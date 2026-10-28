@@ -137,25 +137,48 @@ fn up_to_date(info_path: &Path, lib: &Path, pin: &Pin) -> bool {
         && field(&format!("{STATIC_LIB} sha256:")).is_some_and(|hash| sha256_file(lib).is_ok_and(|h| h == hash))
 }
 
-/// The pinned source under target/ghostty/src-<short>: a git checkout, or the
-/// GitHub source archive when git is unavailable.
+/// The pinned source under target/ghostty/src-<short>: a git checkout of
+/// exactly the pinned commit. An existing tree is reused only when git says
+/// its HEAD is the pin and no tracked file changed; otherwise it is cloned
+/// again. Git is required: there is no unverified download fallback.
 fn fetch(root: &Path, pin: &Pin) -> Result<PathBuf> {
     let src = source_dir(root, pin);
-    let stamp = src.join(".ghostty-commit");
-    if fs::read_to_string(&stamp).is_ok_and(|s| s.trim() == pin.commit) && src.join("build.zig").is_file() {
-        return Ok(src);
+    if src.join("build.zig").is_file() {
+        match verify_checkout(&src, &pin.commit) {
+            Ok(true) => return Ok(src),
+            Ok(false) => println!("{} is not a clean checkout of {}; cloning again", src.display(), pin.short()),
+            Err(error) => println!("cannot verify {} ({error:#}); cloning again", src.display()),
+        }
     }
     if src.exists() {
         fs::remove_dir_all(&src).with_context(|| format!("cannot clean {}", src.display()))?;
     }
     fs::create_dir_all(ghostty_dir(root))?;
     if let Err(error) = git_checkout(&src, &pin.commit) {
-        println!("git checkout failed ({error:#}); downloading the source archive");
         let _ = fs::remove_dir_all(&src);
-        download(&src, &pin.commit)?;
+        bail!("git is required to fetch the pinned Ghostty source: {error:#}");
     }
-    fs::write(&stamp, &pin.commit)?;
+    ensure!(verify_checkout(&src, &pin.commit)?, "the fresh checkout of {} does not verify", pin.short());
     Ok(src)
+}
+
+/// Output of a git command in `src`.
+fn git(src: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git").arg("-C").arg(src).args(args).output().with_context(|| format!("cannot run git {}", args.join(" ")))?;
+    ensure!(output.status.success(), "git {} failed ({})", args.join(" "), output.status);
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The checkout in `src` is the pinned commit with no tracked file changed.
+fn verify_checkout(src: &Path, commit: &str) -> Result<bool> {
+    let head = git(src, &["rev-parse", "HEAD"])?;
+    let status = git(src, &["status", "--porcelain", "--untracked-files=no"])?;
+    Ok(checkout_matches(&head, &status, commit))
+}
+
+/// `git rev-parse HEAD` names the pin and `git status --porcelain` lists nothing.
+fn checkout_matches(head: &str, porcelain: &str, commit: &str) -> bool {
+    head.trim().eq_ignore_ascii_case(commit) && porcelain.trim().is_empty()
 }
 
 fn git_checkout(src: &Path, commit: &str) -> Result<()> {
@@ -171,24 +194,10 @@ fn git_checkout(src: &Path, commit: &str) -> Result<()> {
         "git clone",
     )?;
     run(Command::new("git").arg("-C").arg(src).args(["checkout", "--quiet", "--detach", commit]), "git checkout")?;
-    let head = Command::new("git").arg("-C").arg(src).args(["rev-parse", "HEAD"]).output().context("git rev-parse")?;
-    let head = String::from_utf8_lossy(&head.stdout).trim().to_owned();
-    ensure!(head == commit, "checked out {head}, expected {commit}");
+    let head = git(src, &["rev-parse", "HEAD"])?;
+    ensure!(head.trim().eq_ignore_ascii_case(commit), "checked out {}, expected {commit}", head.trim());
     Ok(())
 }
-
-fn download(src: &Path, commit: &str) -> Result<()> {
-    let parent = src.parent().context("source directory has a parent")?;
-    let archive = parent.join(format!("ghostty-{commit}.tar.gz"));
-    let url = format!("{REPO}/archive/{commit}.tar.gz");
-    println!("downloading {url}");
-    run(Command::new("curl.exe").args(["-fsSL", "-o"]).arg(&archive).arg(&url), "curl")?;
-    run(Command::new("tar.exe").arg("-xzf").arg(&archive).arg("-C").arg(parent), "tar")?;
-    fs::rename(parent.join(format!("ghostty-{commit}")), src).context("cannot move the extracted source")?;
-    let _ = fs::remove_file(&archive);
-    Ok(())
-}
-
 /// `ZIG`, then the default install, then `zig` on PATH; must be the pinned version.
 fn find_zig(pin: &Pin) -> Result<PathBuf> {
     let zig = match std::env::var_os("ZIG") {
@@ -325,6 +334,60 @@ mod tests {
         assert!(!pin.zig.is_empty());
         let entries = read_entries(&checksums_file(&workspace_root())).unwrap();
         assert!(entries.contains_key("src/bindings.rs") && entries.contains_key("vendor/include/ghostty/vt.h"));
+    }
+
+    #[test]
+    fn source_trees_are_reused_only_when_clean_and_pinned() {
+        let commit = "521cf2c5d30bd48028ca61546c64e7913764073d";
+        assert!(checkout_matches(&format!("{commit}\n"), "", commit));
+        assert!(checkout_matches(&commit.to_ascii_uppercase(), "\n", commit), "case does not matter");
+        assert!(!checkout_matches("0000000000000000000000000000000000000000\n", "", commit), "another commit");
+        assert!(!checkout_matches(commit, " M src/terminal/Terminal.zig\n", commit), "a modified tracked file");
+        assert!(!checkout_matches("", "", commit));
+    }
+
+    #[test]
+    fn a_tree_that_is_not_a_checkout_does_not_verify() {
+        let dir = std::env::temp_dir().join(format!("xtask-src-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        assert!(verify_checkout(&dir, "521cf2c5d30bd48028ca61546c64e7913764073d").map_or(true, |ok| !ok));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The sys crate's build script, for its pure checks.
+    #[allow(dead_code)]
+    mod build_rs {
+        include!("../../ghostty-vt-sys/build.rs");
+    }
+
+    #[test]
+    fn the_build_script_validates_the_pin_and_the_library() {
+        use build_rs::{check_build_info, normalize_commit, short};
+        let commit = "521CF2C5D30BD48028CA61546C64E7913764073D";
+        // The same normalization as `read_pin`, so both name the same build folder.
+        assert_eq!(normalize_commit(commit).unwrap(), read_pin(&checksums_file(&workspace_root())).unwrap().commit);
+        assert_eq!(normalize_commit(&format!(" {commit} ")).unwrap(), commit.to_ascii_lowercase());
+        for bad in ["521cf2c5", "", "zz1cf2c5d30bd48028ca61546c64e7913764073d", "521cf2c5d30bd48028ca61546c64e7913764073d0"] {
+            assert!(normalize_commit(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!((short("521cf2c5"), short("521cf2c5d30bd48")), ("521cf2c5", "521cf2c5d30b"), "short input never panics");
+
+        let dir = std::env::temp_dir().join(format!("xtask-build-info-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let (info, lib) = (dir.join("BUILD-INFO.txt"), dir.join(STATIC_LIB));
+        let commit = commit.to_ascii_lowercase();
+        fs::write(&lib, b"library bytes").unwrap();
+        let hash = sha256_file(&lib).unwrap();
+        assert!(check_build_info(&info, &commit, &lib).unwrap_err().contains("missing"));
+        fs::write(&info, format!("ghostty-commit: {commit}\n{STATIC_LIB} sha256: {}\n", hash.to_ascii_uppercase())).unwrap();
+        assert_eq!(check_build_info(&info, &commit, &lib), Ok(()));
+        fs::write(&lib, b"tampered").unwrap();
+        assert!(check_build_info(&info, &commit, &lib).unwrap_err().contains("does not match"));
+        fs::write(&info, format!("ghostty-commit: {commit}\n")).unwrap();
+        assert!(check_build_info(&info, &commit, &lib).unwrap_err().contains("records no"));
+        fs::write(&info, format!("ghostty-commit: 0000000000000000000000000000000000000000\n{STATIC_LIB} sha256: {hash}\n")).unwrap();
+        assert!(check_build_info(&info, &commit, &lib).unwrap_err().contains("is not a build of"));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

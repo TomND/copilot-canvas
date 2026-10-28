@@ -8,7 +8,7 @@ use canvas_common::protocol::*;
 use canvas_host::emulator::{self, Config, Emulator, Engine, Events, Snapshot};
 use serde::{Deserialize, Serialize};
 
-use crate::vtrec::{Kind, Recording};
+use crate::vtrec::{Kind, Recording, clamp_size};
 
 /// Hosted terminals' scrollback (`term.rs`).
 pub const SCROLLBACK: usize = 5000;
@@ -166,14 +166,16 @@ impl Screen {
 /// Feeds the recording into a fresh `engine`, respecting chunk boundaries,
 /// resizes and (for synchronized updates) virtual time.
 pub fn replay(engine: Engine, recording: &Recording) -> Result<Expected> {
-    let mut emu = new_emulator(engine, recording.header.cols, recording.header.rows)?;
+    // Recordings built in code skip the parser's clamp.
+    let (cols, rows) = clamp_size(recording.header.cols, recording.header.rows);
+    let mut emu = new_emulator(engine, cols, rows)?;
     let mut events = EventLog::default();
     let mut screens = Vec::new();
     let mut clock = 0u64;
     let mut sync_since: Option<u64> = None;
     for event in &recording.events {
-        clock += event.delta_ms;
-        if sync_since.is_some_and(|since| clock - since >= SYNC_FLUSH_MS) && emu.sync_deadline().is_some() {
+        clock = clock.saturating_add(event.delta_ms);
+        if sync_since.is_some_and(|since| clock.saturating_sub(since) >= SYNC_FLUSH_MS) && emu.sync_deadline().is_some() {
             emu.end_sync(&mut events);
             sync_since = None;
         }
@@ -182,7 +184,10 @@ pub fn replay(engine: Engine, recording: &Recording) -> Result<Expected> {
                 emu.feed(bytes, &mut events);
                 sync_since = emu.sync_deadline().map(|_| sync_since.unwrap_or(clock));
             }
-            Kind::Resize(cols, rows) => emu.resize(*cols, *rows),
+            Kind::Resize(cols, rows) => {
+                let (cols, rows) = clamp_size(*cols, *rows);
+                emu.resize(cols, rows);
+            }
             Kind::Input(_) => {}
             Kind::Mark(name) => screens.push(Screen::capture(name, &emu.snapshot())),
         }
@@ -469,6 +474,17 @@ mod tests {
         assert!(diff.contains("[end] row 0 col 2: expected \"c\" | actual \"d\""), "{diff}");
         assert!(diff.contains("[end] row 1 col 0: expected \"x\" | actual \"x\" bold"), "{diff}");
         assert!(diff.contains("4 cell(s) differ in 2 row(s)"), "{diff}");
+    }
+
+    #[test]
+    fn huge_sizes_and_times_in_built_recordings_are_bounded() {
+        let mut rec = recording(&[b"x"]);
+        (rec.header.cols, rec.header.rows) = (60_000, 60_000);
+        rec.events.push(Event { delta_ms: u64::MAX, kind: Kind::Resize(65_535, 65_535) });
+        rec.events.push(Event::output(u64::MAX, b"\x1b[?2026hy".to_vec()));
+        let expected = replay(Engine::Alacritty, &rec).unwrap();
+        let end = expected.screens.last().unwrap();
+        assert_eq!((end.cols, end.rows), (crate::vtrec::MAX_COLS, crate::vtrec::MAX_ROWS));
     }
 
     #[test]

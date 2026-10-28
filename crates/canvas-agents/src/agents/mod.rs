@@ -182,7 +182,9 @@ pub trait Provider: Send + Sync {
 /// `program` from `env` or the first of `names` on PATH.
 pub fn find_program(env: &str, names: &[&str]) -> Result<String> {
     if let Some(custom) = std::env::var_os(env) {
-        return Ok(custom.to_string_lossy().into_owned());
+        let custom = custom.to_string_lossy().into_owned();
+        ensure_not_batch(Path::new(&custom), env)?;
+        return Ok(custom);
     }
     names
         .iter()
@@ -191,10 +193,72 @@ pub fn find_program(env: &str, names: &[&str]) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("{} was not found on PATH (set {env} to override)", names[0]))
 }
 
+/// True for `.cmd` / `.bat` files.
+pub fn is_batch(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"))
+}
+
+/// Refuses batch scripts: CreateProcess runs them through cmd.exe, which
+/// parses the command line differently from the quoting the PTY applies, so
+/// text in an argument (a prompt) could run commands.
+pub fn ensure_not_batch(program: &Path, env: &str) -> Result<()> {
+    anyhow::ensure!(
+        !is_batch(program),
+        "{} is a batch script, which cannot be started safely; set {env} to the native executable",
+        program.display()
+    );
+    Ok(())
+}
+
+/// Free text (prompt, title, name) as one argument that never parses as an
+/// option: text starting with '-' gets a leading space.
+pub fn positional(text: &str) -> String {
+    if text.starts_with('-') { format!(" {text}") } else { text.to_owned() }
+}
+
+/// An option value such as a model or agent name: refused when it could parse
+/// as an option or carries control characters.
+pub fn option_value<'a>(option: &str, value: &'a str) -> Result<&'a str> {
+    anyhow::ensure!(!value.starts_with('-'), "invalid {option} value {value:?}: must not start with '-'");
+    anyhow::ensure!(!value.chars().any(char::is_control), "invalid {option} value: contains control characters");
+    Ok(value)
+}
+
+/// The first 8 characters of an id (all of it when shorter), for messages.
+pub fn short_id(id: &str) -> &str {
+    id.get(..8).unwrap_or(id)
+}
+
 pub fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
 pub fn exists(path: &Path) -> bool {
     path.exists()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn free_text_and_option_values_never_become_options() {
+        assert_eq!(positional("-v"), " -v");
+        assert_eq!(positional("--help me"), " --help me");
+        assert_eq!(positional("fix -v"), "fix -v");
+        assert_eq!(option_value("--model", "opus").unwrap(), "opus");
+        for bad in ["-x", "--evil", "a\nb", "a\u{1b}b"] {
+            assert!(option_value("--model", bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn batch_scripts_are_recognized_and_short_ids_never_panic() {
+        for script in [r"C:\x\a.cmd", r"C:\x\a.BAT", "b.Cmd"] {
+            assert!(is_batch(Path::new(script)) && ensure_not_batch(Path::new(script), "X").is_err(), "{script}");
+        }
+        assert!(!is_batch(Path::new(r"C:\x\a.exe")) && ensure_not_batch(Path::new("cmd"), "X").is_ok());
+        assert_eq!((short_id("12345678-abcd"), short_id("abc"), short_id("")), ("12345678", "abc", ""));
+        assert_eq!(short_id("\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}"), "\u{e9}\u{e9}\u{e9}\u{e9}", "never splits a character");
+    }
 }
