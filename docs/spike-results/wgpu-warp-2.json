@@ -1,0 +1,102 @@
+{
+  "adapter": "Microsoft Basic Render Driver",
+  "adapter_type": "Cpu",
+  "backend": "Dx12",
+  "boot_to_streaming_s": 0.56,
+  "drawn": {
+    "pan_zoom": {
+      "app_canvas_ms_avg": 2.27,
+      "app_tiles_ms_avg": 0.06,
+      "boxes_avg": 633.0,
+      "tile_cells_avg": 148.0
+    },
+    "streaming_tiles": {
+      "app_canvas_ms_avg": 0.49,
+      "app_tiles_ms_avg": 0.58,
+      "boxes_avg": 217.0,
+      "tile_cells_avg": 6922.0
+    },
+    "tiles_only_full_grid": {
+      "app_canvas_ms_avg": 0.0,
+      "app_tiles_ms_avg": 1.84,
+      "boxes_avg": 0.0,
+      "tile_cells_avg": 22810.0
+    }
+  },
+  "first_paint_ms": 490.34,
+  "frame_ms": {
+    "pan_zoom": {
+      "acquire_wait_p50": 30.49,
+      "fps": 27.73,
+      "frames": 138,
+      "max": 8.35,
+      "mean": 3.15,
+      "p50": 3.42,
+      "p95": 6.08,
+      "process_cpu_ms_per_frame": 157.27
+    },
+    "streaming_tiles": {
+      "acquire_wait_p50": 100.78,
+      "fps": 9.7,
+      "frames": 77,
+      "max": 1.77,
+      "mean": 1.46,
+      "p50": 1.47,
+      "p95": 1.68,
+      "process_cpu_ms_per_frame": 706.98
+    },
+    "tiles_only_full_grid": {
+      "acquire_wait_p50": 127.26,
+      "fps": 7.23,
+      "frames": 36,
+      "max": 2.9,
+      "mean": 2.34,
+      "p50": 2.42,
+      "p95": 2.64,
+      "process_cpu_ms_per_frame": 699.65
+    }
+  },
+  "idle_cpu_percent": 0.0,
+  "idle_frames_presented": 0,
+  "idle_seconds": 10.0,
+  "keystroke_to_present_ms": {
+    "key_handled_p50": 0.68,
+    "key_handled_p95": 1.16,
+    "max": 203.66,
+    "missed": 0,
+    "p50": 181.37,
+    "p95": 188.18,
+    "path": "PostMessage WM_KEYDOWN to the window -> framework key/char handling -> ClientMsg::Input -> service -> echo -> Frame -> present",
+    "samples": 60,
+    "service_frame_p50": 90.93,
+    "service_frame_to_present_p50": 90.69,
+    "service_frame_to_present_p95": 96.07
+  },
+  "mono_font": "Cascadia Mono",
+  "present_mode": "Mailbox",
+  "private_mb_after_10s_streaming": 142.33,
+  "private_mb_after_gpu_init": 100.75,
+  "private_mb_after_window_and_fonts": 3.23,
+  "private_mb_at_end": 191.34,
+  "private_mb_at_start": 1.61,
+  "process_cpu_percent": {
+    "idle": 0.0,
+    "latency_typing": 642.97,
+    "pan_zoom": 436.08,
+    "streaming_tiles": 685.51,
+    "tiles_only_full_grid": 505.91
+  },
+  "refresh_hz": 60.0,
+  "scale_factor": 1.25,
+  "software_renderer": true,
+  "stack": "wgpu",
+  "startup_ms_after_gpu_init": 447.27,
+  "startup_ms_after_window_and_fonts": 71.42,
+  "startup_ms_at_start": 21.89,
+  "window_logical": [
+    1800,
+    1000
+  ],
+  "working_set_mb_after_10s_streaming": 101.29,
+  "working_set_mb_at_end": 140.25
+}

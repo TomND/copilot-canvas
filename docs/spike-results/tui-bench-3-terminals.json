@@ -1,0 +1,56 @@
+{
+  "build": "0.3.0-2486dd7a956be13e",
+  "client_stream": {
+    "frames_per_s": 163.0,
+    "kb_per_s": 192.0
+  },
+  "cpu_burners": 0,
+  "hosted_processes": {
+    "count": 8,
+    "note": "benchmark noise/echo programs plus console hosts; real Copilot processes are much larger",
+    "private_mb": 11.7
+  },
+  "keystroke_to_screen_ms": {
+    "max": 13.4,
+    "missed": 0,
+    "p50": 4.46,
+    "p95": 5.02,
+    "p99": 8.73,
+    "samples": 276
+  },
+  "launch_all_ms": 42,
+  "logical_cpus": 12,
+  "priority_manager": true,
+  "service": {
+    "cpu_percent_of_one_core": 6.0,
+    "output_parsed_mb_per_s": 0.0,
+    "private_kb_per_terminal": 6069.0,
+    "private_mb": 23.7,
+    "working_set_mb": 30.0
+  },
+  "streaming_terminals": 3,
+  "ui_render": {
+    "frames": {
+      "zoom_100": {
+        "max_ms": 1.78,
+        "p50_ms": 0.74,
+        "p95_ms": 0.84
+      },
+      "zoom_25": {
+        "max_ms": 1.63,
+        "p50_ms": 0.92,
+        "p95_ms": 0.99
+      },
+      "zoom_50": {
+        "max_ms": 0.99,
+        "p50_ms": 0.77,
+        "p95_ms": 0.84
+      }
+    },
+    "groups": 10,
+    "screen": "200x50",
+    "sessions": 100,
+    "subagent_boxes": 1200,
+    "terminal_tiles": 4
+  }
+}

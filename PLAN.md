@@ -148,6 +148,19 @@ Spike criteria:
 
 Default if results are close: GPUI.
 
+**Decision (Phase 3 spike, 2026-10-27): wgpu + winit + glyphon.** The results were not close where it matters most:
+
+- **Four streaming tiles:** 1.3 ms per frame against GPUI's 6.5 ms, and 13 % CPU against 44 %.
+- **Keystroke → present:** p50 9.9 ms against 34.7 ms.
+
+GPUI was better on first paint (0.29 s against 0.46 s) and memory (145 MB against 181 MB); both are within budget. Conditions:
+
+- egui (or a small widget layer) for the chrome, prototyped in Phase 4 week 1;
+- Mailbox presentation with our own pacing;
+- `MemoryHints::MemoryUsage`.
+
+Details: `docs/GPU-SPIKE.md`.
+
 ### D4. Where the GPU client runs
 
 - **The home PC, with a real GPU, in remote mode.** This is the primary target.
