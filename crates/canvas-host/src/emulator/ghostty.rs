@@ -9,13 +9,21 @@
 //! Snapshots are read from the render state. While a program holds the
 //! screen with synchronized output (DEC 2026) the render state captured when
 //! the hold began is shown, as alacritty shows the screen from before its
-//! buffered sync, until the hold ends or [`SYNC_TIMEOUT`] passes.
+//! buffered sync, until the hold ends or [`SYNC_TIMEOUT`] passes. The display
+//! offset, history size and modes of a held snapshot are captured together
+//! with that render state ([`View`]); hyperlinks can only be looked up in the
+//! live terminal, so a held snapshot carries none (they return with the next
+//! frame after the hold, at most [`SYNC_TIMEOUT`] later).
 //!
 //! Key input goes through Ghostty's key encoder (kitty keyboard protocol
 //! included). In legacy mode the few xterm extensions that ConPTY's input
 //! parser does not map to keys are replaced with the `crate::keys` bytes (see
 //! [`is_legacy_extension`]). Mouse reports follow `crate::keys` exactly.
+//!
+//! OSC 52 writes reach the clipboard only for the standard clipboard and up
+//! to [`CLIPBOARD_MAX_BYTES`].
 
+use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void};
 use std::time::{Duration, Instant};
 
@@ -23,7 +31,7 @@ use alacritty_terminal::vte::ansi::NamedColor;
 use canvas_common::protocol::*;
 use ghostty_vt_sys as sys;
 
-use super::alacritty::palette;
+use super::alacritty::{CLIPBOARD_MAX_BYTES, palette};
 use super::{Config, Emulator, Engine, Events, Scroll, Snapshot};
 
 /// How long a synchronized update may hold the screen (alacritty's limit).
@@ -54,6 +62,63 @@ struct Shared {
     hold: Option<Instant>,
     /// Captured when a hold begins (see `on_render_hold`).
     render: sys::GhosttyRenderState,
+    /// What a held snapshot shows besides the cells, read with `render`.
+    held: View,
+}
+
+/// The parts of a snapshot read from the terminal rather than the render
+/// state; captured together with the render state during a hold.
+#[derive(Clone, Copy, Default)]
+struct View {
+    display_offset: u32,
+    history: u32,
+    modes: u32,
+}
+
+impl View {
+    /// The live values (`terminal` must be valid).
+    fn read(terminal: sys::GhosttyTerminal) -> Self {
+        // SAFETY: SCROLLBACK_ROWS yields a usize.
+        let history = unsafe { terminal_get(terminal, sys::GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS, 0usize) }.unwrap_or(0);
+        Self { display_offset: display_offset(terminal), history: u32::try_from(history).unwrap_or(u32::MAX), modes: modes(terminal) }
+    }
+}
+
+/// Hyperlink targets of one snapshot, deduplicated.
+#[derive(Default)]
+struct Links {
+    targets: Vec<String>,
+    /// Target -> 1-based id (`Run8::link`).
+    ids: HashMap<String, u32>,
+    /// The URI read for the current cell.
+    uri: Vec<u8>,
+    /// The previous linked cell's URI and id: runs of linked cells reuse it
+    /// without hashing or allocating (the C API has no per-cell link id).
+    previous: Vec<u8>,
+    previous_id: u32,
+}
+
+impl Links {
+    /// The id of the URI in `self.uri`.
+    fn intern(&mut self) -> u32 {
+        if self.previous_id != 0 && self.uri == self.previous {
+            return self.previous_id;
+        }
+        let uri = String::from_utf8_lossy(&self.uri);
+        let id = match self.ids.get(uri.as_ref()) {
+            Some(&id) => id,
+            None => {
+                let uri = uri.into_owned();
+                self.targets.push(uri.clone());
+                let id = self.targets.len() as u32;
+                self.ids.insert(uri, id);
+                id
+            }
+        };
+        std::mem::swap(&mut self.uri, &mut self.previous);
+        self.previous_id = id;
+        id
+    }
 }
 
 /// The Ghostty engine. `!Send`: it lives on its terminal's emulator thread.
@@ -85,6 +150,7 @@ impl GhosttyEmulator {
             rows,
             hold: None,
             render: std::ptr::null_mut(),
+            held: View::default(),
         }));
         // Drop frees whatever was created if a later step fails.
         let mut emu = Self {
@@ -156,6 +222,9 @@ impl GhosttyEmulator {
         set!(GHOSTTY_TERMINAL_OPT_TERMINFO_NAME, (&raw const terminfo).cast());
         // ConPTY keeps no scrollback of its own: a resize must not pull rows back.
         set!(GHOSTTY_TERMINAL_OPT_RESIZE_PULL_SCROLLBACK, (&raw const pull_scrollback).cast());
+        // Bounds OSC 5522 transactions; OSC 52 writes are checked in `on_clipboard_write`.
+        let clipboard_max: usize = CLIPBOARD_MAX_BYTES;
+        set!(GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE_MAX_BYTES, (&raw const clipboard_max).cast());
         Ok(())
     }
 
@@ -174,10 +243,9 @@ impl GhosttyEmulator {
     ///
     /// # Safety
     /// `T` must be the output type the data kind documents.
-    unsafe fn get<T>(&self, data: sys::GhosttyTerminalData, mut value: T) -> Option<T> {
-        // SAFETY: upheld by the caller; the terminal handle is valid.
-        let result = unsafe { sys::ghostty_terminal_get(self.terminal, data, (&raw mut value).cast()) };
-        (result == sys::GHOSTTY_SUCCESS).then_some(value)
+    unsafe fn get<T>(&self, data: sys::GhosttyTerminalData, value: T) -> Option<T> {
+        // SAFETY: upheld by the caller.
+        unsafe { terminal_get(self.terminal, data, value) }
     }
 
     fn mode(&self, mode: sys::GhosttyMode) -> bool {
@@ -212,11 +280,12 @@ impl GhosttyEmulator {
         }
     }
 
-    /// One viewport row as protocol-8 runs (same merging and trimming as alacritty).
+    /// One viewport row as protocol-8 runs (same merging and trimming as
+    /// alacritty). Hyperlinks are looked up only when `links` is given.
     ///
     /// # Safety
     /// `rows` must be positioned on viewport row `y` of the current render state.
-    unsafe fn row_runs(&self, rows: sys::GhosttyRenderStateRowIterator, y: u16, links: &mut Vec<String>) -> Vec<Run8> {
+    unsafe fn row_runs(&self, rows: sys::GhosttyRenderStateRowIterator, y: u16, mut links: Option<&mut Links>) -> Vec<Run8> {
         let mut view = sys::GhosttyCellsView { ptr: std::ptr::null(), len: 0 };
         // SAFETY: CELLS_RAW yields a view valid until the next render-state update.
         if unsafe { sys::ghostty_render_state_row_get(rows, sys::GHOSTTY_RENDER_STATE_ROW_DATA_CELLS_RAW, (&raw mut view).cast()) }
@@ -260,14 +329,16 @@ impl GhosttyEmulator {
                 sys::GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE => {
                     let mut index: u8 = 0;
                     // SAFETY: COLOR_PALETTE writes a GhosttyColorPaletteIndex.
-                    unsafe { sys::ghostty_cell_get(raw_cell, sys::GHOSTTY_CELL_DATA_COLOR_PALETTE, (&raw mut index).cast()) };
-                    style.bg = index as u32 + 1;
+                    if unsafe { sys::ghostty_cell_get(raw_cell, sys::GHOSTTY_CELL_DATA_COLOR_PALETTE, (&raw mut index).cast()) } == sys::GHOSTTY_SUCCESS {
+                        style.bg = index as u32 + 1;
+                    }
                 }
                 sys::GHOSTTY_CELL_CONTENT_BG_COLOR_RGB => {
                     let mut rgb = sys::GhosttyColorRgb::default();
                     // SAFETY: COLOR_RGB writes a GhosttyColorRgb.
-                    unsafe { sys::ghostty_cell_get(raw_cell, sys::GHOSTTY_CELL_DATA_COLOR_RGB, (&raw mut rgb).cast()) };
-                    style.bg = rgb_color(rgb);
+                    if unsafe { sys::ghostty_cell_get(raw_cell, sys::GHOSTTY_CELL_DATA_COLOR_RGB, (&raw mut rgb).cast()) } == sys::GHOSTTY_SUCCESS {
+                        style.bg = rgb_color(rgb);
+                    }
                 }
                 _ => {}
             }
@@ -278,19 +349,11 @@ impl GhosttyEmulator {
             } else {
                 Vec::new()
             };
-            let link = if cell.link {
-                match self.hyperlink(x, y) {
-                    Some(uri) => match links.iter().position(|l| *l == uri) {
-                        Some(i) => i as u32 + 1,
-                        None => {
-                            links.push(uri);
-                            links.len() as u32
-                        }
-                    },
-                    None => 0,
+            let link = match links.as_deref_mut() {
+                Some(links) if cell.link => {
+                    if self.hyperlink(x, y, &mut links.uri) { links.intern() } else { 0 }
                 }
-            } else {
-                0
+                _ => 0,
             };
             let wide = cell.wide == sys::GHOSTTY_CELL_WIDE_WIDE;
             let same = |run: &Run8| {
@@ -328,31 +391,31 @@ impl GhosttyEmulator {
         runs
     }
 
-    /// The OSC 8 target of a viewport cell.
-    fn hyperlink(&self, x: u16, y: u16) -> Option<String> {
+    /// Reads the OSC 8 target of a live viewport cell into `uri`; `false` when it has none.
+    fn hyperlink(&self, x: u16, y: u16, uri: &mut Vec<u8>) -> bool {
         let mut value = sys::GhosttyPointValue { _padding: [0; 2] };
         value.coordinate = sys::GhosttyPointCoordinate { x, y: y as u32 };
         let point = sys::GhosttyPoint { tag: sys::GHOSTTY_POINT_TAG_VIEWPORT, value };
         let mut grid_ref = sys::GhosttyGridRef::sized();
         // SAFETY: the terminal handle is valid; the ref is used before any mutation.
         if unsafe { sys::ghostty_terminal_grid_ref(self.terminal, point, &mut grid_ref) } != sys::GHOSTTY_SUCCESS {
-            return None;
+            return false;
         }
-        let mut buf = vec![0u8; 256];
+        // Reuses the buffer's allocation from cell to cell.
+        let capacity = uri.capacity().max(256);
+        uri.clear();
+        uri.resize(capacity, 0);
         let mut len = 0usize;
-        // SAFETY: `buf` has `buf.len()` writable bytes.
-        let mut result = unsafe { sys::ghostty_grid_ref_hyperlink_uri(&grid_ref, buf.as_mut_ptr(), buf.len(), &mut len) };
-        if result == sys::GHOSTTY_OUT_OF_SPACE {
-            buf.resize(len, 0);
+        // SAFETY: `uri` has `uri.len()` writable bytes.
+        let mut result = unsafe { sys::ghostty_grid_ref_hyperlink_uri(&grid_ref, uri.as_mut_ptr(), uri.len(), &mut len) };
+        if result == sys::GHOSTTY_OUT_OF_SPACE && len > uri.len() {
+            uri.resize(len, 0);
             // SAFETY: as above, with the required size.
-            result = unsafe { sys::ghostty_grid_ref_hyperlink_uri(&grid_ref, buf.as_mut_ptr(), buf.len(), &mut len) };
+            result = unsafe { sys::ghostty_grid_ref_hyperlink_uri(&grid_ref, uri.as_mut_ptr(), uri.len(), &mut len) };
         }
-        (result == sys::GHOSTTY_SUCCESS && len > 0 && len <= buf.len()).then(|| String::from_utf8_lossy(&buf[..len]).into_owned())
-    }
-
-    fn scrollbar(&self) -> sys::GhosttyTerminalScrollbar {
-        // SAFETY: DATA_SCROLLBAR yields a GhosttyTerminalScrollbar.
-        unsafe { self.get(sys::GHOSTTY_TERMINAL_DATA_SCROLLBAR, sys::GhosttyTerminalScrollbar::default()) }.unwrap_or_default()
+        let found = result == sys::GHOSTTY_SUCCESS && len > 0 && len <= uri.len();
+        uri.truncate(if found { len } else { 0 });
+        found
     }
 
     fn encode_paste(&self, text: &str) -> Vec<u8> {
@@ -478,17 +541,28 @@ impl Emulator for GhosttyEmulator {
     }
 
     fn snapshot(&self) -> Snapshot {
-        let held = self.shared().hold.is_some();
+        // Copied out: no reference to `Shared` may live across FFI calls.
+        let (held, shared_cols, shared_rows, held_view) = {
+            let shared = self.shared();
+            (shared.hold.is_some(), shared.cols, shared.rows, shared.held)
+        };
+        let blank = || Snapshot { cols: shared_cols, rows: shared_rows, lines: vec![Vec::new(); shared_rows as usize], modes: self.modes(), ..Snapshot::default() };
         // SAFETY: all handles are valid and used on this thread only; row and
         // cell data are read before the render state is updated again.
         unsafe {
-            if !held {
-                sys::ghostty_render_state_update(self.render, self.terminal);
+            if !held && sys::ghostty_render_state_update(self.render, self.terminal) != sys::GHOSTTY_SUCCESS {
+                return blank();
             }
             let (mut cols, mut rows) = (0u16, 0u16);
-            sys::ghostty_render_state_get(self.render, sys::GHOSTTY_RENDER_STATE_DATA_COLS, (&raw mut cols).cast());
-            sys::ghostty_render_state_get(self.render, sys::GHOSTTY_RENDER_STATE_DATA_ROWS, (&raw mut rows).cast());
-            let mut links = Vec::new();
+            if sys::ghostty_render_state_get(self.render, sys::GHOSTTY_RENDER_STATE_DATA_COLS, (&raw mut cols).cast()) != sys::GHOSTTY_SUCCESS
+                || sys::ghostty_render_state_get(self.render, sys::GHOSTTY_RENDER_STATE_DATA_ROWS, (&raw mut rows).cast()) != sys::GHOSTTY_SUCCESS
+            {
+                return blank();
+            }
+            // A held frame takes everything from the moment it was captured;
+            // links exist only in the live terminal (see the module docs).
+            let view = if held { held_view } else { View::read(self.terminal) };
+            let mut links = (!held).then(Links::default);
             let mut lines = Vec::with_capacity(rows as usize);
             let mut iterator = self.rows;
             if sys::ghostty_render_state_get(self.render, sys::GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, (&raw mut iterator).cast())
@@ -496,31 +570,32 @@ impl Emulator for GhosttyEmulator {
             {
                 while lines.len() < rows as usize && sys::ghostty_render_state_row_iterator_next(iterator) {
                     let y = lines.len() as u16;
-                    lines.push(self.row_runs(iterator, y, &mut links));
+                    lines.push(self.row_runs(iterator, y, links.as_mut()));
                 }
             }
             lines.resize(rows as usize, Vec::new());
             let mut cursor = sys::GhosttyRenderStateCursor::sized();
-            sys::ghostty_render_state_get(self.render, sys::GHOSTTY_RENDER_STATE_DATA_CURSOR, (&raw mut cursor).cast());
-            let display_offset = self.display_offset();
+            let have_cursor =
+                sys::ghostty_render_state_get(self.render, sys::GHOSTTY_RENDER_STATE_DATA_CURSOR, (&raw mut cursor).cast()) == sys::GHOSTTY_SUCCESS;
             let cursor_shape = match cursor.visual_style {
+                _ if !have_cursor => CURSOR_BLOCK,
                 sys::GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR => CURSOR_BAR,
                 sys::GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE => CURSOR_UNDERLINE,
                 sys::GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW => CURSOR_BLOCK_HOLLOW,
                 _ => CURSOR_BLOCK,
             };
-            let history = self.get(sys::GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS, 0usize).unwrap_or(0);
             Snapshot {
                 cols,
                 rows,
                 lines,
-                links,
-                cursor: (display_offset == 0 && cursor.visible && cursor.viewport_has_value).then_some((cursor.viewport_x, cursor.viewport_y)),
+                links: links.map(|links| links.targets).unwrap_or_default(),
+                cursor: (have_cursor && view.display_offset == 0 && cursor.visible && cursor.viewport_has_value)
+                    .then_some((cursor.viewport_x, cursor.viewport_y)),
                 cursor_shape,
-                cursor_blink: cursor.blinking,
-                display_offset,
-                history: u32::try_from(history).unwrap_or(u32::MAX),
-                modes: self.modes(),
+                cursor_blink: have_cursor && cursor.blinking,
+                display_offset: view.display_offset,
+                history: view.history,
+                modes: view.modes,
             }
         }
     }
@@ -541,56 +616,20 @@ impl Emulator for GhosttyEmulator {
         }
         // SAFETY: valid handle.
         unsafe { sys::ghostty_terminal_scroll_viewport(self.terminal, behavior) };
-        if self.shared().hold.is_some() {
-            // Scrolling shows live content even during a hold.
-            // SAFETY: valid handles.
-            unsafe { sys::ghostty_render_state_update(self.render, self.terminal) };
+        // Scrolling shows live content even during a hold.
+        // SAFETY: valid handles.
+        if self.shared().hold.is_some() && unsafe { sys::ghostty_render_state_update(self.render, self.terminal) } == sys::GHOSTTY_SUCCESS {
+            let view = View::read(self.terminal);
+            self.shared_mut().held = view;
         }
     }
 
     fn display_offset(&self) -> u32 {
-        let bar = self.scrollbar();
-        u32::try_from(bar.total.saturating_sub(bar.offset).saturating_sub(bar.len)).unwrap_or(u32::MAX)
+        display_offset(self.terminal)
     }
 
     fn modes(&self) -> u32 {
-        const MODES: [(sys::GhosttyMode, u32); 11] = [
-            (sys::GHOSTTY_MODE_X10_MOUSE, MODE_MOUSE),
-            (sys::GHOSTTY_MODE_NORMAL_MOUSE, MODE_MOUSE),
-            (sys::GHOSTTY_MODE_BUTTON_MOUSE, MODE_MOUSE | MODE_MOUSE_DRAG),
-            (sys::GHOSTTY_MODE_ANY_MOUSE, MODE_MOUSE | MODE_MOUSE_MOTION),
-            (sys::GHOSTTY_MODE_SGR_MOUSE, MODE_SGR_MOUSE),
-            (sys::GHOSTTY_MODE_UTF8_MOUSE, MODE_UTF8_MOUSE),
-            (sys::GHOSTTY_MODE_BRACKETED_PASTE, MODE_BRACKETED_PASTE),
-            (sys::GHOSTTY_MODE_DECCKM, MODE_APP_CURSOR),
-            (sys::GHOSTTY_MODE_FOCUS_EVENT, MODE_FOCUS),
-            (sys::GHOSTTY_MODE_CURSOR_VISIBLE, MODE_SHOW_CURSOR),
-            (sys::GHOSTTY_MODE_KEYPAD_KEYS, MODE_APP_KEYPAD),
-        ];
-        let mut configs = MODES.map(|(mode, _)| sys::GhosttyTerminalModeConfig { mode, value: false });
-        let mut screen: sys::GhosttyTerminalScreen = sys::GHOSTTY_TERMINAL_SCREEN_PRIMARY;
-        let mut kitty: sys::GhosttyKittyKeyFlags = 0;
-        let mut keys = [sys::GHOSTTY_TERMINAL_DATA_MODE; MODES.len() + 2];
-        let mut values = [std::ptr::null_mut::<c_void>(); MODES.len() + 2];
-        for (value, config) in values.iter_mut().zip(configs.iter_mut()) {
-            *value = (config as *mut sys::GhosttyTerminalModeConfig).cast();
-        }
-        keys[MODES.len()] = sys::GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN;
-        values[MODES.len()] = (&raw mut screen).cast();
-        keys[MODES.len() + 1] = sys::GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS;
-        values[MODES.len() + 1] = (&raw mut kitty).cast();
-        // SAFETY: each value points to the output type of its key.
-        unsafe { sys::ghostty_terminal_get_multi(self.terminal, keys.len(), keys.as_ptr(), values.as_mut_ptr(), std::ptr::null_mut()) };
-        let mut bits = 0;
-        for ((_, bit), config) in MODES.iter().zip(&configs) {
-            if config.value {
-                bits |= bit;
-            }
-        }
-        if screen == sys::GHOSTTY_TERMINAL_SCREEN_ALTERNATE {
-            bits |= MODE_ALT_SCREEN;
-        }
-        bits | (kitty as u32 & 0x1f) << MODE_KITTY_SHIFT
+        modes(self.terminal)
     }
 
     fn encode(&mut self, input: &Input) -> Vec<u8> {
@@ -625,6 +664,77 @@ impl Emulator for GhosttyEmulator {
     }
 }
 
+/// Reads one `GHOSTTY_TERMINAL_DATA_*` value.
+///
+/// # Safety
+/// `terminal` must be valid and `T` the output type the data kind documents.
+unsafe fn terminal_get<T>(terminal: sys::GhosttyTerminal, data: sys::GhosttyTerminalData, mut value: T) -> Option<T> {
+    // SAFETY: upheld by the caller.
+    let result = unsafe { sys::ghostty_terminal_get(terminal, data, (&raw mut value).cast()) };
+    (result == sys::GHOSTTY_SUCCESS).then_some(value)
+}
+
+/// Lines between the viewport and the live screen (`terminal` must be valid).
+fn display_offset(terminal: sys::GhosttyTerminal) -> u32 {
+    // SAFETY: DATA_SCROLLBAR yields a GhosttyTerminalScrollbar.
+    let bar = unsafe { terminal_get(terminal, sys::GHOSTTY_TERMINAL_DATA_SCROLLBAR, sys::GhosttyTerminalScrollbar::default()) }.unwrap_or_default();
+    u32::try_from(bar.total.saturating_sub(bar.offset).saturating_sub(bar.len)).unwrap_or(u32::MAX)
+}
+
+/// `MODE_*` bits: one `get_multi` call, or one query per value if it fails
+/// (`terminal` must be valid).
+fn modes(terminal: sys::GhosttyTerminal) -> u32 {
+    const MODES: [(sys::GhosttyMode, u32); 11] = [
+        (sys::GHOSTTY_MODE_X10_MOUSE, MODE_MOUSE),
+        (sys::GHOSTTY_MODE_NORMAL_MOUSE, MODE_MOUSE),
+        (sys::GHOSTTY_MODE_BUTTON_MOUSE, MODE_MOUSE | MODE_MOUSE_DRAG),
+        (sys::GHOSTTY_MODE_ANY_MOUSE, MODE_MOUSE | MODE_MOUSE_MOTION),
+        (sys::GHOSTTY_MODE_SGR_MOUSE, MODE_SGR_MOUSE),
+        (sys::GHOSTTY_MODE_UTF8_MOUSE, MODE_UTF8_MOUSE),
+        (sys::GHOSTTY_MODE_BRACKETED_PASTE, MODE_BRACKETED_PASTE),
+        (sys::GHOSTTY_MODE_DECCKM, MODE_APP_CURSOR),
+        (sys::GHOSTTY_MODE_FOCUS_EVENT, MODE_FOCUS),
+        (sys::GHOSTTY_MODE_CURSOR_VISIBLE, MODE_SHOW_CURSOR),
+        (sys::GHOSTTY_MODE_KEYPAD_KEYS, MODE_APP_KEYPAD),
+    ];
+    let mut configs = MODES.map(|(mode, _)| sys::GhosttyTerminalModeConfig { mode, value: false });
+    let mut screen: sys::GhosttyTerminalScreen = sys::GHOSTTY_TERMINAL_SCREEN_PRIMARY;
+    let mut kitty: sys::GhosttyKittyKeyFlags = 0;
+    let mut keys = [sys::GHOSTTY_TERMINAL_DATA_MODE; MODES.len() + 2];
+    let mut values = [std::ptr::null_mut::<c_void>(); MODES.len() + 2];
+    for (value, config) in values.iter_mut().zip(configs.iter_mut()) {
+        *value = (config as *mut sys::GhosttyTerminalModeConfig).cast();
+    }
+    keys[MODES.len()] = sys::GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN;
+    values[MODES.len()] = (&raw mut screen).cast();
+    keys[MODES.len() + 1] = sys::GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS;
+    values[MODES.len() + 1] = (&raw mut kitty).cast();
+    // SAFETY: each value points to the output type of its key.
+    let result = unsafe { sys::ghostty_terminal_get_multi(terminal, keys.len(), keys.as_ptr(), values.as_mut_ptr(), std::ptr::null_mut()) };
+    if result != sys::GHOSTTY_SUCCESS {
+        // Some values may be unwritten: ask for each one, defaulting what fails.
+        for config in &mut configs {
+            // SAFETY: DATA_MODE takes a GhosttyTerminalModeConfig.
+            config.value = unsafe { terminal_get(terminal, sys::GHOSTTY_TERMINAL_DATA_MODE, *config) }.is_some_and(|c| c.value);
+        }
+        // SAFETY: as documented for each data kind.
+        screen = unsafe { terminal_get(terminal, sys::GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, sys::GHOSTTY_TERMINAL_SCREEN_PRIMARY) }
+            .unwrap_or(sys::GHOSTTY_TERMINAL_SCREEN_PRIMARY);
+        // SAFETY: as above.
+        kitty = unsafe { terminal_get(terminal, sys::GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS, 0) }.unwrap_or(0);
+    }
+    let mut bits = 0;
+    for ((_, bit), config) in MODES.iter().zip(&configs) {
+        if config.value {
+            bits |= bit;
+        }
+    }
+    if screen == sys::GHOSTTY_TERMINAL_SCREEN_ALTERNATE {
+        bits |= MODE_ALT_SCREEN;
+    }
+    bits | (kitty as u32 & 0x1f) << MODE_KITTY_SHIFT
+}
+
 /// The fields of a packed cell the snapshot needs.
 struct CellInfo {
     codepoint: u32,
@@ -636,8 +746,19 @@ struct CellInfo {
 }
 
 impl CellInfo {
+    /// A blank, unstyled, narrow cell.
+    const BLANK: Self = CellInfo {
+        codepoint: 0,
+        tag: sys::GHOSTTY_CELL_CONTENT_CODEPOINT,
+        wide: sys::GHOSTTY_CELL_WIDE_NARROW,
+        styled: false,
+        style_id: 0,
+        link: false,
+    };
+
+    /// The cell's fields, or [`CellInfo::BLANK`] when they cannot be read.
     fn decode(cell: sys::GhosttyCell) -> Self {
-        let mut info = CellInfo { codepoint: 0, tag: 0, wide: 0, styled: false, style_id: 0, link: false };
+        let mut info = Self::BLANK;
         let keys = [
             sys::GHOSTTY_CELL_DATA_CODEPOINT,
             sys::GHOSTTY_CELL_DATA_CONTENT_TAG,
@@ -655,8 +776,8 @@ impl CellInfo {
             (&raw mut info.link).cast(),
         ];
         // SAFETY: each value points to the output type of its key.
-        unsafe { sys::ghostty_cell_get_multi(cell, keys.len(), keys.as_ptr(), values.as_mut_ptr(), std::ptr::null_mut()) };
-        info
+        let result = unsafe { sys::ghostty_cell_get_multi(cell, keys.len(), keys.as_ptr(), values.as_mut_ptr(), std::ptr::null_mut()) };
+        if result == sys::GHOSTTY_SUCCESS { info } else { Self::BLANK }
     }
 }
 
@@ -913,12 +1034,24 @@ unsafe extern "C" fn on_device_attributes(_: sys::GhosttyTerminal, _: *mut c_voi
     true
 }
 
-/// OSC 52 (and OSC 1337 / 5522) writes: the text representation becomes a clipboard event.
+/// OSC 52 (and OSC 1337 / 5522) writes: the text representation becomes a
+/// clipboard event, for the standard clipboard only and up to [`CLIPBOARD_MAX_BYTES`].
 unsafe extern "C" fn on_clipboard_write(_: sys::GhosttyTerminal, userdata: *mut c_void, write: *const sys::GhosttyClipboardWrite) {
     // SAFETY: userdata is ours; the request is borrowed for this call.
     let (Some(shared), Some(request)) = (unsafe { shared(userdata) }, unsafe { write.as_ref() }) else { return };
+    let answer = |result| {
+        if let Some(reply) = request.reply {
+            let mut answer = sys::GhosttyClipboardWriteReply::sized();
+            answer.result = result;
+            // SAFETY: answered during the callback with the request it came with.
+            unsafe { reply(write, &answer) };
+        }
+    };
     if request.size < std::mem::size_of::<sys::GhosttyClipboardWrite>() || request.contents.is_null() || request.contents_len == 0 {
         return;
+    }
+    if request.location != sys::GHOSTTY_CLIPBOARD_LOCATION_STANDARD {
+        return answer(sys::GHOSTTY_CLIPBOARD_WRITE_RESULT_DENIED);
     }
     // SAFETY: `contents_len` entries whose strings live for this call.
     let contents = unsafe { std::slice::from_raw_parts(request.contents, request.contents_len) };
@@ -927,13 +1060,12 @@ unsafe extern "C" fn on_clipboard_write(_: sys::GhosttyTerminal, userdata: *mut 
         return;
     };
     // SAFETY: as above.
-    shared.pending.push(Pending::Clipboard(String::from_utf8_lossy(unsafe { text.data.as_bytes() }).into_owned()));
-    if let Some(reply) = request.reply {
-        let mut answer = sys::GhosttyClipboardWriteReply::sized();
-        answer.result = sys::GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS;
-        // SAFETY: answered during the callback with the request it came with.
-        unsafe { reply(write, &answer) };
+    let data = unsafe { text.data.as_bytes() };
+    if data.len() > CLIPBOARD_MAX_BYTES {
+        return answer(sys::GHOSTTY_CLIPBOARD_WRITE_RESULT_DENIED);
     }
+    shared.pending.push(Pending::Clipboard(String::from_utf8_lossy(data).into_owned()));
+    answer(sys::GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS);
 }
 
 unsafe extern "C" fn on_notification(
@@ -965,13 +1097,18 @@ unsafe extern "C" fn on_progress(_: sys::GhosttyTerminal, userdata: *mut c_void,
     }
 }
 
-/// A hold begins with the screen the program wants shown: capture it now.
+/// A hold begins with the screen the program wants shown: capture it (and
+/// the [`View`] that goes with it) now.
 unsafe extern "C" fn on_render_hold(terminal: sys::GhosttyTerminal, userdata: *mut c_void, held: bool) {
     // SAFETY: userdata is ours.
     let Some(shared) = (unsafe { shared(userdata) }) else { return };
     if held {
         // SAFETY: reading the terminal from a callback is allowed (only writes re-enter).
-        unsafe { sys::ghostty_render_state_update(shared.render, terminal) };
+        if unsafe { sys::ghostty_render_state_update(shared.render, terminal) } != sys::GHOSTTY_SUCCESS {
+            // No frame to hold: keep showing the live screen.
+            return;
+        }
+        shared.held = View::read(terminal);
         shared.hold = Some(Instant::now());
     } else {
         shared.hold = None;
@@ -1128,6 +1265,68 @@ mod tests {
         assert_eq!(events.clipboard, vec!["hello world".to_owned()]);
         let events = feed_collect(&mut emu, b"\x1b]52;c;?\x07\x1b]52;p;?\x1b\\");
         assert!(events.replies.is_empty() && events.clipboard.is_empty(), "no clipboard contents leave: {events:?}");
+    }
+
+    #[test]
+    fn clipboard_writes_are_capped_and_limited_to_the_standard_clipboard() {
+        use crate::emulator::alacritty::tests::base64;
+        let mut emu = emulator(20, 3);
+        let osc = |target: &str, text: &[u8]| format!("\x1b]52;{target};{}\x07", base64(text)).into_bytes();
+        assert_eq!(feed_collect(&mut emu, &osc("c", &[b'a'; 8192])).clipboard[0].len(), 8192);
+        assert!(feed_collect(&mut emu, &osc("p", b"primary")).clipboard.is_empty(), "primary writes are refused");
+        assert!(feed_collect(&mut emu, &osc("s", b"select")).clipboard.is_empty(), "selection writes are refused");
+        let over = vec![b'a'; CLIPBOARD_MAX_BYTES + 1];
+        assert!(feed_collect(&mut emu, &osc("c", &over)).clipboard.is_empty(), "oversized writes are dropped");
+        assert_eq!(feed_collect(&mut emu, &osc("c", b"after")).clipboard, ["after"], "the parser recovers");
+        // SAFETY: DATA_CLIPBOARD_WRITE_MAX_BYTES yields a size_t.
+        let limit = unsafe { emu.get(sys::GHOSTTY_TERMINAL_DATA_CLIPBOARD_WRITE_MAX_BYTES, 0usize) }.expect("limit");
+        assert_eq!(limit, CLIPBOARD_MAX_BYTES, "OSC 5522 transactions are capped as well");
+    }
+
+    #[test]
+    fn adjacent_links_with_the_same_style_stay_distinct() {
+        let mut emu = emulator(40, 2);
+        feed_collect(&mut emu, b"\x1b]8;;https://a.example\x07aa\x1b]8;;https://b.example\x07bb\x1b]8;;https://a.example\x07cc\x1b]8;;\x07");
+        let snap = emu.snapshot();
+        assert_eq!(snap.links, ["https://a.example", "https://b.example"]);
+        let ids: Vec<(String, u32)> = snap.lines[0].iter().map(|r| (r.text.clone(), r.link)).collect();
+        assert_eq!(ids, [("aa".to_owned(), 1), ("bb".to_owned(), 2), ("cc".to_owned(), 1)]);
+    }
+
+    #[test]
+    fn many_links_map_to_their_targets() {
+        let mut emu = emulator(200, 30);
+        let mut stream = String::new();
+        for i in 0..200 {
+            stream.push_str(&format!("\x1b]8;;https://x.example/{i}\x07{}\x1b]8;;\x07 ", i % 10));
+        }
+        feed_collect(&mut emu, stream.as_bytes());
+        let snap = emu.snapshot();
+        assert_eq!(snap.links.len(), 200);
+        let mut linked = 0;
+        for run in snap.lines.iter().flatten().filter(|r| r.link != 0) {
+            let target: usize = snap.links[run.link as usize - 1].rsplit('/').next().unwrap().parse().unwrap();
+            assert_eq!(run.text, (target % 10).to_string(), "link {} points at its own target", run.link);
+            linked += 1;
+        }
+        assert_eq!(linked, 200);
+    }
+
+    #[test]
+    fn a_held_snapshot_does_not_mix_in_live_links_or_modes() {
+        let mut emu = emulator(30, 3);
+        feed_collect(&mut emu, b"plain");
+        feed_collect(&mut emu, b"\x1b[?2026h\x1b[?1049h\x1b[H\x1b]8;;https://live.example\x07link\x1b]8;;\x07\x1b[?1000h");
+        assert!(emu.sync_deadline().is_some());
+        assert_ne!(emu.modes() & MODE_MOUSE, 0, "the live terminal has the new modes");
+        let held = emu.snapshot();
+        assert_eq!(held.text().lines().next(), Some("plain"));
+        assert!(held.links.is_empty() && held.lines[0].iter().all(|r| r.link == 0), "no live links in the held frame");
+        assert_eq!(held.modes & (MODE_MOUSE | MODE_ALT_SCREEN), 0, "modes as of the held frame");
+        feed_collect(&mut emu, b"\x1b[?2026l");
+        let live = emu.snapshot();
+        assert_eq!(live.links, ["https://live.example"]);
+        assert_eq!(live.modes & (MODE_MOUSE | MODE_ALT_SCREEN), MODE_MOUSE | MODE_ALT_SCREEN);
     }
 
     #[test]

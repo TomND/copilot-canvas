@@ -121,6 +121,7 @@ pub fn get(port: u16, password: &str, path: &str) -> Result<(u16, Vec<u8>)> {
     let mut buffer = [0u8; 16 * 1024];
     let mut header_end = None;
     let mut parsed: Option<(u16, Framing)> = None;
+    let mut chunks = Dechunker::default();
     loop {
         if started.elapsed() > DEADLINE {
             bail!("GET {path}: timed out");
@@ -142,11 +143,7 @@ pub fn get(port: u16, password: &str, path: &str) -> Result<(u16, Vec<u8>)> {
             let body = &data[start..];
             match framing {
                 Framing::Length(len) if body.len() >= len => return Ok((status, body[..len].to_vec())),
-                Framing::Chunked => {
-                    if let Some(decoded) = dechunk(body)? {
-                        return Ok((status, decoded));
-                    }
-                }
+                Framing::Chunked if chunks.feed(body, MAX_BODY).with_context(|| format!("GET {path}"))? => return Ok((status, chunks.out)),
                 _ => {}
             }
             if n == 0 {
@@ -186,25 +183,62 @@ fn parse_head(head: &[u8]) -> Result<(u16, Framing)> {
     Ok((status, framing))
 }
 
-/// The decoded body once the final chunk arrived, else `None`.
-fn dechunk(mut data: &[u8]) -> Result<Option<Vec<u8>>> {
-    let mut out = Vec::new();
-    loop {
-        let Some(line_end) = find(data, b"\r\n") else { return Ok(None) };
-        let size_text = String::from_utf8_lossy(&data[..line_end]);
-        let size = usize::from_str_radix(size_text.split(';').next().unwrap_or_default().trim(), 16).context("malformed chunk size")?;
-        let rest = &data[line_end + 2..];
-        if size == 0 {
-            return Ok(Some(out));
-        }
-        if rest.len() < size + 2 {
-            return Ok(None);
-        }
-        out.extend_from_slice(&rest[..size]);
-        data = &rest[size + 2..];
-    }
+/// Incremental `Transfer-Encoding: chunked` decoder: each call continues
+/// where the previous one stopped, so a body is parsed once however many
+/// reads it takes.
+#[derive(Debug, Default)]
+struct Dechunker {
+    out: Vec<u8>,
+    /// Bytes of the body consumed so far.
+    pos: usize,
+    state: Chunk,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum Chunk {
+    /// Expecting a size line.
+    #[default]
+    Size,
+    /// Expecting this many data bytes and their CRLF.
+    Data(usize),
+    /// The last chunk arrived.
+    Done,
+}
+
+impl Dechunker {
+    /// Consumes what it can of `body` (everything received so far); `true`
+    /// once the final chunk arrived. Sizes are checked against `limit`.
+    fn feed(&mut self, body: &[u8], limit: usize) -> Result<bool> {
+        loop {
+            let rest = &body[self.pos..];
+            match self.state {
+                Chunk::Done => return Ok(true),
+                Chunk::Size => {
+                    let Some(end) = find(rest, b"\r\n") else {
+                        anyhow::ensure!(rest.len() <= 1024, "malformed chunk size line");
+                        return Ok(false);
+                    };
+                    let line = std::str::from_utf8(&rest[..end]).context("malformed chunk size")?;
+                    let size = usize::from_str_radix(line.split(';').next().unwrap_or_default().trim(), 16).context("malformed chunk size")?;
+                    anyhow::ensure!(self.out.len().checked_add(size).is_some_and(|total| total <= limit), "chunked body too large");
+                    self.pos += end + 2;
+                    self.state = if size == 0 { Chunk::Done } else { Chunk::Data(size) };
+                }
+                Chunk::Data(size) => {
+                    // `size` <= limit, so this cannot overflow; checked anyway.
+                    let needed = size.checked_add(2).context("chunk size overflow")?;
+                    if rest.len() < needed {
+                        return Ok(false);
+                    }
+                    anyhow::ensure!(&rest[size..needed] == b"\r\n", "malformed chunk");
+                    self.out.extend_from_slice(&rest[..size]);
+                    self.pos += needed;
+                    self.state = Chunk::Size;
+                }
+            }
+        }
+    }
+}
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
@@ -312,5 +346,33 @@ mod tests {
     fn body_without_length_reads_to_close() {
         let port = serve(vec![("/x", b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n[1,2]".to_vec())]);
         assert_eq!(get_json(port, "pw", "/x").unwrap(), serde_json::json!([1, 2]));
+    }
+
+    #[test]
+    fn chunked_bodies_parse_incrementally() {
+        let body = b"5\r\nhello\r\n6;ext=1\r\n world\r\n0\r\n\r\n";
+        let mut chunks = Dechunker::default();
+        let mut done_at = None;
+        for n in 0..=body.len() {
+            if chunks.feed(&body[..n], MAX_BODY).unwrap() {
+                done_at = Some(n);
+                break;
+            }
+        }
+        assert_eq!((done_at, chunks.out.as_slice()), (Some(body.len() - 2), &b"hello world"[..]), "byte by byte");
+        assert!(chunks.feed(body, MAX_BODY).unwrap(), "stays done");
+    }
+
+    #[test]
+    fn chunked_sizes_cannot_overflow_or_exceed_the_limit() {
+        for bad in [&b"ffffffffffffffffffff\r\n"[..], b"ffffffffffffffff\r\n", b"fffffffffffffffe\r\n", b"11\r\n", b"zz\r\n", b"3\r\nabcX\r\n"] {
+            assert!(Dechunker::default().feed(bad, 16).is_err(), "{}", String::from_utf8_lossy(bad));
+        }
+        let mut chunks = Dechunker::default();
+        assert!(chunks.feed(b"8\r\n12345678\r\n9\r\n", 16).is_err(), "the total counts, not each chunk");
+        assert!(Dechunker::default().feed(&[b'1'; 2000], 16).is_err(), "an endless size line");
+        assert!(!Dechunker::default().feed(b"10\r\n0123456789", 16).unwrap(), "waits for the rest");
+        let port = serve(vec![("/big", b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nfffffffffffffffff\r\n".to_vec())]);
+        assert!(get(port, "pw", "/big").is_err());
     }
 }

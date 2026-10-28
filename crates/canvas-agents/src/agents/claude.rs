@@ -33,24 +33,31 @@ fn is_desktop_app(path: &Path) -> bool {
 
 /// The Claude Code CLI: `COPILOT_CANVAS_CLAUDE`, else `claude.exe` on PATH (not
 /// the desktop app), an npm install's native binary, then `~/.local/bin`.
+/// Batch scripts (`claude.cmd`) are never started (see [`super::ensure_not_batch`]).
 pub fn find_cli() -> Result<String> {
-    if let Some(custom) = std::env::var_os("COPILOT_CANVAS_CLAUDE") {
-        return Ok(custom.to_string_lossy().into_owned());
+    find_cli_in(std::env::var_os("COPILOT_CANVAS_CLAUDE"), std::env::var_os("PATH").unwrap_or_default(), &super::home())
+}
+
+fn find_cli_in(custom: Option<std::ffi::OsString>, path: std::ffi::OsString, home: &Path) -> Result<String> {
+    if let Some(custom) = custom {
+        let custom = custom.to_string_lossy().into_owned();
+        super::ensure_not_batch(Path::new(&custom), "COPILOT_CANVAS_CLAUDE")?;
+        return Ok(custom);
     }
-    let path = std::env::var_os("PATH").unwrap_or_default();
     for dir in std::env::split_paths(&path) {
         let exe = dir.join("claude.exe");
         if exe.is_file() && !is_desktop_app(&exe) {
             return Ok(exe.display().to_string());
         }
         if dir.join("claude.cmd").is_file() {
+            // The native binary behind npm's shim; the shim itself is never started.
             let native = dir.join("node_modules").join("@anthropic-ai").join("claude-code").join("bin").join("claude.exe");
             if native.is_file() {
                 return Ok(native.display().to_string());
             }
         }
     }
-    let local = super::home().join(".local").join("bin").join("claude.exe");
+    let local = home.join(".local").join("bin").join("claude.exe");
     if local.is_file() {
         return Ok(local.display().to_string());
     }
@@ -78,6 +85,89 @@ pub fn mcp_config(user_config: &Path, off: &[String]) -> Result<serde_json::Valu
     Ok(serde_json::json!({ "mcpServers": servers }))
 }
 
+/// Folder of the per-session MCP configurations below the canvas home.
+fn mcp_dir(home: &Path) -> PathBuf {
+    home.join("mcp")
+}
+
+/// The canvas home: the plugin folder's parent, else `COPILOT_CANVAS_HOME`
+/// from the integration environment.
+fn canvas_home(integration: &Integration) -> Option<PathBuf> {
+    integration.plugin_dir.as_ref().and_then(|p| p.parent()).map(Path::to_path_buf).or_else(|| {
+        integration.env.iter().rev().find(|(k, v)| k == "COPILOT_CANVAS_HOME" && !v.is_empty()).map(|(_, v)| PathBuf::from(v))
+    })
+}
+
+/// Removes the per-session files a launch wrote below the canvas `home`: the
+/// MCP configuration `mcp/claude-<id>.json` (it holds the user's MCP server
+/// settings, secrets included) and temporary files left by an interrupted
+/// write. `id` is the Claude session id the launch used (`launch.native_id`,
+/// else the terminal id). The service calls this when the terminal exits.
+pub fn cleanup_session_files(home: &Path, id: &str) {
+    if !is_session_id(id) {
+        return;
+    }
+    let folder = mcp_dir(home);
+    let _ = std::fs::remove_file(folder.join(format!("claude-{id}.json")));
+    let temp = format!("claude-{id}.json.");
+    if let Ok(entries) = std::fs::read_dir(&folder) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with(&temp) && name.ends_with(".tmp") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
+/// Writes `path` atomically (a temporary file in the same folder, renamed
+/// over it) with a protected DACL that grants access to the current user only.
+fn write_private(path: &Path, contents: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let name = path.file_name().context("no file name")?.to_string_lossy().into_owned();
+    let temp = path.with_file_name(format!("{name}.{}.tmp", uuid::Uuid::new_v4().simple()));
+    let written = create_private(&temp).and_then(|mut file| {
+        file.write_all(contents)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp, path)
+    });
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written.with_context(|| format!("cannot write {}", path.display()))
+}
+
+/// Creates a new file that only the current user can open.
+fn create_private(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
+    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+    use windows_sys::Win32::Storage::FileSystem::{CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL};
+
+    let sid = crate::win::current_user_sid()?;
+    let sddl: Vec<u16> = format!("D:P(A;;FA;;;{sid})").encode_utf16().chain(Some(0)).collect();
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: `sddl` is NUL-terminated; the descriptor is freed below.
+    if unsafe { ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), SDDL_REVISION_1, &mut descriptor, std::ptr::null_mut()) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let attributes = SECURITY_ATTRIBUTES { nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: descriptor, bInheritHandle: 0 };
+    // SAFETY: `wide` is NUL-terminated and `attributes` outlives the call.
+    let handle = unsafe { CreateFileW(wide.as_ptr(), GENERIC_WRITE, 0, &attributes, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, std::ptr::null_mut()) };
+    let error = std::io::Error::last_os_error();
+    // SAFETY: allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW.
+    unsafe { LocalFree(descriptor) };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(error);
+    }
+    // SAFETY: a new, owned file handle.
+    Ok(unsafe { std::fs::File::from_raw_handle(handle) })
+}
+
 impl Claude {
     /// The command for a launch against a given Claude Code home.
     pub fn command_in(&self, home: &ClaudeHome, id: &str, launch: &AgentLaunch, integration: &Integration) -> Result<Command> {
@@ -87,7 +177,7 @@ impl Claude {
         let mut push = |items: &[&str]| args.extend(items.iter().map(|s| (*s).to_owned()));
         // The prompt is positional; it comes before the variadic options
         // (`--add-dir a b`) and must not look like an option itself.
-        let positional = |text: &str| if text.starts_with('-') { format!(" {text}") } else { text.to_owned() };
+        let positional = super::positional;
         if let Some(prompt) = launch.headless_prompt.as_ref() {
             // Passive run: one turn, never asks.
             push(&["-p", &positional(prompt)]);
@@ -112,7 +202,7 @@ impl Claude {
             if !launch.resume
                 && let Some(name) = launch.name.as_deref().filter(|n| !n.trim().is_empty())
             {
-                push(&["-n", name.trim()]);
+                push(&["-n", &positional(name.trim())]);
             }
             // A first prompt also applies to a forked or resumed session.
             if let Some(prompt) = launch.prompt.as_deref().filter(|p| !p.trim().is_empty()) {
@@ -124,14 +214,11 @@ impl Claude {
             }
         }
         // Nothing below is saved with a Claude session, so it applies to resumes too.
-        let mut flag = |name: &str, value: &Option<String>| {
+        for (name, value) in [("--model", &launch.model), ("--effort", &launch.effort), ("--agent", &launch.custom_agent)] {
             if let Some(value) = value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-                args.extend([name.to_owned(), value.to_owned()]);
+                args.extend([name.to_owned(), super::option_value(name, value)?.to_owned()]);
             }
-        };
-        flag("--model", &launch.model);
-        flag("--effort", &launch.effort);
-        flag("--agent", &launch.custom_agent);
+        }
         for dir in launch.add_dirs.iter().map(|d| d.trim()).filter(|d| !d.is_empty()) {
             args.extend(["--add-dir".to_owned(), dir.to_owned()]);
         }
@@ -145,13 +232,21 @@ impl Claude {
             args.extend(["--append-system-prompt-file".to_owned(), dirs.instructions_file.display().to_string()]);
         }
         if !launch.mcp_off.is_empty() {
-            // Only the servers written to this file start (user scope minus the ones turned off).
-            let config = mcp_config(&home.user_config, &launch.mcp_off)?;
-            let folder = integration.plugin_dir.as_ref().and_then(|p| p.parent()).map(|h| h.join("mcp")).unwrap_or_else(|| std::env::temp_dir().join("copilot-canvas-mcp"));
-            std::fs::create_dir_all(&folder).with_context(|| format!("cannot create {}", folder.display()))?;
-            let file = folder.join(format!("claude-{session}.json"));
-            std::fs::write(&file, serde_json::to_string_pretty(&config)?).with_context(|| format!("cannot write {}", file.display()))?;
-            args.extend(["--strict-mcp-config".to_owned(), "--mcp-config".to_owned(), file.display().to_string()]);
+            // Only the servers written to this file start (user scope minus the
+            // ones turned off). It holds their settings (secrets included), so it
+            // lives only below the canvas home, readable by the user alone, and
+            // `cleanup_session_files` removes it when the terminal exits.
+            match canvas_home(integration) {
+                Some(canvas) => {
+                    let config = mcp_config(&home.user_config, &launch.mcp_off)?;
+                    let folder = mcp_dir(&canvas);
+                    std::fs::create_dir_all(&folder).with_context(|| format!("cannot create {}", folder.display()))?;
+                    let file = folder.join(format!("claude-{session}.json"));
+                    write_private(&file, serde_json::to_string_pretty(&config)?.as_bytes())?;
+                    args.extend(["--strict-mcp-config".to_owned(), "--mcp-config".to_owned(), file.display().to_string()]);
+                }
+                None => eprintln!("claude {}: no canvas home for the MCP configuration; all MCP servers stay on", super::short_id(session)),
+            }
         }
         if let Some(plugin) = &integration.plugin_dir {
             args.extend(["--plugin-dir".to_owned(), plugin.display().to_string()]);
@@ -296,9 +391,87 @@ mod tests {
         assert_eq!(servers["blender"]["env"]["K"], "v", "the remaining servers keep their configuration");
         assert_eq!(args[2..4], ["--add-dir", r"C:\extra"]);
         // No servers turned off: Claude's own MCP configuration applies.
-        let plain = AgentLaunch { mcp_off: Vec::new(), ..launch };
+        let plain = AgentLaunch { mcp_off: Vec::new(), ..launch.clone() };
         assert!(!Claude.command_in(&home, ID, &plain, &integration).unwrap().args.iter().any(|a| a.contains("mcp")));
         assert_eq!(mcp_config(&root.join("missing.json"), &[]).unwrap(), serde_json::json!({ "mcpServers": {} }));
+        // The file goes away with the session, temporary leftovers too.
+        let file = PathBuf::from(&args[at + 2]);
+        let leftover = file.with_file_name(format!("claude-{ID}.json.0123.tmp"));
+        std::fs::write(&leftover, "x").unwrap();
+        cleanup_session_files(&root.join("home"), "not-a-session");
+        assert!(file.is_file(), "invalid ids touch nothing");
+        cleanup_session_files(&root.join("home"), ID);
+        assert!(!file.exists() && !leftover.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_mcp_file_never_falls_back_to_temp() {
+        let (home, _, root) = setup();
+        let launch = AgentLaunch { agent: "claude".into(), mcp_off: vec!["github".into()], ..Default::default() };
+        let homeless = Integration { plugin_dir: None, env: Vec::new() };
+        let args = Claude.command_in(&home, ID, &launch, &homeless).unwrap().args;
+        assert!(!args.iter().any(|a| a.contains("mcp")), "no canvas home: the selection is refused, not written to %TEMP%");
+        // COPILOT_CANVAS_HOME names the home when the plugin folder is missing.
+        let canvas = root.join("canvas");
+        let env_only = Integration { plugin_dir: None, env: vec![("COPILOT_CANVAS_HOME".into(), canvas.display().to_string())] };
+        let args = Claude.command_in(&home, ID, &launch, &env_only).unwrap().args;
+        let file = canvas.join("mcp").join(format!("claude-{ID}.json"));
+        assert_eq!(args.last().unwrap(), &file.display().to_string());
+        let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert!(written["mcpServers"]["blender"].is_object());
+        // Rewriting replaces the file atomically and leaves no temporary files.
+        Claude.command_in(&home, ID, &launch, &env_only).unwrap();
+        assert_eq!(std::fs::read_dir(canvas.join("mcp")).unwrap().count(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn private_files_grant_only_the_current_user() {
+        let dir = std::env::temp_dir().join(format!("cc-private-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("secret.json");
+        write_private(&file, b"{}").unwrap();
+        write_private(&file, b"{\"a\":1}").unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "{\"a\":1}");
+        let run = |program: &str, arg: &Path| String::from_utf8_lossy(&std::process::Command::new(program).arg(arg).output().unwrap().stdout).to_ascii_lowercase();
+        let acl = run("icacls", &file).replace(&file.display().to_string().to_ascii_lowercase(), "");
+        let user = run("whoami", Path::new("/user")).lines().filter_map(|l| l.split_whitespace().next()).find(|w| w.contains('\\')).unwrap().to_owned();
+        let entries: Vec<&str> = acl.lines().map(str::trim).filter(|l| l.contains(":(")).collect();
+        assert_eq!(entries, [format!("{user}:(f)")], "{acl}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn batch_shims_are_never_started() {
+        let root = std::env::temp_dir().join(format!("cc-claude-cli-{}", uuid::Uuid::new_v4()));
+        let bin = root.join("npm");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("claude.cmd"), "@echo off").unwrap();
+        let path = std::env::join_paths([&bin]).unwrap();
+        let error = find_cli_in(None, path.clone(), &root).unwrap_err().to_string();
+        assert!(error.contains("COPILOT_CANVAS_CLAUDE"), "{error}");
+        let native = bin.join("node_modules").join("@anthropic-ai").join("claude-code").join("bin");
+        std::fs::create_dir_all(&native).unwrap();
+        std::fs::write(native.join("claude.exe"), "").unwrap();
+        assert_eq!(find_cli_in(None, path.clone(), &root).unwrap(), native.join("claude.exe").display().to_string());
+        for script in [r"C:\x\claude.cmd", r"C:\x\CLAUDE.BAT"] {
+            let error = find_cli_in(Some(script.into()), path.clone(), &root).unwrap_err().to_string();
+            assert!(error.contains("batch script") && error.contains("COPILOT_CANVAS_CLAUDE"), "{error}");
+        }
+        assert_eq!(find_cli_in(Some(r"C:\x\claude.exe".into()), path, &root).unwrap(), r"C:\x\claude.exe");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn names_and_option_values_cannot_inject_options() {
+        let (home, integration, root) = setup();
+        let launch = AgentLaunch { agent: "claude".into(), name: Some("-x".into()), prompt: Some("--help".into()), ..Default::default() };
+        let args = Claude.command_in(&home, ID, &launch, &integration).unwrap().args;
+        assert_eq!(args[..5], ["--session-id", ID, "-n", " -x", " --help"]);
+        for bad in [AgentLaunch { model: Some("-x".into()), ..launch.clone() }, AgentLaunch { effort: Some("--evil".into()), ..launch.clone() }, AgentLaunch { custom_agent: Some("a\nb".into()), ..launch }] {
+            assert!(Claude.command_in(&home, ID, &bad, &integration).is_err());
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 

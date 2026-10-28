@@ -30,7 +30,7 @@ use crossbeam_channel::{RecvTimeoutError, unbounded};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 use crate::replay::{Expected, EventLog, Screen, new_emulator, row_text};
-use crate::vtrec::{Event, Header, Kind, Recording, VERSION};
+use crate::vtrec::{Event, Header, Kind, Recording, VERSION, clamp_size};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Step {
@@ -155,7 +155,10 @@ pub fn parse_script(text: &str) -> Result<Vec<Step>> {
             "resize" => {
                 let mut parts = arg.split_whitespace().map(str::parse::<u16>);
                 match (parts.next(), parts.next()) {
-                    (Some(Ok(cols)), Some(Ok(rows))) if cols >= 2 && rows >= 2 => Step::Resize(cols, rows),
+                    (Some(Ok(cols)), Some(Ok(rows))) if cols >= 2 && rows >= 2 => {
+                        let (cols, rows) = clamp_size(cols, rows);
+                        Step::Resize(cols, rows)
+                    }
                     _ => bail!("line {number}: resize COLS ROWS"),
                 }
             }
@@ -182,6 +185,9 @@ pub struct Spec {
     pub rows: u16,
     /// Recording stops (the program is killed) after this long.
     pub limit: Duration,
+    /// Recording stops (the program is killed) after this much output
+    /// ([`MAX_RECORDED_BYTES`] for the CLI); the description says so.
+    pub max_bytes: u64,
     pub script: Vec<Step>,
     pub description: String,
     /// Prints the script's progress to stderr.
@@ -197,12 +203,20 @@ enum Running {
     Quiet(Duration, Instant, Instant),
 }
 
+/// Output a recording keeps at most (`copilot-canvas record`).
+pub const MAX_RECORDED_BYTES: u64 = 64 << 20;
+
+/// `at + by`, or a year later when that does not fit (durations come from
+/// scripts and the command line).
+fn later(at: Instant, by: Duration) -> Instant {
+    at.checked_add(by).or_else(|| at.checked_add(Duration::from_secs(365 * 86_400))).unwrap_or(at)
+}
+
 /// Runs the program and returns the recording.
 pub fn record(spec: &Spec) -> Result<Recording> {
     ensure!(spec.cols >= 20 && spec.rows >= 5, "the pseudoconsole needs at least 20x5");
-    let pair = native_pty_system()
-        .openpty(PtySize { rows: spec.rows, cols: spec.cols, pixel_width: 0, pixel_height: 0 })
-        .context("cannot create a pseudoconsole")?;
+    let (cols, rows) = clamp_size(spec.cols, spec.rows);
+    let pair = native_pty_system().openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }).context("cannot create a pseudoconsole")?;
     let mut command = CommandBuilder::new(&spec.program);
     command.args(&spec.args);
     let cwd = match &spec.cwd {
@@ -232,11 +246,11 @@ pub fn record(spec: &Spec) -> Result<Recording> {
         }
     });
 
-    let mut emu = new_emulator(Engine::Alacritty, spec.cols, spec.rows)?;
+    let mut emu = new_emulator(Engine::Alacritty, cols, rows)?;
     let mut recording = Recording::new(Header {
         vtrec: VERSION,
-        cols: spec.cols,
-        rows: spec.rows,
+        cols,
+        rows,
         program: std::iter::once(spec.program.as_str()).chain(spec.args.iter().map(String::as_str)).collect::<Vec<_>>().join(" "),
         description: spec.description.clone(),
         source: "conpty".into(),
@@ -248,7 +262,9 @@ pub fn record(spec: &Spec) -> Result<Recording> {
         last = last.max(at);
         recording.events.push(Event { delta_ms, kind });
     };
-    let deadline = started + spec.limit;
+    let deadline = later(started, spec.limit);
+    let mut recorded = 0u64;
+    let mut capped = false;
     let mut steps = spec.script.iter();
     let mut running = Running::Idle;
     let mut last_output = started;
@@ -270,6 +286,15 @@ pub fn record(spec: &Spec) -> Result<Recording> {
         batch.extend(rx.try_iter());
         for (at, bytes) in batch {
             last_output = at;
+            if capped || recorded.saturating_add(bytes.len() as u64) > spec.max_bytes {
+                if !capped {
+                    eprintln!("record: {} bytes recorded, the limit; ending the program", recorded);
+                    capped = true;
+                    killed = true;
+                }
+                continue;
+            }
+            recorded += bytes.len() as u64;
             let mut events = EventLog::default();
             emu.feed(&bytes, &mut events);
             for reply in events.replies {
@@ -280,15 +305,15 @@ pub fn record(spec: &Spec) -> Result<Recording> {
         let now = Instant::now();
         if let Some(at) = exited_at {
             // The program is gone: let ConPTY flush, then close it so the reader ends.
-            if master.is_some() && now >= at + Duration::from_millis(300) {
+            if master.is_some() && now >= later(at, Duration::from_millis(300)) {
                 master = None;
             }
-            if now >= at + Duration::from_secs(5) {
+            if now >= later(at, Duration::from_secs(5)) {
                 break;
             }
             continue;
         }
-        if now >= deadline + Duration::from_secs(10) {
+        if now >= later(deadline, Duration::from_secs(10)) {
             bail!("the program did not end after being killed");
         }
         if child.try_wait()?.is_some() {
@@ -341,9 +366,9 @@ pub fn record(spec: &Spec) -> Result<Recording> {
             eprintln!("record: {:>6} ms  {what}", started.elapsed().as_millis());
         }
         match step {
-            Step::Wait(ms) => running = Running::Until(now + Duration::from_millis(*ms)),
-            Step::WaitFor(text, timeout) => running = Running::WaitFor(text.clone(), now + Duration::from_millis(*timeout)),
-            Step::WaitQuiet(quiet, timeout) => running = Running::Quiet(Duration::from_millis(*quiet), now, now + Duration::from_millis(*timeout)),
+            Step::Wait(ms) => running = Running::Until(later(now, Duration::from_millis(*ms))),
+            Step::WaitFor(text, timeout) => running = Running::WaitFor(text.clone(), later(now, Duration::from_millis(*timeout))),
+            Step::WaitQuiet(quiet, timeout) => running = Running::Quiet(Duration::from_millis(*quiet), now, later(now, Duration::from_millis(*timeout))),
             Step::Send(input) => {
                 let bytes = emu.encode(input);
                 // A program that just exited cannot read; its recording is still wanted.
@@ -371,6 +396,10 @@ pub fn record(spec: &Spec) -> Result<Recording> {
     }
     if steps.next().is_some() && spec.verbose {
         eprintln!("record: the program ended before the script did");
+    }
+    if capped {
+        let note = format!("(output capped at {} bytes)", spec.max_bytes);
+        recording.header.description = if recording.header.description.is_empty() { note } else { format!("{} {note}", recording.header.description) };
     }
     Ok(recording)
 }
@@ -428,6 +457,7 @@ mod tests {
             cols: 60,
             rows: 10,
             limit: Duration::from_secs(20),
+            max_bytes: MAX_RECORDED_BYTES,
             script,
             description: "test".into(),
             verbose: false,
@@ -440,5 +470,35 @@ mod tests {
         assert!(expected.screens[0].text.iter().any(|l| l.contains("ready")));
         let end = screen_text(expected.screens.last().unwrap());
         assert!(end.contains("typed-in"), "{end}");
+    }
+
+    #[test]
+    fn output_beyond_the_cap_ends_the_recording() {
+        let spec = Spec {
+            program: "cmd.exe".into(),
+            args: vec!["/d".into(), "/c".into(), "for /l %i in (1,1,100000) do @echo 0123456789abcdefghijklmnopqrstuvwxyz".into()],
+            cwd: None,
+            env: Vec::new(),
+            cols: 60,
+            rows: 10,
+            limit: Duration::from_secs(30),
+            max_bytes: 4096,
+            script: Vec::new(),
+            description: "flood".into(),
+            verbose: false,
+        };
+        let started = Instant::now();
+        let recording = record(&spec).unwrap();
+        assert!(recording.output_bytes() <= 4096, "{} bytes", recording.output_bytes());
+        assert_eq!(recording.header.description, "flood (output capped at 4096 bytes)");
+        assert!(started.elapsed() < Duration::from_secs(20), "the program is ended at the cap");
+    }
+
+    #[test]
+    fn huge_script_values_neither_overflow_nor_allocate() {
+        assert_eq!(parse_script("resize 60000 60000").unwrap(), [Step::Resize(crate::vtrec::MAX_COLS, crate::vtrec::MAX_ROWS)]);
+        let now = Instant::now();
+        assert!(later(now, Duration::from_millis(u64::MAX)) >= now);
+        assert!(later(now, Duration::MAX) >= now);
     }
 }

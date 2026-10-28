@@ -1,5 +1,6 @@
 //! The alacritty_terminal engine behind [`Emulator`].
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -9,7 +10,7 @@ use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll as GridScroll};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::term::{Config as TermConfig, TermMode};
+use alacritty_terminal::term::{ClipboardType, Config as TermConfig, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Processor, Rgb};
 use canvas_common::protocol::*;
 
@@ -44,6 +45,9 @@ pub struct Listener {
     pending: Arc<Mutex<Vec<Pending>>>,
     size: Arc<AtomicU32>,
 }
+
+/// Largest OSC 52 clipboard write passed on (both engines); larger ones are dropped.
+pub const CLIPBOARD_MAX_BYTES: usize = 1 << 20;
 
 const DEFAULT_FG: Rgb = Rgb { r: 0xcc, g: 0xcc, b: 0xcc };
 const DEFAULT_BG: Rgb = Rgb { r: 0x0c, g: 0x0c, b: 0x0c };
@@ -82,7 +86,8 @@ impl EventListener for Listener {
             Event::Title(title) => Pending::Title(Some(title)),
             Event::ResetTitle => Pending::Title(None),
             Event::Bell => Pending::Bell,
-            Event::ClipboardStore(_, text) => Pending::Clipboard(text),
+            // Only the standard clipboard, and only reasonable amounts.
+            Event::ClipboardStore(ClipboardType::Clipboard, text) if text.len() <= CLIPBOARD_MAX_BYTES => Pending::Clipboard(text),
             Event::ColorRequest(index, format) => Pending::Reply(format(palette(index)).into_bytes()),
             Event::TextAreaSizeRequest(format) => {
                 let size = self.size.load(Ordering::Relaxed);
@@ -205,6 +210,8 @@ impl Emulator for AlacrittyEmulator {
         let rows = grid.screen_lines();
         let offset = grid.display_offset();
         let mut links: Vec<String> = Vec::new();
+        // Target -> 1-based id (`Run8::link`).
+        let mut link_ids: HashMap<String, u32> = HashMap::new();
         let mut lines = Vec::with_capacity(rows);
         for y in 0..rows {
             let row = &grid[Line(y as i32 - offset as i32)];
@@ -253,11 +260,13 @@ impl Emulator for AlacrittyEmulator {
                 let link = match cell.hyperlink() {
                     Some(h) => {
                         let uri = h.uri();
-                        match links.iter().position(|l| l == uri) {
-                            Some(i) => i as u32 + 1,
+                        match link_ids.get(uri) {
+                            Some(&id) => id,
                             None => {
                                 links.push(uri.to_owned());
-                                links.len() as u32
+                                let id = links.len() as u32;
+                                link_ids.insert(uri.to_owned(), id);
+                                id
                             }
                         }
                     }
@@ -452,7 +461,7 @@ impl OscScan {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::emulator::feed_collect;
 
@@ -559,5 +568,61 @@ mod tests {
         assert_eq!(palette(16), Rgb { r: 0, g: 0, b: 0 });
         assert_eq!(palette(231), Rgb { r: 255, g: 255, b: 255 });
         assert_eq!(palette(232), Rgb { r: 8, g: 8, b: 8 });
+    }
+
+    /// Standard base64 (tests only).
+    pub fn base64(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+        for chunk in bytes.chunks(3) {
+            let n = chunk.iter().enumerate().fold(0u32, |n, (i, &b)| n | (b as u32) << (16 - 8 * i));
+            for i in 0..4 {
+                out.push(if i <= chunk.len() { ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn clipboard_writes_are_capped_and_limited_to_the_standard_clipboard() {
+        assert_eq!(base64(b"hello world"), "aGVsbG8gd29ybGQ=");
+        let mut emu = emulator(20, 3);
+        let osc = |target: &str, text: &[u8]| format!("\x1b]52;{target};{}\x07", base64(text)).into_bytes();
+        assert_eq!(feed_collect(&mut emu, &osc("c", b"hello world")).clipboard, ["hello world"]);
+        assert!(feed_collect(&mut emu, &osc("p", b"primary")).clipboard.is_empty(), "selection writes are refused");
+        assert!(feed_collect(&mut emu, &osc("s", b"select")).clipboard.is_empty());
+        let limit = vec![b'a'; CLIPBOARD_MAX_BYTES];
+        assert_eq!(feed_collect(&mut emu, &osc("c", &limit)).clipboard[0].len(), CLIPBOARD_MAX_BYTES);
+        let over = vec![b'a'; CLIPBOARD_MAX_BYTES + 1];
+        assert!(feed_collect(&mut emu, &osc("c", &over)).clipboard.is_empty(), "oversized writes are dropped");
+    }
+
+    #[test]
+    fn adjacent_links_with_the_same_style_stay_distinct() {
+        let mut emu = emulator(40, 2);
+        feed_collect(&mut emu, b"\x1b]8;;https://a.example\x07aa\x1b]8;;https://b.example\x07bb\x1b]8;;https://a.example\x07cc\x1b]8;;\x07");
+        let snap = emu.snapshot();
+        assert_eq!(snap.links, ["https://a.example", "https://b.example"]);
+        let ids: Vec<(String, u32)> = snap.lines[0].iter().map(|r| (r.text.clone(), r.link)).collect();
+        assert_eq!(ids, [("aa".to_owned(), 1), ("bb".to_owned(), 2), ("cc".to_owned(), 1)]);
+    }
+
+    #[test]
+    fn many_links_map_to_their_targets() {
+        let mut emu = emulator(200, 30);
+        let mut stream = String::new();
+        for i in 0..200 {
+            stream.push_str(&format!("\x1b]8;;https://x.example/{i}\x07{}\x1b]8;;\x07 ", i % 10));
+        }
+        feed_collect(&mut emu, stream.as_bytes());
+        let snap = emu.snapshot();
+        assert_eq!(snap.links.len(), 200);
+        let mut linked = 0;
+        for run in snap.lines.iter().flatten().filter(|r| r.link != 0) {
+            let target: usize = snap.links[run.link as usize - 1].rsplit('/').next().unwrap().parse().unwrap();
+            assert_eq!(run.text, (target % 10).to_string(), "link {} points at its own target", run.link);
+            linked += 1;
+        }
+        assert_eq!(linked, 200);
     }
 }

@@ -23,6 +23,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 pub const VERSION: u32 = 1;
+/// Largest terminal a recording may ask for (the hosted terminal's limits):
+/// larger headers and resizes are clamped, so a file cannot make a replay
+/// allocate an enormous screen.
+pub const MAX_COLS: u16 = 1000;
+pub const MAX_ROWS: u16 = 500;
+
+/// A size clamped to [`MAX_COLS`] x [`MAX_ROWS`].
+pub fn clamp_size(cols: u16, rows: u16) -> (u16, u16) {
+    (cols.min(MAX_COLS), rows.min(MAX_ROWS))
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Header {
@@ -152,16 +162,19 @@ impl Recording {
                 Err(error) => bail!("line {}: {error}", number + 1),
             };
             if map.contains_key("vtrec") {
-                let header: Header = serde_json::from_value(Value::Object(map)).with_context(|| format!("line {}: header", number + 1))?;
+                let mut header: Header = serde_json::from_value(Value::Object(map)).with_context(|| format!("line {}: header", number + 1))?;
+                (header.cols, header.rows) = clamp_size(header.cols, header.rows);
                 ensure!(header.vtrec <= VERSION, "line {}: vtrec version {} is newer than this build ({VERSION})", number + 1, header.vtrec);
                 ensure!(header.cols >= 2 && header.rows >= 2, "line {}: terminal size {}x{} is too small", number + 1, header.cols, header.rows);
                 segments.push(Recording::new(header));
                 continue;
             }
             let Some(segment) = segments.last_mut() else { bail!("line {}: expected a vtrec header", number + 1) };
-            if let Some(event) = Event::from_map(&map).with_context(|| format!("line {}", number + 1))? {
+            if let Some(mut event) = Event::from_map(&map).with_context(|| format!("line {}", number + 1))? {
                 if let Kind::Resize(cols, rows) = event.kind {
                     ensure!(cols >= 2 && rows >= 2, "line {}: resize to {cols}x{rows} is too small", number + 1);
+                    let (cols, rows) = clamp_size(cols, rows);
+                    event.kind = Kind::Resize(cols, rows);
                 }
                 segment.events.push(event);
             }
@@ -206,7 +219,7 @@ impl Recording {
     }
 
     pub fn duration_ms(&self) -> u64 {
-        self.events.iter().map(|e| e.delta_ms).sum()
+        self.events.iter().fold(0u64, |total, e| total.saturating_add(e.delta_ms))
     }
 
     pub fn marks(&self) -> Vec<&str> {
@@ -259,6 +272,16 @@ mod tests {
         assert_eq!(segments.len(), 2);
         let last = Recording::parse(text).unwrap();
         assert_eq!((last.header.cols, last.events.len(), last.output()), (12, 1, b"b".to_vec()));
+    }
+
+    #[test]
+    fn huge_sizes_are_clamped_and_times_saturate() {
+        let text = format!("{{\"vtrec\":1,\"cols\":60000,\"rows\":60000}}\n{{\"t\":{},\"s\":\"a\"}}\n{{\"t\":{},\"resize\":[65535,3]}}\n", u64::MAX, u64::MAX);
+        let rec = Recording::parse(&text).unwrap();
+        assert_eq!((rec.header.cols, rec.header.rows), (MAX_COLS, MAX_ROWS));
+        assert_eq!(rec.events[1].kind, Kind::Resize(MAX_COLS, 3));
+        assert_eq!(rec.duration_ms(), u64::MAX, "no overflow");
+        assert!(Recording::parse("{\"vtrec\":1,\"cols\":100000,\"rows\":5}\n").is_err(), "beyond u16 is an error, not a panic");
     }
 
     #[test]

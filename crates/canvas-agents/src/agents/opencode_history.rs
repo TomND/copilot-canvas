@@ -8,11 +8,15 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde_json::Value;
 
 use crate::paths::now_ms;
 use crate::protocol::{Activity, AgentStatus, AgentSummary, SessionSummary};
+
+use super::opencode::ServerState;
+use super::opencode_server::Live;
 
 const LIST_LIMIT: usize = 300;
 const MAX_AGENTS: usize = 12;
@@ -30,11 +34,10 @@ pub fn db_path() -> PathBuf {
     }
 }
 
-/// Opens the database read-only.
+/// Opens the database read-only, by plain path (no URI parsing).
 pub fn open(path: &Path) -> Result<Connection> {
     anyhow::ensure!(path.is_file(), "{} does not exist", path.display());
-    let uri = format!("file:{}?mode=ro", path.to_string_lossy().replace('\\', "/"));
-    let connection = Connection::open_with_flags(&uri, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
         .with_context(|| format!("cannot open {}", path.display()))?;
     connection.busy_timeout(Duration::from_millis(200))?;
     connection.pragma_update(None, "query_only", 1)?;
@@ -58,6 +61,46 @@ fn has_table(connection: &Connection, table: &str) -> bool {
     connection.query_row("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1", [table], |_| Ok(())).is_ok()
 }
 
+/// Column names of `table`.
+fn columns(connection: &Connection, table: &str) -> HashSet<String> {
+    let Ok(mut statement) = connection.prepare(&format!("PRAGMA table_info({table})")) else { return HashSet::new() };
+    let rows = statement.query_map([], |r| r.get::<_, String>("name"));
+    rows.map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default()
+}
+
+/// What the open database supports, checked once per connection.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Schema {
+    /// `SELECT` list of a session [`Row`]; missing optional columns read as defaults.
+    row: String,
+    /// `AND time_archived IS NULL` when the column exists.
+    not_archived: &'static str,
+    /// The root-session list can use an index.
+    list: bool,
+    /// Messages and parts can be read by index.
+    indexed: bool,
+    /// Event sequence numbers can be looked up by index.
+    seq: bool,
+}
+
+impl Schema {
+    fn read(connection: &Connection) -> Self {
+        let session = columns(connection, "session");
+        let column = |name: &str, default: &str| if session.contains(name) { name.to_owned() } else { format!("{default} AS {name}") };
+        let row = [("parent_id", "NULL"), ("directory", "''"), ("title", "''"), ("agent", "NULL"), ("time_created", "0"), ("time_updated", "0")]
+            .iter()
+            .fold("id".to_owned(), |list, (name, default)| format!("{list}, {}", column(name, default)));
+        Schema {
+            row,
+            not_archived: if session.contains("time_archived") { " AND time_archived IS NULL" } else { "" },
+            list: has_index(connection, "session", &["parent_id"]) || has_index(connection, "session", &["time_updated"]),
+            indexed: has_index(connection, "message", &["session_id", "time_created"])
+                && has_index(connection, "part", &["message_id"])
+                && has_index(connection, "session", &["parent_id"]),
+            seq: has_table(connection, "event_sequence") && has_index(connection, "event_sequence", &["aggregate_id"]),
+        }
+    }
+}
 fn same_dir(a: &str, b: &str) -> bool {
     let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_lowercase();
     norm(a) == norm(b)
@@ -93,20 +136,32 @@ struct Row {
     updated_ms: u64,
 }
 
-const ROW: &str = "id, parent_id, directory, title, agent, time_created, time_updated";
+/// A column as text when it holds text (lenient about types and NULL).
+fn text(r: &rusqlite::Row, index: usize) -> rusqlite::Result<Option<String>> {
+    Ok(r.get_ref(index)?.as_str().ok().map(str::to_owned))
+}
 
-fn row(r: &rusqlite::Row) -> rusqlite::Result<Row> {
-    Ok(Row {
-        id: r.get(0)?,
-        parent: r.get(1)?,
-        directory: r.get(2)?,
-        title: r.get(3)?,
-        agent: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
-        created_ms: r.get::<_, i64>(5)?.max(0) as u64,
-        updated_ms: r.get::<_, i64>(6)?.max(0) as u64,
+/// A column as a non-negative integer when it holds a number.
+fn number(r: &rusqlite::Row, index: usize) -> rusqlite::Result<Option<u64>> {
+    Ok(match r.get_ref(index)? {
+        ValueRef::Integer(n) => Some(n.max(0) as u64),
+        ValueRef::Real(n) if n.is_finite() => Some(n.max(0.0) as u64),
+        _ => None,
     })
 }
 
+/// A session row selected with [`Schema::row`].
+fn row(r: &rusqlite::Row) -> rusqlite::Result<Row> {
+    Ok(Row {
+        id: r.get(0)?,
+        parent: text(r, 1)?,
+        directory: text(r, 2)?.unwrap_or_default(),
+        title: text(r, 3)?.unwrap_or_default(),
+        agent: text(r, 4)?.unwrap_or_default(),
+        created_ms: number(r, 5)?.unwrap_or(0),
+        updated_ms: number(r, 6)?.unwrap_or(0),
+    })
+}
 /// One message (`message.data` holds the JSON).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Msg {
@@ -146,7 +201,21 @@ pub struct Derived {
     pub aborted: bool,
 }
 
-pub fn derive(messages: &[Msg], parts: &[Value]) -> Derived {
+/// The fields of a part that status and event detection look at, read with
+/// `json_extract` so polls never load whole part blobs (tool output can be large).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PartInfo {
+    pub id: String,
+    /// `type`: "tool", "text", ...
+    pub kind: String,
+    pub tool: String,
+    /// `state.status`: "pending", "running", "completed", "error".
+    pub status: String,
+    /// `state.time.end`.
+    pub end_ms: u64,
+}
+
+pub fn derive(messages: &[Msg], parts: &[PartInfo]) -> Derived {
     let mut out = Derived { last_event_ms: messages.iter().map(|m| m.updated_ms.max(m.created_ms)).max().unwrap_or(0), ..Default::default() };
     let Some(latest) = messages.first() else {
         out.activity = Activity::Idle;
@@ -165,14 +234,13 @@ pub fn derive(messages: &[Msg], parts: &[Value]) -> Derived {
         }
         _ => out.activity = Activity::Working,
     }
-    for part in parts.iter().filter(|p| p["type"] == "tool") {
-        let status = part["state"]["status"].as_str().unwrap_or_default();
-        if matches!(status, "pending" | "running") {
+    for part in parts.iter().filter(|p| p.kind == "tool") {
+        if matches!(part.status.as_str(), "pending" | "running") {
             if out.activity != Activity::Failed {
                 out.activity = Activity::Working;
                 out.finished_ms = None;
             }
-            if part["tool"] == "question" {
+            if part.tool == "question" {
                 out.pending += 1;
             }
         }
@@ -198,6 +266,11 @@ fn split_subagent_title(title: &str, agent: &str) -> (String, String) {
         return (if agent.is_empty() { name.to_owned() } else { agent.to_owned() }, title[..start].to_owned());
     }
     (if agent.is_empty() { "Subagent".to_owned() } else { agent.to_owned() }, title.to_owned())
+}
+
+/// Tool parts that may become git/PR events (their full data is read once).
+fn watched_tool(tool: &str) -> bool {
+    tool == "bash" || tool.contains("pull_request")
 }
 
 /// Tool calls that may become git/PR events.
@@ -273,30 +346,38 @@ pub struct Overlay {
 pub struct OpenCodeHistory {
     path: PathBuf,
     connection: Option<Connection>,
-    indexed: bool,
-    has_seq: bool,
+    schema: Schema,
     retry_at: Option<Instant>,
     entries: HashMap<String, Entry>,
     parents: HashMap<String, Option<String>>,
     git_roots: HashMap<String, String>,
     last_full_scan: Option<Instant>,
+    /// Warnings already given once (missing indexes): not repeated on reconnects.
+    noted: HashSet<String>,
     /// Ask the canvas-started TUIs' servers for live state.
     pub use_servers: bool,
     pub warnings: Vec<String>,
 }
+
+/// Wait after a failed open before trying again.
+const OPEN_BACKOFF: Duration = Duration::from_secs(10);
+/// Wait after a failed query (schema change, locked database) before reopening.
+const QUERY_BACKOFF: Duration = Duration::from_secs(30);
+/// Live server state older than this is ignored.
+const LIVE_FRESH_MS: u64 = 5_000;
 
 impl OpenCodeHistory {
     pub fn new(path: PathBuf) -> Self {
         Self {
             path,
             connection: None,
-            indexed: false,
-            has_seq: false,
+            schema: Schema::default(),
             retry_at: None,
             entries: HashMap::new(),
             parents: HashMap::new(),
             git_roots: HashMap::new(),
             last_full_scan: None,
+            noted: HashSet::new(),
             use_servers: true,
             warnings: Vec::new(),
         }
@@ -311,13 +392,16 @@ impl OpenCodeHistory {
         }
         match open(&self.path) {
             Ok(connection) => {
-                self.indexed = has_index(&connection, "message", &["session_id", "time_created"])
-                    && has_index(&connection, "part", &["message_id"])
-                    && has_index(&connection, "session", &["parent_id"]);
-                if !self.indexed {
-                    self.warn("opencode: the database lacks the expected indexes; only listing sessions".into());
+                self.schema = Schema::read(&connection);
+                if !self.schema.list {
+                    self.note_once("opencode: the session table lacks an index on parent_id; only tracked sessions are listed".into());
                 }
-                self.has_seq = has_table(&connection, "event_sequence");
+                if !self.schema.indexed {
+                    self.note_once("opencode: the database lacks the expected indexes; only listing sessions".into());
+                }
+                if !self.schema.seq {
+                    self.note_once("opencode: no indexed event_sequence table; tracked sessions are re-read every poll".into());
+                }
                 self.connection = Some(connection);
                 self.retry_at = None;
                 true
@@ -326,7 +410,7 @@ impl OpenCodeHistory {
                 if self.path.exists() {
                     self.warn(format!("opencode: {error:#}"));
                 }
-                self.retry_at = Some(Instant::now() + Duration::from_secs(10));
+                self.retry_at = Some(Instant::now() + OPEN_BACKOFF);
                 false
             }
         }
@@ -339,9 +423,10 @@ impl OpenCodeHistory {
         match self.poll_inner(tracked, full_every) {
             Ok(result) => result,
             Err(error) => {
-                // Reopen next time (schema change, locked database, …).
+                // Reopen after a pause (schema change, locked database, …), not every poll.
                 self.warn(format!("opencode: {error:#}"));
                 self.connection = None;
+                self.retry_at = Some(Instant::now() + QUERY_BACKOFF);
                 (Vec::new(), Vec::new())
             }
         }
@@ -353,19 +438,23 @@ impl OpenCodeHistory {
         let mut seen = HashSet::new();
         {
             let connection = self.connection.as_ref().context("not connected")?;
+            let schema = &self.schema;
             if full {
                 self.last_full_scan = Some(Instant::now());
-                let mut statement = connection.prepare_cached(&format!(
-                    "SELECT {ROW} FROM session WHERE parent_id IS NULL AND time_archived IS NULL ORDER BY time_updated DESC LIMIT {LIST_LIMIT}"
-                ))?;
-                for found in statement.query_map([], row)? {
-                    let found = found?;
-                    seen.insert(found.id.clone());
-                    upsert(&mut self.entries, found);
+                if schema.list {
+                    let mut statement = connection.prepare_cached(&format!(
+                        "SELECT {} FROM session WHERE parent_id IS NULL{} ORDER BY time_updated DESC LIMIT {LIST_LIMIT}",
+                        schema.row, schema.not_archived
+                    ))?;
+                    for found in statement.query_map([], row)? {
+                        let found = found?;
+                        seen.insert(found.id.clone());
+                        upsert(&mut self.entries, found);
+                    }
                 }
             }
             // Tracked sessions are read every time (a primary-key lookup).
-            let mut statement = connection.prepare_cached(&format!("SELECT {ROW} FROM session WHERE id = ?1"))?;
+            let mut statement = connection.prepare_cached(&format!("SELECT {} FROM session WHERE id = ?1", schema.row))?;
             let missing: Vec<&String> = tracked.iter().filter(|id| super::opencode::is_session_id(id) && !seen.contains(*id)).collect();
             for id in missing {
                 if let Some(found) = statement.query_row([id], row).optional()? {
@@ -382,7 +471,7 @@ impl OpenCodeHistory {
                 removed.push(id);
             }
         }
-        let overlay = if self.use_servers { self.server_overlay()? } else { HashMap::new() };
+        let overlay = if self.use_servers { self.server_overlay(now)? } else { HashMap::new() };
         let mut changed = Vec::new();
         let ids: Vec<String> = self.entries.keys().cloned().collect();
         for id in ids {
@@ -418,46 +507,85 @@ impl OpenCodeHistory {
     }
 
     fn seq(&self, id: &str) -> Result<Option<i64>> {
-        if !self.has_seq {
+        if !self.schema.seq {
             return Ok(None);
         }
         let connection = self.connection.as_ref().context("not connected")?;
         Ok(connection.prepare_cached("SELECT seq FROM event_sequence WHERE aggregate_id = ?1")?.query_row([id], |r| r.get(0)).optional()?)
     }
 
+    /// The newest messages of a session, newest first (only the fields status needs).
     fn messages(&self, session: &str, limit: usize) -> Result<Vec<Msg>> {
         let connection = self.connection.as_ref().context("not connected")?;
-        let mut statement =
-            connection.prepare_cached("SELECT id, time_updated, data FROM message WHERE session_id = ?1 ORDER BY time_created DESC, id DESC LIMIT ?2")?;
-        let rows = statement.query_map(params![session, limit as i64], |r| Ok(Msg::parse(r.get(0)?, r.get::<_, i64>(1)?.max(0) as u64, &r.get::<_, String>(2)?)))?;
+        let mut statement = connection.prepare_cached(
+            "SELECT id, time_updated, json_extract(d, '$.role'), json_extract(d, '$.time.created'), json_extract(d, '$.time.completed'), \
+             json_extract(d, '$.finish'), json_extract(d, '$.error.name'), json_type(d, '$.error') \
+             FROM (SELECT id, time_created, time_updated, CASE WHEN json_valid(data) THEN data ELSE '{}' END AS d \
+                   FROM message WHERE session_id = ?1 ORDER BY time_created DESC, id DESC LIMIT ?2) \
+             ORDER BY time_created DESC, id DESC",
+        )?;
+        let rows = statement.query_map(params![session, limit as i64], |r| {
+            let error = match (text(r, 6)?, text(r, 7)?.as_deref()) {
+                (Some(name), _) => name,
+                (None, Some("object")) => "Error".to_owned(),
+                _ => String::new(),
+            };
+            Ok(Msg {
+                id: r.get(0)?,
+                updated_ms: number(r, 1)?.unwrap_or(0),
+                role: text(r, 2)?.unwrap_or_default(),
+                created_ms: number(r, 3)?.unwrap_or(0),
+                completed_ms: number(r, 4)?,
+                finish: text(r, 5)?.unwrap_or_default(),
+                error,
+            })
+        })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    fn parts(&self, message: &str) -> Result<Vec<(String, Value)>> {
+    fn parts(&self, message: &str) -> Result<Vec<PartInfo>> {
         let connection = self.connection.as_ref().context("not connected")?;
-        let mut statement = connection.prepare_cached("SELECT id, data FROM part WHERE message_id = ?1 ORDER BY id")?;
-        let rows = statement.query_map([message], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-        Ok(rows.filter_map(|r| r.ok()).map(|(id, data)| (id, serde_json::from_str(&data).unwrap_or_default())).collect())
+        let mut statement = connection.prepare_cached(
+            "SELECT id, json_extract(d, '$.type'), json_extract(d, '$.tool'), json_extract(d, '$.state.status'), json_extract(d, '$.state.time.end') \
+             FROM (SELECT id, CASE WHEN json_valid(data) THEN data ELSE '{}' END AS d FROM part WHERE message_id = ?1) ORDER BY id",
+        )?;
+        let rows = statement.query_map([message], |r| {
+            Ok(PartInfo {
+                id: r.get(0)?,
+                kind: text(r, 1)?.unwrap_or_default(),
+                tool: text(r, 2)?.unwrap_or_default(),
+                status: text(r, 3)?.unwrap_or_default(),
+                end_ms: number(r, 4)?.unwrap_or(0),
+            })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// The full JSON of one part.
+    fn part_data(&self, id: &str) -> Result<Value> {
+        let connection = self.connection.as_ref().context("not connected")?;
+        let data: Option<String> = connection.prepare_cached("SELECT data FROM part WHERE id = ?1")?.query_row([id], |r| text(r, 0)).optional()?.flatten();
+        Ok(data.and_then(|d| serde_json::from_str(&d).ok()).unwrap_or_default())
     }
 
     fn children(&self, session: &str) -> Result<Vec<Row>> {
         let connection = self.connection.as_ref().context("not connected")?;
-        let mut statement = connection.prepare_cached(&format!("SELECT {ROW} FROM session WHERE parent_id = ?1 ORDER BY time_created DESC LIMIT {MAX_AGENTS}"))?;
+        let mut statement =
+            connection.prepare_cached(&format!("SELECT {} FROM session WHERE parent_id = ?1 ORDER BY time_created DESC LIMIT {MAX_AGENTS}", self.schema.row))?;
         let mut rows: Vec<Row> = statement.query_map([session], row)?.collect::<rusqlite::Result<_>>()?;
         rows.reverse();
         Ok(rows)
     }
-
     /// Re-reads a tracked session when its event sequence moved, and its
     /// subagents when theirs did (each child is re-read only when it moved).
     fn refresh(&mut self, id: &str, now: u64) -> Result<()> {
-        if !self.indexed {
+        if !self.schema.indexed {
             return Ok(());
         }
         let seq = self.seq(id)?;
-        let (refreshed, last_seq, children, since_ms, last_refresh_ms) = {
+        let (refreshed, last_seq, children, since_ms, last_refresh_ms, reported) = {
             let state = self.entries.get_mut(id).context("no entry")?.tracked.get_or_insert_with(|| Tracked::new(now));
-            (state.refreshed, state.seq, state.children.clone(), state.since_ms, state.last_refresh_ms)
+            (state.refreshed, state.seq, state.children.clone(), state.since_ms, state.last_refresh_ms, state.reported.clone())
         };
         let parent_moved = !refreshed || seq.is_none() || seq != last_seq;
         let mut children_moved = false;
@@ -477,22 +605,24 @@ impl OpenCodeHistory {
             let mut found = Vec::new();
             let mut checked = Vec::new();
             for (index, message) in messages.iter().enumerate() {
-                let recent = index == 0 || message.updated_ms + 5_000 >= last_refresh_ms;
+                let recent = index == 0 || message.updated_ms.saturating_add(5_000) >= last_refresh_ms;
                 if message.role != "assistant" || !recent {
                     continue;
                 }
                 let parts = self.parts(&message.id)?;
-                for (part_id, part) in &parts {
-                    let ended = part["state"]["time"]["end"].as_u64().unwrap_or(0);
-                    if part["type"] == "tool" && part["state"]["status"] == "completed" && ended >= since_ms {
-                        checked.push(part_id.clone());
-                        if let Some(event) = detect_part(part) {
-                            found.push((part_id.clone(), event));
+                for part in &parts {
+                    if part.kind == "tool" && part.status == "completed" && part.end_ms >= since_ms && !reported.contains(&part.id) {
+                        checked.push(part.id.clone());
+                        // Only candidates are read in full, and each only once.
+                        if watched_tool(&part.tool)
+                            && let Some(event) = detect_part(&self.part_data(&part.id)?)
+                        {
+                            found.push((part.id.clone(), event));
                         }
                     }
                 }
                 if index == 0 {
-                    latest_parts = parts.into_iter().map(|(_, p)| p).collect();
+                    latest_parts = parts;
                 }
             }
             parent = Some((derive(&messages, &latest_parts), found, checked));
@@ -542,30 +672,16 @@ impl OpenCodeHistory {
     }
 
     /// Busy, waiting and open sessions according to the canvas-started TUIs.
-    fn server_overlay(&mut self) -> Result<HashMap<String, Overlay>> {
+    fn server_overlay(&mut self, now: u64) -> Result<HashMap<String, Overlay>> {
         super::opencode::watch_servers();
-        let mut overlay: HashMap<String, Overlay> = HashMap::new();
-        for (_, state) in super::opencode::servers() {
-            let Some(live) = &state.live else { continue };
-            for id in &state.sessions {
-                overlay.entry(id.clone()).or_default().live = true;
-            }
-            for id in live.status.keys() {
-                let entry = overlay.entry(id.clone()).or_default();
-                entry.busy = true;
-                entry.live = true;
-            }
-            for id in live.waiting() {
-                // A subagent's prompt blocks its root session.
-                let root = self.root_of(id)?;
-                let entry = overlay.entry(root).or_default();
-                entry.waiting += 1;
-                entry.live = true;
-            }
+        let states: Vec<ServerState> = super::opencode::servers().into_iter().map(|(_, state)| state).collect();
+        let mut roots = HashMap::new();
+        for id in fresh(&states, now).flat_map(|live| live.waiting()) {
+            // A subagent's prompt blocks its root session.
+            roots.insert(id.to_owned(), self.root_of(id)?);
         }
-        Ok(overlay)
+        Ok(overlay(&states, now, &roots))
     }
-
     fn root_of(&mut self, id: &str) -> Result<String> {
         let mut current = id.to_owned();
         for _ in 0..4 {
@@ -592,6 +708,13 @@ impl OpenCodeHistory {
             self.warnings.push(message);
         }
     }
+
+    /// A warning given once per history (not again after a reconnect).
+    fn note_once(&mut self, message: String) {
+        if self.noted.insert(message.clone()) {
+            self.warn(message);
+        }
+    }
 }
 
 fn upsert(entries: &mut HashMap<String, Entry>, found: Row) {
@@ -601,6 +724,34 @@ fn upsert(entries: &mut HashMap<String, Entry>, found: Row) {
             entries.insert(found.id.clone(), Entry { row: found, tracked: None, sent: None });
         }
     }
+}
+
+/// Server states whose last answer is at most [`LIVE_FRESH_MS`] old: a
+/// server that stopped answering (or whose watcher ended) says nothing.
+fn fresh(states: &[ServerState], now: u64) -> impl Iterator<Item = &Live> {
+    states.iter().filter(move |s| now.saturating_sub(s.ok_ms) <= LIVE_FRESH_MS).filter_map(|s| s.live.as_ref())
+}
+
+/// The overlay from fresh server states; `roots` maps waiting sessions to their root.
+fn overlay(states: &[ServerState], now: u64, roots: &HashMap<String, String>) -> HashMap<String, Overlay> {
+    let mut overlay: HashMap<String, Overlay> = HashMap::new();
+    for state in states.iter().filter(|s| s.live.is_some() && now.saturating_sub(s.ok_ms) <= LIVE_FRESH_MS) {
+        for id in &state.sessions {
+            overlay.entry(id.clone()).or_default().live = true;
+        }
+        let Some(live) = &state.live else { continue };
+        for id in live.status.keys() {
+            let entry = overlay.entry(id.clone()).or_default();
+            entry.busy = true;
+            entry.live = true;
+        }
+        for id in live.waiting() {
+            let entry = overlay.entry(roots.get(id).cloned().unwrap_or_else(|| id.to_owned())).or_default();
+            entry.waiting += 1;
+            entry.live = true;
+        }
+    }
+    overlay
 }
 
 fn summarize(entry: &mut Entry, tracked: bool, overlay: Option<&Overlay>, git_root: String, now: u64) -> SessionSummary {
@@ -900,5 +1051,102 @@ mod tests {
     fn subagent_titles_split_into_name_and_description() {
         assert_eq!(split_subagent_title("Find callers (@explore subagent)", ""), ("explore".into(), "Find callers".into()));
         assert_eq!(split_subagent_title("Plain", "general"), ("general".into(), "Plain".into()));
+    }
+
+    /// A database at `name` in a fresh folder, built from `schema`.
+    fn custom_db(schema: &str) -> (PathBuf, Connection) {
+        let dir = std::env::temp_dir().join(format!("cc-oc-schema-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("opencode.db");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(schema).unwrap();
+        (path, connection)
+    }
+
+    #[test]
+    fn older_schemas_without_optional_columns_still_list() {
+        let schema = SCHEMA.replace(", time_archived integer, agent text", "");
+        let (path, connection) = custom_db(&schema);
+        connection.execute("INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES ('ses_x', 'p', 's', 'C:/a', 'X', '1', 1, 2)", []).unwrap();
+        connection.execute("INSERT INTO session (id, project_id, parent_id, slug, directory, title, version, time_created, time_updated) VALUES ('ses_k', 'p', 'ses_x', 's', 'C:/a', 'Kid (@explore subagent)', '1', 1, 2)", []).unwrap();
+        let mut history = OpenCodeHistory::new(path.clone());
+        history.use_servers = false;
+        let (changed, _) = history.poll(&["ses_x".to_owned()].into_iter().collect(), Duration::ZERO);
+        assert_eq!(changed.len(), 1, "{:?}", history.warnings);
+        assert_eq!((changed[0].name.as_str(), changed[0].agents[0].name.as_str()), ("X", "explore"));
+        assert!(history.warnings.is_empty(), "{:?}", history.warnings);
+        drop((history, connection));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn missing_list_and_sequence_indexes_are_noted_once_and_degrade() {
+        let schema = SCHEMA
+            .replace("CREATE INDEX session_parent_idx ON session (parent_id);", "")
+            .replace("CREATE TABLE event_sequence (aggregate_id text PRIMARY KEY, seq integer NOT NULL);", "CREATE TABLE event_sequence (aggregate_id text, seq integer);");
+        let (path, connection) = custom_db(&schema);
+        connection.execute("INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES ('ses_x', 'p', 's', 'C:/a', 'X', '1', 1, 2)", []).unwrap();
+        connection.execute("INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES ('ses_y', 'p', 's', 'C:/a', 'Y', '1', 1, 2)", []).unwrap();
+        let mut history = OpenCodeHistory::new(path.clone());
+        history.use_servers = false;
+        let (changed, _) = history.poll(&["ses_x".to_owned()].into_iter().collect(), Duration::ZERO);
+        assert_eq!(changed.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["ses_x"], "no unindexed list scan; tracked sessions still read");
+        let warnings = std::mem::take(&mut history.warnings);
+        assert!(warnings.iter().any(|w| w.contains("parent_id")) && warnings.iter().any(|w| w.contains("event_sequence")), "{warnings:?}");
+        // Reconnecting does not repeat them.
+        history.connection = None;
+        history.poll(&["ses_x".to_owned()].into_iter().collect(), Duration::ZERO);
+        assert!(history.warnings.is_empty(), "{:?}", history.warnings);
+        drop((history, connection));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn query_errors_back_off_instead_of_reopening_every_poll() {
+        // Indexed, but `message` has no `data` column: reading a tracked session fails.
+        let schema = SCHEMA.replace("time_updated integer NOT NULL, data text NOT NULL);\n        CREATE INDEX message_session", "time_updated integer NOT NULL);\n        CREATE INDEX message_session");
+        assert_ne!(schema, SCHEMA);
+        let (path, connection) = custom_db(&schema);
+        connection.execute("INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES ('ses_x', 'p', 's', 'C:/a', 'X', '1', 1, 2)", []).unwrap();
+        let mut history = OpenCodeHistory::new(path.clone());
+        history.use_servers = false;
+        let tracked: HashSet<String> = ["ses_x".to_owned()].into_iter().collect();
+        assert!(history.poll(&tracked, Duration::ZERO).0.is_empty());
+        assert!(history.connection.is_none() && history.retry_at.is_some_and(|t| t > Instant::now() + Duration::from_secs(25)));
+        history.warnings.clear();
+        assert!(history.poll(&tracked, Duration::ZERO).0.is_empty());
+        assert!(history.connection.is_none() && history.warnings.is_empty(), "no reopen and no new error within the pause");
+        drop((history, connection));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn malformed_rows_do_not_break_a_poll() {
+        let mut db = Db::new();
+        let now = now_ms();
+        db.session(SES, None, "S", now - 60_000);
+        db.connection.execute("INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES ('msg_bad', ?1, 1, 1, '{not json')", [SES]).unwrap();
+        db.message(SES, "msg_2", now - 9_000, assistant(now - 9_000, None, None));
+        db.connection.execute("INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES ('prt_bad', 'msg_2', ?1, 0, 0, 'garbage')", [SES]).unwrap();
+        db.part(SES, "msg_2", "prt_q", tool("question", "running", serde_json::json!({}), "", 0));
+        let mut history = db.history();
+        let (changed, _) = history.poll(&tracked(), Duration::ZERO);
+        assert_eq!((changed[0].activity, changed[0].pending), (Activity::Working, 1), "{:?}", history.warnings);
+    }
+
+    #[test]
+    fn stale_server_state_is_ignored() {
+        let live = |busy: &str| ServerState {
+            live: Some(Live { status: [(busy.to_owned(), "busy".to_owned())].into_iter().collect(), permissions: vec![("ses_child".into(), "per".into())], ..Default::default() }),
+            ok_ms: 10_000,
+            sessions: [busy.to_owned()].into_iter().collect(),
+        };
+        let roots: HashMap<String, String> = [("ses_child".to_owned(), "ses_root".to_owned())].into_iter().collect();
+        let fresh_overlay = overlay(&[live("ses_a")], 10_000 + LIVE_FRESH_MS, &roots);
+        assert!(fresh_overlay["ses_a"].busy && fresh_overlay["ses_a"].live);
+        assert_eq!(fresh_overlay["ses_root"].waiting, 1, "a subagent's prompt counts for its root");
+        assert!(overlay(&[live("ses_a")], 10_000 + LIVE_FRESH_MS + 1, &roots).is_empty(), "too old");
+        assert!(overlay(&[ServerState { live: None, ..live("ses_a") }], 10_000, &roots).is_empty(), "not answering");
+        assert_eq!(fresh(&[live("ses_a")], 20_000).count(), 0);
     }
 }

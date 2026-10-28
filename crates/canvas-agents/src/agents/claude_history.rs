@@ -18,6 +18,10 @@ const INITIAL_TAIL: u64 = 1024 * 1024;
 const HEAD: u64 = 64 * 1024;
 const TITLE_TAIL: u64 = 64 * 1024;
 const MAX_AGENTS: usize = 12;
+/// A transcript line longer than this is skipped instead of buffered.
+const MAX_LINE: usize = 8 * 1024 * 1024;
+/// Bytes from the start of a transcript that identify it (see [`Identity`]).
+const IDENTITY_BYTES: u64 = 64;
 /// Silence after `end_turn` before the turn counts as finished when no
 /// `turn_duration` record follows.
 const SETTLE_MS: u64 = 4_000;
@@ -75,7 +79,7 @@ impl PidFile {
         let v: Value = serde_json::from_str(text).ok()?;
         let number = |v: &Value| v.as_u64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()));
         Some(Self {
-            pid: number(&v["pid"])? as u32,
+            pid: u32::try_from(number(&v["pid"])?).ok()?,
             session_id: v["sessionId"].as_str()?.to_owned(),
             cwd: v["cwd"].as_str().unwrap_or_default().to_owned(),
             started_ms: number(&v["startedAt"]).unwrap_or(0),
@@ -93,7 +97,7 @@ impl PidFile {
         let Some(started) = crate::win::process_start_ms(self.pid) else { return false };
         match self.proc_start {
             Some(filetime) => started.abs_diff((filetime / 10_000).saturating_sub(11_644_473_600_000)) <= 1,
-            None => started <= self.started_ms + 2_000,
+            None => started <= self.started_ms.saturating_add(2_000),
         }
     }
 
@@ -103,7 +107,8 @@ impl PidFile {
     }
 }
 
-/// Live pid files by session id (the newest process wins).
+/// Live pid files by session id (the newest process wins). Files that do not
+/// parse, name another pid or carry an invalid session id are ignored.
 pub fn live_sessions(dir: &Path) -> HashMap<String, PidFile> {
     let mut out: HashMap<String, PidFile> = HashMap::new();
     let Ok(entries) = std::fs::read_dir(dir.join("sessions")) else { return out };
@@ -114,7 +119,7 @@ pub fn live_sessions(dir: &Path) -> HashMap<String, PidFile> {
             continue;
         }
         let Some(file) = std::fs::read_to_string(entry.path()).ok().and_then(|t| PidFile::parse(&t)) else { continue };
-        if file.pid.to_string() != stem || !file.alive() {
+        if file.pid.to_string() != stem || !crate::index::is_session_id(&file.session_id) || !file.alive() {
             continue;
         }
         match out.get(&file.session_id) {
@@ -226,6 +231,11 @@ fn tag<'a>(text: &'a str, name: &str) -> Option<&'a str> {
     Some(text[start..end].trim())
 }
 
+/// A subagent id safe to use in a file name: 1-128 of `[A-Za-z0-9_-]`.
+fn is_agent_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 impl ClaudeState {
     /// Applies one transcript line; false when it is not JSON.
     pub fn apply(&mut self, line: &str) -> bool {
@@ -321,7 +331,8 @@ impl ClaudeState {
             }
             if let Some(agent) = self.agents.iter_mut().find(|a| a.key == id) {
                 let result = &v["toolUseResult"];
-                if let Some(agent_id) = result["agentId"].as_str() {
+                // The id names files below the transcript's folder (see `refresh_tail`).
+                if let Some(agent_id) = result["agentId"].as_str().filter(|a| is_agent_id(a)) {
                     self.agent_ids.insert(agent_id.to_owned(), id.clone());
                 }
                 if result["status"].as_str() != Some("async_launched") {
@@ -459,8 +470,30 @@ struct Meta {
 struct Tail {
     offset: u64,
     partial: Vec<u8>,
+    /// Inside a line that is being skipped (too long, or cut by a skip ahead).
+    skipping: bool,
+    /// The file this tail has read (a replaced file is read again from the start).
+    identity: Option<Identity>,
     state: ClaudeState,
     truncated: bool,
+}
+
+/// A cheap identity of a transcript file: its creation time and first bytes.
+#[derive(Clone, Debug, PartialEq)]
+struct Identity {
+    created: Option<SystemTime>,
+    head: Vec<u8>,
+}
+
+impl Identity {
+    fn read(path: &Path, metadata: &std::fs::Metadata) -> Option<Self> {
+        Some(Self { created: metadata.created().ok(), head: read_range(path, 0, IDENTITY_BYTES).ok()? })
+    }
+
+    /// The same file, possibly grown since `self` was read.
+    fn same_file(&self, newer: &Identity) -> bool {
+        self.created == newer.created && newer.head.starts_with(&self.head)
+    }
 }
 
 struct Entry {
@@ -737,26 +770,40 @@ impl ClaudeHistory {
         let Some(path) = entry.path.clone() else { return };
         let Ok(metadata) = std::fs::metadata(&path) else { return };
         let size = metadata.len();
-        if size < tail.offset {
-            *tail = new_tail();
+        if size != tail.offset {
+            // A shrunk or replaced file is read again from the start.
+            let identity = Identity::read(&path, &metadata);
+            let replaced = match (&tail.identity, &identity) {
+                (Some(old), Some(new)) => !old.same_file(new),
+                _ => false,
+            };
+            if size < tail.offset || replaced {
+                *tail = new_tail();
+            }
+            tail.identity = identity;
         }
         if size > tail.offset {
             let start = tail.offset.max(size.saturating_sub(INITIAL_TAIL));
             let skipped = start > tail.offset;
             if skipped {
                 tail.partial.clear();
+                tail.skipping = true;
                 tail.truncated = true;
                 tail.state.reset_unknown();
             }
             match read_range(&path, start, size - start) {
-                Err(error) => warnings.push(format!("claude {}: {error}", &id[..8])),
+                Err(error) => warnings.push(format!("claude {}: {error}", super::short_id(id))),
                 Ok(buffer) => {
                     let mut data = std::mem::take(&mut tail.partial);
                     data.extend_from_slice(&buffer);
                     let mut slice = data.as_slice();
-                    if skipped {
+                    if tail.skipping {
+                        // The rest of a line whose start was not read (or was too long).
                         slice = match slice.iter().position(|&b| b == b'\n') {
-                            Some(pos) => &slice[pos + 1..],
+                            Some(pos) => {
+                                tail.skipping = false;
+                                &slice[pos + 1..]
+                            }
                             None => &[],
                         };
                     }
@@ -769,10 +816,17 @@ impl ClaudeHistory {
                             bad += 1;
                         }
                     }
-                    if bad > 0 {
-                        warnings.push(format!("claude {}: {bad} malformed transcript line(s)", &id[..8]));
+                    let rest = &slice[complete..];
+                    if rest.len() > MAX_LINE {
+                        // Never buffer a line without bound: skip to its end.
+                        bad += 1;
+                        tail.skipping = true;
+                    } else {
+                        tail.partial = rest.to_vec();
                     }
-                    tail.partial = slice[complete..].to_vec();
+                    if bad > 0 {
+                        warnings.push(format!("claude {}: {bad} malformed transcript line(s)", super::short_id(id)));
+                    }
                     tail.offset = start + buffer.len() as u64;
                 }
             }
@@ -838,7 +892,7 @@ fn note_status(entry: &mut Entry) {
 fn new_tail() -> Tail {
     // Only actions from now on become events (the history is replayed for status).
     let state = ClaudeState { since_ms: now_ms().saturating_sub(5_000), ..Default::default() };
-    Tail { offset: 0, partial: Vec::new(), state, truncated: false }
+    Tail { offset: 0, partial: Vec::new(), skipping: false, identity: None, state, truncated: false }
 }
 
 fn summarize(id: &str, entry: &Entry, tracked: bool, now: u64, git_root: String) -> SessionSummary {
@@ -864,7 +918,7 @@ fn summarize(id: &str, entry: &Entry, tracked: bool, now: u64, git_root: String)
         .map(str::to_owned)
         .or_else(|| (!meta.first_prompt.is_empty()).then(|| meta.first_prompt.clone()))
         .or_else(|| pid.map(|p| p.name.clone()).filter(|n| !n.is_empty()))
-        .unwrap_or_else(|| id[..8].to_owned());
+        .unwrap_or_else(|| super::short_id(id).to_owned());
     let mut summary = SessionSummary {
         id: id.to_owned(),
         name,
@@ -890,7 +944,7 @@ fn summarize(id: &str, entry: &Entry, tracked: bool, now: u64, git_root: String)
         if let Some(pid) = pid {
             // Subagents of an earlier process cannot still be working.
             for agent in summary.agents.iter_mut().filter(|a| a.status == AgentStatus::Working) {
-                if tail.state.agent_started.get(&agent.key).is_some_and(|&t| t + 2_000 < pid.started_ms) {
+                if tail.state.agent_started.get(&agent.key).is_some_and(|&t| t.saturating_add(2_000) < pid.started_ms) {
                     agent.status = AgentStatus::Unknown;
                 }
             }
@@ -1189,6 +1243,106 @@ mod tests {
         assert_eq!((file.pid, file.proc_start, file.needs_you()), (42, Some(134372675241511857), false));
         assert!(PidFile::parse(r#"{"pid":1}"#).is_none());
         assert!(!PidFile { pid: 0, ..Default::default() }.alive());
+        assert!(PidFile::parse(r#"{"pid":4294967297,"sessionId":"s"}"#).is_none(), "no silent truncation to pid 1");
+    }
+
+    #[test]
+    fn malformed_pid_files_are_ignored_without_panicking() {
+        let (dir, _) = fixture();
+        let me = std::process::id();
+        let started = crate::win::process_start_ms(me).unwrap();
+        let file = |id: &str| {
+            format!(r#"{{"pid":{me},"sessionId":{},"cwd":"C:\\x","startedAt":{started},"procStart":"{}","status":"busy"}}"#, serde_json::to_string(id).unwrap(), (started + 11_644_473_600_000) * 10_000)
+        };
+        let sessions = dir.join("sessions");
+        for (i, text) in [
+            "not json".to_owned(),
+            "{\"pid\":".to_owned(),
+            r#"{"pid":18446744073709551615,"sessionId":"x"}"#.to_owned(),
+            r#"{"pid":-1,"sessionId":"x"}"#.to_owned(),
+            r#"[1,2,3]"#.to_owned(),
+            file("abc"),
+            file(""),
+            file(r"..\..\evil"),
+            file("12345678-1234-1234-1234-12345678\u{e9}abc"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            std::fs::write(sessions.join(format!("{me}.json")), text).unwrap();
+            assert!(live_sessions(&dir).is_empty(), "case {i}: {text}");
+            let mut history = ClaudeHistory::new(dir.clone());
+            let (changed, _) = history.poll(&HashSet::new(), std::time::Duration::ZERO);
+            assert!(changed.is_empty(), "case {i}");
+        }
+        std::fs::write(sessions.join("4294967297.json"), file(ID)).unwrap();
+        std::fs::write(sessions.join(format!("{me}.json")), file(ID)).unwrap();
+        assert_eq!(live_sessions(&dir).keys().collect::<Vec<_>>(), [ID], "a valid file still counts");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn short_ids_never_panic_in_messages() {
+        let entry = Entry::new(None);
+        assert_eq!(summarize("abc", &entry, false, 0, String::new()).name, "abc");
+        assert_eq!(summarize(ID, &entry, false, 0, String::new()).name, "12345678");
+    }
+
+    #[test]
+    fn a_replaced_transcript_is_read_again_from_the_start() {
+        let (dir, transcript) = fixture();
+        append(&transcript, &prompt("2026-10-27T10:00:00Z", "first"));
+        append(&transcript, &tool_use("2026-10-27T10:00:01Z", "q1", "AskUserQuestion", "{}"));
+        let mut history = ClaudeHistory::new(dir.clone());
+        let (changed, _) = history.poll(&tracked(), std::time::Duration::ZERO);
+        assert_eq!(changed[0].pending, 1);
+        // Same session, rewritten with different (and longer) content.
+        let replacement = rec("system", "2026-10-27T11:00:00Z", ",\"subtype\":\"compact\"") + &prompt("2026-10-27T11:00:01Z", "second") + &end_turn("2026-10-27T11:00:02Z") + &turn_duration("2026-10-27T11:00:02Z");
+        assert!(replacement.len() as u64 > std::fs::metadata(&transcript).unwrap().len());
+        std::fs::write(&transcript, &replacement).unwrap();
+        let (changed, _) = history.poll(&tracked(), std::time::Duration::from_secs(60));
+        assert_eq!((changed[0].pending, changed[0].activity), (0, Activity::Idle), "the old question is gone");
+        assert_eq!(changed[0].finished_ms, Some(ms("2026-10-27T11:00:02Z")));
+        // Growth of the same file is still read incrementally.
+        append(&transcript, &prompt("2026-10-27T11:01:00Z", "third"));
+        let (changed, _) = history.poll(&tracked(), std::time::Duration::from_secs(60));
+        assert_eq!(changed[0].activity, Activity::Working);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_endless_line_is_skipped_not_buffered() {
+        let (dir, transcript) = fixture();
+        append(&transcript, &prompt("2026-10-27T10:00:00Z", "go"));
+        let mut history = ClaudeHistory::new(dir.clone());
+        history.poll(&tracked(), std::time::Duration::ZERO);
+        // One line written in pieces smaller than a read, longer than the cap.
+        append(&transcript, "{\"type\":\"attachment\",\"text\":\"");
+        let piece = "z".repeat(900_000);
+        for _ in 0..10 {
+            append(&transcript, &piece);
+            history.poll(&tracked(), std::time::Duration::from_secs(60));
+            let tail = history.entries[ID].tail.as_ref().unwrap();
+            assert!(tail.partial.len() <= MAX_LINE, "{} bytes buffered", tail.partial.len());
+        }
+        assert!(history.entries[ID].tail.as_ref().unwrap().skipping);
+        append(&transcript, "\"}\n");
+        append(&transcript, &tool_use("2026-10-27T10:00:05Z", "q", "AskUserQuestion", "{}"));
+        let (changed, _) = history.poll(&tracked(), std::time::Duration::from_secs(60));
+        assert_eq!(changed[0].pending, 1, "lines after the long one are read");
+        assert!(std::mem::take(&mut history.warnings).iter().any(|w| w.contains("malformed")));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn subagent_ids_must_be_safe_file_name_parts() {
+        let mut state = ClaudeState::default();
+        state.apply(&tool_use("2026-10-27T10:00:01Z", "t1", "Agent", r#"{"description":"x"}"#));
+        state.apply(&tool_use("2026-10-27T10:00:01Z", "t2", "Agent", r#"{"description":"y"}"#));
+        state.apply(&tool_result("2026-10-27T10:00:02Z", "t1", false, r#"{"status":"async_launched","agentId":"..\\..\\x"}"#));
+        state.apply(&tool_result("2026-10-27T10:00:02Z", "t2", false, r#"{"status":"async_launched","agentId":"a_1-B"}"#));
+        assert_eq!(state.agent_ids.keys().collect::<Vec<_>>(), ["a_1-B"]);
+        assert!(!is_agent_id("") && !is_agent_id("a/b") && !is_agent_id(&"a".repeat(129)) && is_agent_id("abc123"));
     }
 
     #[test]

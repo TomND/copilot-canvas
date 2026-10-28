@@ -171,7 +171,7 @@ fn probe_claude_store() {
         let pid = live.get(&s.id).map(|p| format!("pid {} status={} waitingFor={:?}", p.pid, p.status, p.waiting_for)).unwrap_or_else(|| "no live pid file".into());
         println!(
             "  {} {:<40} live={} {:?} pending={} finished={} last_event={} truncated={} agents={} ({} working) branch={} cwd={} [{pid}]",
-            &s.id[..8],
+            super::short_id(&s.id),
             s.name.chars().take(40).collect::<String>(),
             s.live,
             s.activity,
@@ -265,8 +265,9 @@ fn probe_opencode_e2e() {
     let integration = Integration { plugin_dir: Some(plugin), env: vec![("COPILOT_CANVAS_SESSION".into(), "probe-oc".into())] };
     let launch = AgentLaunch { agent: "opencode".into(), model: Some(model.clone()), ..Default::default() };
     let command = OpenCode.command("probe-oc", &launch, &integration).unwrap();
-    let env = |k: &str| command.env.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone()).unwrap();
-    let (port, password): (u16, String) = (env(super::opencode::PORT_ENV).parse().unwrap(), env(super::opencode::PASSWORD_ENV));
+    // The port and password live in the registry, not in the TUI's environment.
+    let server = super::opencode::server("probe-oc").expect("registered server");
+    let (port, password) = (server.port, server.password);
     println!("model {model}; {} {}", command.program, command.args.join(" "));
     let launched = now_ms();
     let mut console = Console::start(&command, &dir, 120, 36).unwrap();

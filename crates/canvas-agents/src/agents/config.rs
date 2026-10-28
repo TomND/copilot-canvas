@@ -1,11 +1,15 @@
 //! Configuration views (plugins, MCP servers, skills, agents, settings) for
 //! every agent, in the shape of Copilot's [`crate::copilot_cfg::Snapshot`].
-//! CLIs run hidden with timeouts; secrets (MCP env and headers, provider
-//! keys) are never read into the snapshot.
+//! CLIs run hidden with timeouts, their output in memory only. Secrets never
+//! reach the snapshot or error messages: MCP targets lose URL credentials and
+//! secret-looking arguments, settings hide secret-looking paths (see
+//! [`redact_setting`]).
 
+use std::io::Read;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -36,47 +40,179 @@ pub fn caps_for_changes(kind: AgentKind, what: Kind) -> (bool, bool) {
     }
 }
 
-/// Runs an agent CLI without a window and returns stdout.
+/// Output kept per stream of a CLI run; the rest is dropped.
+const MAX_OUTPUT: usize = 4 << 20;
+/// What replaces a secret in views and messages.
+const HIDDEN: &str = "(hidden)";
+
+/// An empty working folder for a CLI run (so it picks up no project
+/// configuration), removed when dropped, retrying while the child lets go.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new() -> Result<Self> {
+        let path = std::env::temp_dir().join(format!("copilot-canvas-cli-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&path).with_context(|| format!("cannot create {}", path.display()))?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        for attempt in 1..=10 {
+            if std::fs::remove_dir_all(&self.0).is_ok() || !self.0.exists() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50 * attempt));
+        }
+    }
+}
+
+/// A child's output stream, drained on its own thread into a bounded buffer.
+struct Capture {
+    data: Arc<Mutex<Vec<u8>>>,
+    done: mpsc::Receiver<()>,
+}
+
+impl Capture {
+    fn start(stream: Option<impl Read + Send + 'static>) -> Self {
+        let data = Arc::new(Mutex::new(Vec::new()));
+        let (tx, done) = mpsc::channel();
+        if let Some(mut stream) = stream {
+            let sink = data.clone();
+            std::thread::spawn(move || {
+                let mut buffer = [0u8; 8192];
+                while let Ok(n) = stream.read(&mut buffer)
+                    && n > 0
+                {
+                    let mut data = sink.lock().unwrap_or_else(|e| e.into_inner());
+                    let room = MAX_OUTPUT.saturating_sub(data.len());
+                    data.extend_from_slice(&buffer[..n.min(room)]);
+                }
+                let _ = tx.send(());
+            });
+        }
+        Self { data, done }
+    }
+
+    /// What was read. Waits briefly for the end of the stream: a process the
+    /// CLI started may keep it open after the CLI exited.
+    fn finish(self) -> String {
+        let _ = self.done.recv_timeout(Duration::from_secs(2));
+        String::from_utf8_lossy(&self.data.lock().unwrap_or_else(|e| e.into_inner())).into_owned()
+    }
+}
+
+fn kill(child: &mut std::process::Child) {
+    let _ = crate::win::kill_tree(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Runs an agent CLI without a window and returns stdout. Output goes
+/// through pipes drained by threads: it may hold secrets (`opencode debug
+/// config` prints API keys) and never touches the disk.
 pub fn run(program: &str, args: &[&str], env: &[(&str, &str)], timeout: Duration) -> Result<String> {
-    let temp = std::env::temp_dir().join(format!("copilot-canvas-cli-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&temp)?;
-    let out_path = temp.join("out.txt");
-    let err_path = temp.join("err.txt");
+    let cwd = TempDir::new()?;
     let mut command = Command::new(program);
-    command.args(args).current_dir(&temp).stdin(Stdio::null());
+    command.args(args).current_dir(&cwd.0).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).creation_flags(CREATE_NO_WINDOW);
     for (key, value) in env {
         command.env(key, value);
     }
-    // Files instead of pipes: no risk of a full pipe blocking the child.
-    let mut child = command
-        .stdout(std::fs::File::create(&out_path)?)
-        .stderr(std::fs::File::create(&err_path)?)
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .with_context(|| format!("cannot run {program}"))?;
+    let mut child = command.spawn().with_context(|| format!("cannot run {program}"))?;
+    let stdout = Capture::start(child.stdout.take());
+    let stderr = Capture::start(child.stderr.take());
     let deadline = Instant::now() + timeout;
     let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() > deadline => {
+                kill(&mut child);
+                bail!("{} {} timed out", Path::new(program).file_stem().unwrap_or_default().to_string_lossy(), args.join(" "));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            Err(error) => {
+                kill(&mut child);
+                return Err(error.into());
+            }
         }
-        if Instant::now() > deadline {
-            let _ = crate::win::kill_tree(child.id());
-            let _ = child.kill();
-            let _ = std::fs::remove_dir_all(&temp);
-            bail!("{} {} timed out", Path::new(program).file_stem().unwrap_or_default().to_string_lossy(), args.join(" "));
-        }
-        std::thread::sleep(Duration::from_millis(25));
     };
-    let stdout = std::fs::read_to_string(&out_path).unwrap_or_default();
-    let stderr = std::fs::read_to_string(&err_path).unwrap_or_default();
-    let _ = std::fs::remove_dir_all(&temp);
+    let (stdout, stderr) = (stdout.finish(), stderr.finish());
     if !status.success() {
-        let message = if stderr.trim().is_empty() { stdout.trim() } else { stderr.trim() };
-        bail!("{}", message.lines().last().unwrap_or("the command failed"));
+        bail!("{}", failure_message(&stderr, &stdout, status));
     }
     Ok(stdout)
 }
 
+/// A failed CLI's last line of output, redacted, when it is short; else a generic message.
+fn failure_message(stderr: &str, stdout: &str, status: std::process::ExitStatus) -> String {
+    let text = if stderr.trim().is_empty() { stdout } else { stderr };
+    match text.trim().lines().last().map(str::trim) {
+        Some(line) if !line.is_empty() && line.chars().count() <= 200 => redact_text(line),
+        _ => format!("the command failed ({status})"),
+    }
+}
+
+/// Words naming a secret (flags, `KEY=VALUE` keys, header names).
+fn secret_name(name: &str) -> bool {
+    let lower = name.trim_start_matches('-').to_ascii_lowercase();
+    ["api-key", "apikey", "api_key", "token", "password", "passwd", "secret", "auth", "bearer", "credential"].iter().any(|w| lower.contains(w))
+}
+
+/// A URL without user info, query string or fragment.
+fn redact_url(url: &str) -> String {
+    let main = &url[..url.find(['?', '#']).unwrap_or(url.len())];
+    let Some(scheme) = main.find("://") else { return main.to_owned() };
+    let rest = &main[scheme + 3..];
+    let authority = &rest[..rest.find('/').unwrap_or(rest.len())];
+    match authority.rfind('@') {
+        Some(at) => format!("{}{}", &main[..scheme + 3], &rest[at + 1..]),
+        None => main.to_owned(),
+    }
+}
+
+/// One word with secrets replaced: URL credentials, `KEY=VALUE` and
+/// `Header: value` with secret-looking names.
+fn redact_word(word: &str) -> String {
+    if let Some(scheme) = word.find("://")
+        && word.find('=').is_none_or(|eq| scheme < eq)
+    {
+        return redact_url(word);
+    }
+    if let Some((key, value)) = word.split_once('=') {
+        return if secret_name(key) { format!("{key}={HIDDEN}") } else { format!("{key}={}", redact_word(value)) };
+    }
+    match word.split_once(':') {
+        Some((name, _)) if secret_name(name) => format!("{name}: {HIDDEN}"),
+        _ => word.to_owned(),
+    }
+}
+
+/// Command-line words with secrets replaced: [`redact_word`], plus the word
+/// after a secret-looking flag (`--api-key X`) or `Bearer`.
+fn redact_words<'a>(words: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut hide_next = false;
+    for word in words {
+        if std::mem::take(&mut hide_next) {
+            out.push(HIDDEN.to_owned());
+            continue;
+        }
+        hide_next = !word.contains('=') && !word.contains(':') && ((word.starts_with('-') && secret_name(word)) || word.eq_ignore_ascii_case("bearer"));
+        out.push(redact_word(word));
+    }
+    out
+}
+
+/// A line of text (an error message) with secrets replaced.
+fn redact_text(line: &str) -> String {
+    let words = redact_words(line.split_whitespace());
+    // "Authorization: Bearer x" spans words: a hidden header hides the rest of the line.
+    match words.iter().position(|w| w.ends_with(&format!(": {HIDDEN}"))) {
+        Some(at) => words[..=at].join(" "),
+        None => words.join(" "),
+    }
+}
 fn opencode(args: &[&str]) -> Result<String> {
     run(&super::opencode::find_cli()?, args, &[("OPENCODE_DISABLE_AUTOUPDATE", "1")], TIMEOUT)
 }
@@ -145,10 +281,42 @@ fn flatten(prefix: &str, value: &Value, out: &mut Vec<(String, String)>) {
     }
 }
 
-/// Keys whose values may be secrets.
-fn secret(key: &str) -> bool {
-    let lower = key.to_ascii_lowercase();
-    ["key", "token", "secret", "password", "header", "auth", "credential", "env."].iter().any(|w| lower.contains(w)) || lower == "env"
+/// Setting paths whose values may be secrets (any part of the dotted path).
+fn secret(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    ["environment", "headers", "env", "token", "key", "secret", "password", "auth", "credential", "cookie"].iter().any(|w| lower.contains(w))
+}
+
+/// The last part of a dotted setting path, lowercased.
+fn leaf(path: &str) -> String {
+    path.rsplit('.').next().unwrap_or(path).to_ascii_lowercase()
+}
+
+/// The program of a command (a string or an array of words): its file name only.
+fn program_name(command: &Value) -> Value {
+    let first = match command {
+        Value::String(s) => s.split_whitespace().next(),
+        Value::Array(items) => items.first().and_then(Value::as_str),
+        _ => None,
+    };
+    let first = first.unwrap_or_default().trim_matches('"');
+    Value::String(first.rsplit(['\\', '/']).next().unwrap_or(first).to_owned())
+}
+
+/// A setting value with secrets replaced, walking objects and arrays: values
+/// below secret-looking paths are hidden, URLs lose credentials and queries,
+/// commands show their program only.
+fn redact_setting(path: &str, value: &Value) -> Value {
+    match value {
+        _ if leaf(path).contains("command") && !secret(path) && !value.is_object() => program_name(value),
+        Value::Object(map) => {
+            Value::Object(map.iter().map(|(key, child)| (key.clone(), redact_setting(&if path.is_empty() { key.clone() } else { format!("{path}.{key}") }, child))).collect())
+        }
+        Value::Array(items) => Value::Array(items.iter().map(|item| redact_setting(path, item)).collect()),
+        _ if secret(path) => Value::String(HIDDEN.to_owned()),
+        Value::String(s) if leaf(path).contains("url") => Value::String(redact_url(s)),
+        other => other.clone(),
+    }
 }
 
 /// Settings as (key, value) pairs, secrets hidden.
@@ -156,12 +324,7 @@ fn settings(value: &Value, skip: &[&str]) -> Vec<(String, String)> {
     let mut out = Vec::new();
     if let Some(map) = value.as_object() {
         for (key, child) in map.iter().filter(|(k, _)| !skip.contains(&k.as_str())) {
-            flatten(key, child, &mut out);
-        }
-    }
-    for (key, value) in &mut out {
-        if secret(key) {
-            *value = "(hidden)".to_owned();
+            flatten(key, &redact_setting(key, child), &mut out);
         }
     }
     out
@@ -169,8 +332,10 @@ fn settings(value: &Value, skip: &[&str]) -> Vec<(String, String)> {
 
 fn mcp_entry(name: &str, entry: &Value, source: &str) -> McpServer {
     let transport = entry["type"].as_str().unwrap_or(if entry.get("url").is_some() { "http" } else { "stdio" }).to_owned();
+    // Shown in the UI: never with credentials (URL user info and queries,
+    // values of secret-looking flags and KEY=VALUE arguments).
     let target = match entry["url"].as_str() {
-        Some(url) => url.to_owned(),
+        Some(url) => redact_url(url),
         None => {
             // Claude: command + args; OpenCode: command is an array.
             let mut words: Vec<&str> = match &entry["command"] {
@@ -179,13 +344,12 @@ fn mcp_entry(name: &str, entry: &Value, source: &str) -> McpServer {
                 _ => Vec::new(),
             };
             words.extend(entry["args"].as_array().into_iter().flatten().filter_map(|v| v.as_str()));
-            words.join(" ")
+            redact_words(words).join(" ")
         }
     };
     let enabled = entry["enabled"].as_bool().unwrap_or(true) && entry["disabled"].as_bool() != Some(true);
     McpServer { name: name.to_owned(), source: source.to_owned(), transport, target, enabled }
 }
-
 fn frontmatter(text: &str) -> (Option<String>, Option<String>) {
     let mut name = None;
     let mut description = None;
@@ -487,5 +651,95 @@ mod tests {
         assert!(remove(AgentKind::Claude, Kind::Skill, "x").is_err());
         assert!(remove(AgentKind::Claude, Kind::Mcp, "--scope").is_err(), "names are never options");
         assert_eq!(caps_for_changes(AgentKind::Claude, Kind::Plugin), (true, true));
+    }
+
+    #[test]
+    fn mcp_targets_never_show_credentials() {
+        let remote = mcp_entry("r", &json!({ "url": "https://user:SECRET1@mcp.example:8443/x?api_key=SECRET2#SECRET3" }), "user");
+        assert_eq!(remote.target, "https://mcp.example:8443/x");
+        let args = json!([
+            "-y", "srv", "--api-key", "SECRET4", "--token=SECRET5", "GITHUB_PAT_TOKEN=SECRET6", "--port", "80", "-H", "Authorization: Bearer SECRET7",
+            "--url=https://u:SECRET8@h/q?x=SECRET9", "Bearer", "SECRET10", "--password", "SECRET11", "--verbose", "https://plain.example/a?SECRET12"
+        ]);
+        let local = mcp_entry("l", &json!({ "command": "npx", "args": args }), "user");
+        assert_eq!(
+            local.target,
+            "npx -y srv --api-key (hidden) --token=(hidden) GITHUB_PAT_TOKEN=(hidden) --port 80 -H Authorization: (hidden) --url=https://h/q Bearer (hidden) --password (hidden) --verbose https://plain.example/a"
+        );
+        let opencode = mcp_entry("o", &json!({ "type": "local", "command": ["uvx", "srv", "--auth-token", "SECRET13"] }), "config");
+        assert_eq!(opencode.target, "uvx srv --auth-token (hidden)");
+        assert!(!format!("{remote:?}{local:?}{opencode:?}").contains("SECRET"));
+    }
+
+    #[test]
+    fn settings_hide_secrets_in_nested_objects_arrays_urls_and_commands() {
+        let value = json!({
+            "model": "opus",
+            "env": { "API_KEY": "SECRET1", "PLAIN": "SECRET2" },
+            "servers": [{ "name": "a", "token": "SECRET3" }, { "name": "b", "headers": { "X": "SECRET4" } }],
+            "proxy": { "url": "http://u:SECRET5@proxy:8080/?k=SECRET6" },
+            "statusLine": { "type": "command", "command": "C:\\tools\\status.exe --password SECRET7" },
+            "hooks": { "Stop": [{ "matcher": "*", "command": ["node", "hook.js", "--secret", "SECRET8"] }] },
+            "apiKeyHelper": "SECRET9",
+            "cookies": ["SECRET10"],
+            "credentials": { "list": [1, 2] },
+            "theme": "dark"
+        });
+        let out = settings(&value, &[]);
+        assert!(!format!("{out:?}").contains("SECRET"), "{out:?}");
+        for expected in [
+            ("model", "opus"),
+            ("theme", "dark"),
+            ("env.API_KEY", HIDDEN),
+            ("env.PLAIN", HIDDEN),
+            ("proxy.url", "http://proxy:8080/"),
+            ("statusLine.type", "command"),
+            ("statusLine.command", "status.exe"),
+            ("apiKeyHelper", HIDDEN),
+        ] {
+            assert!(out.contains(&(expected.0.to_owned(), expected.1.to_owned())), "{expected:?} in {out:?}");
+        }
+        let servers = &out.iter().find(|(k, _)| k == "servers").unwrap().1;
+        assert_eq!(servers, r#"[{"name":"a","token":"(hidden)"},{"headers":{"X":"(hidden)"},"name":"b"}]"#);
+        assert_eq!(out.iter().find(|(k, _)| k == "hooks.Stop").unwrap().1, r#"[{"command":"node","matcher":"*"}]"#);
+    }
+
+    #[test]
+    fn cli_errors_are_short_and_redacted() {
+        use std::os::windows::process::ExitStatusExt;
+        let status = std::process::ExitStatus::from_raw(3);
+        let message = failure_message("warming up\nError: login failed for https://u:SECRET@x.example/y?token=SECRET --token SECRET\n", "", status);
+        assert_eq!(message, "Error: login failed for https://x.example/y --token (hidden)");
+        assert_eq!(failure_message("", "out\nAuthorization: Bearer SECRET rest", status), "Authorization: (hidden)");
+        assert_eq!(failure_message(&format!("{}\n", "x".repeat(300)), "", status), format!("the command failed ({status})"), "long lines are not echoed");
+        assert_eq!(failure_message("  \n", "", status), format!("the command failed ({status})"));
+    }
+
+    #[test]
+    fn cli_runs_use_pipes_time_out_and_clean_up() {
+        let comspec = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".into());
+        assert_eq!(run(&comspec, &["/d", "/c", "echo hello"], &[], TIMEOUT).unwrap().trim(), "hello");
+        let error = run(&comspec, &["/d", "/c", "echo --token SECRET 1>&2 & exit 3"], &[], TIMEOUT).unwrap_err().to_string();
+        assert_eq!(error, "--token (hidden)");
+        let started = Instant::now();
+        let error = run(&comspec, &["/d", "/c", "ping -n 30 127.0.0.1"], &[], Duration::from_millis(300)).unwrap_err().to_string();
+        assert!(error.contains("timed out") && started.elapsed() < Duration::from_secs(10), "{error}");
+        // A large output never blocks the child.
+        let big = run(&comspec, &["/d", "/c", "for /l %i in (1,1,3000) do @echo 0123456789012345678901234567890123456789"], &[], TIMEOUT).unwrap();
+        assert_eq!(big.lines().count(), 3000);
+    }
+
+    #[test]
+    fn temporary_folders_are_removed_even_while_briefly_in_use() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.0.clone();
+        let file = std::fs::File::create(path.join("busy.txt")).unwrap();
+        let holder = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            drop(file);
+        });
+        drop(dir);
+        holder.join().unwrap();
+        assert!(!path.exists());
     }
 }

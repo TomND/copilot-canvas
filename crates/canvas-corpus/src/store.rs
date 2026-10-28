@@ -24,7 +24,8 @@ pub struct Meta {
     /// How it was recorded (program and arguments), for re-recording.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub command: Vec<String>,
-    /// Environment the recorder added (`NAME=value`).
+    /// Names of the environment variables the recorder added (values are not
+    /// kept: they may be secrets; older entries say `NAME=value`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]

@@ -32,6 +32,18 @@ fn number<T: std::str::FromStr>(options: Options, name: &str, default: T) -> Res
     }
 }
 
+/// `--<name>` seconds as a duration: positive and in range (never a panic).
+fn seconds(options: Options, name: &str, default: f64) -> Result<Duration> {
+    let value: f64 = number(options, name, default)?;
+    anyhow::ensure!(value > 0.0, "--{name} must be a positive number of seconds, not {value}");
+    Duration::try_from_secs_f64(value).map_err(|_| anyhow::anyhow!("--{name} {value} is out of range"))
+}
+
+/// What `meta.json` keeps of `--env`: the names only (values may be secrets).
+fn env_names(env: &[(String, String)]) -> Vec<String> {
+    env.iter().map(|(name, _)| name.clone()).collect()
+}
+
 /// `corpus list|check|bless|synth|show|diff`.
 pub fn corpus(words: &[&str], options: Options) -> Result<()> {
     let corpus = Corpus::locate(option(options, "corpus").map(Path::new))?;
@@ -284,7 +296,8 @@ pub fn record(home: &Path, words: &[&str], options: Options, cwd: Option<&Path>)
         env: env.clone(),
         cols: number(options, "cols", 120)?,
         rows: number(options, "rows", 40)?,
-        limit: Duration::from_secs_f64(number(options, "seconds", 30.0)?),
+        limit: seconds(options, "seconds", 30.0)?,
+        max_bytes: record::MAX_RECORDED_BYTES,
         script,
         description: option(options, "description").unwrap_or_default().to_owned(),
         verbose: true,
@@ -293,10 +306,10 @@ pub fn record(home: &Path, words: &[&str], options: Options, cwd: Option<&Path>)
     let meta = Meta {
         description: spec.description.clone(),
         source: "recorded".into(),
-        cols: spec.cols,
-        rows: spec.rows,
+        cols: recording.header.cols,
+        rows: recording.header.rows,
         command,
-        env: env.iter().map(|(k, v)| format!("{k}={v}")).collect(),
+        env: env_names(&env),
         recorded_on: windows_version(),
         recorded_at: recording.header.recorded_at.clone(),
         ..Meta::default()
@@ -314,7 +327,8 @@ fn session(home: &Path, id: &str, options: Options) -> Result<()> {
     let path = if exact.is_file() {
         Some(exact)
     } else {
-        let stem = exact.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        // An id prefix (file names add a hash of the whole id; older ones did not).
+        let stem = canvas_host::term::recording_stem(id);
         let matches: Vec<PathBuf> = std::fs::read_dir(&dir)
             .map(|entries| {
                 entries
@@ -365,4 +379,28 @@ fn session(home: &Path, id: &str, options: Options) -> Result<()> {
         ..Meta::default()
     };
     save(&recording, options, meta, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn options(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+    }
+
+    #[test]
+    fn durations_from_the_command_line_never_panic() {
+        assert_eq!(seconds(&options(&[("seconds", "2.5")]), "seconds", 30.0).unwrap(), Duration::from_millis(2500));
+        assert_eq!(seconds(&[], "seconds", 30.0).unwrap(), Duration::from_secs(30));
+        for bad in ["-1", "0", "NaN", "inf", "-inf", "1e300", "abc"] {
+            assert!(seconds(&options(&[("seconds", bad)]), "seconds", 30.0).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn meta_keeps_env_names_not_values() {
+        let env = [("API_TOKEN".to_owned(), "secret".to_owned()), ("DISABLE_AUTOUPDATER".to_owned(), "1".to_owned())];
+        assert_eq!(env_names(&env), ["API_TOKEN", "DISABLE_AUTOUPDATER"]);
+    }
 }
