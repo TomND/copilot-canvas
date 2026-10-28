@@ -9,19 +9,23 @@ use crate::text::{Fonts, ShapeCache, Spec};
 
 /// Chrome outside the canvas and the terminal grids.
 pub const BASE: usize = 0;
-/// Canvas shapes and labels.
+/// The canvas background, dot grid, groups and connectors.
 pub const CANVAS: usize = 1;
-/// Badges, pulses and the rubber band above the canvas.
-pub const CANVAS_TOP: usize = 2;
+/// Boxes with their labels, in [`BOX_LEVELS`] layers: a box that overlaps an
+/// earlier one goes one level up, so its fill covers the labels below it.
+pub const BOXES: usize = 2;
+pub const BOX_LEVELS: usize = 3;
+/// Selected boxes, badges, pulses and the rubber band above the canvas.
+pub const CANVAS_TOP: usize = BOXES + BOX_LEVELS;
 /// Terminal grids.
-pub const TILES: usize = 3;
+pub const TILES: usize = CANVAS_TOP + 1;
 /// Chrome cells drawn over the canvas or a terminal (markers, hints).
-pub const CHROME_TOP: usize = 4;
+pub const CHROME_TOP: usize = TILES + 1;
 /// Dialogs and menus.
-pub const OVERLAY: usize = 5;
-/// IME preedit and the perf overlay.
-pub const HUD: usize = 6;
-pub const LAYERS: usize = 7;
+pub const OVERLAY: usize = CHROME_TOP + 1;
+/// IME preedit, the banner, the paste preview and the perf overlay.
+pub const HUD: usize = OVERLAY + 1;
+pub const LAYERS: usize = HUD + 1;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextItem {
@@ -74,10 +78,6 @@ pub struct Scene {
 impl Scene {
     pub fn new(width: u32, height: u32, clear: [u8; 3]) -> Self {
         Self { layers: Default::default(), width, height, clear }
-    }
-
-    pub fn quads(&self) -> usize {
-        self.layers.iter().map(|l| l.under.len() + l.over.len()).sum()
     }
 }
 

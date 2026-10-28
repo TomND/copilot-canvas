@@ -175,7 +175,7 @@ Details: `docs/GPU-SPIKE.md`.
 - **Home client:** `copilot-canvas --remote <tunnel>` (and the GUI equivalent) manages `devtunnel connect` as a child process, then connects to the forwarded localhost port.
 - **Liveness:**
   - heartbeat every 2 s; a connection is dead after 6 s of silence;
-  - reconnect with backoff 0.5 s → 5 s;
+  - reconnect with backoff 0.5 s → 1.5 s (Phase 6; was 5 s, see `docs/REMOTE.md`);
   - an "offline, reconnecting" banner;
   - **terminal input is blocked while offline**, never queued, so nothing is typed into a changed state;
   - on reconnect, a full snapshot and full frames for visible tiles.
@@ -278,6 +278,14 @@ New in the GUI:
 - Crash log; GPU device-lost recovery; window placement.
 - UI Automation tree (used by tests).
 - Long-run remote soak: home client connected for 48 h with automatic drop injection.
+
+Status (Phase 6, 2026-10-28): `bench --client gui --stress | --perf-canvas | --burn`,
+damage frames (only changed terminal tiles are repainted and uploaded),
+GPU device-lost and surface recovery, WARP fallback, DPI changes, saved
+window placement, an AccessKit UI Automation tree, crash-log details and
+`selftest --client gui --hardening` are in; numbers against §9 in
+`docs/GUI.md` §4. `selftest --remote soak` ran 20 minutes per client (TUI,
+GUI) with a fault every 30 s (`docs/REMOTE.md`); the 48 h run is still to do.
 
 ### Phase 7: Rollout (≈1 week)
 

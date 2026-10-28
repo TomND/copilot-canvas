@@ -1,0 +1,447 @@
+{
+  "bandwidth_kb_s_all_clients": 3.43,
+  "canvas": {
+    "applied_once": 1894,
+    "bandwidth_kb_s_4_busy_tiles": 2.4,
+    "blocked_or_unconfirmed_near_a_fault": 76,
+    "doubled": 0,
+    "keys_typed": 1971,
+    "lost_while_online": 0,
+    "reconnect_after_network_returns_ms": {
+      "max": 1516.0,
+      "n": 24,
+      "p50": 529.0,
+      "p95": 1058.0
+    },
+    "wrong": 0
+  },
+  "client": "gui",
+  "drop_every_s": 30,
+  "failures": [],
+  "faults": [
+    {
+      "at_s": 30.01,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 529.9,
+      "kind": "drop",
+      "protocol_offline_ms": 506.6,
+      "protocol_reconnect_ms": 509.7,
+      "resync_ms": 4.2
+    },
+    {
+      "at_s": 60.01,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 1043.7,
+      "kind": "outage 5 s",
+      "protocol_offline_ms": 6043.9,
+      "protocol_reconnect_ms": 1043.7,
+      "resync_ms": 33.3
+    },
+    {
+      "at_s": 90.03,
+      "canvas_offline_seen": false,
+      "canvas_reconnect_ms": null,
+      "kind": "cut mid-frame",
+      "protocol_offline_ms": 529.9,
+      "protocol_reconnect_ms": 543.3,
+      "resync_ms": 10.0
+    },
+    {
+      "at_s": 120.01,
+      "canvas_offline_seen": false,
+      "canvas_reconnect_ms": null,
+      "kind": "300 ms delay for 10 s",
+      "protocol_offline_ms": null,
+      "protocol_reconnect_ms": null,
+      "resync_ms": null
+    },
+    {
+      "at_s": 150.01,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 85.0,
+      "kind": "outage 15 s",
+      "protocol_offline_ms": 15032.3,
+      "protocol_reconnect_ms": 25.9,
+      "resync_ms": 27.3
+    },
+    {
+      "at_s": 180.02,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 517.2,
+      "kind": "drop",
+      "protocol_offline_ms": 526.1,
+      "protocol_reconnect_ms": 537.4,
+      "resync_ms": 5.6
+    },
+    {
+      "at_s": 210.01,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 1031.9,
+      "kind": "outage 5 s",
+      "protocol_offline_ms": 6040.7,
+      "protocol_reconnect_ms": 1031.9,
+      "resync_ms": 8.8
+    },
+    {
+      "at_s": 240.0,
+      "canvas_offline_seen": false,
+      "canvas_reconnect_ms": null,
+      "kind": "cut mid-frame",
+      "protocol_offline_ms": 528.0,
+      "protocol_reconnect_ms": 582.2,
+      "resync_ms": 10.6
+    },
+    {
+      "at_s": 270.02,
+      "canvas_offline_seen": false,
+      "canvas_reconnect_ms": null,
+      "kind": "300 ms delay for 10 s",
+      "protocol_offline_ms": null,
+      "protocol_reconnect_ms": null,
+      "resync_ms": null
+    },
+    {
+      "at_s": 300.01,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 11.4,
+      "kind": "outage 15 s",
+      "protocol_offline_ms": 15018.8,
+      "protocol_reconnect_ms": 16.4,
+      "resync_ms": 1.1
+    },
+    {
+      "at_s": 330.01,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 515.2,
+      "kind": "drop",
+      "protocol_offline_ms": 506.8,
+      "protocol_reconnect_ms": 507.3,
+      "resync_ms": 4.7
+    },
+    {
+      "at_s": 360.01,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 1023.0,
+      "kind": "outage 5 s",
+      "protocol_offline_ms": 6027.5,
+      "protocol_reconnect_ms": 1028.5,
+      "resync_ms": 6.3
+    },
+    {
+      "at_s": 390.01,
+      "canvas_offline_seen": false,
+      "canvas_reconnect_ms": null,
+      "kind": "cut mid-frame",
+      "protocol_offline_ms": 510.3,
+      "protocol_reconnect_ms": 549.0,
+      "resync_ms": 7.1
+    },
+    {
+      "at_s": 420.01,
+      "canvas_offline_seen": false,
+      "canvas_reconnect_ms": null,
+      "kind": "300 ms delay for 10 s",
+      "protocol_offline_ms": null,
+      "protocol_reconnect_ms": null,
+      "resync_ms": null
+    },
+    {
+      "at_s": 450.0,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 27.1,
+      "kind": "outage 15 s",
+      "protocol_offline_ms": 15013.0,
+      "protocol_reconnect_ms": 10.1,
+      "resync_ms": 2.1
+    },
+    {
+      "at_s": 480.01,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 528.4,
+      "kind": "drop",
+      "protocol_offline_ms": 506.7,
+      "protocol_reconnect_ms": 509.2,
+      "resync_ms": 4.4
+    },
+    {
+      "at_s": 510.01,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 1058.0,
+      "kind": "outage 5 s",
+      "protocol_offline_ms": 6007.1,
+      "protocol_reconnect_ms": 1000.9,
+      "resync_ms": 0.4
+    },
+    {
+      "at_s": 540.01,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 562.3,
+      "kind": "cut mid-frame",
+      "protocol_offline_ms": null,
+      "protocol_reconnect_ms": null,
+      "resync_ms": null
+    },
+    {
+      "at_s": 570.0,
+      "canvas_offline_seen": false,
+      "canvas_reconnect_ms": null,
+      "kind": "300 ms delay for 10 s",
+      "protocol_offline_ms": null,
+      "protocol_reconnect_ms": null,
+      "resync_ms": null
+    },
+    {
+      "at_s": 600.01,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 59.1,
+      "kind": "outage 15 s",
+      "protocol_offline_ms": 15029.3,
+      "protocol_reconnect_ms": 31.2,
+      "resync_ms": 3.3
+    },
+    {
+      "at_s": 630.02,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 529.5,
+      "kind": "drop",
+      "protocol_offline_ms": 503.4,
+      "protocol_reconnect_ms": 504.7,
+      "resync_ms": 4.5
+    },
+    {
+      "at_s": 660.01,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 1056.0,
+      "kind": "outage 5 s",
+      "protocol_offline_ms": 6005.0,
+      "protocol_reconnect_ms": 1004.4,
+      "resync_ms": 0.2
+    },
+    {
+      "at_s": 690.01,
+      "canvas_offline_seen": false,
+      "canvas_reconnect_ms": null,
+      "kind": "cut mid-frame",
+      "protocol_offline_ms": 503.4,
+      "protocol_reconnect_ms": 523.4,
+      "resync_ms": 0.2
+    },
+    {
+      "at_s": 720.0,
+      "canvas_offline_seen": false,
+      "canvas_reconnect_ms": null,
+      "kind": "300 ms delay for 10 s",
+      "protocol_offline_ms": null,
+      "protocol_reconnect_ms": null,
+      "resync_ms": null
+    },
+    {
+      "at_s": 750.01,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 1515.9,
+      "kind": "outage 15 s",
+      "protocol_offline_ms": 15012.7,
+      "protocol_reconnect_ms": 5.0,
+      "resync_ms": 0.2
+    },
+    {
+      "at_s": 780.01,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 514.0,
+      "kind": "drop",
+      "protocol_offline_ms": 505.0,
+      "protocol_reconnect_ms": 507.2,
+      "resync_ms": 4.7
+    },
+    {
+      "at_s": 810.02,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 1045.3,
+      "kind": "outage 5 s",
+      "protocol_offline_ms": 6009.3,
+      "protocol_reconnect_ms": 1010.2,
+      "resync_ms": 2.2
+    },
+    {
+      "at_s": 840.01,
+      "canvas_offline_seen": false,
+      "canvas_reconnect_ms": null,
+      "kind": "cut mid-frame",
+      "protocol_offline_ms": 506.3,
+      "protocol_reconnect_ms": 527.1,
+      "resync_ms": 2.3
+    },
+    {
+      "at_s": 870.01,
+      "canvas_offline_seen": false,
+      "canvas_reconnect_ms": null,
+      "kind": "300 ms delay for 10 s",
+      "protocol_offline_ms": null,
+      "protocol_reconnect_ms": null,
+      "resync_ms": null
+    },
+    {
+      "at_s": 900.01,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 45.8,
+      "kind": "outage 15 s",
+      "protocol_offline_ms": 15021.6,
+      "protocol_reconnect_ms": 15.1,
+      "resync_ms": 1.6
+    },
+    {
+      "at_s": 930.01,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 529.0,
+      "kind": "drop",
+      "protocol_offline_ms": 503.6,
+      "protocol_reconnect_ms": 505.6,
+      "resync_ms": 3.7
+    },
+    {
+      "at_s": 960.01,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 1054.2,
+      "kind": "outage 5 s",
+      "protocol_offline_ms": 6006.3,
+      "protocol_reconnect_ms": 1003.4,
+      "resync_ms": 4.2
+    },
+    {
+      "at_s": 990.01,
+      "canvas_offline_seen": false,
+      "canvas_reconnect_ms": null,
+      "kind": "cut mid-frame",
+      "protocol_offline_ms": 505.9,
+      "protocol_reconnect_ms": 542.2,
+      "resync_ms": 3.7
+    },
+    {
+      "at_s": 1020.0,
+      "canvas_offline_seen": false,
+      "canvas_reconnect_ms": null,
+      "kind": "300 ms delay for 10 s",
+      "protocol_offline_ms": null,
+      "protocol_reconnect_ms": null,
+      "resync_ms": null
+    },
+    {
+      "at_s": 1050.01,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 24.1,
+      "kind": "outage 15 s",
+      "protocol_offline_ms": 15010.8,
+      "protocol_reconnect_ms": 5.2,
+      "resync_ms": 0.2
+    },
+    {
+      "at_s": 1080.0,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 515.9,
+      "kind": "drop",
+      "protocol_offline_ms": 502.3,
+      "protocol_reconnect_ms": 504.0,
+      "resync_ms": 2.7
+    },
+    {
+      "at_s": 1110.01,
+      "canvas_offline_seen": true,
+      "canvas_reconnect_ms": 1047.9,
+      "kind": "outage 5 s",
+      "protocol_offline_ms": 6009.5,
+      "protocol_reconnect_ms": 1006.8,
+      "resync_ms": 2.2
+    },
+    {
+      "at_s": 1140.01,
+      "canvas_offline_seen": false,
+      "canvas_reconnect_ms": null,
+      "kind": "cut mid-frame",
+      "protocol_offline_ms": 504.3,
+      "protocol_reconnect_ms": 555.5,
+      "resync_ms": 4.2
+    },
+    {
+      "at_s": 1170.0,
+      "canvas_offline_seen": false,
+      "canvas_reconnect_ms": null,
+      "kind": "300 ms delay for 10 s",
+      "protocol_offline_ms": null,
+      "protocol_reconnect_ms": null,
+      "resync_ms": null
+    }
+  ],
+  "faults_by_kind": [
+    {
+      "count": 8,
+      "kind": "drop"
+    },
+    {
+      "count": 8,
+      "kind": "outage 5 s"
+    },
+    {
+      "count": 8,
+      "kind": "cut mid-frame"
+    },
+    {
+      "count": 8,
+      "kind": "300 ms delay for 10 s"
+    },
+    {
+      "count": 7,
+      "kind": "outage 15 s"
+    }
+  ],
+  "faults_injected": 39,
+  "memory": {
+    "client_handles": {
+      "first": 525,
+      "last": 519,
+      "slope_per_hour_after_warmup": -27.63
+    },
+    "client_private_mb": {
+      "first": 162.08,
+      "last": 168.31,
+      "max": 168.94,
+      "slope_mb_per_hour_after_warmup": 8.65
+    },
+    "samples": 60,
+    "service_handles": {
+      "first": 256,
+      "last": 253,
+      "slope_per_hour_after_warmup": 4.32
+    },
+    "service_private_mb": {
+      "first": 25.05,
+      "last": 23.82,
+      "max": 25.78,
+      "slope_mb_per_hour_after_warmup": 3.09
+    }
+  },
+  "minutes": 20.0,
+  "pass": true,
+  "protocol_client": {
+    "applied_exactly_once_in_order": 16833,
+    "blocked_while_offline": 3129,
+    "echo_lines_not_observed": 0,
+    "extra_or_doubled": 0,
+    "full_resync_ms": {
+      "max": 33.0,
+      "n": 30,
+      "p50": 4.0,
+      "p95": 27.0
+    },
+    "keystrokes_handed_to_transport": 16839,
+    "out_of_order_or_changed": 0,
+    "reconnect_after_network_returns_ms": {
+      "max": 1044.0,
+      "n": 30,
+      "p50": 527.0,
+      "p95": 1032.0
+    },
+    "reconnects": 30,
+    "unconfirmed_reported_not_resent": 6
+  },
+  "proxy_connections": 56
+}

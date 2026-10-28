@@ -2,15 +2,18 @@
 //! window (wgpu + winit + glyphon), on the same service and app core as the
 //! TUI.
 
+mod access;
 mod boxdraw;
 mod canvas;
 mod chrome;
 mod clipimage;
+mod crashlog;
 mod gpu;
 mod hooks;
 mod images;
 mod input;
 mod perf;
+mod placement;
 mod platform;
 mod quads;
 mod scene;
@@ -261,7 +264,7 @@ fn real_main() -> Result<i32> {
         && conn.service_build == paths::build_id()
         && backend.info().is_ok_and(|info| info.installed.contains(&canvas_core::agents::AgentKind::Copilot))
         && backend.restore_mouse().unwrap_or(false);
-    install_crash_log(home.join("crash.log"));
+    crashlog::install(home.join("crash.log"));
     canvas_core::win::raise_priority();
 
     let mut first = launch.app(0, conn, backend, conn_options)?;
@@ -295,7 +298,7 @@ fn real_main() -> Result<i32> {
         println!("{name}");
         let _ = std::io::stdout().flush();
     }
-    let options = shell::Options { perf: args.perf, test_hooks: args.test_hooks, size: args.size };
+    let options = shell::Options { perf: args.perf, test_hooks: args.test_hooks, size: args.size, home: home.clone(), instance: instance.name.clone() };
     let opener: shell::Opener = Arc::new(move |index| launch.open(index));
     let mut shell = shell::Shell::new(first, options, proxy, fonts, opener);
     event_loop.run_app(&mut shell)?;
@@ -335,26 +338,4 @@ fn restart(instance: &Instance, conn: Conn, target: &ConnTarget, options: &ConnO
     let conn = conn::open(target, options, session)?;
     anyhow::ensure!(!conn.protocol_mismatch, "the terminal service is still the old version");
     Ok(conn)
-}
-
-/// Panics are written to the instance's crash log; the process exits (the
-/// sessions keep running in the service).
-fn install_crash_log(path: PathBuf) {
-    let previous = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let thread = std::thread::current();
-        let report = format!(
-            "{} gui build {} thread {:?}\n{info}\n{}\n\n",
-            paths::now_ms(),
-            paths::build_id(),
-            thread.name().unwrap_or("?"),
-            std::backtrace::Backtrace::force_capture()
-        );
-        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-            let _ = file.write_all(report.as_bytes());
-        }
-        previous(info);
-        eprintln!("Copilot Canvas crashed; details saved to {}. Your sessions keep running: start it again to reattach.", path.display());
-        std::process::exit(101);
-    }));
 }

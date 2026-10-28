@@ -1,4 +1,4 @@
-# GPU client (Phase 4 MVP, Phase 5 parity)
+# GPU client (Phase 4 MVP, Phase 5 parity, Phase 6 hardening)
 
 `copilot-canvas-gui.exe` is the native GPU front end of Copilot Canvas: the
 same canvas, sidebar, dialogs and terminals as the TUI, drawn with wgpu 30,
@@ -8,7 +8,10 @@ terminal service over the same protocol, locally (named pipe) or remotely
 (TCP: `--remote loopback` or `HOST:PORT`). Phase 5 brought it to parity with
 the TUI (every row of PLAN §8, checked by `selftest --client gui --parity`;
 see `docs/PARITY.md`) and added inline images, taskbar progress, flashing and
-toasts, file drag and drop, and several windows.
+toasts, file drag and drop, and several windows. Phase 6 added damage frames,
+GPU device-lost recovery and a software-renderer fallback, DPI changes,
+saved window placement, a UI Automation tree (AccessKit), crash-log details,
+the GUI load probes and `selftest --client gui --hardening`.
 
 ```powershell
 cargo build --release                       # builds copilot-canvas.exe and copilot-canvas-gui.exe
@@ -27,7 +30,7 @@ compare, and the service is started (and upgraded) from it.
 ```
 canvas-core (unchanged state machine)            canvas-gui
 App ──ui::render(app, buf, area, overlay)──▶ chrome Buffer (cells) ─┐
-   RenderMode::Gpu                           overlay Buffer (dialogs)├─▶ Scene (7 layers of quads + text) ──▶ wgpu
+   RenderMode::Gpu                           overlay Buffer (dialogs)├─▶ Scene (10 layers of quads + text) ──▶ wgpu
                                              View { canvas: CanvasModel (world units),
                                                     tiles: [TileModel], cursor, modal, banner } ┘
 App::views[id] (TermView, protocol-8 rows) ──────────────────────────▶ tiles painter
@@ -87,6 +90,20 @@ the display's refresh rate. Presentation uses Mailbox (Immediate, then Fifo,
 as fallbacks) and never blocks the UI thread. `after_draw` sends
 subscriptions, tile sizes and tracking exactly as in the TUI.
 
+**Damage frames.** Each window keeps its last scene and, on the GPU, each
+layer's quad instances and prepared glyphon text (per window: several
+windows share the device and the glyph atlas, not the prepared layers). A
+service frame that only changes a visible terminal's contents (not its scroll
+position, not its first output) does not ask for a full frame: it marks the
+tile damaged. The next frame then skips the core's view, the canvas and the
+chrome, finds the links in the damaged terminals again
+(`ui::rescan_tile_links`), repaints the terminal and HUD layers only, uploads
+their quads and prepares their text; every other layer is drawn from what is
+already on the GPU. The glyph atlas is trimmed only on full frames (a window
+whose text was prepared before another window's trim prepares all its layers
+again), so cached layers never point at evicted glyphs. Anything else (input,
+a status change, a spinner step, a resize) is a full frame as before.
+
 **Inline images.** The Ghostty engine keeps Kitty graphics (storage limit
 64 MiB per terminal; only inline data: the file, temporary-file and
 shared-memory mediums are off so a program cannot make the service read
@@ -121,8 +138,9 @@ the remote paths are pasted. A folder dropped on the canvas opens the
 new-session dialog in it (local mode).
 
 **Drawing (`scene.rs`, `quads.rs`, `chrome.rs`, `canvas.rs`, `tiles.rs`).** A
-frame is 7 layers (base chrome · canvas · canvas top · terminals · chrome over
-content · dialogs · HUD), each drawn as quads, then text, then overlay quads.
+frame is 10 layers (base chrome · canvas: background, groups, connectors ·
+three box levels · canvas top · terminals · chrome over content · dialogs ·
+HUD), each drawn as quads, then text, then overlay quads.
 Quads come from one instanced SDF pipeline (rounded rectangles with solid or
 dashed borders, line segments with round caps). Text goes through glyphon,
 one renderer per layer, from a cache of shaped buffers keyed by content, face
@@ -141,8 +159,10 @@ and size.
   pulses, the halo around the active terminal's box (heavier while typing),
   the rubber band. Labels (Segoe UI) are shaped once and scaled with the
   zoom; below a readable size a box shows one compact line, then only its
-  shape and a status dot. The dot grid thins out when zoomed out. Selected
-  boxes are drawn above the others.
+  shape and a status dot. The dot grid thins out when zoomed out. A box and
+  its labels share a layer: a box that overlaps an earlier one goes one box
+  level up (three levels), so its fill covers the labels underneath; selected
+  boxes are drawn above all of them.
 - *Terminals:* protocol-8 rows (grapheme clusters, engine widths, colours,
   bold, italic, dim, inverse, hidden, strikethrough, overline, underline
   styles single/double/curly/dotted/dashed with their colour), OSC 8 and
@@ -194,8 +214,63 @@ later / quit when its protocol is older). The toolbar's "⟳ Update service"
 works as in the TUI. The service runs from a per-build copy of the
 `copilot-canvas.exe` next to the GUI (`paths::set_build_exe`).
 
-**Crash log.** Panics are appended to `<home>\crash.log`; the sessions keep
-running in the service.
+**Crash log (`crashlog.rs`).** Panics on any thread (the UI thread and
+helpers alike) are appended to `<home>\crash.log` with the build id, the
+thread's name, the number of windows, the GPU adapter and the last test-hook
+command, then a backtrace; the process exits with 101 and the sessions keep
+running in the service. GPU and driver events go to the same file with the
+adapter's name, type, backend and driver: a hardware adapter or device that
+cannot be opened, a lost device or surface, uncaptured device errors, and
+each rebuild (the same text at most every 10 s).
+
+**GPU device loss and software rendering (`gpu.rs`).** wgpu's device-lost
+callback and fatal uncaptured errors (out of memory, internal) set a flag and
+wake the loop; a present that finds the device gone does the same. The shell
+then drops every window's surface and the device, opens a new device
+(adapter, pipelines, glyph atlas, text renderers) with the first window's
+surface, creates the other windows' surfaces and redraws everything; image
+textures are uploaded again when next drawn (the decoded pixels stay in the
+views). A failed rebuild is retried every 2 s. A lost surface alone (a
+monitor or driver change) is recreated in place; an outdated one is
+reconfigured. When no hardware adapter or device works the GUI uses Windows'
+software rasterizer (WARP, `force_fallback_adapter`) and says so in a notice;
+when that fails too it exits with "cannot draw: no usable GPU and no software
+renderer (…). The terminal UI shows the same canvas and sessions without a
+GPU: run `copilot-canvas`." (`CANVAS_GUI_TEST_GPU=nohw|none` refuses adapters
+for the tests.)
+
+**DPI changes.** `ScaleFactorChanged` (a window moved to a monitor with
+another scale) recomputes the cell metrics (whole-pixel cell width, font size
+to match), lays the cells out again for the window's size and keeps the world
+point at the canvas's centre there (for 0.8 s, across the resize winit sends
+next). With `--test-hooks --size`, the grid stays fixed and the window
+follows its new pixel size.
+
+**Window placement (`placement.rs`).** Each window's outer position and inner
+size (of the restored window), maximized state and monitor name are saved to
+`<home>\prefs\<client>-window.json` (`<client>`: the instance, or
+`<instance>-windowN` for later windows) a second after they change and when
+the window closes, and restored when it opens. A placement whose monitor is
+gone, or less than 80 px of whose title bar would be on a monitor's work area
+(from winit's `available_monitors` and `GetMonitorInfoW`), is moved: kept on
+another monitor it overlaps, else centred on the primary monitor's work area;
+it is never larger than the work area. `--size` decides the size when given.
+
+**UI Automation (`access.rs`).** Through AccessKit (`accesskit` 0.25,
+`accesskit_winit` 0.34 on winit 0.30), Windows UIA sees the window's
+structure, built from the same `View`, canvas model and layout the renderer
+draws: the toolbar (buttons by their text, the status counts), the activity
+bar (tabs, the active one selected), the sidebar (the session tree's rows as
+tree items with their status, other views' lines as list items), the canvas
+(groups, and boxes as buttons whose full description is the status line), the
+terminal tiles (UIA documents named by their header, the visible text as
+their value), the status bar, the connection banner, and the open dialog or
+menu (buttons, menu items, list rows, fields, toggles). Focus follows the
+core's (a dialog, the focused terminal, the selected box or row). The tree is
+built only while a UIA client listens, at most every 150 ms after a frame;
+Click, Focus and UIA's Invoke press the element (a click at its centre). The
+`tree` test hook includes the same nodes (`access`), and the `access` hook
+returns them alone.
 
 ## 2. Controls
 
@@ -234,11 +309,32 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   mouse reports) into hook events at cell centres. `CANVAS_GUI_SCREENS=DIR`
   saves PNGs at six steps.
 - `copilot-canvas bench --client gui [--seconds S] [--remote loopback]`
-  measures §4 below over the hooks (`CANVAS_GUI_SCREENS` also applies).
+  measures §4 below over the hooks (`CANVAS_GUI_SCREENS` also applies). The
+  GUI ports of the TUI's load probes:
+  - `bench --client gui --stress [--sessions N --agents M]` (default 100 and
+    12): N live sessions from synthetic histories (this process holds their
+    in-use locks), M subagents each, 30 of them appending events every 50 ms
+    (tools, new subagents, permission prompts); frames while idle, while
+    panning and with everything in view (also as forced full frames), the UI
+    thread's round trip, CPU and memory;
+  - `bench --client gui --perf-canvas FILE|synthetic`: pans a copy of a
+    canvas file at 100, 50 and 25 % (`synthetic`: 94 sessions in 9 groups
+    with subagents and subsessions);
+  - `bench --client gui --burn N`: keystroke → present (real `WM_KEYDOWN`s)
+    through an echo terminal while N sessions burn CPU, once with the
+    service's priority manager and once with `COPILOT_CANVAS_NO_PRIORITY=1`.
+- `copilot-canvas selftest --client gui --hardening`: nine checks with a table
+  (about 35 s): the toolbar's counts at 170 columns, overlapping boxes, a
+  simulated and a real (destroyed) device loss with identical PNGs before and
+  after, a DPI change and back (identical PNG, centre kept), window placement
+  across restarts and a gone monitor, the UIA tree read with the
+  `IUIAutomation` COM API (and "+ New" pressed through UIA's Invoke pattern),
+  crash reports from the UI thread and a helper thread, the WARP fallback and
+  the no-adapter error, damage frames while four terminals stream.
 - `copilot-canvas selftest --client gui --parity` runs one check per row of
   PLAN §8 plus the GUI-only features, in a sandbox with a stand-in Copilot
   CLI, and prints the table (`docs/PARITY.md`).
-- `CANVAS_GUI_TRACE=1` prints start-up milestones on stderr.
+- `CANVAS_GUI_TRACE=1` prints start-up milestones (and GPU events) on stderr.
 
 **Test hooks.** With `--test-hooks` the GUI prints a pipe name
 (`\\.\pipe\copilot-canvas-gui-test-<pid>`, owner-only, local only) and takes
@@ -255,17 +351,59 @@ one (`"window": n`, the creation index):
 | `{"cmd":"wheel","dir":"up\|down\|left\|right","x":…,"y":…,"mods":["ctrl"]}` | one wheel notch |
 | `{"cmd":"drop","paths":["…"],"x":…,"y":…}` | files dropped at a cell |
 | `{"cmd":"screen"}` | `lines`: the screen as text (chrome, canvas as TUI characters, terminal text, dialogs) |
-| `{"cmd":"tree"}` | automation tree: click targets with their text, canvas boxes (status, border, prefix, loop) and groups with screen rects, tiles (tint, image placements as cell rects), links, terminal selection, notice, focus, modal, paste preview |
+| `{"cmd":"tree"}` | automation tree: click targets with their text, canvas boxes (status, border, prefix, loop, drawing `level`) and groups with screen rects, tiles (tint, image placements as cell rects), links, terminal selection, notice, focus, modal, paste preview, and `access`: the UI Automation nodes |
+| `{"cmd":"access"}` | the UI Automation nodes (role, name, description, value, rect, children, focus) and whether a UIA client listens |
 | `{"cmd":"png","path":"…"}` | renders the current frame offscreen to a PNG (works on a locked workstation) |
-| `{"cmd":"size"}`, `{"cmd":"perf","reset":true}` | cells, cell size, DPI, adapter, present mode; frame statistics, round trips, CPU, memory, first paint, textures |
+| `{"cmd":"size"}`, `{"cmd":"perf","reset":true}` | cells, cell size, DPI, adapter (and details, `software`), present mode; frame statistics (all, full and damage frames), round trips, CPU, memory, first paint, textures, GPU rebuilds |
+| `{"cmd":"device-lost"}`, `{"cmd":"device-lost","destroy":true}` | rebuilds the GPU objects as after a lost device (`destroy`: the device is really destroyed first); answers the time taken |
+| `{"cmd":"dpi","scale":1.5}` | a DPI change to `scale` (without: the window's own) |
+| `{"cmd":"place","x":…,"y":…,"width":…,"height":…,"maximized":bool}`, `{"cmd":"placement"}` | moves, sizes or maximizes the window; its position, size, monitor, the tracked and saved placement, the monitors' work areas |
 | `{"cmd":"platform","history":true}` | title, bells, flashes, progress and taskbar state, toasts asked for and their status, the Action Center count, the hooks' clipboard |
 | `{"cmd":"clipboard","text":"…"}`, `{"cmd":"clipboard","image":{"width":64,"height":40,"color":[0,0,255]}}`, `{"cmd":"clipboard","clear":true}` | the hooks' clipboard (stands in when Windows' is unavailable) |
-| `{"cmd":"new_window"}`, `{"cmd":"windows"}`, `{"cmd":"close_window","window":1}` | opens a window (answers its index once it is up), lists them, closes one |
+| `{"cmd":"new_window"}`, `{"cmd":"windows"}`, `{"cmd":"close_window","window":1}` | opens a window (answers its index once it is up), lists them (with their `hwnd`), closes one |
 | `{"cmd":"post_keys","text":"xxx","interval_ms":120}` | real WM_KEYDOWN messages to the window (latency measurement) |
-| `{"cmd":"panic"}` | crashes on purpose (the crash-log check) |
+| `{"cmd":"panic"}`, `{"cmd":"panic_thread"}` | crashes on purpose on the UI thread or a helper thread (the crash-log checks) |
 | `{"cmd":"quit"}` | saves and exits every window (detach); with `"window"`, closes that one |
 
 ## 4. Measured (PLAN §9)
+
+### Phase 6 (damage frames, the GUI load probes)
+
+Release build, RTX 3070, Windows 11, 12 logical CPUs, 125 % DPI, 200 × 56
+cells (2000 × 1232 px), workstation locked, 2026-10-28. `bench --client gui
+--seconds 5`, `--stress`, `--perf-canvas synthetic`, `--burn 24` and
+`--burn 48`; p50 / p95 unless noted. "Full" frames rebuild everything,
+"damage" frames only the terminal tiles (§1); forced full frames come from
+the `redraw` hook every 10 ms.
+
+| Measure | Budget (§9) | Measured | |
+|---|---|---|---|
+| **Damage frame**, 4 streaming tiles at 100 % (CPU: tiles repainted, links rescanned, upload, encode) | ≤ 2 ms | **0.71 / 1.00 ms** (p99 1.10; 280 of 283 frames were damage frames) | ✓ |
+| Full frame, the same 4 streaming tiles (forced) | ≤ 6 ms | 1.91 / 2.55 ms | ✓ |
+| **Full frame, 100 sessions + 1,200 subagents** (1,304 boxes in view at 11 %) + 4 streaming tiles (forced) | ≤ 6 ms | **4.06 / 4.69 ms** (p50: view 2.03, scene 1.21, encode 0.55) | ✓ |
+| `--stress`: 100 live sessions + 1,200 subagents from histories (1,600 boxes with spawned ones), 30 busy, all in view, forced full frames | ≤ 6 ms | **4.14 / 4.81 ms** (p99 5.11) | ✓ |
+| `--stress`, the same while the sessions stream (no input; spinners and statuses) | ≤ 6 ms | 4.49 / 5.33 ms, 6.6 % of one core (1,600 animated boxes in view) | ✓ |
+| `--stress`, idle at 100 % (a part of the canvas in view) | animations ≤ 15 fps, ≤ 2 % CPU | 2.46 / 3.11 ms per frame, **1.9 %** of one core (spinners at 12.5 fps) | ✓ |
+| `--stress`, panning at 100 % while busy: frame · drag → present | ≤ 16 ms per frame | 2.12 / 2.61 ms · **2.39 / 3.00 ms** | ✓ |
+| `--stress`, UI responsiveness: a hook round trip answered by the UI thread, idle · everything in view | — | 0.24 / 1.85 ms · 0.25 / 3.53 ms | |
+| Panning at 100 % while 4 tiles stream (`bench`): frame · drag → present | ≤ 16 ms | 2.12 / 2.59 ms · 2.24 / 2.74 ms | ✓ |
+| `--perf-canvas synthetic` (94 sessions, 9 groups, 233 boxes), panning at 100 / 50 / 25 %: frame p95 · drag → present p95 | ≤ 16 ms | 1.44 / 1.46 / 1.75 ms · 1.61 / 1.60 / 1.91 ms | ✓ |
+| **Keystroke → present** (real `WM_KEYDOWN`, echo terminal, 3 tiles streaming), p50 / p95 / p99 | p50 ≤ 8, p99 ≤ 20 ms | **5.17 / 5.66 / 7.24 ms** (Phase 4: 6.7 / 7.7 / 7.8) | ✓ |
+| `--burn 24` (24 CPU-burning sessions, 12 logical CPUs), keystroke → present p50 / p95 / p99: priority manager on · off | p50 ≤ 8, p99 ≤ 20 ms | **5.66 / 6.55 / 6.88 ms** · 5.76 / 7.07 / 12.04 ms | ✓ |
+| `--burn 48`, the same | p50 ≤ 8, p99 ≤ 20 ms | **5.64 / 6.58 / 6.67 ms** · 5.77 / 6.99 / 8.68 ms | ✓ |
+| Idle CPU, 10 live sessions, 1,304 boxes (10 s) | ≤ 1 % | **0.31 %** of one core (3 frames) | ✓ |
+| Private memory: 4 tiles + 1,304 boxes · `--stress` 1,600 boxes | ≤ 250 MB | **164 MB** · 162–185 MB | ✓ |
+| First paint, process start → first frame: service started by the GUI · running | ≤ 1.5 s | **0.89 s** · 0.44 s | ✓ |
+| Remote: reconnect after the network returns · full resync · canvas bandwidth with 4 busy tiles (20-minute soaks, `docs/REMOTE.md`) | ≤ 2 s · ≤ 500 ms · ≤ 200 KB/s | GUI canvas p95 1.06 s, max 1.52 s · max 33 ms · 2.4 KB/s | ✓ |
+
+The burn probe's priority manager matters less here than in the TUI's
+measurement (README: p99 1.26 s → 14 ms with 40 burners on a busy 16-core
+machine): the GUI raises its own priority, Windows boosts the foreground
+window's input, and the echo terminal competes only with the burners; the
+priority manager still halves the p99 at 24 burners. Damage frames also
+shortened keystroke → present by ~1.5 ms, since the echo is a damage frame.
+
+### Phase 4 (for comparison; every frame was a full frame)
 
 Release build, RTX 3070, Windows 11, 125 % DPI, 200 × 56 cells (2000 × 1232 px),
 workstation locked (as in the spike). `bench --client gui --seconds 6`: two
@@ -311,7 +449,16 @@ with forwarded clicks), `user-message-tint.png` (named
 `parity-user-message-tint.png` by the suite) and `second-window.png` (a
 second window on the same canvas after a rename made in the first).
 
-## 6. Known gaps (Phase 6 and later)
+Phase 6 (`--hardening` and the probes, same variable):
+`toolbar-170-columns.png` (non-demo toolbar at 170 columns with sessions in
+every state: the buttons stay whole, "open elsewhere" and the session total
+are dropped), `overlapping-boxes.png` (a box overlapping another's labels
+covers them), `software-renderer.png` (WARP, with its notice),
+`stress-1600-boxes-fit.png` (`--stress`: 100 busy sessions with their
+subagents at 8 %) and `perf-canvas-synthetic-25.png` (`--perf-canvas
+synthetic` at 25 %).
+
+## 6. Known gaps (after Phase 6)
 
 - **Kitty graphics through ConPTY:** Windows' inbox ConPTY drops APC, so only
   iTerm2 inline PNG images (an OSC) reach the engine from programs; a raw
@@ -323,22 +470,27 @@ second window on the same canvas after a rename made in the first).
   activator is registered); Focus Assist decides whether they pop up.
 - **Clipboard on a locked workstation:** Windows refuses it; copy and paste
   fail with a notice (the test hooks use a clipboard of their own then).
-- **Toolbar crowding:** at narrow widths the status counts on the right can
-  cover the last toolbar buttons (as in the TUI).
 - **Widgets:** dialogs, menus and lists are the TUI's cell layouts drawn
   crisply; no GUI-native widgets, text-field selection with the mouse, or
-  scroll bars in lists. Accessibility (UI Automation) is Phase 6; the `tree`
-  hook is its test-side stand-in.
-- **Overlapping boxes:** labels are drawn above all box shapes of their
-  layer, so a lower box's label can show through an overlapping box (selected
-  boxes, the ones you drag, are drawn above the rest).
-- **No damage tracking:** every frame is a full frame (2–3 ms with four
-  streaming tiles). Scissored partial redraws would matter on WARP.
+  scroll bars in lists. The UI Automation tree names their buttons, rows and
+  fields from those cells; text fields expose no caret or selection to UIA,
+  and terminal text is a plain value (no text pattern).
+- **Box levels:** three; a fourth box stacked on three overlapping ones
+  shares the top level, so its labels can still mix with the third's.
+- **Damage frames** cover terminal output only; the canvas and chrome are
+  still rebuilt whole (a spinner step on the canvas is a full frame, 2–5 ms).
+  No scissored partial presents: on WARP every frame still rasterizes the
+  whole window.
+- **Device loss** is tested by rebuilding on request and by destroying the
+  device (the driver's own report path); a real TDR (driver reset) or an
+  unplugged GPU was not reproduced.
 - **Start-up:** GPU device creation (0.38 s) could overlap the service
   connection; shaders are compiled at start.
 - **Not verified by hand:** a real IME session (Japanese, Chinese), AltGr on a
-  German layout, per-monitor DPI changes, an unlocked desktop's vsync, real
-  drag and drop from Explorer (the hooks inject the drop).
+  German layout, a real move between monitors of different DPI (the `dpi`
+  hook runs the same code), Narrator reading the tree (a UIA client test
+  does), an unlocked desktop's vsync, real drag and drop from Explorer (the
+  hooks inject the drop).
 - Cursor blink, the Copilot-only hollow cursor for unfocused tiles, and
   hinting (text is grayscale, unhinted as in the spike).
 

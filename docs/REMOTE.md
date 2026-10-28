@@ -131,9 +131,11 @@ as a backstop and Nagle is off.
 
 - When the connection drops, the canvas shows "Offline — reconnecting…"
   (status bar; `App::banner` for other front ends) and reconnects with backoff
-  0.5 s, 1 s, 2 s, then every 5 s. A local service that is gone is started
-  again. Remote clients never restart or upgrade the service: a protocol
-  mismatch is shown as an error.
+  0.5 s, 1 s, then every 1.5 s (Phase 6: it was 2 s, then every 5 s, which
+  missed PLAN §9's "≤ 2 s after the network returns" after outages longer
+  than a few seconds; an attempt is one TCP connect). A local service that is
+  gone is started again. Remote clients never restart or upgrade the service:
+  a protocol mismatch is shown as an error.
 - The new connection replaces the old one (like a service restart): the client
   sends its subscriptions, sizes, tracked sessions and routing again; the
   service sends the terminal list and full frames.
@@ -394,6 +396,8 @@ Checklist (over a day):
   and needs an unlocked interactive session).
 - `copilot-canvas bench --remote loopback`: keystroke latency and client
   traffic with the echo tile focused and four busy tiles, compressed and not.
+- `copilot-canvas selftest --remote soak [--minutes N] [--drop-every S]
+  [--client tui|gui] [--json FILE]`: the long-run soak below.
 
 Measured on the development Cloud PC (12 logical CPUs, 100 streaming terminals,
 `bench` and `bench --remote loopback`):
@@ -408,3 +412,85 @@ The extra ~3 ms over loopback is the focused tile's 16 ms coalescing (the
 benchmark types every ~25 ms); a loopback round trip itself takes ~30 µs.
 Reconnect after a drop or a cut frame: 0.5 s (the first backoff step); the
 canvas reconnected 0.4 s after the proxy accepted connections again.
+
+## Long-run soak (Phase 6)
+
+`copilot-canvas selftest --remote soak --minutes N --drop-every S --client
+tui|gui` (`src/soak.rs`) runs a service listening on loopback TCP behind the
+fault-injecting proxy of `--remote faults`, with three terminals streaming 20
+coloured lines a second (`noise`) and two echo terminals. Two clients connect
+through the proxy:
+
+- a protocol client (the canvas's own `conn` code, reconnecting forever with
+  the same backoff) typing into `echo` every 50 ms; every echo line it sees is
+  recorded, and the keys the service confirmed must appear exactly once and in
+  order (unconfirmed keys at a drop are reported and never resent; keys typed
+  while offline are blocked);
+- the canvas itself (the TUI in a hidden pseudoconsole, or the GUI over its
+  test hooks) with four busy tiles (`ui-echo` and the three streams), typing a
+  key into `ui-echo` every 500 ms and checking each one: applied once, or not
+  applied near a fault (blocked or unconfirmed), never doubled, never lost
+  while online.
+
+Every S seconds the proxy injects the next fault of a cycle: drop every
+connection; take the network down for 5 s; cut the next frame in half; delay
+everything by 300 ms each way for 10 s; take the network down for 15 s. For
+each fault it measures the protocol client's reconnect after the network
+returned and its full resync (reconnected → the echo terminal's full frame),
+and the canvas's reconnect (polled every 50 ms: the GUI's `connected`, the
+TUI's banner). Every 20 s it samples private memory and handle counts of the
+canvas and the service; every minute it prints a summary with the bandwidth
+from the proxy (all clients, and the canvas: all minus the protocol client).
+The JSON report lists every fault. The run fails on a lost, doubled or
+reordered keystroke, a reconnect over 2 s or a resync over 500 ms, a drop or
+outage without a reconnect, steady memory growth (over 20 MB/h and 15 MB
+after the first 20 %), growing handles, the canvas exiting, or more than
+200 KB/s for the four busy tiles.
+
+**Runs on 2026-10-28** (release build, 12 logical CPUs, workstation locked,
+other tests running at the same time): 20 minutes per client with a fault
+every 30 s (`--minutes 20 --drop-every 30`). Full reports:
+`docs/soak/soak-tui-20min.json`, `docs/soak/soak-gui-20min.json`.
+
+| | TUI | GUI |
+|---|---|---|
+| Result | **PASS** | **PASS** |
+| Faults (8 drops, 8 × 5 s outages, 8 cut frames, 8 × 10 s delays, 7 × 15 s outages) | 39 | 39 |
+| Connections through the proxy | 56 | 56 |
+| Protocol client: keystrokes handed to the transport / applied exactly once in order | 16,846 / 16,839 | 16,839 / 16,833 |
+| … out of order, changed or doubled · echo lines not observed | 0 · 0 | 0 · 0 |
+| … unconfirmed at a drop (reported, not resent) · blocked while offline | 7 · 2,969 | 6 · 3,129 |
+| … reconnect after the network returned, p50 / p95 / max (n) | 518 / 1,005 / 1,042 ms (27) | 527 / 1,032 / 1,044 ms (30) |
+| … full resync p50 / p95 / max | 3 / 9 / 25 ms | 4 / 27 / 33 ms |
+| Canvas: keys typed / applied once / blocked or unconfirmed near a fault | 1,967 / 1,889 / 77 | 1,971 / 1,894 / 76 |
+| … lost while online · doubled · wrong | 0 · 0 · 0 | 0 · 0 · 0 |
+| … reconnect after the network returned, p50 / p95 / max (n) | 535 / 1,052 / 1,065 ms (27) | 529 / 1,058 / 1,516 ms (24) |
+| Canvas bandwidth, 4 busy tiles (zstd, coalesced) · all clients | 2.4 KB/s · 3.4 KB/s | 2.4 KB/s · 3.4 KB/s |
+| Canvas private memory first → last (max) · slope after warm-up | 9.8 → 7.7 MB (10.3) · 2.4 MB/h | 162.1 → 168.3 MB (168.9) · 8.7 MB/h |
+| Canvas handles first → last | 158 → 158 | 525 → 519 |
+| Service private memory first → last (max) · slope | 25.1 → 24.0 MB (25.6) · 7.0 MB/h | 25.1 → 23.8 MB (25.8) · 3.1 MB/h |
+| Service handles first → last | 256 → 252 | 256 → 253 |
+
+By fault kind (max): drops reconnect in 0.53–0.58 s (the first backoff step),
+5 s outages in 1.04–1.07 s after the network returned, 15 s outages in
+0.03–0.09 s for the protocol client and up to 1.52 s for the GUI (the
+1.5 s backoff step), cut frames in 0.55–0.58 s; the 300 ms delays never
+caused a reconnect. Before this phase the backoff grew to 5 s, so an outage
+longer than about 4 s could take up to 5 s to recover from; it is now 0.5 s,
+1 s, then every 1.5 s.
+
+The memory slopes are below the leak threshold and within the noise of a
+20-minute run (the GUI's 6 MB over 16 minutes is consistent with its glyph
+atlas and shape cache filling); a slow leak would need the long run to show.
+
+**The 48 h soak (PLAN §5 Phase 6) was not performed in this session.** Run
+it with:
+
+```powershell
+copilot-canvas selftest --remote soak --minutes 2880 --drop-every 300 --client gui --json soak-gui-48h.json
+copilot-canvas selftest --remote soak --minutes 2880 --drop-every 300 --client tui --json soak-tui-48h.json
+```
+
+(on an unlocked workstation as well as a locked one; copy the two
+executables elsewhere first if you want to rebuild meanwhile: a running soak
+holds them open).

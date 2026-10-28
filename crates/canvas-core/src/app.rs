@@ -851,11 +851,7 @@ impl App {
 
     pub fn center_on(&mut self, wx: i32, wy: i32) {
         if self.render_mode == RenderMode::Gpu {
-            let c = self.layout.canvas;
-            let s = self.view_scale;
-            self.set_origin(wx as f32 - c.width.max(20) as f32 / s / 2.0, wy as f32 - c.height.max(10) as f32 / s / 2.0);
-            self.mark_dirty();
-            return;
+            return self.center_on_f(wx as f32, wy as f32);
         }
         let (n, d) = self.scale();
         let c = self.layout.canvas;
@@ -863,6 +859,20 @@ impl App {
         self.doc.view.x = wx - cw / 2;
         self.doc.view.y = wy - ch / 2;
         self.mark_dirty();
+    }
+
+    /// Gpu mode: puts world point `(wx, wy)` at the canvas's centre.
+    pub fn center_on_f(&mut self, wx: f32, wy: f32) {
+        let c = self.layout.canvas;
+        let s = self.view_scale;
+        self.set_origin(wx - c.width.max(20) as f32 / s / 2.0, wy - c.height.max(10) as f32 / s / 2.0);
+        self.mark_dirty();
+    }
+
+    /// Gpu mode: the world point at the canvas's centre.
+    pub fn canvas_center_f(&self) -> (f32, f32) {
+        let c = self.layout.canvas;
+        self.to_world_f(c.x as f32 + c.width.max(20) as f32 / 2.0, c.y as f32 + c.height.max(10) as f32 / 2.0)
     }
 
     pub fn reveal_node(&mut self, id: &str) {

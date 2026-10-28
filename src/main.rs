@@ -3,12 +3,14 @@
 mod bench;
 mod fake_copilot;
 mod gui_bench;
+mod hardening;
 mod kitty_demo;
 mod pair_probe;
 mod parity;
 mod remote_cli;
 mod remote_probe;
 mod selftest;
+mod soak;
 mod standin;
 
 use canvas_agents::{automations, cli, factory_cli, index, service, vscode};
@@ -47,17 +49,31 @@ USAGE
                                         measure service/terminal/rendering performance (no Copilot);
                                         --remote loopback: over TCP, with and without compression
   copilot-canvas bench --client gui [--seconds S] [--json FILE] [--remote loopback]
-                                        the GPU client: first paint, frame cost, panning, keystroke
-                                        to present, idle CPU and memory (over its test hooks)
+                                        the GPU client: first paint, frame cost (full and damage frames),
+                                        panning, keystroke to present, idle CPU and memory (over its test hooks)
+  copilot-canvas bench --client gui --stress [--sessions N --agents M]
+                                        N live sessions from busy synthetic histories (M subagents each)
+  copilot-canvas bench --client gui --perf-canvas FILE|synthetic
+                                        panning a copy of a canvas file at 100, 50 and 25 %
+  copilot-canvas bench --client gui --burn N
+                                        keystroke to present while N sessions burn CPU, with and
+                                        without the priority manager
   copilot-canvas selftest [--client tui|gui] [--remote loopback]
                                         drive the real UI end to end (TUI: in a hidden pseudoconsole;
                                         GUI: over its test hooks)
   copilot-canvas selftest --client gui --parity
                                         one GUI check per row of the parity matrix (PLAN §8), with a
                                         table; demo shells and a stand-in Copilot CLI only
+  copilot-canvas selftest --client gui --hardening
+                                        GPU device loss, DPI change, window placement, the UI Automation
+                                        tree, the crash log, software rendering, visual regressions
   copilot-canvas selftest --remote faults
                                         drop, cut and delay the TCP connection while typing; check
                                         reconnect, resync and that no keystroke is lost or doubled
+  copilot-canvas selftest --remote soak [--minutes N] [--drop-every SECONDS] [--client tui|gui]
+                                        a client connected through a fault-injecting proxy for N minutes:
+                                        drops, outages, cuts and delays; exactly-once typing, reconnect and
+                                        resync times, memory and handle growth, bandwidth; JSON report
   copilot-canvas selftest --remote paired
                                         pairing, a Dev Tunnel stand-in, the canvas through it, drops,
                                         a killed tunnel child, revocation, wrong secrets
@@ -169,7 +185,7 @@ fn parse() -> Result<Args> {
             "--canvas" => args.canvas = Some(PathBuf::from(value("--canvas")?)),
             "--cwd" => args.cwd = Some(PathBuf::from(value("--cwd")?)),
             "--remote" => args.remote = Some(value("--remote")?),
-            "--yes" | "--force" | "--parity" => args.flags.push(arg.trim_start_matches("--").to_owned()),
+            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" => args.flags.push(arg.trim_start_matches("--").to_owned()),
             "--" => {
                 // `record … -- PROGRAM ARGS…`: the rest belongs to the program.
                 args.command.push(arg);
@@ -346,12 +362,22 @@ fn real_main() -> Result<()> {
                 anyhow::ensure!(client == selftest::Client::Gui, "--parity checks the GUI: add --client gui");
                 return parity::run(args.remote.as_deref());
             }
+            if flag("hardening") {
+                anyhow::ensure!(client == selftest::Client::Gui, "--hardening checks the GUI: add --client gui");
+                return hardening::run();
+            }
             match args.remote.as_deref() {
                 None => selftest::run(None, client),
                 Some("loopback") => selftest::run(Some("loopback"), client),
                 Some("faults") => remote_probe::faults(&std::env::current_exe()?),
                 Some("paired") => pair_probe::run(&std::env::current_exe()?),
-                Some(other) => bail!("selftest --remote takes `loopback`, `faults` or `paired`, not {other:?}"),
+                Some("soak") => soak::run(soak::Options {
+                    minutes: option("minutes").map(|v| v.parse()).transpose()?.unwrap_or(20.0),
+                    drop_every: option("drop-every").map(|v| v.parse()).transpose()?.unwrap_or(30),
+                    gui: client == selftest::Client::Gui,
+                    json: option("json").map(PathBuf::from),
+                }),
+                Some(other) => bail!("selftest --remote takes `loopback`, `faults`, `paired` or `soak`, not {other:?}"),
             }
         }
         ["selftest", "agent"] => selftest::agent(option("agent").as_deref()),
@@ -366,6 +392,18 @@ fn real_main() -> Result<()> {
                 Some("loopback") => true,
                 Some(other) => bail!("bench --remote takes `loopback`, not {other:?}"),
             },
+            probe: if flag("stress") {
+                gui_bench::Probe::Stress {
+                    sessions: option("sessions").map(|v| v.parse()).transpose()?.unwrap_or(100),
+                    agents: option("agents").map(|v| v.parse()).transpose()?.unwrap_or(12),
+                }
+            } else if let Some(file) = option("perf-canvas") {
+                gui_bench::Probe::PerfCanvas(file)
+            } else if let Some(burn) = option("burn") {
+                gui_bench::Probe::Burn(burn.parse()?)
+            } else {
+                gui_bench::Probe::Standard
+            },
         }),
         ["bench"] => bench::run(bench::Options {
             terminals: option("terminals").map(|v| v.parse()).transpose()?.unwrap_or(100),
@@ -379,7 +417,7 @@ fn real_main() -> Result<()> {
             },
         }),
         ["noise"] => bench::noise(option("rate").map(|v| v.parse()).transpose()?.unwrap_or(20)),
-        ["echo"] => bench::echo(),
+        ["echo"] => bench::echo(option("tag").unwrap_or_default()),
         ["burn"] => bench::burn(),
         ["kitty-demo"] => kitty_demo::run(None),
         ["kitty-demo", mode] => kitty_demo::run(Some(mode)),

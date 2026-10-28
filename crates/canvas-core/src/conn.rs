@@ -291,13 +291,14 @@ pub fn connect(instance: &Instance, start: bool) -> Result<Conn> {
     open_local(instance, &ConnOptions { start, ..ConnOptions::default() }, &ClientSession::new())
 }
 
-/// Delay before reconnect attempt `n` (from 0): 0.5 s, 1 s, 2 s, then every 5 s.
+/// Delay before reconnect attempt `n` (from 0): 0.5 s, 1 s, then every
+/// 1.5 s, so a client is back at most about 1.5 s after the network returns
+/// (PLAN §9: ≤ 2 s). An attempt is one TCP connect; a pipe is local.
 pub fn backoff(attempt: u32) -> Duration {
     match attempt {
         0 => Duration::from_millis(500),
         1 => Duration::from_secs(1),
-        2 => Duration::from_secs(2),
-        _ => Duration::from_secs(5),
+        _ => Duration::from_millis(1500),
     }
 }
 
@@ -706,9 +707,9 @@ mod tests {
     }
 
     #[test]
-    fn backoff_grows_to_five_seconds() {
+    fn backoff_stays_under_the_reconnect_budget() {
         let delays: Vec<u64> = (0..6).map(|n| backoff(n).as_millis() as u64).collect();
-        assert_eq!(delays, vec![500, 1000, 2000, 5000, 5000, 5000]);
+        assert_eq!(delays, vec![500, 1000, 1500, 1500, 1500, 1500]);
     }
 
     #[test]

@@ -6,6 +6,12 @@
 //! something changed (input immediately, background updates paced to the
 //! display), and ticks run every 40 ms while anything is active. The process
 //! ends when its last window closes.
+//!
+//! A frame in which only terminal contents changed (streaming output) keeps
+//! the previous frame's other layers: it repaints the terminal tiles and the
+//! HUD only. A lost GPU device is rebuilt with every window's surface; a DPI
+//! change re-lays out the cells and keeps the canvas centred; each window's
+//! placement is saved and restored; AccessKit exposes the UI Automation tree.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -26,8 +32,9 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
-use crate::gpu::{Gpu, Skip, Surface};
+use crate::gpu::{self, Gpu, Skip, Surface};
 use crate::perf::{Perf, ms};
+use crate::placement::Placement;
 use crate::platform::{GuiPlatform, Taskbar};
 use crate::quads::Quad;
 use crate::scene::{self, ImageItem, Painter, Scene};
@@ -43,6 +50,10 @@ const IDLE_TICK: Duration = Duration::from_millis(400);
 const SERVICE_BUDGET: Duration = Duration::from_millis(4);
 /// How long the preview of a pasted image stays.
 const PREVIEW_FOR: Duration = Duration::from_secs(5);
+/// Placement changes are written this long after the last one.
+const PLACEMENT_SAVE: Duration = Duration::from_secs(1);
+/// The accessibility tree is sent at most this often.
+const ACCESS_EVERY: Duration = Duration::from_millis(150);
 
 pub enum UserEvent {
     /// Service messages are waiting for window `.0`.
@@ -54,6 +65,23 @@ pub enum UserEvent {
     /// Another window's app is ready (or could not be opened); `reply`
     /// answers the test hook that asked for it.
     Opened(Box<Result<crate::Opened, String>>, Option<Sender<Value>>),
+    /// The GPU device may be lost (its callback or an error said so).
+    GpuCheck,
+    /// A screen reader or UI Automation client asked something.
+    Access(accesskit_winit::Event),
+}
+
+impl From<accesskit_winit::Event> for UserEvent {
+    fn from(event: accesskit_winit::Event) -> Self {
+        UserEvent::Access(event)
+    }
+}
+
+/// Wakes the event loop to check the GPU device (from any thread).
+pub fn wake() {
+    if let Some(proxy) = PROXY.get() {
+        let _ = proxy.send_event(UserEvent::GpuCheck);
+    }
 }
 
 pub struct Options {
@@ -61,6 +89,9 @@ pub struct Options {
     pub test_hooks: bool,
     /// Initial window size in cells (fixed with test hooks).
     pub size: Option<(u16, u16)>,
+    /// The data folder and instance (window placements are saved there).
+    pub home: std::path::PathBuf,
+    pub instance: String,
 }
 
 /// Opens the app of window `index` (connection, document, preferences).
@@ -81,7 +112,8 @@ struct Win {
     platform: Arc<GuiPlatform>,
     taskbar: Taskbar,
     window: Arc<Window>,
-    surface: Surface,
+    /// `None` while the GPU objects are rebuilt.
+    surface: Option<Surface>,
     grid: Grid,
     cols: u16,
     rows: u16,
@@ -90,6 +122,28 @@ struct Win {
     chrome: Buffer,
     overlay: Buffer,
     view: View,
+    /// The last frame's scene (its layers are still on the GPU).
+    scene: Option<Scene>,
+    /// Terminals whose contents changed since the last frame while nothing
+    /// else did: the next frame repaints only the tiles.
+    damaged: Vec<String>,
+    damage_frames: u64,
+    /// Scratch cells for finding links in damaged tiles.
+    scratch: Buffer,
+    /// After a DPI change: the world point kept at the canvas's centre, until when.
+    recenter: Option<((f32, f32), Instant)>,
+    placement: Placement,
+    placement_path: std::path::PathBuf,
+    placement_dirty: Option<Instant>,
+    access: Option<accesskit_winit::Adapter>,
+    /// An accessibility client is listening.
+    access_active: bool,
+    access_due: bool,
+    access_at: Option<Instant>,
+    /// The last nodes sent (actions find their targets here).
+    access_items: Vec<crate::access::Item>,
+    /// The last present found the device gone.
+    device_lost: bool,
     mods: ModifiersState,
     /// Pointer in fractional cells.
     pointer: (f32, f32),
@@ -133,6 +187,9 @@ pub struct Shell {
     /// Apps waiting for their window (the first waits for `resumed`).
     waiting: Vec<(crate::Opened, Option<Sender<Value>>)>,
     next_index: usize,
+    /// GPU objects rebuilt after a lost device, and the next retry when that failed.
+    recoveries: u64,
+    recover_at: Option<Instant>,
     pub first_paint: Option<Duration>,
     pub exit_code: i32,
 }
@@ -149,6 +206,8 @@ impl Shell {
             wins: Vec::new(),
             waiting: vec![(first, None)],
             next_index: 1,
+            recoveries: 0,
+            recover_at: None,
             first_paint: None,
             exit_code: 0,
         }
@@ -165,7 +224,8 @@ impl Shell {
         });
     }
 
-    /// Creates the window for an opened app (the first one also opens the GPU device).
+    /// Creates the window for an opened app (the first one also opens the GPU
+    /// device), where it was last time.
     fn create_window(&mut self, event_loop: &ActiveEventLoop, opened: crate::Opened) -> anyhow::Result<usize> {
         if self.fonts.is_none() {
             let fonts = match self.font_loader.take() {
@@ -179,12 +239,28 @@ impl Shell {
         let monitor_scale = event_loop.primary_monitor().map(|m| m.scale_factor()).unwrap_or(1.0) as f32;
         let grid = Grid::new(advance, monitor_scale);
         let index = opened.index;
-        let mut attrs = Window::default_attributes().with_title(if index == 0 { "Copilot Canvas".to_owned() } else { format!("Copilot Canvas · window {}", index + 1) }).with_min_inner_size(LogicalSize::new(640.0, 360.0));
-        attrs = match self.options.size {
-            Some((cols, rows)) => attrs.with_inner_size(PhysicalSize::new((cols as f32 * grid.cell_w) as u32, (rows as f32 * grid.cell_h) as u32)),
-            None => attrs.with_inner_size(LogicalSize::new(1560.0, 940.0)),
+        let client = if index == 0 { self.options.instance.clone() } else { format!("{}-window{}", self.options.instance, index + 1) };
+        let placement_path = crate::placement::path(&self.options.home, &client);
+        let saved = crate::placement::load(&placement_path).map(|p| crate::placement::clamp(p, &crate::placement::monitors(event_loop)));
+        // Invisible until the accessibility adapter is attached.
+        let mut attrs = Window::default_attributes()
+            .with_title(if index == 0 { "Copilot Canvas".to_owned() } else { format!("Copilot Canvas · window {}", index + 1) })
+            .with_min_inner_size(LogicalSize::new(640.0, 360.0))
+            .with_visible(false);
+        attrs = match (self.options.size, &saved) {
+            (Some((cols, rows)), _) => attrs.with_inner_size(PhysicalSize::new((cols as f32 * grid.cell_w) as u32, (rows as f32 * grid.cell_h) as u32)),
+            (None, Some(p)) => attrs.with_inner_size(PhysicalSize::new(p.width.max(320), p.height.max(200))),
+            (None, None) => attrs.with_inner_size(LogicalSize::new(1560.0, 940.0)),
         };
+        if let Some(p) = &saved {
+            attrs = attrs.with_position(PhysicalPosition::new(p.x, p.y));
+        }
         let window = Arc::new(event_loop.create_window(attrs)?);
+        let access = accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, self.proxy.clone());
+        window.set_visible(true);
+        if saved.as_ref().is_some_and(|p| p.maximized) {
+            window.set_maximized(true);
+        }
         window.set_ime_allowed(true);
         opened.platform.set_window(hwnd_of(&window));
         let grid = Grid::new(advance, window.scale_factor() as f32);
@@ -193,19 +269,82 @@ impl Shell {
             Some(gpu) => gpu.surface(window.clone())?,
             None => {
                 let (gpu, surface) = Gpu::new(window.clone(), event_loop.owned_display_handle())?;
+                crate::crashlog::set_adapter(gpu.describe());
                 self.gpu = Some(gpu);
                 surface
             }
         };
         trace("gpu");
         let mut win = Win::new(opened, window.clone(), surface, grid, &self.proxy);
+        win.access = Some(access);
+        win.placement_path = placement_path;
+        win.placement = saved.unwrap_or_default();
+        win.track_placement();
+        win.placement_dirty = None;
+        if self.gpu.as_ref().is_some_and(|g| g.software) {
+            win.app.notify("No usable GPU: drawing with Windows' software renderer (WARP), which costs more CPU.", false);
+        }
         if let Some(hz) = window.current_monitor().and_then(|m| m.refresh_rate_millihertz()).filter(|m| *m > 0) {
             win.frame_interval = Duration::from_secs_f64(1000.0 / hz as f64);
         }
         let size = window.inner_size();
         win.fit(size.width, size.height, &self.options);
         self.wins.push(win);
+        crate::crashlog::set_windows(self.wins.len());
         Ok(index)
+    }
+
+    /// Builds the GPU device, pipelines, atlas and every window's surface
+    /// again (a lost device, or the `device-lost` hook); image textures are
+    /// uploaded again as they are drawn.
+    fn recover_gpu(&mut self, event_loop: &ActiveEventLoop, reason: &str) -> anyhow::Result<Duration> {
+        let started = Instant::now();
+        crate::crashlog::event("gpu", &format!("rebuilding the GPU objects: {reason}"));
+        for win in &mut self.wins {
+            win.surface = None;
+            win.scene = None;
+        }
+        drop(self.gpu.take());
+        let first = self.wins.first().map(|w| w.window.clone()).ok_or_else(|| anyhow::anyhow!("no window"))?;
+        let result = (|| -> anyhow::Result<()> {
+            let (gpu, surface) = Gpu::new(first, event_loop.owned_display_handle())?;
+            crate::crashlog::set_adapter(gpu.describe());
+            self.wins[0].surface = Some(surface);
+            for win in self.wins.iter_mut().skip(1) {
+                win.surface = Some(gpu.surface(win.window.clone())?);
+            }
+            self.gpu = Some(gpu);
+            Ok(())
+        })();
+        if let Err(error) = result {
+            // Try again shortly (a driver being reset may need a moment).
+            self.recover_at = Some(Instant::now() + Duration::from_secs(2));
+            crate::crashlog::event("gpu", &format!("rebuilding failed: {error:#}"));
+            return Err(error);
+        }
+        self.recover_at = None;
+        self.recoveries += 1;
+        for win in &mut self.wins {
+            win.redraw = true;
+            win.app.needs_draw = true;
+            win.input_waiting = true;
+            win.retry_at = None;
+        }
+        let took = started.elapsed();
+        crate::crashlog::event("gpu", &format!("rebuilt in {} ms", took.as_millis()));
+        Ok(took)
+    }
+
+    /// Rebuilds the GPU objects when the device is gone (or a retry is due).
+    fn check_gpu(&mut self, event_loop: &ActiveEventLoop) {
+        let lost = self.gpu.as_ref().is_some_and(|g| g.lost.load(Ordering::Acquire)) || self.wins.iter().any(|w| w.device_lost);
+        let retry = self.recover_at.is_some_and(|t| Instant::now() >= t);
+        if (lost || retry) && !self.wins.is_empty() {
+            for win in &mut self.wins {
+                win.device_lost = false;
+            }
+            let _ = self.recover_gpu(event_loop, if lost { "the device was lost" } else { "retry" });
+        }
     }
 
     /// The window a hook command addresses (`"window": n`, else the first).
@@ -218,13 +357,32 @@ impl Shell {
 
     fn on_hook(&mut self, event_loop: &ActiveEventLoop, command: &Value, reply: Sender<Value>) {
         let name = command["cmd"].as_str().unwrap_or_default();
+        crate::crashlog::set_hook(&command.to_string());
         match name {
             "new_window" => return self.open_window(Some(reply)),
+            "device-lost" => {
+                // As a driver reset: the device goes (`destroy`: really), then
+                // the same recovery as for a reported loss.
+                if command["destroy"].as_bool() == Some(true)
+                    && let Some(gpu) = &self.gpu
+                {
+                    gpu.destroy();
+                }
+                if let Some(gpu) = &self.gpu {
+                    gpu.lost.store(true, Ordering::Release);
+                }
+                let answer = match self.recover_gpu(event_loop, "test hook") {
+                    Ok(took) => json!({ "ok": true, "ms": took.as_millis() as u64, "recoveries": self.recoveries, "adapter": self.gpu.as_ref().map(|g| g.describe()) }),
+                    Err(error) => json!({ "ok": false, "error": format!("{error:#}") }),
+                };
+                let _ = reply.send(answer);
+                return;
+            }
             "windows" => {
                 let list: Vec<Value> = self
                     .wins
                     .iter()
-                    .map(|w| json!({ "window": w.index, "title": w.window.title(), "focused": w.focused, "cols": w.cols, "rows": w.rows, "connected": w.app.connected }))
+                    .map(|w| json!({ "window": w.index, "title": w.window.title(), "focused": w.focused, "cols": w.cols, "rows": w.rows, "connected": w.app.connected, "hwnd": hwnd_of(&w.window) }))
                     .collect();
                 let _ = reply.send(json!({ "ok": true, "windows": list }));
                 return;
@@ -267,7 +425,27 @@ impl Shell {
                 let textures = self.gpu.as_ref().map(|g| g.images.textures());
                 let mut answer = self.wins[at].perf_json(command);
                 answer["textures"] = json!(textures);
+                answer["gpu_recoveries"] = json!(self.recoveries);
                 answer
+            }
+            "dpi" => {
+                let scale = command["scale"].as_f64().unwrap_or_else(|| self.wins[at].window.scale_factor()) as f32;
+                let advance = self.fonts.as_ref().map(|f| f.advance).unwrap_or(0.6);
+                let (gpu, options) = (self.gpu.as_ref(), &self.options);
+                self.wins[at].rescale(scale, advance, gpu, options);
+                let win = &self.wins[at];
+                json!({ "ok": true, "scale": win.grid.scale, "cell_w": win.grid.cell_w, "cell_h": win.grid.cell_h, "cols": win.cols, "rows": win.rows })
+            }
+            "placement" => {
+                let monitors: Vec<Value> = crate::placement::monitors(event_loop).into_iter().map(|m| json!({ "name": m.name, "work": m.work, "primary": m.primary })).collect();
+                let win = &self.wins[at];
+                let position = win.window.outer_position().ok().map(|p| [p.x, p.y]);
+                let size = win.window.inner_size();
+                json!({
+                    "ok": true, "position": position, "size": [size.width, size.height], "maximized": win.window.is_maximized(),
+                    "monitor": win.window.current_monitor().and_then(|m| m.name()), "tracked": win.placement, "saved": crate::placement::load(&win.placement_path),
+                    "path": win.placement_path, "monitors": monitors,
+                })
             }
             _ => {
                 let (gpu, fonts) = (&mut self.gpu, &mut self.fonts);
@@ -305,6 +483,7 @@ impl Shell {
                 index += 1;
             }
         }
+        crate::crashlog::set_windows(self.wins.len());
         if self.wins.is_empty() && self.waiting.is_empty() && self.gpu.is_some() {
             event_loop.exit();
         }
@@ -330,7 +509,7 @@ impl Win {
             platform,
             taskbar: Taskbar::default(),
             window,
-            surface,
+            surface: Some(surface),
             grid,
             cols: 0,
             rows: 0,
@@ -339,6 +518,20 @@ impl Win {
             chrome: Buffer::empty(area),
             overlay: Buffer::empty(area),
             view: View::default(),
+            scene: None,
+            damaged: Vec::new(),
+            damage_frames: 0,
+            scratch: Buffer::empty(area),
+            recenter: None,
+            placement: Placement::default(),
+            placement_path: std::path::PathBuf::new(),
+            placement_dirty: None,
+            access: None,
+            access_active: false,
+            access_due: false,
+            access_at: None,
+            access_items: Vec::new(),
+            device_lost: false,
             mods: ModifiersState::empty(),
             pointer: (0.0, 0.0),
             held: Vec::new(),
@@ -420,7 +613,23 @@ impl Win {
                 }
                 _ => {}
             }
+            // A frame that only changes a terminal's contents (not its scroll
+            // position, not its first output) damages its tile, nothing else.
+            let term = match &message {
+                ServiceMsg::Frame8(frame) => Some(frame.id.clone()),
+                ServiceMsg::Frame(frame) => Some(frame.id.clone()),
+                _ => None,
+            };
+            let before = (self.app.needs_draw, term.as_ref().and_then(|id| self.app.views.get(id)).map(|v| v.display_offset));
             self.app.on_service(message);
+            if let (Some(id), (false, Some(offset))) = (term, before)
+                && self.app.views.get(&id).map(|v| v.display_offset) == Some(offset)
+            {
+                self.app.needs_draw = false;
+                if self.view.tiles.iter().any(|t| t.id == id) && !self.damaged.contains(&id) {
+                    self.damaged.push(id);
+                }
+            }
             if started.elapsed() >= SERVICE_BUDGET {
                 // Leftovers after input and drawing.
                 if !self.svc_pending.swap(true, Ordering::AcqRel) {
@@ -530,20 +739,50 @@ impl Win {
         self.app.needs_draw = true;
     }
 
-    /// Builds the view, draws it and presents.
+    /// Builds the view, draws it and presents. When only terminal contents
+    /// changed, the previous frame's other layers stay (a damage frame).
     fn frame(&mut self, gpu: &mut Gpu, fonts: &mut Fonts, options: &Options) {
-        if self.cols == 0 {
+        if self.cols == 0 || self.surface.is_none() {
             return;
         }
         let started = Instant::now();
-        self.build_view();
-        let viewed = Instant::now();
         let (width, height) = self.surface_size();
-        let (scene, ime) = self.build_scene(fonts, options, width, height);
+        let damage = !(self.app.needs_draw || self.redraw) && self.scene.as_ref().is_some_and(|s| (s.width, s.height) == (width, height));
+        let (scene, ime, dirty, viewed) = if damage {
+            // Links in the damaged terminals are found again; the rest of the layout stays.
+            let ids = std::mem::take(&mut self.damaged);
+            canvas_core::ui::rescan_tile_links(&mut self.app, &ids, &mut self.scratch);
+            let viewed = Instant::now();
+            let mut scene = self.scene.take().unwrap_or_else(|| Scene::new(width, height, BG));
+            scene.layers[scene::TILES] = Default::default();
+            scene.layers[scene::HUD] = Default::default();
+            self.damage_frames += 1;
+            if self.damage_frames.is_multiple_of(64) {
+                // The kept layers' shaped text stays in the cache.
+                for layer in &scene.layers {
+                    for t in &layer.texts {
+                        self.cache.touch(t.key);
+                    }
+                }
+            }
+            let ime = self.paint_dynamic(&mut scene, fonts, options, width, height);
+            let mut dirty = [false; scene::LAYERS];
+            dirty[scene::TILES] = true;
+            dirty[scene::HUD] = true;
+            (scene, ime, dirty, viewed)
+        } else {
+            self.damaged.clear();
+            self.build_view();
+            self.apply_recenter();
+            let viewed = Instant::now();
+            let (scene, ime) = self.build_scene(fonts, options, width, height);
+            (scene, ime, gpu::ALL, viewed)
+        };
         let built = Instant::now();
         // Minimized: nothing to present (the view is still built for the hooks).
         let minimized = self.window.inner_size().width == 0 || self.window.inner_size().height == 0;
-        let result = (!minimized).then(|| gpu.present(&self.surface, &self.window, &scene, &self.cache, fonts));
+        let surface = self.surface.as_mut().expect("surface");
+        let result = (!minimized).then(|| gpu.present(surface, &self.window, &scene, &dirty, &self.cache, fonts));
         self.cache.end_frame();
         let now = Instant::now();
         self.last_draw = now;
@@ -552,27 +791,42 @@ impl Win {
             Some(Ok(presented)) => {
                 self.retries = 0;
                 self.retry_at = None;
-                self.perf.view_ms.push(ms(viewed - started));
-                self.perf.scene_ms.push(ms(built - viewed));
-                self.perf.encode_ms.push(ms(presented.encode));
+                let cost = ms(now - started - presented.acquire);
+                if damage {
+                    self.perf.damage_ms.push(cost);
+                } else {
+                    self.perf.view_ms.push(ms(viewed - started));
+                    self.perf.scene_ms.push(ms(built - viewed));
+                    self.perf.encode_ms.push(ms(presented.encode));
+                    self.perf.full_ms.push(cost);
+                }
                 self.perf.acquire_ms.push(ms(presented.acquire));
                 self.perf.present_ms.push(ms(presented.present));
-                self.perf.frame_ms.push(ms(now - started - presented.acquire));
+                self.perf.frame_ms.push(cost);
                 self.perf.presented(now);
                 if self.first_paint.is_none() {
                     trace("first present");
                 }
                 self.first_paint.get_or_insert_with(crate::perf::since_start);
+                self.scene = Some(scene);
+                self.access_due = true;
             }
             Some(Err(Skip::Retry)) => {
-                // Occluded or resized: try again, backing off while it lasts.
+                // Occluded or resized: try again (all layers), backing off while it lasts.
                 self.perf.skipped += 1;
                 self.retries += 1;
                 self.redraw = true;
                 let wait = if self.retries > 10 { 250 } else { 16 };
                 self.retry_at = Some(now + Duration::from_millis(wait));
             }
-            None => {}
+            Some(Err(Skip::DeviceLost)) => {
+                self.device_lost = true;
+                self.redraw = true;
+                wake();
+            }
+            None => {
+                self.scene = None;
+            }
         }
         self.app.after_draw();
         self.app.raw_out.clear();
@@ -586,6 +840,91 @@ impl Win {
                 self.ime_rect = Some(rect);
             }
         }
+    }
+
+    /// After a DPI change: keeps the canvas's centre where it was.
+    fn apply_recenter(&mut self) {
+        let Some((center, until)) = self.recenter else { return };
+        if Instant::now() >= until {
+            self.recenter = None;
+            return;
+        }
+        let now = self.app.canvas_center_f();
+        if (now.0 - center.0).abs() > 1e-3 || (now.1 - center.1).abs() > 1e-3 {
+            self.app.center_on_f(center.0, center.1);
+            self.build_view();
+        }
+    }
+
+    /// A new DPI scale (another monitor, or the `dpi` hook): cell metrics,
+    /// the grid's size and the canvas centre.
+    fn rescale(&mut self, scale: f32, advance: f32, gpu: Option<&Gpu>, options: &Options) {
+        let center = self.app.canvas_center_f();
+        self.grid = Grid::new(advance, scale);
+        if let (true, Some((cols, rows))) = (options.test_hooks, options.size) {
+            // A fixed grid: the window follows its new size.
+            let size = PhysicalSize::new((cols as f32 * self.grid.cell_w) as u32, (rows as f32 * self.grid.cell_h) as u32);
+            if let Some(now) = self.window.request_inner_size(size)
+                && let (Some(gpu), Some(surface)) = (gpu, self.surface.as_mut())
+            {
+                surface.resize(gpu, now.width, now.height);
+            }
+        }
+        let (width, height) = self.surface_size();
+        self.fit(width, height, options);
+        self.recenter = Some((center, Instant::now() + Duration::from_millis(800)));
+        self.ime_rect = None;
+        self.redraw = true;
+        self.app.needs_draw = true;
+    }
+
+    /// Notes where the window is (saved a moment later).
+    fn track_placement(&mut self) {
+        if self.window.is_minimized() == Some(true) {
+            return;
+        }
+        let maximized = self.window.is_maximized();
+        if !maximized && let Ok(position) = self.window.outer_position() {
+            let size = self.window.inner_size();
+            self.placement.x = position.x;
+            self.placement.y = position.y;
+            self.placement.width = size.width;
+            self.placement.height = size.height;
+        }
+        self.placement.maximized = maximized;
+        self.placement.monitor = self.window.current_monitor().and_then(|m| m.name());
+        self.placement_dirty = Some(Instant::now());
+    }
+
+    fn save_placement(&mut self) {
+        self.placement_dirty = None;
+        if self.placement.width == 0 || self.placement_path.as_os_str().is_empty() {
+            return;
+        }
+        if crate::placement::load(&self.placement_path).as_ref() != Some(&self.placement)
+            && let Err(error) = crate::placement::save(&self.placement_path, &self.placement)
+        {
+            eprintln!("copilot-canvas-gui: cannot save the window placement: {error:#}");
+        }
+    }
+
+    /// The accessibility nodes of the current view.
+    fn access_nodes(&self) -> (Vec<crate::access::Item>, u64) {
+        crate::access::items(&self.app, &self.view, &self.chrome, &self.overlay, &self.grid, &self.window.title())
+    }
+
+    /// Sends the accessibility tree when a client listens and the UI changed.
+    fn update_access(&mut self, force: bool) {
+        if !self.access_active || !(self.access_due || force) || (!force && self.access_at.is_some_and(|t| t.elapsed() < ACCESS_EVERY)) {
+            return;
+        }
+        let (items, focus) = self.access_nodes();
+        if let Some(adapter) = self.access.as_mut() {
+            adapter.update_if_active(|| crate::access::update(&items, focus));
+        }
+        self.access_items = items;
+        self.access_due = false;
+        self.access_at = Some(Instant::now());
     }
 
     /// Renders the core's view into the chrome and overlay buffers.
@@ -603,6 +942,7 @@ impl Win {
         self.redraw = false;
     }
 
+    /// Every layer of a frame.
     fn build_scene(&mut self, fonts: &mut Fonts, options: &Options, width: u32, height: u32) -> (Scene, crate::tiles::CursorRect) {
         let mut scene = Scene::new(width, height, BG);
         let grid = self.grid;
@@ -622,6 +962,22 @@ impl Win {
         let inners: Vec<Rect> = self.view.tiles.iter().map(|t| t.inner).collect();
         let regions = crate::chrome::Regions { canvas: self.view.canvas.as_ref().map(|c| c.area), inners: &inners };
         crate::chrome::paint(&mut p, &grid, &self.chrome, Some(&self.overlay), &regions);
+        // The text cursor of a field (terminals draw their own).
+        if let Some((x, y)) = self.view.cursor.filter(|(x, y)| !inners.iter().any(|r| *x >= r.x && *x < r.right() && *y >= r.y && *y < r.bottom())) {
+            let layer = if self.view.modal.is_some() { scene::OVERLAY } else { scene::CHROME_TOP };
+            let thin = (2.0 * grid.scale).round().max(2.0);
+            let full = [0.0, 0.0, width as f32, height as f32];
+            p.over(layer, Quad::rect((x as f32 * grid.cell_w).round(), (y as f32 * grid.cell_h).round(), thin, grid.cell_h, theme::color(canvas_core::paint::TEXT, 1.0), full));
+        }
+        let ime = self.paint_dynamic(&mut scene, fonts, options, width, height);
+        (scene, ime)
+    }
+
+    /// The layers a damage frame repaints: the terminal tiles and the HUD
+    /// (IME composition, banner, paste preview, perf overlay).
+    fn paint_dynamic(&mut self, scene: &mut Scene, fonts: &mut Fonts, options: &Options, width: u32, height: u32) -> crate::tiles::CursorRect {
+        let grid = self.grid;
+        let mut p = Painter { scene, cache: &mut self.cache, fonts };
         let input = TileInput {
             selection: self.app.term_select.as_ref(),
             links: &self.app.layout.links,
@@ -630,13 +986,6 @@ impl Win {
             preedit: self.preedit.as_deref(),
         };
         let ime = crate::tiles::paint(&mut p, &grid, &self.view.tiles, &self.app.views, &mut self.tile_cache, &input);
-        // The text cursor of a field (terminals draw their own).
-        if let Some((x, y)) = self.view.cursor.filter(|(x, y)| !inners.iter().any(|r| *x >= r.x && *x < r.right() && *y >= r.y && *y < r.bottom())) {
-            let layer = if self.view.modal.is_some() { scene::OVERLAY } else { scene::CHROME_TOP };
-            let thin = (2.0 * grid.scale).round().max(2.0);
-            let full = [0.0, 0.0, width as f32, height as f32];
-            p.over(layer, Quad::rect((x as f32 * grid.cell_w).round(), (y as f32 * grid.cell_h).round(), thin, grid.cell_h, theme::color(canvas_core::paint::TEXT, 1.0), full));
-        }
         if let Some(text) = &self.view.banner {
             // Centred over the canvas (else the window).
             let center = self.view.canvas.as_ref().map(|c| (c.area.x as f32 + c.area.width as f32 / 2.0) * grid.cell_w).unwrap_or(width as f32 / 2.0);
@@ -653,12 +1002,12 @@ impl Win {
             let lines = self.perf.lines(self.app.conn.remote);
             hud(&mut p, &grid, &lines, width, self.rows);
         }
-        (scene, ime)
+        ime
     }
 
     /// Renders the current frame offscreen to a PNG.
     fn png(&mut self, gpu: &mut Gpu, fonts: &mut Fonts, options: &Options, path: &std::path::Path) -> anyhow::Result<(u32, u32)> {
-        if self.app.needs_draw || self.cols == 0 || self.redraw {
+        if self.app.needs_draw || self.cols == 0 || self.redraw || !self.damaged.is_empty() {
             self.frame(gpu, fonts, options);
         }
         let (width, height) = self.grid_size();
@@ -794,7 +1143,33 @@ impl Win {
                 let mut tree = crate::hooks::tree(&self.app, &self.view, &self.chrome);
                 tree["window"] = json!(self.index);
                 tree["paste_preview"] = json!(self.preview.as_ref().map(|p| json!({ "width": p.size.0, "height": p.size.1, "rect": p.item.rect })));
+                // The UI Automation tree, from the same builder AccessKit gets.
+                let (items, focus) = self.access_nodes();
+                tree["access"] = crate::access::json(&items, focus);
                 json!({ "ok": true, "tree": tree })
+            }
+            "access" => {
+                self.fresh_view(gpu, fonts, options);
+                let (items, focus) = self.access_nodes();
+                json!({ "ok": true, "active": self.access_active, "tree": crate::access::json(&items, focus) })
+            }
+            "place" => {
+                // Moves, sizes or maximizes the window as the user would.
+                if let Some(maximized) = command["maximized"].as_bool() {
+                    self.window.set_maximized(maximized);
+                }
+                if let (Some(x), Some(y)) = (command["x"].as_i64(), command["y"].as_i64()) {
+                    self.window.set_outer_position(PhysicalPosition::new(x as i32, y as i32));
+                }
+                if let (Some(w), Some(h)) = (command["width"].as_u64(), command["height"].as_u64()) {
+                    let _ = self.window.request_inner_size(PhysicalSize::new(w as u32, h as u32));
+                }
+                json!({ "ok": true })
+            }
+            "panic_thread" => {
+                // A crash on a helper thread (the crash-log check).
+                let _ = std::thread::Builder::new().name("test-panic".into()).spawn(|| panic!("test hook asked for a crash on a helper thread"));
+                json!({ "ok": true })
             }
             "clipboard" => {
                 // The test hooks' clipboard (used when Windows' clipboard is unavailable).
@@ -835,7 +1210,8 @@ impl Win {
             }
             "size" => json!({
                 "ok": true, "cols": self.cols, "rows": self.rows, "cell_w": self.grid.cell_w, "cell_h": self.grid.cell_h, "scale": self.grid.scale,
-                "adapter": gpu.map(|g| g.info.name.clone()), "present_mode": format!("{:?}", self.surface.present_mode()),
+                "adapter": gpu.as_ref().map(|g| g.info.name.clone()), "adapter_details": gpu.as_ref().map(|g| g.describe()), "software": gpu.as_ref().map(|g| g.software),
+                "present_mode": self.surface.as_ref().map(|s| format!("{:?}", s.present_mode())),
             }),
             "redraw" => {
                 // Forces a full frame (measurements).
@@ -910,6 +1286,7 @@ impl Win {
     /// Saves before the window goes; the last edits reach the service (it
     /// saves them). Returns the save error, if any.
     fn finish(&mut self) -> Option<String> {
+        self.save_placement();
         self.app.save_now();
         let deadline = Instant::now() + FLUSH_TIMEOUT;
         while self.app.replica.in_flight() > 0 && self.app.connected && Instant::now() < deadline {
@@ -968,8 +1345,12 @@ impl Win {
             self.after_events(&proxy);
         }
         self.platform.apply(&self.window, &mut self.taskbar);
+        if self.placement_dirty.is_some_and(|t| t.elapsed() >= PLACEMENT_SAVE) {
+            self.save_placement();
+        }
+        self.update_access(false);
         let due = |s: &Self| -> Option<Instant> {
-            if !(s.app.needs_draw || s.redraw) {
+            if !(s.app.needs_draw || s.redraw || !s.damaged.is_empty()) {
                 return None;
             }
             if let Some(at) = s.retry_at {
@@ -982,7 +1363,11 @@ impl Win {
         {
             self.frame(gpu, fonts, options);
         }
-        [Some(self.next_tick), due(self)].into_iter().flatten().min().unwrap_or(self.next_tick)
+        [Some(self.next_tick), due(self), self.placement_dirty.map(|t| t + PLACEMENT_SAVE), (self.access_active && self.access_due).then(|| self.access_at.map_or_else(Instant::now, |t| t + ACCESS_EVERY))]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(self.next_tick)
     }
 }
 
@@ -1155,7 +1540,16 @@ impl ApplicationHandler<UserEvent> for Shell {
                     }
                 }
                 Err(error) => {
-                    eprintln!("copilot-canvas-gui: {error:#}");
+                    let gpu = self.gpu.is_none();
+                    if gpu {
+                        // Neither a GPU nor WARP: the TUI needs neither.
+                        eprintln!(
+                            "copilot-canvas-gui: cannot draw: no usable GPU and no software renderer ({error:#}).\n\
+                             Details are in the crash log. The terminal UI shows the same canvas and sessions without a GPU: run `copilot-canvas`."
+                        );
+                    } else {
+                        eprintln!("copilot-canvas-gui: {error:#}");
+                    }
                     self.exit_code = 1;
                     event_loop.exit();
                     return;
@@ -1166,6 +1560,29 @@ impl ApplicationHandler<UserEvent> for Shell {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
+            UserEvent::GpuCheck => self.check_gpu(event_loop),
+            UserEvent::Access(event) => {
+                let Some(at) = self.by_window(event.window_id) else { return };
+                let win = &mut self.wins[at];
+                match event.window_event {
+                    accesskit_winit::WindowEvent::InitialTreeRequested => {
+                        win.access_active = true;
+                        win.update_access(true);
+                    }
+                    accesskit_winit::WindowEvent::ActionRequested(request) => {
+                        // Click, focus and the default action press the element.
+                        let target = win.access_items.iter().find(|i| i.id == request.target_node.0).and_then(|i| i.click);
+                        if let Some((x, y)) = target {
+                            let mods = Modifiers::NONE;
+                            let down = canvas_core::input::MouseEvent::at(MouseEventKind::Down(MouseButton::Left), x, y, mods);
+                            let up = canvas_core::input::MouseEvent::at(MouseEventKind::Up(MouseButton::Left), x, y, mods);
+                            win.raw_input(vec![InputEvent::Mouse(down), InputEvent::Mouse(up)]);
+                        }
+                        self.after_input(event_loop);
+                    }
+                    accesskit_winit::WindowEvent::AccessibilityDeactivated => win.access_active = false,
+                }
+            }
             UserEvent::Service(index) => {
                 if let Some(at) = self.by_index(index) {
                     self.wins[at].drain_service(&self.proxy);
@@ -1217,6 +1634,9 @@ impl ApplicationHandler<UserEvent> for Shell {
         let others = self.wins.len() > 1;
         let (options, proxy) = (&self.options, &self.proxy);
         let win = &mut self.wins[at];
+        if let Some(adapter) = win.access.as_mut() {
+            adapter.process_event(&win.window, &event);
+        }
         match event {
             WindowEvent::CloseRequested => {
                 if others {
@@ -1229,19 +1649,21 @@ impl ApplicationHandler<UserEvent> for Shell {
                 win.input_waiting = true;
             }
             WindowEvent::Resized(size) => {
-                if let Some(gpu) = &self.gpu {
-                    win.surface.resize(gpu, size.width, size.height);
+                if let (Some(gpu), Some(surface)) = (&self.gpu, win.surface.as_mut()) {
+                    surface.resize(gpu, size.width, size.height);
                 }
                 win.fit(size.width, size.height, options);
                 win.redraw = true;
                 win.retry_at = None;
                 win.retries = 0;
+                win.track_placement();
             }
+            WindowEvent::Moved(_) => win.track_placement(),
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                if let Some(fonts) = &self.fonts {
-                    win.grid = Grid::new(fonts.advance, scale_factor as f32);
-                }
-                win.redraw = true;
+                // Another monitor's DPI: cell metrics and the grid follow; the
+                // new window size arrives as `Resized`.
+                let advance = self.fonts.as_ref().map(|f| f.advance).unwrap_or(0.6);
+                win.rescale(scale_factor as f32, advance, self.gpu.as_ref(), options);
             }
             WindowEvent::RedrawRequested => win.redraw = true,
             WindowEvent::Focused(focused) => {
@@ -1329,10 +1751,14 @@ impl ApplicationHandler<UserEvent> for Shell {
         if self.wins.is_empty() {
             return;
         }
-        let mut wake: Option<Instant> = None;
+        self.check_gpu(event_loop);
+        let mut wake: Option<Instant> = self.recover_at;
         for win in &mut self.wins {
             let next = win.tick(self.gpu.as_mut(), self.fonts.as_mut(), &self.options);
             wake = Some(wake.map_or(next, |w| w.min(next)));
+        }
+        if self.wins.iter().any(|w| w.device_lost) {
+            self.check_gpu(event_loop);
         }
         if let Some(paint) = self.wins.first().and_then(|w| w.first_paint) {
             self.first_paint.get_or_insert(paint);

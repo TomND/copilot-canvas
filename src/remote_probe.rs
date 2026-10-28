@@ -30,12 +30,12 @@ const ECHO: &str = "echo";
 const RECONNECT_LIMIT: Duration = Duration::from_secs(5);
 
 /// A TCP proxy that can drop, cut and delay its connections.
-struct Proxy {
-    addr: String,
-    shared: Arc<ProxyShared>,
+pub(crate) struct Proxy {
+    pub(crate) addr: String,
+    pub(crate) shared: Arc<ProxyShared>,
 }
 
-struct ProxyShared {
+pub(crate) struct ProxyShared {
     upstream: String,
     links: Mutex<Vec<(TcpCloser, TcpCloser)>>,
     /// Added latency per direction.
@@ -46,12 +46,14 @@ struct ProxyShared {
     /// Size of the last frame that was cut, and whether it was compressed.
     cut_size: AtomicU64,
     cut_compressed: AtomicBool,
-    connections: AtomicU64,
+    pub(crate) connections: AtomicU64,
     down: AtomicBool,
+    /// Bytes relayed from the service to clients.
+    pub(crate) bytes_down: AtomicU64,
 }
 
 impl Proxy {
-    fn start(upstream: String) -> Result<Self> {
+    pub(crate) fn start(upstream: String) -> Result<Self> {
         let listener = tcp::listen_loopback("127.0.0.1:0")?;
         let addr = listener.local_addr()?.to_string();
         let shared = Arc::new(ProxyShared {
@@ -64,6 +66,7 @@ impl Proxy {
             cut_compressed: AtomicBool::new(false),
             connections: AtomicU64::new(0),
             down: AtomicBool::new(false),
+            bytes_down: AtomicU64::new(0),
         });
         let accept = shared.clone();
         std::thread::spawn(move || {
@@ -84,24 +87,24 @@ impl Proxy {
     }
 
     /// Closes every connection (both sides see it end).
-    fn drop_all(&self) {
+    pub(crate) fn drop_all(&self) {
         for (client, service) in lock(&self.shared.links).drain(..) {
             client.close();
             service.close();
         }
     }
 
-    fn cut_next_frame(&self, min_size: u64) {
+    pub(crate) fn cut_next_frame(&self, min_size: u64) {
         self.shared.cut_min.store(min_size, Ordering::Release);
         self.shared.cut.store(true, Ordering::Release);
     }
 
     /// Accept nothing (connections close at once), like a network that is down.
-    fn set_down(&self, down: bool) {
+    pub(crate) fn set_down(&self, down: bool) {
         self.shared.down.store(down, Ordering::Release);
     }
 
-    fn set_delay(&self, delay: Duration) {
+    pub(crate) fn set_delay(&self, delay: Duration) {
         self.shared.delay_ms.store(delay.as_millis() as u64, Ordering::Release);
     }
 }
@@ -152,6 +155,7 @@ fn relay(mut from: Box<dyn Read + Send>, mut to: Box<dyn Write + Send>, ends: [T
                     break;
                 }
                 packet.extend_from_slice(&body);
+                shared.bytes_down.fetch_add(packet.len() as u64, Ordering::Relaxed);
                 if tx.send((Instant::now(), packet, false)).is_err() {
                     break;
                 }

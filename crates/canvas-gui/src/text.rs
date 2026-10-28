@@ -204,6 +204,13 @@ impl ShapeCache {
         self.entries.get(&key).map(|e| &e.buffer)
     }
 
+    /// Marks an entry used this frame (text kept on the GPU from earlier frames).
+    pub fn touch(&mut self, key: u64) {
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.used = self.frame;
+        }
+    }
+
     /// Ends a frame: entries unused for 300 frames go.
     pub fn end_frame(&mut self) {
         self.frame += 1;

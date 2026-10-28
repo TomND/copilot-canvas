@@ -10,6 +10,8 @@ name = "copilot-canvas-gui"
 path = "src/main.rs"
 
 [dependencies]
+accesskit.workspace = true
+accesskit_winit.workspace = true
 canvas-agents.workspace = true
 canvas-common.workspace = true
 canvas-core.workspace = true
