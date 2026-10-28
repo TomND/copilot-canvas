@@ -1,0 +1,37 @@
+{"vtrec":1,"cols":120,"rows":40,"program":"cmd.exe /d /k prompt $g$s","description":"Git for Windows in cmd.exe (ConPTY): git log --graph --color --oneline --all over a merge with a tag, then git diff --color with several hunks in two files","source":"conpty","recorded_at":"2026-10-28T02:30:04.643Z"}
+{"t":14,"s":"\u001b[6n"}
+{"t":0,"s":"\u001b[?9001h\u001b[?1004h"}
+{"t":0,"s":"\u001b[m\u001b]0;C:\\WINDOWS\\system32\\cmd.exe\u0007\u001b[?25h"}
+{"t":17,"s":"\r\n> "}
+{"t":513,"in":"git --no-pager log --graph --color --oneline --all"}
+{"t":0,"s":"git --no-pager log --graph --color --oneline --all"}
+{"t":0,"in":"\r"}
+{"t":15,"s":"\r\n\u001b]0;C:\\WINDOWS\\system32\\cmd.exe - git  --no-pager log --graph --color --oneline --all\u0007"}
+{"t":15,"s":"*   \u001b[33m5160889 (\u001b[36m\u001b[1mHEAD\u001b[33m\u001b[22m -> \u001b[32m\u001b[1mmain\u001b[33m\u001b[22m, \u001b[1mtag: v1.0\u001b[22m) \u001b[mMerge branch 'feature'\u001b[31m\r\n|\u001b[32m\\  \u001b[31m\r\n| \u001b[m* \u001b[33m8fc93ac (\u001b[32m\u001b[1mfeature\u001b[33m\u001b[22m) \u001b[mAdd helper\u001b[31m\r\n| \u001b[m* \u001b[33mcb31f77 \u001b[mDocument the feature\r\n* \u001b[32m| \u001b[33m5679637 \u001b[mFix line 31\u001b[32m\r\n|/  \u001b[m\r\n* \u001b[33mc576726 \u001b[mTweak line 5 on main\r\n* \u001b[33md6b3c7f \u001b[mInitial commit\r\n"}
+{"t":15,"s":"\r\n> \u001b]0;C:\\WINDOWS\\system32\\cmd.exe\u0007"}
+{"t":1000,"mark":"log"}
+{"t":15,"in":"git --no-pager diff --color"}
+{"t":0,"s":"git --no-pager diff --color"}
+{"t":0,"in":"\r"}
+{"t":15,"s":"\r\n\u001b]0;C:\\WINDOWS\\system32\\cmd.exe - git  --no-pager diff --color\u0007"}
+{"t":13,"s":"\u001b[1mdiff --git a/README.md b/README.md\r\nindex 53f61df..a0990c4 100644\r\n--- a/README.md\r\n+++ b/README.md\u001b[36m\u001b[22m\r\n@@ -1,5 +1,5 @@\u001b[m\r\n # Sample\r\n \u001b[31m\r\n-A sample repository for the golden corpus.\u001b[32m\r\n+A sample repository (edited) for the golden corpus.\u001b[m\r\n \r\n Feature notes.\u001b[1m\r\ndiff --git a/app.txt b/app.txt\r\nindex 2359157..2b27791 100644\r\n--- a/app.txt\r\n+++ b/app.txt\u001b[36m\u001b[22m\r\n@@ -1,5 +1,5 @@\u001b[m\r\n line 1 of the sample file\u001b[31m\r\n-line 2 of the sample file\u001b[32m\r\n+line 2 edited in the working tree\u001b[m\r\n line 3 of the sample file\r\n line 4 of the sample file\r\n line 5 changed on main\u001b[36m\r\n@@ -17,6 +17,8 @@ \u001b[mline 16 of the sample file\r\n line 17 of the sample file\r\n line 18 of the sample file\r\n line 19 of the sample file\u001b[32m\r\n+inserted line A\r\n+inserted line B\r"}
+{"t":0,"s":"\u001b[m\n line 20 of the sample file\r"}
+{"t":0,"s":"\n line 21 of the sample file\r"}
+{"t":0,"s":"\n line 22 of the sample file\r"}
+{"t":0,"s":"\n\u001b[36m@@ -36,5 +38,5 @@ \u001b[mline 35 of the sample file\u001b[K"}
+{"t":0,"s":"\r\n line 36 of the sample file\r"}
+{"t":0,"s":"\n line 37 of the sample file\r"}
+{"t":0,"s":"\n line 38 of the sample file\r"}
+{"t":0,"s":"\n\u001b[31m-line 39 of the sample file\r"}
+{"t":0,"s":"\u001b[m\n\u001b[32m+second to last, removed text\r"}
+{"t":0,"s":"\u001b[m\n line 40 of the sample file\r"}
+{"t":1,"s":"\n"}
+{"t":3,"s":"\u001b]0;C:\\WINDOWS\\system32\\cmd.exe\u0007"}
+{"t":12,"s":"\n>\u001b[1C"}
+{"t":1012,"mark":"diff"}
+{"t":15,"in":"exit"}
+{"t":0,"s":"exit"}
+{"t":0,"in":"\r"}
+{"t":0,"s":"\r"}
+{"t":15,"s":"\n"}
+{"t":313,"s":"\u001b[?9001l\u001b[?1004l"}

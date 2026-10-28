@@ -233,6 +233,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "canvas-corpus"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "canvas-common",
+ "canvas-host",
+ "crossbeam-channel",
+ "portable-pty",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "canvas-host"
 version = "0.3.0"
 dependencies = [
@@ -375,6 +388,7 @@ dependencies = [
  "canvas-agents",
  "canvas-common",
  "canvas-core",
+ "canvas-corpus",
  "canvas-host",
  "canvas-model",
  "canvas-tui",

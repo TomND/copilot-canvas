@@ -1,0 +1,15 @@
+# PowerShell 5.1: a dir listing, a Get-Process table, coloured Write-Host lines, then a resize.
+timeout 30000
+wait-for PS
+wait-quiet 700
+line dir
+wait-quiet 1000
+line Get-Process | Select -First 15
+wait-quiet 2000
+line Write-Host 'error: red' -ForegroundColor Red; Write-Host 'warning: yellow on dark blue' -ForegroundColor Yellow -BackgroundColor DarkBlue; Write-Host 'ok' -ForegroundColor Green -NoNewline; Write-Host ' then default'
+wait-quiet 1000
+mark output
+resize 100 30
+wait-quiet 1500
+mark resized
+line exit

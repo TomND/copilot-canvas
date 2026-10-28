@@ -1,0 +1,21 @@
+{
+  "description": "Git for Windows in cmd.exe (ConPTY): git log --graph --color --oneline --all over a merge with a tag, then git diff --color with several hunks in two files",
+  "source": "recorded",
+  "cols": 120,
+  "rows": 40,
+  "tags": [
+    "git",
+    "color",
+    "diff",
+    "shell",
+    "conpty"
+  ],
+  "command": [
+    "cmd.exe",
+    "/d",
+    "/k",
+    "prompt $g$s"
+  ],
+  "recorded_on": "Microsoft Windows [Version 10.0.26300.9711]",
+  "recorded_at": "2026-10-28T02:30:04.643Z"
+}

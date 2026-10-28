@@ -1,0 +1,17 @@
+{
+  "description": "Reflow on resize: wrapped plain and wide text, a coloured line and the cursor across narrower, wider and shorter sizes",
+  "source": "synthetic",
+  "cols": 40,
+  "rows": 8,
+  "tags": [
+    "resize",
+    "reflow",
+    "wrap"
+  ],
+  "command": [
+    "copilot-canvas",
+    "corpus",
+    "synth",
+    "synth-resize"
+  ]
+}

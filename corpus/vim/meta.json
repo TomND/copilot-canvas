@@ -1,0 +1,24 @@
+{
+  "description": "vim --clean (Git for Windows, LANG=en_US.UTF-8, ConPTY): alternate screen, mouse/focus/paste modes, appended lines with accents, CJK, emoji and a combining mark, :set number, :q!",
+  "source": "recorded",
+  "cols": 120,
+  "rows": 40,
+  "tags": [
+    "vim",
+    "alt-screen",
+    "unicode",
+    "tui",
+    "conpty"
+  ],
+  "command": [
+    "C:\\Program Files\\Git\\usr\\bin\\vim.exe",
+    "--clean",
+    "notes.txt"
+  ],
+  "env": [
+    "LANG=en_US.UTF-8"
+  ],
+  "recorded_on": "Microsoft Windows [Version 10.0.26300.9711]",
+  "recorded_at": "2026-10-28T02:29:47.374Z",
+  "notes": "Emoji typed into vim show as <dXXX> surrogate halves: the MSYS2 vim reads console input as UTF-16 code units. That is what this vim prints, not an emulator bug."
+}

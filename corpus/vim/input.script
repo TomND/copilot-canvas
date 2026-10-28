@@ -1,0 +1,17 @@
+# vim --clean: append Unicode lines, :set number, then :q! (marks keep the screens before quitting).
+timeout 20000
+wait-for notes.txt
+wait-quiet 800
+mark opened
+type Go
+type Accents: h\xc3\xa9llo w\xc3\xb6rld, na\xc3\xafve caf\xc3\xa9\r
+type CJK: \xe4\xb8\xad\xe6\x96\x87\xe5\xad\x97\xe7\xac\xa6 \xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e \xed\x95\x9c\xea\xb5\xad\xec\x96\xb4\r
+type Emoji: \xf0\x9f\x98\x80 \xf0\x9f\x91\x8d\xf0\x9f\x8f\xbd \xe2\x9c\x85 and a combining e\xcc\x81
+wait-quiet 500
+key esc
+wait-quiet 500
+mark inserted
+type :set number\r
+wait-quiet 800
+mark numbered
+type :q!\r

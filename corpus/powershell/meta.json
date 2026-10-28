@@ -1,0 +1,20 @@
+{
+  "description": "Windows PowerShell 5.1 (ConPTY): prompt, dir listing, Get-Process | Select -First 15 table, coloured Write-Host lines (red, yellow on dark blue, green without newline), then a resize to 100x30",
+  "source": "recorded",
+  "cols": 120,
+  "rows": 40,
+  "tags": [
+    "powershell",
+    "shell",
+    "color",
+    "resize",
+    "conpty"
+  ],
+  "command": [
+    "powershell.exe",
+    "-NoLogo",
+    "-NoProfile"
+  ],
+  "recorded_on": "Microsoft Windows [Version 10.0.26300.9711]",
+  "recorded_at": "2026-10-28T02:29:57.589Z"
+}

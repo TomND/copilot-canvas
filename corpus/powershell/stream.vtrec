@@ -1,0 +1,36 @@
+{"vtrec":1,"cols":120,"rows":40,"program":"powershell.exe -NoLogo -NoProfile","description":"Windows PowerShell 5.1 (ConPTY): prompt, dir listing, Get-Process | Select -First 15 table, coloured Write-Host lines (red, yellow on dark blue, green without newline), then a resize to 100x30","source":"conpty","recorded_at":"2026-10-28T02:29:57.589Z"}
+{"t":13,"s":"\u001b[6n"}
+{"t":0,"s":"\u001b[?9001h\u001b[?1004h"}
+{"t":0,"s":"\u001b[m\u001b]0;C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\u0007\u001b[?25h"}
+{"t":173,"s":"PS C:\\Users\\thoma\\AppData\\Local\\Temp\\opencode\\cc-corpus\\ps> "}
+{"t":708,"in":"dir"}
+{"t":2,"s":"\u001b[?25l"}
+{"t":0,"in":"\r"}
+{"t":13,"s":"\u001b[93mdir\r\n\u001b[?25h"}
+{"t":21,"s":"\u001b[m\r\n"}
+{"t":9,"s":"\u001b[?25l\r\n    Directory: C:\\Users\\thoma\\AppData\\Local\\Temp\\opencode\\cc-corpus\\ps\u001b[7;1HMode                 LastWriteTime         Length Name\u001b[65X\r\n----                 -------------         ------ ----\u001b[65X\r\nd-----        10/27/2026   7:27 PM                docs\u001b[65X\r\n-a----        10/27/2026   7:27 PM            202 build.log\u001b[60X\r\n-a----        10/27/2026   7:27 PM             10 data.json\u001b[60X\r\n-a----        10/27/2026   7:27 PM              7 readme.txt\u001b[59X\u001b[15;1H\u001b[?25h"}
+{"t":15,"s":"PS C:\\Users\\thoma\\AppData\\Local\\Temp\\opencode\\cc-corpus\\ps> "}
+{"t":1004,"in":"Get-Process | Select -First 15"}
+{"t":0,"s":"\u001b[?25l"}
+{"t":0,"in":"\r"}
+{"t":15,"s":"\u001b[93mGet-Process \u001b[37m| \u001b[93mSelect \u001b[90m-First \u001b[97m15\r\n\u001b[?25h"}
+{"t":51,"s":"\u001b[m\r\n"}
+{"t":12,"s":"Handles  NPM(K)    PM(K)      WS(K)     CPU(s)     Id  SI ProcessName\u001b[50X\r\n-------  ------    -----      -----     ------     --  -- -----------\u001b[50X\r\n    295      14     4800      12324              6012   0 AggregatorHost\u001b[47X\r\n    157      10     2576       2604              3140   0 amdfendrsr\u001b[51X\r\n    435      27     9204       5776       2.16  23624   1 ApplePhotoStreams\u001b[44X\r\n    650      32    56368      14716      83.83  14392   1 ApplicationFrameHost\u001b[41X\r\n    524      23     6472       9732       4.61  23800   1 APSDaemon\u001b[52X\r\n   1305      19     6880       8644              5584   1 atieclxx\u001b[53X\r\n    223      12     2052       2492              3132   0 atiesrxx\u001b[53X\r\n    186      10     2896       3632       4.20  12672   1 backgroundTaskHost\u001b[43X\r\n    831      27    29712      43252       4.69  73792   1 backgroundTaskHost\u001b[43X\r\n     68       6      820        912       0.02  20820   1 blender-mcp\u001b[50X\r\n     68       6      828        912       0.02  22568   1 blender-mcp\u001b[50X\r\n"}
+{"t":15,"s":"\u001b[?25l     68       6      816        908       0.03  72152   1 blender-mcp\u001b[50X\r\n    374      36  1488060     558160  16,415.13  19892   1 claude\u001b[55X\r\n    328      21  1121352     440428  11,913.61  22136   1 claude\u001b[55X\r\n    339      24    67772     119308      18.72  28900   1 claude\u001b[55X\u001b[36;1HPS C:\\Users\\thoma\\AppData\\Local\\Temp\\opencode\\cc-corpus\\ps> \u001b[?25h"}
+{"t":2015,"in":"Write-Host 'error: red' -ForegroundColor Red; Write-Host 'warning: yellow on dark blue' -ForegroundColor Yellow -BackgroundColor DarkBlue; Write-Host 'ok' -ForegroundColor Green -NoNewline; Write-Host ' then default'"}
+{"t":0,"s":"\u001b[?25l"}
+{"t":0,"in":"\r"}
+{"t":14,"s":"\u001b[93mW\u001b[?25h"}
+{"t":13,"s":"\u001b[?25l\u001b[m\u001b[36;59H> \u001b[93mWrite-Host \u001b[36m'error: red' \u001b[90m-ForegroundColor \u001b[37mRed; \u001b[93mWrite-Host \u001b[36m'warning: yellow on dark blue' \u001b[90m-ForegroundColor \u001b[37mYellow \u001b[90m-BackgroundColor \u001b[37mDarkBlue; \u001b[93mWrite-Host \u001b[36m'ok' \u001b[90m-ForegroundColor \u001b[37mGreen \u001b[90m-NoNewline\u001b[37m; \u001b[93mWrite-Host \u001b[36m' then default'\u001b[38;5;9m\r\nerror: red\u001b[38;5;11m\u001b[48;5;4m\r\nwarning: yellow on dark blue\u001b[?25h"}
+{"t":1,"s":"\u001b[m\r\n\u001b[38;5;10mok \u001b[mthen default\u001b[K"}
+{"t":1,"s":"\r\nPS C:\\Users\\thoma\\AppData\\Local\\Temp\\opencode\\cc-corpus\\ps>\u001b[1C"}
+{"t":1015,"mark":"output"}
+{"t":15,"resize":[100,30]}
+{"t":0,"s":"\u001b[?25l\u001b[8;30;100t\u001b[H\u001b[K\r\n\u001b[K\r\nPS C:\\Users\\thoma\\AppData\\Local\\Temp\\opencode\\cc-corpus\\ps> \u001b[93mGet-Process \u001b[37m| \u001b[93mSelect \u001b[90m-First \u001b[97m15\u001b[K\u001b[m\r\n\u001b[K\r\nHandles  NPM(K)    PM(K)      WS(K)     CPU(s)     Id  SI ProcessName\u001b[K\r\n-------  ------    -----      -----     ------     --  -- -----------\u001b[K\r\n    295      14     4800      12324              6012   0 AggregatorHost\u001b[K\r\n    157      10     2576       2604              3140   0 amdfendrsr\u001b[K\r\n    435      27     9204       5776       2.16  23624   1 ApplePhotoStreams\u001b[K\r\n    650      32    56368      14716      83.83  14392   1 ApplicationFrameHost\u001b[K\r\n    524      23     6472       9732       4.61  23800   1 APSDaemon\u001b[K\r\n   1305      19     6880       8644              5584   1 atieclxx\u001b[K\r\n    223      12     2052       2492              3132   0 atiesrxx\u001b[K\r\n    186      10     2896       3632       4.20  12672   1 backgroundTaskHost\u001b[K\r\n    831      27    29712      43252       4.69  73792   1 backgroundTaskHost\u001b[K\r\n     68       6      820        912       0.02  20820   1 blender-mcp\u001b[K\r\n     68       6      828        912       0.02  22568   1 blender-mcp\u001b[K\r\n     68       6      816        908       0.03  72152   1 blender-mcp\u001b[K\r\n    374      36  1488060     558160  16,415.13  19892   1 claude\u001b[K\r\n    328      21  1121352     440428  11,913.61  22136   1 claude\u001b[K\r\n    339      24    67772     119308      18.72  28900   1 claude\u001b[K\r\n\u001b[K\r\n\u001b[K\r\nPS C:\\Users\\thoma\\AppData\\Local\\Temp\\opencode\\cc-corpus\\ps> \u001b[93mWrite-Host \u001b[36m'error: red' \u001b[90m-ForegroundColor\u001b[m \u001b[37mRed; \u001b[93mWrite-Host \u001b[36m'warning: yellow on dark blue' \u001b[90m-ForegroundColor \u001b[37mYellow \u001b[90m-BackgroundColor \u001b[37mDarkBlue; \u001b[93mWrite-Host \u001b[36m'ok' \u001b[90m-ForegroundColor \u001b[37mGreen \u001b[90m-NoNewline\u001b[37m; \u001b[93mWrite-Host \u001b[36m' then default'\u001b[K\u001b[38;5;9m\r\nerror: red\u001b[K\u001b[38;5;11m\u001b[48;5;4m\r\nwarning: yellow on dark blue\u001b[m\u001b[K\u001b[38;5;10m\r\nok \u001b[mthen default\u001b[K\r\nPS C:\\Users\\thoma\\AppData\\Local\\Temp\\opencode\\cc-corpus\\ps>\u001b[K\u001b[1C\u001b[?25h"}
+{"t":1512,"mark":"resized"}
+{"t":16,"in":"exit"}
+{"t":0,"s":"\u001b[?25l"}
+{"t":0,"in":"\r"}
+{"t":1,"s":"\u001b[92mexit\u001b[?25h"}
+{"t":14,"s":"\u001b[m\r\n"}
+{"t":313,"s":"\u001b[?9001l\u001b[?1004l"}

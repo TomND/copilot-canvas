@@ -1,0 +1,21 @@
+{
+  "description": "OSC 0/1/2 titles, OSC 8 hyperlinks (ids, BEL/ST, adjacent, styled, wrapped, split reads), OSC 52 clipboard write and refused read, OSC 9;4 progress states, OSC 777 and OSC 9 notifications, BEL, colour queries (OSC 4/10/11) and ignored OSC 7/133/633/104",
+  "source": "synthetic",
+  "cols": 60,
+  "rows": 18,
+  "tags": [
+    "osc",
+    "hyperlink",
+    "clipboard",
+    "progress",
+    "notify",
+    "bell",
+    "title"
+  ],
+  "command": [
+    "copilot-canvas",
+    "corpus",
+    "synth",
+    "synth-osc"
+  ]
+}

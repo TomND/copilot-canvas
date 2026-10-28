@@ -1,0 +1,12 @@
+{"vtrec":1,"cols":30,"rows":5,"program":"copilot-canvas corpus synth synth-sync","description":"Synchronized updates (DEC 2026): a terminated update, one flushed by the timeout and one still open at the end of the stream","source":"synthetic","recorded_at":""}
+{"t":1,"s":"before sync\r\n"}
+{"t":0,"mark":"before"}
+{"t":1,"s":"\u001b[?2026h\u001b[2J\u001b[Hframe 1 line a\r\n"}
+{"t":1,"s":"frame 1 line b"}
+{"t":0,"mark":"inside-sync"}
+{"t":1,"s":"\u001b[?2026l"}
+{"t":0,"mark":"after-end"}
+{"t":1,"s":"\u001b[?2026h\u001b[2J\u001b[Hunterminated"}
+{"t":200,"s":"\r\nlate"}
+{"t":0,"mark":"after-timeout"}
+{"t":1,"s":"\u001b[?2026h\r\npending at end"}

@@ -1,0 +1,9 @@
+# Claude Code start-up (folder-trust prompt in a fresh folder). No prompt is typed (no model turn,
+# no credits): wait, keep the screen, decline with Esc (Ctrl+C if it is still running).
+wait 5000
+mark startup
+key esc
+wait 1500
+key ctrl-c
+wait 500
+key ctrl-c

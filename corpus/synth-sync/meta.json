@@ -1,0 +1,15 @@
+{
+  "description": "Synchronized updates (DEC 2026): a terminated update, one flushed by the timeout and one still open at the end of the stream",
+  "source": "synthetic",
+  "cols": 30,
+  "rows": 5,
+  "tags": [
+    "sync"
+  ],
+  "command": [
+    "copilot-canvas",
+    "corpus",
+    "synth",
+    "synth-sync"
+  ]
+}

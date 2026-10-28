@@ -1,0 +1,18 @@
+{
+  "description": "Scrollback, alternate screen (1049) with cursor save/restore, DECALN and erase variants, DEC special graphics and box drawing, scroll region with LF/RI/SU/SD/IL/DL, ICH/DCH/ECH, origin mode, DECSC/DECRC and SCOSC/SCORC, autowrap off, tab stops (HTS/TBC/CBT), REP and insert mode",
+  "source": "synthetic",
+  "cols": 50,
+  "rows": 14,
+  "tags": [
+    "screen",
+    "alt-screen",
+    "scroll-region",
+    "cursor"
+  ],
+  "command": [
+    "copilot-canvas",
+    "corpus",
+    "synth",
+    "synth-screen"
+  ]
+}

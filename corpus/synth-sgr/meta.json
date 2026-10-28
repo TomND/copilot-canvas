@@ -1,0 +1,17 @@
+{
+  "description": "SGR matrix: 16 colours fg/bg, the 256-colour palette (semicolon and colon forms), truecolor, bold/dim/italic/underline/blink/inverse/hidden/strike/overline and their resets, underline styles 4:0..4:5 and 21, underline colour 58/59, background colour erase, invalid parameters; reads split inside sequences",
+  "source": "synthetic",
+  "cols": 100,
+  "rows": 32,
+  "tags": [
+    "sgr",
+    "color",
+    "underline"
+  ],
+  "command": [
+    "copilot-canvas",
+    "corpus",
+    "synth",
+    "synth-sgr"
+  ]
+}
