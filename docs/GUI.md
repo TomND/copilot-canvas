@@ -112,16 +112,28 @@ ConPTY drops APC sequences, so Kitty commands written by a program never
 reach the engine; OSC sequences pass, and the host turns iTerm2 inline
 images (`OSC 1337;File=inline=1;width=…;height=…:<base64 PNG>`) into the
 equivalent Kitty placement (cursor unmoved: ConPTY's cursor is the one that
-counts; programs leave room below the image). Snapshots list the render
-state's placements; the service sends each image once per client
+counts; programs leave room below the image). Only strict base64 bodies are
+translated, a sequence split across reads is held and only its new bytes are
+searched (linear time, at most 32 MiB). Images whose side exceeds 8192 px or
+with more than 4096 × 4096 pixels are never kept or sent. Snapshots list the
+render state's placements; the service sends each image once per client
 (`ServiceMsg::Image`, PNG, at most 16 MiB) and the viewport's placements
 (`ServiceMsg::Placements`: cell, size and offset in the host's 8 × 16 px cell
 geometry, source rectangle, z), only to clients that set `CAP_IMAGES` (the
-GUI; the TUI does not). A client may forget images no placement uses; they
-are sent again when placed again. The GUI uploads each image once as a
-texture (keyed by a serial per received image), draws placements scaled to
-its own cells below the text (z < 0) or above it, clipped to the tile, and
-frees textures not drawn for 20 s (at most 256 MiB). `copilot-canvas
+GUI; the TUI does not). Images are PNG-encoded on two encoder threads (never
+on the frame pump), at most every 250 ms per changing image, and the encoded
+bytes are shared by every client (not copied per client); each client has at
+most 32 MiB of image messages queued, more wait their turn while it keeps the
+pixels it has. A client may forget images no placement uses; they are sent
+again when placed again. The GUI uploads each image once as a texture (keyed
+by a serial per received image), draws placements scaled to its own cells
+below the text (z < 0) or above it, clipped to the tile, and frees textures
+not drawn for 20 s. The texture cache never passes 256 MiB: before an upload
+the least recently drawn textures not used in that frame are freed, and an
+image that still does not fit is skipped. Images wider or taller than the
+device allows (`max_texture_dimension_2d`, at most 8192) are dropped, and a
+texture the GPU refuses (an error scope around its creation) drops only that
+image. `copilot-canvas
 kitty-demo` prints a test image (magenta and green halves, 8 × 2 cells);
 `kitty-demo apc` prints the raw Kitty command instead.
 
@@ -133,9 +145,12 @@ image with its size at the terminal's top right for 5 s.
 **File drag and drop.** Files dropped on a terminal are pasted as quoted
 paths (as Windows Terminal does). In remote mode they are uploaded first
 (`Request::Upload` in 4 MiB pieces, at most 50 MB per file, into
-`<home>/uploads/<date>/` on the service's machine, under a free name) and
-the remote paths are pasted. A folder dropped on the canvas opens the
-new-session dialog in it (local mode).
+`<home>/uploads/<date>/` on the service's machine, the date the upload
+started; the name is claimed with create-new, so an existing file is never
+replaced and a taken name becomes `name (2).ext`; Windows device names such as
+`CON` or `COM1` get a `_` prefix; unfinished pieces older than a day are
+removed) and the remote paths are pasted. A folder dropped on the canvas opens
+the new-session dialog in it (local mode).
 
 **Drawing (`scene.rs`, `quads.rs`, `chrome.rs`, `canvas.rs`, `tiles.rs`).** A
 frame is 10 layers (base chrome · canvas: background, groups, connectors ·

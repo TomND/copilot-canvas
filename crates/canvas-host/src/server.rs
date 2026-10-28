@@ -221,9 +221,11 @@ impl Client {
             return Ok(());
         }
         let message = Outgoing::Image { term: term.to_owned(), image_id, width: image.width, height: image.height, png: image.png.clone() };
-        self.out.try_send(message)?;
+        // Counted before it is queued: the writer may take it off at once.
         self.image_bytes.fetch_add(image.png.len(), Ordering::AcqRel);
-        Ok(())
+        self.out.try_send(message).inspect_err(|_| {
+            self.image_bytes.fetch_sub(image.png.len(), Ordering::AcqRel);
+        })
     }
 
     /// Whether an image of `len` bytes fits the image budget now (one image always fits an empty queue).

@@ -66,30 +66,34 @@ pub fn dib_to_png(dib: &[u8]) -> Result<Vec<u8>> {
     let stride = (w * bytes_per_pixel).div_ceil(4) * 4;
     ensure!(dib.len() >= offset + stride * h, "the bitmap is truncated");
     let pixels = &dib[offset..];
-    let mut rgba = vec![0u8; w * h * 4];
-    let mut any_alpha = false;
-    for y in 0..h {
-        // Positive heights are stored bottom-up.
+    // Output row `y` (top-down): positive heights are stored bottom-up.
+    let row = |y: usize| {
         let source = if height > 0 { h - 1 - y } else { y };
-        let row = &pixels[source * stride..source * stride + w * bytes_per_pixel];
-        for x in 0..w {
-            let p = &row[x * bytes_per_pixel..(x + 1) * bytes_per_pixel];
-            let pixel = if bytes_per_pixel == 4 { u32::from_le_bytes([p[0], p[1], p[2], p[3]]) } else { u32::from_le_bytes([p[0], p[1], p[2], 0]) };
-            let out = &mut rgba[(y * w + x) * 4..(y * w + x + 1) * 4];
-            out[0] = channel(pixel, masks[0]);
-            out[1] = channel(pixel, masks[1]);
-            out[2] = channel(pixel, masks[2]);
-            out[3] = channel(pixel, masks[3]);
-            any_alpha |= out[3] != 0;
-        }
-    }
+        pixels[source * stride..source * stride + w * bytes_per_pixel].chunks_exact(bytes_per_pixel).map(|p| {
+            if bytes_per_pixel == 4 { u32::from_le_bytes([p[0], p[1], p[2], p[3]]) } else { u32::from_le_bytes([p[0], p[1], p[2], 0]) }
+        })
+    };
     // Most 32-bit clipboard bitmaps leave the alpha byte at 0: they are opaque.
-    if !any_alpha {
-        for pixel in rgba.chunks_mut(4) {
-            pixel[3] = 255;
+    let any_alpha = masks[3] != 0 && (0..h).any(|y| row(y).any(|pixel| channel(pixel, masks[3]) != 0));
+    // Rows are converted and compressed one at a time: no full RGBA copy.
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, w as u32, h as u32);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().context("cannot encode the image")?;
+    let mut stream = writer.stream_writer().context("cannot encode the image")?;
+    let mut line = Vec::with_capacity(w * 4);
+    for y in 0..h {
+        line.clear();
+        for pixel in row(y) {
+            let alpha = if any_alpha { channel(pixel, masks[3]) } else { 255 };
+            line.extend_from_slice(&[channel(pixel, masks[0]), channel(pixel, masks[1]), channel(pixel, masks[2]), alpha]);
         }
+        std::io::Write::write_all(&mut stream, &line).context("cannot encode the image")?;
     }
-    encode_png(w as u32, h as u32, &rgba)
+    stream.finish().context("cannot encode the image")?;
+    writer.finish().context("cannot encode the image")?;
+    Ok(out)
 }
 
 /// RGBA pixels as a PNG.

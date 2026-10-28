@@ -224,6 +224,8 @@ fn upload(home: &Path, name: &str, id: &str, offset: u64, data: &str, last: bool
     let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|e| anyhow!("invalid upload data: {e}"))?;
     anyhow::ensure!(offset + bytes.len() as u64 <= canvas_model::rpc::MAX_UPLOAD, "files over {} MB are not uploaded", canvas_model::rpc::MAX_UPLOAD >> 20);
     let uploads = home.join("uploads");
+    // Uploads in progress are told apart by their data folder and id.
+    let key = format!("{}|{id}", uploads.display());
     let dir = {
         let mut started = UPLOADS.lock().unwrap_or_else(|e| e.into_inner());
         let started = started.get_or_insert_with(Default::default);
@@ -233,9 +235,9 @@ fn upload(home: &Path, name: &str, id: &str, offset: u64, data: &str, last: bool
                 started.clear();
             }
             let date = crate::paths::rfc3339_now().chars().take(10).collect::<String>();
-            started.insert(id.to_owned(), uploads.join(date));
+            started.insert(key.clone(), uploads.join(date));
         }
-        started.get(id).cloned().context("upload piece out of order")?
+        started.get(&key).cloned().context("upload piece out of order")?
     };
     std::fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
     let part = dir.join(format!(".{id}.part"));
@@ -248,7 +250,7 @@ fn upload(home: &Path, name: &str, id: &str, offset: u64, data: &str, last: bool
     }
     drop(file);
     if let Some(started) = UPLOADS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-        started.remove(id);
+        started.remove(&key);
     }
     let target = finish_upload(&part, &dir, &safe_file_name(name))?;
     Ok(text(&target))
@@ -292,17 +294,18 @@ fn sweep_parts(uploads: &Path) {
     }
 }
 
-/// A file name without folders, characters Windows refuses or a reserved
-/// device name (`CON`, `NUL`, `COM1`, … get a `_` prefix).
+/// A file name without folders, characters Windows refuses, trailing dots or
+/// spaces (Windows drops them) or a reserved device name (`CON`, `NUL`,
+/// `COM1`, … get a `_` prefix).
 fn safe_file_name(name: &str) -> String {
     let base = name.rsplit(['\\', '/']).next().unwrap_or_default();
     let clean: String = base.chars().map(|c| if c.is_control() || r#"<>:\"|?*"#.contains(c) { '_' } else { c }).collect();
-    let clean = clean.trim().trim_end_matches('.').to_owned();
+    let clean = clean.trim_start().trim_end_matches(['.', ' ']).to_owned();
     if clean.is_empty() {
         return "upload".to_owned();
     }
     let device = clean.split('.').next().unwrap_or_default().trim_end().to_ascii_uppercase();
-    let reserved = matches!(device.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+    let reserved = matches!(device.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
         || (device.len() == 4 && (device.starts_with("COM") || device.starts_with("LPT")) && device.as_bytes()[3].is_ascii_digit() && device.as_bytes()[3] != b'0');
     if reserved { format!("_{clean}") } else { clean }
 }
@@ -455,5 +458,63 @@ mod tests {
         assert!(backend.upload_piece("a", "../evil", 0, b64(b"x"), true).is_err(), "ids are plain");
         assert!(backend.upload_piece("a", "u4", canvas_model::rpc::MAX_UPLOAD, b64(b"x"), true).is_err(), "size cap");
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn finished_uploads_never_replace_a_file_and_avoid_device_names() {
+        let dir = temp("collide");
+        let part = |n: u8| {
+            let path = dir.join(format!(".p{n}.part"));
+            std::fs::write(&path, [n]).unwrap();
+            path
+        };
+        std::fs::write(dir.join("a.txt"), "mine").unwrap();
+        std::fs::write(dir.join("a (2).txt"), "also mine").unwrap();
+        let first = finish_upload(&part(1), &dir, "a.txt").unwrap();
+        assert_eq!(first, dir.join("a (3).txt"), "the next free name");
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "mine", "never replaced");
+        assert_eq!(std::fs::read(&first).unwrap(), [1]);
+        assert_eq!(finish_upload(&part(2), &dir, "a.txt").unwrap(), dir.join("a (4).txt"));
+        assert_eq!(finish_upload(&part(3), &dir, "noext").unwrap(), dir.join("noext"));
+        assert_eq!(finish_upload(&part(4), &dir, "noext").unwrap(), dir.join("noext (2)"));
+        for (name, safe) in [
+            ("CON", "_CON"),
+            ("con.txt", "_con.txt"),
+            ("NUL.tar.gz", "_NUL.tar.gz"),
+            ("com1.log", "_com1.log"),
+            ("LPT9", "_LPT9"),
+            ("aux .txt", "_aux .txt"),
+            ("COM0.txt", "COM0.txt"),
+            ("console.txt", "console.txt"),
+            ("prn2", "prn2"),
+            (r"..\..\x\CON", "_CON"),
+            ("a<b>.txt", "a_b_.txt"),
+            ("trail. . ", "trail"),
+            ("", "upload"),
+        ] {
+            assert_eq!(safe_file_name(name), safe, "{name:?}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn stale_upload_pieces_are_swept() {
+        let uploads = temp("sweep");
+        let day = uploads.join("2026-01-01");
+        std::fs::create_dir_all(&day).unwrap();
+        let old = day.join(".old.part");
+        let fresh = day.join(".fresh.part");
+        let kept = day.join("old.txt");
+        for path in [&old, &fresh, &kept] {
+            std::fs::write(path, "x").unwrap();
+        }
+        let long_ago = std::time::SystemTime::now() - STALE_PART - Duration::from_secs(60);
+        for path in [&old, &kept] {
+            std::fs::OpenOptions::new().write(true).open(path).unwrap().set_modified(long_ago).unwrap();
+        }
+        sweep_parts(&uploads);
+        assert!(!old.exists(), "an unfinished piece older than a day goes");
+        assert!(fresh.exists() && kept.exists(), "recent pieces and finished files stay");
+        std::fs::remove_dir_all(uploads).unwrap();
     }
 }
