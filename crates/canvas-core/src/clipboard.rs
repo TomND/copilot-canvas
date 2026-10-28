@@ -90,8 +90,9 @@ pub fn get_text() -> Result<String> {
 }
 
 /// The clipboard's image as PNG: the "PNG" format when a program offers it
-/// (keeps transparency), else the bitmap (`CF_DIBV5`, `CF_DIB`) converted.
-/// At most `clipimage::MAX_PNG` bytes.
+/// (keeps transparency), else the bitmap (`CF_DIBV5`, `CF_DIB`) converted
+/// straight from the clipboard's memory (no copy of the bitmap). At most
+/// `clipimage::MAX_PNG` bytes; a larger PNG is refused before it is copied.
 pub fn get_image_png() -> Result<Vec<u8>> {
     use canvas_common::clipimage;
     use windows_sys::Win32::System::DataExchange::RegisterClipboardFormatW;
@@ -103,7 +104,7 @@ pub fn get_image_png() -> Result<Vec<u8>> {
     let png_format = unsafe { RegisterClipboardFormatW(name.as_ptr()) };
     open()?;
     // SAFETY: the clipboard is open; each handle stays valid until it closes.
-    let (format, bytes) = unsafe {
+    let png = unsafe {
         let mut found = None;
         for format in [png_format, CF_DIBV5, CF_DIB] {
             if format == 0 || IsClipboardFormatAvailable(format) == 0 {
@@ -118,15 +119,19 @@ pub fn get_image_png() -> Result<Vec<u8>> {
                 continue;
             }
             let len = GlobalSize(handle);
-            let bytes = std::slice::from_raw_parts(data, len).to_vec();
+            let bytes = std::slice::from_raw_parts(data, len);
+            let converted = if format == png_format {
+                if len <= clipimage::MAX_PNG { Ok(bytes.to_vec()) } else { Err(anyhow::anyhow!("the image is larger than {} MB", clipimage::MAX_PNG >> 20)) }
+            } else {
+                clipimage::dib_to_png(bytes)
+            };
             GlobalUnlock(handle);
-            found = Some((format, bytes));
+            found = Some(converted);
             break;
         }
         CloseClipboard();
-        found.ok_or_else(|| anyhow::anyhow!("the clipboard has no image"))?
+        found.ok_or_else(|| anyhow::anyhow!("the clipboard has no image"))??
     };
-    let png = if format == png_format { bytes } else { clipimage::dib_to_png(&bytes)? };
     anyhow::ensure!(png.len() <= clipimage::MAX_PNG, "the image is larger than {} MB", clipimage::MAX_PNG >> 20);
     Ok(png)
 }

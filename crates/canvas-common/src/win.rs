@@ -269,7 +269,24 @@ pub fn current_user_sid() -> io::Result<String> {
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
             return Err(io::Error::last_os_error());
         }
-        let token = Owned(token);
+        token_user_sid(&Owned(token))
+    }
+}
+
+/// String SID of the user process `pid` runs as.
+pub fn process_user_sid(pid: u32) -> io::Result<String> {
+    let process = open(pid, PROCESS_QUERY_LIMITED_INFORMATION).ok_or_else(io::Error::last_os_error)?;
+    let mut token: HANDLE = std::ptr::null_mut();
+    // SAFETY: a valid process handle; the token handle is owned below.
+    if unsafe { OpenProcessToken(process.0, TOKEN_QUERY, &mut token) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    token_user_sid(&Owned(token))
+}
+
+/// The user SID of an access token as a string.
+fn token_user_sid(token: &Owned) -> io::Result<String> {
+    unsafe {
         let mut needed = 0u32;
         GetTokenInformation(token.0, TokenUser, std::ptr::null_mut(), 0, &mut needed);
         let mut buffer = vec![0u64; (needed as usize).div_ceil(8)];
@@ -289,6 +306,55 @@ pub fn current_user_sid() -> io::Result<String> {
         LocalFree(text as _);
         Ok(sid)
     }
+}
+
+/// Creates a new file only the current user can open (a protected DACL);
+/// fails when it exists.
+pub fn create_private(path: &Path) -> io::Result<std::fs::File> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Foundation::GENERIC_WRITE;
+    use windows_sys::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
+    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+    use windows_sys::Win32::Storage::FileSystem::{CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL};
+
+    let sid = current_user_sid()?;
+    let sddl: Vec<u16> = format!("D:P(A;;FA;;;{sid})").encode_utf16().chain(Some(0)).collect();
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: `sddl` is NUL-terminated; the descriptor is freed below.
+    if unsafe { ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), SDDL_REVISION_1, &mut descriptor, std::ptr::null_mut()) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let attributes = SECURITY_ATTRIBUTES { nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: descriptor, bInheritHandle: 0 };
+    // SAFETY: `wide` is NUL-terminated and `attributes` outlives the call.
+    let handle = unsafe { CreateFileW(wide.as_ptr(), GENERIC_WRITE, 0, &attributes, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, std::ptr::null_mut()) };
+    let error = io::Error::last_os_error();
+    // SAFETY: allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW.
+    unsafe { LocalFree(descriptor) };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(error);
+    }
+    // SAFETY: a new, owned file handle.
+    Ok(unsafe { std::fs::File::from_raw_handle(handle) })
+}
+
+/// Writes `path` atomically with an owner-only DACL: a private temporary file
+/// (`NAME.<random>.tmp` next to it) renamed over it.
+pub fn write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    let name = path.file_name().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))?.to_string_lossy().into_owned();
+    let temp = path.with_file_name(format!("{name}.{}.tmp", crate::paths::hex(&crate::protocol::nonce()[..8])));
+    let written = create_private(&temp).and_then(|mut file| {
+        file.write_all(contents)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp, path)
+    });
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
 }
 
 /// Runs this process above normal priority so busy sessions (Copilot starting,

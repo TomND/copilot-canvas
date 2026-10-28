@@ -1062,7 +1062,12 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     crate::automations::write_sample_db(&automations_db)?;
     // `O` (open the other client) writes its command line here instead of starting it.
     let other_client = instance.home.join("other-client.txt");
-    let env = [("COPILOT_HOME", copilot_home.as_path()), ("COPILOT_CANVAS_OTHER_CLIENT_DRYRUN", other_client.as_path())];
+    let env = [
+        ("COPILOT_HOME", copilot_home.as_path()),
+        ("COPILOT_CANVAS_OTHER_CLIENT_DRYRUN", other_client.as_path()),
+        // The dry run is only honoured in self-tests.
+        ("COPILOT_CANVAS_SELFTEST", Path::new("1")),
+    ];
     let started = Instant::now();
     let mut ui = start(&args, &env)?;
     step("client starts and auto-starts the terminal service");

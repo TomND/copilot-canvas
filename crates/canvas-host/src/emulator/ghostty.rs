@@ -38,14 +38,14 @@ use canvas_common::protocol::*;
 use ghostty_vt_sys as sys;
 
 use super::alacritty::{CLIPBOARD_MAX_BYTES, palette};
-use super::{Config, Emulator, Engine, Events, ImageData, Scroll, Snapshot, SnapshotImage};
+use super::{Config, Emulator, Engine, Events, ImageData, Scroll, Snapshot, SnapshotImage, image_size_ok};
 
 /// How long a synchronized update may hold the screen (alacritty's limit).
 pub const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
 /// Kitty graphics storage per terminal (both screens).
 pub const IMAGE_STORAGE_LIMIT: u64 = 64 << 20;
-/// Largest image (width × height) whose pixels are handed out.
-pub const MAX_IMAGE_PIXELS: u64 = 4096 * 4096;
+/// Largest image whose pixels are decoded or handed out.
+pub use super::{MAX_IMAGE_PIXELS, MAX_IMAGE_SIDE};
 /// Cell size reported to size queries (XTWINOPS), as alacritty reports it.
 const CELL_WIDTH: u32 = HOST_CELL_PX.0;
 const CELL_HEIGHT: u32 = HOST_CELL_PX.1;
@@ -600,8 +600,19 @@ fn install_png_decoder() {
     });
 }
 
-/// Decodes a PNG payload into RGBA allocated with Ghostty's allocator.
+/// Decodes a PNG payload into RGBA allocated with Ghostty's allocator. A
+/// panic must not unwind into C: it fails the decode instead.
 unsafe extern "C" fn decode_png(_: *mut c_void, allocator: *const sys::GhosttyAllocator, data: *const u8, len: usize, out: *mut sys::GhosttySysImage) -> bool {
+    // SAFETY: forwarded from the caller's contract.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe { decode_png_into(allocator, data, len, out) })).unwrap_or(false)
+}
+
+/// The body of [`decode_png`].
+///
+/// # Safety
+/// `data` holds `len` readable bytes (or is NULL), `out` is writable (or NULL)
+/// and `allocator` is the allocator Ghostty passed.
+unsafe fn decode_png_into(allocator: *const sys::GhosttyAllocator, data: *const u8, len: usize, out: *mut sys::GhosttySysImage) -> bool {
     if data.is_null() || out.is_null() {
         return false;
     }
@@ -622,13 +633,13 @@ unsafe extern "C" fn decode_png(_: *mut c_void, allocator: *const sys::GhosttyAl
 }
 
 /// A PNG file as straight RGBA rows (8 bits per channel); `None` when it does
-/// not decode or is larger than [`MAX_IMAGE_PIXELS`].
+/// not decode or its size is over the limits ([`image_size_ok`]).
 pub fn decode_rgba(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().ok()?;
     let (width, height) = (reader.info().width, reader.info().height);
-    if width == 0 || height == 0 || width as u64 * height as u64 > MAX_IMAGE_PIXELS {
+    if !image_size_ok(width, height) {
         return None;
     }
     let mut buffer = vec![0; reader.output_buffer_size()?];
@@ -841,7 +852,7 @@ impl Emulator for GhosttyEmulator {
                 && get(sys::GHOSTTY_KITTY_IMAGE_DATA_GENERATION, (&raw mut generation).cast())
                 && get(sys::GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR, (&raw mut ptr).cast())
                 && get(sys::GHOSTTY_KITTY_IMAGE_DATA_DATA_LEN, (&raw mut len).cast());
-            if !ok || ptr.is_null() || width == 0 || height == 0 || width as u64 * height as u64 > MAX_IMAGE_PIXELS {
+            if !ok || ptr.is_null() || !image_size_ok(width, height) {
                 return None;
             }
             let rgba = to_rgba(format, std::slice::from_raw_parts(ptr, len))?;
@@ -1885,6 +1896,34 @@ mod tests {
         feed_collect(&mut emu, format!("\x1b_Gf=100,t=f,a=T,i=9,q=2;{}\x1b\\", base64(path.display().to_string().as_bytes())).as_bytes());
         assert!(emu.image(9).is_none(), "file transmission refused");
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn images_wider_or_taller_than_a_texture_are_never_handed_out() {
+        use crate::emulator::alacritty::tests::base64;
+        let wide = crate::emulator::encode_png(MAX_IMAGE_SIDE + 1, 1, &vec![200; (MAX_IMAGE_SIDE as usize + 1) * 4]).unwrap();
+        assert!(decode_rgba(&wide).is_none(), "8193 x 1 is refused although it has few pixels");
+        let tall = crate::emulator::encode_png(1, MAX_IMAGE_SIDE + 1, &vec![200; (MAX_IMAGE_SIDE as usize + 1) * 4]).unwrap();
+        assert!(decode_rgba(&tall).is_none());
+        let widest = crate::emulator::encode_png(MAX_IMAGE_SIDE, 1, &vec![200; MAX_IMAGE_SIDE as usize * 4]).unwrap();
+        assert_eq!(decode_rgba(&widest).map(|(w, h, _)| (w, h)), Some((MAX_IMAGE_SIDE, 1)));
+        let mut emu = emulator(40, 10);
+        feed_collect(&mut emu, format!("\x1b_Gf=100,a=T,i=11,q=2;{}\x1b\\", base64(&wide)).as_bytes());
+        assert!(emu.image(11).is_none(), "a PNG over the limit is not stored");
+        // Raw pixels reach Ghostty's store without our decoder: the read refuses them.
+        feed_collect(&mut emu, format!("\x1b_Gf=32,s={},v=1,a=T,i=12,q=2;{}\x1b\\", MAX_IMAGE_SIDE + 1, base64(&vec![9; (MAX_IMAGE_SIDE as usize + 1) * 4])).as_bytes());
+        assert!(emu.image(12).is_none(), "raw pixels over the limit are not handed out");
+        feed_collect(&mut emu, format!("\x1b_Gf=100,a=T,i=13,q=2;{}\x1b\\", base64(&widest)).as_bytes());
+        assert_eq!(emu.image(13).map(|i| (i.width, i.height)), Some((MAX_IMAGE_SIDE, 1)));
+    }
+
+    #[test]
+    fn the_png_callback_survives_garbage() {
+        let mut out = sys::GhosttySysImage { width: 0, height: 0, data: std::ptr::null_mut(), data_len: 0 };
+        let junk = [0x89u8, b'P', b'N', b'G', 1, 2, 3];
+        // SAFETY: a valid buffer and output; the allocator is never reached for undecodable input.
+        assert!(!unsafe { decode_png(std::ptr::null_mut(), std::ptr::null(), junk.as_ptr(), junk.len(), &mut out) });
+        assert!(!unsafe { decode_png(std::ptr::null_mut(), std::ptr::null(), std::ptr::null(), 0, &mut out) });
     }
 
     // ---- Cross-engine comparison ----

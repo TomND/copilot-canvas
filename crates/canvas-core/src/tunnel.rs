@@ -4,9 +4,24 @@
 //! is started on the first connection, started again when it died (every
 //! reconnect asks for the address), restarted when connections through it
 //! keep failing, and killed with this process (a kill-on-close job).
+//!
+//! `devtunnel connect ID` has no option for the local port: it listens on
+//! each tunnel port's own number, or the next free one (up to ten higher)
+//! when that is taken, and says where (Dev Tunnels CLI 1.0.2115):
+//!
+//! ```text
+//! Connected to tunnel: copilot-canvas.usw2
+//! Forwarding from 127.0.0.1:47601 to host port 47600.
+//! Forwarding from [::1]:47601 to host port 47600.
+//! ```
+//!
+//! The address comes from those lines. If the wording ever differs, the
+//! client only connects to a port the child itself (or a process it
+//! started) listens on, never to whatever else answers on the tunnel's port.
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read};
+use std::net::SocketAddr;
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -20,8 +35,10 @@ use canvas_common::win::KillOnClose;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// How long `devtunnel connect` may take to forward the port.
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
-/// Without a "Forwarding from" line, the port is probed after this long.
+/// Without a "Forwarding from" line, the child's own listeners are looked for after this long.
 const PROBE_AFTER: Duration = Duration::from_secs(8);
+/// How often the child's listeners are looked for.
+const PROBE_EVERY: Duration = Duration::from_millis(500);
 /// Failed connections through a live child before it is restarted.
 const RESTART_AFTER_FAILURES: u32 = 2;
 /// Output lines kept for error messages.
@@ -115,6 +132,8 @@ struct Tunnel {
     id: String,
     /// The tunnel's port (the service's remote port).
     port: u16,
+    ready_timeout: Duration,
+    probe_after: Duration,
     state: Mutex<TunnelState>,
 }
 
@@ -136,6 +155,7 @@ struct Running {
     _job: Option<KillOnClose>,
     output: Arc<Mutex<Output>>,
     started: Instant,
+    probed: Option<Instant>,
 }
 
 impl Drop for Running {
@@ -145,7 +165,8 @@ impl Drop for Running {
     }
 }
 
-/// A "Forwarding from 127.0.0.1:47601 to host port 47600." line as
+/// A "Forwarding from 127.0.0.1:47601 to host port 47600." line (the Dev
+/// Tunnels SDK's wording, possibly after a prefix such as "SSH: ") as
 /// (local host, local port, tunnel port).
 fn parse_forward(line: &str) -> Option<(String, u16, u16)> {
     let lower = line.to_ascii_lowercase();
@@ -156,7 +177,8 @@ fn parse_forward(line: &str) -> Option<(String, u16, u16)> {
     let after = &remote[remote.find("port")? + 4..];
     let digits: String = after.trim_start().chars().take_while(|c| c.is_ascii_digit()).collect();
     let host = match host {
-        "localhost" => "127.0.0.1".to_owned(),
+        "localhost" | "0.0.0.0" => "127.0.0.1".to_owned(),
+        "[::]" => "[::1]".to_owned(),
         other => other.to_owned(),
     };
     Some((host, port, digits.parse().ok()?))
@@ -175,6 +197,46 @@ fn pick_forward(forwards: &[(String, u16, u16)], port: u16) -> Option<String> {
     match ports.as_slice() {
         [_] => forwards.iter().find(|f| !f.0.starts_with('[')).or(forwards.first()).map(address),
         _ => None,
+    }
+}
+
+/// A loopback address that one of `owners` (the tunnel child and the
+/// processes it started) listens on: the tunnel's own `port` when it is one
+/// of them, else the only port they listen on (IPv4 preferred). Listeners of
+/// any other process are never chosen.
+fn owned_forward(listeners: &[(SocketAddr, u32)], owners: &[u32], port: u16) -> Option<String> {
+    let owned: Vec<SocketAddr> = listeners.iter().filter(|(addr, pid)| owners.contains(pid) && (addr.ip().is_loopback() || addr.ip().is_unspecified())).map(|(addr, _)| *addr).collect();
+    let mut ports: Vec<u16> = owned.iter().map(SocketAddr::port).collect();
+    ports.sort_unstable();
+    ports.dedup();
+    let chosen = if ports.contains(&port) {
+        port
+    } else {
+        match ports.as_slice() {
+            [only] => *only,
+            _ => return None,
+        }
+    };
+    Some(if owned.iter().any(|a| a.port() == chosen && a.is_ipv4()) { format!("127.0.0.1:{chosen}") } else { format!("[::1]:{chosen}") })
+}
+
+/// The tunnel child and the processes it started (those that started after it).
+fn child_tree(pid: u32) -> Vec<u32> {
+    let born = canvas_common::win::process_start_ms(pid);
+    let mut tree = vec![pid];
+    tree.extend(canvas_common::win::descendants(pid).into_iter().filter(|d| born.is_some_and(|b| canvas_common::win::process_start_ms(*d).is_some_and(|s| s >= b))));
+    tree
+}
+
+/// A hint for a `devtunnel connect` that ended, from its last lines.
+fn exit_hint(tail: &str) -> &'static str {
+    let lower = tail.to_ascii_lowercase();
+    if lower.contains("login required") || lower.contains("login token expired") || lower.contains("not logged in") {
+        " Sign in once with `devtunnel user login -g` (GitHub) or `devtunnel user login` (Microsoft), as the account that created the tunnel."
+    } else if lower.contains("tunnel not found") {
+        " Check the tunnel id (`devtunnel list` on the service's machine) and add the server again with the right `--tunnel`."
+    } else {
+        ""
     }
 }
 
@@ -199,10 +261,11 @@ fn read_lines(source: impl Read + Send + 'static, output: Arc<Mutex<Output>>) {
 
 impl Tunnel {
     fn new(id: &str, port: u16) -> Self {
-        Self { id: id.to_owned(), port, state: Mutex::new(TunnelState::default()) }
+        Self { id: id.to_owned(), port, ready_timeout: READY_TIMEOUT, probe_after: PROBE_AFTER, state: Mutex::new(TunnelState::default()) }
     }
 
     fn spawn(&self) -> Result<Running> {
+        anyhow::ensure!(canvas_common::remote::valid_tunnel_id(&self.id), "{:?} is not a Dev Tunnel id; add the server again", self.id);
         let cli = canvas_common::remote::devtunnel().context(
             "devtunnel.exe was not found: install the Dev Tunnels CLI (`winget install Microsoft.devtunnel`) or set COPILOT_CANVAS_DEVTUNNEL",
         )?;
@@ -223,7 +286,7 @@ impl Tunnel {
         if let Some(stderr) = child.stderr.take() {
             read_lines(stderr, output.clone());
         }
-        Ok(Running { child, _job: job, output, started: Instant::now() })
+        Ok(Running { child, _job: job, output, started: Instant::now(), probed: None })
     }
 
     /// The forwarded address; starts the child when it is not running (or
@@ -238,7 +301,7 @@ impl Tunnel {
         if state.child.is_none() {
             state.child = Some(self.spawn()?);
         }
-        let deadline = Instant::now() + READY_TIMEOUT;
+        let deadline = Instant::now() + self.ready_timeout;
         loop {
             let running = state.child.as_mut().expect("started above");
             let (forward, tail) = {
@@ -253,23 +316,25 @@ impl Tunnel {
                 std::thread::sleep(Duration::from_millis(100));
                 let tail = lock(&running.output).lines.iter().rev().take(4).rev().cloned().collect::<Vec<_>>().join(" ");
                 state.child = None;
-                let hint = if tail.to_ascii_lowercase().contains("login") {
-                    " Sign in once with `devtunnel user login -g` (GitHub) or `devtunnel user login`."
-                } else {
-                    ""
-                };
-                bail!("`devtunnel connect {}` exited ({status}): {}{hint}", self.id, if tail.is_empty() { "no output" } else { &tail });
+                bail!("`devtunnel connect {}` exited ({status}): {}{}", self.id, if tail.is_empty() { "no output" } else { &tail }, exit_hint(&tail));
             }
-            // An unrecognized output format: the tunnel's own port answering is enough.
-            if running.started.elapsed() >= PROBE_AFTER
-                && let Ok(addr) = format!("127.0.0.1:{}", self.port).parse()
-                && std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
-            {
-                return Ok(format!("127.0.0.1:{}", self.port));
+            // Output this build does not recognize: a port the child itself listens on.
+            if running.started.elapsed() >= self.probe_after && running.probed.is_none_or(|at| at.elapsed() >= PROBE_EVERY) {
+                running.probed = Some(Instant::now());
+                let owners = child_tree(running.child.id());
+                if let Some(address) = canvas_common::tcp::listeners().ok().and_then(|listeners| owned_forward(&listeners, &owners, self.port)) {
+                    return Ok(address);
+                }
             }
             if Instant::now() >= deadline {
                 state.child = None;
-                bail!("`devtunnel connect {}` did not forward port {} within {} s: {}", self.id, self.port, READY_TIMEOUT.as_secs(), if tail.is_empty() { "no output" } else { &tail });
+                bail!(
+                    "`devtunnel connect {}` did not forward port {} within {} s: {}",
+                    self.id,
+                    self.port,
+                    self.ready_timeout.as_secs(),
+                    if tail.is_empty() { "no output" } else { &tail }
+                );
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -280,17 +345,47 @@ impl Tunnel {
 mod tests {
     use super::*;
 
+    /// Lines of the real CLI (1.0.2115; strings from its binary).
     #[test]
-    fn forwarding_lines_are_parsed_and_the_tunnel_port_is_picked() {
+    fn forwarding_lines_of_the_real_cli_are_parsed_and_the_tunnel_port_is_picked() {
         assert_eq!(parse_forward("Forwarding from 127.0.0.1:47601 to host port 47600."), Some(("127.0.0.1".into(), 47601, 47600)));
-        assert_eq!(parse_forward("SSH: Forwarding from [::1]:22 to host port 22."), Some(("[::1]".into(), 22, 22)));
+        assert_eq!(parse_forward("SSH: Forwarding from [::1]:47600 to host port 47600."), Some(("[::1]".into(), 47600, 47600)));
         assert_eq!(parse_forward("forwarding from localhost:5000 to host port 5000"), Some(("127.0.0.1".into(), 5000, 5000)));
-        assert_eq!(parse_forward("Connected to tunnel: copilot-canvas.usw2"), None);
+        for other in [
+            "Connected to tunnel: copilot-canvas.usw2",
+            "Listening on port 47600 failed: Only one usage of each socket address (protocol/network address/port) is normally permitted.",
+            "Incrementing port and trying again",
+            "Using local interface address 127.0.0.1 instead of 0.0.0.0.",
+            "Connection to port 47600 is E2E encrypted between tunnel client and tunnel host.",
+            "Ready to accept connections for tunnel: copilot-canvas.usw2.",
+            "Login required.",
+        ] {
+            assert_eq!(parse_forward(other), None, "{other}");
+        }
         let forwards = vec![("[::1]".to_owned(), 47600, 47600), ("127.0.0.1".to_owned(), 47601, 47600), ("127.0.0.1".to_owned(), 22, 22)];
         assert_eq!(pick_forward(&forwards, 47600).as_deref(), Some("127.0.0.1:47601"), "IPv4 first");
         assert_eq!(pick_forward(&forwards, 9999), None, "several other ports: none is ours");
         assert_eq!(pick_forward(&forwards[..2], 9999).as_deref(), Some("127.0.0.1:47601"), "the only forwarded port");
         assert_eq!(pick_forward(&[], 47600), None);
+        assert!(exit_hint("Login required.").contains("devtunnel user login -g"));
+        assert!(exit_hint("Tunnel not found: copilot-canvas").contains("devtunnel list"));
+        assert_eq!(exit_hint("something else"), "");
+    }
+
+    #[test]
+    fn only_listeners_of_the_tunnel_child_are_used_without_a_forwarding_line() {
+        let v4 = |port: u16| SocketAddr::from(([127, 0, 0, 1], port));
+        let v6 = |port: u16| SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port));
+        let lan = SocketAddr::from(([192, 0, 2, 5], 47600));
+        // A squatter (pid 9) holds the tunnel's port; the child (pid 5) moved to 47601.
+        let listeners = [(v4(47600), 9), (v4(47601), 5), (v6(47601), 5), (lan, 5)];
+        assert_eq!(owned_forward(&listeners, &[5], 47600).as_deref(), Some("127.0.0.1:47601"));
+        assert_eq!(owned_forward(&listeners, &[5, 6], 47600).as_deref(), Some("127.0.0.1:47601"));
+        assert_eq!(owned_forward(&listeners[..1], &[5], 47600), None, "the squatter's port is never used");
+        assert_eq!(owned_forward(&[(v4(47600), 5), (v4(22), 5)], &[5], 47600).as_deref(), Some("127.0.0.1:47600"), "the tunnel's own port first");
+        assert_eq!(owned_forward(&[(v4(1000), 5), (v4(22), 5)], &[5], 47600), None, "several other ports: none is ours");
+        assert_eq!(owned_forward(&[(v6(47600), 5)], &[5], 47600).as_deref(), Some("[::1]:47600"));
+        assert_eq!(owned_forward(&[(SocketAddr::from(([0, 0, 0, 0], 47600)), 5)], &[5], 47600).as_deref(), Some("127.0.0.1:47600"), "a wildcard listener");
     }
 
     #[test]
@@ -301,14 +396,19 @@ mod tests {
         assert_eq!(server.tunnel_pid(), None);
         let none = Server::new(ServerRecord { name: "y".into(), ..Default::default() }, vec![]);
         assert!(none.address().is_err());
+        let injected = Server::new(ServerRecord { name: "z".into(), tunnel: Some("--help".into()), port: 1, ..Default::default() }, vec![]);
+        assert!(injected.address().unwrap_err().to_string().contains("not a Dev Tunnel id"), "never passed to devtunnel");
     }
 
     /// The only test that sets `COPILOT_CANVAS_DEVTUNNEL` (`cmd.exe` plays the CLI).
     #[test]
     fn the_tunnel_child_forwards_restarts_and_reports_its_failures() {
-        let tunnel = |script: &str| {
+        let set = |script: &str| {
             // SAFETY: no other test in this binary reads the variable.
             unsafe { std::env::set_var(canvas_common::remote::DEVTUNNEL_ENV, format!("cmd.exe|/d|/c|{script} & rem")) };
+        };
+        let tunnel = |script: &str| {
+            set(script);
             Server::new(ServerRecord { name: "t".into(), tunnel: Some("fake".into()), port: 47600, client_id: "pc-1".into(), ..Default::default() }, vec![])
         };
         let server = tunnel("echo Connected to tunnel: fake.usw2& echo Forwarding from 127.0.0.1:5555 to host port 47600.& ping -n 30 127.0.0.1");
@@ -326,7 +426,26 @@ mod tests {
         assert!(!canvas_common::win::alive(second), "stopping kills the child");
         let failing = tunnel("echo Login required.& exit 3");
         let error = failing.address().unwrap_err().to_string();
-        unsafe { std::env::remove_var(canvas_common::remote::DEVTUNNEL_ENV) };
         assert!(error.contains("Login required") && error.contains("devtunnel user login -g"), "{error}");
+
+        // Silent children: the tunnel's port answering is not enough, the child must own the listener.
+        let quick = |port: u16| Tunnel { ready_timeout: Duration::from_secs(20), probe_after: Duration::from_millis(200), ..Tunnel::new("fake", port) };
+        let squatted = canvas_common::tcp::listen_loopback("127.0.0.1:0").unwrap();
+        let squatted_port = squatted.local_addr().unwrap().port();
+        set("ping -n 30 127.0.0.1 >nul");
+        let silent = Tunnel { ready_timeout: Duration::from_secs(2), ..quick(squatted_port) };
+        let error = silent.address().unwrap_err().to_string();
+        assert!(error.contains("did not forward"), "a port this test (not the child) listens on is never used: {error}");
+        drop(squatted);
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let owned_port = free.local_addr().unwrap().port();
+        drop(free);
+        // No quotes: cmd.exe and PowerShell would each read them their own way.
+        set(&format!("powershell -NoProfile -Command $l=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,{owned_port});$l.Start();Start-Sleep 30"));
+        let owned = quick(owned_port);
+        let found = owned.address();
+        unsafe { std::env::remove_var(canvas_common::remote::DEVTUNNEL_ENV) };
+        assert_eq!(found.unwrap(), format!("127.0.0.1:{owned_port}"), "a listener of the child's own process tree is used");
+        lock(&owned.state).child = None;
     }
 }

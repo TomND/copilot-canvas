@@ -6,6 +6,11 @@
 //! connection is one zstd stream and every compressed frame is a flushed
 //! block of it, so rows repeated across frames cost almost nothing. Bodies of
 //! `COMPRESS_MIN` bytes or less are sent as they are.
+//!
+//! Readers take a body limit: [`PRE_AUTH_FRAME`] until the peer authenticated,
+//! then [`MAX_FRAME`]. Bodies are read as they arrive (memory grows with the
+//! bytes received, not with the length a peer claims), and decompression
+//! stops at the size the frame announced.
 
 use std::io::{self, Read, Write};
 use std::sync::Arc;
@@ -14,13 +19,15 @@ use std::time::{Duration, Instant};
 
 use serde::{Serialize, de::DeserializeOwned};
 
-use crate::protocol::MAX_FRAME;
+pub use crate::protocol::{MAX_FRAME, PRE_AUTH_FRAME};
 
 /// Length bit marking a compressed body.
 pub const COMPRESSED: u32 = 1 << 31;
 /// Bodies up to this size are never compressed.
 pub const COMPRESS_MIN: usize = 512;
 const LEVEL: i32 = 3;
+/// Largest zstd window a reader accepts (16 MiB; level 3 uses 2 MiB).
+const WINDOW_LOG_MAX: u32 = 24;
 
 /// Heartbeat interval of protocol-8 connections.
 pub const HEARTBEAT: Duration = Duration::from_secs(2);
@@ -29,6 +36,16 @@ pub const DEAD_AFTER: Duration = Duration::from_secs(6);
 
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.to_owned())
+}
+
+/// Reads exactly `len` bytes, growing the buffer as they arrive.
+pub(crate) fn read_body(reader: impl Read, len: usize) -> io::Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(len.min(64 * 1024));
+    reader.take(len as u64).read_to_end(&mut body)?;
+    if body.len() != len {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "the connection ended inside a frame"));
+    }
+    Ok(body)
 }
 
 /// Ends a connection: blocked reads and writes on it return.
@@ -83,27 +100,29 @@ impl FrameWriter {
         self.zstd.is_some()
     }
 
-    /// Sends one message; returns the bytes written.
-    pub fn send<T: Serialize>(&mut self, message: &T) -> io::Result<usize> {
-        let body = postcard::to_stdvec(message).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        if body.len() > MAX_FRAME {
+    /// Sends one message; returns the bytes written. A message that cannot be
+    /// encoded or is too large fails with `InvalidData` before anything is
+    /// written (the connection stays usable).
+    pub fn send<T: Serialize + ?Sized>(&mut self, message: &T) -> io::Result<usize> {
+        // Serialized right after room for the length, so the body is not copied again.
+        let mut packet = postcard::to_extend(message, vec![0u8; 4]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let len = packet.len() - 4;
+        if len > MAX_FRAME {
             return Err(invalid("frame too large"));
         }
         let packet = match &mut self.zstd {
-            Some(encoder) if body.len() > COMPRESS_MIN => {
-                encoder.write_all(&body)?;
+            Some(encoder) if len > COMPRESS_MIN => {
+                encoder.write_all(&packet[4..])?;
                 encoder.flush()?;
                 let block = std::mem::take(encoder.get_mut());
-                let mut packet = Vec::with_capacity(block.len() + 8);
-                packet.extend_from_slice(&((block.len() + 4) as u32 | COMPRESSED).to_le_bytes());
-                packet.extend_from_slice(&(body.len() as u32).to_le_bytes());
-                packet.extend_from_slice(&block);
-                packet
+                let mut compressed = Vec::with_capacity(block.len() + 8);
+                compressed.extend_from_slice(&((block.len() + 4) as u32 | COMPRESSED).to_le_bytes());
+                compressed.extend_from_slice(&(len as u32).to_le_bytes());
+                compressed.extend_from_slice(&block);
+                compressed
             }
             _ => {
-                let mut packet = Vec::with_capacity(body.len() + 4);
-                packet.extend_from_slice(&(body.len() as u32).to_le_bytes());
-                packet.extend_from_slice(&body);
+                packet[..4].copy_from_slice(&(len as u32).to_le_bytes());
                 packet
             }
         };
@@ -114,16 +133,40 @@ impl FrameWriter {
     }
 }
 
+/// Collects decompressed bytes and refuses to grow past `limit` (the size
+/// the frame announced), so a small block cannot expand without bound.
+#[derive(Default)]
+struct Bounded {
+    bytes: Vec<u8>,
+    limit: usize,
+}
+
+impl Write for Bounded {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.bytes.len() + buf.len() > self.limit {
+            return Err(invalid("a compressed frame expands beyond its announced size"));
+        }
+        self.bytes.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Reads frames; accepts compressed bodies once `accept_compressed` was called.
 pub struct FrameReader {
     inner: Box<dyn Read + Send>,
-    zstd: Option<zstd::stream::write::Decoder<'static, Vec<u8>>>,
+    zstd: Option<zstd::stream::write::Decoder<'static, Bounded>>,
     stats: Arc<WireStats>,
+    /// Largest body accepted.
+    limit: usize,
 }
 
 impl FrameReader {
     pub fn new(inner: Box<dyn Read + Send>) -> Self {
-        Self { inner, zstd: None, stats: Arc::default() }
+        Self { inner, zstd: None, stats: Arc::default(), limit: MAX_FRAME }
     }
 
     pub fn with_stats(mut self, stats: Arc<WireStats>) -> Self {
@@ -131,9 +174,22 @@ impl FrameReader {
         self
     }
 
+    /// The largest body accepted (at most [`MAX_FRAME`]).
+    pub fn with_limit(mut self, limit: usize) -> Self {
+        self.set_limit(limit);
+        self
+    }
+
+    /// Changes the body limit: [`PRE_AUTH_FRAME`] before the handshake, [`MAX_FRAME`] after it.
+    pub fn set_limit(&mut self, limit: usize) {
+        self.limit = limit.min(MAX_FRAME);
+    }
+
     pub fn accept_compressed(&mut self) -> io::Result<()> {
         if self.zstd.is_none() {
-            self.zstd = Some(zstd::stream::write::Decoder::new(Vec::new())?);
+            let mut decoder = zstd::stream::write::Decoder::new(Bounded::default())?;
+            decoder.window_log_max(WINDOW_LOG_MAX)?;
+            self.zstd = Some(decoder);
         }
         Ok(())
     }
@@ -159,28 +215,29 @@ impl FrameReader {
         let raw = u32::from_le_bytes(header);
         let compressed = raw & COMPRESSED != 0 && self.zstd.is_some();
         let len = if compressed { (raw & !COMPRESSED) as usize } else { raw as usize };
-        if len > MAX_FRAME {
+        if len > self.limit {
             return Err(invalid("frame too large"));
         }
-        let mut body = vec![0u8; len];
-        self.inner.read_exact(&mut body)?;
+        let body = read_body(&mut self.inner, len)?;
         self.stats.bytes_in.fetch_add(len as u64 + 4, Ordering::Relaxed);
         self.stats.frames_in.fetch_add(1, Ordering::Relaxed);
-        if compressed {
-            body = self.decompress(&body)?;
-        }
+        let body = if compressed { self.decompress(&body)? } else { body };
         Ok(Some(postcard::from_bytes(&body).map_err(|_| body)))
     }
 
     fn decompress(&mut self, packet: &[u8]) -> io::Result<Vec<u8>> {
+        let limit = self.limit;
         let decoder = self.zstd.as_mut().expect("checked by the caller");
         let size = packet.get(..4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize).ok_or_else(|| invalid("short compressed frame"))?;
-        if size > MAX_FRAME {
+        if size > limit {
             return Err(invalid("frame too large"));
         }
+        let output = decoder.get_mut();
+        output.limit = size;
+        output.bytes = Vec::with_capacity(size.min(1 << 20));
         decoder.write_all(&packet[4..])?;
         decoder.flush()?;
-        let body = std::mem::take(decoder.get_mut());
+        let body = std::mem::take(&mut decoder.get_mut().bytes);
         if body.len() != size {
             return Err(invalid("compressed frame has the wrong size"));
         }
@@ -342,6 +399,46 @@ mod tests {
         cut.truncate(cut.len() / 2);
         assert!(FrameReader::new(Box::new(io::Cursor::new(cut))).recv::<ServiceMsg>().is_err());
         assert_eq!(FrameReader::new(Box::new(io::Cursor::new(Vec::new()))).recv::<ServiceMsg>().unwrap(), None);
+    }
+
+    #[test]
+    fn readers_hold_unauthenticated_peers_to_the_small_limit() {
+        let frame = |len: usize| {
+            let mut bytes = (len as u32).to_le_bytes().to_vec();
+            bytes.extend(std::iter::repeat_n(0u8, len));
+            bytes
+        };
+        let read = |bytes: Vec<u8>, limit: usize| FrameReader::new(Box::new(io::Cursor::new(bytes))).with_limit(limit).recv_lenient::<ClientMsg>();
+        assert!(read(frame(PRE_AUTH_FRAME), PRE_AUTH_FRAME).is_ok(), "a body at the limit is read");
+        assert_eq!(read(frame(PRE_AUTH_FRAME + 1), PRE_AUTH_FRAME).unwrap_err().to_string(), "frame too large");
+        assert!(read(frame(PRE_AUTH_FRAME + 1), MAX_FRAME).is_ok(), "after authentication the normal limit applies");
+        // A claimed length is not allocated up front: the body is read as it arrives.
+        let mut claimed = (MAX_FRAME as u32).to_le_bytes().to_vec();
+        claimed.extend_from_slice(b"short");
+        assert_eq!(read(claimed, MAX_FRAME).unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+        let mut reader = FrameReader::new(Box::new(io::Cursor::new(Vec::new())));
+        reader.set_limit(usize::MAX);
+        assert_eq!(reader.limit, MAX_FRAME, "never above MAX_FRAME");
+    }
+
+    #[test]
+    fn a_compressed_frame_cannot_expand_past_its_announced_size() {
+        // A block of 8 MiB of zeros compresses to a few hundred bytes.
+        let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), LEVEL).unwrap();
+        encoder.write_all(&vec![0u8; 8 << 20]).unwrap();
+        encoder.flush().unwrap();
+        let block = std::mem::take(encoder.get_mut());
+        assert!(block.len() < 64 * 1024);
+        for announced in [100u32, 1 << 20] {
+            let mut packet = ((block.len() + 4) as u32 | COMPRESSED).to_le_bytes().to_vec();
+            packet.extend_from_slice(&announced.to_le_bytes());
+            packet.extend_from_slice(&block);
+            let mut reader = FrameReader::new(Box::new(io::Cursor::new(packet)));
+            reader.accept_compressed().unwrap();
+            let error = reader.recv::<ServiceMsg>().unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
+            assert!(reader.zstd.as_mut().unwrap().get_mut().bytes.capacity() <= (1 << 20) + (256 << 10), "output stayed bounded");
+        }
     }
 
     #[test]

@@ -16,7 +16,12 @@ use sha2::Sha256;
 pub const PROTOCOL: u32 = 8;
 /// Oldest service protocol this client still speaks (with `Hello`).
 pub const PROTOCOL_MIN: u32 = 7;
-pub(crate) const MAX_FRAME: usize = 32 * 1024 * 1024;
+/// Largest frame body.
+pub const MAX_FRAME: usize = 32 * 1024 * 1024;
+/// Largest frame body read before the peer authenticated.
+pub const PRE_AUTH_FRAME: usize = 16 * 1024;
+/// Longest build id and client name in a handshake.
+pub const MAX_HELLO_FIELD: usize = 256;
 
 /// `ClientInfo::caps`: the client applies `Frame8` (else it gets protocol-7 frames).
 pub const CAP_FRAME8: u32 = 1;
@@ -96,12 +101,17 @@ pub enum ClientMsg {
     /// Protocol 8: a backend request (`canvas_model::rpc::Request` as JSON),
     /// answered with `ServiceMsg::RpcReply` carrying the same `id`.
     Rpc { id: u64, json: String },
-    /// Protocol 8, TCP only: opens a connection that pairs a new remote client
-    /// (instead of `Hello8`). `code_proof` is an HMAC of the one-time pairing
-    /// code over `nonce` (the code itself is never sent); `name` names the
-    /// client in `remote clients`. Answered with `ServiceMsg::Paired` or
-    /// `ServiceMsg::Error`, then the service closes the connection.
+    /// Pairing of older clients (a proof of the code before the service
+    /// proved anything); refused: clients open with `PairStart` now.
     Pair { code_proof: Vec<u8>, name: String, nonce: Vec<u8> },
+    /// Protocol 8, TCP only: opens a connection that pairs a new remote client
+    /// (instead of `Hello8`); `name` names the client in `remote clients`.
+    /// Answered with `ServiceMsg::PairChallenge` (see [`crate::pairing`]).
+    PairStart { name: String, nonce: Vec<u8> },
+    /// Protocol 8: the client's proof of the pairing code, sent once the
+    /// service proved it knows the code. Answered with `ServiceMsg::Paired`
+    /// (or `Error`), then the service closes the connection.
+    PairProof { proof: Vec<u8> },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -239,6 +249,15 @@ pub enum ServiceMsg {
     /// Protocol 8, `CAP_NOTIFY`: a terminal's program sent a desktop
     /// notification (OSC 777 or OSC 9).
     Notification { term: String, title: String, body: String },
+    /// Protocol 8: the answer to `PairStart`: the service's nonce and a proof
+    /// of each open code, padded with random ones to `pairing::MAX_OPEN_CODES`.
+    PairChallenge { nonce: Vec<u8>, proofs: Vec<Vec<u8>> },
+    /// Protocol 8: the service refuses this client before authentication.
+    /// `proof` is an HMAC with the client's revocation key when it is a
+    /// revoked paired client (only that client can check it), else random.
+    Refusal { proof: Vec<u8> },
+    /// Protocol 8, TCP: the service's build, told once the client authenticated.
+    Welcome { build: String },
 }
 
 /// Where an image is drawn in a terminal's viewport (`ServiceMsg::Placements`).
@@ -287,6 +306,9 @@ impl ServiceMsg {
             | ServiceMsg::Image { .. }
             | ServiceMsg::Placements { .. }
             | ServiceMsg::Notification { .. }
+            | ServiceMsg::PairChallenge { .. }
+            | ServiceMsg::Refusal { .. }
+            | ServiceMsg::Welcome { .. }
                 if protocol < 8 =>
             {
                 None
@@ -304,6 +326,43 @@ impl ServiceMsg {
             ServiceMsg::Notification { .. } if caps & CAP_NOTIFY == 0 => None,
             _ => self.shaped(protocol, caps & CAP_FRAME8 != 0),
         }
+    }
+}
+
+/// Index of `ServiceMsg::Image` (postcard encodes it before the fields).
+const IMAGE_VARIANT: u32 = 21;
+
+/// A PNG `ServiceMsg::Image` serialized from borrowed bytes (the same bytes on
+/// the wire), so one encoded image can be queued for many clients without a
+/// copy per client.
+pub struct ImageRef<'a> {
+    pub term: &'a str,
+    pub image_id: u32,
+    pub width: u32,
+    pub height: u32,
+    pub png: &'a [u8],
+}
+
+/// Bytes serialized in one piece (postcard writes them as a sequence of `u8` would be).
+struct Bytes<'a>(&'a [u8]);
+
+impl Serialize for Bytes<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(self.0)
+    }
+}
+
+impl Serialize for ImageRef<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStructVariant;
+        let mut variant = serializer.serialize_struct_variant("ServiceMsg", IMAGE_VARIANT, "Image", 6)?;
+        variant.serialize_field("term", self.term)?;
+        variant.serialize_field("image_id", &self.image_id)?;
+        variant.serialize_field("width", &self.width)?;
+        variant.serialize_field("height", &self.height)?;
+        variant.serialize_field("rgba_or_png", &Bytes(self.png))?;
+        variant.serialize_field("format", &IMAGE_PNG)?;
+        variant.end()
     }
 }
 
@@ -597,8 +656,7 @@ pub fn read_frame_lenient<R: Read, T: DeserializeOwned>(reader: &mut R) -> io::R
     if len > MAX_FRAME {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "frame too large"));
     }
-    let mut body = vec![0u8; len];
-    reader.read_exact(&mut body)?;
+    let body = crate::wire::read_body(reader, len)?;
     Ok(Some(postcard::from_bytes(&body).map_err(|_| body)))
 }
 
@@ -746,6 +804,8 @@ pub(crate) mod tests {
             (22, ClientMsg::DocEdit { key: "canvas-1".into(), base: 7, ops_json: "[]".into() }),
             (23, ClientMsg::Rpc { id: 9, json: "\"Info\"".into() }),
             (24, ClientMsg::Pair { code_proof: vec![3; 32], name: "home-pc".into(), nonce: vec![4; 32] }),
+            (25, ClientMsg::PairStart { name: "home-pc".into(), nonce: vec![4; 32] }),
+            (26, ClientMsg::PairProof { proof: vec![5; 32] }),
         ];
         for (index, message) in client {
             let bytes = postcard::to_stdvec(&message).unwrap();
@@ -765,6 +825,9 @@ pub(crate) mod tests {
             (21, sample_image()),
             (22, sample_placements()),
             (23, ServiceMsg::Notification { term: "t".into(), title: "Build".into(), body: "done".into() }),
+            (24, ServiceMsg::PairChallenge { nonce: vec![1; 32], proofs: vec![vec![2; 32]; 3] }),
+            (25, ServiceMsg::Refusal { proof: vec![3; 32] }),
+            (26, ServiceMsg::Welcome { build: "0.3.0-abc".into() }),
         ];
         for (index, message) in service {
             let bytes = postcard::to_stdvec(&message).unwrap();
@@ -793,6 +856,9 @@ pub(crate) mod tests {
             sample_image(),
             sample_placements(),
             ServiceMsg::Notification { term: "t".into(), title: "T".into(), body: "B".into() },
+            ServiceMsg::PairChallenge { nonce: vec![1; 32], proofs: Vec::new() },
+            ServiceMsg::Refusal { proof: vec![1; 32] },
+            ServiceMsg::Welcome { build: "b".into() },
         ];
         for message in all.clone() {
             let Some(shaped) = message.shaped(7, true) else { continue };
@@ -837,5 +903,23 @@ pub(crate) mod tests {
         // Everything else is shaped as before.
         assert!(matches!(ServiceMsg::Frame8(sample_frame8()).shaped_for(8, 0), Some(ServiceMsg::Frame(_))));
         assert!(matches!(ServiceMsg::Frame8(sample_frame8()).shaped_for(8, CAP_FRAME8), Some(ServiceMsg::Frame8(_))));
+    }
+
+    #[test]
+    fn borrowed_images_serialize_like_image_messages() {
+        let png: Vec<u8> = (0..1000u32).map(|i| (i * 7) as u8).collect();
+        let owned = ServiceMsg::Image { term: "term-1".into(), image_id: 9, width: 300, height: 2, rgba_or_png: png.clone(), format: IMAGE_PNG };
+        let borrowed = ImageRef { term: "term-1", image_id: 9, width: 300, height: 2, png: &png };
+        let bytes = postcard::to_stdvec(&borrowed).unwrap();
+        assert_eq!(bytes, postcard::to_stdvec(&owned).unwrap());
+        assert_eq!(postcard::from_bytes::<ServiceMsg>(&bytes).unwrap(), owned);
+    }
+
+    #[test]
+    fn legacy_reads_refuse_oversized_and_truncated_bodies() {
+        let mut huge = ((MAX_FRAME as u32) - 1).to_le_bytes().to_vec();
+        huge.extend_from_slice(&[0; 8]);
+        let error = read_frame::<_, ClientMsg>(&mut huge.as_slice()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof, "a claimed length does not allocate it up front");
     }
 }

@@ -11,14 +11,14 @@
 //! emulator falls behind, the reader blocks and ConPTY slows the program.
 
 use std::any::Any;
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::io::{BufWriter, Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -54,6 +54,14 @@ const RECORD_FLUSH: Duration = Duration::from_millis(250);
 pub const MAX_IMAGE_MESSAGE: usize = 16 << 20;
 /// Encoded images kept per terminal.
 const MAX_ENCODED_IMAGES: usize = 64;
+/// A changed image is encoded again at most this often.
+const IMAGE_REENCODE: Duration = Duration::from_millis(250);
+/// When an encoding in progress is checked again (the encoder also wakes the pump).
+const IMAGE_POLL: Duration = Duration::from_millis(250);
+/// Threads encoding images for every terminal.
+const IMAGE_WORKERS: usize = 2;
+/// Encodings waiting for a worker.
+const IMAGE_JOBS: usize = 256;
 
 /// Small messages the emulator thread handles before any pending output.
 enum Ctl {
@@ -95,17 +103,38 @@ pub struct Terminal {
     /// The size the PTY and the emulator have (or have queued); see [`Terminal::resize`].
     size: AtomicU32,
     stopping: AtomicBool,
-    /// Images encoded as PNG for clients: id -> (generation, width, height, file).
-    encoded: Mutex<HashMap<u32, EncodedImage>>,
+    /// Images encoded as PNG for clients, by image id.
+    encoded: Mutex<HashMap<u32, CachedImage>>,
+    /// Image ids an encoder is working on.
+    encoding: Mutex<HashSet<u32>>,
+    /// Wakes the frame pump (an encoded image is ready).
+    pump: Sender<()>,
 }
 
-/// An image's pixels as a PNG file, for every client that needs it.
+/// An image's pixels as a PNG file, shared by every client that needs it.
 #[derive(Clone)]
 pub struct EncodedImage {
     pub generation: u64,
     pub width: u32,
     pub height: u32,
-    pub png: Arc<Vec<u8>>,
+    pub png: Arc<[u8]>,
+}
+
+/// The last encoding of one image.
+struct CachedImage {
+    generation: u64,
+    /// `None`: the image is gone or too large to send.
+    encoded: Option<EncodedImage>,
+    at: Instant,
+}
+
+/// What can be sent of an image now ([`Terminal::image_png`]).
+pub enum ImagePng {
+    Ready(EncodedImage),
+    /// Being encoded, or encoded too recently to encode again: ask again at this time.
+    Pending(Instant),
+    /// Gone, or too large to send.
+    Unavailable,
 }
 
 /// A program's desktop notification: (terminal id, title, body).
@@ -259,6 +288,8 @@ impl Terminal {
             size: AtomicU32::new(pack(cols, rows)),
             stopping: AtomicBool::new(false),
             encoded: Mutex::new(HashMap::new()),
+            encoding: Mutex::new(HashSet::new()),
+            pump: hooks.pump.clone(),
         });
         // Weak: the emulator thread must not keep the terminal alive.
         let weak = Arc::downgrade(&terminal);
@@ -322,26 +353,52 @@ impl Terminal {
         request_snapshot(&self.control, &self.pending_snapshot, CONTROL_TIMEOUT, SNAPSHOT_TIMEOUT)
     }
 
-    /// An image as a PNG file, encoded once per generation and shared by all
-    /// clients; `None` when the image is gone or too large to send.
-    pub fn image_png(&self, id: u32, generation: u64) -> Option<EncodedImage> {
-        if let Some(cached) = lock(&self.encoded).get(&id).filter(|e| e.generation == generation) {
-            return Some(cached.clone());
+    /// An image as a PNG file, encoded once per generation on an encoder
+    /// thread and shared by all clients. Never blocks: an image not encoded
+    /// yet is queued for encoding ([`ImagePng::Pending`]), and a changed image
+    /// is encoded again at most every [`IMAGE_REENCODE`].
+    pub fn image_png(self: &Arc<Self>, id: u32, generation: u64) -> ImagePng {
+        let now = Instant::now();
+        if let Some(cached) = lock(&self.encoded).get(&id) {
+            if cached.generation == generation {
+                return cached.encoded.clone().map_or(ImagePng::Unavailable, ImagePng::Ready);
+            }
+            let next = cached.at + IMAGE_REENCODE;
+            if next > now {
+                return ImagePng::Pending(next);
+            }
         }
-        let (tx, rx) = bounded(1);
-        self.control.send_timeout(Ctl::Image(id, tx), CONTROL_TIMEOUT).ok()?;
-        let image = rx.recv_timeout(SNAPSHOT_TIMEOUT).ok()??;
-        let png = emulator::encode_png(image.width, image.height, &image.rgba)?;
-        if png.len() > MAX_IMAGE_MESSAGE {
-            return None;
+        if lock(&self.encoding).insert(id) {
+            let job = EncodeJob { terminal: Arc::downgrade(self), id, generation };
+            if image_encoder().is_none_or(|jobs| jobs.try_send(job).is_err()) {
+                lock(&self.encoding).remove(&id);
+            }
         }
-        let encoded = EncodedImage { generation: image.generation, width: image.width, height: image.height, png: Arc::new(png) };
-        let mut cache = lock(&self.encoded);
-        if cache.len() >= MAX_ENCODED_IMAGES {
-            cache.clear();
+        ImagePng::Pending(now + IMAGE_POLL)
+    }
+
+    /// Encodes one image (an encoder thread): its pixels from the emulator
+    /// thread, then PNG; the result is cached and the pump woken.
+    fn encode_image(&self, id: u32, generation: u64) {
+        let image = (|| {
+            let (tx, rx) = bounded(1);
+            self.control.send_timeout(Ctl::Image(id, tx), CONTROL_TIMEOUT).ok()?;
+            rx.recv_timeout(SNAPSHOT_TIMEOUT).ok()?
+        })();
+        let encoded = image.filter(|image| emulator::image_size_ok(image.width, image.height)).and_then(|image| {
+            let png = emulator::encode_png(image.width, image.height, &image.rgba)?;
+            (png.len() <= MAX_IMAGE_MESSAGE).then(|| EncodedImage { generation: image.generation, width: image.width, height: image.height, png: png.into() })
+        });
+        let generation = encoded.as_ref().map_or(generation, |e| e.generation);
+        {
+            let mut cache = lock(&self.encoded);
+            if cache.len() >= MAX_ENCODED_IMAGES && !cache.contains_key(&id) {
+                cache.clear();
+            }
+            cache.insert(id, CachedImage { generation, encoded, at: Instant::now() });
         }
-        cache.insert(id, encoded.clone());
-        Some(encoded)
+        lock(&self.encoding).remove(&id);
+        let _ = self.pump.try_send(());
     }
 
     /// Queues a control message, waiting up to [`CONTROL_TIMEOUT`] for room.
@@ -461,6 +518,37 @@ fn send_control(control: &Sender<Ctl>, ctl: Ctl, timeout: Duration) -> Result<()
         SendTimeoutError::Timeout(_) => anyhow::anyhow!("terminal is not responding (input backlog is full)"),
         SendTimeoutError::Disconnected(_) => anyhow::anyhow!("terminal emulator has stopped"),
     })
+}
+
+/// An image to encode for clients.
+struct EncodeJob {
+    terminal: Weak<Terminal>,
+    id: u32,
+    generation: u64,
+}
+
+/// The queue of the image encoder threads (started on first use; `None` when
+/// no thread could be started).
+fn image_encoder() -> Option<&'static Sender<EncodeJob>> {
+    static ENCODER: OnceLock<Option<Sender<EncodeJob>>> = OnceLock::new();
+    ENCODER
+        .get_or_init(|| {
+            let (tx, rx) = bounded::<EncodeJob>(IMAGE_JOBS);
+            let mut started = 0;
+            for _ in 0..IMAGE_WORKERS {
+                let jobs = rx.clone();
+                let worker = move || {
+                    for job in jobs {
+                        if let Some(terminal) = job.terminal.upgrade() {
+                            terminal.encode_image(job.id, job.generation);
+                        }
+                    }
+                };
+                started += usize::from(std::thread::Builder::new().name("image-encoder".into()).spawn(worker).is_ok());
+            }
+            (started > 0).then_some(tx)
+        })
+        .as_ref()
 }
 
 /// Asks the emulator thread for its viewport. At most one request per

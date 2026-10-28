@@ -249,7 +249,8 @@ fn remote_session() -> bool {
 
 /// `copilot-canvas config [KEY [VALUE]]`: machine settings (settings.json).
 fn config(home: &std::path::Path, key: Option<&str>, value: Option<&str>) -> Result<()> {
-    let mut settings = canvas_common::settings::Settings::load(home);
+    // A malformed file is reported, never overwritten.
+    let mut settings = canvas_common::settings::Settings::load_checked(home)?;
     let Some(key) = key else {
         println!("client  {}", settings.client.as_deref().unwrap_or("tui (default)"));
         println!("agent   {}", settings.agent.as_deref().unwrap_or("auto (first installed)"));
@@ -291,7 +292,7 @@ fn launch_gui() -> Result<()> {
     let exe = std::env::current_exe()?.with_file_name("copilot-canvas-gui.exe");
     anyhow::ensure!(exe.is_file(), "the GPU client {} is missing", exe.display());
     let args: Vec<String> = std::env::args().skip(1).filter(|a| a != "--gui" && a != "--tui").collect();
-    if std::env::var_os("COPILOT_CANVAS_OTHER_CLIENT_DRYRUN").is_some() {
+    if canvas_core::platform::other_client_dryrun().is_some() {
         return canvas_core::platform::spawn_client(&exe, &args, false);
     }
     let status = std::process::Command::new(&exe).args(&args).status().with_context(|| format!("cannot start {}", exe.display()))?;

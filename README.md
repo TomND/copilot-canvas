@@ -368,11 +368,15 @@ and `docs/REMOTE.md`.
   knowledge of a per-start token (HMAC) so neither can be impersonated. The
   client connects with identification-only impersonation rights.
 - **Remote mode** (off until you pair a client): the service listens on
-  loopback only, behind a private Dev Tunnel (owner sign-in). Each paired
-  client has its own secret (one-time pairing code; DPAPI on both sides;
-  `remote revoke` drops it at once) and both sides prove it per connection.
-  Remote links never execute anything: URLs open at home, the Cloud PC's
-  files in VS Code through its tunnel or in a read-only viewer.
+  loopback only (bound exclusively), behind a private Dev Tunnel (owner
+  sign-in). Each paired client has its own secret (a one-time 12-character
+  pairing code shown as `ABCD-EFGH-JKMN`, which the service proves it knows
+  before the client does; DPAPI on both sides; `remote revoke` drops it at
+  once) and both sides prove it per connection. Over TCP the service token
+  only works for your own processes. A paired client can do what you can on
+  the Cloud PC: pair only your own machines (security notes in
+  docs/REMOTE.md). Remote links never execute anything: URLs open at home, the
+  Cloud PC's files in VS Code through its tunnel or in a read-only viewer.
 - Stop is graceful (Ctrl+D, then the whole process tree after 5 s). The service
   sits in a kill-on-close job so nothing is orphaned if it dies.
 - **Idle auto-stop** (*Settings › Performance › Stop idle sessions*: never /

@@ -62,6 +62,18 @@ impl Settings {
         std::fs::read_to_string(path(home)).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
     }
 
+    /// Settings to change and save: a missing file is the defaults, a file
+    /// that cannot be read or parsed is an error (it is never overwritten).
+    pub fn load_checked(home: &Path) -> anyhow::Result<Self> {
+        use anyhow::Context;
+        let file = path(home);
+        match std::fs::read_to_string(&file) {
+            Ok(text) => serde_json::from_str(&text).with_context(|| format!("{} is not valid settings JSON; fix or remove it first", file.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) => Err(error).with_context(|| format!("cannot read {}", file.display())),
+        }
+    }
+
     pub fn save(&self, home: &Path) -> std::io::Result<()> {
         let target = path(home);
         let temp = target.with_extension(format!("json.{}.tmp", std::process::id()));
@@ -111,6 +123,12 @@ mod tests {
         changed.remote.listen = Some("127.0.0.1:47600".into());
         changed.save(&home).unwrap();
         assert_eq!(Settings::load(&home), changed);
+        assert_eq!(Settings::load_checked(&home).unwrap(), changed);
+        std::fs::write(path(&home), "{ \"remote\": { \"listen\": ").unwrap();
+        assert_eq!(Settings::load(&home), Settings::default(), "readers fall back to the defaults");
+        assert!(Settings::load_checked(&home).unwrap_err().to_string().contains("not valid settings JSON"), "writers stop");
         std::fs::remove_dir_all(home).unwrap();
+        let missing = std::env::temp_dir().join(format!("cc-settings-{}", uuid::Uuid::new_v4()));
+        assert_eq!(Settings::load_checked(&missing).unwrap(), Settings::default());
     }
 }

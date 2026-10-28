@@ -1,9 +1,13 @@
 //! Images on the GPU: a textured-rectangle pipeline and a texture cache keyed
 //! by image (terminal images by their serial, the paste preview by its own).
-//! Textures not drawn for [`EVICT_AFTER`] are freed, and the least recently
-//! drawn go first when the cache passes [`MAX_TEXTURE_BYTES`].
+//! Textures not drawn for [`EVICT_AFTER`] are freed. The cache never holds
+//! more than [`MAX_TEXTURE_BYTES`]: before a texture is created, the least
+//! recently drawn ones not used in this frame make room, and an image that
+//! still does not fit is skipped. Images wider or taller than the device
+//! allows (at most [`MAX_SIDE`]) are dropped, and so is one whose texture
+//! the GPU refuses (an error scope catches it instead of losing the device).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -18,6 +22,36 @@ pub const EVICT_AFTER: Duration = Duration::from_secs(20);
 pub const MAX_TEXTURE_BYTES: usize = 256 << 20;
 /// Largest image decoded (width × height).
 const MAX_PIXELS: u64 = 4096 * 4096;
+/// Longest image side kept (the service sends nothing longer).
+pub const MAX_SIDE: u32 = 8192;
+
+/// Whether an image of this size may become a texture on a device whose
+/// textures are at most `max_side` wide and tall.
+pub fn size_ok(width: u32, height: u32, max_side: u32) -> bool {
+    let side = max_side.min(MAX_SIDE);
+    width > 0 && height > 0 && width <= side && height <= side && width as u64 * height as u64 <= MAX_PIXELS
+}
+
+/// Which cached textures (key, bytes, last drawn) to free so `extra` more
+/// bytes fit in `budget` next to `total`, oldest first and never one in
+/// `in_use`; `None` when that is not enough.
+fn evictions(entries: &[(u64, usize, Instant)], in_use: &HashSet<u64>, total: usize, extra: usize, budget: usize) -> Option<Vec<u64>> {
+    if extra > budget {
+        return None;
+    }
+    let mut candidates: Vec<&(u64, usize, Instant)> = entries.iter().filter(|(key, ..)| !in_use.contains(key)).collect();
+    candidates.sort_by_key(|(_, _, used)| *used);
+    let mut freed = Vec::new();
+    let mut total = total;
+    for (key, bytes, _) in candidates {
+        if total + extra <= budget {
+            break;
+        }
+        total -= bytes;
+        freed.push(*key);
+    }
+    (total + extra <= budget).then_some(freed)
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -82,6 +116,10 @@ pub struct ImagePipeline {
     instances: wgpu::Buffer,
     capacity: usize,
     textures: HashMap<u64, Texture>,
+    /// Bytes of the cached textures.
+    bytes: usize,
+    /// Longest texture side the device takes.
+    max_side: u32,
     /// Instances of the current frame, in drawing order.
     queued: Vec<(u64, Instance)>,
 }
@@ -151,7 +189,8 @@ impl ImagePipeline {
         });
         let capacity = 64;
         let instances = Self::buffer(device, capacity);
-        Self { pipeline, globals, globals_group, texture_layout, instances, capacity, textures: HashMap::new(), queued: Vec::new() }
+        let max_side = device.limits().max_texture_dimension_2d;
+        Self { pipeline, globals, globals_group, texture_layout, instances, capacity, textures: HashMap::new(), bytes: 0, max_side, queued: Vec::new() }
     }
 
     fn buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
@@ -169,42 +208,80 @@ impl ImagePipeline {
     }
 
     /// Queues an image for this frame (uploading its texture if needed);
-    /// returns its index for [`ImagePipeline::draw`].
+    /// returns its index for [`ImagePipeline::draw`]. `None`: the image is
+    /// skipped (too large for the device or the budget, or refused by the GPU).
     pub fn queue(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, item: &ImageItem) -> Option<u32> {
-        if item.width == 0 || item.height == 0 || item.rgba.len() < item.width as usize * item.height as usize * 4 {
+        if !size_ok(item.width, item.height, self.max_side) || item.rgba.len() < item.width as usize * item.height as usize * 4 {
             return None;
         }
         let now = Instant::now();
         if let Some(texture) = self.textures.get_mut(&item.key) {
             texture.used = now;
         } else {
-            let size = wgpu::Extent3d { width: item.width, height: item.height, depth_or_array_layers: 1 };
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("image"),
-                size,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-                &item.rgba[..item.width as usize * item.height as usize * 4],
-                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(item.width * 4), rows_per_image: Some(item.height) },
-                size,
-            );
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("image"),
-                layout: &self.texture_layout,
-                entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }],
-            });
-            self.textures.insert(item.key, Texture { bind_group, bytes: (item.width * item.height * 4) as usize, used: now, _texture: texture });
+            let bytes = item.width as usize * item.height as usize * 4;
+            self.make_room(bytes)?;
+            let texture = self.upload_texture(device, queue, item)?;
+            self.bytes += bytes;
+            self.textures.insert(item.key, Texture { bind_group: texture.1, bytes, used: now, _texture: texture.0 });
         }
         self.queued.push((item.key, Instance { rect: item.rect, uv: item.uv, clip: item.clip }));
         Some(self.queued.len() as u32 - 1)
+    }
+
+    /// Frees the least recently drawn textures not used in this frame until
+    /// `bytes` more fit in [`MAX_TEXTURE_BYTES`]; `None` when they cannot.
+    fn make_room(&mut self, bytes: usize) -> Option<()> {
+        let entries: Vec<(u64, usize, Instant)> = self.textures.iter().map(|(key, t)| (*key, t.bytes, t.used)).collect();
+        let in_use: HashSet<u64> = self.queued.iter().map(|(key, _)| *key).collect();
+        for key in evictions(&entries, &in_use, self.bytes, bytes, MAX_TEXTURE_BYTES)? {
+            self.forget(key);
+        }
+        Some(())
+    }
+
+    fn forget(&mut self, key: u64) {
+        if let Some(texture) = self.textures.remove(&key) {
+            self.bytes -= texture.bytes;
+        }
+    }
+
+    /// Creates and fills an image's texture inside error scopes, so a
+    /// texture the GPU refuses (validation, out of memory) only drops this
+    /// image.
+    fn upload_texture(&self, device: &wgpu::Device, queue: &wgpu::Queue, item: &ImageItem) -> Option<(wgpu::Texture, wgpu::BindGroup)> {
+        let out_of_memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let size = wgpu::Extent3d { width: item.width, height: item.height, depth_or_array_layers: 1 };
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("image"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            &item.rgba[..item.width as usize * item.height as usize * 4],
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(item.width * 4), rows_per_image: Some(item.height) },
+            size,
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("image"),
+            layout: &self.texture_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }],
+        });
+        // Popped innermost first; on native the errors are known at once.
+        let invalid = pollster::block_on(validation.pop());
+        let exhausted = pollster::block_on(out_of_memory.pop());
+        if let Some(error) = invalid.or(exhausted) {
+            crate::crashlog::event("gpu", &format!("an image of {}x{} was dropped: {error}", item.width, item.height));
+            return None;
+        }
+        Some((texture, bind_group))
     }
 
     /// Uploads the queued instances (once per frame, before drawing).
@@ -239,22 +316,21 @@ impl ImagePipeline {
     pub fn end_frame(&mut self) {
         self.queued.clear();
         let now = Instant::now();
-        self.textures.retain(|_, t| now.duration_since(t.used) < EVICT_AFTER);
-        let mut total: usize = self.textures.values().map(|t| t.bytes).sum();
-        while total > MAX_TEXTURE_BYTES {
-            let Some((&oldest, _)) = self.textures.iter().min_by_key(|(_, t)| t.used) else { break };
-            total -= self.textures.remove(&oldest).map(|t| t.bytes).unwrap_or(0);
+        let stale: Vec<u64> = self.textures.iter().filter(|(_, t)| now.duration_since(t.used) >= EVICT_AFTER).map(|(key, _)| *key).collect();
+        for key in stale {
+            self.forget(key);
         }
     }
 }
 
-/// A PNG file as straight RGBA rows; `None` when it does not decode or is too large.
+/// A PNG file as straight RGBA rows; `None` when it does not decode or is
+/// too large ([`size_ok`] with the largest side the service sends).
 pub fn decode_png(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().ok()?;
     let (width, height) = (reader.info().width, reader.info().height);
-    if width == 0 || height == 0 || width as u64 * height as u64 > MAX_PIXELS {
+    if !size_ok(width, height, MAX_SIDE) {
         return None;
     }
     let mut buffer = vec![0; reader.output_buffer_size()?];
@@ -326,5 +402,42 @@ mod tests {
         assert_eq!((w, h, pixels.len()), (40, 20, 40 * 20 * 4));
         let (w, h, _) = thumbnail(10, 10, &rgba[..400], 40, 40);
         assert_eq!((w, h), (10, 10), "never enlarged");
+    }
+
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut encoder = png::Encoder::new(&mut out, width, height);
+        encoder.set_color(png::ColorType::Grayscale);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.write_header().unwrap().write_image_data(&vec![7; (width * height) as usize]).unwrap();
+        out
+    }
+
+    #[test]
+    fn images_wider_or_taller_than_a_texture_are_dropped() {
+        assert!(size_ok(8192, 1, 8192) && size_ok(4096, 4096, 16384) && size_ok(1, 2048, 2048));
+        assert!(!size_ok(8193, 1, 16384), "never longer than the service sends");
+        assert!(!size_ok(1, 4097, 4096), "the device's own limit counts");
+        assert!(!size_ok(8192, 2049, 8192) && !size_ok(0, 1, 8192));
+        assert_eq!(decode_png(&png(MAX_SIDE, 1)).map(|(w, h, _)| (w, h)), Some((MAX_SIDE, 1)));
+        assert!(decode_png(&png(MAX_SIDE + 1, 1)).is_none());
+        assert!(decode_png(&png(1, MAX_SIDE + 1)).is_none());
+        let wide = ServiceMsg::Image { term: "t".into(), image_id: 1, width: 0, height: 0, rgba_or_png: png(MAX_SIDE + 1, 1), format: IMAGE_PNG };
+        assert!(decode_message(wide).is_none(), "the message is dropped before it reaches the GPU");
+    }
+
+    #[test]
+    fn the_texture_budget_frees_old_textures_before_an_upload_or_skips_it() {
+        let start = Instant::now();
+        let at = |s: u64| start + Duration::from_secs(s);
+        let entries = [(1, 40, at(3)), (2, 30, at(1)), (3, 20, at(2))];
+        let none = HashSet::new();
+        assert_eq!(evictions(&entries, &none, 90, 10, 100), Some(vec![]), "it fits");
+        assert_eq!(evictions(&entries, &none, 90, 30, 100), Some(vec![2]), "the least recently drawn goes first");
+        assert_eq!(evictions(&entries, &none, 90, 70, 100), Some(vec![2, 3, 1]));
+        let drawn_now: HashSet<u64> = [2].into();
+        assert_eq!(evictions(&entries, &drawn_now, 90, 30, 100), Some(vec![3]), "never one this frame draws");
+        assert_eq!(evictions(&entries, &drawn_now, 90, 80, 100), None, "skipped: it cannot fit this frame");
+        assert_eq!(evictions(&[], &none, 0, 101, 100), None, "larger than the whole budget");
     }
 }

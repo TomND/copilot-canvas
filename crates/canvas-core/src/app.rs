@@ -625,7 +625,22 @@ impl App {
         let session = self.conn.session.clone();
         let tx = self.app_tx.clone();
         let spawned = std::thread::Builder::new().name("reconnect".into()).spawn(move || {
-            let result = crate::conn::reconnect(&target, &options, &session, |_, _| true).map_err(|e| format!("{e:#}"));
+            // A refusal keeps the client retrying; the banner says why.
+            let mut shown = None;
+            let result = crate::conn::reconnect(&target, &options, &session, |_, error| {
+                let reason = crate::conn::retry_reason(error);
+                if reason != shown {
+                    shown = reason;
+                    let _ = tx.send(AppEvent::Run(Box::new(move |app: &mut App| {
+                        if app.reconnecting {
+                            app.banner = Some(reason.map_or_else(|| "Offline — reconnecting…".to_owned(), |why| format!("Offline — reconnecting… ({why})")));
+                            app.needs_draw = true;
+                        }
+                    })));
+                }
+                true
+            })
+            .map_err(|e| format!("{e:#}"));
             let _ = tx.send(AppEvent::Reconnected(result));
         });
         if spawned.is_err() {
@@ -1573,7 +1588,14 @@ impl App {
             }
             ServiceMsg::Placements { term, placements } => self.views.entry(term).or_default().set_placements(placements),
             ServiceMsg::Notification { term, title, body } => self.on_notification(&term, &title, &body),
-            ServiceMsg::Ready { .. } | ServiceMsg::Ready8 { .. } | ServiceMsg::Heartbeat { .. } | ServiceMsg::Challenge { .. } | ServiceMsg::Paired { .. } => {}
+            ServiceMsg::Ready { .. }
+            | ServiceMsg::Ready8 { .. }
+            | ServiceMsg::Heartbeat { .. }
+            | ServiceMsg::Challenge { .. }
+            | ServiceMsg::Paired { .. }
+            | ServiceMsg::PairChallenge { .. }
+            | ServiceMsg::Refusal { .. }
+            | ServiceMsg::Welcome { .. } => {}
         }
     }
 

@@ -59,6 +59,11 @@ impl Instance {
         self.home.join(format!("service-{}.port", self.name))
     }
 
+    /// Why the running service could not listen for remote clients (while that is so).
+    pub fn listen_error_path(&self) -> PathBuf {
+        self.home.join(format!("service-{}.listen-error", self.name))
+    }
+
     pub fn bin_dir(&self) -> PathBuf {
         self.home.join("bin")
     }
