@@ -78,6 +78,11 @@ pub fn mcp_config(user_config: &Path, off: &[String]) -> Result<serde_json::Valu
     Ok(serde_json::json!({ "mcpServers": servers }))
 }
 
+/// The per-session `--mcp-config` file under the canvas `home` (`<home>/mcp`).
+fn mcp_file(home: Option<&Path>, session: &str) -> PathBuf {
+    home.map(|h| h.join("mcp")).unwrap_or_else(|| std::env::temp_dir().join("copilot-canvas-mcp")).join(format!("claude-{session}.json"))
+}
+
 impl Claude {
     /// The command for a launch against a given Claude Code home.
     pub fn command_in(&self, home: &ClaudeHome, id: &str, launch: &AgentLaunch, integration: &Integration) -> Result<Command> {
@@ -147,9 +152,9 @@ impl Claude {
         if !launch.mcp_off.is_empty() {
             // Only the servers written to this file start (user scope minus the ones turned off).
             let config = mcp_config(&home.user_config, &launch.mcp_off)?;
-            let folder = integration.plugin_dir.as_ref().and_then(|p| p.parent()).map(|h| h.join("mcp")).unwrap_or_else(|| std::env::temp_dir().join("copilot-canvas-mcp"));
+            let file = mcp_file(integration.plugin_dir.as_ref().and_then(|p| p.parent()), session);
+            let folder = file.parent().map(Path::to_path_buf).unwrap_or_default();
             std::fs::create_dir_all(&folder).with_context(|| format!("cannot create {}", folder.display()))?;
-            let file = folder.join(format!("claude-{session}.json"));
             std::fs::write(&file, serde_json::to_string_pretty(&config)?).with_context(|| format!("cannot write {}", file.display()))?;
             args.extend(["--strict-mcp-config".to_owned(), "--mcp-config".to_owned(), file.display().to_string()]);
         }
@@ -214,6 +219,11 @@ impl Provider for Claude {
 
     fn history_root(&self) -> PathBuf {
         claude_dir().join("projects")
+    }
+
+    fn terminal_exited(&self, id: &str, home: &Path) {
+        // The session's MCP choice is written again on every launch.
+        let _ = std::fs::remove_file(mcp_file(Some(home), id));
     }
 }
 
@@ -295,6 +305,8 @@ mod tests {
         assert_eq!(servers.keys().collect::<Vec<_>>(), ["blender"]);
         assert_eq!(servers["blender"]["env"]["K"], "v", "the remaining servers keep their configuration");
         assert_eq!(args[2..4], ["--add-dir", r"C:\extra"]);
+        Claude.terminal_exited(ID, &root.join("home"));
+        assert!(!Path::new(&args[at + 2]).exists(), "the per-session file is removed when its terminal exits");
         // No servers turned off: Claude's own MCP configuration applies.
         let plain = AgentLaunch { mcp_off: Vec::new(), ..launch };
         assert!(!Claude.command_in(&home, ID, &plain, &integration).unwrap().args.iter().any(|a| a.contains("mcp")));

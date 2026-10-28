@@ -69,12 +69,30 @@ pub fn discover_new_session(cwd: &str, since_ms: u64) -> Option<String> {
     discover_in(&open(&db_path()).ok()?, cwd, since_ms)
 }
 
+/// Every top-level session created in `cwd` at or after `since_ms`, oldest
+/// first: (id, created ms).
+pub fn discover_new_sessions(cwd: &str, since_ms: u64) -> Vec<(String, u64)> {
+    open(&db_path()).map(|c| new_sessions_in(&c, cwd, since_ms)).unwrap_or_default()
+}
+
 pub fn discover_in(connection: &Connection, cwd: &str, since_ms: u64) -> Option<String> {
-    let mut statement = connection
-        .prepare_cached("SELECT id, directory FROM session WHERE parent_id IS NULL AND time_created >= ?1 ORDER BY time_created ASC, id ASC")
-        .ok()?;
-    let rows = statement.query_map([since_ms as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).ok()?;
-    rows.filter_map(|r| r.ok()).find(|(_, dir)| same_dir(dir, cwd)).map(|(id, _)| id)
+    new_sessions_in(connection, cwd, since_ms).into_iter().next().map(|(id, _)| id)
+}
+
+fn new_sessions_in(connection: &Connection, cwd: &str, since_ms: u64) -> Vec<(String, u64)> {
+    let Ok(mut statement) = connection
+        .prepare_cached("SELECT id, directory, time_created FROM session WHERE parent_id IS NULL AND time_created >= ?1 ORDER BY time_created ASC, id ASC")
+    else {
+        return Vec::new();
+    };
+    let row = |r: &rusqlite::Row| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?.max(0) as u64));
+    let Ok(rows) = statement.query_map([since_ms as i64], row) else { return Vec::new() };
+    rows.filter_map(|r| r.ok()).filter(|(_, dir, _)| same_dir(dir, cwd)).map(|(id, _, created)| (id, created)).collect()
+}
+
+/// Number of top-level sessions in the database (for `doctor`).
+pub fn root_session_count(path: &Path) -> Option<u64> {
+    open(path).ok()?.query_row("SELECT count(*) FROM session WHERE parent_id IS NULL", [], |r| r.get::<_, i64>(0)).ok().map(|n| n.max(0) as u64)
 }
 
 /// The session exists in the database.
@@ -855,6 +873,8 @@ mod tests {
         db.session("ses_later", None, "d", 7_000);
         let connection = open(&db.path).unwrap();
         assert_eq!(discover_in(&connection, r"C:\Repos\demo\", 2_000).as_deref(), Some("ses_mine"));
+        assert_eq!(new_sessions_in(&connection, r"C:\Repos\demo\", 2_000), [("ses_mine".to_owned(), 5_000), ("ses_later".to_owned(), 7_000)]);
+        assert_eq!(root_session_count(&db.path), Some(3));
         assert_eq!(discover_in(&connection, r"C:\other", 0), None);
         assert!(session_exists(&db.path, "ses_mine"));
         assert!(!session_exists(&db.path, "ses_nope"));

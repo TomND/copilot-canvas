@@ -87,6 +87,9 @@ pub struct PassiveSpec {
     pub rollover_runs: u32,
     pub max_runs_per_day: u32,
     pub mcp_off: Vec<String>,
+    /// Agent CLI that runs it ("copilot", "opencode", "claude"; empty: Copilot).
+    #[serde(default)]
+    pub agent: String,
 }
 
 /// An event on the bus. CLI-written inbox files may omit the service-filled fields.
@@ -143,6 +146,10 @@ pub struct PassiveState {
     pub last_error: String,
     /// The session exists on disk (it has run before).
     pub started: bool,
+    /// The agent's own id of the current conversation when it differs from
+    /// `session_id` (OpenCode names its sessions itself).
+    #[serde(default)]
+    pub native_id: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -184,6 +191,10 @@ pub struct PassiveView {
     pub next_run_ms: u64,
     pub runs_today: u32,
     pub last_error: String,
+    /// The agent's own id of the current conversation when it differs from
+    /// `session_id` (OpenCode).
+    #[serde(default)]
+    pub native_id: String,
 }
 
 /// Local calendar time (for daily schedules).
@@ -425,6 +436,7 @@ impl BusState {
                     next_run_ms: state.next_run_ms(spec, now),
                     runs_today: state.runs_today,
                     last_error: state.last_error.clone(),
+                    native_id: state.native_id.clone(),
                 },
             );
         }

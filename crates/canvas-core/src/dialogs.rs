@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use crate::agents::AgentKind;
 use crate::side::{DefaultField, SideView};
 use crate::copilot_cfg::Kind;
 use crate::git::GitInfo;
@@ -217,6 +218,7 @@ pub enum NsField {
     Base,
     NewBranch,
     WtPath,
+    Agent,
     Context,
     Mcp,
     Prompt,
@@ -244,10 +246,12 @@ pub struct NewSession {
     pub error: Option<String>,
     /// MCP servers the new session starts without.
     pub mcp_off: Vec<String>,
-    /// A subsession of a Copilot session with history can fork its conversation.
+    /// A subsession of a session with history can fork its conversation.
     pub can_fork: bool,
     /// Start with the parent's conversation (like Copilot's `/fork`).
     pub fork: bool,
+    /// The agent CLI the session runs.
+    pub agent: AgentKind,
 }
 
 impl NewSession {
@@ -259,6 +263,7 @@ impl NewSession {
                 fields.extend([NsField::Base, NsField::NewBranch, NsField::WtPath]);
             }
         }
+        fields.push(NsField::Agent);
         if self.can_fork {
             fields.push(NsField::Context);
         }
@@ -336,6 +341,8 @@ pub enum McpTarget {
 #[derive(Clone, Debug)]
 pub struct McpPicker {
     pub target: McpTarget,
+    /// Whose servers are listed (the session's agent).
+    pub agent: AgentKind,
     pub off: Vec<String>,
     pub sel: usize,
 }
@@ -388,7 +395,7 @@ impl Grouping {
         match self {
             Grouping::None => "no groups",
             Grouping::Folder => "group by folder",
-            Grouping::Client => "group by client (CLI / VS Code)",
+            Grouping::Client => "group by agent / client",
         }
     }
     pub fn next(self) -> Self {
@@ -492,10 +499,15 @@ mod tests {
             mcp_off: Vec::new(),
             can_fork: false,
             fork: false,
+            agent: AgentKind::OpenCode,
         };
         assert!(!dialog.fields().contains(&NsField::Base));
+        assert!(dialog.fields().contains(&NsField::Agent), "every session chooses its agent");
         dialog.git = GitState::Repo(GitInfo { root: PathBuf::from("C:\\r"), branch: None, branches: vec![], local_count: 0 });
         assert!(dialog.fields().contains(&NsField::WtPath));
+        // Worktree fields come before the agent (the Tab order selftests rely on).
+        let fields = dialog.fields();
+        assert!(fields.iter().position(|f| *f == NsField::WtPath) < fields.iter().position(|f| *f == NsField::Agent));
         dialog.focus = NsField::Cancel;
         dialog.cycle(true);
         assert_eq!(dialog.focus, NsField::Name);

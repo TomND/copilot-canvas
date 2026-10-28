@@ -44,12 +44,12 @@ fn view_title(app: &App) -> String {
 fn hints(view: SideView) -> &'static str {
     match view {
         SideView::Automations => "Enter details · Space on/off",
-        SideView::Plugins => "Space on/off · Del uninstall",
-        SideView::Mcp => "Space on/off · Del remove",
-        SideView::Skills => "Space on/off · Del remove",
-        SideView::Agents => "Enter details",
+        SideView::Plugins => "Space on/off · Del uninstall · A agent",
+        SideView::Mcp => "Space on/off · Del remove · A agent",
+        SideView::Skills => "Space on/off · Del remove · A agent",
+        SideView::Agents => "Enter details · A agent",
         SideView::VsCode => "Enter run / toggle",
-        SideView::Settings => "Enter edit",
+        SideView::Settings => "Enter edit · A agent",
         SideView::Sessions => "",
     }
 }
@@ -57,7 +57,7 @@ fn hints(view: SideView) -> &'static str {
 pub fn draw_list(app: &mut App, buf: &mut Buffer, area: Rect) {
     fill(buf, area.x as i32, area.y as i32, area.width as i32, area.height as i32, Style::default().bg(PANEL), area);
     let focused = app.focus == Focus::Sidebar;
-    let busy = app.cli_busy.is_some() || app.config_loading || app.automations_loading || app.vs_syncing;
+    let busy = app.cli_busy.is_some() || !app.configs_loading.is_empty() || app.automations_loading || app.vs_syncing;
     let title = view_title(app);
     let end = put(buf, area.x as i32 + 1, area.y as i32, &truncate(&title, area.width as usize - 3), bold(if focused { ACCENT } else { GRAY }).bg(PANEL), area);
     if busy {

@@ -340,6 +340,10 @@ impl App {
                 dialog.fork = !dialog.fork;
                 return Outcome::Keep;
             }
+            NsField::Agent if activate || matches!(key.code, KeyCode::Left | KeyCode::Right) => {
+                self.cycle_dialog_agent(dialog, key.code != KeyCode::Left);
+                return Outcome::Keep;
+            }
             NsField::Mcp if activate => {
                 self.modals.push(Modal::NewSession(Box::new(dialog.clone())));
                 self.open_mcp_picker(crate::dialogs::McpTarget::NewSession);
@@ -388,14 +392,14 @@ impl App {
 
     fn mcp_key(&mut self, picker: &mut crate::dialogs::McpPicker, key: KeyEvent) -> Outcome {
         let ctrl = key.modifiers.contains(Modifiers::CONTROL);
-        let choices = self.mcp_choices().unwrap_or_default();
-        let known = self.mcp_available();
+        let choices = self.mcp_choices(picker.agent).unwrap_or_default();
+        let known = self.mcp_available(picker.agent);
         let names = self.doc.mcp.names();
         match key.code {
             KeyCode::Esc => Outcome::Close,
             KeyCode::Enter => {
                 let target = picker.target.clone();
-                self.apply_mcp_choice(&target, picker.off.clone());
+                self.apply_mcp_choice(&target, picker.agent, picker.off.clone());
                 Outcome::Close
             }
             KeyCode::Char(' ') => {
@@ -662,7 +666,7 @@ impl App {
             }
             (Some(Modal::NewSession(dialog)), Hit::Field(field)) => {
                 dialog.focus = field;
-                if matches!(field, NsField::Browse | NsField::Recent | NsField::Mode | NsField::Base | NsField::Context | NsField::Mcp | NsField::Create | NsField::Cancel) {
+                if matches!(field, NsField::Browse | NsField::Recent | NsField::Mode | NsField::Base | NsField::Agent | NsField::Context | NsField::Mcp | NsField::Create | NsField::Cancel) {
                     self.modal_key(enter);
                 }
             }
@@ -715,8 +719,9 @@ impl App {
                     picker.sel = i;
                 }
             }
-            (Some(Modal::Mcp(_)), Hit::Chip(i)) => {
-                let known = self.mcp_available();
+            (Some(Modal::Mcp(picker)), Hit::Chip(i)) => {
+                let agent = picker.agent;
+                let known = self.mcp_available(agent);
                 let off = self.doc.mcp.names().get(i).and_then(|name| self.doc.mcp.preset_off(name, &known));
                 if let (Some(off), Some(Modal::Mcp(picker))) = (off, self.modals.last_mut()) {
                     picker.off = off;

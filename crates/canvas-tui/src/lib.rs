@@ -110,7 +110,7 @@ fn demo_doc(cwd: &str) -> Doc {
         command: shell.clone(),
         fresh: true,
         automation: None,
-        synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false,
+        synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None,
     };
     let mut doc = Doc::default();
     doc.nodes.push(session("demo-main", "Build session canvas", 2, 2));
@@ -151,8 +151,10 @@ pub fn run(options: Options) -> Result<()> {
         // Same protocol, older build: terminal fixes only apply after a restart.
         (conn, resume) = upgrade_service(&options.instance, conn, false)?;
     }
-    // Replaced an older service: undo the `mouse: false` it forced on Copilot.
-    let mouse_restored = outdated && !options.demo && conn.service_build == canvas_core::paths::build_id() && canvas_core::copilot_cfg::restore_mouse().unwrap_or(false);
+    // Replaced an older service: undo the `mouse: false` it forced on Copilot (when installed).
+    let copilot = canvas_core::agents::AgentKind::Copilot.provider().program().is_ok();
+    let mouse_restored =
+        outdated && !options.demo && copilot && conn.service_build == canvas_core::paths::build_id() && canvas_core::copilot_cfg::restore_mouse().unwrap_or(false);
 
     let previous_hook = std::panic::take_hook();
     let crash_log = home.join("crash.log");

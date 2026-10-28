@@ -69,6 +69,13 @@ pub struct Node {
     /// Do not type messages from passive sessions into this session.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_messages: bool,
+    /// Agent CLI of a session: "copilot", "opencode" or "claude" (`None`: Copilot).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// The agent's own session id when it differs from `id` (OpenCode names
+    /// its sessions itself, on the first prompt).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session: Option<String>,
 }
 
 /// Passive session settings (the service keeps its run state).
@@ -331,6 +338,10 @@ pub struct Doc {
     /// The default automation doctor was added once (removing it is respected).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub doctor_created: bool,
+    /// Agent CLI for new sessions on this canvas (`None`: the machine's
+    /// setting, else the first installed agent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_agent: Option<String>,
 }
 
 /// MCP server choice for new sessions: the last one used and named presets.
@@ -424,6 +435,7 @@ impl Default for Doc {
             mcp: McpPrefs::default(),
             automations_dir: None,
             doctor_created: false,
+            default_agent: None,
         }
     }
 }
@@ -851,7 +863,7 @@ pub fn migrate_v1(path: &Path) -> Option<Doc> {
             command: None,
             fresh: false,
             automation: None,
-            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false,
+            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None,
         });
     }
     // The prototype stacked boxes 7 rows apart; v2 boxes are 4 tall, so keep positions.
@@ -865,11 +877,27 @@ mod tests {
     use super::*;
 
     fn session(id: &str, x: i32, y: i32) -> Node {
-        Node { id: id.into(), kind: NodeKind::Session, name: id.into(), x, y, cwd: None, parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false }
+        Node { id: id.into(), kind: NodeKind::Session, name: id.into(), x, y, cwd: None, parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None }
     }
 
     fn agent(id: &str, parent: &str, x: i32, y: i32) -> Node {
         Node { kind: NodeKind::Agent, parent: Some(parent.into()), ..session(id, x, y) }
+    }
+
+    #[test]
+    fn agent_fields_default_for_old_canvases_and_are_omitted_when_unset() {
+        let old: Doc = serde_json::from_str(r#"{"version":2,"nodes":[{"id":"a","kind":"session","name":"A","x":0,"y":0}],"groups":[],"view":{"x":0,"y":0}}"#).unwrap();
+        assert_eq!((old.nodes[0].agent.as_deref(), old.nodes[0].agent_session.as_deref(), old.default_agent.as_deref()), (None, None, None));
+        let text = serde_json::to_string(&old).unwrap();
+        assert!(!text.contains("agent_session") && !text.contains("default_agent"), "{text}");
+        let node = serde_json::to_value(&old.nodes[0]).unwrap();
+        assert!(node.get("agent").is_none(), "{node}");
+        let mut doc = old;
+        doc.nodes[0].agent = Some("opencode".into());
+        doc.nodes[0].agent_session = Some("ses_x".into());
+        doc.default_agent = Some("claude".into());
+        let back: Doc = serde_json::from_str(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(back, doc);
     }
 
     #[test]

@@ -139,6 +139,9 @@ pub enum ServiceMsg {
     Bus { json: String },
     /// One event with the sessions it was delivered to (for the canvas pulse).
     BusEvent { json: String },
+    /// Protocol 8: the agent session a terminal runs became known (OpenCode
+    /// creates its session on the first prompt): terminal id → agent's id.
+    AgentSession { id: String, native: String },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]

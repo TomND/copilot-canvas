@@ -12,10 +12,11 @@ use std::time::Duration;
 
 use crossbeam_channel::Receiver;
 
-use super::{Shared, lock, log, session_live};
+use super::{Shared, lock, log};
+use crate::agents::AgentKind;
 use crate::bus::{self, BusState, Event, Mail, PassiveSpec, Routing, Target};
 use crate::paths::now_ms;
-use crate::protocol::{Activity, Input, Key, LaunchKind, ServiceMsg};
+use crate::protocol::{Activity, AgentLaunch, Input, Key, LaunchKind, ServiceMsg};
 
 pub fn bus_dir(home: &Path) -> PathBuf {
     home.join("bus")
@@ -79,7 +80,8 @@ fn idle(shared: &Shared, session: &str) -> bool {
     if lock(&shared.input_at).get(session).is_some_and(|t| now_ms().saturating_sub(*t) < 20_000) {
         return false;
     }
-    match lock(&shared.sessions).get(session) {
+    let native = shared.native_of(session);
+    match lock(&shared.sessions).get(&native) {
         Some(summary) => summary.pending == 0 && summary.activity != Activity::Working,
         None => true,
     }
@@ -140,7 +142,7 @@ fn write_context(shared: &Shared, routing: &Routing, group: &bus::RouteGroup, st
     let sessions = lock(&shared.sessions).clone();
     for (id, _) in routing.members.iter().filter(|(_, g)| **g == group.id) {
         let name = routing.names.get(id).cloned().unwrap_or_else(|| id.clone());
-        let summary = sessions.get(id);
+        let summary = sessions.get(&shared.native_of(id));
         let history = shared.instance.sessions_dir.join(id).join("events.jsonl");
         let (first, last) = digest(&history);
         text.push_str(&format!("\n## {name}\n- session: `{id}`\n"));
@@ -266,6 +268,7 @@ fn start_run(shared: &Shared, routing: &Routing, spec: &PassiveSpec, state: &mut
     let mut fresh = !s.started;
     if s.needs_rollover(spec) {
         s.session_id = uuid::Uuid::new_v4().to_string();
+        s.native_id.clear();
         s.episode += 1;
         s.runs_since_rollover = 0;
         s.started = false;
@@ -291,29 +294,34 @@ fn start_run(shared: &Shared, routing: &Routing, spec: &PassiveSpec, state: &mut
         }
         return;
     }
-    if session_live(&shared.instance.sessions_dir, &session) {
+    let kind = AgentKind::parse(&spec.agent).unwrap_or(AgentKind::Copilot);
+    let native = (!s.native_id.is_empty()).then(|| s.native_id.clone());
+    if kind.provider().is_live(native.as_deref().unwrap_or(&session)) {
         // Open in another terminal or VS Code: try later.
         s.pending = events;
         s.retry_at_ms = now + 60_000;
         return;
     }
-    let plugin = shared.instance.home.join("plugin");
-    let mut args = vec!["-p".to_owned(), prompt, "--allow-all".into(), "--no-ask-user".into(), "--add-dir".into(), folder.display().to_string()];
-    if plugin.is_dir() {
-        args.extend(["--plugin-dir".into(), plugin.display().to_string()]);
-    }
-    args.extend(crate::doc::mcp_off_args(&spec.mcp_off));
-    let path = format!("{};{}", shared.instance.home.join("cli").display(), std::env::var("PATH").unwrap_or_default());
-    let env = vec![
-        ("COPILOT_CANVAS_HOME".to_owned(), shared.instance.home.display().to_string()),
-        ("COPILOT_CANVAS_SESSION".to_owned(), session.clone()),
-        ("COPILOT_CANVAS_PASSIVE".to_owned(), spec.key.clone()),
-        ("COPILOT_CANVAS_HOP".to_owned(), hop.to_string()),
-        ("PATH".to_owned(), path),
-    ];
-    let kind = LaunchKind::CopilotWith { new_name: fresh.then(|| spec.name.clone()), prompt: None, resume: !fresh, args, env };
-    match shared.launch(&session, kind, &folder.display().to_string(), 120, 40) {
+    // The agent's provider adds its headless flags (Copilot: -p … --allow-all
+    // --no-ask-user) and the canvas integration (skills, identity, PATH).
+    let launch = AgentLaunch {
+        agent: kind.id().to_owned(),
+        native_id: native.clone(),
+        resume: !fresh,
+        name: Some(spec.name.clone()),
+        allow_all: true,
+        mcp_off: spec.mcp_off.clone(),
+        group_folder: Some(folder.display().to_string()),
+        headless_prompt: Some(prompt),
+        env: vec![("COPILOT_CANVAS_PASSIVE".to_owned(), spec.key.clone()), ("COPILOT_CANVAS_HOP".to_owned(), hop.to_string())],
+        ..Default::default()
+    };
+    match shared.launch(&session, LaunchKind::Agent(Box::new(launch)), &folder.display().to_string(), 120, 40) {
         Ok(()) => {
+            if kind == AgentKind::OpenCode && native.is_none() {
+                // `opencode run` names its session itself: learn it from the folder.
+                shared.expect_session(&session, Some(folder.display().to_string()), false);
+            }
             s.running = true;
             s.started = true;
             s.inflight = events;
@@ -412,6 +420,11 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
             let s = state.passive.entry(spec.key.clone()).or_default();
             if s.session_id.is_empty() {
                 s.session_id = spec.session_id.clone();
+            }
+            if s.native_id.is_empty()
+                && let Some(native) = lock(&shared.agent_sessions).get(&s.session_id)
+            {
+                s.native_id = native.clone();
             }
             s.roll_day(&local.date());
             for event in s.due_timers(spec, now, local) {

@@ -109,6 +109,7 @@ impl App {
                     rollover_runs: p.rollover_runs,
                     max_runs_per_day: p.max_runs_per_day,
                     mcp_off: node.mcp_off.clone().unwrap_or_default(),
+                    agent: crate::agents::agent_of(node).id().to_owned(),
                 }),
                 None => {
                     if let Some(group) = self.doc.group_of(node) {
@@ -145,8 +146,24 @@ impl App {
             .collect();
         for (old, new) in moves {
             self.rename_node_id(&old, &new);
-            if let Some(p) = self.doc.node_mut(&new).and_then(|n| n.passive.as_mut()) {
-                p.episodes.push(old);
+            if let Some(node) = self.doc.node_mut(&new) {
+                // A fresh conversation: the agent names it anew.
+                node.agent_session = None;
+                if let Some(p) = node.passive.as_mut() {
+                    p.episodes.push(old);
+                }
+            }
+        }
+        // The agent's own id of the current conversation (OpenCode names it itself).
+        let natives: Vec<(String, String)> = self
+            .doc
+            .nodes
+            .iter()
+            .filter_map(|n| n.passive.as_ref().and_then(|p| snapshot.passive.get(&p.key)).filter(|v| !v.native_id.is_empty()).map(|v| (n.id.clone(), v.native_id.clone())))
+            .collect();
+        for (id, native) in natives {
+            if crate::app::apply_agent_session(&mut self.doc, &id, &native) {
+                self.mark_dirty();
             }
         }
         // Once a passive session has run, opening it resumes that conversation.
@@ -318,6 +335,9 @@ impl App {
                 ..Default::default()
             }),
             no_messages: false,
+            // Passive sessions (the automation doctor too) run the canvas's default agent.
+            agent: Some(self.default_agent().id().to_owned()),
+            agent_session: None,
         });
         self.mark_dirty();
         self.select_node(&id, false);

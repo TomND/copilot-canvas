@@ -40,7 +40,7 @@ impl App {
             if let Some(id) = self.focused_term.clone().filter(|id| self.owned_alive(id)) {
                 if text.is_empty() {
                     // The outer terminal pasted nothing (the clipboard holds an
-                    // image): let Copilot read the clipboard itself.
+                    // image): let the agent read the clipboard itself.
                     self.send_ctrl_v(&id);
                 } else {
                     self.send(ClientMsg::Input { id, input: Input::Paste(text) });
@@ -92,6 +92,15 @@ impl App {
                 KeyCode::Enter => return self.list_activate(self.list_sel),
                 KeyCode::Char(' ') => return self.list_toggle(self.list_sel),
                 KeyCode::Delete => return self.list_delete(self.list_sel),
+                KeyCode::Char('a' | 'A')
+                    if !ctrl
+                        && matches!(
+                            self.side_view,
+                            crate::side::SideView::Plugins | crate::side::SideView::Mcp | crate::side::SideView::Skills | crate::side::SideView::Agents | crate::side::SideView::Settings
+                        ) =>
+                {
+                    return self.cycle_config_agent();
+                }
                 KeyCode::Esc => {
                     if self.settings_group.take().is_none() {
                         self.right_detail = None;
@@ -312,7 +321,7 @@ impl App {
         };
         let ctrl = key.modifiers.contains(Modifiers::CONTROL);
         let is = |c: char| matches!(key.code, KeyCode::Char(k) if k.eq_ignore_ascii_case(&c));
-        // Like Windows Terminal: Ctrl+C copies while text is selected; otherwise it reaches Copilot.
+        // Like Windows Terminal: Ctrl+C copies while text is selected; otherwise it reaches the agent.
         if ctrl && is('c') && self.term_select.as_ref().is_some_and(|s| s.id == id) {
             self.copy_selection();
             self.term_select = None;

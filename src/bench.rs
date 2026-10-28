@@ -264,7 +264,7 @@ fn render_bench() -> Result<serde_json::Value> {
             command: None,
             fresh: false,
             automation: None,
-            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false,
+            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None,
         };
         let mut agents = Vec::new();
         for a in 0..12 {

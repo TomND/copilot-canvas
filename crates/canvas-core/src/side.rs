@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use ratatui::style::Color;
 
+use crate::agents::{AgentKind, agent_of};
 use crate::app::{App, AppEvent, Seed};
 use crate::dialogs::{Confirm, Modal, Pick, PickPurpose, Prompt, PromptPurpose, TextInput};
 use crate::doc::{CONTEXTS, EFFORTS, GRID_X, GRID_Y, Group, LaunchDefaults, MODES, Node, NodeKind, Rect, SESSION_H, SESSION_W};
@@ -137,6 +138,10 @@ pub enum ItemRef {
     AutomationsDir,
     VsAuto,
     VsMigrate,
+    /// Which agent's configuration the views show (Enter or A switches).
+    ConfigAgent,
+    /// The canvas's agent for new sessions.
+    DefaultAgent,
 }
 
 #[derive(Clone, Debug)]
@@ -210,7 +215,7 @@ impl App {
         self.doc.ui.sidebar_visible = true;
         match view {
             SideView::Plugins | SideView::Mcp | SideView::Skills | SideView::Agents | SideView::Settings => {
-                if self.config.is_none() && !self.config_loading {
+                if self.config.is_none() {
                     self.refresh_config();
                 }
             }
@@ -221,21 +226,56 @@ impl App {
         self.mark_dirty();
     }
 
+    /// Reloads the configuration the views show (`config_agent`'s).
     pub fn refresh_config(&mut self) {
-        if self.config_loading {
+        self.refresh_config_for(self.config_agent);
+    }
+
+    /// Loads an agent's configuration in the background.
+    pub fn refresh_config_for(&mut self, kind: AgentKind) {
+        if !self.configs_loading.insert(kind) {
             return;
         }
-        self.config_loading = true;
         let tx = self.app_tx.clone();
         if self.demo {
-            // Demo mode never runs Copilot.
-            let snapshot = copilot_cfg::Snapshot { errors: vec!["demo mode: Copilot CLI settings are not loaded".into()], ..Default::default() };
-            let _ = tx.send(AppEvent::Config(Box::new(snapshot)));
+            // Demo mode never runs an agent CLI.
+            let snapshot = copilot_cfg::Snapshot { errors: vec![format!("demo mode: {} settings are not loaded", kind.label())], ..Default::default() };
+            let _ = tx.send(AppEvent::Config(kind, Box::new(snapshot)));
             return;
         }
         std::thread::spawn(move || {
-            let _ = tx.send(AppEvent::Config(Box::new(copilot_cfg::snapshot())));
+            let snapshot = crate::agents::config::snapshot(kind).unwrap_or_else(|e| copilot_cfg::Snapshot { errors: vec![format!("{e:#}")], ..Default::default() });
+            let _ = tx.send(AppEvent::Config(kind, Box::new(snapshot)));
         });
+    }
+
+    /// A configuration arrived.
+    pub fn on_config(&mut self, kind: AgentKind, snapshot: copilot_cfg::Snapshot) {
+        self.configs_loading.remove(&kind);
+        if kind == self.config_agent {
+            self.config = Some(snapshot.clone());
+        }
+        self.agent_configs.insert(kind, snapshot);
+    }
+
+    /// Shows the next agent's configuration in the views.
+    pub fn cycle_config_agent(&mut self) {
+        let index = crate::agents::ALL.iter().position(|k| *k == self.config_agent).unwrap_or(0);
+        self.config_agent = crate::agents::ALL[(index + 1) % crate::agents::ALL.len()];
+        self.config = self.agent_configs.get(&self.config_agent).cloned();
+        self.right_detail = None;
+        if self.config.is_none() {
+            self.refresh_config();
+        }
+        self.needs_draw = true;
+    }
+
+    /// Whether `config_agent` supports a change; tells you when it does not.
+    fn supported(&mut self, ok: bool) -> bool {
+        if !ok {
+            self.notify(format!("Not supported for {}.", self.config_agent.label()), true);
+        }
+        ok
     }
 
     pub fn refresh_automations(&mut self) {
@@ -260,7 +300,12 @@ impl App {
     /// Builds the rows of the current non-session view.
     pub fn build_list(&self) -> Vec<ListRow> {
         let mut rows = Vec::new();
-        let loading = |rows: &mut Vec<ListRow>| rows.push(ListRow::info("Loading from Copilot CLI…"));
+        let label = self.config_agent.label();
+        let loading = |rows: &mut Vec<ListRow>| rows.push(ListRow::info(format!("Loading from {label}…")));
+        if matches!(self.side_view, SideView::Plugins | SideView::Mcp | SideView::Skills | SideView::Agents) {
+            // Which agent's configuration this is; Enter or A shows the next one.
+            rows.push(ListRow::row(ItemRef::ConfigAgent, "⇄", BLUE, format!("Agent: {label}"), "A: switch"));
+        }
         match self.side_view {
             SideView::Sessions => {}
             SideView::Automations => {
@@ -386,6 +431,13 @@ impl App {
                 };
                 rows.push(ListRow::header(scope));
                 let global = self.settings_group.is_none();
+                if global {
+                    let agent = match self.doc.default_agent.as_deref().and_then(AgentKind::parse) {
+                        Some(kind) => kind.label().to_owned(),
+                        None => format!("Auto (detected: {})", self.detected_agent.label()),
+                    };
+                    rows.push(ListRow::row(ItemRef::DefaultAgent, "›", TEXT, "Agent for new sessions", agent));
+                }
                 for field in DefaultField::ALL {
                     let value = field.get(&defaults);
                     let shown = match (value.is_empty(), field, global) {
@@ -396,6 +448,8 @@ impl App {
                     };
                     rows.push(ListRow::row(ItemRef::Default(field), "›", TEXT, field.label(), shown));
                 }
+                rows.push(ListRow::info("Effort: Copilot, Claude Code"));
+                rows.push(ListRow::info("Mode, context tier: Copilot"));
                 if self.settings_group.is_some() {
                     rows.push(ListRow::info("Esc: back to canvas defaults"));
                 }
@@ -407,14 +461,17 @@ impl App {
                     rows.push(ListRow::header("Automations"));
                     rows.push(ListRow::row(ItemRef::AutomationsDir, "›", TEXT, "Manifest folder", self.automations_dir().display().to_string()));
                 }
-                rows.push(ListRow::header("Copilot settings (copilot config)"));
+                rows.push(ListRow::header(if self.config_agent == AgentKind::Copilot { "Copilot settings (copilot config)".to_owned() } else { format!("{label} settings (read-only)") }));
+                rows.push(ListRow::row(ItemRef::ConfigAgent, "⇄", BLUE, format!("Agent: {label}"), "A: switch"));
                 match &self.config {
                     None => loading(&mut rows),
                     Some(config) => {
                         for (key, value) in &config.settings {
                             rows.push(ListRow::row(ItemRef::Setting(key.clone()), "·", GRAY, key.clone(), value.clone()));
                         }
-                        rows.push(ListRow::row(ItemRef::AddSetting, "+", BLUE, "Set another setting…", ""));
+                        if self.config_agent == AgentKind::Copilot {
+                            rows.push(ListRow::row(ItemRef::AddSetting, "+", BLUE, "Set another setting…", ""));
+                        }
                         rows.push(ListRow::row(ItemRef::Refresh, "⟳", BLUE, "Refresh", ""));
                     }
                 }
@@ -488,6 +545,10 @@ impl App {
                 }
             }
             ItemRef::Add(kind) => {
+                // Adding and installing go through Copilot's CLI only.
+                if !self.supported(self.config_agent == AgentKind::Copilot) {
+                    return;
+                }
                 let (title, hint, purpose) = match kind {
                     AddKind::Skill => ("Add a skill", "path to SKILL.md, a folder of skills, or an https URL", PromptPurpose::AddSkill),
                     AddKind::Mcp => ("Add an MCP server", "name -- command [args]    or    name https://url", PromptPurpose::AddMcp),
@@ -497,6 +558,9 @@ impl App {
             }
             ItemRef::Default(field) => self.edit_default(field),
             ItemRef::Setting(key) => {
+                if !self.supported(self.config_agent == AgentKind::Copilot) {
+                    return;
+                }
                 let current = self.config.as_ref().and_then(|c| c.settings.iter().find(|(k, _)| *k == key)).map(|(_, v)| v.clone()).unwrap_or_default();
                 self.modals.push(Modal::Prompt(Prompt {
                     title: format!("copilot config {key}"),
@@ -506,6 +570,9 @@ impl App {
                 }));
             }
             ItemRef::AddSetting => {
+                if !self.supported(self.config_agent == AgentKind::Copilot) {
+                    return;
+                }
                 self.modals.push(Modal::Prompt(Prompt {
                     title: "Set a Copilot setting".into(),
                     hint: "key value   (see `copilot help config`, e.g. beep on)".into(),
@@ -546,6 +613,27 @@ impl App {
                 input: TextInput::new(&self.doc.automations_dir.clone().unwrap_or_else(|| self.automations_dir().display().to_string())),
                 purpose: PromptPurpose::AutomationsDir,
             })),
+            ItemRef::ConfigAgent => self.cycle_config_agent(),
+            ItemRef::DefaultAgent => {
+                // Auto → Copilot → OpenCode → Claude Code → Auto.
+                let current = self.doc.default_agent.as_deref().and_then(AgentKind::parse);
+                let next = match current {
+                    None => Some(crate::agents::ALL[0]),
+                    Some(kind) => crate::agents::ALL.iter().position(|k| *k == kind).and_then(|i| crate::agents::ALL.get(i + 1)).copied(),
+                };
+                self.doc.default_agent = next.map(|k| k.id().to_owned());
+                let agent = self.default_agent();
+                if !self.installed_agents.contains(&agent) {
+                    self.notify(format!("{} was not found on this machine; new sessions with it cannot start.", agent.label()), true);
+                }
+                // The views follow the default agent.
+                self.config_agent = agent;
+                self.config = self.agent_configs.get(&agent).cloned();
+                if self.config.is_none() {
+                    self.refresh_config();
+                }
+                self.mark_dirty();
+            }
             ItemRef::Header | ItemRef::Info => {}
         }
         self.needs_draw = true;
@@ -556,29 +644,57 @@ impl App {
         let rows = self.build_list();
         let Some(row) = rows.get(index).cloned() else { return };
         let config = self.config.clone().unwrap_or_default();
+        let enabled_now = |kind: Kind, name: &str| match kind {
+            Kind::Plugin => config.plugins.iter().any(|p| p.name == name && p.enabled),
+            Kind::Mcp => config.mcp.iter().any(|s| s.name == name && s.enabled),
+            Kind::Skill => config.skills.iter().any(|s| s.name == name && s.enabled),
+        };
         match row.item {
             ItemRef::Automation(key) => self.toggle_automation(&key),
-            ItemRef::Plugin(name) => {
-                let enabled = !config.plugins.iter().any(|p| p.name == name && p.enabled);
-                self.run_cli_op(format!("{} plugin {name}", if enabled { "Enabling" } else { "Disabling" }), move || copilot_cfg::set_enabled(Kind::Plugin, &name, enabled));
-            }
-            ItemRef::Mcp(name) => {
-                let enabled = !config.mcp.iter().any(|s| s.name == name && s.enabled);
-                self.run_cli_op(format!("{} MCP server {name}", if enabled { "Enabling" } else { "Disabling" }), move || copilot_cfg::set_enabled(Kind::Mcp, &name, enabled));
-            }
-            ItemRef::Skill(name) => {
-                let enabled = !config.skills.iter().any(|s| s.name == name && s.enabled);
-                self.run_cli_op(format!("{} skill {name}", if enabled { "Enabling" } else { "Disabling" }), move || copilot_cfg::set_enabled(Kind::Skill, &name, enabled));
-            }
-            ItemRef::VsArchived | ItemRef::VsCliSessions | ItemRef::VsAuto | ItemRef::IdleStop => self.list_activate(index),
+            ItemRef::Plugin(name) => self.set_config_enabled(Kind::Plugin, name.clone(), !enabled_now(Kind::Plugin, &name)),
+            ItemRef::Mcp(name) => self.set_config_enabled(Kind::Mcp, name.clone(), !enabled_now(Kind::Mcp, &name)),
+            ItemRef::Skill(name) => self.set_config_enabled(Kind::Skill, name.clone(), !enabled_now(Kind::Skill, &name)),
+            ItemRef::VsArchived | ItemRef::VsCliSessions | ItemRef::VsAuto | ItemRef::IdleStop | ItemRef::ConfigAgent | ItemRef::DefaultAgent => self.list_activate(index),
             _ => {}
         }
+    }
+
+    /// Turns a plugin, MCP server or skill of `config_agent` on or off.
+    pub fn set_config_enabled(&mut self, what: Kind, name: String, enabled: bool) {
+        let agent = self.config_agent;
+        if !self.supported(crate::agents::config::caps_for_changes(agent, what).0) {
+            return;
+        }
+        let noun = match what {
+            Kind::Plugin => "plugin",
+            Kind::Mcp => "MCP server",
+            Kind::Skill => "skill",
+        };
+        self.run_cli_op(format!("{} {noun} {name}", if enabled { "Enabling" } else { "Disabling" }), move || crate::agents::config::set_enabled(agent, what, &name, enabled));
+    }
+
+    /// Removes a plugin, MCP server or skill of `config_agent`.
+    pub fn remove_config(&mut self, what: Kind, name: String) {
+        let agent = self.config_agent;
+        if !self.supported(crate::agents::config::caps_for_changes(agent, what).1) {
+            return;
+        }
+        self.run_cli_op(format!("Removing {name}"), move || crate::agents::config::remove(agent, what, &name));
     }
 
     /// Del: remove (always confirmed).
     pub fn list_delete(&mut self, index: usize) {
         let rows = self.build_list();
         let Some(row) = rows.get(index).cloned() else { return };
+        let what = match &row.item {
+            ItemRef::Plugin(_) => Kind::Plugin,
+            ItemRef::Mcp(_) => Kind::Mcp,
+            ItemRef::Skill(_) => Kind::Skill,
+            _ => return,
+        };
+        if !self.supported(crate::agents::config::caps_for_changes(self.config_agent, what).1) {
+            return;
+        }
         let (what, action) = match &row.item {
             ItemRef::Plugin(name) => (format!("Uninstall plugin “{name}”?"), crate::dialogs::Action::RemoveConfig(Kind::Plugin, name.clone())),
             ItemRef::Mcp(name) => {
@@ -599,7 +715,7 @@ impl App {
         };
         self.modals.push(Modal::Confirm(Confirm {
             title: what,
-            body: vec!["Copilot CLI performs the removal; this cannot be undone here.".into()],
+            body: vec![format!("{} performs the removal; this cannot be undone here.", self.config_agent.label())],
             buttons: vec![("Remove".into(), action), ("Cancel".into(), crate::dialogs::Action::Nothing)],
             sel: 1,
         }));
@@ -641,11 +757,11 @@ impl App {
                 let mut items: Vec<(String, String)> = match (field, group.is_some()) {
                     (DefaultField::Permissions, false) => Vec::new(),
                     (DefaultField::Permissions, true) => vec![("(not set)".into(), "use the canvas default".into())],
-                    _ => vec![("(not set)".into(), "use Copilot's default".into())],
+                    _ => vec![("(not set)".into(), "use the agent's default".into())],
                 };
                 let note = |c: &str| match c {
-                    "allow-all" => "--allow-all: tools, paths and URLs without asking",
-                    "ask" => "Copilot asks before tools, paths and URLs",
+                    "allow-all" => "tools, paths and URLs without asking (every agent)",
+                    "ask" => "the agent asks before tools, paths and URLs",
                     _ => "",
                 };
                 items.extend(choices.iter().map(|c| ((*c).to_owned(), note(c).to_owned())));
@@ -653,9 +769,9 @@ impl App {
             }
             None => {
                 let hint = match field {
-                    DefaultField::Model => "model id, e.g. claude-opus-5.5 or auto; empty = Copilot's default",
+                    DefaultField::Model => "model id (e.g. claude-opus-5.5, opus, opencode/big-pickle); empty = agent default",
                     DefaultField::Agent => "custom agent name; empty = none",
-                    _ => "folders separated by ;   (passed as --add-dir)",
+                    _ => "folders separated by ;   (the session may use them)",
                 };
                 self.modals.push(Modal::Prompt(Prompt {
                     title: field.label().into(),
@@ -755,21 +871,21 @@ impl App {
         Ok(())
     }
 
-    /// MCP servers from Copilot's configuration: (name, source, enabled in the
-    /// config). `None` while the configuration is loading.
-    pub fn mcp_choices(&self) -> Option<Vec<(String, String, bool)>> {
-        self.config.as_ref().map(|c| c.mcp.iter().map(|s| (s.name.clone(), s.source.clone(), s.enabled)).collect())
+    /// MCP servers from an agent's configuration: (name, source, enabled in
+    /// the config). `None` while the configuration is loading.
+    pub fn mcp_choices(&self, agent: AgentKind) -> Option<Vec<(String, String, bool)>> {
+        self.agent_configs.get(&agent).map(|c| c.mcp.iter().map(|s| (s.name.clone(), s.source.clone(), s.enabled)).collect())
     }
 
-    /// Names of the servers you can turn on or off (enabled in Copilot's config).
-    pub fn mcp_available(&self) -> Vec<String> {
-        self.mcp_choices().unwrap_or_default().into_iter().filter(|(_, _, on)| *on).map(|(name, _, _)| name).collect()
+    /// Names of the servers you can turn on or off (enabled in the agent's config).
+    pub fn mcp_available(&self, agent: AgentKind) -> Vec<String> {
+        self.mcp_choices(agent).unwrap_or_default().into_iter().filter(|(_, _, on)| *on).map(|(name, _, _)| name).collect()
     }
 
     /// "12 of 19 on · preset “Investigation”" for a choice.
-    pub fn mcp_summary(&self, off: &[String]) -> String {
-        let Some(choices) = self.mcp_choices() else { return "loading your MCP servers…".into() };
-        let known = self.mcp_available();
+    pub fn mcp_summary(&self, agent: AgentKind, off: &[String]) -> String {
+        let Some(choices) = self.mcp_choices(agent) else { return format!("loading {}'s MCP servers…", agent.label()) };
+        let known = self.mcp_available(agent);
         if choices.is_empty() {
             return "no MCP servers configured".into();
         }
@@ -796,7 +912,7 @@ impl App {
             command: Some(std::iter::once(exe.to_string_lossy().into_owned()).chain(args).collect()),
             fresh: true,
             automation: None,
-            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false,
+            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None,
         });
         self.select_node(&id, false);
         self.launch(&id);
@@ -854,51 +970,133 @@ impl App {
     }
 }
 
-/// Copilot arguments and environment variables added to a launch.
-pub type LaunchExtras = (Vec<String>, Vec<(String, String)>);
+/// What to launch for an agent session box. The service adds the canvas
+/// integration (skills plugin, identity, `copilot-canvas` on PATH) and turns
+/// it into the agent's command line.
+///
+/// Launch defaults (canvas, overridden by the box's group) apply to new
+/// conversations only, and only those the agent supports; permissions and the
+/// box's MCP choice apply to every run.
+pub fn agent_launch(
+    node: &Node,
+    canvas: &LaunchDefaults,
+    group: Option<&Group>,
+    prompt: Option<String>,
+    fork_from: Option<String>,
+    resume: bool,
+) -> crate::protocol::AgentLaunch {
+    let kind = agent_of(node);
+    let caps = kind.provider().caps();
+    let defaults = canvas.merged(group.and_then(|g| g.defaults.as_ref()));
+    let fresh = |value: &Option<String>, supported: bool| value.clone().filter(|v| !resume && supported && !v.trim().is_empty());
+    let group = group.filter(|g| g.folder.is_some());
+    crate::protocol::AgentLaunch {
+        agent: kind.id().to_owned(),
+        native_id: node.agent_session.clone().filter(|s| !s.is_empty()),
+        resume,
+        fork_from,
+        name: Some(node.name.clone()).filter(|n| !n.trim().is_empty()),
+        prompt: prompt.filter(|p| !p.trim().is_empty()),
+        model: fresh(&defaults.model, true),
+        effort: fresh(&defaults.reasoning_effort, caps.effort),
+        mode: fresh(&defaults.mode, caps.modes),
+        custom_agent: fresh(&defaults.agent, true),
+        context: fresh(&defaults.context, kind == AgentKind::Copilot),
+        allow_all: defaults.permissions.as_deref() != Some("ask"),
+        add_dirs: if resume { Vec::new() } else { defaults.add_dirs.iter().filter(|d| !d.trim().is_empty()).cloned().collect() },
+        mcp_off: node.mcp_off.clone().unwrap_or_default(),
+        group_folder: group.and_then(|g| g.folder.clone()),
+        group_name: group.map(|g| g.name.clone()),
+        headless_prompt: None,
+        env: Vec::new(),
+    }
+}
 
-impl App {
-    /// Extra Copilot arguments and environment for launching `id`.
-    pub fn launch_extras(&self, id: &str, fresh: bool) -> Result<LaunchExtras, String> {
-        let group = self.group_for_session(id);
-        let defaults = self.doc.defaults.merged(group.as_ref().and_then(|g| g.defaults.as_ref()));
-        // Permissions apply to every run (they are not saved with the session).
-        let mut args = defaults.permission_args();
-        if fresh {
-            args.extend(defaults.args());
-        }
-        // The session's MCP server choice applies to every run (resumes too).
-        if let Some(off) = self.doc.node(id).and_then(|n| n.mcp_off.as_ref()) {
-            args.extend(crate::doc::mcp_off_args(off));
-        }
-        let mut env = Vec::new();
-        // Events: the canvas skills, this session's identity and the copilot-canvas command.
-        if let Some(instance) = self.instance.as_ref() {
-            let plugin = instance.home.join("plugin");
-            if plugin.is_dir() {
-                args.push("--plugin-dir".into());
-                args.push(plugin.display().to_string());
-            }
-            env.push(("COPILOT_CANVAS_HOME".into(), instance.home.display().to_string()));
-            env.push(("COPILOT_CANVAS_SESSION".into(), id.to_owned()));
-            env.push(("PATH".into(), format!("{};{}", instance.home.join("cli").display(), std::env::var("PATH").unwrap_or_default())));
-        }
-        if let Some(group) = group.filter(|g| g.folder.is_some()) {
-            let instructions = crate::doc::prepare_group_folders(&group).map_err(|e| format!("{e:#}"))?.expect("folder set");
-            for dir in [group.ai_docs(), group.outputs()].into_iter().flatten() {
-                args.push("--add-dir".into());
-                args.push(dir.display().to_string());
-            }
-            let mut dirs = std::env::var("COPILOT_CUSTOM_INSTRUCTIONS_DIRS").unwrap_or_default();
-            if !dirs.is_empty() {
-                dirs.push(',');
-            }
-            dirs.push_str(&instructions.display().to_string());
-            env.push(("COPILOT_CUSTOM_INSTRUCTIONS_DIRS".into(), dirs));
-        }
-        Ok((args, env))
+#[cfg(test)]
+mod launch_tests {
+    use super::*;
+
+    fn node(agent: Option<&str>) -> Node {
+        let mut node: Node = serde_json::from_value(serde_json::json!({ "id": "12345678-1234-1234-1234-123456789abc", "kind": "session", "name": "Fix it", "x": 0, "y": 0 })).unwrap();
+        node.agent = agent.map(str::to_owned);
+        node
     }
 
+    fn defaults() -> LaunchDefaults {
+        LaunchDefaults {
+            model: Some("m1".into()),
+            reasoning_effort: Some("high".into()),
+            mode: Some("plan".into()),
+            agent: Some("reviewer".into()),
+            context: Some("long_context".into()),
+            add_dirs: vec![r"C:\shared".into()],
+            permissions: None,
+        }
+    }
+
+    #[test]
+    fn new_sessions_get_the_defaults_their_agent_supports() {
+        let copilot = agent_launch(&node(None), &defaults(), None, Some("hello".into()), None, false);
+        assert_eq!(copilot.agent, "copilot");
+        assert_eq!((copilot.name.as_deref(), copilot.prompt.as_deref(), copilot.resume, copilot.native_id.as_deref()), (Some("Fix it"), Some("hello"), false, None));
+        assert_eq!((copilot.model.as_deref(), copilot.effort.as_deref(), copilot.mode.as_deref(), copilot.context.as_deref()), (Some("m1"), Some("high"), Some("plan"), Some("long_context")));
+        assert_eq!((copilot.custom_agent.as_deref(), copilot.add_dirs.as_slice()), (Some("reviewer"), [r"C:\shared".to_owned()].as_slice()));
+        assert!(copilot.allow_all, "unset permissions mean allow-all");
+        assert!(copilot.headless_prompt.is_none() && copilot.env.is_empty(), "the service adds the integration");
+
+        let claude = agent_launch(&node(Some("claude")), &defaults(), None, None, None, false);
+        assert_eq!(claude.agent, "claude");
+        assert_eq!((claude.model.as_deref(), claude.effort.as_deref(), claude.mode, claude.context), (Some("m1"), Some("high"), None, None), "no start mode or context tier");
+
+        let opencode = agent_launch(&node(Some("opencode")), &defaults(), None, None, None, false);
+        assert_eq!(opencode.agent, "opencode");
+        assert_eq!((opencode.model.as_deref(), opencode.effort, opencode.mode, opencode.context), (Some("m1"), None, None, None));
+        assert_eq!(opencode.custom_agent.as_deref(), Some("reviewer"));
+    }
+
+    #[test]
+    fn resumes_keep_permissions_and_mcp_but_not_new_session_defaults() {
+        let mut box_ = node(Some("opencode"));
+        box_.agent_session = Some("ses_abc".into());
+        box_.mcp_off = Some(vec!["github".into()]);
+        let asking = LaunchDefaults { permissions: Some("ask".into()), ..defaults() };
+        let resumed = agent_launch(&box_, &asking, None, None, None, true);
+        assert_eq!((resumed.resume, resumed.native_id.as_deref()), (true, Some("ses_abc")));
+        assert!(resumed.model.is_none() && resumed.effort.is_none() && resumed.custom_agent.is_none() && resumed.add_dirs.is_empty());
+        assert!(!resumed.allow_all, "ask applies to every run");
+        assert_eq!(resumed.mcp_off, ["github"], "the box's MCP choice applies to resumes too");
+        let empty = LaunchDefaults { model: Some("  ".into()), ..LaunchDefaults::default() };
+        assert!(agent_launch(&node(None), &empty, None, Some(" ".into()), None, false).model.is_none() && agent_launch(&node(None), &empty, None, Some(" ".into()), None, false).prompt.is_none());
+    }
+
+    #[test]
+    fn groups_override_defaults_and_pass_their_folder() {
+        let group = Group {
+            id: "g".into(),
+            name: "Team".into(),
+            folder: Some(r"C:\team".into()),
+            defaults: Some(LaunchDefaults { model: Some("group-model".into()), permissions: Some("ask".into()), add_dirs: vec![r"D:\docs".into()], ..Default::default() }),
+            ..Default::default()
+        };
+        let launch = agent_launch(&node(Some("claude")), &defaults(), Some(&group), None, None, false);
+        assert_eq!((launch.model.as_deref(), launch.allow_all), (Some("group-model"), false));
+        assert_eq!(launch.add_dirs, [r"C:\shared", r"D:\docs"]);
+        assert_eq!((launch.group_folder.as_deref(), launch.group_name.as_deref()), (Some(r"C:\team"), Some("Team")));
+        let no_folder = Group { folder: None, ..group };
+        let launch = agent_launch(&node(None), &defaults(), Some(&no_folder), None, None, false);
+        assert_eq!((launch.group_folder, launch.group_name), (None, None), "a group without a folder has nothing to share");
+    }
+
+    #[test]
+    fn native_forks_name_their_parent() {
+        let fork = agent_launch(&node(Some("claude")), &defaults(), None, Some("go on".into()), Some("87654321-4321-4321-4321-cba987654321".into()), false);
+        assert_eq!((fork.fork_from.as_deref(), fork.resume, fork.prompt.as_deref()), (Some("87654321-4321-4321-4321-cba987654321"), false, Some("go on")));
+        let fork = agent_launch(&node(Some("opencode")), &defaults(), None, None, Some("ses_parent".into()), false);
+        assert_eq!((fork.agent.as_str(), fork.fork_from.as_deref()), ("opencode", Some("ses_parent")));
+    }
+}
+
+impl App {
     // ---------- automations on the canvas ----------
 
     /// Keeps one box per automation inside a dedicated "Automations" group.
@@ -969,7 +1167,7 @@ impl App {
                 command: None,
                 fresh: false,
                 automation: Some(key),
-                synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false,
+                synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None,
             });
         }
     }
@@ -1131,6 +1329,7 @@ impl App {
                 name: if session.label.is_empty() { summary.name.clone() } else { session.label.clone() },
                 cwd: session.cwd.clone().unwrap_or_else(|| summary.cwd.clone()),
                 source: Some("vscode".into()),
+                agent: None,
             };
             added += 1;
             match buckets.iter_mut().find(|(k, _, _)| *k == candidate.group_key) {
@@ -1267,7 +1466,7 @@ impl App {
             fresh: false,
             automation: None,
             synced_name,
-            reviewed_ms: None, mcp_off: None, passive: None, no_messages: false,
+            reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None,
         });
     }
 

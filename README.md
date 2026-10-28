@@ -349,14 +349,20 @@ UI load tests `cargo test --release stress_probe -- --ignored --nocapture`
 
 ```text
 copilot-canvas [--demo] [--perf] [--cwd DIR] [--canvas FILE] [--instance NAME] [--home DIR]
-copilot-canvas doctor                 environment checks (Copilot, Git, ConPTY, service, VS Code)
+copilot-canvas doctor                 environment checks (each agent CLI and its history, the default
+                                      agent, terminal engine, Git, ConPTY, service, VS Code)
 copilot-canvas service status|stop    stop ends the service's sessions (gracefully)
 copilot-canvas bench [--terminals N] [--seconds S] [--json FILE]
 copilot-canvas selftest               end-to-end UI test in a hidden console (demo shells only)
-copilot-canvas selftest copilot       real check: launches Copilot, sends no prompt, syncs
-                                      VS Code sessions into a temporary canvas, loads the
-                                      plugin/MCP/skill views, previews migration (applies
-                                      nothing), then deletes the single test session it created
+copilot-canvas selftest agent [--agent copilot|opencode|claude]
+                                      real check with an agent CLI (default: the detected one); never
+                                      submits a prompt: imports its recent sessions into a temporary
+                                      canvas, loads its plugin/MCP/skill views, starts a session with
+                                      allow-all, types (and erases) text, stops it gracefully, and
+                                      removes a test session only if it holds no prompt. Copilot also
+                                      syncs VS Code sessions and previews migration (applies nothing).
+                                      Claude Code runs in a throw-away CLAUDE_CONFIG_DIR.
+copilot-canvas selftest copilot       same as selftest agent --agent copilot
 cargo test                            unit tests
 ```
 

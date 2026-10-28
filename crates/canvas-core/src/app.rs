@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Sender;
 use ratatui::layout::Rect;
 
+use crate::agents::{AgentKind, agent_of, native_id};
 use crate::conn::Conn;
 use crate::dialogs::{Hit, Modal};
 use crate::doc::{Doc, GRID_X, Node, NodeKind, Store};
@@ -20,7 +21,8 @@ pub enum AppEvent {
     Git { req: u64, folder: String, result: Result<Option<GitInfo>, String> },
     Worktree { node: String, result: Result<(), String> },
     Forked { node: String, result: Result<(), String> },
-    Config(Box<crate::copilot_cfg::Snapshot>),
+    /// An agent's configuration (plugins, MCP servers, skills, agents, settings).
+    Config(AgentKind, Box<crate::copilot_cfg::Snapshot>),
     Automations(crate::factory_client::AutoLoad),
     CliDone { label: String, result: Result<String, String> },
     VsSync(Vec<crate::vscode::SyncCandidate>, Vec<String>),
@@ -189,8 +191,19 @@ pub struct App {
     pub side_view: crate::side::SideView,
     pub list_sel: usize,
     pub list_scroll: usize,
+    /// Configuration of `config_agent` (what the configuration views show).
     pub config: Option<crate::copilot_cfg::Snapshot>,
-    pub config_loading: bool,
+    /// The agent whose configuration the views show.
+    pub config_agent: AgentKind,
+    /// Every agent configuration loaded so far (MCP choices for new sessions).
+    pub agent_configs: HashMap<AgentKind, crate::copilot_cfg::Snapshot>,
+    pub configs_loading: HashSet<AgentKind>,
+    /// The machine's agent for new sessions (settings.json, else the first installed).
+    pub detected_agent: AgentKind,
+    /// Agents whose CLI was found at start.
+    pub installed_agents: Vec<AgentKind>,
+    /// New subsessions that fork their parent natively: node → parent's agent session.
+    pub pending_forks: HashMap<String, String>,
     pub automations: Vec<crate::automations::Automation>,
     pub automations_loading: bool,
     pub automations_at: Instant,
@@ -209,6 +222,9 @@ impl App {
     pub fn new(conn: Conn, store: Store, doc: Doc, demo: bool, default_cwd: String, app_tx: Sender<AppEvent>, instance_home: std::path::PathBuf) -> Self {
         let build_mismatch = conn.service_build != crate::paths::build_id();
         let selection = doc.selected.clone().into_iter().collect();
+        let detected_agent = crate::agents::machine_default(&instance_home);
+        let installed_agents: Vec<AgentKind> = crate::agents::ALL.into_iter().filter(|k| k.provider().program().is_ok()).collect();
+        let config_agent = doc.default_agent.as_deref().and_then(AgentKind::parse).unwrap_or(detected_agent);
         let mut app = Self {
             demo,
             default_cwd,
@@ -269,7 +285,12 @@ impl App {
             list_sel: 0,
             list_scroll: 0,
             config: None,
-            config_loading: false,
+            config_agent,
+            agent_configs: HashMap::new(),
+            configs_loading: HashSet::new(),
+            detected_agent,
+            installed_agents,
+            pending_forks: HashMap::new(),
             automations: Vec::new(),
             automations_loading: false,
             automations_at: Instant::now() - Duration::from_secs(60),
@@ -465,6 +486,31 @@ impl App {
 
     // ---------- status ----------
 
+    /// The agent for new sessions: the canvas setting, else the machine's.
+    pub fn default_agent(&self) -> AgentKind {
+        self.doc.default_agent.as_deref().and_then(AgentKind::parse).unwrap_or(self.detected_agent)
+    }
+
+    /// History summary of a session box (its agent's session), or of a
+    /// subagent box's parent.
+    pub fn summary(&self, node: &Node) -> Option<&SessionSummary> {
+        match node.kind {
+            NodeKind::Session => self.sessions.get(native_id(node)),
+            NodeKind::Agent => {
+                let parent = node.parent.as_deref()?;
+                // Usually the parent box id is its session id (one hash lookup per box).
+                self.sessions.get(parent).or_else(|| self.doc.node(parent).map(native_id).filter(|n| *n != parent).and_then(|n| self.sessions.get(n)))
+            }
+            NodeKind::Automation => None,
+        }
+    }
+
+    /// Agent sessions already on the canvas (box ids and learned agent ids).
+    pub fn native_ids(&self) -> HashSet<&str> {
+        self.doc.nodes.iter().filter(|n| n.kind == NodeKind::Session).flat_map(|n| [n.id.as_str(), native_id(n)]).collect()
+    }
+
+    /// The terminal (box id) of a session box or of a subagent's parent.
     pub fn session_of(&self, node_id: &str) -> Option<String> {
         let node = self.doc.node(node_id)?;
         match node.kind {
@@ -480,7 +526,7 @@ impl App {
 
     /// Running in another terminal (CLI or VS Code) rather than in this service.
     pub fn live_elsewhere(&self, node: &Node) -> bool {
-        node.kind == NodeKind::Session && !self.owned_alive(&node.id) && self.sessions.get(&node.id).is_some_and(|s| s.live)
+        node.kind == NodeKind::Session && !self.owned_alive(&node.id) && self.summary(node).is_some_and(|s| s.live)
     }
 
     pub fn node_status(&self, node: &Node) -> Status {
@@ -489,7 +535,7 @@ impl App {
             NodeKind::Session if node.passive.is_some() => {
                 // A passive session shows its reported state; runs show as working.
                 let view = self.passive_view(node);
-                if view.is_some_and(|v| v.running) || self.owned_alive(&node.id) && status::session_status(self.sessions.get(&node.id), self.terms.get(&node.id), node.reviewed_ms) == Status::Working {
+                if view.is_some_and(|v| v.running) || self.owned_alive(&node.id) && status::session_status(self.summary(node), self.terms.get(&node.id), node.reviewed_ms) == Status::Working {
                     return Status::Working;
                 }
                 match view.map(|v| (v.status.as_str(), v.status_ms)) {
@@ -506,7 +552,7 @@ impl App {
                 if self.node_errors.contains_key(&node.id) && !self.owned_alive(&node.id) {
                     return Status::Failed;
                 }
-                status::session_status(self.sessions.get(&node.id), self.terms.get(&node.id), node.reviewed_ms)
+                status::session_status(self.summary(node), self.terms.get(&node.id), node.reviewed_ms)
             }
             NodeKind::Automation => match node.automation.as_deref().and_then(|k| self.automation(k)) {
                 Some(automation) => crate::side::automation_status(automation),
@@ -514,7 +560,7 @@ impl App {
             },
             NodeKind::Agent => {
                 let parent = node.parent.as_deref().unwrap_or_default();
-                let summary = self.sessions.get(parent);
+                let summary = self.summary(node);
                 let running = self.owned_alive(parent) || summary.is_some_and(|s| s.live);
                 match summary.and_then(|s| s.agents.iter().find(|a| Some(&a.key) == node.agent_key.as_ref())) {
                     Some(agent) => status::agent_status(agent.status, agent.finished_ms, running, now),
@@ -542,13 +588,13 @@ impl App {
                 None => "automation".into(),
             };
         }
-        if let Some(summary) = self.sessions.get(&node.id)
+        if let Some(summary) = self.summary(node)
             && !summary.branch.is_empty()
         {
             let folder = summary.cwd.rsplit(['\\', '/']).next().unwrap_or_default();
             return format!("{folder} · {}", summary.branch);
         }
-        let cwd = node.cwd.as_deref().or_else(|| self.sessions.get(&node.id).map(|s| s.cwd.as_str())).unwrap_or_default();
+        let cwd = node.cwd.as_deref().or_else(|| self.summary(node).map(|s| s.cwd.as_str())).unwrap_or_default();
         cwd.rsplit(['\\', '/']).find(|s| !s.is_empty()).unwrap_or(cwd).to_owned()
     }
 
@@ -672,10 +718,17 @@ impl App {
             automation: None,
             synced_name: None,
             reviewed_ms: None,
-            mcp_off: None, passive: None, no_messages: false,
+            mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None,
         });
         self.mark_dirty();
         self.notify(format!("“{}” started subsession “{name}”.", p.name), false);
+    }
+
+    /// The service learned which agent session terminal `id` runs.
+    pub fn set_agent_session(&mut self, id: &str, native: &str) {
+        if apply_agent_session(&mut self.doc, id, native) {
+            self.mark_dirty();
+        }
     }
 
     /// "every 15m" when this box repeats on a schedule that is active now: a live
@@ -689,8 +742,8 @@ impl App {
                 (!passive.paused && !done).then(|| Self::passive_trigger(passive))
             }
             NodeKind::Session => {
-                let live = self.owned_alive(&node.id) || self.sessions.get(&node.id).is_some_and(|s| s.live);
-                if let Some(summary) = self.sessions.get(&node.id).filter(|s| live && s.loop_ms > 0) {
+                let live = self.owned_alive(&node.id) || self.summary(node).is_some_and(|s| s.live);
+                if let Some(summary) = self.summary(node).filter(|s| live && s.loop_ms > 0) {
                     return Some(format!("every {}", short_interval(summary.loop_ms)));
                 }
                 self.automation(&format!("session:{}", node.id)).filter(|a| a.enabled && repeats(&a.schedule)).map(|a| a.schedule.clone())
@@ -705,7 +758,7 @@ impl App {
 
     /// You looked at this session: clears its "done · review" state.
     pub fn mark_reviewed(&mut self, id: &str) {
-        let finished = self.sessions.get(id).and_then(|s| s.finished_ms);
+        let finished = self.doc.node(id).and_then(|n| self.summary(n)).and_then(|s| s.finished_ms);
         if let Some(node) = self.doc.node_mut(id)
             && node.kind == NodeKind::Session
             && (node.reviewed_ms.is_none() || finished.is_some_and(|f| Some(f) > node.reviewed_ms))
@@ -812,7 +865,7 @@ impl App {
             self.notify("This session's worktree is still being created.", false);
             return;
         }
-        if self.sessions.get(&session).is_some_and(|s| s.live) {
+        if self.doc.node(&session).and_then(|n| self.summary(n)).is_some_and(|s| s.live) {
             self.notify("This session is open in another terminal (CLI or VS Code). Copilot Canvas never starts a second copy.", true);
             return;
         }
@@ -825,7 +878,7 @@ impl App {
             .cwd
             .clone()
             .filter(|c| !c.is_empty())
-            .or_else(|| self.sessions.get(id).map(|s| s.cwd.clone()).filter(|c| !c.is_empty()))
+            .or_else(|| self.summary(&node).map(|s| s.cwd.clone()).filter(|c| !c.is_empty()))
             .unwrap_or_else(|| self.default_cwd.clone());
         if !Path::new(&cwd).is_dir() {
             self.node_errors.insert(id.to_owned(), "folder missing".into());
@@ -835,20 +888,12 @@ impl App {
         let kind = match &node.command {
             Some(command) if !command.is_empty() => LaunchKind::Command { program: command[0].clone(), args: command[1..].to_vec() },
             _ => {
-                let (args, env) = match self.launch_extras(id, node.fresh) {
-                    Ok(extras) => extras,
-                    Err(error) => {
-                        self.notify(format!("Cannot prepare the group folders: {error}"), true);
-                        (Vec::new(), Vec::new())
-                    }
-                };
-                LaunchKind::CopilotWith {
-                    new_name: node.fresh.then(|| node.name.clone()),
-                    prompt: self.pending_prompts.remove(id),
-                    resume: !node.fresh,
-                    args,
-                    env,
-                }
+                let group = self.group_for_session(id);
+                let prompt = self.pending_prompts.remove(id);
+                // A native fork starts once from its parent; later launches resume it.
+                let fork_from = self.pending_forks.remove(id).filter(|_| node.fresh);
+                let launch = crate::side::agent_launch(&node, &self.doc.defaults, group.as_ref(), prompt, fork_from, !node.fresh);
+                LaunchKind::Agent(Box::new(launch))
             }
         };
         let (cols, rows) = self.pane_size();
@@ -941,13 +986,16 @@ impl App {
                 self.sessions_loaded = true;
                 self.sessions_rev += 1;
                 self.sync_agents();
-                if !self.auto_imported && !self.demo && self.doc.nodes.is_empty() && !self.sessions.is_empty() {
+                let agent = self.default_agent();
+                if !self.auto_imported && !self.demo && self.doc.nodes.is_empty() && self.sessions.values().any(|s| crate::agents::agent_of_summary(s) == agent) {
                     self.auto_imported = true;
-                    let mut recent: Vec<&SessionSummary> = self.sessions.values().collect();
+                    // The default agent's most recent sessions.
+                    let mut recent: Vec<&SessionSummary> = self.sessions.values().filter(|s| crate::agents::agent_of_summary(s) == agent).collect();
                     recent.sort_by_key(|s| std::cmp::Reverse(s.updated_ms));
                     let ids: Vec<String> = recent.into_iter().take(8).map(|s| s.id.clone()).collect();
+                    let count = ids.len();
                     self.import_ids(ids, crate::dialogs::Grouping::None);
-                    self.notify("Added your 8 most recent sessions. Press I to import more or V for VS Code agents.", false);
+                    self.notify(format!("Added your {count} most recent {} sessions. Press I to import more or V for VS Code agents.", agent.label()), false);
                 }
             }
             ServiceMsg::Clipboard(text) => self.copy_to_clipboard(&text),
@@ -962,6 +1010,7 @@ impl App {
             ServiceMsg::Subsession { parent, child, name, cwd } => self.link_subsession(&parent, &child, &name, &cwd),
             ServiceMsg::Bus { json } => self.on_bus(&json),
             ServiceMsg::BusEvent { json } => self.on_bus_event(&json),
+            ServiceMsg::AgentSession { id, native } => self.set_agent_session(&id, &native),
             ServiceMsg::Ready { .. } | ServiceMsg::Challenge { .. } => {}
         }
     }
@@ -986,7 +1035,7 @@ impl App {
             .iter()
             .filter(|n| n.kind == NodeKind::Session)
             .filter_map(|parent| {
-                let summary = self.sessions.get(&parent.id)?;
+                let summary = self.sessions.get(native_id(parent))?;
                 let agents: Vec<(String, String)> = summary
                     .agents
                     .iter()
@@ -1016,7 +1065,7 @@ impl App {
                     command: None,
                     fresh: false,
                     automation: None,
-                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false,
+                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None,
                 };
                 let rect = node.rect();
                 index.insert(rect);
@@ -1050,24 +1099,22 @@ impl App {
     pub fn import_ids(&mut self, ids: Vec<String>, grouping: crate::dialogs::Grouping) {
         use crate::dialogs::Grouping;
         let mut buckets: Vec<(Option<String>, Vec<Seed>)> = Vec::new();
+        let present: HashSet<String> = self.native_ids().into_iter().map(str::to_owned).collect();
         for id in ids {
-            if self.doc.node(&id).is_some() {
+            if present.contains(&id) {
                 continue;
             }
             let Some(summary) = self.sessions.get(&id) else { continue };
+            let agent = crate::agents::agent_of_summary(summary);
             let key = match grouping {
                 Grouping::None => None,
                 Grouping::Folder => {
                     let root = if summary.git_root.is_empty() { &summary.cwd } else { &summary.git_root };
                     Some(root.rsplit(['\\', '/']).find(|s| !s.is_empty()).unwrap_or("Other").to_owned())
                 }
-                Grouping::Client => Some(match summary.client.as_str() {
-                    "vscode-agent-host" => "VS Code".to_owned(),
-                    "github/cli" | "" => "Copilot CLI".to_owned(),
-                    other => other.to_owned(),
-                }),
+                Grouping::Client => Some(client_label(summary).to_owned()),
             };
-            let seed = Seed { id: id.clone(), name: summary.name.clone(), cwd: summary.cwd.clone(), source: None };
+            let seed = Seed { id: id.clone(), name: summary.name.clone(), cwd: summary.cwd.clone(), source: None, agent: (agent != AgentKind::Copilot).then(|| agent.id().to_owned()) };
             match buckets.iter_mut().find(|(k, _)| *k == key) {
                 Some((_, seeds)) => seeds.push(seed),
                 None => buckets.push((key, vec![seed])),
@@ -1110,7 +1157,7 @@ impl App {
                     command: None,
                     fresh: false,
                     automation: None,
-                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false,
+                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None,
                 };
                 first.get_or_insert_with(|| node.id.clone());
                 ids.push(node.id.clone());
@@ -1161,7 +1208,7 @@ impl App {
             if !matches!(self.node_status(node), Status::Idle | Status::Running) || self.node_loop(node).is_some() {
                 continue;
             }
-            let summary = self.sessions.get(id);
+            let summary = self.summary(node);
             let typed = self.last_input_at.get(id).map(|t| now.saturating_sub(t.elapsed().as_millis() as u64)).unwrap_or(0);
             let last = [info.started_ms, info.last_output_ms, typed, summary.map(|s| s.last_event_ms.max(s.updated_ms)).unwrap_or(0)].into_iter().max().unwrap_or(0);
             if now.saturating_sub(last) >= limit {
@@ -1169,10 +1216,21 @@ impl App {
             }
         }
         for id in &idle {
-            self.send(ClientMsg::Stop { id: id.clone(), force: false });
+            self.stop_terminal(id, false);
         }
         if !idle.is_empty() {
             self.notify(format!("Stopped {} session(s) idle for {minutes}+ min to free memory; click one to resume it.", idle.len()), false);
+        }
+    }
+
+    /// Stops a terminal: agents exit gracefully (Ctrl+D; Claude Code wants it
+    /// twice), anything else is ended.
+    pub fn stop_terminal(&mut self, id: &str, force: bool) {
+        self.send(ClientMsg::Stop { id: id.to_owned(), force });
+        let claude = self.doc.node(id).is_some_and(|n| n.command.is_none() && agent_of(n) == AgentKind::Claude);
+        if !force && claude {
+            let input = Input::Key { key: crate::protocol::Key::Char('d'), mods: crate::protocol::MOD_CTRL };
+            self.send(ClientMsg::Input { id: id.to_owned(), input });
         }
     }
 
@@ -1192,12 +1250,13 @@ impl App {
                 }
             }
         }
+        // History is indexed by the agents' own session ids.
         let mut tracked: Vec<String> = self
             .doc
             .nodes
             .iter()
             .filter(|n| n.kind == NodeKind::Session && n.command.is_none())
-            .map(|n| n.id.clone())
+            .map(|n| native_id(n).to_owned())
             .collect();
         tracked.sort();
         if tracked != self.last_tracked {
@@ -1392,4 +1451,54 @@ pub struct Seed {
     pub name: String,
     pub cwd: String,
     pub source: Option<String>,
+    /// Agent of the session (`None`: Copilot).
+    pub agent: Option<String>,
+}
+
+/// "Copilot CLI", "VS Code", "OpenCode", "Claude Code": where a session comes from.
+pub fn client_label(summary: &SessionSummary) -> &str {
+    match (crate::agents::agent_of_summary(summary), summary.client.as_str()) {
+        (AgentKind::Copilot, "vscode-agent-host") => "VS Code",
+        (AgentKind::Copilot, "github/cli" | "") => "Copilot CLI",
+        (AgentKind::Copilot, other) => other,
+        (kind, _) => kind.label(),
+    }
+}
+
+/// Points session box `id` at the agent's own session `native` (OpenCode
+/// learns it after the first prompt). Returns true when the box changed.
+pub fn apply_agent_session(doc: &mut Doc, id: &str, native: &str) -> bool {
+    let Some(node) = doc.node_mut(id).filter(|n| n.kind == NodeKind::Session && !native.is_empty()) else { return false };
+    let value = (native != id).then(|| native.to_owned());
+    if node.agent_session == value {
+        return false;
+    }
+    node.agent_session = value;
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn learned_agent_sessions_rekey_their_box_once() {
+        let mut doc = Doc::default();
+        doc.nodes.push(serde_json::from_value(serde_json::json!({ "id": "t1", "kind": "session", "name": "n", "x": 0, "y": 0, "agent": "opencode" })).unwrap());
+        assert!(apply_agent_session(&mut doc, "t1", "ses_abc"));
+        assert_eq!((doc.nodes[0].agent_session.as_deref(), native_id(&doc.nodes[0])), (Some("ses_abc"), "ses_abc"));
+        assert!(!apply_agent_session(&mut doc, "t1", "ses_abc"), "unchanged: nothing to save");
+        assert!(!apply_agent_session(&mut doc, "missing", "ses_x"), "unknown boxes are ignored");
+        assert!(apply_agent_session(&mut doc, "t1", "t1"), "the box id itself clears the mapping");
+        assert_eq!(doc.nodes[0].agent_session, None);
+    }
+
+    #[test]
+    fn client_labels_name_the_agent() {
+        let summary = |id: &str, client: &str| SessionSummary { id: id.into(), client: client.into(), ..Default::default() };
+        assert_eq!(client_label(&summary("u", "vscode-agent-host")), "VS Code");
+        assert_eq!(client_label(&summary("u", "github/cli")), "Copilot CLI");
+        assert_eq!(client_label(&summary("ses_x", "opencode")), "OpenCode");
+        assert_eq!(client_label(&summary("u", "claude-code")), "Claude Code");
+    }
 }

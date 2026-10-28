@@ -326,7 +326,7 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
         let lines = [
             "Your canvas is empty.",
             "",
-            "N  new session          I  import Copilot sessions",
+            "N  new session          I  import agent sessions",
             "V  import VS Code agents   ?  help",
             "Double-click anywhere to create a session there.",
         ];

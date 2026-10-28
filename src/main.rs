@@ -19,18 +19,21 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 
 const USAGE: &str = "\
-Copilot Canvas — spatial session manager for GitHub Copilot CLI
+Copilot Canvas — spatial session manager for agent CLIs (GitHub Copilot, OpenCode, Claude Code)
 
 USAGE
   copilot-canvas [options]              open the canvas (starts the terminal service if needed)
-  copilot-canvas --demo                 safe demo with native PowerShell panes, no Copilot calls
+  copilot-canvas --demo                 safe demo with native PowerShell panes, no agent calls
   copilot-canvas service status|stop    inspect or stop the terminal service (stop ends its sessions)
   copilot-canvas service start          start it in the background (for a logon task: passive sessions
                                         and the automation doctor then run without the canvas open)
-  copilot-canvas doctor                 check Copilot, ConPTY, session history and the service
+  copilot-canvas doctor                 check the agents, ConPTY, session history and the service
   copilot-canvas bench [--terminals N] [--seconds S] [--json FILE]
-                                        measure service/terminal/rendering performance (no Copilot)
+                                        measure service/terminal/rendering performance (no agent)
   copilot-canvas selftest               drive the real UI end to end in a hidden pseudoconsole
+  copilot-canvas selftest agent [--agent copilot|opencode|claude]
+                                        the same with a real agent CLI (default: the detected one;
+                                        never submits a prompt). `selftest copilot` = --agent copilot
 
 GOLDEN CORPUS (recorded terminal output vs. each engine's screen; see corpus/README.md)
   copilot-canvas record (--out FILE | --entry NAME) [--cols N] [--rows M] [--input SCRIPT] [--seconds S]
@@ -225,7 +228,8 @@ fn real_main() -> Result<()> {
         ),
         ["doctor"] => selftest::doctor(&instance),
         ["selftest"] => selftest::run(),
-        ["selftest", "copilot"] => selftest::copilot(),
+        ["selftest", "agent"] => selftest::agent(option("agent").as_deref()),
+        ["selftest", "copilot"] => selftest::agent(Some("copilot")),
         ["record", rest @ ..] => canvas_corpus::cli::record(&instance.home, rest, &args.rest, args.cwd.as_deref()),
         ["corpus", rest @ ..] => canvas_corpus::cli::corpus(rest, &args.rest),
         ["bench"] => bench::run(
