@@ -3,11 +3,10 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
 use crate::side::{DefaultField, SideView};
 use crate::copilot_cfg::Kind;
 use crate::git::GitInfo;
+use crate::input::{KeyCode, KeyEvent, Modifiers};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TextInput {
@@ -43,7 +42,7 @@ impl TextInput {
 
     /// Applies an editing key. Returns true when the key was consumed.
     pub fn handle(&mut self, key: &KeyEvent) -> bool {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let ctrl = key.modifiers.contains(Modifiers::CONTROL);
         let len = self.text.chars().count();
         match key.code {
             KeyCode::Char('u') if ctrl => {
@@ -63,7 +62,7 @@ impl TextInput {
                 self.text.replace_range(a..b, "");
                 self.cursor = start;
             }
-            KeyCode::Char(c) if !ctrl || key.modifiers.contains(KeyModifiers::ALT) => self.insert(&c.to_string()),
+            KeyCode::Char(c) if !ctrl || key.modifiers.contains(Modifiers::ALT) => self.insert(&c.to_string()),
             KeyCode::Backspace if self.cursor > 0 => {
                 let (a, b) = (self.byte_index(self.cursor - 1), self.byte_index(self.cursor));
                 self.text.replace_range(a..b, "");
@@ -444,7 +443,7 @@ mod tests {
     use super::*;
 
     fn press(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
+        KeyEvent::new(code, Modifiers::NONE)
     }
 
     #[test]
@@ -456,7 +455,7 @@ mod tests {
         input.handle(&press(KeyCode::Home));
         input.handle(&press(KeyCode::Char('¡')));
         assert_eq!(input.text, "¡hélo");
-        input.handle(&KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
+        input.handle(&KeyEvent::new(KeyCode::Char('w'), Modifiers::CONTROL));
         assert_eq!(input.text, "hélo");
         input.insert("a\nb");
         assert!(!input.text.contains('\n'));

@@ -2,10 +2,9 @@
 
 use std::path::PathBuf;
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-
 use crate::app::App;
 use crate::dialogs::{Action, FolderBrowser, GitState, Hit, Modal, NewSession, NsField, Pick, PickPurpose, PromptPurpose, Target};
+use crate::input::{KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseEventKind};
 use crate::paint::rect_contains;
 
 enum Outcome {
@@ -140,7 +139,7 @@ impl App {
             Modal::Mcp(picker) => self.mcp_key(picker, key),
             Modal::ImportCopilot(dialog) => {
                 let candidates = self.copilot_import_candidates(&dialog.filter.text);
-                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                let ctrl = key.modifiers.contains(Modifiers::CONTROL);
                 match key.code {
                     KeyCode::Esc => Outcome::Close,
                     KeyCode::Tab => {
@@ -270,7 +269,7 @@ impl App {
     }
 
     fn new_session_key(&mut self, dialog: &mut NewSession, key: KeyEvent) -> Outcome {
-        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let shift = key.modifiers.contains(Modifiers::SHIFT);
         match key.code {
             KeyCode::Esc => return Outcome::Close,
             KeyCode::Tab => {
@@ -388,7 +387,7 @@ impl App {
     }
 
     fn mcp_key(&mut self, picker: &mut crate::dialogs::McpPicker, key: KeyEvent) -> Outcome {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let ctrl = key.modifiers.contains(Modifiers::CONTROL);
         let choices = self.mcp_choices().unwrap_or_default();
         let known = self.mcp_available();
         let names = self.doc.mcp.names();
@@ -496,7 +495,7 @@ impl App {
     }
 
     fn folder_key(&mut self, browser: &mut FolderBrowser, key: KeyEvent) -> Outcome {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let ctrl = key.modifiers.contains(Modifiers::CONTROL);
         let visible = Self::folder_visible(browser);
         match key.code {
             KeyCode::Esc => Outcome::Close,
@@ -589,7 +588,7 @@ impl App {
                 pick.sel = 0;
                 Outcome::Keep
             }
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char(c) if !key.modifiers.contains(Modifiers::CONTROL) => {
                 pick.filter.push(c);
                 pick.sel = 0;
                 pick.scroll = 0;
@@ -612,7 +611,7 @@ impl App {
             _ => None,
         };
         if let Some(delta) = wheel {
-            let key = KeyEvent::new(if delta < 0 { KeyCode::Up } else { KeyCode::Down }, KeyModifiers::NONE);
+            let key = KeyEvent::new(if delta < 0 { KeyCode::Up } else { KeyCode::Down }, Modifiers::NONE);
             if !matches!(self.modals.last(), Some(Modal::NewSession(_)) | Some(Modal::Confirm(_)) | Some(Modal::Rename(_))) {
                 for _ in 0..delta.abs() {
                     self.modal_key(key);
@@ -644,7 +643,7 @@ impl App {
             self.last_click = if double { None } else { Some((now, x, y)) };
             double
         };
-        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let enter = KeyEvent::new(KeyCode::Enter, Modifiers::NONE);
         self.needs_draw = true;
         match (self.modals.last_mut(), hit) {
             (Some(Modal::Menu(menu)), Hit::MenuItem(i)) => {
@@ -693,7 +692,7 @@ impl App {
             }
             (Some(Modal::ImportCopilot(dialog)), Hit::ListRow(i)) => {
                 dialog.sel = i;
-                self.modal_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+                self.modal_key(KeyEvent::new(KeyCode::Char(' '), Modifiers::NONE));
                 if let Some(Modal::ImportCopilot(dialog)) = self.modals.last_mut() {
                     dialog.sel = i;
                 }
@@ -703,7 +702,7 @@ impl App {
             (Some(Modal::Prompt(_)), Hit::Button(0)) => self.modal_key(enter),
             (Some(Modal::Migrate(dialog)), Hit::ListRow(i)) => {
                 dialog.sel = i;
-                self.modal_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+                self.modal_key(KeyEvent::new(KeyCode::Char(' '), Modifiers::NONE));
                 if let Some(Modal::Migrate(dialog)) = self.modals.last_mut() {
                     dialog.sel = i;
                 }
@@ -711,7 +710,7 @@ impl App {
             (Some(Modal::Migrate(_)), Hit::Button(0)) => self.modal_key(enter),
             (Some(Modal::Mcp(picker)), Hit::ListRow(i)) => {
                 picker.sel = i;
-                self.modal_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+                self.modal_key(KeyEvent::new(KeyCode::Char(' '), Modifiers::NONE));
                 if let Some(Modal::Mcp(picker)) = self.modals.last_mut() {
                     picker.sel = i;
                 }
@@ -724,7 +723,7 @@ impl App {
                 }
             }
             (Some(Modal::Mcp(_)), Hit::Button(0)) => self.modal_key(enter),
-            (Some(Modal::Mcp(_)), Hit::Button(1)) => self.modal_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+            (Some(Modal::Mcp(_)), Hit::Button(1)) => self.modal_key(KeyEvent::new(KeyCode::Char('s'), Modifiers::CONTROL)),
             (Some(_), Hit::Button(_)) => {
                 self.modals.pop();
             }
