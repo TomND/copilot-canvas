@@ -304,18 +304,7 @@ fn start_run(shared: &Shared, routing: &Routing, spec: &PassiveSpec, state: &mut
     }
     // The agent's provider adds its headless flags (Copilot: -p … --allow-all
     // --no-ask-user) and the canvas integration (skills, identity, PATH).
-    let launch = AgentLaunch {
-        agent: kind.id().to_owned(),
-        native_id: native.clone(),
-        resume: !fresh,
-        name: Some(spec.name.clone()),
-        allow_all: true,
-        mcp_off: spec.mcp_off.clone(),
-        group_folder: Some(folder.display().to_string()),
-        headless_prompt: Some(prompt),
-        env: vec![("COPILOT_CANVAS_PASSIVE".to_owned(), spec.key.clone()), ("COPILOT_CANVAS_HOP".to_owned(), hop.to_string())],
-        ..Default::default()
-    };
+    let launch = passive_launch(kind, spec, native.clone(), fresh, &folder, prompt, hop);
     match shared.launch(&session, LaunchKind::Agent(Box::new(launch)), &folder.display().to_string(), 120, 40) {
         Ok(()) => {
             if kind == AgentKind::OpenCode && native.is_none() {
@@ -331,6 +320,23 @@ fn start_run(shared: &Shared, routing: &Routing, spec: &PassiveSpec, state: &mut
             s.pending = events;
             s.fail(&format!("{error:#}"), now);
         }
+    }
+}
+
+/// The headless launch of one passive run (every run uses the spec's model).
+fn passive_launch(kind: AgentKind, spec: &PassiveSpec, native: Option<String>, fresh: bool, folder: &Path, prompt: String, hop: u32) -> AgentLaunch {
+    AgentLaunch {
+        agent: kind.id().to_owned(),
+        native_id: native,
+        resume: !fresh,
+        name: Some(spec.name.clone()),
+        model: Some(spec.model.trim().to_owned()).filter(|m| !m.is_empty()),
+        allow_all: true,
+        mcp_off: spec.mcp_off.clone(),
+        group_folder: Some(folder.display().to_string()),
+        headless_prompt: Some(prompt),
+        env: vec![("COPILOT_CANVAS_PASSIVE".to_owned(), spec.key.clone()), ("COPILOT_CANVAS_HOP".to_owned(), hop.to_string())],
+        ..Default::default()
     }
 }
 
@@ -522,3 +528,25 @@ pub(super) fn input_noted(shared: &Shared, id: &str) {
 
 #[allow(dead_code)]
 fn _assert_send(_: HashMap<String, String>) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn passive_runs_carry_the_specs_model_into_the_agents_command_line() {
+        // SAFETY: tests in this crate only read this variable.
+        unsafe { std::env::set_var("COPILOT_CANVAS_OPENCODE", r"C:\bin\opencode.exe") };
+        let spec = PassiveSpec { key: "k".into(), name: "Watch".into(), agent: "opencode".into(), model: "opencode/x-free".into(), ..Default::default() };
+        let integration = crate::agents::Integration::default();
+        for (fresh, native) in [(true, None), (false, Some("ses_e7fbbd911ffeOynBIm3IrWFsUl".to_owned()))] {
+            let launch = passive_launch(AgentKind::OpenCode, &spec, native, fresh, Path::new(r"C:\g"), "check".into(), 1);
+            let args = crate::agents::opencode::OpenCode.command_with("t", &launch, &integration, false).unwrap().args;
+            let model = args.iter().position(|a| a == "-m").and_then(|i| args.get(i + 1));
+            assert_eq!(model.map(String::as_str), Some("opencode/x-free"), "fresh={fresh}: {args:?}");
+            assert!(args.iter().any(|a| a == "--auto") && args[0] == "run", "{args:?}");
+        }
+        let unset = passive_launch(AgentKind::OpenCode, &PassiveSpec { model: "  ".into(), ..spec }, None, true, Path::new(r"C:\g"), "check".into(), 1);
+        assert_eq!(unset.model, None, "blank: the agent's own default");
+    }
+}

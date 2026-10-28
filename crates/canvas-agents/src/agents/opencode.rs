@@ -98,6 +98,8 @@ pub struct ServerState {
     pub ok_ms: u64,
     /// Sessions this server worked on (opened, busy, waiting, or created after it started).
     pub sessions: HashSet<String>,
+    /// The folder the TUI works in (`GET /path`), once it answered.
+    pub directory: Option<String>,
 }
 
 struct Slot {
@@ -105,6 +107,8 @@ struct Slot {
     state: ServerState,
     /// A watcher thread polls this server.
     watched: bool,
+    /// Process id of the terminal's program (the TUI), once it started.
+    pid: Option<u32>,
 }
 
 static SERVERS: Mutex<Vec<Slot>> = Mutex::new(Vec::new());
@@ -119,7 +123,68 @@ pub fn register_server(server: Server) {
     let mut servers = servers_lock();
     servers.retain(|s| s.server.terminal != server.terminal);
     let sessions = server.session.iter().cloned().collect();
-    servers.push(Slot { server, state: ServerState { sessions, ..Default::default() }, watched: false });
+    servers.push(Slot { server, state: ServerState { sessions, ..Default::default() }, watched: false, pid: None });
+}
+
+/// The program of canvas terminal `terminal` (its TUI) runs as `pid`: only
+/// listeners inside that process tree get the server's password.
+pub fn set_terminal_pid(terminal: &str, pid: u32) {
+    if let Some(slot) = servers_lock().iter_mut().find(|s| s.server.terminal == terminal && s.pid.is_none()) {
+        slot.pid = Some(pid);
+    }
+}
+
+/// Who listens on a TUI's server port.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Listener {
+    /// Nobody yet (the TUI is starting).
+    None,
+    /// Only processes of the TUI's terminal.
+    Ours,
+    /// Some other process (the port was taken before the TUI bound it).
+    Foreign(Vec<u32>),
+}
+
+/// The decision behind [`listener_of`]: `owners` listen on the port, `tree`
+/// is the terminal's process tree.
+pub fn classify_listener(owners: &[u32], tree: &[u32]) -> Listener {
+    let foreign: Vec<u32> = owners.iter().copied().filter(|pid| !tree.contains(pid)).collect();
+    match (owners.is_empty(), foreign.is_empty()) {
+        (true, _) => Listener::None,
+        (false, true) => Listener::Ours,
+        (false, false) => Listener::Foreign(foreign),
+    }
+}
+
+/// Who listens on `port` relative to the process tree of `root`. The port was
+/// chosen by binding port 0 and releasing it, so another process could have
+/// taken it before the TUI did: the password goes only to the TUI's own tree.
+pub fn listener_of(port: u16, root: u32) -> Result<Listener> {
+    let owners = canvas_common::tcp::listener_owners(port).context("cannot list TCP listeners")?;
+    if owners.is_empty() {
+        return Ok(Listener::None);
+    }
+    let entries = crate::win::process_entries();
+    let mut children: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
+    for (pid, parent, _) in &entries {
+        children.entry(*parent).or_default().push(*pid);
+    }
+    Ok(classify_listener(&owners, &crate::win::process_tree(root, &children)))
+}
+
+/// Messages for the service log (each said once per server).
+static NOTES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Messages for the service log since the last call.
+pub fn take_notes() -> Vec<String> {
+    std::mem::take(&mut *NOTES.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+fn note(message: String) {
+    let mut notes = NOTES.lock().unwrap_or_else(|e| e.into_inner());
+    if notes.len() < 50 {
+        notes.push(message);
+    }
 }
 
 /// Forgets the TUI server of canvas terminal `terminal` (its watcher stops
@@ -156,6 +221,14 @@ pub fn server_sessions(terminal: &str) -> Vec<String> {
     ids
 }
 
+/// The service decided that the TUI in `terminal` created `session` (a first
+/// turn too quick to be seen busy): it counts as open there.
+pub fn claim_session(terminal: &str, session: &str) {
+    if let Some(slot) = servers_lock().iter_mut().find(|s| s.server.terminal == terminal) {
+        slot.state.sessions.insert(session.to_owned());
+    }
+}
+
 /// Starts a watcher thread for every registered server that has none.
 pub fn watch_servers() {
     let mut servers = servers_lock();
@@ -177,24 +250,47 @@ impl Drop for Watching {
     }
 }
 
-/// Polls one server until it stops answering for good.
+/// Polls one server until it stops answering for good. No request (and so
+/// no password) goes out until the port's listener is known to belong to the
+/// TUI's own process tree; after a failed request that is checked again.
 fn watch(server: Server) {
     let _watching = Watching(server.clone());
-    let mut round = 0u32;
     // Every request is scoped to the TUI's folder (see `opencode_server::live_with`).
     let mut directory: Option<String> = None;
+    let mut trusted = false;
+    // (a foreign listener was logged, a failed check was logged)
+    let mut noted = (false, false);
     loop {
-        // Root sessions change rarely (the first prompt, `/new`): list them every few rounds.
-        let known = servers_lock().iter().find(|s| s.server == server).is_some_and(|s| !s.state.sessions.is_empty());
-        if directory.is_none() {
+        let pid = servers_lock().iter().find(|s| s.server == server).and_then(|s| s.pid);
+        if !trusted {
+            match pid.map(|pid| listener_of(server.port, pid)) {
+                Some(Ok(Listener::Ours)) => trusted = true,
+                Some(Ok(Listener::Foreign(owners))) if !noted.0 => {
+                    noted.0 = true;
+                    note(format!(
+                        "opencode: port {} of terminal {} is held by process(es) {owners:?} outside its process tree; the server password is not sent there",
+                        server.port, server.terminal
+                    ));
+                }
+                Some(Err(error)) if !noted.1 => {
+                    noted.1 = true;
+                    note(format!("opencode: cannot check who listens on port {} of terminal {}: {error:#}", server.port, server.terminal));
+                }
+                _ => {}
+            }
+        }
+        if trusted && directory.is_none() {
             directory = opencode_server::directory(server.port, &server.password).ok();
         }
+        // The folder's session list is not asked for: it holds other processes' sessions too.
         let result = match directory.as_deref() {
-            Some(dir) => opencode_server::live_with(server.port, &server.password, dir, !known || round.is_multiple_of(5)),
-            None => Err(anyhow::anyhow!("the TUI's server has not answered yet")),
+            Some(dir) if trusted => opencode_server::live_with(server.port, &server.password, dir, false),
+            _ if !trusted => Err(anyhow::anyhow!("the TUI's server is not listening (or not verified) yet")),
+            _ => Err(anyhow::anyhow!("the TUI's server has not answered yet")),
         };
-        round = round.wrapping_add(1);
         let ok = result.is_ok();
+        // Whoever listens may have changed (the TUI exited): check again first.
+        trusted &= ok;
         {
             let mut servers = servers_lock();
             let Some(slot) = servers.iter_mut().find(|s| s.server == server) else { return };
@@ -203,12 +299,11 @@ fn watch(server: Server) {
                 Ok(live) => {
                     let state = &mut slot.state;
                     state.ok_ms = now;
+                    state.directory.clone_from(&directory);
+                    // Only what this process works on: busy or waiting here. A new
+                    // session in the same folder may be another process's (see `claim_session`).
                     state.sessions.extend(live.status.keys().cloned());
                     state.sessions.extend(live.waiting().map(str::to_owned));
-                    // The session a new TUI creates on its first prompt.
-                    state.sessions.extend(
-                        live.sessions.iter().filter(|s| s.parent.is_none() && s.created_ms.saturating_add(2_000) >= server.registered_ms).map(|s| s.id.clone()),
-                    );
                     state.live = Some(live);
                 }
                 Err(_) => {
@@ -440,7 +535,9 @@ impl History for OpenCodeHistory {
     }
 
     fn take_warnings(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.warnings)
+        let mut warnings = std::mem::take(&mut self.warnings);
+        warnings.extend(take_notes());
+        warnings
     }
 }
 
@@ -627,6 +724,98 @@ mod tests {
         std::fs::write(other.join("pkg").join("oc.exe"), "").unwrap();
         assert_eq!(find_cli_in(None, std::env::join_paths([&other]).unwrap()).unwrap(), other.join("pkg").join("oc.exe").display().to_string());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_password_only_goes_to_listeners_in_the_terminals_process_tree() {
+        let tree = [10, 11, 12];
+        assert_eq!(classify_listener(&[], &tree), Listener::None, "not listening yet: wait");
+        assert_eq!(classify_listener(&[11], &tree), Listener::Ours);
+        assert_eq!(classify_listener(&[11, 12], &tree), Listener::Ours, "several listeners of the TUI (IPv4 and IPv6)");
+        assert_eq!(classify_listener(&[11, 99], &tree), Listener::Foreign(vec![99]), "one foreign listener is enough to refuse");
+        assert_eq!(classify_listener(&[99], &[]), Listener::Foreign(vec![99]));
+        // A real listener: this process owns it; a tree without this process does not.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert_eq!(listener_of(port, std::process::id()).unwrap(), Listener::Ours);
+        let mut other = std::process::Command::new("cmd.exe").args(["/d", "/c", "ping -n 5 127.0.0.1 >nul"]).spawn().unwrap();
+        assert_eq!(listener_of(port, other.id()).unwrap(), Listener::Foreign(vec![std::process::id()]));
+        drop(listener);
+        assert_eq!(listener_of(port, std::process::id()).unwrap(), Listener::None);
+        let _ = crate::win::kill_tree(other.id());
+        let _ = other.wait();
+    }
+
+    #[test]
+    fn a_watcher_never_sends_the_password_to_a_foreign_listener() {
+        // A "server" this process owns, registered for a terminal whose program is another process.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut other = std::process::Command::new("cmd.exe").args(["/d", "/c", "ping -n 30 127.0.0.1 >nul"]).spawn().unwrap();
+        let terminal = format!("foreign-{}", uuid::Uuid::new_v4().simple());
+        register_server(Server { terminal: terminal.clone(), port, password: "secret".into(), session: None, registered_ms: now_ms() });
+        set_terminal_pid(&terminal, other.id());
+        watch_servers();
+        std::thread::sleep(Duration::from_millis(2_500));
+        assert!(matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock), "no connection was made");
+        let notes = take_notes();
+        assert!(notes.iter().any(|n| n.contains(&terminal) && n.contains("not sent")), "{notes:?}");
+        unregister_terminal(&terminal);
+        let _ = crate::win::kill_tree(other.id());
+        let _ = other.wait();
+    }
+
+    /// A stand-in for a TUI's server: answers every request by path prefix.
+    fn fake_server(routes: Vec<(&'static str, String)>) -> u16 {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut request = Vec::new();
+                let mut buf = [0u8; 4096];
+                while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => request.extend_from_slice(&buf[..n]),
+                    }
+                }
+                let text = String::from_utf8_lossy(&request);
+                let path = text.split_whitespace().nth(1).unwrap_or_default().to_owned();
+                let body = routes.iter().find(|(prefix, _)| path.starts_with(prefix)).map(|(_, body)| body.clone()).unwrap_or_else(|| "[]".into());
+                let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+            }
+        });
+        port
+    }
+
+    #[test]
+    fn a_tui_owns_only_the_sessions_it_works_on_or_was_given() {
+        let terminal = format!("own-{}", uuid::Uuid::new_v4().simple());
+        let (mine, other) = (format!("ses_mine{}", &terminal[4..12]), format!("ses_other{}", &terminal[4..12]));
+        let port = fake_server(vec![
+            ("/path", r#"{"directory":"C:\\work"}"#.into()),
+            ("/session/status", format!(r#"{{"{mine}":{{"type":"busy"}}}}"#)),
+            // The folder's list holds another process's new session too.
+            ("/session?", format!(r#"[{{"id":"{other}","time":{{"created":{}}}}},{{"id":"{mine}","time":{{"created":{}}}}}]"#, now_ms(), now_ms())),
+        ]);
+        register_server(Server { terminal: terminal.clone(), port, password: "pw".into(), session: None, registered_ms: now_ms().saturating_sub(1_000) });
+        set_terminal_pid(&terminal, std::process::id());
+        watch_servers();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while servers().iter().all(|(s, state)| s.terminal != terminal || state.ok_ms == 0) {
+            assert!(std::time::Instant::now() < deadline, "the watcher never reached the server");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let state = servers().into_iter().find(|(s, _)| s.terminal == terminal).unwrap().1;
+        assert_eq!(state.directory.as_deref(), Some(r"C:\work"));
+        assert_eq!(server_sessions(&terminal), std::slice::from_ref(&mine), "busy here: its own; listed in the folder: not");
+        assert!(OpenCode.is_live(&mine) && !OpenCode.is_live(&other), "the other process's session may be resumed");
+        claim_session(&terminal, &other);
+        assert!(OpenCode.is_live(&other), "a session the service gave this TUI is open there");
+        unregister_terminal(&terminal);
     }
 
     #[test]

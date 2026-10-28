@@ -887,6 +887,7 @@ dependencies = [
  "portable-pty",
  "postcard",
  "ratatui",
+ "rusqlite",
  "serde_json",
  "uuid",
  "windows",

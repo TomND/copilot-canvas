@@ -54,6 +54,29 @@ struct PendingSession {
     busy: HashSet<String>,
 }
 
+/// What the service knows about a launch's agent session up front.
+#[derive(Clone, Debug, PartialEq)]
+enum SessionPlan {
+    /// The agent names it later (OpenCode's first prompt, or its fork at start).
+    Expect { fork: bool },
+    /// A resumed session whose id differs from the terminal's.
+    Known(String),
+    /// The terminal id is the session id (Copilot, Claude Code), or the caller
+    /// learns it (a passive OpenCode run, from its folder).
+    Terminal,
+}
+
+fn session_plan(kind: AgentKind, launch: &AgentLaunch, id: &str, session: &str) -> SessionPlan {
+    let fork = launch.fork_from.is_some();
+    if kind == AgentKind::OpenCode && launch.headless_prompt.is_none() && (!launch.resume || fork) {
+        return SessionPlan::Expect { fork };
+    }
+    if launch.resume && !fork && session != id {
+        return SessionPlan::Known(session.to_owned());
+    }
+    SessionPlan::Terminal
+}
+
 /// The backend's state; dereferences to the terminal host it runs in.
 pub struct Agents {
     host: Arc<Host>,
@@ -181,9 +204,18 @@ impl Agents {
             launch.resume = false;
         }
         let command = provider.command(id, &launch, &self.integration(id))?;
+        let how = if launch.headless_prompt.is_some() { "headless run" } else if launch.fork_from.is_some() { "fork" } else if launch.resume { "resume" } else { "new session" };
+        let model = launch.model.as_deref().map(|m| format!(", model {m}")).unwrap_or_default();
+        log(&self.instance, &format!("terminal {id}: {} {how}{model}", kind.id()));
         lock(&self.agent_terms).insert(id.to_owned(), kind);
-        if kind == AgentKind::OpenCode && launch.headless_prompt.is_none() && (!launch.resume || launch.fork_from.is_some()) {
-            self.expect_session(id, None, launch.fork_from.is_some());
+        match session_plan(kind, &launch, id, &session) {
+            SessionPlan::Expect { fork } => self.expect_session(id, None, fork),
+            SessionPlan::Known(native) => {
+                // A resumed session's id is known up front (events and status follow it).
+                lock(&self.pending_sessions).remove(id);
+                lock(&self.agent_sessions).insert(id.to_owned(), native);
+            }
+            SessionPlan::Terminal => {}
         }
         Ok(Resolved { program: command.program, args: command.args, env: command.env, agent: true })
     }
@@ -203,6 +235,8 @@ impl Agents {
     fn learned_session(&self, id: &str, native: &str) {
         lock(&self.pending_sessions).remove(id);
         lock(&self.agent_sessions).insert(id.to_owned(), native.to_owned());
+        // Open in that TUI from now on (never resumed a second time elsewhere).
+        crate::agents::opencode::claim_session(id, native);
         log(&self.instance, &format!("terminal {id} runs agent session {native}"));
         self.broadcast(ServiceMsg::AgentSession { id: id.to_owned(), native: native.to_owned() });
         let _ = self.index_wake.try_send(());
@@ -309,6 +343,13 @@ impl HostApp for Agents {
     }
 
     fn terminals_changed(&self) {
+        // OpenCode TUIs: their server's listener is checked against the program's process tree.
+        let opencode: Vec<String> = lock(&self.agent_terms).iter().filter(|(_, k)| **k == AgentKind::OpenCode).map(|(id, _)| id.clone()).collect();
+        for id in opencode {
+            if let Some(pid) = lock(&self.terms).get(&id).filter(|t| t.alive.load(Ordering::Acquire) && t.pid != 0).map(|t| t.pid) {
+                crate::agents::opencode::set_terminal_pid(&id, pid);
+            }
+        }
         let _ = self.index_wake.try_send(());
     }
 
@@ -716,17 +757,18 @@ fn agent_session_loop(shared: Arc<Agents>) {
         if pending.is_empty() {
             continue;
         }
+        // Normally started by the history poll; that waits while OpenCode's database is missing.
+        crate::agents::opencode::watch_servers();
         let servers = crate::agents::opencode::servers();
         let now = now_ms();
         for (id, mut entry) in pending {
             let server = servers.iter().find(|(s, _)| s.terminal == id);
+            // The watcher asked the TUI's own (verified) server for its folder.
             if entry.cwd.is_none()
-                && let Some((server, _)) = server
-                && let Ok(path) = crate::agents::opencode_server::get_json(server.port, &server.password, "/path")
-                && let Some(dir) = path["directory"].as_str().filter(|d| !d.is_empty())
+                && let Some(dir) = server.and_then(|(_, state)| state.directory.clone())
             {
-                entry.cwd = Some(dir.to_owned());
                 log(&shared.instance, &format!("terminal {id} works in {dir}; waiting for its session"));
+                entry.cwd = Some(dir);
             }
             // Sessions busy in this TUI's own process are its own.
             if let Some(live) = server.and_then(|(_, state)| state.live.as_ref()) {
@@ -756,6 +798,14 @@ fn agent_session_loop(shared: Arc<Agents>) {
             }
         }
     }
+}
+
+/// The bus source of an event found in agent session `session`: the terminal
+/// (box) that runs it when the agent's id differs, else the session itself.
+fn event_source(agent_sessions: &HashMap<String, String>, session: &str) -> String {
+    let mut terminals: Vec<&String> = agent_sessions.iter().filter(|(_, native)| *native == session).map(|(id, _)| id).collect();
+    terminals.sort();
+    terminals.first().map(|id| (*id).clone()).unwrap_or_else(|| session.to_owned())
 }
 
 fn index_loop(shared: Arc<Agents>, wake: Receiver<()>) {
@@ -791,8 +841,11 @@ fn index_loop(shared: Arc<Agents>, wake: Receiver<()>) {
             changed.extend(c);
             removed.extend(r);
             for (session, kind, data) in detected {
-                log(&shared.instance, &format!("detected {kind} in {session}"));
-                let _ = shared.bus_tx.send(crate::bus::Event { kind, source: session, data, ..Default::default() });
+                // Routing knows boxes by their terminal id; OpenCode names its sessions itself.
+                let source = event_source(&lock(&shared.agent_sessions), &session);
+                let alias = if source == session { String::new() } else { format!(" (terminal {source})") };
+                log(&shared.instance, &format!("detected {kind} in {session}{alias}"));
+                let _ = shared.bus_tx.send(crate::bus::Event { kind, source, data, ..Default::default() });
             }
             for warning in warnings {
                 log(&shared.instance, &warning);
@@ -837,6 +890,32 @@ mod tests {
         assert_eq!(pick_session(&settled, &none, &none, false, false, now).as_deref(), Some("ses_old"), "a quick first turn is still found");
         assert_eq!(pick_session(&[], &none, &set(&["ses_x"]), false, true, now), None, "busy elsewhere is not new here");
         assert!(same_dir(r"C:\Repos\Demo\", "c:/repos/demo"));
+    }
+
+    #[test]
+    fn launches_say_when_the_agent_session_is_known() {
+        const SES: &str = "ses_e7fbbd911ffeOynBIm3IrWFsUl";
+        let oc = |f: &dyn Fn(&mut AgentLaunch)| {
+            let mut launch = AgentLaunch { agent: "opencode".into(), ..Default::default() };
+            f(&mut launch);
+            session_plan(AgentKind::OpenCode, &launch, "box", launch.native_id.as_deref().unwrap_or("box"))
+        };
+        assert_eq!(oc(&|_| {}), SessionPlan::Expect { fork: false }, "named on the first prompt");
+        assert_eq!(oc(&|l| l.fork_from = Some(SES.into())), SessionPlan::Expect { fork: true });
+        assert_eq!(oc(&|l| (l.resume, l.native_id) = (true, Some(SES.into()))), SessionPlan::Known(SES.into()), "resumed: its events and status follow it at once");
+        let passive = |l: &mut AgentLaunch| (l.resume, l.native_id, l.headless_prompt) = (true, Some(SES.into()), Some("run".into()));
+        assert_eq!(oc(&passive), SessionPlan::Known(SES.into()));
+        assert_eq!(oc(&|l| l.headless_prompt = Some("run".into())), SessionPlan::Terminal, "a first passive run is learned from its folder");
+        let copilot = AgentLaunch { agent: "copilot".into(), resume: true, ..Default::default() };
+        assert_eq!(session_plan(AgentKind::Copilot, &copilot, "box", "box"), SessionPlan::Terminal);
+    }
+
+    #[test]
+    fn events_found_in_an_agents_own_session_come_from_its_box() {
+        let sessions: HashMap<String, String> = [("box-1".to_owned(), "ses_a".to_owned()), ("box-2".to_owned(), "ses_b".to_owned())].into_iter().collect();
+        assert_eq!(event_source(&sessions, "ses_a"), "box-1", "routing knows the box, not OpenCode's id");
+        assert_eq!(event_source(&sessions, "12345678-1234-1234-1234-123456789abc"), "12345678-1234-1234-1234-123456789abc", "Copilot and Claude: the same id");
+        assert_eq!(event_source(&HashMap::new(), "ses_c"), "ses_c", "an imported box is keyed by its session id");
     }
 
     #[test]

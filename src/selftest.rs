@@ -724,7 +724,7 @@ fn cleanup_generated(kind: AgentKind, instance: &Instance, canvas: &Path, work: 
 }
 
 /// Words an agent's TUI shows once it is up (or a dialog that stops it).
-fn agent_ui_up(kind: AgentKind, text: &str) -> bool {
+pub(crate) fn agent_ui_up(kind: AgentKind, text: &str) -> bool {
     match kind {
         AgentKind::Copilot => text.contains("Copilot v") || text.contains("trust") || text.contains("Trust") || text.contains("❯"),
         AgentKind::OpenCode => text.contains("ctrl+p") || text.contains("Ask anything") || text.contains("tab agents"),
@@ -984,9 +984,9 @@ fn migration_preview_step(ui: &mut Console) -> Result<()> {
 /// Canvas columns at 170 columns with the default 30-column sidebar and 55% terminals.
 const CANVAS: (u16, u16) = (34, 95);
 /// Sidebar columns (right of the 3-column activity bar).
-const SIDEBAR: (u16, u16) = (3, 33);
+pub(crate) const SIDEBAR: (u16, u16) = (3, 33);
 
-fn step(name: &str) {
+pub(crate) fn step(name: &str) {
     println!("  · {name}");
 }
 

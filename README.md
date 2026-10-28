@@ -42,7 +42,9 @@ alacritty terminal engine instead of Ghostty.
   Claude Code; pick another per session in the new-session dialog (*Agent*), per
   canvas in *Settings › Agent for new sessions*, or for the machine with
   `copilot-canvas config agent opencode`. Each agent's sessions, status,
-  subagents and configuration views come from its own history and CLI.
+  subagents and configuration views come from its own history and CLI. See
+  [docs/AGENTS.md](docs/AGENTS.md) for how each agent is launched, resumed and
+  forked, how its status is read, and what is verified end to end.
 - **Clients.** `copilot-canvas` opens the client set by
   `copilot-canvas config client tui|gui|auto` (default `tui`; `auto` picks the
   GUI except over remote desktop or SSH); `--tui` and `--gui` override it. In
@@ -158,7 +160,10 @@ folder).
   schedules itself. Events arriving within 8 s are coalesced into one run.
 - **Runs** are headless `copilot --resume <id> -p …` turns started by the
   service (no process stays alive between runs, at most 2 at a time), so it is
-  one continuous conversation. After *rollover* runs (default 20) it starts a
+  one continuous conversation. A passive session runs the canvas's default
+  agent (`opencode run -s ses_… --auto`, `claude -p -r …` for the others) with
+  the model new sessions in its group would get (Settings › Model, or the
+  group's defaults), on every run. After *rollover* runs (default 20) it starts a
   fresh conversation that reads its files; old ones are kept as episodes. If
   you have its chat open and idle, the run is typed in there instead.
   Budget: *max runs per day* (default 24); failures back off 1 / 5 / 30 min
@@ -430,6 +435,13 @@ copilot-canvas selftest agent [--agent copilot|opencode|claude]
                                       syncs VS Code sessions and previews migration (applies nothing).
                                       Claude Code runs in a throw-away CLAUDE_CONFIG_DIR.
 copilot-canvas selftest copilot       same as selftest agent --agent copilot
+copilot-canvas selftest agent --agent opencode --prompt [--model ID] [--client tui|gui] [--steps LIST]
+                                      OpenCode through the canvas with tiny prompts to a free model only
+                                      (ids ending in -free; default opencode/deepseek-v4.1-flash-free):
+                                      re-keying, working → done · review → idle, wheel, git push event,
+                                      subagent box, question and permission (needs you, rejected), resume,
+                                      a headless passive run; deletes every session it created
+                                      (docs/AGENTS.md)
 copilot-canvas selftest --remote loopback|faults|paired
                                       remote mode: the UI test over TCP; drops, cut frames and delay;
                                       pairing, a Dev Tunnel stand-in, revocation (docs/REMOTE.md)
@@ -462,6 +474,11 @@ cargo test                            unit tests
   OpenCode 1.19 can hang when asked to quit while one of its own background
   requests is pending (a model-list refresh at start-up, an MCP server it keeps
   reconnecting to), so stopping such a session takes those 5 s.
+- OpenCode names a session on its first prompt: the box learns that `ses_` id
+  within a few seconds and follows it from then on; a TUI that starts another
+  session (`/new`) keeps the box on its first one. OpenCode sessions open in an
+  OpenCode the canvas did not start are not shown as open elsewhere. See
+  [docs/AGENTS.md](docs/AGENTS.md#known-limitations).
 - Automations are read from Copilot's local database; creating or editing
   their prompt/schedule is done in VS Code or the Copilot app.
 - Upgrading: terminal fixes live in the service. When a newer build starts

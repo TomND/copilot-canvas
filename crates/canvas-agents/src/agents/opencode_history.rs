@@ -1160,6 +1160,7 @@ mod tests {
             live: Some(Live { status: [(busy.to_owned(), "busy".to_owned())].into_iter().collect(), permissions: vec![("ses_child".into(), "per".into())], ..Default::default() }),
             ok_ms: 10_000,
             sessions: [busy.to_owned()].into_iter().collect(),
+            directory: None,
         };
         let roots: HashMap<String, String> = [("ses_child".to_owned(), "ses_root".to_owned())].into_iter().collect();
         let fresh_overlay = overlay(&[live("ses_a")], 10_000 + LIVE_FRESH_MS, &roots);

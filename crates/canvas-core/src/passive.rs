@@ -109,6 +109,8 @@ impl App {
                     max_runs_per_day: p.max_runs_per_day,
                     mcp_off: node.mcp_off.clone().unwrap_or_default(),
                     agent: crate::agents::agent_of(node).id().to_owned(),
+                    // Runs use the model new sessions in its group would get.
+                    model: self.doc.defaults.merged(self.doc.group(&p.group).and_then(|g| g.defaults.as_ref())).model.map(|m| m.trim().to_owned()).unwrap_or_default(),
                 }),
                 None => {
                     if let Some(group) = self.doc.group_of(node) {
@@ -461,6 +463,27 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn passive_runs_use_the_model_new_sessions_in_their_group_get() {
+        use crate::doc::{Doc, Group, LaunchDefaults};
+        let (tx, _sent) = crossbeam_channel::bounded(64);
+        let (_service, service_rx) = crossbeam_channel::bounded(1);
+        let (app_tx, _app_rx) = crossbeam_channel::unbounded();
+        let mut doc = Doc { defaults: LaunchDefaults { model: Some("opencode/x-free".into()), ..Default::default() }, ..Doc::default() };
+        doc.groups.push(Group { id: "g1".into(), name: "G".into(), folder: Some(r"C:\g".into()), ..Default::default() });
+        doc.groups.push(Group { id: "g2".into(), name: "H".into(), defaults: Some(LaunchDefaults { model: Some(" big ".into()), ..Default::default() }), ..Default::default() });
+        for (id, group) in [("p1", "g1"), ("p2", "g2")] {
+            let mut node: Node = serde_json::from_value(serde_json::json!({ "id": id, "kind": "session", "name": id, "x": 0, "y": 0, "agent": "opencode" })).unwrap();
+            node.passive = Some(Passive { key: format!("k{id}"), group: group.into(), ..Default::default() });
+            doc.nodes.push(node);
+        }
+        let app = App::new(crate::conn::Conn::detached(tx, service_rx), std::sync::Arc::new(crate::rpc::Offline), crate::sync::Opened::detached(doc), false, ".".into(), app_tx, None);
+        let routing = app.build_routing();
+        let model = |key: &str| routing.passive.iter().find(|p| p.key == key).map(|p| (p.agent.clone(), p.model.clone()));
+        assert_eq!(model("kp1"), Some(("opencode".into(), "opencode/x-free".into())), "the canvas default");
+        assert_eq!(model("kp2"), Some(("opencode".into(), "big".into())), "the group's default wins");
+    }
 
     #[test]
     fn slugs_are_filesystem_safe() {
