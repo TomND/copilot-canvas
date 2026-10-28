@@ -32,25 +32,28 @@ installed agent (OpenCode on the development machine, which has no Copilot).
 | 6 Hardening | Done: damage frames, device-lost and DPI recovery, window placement, UI Automation (AccessKit), crash log, GUI stress/perf/burn probes | `selftest --client gui --hardening`; §9 budgets all met (docs/GUI.md) |
 | 7 Rollout | Done except the time-gated step: `client` setting (`tui`, `gui`, `auto`; `copilot-canvas config client …`), `--tui`/`--gui`, **O** opens the same canvas in the other client | `selftest` step "O opens this canvas in the other client" (TUI and GUI) |
 
-Not done in this session, because they need time or a second machine:
+Validated by the owner on 2026-10-28, on the real setup:
 
-- **Dogfood week, then switch the default client** (Phase 7). The default is
-  still `tui`; after the week, `copilot-canvas config client gui` (or `auto`,
-  which keeps the TUI over remote desktop and SSH as D4 asks).
-- **A day on a real Dev Tunnel** (Phase 1 exit criterion): the devtunnel CLI is
-  installed but signed out here; everything was tested with a stand-in that
-  forwards a port (docs/REMOTE.md has the manual checklist and commands).
+- **Remote mode over a real Dev Tunnel** (Phase 1 exit criterion): the home
+  client paired with the Cloud PC and works through the tunnel.
+- **GitHub Copilot CLI** on the Cloud PC (`selftest agent --agent copilot`).
+- **The GUI as the default client** (`copilot-canvas config client gui`): the
+  dogfood week (Phase 7) started on 2026-10-28.
+
+Also verified here: OpenCode end to end through the canvas with a free model
+(`selftest agent --agent opencode --prompt`: re-keying, status, needs-you,
+subagents, wheel, push detection, resume, passive runs; docs/AGENTS.md);
+Claude Code launched and stopped through the canvas, never prompted.
+
+Still running or time-gated:
+
 - **The 48 h remote soak** (Phase 6): 20-minute soaks passed for both clients;
   the 48 h run with the GUI client started on 2026-10-28 11:46 (report:
-  `%TEMP%\cc-soak48\soak-gui-48h.json`; after 2 h, 0 keystrokes lost or
-  doubled, reconnects ≤ 1.54 s, flat memory and handles).
-- **Real-Copilot probes**: Copilot CLI is not installed on the development
-  machine; the Copilot provider keeps the original command lines (unit-tested)
-  and `selftest agent --agent copilot` runs them where Copilot is installed.
-  OpenCode was verified end to end through the canvas with a free model
-  (`selftest agent --agent opencode --prompt`: re-keying, status, needs-you,
-  subagents, wheel, push detection, resume, passive runs; docs/AGENTS.md);
-  Claude Code was launched and stopped through the canvas, never prompted.
+  `%TEMP%\cc-soak48\soak-gui-48h.json`; after 4 h, 500 faults: 0 keystrokes
+  lost or doubled, reconnects ≤ 1.55 s, flat memory and handles).
+- **Switching the built-in default** from `tui` to `gui` (or `auto`, which
+  keeps the TUI over remote desktop and SSH as D4 asks) after the dogfood week
+  with no open parity bugs.
 
 ## 1. Goals and non-goals
 

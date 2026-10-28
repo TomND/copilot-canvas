@@ -15,7 +15,7 @@ locked), prints each check as it runs and ends with the table below;
 ## How the suite works
 
 - **Over the test hooks.** It starts `copilot-canvas-gui.exe --test-hooks
-  --size 170x46 --perf` and drives it like the 26-step self-test
+  --size 170x46 --perf` and drives it like the 27-step self-test
   (`docs/GUI.md` §3): keys, text, mouse and wheel at cell centres, the `screen`
   text, the `tree` (boxes with status, border and loop; tiles with images,
   tint and links; selection; notices), offscreen `png` captures whose pixels
@@ -44,7 +44,7 @@ locked), prints each check as it runs and ends with the table below;
 
 ## The matrix
 
-`GUI check` is the parity suite's check; `also` lists the 26-step GUI
+`GUI check` is the parity suite's check; `also` lists the 27-step GUI
 self-test steps (`selftest --client gui`, also run with `--remote loopback`)
 and unit tests that cover the row.
 
@@ -79,10 +79,10 @@ and unit tests that cover the row.
 | 27 | Copilot automations (`data.db`) and session schedules | `automation_boxes_and_session_loops`: three automation boxes; the session schedule loops | | ✓ |
 | 28 | Idle auto-stop, priority manager, upgrade with resume, protocol-mismatch tolerance, crash log | `crash_log_and_build_match`: no update prompt for a current service; a crash is written to `crash.log` and the sessions keep running (idle stop, priorities and upgrades are the service's, shared with the TUI) | `upgrade_probe` (manual), canvas-host tests | ✓ |
 | 29 | Keyboard map, F6 / Ctrl+] to leave a terminal, Q / Ctrl+Q quit dialog, `?` help | `help_f6_and_quit_dialog` | steps "Ctrl+] returns keyboard focus", "detach", "stop all and quit" | ✓ |
-| 30 | `--demo` mode | `demo_mode_canvas` | the whole 26-step self-test runs in `--demo` | ✓ |
+| 30 | `--demo` mode | `demo_mode_canvas` | the whole 27-step self-test runs in `--demo` | ✓ |
 | 31 | `--perf` overlay (GPU timings, round-trip time) | `perf_overlay_rtt`: frame timings and service round trips measured | `bench --client gui` | ✓ |
 | 32 | CLI (service, doctor, bench, events, emit, send, status, followup, automations) | `cli_unchanged` — **no front end:** the same CLI binary for both clients | existing CLI tests | ✓ |
-| 33 | **New:** remote mode (pair, reconnect, resync, offline input blocking) | `remote_loopback_gui_and_upload`: the GUI over loopback TCP; a dropped file is uploaded to the service's machine and its path pasted | `selftest --client gui --remote loopback` (26 steps over TCP); `selftest --remote faults` (the reconnect core both clients share) | ✓ |
+| 33 | **New:** remote mode (pair, reconnect, resync, offline input blocking) | `remote_loopback_gui_and_upload`: the GUI over loopback TCP; a dropped file is uploaded to the service's machine and its path pasted | `selftest --client gui --remote loopback` (27 steps over TCP); `selftest --remote faults` (the reconnect core both clients share) | ✓ |
 
 No row is TUI-only: every feature of the TUI exists in the GUI. Row 32 is
 not a front-end feature.

@@ -140,5 +140,6 @@ the listener check, history parsing, re-keying decisions and status mapping.
 - Claude Code is never sent a prompt by the tests; its status paths are
   covered by unit tests and the no-prompt check.
 - Copilot's real-agent check needs the Copilot CLI, which the development
-  machine does not have; Copilot's paths are covered by the demo self-tests
-  (a stand-in CLI) and unit tests.
+  machine does not have; it passed on the owner's Cloud PC (2026-10-28), and
+  Copilot's paths are also covered by the demo self-tests (a stand-in CLI) and
+  unit tests.

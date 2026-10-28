@@ -464,11 +464,10 @@ clipboard), "Close". Nothing is ever executed.
 
 ## Manual checklist (real tunnel)
 
-The exit criterion "the TUI at home through a real tunnel passes a manual
-checklist over a day" could not be run where this was built: the Dev Tunnels
-CLI there (1.0.2115) is not signed in, and signing in needs an interactive
-browser. Everything up to the tunnel is covered by `selftest --remote paired`
-with the stand-in. To run it for real:
+Validated on the owner's real setup (home PC and Cloud PC over a private Dev
+Tunnel) on 2026-10-28. The build machine's Dev Tunnels CLI (1.0.2115) is not
+signed in, so automated tests cover everything up to the tunnel with the
+stand-in (`selftest --remote paired`). To set it up or check it again:
 
 On the Cloud PC:
 
@@ -555,7 +554,7 @@ Checklist (over a day):
   tables; input dedupe and takeover; heartbeats keeping a connection and
   silence ending it with short timeouts (`canvas-core::conn`); offline input,
   reconnect resync and the lost-keystroke report (`canvas-core::app`).
-- `copilot-canvas selftest --remote loopback`: the 26-step UI self-test with
+- `copilot-canvas selftest --remote loopback`: the 27-step UI self-test with
   the client on TCP.
 - `copilot-canvas selftest --remote faults` (or, after `cargo build --release`,
   `cargo test --release fault_injection -- --ignored --nocapture`): a TCP proxy
