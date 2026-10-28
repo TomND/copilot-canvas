@@ -2,42 +2,33 @@
 
 use std::time::{Duration, Instant};
 
-use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-
 use crate::app::{App, CanvasHit, Drag, Focus, SideKind};
 use crate::dialogs::{Action, Hit, Target};
 use crate::doc::NodeKind;
-use crate::input::{self, InputEvent};
+use crate::input::{self, InputEvent, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind};
 use crate::paint::rect_contains;
 use crate::protocol::{ClientMsg, Input};
 
 impl App {
+    /// The single input dispatch for every front end.
     pub fn on_input(&mut self, batch: Vec<InputEvent>) {
         for event in batch {
             self.needs_draw = true;
             match event {
                 InputEvent::Paste(text) => self.on_paste(text),
-                InputEvent::Event(Event::Paste(text)) => self.on_paste(text),
-                InputEvent::Event(Event::Key(key)) if key.kind != KeyEventKind::Release => self.on_key(key),
-                InputEvent::Event(Event::Mouse(mouse)) => self.on_mouse(mouse),
-                InputEvent::Event(Event::Resize(_, _)) => {}
-                InputEvent::Event(Event::FocusLost) => {
+                InputEvent::Key(key) if key.kind != KeyEventKind::Release => self.on_key(key),
+                InputEvent::Key(_) => {}
+                InputEvent::Mouse(mouse) => self.on_mouse(mouse),
+                // The front end resizes its surface; the next draw lays out anew.
+                InputEvent::Resize(_, _) => {}
+                InputEvent::Focus(focused) => {
                     if self.focus == Focus::Terminal
                         && let Some(id) = self.focused_term.clone()
                         && self.owned_alive(&id)
                     {
-                        self.send(ClientMsg::Input { id, input: Input::Focus(false) });
+                        self.send(ClientMsg::Input { id, input: Input::Focus(focused) });
                     }
                 }
-                InputEvent::Event(Event::FocusGained) => {
-                    if self.focus == Focus::Terminal
-                        && let Some(id) = self.focused_term.clone()
-                        && self.owned_alive(&id)
-                    {
-                        self.send(ClientMsg::Input { id, input: Input::Focus(true) });
-                    }
-                }
-                InputEvent::Event(_) => {}
             }
         }
     }
@@ -82,9 +73,9 @@ impl App {
             self.terminal_key(key);
             return;
         }
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-        if key.modifiers.contains(KeyModifiers::ALT)
+        let ctrl = key.modifiers.contains(Modifiers::CONTROL);
+        let shift = key.modifiers.contains(Modifiers::SHIFT);
+        if key.modifiers.contains(Modifiers::ALT)
             && let KeyCode::Char(c @ '1'..='8') = key.code
         {
             let view = crate::side::VIEWS[(c as u8 - b'1') as usize].0;
@@ -319,7 +310,7 @@ impl App {
         let Some(id) = self.focused_term.clone() else {
             return self.set_focus(Focus::Canvas);
         };
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let ctrl = key.modifiers.contains(Modifiers::CONTROL);
         let is = |c: char| matches!(key.code, KeyCode::Char(k) if k.eq_ignore_ascii_case(&c));
         // Like Windows Terminal: Ctrl+C copies while text is selected; otherwise it reaches Copilot.
         if ctrl && is('c') && self.term_select.as_ref().is_some_and(|s| s.id == id) {
@@ -327,7 +318,7 @@ impl App {
             self.term_select = None;
             return;
         }
-        if ctrl && key.modifiers.contains(KeyModifiers::SHIFT) && is('c') {
+        if ctrl && key.modifiers.contains(Modifiers::SHIFT) && is('c') {
             return;
         }
         if ctrl && is('v') {
@@ -343,7 +334,7 @@ impl App {
             }
             return;
         }
-        if key.modifiers.contains(KeyModifiers::SHIFT) && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
+        if key.modifiers.contains(Modifiers::SHIFT) && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
             let rows = self.views.get(&id).map(|v| v.rows as i32).unwrap_or(20).max(4) - 2;
             let delta = if key.code == KeyCode::PageUp { rows } else { -rows };
             self.send(ClientMsg::Scroll { id, delta });
@@ -419,11 +410,11 @@ impl App {
         }
     }
 
-    fn mouse_down(&mut self, button: MouseButton, x: u16, y: u16, modifiers: KeyModifiers) {
-        let additive = modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    fn mouse_down(&mut self, button: MouseButton, x: u16, y: u16, modifiers: Modifiers) {
+        let additive = modifiers.intersects(Modifiers::CONTROL | Modifiers::SHIFT);
         if button == MouseButton::Left
             && let Some(link) = self.layout.links.iter().find(|l| l.contains(x, y)).cloned()
-            && (!link.terminal || modifiers.contains(KeyModifiers::CONTROL))
+            && (!link.terminal || modifiers.contains(Modifiers::CONTROL))
         {
             match crate::links::open(&link.target) {
                 Ok(message) => self.notify(message, false),
@@ -693,9 +684,9 @@ impl App {
         self.mark_dirty();
     }
 
-    fn mouse_scroll(&mut self, kind: MouseEventKind, x: u16, y: u16, modifiers: KeyModifiers) {
+    fn mouse_scroll(&mut self, kind: MouseEventKind, x: u16, y: u16, modifiers: Modifiers) {
         let up = matches!(kind, MouseEventKind::ScrollUp);
-        let horizontal = matches!(kind, MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight) || modifiers.contains(KeyModifiers::SHIFT);
+        let horizontal = matches!(kind, MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight) || modifiers.contains(Modifiers::SHIFT);
         if rect_contains(self.layout.sidebar, x, y) {
             if self.side_view == crate::side::SideView::Sessions {
                 self.side_scroll = if up { self.side_scroll.saturating_sub(3) } else { self.side_scroll + 3 };
@@ -708,17 +699,7 @@ impl App {
             if self.terms.contains_key(&id) {
                 let col = x.saturating_sub(inner.x).min(inner.width.saturating_sub(1));
                 let row = y.saturating_sub(inner.y).min(inner.height.saturating_sub(1));
-                let mut mods = 0;
-                if modifiers.contains(KeyModifiers::SHIFT) {
-                    mods |= crate::protocol::MOD_SHIFT;
-                }
-                if modifiers.contains(KeyModifiers::ALT) {
-                    mods |= crate::protocol::MOD_ALT;
-                }
-                if modifiers.contains(KeyModifiers::CONTROL) {
-                    mods |= crate::protocol::MOD_CTRL;
-                }
-                self.send(ClientMsg::Wheel { id, up, col, row, mods });
+                self.send(ClientMsg::Wheel { id, up, col, row, mods: input::mods(modifiers) });
             }
             return;
         }
@@ -726,7 +707,7 @@ impl App {
             return;
         }
         // Windows Terminal may keep Ctrl+wheel for font zoom, so Alt+wheel also zooms.
-        if modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+        if modifiers.intersects(Modifiers::CONTROL | Modifiers::ALT) {
             return self.zoom_at(x as i32, y as i32, if up { -1 } else { 1 });
         }
         let (n, d) = self.scale();

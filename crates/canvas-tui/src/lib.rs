@@ -1,8 +1,10 @@
 //! The TUI client: canvas + sidebar + terminal panes, connected to the service.
 
+mod input;
 mod stable;
 
-use canvas_core::{app, conn, doc, input, ui};
+use canvas_core::{app, conn, doc, ui};
+use canvas_core::input::InputEvent;
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -229,9 +231,9 @@ pub fn run(options: Options) -> Result<()> {
         // Set when input arrived since the last frame (draw at once, not paced).
         let mut input_waiting = false;
         let mut resize: Option<(u16, u16)> = None;
-        let on_input = |app: &mut App, batch: Vec<input::InputEvent>, resize: &mut Option<(u16, u16)>| {
+        let on_input = |app: &mut App, batch: Vec<InputEvent>, resize: &mut Option<(u16, u16)>| {
             for event in &batch {
-                if let input::InputEvent::Event(ratatui::crossterm::event::Event::Resize(w, h)) = event {
+                if let InputEvent::Resize(w, h) = event {
                     *resize = Some((*w, *h));
                 }
             }
