@@ -8,6 +8,7 @@ use crate::doc::NodeKind;
 use crate::input::{self, InputEvent, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind};
 use crate::paint::rect_contains;
 use crate::protocol::{ClientMsg, Input};
+use crate::view::RenderMode;
 
 impl App {
     /// The single input dispatch for every front end.
@@ -16,6 +17,7 @@ impl App {
             self.needs_draw = true;
             match event {
                 InputEvent::Paste(text) => self.on_paste(text),
+                InputEvent::Text(text) => self.on_text(&text),
                 InputEvent::Key(key) if key.kind != KeyEventKind::Release => self.on_key(key),
                 InputEvent::Key(_) => {}
                 InputEvent::Mouse(mouse) => self.on_mouse(mouse),
@@ -48,6 +50,31 @@ impl App {
             }
         } else if self.side_filter_active {
             self.side_filter.insert(&text);
+        }
+    }
+
+    /// Committed text (IME): typed into a terminal, inserted into text fields.
+    fn on_text(&mut self, text: &str) {
+        let text: String = text.chars().filter(|c| !c.is_control()).collect();
+        if text.is_empty() {
+            return;
+        }
+        if !self.modals.is_empty() {
+            self.modal_paste(&text);
+        } else if self.focus == Focus::Terminal {
+            if let Some(id) = self.focused_term.clone().filter(|id| self.owned_alive(id)) {
+                self.term_select = None;
+                for c in text.chars() {
+                    self.send(ClientMsg::Input { id: id.clone(), input: Input::Key { key: crate::protocol::Key::Char(c), mods: 0 } });
+                }
+            }
+        } else if self.side_filter_active {
+            self.side_filter.insert(&text);
+            self.side_sel = 0;
+            self.side_scroll = 0;
+        } else if let [c] = text.chars().collect::<Vec<_>>()[..] {
+            // One character on the canvas or sidebar is a key press (shortcuts).
+            self.on_key(KeyEvent::new(KeyCode::Char(c), Modifiers::NONE));
         }
     }
 
@@ -396,13 +423,17 @@ impl App {
     }
 
     pub fn on_mouse(&mut self, mouse: MouseEvent) {
+        self.pointer = (mouse.x, mouse.y);
         if !self.modals.is_empty() {
             self.modal_mouse(mouse);
             return;
         }
         let (x, y) = (mouse.column, mouse.row);
         match mouse.kind {
-            MouseEventKind::Down(button) => self.mouse_down(button, x, y, mouse.modifiers),
+            MouseEventKind::Down(button) => {
+                self.drag_origin = self.pointer;
+                self.mouse_down(button, x, y, mouse.modifiers)
+            }
             MouseEventKind::Drag(_) => self.mouse_drag(x, y),
             MouseEventKind::Up(_) => self.mouse_up(x, y),
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown | MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
@@ -425,7 +456,7 @@ impl App {
             && let Some(link) = self.layout.links.iter().find(|l| l.contains(x, y)).cloned()
             && (!link.terminal || modifiers.contains(Modifiers::CONTROL))
         {
-            match crate::links::open(&link.target) {
+            match self.platform.open_link(&link.target) {
                 Ok(message) => self.notify(message, false),
                 Err(error) => self.notify(format!("{error:#}"), true),
             }
@@ -565,6 +596,9 @@ impl App {
     }
 
     fn mouse_drag(&mut self, x: u16, y: u16) {
+        if self.render_mode == RenderMode::Gpu && self.precise_drag(x, y) {
+            return;
+        }
         let (n, d) = self.scale();
         let Some(drag) = self.drag.take() else { return };
         let world = |dx: i32, dy: i32| (dx * d / n, dy * d / n);
@@ -638,6 +672,50 @@ impl App {
         });
     }
 
+    /// Gpu mode: canvas drags follow the precise pointer (boxes and groups move
+    /// in whole world units; the rest shows as a visual offset). False for
+    /// drags that work in cells in both modes.
+    fn precise_drag(&mut self, x: u16, y: u16) -> bool {
+        let s = self.scale_f();
+        let (dx, dy) = ((self.pointer.0 - self.drag_origin.0) / s, (self.pointer.1 - self.drag_origin.1) / s);
+        let (rx, ry) = (dx.round() as i32, dy.round() as i32);
+        let next = match self.drag.take() {
+            Some(Drag::Nodes { ids, start, applied, moved, click }) => {
+                if (rx, ry) != applied {
+                    self.doc.move_nodes(&ids, rx - applied.0, ry - applied.1);
+                }
+                self.mark_dirty();
+                Drag::Nodes { moved: moved || (rx, ry) != (0, 0), ids, start, applied: (rx, ry), click }
+            }
+            Some(Drag::Group { id, start, applied, moved }) => {
+                if (rx, ry) != applied {
+                    self.doc.move_group(&id, rx - applied.0, ry - applied.1);
+                }
+                self.mark_dirty();
+                Drag::Group { moved: moved || (rx, ry) != (0, 0), id, start, applied: (rx, ry) }
+            }
+            Some(Drag::Resize { id, start, orig }) => {
+                if let Some(group) = self.doc.group_mut(&id) {
+                    group.w = (orig.0 + rx).max(crate::doc::GROUP_MIN_W);
+                    group.h = (orig.1 + ry).max(crate::doc::GROUP_MIN_H);
+                }
+                self.mark_dirty();
+                Drag::Resize { id, start, orig }
+            }
+            Some(Drag::Pan { last, moved }) => {
+                self.pan_cells(self.pointer.0 - self.drag_origin.0, self.pointer.1 - self.drag_origin.1);
+                self.drag_origin = self.pointer;
+                Drag::Pan { last: (x, y), moved: moved || last != (x, y) }
+            }
+            other => {
+                self.drag = other;
+                return false;
+            }
+        };
+        self.drag = Some(next);
+        true
+    }
+
     fn mouse_up(&mut self, x: u16, y: u16) {
         let Some(drag) = self.drag.take() else { return };
         match drag {
@@ -664,9 +742,18 @@ impl App {
                     }
                     return;
                 }
-                let (ax, ay) = self.to_world(start.0.min(now.0) as i32, start.1.min(now.1) as i32);
-                let (bx, by) = self.to_world(start.0.max(now.0) as i32 + 1, start.1.max(now.1) as i32 + 1);
-                let area = crate::doc::Rect { x: ax, y: ay, w: (bx - ax).max(1), h: (by - ay).max(1) };
+                let area = if self.render_mode == RenderMode::Gpu {
+                    // The band as drawn, from the precise pointer positions.
+                    let (o, p) = (self.drag_origin, self.pointer);
+                    let (ax, ay) = self.to_world_f(o.0.min(p.0), o.1.min(p.1));
+                    let (bx, by) = self.to_world_f(o.0.max(p.0), o.1.max(p.1));
+                    let (x0, y0) = (ax.floor() as i32, ay.floor() as i32);
+                    crate::doc::Rect { x: x0, y: y0, w: (bx.ceil() as i32 - x0).max(1), h: (by.ceil() as i32 - y0).max(1) }
+                } else {
+                    let (ax, ay) = self.to_world(start.0.min(now.0) as i32, start.1.min(now.1) as i32);
+                    let (bx, by) = self.to_world(start.0.max(now.0) as i32 + 1, start.1.max(now.1) as i32 + 1);
+                    crate::doc::Rect { x: ax, y: ay, w: (bx - ax).max(1), h: (by - ay).max(1) }
+                };
                 let hits: Vec<String> = self
                     .doc
                     .nodes
@@ -717,12 +804,22 @@ impl App {
         }
         // Windows Terminal may keep Ctrl+wheel for font zoom, so Alt+wheel also zooms.
         if modifiers.intersects(Modifiers::CONTROL | Modifiers::ALT) {
+            if self.render_mode == RenderMode::Gpu {
+                // Continuous: one notch is 1/8 of a power of two, around the pointer.
+                let (px, py) = self.point_in(x, y);
+                return self.zoom_by(px, py, 2f32.powf(if up { 0.125 } else { -0.125 }));
+            }
             return self.zoom_at(x as i32, y as i32, if up { -1 } else { 1 });
+        }
+        let forward = matches!(kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollLeft);
+        if self.render_mode == RenderMode::Gpu {
+            self.pan_quiet_until = Some(Instant::now() + Duration::from_millis(200));
+            let step = if forward { 3.0 } else { -3.0 };
+            return if horizontal { self.pan_cells(step * 2.0, 0.0) } else { self.pan_cells(0.0, step) };
         }
         let (n, d) = self.scale();
         let amount = 3 * d / n;
         self.pan_quiet_until = Some(Instant::now() + Duration::from_millis(200));
-        let forward = matches!(kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollLeft);
         if horizontal {
             self.doc.view.x += if forward { -amount * 2 } else { amount * 2 };
         } else {

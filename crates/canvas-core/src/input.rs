@@ -17,6 +17,9 @@ pub enum InputEvent {
     /// Text pasted at once: bracketed paste, or a burst of keys coalesced by
     /// [`coalesce`].
     Paste(String),
+    /// Text typed at once (an IME composition committed): a terminal gets
+    /// the characters, a text field inserts them.
+    Text(String),
     /// The window gained (`true`) or lost (`false`) keyboard focus.
     Focus(bool),
     /// The surface is now this many cells (columns, rows).

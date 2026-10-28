@@ -53,6 +53,15 @@ pub fn has_text() -> bool {
     unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT) != 0 }
 }
 
+/// True when the clipboard holds a bitmap (a screenshot, a copied image).
+pub fn has_image() -> bool {
+    const CF_BITMAP: u32 = 2;
+    const CF_DIB: u32 = 8;
+    const CF_DIBV5: u32 = 17;
+    // SAFETY: no clipboard ownership needed for these queries.
+    [CF_DIB, CF_DIBV5, CF_BITMAP].into_iter().any(|format| unsafe { IsClipboardFormatAvailable(format) != 0 })
+}
+
 pub fn get_text() -> Result<String> {
     open()?;
     // SAFETY: the clipboard is open; the handle stays valid until it closes.

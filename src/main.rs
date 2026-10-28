@@ -1,6 +1,7 @@
 //! Copilot Canvas: a spatial session manager for agent CLIs.
 
 mod bench;
+mod gui_bench;
 mod remote_probe;
 mod selftest;
 
@@ -25,6 +26,7 @@ Copilot Canvas — spatial session manager for agent CLIs (GitHub Copilot, OpenC
 USAGE
   copilot-canvas [options]              open the canvas (starts the terminal service if needed)
   copilot-canvas --demo                 safe demo with native PowerShell panes, no Copilot calls
+  copilot-canvas --gui [options]        open the GPU client (copilot-canvas-gui.exe next to this program)
   copilot-canvas --remote loopback      open the canvas over TCP to the local service (remote mode
                                         without a tunnel; starts the service listening on loopback)
   copilot-canvas --remote HOST:PORT     open the canvas on a remote service (a forwarded tunnel port;
@@ -36,8 +38,12 @@ USAGE
   copilot-canvas bench [--terminals N] [--seconds S] [--json FILE] [--remote loopback]
                                         measure service/terminal/rendering performance (no Copilot);
                                         --remote loopback: over TCP, with and without compression
-  copilot-canvas selftest [--remote loopback]
-                                        drive the real UI end to end in a hidden pseudoconsole
+  copilot-canvas bench --client gui [--seconds S] [--json FILE] [--remote loopback]
+                                        the GPU client: first paint, frame cost, panning, keystroke
+                                        to present, idle CPU and memory (over its test hooks)
+  copilot-canvas selftest [--client tui|gui] [--remote loopback]
+                                        drive the real UI end to end (TUI: in a hidden pseudoconsole;
+                                        GUI: over its test hooks)
   copilot-canvas selftest --remote faults
                                         drop, cut and delay the TCP connection while typing; check
                                         reconnect, resync and that no keystroke is lost or doubled
@@ -92,6 +98,7 @@ struct Args {
     remote: Option<String>,
     demo: bool,
     perf: bool,
+    gui: bool,
     rest: Vec<(String, String)>,
     flags: Vec<String>,
 }
@@ -107,6 +114,7 @@ fn parse() -> Result<Args> {
         remote: None,
         demo: false,
         perf: false,
+        gui: false,
         rest: Vec::new(),
         flags: Vec::new(),
     };
@@ -124,6 +132,7 @@ fn parse() -> Result<Args> {
             }
             "--demo" => args.demo = true,
             "--perf" => args.perf = true,
+            "--gui" => args.gui = true,
             "--instance" => args.instance = Some(value("--instance")?),
             "--home" => args.home = Some(PathBuf::from(value("--home")?)),
             "--sessions-dir" => args.sessions_dir = Some(PathBuf::from(value("--sessions-dir")?)),
@@ -153,8 +162,21 @@ fn main() {
     }
 }
 
+/// `copilot-canvas --gui …`: runs the GPU client next to this program with
+/// the same options, and exits with its exit code.
+fn launch_gui() -> Result<()> {
+    let exe = std::env::current_exe()?.with_file_name("copilot-canvas-gui.exe");
+    anyhow::ensure!(exe.is_file(), "the GPU client {} is missing", exe.display());
+    let args: Vec<String> = std::env::args().skip(1).filter(|a| a != "--gui").collect();
+    let status = std::process::Command::new(&exe).args(&args).status().with_context(|| format!("cannot start {}", exe.display()))?;
+    std::process::exit(status.code().unwrap_or(1));
+}
+
 fn real_main() -> Result<()> {
     let args = parse()?;
+    if args.gui && args.command.is_empty() {
+        return launch_gui();
+    }
     let instance = paths::Instance::new(args.instance.clone(), args.home.clone(), args.sessions_dir.clone())?;
     let option = |name: &str| args.rest.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
     let options = |name: &str| args.rest.iter().filter(|(k, _)| k == name).map(|(_, v)| v.clone()).collect::<Vec<_>>();
@@ -250,16 +272,32 @@ fn real_main() -> Result<()> {
             },
         ),
         ["doctor"] => selftest::doctor(&instance),
-        ["selftest"] => match args.remote.as_deref() {
-            None => selftest::run(None),
-            Some("loopback") => selftest::run(Some("loopback")),
-            Some("faults") => remote_probe::faults(&std::env::current_exe()?),
-            Some(other) => bail!("selftest --remote takes `loopback` or `faults`, not {other:?}"),
-        },
+        ["selftest"] => {
+            let client = match option("client").as_deref() {
+                None | Some("tui") => selftest::Client::Tui,
+                Some("gui") => selftest::Client::Gui,
+                Some(other) => bail!("selftest --client takes `tui` or `gui`, not {other:?}"),
+            };
+            match args.remote.as_deref() {
+                None => selftest::run(None, client),
+                Some("loopback") => selftest::run(Some("loopback"), client),
+                Some("faults") => remote_probe::faults(&std::env::current_exe()?),
+                Some(other) => bail!("selftest --remote takes `loopback` or `faults`, not {other:?}"),
+            }
+        }
         ["selftest", "agent"] => selftest::agent(option("agent").as_deref()),
         ["selftest", "copilot"] => selftest::agent(Some("copilot")),
         ["record", rest @ ..] => canvas_corpus::cli::record(&instance.home, rest, &args.rest, args.cwd.as_deref()),
         ["corpus", rest @ ..] => canvas_corpus::cli::corpus(rest, &args.rest),
+        ["bench"] if option("client").as_deref() == Some("gui") => gui_bench::run(gui_bench::Options {
+            seconds: option("seconds").map(|v| v.parse()).transpose()?.unwrap_or(5),
+            json: option("json").map(PathBuf::from),
+            remote: match args.remote.as_deref() {
+                None => false,
+                Some("loopback") => true,
+                Some(other) => bail!("bench --remote takes `loopback`, not {other:?}"),
+            },
+        }),
         ["bench"] => bench::run(bench::Options {
             terminals: option("terminals").map(|v| v.parse()).transpose()?.unwrap_or(100),
             seconds: option("seconds").map(|v| v.parse()).transpose()?.unwrap_or(10),

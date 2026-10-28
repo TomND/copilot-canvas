@@ -189,7 +189,7 @@ impl App {
         let name = |id: &str| self.doc.node(id).map(|n| n.name.clone()).unwrap_or_else(|| id.chars().take(8).collect());
         match event.kind.as_str() {
             "passive.status" if event.data["state"] == "alert" => {
-                self.raw_out.push(0x07);
+                self.platform.bell(&mut self.raw_out);
                 self.notify(format!("⚠ {}: {}", name(&event.source), event.data["headline"].as_str().unwrap_or_default()), true);
             }
             "message" if !targets.is_empty() => {

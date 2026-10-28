@@ -1,5 +1,7 @@
 [workspace]
 members = ["crates/*"]
+# `cargo build` builds both executables: copilot-canvas.exe and copilot-canvas-gui.exe.
+default-members = [".", "crates/canvas-gui"]
 resolver = "3"
 
 [workspace.package]
@@ -16,6 +18,7 @@ canvas-termview = { path = "crates/canvas-termview" }
 canvas-core = { path = "crates/canvas-core" }
 canvas-tui = { path = "crates/canvas-tui" }
 canvas-corpus = { path = "crates/canvas-corpus" }
+canvas-gui = { path = "crates/canvas-gui" }
 
 alacritty_terminal = "0.26.0"
 anyhow = "1.0.104"
@@ -57,6 +60,13 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 yaml-rust2 = "0.13.0"
 zstd = { version = "0.14.3", default-features = false }
+# GPU front end (canvas-gui).
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "wgsl"] }
+winit = "0.30.13"
+glyphon = "0.12.0"
+pollster = "0.4.0"
+bytemuck = { version = "1.25.2", features = ["derive"] }
+png = "0.18.1"
 
 [package]
 name = "copilot-canvas"

@@ -13,6 +13,7 @@ use crate::conn::Conn;
 use crate::dialogs::{Hit, Modal};
 use crate::doc::{Doc, GRID_X, Node, NodeKind, Store};
 use crate::status::{self, Status};
+use crate::view::RenderMode;
 use crate::git::GitInfo;
 use crate::paths::now_ms;
 use crate::protocol::{ClientMsg, Input, LaunchKind, ServiceMsg, ServiceStats, SessionSummary, TermInfo};
@@ -109,7 +110,28 @@ pub enum CanvasHit {
 
 pub const ZOOMS: [(i32, i32); 3] = [(1, 1), (1, 2), (1, 4)];
 
+/// Gpu mode: the continuous canvas scale's range (cells per world unit).
+pub const MIN_SCALE: f32 = 1.0 / 16.0;
+pub const MAX_SCALE: f32 = 2.0;
+/// Gpu mode: denominator of the rational scale `scale()` reports.
+const SCALE_DEN: i32 = 1024;
+
 pub struct App {
+    /// How the front end draws: character cells (TUI) or the GPU canvas.
+    pub render_mode: crate::view::RenderMode,
+    /// Gpu mode: canvas scale in cells per world unit (client-local; the TUI
+    /// uses the discrete `ZOOMS`).
+    pub view_scale: f32,
+    /// Gpu mode: the fractional part of the view origin (world units, 0..1),
+    /// so panning and zooming are pixel-smooth while the document keeps
+    /// integer coordinates.
+    pub view_frac: (f32, f32),
+    /// Precise pointer position of the last mouse event (cell units).
+    pub pointer: (f32, f32),
+    /// Gpu mode: the pointer where the current drag started (cell units).
+    pub drag_origin: (f32, f32),
+    /// Clipboard, links, bells and taskbar of the machine the front end runs on.
+    pub platform: std::sync::Arc<dyn crate::platform::Platform>,
     pub demo: bool,
     pub perf: Option<Perf>,
     pub term_select: Option<TermSelection>,
@@ -240,6 +262,12 @@ impl App {
         let installed_agents: Vec<AgentKind> = crate::agents::ALL.into_iter().filter(|k| k.provider().program().is_ok()).collect();
         let config_agent = doc.default_agent.as_deref().and_then(AgentKind::parse).unwrap_or(detected_agent);
         let mut app = Self {
+            render_mode: crate::view::RenderMode::Cells,
+            view_scale: 1.0,
+            view_frac: (0.0, 0.0),
+            pointer: (0.0, 0.0),
+            drag_origin: (0.0, 0.0),
+            platform: std::sync::Arc::new(crate::platform::TerminalPlatform),
             demo,
             default_cwd,
             doc,
@@ -472,23 +500,68 @@ impl App {
 
     // ---------- geometry ----------
 
+    /// The canvas scale as a fraction: `n / d` cells per world unit.
     pub fn scale(&self) -> (i32, i32) {
-        ZOOMS[(self.doc.view.zoom as usize).min(ZOOMS.len() - 1)]
+        match self.render_mode {
+            RenderMode::Cells => ZOOMS[(self.doc.view.zoom as usize).min(ZOOMS.len() - 1)],
+            RenderMode::Gpu => (((self.view_scale * SCALE_DEN as f32).round() as i32).max(1), SCALE_DEN),
+        }
+    }
+
+    /// The canvas scale in cells per world unit.
+    pub fn scale_f(&self) -> f32 {
+        match self.render_mode {
+            RenderMode::Cells => {
+                let (n, d) = self.scale();
+                n as f32 / d as f32
+            }
+            RenderMode::Gpu => self.view_scale,
+        }
+    }
+
+    /// The world point at the canvas's top-left corner (fractional in Gpu mode).
+    pub fn origin_f(&self) -> (f32, f32) {
+        (self.doc.view.x as f32 + self.view_frac.0, self.doc.view.y as f32 + self.view_frac.1)
+    }
+
+    /// World → screen in fractional cells.
+    pub fn to_screen_f(&self, wx: f32, wy: f32) -> (f32, f32) {
+        let (s, (ox, oy), c) = (self.scale_f(), self.origin_f(), self.layout.canvas);
+        (c.x as f32 + (wx - ox) * s, c.y as f32 + (wy - oy) * s)
+    }
+
+    /// Screen (fractional cells) → world.
+    pub fn to_world_f(&self, sx: f32, sy: f32) -> (f32, f32) {
+        let (s, (ox, oy), c) = (self.scale_f(), self.origin_f(), self.layout.canvas);
+        (ox + (sx - c.x as f32) / s, oy + (sy - c.y as f32) / s)
     }
 
     pub fn to_screen(&self, wx: i32, wy: i32) -> (i32, i32) {
+        if self.render_mode == RenderMode::Gpu {
+            // The cell whose centre the point's cell starts at.
+            let (x, y) = self.to_screen_f(wx as f32, wy as f32);
+            return (x.round() as i32, y.round() as i32);
+        }
         let (n, d) = self.scale();
         let c = self.layout.canvas;
         (c.x as i32 + ((wx - self.doc.view.x) * n).div_euclid(d), c.y as i32 + ((wy - self.doc.view.y) * n).div_euclid(d))
     }
 
     pub fn to_world(&self, sx: i32, sy: i32) -> (i32, i32) {
+        if self.render_mode == RenderMode::Gpu {
+            let (x, y) = self.to_world_f(sx as f32, sy as f32);
+            return (x.floor() as i32, y.floor() as i32);
+        }
         let (n, d) = self.scale();
         let c = self.layout.canvas;
         (self.doc.view.x + (sx - c.x as i32) * d / n, self.doc.view.y + (sy - c.y as i32) * d / n)
     }
 
     pub fn scaled(&self, w: i32, h: i32, min_w: i32, min_h: i32) -> (i32, i32) {
+        if self.render_mode == RenderMode::Gpu {
+            let s = self.view_scale;
+            return (((w as f32 * s).round() as i32).max(min_w), ((h as f32 * s).round() as i32).max(min_h));
+        }
         let (n, d) = self.scale();
         ((w * n / d).max(min_w), (h * n / d).max(min_h))
     }
@@ -507,6 +580,9 @@ impl App {
     }
 
     pub fn canvas_hit(&self, sx: u16, sy: u16) -> CanvasHit {
+        if self.render_mode == RenderMode::Gpu {
+            return self.canvas_hit_f(self.point_in(sx, sy));
+        }
         let (sx, sy) = (sx as i32, sy as i32);
         let inside = |x: i32, y: i32, w: i32, h: i32| sx >= x && sx < x + w && sy >= y && sy < y + h;
         let mut order: Vec<&Node> = self.doc.nodes.iter().collect();
@@ -534,7 +610,69 @@ impl App {
         CanvasHit::Empty
     }
 
+    /// The precise pointer when it lies in cell `(sx, sy)`, else the cell's centre.
+    pub fn point_in(&self, sx: u16, sy: u16) -> (f32, f32) {
+        let (px, py) = self.pointer;
+        if px.floor() as i32 == sx as i32 && py.floor() as i32 == sy as i32 { (px, py) } else { (sx as f32 + 0.5, sy as f32 + 0.5) }
+    }
+
+    /// Pixel-precise hit test at a point in fractional cells (Gpu mode): the
+    /// targets of `canvas_hit` at any scale. A group's title row and resize
+    /// corner stay at least about a cell large on screen.
+    pub fn canvas_hit_f(&self, (px, py): (f32, f32)) -> CanvasHit {
+        let s = self.scale_f();
+        let (wx, wy) = self.to_world_f(px, py);
+        let inside = |r: crate::doc::Rect| wx >= r.x as f32 && wx < (r.x + r.w) as f32 && wy >= r.y as f32 && wy < (r.y + r.h) as f32;
+        let mut order: Vec<&Node> = self.doc.nodes.iter().collect();
+        order.sort_by_key(|n| self.selection.contains(&n.id));
+        if let Some(node) = order.into_iter().rev().find(|n| inside(n.rect())) {
+            return CanvasHit::Node(node.id.clone());
+        }
+        let mut groups: Vec<&crate::doc::Group> = self.doc.groups.iter().collect();
+        groups.sort_by_key(|g| std::cmp::Reverse((g.w as i64) * (g.h as i64)));
+        let row = 1f32.max(0.8 / s);
+        let corner = 2f32.max(1.6 / s);
+        for group in groups.into_iter().rev() {
+            let (x0, y0, x1, y1) = (group.x as f32, group.y as f32, (group.x + group.w) as f32, (group.y + group.h) as f32);
+            if wx >= x1 - corner && wx < x1 && wy >= y1 - row && wy < y1 {
+                return CanvasHit::GroupResize(group.id.clone());
+            }
+            if wy >= y0 && wy < y0 + row && wx >= x0 && wx < x1 {
+                return CanvasHit::GroupTitle(group.id.clone());
+            }
+            if inside(group.rect()) {
+                return CanvasHit::GroupBody;
+            }
+        }
+        CanvasHit::Empty
+    }
+
+    /// Gpu mode: puts the canvas's top-left corner at world point `(x, y)`.
+    fn set_origin(&mut self, x: f32, y: f32) {
+        let (fx, fy) = (x.floor(), y.floor());
+        self.doc.view.x = fx as i32;
+        self.doc.view.y = fy as i32;
+        self.view_frac = (x - fx, y - fy);
+    }
+
+    /// Gpu mode: pans by a pointer movement in fractional cells.
+    pub fn pan_cells(&mut self, dx: f32, dy: f32) {
+        let s = self.scale_f();
+        let (ox, oy) = self.origin_f();
+        self.set_origin(ox - dx / s, oy - dy / s);
+        if dx != 0.0 || dy != 0.0 {
+            self.mark_dirty();
+        }
+    }
+
     pub fn center_on(&mut self, wx: i32, wy: i32) {
+        if self.render_mode == RenderMode::Gpu {
+            let c = self.layout.canvas;
+            let s = self.view_scale;
+            self.set_origin(wx as f32 - c.width.max(20) as f32 / s / 2.0, wy as f32 - c.height.max(10) as f32 / s / 2.0);
+            self.mark_dirty();
+            return;
+        }
         let (n, d) = self.scale();
         let c = self.layout.canvas;
         let (cw, ch) = (c.width.max(20) as i32 * d / n, c.height.max(10) as i32 * d / n);
@@ -553,16 +691,24 @@ impl App {
     pub fn reveal_group(&mut self, id: &str) {
         let Some(group) = self.doc.group(id).cloned() else { return };
         let c = self.layout.canvas;
-        for zoom in 0..ZOOMS.len() as u8 {
-            let (n, d) = ZOOMS[zoom as usize];
-            if group.w * n / d <= c.width as i32 - 2 && group.h * n / d < c.height as i32 {
-                if zoom > self.doc.view.zoom {
+        if self.render_mode == RenderMode::Gpu {
+            // Zoom out (never in) until the group fits.
+            let fit = ((c.width as f32 - 2.0) / group.w.max(1) as f32).min((c.height as f32 - 1.0) / group.h.max(1) as f32);
+            if fit < self.view_scale {
+                self.set_scale(fit);
+            }
+        } else {
+            for zoom in 0..ZOOMS.len() as u8 {
+                let (n, d) = ZOOMS[zoom as usize];
+                if group.w * n / d <= c.width as i32 - 2 && group.h * n / d < c.height as i32 {
+                    if zoom > self.doc.view.zoom {
+                        self.doc.view.zoom = zoom;
+                    }
+                    break;
+                }
+                if zoom as usize == ZOOMS.len() - 1 {
                     self.doc.view.zoom = zoom;
                 }
-                break;
-            }
-            if zoom as usize == ZOOMS.len() - 1 {
-                self.doc.view.zoom = zoom;
             }
         }
         let (cx, cy) = group.rect().center();
@@ -573,18 +719,44 @@ impl App {
     pub fn fit_all(&mut self) {
         let Some(bounds) = self.doc.bounds() else { return };
         let c = self.layout.canvas;
-        self.doc.view.zoom = (ZOOMS.len() - 1) as u8;
-        for (zoom, (n, d)) in ZOOMS.iter().enumerate() {
-            if bounds.w * n / d <= c.width as i32 - 2 && bounds.h * n / d < c.height as i32 {
-                self.doc.view.zoom = zoom as u8;
-                break;
+        if self.render_mode == RenderMode::Gpu {
+            // Everything in view, never above 100 %.
+            let fit = ((c.width as f32 - 2.0) / bounds.w.max(1) as f32).min((c.height as f32 - 1.0) / bounds.h.max(1) as f32);
+            self.set_scale(fit.min(1.0));
+        } else {
+            self.doc.view.zoom = (ZOOMS.len() - 1) as u8;
+            for (zoom, (n, d)) in ZOOMS.iter().enumerate() {
+                if bounds.w * n / d <= c.width as i32 - 2 && bounds.h * n / d < c.height as i32 {
+                    self.doc.view.zoom = zoom as u8;
+                    break;
+                }
             }
         }
         let (cx, cy) = bounds.center();
         self.center_on(cx, cy);
     }
 
+    /// Gpu mode: sets the scale (clamped) and the nearest discrete zoom the
+    /// document keeps for the TUI.
+    fn set_scale(&mut self, scale: f32) {
+        self.view_scale = scale.clamp(MIN_SCALE, MAX_SCALE);
+        self.doc.view.zoom = if self.view_scale >= 0.75 {
+            0
+        } else if self.view_scale >= 0.375 {
+            1
+        } else {
+            2
+        };
+    }
+
+    /// Zooms one step around a cell: `delta < 0` zooms in. Gpu mode steps
+    /// between powers of two (… 25 % · 50 % · 100 % · 200 %).
     pub fn zoom_at(&mut self, sx: i32, sy: i32, delta: i32) {
+        if self.render_mode == RenderMode::Gpu {
+            let level = self.view_scale.log2();
+            let target = if delta < 0 { (level + 1e-3).floor() + 1.0 } else { (level - 1e-3).ceil() - 1.0 };
+            return self.zoom_to(sx as f32, sy as f32, 2f32.powf(target));
+        }
         let before = self.to_world(sx, sy);
         let zoom = (self.doc.view.zoom as i32 + delta).clamp(0, ZOOMS.len() as i32 - 1) as u8;
         if zoom == self.doc.view.zoom {
@@ -595,6 +767,38 @@ impl App {
         self.doc.view.x += before.0 - after.0;
         self.doc.view.y += before.1 - after.1;
         self.mark_dirty();
+    }
+
+    /// Gpu mode: continuous zoom by `factor` around a point in fractional cells.
+    pub fn zoom_by(&mut self, sx: f32, sy: f32, factor: f32) {
+        self.zoom_to(sx, sy, self.view_scale * factor);
+    }
+
+    /// Gpu mode: sets the scale keeping the world point under `(sx, sy)` in place.
+    fn zoom_to(&mut self, sx: f32, sy: f32, scale: f32) {
+        if (scale.clamp(MIN_SCALE, MAX_SCALE) - self.view_scale).abs() < 1e-6 {
+            return;
+        }
+        let before = self.to_world_f(sx, sy);
+        self.set_scale(scale);
+        let after = self.to_world_f(sx, sy);
+        let (ox, oy) = self.origin_f();
+        self.set_origin(ox + before.0 - after.0, oy + before.1 - after.1);
+        self.mark_dirty();
+    }
+
+    /// Gpu mode: the visual offset (world units, below one) of the boxes and
+    /// groups being dragged; the document moves in whole units.
+    pub fn drag_offset(&self) -> (f32, f32) {
+        if self.render_mode != RenderMode::Gpu {
+            return (0.0, 0.0);
+        }
+        let s = self.scale_f();
+        let (dx, dy) = ((self.pointer.0 - self.drag_origin.0) / s, (self.pointer.1 - self.drag_origin.1) / s);
+        match &self.drag {
+            Some(Drag::Nodes { applied, .. } | Drag::Group { applied, .. }) => (dx - applied.0 as f32, dy - applied.1 as f32),
+            _ => (0.0, 0.0),
+        }
     }
 
     // ---------- status ----------
@@ -782,22 +986,24 @@ impl App {
     pub fn mirror_progress(&mut self) {
         self.progress_check_at = Instant::now();
         let mut state = 0;
+        let mut waiting = 0;
         for node in self.doc.nodes.iter().filter(|n| n.kind == NodeKind::Session) {
             match self.node_status(node) {
                 Status::Waiting => {
                     state = 4;
-                    break;
+                    waiting += 1;
                 }
-                Status::Working => state = 3,
+                Status::Working if state != 4 => state = 3,
                 _ => {}
             }
         }
         if state != self.outer_progress {
             self.outer_progress = state;
             let value = if state == 4 { 100 } else { 0 };
-            self.raw_out.extend_from_slice(format!("\x1b]9;4;{state};{value}\x07").as_bytes());
+            self.platform.progress(state, value, &mut self.raw_out);
             self.needs_draw = true;
         }
+        self.platform.title(waiting);
     }
 
     /// A session started inside `parent`'s terminal: show it as a linked
@@ -1069,7 +1275,7 @@ impl App {
                         && self.last_bell.is_none_or(|t| t.elapsed() >= Duration::from_secs(1))
                     {
                         self.last_bell = Some(Instant::now());
-                        self.raw_out.push(0x07);
+                        self.platform.bell(&mut self.raw_out);
                     }
                     if info.alive {
                         self.launching.remove(&info.id);
@@ -1141,7 +1347,7 @@ impl App {
     /// Copilot asked to copy (OSC 52): use the Windows clipboard directly; the
     /// console belongs to the output thread.
     pub fn copy_to_clipboard(&mut self, text: &str) {
-        match crate::clipboard::set_text(text) {
+        match self.platform.set_clipboard_text(text) {
             Ok(()) => self.notify("Copied to the clipboard.", false),
             Err(error) => self.notify(format!("Copy failed: {error:#}"), true),
         }

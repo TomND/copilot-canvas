@@ -160,6 +160,342 @@ impl Console {
     }
 }
 
+/// What the end-to-end scenario drives: the TUI in a hidden pseudoconsole
+/// ([`Console`]) or the GUI over its test hooks ([`GuiDriver`]). Input is
+/// what a terminal sends: keys, text and SGR mouse reports.
+pub trait Ui {
+    fn send(&mut self, bytes: &[u8]) -> Result<()>;
+    /// The screen as text, one line per row.
+    fn text(&self) -> String;
+    fn wait_exit(&mut self, timeout: Duration) -> Result<u32>;
+
+    /// Terminal modes the client asked its console for (the TUI only).
+    fn mode(&self) -> String {
+        String::new()
+    }
+
+    /// Saves the screen as a PNG when `CANVAS_GUI_SCREENS` names a folder (the GUI only).
+    fn screenshot(&self, _name: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn wait(&self, what: &str, timeout: Duration, predicate: impl Fn(&str) -> bool) -> Result<()> {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if predicate(&self.text()) {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        bail!("timed out waiting for {what}\n--- screen ---\n{}", self.text())
+    }
+
+    fn click(&mut self, x: u16, y: u16) -> Result<()> {
+        self.send(format!("\x1b[<0;{};{}M", x + 1, y + 1).as_bytes())?;
+        self.send(format!("\x1b[<0;{};{}m", x + 1, y + 1).as_bytes())
+    }
+
+    fn drag(&mut self, button: u8, from: (u16, u16), to: (u16, u16)) -> Result<()> {
+        self.send(format!("\x1b[<{button};{};{}M", from.0 + 1, from.1 + 1).as_bytes())?;
+        let steps = 4;
+        for i in 1..=steps {
+            let x = from.0 as i32 + (to.0 as i32 - from.0 as i32) * i / steps;
+            let y = from.1 as i32 + (to.1 as i32 - from.1 as i32) * i / steps;
+            self.send(format!("\x1b[<{};{};{}M", button + 32, x + 1, y + 1).as_bytes())?;
+        }
+        self.send(format!("\x1b[<{button};{};{}m", to.0 + 1, to.1 + 1).as_bytes())
+    }
+
+    /// Screen cell of the first occurrence of `needle` starting within columns `[min_x, max_x)`.
+    fn find_in(&self, needle: &str, min_x: u16, max_x: u16) -> Option<(u16, u16)> {
+        self.text().lines().enumerate().find_map(|(y, line)| {
+            line.match_indices(needle).find_map(|(byte, _)| {
+                let x = crate::client::paint::text_width(&line[..byte]) as u16;
+                (x >= min_x && x < max_x).then_some((x, y as u16))
+            })
+        })
+    }
+
+    /// Like `find_in`, but an error includes the screen for diagnosis.
+    fn locate(&self, needle: &str, range: (u16, u16)) -> Result<(u16, u16)> {
+        self.find_in(needle, range.0, range.1).with_context(|| format!("{needle:?} not visible in columns {range:?}\n--- screen ---\n{}", self.text()))
+    }
+
+    fn find(&self, needle: &str) -> Option<(u16, u16)> {
+        self.find_in(needle, 0, u16::MAX)
+    }
+}
+
+impl Ui for Console {
+    fn send(&mut self, bytes: &[u8]) -> Result<()> {
+        Console::send(self, bytes)
+    }
+
+    fn text(&self) -> String {
+        Console::text(self)
+    }
+
+    fn wait_exit(&mut self, timeout: Duration) -> Result<u32> {
+        Console::wait_exit(self, timeout)
+    }
+
+    fn mode(&self) -> String {
+        Console::mode(self)
+    }
+
+    fn wait(&self, what: &str, timeout: Duration, predicate: impl Fn(&str) -> bool) -> Result<()> {
+        Console::wait(self, what, timeout, predicate)
+    }
+
+    fn click(&mut self, x: u16, y: u16) -> Result<()> {
+        Console::click(self, x, y)
+    }
+
+    fn drag(&mut self, button: u8, from: (u16, u16), to: (u16, u16)) -> Result<()> {
+        Console::drag(self, button, from, to)
+    }
+
+    fn find_in(&self, needle: &str, min_x: u16, max_x: u16) -> Option<(u16, u16)> {
+        Console::find_in(self, needle, min_x, max_x)
+    }
+}
+
+/// The GUI client (`copilot-canvas-gui.exe --test-hooks`) driven over its
+/// pipe: terminal input bytes become key and mouse events (mouse at cell
+/// centres), the screen is the GUI's text rendering of its frame.
+pub struct GuiDriver {
+    child: std::process::Child,
+    pipe: Mutex<(std::io::BufReader<canvas_common::pipe::PipeReader>, canvas_common::pipe::PipeWriter)>,
+    _closer: canvas_common::pipe::PipeCloser,
+    _stdout: std::process::ChildStdout,
+}
+
+impl GuiDriver {
+    /// Starts the GUI next to this executable with `args`, a fixed cell grid
+    /// and its stderr in `log`.
+    pub fn start(args: &[String], env: &[(&str, &Path)], (cols, rows): (u16, u16), log: &Path) -> Result<Self> {
+        use std::io::BufRead;
+        let exe = std::env::current_exe()?.with_file_name("copilot-canvas-gui.exe");
+        anyhow::ensure!(exe.is_file(), "{} is missing (cargo build --release builds it)", exe.display());
+        let mut command = std::process::Command::new(&exe);
+        command.args(args).args(["--test-hooks".to_owned(), "--size".to_owned(), format!("{cols}x{rows}")]);
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::fs::File::create(log)?);
+        let mut child = command.spawn().with_context(|| format!("cannot start {}", exe.display()))?;
+        let stdout = child.stdout.take().context("GUI stdout")?;
+        let mut reader = std::io::BufReader::new(stdout);
+        let mut name = String::new();
+        reader.read_line(&mut name)?;
+        let name = name.trim().to_owned();
+        if !name.starts_with(r"\\.\pipe\") {
+            let _ = child.kill();
+            bail!("the GUI did not start its test hooks; see {}", log.display());
+        }
+        let pipe = canvas_common::pipe::connect(&name, Duration::from_secs(10)).with_context(|| format!("cannot connect to {name}"))?;
+        let (pipe_reader, writer, closer) = pipe.split()?;
+        Ok(Self { child, pipe: Mutex::new((std::io::BufReader::new(pipe_reader), writer)), _closer: closer, _stdout: reader.into_inner() })
+    }
+
+    /// One command and its answer.
+    pub fn request(&self, command: serde_json::Value) -> Result<serde_json::Value> {
+        use std::io::BufRead;
+        let mut pipe = lock(&self.pipe);
+        writeln!(pipe.1, "{command}")?;
+        pipe.1.flush()?;
+        let mut line = String::new();
+        anyhow::ensure!(pipe.0.read_line(&mut line)? > 0, "the GUI closed its test hooks");
+        let reply: serde_json::Value = serde_json::from_str(&line)?;
+        anyhow::ensure!(reply["ok"] == true, "{command} failed: {reply}");
+        Ok(reply)
+    }
+}
+
+impl Drop for GuiDriver {
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let _ = self.child.kill();
+        }
+    }
+}
+
+impl Ui for GuiDriver {
+    fn screenshot(&self, name: &str) -> Result<()> {
+        if let Some(dir) = std::env::var_os("CANVAS_GUI_SCREENS") {
+            let path = Path::new(&dir).join(format!("{name}.png"));
+            self.request(serde_json::json!({ "cmd": "png", "path": path }))?;
+        }
+        Ok(())
+    }
+
+    fn send(&mut self, bytes: &[u8]) -> Result<()> {
+        let mut keys = Vec::new();
+        for event in vt_events(bytes) {
+            if event.get("kind").is_some() {
+                if !keys.is_empty() {
+                    self.request(serde_json::json!({ "cmd": "keys", "keys": std::mem::take(&mut keys) }))?;
+                }
+                self.request(event)?;
+            } else {
+                keys.push(event);
+            }
+        }
+        if !keys.is_empty() {
+            self.request(serde_json::json!({ "cmd": "keys", "keys": keys }))?;
+        }
+        std::thread::sleep(Duration::from_millis(60));
+        Ok(())
+    }
+
+    fn text(&self) -> String {
+        match self.request(serde_json::json!({ "cmd": "screen" })) {
+            Ok(reply) => reply["lines"].as_array().map(|lines| lines.iter().filter_map(|l| l.as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default(),
+            Err(_) => String::new(),
+        }
+    }
+
+    fn wait_exit(&mut self, timeout: Duration) -> Result<u32> {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if let Some(status) = self.child.try_wait()? {
+                return Ok(status.code().unwrap_or(-1) as u32);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let screen = self.text();
+        let _ = self.child.kill();
+        bail!("the GUI did not exit\n--- screen ---\n{screen}")
+    }
+}
+
+/// Terminal input bytes as test-hook events: keys (`{"key"|"char", "mods"}`)
+/// and mouse/wheel commands (SGR reports, at cell centres).
+fn vt_events(bytes: &[u8]) -> Vec<serde_json::Value> {
+    use serde_json::json;
+    let chars: Vec<char> = String::from_utf8_lossy(bytes).chars().collect();
+    let key = |name: &str, mods: &[&str]| json!({ "key": name, "mods": mods });
+    let char_key = |c: char, mods: &[&str]| {
+        let shift = c.is_ascii_uppercase() && !mods.contains(&"shift");
+        let mut all: Vec<&str> = mods.to_vec();
+        if shift {
+            all.push("shift");
+        }
+        json!({ "char": c.to_string(), "mods": all })
+    };
+    let control = |c: char| -> Option<serde_json::Value> {
+        Some(match c {
+            '\r' | '\n' => key("Enter", &[]),
+            '\t' => key("Tab", &[]),
+            '\x7f' | '\x08' => key("Backspace", &[]),
+            '\x1d' => char_key(']', &["ctrl"]),
+            '\x1c' => char_key('\\', &["ctrl"]),
+            '\x1f' => char_key('_', &["ctrl"]),
+            '\0' => char_key(' ', &["ctrl"]),
+            '\x01'..='\x1a' => char_key((c as u8 - 1 + b'a') as char, &["ctrl"]),
+            _ => return None,
+        })
+    };
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c != '\x1b' {
+            out.push(control(c).unwrap_or_else(|| char_key(c, &[])));
+            i += 1;
+            continue;
+        }
+        match chars.get(i + 1).copied() {
+            None | Some('\x1b') => {
+                out.push(key("Esc", &[]));
+                i += 1;
+            }
+            Some('[') | Some('O') => {
+                let ss3 = chars[i + 1] == 'O';
+                let start = i + 2;
+                let mut end = start;
+                while end < chars.len() && !('\x40'..='\x7e').contains(&chars[end]) {
+                    end += 1;
+                }
+                let params: String = chars[start..end.min(chars.len())].iter().collect();
+                let fin = chars.get(end).copied().unwrap_or('~');
+                i = end + 1;
+                if let Some(sgr) = params.strip_prefix('<') {
+                    let n: Vec<i64> = sgr.split(';').filter_map(|p| p.parse().ok()).collect();
+                    let (b, x, y) = (n.first().copied().unwrap_or(0), n.get(1).copied().unwrap_or(1), n.get(2).copied().unwrap_or(1));
+                    let mut mods = Vec::new();
+                    for (bit, name) in [(4, "shift"), (8, "alt"), (16, "ctrl")] {
+                        if b & bit != 0 {
+                            mods.push(name);
+                        }
+                    }
+                    let (px, py) = ((x - 1) as f64 + 0.5, (y - 1) as f64 + 0.5);
+                    let button = ["left", "middle", "right", "none"][(b & 3) as usize];
+                    if b & 64 != 0 {
+                        let dir = ["up", "down", "left", "right"][(b & 3) as usize];
+                        out.push(json!({ "cmd": "wheel", "kind": "wheel", "dir": dir, "x": px, "y": py, "mods": mods }));
+                        continue;
+                    }
+                    let kind = match (b & 32 != 0, fin) {
+                        (true, _) if button == "none" => "move",
+                        (true, _) => "drag",
+                        (false, 'M') => "down",
+                        _ => "up",
+                    };
+                    out.push(json!({ "cmd": "mouse", "kind": kind, "button": button, "x": px, "y": py, "mods": mods }));
+                    continue;
+                }
+                let mut parts = params.split(';');
+                let number: u32 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(1);
+                let modifier: u32 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(1).max(1) - 1;
+                let mut mods = Vec::new();
+                for (bit, name) in [(1, "shift"), (2, "alt"), (4, "ctrl")] {
+                    if modifier & bit != 0 {
+                        mods.push(name);
+                    }
+                }
+                let name = match (fin, number) {
+                    ('A', _) => "Up",
+                    ('B', _) => "Down",
+                    ('C', _) => "Right",
+                    ('D', _) => "Left",
+                    ('H', _) => "Home",
+                    ('F', _) => "End",
+                    ('Z', _) => "BackTab",
+                    ('P', _) if ss3 => "F1",
+                    ('Q', _) if ss3 => "F2",
+                    ('R', _) if ss3 => "F3",
+                    ('S', _) if ss3 => "F4",
+                    ('~', 2) => "Insert",
+                    ('~', 3) => "Delete",
+                    ('~', 5) => "PageUp",
+                    ('~', 6) => "PageDown",
+                    ('~', 15) => "F5",
+                    ('~', 17) => "F6",
+                    ('~', 18) => "F7",
+                    ('~', 19) => "F8",
+                    ('~', 20) => "F9",
+                    ('~', 21) => "F10",
+                    ('~', 23) => "F11",
+                    ('~', 24) => "F12",
+                    _ => continue,
+                };
+                out.push(key(name, &mods));
+            }
+            Some(next) => {
+                // Alt + key.
+                let mut event = control(next).unwrap_or_else(|| char_key(next, &[]));
+                if let Some(mods) = event["mods"].as_array_mut() {
+                    mods.push("alt".into());
+                }
+                out.push(event);
+                i += 2;
+            }
+        }
+    }
+    out
+}
+
 /// Sessions in an agent's history, where counting is cheap.
 fn session_count(kind: AgentKind, instance: &Instance) -> Option<u64> {
     match kind {
@@ -595,9 +931,18 @@ fn step(name: &str) {
     println!("  · {name}");
 }
 
+/// The front end the self-test drives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Client {
+    /// The TUI in a hidden pseudoconsole.
+    Tui,
+    /// `copilot-canvas-gui.exe` over its test hooks.
+    Gui,
+}
+
 /// `remote`: `Some("loopback")` runs the same scenario with the client
 /// connected over TCP (`--remote loopback`).
-pub fn run(remote: Option<&str>) -> Result<()> {
+pub fn run(remote: Option<&str>, client: Client) -> Result<()> {
     let root = std::env::temp_dir().join(format!("copilot-canvas-selftest-{}", uuid::Uuid::new_v4()));
     let home = root.join("home");
     let sessions = root.join("sessions");
@@ -605,7 +950,13 @@ pub fn run(remote: Option<&str>) -> Result<()> {
     std::fs::create_dir_all(&sessions)?;
     std::fs::create_dir_all(&work)?;
     let instance = Instance::new(Some(format!("selftest{}", std::process::id())), Some(home), Some(sessions))?;
-    let result = scenario(&instance, &work, remote);
+    let result = match client {
+        Client::Tui => scenario(&instance, &work, remote, "tui", |args, env| Console::start_with_env(&std::env::current_exe()?, args, env, 170, 46)),
+        Client::Gui => {
+            let log = root.join("gui-stderr.log");
+            scenario(&instance, &work, remote, "gui", |args, env| GuiDriver::start(args, env, (170, 46), &log))
+        }
+    };
     // Always stop the isolated test service and its shells.
     if let Ok(conn) = crate::client::conn::try_connect(&instance) {
         let _ = conn.tx.send(crate::protocol::ClientMsg::Shutdown);
@@ -625,9 +976,10 @@ pub fn run(remote: Option<&str>) -> Result<()> {
     result
 }
 
-fn scenario(instance: &Instance, work: &Path, remote: Option<&str>) -> Result<()> {
+/// The 26 steps, against any front end (client: its name in the service log;
+/// start: launches it with the given arguments and environment).
+fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, client: &str, start: impl Fn(&[String], &[(&str, &Path)]) -> Result<U>) -> Result<()> {
     let canvas = instance.home.join("demo-canvas.json");
-    let exe = std::env::current_exe()?;
     let mut args: Vec<String> = vec![
         "--demo".into(),
         "--instance".into(),
@@ -643,14 +995,15 @@ fn scenario(instance: &Instance, work: &Path, remote: Option<&str>) -> Result<()
         args.extend(["--remote".into(), remote.to_owned()]);
     }
     let over = remote.map(|r| format!(", client over --remote {r}")).unwrap_or_default();
-    println!("Copilot Canvas self-test (demo shells only; isolated data in {}{over})", instance.home.display());
+    let of = if client == "tui" { String::new() } else { format!(" of the {client}") };
+    println!("Copilot Canvas self-test{of} (demo shells only; isolated data in {}{over})", instance.home.display());
     let copilot_home = instance.home.join("copilot-home");
     std::fs::create_dir_all(&copilot_home)?;
     let automations_db = copilot_home.join("data.db");
     crate::automations::write_sample_db(&automations_db)?;
     let env = [("COPILOT_HOME", copilot_home.as_path())];
     let started = Instant::now();
-    let mut ui = Console::start_with_env(&exe, &args, &env, 170, 46)?;
+    let mut ui = start(&args, &env)?;
     step("client starts and auto-starts the terminal service");
     ui.wait("the canvas", Duration::from_secs(20), |t| t.contains("Copilot Canvas") && t.contains("Build session canvas"))?;
     let startup = started.elapsed();
@@ -658,7 +1011,7 @@ fn scenario(instance: &Instance, work: &Path, remote: Option<&str>) -> Result<()
         // The client really talks TCP: the service published its port and logged the connection.
         anyhow::ensure!(crate::client::conn::listening_port(instance).is_some(), "the service publishes its TCP port");
         let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
-        anyhow::ensure!(log.contains("connected (tui, protocol 8"), "the service saw a remote TUI client:\n{log}");
+        anyhow::ensure!(log.contains(&format!("connected ({client}, protocol 8")), "the service saw a remote {client} client:\n{log}");
     }
     if std::env::var_os("CANVAS_SELFTEST_DEBUG").is_some() {
         println!("terminal modes requested by the client console: {}", ui.mode());
@@ -681,6 +1034,7 @@ fn scenario(instance: &Instance, work: &Path, remote: Option<&str>) -> Result<()
     let (bx, by) = ui.locate("Build session canvas", CANVAS)?;
     let halo_row = ui.text().lines().nth(by as usize - 1).unwrap_or_default().chars().skip(bx.saturating_sub(6) as usize).take(12).collect::<String>();
     anyhow::ensure!(halo_row.contains('━') || halo_row.contains('┏'), "no halo above the active box: {halo_row:?}");
+    ui.screenshot("terminal-and-halo")?;
 
     step("Ctrl+] returns keyboard focus to the canvas");
     ui.send(b"\x1d")?;
@@ -707,11 +1061,13 @@ fn scenario(instance: &Instance, work: &Path, remote: Option<&str>) -> Result<()
     let (x, y) = ui.locate("Renamed", CANVAS)?;
     ui.send(format!("\x1b[<2;{};{}M\x1b[<2;{};{}m", x + 3, y + 2, x + 3, y + 2).as_bytes())?;
     ui.wait("node context menu", Duration::from_secs(5), |t| t.contains("New subsession") && t.contains("Remove from canvas"))?;
+    ui.screenshot("context-menu")?;
     ui.send(b"\x1b")?;
     ui.wait("menu closed", Duration::from_secs(5), |t| !t.contains("Remove from canvas"))?;
     let (zx, zy) = ui.locate(" − ", (60, 120))?;
     ui.click(zx + 1, zy)?;
     ui.wait("zoomed out", Duration::from_secs(5), |t| t.contains("zoom 50%"))?;
+    ui.screenshot("zoom-50")?;
     let (zx, zy) = ui.locate(" + ", (60, 120))?;
     ui.click(zx + 1, zy)?;
     ui.wait("zoomed in", Duration::from_secs(5), |t| t.contains("zoom 100%"))?;
@@ -720,6 +1076,7 @@ fn scenario(instance: &Instance, work: &Path, remote: Option<&str>) -> Result<()
     ui.send(b"n")?;
     ui.wait("new session dialog", Duration::from_secs(5), |t| t.contains("New session") && t.contains("Folder"))?;
     ui.wait("git probe", Duration::from_secs(10), |t| t.contains("Not a Git repository") || t.contains("Git:"))?;
+    ui.screenshot("new-session-dialog")?;
     ui.send(b"Spawned session\r")?;
     let doc = wait_doc(&canvas, "spawned node", |d| d.nodes.iter().any(|n| n.name == "Spawned session"))?;
     let spawned = doc.nodes.iter().find(|n| n.name == "Spawned session").context("spawned")?.id.clone();
@@ -763,6 +1120,7 @@ fn scenario(instance: &Instance, work: &Path, remote: Option<&str>) -> Result<()
     step("tiled view shows both live shells");
     ui.send(b"t")?;
     ui.wait("tiled", Duration::from_secs(5), |t| t.contains("Tiled") && t.contains("CANVAS_TERMINAL_OK") && t.contains("Spawned session · "))?;
+    ui.screenshot("tiled")?;
 
     step("sidebar click reveals and opens a session");
     let (rx, ry) = ui.locate("Renamed by selftest", SIDEBAR)?;
@@ -793,14 +1151,20 @@ fn scenario(instance: &Instance, work: &Path, remote: Option<&str>) -> Result<()
     ui.wait("loop markers in the sidebar", Duration::from_secs(10), |t| t.contains("↻ Morning triage") && t.contains("↻ Watch builds"))?;
     anyhow::ensure!(!ui.text().contains("↻ Cron job"), "a disabled automation does not loop");
     anyhow::ensure!(ui.text().contains("↻"), "zoomed out: the ↻ icon marks looping boxes");
-    for _ in 0..2 {
+    // Zoom in until 100 % (the TUI steps 25 → 50 → 100 %; the GUI from wherever fitting left it).
+    for _ in 0..4 {
+        if ui.text().contains("zoom 100%") {
+            break;
+        }
         let (zx, zy) = ui.find(" −   +   ?").context("zoom buttons")?;
         ui.click(zx + 5, zy)?;
+        std::thread::sleep(Duration::from_millis(150));
     }
     ui.wait("zoom 100%", Duration::from_secs(5), |t| t.contains("zoom 100%"))?;
     let (mx, my) = ui.locate("Morning triage", SIDEBAR)?;
     ui.click(mx, my)?;
     ui.wait("loopback drawn beside the box", Duration::from_secs(5), |t| t.contains("↻ daily") && t.contains("◂"))?;
+    ui.screenshot("automations-loops")?;
     // The lit dot moves along the arc between frames.
     // The 4×3 cells of the arc next to the box (bottom row ends in ◂).
     let arc = |text: &str| -> String {
@@ -868,7 +1232,8 @@ fn scenario(instance: &Instance, work: &Path, remote: Option<&str>) -> Result<()
     anyhow::ensure!(code == 0, "client exited with {code}");
 
     step("reattach: a new client shows the same live terminal and its output");
-    let mut ui = Console::start_with_env(&exe, &args, &env, 170, 46)?;
+    drop(ui);
+    let mut ui = start(&args, &env)?;
     ui.wait("canvas again", Duration::from_secs(20), |t| t.contains("Renamed by selftest"))?;
     ui.wait("restored tiles with previous output", Duration::from_secs(10), |t| t.contains("CANVAS_TERMINAL_OK") && t.contains("Spawned session · "))?;
     let (x, y) = ui.locate("Renam", CANVAS)?;

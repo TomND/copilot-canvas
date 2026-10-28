@@ -16,17 +16,29 @@ use crate::paint::{
 };
 use crate::status::Status;
 use crate::paths::{format_age, now_ms};
+use crate::view::{RenderMode, View};
 
 pub fn draw(app: &mut App, frame: &mut Frame) {
-    let screen = frame.area();
+    let area = frame.area();
+    let view = render(app, frame.buffer_mut(), area, None);
+    if let Some((x, y)) = view.cursor {
+        frame.set_cursor_position(Position::new(x, y));
+    }
+}
+
+/// Draws one frame of `screen` into `buf`. In Gpu mode (`app.render_mode`)
+/// the canvas region and the terminal grids stay blank and are described by
+/// the returned [`View`]; dialogs and menus go to `overlay` when given.
+pub fn render(app: &mut App, buf: &mut Buffer, screen: Rect, overlay: Option<&mut Buffer>) -> View {
+    let gpu = app.render_mode == RenderMode::Gpu;
+    let mut view = View { banner: app.banner.clone(), ..View::default() };
     app.layout.hits.clear();
     app.layout.links.clear();
     app.layout.modal_rect = None;
     app.layout.screen = screen;
-    let buf = frame.buffer_mut();
     if screen.width < 60 || screen.height < 16 {
         put(buf, 1, 1, "Copilot Canvas needs at least 60×16 cells. Ctrl+Q quits.", fg(ATTENTION), screen);
-        return;
+        return view;
     }
     let toolbar = Rect::new(0, 0, screen.width, 1);
     let status = Rect::new(0, screen.height - 1, screen.width, 1);
@@ -76,7 +88,11 @@ pub fn draw(app: &mut App, frame: &mut Frame) {
         app.layout.sidebar_rows.clear();
     }
     phase(app, "sidebar");
-    crate::ui_canvas::draw_canvas(app, buf, canvas);
+    if gpu {
+        view.canvas = Some(crate::ui_canvas::canvas_model(app, canvas));
+    } else {
+        crate::ui_canvas::draw_canvas(app, buf, canvas);
+    }
     phase(app, "canvas");
     if app.focus == Focus::Canvas {
         put(buf, canvas.x as i32, canvas.y as i32, "▌", fg(ACCENT), canvas);
@@ -86,23 +102,29 @@ pub fn draw(app: &mut App, frame: &mut Frame) {
             put_sym(buf, canvas.right() as i32, y as i32, "│", fg(FAINT), screen);
         }
     }
-    let cursor = draw_terminals(app, buf, terms);
+    let cursor = draw_terminals(app, buf, terms, &mut view);
     phase(app, "terminals");
-    // Plain-text URLs and paths: terminals first (Ctrl+click), then everything else.
+    // Plain-text URLs and paths: terminals first (Ctrl+click), then everything
+    // else. (Gpu mode scanned each terminal before blanking its grid.)
     let inners: Vec<Rect> = app.layout.tiles.iter().map(|(_, _, inner)| *inner).collect();
     let mut links = std::mem::take(&mut app.layout.links);
-    for inner in &inners {
-        crate::links::scan(buf, *inner, true, &[], &mut links);
+    if !gpu {
+        for inner in &inners {
+            crate::links::scan(buf, *inner, true, &[], &mut links);
+        }
     }
     crate::links::scan(buf, body, false, &inners, &mut links);
     app.layout.links = links;
     phase(app, "links");
     draw_status(app, buf, status);
-    let modal_cursor = crate::ui_modals::draw_modals(app, buf, screen);
+    let modal_cursor = match overlay {
+        Some(overlay) if gpu => crate::ui_modals::draw_modals(app, overlay, screen),
+        _ => crate::ui_modals::draw_modals(app, buf, screen),
+    };
     phase(app, "status+modals");
-    if let Some((x, y)) = modal_cursor.or(cursor) {
-        frame.set_cursor_position(Position::new(x, y));
-    }
+    view.cursor = modal_cursor.or(cursor);
+    view.modal = app.layout.modal_rect;
+    view
 }
 
 fn toolbar_button(app: &mut App, buf: &mut Buffer, x: i32, label: &str, action: Action, area: Rect) -> i32 {
@@ -520,8 +542,9 @@ fn tile_rects(area: Rect, count: usize) -> Vec<Rect> {
     }
 }
 
-fn draw_terminals(app: &mut App, buf: &mut Buffer, area: Rect) -> Option<(u16, u16)> {
+fn draw_terminals(app: &mut App, buf: &mut Buffer, area: Rect, view_model: &mut View) -> Option<(u16, u16)> {
     app.layout.tiles.clear();
+    let gpu = app.render_mode == RenderMode::Gpu;
     if area.width < 10 {
         return None;
     }
@@ -573,6 +596,7 @@ fn draw_terminals(app: &mut App, buf: &mut Buffer, area: Rect) -> Option<(u16, u
         put(buf, close_x, outer.y as i32, "[×]", fg(GRAY), outer);
         app.layout.hits.push((Rect::new(close_x as u16, outer.y, 3, 1), Hit::TileClose(id.clone())));
 
+        let tint = info.copilot && agent == Some(crate::agents::AgentKind::Copilot);
         match view {
             Some(view) => {
                 let drawn = canvas_termview::tui::draw(
@@ -581,7 +605,7 @@ fn draw_terminals(app: &mut App, buf: &mut Buffer, area: Rect) -> Option<(u16, u
                     inner,
                     &canvas_termview::tui::Options {
                         // Copilot's own user-message rows get the canvas tint.
-                        tint: (info.copilot && agent == Some(crate::agents::AgentKind::Copilot)).then_some((crate::paint::USER_BG, crate::paint::ACCENT)),
+                        tint: tint.then_some((crate::paint::USER_BG, crate::paint::ACCENT)),
                         selection: app.term_select.as_ref().filter(|s| s.id == *id),
                         cursor: focused && info.alive,
                     },
@@ -592,11 +616,30 @@ fn draw_terminals(app: &mut App, buf: &mut Buffer, area: Rect) -> Option<(u16, u
                 if drawn.cursor.is_some() {
                     cursor = drawn.cursor;
                 }
+                if gpu {
+                    // The front end draws the grid itself; links are found here first.
+                    let mut links = std::mem::take(&mut app.layout.links);
+                    crate::links::scan(buf, inner, true, &[], &mut links);
+                    app.layout.links = links;
+                    fill(buf, inner.x as i32, inner.y as i32, inner.width as i32, inner.height as i32, Style::default(), inner);
+                }
             }
             None => {
                 let text = if info.alive || app.launching.contains_key(id) { "Starting…" } else { "No output yet." };
                 put(buf, inner.x as i32 + 1, inner.y as i32, text, fg(MUTED), inner);
             }
+        }
+        if gpu {
+            view_model.tiles.push(crate::view::TileModel {
+                id: id.clone(),
+                outer,
+                inner,
+                focused,
+                alive: info.alive,
+                cursor: focused && info.alive,
+                tint,
+                title: title.trim().to_owned(),
+            });
         }
         if !info.alive && !app.launching.contains_key(id) {
             let hint = " Exited — press Enter or click the box to restart ";
@@ -766,7 +809,10 @@ fn draw_status(app: &mut App, buf: &mut Buffer, area: Rect) {
             " svc {} MB · {} live · zoom {} ",
             stats.private_bytes / (1024 * 1024),
             stats.alive,
-            ["100%", "50%", "25%"][app.doc.view.zoom.min(2) as usize]
+            match app.render_mode {
+                RenderMode::Cells => ["100%", "50%", "25%"][app.doc.view.zoom.min(2) as usize].to_owned(),
+                RenderMode::Gpu => format!("{:.0}%", app.view_scale * 100.0),
+            }
         ),
         None => String::new(),
         },
