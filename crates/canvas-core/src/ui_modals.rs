@@ -31,6 +31,7 @@ const HELP: &[(&str, &str)] = &[
     ("R · Del · X", "rename · remove box or group · stop session"),
     ("T · F · + − · C", "tile terminals · fit all · zoom · center"),
     ("/ · B", "filter sidebar · toggle sidebar"),
+    ("O", "open this canvas in the other client (GUI / TUI)"),
     ("F6 · Ctrl+]", "cycle focus · leave a terminal"),
     ("Shift+PgUp/PgDn", "terminal history"),
     ("Q / Ctrl+Q", "quit (sessions can keep running)"),

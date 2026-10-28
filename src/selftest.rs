@@ -664,6 +664,13 @@ pub fn agent(agent: Option<&str>) -> Result<()> {
         std::fs::write(config.join(".claude.json"), seed.to_string())?;
         env.push(("CLAUDE_CONFIG_DIR", config));
     }
+    if kind == AgentKind::OpenCode {
+        // OpenCode 1.19 refetches its model list at start-up when its cache is
+        // stale and can hang if asked to quit while that request is pending (the
+        // canvas then kills it after 5 s and still reports a stop; unit-tested in
+        // canvas-host). The check of the graceful stop must not depend on the network.
+        env.push(("OPENCODE_DISABLE_MODELS_FETCH", std::path::PathBuf::from("1")));
+    }
     let instance = Instance::new(Some(format!("check{}", std::process::id())), Some(home.clone()), None)?;
     println!("Copilot Canvas real-agent check: {} ({program}); no prompt is submitted", kind.label());
     let started_ms = crate::paths::now_ms();
@@ -826,7 +833,22 @@ fn agent_scenario(instance: &Instance, work: &Path, kind: AgentKind, env: &[(&st
     ui.send(b"n")?;
     let chosen = format!("◉ {label}");
     ui.wait("new session dialog with the agent chosen", Duration::from_secs(5), |t| t.contains("New session") && t.contains(&chosen))?;
-    ui.send(format!("{CHECK_NAME}\r").as_bytes())?;
+    ui.send(CHECK_NAME.as_bytes())?;
+    // The session starts with the agent's MCP servers off (the dialog's MCP
+    // picker: N = none), so the check does not depend on them: OpenCode 1.19
+    // can hang when asked to quit while it keeps reconnecting to an MCP server
+    // that is not running (the canvas then kills it after 5 s and still
+    // reports a stop; that path is unit-tested in canvas-host).
+    for _ in 0..5 {
+        ui.send(b"\t")?;
+    }
+    ui.send(b"\r")?;
+    ui.wait("MCP picker", Duration::from_secs(30), |t| t.contains("MCP servers for the new session") && !t.contains("MCP servers.\u{2026}") && !t.contains("Loading"))?;
+    ui.send(b"n")?;
+    ui.send(b"\r")?;
+    ui.wait("back in the new session dialog", Duration::from_secs(5), |t| t.contains("New session") && !t.contains("MCP servers for the new session"))?;
+    ui.send(b"\t\t")?;
+    ui.send(b"\r")?;
     let header = format!("{CHECK_NAME} · ");
     ui.wait(&format!("{label} UI"), Duration::from_secs(90), |t| t.contains(&header) && agent_ui_up(kind, t))?;
     // Let the TUI settle (OpenCode draws its home screen in steps).
@@ -890,8 +912,7 @@ fn agent_scenario(instance: &Instance, work: &Path, kind: AgentKind, env: &[(&st
         step("mouse wheel over the terminal");
         println!("    (needs output that only a prompt would produce in {label}; skipped)");
     }
-    step(&format!("stop all and quit ({label} exits gracefully)"));
-    ui.send(b"\x1d")?;
+    step(&format!("stop all and quit ({label} exits gracefully)"));    ui.send(b"\x1d")?;
     ui.send(b"q")?;
     ui.wait("quit dialog", Duration::from_secs(5), |t| t.contains("Stop all and quit"))?;
     ui.send(b"\x1b[C\r")?;
@@ -1039,7 +1060,9 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     std::fs::create_dir_all(&copilot_home)?;
     let automations_db = copilot_home.join("data.db");
     crate::automations::write_sample_db(&automations_db)?;
-    let env = [("COPILOT_HOME", copilot_home.as_path())];
+    // `O` (open the other client) writes its command line here instead of starting it.
+    let other_client = instance.home.join("other-client.txt");
+    let env = [("COPILOT_HOME", copilot_home.as_path()), ("COPILOT_CANVAS_OTHER_CLIENT_DRYRUN", other_client.as_path())];
     let started = Instant::now();
     let mut ui = start(&args, &env)?;
     step("client starts and auto-starts the terminal service");
@@ -1077,6 +1100,25 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     step("Ctrl+] returns keyboard focus to the canvas");
     ui.send(b"\x1d")?;
     ui.wait("canvas focus hints", Duration::from_secs(5), |t| t.contains("empty-drag pan"))?;
+
+    step("O opens this canvas in the other client (same service and canvas; dry run)");
+    ui.send(b"o")?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let line = loop {
+        if let Ok(line) = std::fs::read_to_string(&other_client) {
+            break line;
+        }
+        anyhow::ensure!(Instant::now() < deadline, "O did not open the other client");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let parts: Vec<&str> = line.split('\u{1f}').collect();
+    let (exe, rest) = parts.split_first().context("command line")?;
+    let wants = if client == "tui" { "copilot-canvas-gui.exe" } else { "copilot-canvas.exe" };
+    anyhow::ensure!(exe.ends_with(wants), "the {client} opened {exe}, not {wants}");
+    anyhow::ensure!(client == "tui" || rest.first() == Some(&"--tui"), "the GUI opens the TUI with --tui: {rest:?}");
+    let after = |flag: &str| rest.iter().position(|a| *a == flag).and_then(|i| rest.get(i + 1)).copied();
+    anyhow::ensure!(after("--instance") == Some(instance.name.as_str()) && rest.contains(&"--demo"), "same instance and demo canvas: {rest:?}");
+    anyhow::ensure!(after("--remote") == remote, "same connection ({remote:?}): {rest:?}");
 
     step("mouse drag moves a session together with its subagent");
     let before = wait_doc(&canvas, "initial save", |d| d.node("demo-main").is_some())?;

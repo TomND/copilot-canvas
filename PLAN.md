@@ -11,6 +11,38 @@ This plan turns Copilot Canvas into three layers so that:
 
 It supersedes `docs/GPU-CANVAS-PLAN.md`.
 
+## 0. Implementation status (2026-10-28)
+
+All phases are implemented on `main` of the new repository. Besides GitHub
+Copilot CLI, the canvas now also runs **OpenCode** and **Claude Code** sessions
+(agent providers in `canvas-agents/src/agents`); it defaults to the first
+installed agent (OpenCode on the development machine, which has no Copilot).
+
+| Phase | State | Verified by |
+|---|---|---|
+| 0 Layer split | Done: workspace crates (§3), `Emulator` trait, `Backend` RPC trait (local and remote), `InputEvent`, `RenderMode`/`CanvasModel` view model, golden corpus (13 entries, both engines) | `cargo test --workspace`; `corpus check`; `selftest` (TUI, 27 steps) |
+| 1 Remote mode | Done: protocol 8, TCP + zstd, heartbeat, reconnect (backoff capped at 1.5 s, see D5), input acks, offline blocking, per-tile coalescing, backend-owned document with patches, pairing (DPAPI), `CopilotCanvas-Tunnel` manifest, managed `devtunnel connect`, §6 behaviours | `selftest --remote` `loopback`, `faults`, `paired`; backend contract tests; 20-minute soaks (docs/soak) |
+| 2 libghostty-vt | Done and default: pinned Ghostty `521cf2c5`, Zig 0.17.0, `cargo xtask build-ghostty`, vendored headers with checksums; corpus differences reviewed (corpus/reviewed-differences.md) | `bench --terminals 100`: equal CPU, about 58 % less memory per terminal, keystroke p50 ~1.1 ms |
+| 3 GPU spike | Done: wgpu 30 + winit + glyphon chosen over GPUI (docs/GPU-SPIKE.md) | measured on the RTX 3070 and WARP |
+| 4 GUI MVP | Done: `copilot-canvas-gui.exe` | `selftest --client gui` (+ `--remote loopback`) |
+| 5 Parity | Done: all 33 rows of §8 plus images, taskbar/flash/toasts, drag and drop, several windows (docs/PARITY.md) | `selftest --client gui --parity` (38 checks) |
+| 6 Hardening | Done: damage frames, device-lost and DPI recovery, window placement, UI Automation (AccessKit), crash log, GUI stress/perf/burn probes | `selftest --client gui --hardening`; §9 budgets all met (docs/GUI.md) |
+| 7 Rollout | Done except the time-gated step: `client` setting (`tui`, `gui`, `auto`; `copilot-canvas config client …`), `--tui`/`--gui`, **O** opens the same canvas in the other client | `selftest` step "O opens this canvas in the other client" (TUI and GUI) |
+
+Not done in this session, because they need time or a second machine:
+
+- **Dogfood week, then switch the default client** (Phase 7). The default is
+  still `tui`; after the week, `copilot-canvas config client gui` (or `auto`,
+  which keeps the TUI over remote desktop and SSH as D4 asks).
+- **A day on a real Dev Tunnel** (Phase 1 exit criterion): the devtunnel CLI is
+  installed but signed out here; everything was tested with a stand-in that
+  forwards a port (docs/REMOTE.md has the manual checklist and commands).
+- **The 48 h remote soak** (Phase 6): 20-minute soaks ran for both clients;
+  `copilot-canvas selftest --remote soak --minutes 2880` runs the long one.
+- **Real-Copilot probes**: Copilot CLI is not installed on the development
+  machine; the Copilot provider keeps the original command lines (unit-tested)
+  and `selftest agent --agent copilot` runs them where Copilot is installed.
+
 ## 1. Goals and non-goals
 
 ### Goals

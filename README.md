@@ -1,9 +1,12 @@
 # Copilot Canvas
 
-A fast, native, spatial session manager for GitHub Copilot CLI on Windows.
-Sessions are boxes on an infinite canvas; subagents hang off their parent;
-groups are boxes around sessions; the sidebar lists everything; clicking a box
-opens the **real** Copilot terminal on the right (single or tiled).
+A fast, native, spatial session manager for agent CLIs on Windows:
+**GitHub Copilot CLI, OpenCode and Claude Code**. Sessions are boxes on an
+infinite canvas; subagents hang off their parent; groups are boxes around
+sessions; the sidebar lists everything; clicking a box opens the **real**
+agent terminal on the right (single or tiled). Two front ends share one
+persistent terminal service: a terminal UI (TUI) and a GPU client (GUI); both
+work locally or from another PC over a Dev Tunnel (remote mode).
 
 ```
 ┌ SESSIONS ──────────┐┌ canvas ─────────────────────────┐┌ terminals ───────────────┐
@@ -16,26 +19,42 @@ opens the **real** Copilot terminal on the right (single or tiled).
 └────────────────────┘└─────────────────────────────────┘└──────────────────────────┘
 ```
 
-Roadmap (layers, remote mode over Dev Tunnels, libghostty-vt, GPU client): see [PLAN.md](PLAN.md).
+Design and status (layers, remote mode, libghostty-vt, GPU client): see [PLAN.md](PLAN.md).
 
 ## Quick start
 
 ```powershell
 git clone <this repository> copilot-canvas
 cd copilot-canvas
-cargo build --release
-.\target\release\copilot-canvas.exe --demo     # safe demo: PowerShell panes, no Copilot
-.\target\release\copilot-canvas.exe            # your real Copilot sessions
+cargo xtask build-ghostty                      # once: builds libghostty-vt (needs Zig 0.17.0; docs/GHOSTTY.md)
+cargo build --release                          # copilot-canvas.exe (service, CLI, TUI) + copilot-canvas-gui.exe
+.\target\release\copilot-canvas.exe --demo     # safe demo: PowerShell panes, no agent
+.\target\release\copilot-canvas.exe            # your real agent sessions (TUI)
+.\target\release\copilot-canvas.exe --gui      # the same canvas in the GPU client
 ```
 
-Optional: `cargo install --path .` puts `copilot-canvas` on your PATH.
-Use a reasonably large Windows Terminal window (≥ 140×40 is comfortable).
+Optional: `cargo install --path .` puts `copilot-canvas` on your PATH. Use a
+reasonably large Windows Terminal window for the TUI (≥ 140×40 is comfortable).
+Without Zig, `cargo build --release --no-default-features` builds with the
+alacritty terminal engine instead of Ghostty.
 
-The GPU client (preview, Phase 4): `.\target\release\copilot-canvas.exe --gui`
-(or `copilot-canvas-gui.exe`, which `cargo build --release` builds next to it)
-opens the same canvas in a native window with continuous zoom, pixel-smooth
-dragging and real fonts, on the same terminal service. See
-[docs/GUI.md](docs/GUI.md).
+- **Agents.** New sessions use the first installed of Copilot, OpenCode and
+  Claude Code; pick another per session in the new-session dialog (*Agent*), per
+  canvas in *Settings › Agent for new sessions*, or for the machine with
+  `copilot-canvas config agent opencode`. Each agent's sessions, status,
+  subagents and configuration views come from its own history and CLI.
+- **Clients.** `copilot-canvas` opens the client set by
+  `copilot-canvas config client tui|gui|auto` (default `tui`; `auto` picks the
+  GUI except over remote desktop or SSH); `--tui` and `--gui` override it. In
+  either client, **O** opens the same canvas in the other one (same service,
+  same document). See [docs/GUI.md](docs/GUI.md).
+- **Remote mode.** Agents run on one PC (say a Cloud PC), the canvas on another,
+  over a private Dev Tunnel with pairing: `copilot-canvas remote tunnel-setup`
+  and `remote pair` there, `remote add NAME --tunnel ID --code CODE` and
+  `copilot-canvas --remote NAME` at home. See [docs/REMOTE.md](docs/REMOTE.md).
+- **Terminal engine.** Terminals run on libghostty-vt (graphemes, Kitty
+  keyboard, underline styles, images); `copilot-canvas config engine alacritty`
+  switches back. See [docs/GHOSTTY.md](docs/GHOSTTY.md).
 
 On first run the canvas imports your 8 most recent sessions. If the Node
 prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
@@ -239,14 +258,21 @@ windowless `python`) and its `state` folder (`tasks/`, `logs/`, `status/`,
 ## Architecture
 
 ```
-copilot-canvas.exe (TUI client)            copilot-canvas service (persistent, per user)
-  ratatui canvas · sidebar · tiles   ◀──▶    owner-only named pipe, HMAC-authenticated
-  draws only what is visible                 ConPTY per session (portable-pty)
-  ~/.copilot-canvas/prefs (own view)         alacritty_terminal emulator per session
-                                             row-diff frames for visible terminals only
-                                             incremental session-history index
-                                             ~/.copilot-canvas/canvas.json (owner)
+ clients (home PC or local)                    copilot-canvas service (persistent, per user; where agents run)
+  copilot-canvas.exe      TUI (ratatui)   ◀──▶   L1 terminal host: ConPTY per session, libghostty-vt
+  copilot-canvas-gui.exe  GUI (wgpu)             (or alacritty) per terminal, protocol-8 row-diff frames
+  canvas-core: app state, ViewModel              L3 backend: agent providers (Copilot, OpenCode, Claude),
+  canvas-termview: terminal grids                history index, canvas document owner, event bus,
+  ~/.copilot-canvas/prefs (own view)             passive sessions, automations, backend RPCs
+        local: owner-only named pipe, HMAC token · remote: TCP on loopback behind a Dev Tunnel,
+        paired client secret (DPAPI), heartbeat, reconnect, input acks, zstd
 ```
+
+Workspace crates: `canvas-common` (protocol, transports, settings),
+`canvas-host` (L1), `canvas-agents` (L3 backend), `canvas-model` (document,
+bus, RPC types), `canvas-core` (app state machine), `canvas-termview` (L2),
+`canvas-tui`, `canvas-gui`, `canvas-corpus` (golden terminal corpus),
+`ghostty-vt-sys` and `xtask`.
 
 - **The service owns the canvas document.** It is the single writer of
   `canvas.json`; every open window sends its edits and applies the patches the
@@ -372,8 +398,15 @@ and `docs/REMOTE.md`.
 ## Commands
 
 ```text
-copilot-canvas [--demo] [--perf] [--cwd DIR] [--canvas FILE] [--instance NAME] [--home DIR]
-copilot-canvas --gui [options]        the GPU client (copilot-canvas-gui.exe) with the same options
+copilot-canvas [--demo] [--perf] [--cwd DIR] [--canvas FILE] [--instance NAME] [--home DIR] [--remote NAME]
+copilot-canvas --gui | --tui [options]
+                                      the GPU client (copilot-canvas-gui.exe) or the TUI, whatever the
+                                      client setting says
+copilot-canvas config [client|agent|engine [VALUE]]
+                                      machine settings: client tui|gui|auto, agent copilot|opencode|
+                                      claude|auto, engine ghostty|alacritty|auto
+copilot-canvas record … · corpus check|bless|diff|list
+                                      golden terminal corpus (corpus/README.md)
 copilot-canvas doctor                 environment checks (each agent CLI and its history, the default
                                       agent, terminal engine, Git, ConPTY, service, VS Code)
 copilot-canvas service status|stop    stop ends the service's sessions (gracefully)
@@ -407,8 +440,10 @@ cargo test                            unit tests
   Copilot API for that); open them where they run.
 - Subagents run inside their parent's terminal; their boxes show status and
   open the parent.
-- VS Code's local chat and Claude sessions aren't Copilot CLI sessions, so they
-  aren't imported. VS Code lists each agent session in several workspace
+- VS Code sync and migration are Copilot-only (VS Code's agent sessions are
+  Copilot CLI sessions); OpenCode and Claude Code sessions are imported from
+  their own history. Automations (`data.db`), `/every` loops and the
+  plugin/skill install actions are Copilot features too. VS Code lists each agent session in several workspace
   caches; each is assigned to the workspace whose folder best matches the
   session's working directory.
 - "Done · review" relies on Copilot's events; when no idle event is written, a
@@ -418,6 +453,11 @@ cargo test                            unit tests
   client (`--gui`) draws Kitty graphics and iTerm2 inline PNG images. OSC 52
   copy is forwarded to your terminal.
 - Windows only (ConPTY, named pipes, job objects).
+- Stopping a session sends the agent Ctrl+D (twice), then Ctrl+C, and ends its
+  process tree after 5 s; a session the canvas stopped always shows as stopped.
+  OpenCode 1.19 can hang when asked to quit while one of its own background
+  requests is pending (a model-list refresh at start-up, an MCP server it keeps
+  reconnecting to), so stopping such a session takes those 5 s.
 - Automations are read from Copilot's local database; creating or editing
   their prompt/schedule is done in VS Code or the Copilot app.
 - Upgrading: terminal fixes live in the service. When a newer build starts

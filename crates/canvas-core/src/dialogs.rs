@@ -168,6 +168,8 @@ pub enum Action {
     Nothing,
     /// Another window on the same canvas (front ends with windows).
     NewWindow,
+    /// This canvas in the other front end (the TUI from the GUI and back).
+    OpenOtherClient,
 }
 
 #[derive(Clone, Debug)]

@@ -1785,6 +1785,27 @@ impl App {
         }
     }
 
+    /// Options that open this canvas in another front end: the same service
+    /// (instance, data folder, `--remote`), canvas and default folder.
+    pub fn other_client_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if let Some(instance) = &self.instance {
+            args.extend(["--instance".to_owned(), instance.name.clone(), "--home".to_owned(), instance.home.display().to_string()]);
+            args.extend(["--sessions-dir".to_owned(), instance.sessions_dir.display().to_string()]);
+        }
+        if let Some(remote) = self.target.as_ref().and_then(|t| t.remote_arg()) {
+            args.extend(["--remote".to_owned(), remote]);
+        }
+        if let Some(canvas) = &self.doc_request.0 {
+            args.extend(["--canvas".to_owned(), canvas.clone()]);
+        }
+        if self.doc_request.1 {
+            args.push("--demo".to_owned());
+        }
+        args.extend(["--cwd".to_owned(), self.default_cwd.clone()]);
+        args
+    }
+
     /// Stops a terminal: agents exit gracefully (Ctrl+D; Claude Code wants it
     /// twice), anything else is ended.
     pub fn stop_terminal(&mut self, id: &str, force: bool) {
@@ -2089,6 +2110,29 @@ mod connection_tests {
         let (tx, rx) = bounded(64);
         let (_service, service_rx) = bounded(1);
         (Conn::detached(tx, service_rx), rx)
+    }
+
+    #[test]
+    fn the_other_client_opens_the_same_service_and_canvas() {
+        let (conn, _sent) = detached();
+        let (app_tx, _app_rx) = unbounded();
+        let mut app = App::new(conn, Arc::new(crate::rpc::Offline), Opened::detached(Doc::default()), true, r"C:\work".into(), app_tx, None);
+        let home = std::env::temp_dir().join(format!("cc-other-{}", uuid::Uuid::new_v4()));
+        let instance = crate::paths::Instance::new(Some("dogfood".into()), Some(home.clone()), Some(home.join("sessions"))).unwrap();
+        app.instance = Some(instance.clone());
+        app.target = Some(crate::conn::ConnTarget::Loopback(instance.clone()));
+        app.doc_request = (Some(r"C:\c\canvas.json".into()), true);
+        let args = app.other_client_args();
+        let after = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
+        assert_eq!(after("--instance").as_deref(), Some("dogfood"));
+        assert_eq!(after("--home"), Some(instance.home.display().to_string()));
+        assert_eq!(after("--remote").as_deref(), Some("loopback"));
+        assert_eq!(after("--canvas").as_deref(), Some(r"C:\c\canvas.json"));
+        assert_eq!(after("--cwd").as_deref(), Some(r"C:\work"));
+        assert!(args.iter().any(|a| a == "--demo"));
+        app.target = Some(crate::conn::ConnTarget::Local(instance));
+        assert!(!app.other_client_args().iter().any(|a| a == "--remote"), "the local pipe needs no --remote");
+        let _ = std::fs::remove_dir_all(home);
     }
 
     #[test]

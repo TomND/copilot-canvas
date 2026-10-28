@@ -136,6 +136,15 @@ impl GuiPlatform {
 }
 
 impl Platform for GuiPlatform {
+    /// The TUI in a new console window (Windows' default terminal).
+    fn open_other_client(&self, args: &[String]) -> anyhow::Result<String> {
+        let tui = canvas_core::platform::build_sibling("copilot-canvas.exe")?;
+        let mut all = vec!["--tui".to_owned()];
+        all.extend(args.iter().cloned());
+        canvas_core::platform::spawn_client(&tui, &all, true)?;
+        Ok("Opened the TUI on this canvas in a new console window.".into())
+    }
+
     fn set_clipboard_text(&self, text: &str) -> anyhow::Result<()> {
         let result = canvas_core::clipboard::set_text(text);
         match self.test_clip() {

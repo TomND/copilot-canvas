@@ -204,6 +204,7 @@ impl App {
                 return;
             }
             KeyCode::Char('t') if !ctrl => return self.run(Action::ToggleTiled),
+            KeyCode::Char('o') if !ctrl => return self.run(Action::OpenOtherClient),
             KeyCode::Char('f') if !ctrl => return self.run(Action::FitAll),
             KeyCode::Char('g') if !ctrl => return self.run(Action::GroupSelection),
             KeyCode::Char('r') | KeyCode::F(2) if !ctrl => {

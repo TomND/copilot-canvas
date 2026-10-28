@@ -64,6 +64,49 @@ pub trait Platform: Send + Sync {
     /// permission; GUI: a toast and a flashing taskbar button when the
     /// window is in the background).
     fn needs_you(&self, _session: &str) {}
+
+    /// Opens the other front end (TUI from the GUI, GUI from the TUI) on the
+    /// same service and canvas with `args` (PLAN Phase 7: the TUI stays one
+    /// keystroke away). Returns a status line.
+    fn open_other_client(&self, args: &[String]) -> Result<String> {
+        let gui = build_sibling("copilot-canvas-gui.exe")?;
+        spawn_client(&gui, args, false)?;
+        Ok("Opened the GPU client on this canvas.".into())
+    }
+}
+
+/// `name` next to the running program (or the build that runs the service).
+pub fn build_sibling(name: &str) -> Result<std::path::PathBuf> {
+    let exe = std::env::current_exe()?.with_file_name(name);
+    if exe.is_file() {
+        return Ok(exe);
+    }
+    let fallback = crate::paths::build_exe()?.with_file_name(name);
+    anyhow::ensure!(fallback.is_file(), "{name} is not next to this program");
+    Ok(fallback)
+}
+
+/// Starts a front end detached from this one (`console`: in a new console
+/// window, for the TUI). `COPILOT_CANVAS_OTHER_CLIENT_DRYRUN=FILE` writes the
+/// command line to FILE instead (tests).
+pub fn spawn_client(exe: &std::path::Path, args: &[String], console: bool) -> Result<()> {
+    use std::os::windows::process::CommandExt;
+    if let Some(file) = std::env::var_os("COPILOT_CANVAS_OTHER_CLIENT_DRYRUN") {
+        let line = std::iter::once(exe.display().to_string()).chain(args.iter().cloned()).collect::<Vec<_>>().join("\u{1f}");
+        std::fs::write(file, line)?;
+        return Ok(());
+    }
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    let flags = CREATE_NEW_PROCESS_GROUP | if console { CREATE_NEW_CONSOLE } else { DETACHED_PROCESS };
+    std::process::Command::new(exe)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .creation_flags(flags)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| anyhow::anyhow!("cannot start {}: {e}", exe.display()))
 }
 
 /// The TUI: bells and OSC 9;4 progress go to the outer terminal.

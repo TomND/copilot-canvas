@@ -88,6 +88,16 @@ impl ConnTarget {
         }
     }
 
+    /// The `--remote` option that reaches the same service (`None`: the local pipe).
+    pub fn remote_arg(&self) -> Option<String> {
+        match self {
+            ConnTarget::Local(_) => None,
+            ConnTarget::Loopback(_) => Some("loopback".to_owned()),
+            ConnTarget::Tcp { addr, .. } => Some(addr.clone()),
+            ConnTarget::Server(server) => Some(server.name().to_owned()),
+        }
+    }
+
     pub fn describe(&self) -> String {
         match self {
             ConnTarget::Local(instance) => format!("the local service ({})", instance.name),

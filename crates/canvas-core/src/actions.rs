@@ -132,6 +132,7 @@ impl App {
                 item("Migrate VS Code skills & settings…", "", Action::Migrate, !self.demo),
                 item("Fit everything", "F", Action::FitAll, true),
                 item(if self.doc.ui.tiled { "Single terminal view" } else { "Tile terminals" }, "T", Action::ToggleTiled, true),
+                item("Open in the other client", "O", Action::OpenOtherClient, true),
                 item("Help", "?", Action::Help, true),
             ],
         )
@@ -776,6 +777,13 @@ impl App {
             Action::Help => self.modals.push(Modal::Help),
             Action::Nothing => {}
             Action::NewWindow => self.new_window_requested = true,
+            Action::OpenOtherClient => {
+                let args = self.other_client_args();
+                match self.platform.open_other_client(&args) {
+                    Ok(status) => self.notify(status, false),
+                    Err(error) => self.notify(format!("Cannot open the other client: {error:#}"), true),
+                }
+            }
         }
     }
 

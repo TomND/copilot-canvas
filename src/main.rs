@@ -35,6 +35,11 @@ USAGE
   copilot-canvas [options]              open the canvas (starts the terminal service if needed)
   copilot-canvas --demo                 safe demo with native PowerShell panes, no Copilot calls
   copilot-canvas --gui [options]        open the GPU client (copilot-canvas-gui.exe next to this program)
+  copilot-canvas --tui [options]        open the terminal client (whatever the client setting says)
+  copilot-canvas config [client|agent|engine [VALUE]]
+                                        machine settings: client tui|gui|auto (which one
+                                        `copilot-canvas` opens), agent copilot|opencode|claude|auto,
+                                        engine ghostty|alacritty|auto
   copilot-canvas --remote loopback      open the canvas over TCP to the local service (remote mode
                                         without a tunnel; starts the service listening on loopback)
   copilot-canvas --remote NAME          open the canvas on a paired service (see REMOTE; runs
@@ -145,6 +150,7 @@ struct Args {
     demo: bool,
     perf: bool,
     gui: bool,
+    tui: bool,
     rest: Vec<(String, String)>,
     flags: Vec<String>,
 }
@@ -161,6 +167,7 @@ fn parse() -> Result<Args> {
         demo: false,
         perf: false,
         gui: false,
+        tui: false,
         rest: Vec::new(),
         flags: Vec::new(),
     };
@@ -179,6 +186,7 @@ fn parse() -> Result<Args> {
             "--demo" => args.demo = true,
             "--perf" => args.perf = true,
             "--gui" => args.gui = true,
+            "--tui" => args.tui = true,
             "--instance" => args.instance = Some(value("--instance")?),
             "--home" => args.home = Some(PathBuf::from(value("--home")?)),
             "--sessions-dir" => args.sessions_dir = Some(PathBuf::from(value("--sessions-dir")?)),
@@ -215,19 +223,84 @@ fn main() {
     }
 }
 
+/// Whether `copilot-canvas` (no command) opens the GPU client: the `client`
+/// setting (`COPILOT_CANVAS_CLIENT`, else settings.json): `gui`, `tui`
+/// (the default until the dogfood week ends, PLAN Phase 7) or `auto` (the GUI
+/// unless this is a remote desktop or SSH session, where the TUI is better,
+/// PLAN D4). The GUI must be next to this program.
+fn wants_gui(home: Option<&std::path::Path>) -> bool {
+    let home = home.map(std::path::Path::to_path_buf).or_else(|| std::env::var_os("COPILOT_CANVAS_HOME").map(PathBuf::from)).or_else(|| dirs::home_dir().map(|h| h.join(".copilot-canvas")));
+    let setting = home.map(|h| canvas_common::settings::Settings::load(&h)).unwrap_or_default().client().unwrap_or_default();
+    let gui_present = std::env::current_exe().map(|e| e.with_file_name("copilot-canvas-gui.exe").is_file()).unwrap_or(false);
+    match setting.trim().to_ascii_lowercase().as_str() {
+        "gui" => gui_present,
+        "auto" => gui_present && !remote_session(),
+        _ => false,
+    }
+}
+
+/// A remote desktop (Cloud PC over RDP: no GPU) or an SSH session.
+fn remote_session() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_REMOTESESSION};
+    // SAFETY: a plain query.
+    let rdp = unsafe { GetSystemMetrics(SM_REMOTESESSION) } != 0;
+    rdp || std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_CLIENT").is_some()
+}
+
+/// `copilot-canvas config [KEY [VALUE]]`: machine settings (settings.json).
+fn config(home: &std::path::Path, key: Option<&str>, value: Option<&str>) -> Result<()> {
+    let mut settings = canvas_common::settings::Settings::load(home);
+    let Some(key) = key else {
+        println!("client  {}", settings.client.as_deref().unwrap_or("tui (default)"));
+        println!("agent   {}", settings.agent.as_deref().unwrap_or("auto (first installed)"));
+        println!("engine  {}", settings.terminal.engine.as_deref().unwrap_or("auto (ghostty when built in)"));
+        println!("listen  {}", settings.remote.listen.as_deref().unwrap_or("off"));
+        println!("({})", canvas_common::settings::path(home).display());
+        return Ok(());
+    };
+    let unset = |v: &str| matches!(v, "default" | "unset" | "none");
+    let value = value.with_context(|| format!("config {key} needs a value"))?.trim().to_ascii_lowercase();
+    match key {
+        "client" => {
+            anyhow::ensure!(matches!(value.as_str(), "tui" | "gui" | "auto") || unset(&value), "client is tui, gui or auto");
+            settings.client = (!unset(&value)).then_some(value);
+        }
+        "agent" => {
+            anyhow::ensure!(value == "auto" || unset(&value) || canvas_agents::agents::AgentKind::parse(&value).is_some(), "agent is copilot, opencode, claude or auto");
+            settings.agent = (!(value == "auto" || unset(&value))).then(|| canvas_agents::agents::AgentKind::parse(&value).map(|k| k.id().to_owned()).unwrap_or(value));
+        }
+        "engine" => {
+            anyhow::ensure!(matches!(value.as_str(), "ghostty" | "alacritty" | "auto") || unset(&value), "engine is ghostty, alacritty or auto");
+            settings.terminal.engine = (!(value == "auto" || unset(&value))).then_some(value);
+            println!("New terminals use it after the service restarts (copilot-canvas service stop).");
+        }
+        other => bail!("unknown setting {other:?} (client, agent, engine)"),
+    }
+    settings.save(home)?;
+    println!("{key} = {}", match key {
+        "client" => settings.client.clone(),
+        "agent" => settings.agent.clone(),
+        _ => settings.terminal.engine.clone(),
+    }.unwrap_or_else(|| "default".into()));
+    Ok(())
+}
+
 /// `copilot-canvas --gui …`: runs the GPU client next to this program with
 /// the same options, and exits with its exit code.
 fn launch_gui() -> Result<()> {
     let exe = std::env::current_exe()?.with_file_name("copilot-canvas-gui.exe");
     anyhow::ensure!(exe.is_file(), "the GPU client {} is missing", exe.display());
-    let args: Vec<String> = std::env::args().skip(1).filter(|a| a != "--gui").collect();
+    let args: Vec<String> = std::env::args().skip(1).filter(|a| a != "--gui" && a != "--tui").collect();
+    if std::env::var_os("COPILOT_CANVAS_OTHER_CLIENT_DRYRUN").is_some() {
+        return canvas_core::platform::spawn_client(&exe, &args, false);
+    }
     let status = std::process::Command::new(&exe).args(&args).status().with_context(|| format!("cannot start {}", exe.display()))?;
     std::process::exit(status.code().unwrap_or(1));
 }
 
 fn real_main() -> Result<()> {
     let args = parse()?;
-    if args.gui && args.command.is_empty() {
+    if args.command.is_empty() && !args.tui && (args.gui || wants_gui(args.home.as_deref())) {
         return launch_gui();
     }
     // The tunnel stand-in touches no data folder.
@@ -333,6 +406,9 @@ fn real_main() -> Result<()> {
                 name: option("name"),
             },
         ),
+        ["config"] => config(&instance.home, None, None),
+        ["config", key] => config(&instance.home, Some(key), None),
+        ["config", key, value] => config(&instance.home, Some(key), Some(value)),
         ["doctor"] => selftest::doctor(&instance),
         ["remote", "pair"] => remote_cli::pair(&instance, option("name")),
         ["remote", "clients"] => remote_cli::clients(&instance),
