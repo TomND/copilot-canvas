@@ -1,6 +1,11 @@
 //! Wire protocol between the TUI client and the terminal service.
 //!
 //! Frames are a little-endian u32 length followed by a postcard-encoded message.
+//! Enums are append-only: postcard encodes the variant index.
+//!
+//! Version negotiation: a protocol-7 client opens with `Hello` and is served
+//! protocol-7 shapes only; a protocol-8 client opens with `Hello8` and gets
+//! `Frame8`, heartbeats and input acknowledgements.
 
 use std::io::{self, Read, Write};
 
@@ -8,8 +13,30 @@ use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::Sha256;
 
-pub const PROTOCOL: u32 = 7;
-const MAX_FRAME: usize = 32 * 1024 * 1024;
+pub const PROTOCOL: u32 = 8;
+/// Oldest service protocol this client still speaks (with `Hello`).
+pub const PROTOCOL_MIN: u32 = 7;
+pub(crate) const MAX_FRAME: usize = 32 * 1024 * 1024;
+
+/// `ClientInfo::caps`: the client applies `Frame8` (else it gets protocol-7 frames).
+pub const CAP_FRAME8: u32 = 1;
+/// The client reads zstd-compressed frames on the TCP transport.
+pub const CAP_COMPRESS: u32 = 1 << 1;
+/// Reserved: the client renders Kitty graphics.
+pub const CAP_IMAGES: u32 = 1 << 2;
+
+/// Who a protocol-8 client is (`Hello8`).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct ClientInfo {
+    /// Front end name, e.g. "tui".
+    pub name: String,
+    /// `CAP_*` bits.
+    pub caps: u32,
+    /// 16 random bytes naming this client session across reconnects (input dedupe).
+    pub session: Vec<u8>,
+    /// Paired remote client id; `None` authenticates with the service token.
+    pub remote_id: Option<String>,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum ClientMsg {
@@ -39,6 +66,15 @@ pub enum ClientMsg {
     Routing { json: String },
     /// Event bus request (run now, resume, emit, discard mail) as JSON.
     Bus { json: String },
+    /// Protocol 8: opens the handshake (instead of `Hello`).
+    Hello8 { protocol: u32, build: String, nonce: Vec<u8>, client: ClientInfo },
+    /// Protocol 8: sent every 2 s; 6 s of silence means the connection is dead.
+    Heartbeat,
+    /// Protocol 8: terminal input numbered per client session; the service
+    /// applies each `seq` at most once and acknowledges the highest applied.
+    Input8 { id: String, input: Input, seq: u64 },
+    /// Protocol 8: `Subscribe` plus the focused tile (frames at a higher rate remotely).
+    Subscribe8 { ids: Vec<String>, focused: Option<String> },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -139,6 +175,30 @@ pub enum ServiceMsg {
     Bus { json: String },
     /// One event with the sessions it was delivered to (for the canvas pulse).
     BusEvent { json: String },
+    /// Protocol 8: a frame of protocol-8 rows (instead of `Frame`).
+    Frame8(Frame8),
+    /// Protocol 8: sent every 2 s; `input_ack` is the highest applied `Input8::seq`.
+    Heartbeat { input_ack: u64 },
+    /// Protocol 8: authentication succeeded (instead of `Ready`); `input_ack` is
+    /// the last input of this client session applied so far (0 if unknown).
+    Ready8 { pid: u32, input_ack: u64 },
+}
+
+/// Index of the first `ServiceMsg` variant protocol-7 clients cannot decode.
+pub const SERVICE_V7_VARIANTS: u8 = 12;
+
+impl ServiceMsg {
+    /// The message in the shape a client of `protocol` reads (`frame8`: it set
+    /// `CAP_FRAME8`). `None`: nothing to send (a protocol-8 heartbeat to a
+    /// protocol-7 client).
+    pub fn shaped(self, protocol: u32, frame8: bool) -> Option<ServiceMsg> {
+        match self {
+            ServiceMsg::Frame8(frame) if protocol < 8 || !frame8 => Some(ServiceMsg::Frame(frame.to_v7())),
+            ServiceMsg::Heartbeat { .. } if protocol < 8 => None,
+            ServiceMsg::Ready8 { pid, .. } if protocol < 8 => Some(ServiceMsg::Ready { pid }),
+            other => Some(other),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
@@ -298,6 +358,22 @@ pub struct Frame8 {
     pub modes: u32,
     /// Hyperlink targets referenced by `Run8::link` in this frame's rows.
     pub links: Vec<String>,
+}
+
+impl Frame8 {
+    /// The same frame for a protocol-7 client.
+    pub fn to_v7(&self) -> Frame {
+        Frame {
+            id: self.id.clone(),
+            cols: self.cols,
+            rows: self.rows,
+            full: self.full,
+            changed: self.changed.iter().map(|(y, row)| (*y, runs_v7(row, &self.links))).collect(),
+            cursor: self.cursor,
+            display_offset: self.display_offset,
+            history: self.history,
+        }
+    }
 }
 
 /// Protocol-7 runs of a protocol-8 row (adjacent runs that differ only in
@@ -490,7 +566,7 @@ pub fn verify(token: &[u8], role: &str, nonce: &[u8], proof: &[u8]) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -530,5 +606,78 @@ mod tests {
         assert!(!verify(token, "client", &n, &proof));
         assert!(!verify(b"other", "server", &n, &proof));
         assert!(!verify(token, "server", &nonce(), &proof));
+    }
+
+    pub(crate) fn sample_frame8() -> Frame8 {
+        Frame8 {
+            id: "t".into(),
+            cols: 20,
+            rows: 2,
+            full: true,
+            changed: vec![
+                (0, vec![Run8 { col: 0, text: "e\u{301}x".into(), clusters: vec![(0, 1)], fg: 3, flags: F_BOLD as u32 | F8_OVERLINE, link: 1, ..Default::default() }]),
+                (1, vec![Run8 { col: 2, text: "中".into(), wide: true, underline: COLOR_RGB | 0xff0000, flags: F_UNDERLINE as u32 | (UL_CURLY << F8_UL_SHIFT), ..Default::default() }]),
+            ],
+            cursor: Some((1, 1)),
+            cursor_shape: CURSOR_BAR,
+            cursor_blink: true,
+            display_offset: 0,
+            history: 7,
+            modes: MODE_BRACKETED_PASTE | MODE_KITTY_DISAMBIGUATE,
+            links: vec!["https://example.com/x".into()],
+        }
+    }
+
+    #[test]
+    fn protocol8_variants_round_trip_at_appended_indices() {
+        let info = ClientInfo { name: "tui".into(), caps: CAP_FRAME8 | CAP_COMPRESS, session: vec![7; 16], remote_id: Some("home-pc".into()) };
+        let client = [
+            (17, ClientMsg::Hello8 { protocol: PROTOCOL, build: "b".into(), nonce: vec![1; 32], client: info }),
+            (18, ClientMsg::Heartbeat),
+            (19, ClientMsg::Input8 { id: "t".into(), input: Input::Key { key: Key::Char('x'), mods: MOD_CTRL }, seq: 1 << 40 }),
+            (20, ClientMsg::Subscribe8 { ids: vec!["a".into(), "b".into()], focused: Some("b".into()) }),
+        ];
+        for (index, message) in client {
+            let bytes = postcard::to_stdvec(&message).unwrap();
+            assert_eq!(bytes[0], index, "{message:?}");
+            assert_eq!(postcard::from_bytes::<ClientMsg>(&bytes).unwrap(), message);
+        }
+        let service = [
+            (SERVICE_V7_VARIANTS, ServiceMsg::Frame8(sample_frame8())),
+            (13, ServiceMsg::Heartbeat { input_ack: 42 }),
+            (14, ServiceMsg::Ready8 { pid: 9, input_ack: 3 }),
+        ];
+        for (index, message) in service {
+            let bytes = postcard::to_stdvec(&message).unwrap();
+            assert_eq!(bytes[0], index, "{message:?}");
+            assert_eq!(postcard::from_bytes::<ServiceMsg>(&bytes).unwrap(), message);
+        }
+        // Protocol-7 indices are unchanged.
+        assert_eq!(postcard::to_stdvec(&ServiceMsg::BusEvent { json: String::new() }).unwrap()[0], SERVICE_V7_VARIANTS - 1);
+        assert_eq!(postcard::to_stdvec(&ClientMsg::Bus { json: String::new() }).unwrap()[0], 16);
+    }
+
+    #[test]
+    fn protocol7_clients_only_get_protocol7_shapes() {
+        let all = [
+            ServiceMsg::Ready { pid: 1 },
+            ServiceMsg::Frame8(sample_frame8()),
+            ServiceMsg::Heartbeat { input_ack: 1 },
+            ServiceMsg::Ready8 { pid: 1, input_ack: 1 },
+            ServiceMsg::Clipboard("x".into()),
+        ];
+        for message in all.clone() {
+            let Some(shaped) = message.shaped(7, true) else { continue };
+            let bytes = postcard::to_stdvec(&shaped).unwrap();
+            assert!(bytes[0] < SERVICE_V7_VARIANTS, "a protocol-7 client got {shaped:?}");
+        }
+        assert_eq!(ServiceMsg::Heartbeat { input_ack: 1 }.shaped(7, true), None);
+        let ServiceMsg::Frame(frame) = ServiceMsg::Frame8(sample_frame8()).shaped(7, true).unwrap() else { panic!("frame") };
+        assert_eq!(frame.changed[0].1[0].link.as_deref(), Some("https://example.com/x"));
+        assert_eq!(frame.changed[1].1[0].text, "中");
+        // Protocol 8 without CAP_FRAME8 also reads protocol-7 frames.
+        assert!(matches!(ServiceMsg::Frame8(sample_frame8()).shaped(8, false), Some(ServiceMsg::Frame(_))));
+        assert!(matches!(ServiceMsg::Frame8(sample_frame8()).shaped(8, true), Some(ServiceMsg::Frame8(_))));
+        assert_eq!(ServiceMsg::Heartbeat { input_ack: 1 }.shaped(8, true), Some(ServiceMsg::Heartbeat { input_ack: 1 }));
     }
 }

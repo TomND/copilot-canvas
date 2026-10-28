@@ -1,6 +1,7 @@
 //! Copilot Canvas: a spatial session manager for agent CLIs.
 
 mod bench;
+mod remote_probe;
 mod selftest;
 
 use canvas_agents::{automations, cli, factory_cli, index, service, vscode};
@@ -24,13 +25,22 @@ Copilot Canvas — spatial session manager for GitHub Copilot CLI
 USAGE
   copilot-canvas [options]              open the canvas (starts the terminal service if needed)
   copilot-canvas --demo                 safe demo with native PowerShell panes, no Copilot calls
+  copilot-canvas --remote loopback      open the canvas over TCP to the local service (remote mode
+                                        without a tunnel; starts the service listening on loopback)
+  copilot-canvas --remote HOST:PORT     open the canvas on a remote service (a forwarded tunnel port;
+                                        credentials: COPILOT_CANVAS_REMOTE_ID, COPILOT_CANVAS_REMOTE_SECRET)
   copilot-canvas service status|stop    inspect or stop the terminal service (stop ends its sessions)
   copilot-canvas service start          start it in the background (for a logon task: passive sessions
                                         and the automation doctor then run without the canvas open)
   copilot-canvas doctor                 check Copilot, ConPTY, session history and the service
-  copilot-canvas bench [--terminals N] [--seconds S] [--json FILE]
-                                        measure service/terminal/rendering performance (no Copilot)
-  copilot-canvas selftest               drive the real UI end to end in a hidden pseudoconsole
+  copilot-canvas bench [--terminals N] [--seconds S] [--json FILE] [--remote loopback]
+                                        measure service/terminal/rendering performance (no Copilot);
+                                        --remote loopback: over TCP, with and without compression
+  copilot-canvas selftest [--remote loopback]
+                                        drive the real UI end to end in a hidden pseudoconsole
+  copilot-canvas selftest --remote faults
+                                        drop, cut and delay the TCP connection while typing; check
+                                        reconnect, resync and that no keystroke is lost or doubled
 
 GOLDEN CORPUS (recorded terminal output vs. each engine's screen; see corpus/README.md)
   copilot-canvas record (--out FILE | --entry NAME) [--cols N] [--rows M] [--input SCRIPT] [--seconds S]
@@ -68,6 +78,7 @@ OPTIONS
   --sessions-dir DIR   Copilot session history to index (default: ~/.copilot/session-state)
   --canvas FILE        canvas file (default: <home>/canvas.json)
   --cwd DIR            default folder for new sessions (default: current folder)
+  --remote TARGET      connect over TCP: `loopback` or HOST:PORT (see above)
   -h, --help · -V, --version
 ";
 
@@ -78,6 +89,7 @@ struct Args {
     sessions_dir: Option<PathBuf>,
     canvas: Option<PathBuf>,
     cwd: Option<PathBuf>,
+    remote: Option<String>,
     demo: bool,
     perf: bool,
     rest: Vec<(String, String)>,
@@ -85,7 +97,19 @@ struct Args {
 }
 
 fn parse() -> Result<Args> {
-    let mut args = Args { command: Vec::new(), instance: None, home: None, sessions_dir: None, canvas: None, cwd: None, demo: false, perf: false, rest: Vec::new(), flags: Vec::new() };
+    let mut args = Args {
+        command: Vec::new(),
+        instance: None,
+        home: None,
+        sessions_dir: None,
+        canvas: None,
+        cwd: None,
+        remote: None,
+        demo: false,
+        perf: false,
+        rest: Vec::new(),
+        flags: Vec::new(),
+    };
     let mut iter = std::env::args().skip(1);
     while let Some(arg) = iter.next() {
         let mut value = |name: &str| iter.next().with_context(|| format!("{name} needs a value"));
@@ -105,6 +129,7 @@ fn parse() -> Result<Args> {
             "--sessions-dir" => args.sessions_dir = Some(PathBuf::from(value("--sessions-dir")?)),
             "--canvas" => args.canvas = Some(PathBuf::from(value("--canvas")?)),
             "--cwd" => args.cwd = Some(PathBuf::from(value("--cwd")?)),
+            "--remote" => args.remote = Some(value("--remote")?),
             "--yes" | "--force" => args.flags.push(arg.trim_start_matches("--").to_owned()),
             "--" => {
                 // `record … -- PROGRAM ARGS…`: the rest belongs to the program.
@@ -145,6 +170,7 @@ fn real_main() -> Result<()> {
                 perf: args.perf,
                 canvas: args.canvas.clone(),
                 cwd: paths::absolute(&cwd).to_string_lossy().into_owned(),
+                remote: args.remote.clone(),
             })
         }
         ["service"] => service::run(instance),
@@ -224,16 +250,26 @@ fn real_main() -> Result<()> {
             },
         ),
         ["doctor"] => selftest::doctor(&instance),
-        ["selftest"] => selftest::run(),
+        ["selftest"] => match args.remote.as_deref() {
+            None => selftest::run(None),
+            Some("loopback") => selftest::run(Some("loopback")),
+            Some("faults") => remote_probe::faults(&std::env::current_exe()?),
+            Some(other) => bail!("selftest --remote takes `loopback` or `faults`, not {other:?}"),
+        },
         ["selftest", "copilot"] => selftest::copilot(),
         ["record", rest @ ..] => canvas_corpus::cli::record(&instance.home, rest, &args.rest, args.cwd.as_deref()),
         ["corpus", rest @ ..] => canvas_corpus::cli::corpus(rest, &args.rest),
-        ["bench"] => bench::run(
-            option("terminals").map(|v| v.parse()).transpose()?.unwrap_or(100),
-            option("seconds").map(|v| v.parse()).transpose()?.unwrap_or(10),
-            option("json").map(PathBuf::from),
-            option("burn").map(|v| v.parse()).transpose()?.unwrap_or(0),
-        ),
+        ["bench"] => bench::run(bench::Options {
+            terminals: option("terminals").map(|v| v.parse()).transpose()?.unwrap_or(100),
+            seconds: option("seconds").map(|v| v.parse()).transpose()?.unwrap_or(10),
+            json: option("json").map(PathBuf::from),
+            burn: option("burn").map(|v| v.parse()).transpose()?.unwrap_or(0),
+            remote: match args.remote.as_deref() {
+                None => false,
+                Some("loopback") => true,
+                Some(other) => bail!("bench --remote takes `loopback`, not {other:?}"),
+            },
+        }),
         ["noise"] => bench::noise(option("rate").map(|v| v.parse()).transpose()?.unwrap_or(20)),
         ["echo"] => bench::echo(),
         ["burn"] => bench::burn(),

@@ -268,7 +268,8 @@ impl App {
     /// running (Copilot resumes its conversation; panes and focus stay as they are).
     pub fn restart_service(&mut self) {
         let Some(instance) = self.instance.clone() else { return };
-        if self.restarting.is_some() {
+        if self.restarting.is_some() || self.conn.remote {
+            // Remote clients never restart or upgrade the service.
             return;
         }
         let resume: Vec<String> = self.terms.iter().filter(|(id, t)| t.alive && self.doc.node(id).is_some()).map(|(id, _)| id.clone()).collect();
@@ -770,6 +771,7 @@ impl App {
                 }
             }
             AppEvent::ServiceRestarted { result, mouse } => self.on_service_restarted(result, mouse),
+            AppEvent::Reconnected(result) => self.on_reconnected(result),
             AppEvent::MigrateDone(result) => {
                 for modal in self.modals.iter_mut() {
                     if let Modal::Migrate(dialog) = modal {

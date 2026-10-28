@@ -2,27 +2,46 @@
 //! survive client restarts; streams only visible terminals to clients as row
 //! diffs; keeps the session you type in responsive (priority manager).
 //!
+//! Clients connect over the named pipe (local) or, when `remote.listen` is
+//! set, over TCP on loopback (remote clients behind a Dev Tunnel). Both carry
+//! the same framed protocol and handshake. Protocol-8 clients send and get
+//! heartbeats, number their input (applied at most once per client session)
+//! and, over TCP, get frames coalesced per tile and optionally compressed.
+//!
 //! Everything that is not about terminals (session history, the canvas
 //! document, the event bus, …) is delegated to a [`HostApp`], the L3 backend
 //! that shares this process.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
+use std::hash::{Hash, Hasher};
+use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded, unbounded};
 
+use crate::emulator::{Engine, Snapshot};
 use crate::paths::{Instance, build_id, now_ms};
 use crate::pipe::{Pipe, PipeServer};
-use crate::protocol::{self, ClientMsg, Frame, Input, LaunchKind, PROTOCOL, ServiceMsg, ServiceStats, read_frame, write_frame};
-use crate::emulator::Engine;
-use crate::term::{Hooks, Spawn, Terminal, lock, row_hash};
+use crate::protocol::{self, CAP_COMPRESS, CAP_FRAME8, ClientMsg, Frame8, Input, LaunchKind, Run8, ServiceMsg, ServiceStats};
+use crate::term::{Hooks, Spawn, Terminal, lock};
+use canvas_common::wire::{Beat, Closer, FrameReader, FrameWriter, Liveness};
+use canvas_common::{handshake, tcp};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(4);
+/// Remote clients: the focused tile at most every 16 ms, others every 100 ms.
+const FOCUSED_INTERVAL: Duration = Duration::from_millis(16);
+const BACKGROUND_INTERVAL: Duration = Duration::from_millis(100);
+const PUMP_POLL: Duration = Duration::from_millis(50);
+/// TCP clients that have not authenticated by then are dropped.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const IDLE_EXIT: Duration = Duration::from_secs(10 * 60);
+/// Client sessions remembered for input deduplication.
+const MAX_INPUT_SESSIONS: usize = 256;
 pub const CLIENT_QUEUE: usize = 1024;
 
 /// A launch the backend resolved into a concrete program.
@@ -49,8 +68,12 @@ pub trait HostApp: Send + Sync {
     fn terminals_changed(&self);
     /// Pending work that keeps the service running without clients or terminals.
     fn has_work(&self) -> bool;
+    /// The secret of a paired remote client (`ClientInfo::remote_id`); `None` refuses it.
+    fn remote_secret(&self, id: &str) -> Option<Vec<u8>>;
 }
 
+/// What a client last received of one subscribed terminal.
+#[derive(Default)]
 struct Sub {
     generation: u64,
     hashes: Vec<u64>,
@@ -58,19 +81,89 @@ struct Sub {
     rows: u16,
     cursor: Option<(u16, u16)>,
     offset: u32,
+    shape: u8,
+    blink: bool,
+    modes: u32,
+    /// When the last frame went out (remote frames are coalesced).
+    sent_at: Option<Instant>,
+}
+
+/// Keyboard input applied for one client session; outlives its connections.
+#[derive(Debug)]
+struct InputSession {
+    /// Highest `Input8::seq` applied.
+    applied: u64,
+    /// The connection allowed to apply input (the newest one).
+    owner: u64,
+    seen: Instant,
+}
+
+impl InputSession {
+    /// Whether `client` may apply input `seq` now (each seq at most once, only
+    /// from the session's current connection); records it.
+    fn admit(&mut self, client: u64, seq: u64) -> bool {
+        if self.owner != client || seq <= self.applied {
+            return false;
+        }
+        self.applied = seq;
+        true
+    }
 }
 
 /// One connected client.
 pub struct Client {
     pub id: u64,
+    /// Negotiated protocol: 7 (`Hello`) or 8 (`Hello8`).
+    pub protocol: u32,
+    /// Connected over TCP: frames are coalesced per tile.
+    pub remote: bool,
+    /// Reads `Frame8` (else protocol-7 frames).
+    frame8: bool,
     out: Sender<ServiceMsg>,
     subs: Mutex<HashMap<String, Sub>>,
+    /// The focused tile (`Subscribe8`).
+    focused: Mutex<Option<String>>,
+    session: Option<Arc<Mutex<InputSession>>>,
+    liveness: Option<Arc<Liveness>>,
+    closer: Closer,
 }
 
 impl Client {
-    /// Queues a message; false when the client is gone.
+    fn new(id: u64, protocol: u32, remote: bool, caps: u32, out: Sender<ServiceMsg>, closer: Closer) -> Self {
+        Self {
+            id,
+            protocol,
+            remote,
+            frame8: caps & CAP_FRAME8 != 0,
+            out,
+            subs: Mutex::new(HashMap::new()),
+            focused: Mutex::new(None),
+            session: None,
+            liveness: (protocol >= 8).then(|| Arc::new(Liveness::standard())),
+            closer,
+        }
+    }
+
+    /// Queues a message in the shape this client reads; false when the client is gone.
     pub fn send(&self, message: ServiceMsg) -> bool {
-        !matches!(self.out.try_send(message), Err(TrySendError::Disconnected(_)))
+        !matches!(self.try_send(message), Err(TrySendError::Disconnected(_)))
+    }
+
+    fn try_send(&self, message: ServiceMsg) -> Result<(), TrySendError<ServiceMsg>> {
+        match message.shaped(self.protocol, self.frame8) {
+            Some(message) => self.out.try_send(message),
+            None => Ok(()),
+        }
+    }
+
+    /// Ends the connection.
+    pub fn close(&self) {
+        self.closer.close();
+    }
+
+    /// Highest `Input8::seq` applied for this client's session.
+    pub fn input_ack(&self) -> u64 {
+        self.session.as_ref().map(|s| lock(s).applied).unwrap_or(0)
     }
 }
 
@@ -98,6 +191,10 @@ pub struct Host {
     /// Terminal engine for new terminals (`COPILOT_CANVAS_ENGINE`).
     pub engine: Engine,
     fallback_logged: AtomicBool,
+    /// Compress frames for remote clients that accept it (`remote.compress`).
+    compress: bool,
+    /// Input deduplication per client session id.
+    input_sessions: Mutex<HashMap<Vec<u8>, Arc<Mutex<InputSession>>>>,
     app: OnceLock<Arc<dyn HostApp>>,
 }
 
@@ -126,8 +223,9 @@ pub fn spawn_named<F: FnOnce() + Send + 'static>(name: &str, body: F) {
     std::thread::Builder::new().name(name.into()).spawn(body).expect("spawn service thread");
 }
 
-/// Runs the service: binds the pipe, starts the host threads, lets `make_app`
-/// build the backend, then serves clients until shutdown.
+/// Runs the service: binds the pipe (and the TCP port when remote listening
+/// is configured), starts the host threads, lets `make_app` build the
+/// backend, then serves clients until shutdown.
 pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn HostApp>) -> Result<()> {
     crate::win::raise_priority();
     let mut server = match PipeServer::bind(&instance.pipe_name()) {
@@ -142,6 +240,9 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
     }
     let token = protocol::nonce();
     canvas_common::auth::write_token(&instance.token_path(), &token)?;
+    // A port file left by a service that did not exit cleanly.
+    let _ = std::fs::remove_file(instance.port_path());
+    let settings = canvas_common::settings::Settings::load(&instance.home);
     log(&instance, &format!("service started, build {}", build_id()));
 
     let (pump_tx, pump_rx) = bounded::<()>(1);
@@ -169,6 +270,8 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
         shutting_down: AtomicBool::new(false),
         engine: configured_engine(&instance),
         fallback_logged: AtomicBool::new(false),
+        compress: settings.compress(),
+        input_sessions: Mutex::new(HashMap::new()),
         app: OnceLock::new(),
     });
     let app = make_app(&host);
@@ -180,13 +283,17 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
     spawn_named("changes", { let h = host.clone(); move || change_loop(h, changed_rx) });
     spawn_named("idle", { let h = host.clone(); move || idle_loop(h) });
     spawn_named("priority", { let h = host.clone(); move || priority_loop(h, prio_rx) });
+    spawn_named("liveness", { let h = host.clone(); move || liveness_loop(h) });
+    if let Some(addr) = settings.listen() {
+        listen_tcp(&host, &addr);
+    }
 
     loop {
         match server.accept() {
             Ok(pipe) => {
                 let host = host.clone();
                 spawn_named("client", move || {
-                    if let Err(error) = serve_client(&host, pipe) {
+                    if let Err(error) = serve_client(&host, Link::Pipe(pipe)) {
                         log(&host.instance, &format!("client ended: {error:#}"));
                     }
                 });
@@ -197,6 +304,45 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
             }
         }
     }
+}
+
+/// Also serves clients on a loopback TCP port (non-loopback addresses are
+/// refused) and publishes the port in `<home>/service-<instance>.port`.
+fn listen_tcp(host: &Arc<Host>, addr: &str) {
+    let listener = match tcp::listen_loopback(addr) {
+        Ok(listener) => listener,
+        Err(error) => {
+            log(&host.instance, &format!("not listening for remote clients on {addr}: {error}"));
+            return;
+        }
+    };
+    let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+    let path = host.instance.port_path();
+    let temp = path.with_extension(format!("port.{}.tmp", std::process::id()));
+    if let Err(error) = std::fs::write(&temp, port.to_string()).and_then(|_| std::fs::rename(&temp, &path)) {
+        log(&host.instance, &format!("cannot publish the remote port: {error}"));
+    }
+    log(&host.instance, &format!("listening for remote clients on 127.0.0.1:{port}"));
+    let host = host.clone();
+    spawn_named("tcp-accept", move || {
+        for stream in listener.incoming() {
+            match stream {
+                Ok(stream) => {
+                    let host = host.clone();
+                    spawn_named("remote-client", move || {
+                        let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_default();
+                        if let Err(error) = serve_client(&host, Link::Tcp(stream)) {
+                            log(&host.instance, &format!("remote client {peer} ended: {error:#}"));
+                        }
+                    });
+                }
+                Err(error) => {
+                    log(&host.instance, &format!("remote accept failed: {error}"));
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            }
+        }
+    });
 }
 
 impl Host {
@@ -227,7 +373,8 @@ impl Host {
 
     /// Terminals subscribed by any client (shown on someone's screen).
     pub fn visible(&self) -> HashSet<String> {
-        lock(&self.clients).values().flat_map(|c| lock(&c.subs).keys().cloned().collect::<Vec<_>>()).collect()
+        let clients: Vec<Arc<Client>> = lock(&self.clients).values().cloned().collect();
+        clients.iter().flat_map(|c| lock(&c.subs).keys().cloned().collect::<Vec<_>>()).collect()
     }
 
     pub fn launch(&self, id: &str, kind: LaunchKind, cwd: &str, cols: u16, rows: u16) -> Result<()> {
@@ -302,9 +449,15 @@ impl Host {
         for terminal in &terms {
             terminal.force_kill();
         }
-        let _ = std::fs::remove_file(self.instance.token_path());
+        self.remove_published_files();
         log(&self.instance, "service exiting");
         std::process::exit(0);
+    }
+
+    /// The token and port files are only valid while this process runs.
+    fn remove_published_files(&self) {
+        let _ = std::fs::remove_file(self.instance.token_path());
+        let _ = std::fs::remove_file(self.instance.port_path());
     }
 
     /// The configured engine, or alacritty once Ghostty failed to start (logged once).
@@ -326,42 +479,113 @@ impl Host {
             let _ = self.priority_wake.try_send(());
         }
     }
+
+    /// The input state of a client session (created on first use; the least
+    /// recently connected session is forgotten beyond `MAX_INPUT_SESSIONS`).
+    fn input_session(&self, key: &[u8]) -> Arc<Mutex<InputSession>> {
+        let mut sessions = lock(&self.input_sessions);
+        if sessions.len() >= MAX_INPUT_SESSIONS
+            && !sessions.contains_key(key)
+            && let Some(oldest) = sessions.iter().min_by_key(|(_, s)| lock(s).seen).map(|(k, _)| k.clone())
+        {
+            sessions.remove(&oldest);
+        }
+        sessions
+            .entry(key.to_vec())
+            .or_insert_with(|| Arc::new(Mutex::new(InputSession { applied: 0, owner: 0, seen: Instant::now() })))
+            .clone()
+    }
 }
 
-fn serve_client(host: &Arc<Host>, pipe: Pipe) -> Result<()> {
-    let (mut reader, mut writer, closer) = pipe.split()?;
-    let Some(ClientMsg::Hello { protocol: _, build: _, nonce: client_nonce }) = read_frame(&mut reader)? else {
-        bail!("expected hello");
+/// A client transport.
+enum Link {
+    Pipe(Pipe),
+    Tcp(TcpStream),
+}
+
+type Halves = (Box<dyn Read + Send>, Box<dyn Write + Send>, Closer);
+
+impl Link {
+    fn split(self) -> std::io::Result<Halves> {
+        Ok(match self {
+            Link::Pipe(pipe) => {
+                let (reader, writer, closer) = pipe.split()?;
+                (Box::new(reader), Box::new(writer), Closer::new(move || closer.close()))
+            }
+            Link::Tcp(stream) => {
+                let (reader, writer, closer) = tcp::split(stream)?;
+                (Box::new(reader), Box::new(writer), Closer::new(move || closer.close()))
+            }
+        })
+    }
+}
+
+fn serve_client(host: &Arc<Host>, link: Link) -> Result<()> {
+    let remote = matches!(link, Link::Tcp(_));
+    let (reader, writer, closer) = link.split()?;
+    let mut reader = FrameReader::new(reader);
+    let mut writer = FrameWriter::new(writer);
+    let authenticated = Arc::new(AtomicBool::new(false));
+    if remote {
+        let (done, closer) = (authenticated.clone(), closer.clone());
+        spawn_named("handshake-timeout", move || {
+            std::thread::sleep(HANDSHAKE_TIMEOUT);
+            if !done.load(Ordering::Acquire) {
+                closer.close();
+            }
+        });
+    }
+    let accepted = handshake::accept(&mut reader, &mut writer, remote, build_id(), |remote_id| match remote_id {
+        Some(id) => host.app().remote_secret(id),
+        None => Some(host.token.clone()),
+    });
+    authenticated.store(true, Ordering::Release);
+    let accepted = match accepted {
+        Ok(accepted) => accepted,
+        Err(error) => {
+            closer.close();
+            return Err(error);
+        }
     };
-    anyhow::ensure!(client_nonce.len() == 32, "bad client nonce");
-    let server_nonce = protocol::nonce();
-    write_frame(
-        &mut writer,
-        &ServiceMsg::Challenge {
-            protocol: PROTOCOL,
-            build: build_id().to_owned(),
-            nonce: server_nonce.clone(),
-            proof: protocol::prove(&host.token, "server", &client_nonce),
-        },
-    )?;
-    let Some(ClientMsg::Auth { proof }) = read_frame(&mut reader)? else { bail!("expected auth") };
-    if !protocol::verify(&host.token, "client", &server_nonce, &proof) {
-        bail!("client failed authentication");
+    let v8 = accepted.protocol >= 8;
+    let info = accepted.client.unwrap_or_default();
+    if remote && v8 {
+        reader.accept_compressed()?;
+        if host.compress && info.caps & CAP_COMPRESS != 0 {
+            writer.compress()?;
+        }
     }
 
     let (out_tx, out_rx) = bounded::<ServiceMsg>(CLIENT_QUEUE);
     let id = host.next_client.fetch_add(1, Ordering::Relaxed);
-    let client = Arc::new(Client { id, out: out_tx, subs: Mutex::new(HashMap::new()) });
-    let writer_closer = closer.clone();
-    spawn_named("client-writer", move || {
-        for message in out_rx {
-            if write_frame(&mut writer, &message).is_err() {
-                break;
-            }
+    let mut client = Client::new(id, accepted.protocol, remote, info.caps, out_tx, closer.clone());
+    // The newest connection of a client session owns its input; the previous
+    // one (half-open after a network drop) stops applying input and is closed.
+    let mut ready_ack = 0;
+    if v8 {
+        let session = host.input_session(&info.session);
+        let previous = {
+            let mut state = lock(&session);
+            state.seen = Instant::now();
+            ready_ack = state.applied;
+            std::mem::replace(&mut state.owner, id)
+        };
+        let replaced = lock(&host.clients).get(&previous).cloned();
+        if let Some(old) = replaced {
+            log(&host.instance, &format!("client {previous} replaced by its reconnection {id}"));
+            old.close();
         }
-        writer_closer.close();
-    });
-    client.send(ServiceMsg::Ready { pid: std::process::id() });
+        client.session = Some(session);
+    }
+    let client = Arc::new(client);
+    if let Some(liveness) = &client.liveness {
+        liveness.received();
+    }
+    spawn_writer(writer, out_rx, &client);
+    if remote {
+        log(&host.instance, &format!("remote client {id} connected ({}, protocol {}, compression {})", info.name, accepted.protocol, host.compress && info.caps & CAP_COMPRESS != 0));
+    }
+    client.send(ServiceMsg::Ready8 { pid: std::process::id(), input_ack: ready_ack });
     let infos: Vec<_> = lock(&host.terms).values().map(|t| t.info()).collect();
     client.send(ServiceMsg::Terminals(infos));
     host.app().client_connected(&client);
@@ -369,7 +593,10 @@ fn serve_client(host: &Arc<Host>, pipe: Pipe) -> Result<()> {
     host.touch();
 
     let result = (|| -> Result<()> {
-        while let Some(message) = read_frame::<_, ClientMsg>(&mut reader)? {
+        while let Some(message) = reader.recv::<ClientMsg>()? {
+            if let Some(liveness) = &client.liveness {
+                liveness.received();
+            }
             host.touch();
             if let Err(error) = dispatch(host, &client, message) {
                 client.send(ServiceMsg::Error { id: None, message: format!("{error:#}") });
@@ -380,7 +607,83 @@ fn serve_client(host: &Arc<Host>, pipe: Pipe) -> Result<()> {
     lock(&host.clients).remove(&id);
     closer.close();
     host.app().client_disconnected(id);
+    if remote {
+        log(&host.instance, &format!("remote client {id} disconnected"));
+    }
     result
+}
+
+/// Writes queued messages; protocol-8 clients also get a heartbeat every 2 s.
+fn spawn_writer(mut writer: FrameWriter, out: Receiver<ServiceMsg>, client: &Arc<Client>) {
+    let heartbeat = client.liveness.as_ref().map(|l| l.interval);
+    let session = client.session.clone();
+    let closer = client.closer.clone();
+    spawn_named("client-writer", move || {
+        let mut beat = heartbeat.map(Beat::new);
+        loop {
+            let message = match &beat {
+                Some(beat) => match out.recv_deadline(beat.next()) {
+                    Ok(message) => Some(message),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => break,
+                },
+                None => match out.recv() {
+                    Ok(message) => Some(message),
+                    Err(_) => break,
+                },
+            };
+            if let Some(message) = message
+                && writer.send(&message).is_err()
+            {
+                break;
+            }
+            if beat.as_mut().is_some_and(|b| b.due(Instant::now())) {
+                let input_ack = session.as_ref().map(|s| lock(s).applied).unwrap_or(0);
+                if writer.send(&ServiceMsg::Heartbeat { input_ack }).is_err() {
+                    break;
+                }
+            }
+        }
+        closer.close();
+    });
+}
+
+/// Closes protocol-8 connections that stayed silent too long (no heartbeat).
+fn liveness_loop(host: Arc<Host>) {
+    loop {
+        std::thread::sleep(Duration::from_millis(500));
+        let clients: Vec<Arc<Client>> = lock(&host.clients).values().cloned().collect();
+        for client in clients {
+            if let Some(liveness) = &client.liveness
+                && liveness.dead()
+            {
+                log(&host.instance, &format!("client {} silent for {:.1} s; closing", client.id, liveness.silence().as_secs_f32()));
+                client.close();
+            }
+        }
+    }
+}
+
+fn subscribe(host: &Host, client: &Client, ids: Vec<String>, focused: Option<String>) {
+    let mut subs = lock(&client.subs);
+    subs.retain(|id, _| ids.contains(id));
+    for id in ids.into_iter().take(16) {
+        subs.entry(id).or_default();
+    }
+    drop(subs);
+    *lock(&client.focused) = focused;
+    let _ = host.pump.try_send(());
+}
+
+fn apply_input(host: &Host, client: &Client, id: &str, input: &Input) -> Result<()> {
+    host.last_input_client.store(client.id, Ordering::Relaxed);
+    if !matches!(input, Input::Focus(_)) {
+        host.note_active(id);
+        host.app().input_noted(id);
+    }
+    host.terminal(id)?.send_input(input)?;
+    let _ = host.pump.try_send(());
+    Ok(())
 }
 
 fn dispatch(host: &Arc<Host>, client: &Arc<Client>, message: ClientMsg) -> Result<()> {
@@ -390,24 +693,20 @@ fn dispatch(host: &Arc<Host>, client: &Arc<Client>, message: ClientMsg) -> Resul
                 client.send(ServiceMsg::Error { id: Some(id), message: format!("{error:#}") });
             }
         }
-        ClientMsg::Subscribe { ids } => {
-            let mut subs = lock(&client.subs);
-            subs.retain(|id, _| ids.contains(id));
-            for id in ids.into_iter().take(16) {
-                subs.entry(id).or_insert(Sub { generation: 0, hashes: Vec::new(), cols: 0, rows: 0, cursor: None, offset: 0 });
+        ClientMsg::Subscribe { ids } => subscribe(host, client, ids, None),
+        ClientMsg::Subscribe8 { ids, focused } => subscribe(host, client, ids, focused),
+        ClientMsg::Input { id, input } => apply_input(host, client, &id, &input)?,
+        ClientMsg::Input8 { id, input, seq } => match &client.session {
+            Some(session) => {
+                // Held while applying: a reconnection's Ready8 ack is exact.
+                let mut state = lock(session);
+                if state.admit(client.id, seq) {
+                    apply_input(host, client, &id, &input)?;
+                }
             }
-            drop(subs);
-            let _ = host.pump.try_send(());
-        }
-        ClientMsg::Input { id, input } => {
-            host.last_input_client.store(client.id, Ordering::Relaxed);
-            if !matches!(input, Input::Focus(_)) {
-                host.note_active(&id);
-                host.app().input_noted(&id);
-            }
-            host.terminal(&id)?.send_input(&input)?;
-            let _ = host.pump.try_send(());
-        }
+            None => apply_input(host, client, &id, &input)?,
+        },
+        ClientMsg::Heartbeat => {}
         ClientMsg::Resize { id, cols, rows } => {
             host.terminal(&id)?.resize(cols, rows)?;
             let _ = host.pump.try_send(());
@@ -442,75 +741,143 @@ fn dispatch(host: &Arc<Host>, client: &Arc<Client>, message: ClientMsg) -> Resul
         ClientMsg::Stats => {
             client.send(ServiceMsg::Stats(host.stats()));
         }
-        ClientMsg::Hello { .. } | ClientMsg::Auth { .. } => bail!("unexpected handshake message"),
+        ClientMsg::Hello { .. } | ClientMsg::Hello8 { .. } | ClientMsg::Auth { .. } => bail!("unexpected handshake message"),
         other => host.app().message(client, other)?,
     }
     Ok(())
 }
 
+/// Row hash over cells and hyperlink targets (indices differ between snapshots).
+fn row_hash8(row: &[Run8], links: &[String]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for run in row {
+        (run.col, &run.text, &run.clusters, run.wide, run.fg, run.bg, run.flags, run.underline).hash(&mut hasher);
+        let target = (run.link > 0).then(|| links.get(run.link as usize - 1)).flatten();
+        target.hash(&mut hasher);
+    }
+    row.len().hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Rewrites a row's link indices into `table` (targets referenced by the frame).
+fn relink(row: &mut [Run8], targets: &[String], table: &mut Vec<String>) {
+    for run in row.iter_mut().filter(|r| r.link > 0) {
+        run.link = match targets.get(run.link as usize - 1) {
+            Some(target) => match table.iter().position(|t| t == target) {
+                Some(index) => index as u32 + 1,
+                None => {
+                    table.push(target.clone());
+                    table.len() as u32
+                }
+            },
+            None => 0,
+        };
+    }
+}
+
+/// The frame bringing `sub` up to `snap` and the subscription state after it
+/// was sent, or `None` when nothing a client sees changed. `hashes` are the
+/// snapshot's row hashes.
+fn diff_frame(id: &str, sub: &Sub, snap: Snapshot, hashes: Vec<u64>) -> Option<(Frame8, Sub)> {
+    let Snapshot { cols, rows, lines, links: targets, cursor, cursor_shape, cursor_blink, display_offset, history, modes, .. } = snap;
+    let full = sub.cols != cols || sub.rows != rows || sub.hashes.len() != hashes.len();
+    let same_rows = !full && sub.hashes == hashes;
+    let same_state = sub.cursor == cursor && sub.offset == display_offset && sub.shape == cursor_shape && sub.blink == cursor_blink && sub.modes == modes;
+    if same_rows && same_state {
+        return None;
+    }
+    let mut links = Vec::new();
+    let changed: Vec<(u16, Vec<Run8>)> = lines
+        .into_iter()
+        .enumerate()
+        .filter(|(y, _)| full || sub.hashes[*y] != hashes[*y])
+        .map(|(y, mut row)| {
+            relink(&mut row, &targets, &mut links);
+            (y as u16, row)
+        })
+        .collect();
+    let next = Sub {
+        generation: sub.generation,
+        hashes,
+        cols,
+        rows,
+        cursor,
+        offset: display_offset,
+        shape: cursor_shape,
+        blink: cursor_blink,
+        modes,
+        sent_at: sub.sent_at,
+    };
+    let frame = Frame8 { id: id.to_owned(), cols, rows, full, changed, cursor, cursor_shape, cursor_blink, display_offset, history, modes, links };
+    Some((frame, next))
+}
+
 fn pump(host: Arc<Host>, wake: Receiver<()>) {
     let mut next_allowed = Instant::now();
+    // When a coalesced (remote) tile may get its next frame.
+    let mut due: Option<Instant> = None;
     loop {
-        let _ = wake.recv_timeout(Duration::from_millis(50));
+        let wait = due.map(|d| d.saturating_duration_since(Instant::now())).unwrap_or(PUMP_POLL).min(PUMP_POLL);
+        let _ = wake.recv_timeout(wait);
         let now = Instant::now();
         if now < next_allowed {
             std::thread::sleep(next_allowed - now);
         }
+        due = None;
         let clients: Vec<Arc<Client>> = lock(&host.clients).values().cloned().collect();
         for client in clients {
-            // Backpressure: a slow client gets fewer, newer frames instead of a growing queue.
-            if client.out.len() > CLIENT_QUEUE / 2 {
-                continue;
-            }
-            let mut subs = lock(&client.subs);
-            for (id, sub) in subs.iter_mut() {
-                let Some(terminal) = lock(&host.terms).get(id).cloned() else { continue };
-                let generation = terminal.generation();
-                if generation == sub.generation {
-                    continue;
-                }
-                let Some(snap) = terminal.snapshot() else { continue };
-                let lines = crate::term::rows_v7(&snap);
-                let hashes: Vec<u64> = lines.iter().map(|runs| row_hash(runs)).collect();
-                let full = sub.cols != snap.cols || sub.rows != snap.rows || sub.hashes.len() != hashes.len();
-                let changed: Vec<(u16, Vec<crate::protocol::Run>)> = lines
-                    .into_iter()
-                    .enumerate()
-                    .filter(|(y, _)| full || sub.hashes[*y] != hashes[*y])
-                    .map(|(y, runs)| (y as u16, runs))
-                    .collect();
-                if !full && changed.is_empty() && sub.cursor == snap.cursor && sub.offset == snap.display_offset {
-                    sub.generation = generation;
-                    continue;
-                }
-                let frame = Frame {
-                    id: id.clone(),
-                    cols: snap.cols,
-                    rows: snap.rows,
-                    full,
-                    changed,
-                    cursor: snap.cursor,
-                    display_offset: snap.display_offset,
-                    history: snap.history,
-                };
-                match client.out.try_send(ServiceMsg::Frame(frame)) {
-                    Ok(()) => {
-                        host.frames.fetch_add(1, Ordering::Relaxed);
-                        *sub = Sub {
-                            generation,
-                            hashes,
-                            cols: snap.cols,
-                            rows: snap.rows,
-                            cursor: snap.cursor,
-                            offset: snap.display_offset,
-                        };
-                    }
-                    Err(_) => break,
-                }
+            if let Some(at) = pump_client(&host, &client) {
+                due = Some(due.map_or(at, |d| d.min(at)));
             }
         }
         next_allowed = Instant::now() + FRAME_INTERVAL;
     }
+}
+
+/// Sends one client the frames its subscriptions need. Never holds a lock
+/// while snapshotting a terminal. Returns when a coalesced tile is due.
+fn pump_client(host: &Host, client: &Client) -> Option<Instant> {
+    // Backpressure: a slow client gets fewer, newer frames instead of a growing queue.
+    if client.out.len() > CLIENT_QUEUE / 2 {
+        return None;
+    }
+    let focused = lock(&client.focused).clone();
+    let wanted: Vec<(String, u64, Option<Instant>)> = lock(&client.subs).iter().map(|(id, s)| (id.clone(), s.generation, s.sent_at)).collect();
+    let mut due: Option<Instant> = None;
+    for (id, seen, sent_at) in wanted {
+        let terminal = lock(&host.terms).get(&id).cloned();
+        let Some(terminal) = terminal else { continue };
+        let generation = terminal.generation();
+        if generation == seen {
+            continue;
+        }
+        if client.remote
+            && let Some(at) = sent_at
+        {
+            let interval = if focused.as_deref() == Some(id.as_str()) { FOCUSED_INTERVAL } else { BACKGROUND_INTERVAL };
+            let ready = at + interval;
+            if Instant::now() < ready {
+                due = Some(due.map_or(ready, |d| d.min(ready)));
+                continue;
+            }
+        }
+        let Some(snap) = terminal.snapshot() else { continue };
+        let hashes: Vec<u64> = snap.lines.iter().map(|row| row_hash8(row, &snap.links)).collect();
+        let mut subs = lock(&client.subs);
+        // Unsubscribed while we took the snapshot.
+        let Some(sub) = subs.get_mut(&id) else { continue };
+        let Some((frame, next)) = diff_frame(&id, sub, snap, hashes) else {
+            sub.generation = generation;
+            continue;
+        };
+        // Not queued (full or gone): the client keeps what it had; retried next pass.
+        if client.try_send(ServiceMsg::Frame8(frame)).is_err() {
+            break;
+        }
+        host.frames.fetch_add(1, Ordering::Relaxed);
+        *sub = Sub { generation, sent_at: Some(Instant::now()), ..next };
+    }
+    due
 }
 
 /// Keeps the session you type in responsive on a busy machine: its whole
@@ -565,7 +932,9 @@ fn priority_loop(host: Arc<Host>, wake: Receiver<()>) {
 
 fn exit_loop(host: Arc<Host>, exited: Receiver<String>) {
     for id in exited {
-        if let Some(terminal) = lock(&host.terms).get(&id).cloned() {
+        // Not holding `terms` while broadcasting (lock order: clients before terms).
+        let terminal = lock(&host.terms).get(&id).cloned();
+        if let Some(terminal) = terminal {
             log(&host.instance, &format!("terminal {id} exited with {:?}", *lock(&terminal.exit_code)));
             host.broadcast(ServiceMsg::Terminals(vec![terminal.info()]));
         }
@@ -593,7 +962,8 @@ fn change_loop(host: Arc<Host>, changed: Receiver<String>) {
 fn clipboard_loop(host: Arc<Host>, clipboard: Receiver<String>) {
     for text in clipboard {
         let target = host.last_input_client.load(Ordering::Relaxed);
-        if let Some(client) = lock(&host.clients).get(&target) {
+        let client = lock(&host.clients).get(&target).cloned();
+        if let Some(client) = client {
             client.send(ServiceMsg::Clipboard(text));
         }
     }
@@ -606,8 +976,104 @@ fn idle_loop(host: Arc<Host>) {
         let clients = !lock(&host.clients).is_empty();
         if !alive && !clients && lock(&host.last_activity).elapsed() >= IDLE_EXIT && !host.app().has_work() {
             log(&host.instance, "idle with no clients or terminals; exiting");
-            let _ = std::fs::remove_file(host.instance.token_path());
+            host.remove_published_files();
             std::process::exit(0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::{SERVICE_V7_VARIANTS, TermInfo};
+
+    fn client(protocol: u32, caps: u32) -> (Client, Receiver<ServiceMsg>) {
+        let (tx, rx) = bounded(64);
+        (Client::new(1, protocol, false, caps, tx, Closer::new(|| {})), rx)
+    }
+
+    fn snapshot(rows: &[&str], link_row: Option<usize>) -> Snapshot {
+        let lines = rows
+            .iter()
+            .enumerate()
+            .map(|(y, text)| vec![Run8 { col: 0, text: (*text).into(), link: if link_row == Some(y) { 2 } else { 0 }, ..Default::default() }])
+            .collect();
+        Snapshot {
+            cols: 10,
+            rows: rows.len() as u16,
+            lines,
+            links: vec!["https://unused".into(), "https://used".into()],
+            cursor: Some((0, 0)),
+            ..Default::default()
+        }
+    }
+
+    fn frame_of(sub: &mut Sub, snap: Snapshot) -> Option<Frame8> {
+        let hashes = snap.lines.iter().map(|row| row_hash8(row, &snap.links)).collect();
+        let (frame, next) = diff_frame("t", sub, snap, hashes)?;
+        *sub = next;
+        Some(frame)
+    }
+
+    #[test]
+    fn protocol7_clients_are_never_sent_protocol8_messages() {
+        let (old, rx) = client(7, CAP_FRAME8);
+        let frame = frame_of(&mut Sub::default(), snapshot(&["a", "b"], Some(1))).unwrap();
+        for message in [
+            ServiceMsg::Ready8 { pid: 1, input_ack: 0 },
+            ServiceMsg::Terminals(vec![TermInfo::default()]),
+            ServiceMsg::Frame8(frame.clone()),
+            ServiceMsg::Heartbeat { input_ack: 3 },
+            ServiceMsg::Clipboard("x".into()),
+        ] {
+            assert!(old.send(message));
+        }
+        let received: Vec<ServiceMsg> = rx.try_iter().collect();
+        assert_eq!(received.len(), 4, "the heartbeat is dropped");
+        for message in &received {
+            assert!(postcard::to_stdvec(message).unwrap()[0] < SERVICE_V7_VARIANTS, "protocol-7 client got {message:?}");
+        }
+        assert!(matches!(&received[0], ServiceMsg::Ready { .. }));
+        let ServiceMsg::Frame(v7) = &received[2] else { panic!("protocol-7 frame") };
+        assert_eq!(v7.changed[1].1[0].link.as_deref(), Some("https://used"));
+        let (new, rx) = client(8, CAP_FRAME8);
+        new.send(ServiceMsg::Frame8(frame));
+        new.send(ServiceMsg::Heartbeat { input_ack: 3 });
+        assert!(matches!(rx.try_recv(), Ok(ServiceMsg::Frame8(_))));
+        assert!(matches!(rx.try_recv(), Ok(ServiceMsg::Heartbeat { input_ack: 3 })));
+    }
+
+    #[test]
+    fn frames_carry_changed_rows_and_only_the_links_they_reference() {
+        let mut sub = Sub::default();
+        let first = frame_of(&mut sub, snapshot(&["a", "b", "c"], Some(1))).unwrap();
+        assert!(first.full);
+        assert_eq!(first.changed.len(), 3);
+        assert_eq!(first.links, vec!["https://used".to_owned()], "unreferenced targets are left out");
+        assert_eq!(first.changed[1].1[0].link, 1);
+        assert!(frame_of(&mut sub, snapshot(&["a", "b", "c"], Some(1))).is_none(), "nothing changed");
+        let second = frame_of(&mut sub, snapshot(&["a", "b", "X"], Some(1))).unwrap();
+        assert!(!second.full);
+        assert_eq!(second.changed.iter().map(|(y, _)| *y).collect::<Vec<_>>(), vec![2]);
+        assert!(second.links.is_empty());
+        let mut moved = snapshot(&["a", "b", "X"], Some(1));
+        moved.cursor_shape = protocol::CURSOR_BAR;
+        let third = frame_of(&mut sub, moved).unwrap();
+        assert!(third.changed.is_empty() && third.cursor_shape == protocol::CURSOR_BAR, "cursor shape alone is a frame");
+        let resized = frame_of(&mut sub, snapshot(&["a", "b"], None)).unwrap();
+        assert!(resized.full);
+    }
+
+    #[test]
+    fn input_is_applied_once_and_only_from_the_newest_connection() {
+        let mut session = InputSession { applied: 0, owner: 1, seen: Instant::now() };
+        assert!(session.admit(1, 1));
+        assert!(session.admit(1, 2));
+        assert!(!session.admit(1, 2), "a duplicate seq is dropped");
+        assert!(!session.admit(1, 1));
+        session.owner = 2;
+        assert!(!session.admit(1, 3), "the replaced connection no longer applies input");
+        assert!(session.admit(2, 5));
+        assert_eq!(session.applied, 5);
     }
 }

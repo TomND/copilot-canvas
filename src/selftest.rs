@@ -393,7 +393,9 @@ fn step(name: &str) {
     println!("  · {name}");
 }
 
-pub fn run() -> Result<()> {
+/// `remote`: `Some("loopback")` runs the same scenario with the client
+/// connected over TCP (`--remote loopback`).
+pub fn run(remote: Option<&str>) -> Result<()> {
     let root = std::env::temp_dir().join(format!("copilot-canvas-selftest-{}", uuid::Uuid::new_v4()));
     let home = root.join("home");
     let sessions = root.join("sessions");
@@ -401,7 +403,7 @@ pub fn run() -> Result<()> {
     std::fs::create_dir_all(&sessions)?;
     std::fs::create_dir_all(&work)?;
     let instance = Instance::new(Some(format!("selftest{}", std::process::id())), Some(home), Some(sessions))?;
-    let result = scenario(&instance, &work);
+    let result = scenario(&instance, &work, remote);
     // Always stop the isolated test service and its shells.
     if let Ok(conn) = crate::client::conn::try_connect(&instance) {
         let _ = conn.tx.send(crate::protocol::ClientMsg::Shutdown);
@@ -421,10 +423,10 @@ pub fn run() -> Result<()> {
     result
 }
 
-fn scenario(instance: &Instance, work: &Path) -> Result<()> {
+fn scenario(instance: &Instance, work: &Path, remote: Option<&str>) -> Result<()> {
     let canvas = instance.home.join("demo-canvas.json");
     let exe = std::env::current_exe()?;
-    let args: Vec<String> = vec![
+    let mut args: Vec<String> = vec![
         "--demo".into(),
         "--instance".into(),
         instance.name.clone(),
@@ -435,7 +437,11 @@ fn scenario(instance: &Instance, work: &Path) -> Result<()> {
         "--cwd".into(),
         work.to_string_lossy().into_owned(),
     ];
-    println!("Copilot Canvas self-test (demo shells only; isolated data in {})", instance.home.display());
+    if let Some(remote) = remote {
+        args.extend(["--remote".into(), remote.to_owned()]);
+    }
+    let over = remote.map(|r| format!(", client over --remote {r}")).unwrap_or_default();
+    println!("Copilot Canvas self-test (demo shells only; isolated data in {}{over})", instance.home.display());
     let copilot_home = instance.home.join("copilot-home");
     std::fs::create_dir_all(&copilot_home)?;
     let automations_db = copilot_home.join("data.db");
@@ -446,6 +452,12 @@ fn scenario(instance: &Instance, work: &Path) -> Result<()> {
     step("client starts and auto-starts the terminal service");
     ui.wait("the canvas", Duration::from_secs(20), |t| t.contains("Copilot Canvas") && t.contains("Build session canvas"))?;
     let startup = started.elapsed();
+    if remote.is_some() {
+        // The client really talks TCP: the service published its port and logged the connection.
+        anyhow::ensure!(crate::client::conn::listening_port(instance).is_some(), "the service publishes its TCP port");
+        let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
+        anyhow::ensure!(log.contains("connected (tui, protocol 8"), "the service saw a remote TUI client:\n{log}");
+    }
     if std::env::var_os("CANVAS_SELFTEST_DEBUG").is_some() {
         println!("terminal modes requested by the client console: {}", ui.mode());
         let (hx, hy) = ui.find(" ? ").context("help button")?;

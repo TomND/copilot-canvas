@@ -29,6 +29,8 @@ pub struct Options {
     pub perf: bool,
     pub canvas: Option<PathBuf>,
     pub cwd: String,
+    /// `--remote`: `loopback` or `HOST:PORT` (TCP); `None`: the local pipe.
+    pub remote: Option<String>,
 }
 
 /// ratatui renders into this buffer; the bytes go to the console on the
@@ -141,13 +143,31 @@ pub fn run(options: Options) -> Result<()> {
         None if options.demo => demo_doc(&options.cwd),
         None => doc::migrate_v1(&home.join("layout.json")).unwrap_or_default(),
     };
-    let mut conn = conn::connect(&options.instance, true)?;
-    let outdated = conn.service_build != canvas_core::paths::build_id();
+    let target = conn::ConnTarget::parse(options.remote.as_deref(), &options.instance)?;
+    let conn_options = conn::ConnOptions {
+        start: true,
+        compress: canvas_core::settings::Settings::load(&home).compress(),
+        name: "tui".into(),
+        ..Default::default()
+    };
+    let session = conn::ClientSession::new();
+    let mut conn = conn::open(&target, &conn_options, &session)?;
+    let outdated = !target.is_remote() && conn.service_build != canvas_core::paths::build_id();
     // Terminals that were running in a replaced service; they are resumed.
     let mut resume = Vec::new();
-    if conn.protocol_mismatch {
+    if target.is_remote() {
+        // Remote clients never restart or upgrade the service.
+        if conn.protocol_mismatch {
+            bail!(
+                "{} speaks protocol {} and this client {}; update this client",
+                target.describe(),
+                conn.protocol,
+                canvas_core::protocol::PROTOCOL
+            );
+        }
+    } else if conn.protocol_mismatch {
         (conn, resume) = upgrade_service(&options.instance, conn, true)?;
-    } else if conn.service_build != canvas_core::paths::build_id() {
+    } else if outdated {
         // Same protocol, older build: terminal fixes only apply after a restart.
         (conn, resume) = upgrade_service(&options.instance, conn, false)?;
     }
@@ -205,6 +225,8 @@ pub fn run(options: Options) -> Result<()> {
         let mut service_rx = conn.rx.clone();
         let mut app = App::new(conn, store, doc, options.demo, options.cwd.clone(), app_tx, home.clone());
         app.instance = Some(options.instance.clone());
+        app.target = Some(target);
+        app.conn_options = conn_options;
         if !resume.is_empty() {
             let count = app.resume_terminals(&resume);
             app.notify(format!("Terminal service updated; resumed {count} session(s)."), false);
@@ -330,7 +352,7 @@ pub fn run(options: Options) -> Result<()> {
                 recv(service_rx) -> message => match message {
                     Ok(message) => {
                         if let Some(perf) = &mut app.perf
-                            && matches!(message, canvas_core::protocol::ServiceMsg::Frame(_))
+                            && matches!(message, canvas_core::protocol::ServiceMsg::Frame(_) | canvas_core::protocol::ServiceMsg::Frame8(_))
                         {
                             perf.pending.get_or_insert_with(Instant::now);
                         }
@@ -348,9 +370,9 @@ pub fn run(options: Options) -> Result<()> {
                     }
                     Err(_) => {
                         service_rx = never();
+                        // Reconnects in the background; input is blocked meanwhile.
                         if app.restarting.is_none() {
-                            app.connected = false;
-                            app.notify("The terminal service disconnected. Restart Copilot Canvas to reconnect; your canvas is saved.", true);
+                            app.connection_lost();
                         }
                     }
                 },
