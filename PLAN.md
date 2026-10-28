@@ -13,6 +13,9 @@ It supersedes `docs/GPU-CANVAS-PLAN.md`.
 
 ## 0. Implementation status (2026-10-28)
 
+Published at https://github.com/TomND/copilot-canvas (CI: GitHub Actions, a cached
+pinned-Ghostty job and the test matrix).
+
 All phases are implemented on `main` of the new repository. Besides GitHub
 Copilot CLI, the canvas now also runs **OpenCode** and **Claude Code** sessions
 (agent providers in `canvas-agents/src/agents`); it defaults to the first
@@ -37,11 +40,17 @@ Not done in this session, because they need time or a second machine:
 - **A day on a real Dev Tunnel** (Phase 1 exit criterion): the devtunnel CLI is
   installed but signed out here; everything was tested with a stand-in that
   forwards a port (docs/REMOTE.md has the manual checklist and commands).
-- **The 48 h remote soak** (Phase 6): 20-minute soaks ran for both clients;
-  `copilot-canvas selftest --remote soak --minutes 2880` runs the long one.
+- **The 48 h remote soak** (Phase 6): 20-minute soaks passed for both clients;
+  the 48 h run with the GUI client started on 2026-10-28 11:46 (report:
+  `%TEMP%\cc-soak48\soak-gui-48h.json`; after 2 h, 0 keystrokes lost or
+  doubled, reconnects ≤ 1.54 s, flat memory and handles).
 - **Real-Copilot probes**: Copilot CLI is not installed on the development
   machine; the Copilot provider keeps the original command lines (unit-tested)
   and `selftest agent --agent copilot` runs them where Copilot is installed.
+  OpenCode was verified end to end through the canvas with a free model
+  (`selftest agent --agent opencode --prompt`: re-keying, status, needs-you,
+  subagents, wheel, push detection, resume, passive runs; docs/AGENTS.md);
+  Claude Code was launched and stopped through the canvas, never prompted.
 
 ## 1. Goals and non-goals
 

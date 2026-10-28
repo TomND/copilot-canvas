@@ -472,9 +472,9 @@ cargo test                            unit tests
 - Windows only (ConPTY, named pipes, job objects).
 - Stopping a session sends the agent Ctrl+D (twice), then Ctrl+C, and ends its
   process tree after 5 s; a session the canvas stopped always shows as stopped.
-  OpenCode 1.19 can hang when asked to quit while one of its own background
-  requests is pending (a model-list refresh at start-up, an MCP server it keeps
-  reconnecting to), so stopping such a session takes those 5 s.
+  OpenCode 1.19 sometimes quits its screen but leaves its process running (on a
+  busy machine, or while one of its own background requests is pending); the
+  canvas ends such a process 3 s after its screen closed.
 - OpenCode names a session on its first prompt: the box learns that `ses_` id
   within a few seconds and follows it from then on; a TUI that starts another
   session (`/new`) keeps the box on its first one. OpenCode sessions open in an

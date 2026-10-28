@@ -18,9 +18,9 @@ jobs:
   ghostty:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: target/ghostty
           key: ghostty-${{ hashFiles('crates/ghostty-vt-sys/vendor/CHECKSUMS.sha256') }}
@@ -36,7 +36,7 @@ jobs:
       - name: cargo xtask build-ghostty
         if: steps.cache.outputs.cache-hit != 'true'
         run: cargo xtask build-ghostty
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ghostty
           path: target/ghostty
@@ -45,8 +45,8 @@ jobs:
     needs: ghostty
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: ghostty
           path: target/ghostty
@@ -86,7 +86,7 @@ jobs:
         run: target\release\copilot-canvas.exe selftest --client gui --golden
       - name: keep golden diffs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: golden-diffs
           path: |
