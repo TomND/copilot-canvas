@@ -15,6 +15,7 @@ pub mod demo;
 pub mod dialogs;
 pub mod events;
 pub mod factory_client;
+pub mod files;
 pub mod input;
 pub mod links;
 pub mod modals;

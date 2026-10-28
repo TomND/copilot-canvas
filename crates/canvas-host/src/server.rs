@@ -24,11 +24,11 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded, unbounded};
 
-use crate::emulator::{Engine, Snapshot};
+use crate::emulator::{Engine, Snapshot, SnapshotImage};
 use crate::paths::{Instance, build_id, now_ms};
 use crate::pipe::{Pipe, PipeServer};
-use crate::protocol::{self, CAP_COMPRESS, CAP_FRAME8, ClientMsg, Frame8, Input, LaunchKind, Run8, ServiceMsg, ServiceStats};
-use crate::term::{Hooks, Spawn, Terminal, lock};
+use crate::protocol::{self, CAP_COMPRESS, CAP_IMAGES, ClientMsg, Frame8, IMAGE_PNG, Input, LaunchKind, Placement, Run8, ServiceMsg, ServiceStats};
+use crate::term::{Hooks, Notice, Spawn, Terminal, lock};
 use canvas_common::wire::{Beat, Closer, FrameReader, FrameWriter, Liveness};
 use canvas_common::{handshake, tcp};
 
@@ -93,6 +93,10 @@ struct Sub {
     modes: u32,
     /// When the last frame went out (remote frames are coalesced).
     sent_at: Option<Instant>,
+    /// Image placements last sent (CAP_IMAGES).
+    placements: Vec<Placement>,
+    /// Images of the current placements: id -> (generation, delivered).
+    images: HashMap<u32, (u64, bool)>,
 }
 
 /// Keyboard input applied for one client session; outlives its connections.
@@ -124,8 +128,8 @@ pub struct Client {
     pub protocol: u32,
     /// Connected over TCP: frames are coalesced per tile.
     pub remote: bool,
-    /// Reads `Frame8` (else protocol-7 frames).
-    frame8: bool,
+    /// `CAP_*` bits from the handshake.
+    caps: u32,
     out: Sender<ServiceMsg>,
     subs: Mutex<HashMap<String, Sub>>,
     /// The focused tile (`Subscribe8`).
@@ -141,7 +145,7 @@ impl Client {
             id,
             protocol,
             remote,
-            frame8: caps & CAP_FRAME8 != 0,
+            caps,
             out,
             subs: Mutex::new(HashMap::new()),
             focused: Mutex::new(None),
@@ -157,7 +161,7 @@ impl Client {
     }
 
     fn try_send(&self, message: ServiceMsg) -> Result<(), TrySendError<ServiceMsg>> {
-        match message.shaped(self.protocol, self.frame8) {
+        match message.shaped_for(self.protocol, self.caps) {
             Some(message) => self.out.try_send(message),
             None => Ok(()),
         }
@@ -186,6 +190,8 @@ pub struct Host {
     clipboard: Sender<String>,
     /// Terminal ids whose title, progress or bell count changed.
     changed: Sender<String>,
+    /// Desktop notifications with their text.
+    notify: Sender<Notice>,
     last_input_client: AtomicU64,
     /// Terminal that most recently received keyboard input (gets CPU priority).
     active_input: Mutex<Option<String>>,
@@ -256,6 +262,7 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
     let (exited_tx, exited_rx) = unbounded::<String>();
     let (clip_tx, clip_rx) = bounded::<String>(16);
     let (changed_tx, changed_rx) = bounded::<String>(256);
+    let (notify_tx, notify_rx) = bounded::<Notice>(64);
     let (prio_tx, prio_rx) = bounded::<()>(1);
     let host = Arc::new(Host {
         instance: instance.clone(),
@@ -267,6 +274,7 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
         exited: exited_tx,
         clipboard: clip_tx,
         changed: changed_tx,
+        notify: notify_tx,
         last_input_client: AtomicU64::new(0),
         active_input: Mutex::new(None),
         priority_wake: prio_tx,
@@ -288,6 +296,7 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
     spawn_named("exits", { let h = host.clone(); move || exit_loop(h, exited_rx) });
     spawn_named("clipboard", { let h = host.clone(); move || clipboard_loop(h, clip_rx) });
     spawn_named("changes", { let h = host.clone(); move || change_loop(h, changed_rx) });
+    spawn_named("notifications", { let h = host.clone(); move || notify_loop(h, notify_rx) });
     spawn_named("idle", { let h = host.clone(); move || idle_loop(h) });
     spawn_named("priority", { let h = host.clone(); move || priority_loop(h, prio_rx) });
     spawn_named("liveness", { let h = host.clone(); move || liveness_loop(h) });
@@ -413,6 +422,7 @@ impl Host {
                 clipboard: self.clipboard.clone(),
                 bytes: self.bytes.clone(),
                 changed: self.changed.clone(),
+                notify: Some(self.notify.clone()),
             },
         )?;
         // The pid stays last: `selftest copilot` parses the number after " pid ".
@@ -832,6 +842,8 @@ fn diff_frame(id: &str, sub: &Sub, snap: Snapshot, hashes: Vec<u64>) -> Option<(
         blink: cursor_blink,
         modes,
         sent_at: sub.sent_at,
+        placements: sub.placements.clone(),
+        images: sub.images.clone(),
     };
     let frame = Frame8 { id: id.to_owned(), cols, rows, full, changed, cursor, cursor_shape, cursor_blink, display_offset, history, modes, links };
     Some((frame, next))
@@ -886,7 +898,11 @@ fn pump_client(host: &Host, client: &Client) -> Option<Instant> {
                 continue;
             }
         }
-        let Some(snap) = terminal.snapshot() else { continue };
+        let Some(mut snap) = terminal.snapshot() else { continue };
+        let images = std::mem::take(&mut snap.images);
+        if client.caps & CAP_IMAGES != 0 && !send_images(client, &terminal, &id, &images) {
+            break;
+        }
         let hashes: Vec<u64> = snap.lines.iter().map(|row| row_hash8(row, &snap.links)).collect();
         let mut subs = lock(&client.subs);
         // Unsubscribed while we took the snapshot.
@@ -903,6 +919,56 @@ fn pump_client(host: &Host, client: &Client) -> Option<Instant> {
         *sub = Sub { generation, sent_at: Some(Instant::now()), ..next };
     }
     due
+}
+
+/// Sends a `CAP_IMAGES` client the images a terminal's placements need that
+/// it does not have, then the placements when they changed. Images that
+/// cannot be sent (gone, too large) are remembered with their generation and
+/// left out of the placements. False when the client's queue is full.
+fn send_images(client: &Client, terminal: &Terminal, id: &str, images: &[SnapshotImage]) -> bool {
+    let (known, shown) = {
+        let subs = lock(&client.subs);
+        let Some(sub) = subs.get(id) else { return true };
+        (sub.images.clone(), sub.placements.clone())
+    };
+    let placements: Vec<Placement> = images.iter().map(|i| i.placement.clone()).collect();
+    let current = |i: &SnapshotImage| known.get(&i.placement.image_id).is_some_and(|(generation, _)| *generation == i.generation);
+    if placements == shown && images.iter().all(current) {
+        return true;
+    }
+    // Only images placed now are kept: the client may forget the others,
+    // and they are sent again when placed again.
+    let mut have: HashMap<u32, (u64, bool)> = HashMap::new();
+    for image in images {
+        let image_id = image.placement.image_id;
+        if have.contains_key(&image_id) {
+            continue;
+        }
+        if current(image) {
+            have.insert(image_id, known[&image_id]);
+            continue;
+        }
+        let delivered = match terminal.image_png(image_id, image.generation) {
+            Some(encoded) => {
+                let message = ServiceMsg::Image { term: id.to_owned(), image_id, width: encoded.width, height: encoded.height, rgba_or_png: encoded.png.to_vec(), format: IMAGE_PNG };
+                if client.try_send(message).is_err() {
+                    return false;
+                }
+                true
+            }
+            None => false,
+        };
+        have.insert(image_id, (image.generation, delivered));
+    }
+    let visible: Vec<Placement> = placements.iter().filter(|p| have.get(&p.image_id).is_some_and(|(_, ok)| *ok)).cloned().collect();
+    if client.try_send(ServiceMsg::Placements { term: id.to_owned(), placements: visible }).is_err() {
+        return false;
+    }
+    if let Some(sub) = lock(&client.subs).get_mut(id) {
+        sub.images = have;
+        sub.placements = placements;
+    }
+    true
 }
 
 /// Keeps the session you type in responsive on a busy machine: its whole
@@ -974,6 +1040,13 @@ fn exit_loop(host: Arc<Host>, exited: Receiver<String>) {
     }
 }
 
+/// Delivers programs' desktop notifications to the clients that show them.
+fn notify_loop(host: Arc<Host>, notices: Receiver<Notice>) {
+    for (term, title, body) in notices {
+        host.broadcast(ServiceMsg::Notification { term, title, body });
+    }
+}
+
 /// Resends terminal info when a title, progress state or bell changes;
 /// bursts (a title per keystroke, progress toggles) are coalesced.
 fn change_loop(host: Arc<Host>, changed: Receiver<String>) {
@@ -1018,7 +1091,7 @@ fn idle_loop(host: Arc<Host>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{SERVICE_V7_VARIANTS, TermInfo};
+    use crate::protocol::{CAP_FRAME8, SERVICE_V7_VARIANTS, TermInfo};
 
     fn client(protocol: u32, caps: u32) -> (Client, Receiver<ServiceMsg>) {
         let (tx, rx) = bounded(64);

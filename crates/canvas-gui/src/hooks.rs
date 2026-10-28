@@ -1,8 +1,10 @@
 //! `--test-hooks`: a local, owner-only named pipe
 //! (`\\.\pipe\copilot-canvas-gui-test-<pid>`) taking one JSON command per
 //! line and answering one JSON line each. Commands inject input (`key`,
-//! `text`, `paste`, `mouse`, `wheel`), read the UI (`screen`, `tree`,
-//! `size`, `perf`), render offscreen (`png`) and `quit`.
+//! `text`, `paste`, `mouse`, `wheel`, `drop`), read the UI (`screen`, `tree`,
+//! `size`, `perf`, `platform`), render offscreen (`png`), manage windows
+//! (`new_window`, `windows`, `close_window`; others take `"window": n`), set
+//! the stand-in clipboard (`clipboard`) and `quit`. See `docs/GUI.md` §3.
 
 use std::io::{BufRead, BufReader, Write};
 
@@ -115,7 +117,7 @@ pub fn tree(app: &canvas_core::app::App, view: &View, chrome: &Buffer) -> Value 
             "scale": model.scale,
             "origin": [model.origin.0, model.origin.1],
             "boxes": model.boxes.iter().map(|b| json!({
-                "id": b.id, "name": b.name, "status": b.status.label(), "line": b.line, "rect": screen(b.rect),
+                "id": b.id, "name": b.name, "prefix": b.prefix, "status": b.status.label(), "line": b.line, "rect": screen(b.rect),
                 "selected": b.selected, "attention": b.attention.is_some(), "border": format!("{:?}", b.border), "loop": b.every,
             })).collect::<Vec<_>>(),
             "groups": model.groups.iter().map(|g| json!({ "id": g.id, "name": g.name, "rect": screen(g.rect), "selected": g.selected, "members": g.members })).collect::<Vec<_>>(),
@@ -137,7 +139,18 @@ pub fn tree(app: &canvas_core::app::App, view: &View, chrome: &Buffer) -> Value 
         "connected": app.connected,
         "hits": hits,
         "canvas": canvas,
-        "tiles": view.tiles.iter().map(|t| json!({ "id": t.id, "outer": rect(t.outer), "inner": rect(t.inner), "focused": t.focused, "alive": t.alive, "title": t.title })).collect::<Vec<_>>(),
+        "tiles": view.tiles.iter().map(|t| {
+            // Kitty images as screen cell rects (x, y, columns, rows).
+            let images: Vec<Value> = app.views.get(&t.id).map(|v| v.placements.iter().map(|p| json!({
+                "id": p.image_id,
+                "rect": [t.inner.x as i32 + p.col, t.inner.y as i32 + p.row, p.cols, p.rows],
+                "z": p.z,
+                "loaded": v.images.contains_key(&p.image_id),
+            })).collect()).unwrap_or_default();
+            json!({ "id": t.id, "outer": rect(t.outer), "inner": rect(t.inner), "focused": t.focused, "alive": t.alive, "title": t.title, "tint": t.tint, "images": images })
+        }).collect::<Vec<_>>(),
+        "term_selection": app.term_select.as_ref().map(|s| json!({ "id": s.id, "anchor": [s.anchor.0, s.anchor.1], "head": [s.head.0, s.head.1] })),
+        "notice": app.notice.as_ref().map(|n| json!({ "text": n.text, "error": n.error })),
         "links": app.layout.links.iter().map(|l| json!({ "target": l.target, "terminal": l.terminal, "rects": l.rects.iter().map(|r| rect(*r)).collect::<Vec<_>>() })).collect::<Vec<_>>(),
     })
 }

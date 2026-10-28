@@ -1,6 +1,10 @@
 //! The client-side model of one hosted terminal, built from L1 frames.
 
-use canvas_common::protocol::{F_ITALIC, Frame, Frame8, Run, Run8, runs_v7};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use canvas_common::protocol::{F_ITALIC, Frame, Frame8, Placement, Run, Run8, runs_v7};
 
 /// Hyperlink targets kept before the table is rebuilt from the rows.
 const MAX_LINKS: usize = 1024;
@@ -22,7 +26,31 @@ pub struct TermView {
     pub cursor_blink: bool,
     /// `MODE_*` bits.
     pub modes: u32,
+    /// Kitty graphics placements in the viewport (`ServiceMsg::Placements`).
+    pub placements: Vec<Placement>,
+    /// The images the placements show, by image id.
+    pub images: HashMap<u32, TermImage>,
 }
+
+/// One image of a terminal (`ServiceMsg::Image`).
+#[derive(Clone)]
+pub struct TermImage {
+    pub width: u32,
+    pub height: u32,
+    /// `IMAGE_PNG` or `IMAGE_RGBA` (front ends may decode PNG before it arrives here).
+    pub format: u8,
+    pub data: Arc<Vec<u8>>,
+    /// Unique per received image (texture cache key).
+    pub serial: u64,
+}
+
+impl std::fmt::Debug for TermImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TermImage({}x{}, format {}, {} bytes, #{})", self.width, self.height, self.format, self.data.len(), self.serial)
+    }
+}
+
+static IMAGE_SERIAL: AtomicU64 = AtomicU64::new(1);
 
 impl TermView {
     pub fn apply(&mut self, frame: Frame) {
@@ -77,6 +105,19 @@ impl TermView {
         self.cursor_shape = frame.cursor_shape;
         self.cursor_blink = frame.cursor_blink;
         self.modes = frame.modes;
+    }
+
+    /// An image arrived (it replaces one with the same id).
+    pub fn set_image(&mut self, id: u32, width: u32, height: u32, format: u8, data: Vec<u8>) {
+        let serial = IMAGE_SERIAL.fetch_add(1, Ordering::Relaxed);
+        self.images.insert(id, TermImage { width, height, format, data: Arc::new(data), serial });
+    }
+
+    /// The viewport's placements; images no placement shows are forgotten
+    /// (the service sends them again before they are placed again).
+    pub fn set_placements(&mut self, placements: Vec<Placement>) {
+        self.images.retain(|id, _| placements.iter().any(|p| p.image_id == *id));
+        self.placements = placements;
     }
 
     /// Drops link targets no row references any more.
@@ -276,6 +317,20 @@ mod tests {
         assert_eq!(view.links[view.rows8[1][0].link as usize - 1], "https://a");
         assert_eq!(view.lines[2][0].link.as_deref(), Some("https://a"));
         assert_eq!(view.lines[1][0].text, "PR 1");
+    }
+
+    #[test]
+    fn images_live_as_long_as_a_placement_shows_them() {
+        let mut view = TermView::default();
+        view.set_image(1, 2, 1, 0, vec![0; 8]);
+        view.set_image(2, 1, 1, 0, vec![0; 4]);
+        let serial = view.images[&1].serial;
+        view.set_placements(vec![Placement { image_id: 1, cols: 2, rows: 1, ..Default::default() }]);
+        assert_eq!(view.images.keys().copied().collect::<Vec<_>>(), [1], "image 2 is not shown: forgotten");
+        view.set_image(1, 2, 1, 0, vec![1; 8]);
+        assert_ne!(view.images[&1].serial, serial, "replaced pixels get a new serial");
+        view.set_placements(Vec::new());
+        assert!(view.images.is_empty() && view.placements.is_empty());
     }
 
     #[test]

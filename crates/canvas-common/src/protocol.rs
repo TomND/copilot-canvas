@@ -22,8 +22,18 @@ pub(crate) const MAX_FRAME: usize = 32 * 1024 * 1024;
 pub const CAP_FRAME8: u32 = 1;
 /// The client reads zstd-compressed frames on the TCP transport.
 pub const CAP_COMPRESS: u32 = 1 << 1;
-/// Reserved: the client renders Kitty graphics.
+/// The client renders Kitty graphics: it gets `ServiceMsg::Image` and
+/// `ServiceMsg::Placements` for its subscribed terminals.
 pub const CAP_IMAGES: u32 = 1 << 2;
+/// The client shows desktop notifications: it gets `ServiceMsg::Notification`.
+pub const CAP_NOTIFY: u32 = 1 << 3;
+
+/// `ServiceMsg::Image::format`: raw RGBA rows.
+pub const IMAGE_RGBA: u8 = 0;
+/// `ServiceMsg::Image::format`: a PNG file.
+pub const IMAGE_PNG: u8 = 1;
+/// Pixel size of a cell in the host's image geometry (`Placement` offsets and sizes).
+pub const HOST_CELL_PX: (u32, u32) = (8, 16);
 
 /// Who a protocol-8 client is (`Hello8`).
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
@@ -207,6 +217,43 @@ pub enum ServiceMsg {
     DocSaved { key: String, version: u64, error: Option<String> },
     /// Protocol 8: the answer to `ClientMsg::Rpc` (`canvas_model::rpc::Response` as JSON).
     RpcReply { id: u64, json: String },
+    /// Protocol 8, `CAP_IMAGES`: the pixels of one image of a terminal
+    /// (`format`: `IMAGE_PNG` or `IMAGE_RGBA`). Sent once per client and image
+    /// id before a placement uses it, and again when its pixels change or it
+    /// is placed again after no placement used it.
+    Image { term: String, image_id: u32, width: u32, height: u32, rgba_or_png: Vec<u8>, format: u8 },
+    /// Protocol 8, `CAP_IMAGES`: every image placement in a terminal's
+    /// viewport, replacing the previous list. The client may forget images
+    /// that no placement of the terminal refers to.
+    Placements { term: String, placements: Vec<Placement> },
+    /// Protocol 8, `CAP_NOTIFY`: a terminal's program sent a desktop
+    /// notification (OSC 777 or OSC 9).
+    Notification { term: String, title: String, body: String },
+}
+
+/// Where an image is drawn in a terminal's viewport (`ServiceMsg::Placements`).
+/// Offsets and sizes are pixels of the host's cell geometry ([`HOST_CELL_PX`]).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct Placement {
+    pub image_id: u32,
+    /// Top-left cell; negative when the image starts left of or above the viewport.
+    pub col: i32,
+    pub row: i32,
+    /// Cells covered.
+    pub cols: u32,
+    pub rows: u32,
+    /// Offset into the top-left cell and the drawn size (host pixels).
+    pub x_off: u32,
+    pub y_off: u32,
+    pub width: u32,
+    pub height: u32,
+    /// The part of the image to draw (image pixels).
+    pub src_x: u32,
+    pub src_y: u32,
+    pub src_w: u32,
+    pub src_h: u32,
+    /// Kitty's z-index: negative below the text, else above; lower first.
+    pub z: i32,
 }
 
 /// Index of the first `ServiceMsg` variant protocol-7 clients cannot decode.
@@ -226,11 +273,25 @@ impl ServiceMsg {
             | ServiceMsg::DocPatch { .. }
             | ServiceMsg::DocSaved { .. }
             | ServiceMsg::RpcReply { .. }
+            | ServiceMsg::Image { .. }
+            | ServiceMsg::Placements { .. }
+            | ServiceMsg::Notification { .. }
                 if protocol < 8 =>
             {
                 None
             }
             other => Some(other),
+        }
+    }
+
+    /// [`ServiceMsg::shaped`] for a client with `caps` (`CAP_*`): images go
+    /// only to clients with `CAP_IMAGES`, notifications only to clients with
+    /// `CAP_NOTIFY` (a protocol-8 client of an older build cannot decode them).
+    pub fn shaped_for(self, protocol: u32, caps: u32) -> Option<ServiceMsg> {
+        match &self {
+            ServiceMsg::Image { .. } | ServiceMsg::Placements { .. } if caps & CAP_IMAGES == 0 => None,
+            ServiceMsg::Notification { .. } if caps & CAP_NOTIFY == 0 => None,
+            _ => self.shaped(protocol, caps & CAP_FRAME8 != 0),
         }
     }
 }
@@ -688,6 +749,9 @@ pub(crate) mod tests {
             (17, ServiceMsg::DocPatch { key: "canvas-1".into(), version: 2, origin: 3, ops_json: "[]".into() }),
             (18, ServiceMsg::DocSaved { key: "canvas-1".into(), version: 2, error: Some("disk full".into()) }),
             (19, ServiceMsg::RpcReply { id: 9, json: "\"Done\"".into() }),
+            (20, sample_image()),
+            (21, sample_placements()),
+            (22, ServiceMsg::Notification { term: "t".into(), title: "Build".into(), body: "done".into() }),
         ];
         for (index, message) in service {
             let bytes = postcard::to_stdvec(&message).unwrap();
@@ -712,6 +776,9 @@ pub(crate) mod tests {
             ServiceMsg::DocPatch { key: "k".into(), version: 2, origin: 1, ops_json: "[]".into() },
             ServiceMsg::DocSaved { key: "k".into(), version: 2, error: None },
             ServiceMsg::RpcReply { id: 1, json: "\"Done\"".into() },
+            sample_image(),
+            sample_placements(),
+            ServiceMsg::Notification { term: "t".into(), title: "T".into(), body: "B".into() },
         ];
         for message in all.clone() {
             let Some(shaped) = message.shaped(7, true) else { continue };
@@ -730,5 +797,31 @@ pub(crate) mod tests {
         assert!(matches!(ServiceMsg::Frame8(sample_frame8()).shaped(8, false), Some(ServiceMsg::Frame(_))));
         assert!(matches!(ServiceMsg::Frame8(sample_frame8()).shaped(8, true), Some(ServiceMsg::Frame8(_))));
         assert_eq!(ServiceMsg::Heartbeat { input_ack: 1 }.shaped(8, true), Some(ServiceMsg::Heartbeat { input_ack: 1 }));
+    }
+
+    fn sample_image() -> ServiceMsg {
+        ServiceMsg::Image { term: "t".into(), image_id: 3, width: 2, height: 1, rgba_or_png: vec![1, 2, 3, 255, 4, 5, 6, 255], format: IMAGE_RGBA }
+    }
+
+    fn sample_placements() -> ServiceMsg {
+        let placement = Placement { image_id: 3, col: 1, row: -2, cols: 8, rows: 4, width: 64, height: 64, src_w: 2, src_h: 1, z: -1, ..Default::default() };
+        ServiceMsg::Placements { term: "t".into(), placements: vec![placement] }
+    }
+
+    #[test]
+    fn images_and_notifications_only_reach_clients_that_asked_for_them() {
+        let v8 = CAP_FRAME8 | CAP_COMPRESS;
+        for message in [sample_image(), sample_placements()] {
+            assert_eq!(message.clone().shaped_for(8, v8), None, "no CAP_IMAGES");
+            assert_eq!(message.clone().shaped_for(8, v8 | CAP_NOTIFY), None);
+            assert_eq!(message.clone().shaped_for(7, v8 | CAP_IMAGES), None, "protocol 7");
+            assert_eq!(message.clone().shaped_for(8, v8 | CAP_IMAGES).as_ref(), Some(&message));
+        }
+        let note = ServiceMsg::Notification { term: "t".into(), title: "T".into(), body: "B".into() };
+        assert_eq!(note.clone().shaped_for(8, v8 | CAP_IMAGES), None);
+        assert_eq!(note.clone().shaped_for(8, v8 | CAP_NOTIFY).as_ref(), Some(&note));
+        // Everything else is shaped as before.
+        assert!(matches!(ServiceMsg::Frame8(sample_frame8()).shaped_for(8, 0), Some(ServiceMsg::Frame(_))));
+        assert!(matches!(ServiceMsg::Frame8(sample_frame8()).shaped_for(8, CAP_FRAME8), Some(ServiceMsg::Frame8(_))));
     }
 }

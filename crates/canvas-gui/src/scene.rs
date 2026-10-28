@@ -1,5 +1,8 @@
-//! A frame as layers of quads and text, in drawing order. Each layer draws
-//! its `under` quads, then its text, then its `over` quads.
+//! A frame as layers of quads, images and text, in drawing order. Each layer
+//! draws its `under` quads, its images below the text, its text, its images
+//! above the text, then its `over` quads.
+
+use std::sync::Arc;
 
 use crate::quads::{Quad, Rgba};
 use crate::text::{Fonts, ShapeCache, Spec};
@@ -34,10 +37,30 @@ pub struct TextItem {
     pub scale: f32,
 }
 
+/// An image drawn as a textured rectangle.
+#[derive(Clone, Debug)]
+pub struct ImageItem {
+    /// Texture cache key: unique per image content.
+    pub key: u64,
+    pub width: u32,
+    pub height: u32,
+    /// Straight RGBA rows.
+    pub rgba: Arc<Vec<u8>>,
+    /// Destination x, y, w, h (physical px).
+    pub rect: [f32; 4],
+    /// The part of the image drawn: u0, v0, u1, v1 (0..1).
+    pub uv: [f32; 4],
+    pub clip: [f32; 4],
+}
+
 #[derive(Default)]
 pub struct Layer {
     pub under: Vec<Quad>,
+    /// Images below the layer's text (Kitty z < 0).
+    pub images_under: Vec<ImageItem>,
     pub texts: Vec<TextItem>,
+    /// Images above the text.
+    pub images_over: Vec<ImageItem>,
     pub over: Vec<Quad>,
 }
 
@@ -72,6 +95,12 @@ impl Painter<'_> {
 
     pub fn over(&mut self, layer: usize, quad: Quad) {
         self.scene.layers[layer].over.push(quad);
+    }
+
+    /// An image below (`above_text`: above) the layer's text.
+    pub fn image(&mut self, layer: usize, above_text: bool, item: ImageItem) {
+        let layer = &mut self.scene.layers[layer];
+        if above_text { layer.images_over.push(item) } else { layer.images_under.push(item) }
     }
 
     /// Shapes text without placing it; returns its key and width (px).

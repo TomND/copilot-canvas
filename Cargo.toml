@@ -67,6 +67,7 @@ glyphon = "0.12.0"
 pollster = "0.4.0"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 png = "0.18.1"
+base64 = "0.22.1"
 
 [package]
 name = "copilot-canvas"
@@ -94,13 +95,16 @@ canvas-core.workspace = true
 canvas-tui.workspace = true
 canvas-corpus.workspace = true
 anyhow.workspace = true
+base64.workspace = true
 crossbeam-channel.workspace = true
 dirs.workspace = true
+png.workspace = true
 portable-pty.workspace = true
 postcard.workspace = true
 ratatui.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+windows-sys = { workspace = true, features = ["Win32_System_Console"] }
 
 [profile.dev.package."*"]
 opt-level = 2

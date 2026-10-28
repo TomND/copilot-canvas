@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use glyphon::{Cache, ColorMode, Resolution, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport};
 use winit::window::Window;
 
+use crate::images::ImagePipeline;
 use crate::quads::QuadPipeline;
 use crate::scene::{LAYERS, Scene};
 use crate::text::{Fonts, ShapeCache};
@@ -22,6 +23,7 @@ pub struct Gpu {
     queue: wgpu::Queue,
     format: wgpu::TextureFormat,
     quads: QuadPipeline,
+    pub images: ImagePipeline,
     viewport: Viewport,
     atlas: TextAtlas,
     text: Vec<TextRenderer>,
@@ -92,14 +94,14 @@ impl Gpu {
         let mut atlas = TextAtlas::with_color_mode(&device, &queue, &cache, format, ColorMode::Web);
         let text = (0..LAYERS).map(|_| TextRenderer::new(&mut atlas, &device, wgpu::MultisampleState::default(), None)).collect();
         let quads = QuadPipeline::new(&device, format);
+        let images = ImagePipeline::new(&device, format);
         let info = adapter.get_info();
-        let gpu = Self { instance, adapter, info, device, queue, format, quads, viewport, atlas, text, swash: SwashCache::new() };
+        let gpu = Self { instance, adapter, info, device, queue, format, quads, images, viewport, atlas, text, swash: SwashCache::new() };
         let surface = gpu.configure(surface, &window);
         Ok((gpu, surface))
     }
 
     /// A swap chain for another window on the same device.
-    #[allow(dead_code)]
     pub fn surface(&self, window: Arc<Window>) -> Result<Surface> {
         let surface = self.instance.create_surface(window.clone()).context("cannot create the window surface")?;
         Ok(self.configure(surface, &window))
@@ -140,6 +142,18 @@ impl Gpu {
             ranges.push((a..b, b..all.len() as u32));
         }
         self.quads.upload(&self.device, &self.queue, &all, width, height);
+        // Images per layer: (below the text, above it) as index ranges.
+        let mut image_ranges = Vec::with_capacity(LAYERS);
+        for layer in &scene.layers {
+            let mut queue_all = |items: &[crate::scene::ImageItem]| {
+                let indices: Vec<u32> = items.iter().filter_map(|item| self.images.queue(&self.device, &self.queue, item)).collect();
+                indices.first().copied().unwrap_or(0)..indices.last().map_or(0, |l| l + 1)
+            };
+            let under = queue_all(&layer.images_under);
+            let over = queue_all(&layer.images_over);
+            image_ranges.push((under, over));
+        }
+        self.images.upload(&self.device, &self.queue, width, height);
         self.viewport.update(&self.queue, Resolution { width, height });
         for (renderer, layer) in self.text.iter_mut().zip(&scene.layers) {
             let areas = layer.texts.iter().filter_map(|t| {
@@ -175,14 +189,17 @@ impl Gpu {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            for (i, (under, over)) in ranges.into_iter().enumerate() {
+            for (i, ((under, over), (images_under, images_over))) in ranges.into_iter().zip(image_ranges).enumerate() {
                 self.quads.draw(&mut pass, under);
+                self.images.draw(&mut pass, images_under);
                 if !scene.layers[i].texts.is_empty() {
                     let _ = self.text[i].render(&self.atlas, &self.viewport, &mut pass);
                 }
+                self.images.draw(&mut pass, images_over);
                 self.quads.draw(&mut pass, over);
             }
         }
+        self.images.end_frame();
         encoder.finish()
     }
 

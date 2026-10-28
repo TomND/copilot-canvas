@@ -180,7 +180,54 @@ fn run(ctx: &Ctx, request: Request) -> Result<Response> {
 
         Request::DocBackup { path, label, doc } => text(&doc::write_backup(Path::new(&path), &doc, &label)?),
         Request::DocBackups { path } => Response::Texts(doc::list_backups(Path::new(&path))?.iter().map(|p| p.display().to_string()).collect()),
+
+        Request::Upload { name, id, offset, data, last } => upload(&ctx.home, &name, &id, offset, &data, last)?,
     })
+}
+
+/// Writes one piece of an upload (`Request::Upload`) under `<home>/uploads/<date>/`.
+fn upload(home: &Path, name: &str, id: &str, offset: u64, data: &str, last: bool) -> Result<Response> {
+    use base64::Engine;
+    use std::io::{Seek, SeekFrom, Write};
+    anyhow::ensure!(!id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'), "invalid upload id");
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|e| anyhow!("invalid upload data: {e}"))?;
+    anyhow::ensure!(offset + bytes.len() as u64 <= canvas_model::rpc::MAX_UPLOAD, "files over {} MB are not uploaded", canvas_model::rpc::MAX_UPLOAD >> 20);
+    let date = crate::paths::rfc3339_now().chars().take(10).collect::<String>();
+    let dir = home.join("uploads").join(date);
+    std::fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    let part = dir.join(format!(".{id}.part"));
+    let mut file = std::fs::OpenOptions::new().create(true).write(true).truncate(offset == 0).open(&part).with_context(|| format!("cannot write {}", part.display()))?;
+    anyhow::ensure!(file.metadata()?.len() == offset, "upload piece out of order");
+    file.seek(SeekFrom::Start(offset))?;
+    file.write_all(&bytes)?;
+    if !last {
+        return Ok(Response::Done);
+    }
+    drop(file);
+    let target = free_name(&dir, &safe_file_name(name));
+    std::fs::rename(&part, &target).with_context(|| format!("cannot finish {}", target.display()))?;
+    Ok(text(&target))
+}
+
+/// A file name without folders or characters Windows refuses.
+fn safe_file_name(name: &str) -> String {
+    let base = name.rsplit(['\\', '/']).next().unwrap_or_default();
+    let clean: String = base.chars().map(|c| if c.is_control() || r#"<>:\"|?*"#.contains(c) { '_' } else { c }).collect();
+    let clean = clean.trim().trim_end_matches('.').to_owned();
+    if clean.is_empty() { "upload".to_owned() } else { clean }
+}
+
+/// `dir\name`, or `dir\stem (2).ext` � when it exists.
+fn free_name(dir: &Path, name: &str) -> PathBuf {
+    let path = dir.join(name);
+    if !path.exists() {
+        return path;
+    }
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem, format!(".{ext}")),
+        _ => (name, String::new()),
+    };
+    (2..).map(|n| dir.join(format!("{stem} ({n}){ext}"))).find(|p| !p.exists()).unwrap_or(path)
 }
 
 /// Fills in each plugin's folder under Copilot's `installed-plugins`.
@@ -313,5 +360,23 @@ mod tests {
         assert!(!path_info(&dir.join("missing")).exists);
         assert_eq!(read_text(&dir.join("f.txt"), 10).unwrap(), "x");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn uploads_arrive_in_pieces_under_a_free_safe_name() {
+        use base64::Engine;
+        let home = temp("upload");
+        let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+        let backend: &dyn Backend = &LocalBackend::new(Ctx { home: home.clone(), sessions_dir: home.clone() });
+        assert_eq!(backend.upload_piece(r"C:\x\..\re:port?.txt", "u1", 0, b64(b"hello "), false).unwrap(), None);
+        let path = backend.upload_piece(r"C:\x\..\re:port?.txt", "u1", 6, b64(b"world"), true).unwrap().unwrap();
+        assert!(path.ends_with("re_port_.txt") && path.contains(r"\uploads\"), "{path}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello world");
+        let second = backend.upload_piece("re_port_.txt", "u2", 0, b64(b"x"), true).unwrap().unwrap();
+        assert!(second.ends_with("re_port_ (2).txt"), "{second}");
+        assert!(backend.upload_piece("a", "u3", 5, b64(b"late"), true).is_err(), "out of order");
+        assert!(backend.upload_piece("a", "../evil", 0, b64(b"x"), true).is_err(), "ids are plain");
+        assert!(backend.upload_piece("a", "u4", canvas_model::rpc::MAX_UPLOAD, b64(b"x"), true).is_err(), "size cap");
+        std::fs::remove_dir_all(home).unwrap();
     }
 }

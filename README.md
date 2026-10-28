@@ -371,6 +371,9 @@ copilot-canvas bench [--terminals N] [--seconds S] [--json FILE]
 copilot-canvas bench --client gui     the GPU client's latency, frame cost, idle CPU, memory, first paint
 copilot-canvas selftest               end-to-end UI test in a hidden console (demo shells only)
 copilot-canvas selftest --client gui  the same 26 steps against the GPU client (over its test hooks)
+copilot-canvas selftest --client gui --parity
+                                      one GUI check per row of the parity matrix (docs/PARITY.md)
+copilot-canvas kitty-demo             print a small test image (iTerm2 inline image; the GPU client shows it)
 copilot-canvas selftest agent [--agent copilot|opencode|claude]
                                       real check with an agent CLI (default: the detected one); never
                                       submits a prompt: imports its recent sessions into a temporary
@@ -395,9 +398,10 @@ cargo test                            unit tests
   session's working directory.
 - "Done · review" relies on Copilot's events; when no idle event is written, a
   turn end followed by 4 s of silence with no open tool calls counts as idle.
-- The grid canvas is character-based (three zoom levels), not pixel-smooth.
-  Inline images (Kitty graphics, Copilot's `inlineImages`) aren't rendered,
-  as in Windows Terminal; OSC 52 copy is forwarded to your terminal.
+- The TUI's grid canvas is character-based (three zoom levels), not
+  pixel-smooth, and draws no inline images (as in Windows Terminal); the GPU
+  client (`--gui`) draws Kitty graphics and iTerm2 inline PNG images. OSC 52
+  copy is forwarded to your terminal.
 - Windows only (ConPTY, named pipes, job objects).
 - Automations are read from Copilot's local database; creating or editing
   their prompt/schedule is done in VS Code or the Copilot app.

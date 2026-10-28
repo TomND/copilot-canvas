@@ -155,7 +155,10 @@ fn draw_toolbar(app: &mut App, buf: &mut Buffer, area: Rect) {
     x = toolbar_button(app, buf, x, " ⤢ Fit ", Action::FitAll, area);
     x = toolbar_button(app, buf, x, " − ", Action::Zoom(1), area);
     x = toolbar_button(app, buf, x, " + ", Action::Zoom(-1), area);
-    let x = toolbar_button(app, buf, x, " ? ", Action::Help, area);
+    let mut x = toolbar_button(app, buf, x, " ? ", Action::Help, area);
+    if app.render_mode == crate::view::RenderMode::Gpu {
+        x = toolbar_button(app, buf, x, " ⧉ ", Action::NewWindow, area);
+    }
     let _ = toolbar_button(app, buf, x, " ⏻ Quit ", Action::Quit, area);
 
     // Status counts on the right.

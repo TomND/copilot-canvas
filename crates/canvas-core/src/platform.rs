@@ -42,6 +42,15 @@ pub trait Platform: Send + Sync {
 
     /// The window title (`attention`: sessions that need you).
     fn title(&self, _attention: usize) {}
+
+    /// A session's program sent a desktop notification (OSC 777 / OSC 9;
+    /// GUI: a toast). The bell for it is rung separately.
+    fn notification(&self, _session: &str, _title: &str, _body: &str) {}
+
+    /// A session started to need you (it waits for an answer or a
+    /// permission; GUI: a toast and a flashing taskbar button when the
+    /// window is in the background).
+    fn needs_you(&self, _session: &str) {}
 }
 
 /// The TUI: bells and OSC 9;4 progress go to the outer terminal.

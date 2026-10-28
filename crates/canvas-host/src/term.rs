@@ -11,6 +11,7 @@
 //! emulator falls behind, the reader blocks and ConPTY slows the program.
 
 use std::any::Any;
+use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::{BufWriter, Read, Write};
@@ -24,7 +25,8 @@ use anyhow::{Context, Result};
 use crossbeam_channel::{Receiver, RecvTimeoutError, SendTimeoutError, Sender, at, bounded, never, select_biased};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
-use crate::emulator::{self, Config, Emulator, Engine, Events, Scroll, Snapshot};
+use crate::emulator::{self, Config, Emulator, Engine, Events, ImageData, Scroll, Snapshot};
+use crate::emulator::inline::InlineImages;
 use crate::paths::now_ms;
 use crate::protocol::{Input, Run, TermInfo};
 
@@ -48,6 +50,10 @@ const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 const RECORD_LIMIT: u64 = 64 << 20;
 /// Buffered recording data reaches the file at least this often.
 const RECORD_FLUSH: Duration = Duration::from_millis(250);
+/// Largest PNG sent to clients in one message.
+pub const MAX_IMAGE_MESSAGE: usize = 16 << 20;
+/// Encoded images kept per terminal.
+const MAX_ENCODED_IMAGES: usize = 64;
 
 /// Small messages the emulator thread handles before any pending output.
 enum Ctl {
@@ -57,6 +63,7 @@ enum Ctl {
     Resize(u16, u16),
     Scroll(Scroll),
     Snapshot(Sender<Snapshot>),
+    Image(u32, Sender<Option<ImageData>>),
 }
 
 pub struct Terminal {
@@ -88,7 +95,21 @@ pub struct Terminal {
     /// The size the PTY and the emulator have (or have queued); see [`Terminal::resize`].
     size: AtomicU32,
     stopping: AtomicBool,
+    /// Images encoded as PNG for clients: id -> (generation, width, height, file).
+    encoded: Mutex<HashMap<u32, EncodedImage>>,
 }
+
+/// An image's pixels as a PNG file, for every client that needs it.
+#[derive(Clone)]
+pub struct EncodedImage {
+    pub generation: u64,
+    pub width: u32,
+    pub height: u32,
+    pub png: Arc<Vec<u8>>,
+}
+
+/// A program's desktop notification: (terminal id, title, body).
+pub type Notice = (String, String, String);
 
 /// What the emulator thread reports back (title, progress, bells).
 #[derive(Default)]
@@ -121,6 +142,8 @@ pub struct Hooks {
     pub bytes: Arc<AtomicU64>,
     /// Title, progress or bell changed: the terminal's info is resent.
     pub changed: Sender<String>,
+    /// Desktop notifications with their text.
+    pub notify: Option<Sender<Notice>>,
 }
 
 /// Delivers engine events to the terminal's state and hooks.
@@ -130,6 +153,7 @@ struct Sink<'a> {
     input: &'a Sender<Vec<u8>>,
     clipboard: &'a Sender<String>,
     changed: &'a Sender<String>,
+    notify: Option<&'a Sender<Notice>>,
     dirty: bool,
 }
 
@@ -158,6 +182,11 @@ impl Events for Sink<'_> {
     fn notify(&mut self) {
         self.state.bells.fetch_add(1, Ordering::Relaxed);
         self.dirty = true;
+    }
+    fn notification(&mut self, title: String, body: String) {
+        if let Some(notify) = self.notify {
+            let _ = notify.try_send((self.id.to_owned(), title, body));
+        }
     }
 }
 
@@ -228,6 +257,7 @@ impl Terminal {
             error: Mutex::new(None),
             size: AtomicU32::new(pack(cols, rows)),
             stopping: AtomicBool::new(false),
+            encoded: Mutex::new(HashMap::new()),
         });
         // Weak: the emulator thread must not keep the terminal alive.
         let weak = Arc::downgrade(&terminal);
@@ -252,6 +282,8 @@ impl Terminal {
                 pump: hooks.pump.clone(),
                 fail: Some(fail),
                 burst: 0,
+                notify: hooks.notify.clone(),
+                bridge: InlineImages::default(),
             },
             move || emulator::create(engine, &config),
         );
@@ -287,6 +319,28 @@ impl Terminal {
     /// The current viewport (a round trip to the emulator thread).
     pub fn snapshot(&self) -> Option<Snapshot> {
         request_snapshot(&self.control, &self.pending_snapshot, CONTROL_TIMEOUT, SNAPSHOT_TIMEOUT)
+    }
+
+    /// An image as a PNG file, encoded once per generation and shared by all
+    /// clients; `None` when the image is gone or too large to send.
+    pub fn image_png(&self, id: u32, generation: u64) -> Option<EncodedImage> {
+        if let Some(cached) = lock(&self.encoded).get(&id).filter(|e| e.generation == generation) {
+            return Some(cached.clone());
+        }
+        let (tx, rx) = bounded(1);
+        self.control.send_timeout(Ctl::Image(id, tx), CONTROL_TIMEOUT).ok()?;
+        let image = rx.recv_timeout(SNAPSHOT_TIMEOUT).ok()??;
+        let png = emulator::encode_png(image.width, image.height, &image.rgba)?;
+        if png.len() > MAX_IMAGE_MESSAGE {
+            return None;
+        }
+        let encoded = EncodedImage { generation: image.generation, width: image.width, height: image.height, png: Arc::new(png) };
+        let mut cache = lock(&self.encoded);
+        if cache.len() >= MAX_ENCODED_IMAGES {
+            cache.clear();
+        }
+        cache.insert(id, encoded.clone());
+        Some(encoded)
     }
 
     /// Queues a control message, waiting up to [`CONTROL_TIMEOUT`] for room.
@@ -452,6 +506,9 @@ struct EmulatorThread {
     fail: Option<FailHook>,
     /// Control messages handled in a row (see [`EmulatorThread::next`]).
     burst: u32,
+    notify: Option<Sender<Notice>>,
+    /// Inline images that ConPTY passes through, as Kitty graphics.
+    bridge: InlineImages,
 }
 
 /// What the emulator thread handles next.
@@ -479,6 +536,7 @@ impl EmulatorThread {
     /// Runs the engine; a panic in it ends in [`EmulatorThread::failed`]
     /// instead of silently hanging the terminal.
     fn run(mut self, make: impl FnOnce() -> Box<dyn Emulator>) {
+        self.bridge.set_size(self.cols, self.rows);
         let mut emu = match catch_unwind(AssertUnwindSafe(make)) {
             Ok(emu) => emu,
             Err(panic) => return self.failed(&panic_message(panic.as_ref()), None),
@@ -537,7 +595,7 @@ impl EmulatorThread {
     }
 
     fn sink(&self) -> Sink<'_> {
-        Sink { id: &self.id, state: &self.state, input: &self.input, clipboard: &self.clipboard, changed: &self.changed, dirty: false }
+        Sink { id: &self.id, state: &self.state, input: &self.input, clipboard: &self.clipboard, changed: &self.changed, notify: self.notify.as_ref(), dirty: false }
     }
 
     fn bump(&self) {
@@ -548,6 +606,7 @@ impl EmulatorThread {
     fn handle(&mut self, emu: &mut dyn Emulator, msg: Msg) {
         match msg {
             Msg::Output(bytes) => {
+                let bytes = self.bridge.filter(&bytes);
                 let mut sink = self.sink();
                 emu.feed(&bytes, &mut sink);
                 sink.finish();
@@ -603,6 +662,7 @@ impl EmulatorThread {
             Ctl::Resize(cols, rows) => {
                 emu.resize(cols, rows);
                 (self.cols, self.rows) = (cols, rows);
+                self.bridge.set_size(cols, rows);
                 self.bump();
             }
             Ctl::Scroll(scroll) => {
@@ -611,6 +671,9 @@ impl EmulatorThread {
             }
             Ctl::Snapshot(reply) => {
                 let _ = reply.send(emu.snapshot());
+            }
+            Ctl::Image(id, reply) => {
+                let _ = reply.send(emu.image(id));
             }
         }
     }
@@ -997,6 +1060,8 @@ mod tests {
                 pump,
                 fail: Some(fail),
                 burst: 0,
+                notify: None,
+                bridge: InlineImages::default(),
             };
             spawn_emulator(thread, move || Box::new(probe));
             Self { control, output, written, generation, failed, pending: Mutex::new(None), _keep: (clipboard_rx, changed_rx, pump_rx) }
@@ -1120,6 +1185,8 @@ mod tests {
                 let _ = fail_tx.send(message);
             })),
             burst: 0,
+            notify: None,
+            bridge: InlineImages::default(),
         };
         spawn_emulator(thread, || panic!("no engine"));
         assert!(failed.recv_timeout(Duration::from_secs(5)).unwrap().contains("no engine"));
@@ -1163,7 +1230,7 @@ mod tests {
         let (exited, b) = bounded::<String>(16);
         let (clipboard, c) = bounded::<String>(16);
         let (changed, d) = bounded::<String>(1024);
-        (Hooks { pump, exited, clipboard, bytes: Arc::new(AtomicU64::new(0)), changed }, vec![Box::new(a), Box::new(b), Box::new(c), Box::new(d)])
+        (Hooks { pump, exited, clipboard, bytes: Arc::new(AtomicU64::new(0)), changed, notify: None }, vec![Box::new(a), Box::new(b), Box::new(c), Box::new(d)])
     }
 
     fn wait_exit(terminal: &Terminal, within: Duration) -> (Option<u32>, Option<u32>) {

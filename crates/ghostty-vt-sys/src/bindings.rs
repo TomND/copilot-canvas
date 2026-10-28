@@ -41,7 +41,16 @@ opaque! {
     GhosttyRenderStateRowCellsImpl => GhosttyRenderStateRowCells,
     GhosttyKeyEncoderImpl => GhosttyKeyEncoder,
     GhosttyKeyEventImpl => GhosttyKeyEvent,
+    GhosttyRenderStateImageIteratorImpl => GhosttyRenderStateImageIterator,
+    GhosttyKittyGraphicsImpl => GhosttyKittyGraphics,
 }
+
+/// A borrowed Kitty graphics image (`const` in the header).
+#[repr(C)]
+pub struct GhosttyKittyGraphicsImageImpl {
+    _private: [u8; 0],
+}
+pub type GhosttyKittyGraphicsImage = *const GhosttyKittyGraphicsImageImpl;
 
 /// Custom allocator vtable; always passed as NULL (the default allocator).
 #[repr(C)]
@@ -518,6 +527,36 @@ pub const GHOSTTY_RENDER_STATE_DATA_ROWS: GhosttyRenderStateData = 2;
 pub const GHOSTTY_RENDER_STATE_DATA_DIRTY: GhosttyRenderStateData = 3;
 pub const GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR: GhosttyRenderStateData = 4;
 pub const GHOSTTY_RENDER_STATE_DATA_CURSOR: GhosttyRenderStateData = 18;
+pub const GHOSTTY_RENDER_STATE_DATA_IMAGE_ITERATOR: GhosttyRenderStateData = 22;
+pub const GHOSTTY_RENDER_STATE_DATA_IMAGE_PLACEMENTS_GENERATION: GhosttyRenderStateData = 23;
+
+pub type GhosttyImageProtocol = c_int;
+pub const GHOSTTY_IMAGE_PROTOCOL_KITTY: GhosttyImageProtocol = 0;
+
+pub type GhosttyRenderStateImageLayer = c_int;
+pub const GHOSTTY_RENDER_STATE_IMAGE_LAYER_BELOW_BACKGROUND: GhosttyRenderStateImageLayer = 0;
+pub const GHOSTTY_RENDER_STATE_IMAGE_LAYER_BELOW_TEXT: GhosttyRenderStateImageLayer = 1;
+pub const GHOSTTY_RENDER_STATE_IMAGE_LAYER_ABOVE_TEXT: GhosttyRenderStateImageLayer = 2;
+
+pub type GhosttyRenderStateImageData = c_int;
+pub const GHOSTTY_RENDER_STATE_IMAGE_DATA_INVALID: GhosttyRenderStateImageData = 0;
+pub const GHOSTTY_RENDER_STATE_IMAGE_DATA_PROTOCOL: GhosttyRenderStateImageData = 1;
+pub const GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_ID: GhosttyRenderStateImageData = 2;
+pub const GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_GENERATION: GhosttyRenderStateImageData = 3;
+pub const GHOSTTY_RENDER_STATE_IMAGE_DATA_LAYER: GhosttyRenderStateImageData = 4;
+pub const GHOSTTY_RENDER_STATE_IMAGE_DATA_Z: GhosttyRenderStateImageData = 5;
+pub const GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_COL: GhosttyRenderStateImageData = 6;
+pub const GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_ROW: GhosttyRenderStateImageData = 7;
+pub const GHOSTTY_RENDER_STATE_IMAGE_DATA_GRID_COLS: GhosttyRenderStateImageData = 8;
+pub const GHOSTTY_RENDER_STATE_IMAGE_DATA_GRID_ROWS: GhosttyRenderStateImageData = 9;
+pub const GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_X: GhosttyRenderStateImageData = 10;
+pub const GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_Y: GhosttyRenderStateImageData = 11;
+pub const GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_WIDTH: GhosttyRenderStateImageData = 12;
+pub const GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_HEIGHT: GhosttyRenderStateImageData = 13;
+pub const GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_X: GhosttyRenderStateImageData = 14;
+pub const GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_Y: GhosttyRenderStateImageData = 15;
+pub const GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_WIDTH: GhosttyRenderStateImageData = 16;
+pub const GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_HEIGHT: GhosttyRenderStateImageData = 17;
 
 pub type GhosttyRenderStateRowData = c_int;
 pub const GHOSTTY_RENDER_STATE_ROW_DATA_INVALID: GhosttyRenderStateRowData = 0;
@@ -629,6 +668,49 @@ pub const GHOSTTY_BUILD_INFO_SIMD: GhosttyBuildInfo = 1;
 pub const GHOSTTY_BUILD_INFO_KITTY_GRAPHICS: GhosttyBuildInfo = 2;
 pub const GHOSTTY_BUILD_INFO_VERSION_STRING: GhosttyBuildInfo = 5;
 
+/* ---- kitty_graphics.h ---- */
+
+pub type GhosttyKittyImageFormat = c_int;
+pub const GHOSTTY_KITTY_IMAGE_FORMAT_RGB: GhosttyKittyImageFormat = 0;
+pub const GHOSTTY_KITTY_IMAGE_FORMAT_RGBA: GhosttyKittyImageFormat = 1;
+pub const GHOSTTY_KITTY_IMAGE_FORMAT_PNG: GhosttyKittyImageFormat = 2;
+pub const GHOSTTY_KITTY_IMAGE_FORMAT_GRAY_ALPHA: GhosttyKittyImageFormat = 3;
+pub const GHOSTTY_KITTY_IMAGE_FORMAT_GRAY: GhosttyKittyImageFormat = 4;
+
+pub type GhosttyKittyGraphicsImageData = c_int;
+pub const GHOSTTY_KITTY_IMAGE_DATA_INVALID: GhosttyKittyGraphicsImageData = 0;
+pub const GHOSTTY_KITTY_IMAGE_DATA_ID: GhosttyKittyGraphicsImageData = 1;
+pub const GHOSTTY_KITTY_IMAGE_DATA_NUMBER: GhosttyKittyGraphicsImageData = 2;
+pub const GHOSTTY_KITTY_IMAGE_DATA_WIDTH: GhosttyKittyGraphicsImageData = 3;
+pub const GHOSTTY_KITTY_IMAGE_DATA_HEIGHT: GhosttyKittyGraphicsImageData = 4;
+pub const GHOSTTY_KITTY_IMAGE_DATA_FORMAT: GhosttyKittyGraphicsImageData = 5;
+pub const GHOSTTY_KITTY_IMAGE_DATA_COMPRESSION: GhosttyKittyGraphicsImageData = 6;
+/// `const uint8_t*`: decoded pixels, valid until the terminal changes.
+pub const GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR: GhosttyKittyGraphicsImageData = 7;
+pub const GHOSTTY_KITTY_IMAGE_DATA_DATA_LEN: GhosttyKittyGraphicsImageData = 8;
+pub const GHOSTTY_KITTY_IMAGE_DATA_GENERATION: GhosttyKittyGraphicsImageData = 9;
+
+/* ---- sys.h ---- */
+
+/// A decoded image filled in by a PNG decode callback (RGBA, row by row).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct GhosttySysImage {
+    pub width: u32,
+    pub height: u32,
+    /// Allocated with the allocator passed to the callback.
+    pub data: *mut u8,
+    pub data_len: usize,
+}
+
+pub type GhosttySysDecodePngFn =
+    Option<unsafe extern "C" fn(userdata: *mut c_void, allocator: *const GhosttyAllocator, data: *const u8, data_len: usize, out: *mut GhosttySysImage) -> bool>;
+
+pub type GhosttySysOption = c_int;
+pub const GHOSTTY_SYS_OPT_USERDATA: GhosttySysOption = 0;
+pub const GHOSTTY_SYS_OPT_DECODE_PNG: GhosttySysOption = 1;
+pub const GHOSTTY_SYS_OPT_LOG: GhosttySysOption = 2;
+
 unsafe extern "C" {
     /* types.h, build_info.h */
     pub fn ghostty_type_json() -> *const c_char;
@@ -681,6 +763,29 @@ unsafe extern "C" {
     pub fn ghostty_render_state_row_cells_select(cells: GhosttyRenderStateRowCells, x: u16) -> GhosttyResult;
     pub fn ghostty_render_state_row_cells_get(cells: GhosttyRenderStateRowCells, data: GhosttyRenderStateRowCellsData, out: *mut c_void)
     -> GhosttyResult;
+    pub fn ghostty_render_state_image_iterator_new(
+        allocator: *const GhosttyAllocator,
+        out_iterator: *mut GhosttyRenderStateImageIterator,
+    ) -> GhosttyResult;
+    pub fn ghostty_render_state_image_iterator_free(iterator: GhosttyRenderStateImageIterator);
+    pub fn ghostty_render_state_image_iterator_next(iterator: GhosttyRenderStateImageIterator) -> bool;
+    pub fn ghostty_render_state_image_get_multi(
+        iterator: GhosttyRenderStateImageIterator,
+        count: usize,
+        keys: *const GhosttyRenderStateImageData,
+        values: *mut *mut c_void,
+        out_written: *mut usize,
+    ) -> GhosttyResult;
+
+    /* kitty_graphics.h */
+    pub fn ghostty_kitty_graphics_image(graphics: GhosttyKittyGraphics, image_id: u32) -> GhosttyKittyGraphicsImage;
+    pub fn ghostty_kitty_graphics_image_get(image: GhosttyKittyGraphicsImage, data: GhosttyKittyGraphicsImageData, out: *mut c_void) -> GhosttyResult;
+
+    /* sys.h, allocator.h */
+    /// Function-pointer options take the function pointer itself as `value`.
+    pub fn ghostty_sys_set(option: GhosttySysOption, value: *const c_void) -> GhosttyResult;
+    pub fn ghostty_alloc(allocator: *const GhosttyAllocator, len: usize) -> *mut u8;
+    pub fn ghostty_free(allocator: *const GhosttyAllocator, ptr: *mut u8, len: usize);
 
     /* key/event.h, key/encoder.h */
     pub fn ghostty_key_event_new(allocator: *const GhosttyAllocator, event: *mut GhosttyKeyEvent) -> GhosttyResult;

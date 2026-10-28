@@ -1,11 +1,14 @@
-# GPU client (Phase 4 MVP)
+# GPU client (Phase 4 MVP, Phase 5 parity)
 
 `copilot-canvas-gui.exe` is the native GPU front end of Copilot Canvas: the
 same canvas, sidebar, dialogs and terminals as the TUI, drawn with wgpu 30,
 winit 0.30.13 and glyphon 0.12 (the stack chosen in `docs/GPU-SPIKE.md`). It
 runs canvas-core's `App` unchanged as its state machine and talks to the same
 terminal service over the same protocol, locally (named pipe) or remotely
-(TCP: `--remote loopback` or `HOST:PORT`).
+(TCP: `--remote loopback` or `HOST:PORT`). Phase 5 brought it to parity with
+the TUI (every row of PLAN §8, checked by `selftest --client gui --parity`;
+see `docs/PARITY.md`) and added inline images, taskbar progress, flashing and
+toasts, file drag and drop, and several windows.
 
 ```powershell
 cargo build --release                       # builds copilot-canvas.exe and copilot-canvas-gui.exe
@@ -65,18 +68,57 @@ cell position (`App::pointer`), so every hit test of the core works at any
 scale. Box and group drags move the document in whole units and show the rest
 as a sub-unit visual offset (`App::drag_offset`), so they are pixel-smooth.
 
-**The window (`shell.rs`).** One winit window on the UI thread. Service
-messages are forwarded by a thread into a queue and wake the loop with one
-coalesced proxy event; the UI drains them with a 4 ms budget, as the TUI
-does. App events and test-hook commands arrive as proxy events too. Ticks run
-every 40 ms while anything is active (animations, notices, drags, unsaved
-changes) and every 400 ms otherwise. A frame is drawn only when the app needs
-one: at once after input (and for the echo of a keystroke in the focused
-terminal), otherwise paced to the display's refresh rate. Presentation uses
-Mailbox (Immediate, then Fifo, as fallbacks) and never blocks the UI thread.
-`after_draw` sends subscriptions, tile sizes and tracking exactly as in the
-TUI. The device (`Gpu`) and the window's swap chain (`Surface`) are separate
-types, so further windows can share the device.
+**The windows (`shell.rs`).** Every window runs its own `App` with its own
+service connection and view preferences (`<home>/prefs/<instance>-windowN-…`);
+the service's document sync keeps their canvases consistent. They share the
+GPU device, the pipelines and the fonts; each has its swap chain, shape and
+row caches. Ctrl+Shift+N or the toolbar's ⧉ opens another window (its app
+connects on a background thread); closing a window while others are open
+detaches it without asking, the last one asks as before, and the process
+ends with its last window. Service messages are forwarded by a thread per
+connection into a queue (PNG images are decoded to RGBA on the way) and wake
+the loop with one coalesced proxy event; the UI drains them with a 4 ms
+budget, as the TUI does. App events and test-hook commands arrive as proxy
+events too. Ticks run every 40 ms while anything is active (animations,
+notices, drags, unsaved changes, a paste preview) and every 400 ms
+otherwise. A frame is drawn only when the app needs one: at once after input
+(and for the echo of a keystroke in the focused terminal), otherwise paced to
+the display's refresh rate. Presentation uses Mailbox (Immediate, then Fifo,
+as fallbacks) and never blocks the UI thread. `after_draw` sends
+subscriptions, tile sizes and tracking exactly as in the TUI.
+
+**Inline images.** The Ghostty engine keeps Kitty graphics (storage limit
+64 MiB per terminal; only inline data: the file, temporary-file and
+shared-memory mediums are off so a program cannot make the service read
+files; PNG payloads are decoded with the `png` crate). Windows' inbox
+ConPTY drops APC sequences, so Kitty commands written by a program never
+reach the engine; OSC sequences pass, and the host turns iTerm2 inline
+images (`OSC 1337;File=inline=1;width=…;height=…:<base64 PNG>`) into the
+equivalent Kitty placement (cursor unmoved: ConPTY's cursor is the one that
+counts; programs leave room below the image). Snapshots list the render
+state's placements; the service sends each image once per client
+(`ServiceMsg::Image`, PNG, at most 16 MiB) and the viewport's placements
+(`ServiceMsg::Placements`: cell, size and offset in the host's 8 × 16 px cell
+geometry, source rectangle, z), only to clients that set `CAP_IMAGES` (the
+GUI; the TUI does not). A client may forget images no placement uses; they
+are sent again when placed again. The GUI uploads each image once as a
+texture (keyed by a serial per received image), draws placements scaled to
+its own cells below the text (z < 0) or above it, clipped to the tile, and
+frees textures not drawn for 20 s (at most 256 MiB). `copilot-canvas
+kitty-demo` prints a test image (magenta and green halves, 8 × 2 cells);
+`kitty-demo apc` prints the raw Kitty command instead.
+
+**Pasted screenshots.** When Ctrl+V or Alt+V goes to a terminal while the
+clipboard holds an image (PNG, `CF_DIBV5` or `CF_DIB`), the key goes to the
+agent as before (it attaches the image) and the GUI shows a thumbnail of the
+image with its size at the terminal's top right for 5 s.
+
+**File drag and drop.** Files dropped on a terminal are pasted as quoted
+paths (as Windows Terminal does). In remote mode they are uploaded first
+(`Request::Upload` in 4 MiB pieces, at most 50 MB per file, into
+`<home>/uploads/<date>/` on the service's machine, under a free name) and
+the remote paths are pasted. A folder dropped on the canvas opens the
+new-session dialog in it (local mode).
 
 **Drawing (`scene.rs`, `quads.rs`, `chrome.rs`, `canvas.rs`, `tiles.rs`).** A
 frame is 7 layers (base chrome · canvas · canvas top · terminals · chrome over
@@ -125,12 +167,24 @@ image) as in the TUI.
 
 **Platform (`canvas-core platform.rs`, `canvas-gui platform.rs`).** The core
 reaches the machine through `trait Platform`: clipboard text, "clipboard has
-an image", opening links and paths, bells, taskbar progress and the window
-title. The TUI's `TerminalPlatform` keeps today's behaviour (bell and OSC 9;4
-bytes for the outer terminal). The GUI flashes its taskbar button for bells
-(FlashWindowEx), mirrors the canvas to the taskbar button's progress
-(ITaskbarList3: busy while a session works, paused while one needs you), and
-puts the number of sessions that need you in the title.
+an image", opening links and paths, bells, taskbar progress, the window
+title, program notifications and sessions that start to need you. The
+TUI's `TerminalPlatform` keeps today's behaviour (bell and OSC 9;4 bytes for
+the outer terminal). The GUI mirrors the canvas to the taskbar button's
+progress (ITaskbarList3: busy while a session works, paused/yellow while one
+needs you, from the same `mirror_progress` as the TUI's OSC 9;4), puts the
+number of sessions that need you in the title, flashes the taskbar button
+(FlashWindowEx) for bells and sessions that start to need you while the
+window is in the background, and shows Windows toasts for program
+notifications (OSC 777 / OSC 9, with their title and body:
+`ServiceMsg::Notification` to `CAP_NOTIFY` clients) and for sessions that
+start to need you. Toasts use WinRT's `ToastNotificationManager` from a
+background thread. An unpackaged app needs a registered AppUserModelID: the
+GUI registers `CopilotCanvas.Gui` under
+`HKCU\Software\Classes\AppUserModelId` (display name; no Start-menu shortcut)
+and gives the process that id. No toast is shown while the window is in
+front, the same text is shown once (however many windows are open), and a
+toast that fails still leaves the flashing button.
 
 **Connection and upgrades.** Local pipe by default, `--remote` as the TUI;
 the offline banner, reconnect with backoff and blocked input come from the
@@ -153,9 +207,11 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
 | Pan | drag empty canvas or middle-drag, pixel-smooth; wheel / Shift+wheel; Ctrl+arrows |
 | Move | drag a box (its subagents follow) or a group title, pixel-smooth; the document stores whole units |
 | Pointer | hand over buttons and links, resize arrows over the dividers, text beam over terminals |
-| Paste | Ctrl+V / Shift+Insert: into a terminal (images as in the TUI) or the focused text field |
+| Paste | Ctrl+V / Shift+Insert: into a terminal (images as in the TUI, with a thumbnail of the image) or the focused text field |
+| Drop files | on a terminal: quoted paths pasted (remote mode: uploaded first); a folder on the canvas: new session there |
+| New window | Ctrl+Shift+N or the toolbar's ⧉; closing one of several windows detaches it |
 | IME | composition drawn at the terminal cursor or field; committed text typed |
-| Close button | as Ctrl+Q: detach or stop all |
+| Close button | as Ctrl+Q: detach or stop all (the last window) |
 | `--perf` | frame time (view, scene, encode), present and acquire, input → present, keystroke → echo → present, service round trip |
 
 ## 3. Testing
@@ -163,9 +219,13 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
 - `cargo test --workspace`: canvas-core has model tests (the model painted
   as text equals the TUI's canvas at 100 %; zoom steps and continuous zoom
   around the pointer; pixel hit testing; whole-unit drags with visual
-  offset); canvas-gui tests box drawing, row layout (clusters, wide cells,
-  underline styles, inverse, hidden, links), key and wheel mapping, colours,
-  grid metrics, latency bookkeeping and the platform.
+  offset) and drop/upload tests; canvas-gui tests box drawing, row layout
+  (clusters, wide cells, underline styles, inverse, hidden, links), key and
+  wheel mapping, colours, grid metrics, latency bookkeeping, the platform
+  (titles, toast deduplication), PNG and clipboard bitmap decoding and
+  thumbnails; canvas-host tests Kitty placements and pixels, the iTerm2
+  bridge and the refused file medium; the protocol tests which clients get
+  images and notifications.
 - `copilot-canvas selftest --client gui [--remote loopback]` runs the TUI
   self-test's 26 steps against the GUI in a 170 × 46 cell window. A `Ui`
   trait has two drivers: the TUI's hidden pseudoconsole and `GuiDriver`,
@@ -175,11 +235,15 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   saves PNGs at six steps.
 - `copilot-canvas bench --client gui [--seconds S] [--remote loopback]`
   measures §4 below over the hooks (`CANVAS_GUI_SCREENS` also applies).
+- `copilot-canvas selftest --client gui --parity` runs one check per row of
+  PLAN §8 plus the GUI-only features, in a sandbox with a stand-in Copilot
+  CLI, and prints the table (`docs/PARITY.md`).
 - `CANVAS_GUI_TRACE=1` prints start-up milestones on stderr.
 
 **Test hooks.** With `--test-hooks` the GUI prints a pipe name
 (`\\.\pipe\copilot-canvas-gui-test-<pid>`, owner-only, local only) and takes
-one JSON command per line:
+one JSON command per line. Commands act on the first window unless they name
+one (`"window": n`, the creation index):
 
 | Command | Effect / answer |
 |---|---|
@@ -189,12 +253,17 @@ one JSON command per line:
 | `{"cmd":"ime","preedit":"…"}`, `{"cmd":"ime","commit":"…"}` | IME composition and commit |
 | `{"cmd":"mouse","kind":"down\|up\|move\|drag","button":"left","x":40.5,"y":7.5,"mods":[]}` | mouse at fractional cells |
 | `{"cmd":"wheel","dir":"up\|down\|left\|right","x":…,"y":…,"mods":["ctrl"]}` | one wheel notch |
+| `{"cmd":"drop","paths":["…"],"x":…,"y":…}` | files dropped at a cell |
 | `{"cmd":"screen"}` | `lines`: the screen as text (chrome, canvas as TUI characters, terminal text, dialogs) |
-| `{"cmd":"tree"}` | automation tree: click targets with their text, canvas boxes/groups with screen rects, tiles, links, focus, modal |
+| `{"cmd":"tree"}` | automation tree: click targets with their text, canvas boxes (status, border, prefix, loop) and groups with screen rects, tiles (tint, image placements as cell rects), links, terminal selection, notice, focus, modal, paste preview |
 | `{"cmd":"png","path":"…"}` | renders the current frame offscreen to a PNG (works on a locked workstation) |
-| `{"cmd":"size"}`, `{"cmd":"perf","reset":true}` | cells, cell size, DPI, adapter, present mode; frame statistics, CPU, memory, first paint |
+| `{"cmd":"size"}`, `{"cmd":"perf","reset":true}` | cells, cell size, DPI, adapter, present mode; frame statistics, round trips, CPU, memory, first paint, textures |
+| `{"cmd":"platform","history":true}` | title, bells, flashes, progress and taskbar state, toasts asked for and their status, the Action Center count, the hooks' clipboard |
+| `{"cmd":"clipboard","text":"…"}`, `{"cmd":"clipboard","image":{"width":64,"height":40,"color":[0,0,255]}}`, `{"cmd":"clipboard","clear":true}` | the hooks' clipboard (stands in when Windows' is unavailable) |
+| `{"cmd":"new_window"}`, `{"cmd":"windows"}`, `{"cmd":"close_window","window":1}` | opens a window (answers its index once it is up), lists them, closes one |
 | `{"cmd":"post_keys","text":"xxx","interval_ms":120}` | real WM_KEYDOWN messages to the window (latency measurement) |
-| `{"cmd":"quit"}` | saves and exits (detach) |
+| `{"cmd":"panic"}` | crashes on purpose (the crash-log check) |
+| `{"cmd":"quit"}` | saves and exits every window (detach); with `"window"`, closes that one |
 
 ## 4. Measured (PLAN §9)
 
@@ -234,18 +303,28 @@ canvas: 4 streaming tiles; 1,304 boxes in view at 11 %),
 
 The self-test's six PNGs and the benchmark's two are regenerated with
 `CANVAS_GUI_SCREENS=docs\gui-screens`; the IME and offline shots were taken
-by hand through the hooks.
+by hand through the hooks. The parity suite (`--parity`, same variable)
+saves `inline-image.png` (a Kitty image from `kitty-demo` in a shell, 8 × 2
+cells; the paste preview at the top right), `paste-image-preview.png` (the
+thumbnail of a pasted 64 × 40 image over the stand-in Copilot, in mouse mode
+with forwarded clicks), `user-message-tint.png` (named
+`parity-user-message-tint.png` by the suite) and `second-window.png` (a
+second window on the same canvas after a rename made in the first).
 
-## 6. Known gaps (Phase 5 and later)
+## 6. Known gaps (Phase 6 and later)
 
-- **Parity rows still to verify one by one (§8)**: every dialog, list view and
-  probe has only been exercised through the 26-step self-test; the real-agent
-  probes (passive, factory, status, fork, MCP, image paste, links, scroll,
-  copy) need GUI variants.
-- **Inline images** (Kitty graphics, pasted screenshots) are not drawn yet.
-- **Toasts** for OSC 777 notifications; file drag and drop; several windows
-  (the device and swap chain are already separate; the core's single layout
-  is not).
+- **Kitty graphics through ConPTY:** Windows' inbox ConPTY drops APC, so only
+  iTerm2 inline PNG images (an OSC) reach the engine from programs; a raw
+  Kitty command needs a pseudoconsole that passes APC through (a newer
+  `conpty.dll`). Programs must leave rows free below an image (ConPTY does
+  not know its size). Animated Kitty images show their current frame (the
+  engine's animation tick is not driven); JPEG and GIF files are not shown.
+- **Toasts:** clicking one does not bring the window forward (no COM
+  activator is registered); Focus Assist decides whether they pop up.
+- **Clipboard on a locked workstation:** Windows refuses it; copy and paste
+  fail with a notice (the test hooks use a clipboard of their own then).
+- **Toolbar crowding:** at narrow widths the status counts on the right can
+  cover the last toolbar buttons (as in the TUI).
 - **Widgets:** dialogs, menus and lists are the TUI's cell layouts drawn
   crisply; no GUI-native widgets, text-field selection with the mouse, or
   scroll bars in lists. Accessibility (UI Automation) is Phase 6; the `tree`
@@ -258,6 +337,8 @@ by hand through the hooks.
 - **Start-up:** GPU device creation (0.38 s) could overlap the service
   connection; shaders are compiled at start.
 - **Not verified by hand:** a real IME session (Japanese, Chinese), AltGr on a
-  German layout, per-monitor DPI changes, an unlocked desktop's vsync.
+  German layout, per-monitor DPI changes, an unlocked desktop's vsync, real
+  drag and drop from Explorer (the hooks inject the drop).
 - Cursor blink, the Copilot-only hollow cursor for unfocused tiles, and
   hinting (text is grayscale, unhinted as in the spike).
+

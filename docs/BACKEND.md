@@ -85,6 +85,7 @@ the connection dropped while waiting).
 | `CreatePassive { files }` | `Text` (the slug used) | new passive session (rules, memory, run log, `GOALS.md`, event catalog) |
 | `DocBackup { path, label, doc }` | `Text` (backup file) | before a VS Code sync, before its undo |
 | `DocBackups { path }` | `Texts` (oldest first) | backups of a canvas |
+| `Upload { name, id, offset, data, last }` | `Done`, the last piece `Text` (the file's path) | files dropped on a terminal in remote mode: base64 pieces of at most 4 MiB, files of at most 50 MB, written under `<home>/uploads/<date>/` with a free name |
 
 Slow requests (CLI runs, scans, worktrees) are made on background threads and
 their results come back as `AppEvent`s, as before. Quick ones (a folder

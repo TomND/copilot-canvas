@@ -7,11 +7,12 @@
 
 use std::time::Instant;
 
-use canvas_common::protocol::{Input, Run, Run8, runs_v7};
+use canvas_common::protocol::{Input, Placement, Run, Run8, runs_v7};
 
 pub mod alacritty;
 #[cfg(feature = "ghostty")]
 pub mod ghostty;
+pub mod inline;
 
 /// Engine-side happenings, delivered while feeding output.
 pub trait Events {
@@ -26,6 +27,8 @@ pub trait Events {
     fn progress(&mut self, state: u8);
     /// OSC 777 / OSC 9 desktop notification.
     fn notify(&mut self);
+    /// The text of the notification `notify` reported (engines that know it).
+    fn notification(&mut self, _title: String, _body: String) {}
 }
 
 /// Collects events for callers that handle them after feeding.
@@ -37,6 +40,8 @@ pub struct Collected {
     pub clipboard: Vec<String>,
     pub progress: Vec<u8>,
     pub notifications: u32,
+    /// (title, body) of notifications with text.
+    pub texts: Vec<(String, String)>,
 }
 
 impl Events for Collected {
@@ -57,6 +62,9 @@ impl Events for Collected {
     }
     fn notify(&mut self) {
         self.notifications += 1;
+    }
+    fn notification(&mut self, title: String, body: String) {
+        self.texts.push((title, body));
     }
 }
 
@@ -83,6 +91,25 @@ pub struct Snapshot {
     pub display_offset: u32,
     pub history: u32,
     pub modes: u32,
+    /// Kitty graphics placements in the viewport (drawing order not implied).
+    pub images: Vec<SnapshotImage>,
+}
+
+/// One image placement of a snapshot and the generation of its image's pixels.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SnapshotImage {
+    pub placement: Placement,
+    /// Changes whenever the image's pixels change (never reused).
+    pub generation: u64,
+}
+
+/// An image's pixels as straight RGBA rows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImageData {
+    pub width: u32,
+    pub height: u32,
+    pub generation: u64,
+    pub rgba: Vec<u8>,
 }
 
 impl Snapshot {
@@ -180,6 +207,10 @@ pub trait Emulator {
     /// End of a synchronized update (DEC 2026) whose end marker may never come.
     fn sync_deadline(&self) -> Option<Instant>;
     fn end_sync(&mut self, events: &mut dyn Events);
+    /// The pixels of a Kitty graphics image (engines with image support).
+    fn image(&mut self, _id: u32) -> Option<ImageData> {
+        None
+    }
 }
 
 /// Creates an engine. `Ghostty` falls back to alacritty when this build has
@@ -204,4 +235,17 @@ pub fn feed_collect(emulator: &mut dyn Emulator, bytes: &[u8]) -> Collected {
     let mut events = Collected::default();
     emulator.feed(bytes, &mut events);
     events
+}
+
+/// RGBA rows as a PNG file (fast compression: images are sent as they arrive).
+pub fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(png::Compression::Fast);
+    let mut writer = encoder.write_header().ok()?;
+    writer.write_image_data(rgba).ok()?;
+    writer.finish().ok()?;
+    Some(out)
 }

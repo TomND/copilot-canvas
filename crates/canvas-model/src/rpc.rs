@@ -115,7 +115,16 @@ pub enum Request {
     DocBackup { path: String, label: String, doc: Box<Doc> },
     /// Backups of a canvas, oldest first.
     DocBackups { path: String },
+
+    /// One piece of a file dropped on a terminal in remote mode, written into
+    /// `<home>/uploads/<date>/`: `data` (base64) goes at `offset` of upload
+    /// `id`; the `last` piece answers the file's path (a free name from `name`).
+    /// Files are at most [`MAX_UPLOAD`] bytes.
+    Upload { name: String, id: String, offset: u64, data: String, last: bool },
 }
+
+/// Largest file an upload writes.
+pub const MAX_UPLOAD: u64 = 50 << 20;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum Response {
@@ -219,6 +228,7 @@ impl Request {
             Request::CreatePassive { .. } => "passive session files",
             Request::DocBackup { .. } => "canvas backup",
             Request::DocBackups { .. } => "canvas backups",
+            Request::Upload { .. } => "upload",
         }
     }
 
@@ -241,6 +251,7 @@ impl Request {
             | Request::TaskSetEnabled { .. }
             | Request::TaskRun { .. }
             | Request::GitProbe { .. }
+            | Request::Upload { .. }
             | Request::NewestMatches { .. } => 120,
             _ => 30,
         };
@@ -476,6 +487,15 @@ impl dyn Backend + '_ {
 
     pub fn doc_backups(&self, path: &str) -> Result<Vec<String>> {
         self.texts(Request::DocBackups { path: path.to_owned() })
+    }
+
+    /// Sends one upload piece (see [`Request::Upload`]); the last answers the path.
+    pub fn upload_piece(&self, name: &str, id: &str, offset: u64, data: String, last: bool) -> Result<Option<String>> {
+        self.ask(Request::Upload { name: name.to_owned(), id: id.to_owned(), offset, data, last }, |r| match r {
+            Response::Done if !last => Some(None),
+            Response::Text(path) if last => Some(Some(path)),
+            _ => None,
+        })
     }
 }
 

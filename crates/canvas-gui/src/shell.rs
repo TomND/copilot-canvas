@@ -1,10 +1,14 @@
-//! The window and its event loop: winit events become core input, service
-//! messages and app events wake the loop through the proxy, frames are drawn
-//! only when something changed (input immediately, background updates paced
-//! to the display), and ticks run every 40 ms while anything is active.
+//! The windows and their event loop. Every window runs its own canvas-core
+//! `App` (its own service connection and per-client preferences; the
+//! service's document sync keeps them consistent) and shares the GPU device
+//! and the fonts. Winit events become core input, service messages and app
+//! events wake the loop through the proxy, frames are drawn only when
+//! something changed (input immediately, background updates paced to the
+//! display), and ticks run every 40 ms while anything is active. The process
+//! ends when its last window closes.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use canvas_core::app::{App, AppEvent, Focus};
@@ -26,7 +30,7 @@ use crate::gpu::{Gpu, Skip, Surface};
 use crate::perf::{Perf, ms};
 use crate::platform::{GuiPlatform, Taskbar};
 use crate::quads::Quad;
-use crate::scene::{self, Painter, Scene};
+use crate::scene::{self, ImageItem, Painter, Scene};
 use crate::text::{Fonts, Grid, ShapeCache, Spec};
 use crate::theme::{self, BG};
 use crate::tiles::{TileCache, TileInput};
@@ -37,14 +41,19 @@ const TICK: Duration = Duration::from_millis(40);
 const IDLE_TICK: Duration = Duration::from_millis(400);
 /// Longest the UI thread spends on service messages before handling input again.
 const SERVICE_BUDGET: Duration = Duration::from_millis(4);
+/// How long the preview of a pasted image stays.
+const PREVIEW_FOR: Duration = Duration::from_secs(5);
 
 pub enum UserEvent {
-    /// Service messages are waiting.
-    Service,
-    /// The service connection of this generation closed.
-    ServiceClosed(u64),
-    App(Box<AppEvent>),
+    /// Service messages are waiting for window `.0`.
+    Service(usize),
+    /// The service connection of window `.0` and generation `.1` closed.
+    ServiceClosed(usize, u64),
+    App(usize, Box<AppEvent>),
     Hook(crate::hooks::Request),
+    /// Another window's app is ready (or could not be opened); `reply`
+    /// answers the test hook that asked for it.
+    Opened(Box<Result<crate::Opened, String>>, Option<Sender<Value>>),
 }
 
 pub struct Options {
@@ -54,18 +63,25 @@ pub struct Options {
     pub size: Option<(u16, u16)>,
 }
 
-pub struct Shell {
+/// Opens the app of window `index` (connection, document, preferences).
+pub type Opener = Arc<dyn Fn(usize) -> anyhow::Result<crate::Opened> + Send + Sync>;
+
+/// The image shown after pasting one into a terminal.
+struct Preview {
+    item: ImageItem,
+    /// The clipboard image's size.
+    size: (u32, u32),
+    until: Instant,
+}
+
+/// One window: its app, swap chain, layout and input state.
+struct Win {
+    index: usize,
     app: App,
-    options: Options,
-    proxy: EventLoopProxy<UserEvent>,
     platform: Arc<GuiPlatform>,
     taskbar: Taskbar,
-    font_loader: Option<std::thread::JoinHandle<Fonts>>,
-    fonts: Option<Fonts>,
-    window: Option<Arc<Window>>,
-    gpu: Option<Gpu>,
-    /// The window's swap chain (Phase 5: one per window, sharing `gpu`).
-    surface: Option<Surface>,
+    window: Arc<Window>,
+    surface: Surface,
     grid: Grid,
     cols: u16,
     rows: u16,
@@ -99,34 +115,223 @@ pub struct Shell {
     stats_sent: Option<Instant>,
     /// Last keystroke into a terminal: its echo is drawn at once, not paced.
     typed_at: Option<Instant>,
+    first_paint: Option<Duration>,
+    /// Files dropped since the last pass of the loop.
+    dropped: Vec<String>,
+    preview: Option<Preview>,
+    focused: bool,
+}
+
+pub struct Shell {
+    options: Options,
+    proxy: EventLoopProxy<UserEvent>,
+    opener: Opener,
+    font_loader: Option<std::thread::JoinHandle<Fonts>>,
+    fonts: Option<Fonts>,
+    gpu: Option<Gpu>,
+    wins: Vec<Win>,
+    /// Apps waiting for their window (the first waits for `resumed`).
+    waiting: Vec<(crate::Opened, Option<Sender<Value>>)>,
+    next_index: usize,
     pub first_paint: Option<Duration>,
     pub exit_code: i32,
-    exiting: bool,
 }
 
 impl Shell {
-    pub fn new(
-        app: App,
-        options: Options,
-        proxy: EventLoopProxy<UserEvent>,
-        font_loader: std::thread::JoinHandle<Fonts>,
-        platform: Arc<GuiPlatform>,
-        app_rx: Receiver<AppEvent>,
-    ) -> Self {
-        let (svc_tx, svc_rx) = unbounded();
-        let area = Rect::new(0, 0, 1, 1);
-        let mut shell = Self {
-            app,
+    pub fn new(first: crate::Opened, options: Options, proxy: EventLoopProxy<UserEvent>, font_loader: std::thread::JoinHandle<Fonts>, opener: Opener) -> Self {
+        Self {
             options,
-            proxy: proxy.clone(),
-            platform,
-            taskbar: Taskbar::default(),
+            proxy,
+            opener,
             font_loader: Some(font_loader),
             fonts: None,
-            window: None,
             gpu: None,
-            surface: None,
-            grid: Grid::new(0.6, 1.0),
+            wins: Vec::new(),
+            waiting: vec![(first, None)],
+            next_index: 1,
+            first_paint: None,
+            exit_code: 0,
+        }
+    }
+
+    /// Opens another window on a background thread (connecting takes a moment).
+    fn open_window(&mut self, reply: Option<Sender<Value>>) {
+        let index = self.next_index;
+        self.next_index += 1;
+        let (opener, proxy) = (self.opener.clone(), self.proxy.clone());
+        let _ = std::thread::Builder::new().name("open-window".into()).spawn(move || {
+            let result = opener(index).map_err(|e| format!("{e:#}"));
+            let _ = proxy.send_event(UserEvent::Opened(Box::new(result), reply));
+        });
+    }
+
+    /// Creates the window for an opened app (the first one also opens the GPU device).
+    fn create_window(&mut self, event_loop: &ActiveEventLoop, opened: crate::Opened) -> anyhow::Result<usize> {
+        if self.fonts.is_none() {
+            let fonts = match self.font_loader.take() {
+                Some(loader) => loader.join().map_err(|_| anyhow::anyhow!("font loading failed"))?,
+                None => crate::text::load(),
+            };
+            self.fonts = Some(fonts);
+            trace("fonts");
+        }
+        let advance = self.fonts.as_ref().map(|f| f.advance).unwrap_or(0.6);
+        let monitor_scale = event_loop.primary_monitor().map(|m| m.scale_factor()).unwrap_or(1.0) as f32;
+        let grid = Grid::new(advance, monitor_scale);
+        let index = opened.index;
+        let mut attrs = Window::default_attributes().with_title(if index == 0 { "Copilot Canvas".to_owned() } else { format!("Copilot Canvas · window {}", index + 1) }).with_min_inner_size(LogicalSize::new(640.0, 360.0));
+        attrs = match self.options.size {
+            Some((cols, rows)) => attrs.with_inner_size(PhysicalSize::new((cols as f32 * grid.cell_w) as u32, (rows as f32 * grid.cell_h) as u32)),
+            None => attrs.with_inner_size(LogicalSize::new(1560.0, 940.0)),
+        };
+        let window = Arc::new(event_loop.create_window(attrs)?);
+        window.set_ime_allowed(true);
+        opened.platform.set_window(hwnd_of(&window));
+        let grid = Grid::new(advance, window.scale_factor() as f32);
+        trace("window");
+        let surface = match &self.gpu {
+            Some(gpu) => gpu.surface(window.clone())?,
+            None => {
+                let (gpu, surface) = Gpu::new(window.clone(), event_loop.owned_display_handle())?;
+                self.gpu = Some(gpu);
+                surface
+            }
+        };
+        trace("gpu");
+        let mut win = Win::new(opened, window.clone(), surface, grid, &self.proxy);
+        if let Some(hz) = window.current_monitor().and_then(|m| m.refresh_rate_millihertz()).filter(|m| *m > 0) {
+            win.frame_interval = Duration::from_secs_f64(1000.0 / hz as f64);
+        }
+        let size = window.inner_size();
+        win.fit(size.width, size.height, &self.options);
+        self.wins.push(win);
+        Ok(index)
+    }
+
+    /// The window a hook command addresses (`"window": n`, else the first).
+    fn target(&self, command: &Value) -> Option<usize> {
+        match command["window"].as_u64() {
+            Some(index) => self.wins.iter().position(|w| w.index == index as usize),
+            None => (!self.wins.is_empty()).then_some(0),
+        }
+    }
+
+    fn on_hook(&mut self, event_loop: &ActiveEventLoop, command: &Value, reply: Sender<Value>) {
+        let name = command["cmd"].as_str().unwrap_or_default();
+        match name {
+            "new_window" => return self.open_window(Some(reply)),
+            "windows" => {
+                let list: Vec<Value> = self
+                    .wins
+                    .iter()
+                    .map(|w| json!({ "window": w.index, "title": w.window.title(), "focused": w.focused, "cols": w.cols, "rows": w.rows, "connected": w.app.connected }))
+                    .collect();
+                let _ = reply.send(json!({ "ok": true, "windows": list }));
+                return;
+            }
+            "quit" if command.get("window").is_none() => {
+                // Every window saves and detaches; the process ends with the last.
+                for win in &mut self.wins {
+                    win.app.quit = true;
+                }
+                let _ = reply.send(json!({ "ok": true }));
+                self.close_finished(event_loop);
+                return;
+            }
+            _ => {}
+        }
+        let Some(at) = self.target(command) else {
+            let _ = reply.send(json!({ "ok": false, "error": "no such window" }));
+            return;
+        };
+        let answer = match name {
+            "close_window" => {
+                let others = self.wins.len() > 1;
+                let win = &mut self.wins[at];
+                if others { win.app.quit = true } else { win.app.request_quit() }
+                win.input_waiting = true;
+                json!({ "ok": true })
+            }
+            "png" => {
+                let path = std::path::PathBuf::from(command["path"].as_str().unwrap_or("gui.png"));
+                let (Some(gpu), Some(fonts)) = (&mut self.gpu, &mut self.fonts) else {
+                    let _ = reply.send(json!({ "ok": false, "error": "no GPU device" }));
+                    return;
+                };
+                match self.wins[at].png(gpu, fonts, &self.options, &path) {
+                    Ok((w, h)) => json!({ "ok": true, "path": path, "width": w, "height": h }),
+                    Err(error) => json!({ "ok": false, "error": format!("{error:#}") }),
+                }
+            }
+            "perf" => {
+                let textures = self.gpu.as_ref().map(|g| g.images.textures());
+                let mut answer = self.wins[at].perf_json(command);
+                answer["textures"] = json!(textures);
+                answer
+            }
+            _ => {
+                let (gpu, fonts) = (&mut self.gpu, &mut self.fonts);
+                let win = &mut self.wins[at];
+                match win.hook(command, &self.options, gpu.as_mut(), fonts.as_mut()) {
+                    Some(answer) => answer,
+                    None => json!({ "ok": false, "error": format!("unknown command {name:?}") }),
+                }
+            }
+        };
+        let _ = reply.send(answer);
+        self.after_input(event_loop);
+    }
+
+    /// Opens windows the apps asked for and closes the ones that quit.
+    fn after_input(&mut self, event_loop: &ActiveEventLoop) {
+        let wanted = self.wins.iter_mut().map(|w| std::mem::take(&mut w.app.new_window_requested)).filter(|asked| *asked).count();
+        for _ in 0..wanted {
+            self.open_window(None);
+        }
+        self.close_finished(event_loop);
+    }
+
+    /// Saves and closes windows whose app quit; leaves when none is left.
+    fn close_finished(&mut self, event_loop: &ActiveEventLoop) {
+        let mut index = 0;
+        while index < self.wins.len() {
+            if self.wins[index].app.quit {
+                let mut win = self.wins.remove(index);
+                if let Some(error) = win.finish() {
+                    eprintln!("copilot-canvas-gui: the canvas could not be saved: {error}");
+                    self.exit_code = 1;
+                }
+            } else {
+                index += 1;
+            }
+        }
+        if self.wins.is_empty() && self.waiting.is_empty() && self.gpu.is_some() {
+            event_loop.exit();
+        }
+    }
+
+    fn by_window(&self, id: WindowId) -> Option<usize> {
+        self.wins.iter().position(|w| w.window.id() == id)
+    }
+
+    fn by_index(&self, index: usize) -> Option<usize> {
+        self.wins.iter().position(|w| w.index == index)
+    }
+}
+
+impl Win {
+    fn new(opened: crate::Opened, window: Arc<Window>, surface: Surface, grid: Grid, proxy: &EventLoopProxy<UserEvent>) -> Self {
+        let crate::Opened { index, app, app_rx, platform } = opened;
+        let (svc_tx, svc_rx) = unbounded();
+        let area = Rect::new(0, 0, 1, 1);
+        let mut win = Self {
+            index,
+            app,
+            platform,
+            taskbar: Taskbar::default(),
+            window,
+            surface,
+            grid,
             cols: 0,
             rows: 0,
             cache: ShapeCache::default(),
@@ -157,43 +362,47 @@ impl Shell {
             stats_sent: None,
             typed_at: None,
             first_paint: None,
-            exit_code: 0,
-            exiting: false,
+            dropped: Vec::new(),
+            preview: None,
+            focused: false,
         };
-        let rx = shell.app.conn.rx.clone();
-        shell.forward_service(rx);
+        let rx = win.app.conn.rx.clone();
+        win.forward_service(rx, proxy);
+        let proxy = proxy.clone();
         std::thread::Builder::new()
             .name("app-events".into())
             .spawn(move || {
                 for event in app_rx {
-                    if proxy.send_event(UserEvent::App(Box::new(event))).is_err() {
+                    if proxy.send_event(UserEvent::App(index, Box::new(event))).is_err() {
                         break;
                     }
                 }
             })
             .expect("app event thread");
-        shell
+        win
     }
 
-    /// Forwards a service connection's messages to the UI thread.
-    fn forward_service(&mut self, rx: Receiver<ServiceMsg>) {
+    /// Forwards a service connection's messages to the UI thread (images are
+    /// decoded from PNG on the way).
+    fn forward_service(&mut self, rx: Receiver<ServiceMsg>, proxy: &EventLoopProxy<UserEvent>) {
         self.svc_gen += 1;
-        let generation = self.svc_gen;
-        let (tx, pending, proxy) = (self.svc_tx.clone(), self.svc_pending.clone(), self.proxy.clone());
+        let (generation, index) = (self.svc_gen, self.index);
+        let (tx, pending, proxy) = (self.svc_tx.clone(), self.svc_pending.clone(), proxy.clone());
         let _ = std::thread::Builder::new().name("service-forward".into()).spawn(move || {
             for message in rx {
+                let Some(message) = crate::images::decode_message(message) else { continue };
                 if tx.send((generation, message)).is_err() {
                     return;
                 }
-                if !pending.swap(true, Ordering::AcqRel) && proxy.send_event(UserEvent::Service).is_err() {
+                if !pending.swap(true, Ordering::AcqRel) && proxy.send_event(UserEvent::Service(index)).is_err() {
                     return;
                 }
             }
-            let _ = proxy.send_event(UserEvent::ServiceClosed(generation));
+            let _ = proxy.send_event(UserEvent::ServiceClosed(index, generation));
         });
     }
 
-    fn drain_service(&mut self) {
+    fn drain_service(&mut self, proxy: &EventLoopProxy<UserEvent>) {
         self.svc_pending.store(false, Ordering::Release);
         let started = Instant::now();
         let focused = self.app.focused_term.clone();
@@ -215,7 +424,7 @@ impl Shell {
             if started.elapsed() >= SERVICE_BUDGET {
                 // Leftovers after input and drawing.
                 if !self.svc_pending.swap(true, Ordering::AcqRel) {
-                    let _ = self.proxy.send_event(UserEvent::Service);
+                    let _ = proxy.send_event(UserEvent::Service(self.index));
                 }
                 break;
             }
@@ -235,17 +444,17 @@ impl Shell {
         }
     }
 
-    fn after_events(&mut self) {
+    fn after_events(&mut self, proxy: &EventLoopProxy<UserEvent>) {
         if let Some(rx) = self.app.new_service_rx.take() {
-            self.forward_service(rx);
+            self.forward_service(rx, proxy);
         }
     }
 
     /// Feeds input to the core (drawn at once, not paced).
-    fn input(&mut self, events: Vec<InputEvent>) {
+    fn input(&mut self, events: Vec<InputEvent>, proxy: &EventLoopProxy<UserEvent>) {
         let now = Instant::now();
         self.perf.input_at.get_or_insert(now);
-        let typing = self.app.focus == Focus::Terminal && self.app.modals.is_empty();
+        let typing = self.typing();
         if typing && events.iter().any(|e| matches!(e, InputEvent::Key(_) | InputEvent::Text(_) | InputEvent::Paste(_))) {
             self.perf.key_at.get_or_insert(now);
             self.perf.echoed = false;
@@ -253,30 +462,51 @@ impl Shell {
         }
         self.app.on_input(events);
         self.input_waiting = true;
-        self.after_events();
+        self.after_events(proxy);
     }
 
-    /// Ctrl+V / Shift+Insert outside a terminal paste into the focused field
-    /// (a terminal's own paste, with images, is the core's).
-    fn gui_key(&mut self, key: &KeyEvent) -> bool {
-        let terminal = self.app.focus == Focus::Terminal && self.app.modals.is_empty();
+    /// Keyboard input goes to a terminal.
+    fn typing(&self) -> bool {
+        self.app.focus == Focus::Terminal && self.app.modals.is_empty()
+    }
+
+    /// Keys the window handles itself: Ctrl+Shift+N opens a window; Ctrl+V
+    /// and Shift+Insert outside a terminal paste into the focused field (a
+    /// terminal's own paste, with images, is the core's; pasting an image
+    /// also shows what was attached).
+    fn gui_key(&mut self, key: &KeyEvent, proxy: &EventLoopProxy<UserEvent>) -> bool {
+        if key.modifiers.contains(Modifiers::CONTROL | Modifiers::SHIFT) && matches!(key.code, KeyCode::Char('n' | 'N')) {
+            self.app.new_window_requested = true;
+            return true;
+        }
+        let terminal = self.typing();
         if is_paste_key(key) && !terminal {
             if let Ok(text) = self.app.platform.clipboard_text() {
-                self.input(vec![InputEvent::Paste(text)]);
+                self.input(vec![InputEvent::Paste(text)], proxy);
             }
             return true;
+        }
+        if terminal && (is_paste_key(key) || is_alt_v(key)) && self.app.platform.clipboard_has_image() {
+            self.show_paste_preview();
         }
         false
     }
 
+    /// Shows a thumbnail of the clipboard's image (pasted into a terminal).
+    fn show_paste_preview(&mut self) {
+        static SERIAL: AtomicU64 = AtomicU64::new(1);
+        let Some((width, height, rgba)) = self.platform.test_image().or_else(crate::clipimage::read) else { return };
+        let max = (self.grid.cell_w * 28.0) as u32;
+        let (tw, th, pixels) = crate::images::thumbnail(width, height, &rgba, max, max * 2 / 3);
+        let key = 1 << 63 | SERIAL.fetch_add(1, Ordering::Relaxed);
+        let item = ImageItem { key, width: tw, height: th, rgba: pixels, rect: [0.0; 4], uv: [0.0, 0.0, 1.0, 1.0], clip: [0.0; 4] };
+        self.preview = Some(Preview { item, size: (width, height), until: Instant::now() + PREVIEW_FOR });
+        self.redraw = true;
+    }
+
     fn surface_size(&self) -> (u32, u32) {
-        match &self.window {
-            Some(window) => {
-                let size = window.inner_size();
-                (size.width.max(1), size.height.max(1))
-            }
-            None => self.grid_size(),
-        }
+        let size = self.window.inner_size();
+        (size.width.max(1), size.height.max(1))
     }
 
     fn grid_size(&self) -> (u32, u32) {
@@ -284,11 +514,11 @@ impl Shell {
     }
 
     /// Lays out the cells for a window size (unless the grid is fixed).
-    fn fit(&mut self, width: u32, height: u32) {
+    fn fit(&mut self, width: u32, height: u32, options: &Options) {
         if width == 0 || height == 0 {
             return;
         }
-        let (cols, rows) = match (self.options.test_hooks, self.options.size) {
+        let (cols, rows) = match (options.test_hooks, options.size) {
             (true, Some(size)) => size,
             _ => self.grid.cells(width, height),
         };
@@ -301,32 +531,19 @@ impl Shell {
     }
 
     /// Builds the view, draws it and presents.
-    fn frame(&mut self) {
-        if self.fonts.is_none() || self.cols == 0 {
+    fn frame(&mut self, gpu: &mut Gpu, fonts: &mut Fonts, options: &Options) {
+        if self.cols == 0 {
             return;
         }
         let started = Instant::now();
-        let area = Rect::new(0, 0, self.cols, self.rows);
-        if self.chrome.area != area {
-            self.chrome = Buffer::empty(area);
-            self.overlay = Buffer::empty(area);
-        } else {
-            self.chrome.reset();
-            self.overlay.reset();
-        }
-        self.view = canvas_core::ui::render(&mut self.app, &mut self.chrome, area, Some(&mut self.overlay));
-        self.app.needs_draw = false;
-        self.redraw = false;
+        self.build_view();
         let viewed = Instant::now();
         let (width, height) = self.surface_size();
-        let (scene, ime) = self.build_scene(width, height);
+        let (scene, ime) = self.build_scene(fonts, options, width, height);
         let built = Instant::now();
         // Minimized: nothing to present (the view is still built for the hooks).
-        let minimized = self.window.as_ref().is_some_and(|w| w.inner_size().width == 0 || w.inner_size().height == 0);
-        let result = match (&mut self.gpu, &self.surface, &self.window, &mut self.fonts) {
-            (Some(gpu), Some(surface), Some(window), Some(fonts)) if !minimized => Some(gpu.present(surface, window, &scene, &self.cache, fonts)),
-            _ => None,
-        };
+        let minimized = self.window.inner_size().width == 0 || self.window.inner_size().height == 0;
+        let result = (!minimized).then(|| gpu.present(&self.surface, &self.window, &scene, &self.cache, fonts));
         self.cache.end_frame();
         let now = Instant::now();
         self.last_draw = now;
@@ -362,18 +579,32 @@ impl Shell {
         self.tile_cache.retain(|id| self.app.views.contains_key(id));
         // The IME candidate window follows the focused terminal's cursor or text field.
         let field = self.view.cursor.filter(|_| ime.is_none()).map(|(x, y)| [x as f32 * self.grid.cell_w, y as f32 * self.grid.cell_h, self.grid.cell_w, self.grid.cell_h]);
-        if let (Some(window), Some(r)) = (&self.window, ime.or(field)) {
+        if let Some(r) = ime.or(field) {
             let rect = [r[0] as i32, r[1] as i32, r[2] as i32, r[3] as i32];
             if self.ime_rect != Some(rect) {
-                window.set_ime_cursor_area(PhysicalPosition::new(rect[0], rect[1]), PhysicalSize::new(rect[2] as u32, rect[3] as u32));
+                self.window.set_ime_cursor_area(PhysicalPosition::new(rect[0], rect[1]), PhysicalSize::new(rect[2] as u32, rect[3] as u32));
                 self.ime_rect = Some(rect);
             }
         }
     }
 
-    fn build_scene(&mut self, width: u32, height: u32) -> (Scene, crate::tiles::CursorRect) {
+    /// Renders the core's view into the chrome and overlay buffers.
+    fn build_view(&mut self) {
+        let area = Rect::new(0, 0, self.cols, self.rows);
+        if self.chrome.area != area {
+            self.chrome = Buffer::empty(area);
+            self.overlay = Buffer::empty(area);
+        } else {
+            self.chrome.reset();
+            self.overlay.reset();
+        }
+        self.view = canvas_core::ui::render(&mut self.app, &mut self.chrome, area, Some(&mut self.overlay));
+        self.app.needs_draw = false;
+        self.redraw = false;
+    }
+
+    fn build_scene(&mut self, fonts: &mut Fonts, options: &Options, width: u32, height: u32) -> (Scene, crate::tiles::CursorRect) {
         let mut scene = Scene::new(width, height, BG);
-        let Some(fonts) = self.fonts.as_mut() else { return (scene, None) };
         let grid = self.grid;
         let mut p = Painter { scene: &mut scene, cache: &mut self.cache, fonts };
         if let Some(model) = &self.view.canvas {
@@ -411,7 +642,14 @@ impl Shell {
             let center = self.view.canvas.as_ref().map(|c| (c.area.x as f32 + c.area.width as f32 / 2.0) * grid.cell_w).unwrap_or(width as f32 / 2.0);
             banner(&mut p, &grid, text, center, width);
         }
-        if self.options.perf {
+        if let Some(preview) = self.preview.as_mut() {
+            // Top right of the focused terminal (else of the window), clear of its input line.
+            let focused = self.view.tiles.iter().find(|t| t.focused).map(|t| t.inner);
+            let right = focused.map(|r| r.right() as f32 * grid.cell_w).unwrap_or(width as f32) - grid.cell_w;
+            let top = focused.map(|r| r.y as f32 * grid.cell_h).unwrap_or(grid.cell_h * 2.0) + grid.cell_h * 0.5;
+            paste_preview(&mut p, &grid, preview, right, top, width, height);
+        }
+        if options.perf {
             let lines = self.perf.lines(self.app.conn.remote);
             hud(&mut p, &grid, &lines, width, self.rows);
         }
@@ -419,28 +657,56 @@ impl Shell {
     }
 
     /// Renders the current frame offscreen to a PNG.
-    fn png(&mut self, path: &std::path::Path) -> anyhow::Result<(u32, u32)> {
-        if self.app.needs_draw || self.cols == 0 {
-            self.frame();
+    fn png(&mut self, gpu: &mut Gpu, fonts: &mut Fonts, options: &Options, path: &std::path::Path) -> anyhow::Result<(u32, u32)> {
+        if self.app.needs_draw || self.cols == 0 || self.redraw {
+            self.frame(gpu, fonts, options);
         }
         let (width, height) = self.grid_size();
-        let (scene, _) = self.build_scene(width, height);
-        let (Some(gpu), Some(fonts)) = (&mut self.gpu, &mut self.fonts) else { anyhow::bail!("no GPU device") };
+        let (scene, _) = self.build_scene(fonts, options, width, height);
         let rgba = gpu.capture(&scene, &self.cache, fonts)?;
         crate::gpu::write_png(path, width, height, &rgba)?;
         Ok((width, height))
     }
 
-    fn on_hook(&mut self, event_loop: &ActiveEventLoop, command: &Value) -> Value {
+    /// Builds the view for the hooks when something changed since the last frame.
+    fn fresh_view(&mut self, gpu: Option<&mut Gpu>, fonts: Option<&mut Fonts>, options: &Options) {
+        if !(self.app.needs_draw || self.redraw) {
+            return;
+        }
+        match (gpu, fonts) {
+            (Some(gpu), Some(fonts)) => self.frame(gpu, fonts, options),
+            _ => self.build_view(),
+        }
+    }
+
+    fn perf_json(&mut self, command: &Value) -> Value {
+        if command["reset"].as_bool() == Some(true) {
+            self.perf.reset();
+        }
+        let (cpu, private) = crate::perf::process();
+        json!({
+            "ok": true,
+            "perf": self.perf.json(),
+            "cpu_ms": cpu.as_millis() as u64,
+            "private_mb": private as f64 / (1024.0 * 1024.0),
+            "first_paint_ms": self.first_paint.map(|d| d.as_millis() as u64),
+            "shape_cache": self.cache.len(),
+            "shaped": self.cache.shaped,
+            "rows_rebuilt": self.tile_cache.rebuilt,
+            "boxes": self.view.canvas.as_ref().map(|c| c.boxes.len()),
+            "connected": self.app.connected,
+        })
+    }
+
+    /// One test-hook command for this window (`None`: unknown).
+    fn hook(&mut self, command: &Value, options: &Options, gpu: Option<&mut Gpu>, fonts: Option<&mut Fonts>) -> Option<Value> {
         let name = command["cmd"].as_str().unwrap_or_default();
         let mods = parse_mods(&command["mods"]);
-        let point = || (command["x"].as_f64().unwrap_or(0.0) as f32, command["y"].as_f64().unwrap_or(0.0) as f32);
-        match name {
+        let point = (command["x"].as_f64().unwrap_or(0.0) as f32, command["y"].as_f64().unwrap_or(0.0) as f32);
+        Some(match name {
             "key" => match hook_key(command, mods) {
                 Some(key) => {
-                    if !self.gui_key(&key) {
-                        self.input(vec![InputEvent::Key(key)]);
-                    }
+                    self.key_input(key);
                     json!({ "ok": true })
                 }
                 None => json!({ "ok": false, "error": "unknown key" }),
@@ -449,19 +715,18 @@ impl Shell {
                 // A batch, as one read of a console's input.
                 let mut batch = Vec::new();
                 for spec in command["keys"].as_array().into_iter().flatten() {
-                    let Some(key) = hook_key(spec, parse_mods(&spec["mods"])) else { return json!({ "ok": false, "error": format!("unknown key {spec}") }) };
-                    if is_paste_key(&key) {
+                    let Some(key) = hook_key(spec, parse_mods(&spec["mods"])) else { return Some(json!({ "ok": false, "error": format!("unknown key {spec}") })) };
+                    if is_paste_key(&key) || is_alt_v(&key) || is_new_window_key(&key) {
                         if !batch.is_empty() {
-                            self.input(std::mem::take(&mut batch));
+                            self.raw_input(std::mem::take(&mut batch));
                         }
-                        if self.gui_key(&key) {
-                            continue;
-                        }
+                        self.key_input(key);
+                        continue;
                     }
                     batch.push(InputEvent::Key(key));
                 }
                 if !batch.is_empty() {
-                    self.input(batch);
+                    self.raw_input(batch);
                 }
                 json!({ "ok": true })
             }
@@ -474,18 +739,18 @@ impl Shell {
                     }
                     (_, Some(text)) => {
                         self.preedit = None;
-                        self.input(vec![InputEvent::Text(text.to_owned())]);
+                        self.raw_input(vec![InputEvent::Text(text.to_owned())]);
                     }
                     _ => {}
                 }
                 json!({ "ok": true })
             }
             "text" => {
-                self.input(vec![InputEvent::Text(command["text"].as_str().unwrap_or_default().to_owned())]);
+                self.raw_input(vec![InputEvent::Text(command["text"].as_str().unwrap_or_default().to_owned())]);
                 json!({ "ok": true })
             }
             "paste" => {
-                self.input(vec![InputEvent::Paste(command["text"].as_str().unwrap_or_default().to_owned())]);
+                self.raw_input(vec![InputEvent::Paste(command["text"].as_str().unwrap_or_default().to_owned())]);
                 json!({ "ok": true })
             }
             "mouse" => {
@@ -500,7 +765,7 @@ impl Shell {
                     "drag" => MouseEventKind::Drag(button),
                     _ => MouseEventKind::Moved,
                 };
-                self.input(vec![InputEvent::Mouse(canvas_core::input::MouseEvent::at(kind, point().0, point().1, mods))]);
+                self.raw_input(vec![InputEvent::Mouse(canvas_core::input::MouseEvent::at(kind, point.0, point.1, mods))]);
                 json!({ "ok": true })
             }
             "wheel" => {
@@ -510,59 +775,79 @@ impl Shell {
                     "right" => MouseEventKind::ScrollRight,
                     _ => MouseEventKind::ScrollDown,
                 };
-                self.input(vec![InputEvent::Mouse(canvas_core::input::MouseEvent::at(kind, point().0, point().1, mods))]);
+                self.raw_input(vec![InputEvent::Mouse(canvas_core::input::MouseEvent::at(kind, point.0, point.1, mods))]);
+                json!({ "ok": true })
+            }
+            "drop" => {
+                // Files dropped at a cell, as from Explorer.
+                let paths: Vec<String> = command["paths"].as_array().into_iter().flatten().filter_map(|p| p.as_str().map(str::to_owned)).collect();
+                self.app.drop_files(paths, point);
+                self.input_waiting = true;
                 json!({ "ok": true })
             }
             "screen" => {
-                if self.app.needs_draw || self.redraw {
-                    self.frame();
-                }
+                self.fresh_view(gpu, fonts, options);
                 json!({ "ok": true, "cols": self.cols, "rows": self.rows, "lines": crate::hooks::screen(&self.app, &self.view, &self.chrome, &self.overlay) })
             }
             "tree" => {
-                if self.app.needs_draw || self.redraw {
-                    self.frame();
-                }
-                json!({ "ok": true, "tree": crate::hooks::tree(&self.app, &self.view, &self.chrome) })
+                self.fresh_view(gpu, fonts, options);
+                let mut tree = crate::hooks::tree(&self.app, &self.view, &self.chrome);
+                tree["window"] = json!(self.index);
+                tree["paste_preview"] = json!(self.preview.as_ref().map(|p| json!({ "width": p.size.0, "height": p.size.1, "rect": p.item.rect })));
+                json!({ "ok": true, "tree": tree })
             }
-            "png" => {
-                let path = std::path::PathBuf::from(command["path"].as_str().unwrap_or("gui.png"));
-                match self.png(&path) {
-                    Ok((w, h)) => json!({ "ok": true, "path": path, "width": w, "height": h }),
-                    Err(error) => json!({ "ok": false, "error": format!("{error:#}") }),
+            "clipboard" => {
+                // The test hooks' clipboard (used when Windows' clipboard is unavailable).
+                let Some(clip) = &self.platform.test_clipboard else { return Some(json!({ "ok": false, "error": "no test clipboard" })) };
+                let mut clip = clip.lock().unwrap_or_else(|p| p.into_inner());
+                if command["clear"].as_bool() == Some(true) {
+                    *clip = Default::default();
                 }
+                if let Some(text) = command["text"].as_str() {
+                    clip.system_unavailable = canvas_core::clipboard::set_text(text).is_err();
+                    clip.text = Some(text.to_owned());
+                }
+                if let Some(image) = command.get("image") {
+                    let (w, h) = (image["width"].as_u64().unwrap_or(1) as u32, image["height"].as_u64().unwrap_or(1) as u32);
+                    let c: Vec<u8> = image["color"].as_array().map(|a| a.iter().filter_map(|v| v.as_u64().map(|v| v as u8)).collect()).unwrap_or_default();
+                    let pixel = [c.first().copied().unwrap_or(0), c.get(1).copied().unwrap_or(0), c.get(2).copied().unwrap_or(0), 255];
+                    clip.image = Some((w, h, pixel.repeat((w * h) as usize)));
+                }
+                json!({ "ok": true, "text": clip.text, "image": clip.image.is_some(), "system_unavailable": clip.system_unavailable })
+            }
+            "platform" => {
+                let toasts = self.platform.toasts.lock().map(|t| t.clone()).unwrap_or_default();
+                let clipboard = self.platform.test_clipboard.as_ref().map(|c| {
+                    let c = c.lock().unwrap_or_else(|p| p.into_inner());
+                    json!({ "text": c.text, "image": c.image.is_some(), "system_unavailable": c.system_unavailable })
+                });
+                json!({
+                    "ok": true,
+                    "title": self.window.title(),
+                    "bells": self.platform.bells.load(Ordering::Relaxed),
+                    "flashes": self.platform.flashes.load(Ordering::Relaxed),
+                    "progress": self.platform.progress_state(),
+                    "taskbar": self.taskbar.shown,
+                    "toasts": toasts,
+                    "clipboard": clipboard,
+                    "toast_history": if command["history"].as_bool() == Some(true) { json!(crate::platform::toast_history()) } else { Value::Null },
+                })
             }
             "size" => json!({
                 "ok": true, "cols": self.cols, "rows": self.rows, "cell_w": self.grid.cell_w, "cell_h": self.grid.cell_h, "scale": self.grid.scale,
-                "adapter": self.gpu.as_ref().map(|g| g.info.name.clone()), "present_mode": self.surface.as_ref().map(|s| format!("{:?}", s.present_mode())),
+                "adapter": gpu.map(|g| g.info.name.clone()), "present_mode": format!("{:?}", self.surface.present_mode()),
             }),
-            "perf" => {
-                if command["reset"].as_bool() == Some(true) {
-                    self.perf.reset();
-                }
-                let (cpu, private) = crate::perf::process();
-                json!({
-                    "ok": true,
-                    "perf": self.perf.json(),
-                    "cpu_ms": cpu.as_millis() as u64,
-                    "private_mb": private as f64 / (1024.0 * 1024.0),
-                    "first_paint_ms": self.first_paint.map(|d| d.as_millis() as u64),
-                    "shape_cache": self.cache.len(),
-                    "shaped": self.cache.shaped,
-                    "rows_rebuilt": self.tile_cache.rebuilt,
-                    "boxes": self.view.canvas.as_ref().map(|c| c.boxes.len()),
-                    "connected": self.app.connected,
-                })
-            }
             "redraw" => {
                 // Forces a full frame (measurements).
                 self.app.needs_draw = true;
-                self.frame();
+                if let (Some(gpu), Some(fonts)) = (gpu, fonts) {
+                    self.frame(gpu, fonts, options);
+                }
                 json!({ "ok": true })
             }
             "post_keys" => {
                 // Real window messages, through winit's keyboard handling.
-                let hwnd = self.window.as_ref().map(|w| hwnd_of(w)).unwrap_or(0);
+                let hwnd = hwnd_of(&self.window);
                 let text = command["text"].as_str().unwrap_or_default().to_owned();
                 let every = Duration::from_millis(command["interval_ms"].as_u64().unwrap_or(100));
                 std::thread::spawn(move || {
@@ -575,43 +860,30 @@ impl Shell {
             }
             "quit" => {
                 self.app.quit = true;
-                self.finish(event_loop);
                 json!({ "ok": true })
             }
-            other => json!({ "ok": false, "error": format!("unknown command {other:?}") }),
+            "panic" => panic!("test hook asked for a crash"),
+            _ => return None,
+        })
+    }
+
+    /// A key as if typed: the window's own keys first, then the core.
+    fn key_input(&mut self, key: KeyEvent) {
+        let proxy = self.app_proxy();
+        if !self.gui_key(&key, &proxy) {
+            self.input(vec![InputEvent::Key(key)], &proxy);
         }
     }
 
-    fn create_window(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
-        let fonts = match self.font_loader.take() {
-            Some(loader) => loader.join().map_err(|_| anyhow::anyhow!("font loading failed"))?,
-            None => crate::text::load(),
-        };
-        trace("fonts");
-        let monitor_scale = event_loop.primary_monitor().map(|m| m.scale_factor()).unwrap_or(1.0) as f32;
-        let grid = Grid::new(fonts.advance, monitor_scale);
-        let mut attrs = Window::default_attributes().with_title("Copilot Canvas").with_min_inner_size(LogicalSize::new(640.0, 360.0));
-        attrs = match self.options.size {
-            Some((cols, rows)) => attrs.with_inner_size(PhysicalSize::new((cols as f32 * grid.cell_w) as u32, (rows as f32 * grid.cell_h) as u32)),
-            None => attrs.with_inner_size(LogicalSize::new(1560.0, 940.0)),
-        };
-        let window = Arc::new(event_loop.create_window(attrs)?);
-        window.set_ime_allowed(true);
-        self.platform.set_window(hwnd_of(&window));
-        self.grid = Grid::new(fonts.advance, window.scale_factor() as f32);
-        self.fonts = Some(fonts);
-        if let Some(hz) = window.current_monitor().and_then(|m| m.refresh_rate_millihertz()).filter(|m| *m > 0) {
-            self.frame_interval = Duration::from_secs_f64(1000.0 / hz as f64);
-        }
-        trace("window");
-        let (gpu, surface) = Gpu::new(window.clone(), event_loop.owned_display_handle())?;
-        self.gpu = Some(gpu);
-        self.surface = Some(surface);
-        trace("gpu");
-        let size = window.inner_size();
-        self.window = Some(window);
-        self.fit(size.width, size.height);
-        Ok(())
+    fn raw_input(&mut self, events: Vec<InputEvent>) {
+        let proxy = self.app_proxy();
+        self.input(events, &proxy);
+    }
+
+    /// The proxy the window's threads use (kept by the forward threads; a
+    /// fresh one is only needed when a connection is replaced).
+    fn app_proxy(&self) -> EventLoopProxy<UserEvent> {
+        PROXY.get().cloned().expect("event loop proxy")
     }
 
     /// The mouse pointer's shape: a hand over buttons and links, resize
@@ -630,21 +902,15 @@ impl Shell {
             CursorIcon::Default
         };
         if self.cursor_icon != Some(icon) {
-            if let Some(window) = &self.window {
-                window.set_cursor(icon);
-            }
+            self.window.set_cursor(icon);
             self.cursor_icon = Some(icon);
         }
     }
 
-    /// Saves and leaves once the app quits (detach or stop all).
-    fn finish(&mut self, event_loop: &ActiveEventLoop) {
-        if !self.app.quit || self.exiting {
-            return;
-        }
-        self.exiting = true;
+    /// Saves before the window goes; the last edits reach the service (it
+    /// saves them). Returns the save error, if any.
+    fn finish(&mut self) -> Option<String> {
         self.app.save_now();
-        // The last edits reach the service (it saves them) before the window goes.
         let deadline = Instant::now() + FLUSH_TIMEOUT;
         while self.app.replica.in_flight() > 0 && self.app.connected && Instant::now() < deadline {
             match self.svc_rx.recv_timeout(Duration::from_millis(50)) {
@@ -654,18 +920,74 @@ impl Shell {
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
             }
         }
-        if let Some(error) = &self.app.save_error {
-            eprintln!("copilot-canvas-gui: the canvas could not be saved: {error}");
-            self.exit_code = 1;
-        }
-        event_loop.exit();
+        self.app.save_error.clone()
     }
 
     fn mouse(&mut self, kind: MouseEventKind) {
         let event = crate::input::mouse(kind, self.pointer, self.mods);
-        self.input(vec![event]);
+        self.raw_input(vec![event]);
+    }
+
+    /// Files dropped since the last pass, at the pointer's cell.
+    fn flush_dropped(&mut self) {
+        if self.dropped.is_empty() {
+            return;
+        }
+        let paths = std::mem::take(&mut self.dropped);
+        let at = cursor_cell(&self.window, &self.grid).unwrap_or(self.pointer);
+        self.app.drop_files(paths, at);
+        self.input_waiting = true;
+    }
+
+    /// Housekeeping, then a frame when one is due; returns when to wake next.
+    fn tick(&mut self, gpu: Option<&mut Gpu>, fonts: Option<&mut Fonts>, options: &Options) -> Instant {
+        self.flush_dropped();
+        let now = Instant::now();
+        if now >= self.next_tick {
+            let stats_at = self.app.stats_at;
+            self.app.on_tick();
+            if self.app.stats_at != stats_at {
+                self.stats_sent = Some(self.app.stats_at);
+            }
+            if self.preview.as_ref().is_some_and(|p| now >= p.until) {
+                self.preview = None;
+                self.redraw = true;
+            }
+            let app = &self.app;
+            let busy = app.needs_draw
+                || app.notice.is_some()
+                || app.flash.is_some()
+                || !app.pulses.is_empty()
+                || app.dirty_at.is_some()
+                || app.drag.is_some()
+                || app.reconnecting
+                || app.restarting.is_some()
+                || self.preview.is_some();
+            self.next_tick = now + if busy { TICK } else { IDLE_TICK };
+            let proxy = self.app_proxy();
+            self.after_events(&proxy);
+        }
+        self.platform.apply(&self.window, &mut self.taskbar);
+        let due = |s: &Self| -> Option<Instant> {
+            if !(s.app.needs_draw || s.redraw) {
+                return None;
+            }
+            if let Some(at) = s.retry_at {
+                return Some(at);
+            }
+            Some(if s.input_waiting { Instant::now() } else { s.last_draw + s.frame_interval })
+        };
+        if due(self).is_some_and(|at| at <= Instant::now())
+            && let (Some(gpu), Some(fonts)) = (gpu, fonts)
+        {
+            self.frame(gpu, fonts, options);
+        }
+        [Some(self.next_tick), due(self)].into_iter().flatten().min().unwrap_or(self.next_tick)
     }
 }
+
+/// The event loop's proxy, for window threads started after the first.
+static PROXY: std::sync::OnceLock<EventLoopProxy<UserEvent>> = std::sync::OnceLock::new();
 
 /// How long quitting waits for the last edits to reach the service.
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
@@ -683,6 +1005,17 @@ fn hwnd_of(window: &Window) -> isize {
         Ok(RawWindowHandle::Win32(h)) => h.hwnd.get(),
         _ => 0,
     }
+}
+
+/// The mouse pointer's cell in a window (files are dropped where it is).
+fn cursor_cell(window: &Window, grid: &Grid) -> Option<(f32, f32)> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let mut point = POINT { x: 0, y: 0 };
+    // SAFETY: plain Win32 calls on this process's window.
+    let ok = unsafe { GetCursorPos(&mut point) != 0 && ScreenToClient(hwnd_of(window) as _, &mut point) != 0 };
+    ok.then(|| (point.x as f32 / grid.cell_w, point.y as f32 / grid.cell_h))
 }
 
 /// Posts a key press for an ASCII character to the window (as the OS would).
@@ -708,6 +1041,15 @@ fn post_key(hwnd: isize, c: char) {
 fn is_paste_key(key: &KeyEvent) -> bool {
     let ctrl_v = key.modifiers.contains(Modifiers::CONTROL) && matches!(key.code, KeyCode::Char('v' | 'V'));
     ctrl_v || key.modifiers.contains(Modifiers::SHIFT) && key.code == KeyCode::Insert
+}
+
+/// Alt+V (Copilot's image paste key).
+fn is_alt_v(key: &KeyEvent) -> bool {
+    key.modifiers.contains(Modifiers::ALT) && !key.modifiers.contains(Modifiers::CONTROL) && matches!(key.code, KeyCode::Char('v' | 'V'))
+}
+
+fn is_new_window_key(key: &KeyEvent) -> bool {
+    key.modifiers.contains(Modifiers::CONTROL | Modifiers::SHIFT) && matches!(key.code, KeyCode::Char('n' | 'N'))
 }
 
 fn parse_mods(value: &Value) -> Modifiers {
@@ -763,6 +1105,25 @@ fn banner(p: &mut Painter, grid: &Grid, text: &str, center: f32, width: u32) {
     p.place(scene::HUD, key, x + grid.cell_w, y + (bh - size * 1.3) / 2.0, 1.0, [255, 255, 255], full);
 }
 
+/// The pasted image's thumbnail with its size, its top right corner at `right`, `top`.
+fn paste_preview(p: &mut Painter, grid: &Grid, preview: &mut Preview, right: f32, top: f32, width: u32, height: u32) {
+    let size = grid.font_px * 0.85;
+    let caption = format!("Image attached · {} × {}", preview.size.0, preview.size.1);
+    let (key, text_w) = p.shape(Spec::ui(&caption, size));
+    let pad = grid.cell_w * 0.6;
+    let (iw, ih) = (preview.item.width as f32, preview.item.height as f32);
+    let w = iw.max(text_w) + 2.0 * pad;
+    let h = ih + size * 1.4 + 3.0 * pad;
+    let (x, y) = ((right - w).max(0.0), top.min(height as f32 - h).max(0.0));
+    let full = [0.0, 0.0, width as f32, height as f32];
+    p.under(scene::HUD, Quad::rounded(x, y, w, h, 6.0 * grid.scale, theme::rgba([12, 16, 24], 0.96), theme::color(canvas_core::paint::ACCENT, 1.0), grid.scale, full));
+    let rect = [x + pad, y + pad, iw, ih];
+    preview.item.rect = rect;
+    preview.item.clip = full;
+    p.image(scene::HUD, false, preview.item.clone());
+    p.place(scene::HUD, key, x + pad, y + 2.0 * pad + ih, 1.0, theme::rgb(canvas_core::paint::TEXT, theme::FG), full);
+}
+
 /// The `--perf` overlay at the bottom right, above the status bar.
 fn hud(p: &mut Painter, grid: &Grid, lines: &[String], width: u32, rows: u16) {
     let size = grid.font_px * 0.85;
@@ -781,176 +1142,204 @@ fn hud(p: &mut Painter, grid: &Grid, lines: &[String], width: u32, rows: u16) {
 
 impl ApplicationHandler<UserEvent> for Shell {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
+        let _ = PROXY.set(self.proxy.clone());
+        if !self.wins.is_empty() {
             return;
         }
         trace("resumed");
-        if let Err(error) = self.create_window(event_loop) {
-            eprintln!("copilot-canvas-gui: {error:#}");
-            self.exit_code = 1;
-            event_loop.exit();
+        for (opened, reply) in std::mem::take(&mut self.waiting) {
+            match self.create_window(event_loop, opened) {
+                Ok(index) => {
+                    if let Some(reply) = reply {
+                        let _ = reply.send(json!({ "ok": true, "window": index }));
+                    }
+                }
+                Err(error) => {
+                    eprintln!("copilot-canvas-gui: {error:#}");
+                    self.exit_code = 1;
+                    event_loop.exit();
+                    return;
+                }
+            }
         }
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
-            UserEvent::Service => self.drain_service(),
-            UserEvent::ServiceClosed(generation) => {
-                if generation == self.svc_gen && self.app.restarting.is_none() {
-                    // Reconnects in the background; input is blocked meanwhile.
-                    self.app.connection_lost();
+            UserEvent::Service(index) => {
+                if let Some(at) = self.by_index(index) {
+                    self.wins[at].drain_service(&self.proxy);
                 }
             }
-            UserEvent::App(event) => {
-                self.app.on_app_event(*event);
-                self.after_events();
+            UserEvent::ServiceClosed(index, generation) => {
+                if let Some(at) = self.by_index(index) {
+                    let win = &mut self.wins[at];
+                    if generation == win.svc_gen && win.app.restarting.is_none() {
+                        // Reconnects in the background; input is blocked meanwhile.
+                        win.app.connection_lost();
+                    }
+                }
+            }
+            UserEvent::App(index, event) => {
+                if let Some(at) = self.by_index(index) {
+                    let win = &mut self.wins[at];
+                    win.app.on_app_event(*event);
+                    win.after_events(&self.proxy);
+                }
+                self.after_input(event_loop);
             }
             UserEvent::Hook(request) => {
                 trace("hook");
-                let reply = self.on_hook(event_loop, &request.command);
-                let _ = request.reply.send(reply);
+                self.on_hook(event_loop, &request.command, request.reply);
+            }
+            UserEvent::Opened(result, reply) => {
+                let answer = match *result {
+                    Ok(opened) => match self.create_window(event_loop, opened) {
+                        Ok(index) => json!({ "ok": true, "window": index }),
+                        Err(error) => json!({ "ok": false, "error": format!("{error:#}") }),
+                    },
+                    Err(error) => {
+                        if let Some(win) = self.wins.first_mut() {
+                            win.app.notify(format!("Cannot open another window: {error}"), true);
+                        }
+                        json!({ "ok": false, "error": error })
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = reply.send(answer);
+                }
             }
         }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.window.as_ref().is_some_and(|w| w.id() != id) {
-            return;
-        }
+        let Some(at) = self.by_window(id) else { return };
+        let others = self.wins.len() > 1;
+        let (options, proxy) = (&self.options, &self.proxy);
+        let win = &mut self.wins[at];
         match event {
             WindowEvent::CloseRequested => {
-                // As Ctrl+Q: asks to detach or stop the running sessions.
-                self.app.request_quit();
-                self.input_waiting = true;
+                if others {
+                    // Another window stays open: this one just detaches.
+                    win.app.quit = true;
+                } else {
+                    // As Ctrl+Q: asks to detach or stop the running sessions.
+                    win.app.request_quit();
+                }
+                win.input_waiting = true;
             }
             WindowEvent::Resized(size) => {
-                if let (Some(gpu), Some(surface)) = (&self.gpu, &mut self.surface) {
-                    surface.resize(gpu, size.width, size.height);
+                if let Some(gpu) = &self.gpu {
+                    win.surface.resize(gpu, size.width, size.height);
                 }
-                self.fit(size.width, size.height);
-                self.redraw = true;
-                self.retry_at = None;
-                self.retries = 0;
+                win.fit(size.width, size.height, options);
+                win.redraw = true;
+                win.retry_at = None;
+                win.retries = 0;
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 if let Some(fonts) = &self.fonts {
-                    self.grid = Grid::new(fonts.advance, scale_factor as f32);
+                    win.grid = Grid::new(fonts.advance, scale_factor as f32);
                 }
-                self.redraw = true;
+                win.redraw = true;
             }
-            WindowEvent::RedrawRequested => self.redraw = true,
-            WindowEvent::Focused(focused) => self.input(vec![InputEvent::Focus(focused)]),
+            WindowEvent::RedrawRequested => win.redraw = true,
+            WindowEvent::Focused(focused) => {
+                win.focused = focused;
+                win.input(vec![InputEvent::Focus(focused)], proxy);
+            }
             WindowEvent::ModifiersChanged(m) => {
-                let ctrl = self.mods.control_key() != m.state().control_key();
-                self.mods = m.state();
-                if ctrl && self.app.layout.links.iter().any(|l| l.terminal) {
-                    self.redraw = true;
+                let ctrl = win.mods.control_key() != m.state().control_key();
+                win.mods = m.state();
+                if ctrl && win.app.layout.links.iter().any(|l| l.terminal) {
+                    win.redraw = true;
                 }
             }
             WindowEvent::KeyboardInput { event, is_synthetic, .. } => {
-                if is_synthetic || self.preedit.is_some() {
+                if is_synthetic || win.preedit.is_some() {
                     return;
                 }
                 if matches!(event.logical_key, Key::Named(NamedKey::Control | NamedKey::Shift | NamedKey::Alt | NamedKey::Super)) {
                     return;
                 }
-                let Some(input) = crate::input::key(&event.logical_key, event.state, self.mods) else { return };
+                let Some(input) = crate::input::key(&event.logical_key, event.state, win.mods) else { return };
                 if let InputEvent::Key(key) = &input
-                    && self.gui_key(key)
+                    && win.gui_key(key, proxy)
                 {
+                    self.after_input(event_loop);
                     return;
                 }
-                self.input(vec![input]);
+                win.input(vec![input], proxy);
             }
             WindowEvent::Ime(ime) => match ime {
                 Ime::Preedit(text, _) => {
-                    self.preedit = (!text.is_empty()).then_some(text);
-                    self.redraw = true;
+                    win.preedit = (!text.is_empty()).then_some(text);
+                    win.redraw = true;
                 }
                 Ime::Commit(text) => {
-                    self.preedit = None;
-                    self.input(vec![InputEvent::Text(text)]);
+                    win.preedit = None;
+                    win.input(vec![InputEvent::Text(text)], proxy);
                 }
                 Ime::Enabled | Ime::Disabled => {}
             },
             WindowEvent::CursorMoved { position, .. } => {
-                let point = (position.x as f32 / self.grid.cell_w, position.y as f32 / self.grid.cell_h);
+                let point = (position.x as f32 / win.grid.cell_w, position.y as f32 / win.grid.cell_h);
                 let cell = (point.0.max(0.0) as u16, point.1.max(0.0) as u16);
-                let moved_cell = (self.pointer.0 as u16, self.pointer.1 as u16) != cell;
-                self.pointer = point;
-                if let Some(&button) = self.held.last() {
-                    self.mouse(MouseEventKind::Drag(button));
+                let moved_cell = (win.pointer.0 as u16, win.pointer.1 as u16) != cell;
+                win.pointer = point;
+                if let Some(&button) = win.held.last() {
+                    win.mouse(MouseEventKind::Drag(button));
                 } else if moved_cell {
                     // Hover: link underlines follow the pointer.
-                    let over_link = |c: Option<(u16, u16)>| c.is_some_and(|(x, y)| self.app.layout.links.iter().any(|l| l.terminal && l.contains(x, y)));
-                    if over_link(self.hover) || over_link(Some(cell)) {
-                        self.redraw = true;
+                    let over_link = |c: Option<(u16, u16)>| c.is_some_and(|(x, y)| win.app.layout.links.iter().any(|l| l.terminal && l.contains(x, y)));
+                    if over_link(win.hover) || over_link(Some(cell)) {
+                        win.redraw = true;
                     }
-                    self.hover = Some(cell);
-                    self.update_cursor(cell);
+                    win.hover = Some(cell);
+                    win.update_cursor(cell);
                 }
             }
-            WindowEvent::CursorLeft { .. } => self.hover = None,
+            WindowEvent::CursorLeft { .. } => win.hover = None,
             WindowEvent::MouseInput { state, button, .. } => {
                 let Some(button) = crate::input::button(button) else { return };
                 match state {
                     ElementState::Pressed => {
-                        self.held.retain(|b| *b != button);
-                        self.held.push(button);
-                        self.mouse(MouseEventKind::Down(button));
+                        win.held.retain(|b| *b != button);
+                        win.held.push(button);
+                        win.mouse(MouseEventKind::Down(button));
                     }
                     ElementState::Released => {
-                        self.held.retain(|b| *b != button);
-                        self.mouse(MouseEventKind::Up(button));
+                        win.held.retain(|b| *b != button);
+                        win.mouse(MouseEventKind::Up(button));
                     }
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                for kind in self.wheel.notches(delta, self.grid.cell_h) {
-                    self.mouse(kind);
+                for kind in win.wheel.notches(delta, win.grid.cell_h) {
+                    win.mouse(kind);
                 }
             }
+            WindowEvent::DroppedFile(path) => win.dropped.push(path.display().to_string()),
             _ => {}
         }
-        self.finish(event_loop);
+        self.after_input(event_loop);
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_none() {
+        if self.wins.is_empty() {
             return;
         }
-        let now = Instant::now();
-        if now >= self.next_tick {
-            let stats_at = self.app.stats_at;
-            self.app.on_tick();
-            if self.app.stats_at != stats_at {
-                self.stats_sent = Some(self.app.stats_at);
-            }
-            let app = &self.app;
-            let busy = app.needs_draw || app.notice.is_some() || app.flash.is_some() || !app.pulses.is_empty() || app.dirty_at.is_some() || app.drag.is_some() || app.reconnecting || app.restarting.is_some();
-            self.next_tick = now + if busy { TICK } else { IDLE_TICK };
-            self.after_events();
+        let mut wake: Option<Instant> = None;
+        for win in &mut self.wins {
+            let next = win.tick(self.gpu.as_mut(), self.fonts.as_mut(), &self.options);
+            wake = Some(wake.map_or(next, |w| w.min(next)));
         }
-        if let Some(window) = &self.window {
-            self.platform.apply(window, &mut self.taskbar);
+        if let Some(paint) = self.wins.first().and_then(|w| w.first_paint) {
+            self.first_paint.get_or_insert(paint);
         }
-        if self.app.quit {
-            self.finish(event_loop);
-            return;
+        self.after_input(event_loop);
+        if let Some(wake) = wake {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
         }
-        let due = |s: &Self| -> Option<Instant> {
-            if !(s.app.needs_draw || s.redraw) {
-                return None;
-            }
-            if let Some(at) = s.retry_at {
-                return Some(at);
-            }
-            Some(if s.input_waiting { Instant::now() } else { s.last_draw + s.frame_interval })
-        };
-        if due(self).is_some_and(|at| at <= Instant::now()) {
-            self.frame();
-        }
-        let wake = [Some(self.next_tick), due(self)].into_iter().flatten().min().unwrap_or(self.next_tick);
-        event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
     }
 }

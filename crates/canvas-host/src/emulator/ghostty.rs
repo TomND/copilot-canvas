@@ -22,6 +22,12 @@
 //!
 //! OSC 52 writes reach the clipboard only for the standard clipboard and up
 //! to [`CLIPBOARD_MAX_BYTES`].
+//!
+//! Kitty graphics are on with a storage limit of [`IMAGE_STORAGE_LIMIT`] per
+//! terminal; images come only inline (the file, temporary-file and
+//! shared-memory mediums are off), PNG payloads are decoded with the `png`
+//! crate. Snapshots list the render state's placements; [`Emulator::image`]
+//! reads one image's pixels as RGBA.
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void};
@@ -32,13 +38,17 @@ use canvas_common::protocol::*;
 use ghostty_vt_sys as sys;
 
 use super::alacritty::{CLIPBOARD_MAX_BYTES, palette};
-use super::{Config, Emulator, Engine, Events, Scroll, Snapshot};
+use super::{Config, Emulator, Engine, Events, ImageData, Scroll, Snapshot, SnapshotImage};
 
 /// How long a synchronized update may hold the screen (alacritty's limit).
 pub const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
+/// Kitty graphics storage per terminal (both screens).
+pub const IMAGE_STORAGE_LIMIT: u64 = 64 << 20;
+/// Largest image (width × height) whose pixels are handed out.
+pub const MAX_IMAGE_PIXELS: u64 = 4096 * 4096;
 /// Cell size reported to size queries (XTWINOPS), as alacritty reports it.
-const CELL_WIDTH: u32 = 8;
-const CELL_HEIGHT: u32 = 16;
+const CELL_WIDTH: u32 = HOST_CELL_PX.0;
+const CELL_HEIGHT: u32 = HOST_CELL_PX.1;
 
 /// An event recorded by a callback during `vt_write`.
 enum Pending {
@@ -46,7 +56,7 @@ enum Pending {
     Bell,
     Clipboard(String),
     Progress(u8),
-    Notify,
+    Notify(String, String),
 }
 
 /// State the callbacks write to. Reached only through the raw pointer the
@@ -129,6 +139,7 @@ pub struct GhosttyEmulator {
     render: sys::GhosttyRenderState,
     rows: sys::GhosttyRenderStateRowIterator,
     cells: sys::GhosttyRenderStateRowCells,
+    images: sys::GhosttyRenderStateImageIterator,
     encoder: sys::GhosttyKeyEncoder,
     key_event: sys::GhosttyKeyEvent,
     shared: *mut Shared,
@@ -158,10 +169,12 @@ impl GhosttyEmulator {
             render: std::ptr::null_mut(),
             rows: std::ptr::null_mut(),
             cells: std::ptr::null_mut(),
+            images: std::ptr::null_mut(),
             encoder: std::ptr::null_mut(),
             key_event: std::ptr::null_mut(),
             shared,
         };
+        install_png_decoder();
         let null = std::ptr::null();
         // SAFETY: each call writes one handle owned by `emu`.
         unsafe {
@@ -169,6 +182,7 @@ impl GhosttyEmulator {
             check(sys::ghostty_render_state_new(null, &mut emu.render), "ghostty_render_state_new")?;
             check(sys::ghostty_render_state_row_iterator_new(null, &mut emu.rows), "ghostty_render_state_row_iterator_new")?;
             check(sys::ghostty_render_state_row_cells_new(null, &mut emu.cells), "ghostty_render_state_row_cells_new")?;
+            check(sys::ghostty_render_state_image_iterator_new(null, &mut emu.images), "ghostty_render_state_image_iterator_new")?;
             check(sys::ghostty_key_encoder_new(null, &mut emu.encoder), "ghostty_key_encoder_new")?;
             check(sys::ghostty_key_event_new(null, &mut emu.key_event), "ghostty_key_event_new")?;
             (*emu.shared).render = emu.render;
@@ -225,6 +239,14 @@ impl GhosttyEmulator {
         // Bounds OSC 5522 transactions; OSC 52 writes are checked in `on_clipboard_write`.
         let clipboard_max: usize = CLIPBOARD_MAX_BYTES;
         set!(GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE_MAX_BYTES, (&raw const clipboard_max).cast());
+        // Kitty graphics: inline data only (programs must not make the
+        // service read files or shared memory), bounded storage.
+        let off = false;
+        set!(GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_FILE, (&raw const off).cast());
+        set!(GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_SHARED_MEM, (&raw const off).cast());
+        set!(GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_TEMP_FILE, std::ptr::null());
+        let storage: u64 = IMAGE_STORAGE_LIMIT;
+        set!(GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT, (&raw const storage).cast());
         Ok(())
     }
 
@@ -272,7 +294,10 @@ impl GhosttyEmulator {
                 Pending::Bell => events.bell(),
                 Pending::Clipboard(text) => events.clipboard(text),
                 Pending::Progress(state) => events.progress(state),
-                Pending::Notify => events.notify(),
+                Pending::Notify(title, body) => {
+                    events.notify();
+                    events.notification(title, body);
+                }
             }
         }
         if title_changed {
@@ -500,6 +525,134 @@ impl GhosttyEmulator {
         let kitty = modes >> MODE_KITTY_SHIFT & 0x1f != 0;
         if bytes.is_empty() || (!kitty && is_legacy_extension(&bytes)) { legacy() } else { bytes }
     }
+
+    /// The Kitty image placements of the render state's last update.
+    fn placements(&self) -> Vec<SnapshotImage> {
+        let mut out = Vec::new();
+        let mut iterator = self.images;
+        // SAFETY: the iterator belongs to this emulator and is filled from its render state.
+        if unsafe { sys::ghostty_render_state_get(self.render, sys::GHOSTTY_RENDER_STATE_DATA_IMAGE_ITERATOR, (&raw mut iterator).cast()) }
+            != sys::GHOSTTY_SUCCESS
+        {
+            return out;
+        }
+        // SAFETY: as above; values are read before the render state changes.
+        while unsafe { sys::ghostty_render_state_image_iterator_next(iterator) } {
+            let mut protocol: sys::GhosttyImageProtocol = -1;
+            let (mut id, mut generation, mut z, mut col, mut row) = (0u32, 0u64, 0i32, 0i32, 0i32);
+            let (mut cols, mut rows, mut x_off, mut y_off, mut width, mut height) = (0u32, 0u32, 0u32, 0u32, 0u32, 0u32);
+            let (mut src_x, mut src_y, mut src_w, mut src_h) = (0u32, 0u32, 0u32, 0u32);
+            let keys = [
+                sys::GHOSTTY_RENDER_STATE_IMAGE_DATA_PROTOCOL,
+                sys::GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_ID,
+                sys::GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_GENERATION,
+                sys::GHOSTTY_RENDER_STATE_IMAGE_DATA_Z,
+                sys::GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_COL,
+                sys::GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_ROW,
+                sys::GHOSTTY_RENDER_STATE_IMAGE_DATA_GRID_COLS,
+                sys::GHOSTTY_RENDER_STATE_IMAGE_DATA_GRID_ROWS,
+                sys::GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_X,
+                sys::GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_Y,
+                sys::GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_WIDTH,
+                sys::GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_HEIGHT,
+                sys::GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_X,
+                sys::GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_Y,
+                sys::GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_WIDTH,
+                sys::GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_HEIGHT,
+            ];
+            let mut values: [*mut c_void; 16] = [
+                (&raw mut protocol).cast(),
+                (&raw mut id).cast(),
+                (&raw mut generation).cast(),
+                (&raw mut z).cast(),
+                (&raw mut col).cast(),
+                (&raw mut row).cast(),
+                (&raw mut cols).cast(),
+                (&raw mut rows).cast(),
+                (&raw mut x_off).cast(),
+                (&raw mut y_off).cast(),
+                (&raw mut width).cast(),
+                (&raw mut height).cast(),
+                (&raw mut src_x).cast(),
+                (&raw mut src_y).cast(),
+                (&raw mut src_w).cast(),
+                (&raw mut src_h).cast(),
+            ];
+            // SAFETY: each value points to the output type of its key.
+            let result = unsafe { sys::ghostty_render_state_image_get_multi(iterator, keys.len(), keys.as_ptr(), values.as_mut_ptr(), std::ptr::null_mut()) };
+            if result != sys::GHOSTTY_SUCCESS || protocol != sys::GHOSTTY_IMAGE_PROTOCOL_KITTY {
+                continue;
+            }
+            let placement = Placement { image_id: id, col, row, cols, rows, x_off, y_off, width, height, src_x, src_y, src_w, src_h, z };
+            out.push(SnapshotImage { placement, generation });
+        }
+        out
+    }
+}
+
+/// Installs the process-wide PNG decoder Kitty graphics use (once).
+fn install_png_decoder() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let decode: sys::GhosttySysDecodePngFn = Some(decode_png);
+        // SAFETY: a function pointer with the documented signature, valid for the process.
+        unsafe { sys::ghostty_sys_set(sys::GHOSTTY_SYS_OPT_DECODE_PNG, decode.map_or(std::ptr::null(), |f| f as *const c_void)) };
+    });
+}
+
+/// Decodes a PNG payload into RGBA allocated with Ghostty's allocator.
+unsafe extern "C" fn decode_png(_: *mut c_void, allocator: *const sys::GhosttyAllocator, data: *const u8, len: usize, out: *mut sys::GhosttySysImage) -> bool {
+    if data.is_null() || out.is_null() {
+        return false;
+    }
+    // SAFETY: `len` bytes at `data` for this call.
+    let bytes = unsafe { std::slice::from_raw_parts(data, len) };
+    let Some((width, height, rgba)) = decode_rgba(bytes) else { return false };
+    // SAFETY: allocated with the given allocator, as the callback must.
+    let buffer = unsafe { sys::ghostty_alloc(allocator, rgba.len()) };
+    if buffer.is_null() {
+        return false;
+    }
+    // SAFETY: `buffer` has room for `rgba.len()` bytes; `out` is writable.
+    unsafe {
+        std::ptr::copy_nonoverlapping(rgba.as_ptr(), buffer, rgba.len());
+        out.write(sys::GhosttySysImage { width, height, data: buffer, data_len: rgba.len() });
+    }
+    true
+}
+
+/// A PNG file as straight RGBA rows (8 bits per channel); `None` when it does
+/// not decode or is larger than [`MAX_IMAGE_PIXELS`].
+pub fn decode_rgba(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().ok()?;
+    let (width, height) = (reader.info().width, reader.info().height);
+    if width == 0 || height == 0 || width as u64 * height as u64 > MAX_IMAGE_PIXELS {
+        return None;
+    }
+    let mut buffer = vec![0; reader.output_buffer_size()?];
+    let frame = reader.next_frame(&mut buffer).ok()?;
+    let pixels = &buffer[..frame.buffer_size()];
+    let rgba = match frame.color_type {
+        png::ColorType::Rgba => pixels.to_vec(),
+        png::ColorType::Rgb => pixels.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+        png::ColorType::GrayscaleAlpha => pixels.as_chunks::<2>().0.iter().flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+        png::ColorType::Grayscale => pixels.iter().flat_map(|&g| [g, g, g, 255]).collect(),
+        png::ColorType::Indexed => return None,
+    };
+    (rgba.len() == width as usize * height as usize * 4).then_some((width, height, rgba))
+}
+
+/// Stored pixels in Ghostty's `format` as RGBA.
+fn to_rgba(format: sys::GhosttyKittyImageFormat, pixels: &[u8]) -> Option<Vec<u8>> {
+    Some(match format {
+        sys::GHOSTTY_KITTY_IMAGE_FORMAT_RGBA => pixels.to_vec(),
+        sys::GHOSTTY_KITTY_IMAGE_FORMAT_RGB => pixels.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+        sys::GHOSTTY_KITTY_IMAGE_FORMAT_GRAY_ALPHA => pixels.as_chunks::<2>().0.iter().flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+        sys::GHOSTTY_KITTY_IMAGE_FORMAT_GRAY => pixels.iter().flat_map(|&g| [g, g, g, 255]).collect(),
+        _ => return None,
+    })
 }
 
 impl Drop for GhosttyEmulator {
@@ -512,6 +665,7 @@ impl Drop for GhosttyEmulator {
             sys::ghostty_key_encoder_free(self.encoder);
             sys::ghostty_render_state_row_cells_free(self.cells);
             sys::ghostty_render_state_row_iterator_free(self.rows);
+            sys::ghostty_render_state_image_iterator_free(self.images);
             sys::ghostty_terminal_free(self.terminal);
             sys::ghostty_render_state_free(self.render);
             drop(Box::from_raw(self.shared));
@@ -596,6 +750,7 @@ impl Emulator for GhosttyEmulator {
                 display_offset: view.display_offset,
                 history: view.history,
                 modes: view.modes,
+                images: self.placements(),
             }
         }
     }
@@ -661,6 +816,37 @@ impl Emulator for GhosttyEmulator {
         unsafe { sys::ghostty_terminal_set(self.terminal, sys::GHOSTTY_TERMINAL_OPT_MODE, (&raw const mode).cast()) };
         self.shared_mut().hold = None;
         self.drain(events);
+    }
+
+    fn image(&mut self, id: u32) -> Option<ImageData> {
+        let mut graphics: sys::GhosttyKittyGraphics = std::ptr::null_mut();
+        // SAFETY: DATA_KITTY_GRAPHICS yields a handle borrowed until the terminal changes;
+        // everything below is read and copied before any other call.
+        unsafe {
+            if sys::ghostty_terminal_get(self.terminal, sys::GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, (&raw mut graphics).cast()) != sys::GHOSTTY_SUCCESS
+                || graphics.is_null()
+            {
+                return None;
+            }
+            let image = sys::ghostty_kitty_graphics_image(graphics, id);
+            if image.is_null() {
+                return None;
+            }
+            let get = |data, out: *mut c_void| sys::ghostty_kitty_graphics_image_get(image, data, out) == sys::GHOSTTY_SUCCESS;
+            let (mut width, mut height, mut format, mut generation) = (0u32, 0u32, -1 as sys::GhosttyKittyImageFormat, 0u64);
+            let (mut ptr, mut len): (*const u8, usize) = (std::ptr::null(), 0);
+            let ok = get(sys::GHOSTTY_KITTY_IMAGE_DATA_WIDTH, (&raw mut width).cast())
+                && get(sys::GHOSTTY_KITTY_IMAGE_DATA_HEIGHT, (&raw mut height).cast())
+                && get(sys::GHOSTTY_KITTY_IMAGE_DATA_FORMAT, (&raw mut format).cast())
+                && get(sys::GHOSTTY_KITTY_IMAGE_DATA_GENERATION, (&raw mut generation).cast())
+                && get(sys::GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR, (&raw mut ptr).cast())
+                && get(sys::GHOSTTY_KITTY_IMAGE_DATA_DATA_LEN, (&raw mut len).cast());
+            if !ok || ptr.is_null() || width == 0 || height == 0 || width as u64 * height as u64 > MAX_IMAGE_PIXELS {
+                return None;
+            }
+            let rgba = to_rgba(format, std::slice::from_raw_parts(ptr, len))?;
+            (rgba.len() == width as usize * height as usize * 4).then_some(ImageData { width, height, generation, rgba })
+        }
     }
 }
 
@@ -1084,7 +1270,17 @@ unsafe extern "C" fn on_notification(
     {
         return;
     }
-    shared.pending.push(Pending::Notify);
+    let text = |s: sys::GhosttyString| {
+        // SAFETY: the strings live for this call; copied here.
+        let bytes = unsafe { s.as_bytes() };
+        String::from_utf8_lossy(&bytes[..bytes.len().min(1024)]).into_owned()
+    };
+    let (title, body) = if notification.size >= std::mem::size_of::<sys::GhosttyTerminalDesktopNotification>() {
+        (text(notification.title), text(notification.body))
+    } else {
+        (String::new(), String::new())
+    };
+    shared.pending.push(Pending::Notify(title, body));
 }
 
 unsafe extern "C" fn on_progress(_: sys::GhosttyTerminal, userdata: *mut c_void, report: *const sys::GhosttyTerminalProgressReport) {
@@ -1638,6 +1834,57 @@ mod tests {
         for plain in [&b"\x1b[13~"[..], b"\x1b[3;5~", b"\x1b[1;5A", b"\x1bOA", b"\x1b\r", b"a", b"\x1b[200~x"] {
             assert!(!is_legacy_extension(plain), "{plain:?}");
         }
+    }
+
+    // ---- Kitty graphics ----
+
+    /// A 4 × 2 PNG: magenta left half, green right half.
+    fn test_png() -> Vec<u8> {
+        let rgba: Vec<u8> = (0..8).flat_map(|i| if i % 4 < 2 { [255, 0, 255, 255] } else { [0, 255, 0, 255] }).collect();
+        crate::emulator::encode_png(4, 2, &rgba).unwrap()
+    }
+
+    #[test]
+    fn kitty_images_are_placed_and_their_pixels_read() {
+        use crate::emulator::alacritty::tests::base64;
+        let mut emu = emulator(40, 10);
+        feed_collect(&mut emu, format!("ab\x1b_Gf=100,a=T,i=7,c=4,r=2,q=2;{}\x1b\\", base64(&test_png())).as_bytes());
+        let snap = emu.snapshot();
+        assert_eq!(snap.images.len(), 1, "one placement");
+        let p = &snap.images[0].placement;
+        assert_eq!((p.image_id, p.col, p.row, p.cols, p.rows, p.src_w, p.src_h), (7, 2, 0, 4, 2, 4, 2));
+        assert_eq!((p.width, p.height), (4 * HOST_CELL_PX.0, 2 * HOST_CELL_PX.1));
+        let image = emu.image(7).expect("pixels");
+        assert_eq!((image.width, image.height, image.generation), (4, 2, snap.images[0].generation));
+        assert_eq!((&image.rgba[..4], &image.rgba[8..12]), (&[255, 0, 255, 255][..], &[0, 255, 0, 255][..]));
+        // Raw RGB (f=24) is converted to RGBA.
+        feed_collect(&mut emu, format!("\x1b_Gf=24,s=1,v=1,a=T,i=8,q=2;{}\x1b\\", base64(&[1, 2, 3])).as_bytes());
+        assert_eq!(emu.image(8).unwrap().rgba, [1, 2, 3, 255]);
+        assert_eq!(emu.snapshot().images.len(), 2);
+        // Deleting every image removes the placements.
+        feed_collect(&mut emu, b"\x1b_Ga=d,d=A,q=2\x1b\\");
+        assert!(emu.snapshot().images.is_empty());
+        assert!(emu.image(99).is_none());
+    }
+
+    #[test]
+    fn inline_images_through_conpty_become_placements() {
+        use crate::emulator::alacritty::tests::base64;
+        let mut emu = emulator(40, 10);
+        let mut bridge = crate::emulator::inline::InlineImages::default();
+        bridge.set_size(40, 10);
+        let osc = format!("\x1b]1337;File=inline=1;width=6;height=3;preserveAspectRatio=0:{}\x07next", base64(&test_png()));
+        feed_collect(&mut emu, &bridge.filter(osc.as_bytes()));
+        let snap = emu.snapshot();
+        assert_eq!(snap.images.len(), 1);
+        assert_eq!((snap.images[0].placement.cols, snap.images[0].placement.rows), (6, 3));
+        assert!(snap.text().contains("next"));
+        // The file medium is off: a program cannot make the service read files.
+        let path = std::env::temp_dir().join(format!("cc-kitty-{}.png", std::process::id()));
+        std::fs::write(&path, test_png()).unwrap();
+        feed_collect(&mut emu, format!("\x1b_Gf=100,t=f,a=T,i=9,q=2;{}\x1b\\", base64(path.display().to_string().as_bytes())).as_bytes());
+        assert!(emu.image(9).is_none(), "file transmission refused");
+        let _ = std::fs::remove_file(path);
     }
 
     // ---- Cross-engine comparison ----
