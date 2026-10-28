@@ -64,8 +64,9 @@ pub fn burn() -> Result<()> {
     }
 }
 
-/// Prints `<n>:<char>` for every key, used for latency measurement.
-pub fn echo() -> Result<()> {
+/// Prints `<tag><n>:<char>` for every key, used for latency measurement and
+/// the soak's exactly-once checks.
+pub fn echo(tag: String) -> Result<()> {
     ratatui::crossterm::terminal::enable_raw_mode()?;
     let mut out = std::io::stdout();
     write!(out, "echo ready\r\n")?;
@@ -80,7 +81,7 @@ pub fn echo() -> Result<()> {
             }
             if let KeyCode::Char(c) = key.code {
                 n += 1;
-                write!(out, "{n}:{c}\r\n")?;
+                write!(out, "{tag}{n}:{c}\r\n")?;
                 out.flush()?;
             }
         }

@@ -77,6 +77,11 @@ impl Console {
         screen_text(&lock(&self.screen).snapshot())
     }
 
+    /// The program's process id.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.process_id()
+    }
+
     pub fn mode(&self) -> String {
         format!("{:?}", lock(&self.screen).term.mode())
     }
@@ -273,12 +278,20 @@ pub struct GuiDriver {
 impl GuiDriver {
     /// Starts the GUI next to this executable with `args`, a fixed cell grid
     /// and its stderr in `log`.
-    pub fn start(args: &[String], env: &[(&str, &Path)], (cols, rows): (u16, u16), log: &Path) -> Result<Self> {
+    pub fn start(args: &[String], env: &[(&str, &Path)], size: (u16, u16), log: &Path) -> Result<Self> {
+        Self::start_sized(args, env, Some(size), log)
+    }
+
+    /// The same; `None`: the window's own size decides the grid (placements).
+    pub fn start_sized(args: &[String], env: &[(&str, &Path)], size: Option<(u16, u16)>, log: &Path) -> Result<Self> {
         use std::io::BufRead;
         let exe = std::env::current_exe()?.with_file_name("copilot-canvas-gui.exe");
         anyhow::ensure!(exe.is_file(), "{} is missing (cargo build --release builds it)", exe.display());
         let mut command = std::process::Command::new(&exe);
-        command.args(args).args(["--test-hooks".to_owned(), "--size".to_owned(), format!("{cols}x{rows}")]);
+        command.args(args).arg("--test-hooks");
+        if let Some((cols, rows)) = size {
+            command.args(["--size".to_owned(), format!("{cols}x{rows}")]);
+        }
         for (key, value) in env {
             command.env(key, value);
         }
@@ -300,15 +313,29 @@ impl GuiDriver {
 
     /// One command and its answer.
     pub fn request(&self, command: serde_json::Value) -> Result<serde_json::Value> {
+        let reply = self.ask(command.clone())?;
+        anyhow::ensure!(reply["ok"] == true, "{command} failed: {reply}");
+        Ok(reply)
+    }
+
+    /// One command and its answer, whether it succeeded or not.
+    pub fn ask(&self, command: serde_json::Value) -> Result<serde_json::Value> {
         use std::io::BufRead;
         let mut pipe = lock(&self.pipe);
         writeln!(pipe.1, "{command}")?;
         pipe.1.flush()?;
         let mut line = String::new();
         anyhow::ensure!(pipe.0.read_line(&mut line)? > 0, "the GUI closed its test hooks");
-        let reply: serde_json::Value = serde_json::from_str(&line)?;
-        anyhow::ensure!(reply["ok"] == true, "{command} failed: {reply}");
-        Ok(reply)
+        Ok(serde_json::from_str(&line)?)
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Whether the process is still running.
+    pub fn running(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
     }
 }
 

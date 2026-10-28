@@ -1,7 +1,15 @@
-//! The GPU: device, window surface (Mailbox when available, our own pacing),
-//! the quad pipeline, glyphon text per layer, and offscreen rendering to PNG.
+//! The GPU: device, window surfaces (Mailbox when available, our own pacing),
+//! the quad pipeline, glyphon text, and offscreen rendering to PNG.
+//!
+//! Every window keeps its scene layers on the GPU between frames (quad
+//! instances and prepared text per layer), so a frame in which only the
+//! terminals changed uploads and prepares just those layers. A lost device
+//! (driver reset, removed adapter) is reported through [`Gpu::lost`]; the
+//! shell then builds everything again with [`Gpu::new`].
 
+use std::ops::Range;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -9,25 +17,34 @@ use glyphon::{Cache, ColorMode, Resolution, SwashCache, TextArea, TextAtlas, Tex
 use winit::window::Window;
 
 use crate::images::ImagePipeline;
-use crate::quads::QuadPipeline;
+use crate::quads::{Quad, QuadPipeline};
 use crate::scene::{LAYERS, Scene};
 use crate::text::{Fonts, ShapeCache};
 
-/// The device and everything shared by all windows: pipelines, the glyph
-/// atlas and one text renderer per scene layer.
+/// Which scene layers changed since the window's last frame.
+pub type Dirty = [bool; LAYERS];
+pub const ALL: Dirty = [true; LAYERS];
+
+/// The device and everything shared by all windows: pipelines and the glyph atlas.
 pub struct Gpu {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     pub info: wgpu::AdapterInfo,
+    /// Windows' software rasterizer (WARP) stands in for a missing GPU.
+    pub software: bool,
     device: wgpu::Device,
     queue: wgpu::Queue,
     format: wgpu::TextureFormat,
     quads: QuadPipeline,
     pub images: ImagePipeline,
-    viewport: Viewport,
+    cache: Cache,
     atlas: TextAtlas,
-    text: Vec<TextRenderer>,
     swash: SwashCache,
+    /// Bumped whenever the atlas is trimmed: text prepared before may point at
+    /// glyphs evicted since, so those layers are prepared again.
+    atlas_gen: u64,
+    /// Set by the device-lost callback or a fatal device error.
+    pub lost: Arc<AtomicBool>,
 }
 
 /// Timings of one presented frame.
@@ -41,10 +58,29 @@ pub struct Presented {
     pub present: Duration,
 }
 
-/// One window's swap chain.
+/// One scene layer on the GPU: its quad instances and prepared text.
+struct LayerGpu {
+    text: TextRenderer,
+    quads: wgpu::Buffer,
+    capacity: usize,
+    under: Range<u32>,
+    over: Range<u32>,
+    has_text: bool,
+}
+
+/// Layers kept between frames (a window's, or a capture's).
+pub struct Layers {
+    viewport: Viewport,
+    layers: Vec<LayerGpu>,
+    /// The atlas generation the text was prepared in (`None`: not prepared).
+    prepared: Option<u64>,
+}
+
+/// One window's swap chain and layers.
 pub struct Surface {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
+    layers: Option<Layers>,
 }
 
 impl Surface {
@@ -65,40 +101,103 @@ impl Surface {
 pub enum Skip {
     /// Occluded, timed out or reconfigured: try again soon.
     Retry,
+    /// The device is gone: rebuild the GPU objects.
+    DeviceLost,
+}
+
+/// Test switch (`CANVAS_GUI_TEST_GPU`): `nohw` refuses hardware adapters,
+/// `none` every adapter, to exercise the fallbacks.
+fn refused(software: bool) -> bool {
+    match std::env::var("CANVAS_GUI_TEST_GPU").as_deref() {
+        Ok("none") => true,
+        Ok("nohw") => !software,
+        _ => false,
+    }
 }
 
 impl Gpu {
     /// Opens the device for the first window (its surface decides the adapter
-    /// and format); later windows get theirs from `surface`.
+    /// and format); later windows get theirs from `surface`. Falls back to
+    /// WARP when no hardware adapter works; failures are logged with the
+    /// adapter's details.
     pub fn new(window: Arc<Window>, display: winit::event_loop::OwnedDisplayHandle) -> Result<(Self, Surface)> {
         let mut desc = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(display));
         desc.backends = wgpu::Backends::DX12;
         let instance = wgpu::Instance::new(desc);
         let surface = instance.create_surface(window.clone()).context("cannot create the window surface")?;
-        let warp = std::env::var_os("WGPU_FORCE_FALLBACK_ADAPTER").is_some_and(|v| v == "1");
+        let forced = std::env::var_os("WGPU_FORCE_FALLBACK_ADAPTER").is_some_and(|v| v == "1");
+        let mut failures = Vec::new();
+        for software in if forced { vec![true] } else { vec![false, true] } {
+            match Self::open(&instance, &surface, software) {
+                Ok((adapter, device, queue)) => {
+                    let info = adapter.get_info();
+                    let software = software || info.device_type == wgpu::DeviceType::Cpu;
+                    if !failures.is_empty() {
+                        crate::crashlog::event("gpu", &format!("drawing with {} ({:?}) after: {}", info.name, info.device_type, failures.join("; ")));
+                    }
+                    let gpu = Self::assemble(instance, adapter, info, software, device, queue, &surface);
+                    let surface = gpu.configure(surface, &window);
+                    return Ok((gpu, surface));
+                }
+                Err(error) => {
+                    let what = if software { "software adapter (WARP)" } else { "hardware adapter" };
+                    crate::crashlog::event("gpu", &format!("{what}: {error:#}"));
+                    failures.push(format!("{what}: {error:#}"));
+                }
+            }
+        }
+        anyhow::bail!("{}", failures.join("; "))
+    }
+
+    fn open(instance: &wgpu::Instance, surface: &wgpu::Surface<'static>, software: bool) -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
+        anyhow::ensure!(!refused(software), "refused by CANVAS_GUI_TEST_GPU");
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
-            force_fallback_adapter: warp,
-            compatible_surface: Some(&surface),
+            force_fallback_adapter: software,
+            compatible_surface: Some(surface),
             ..Default::default()
         }))
-        .context("no GPU adapter")?;
+        .context("no adapter")?;
+        let info = adapter.get_info();
         // Small allocator blocks: the default reserves ~180 MB up front.
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { memory_hints: wgpu::MemoryHints::MemoryUsage, ..Default::default() }))
-            .context("cannot open the GPU device")?;
+            .with_context(|| format!("cannot open the device on {} ({:?}, driver {} {})", info.name, info.device_type, info.driver, info.driver_info))?;
+        Ok((adapter, device, queue))
+    }
+
+    fn assemble(instance: wgpu::Instance, adapter: wgpu::Adapter, info: wgpu::AdapterInfo, software: bool, device: wgpu::Device, queue: wgpu::Queue, surface: &wgpu::Surface<'static>) -> Self {
+        let lost = Arc::new(AtomicBool::new(false));
+        {
+            let (lost, name) = (lost.clone(), info.name.clone());
+            device.set_device_lost_callback(move |reason, message| {
+                crate::crashlog::event("gpu", &format!("device lost on {name}: {reason:?} {message}"));
+                lost.store(true, Ordering::Release);
+                crate::shell::wake();
+            });
+        }
+        {
+            let (lost, name) = (lost.clone(), info.name.clone());
+            device.on_uncaptured_error(Arc::new(move |error| {
+                crate::crashlog::event("gpu", &format!("error on {name}: {error}"));
+                if matches!(error, wgpu::Error::OutOfMemory { .. } | wgpu::Error::Internal { .. }) {
+                    lost.store(true, Ordering::Release);
+                    crate::shell::wake();
+                }
+            }));
+        }
         let caps = surface.get_capabilities(&adapter);
         let format = caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or(caps.formats[0]);
         let cache = Cache::new(&device);
-        let viewport = Viewport::new(&device, &cache);
         // Colours are sRGB values written to a non-sRGB target.
-        let mut atlas = TextAtlas::with_color_mode(&device, &queue, &cache, format, ColorMode::Web);
-        let text = (0..LAYERS).map(|_| TextRenderer::new(&mut atlas, &device, wgpu::MultisampleState::default(), None)).collect();
+        let atlas = TextAtlas::with_color_mode(&device, &queue, &cache, format, ColorMode::Web);
         let quads = QuadPipeline::new(&device, format);
         let images = ImagePipeline::new(&device, format);
-        let info = adapter.get_info();
-        let gpu = Self { instance, adapter, info, device, queue, format, quads, images, viewport, atlas, text, swash: SwashCache::new() };
-        let surface = gpu.configure(surface, &window);
-        Ok((gpu, surface))
+        Self { instance, adapter, info, software, device, queue, format, quads, images, cache, atlas, swash: SwashCache::new(), atlas_gen: 0, lost }
+    }
+
+    /// The adapter in one line (logs, the hooks).
+    pub fn describe(&self) -> String {
+        format!("{} ({:?}, {:?}, driver {} {})", self.info.name, self.info.device_type, self.info.backend, self.info.driver, self.info.driver_info)
     }
 
     /// A swap chain for another window on the same device.
@@ -127,21 +226,78 @@ impl Gpu {
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&self.device, &config);
-        Surface { surface, config }
+        Surface { surface, config, layers: None }
     }
-    /// Uploads the scene and encodes its draws into `target`.
-    fn encode(&mut self, target: &wgpu::TextureView, scene: &Scene, cache: &ShapeCache, fonts: &mut Fonts) -> wgpu::CommandBuffer {
+
+    fn new_layers(&mut self) -> Layers {
+        let viewport = Viewport::new(&self.device, &self.cache);
+        let layers = (0..LAYERS)
+            .map(|_| LayerGpu {
+                text: TextRenderer::new(&mut self.atlas, &self.device, wgpu::MultisampleState::default(), None),
+                quads: QuadPipeline::buffer(&self.device, 256),
+                capacity: 256,
+                under: 0..0,
+                over: 0..0,
+                has_text: false,
+            })
+            .collect();
+        Layers { viewport, layers, prepared: None }
+    }
+
+    /// Uploads the `dirty` layers of `scene` (all when the text must be
+    /// prepared again) and encodes the draws into `target`. `trim`: glyphs
+    /// unused since the last trim may be evicted (a full frame).
+    #[allow(clippy::too_many_arguments)]
+    fn encode(&mut self, target: &wgpu::TextureView, scene: &Scene, dirty: &Dirty, slot: &mut Option<Layers>, trim: bool, cache: &ShapeCache, fonts: &mut Fonts) -> wgpu::CommandBuffer {
+        let mut layers = match slot.take() {
+            Some(layers) => layers,
+            None => self.new_layers(),
+        };
         let (width, height) = (scene.width.max(1), scene.height.max(1));
-        let mut all = Vec::with_capacity(scene.quads());
-        let mut ranges = Vec::with_capacity(LAYERS);
-        for layer in &scene.layers {
-            let a = all.len() as u32;
-            all.extend_from_slice(&layer.under);
-            let b = all.len() as u32;
-            all.extend_from_slice(&layer.over);
-            ranges.push((a..b, b..all.len() as u32));
+        if trim {
+            self.atlas.trim();
+            self.atlas_gen += 1;
         }
-        self.quads.upload(&self.device, &self.queue, &all, width, height);
+        let stale = layers.prepared != Some(self.atlas_gen);
+        self.quads.globals(&self.queue, width, height);
+        layers.viewport.update(&self.queue, Resolution { width, height });
+        let mut failed = false;
+        for (i, (layer, gpu)) in scene.layers.iter().zip(layers.layers.iter_mut()).enumerate() {
+            if !(stale || dirty[i]) {
+                continue;
+            }
+            let count = layer.under.len() + layer.over.len();
+            if count > gpu.capacity {
+                gpu.capacity = count.next_power_of_two();
+                gpu.quads = QuadPipeline::buffer(&self.device, gpu.capacity);
+            }
+            if !layer.under.is_empty() {
+                self.queue.write_buffer(&gpu.quads, 0, bytemuck::cast_slice(&layer.under));
+            }
+            if !layer.over.is_empty() {
+                let offset = (layer.under.len() * std::mem::size_of::<Quad>()) as u64;
+                self.queue.write_buffer(&gpu.quads, offset, bytemuck::cast_slice(&layer.over));
+            }
+            gpu.under = 0..layer.under.len() as u32;
+            gpu.over = layer.under.len() as u32..count as u32;
+            let areas = layer.texts.iter().filter_map(|t| {
+                cache.buffer(t.key).map(|buffer| TextArea {
+                    buffer,
+                    left: t.x,
+                    top: t.y,
+                    scale: t.scale,
+                    bounds: TextBounds { left: t.clip[0].floor() as i32, top: t.clip[1].floor() as i32, right: t.clip[2].ceil() as i32, bottom: t.clip[3].ceil() as i32 },
+                    default_color: crate::theme::text_color(t.color),
+                    custom_glyphs: &[],
+                })
+            });
+            gpu.has_text = !layer.texts.is_empty();
+            if gpu.has_text && gpu.text.prepare(&self.device, &self.queue, &mut fonts.system, &mut self.atlas, &layers.viewport, areas, &mut self.swash).is_err() {
+                // The atlas is full: the next frame trims it and prepares everything.
+                failed = true;
+            }
+        }
+        layers.prepared = (!failed).then_some(self.atlas_gen);
         // Images per layer: (below the text, above it) as index ranges.
         let mut image_ranges = Vec::with_capacity(LAYERS);
         for layer in &scene.layers {
@@ -154,24 +310,6 @@ impl Gpu {
             image_ranges.push((under, over));
         }
         self.images.upload(&self.device, &self.queue, width, height);
-        self.viewport.update(&self.queue, Resolution { width, height });
-        for (renderer, layer) in self.text.iter_mut().zip(&scene.layers) {
-            let areas = layer.texts.iter().filter_map(|t| {
-                cache.buffer(t.key).map(|buffer| TextArea {
-                    buffer,
-                    left: t.x,
-                    top: t.y,
-                    scale: t.scale,
-                    bounds: TextBounds { left: t.clip[0].floor() as i32, top: t.clip[1].floor() as i32, right: t.clip[2].ceil() as i32, bottom: t.clip[3].ceil() as i32 },
-                    default_color: crate::theme::text_color(t.color),
-                    custom_glyphs: &[],
-                })
-            });
-            if renderer.prepare(&self.device, &self.queue, &mut fonts.system, &mut self.atlas, &self.viewport, areas, &mut self.swash).is_err() {
-                // The atlas is full: drop unused glyphs; the next frame retries.
-                self.atlas.trim();
-            }
-        }
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
         {
             let [r, g, b] = scene.clear;
@@ -189,27 +327,45 @@ impl Gpu {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            for (i, ((under, over), (images_under, images_over))) in ranges.into_iter().zip(image_ranges).enumerate() {
-                self.quads.draw(&mut pass, under);
+            for (gpu, (images_under, images_over)) in layers.layers.iter().zip(image_ranges) {
+                self.quads.draw(&mut pass, &gpu.quads, gpu.under.clone());
                 self.images.draw(&mut pass, images_under);
-                if !scene.layers[i].texts.is_empty() {
-                    let _ = self.text[i].render(&self.atlas, &self.viewport, &mut pass);
+                if gpu.has_text {
+                    let _ = gpu.text.render(&self.atlas, &layers.viewport, &mut pass);
                 }
                 self.images.draw(&mut pass, images_over);
-                self.quads.draw(&mut pass, over);
+                self.quads.draw(&mut pass, &gpu.quads, gpu.over.clone());
             }
         }
         self.images.end_frame();
+        *slot = Some(layers);
         encoder.finish()
     }
 
-    /// Draws the scene to a window and presents it.
-    pub fn present(&mut self, target: &Surface, window: &Window, scene: &Scene, cache: &ShapeCache, fonts: &mut Fonts) -> Result<Presented, Skip> {
+    /// Draws the scene to a window (`dirty`: the layers that changed since its
+    /// last frame) and presents it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn present(&mut self, target: &mut Surface, window: &Arc<Window>, scene: &Scene, dirty: &Dirty, cache: &ShapeCache, fonts: &mut Fonts) -> Result<Presented, Skip> {
+        if self.lost.load(Ordering::Acquire) {
+            return Err(Skip::DeviceLost);
+        }
         let started = Instant::now();
         let frame = match target.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+            wgpu::CurrentSurfaceTexture::Outdated => {
                 target.surface.configure(&self.device, &target.config);
+                return Err(Skip::Retry);
+            }
+            wgpu::CurrentSurfaceTexture::Lost => {
+                // A new surface for the same window (a monitor or driver change can cause this).
+                crate::crashlog::event("gpu", &format!("surface lost on {}; recreating it", self.describe()));
+                let Ok(surface) = self.instance.create_surface(window.clone()) else { return Err(Skip::DeviceLost) };
+                surface.configure(&self.device, &target.config);
+                target.surface = surface;
+                return Err(Skip::Retry);
+            }
+            wgpu::CurrentSurfaceTexture::Validation => {
+                crate::crashlog::event("gpu", &format!("surface validation error on {}", self.describe()));
                 return Err(Skip::Retry);
             }
             _ => return Err(Skip::Retry),
@@ -222,17 +378,18 @@ impl Gpu {
         }
         let encoding = Instant::now();
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let commands = self.encode(&view, scene, cache, fonts);
+        let trim = dirty.iter().all(|d| *d);
+        let commands = self.encode(&view, scene, dirty, &mut target.layers, trim, cache, fonts);
         let encode = encoding.elapsed();
         let presenting = Instant::now();
         self.queue.submit(Some(commands));
         window.pre_present_notify();
         self.queue.present(frame);
-        self.atlas.trim();
         Ok(Presented { encode, acquire, present: presenting.elapsed() })
     }
 
-    /// Renders the scene offscreen; returns RGBA rows.
+    /// Renders the scene offscreen with layers of its own (the windows' stay
+    /// as they are, the atlas is not trimmed); returns RGBA rows.
     pub fn capture(&mut self, scene: &Scene, cache: &ShapeCache, fonts: &mut Fonts) -> Result<Vec<u8>> {
         let (width, height) = (scene.width.max(1), scene.height.max(1));
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -246,7 +403,7 @@ impl Gpu {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let commands = self.encode(&view, scene, cache, fonts);
+        let commands = self.encode(&view, scene, &ALL, &mut None, false, cache, fonts);
         let row = (width * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("capture"),
@@ -284,6 +441,12 @@ impl Gpu {
         }
         buffer.unmap();
         Ok(rgba)
+    }
+
+    /// Destroys the device: the driver reports the loss as after a reset
+    /// (the `device-lost` test hook with `"destroy": true`).
+    pub fn destroy(&self) {
+        self.device.destroy();
     }
 }
 

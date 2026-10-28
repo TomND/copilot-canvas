@@ -44,6 +44,10 @@ fn round(v: f32) -> f32 {
 pub struct Perf {
     /// View + scene + encode on the UI thread.
     pub frame_ms: Samples,
+    /// Frames that rebuilt everything …
+    pub full_ms: Samples,
+    /// … and frames in which only terminal contents changed (the other layers stay on the GPU).
+    pub damage_ms: Samples,
     /// Building the view (core) only.
     pub view_ms: Samples,
     pub scene_ms: Samples,
@@ -98,7 +102,7 @@ impl Perf {
     /// The overlay's lines.
     pub fn lines(&self, remote: bool) -> Vec<String> {
         let mut lines = vec![
-            format!("{} fps · frame {:.2} ms p95 (view {:.2} · scene {:.2} · encode {:.2})", self.fps(), self.frame_ms.percentile(95.0), self.view_ms.percentile(95.0), self.scene_ms.percentile(95.0), self.encode_ms.percentile(95.0)),
+            format!("{} fps · frame {:.2} ms p95 (view {:.2} · scene {:.2} · encode {:.2}) · damage {:.2} ms p95", self.fps(), self.frame_ms.percentile(95.0), self.view_ms.percentile(95.0), self.scene_ms.percentile(95.0), self.encode_ms.percentile(95.0), self.damage_ms.percentile(95.0)),
             format!("present {:.2} ms · acquire {:.2} ms · input→present {:.1} ms p95", self.present_ms.percentile(95.0), self.acquire_ms.percentile(95.0), self.input_ms.percentile(95.0)),
             format!("key→echo→present p50 {:.1} / p99 {:.1} ms · output→present {:.1} ms p95", self.key_ms.percentile(50.0), self.key_ms.percentile(99.0), self.output_ms.percentile(95.0)),
         ];
@@ -114,6 +118,8 @@ impl Perf {
             "presented": self.presented,
             "skipped": self.skipped,
             "frame_ms": self.frame_ms.json(),
+            "full_ms": self.full_ms.json(),
+            "damage_ms": self.damage_ms.json(),
             "view_ms": self.view_ms.json(),
             "scene_ms": self.scene_ms.json(),
             "encode_ms": self.encode_ms.json(),

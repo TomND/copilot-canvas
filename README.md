@@ -318,6 +318,10 @@ UI load tests `cargo test --release stress_probe -- --ignored --nocapture`
 (keystroke latency with CPU-burning background sessions) and `PERF_CANVAS=<copy of a canvas.json> cargo test
 --release perf_probe -- --ignored --nocapture` (panning a real canvas).
 `copilot-canvas --perf` shows the same numbers live in the status bar.
+The GPU client has the same probes (`bench --client gui --stress`,
+`--perf-canvas FILE`, `--burn N`), `selftest --client gui --hardening` and a
+long-run remote soak (`selftest --remote soak`); numbers in `docs/GUI.md` §4
+and `docs/REMOTE.md`.
 
 ## Safety
 

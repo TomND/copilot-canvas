@@ -1,10 +1,13 @@
 //! `--test-hooks`: a local, owner-only named pipe
 //! (`\\.\pipe\copilot-canvas-gui-test-<pid>`) taking one JSON command per
 //! line and answering one JSON line each. Commands inject input (`key`,
-//! `text`, `paste`, `mouse`, `wheel`, `drop`), read the UI (`screen`, `tree`,
-//! `size`, `perf`, `platform`), render offscreen (`png`), manage windows
-//! (`new_window`, `windows`, `close_window`; others take `"window": n`), set
-//! the stand-in clipboard (`clipboard`) and `quit`. See `docs/GUI.md` §3.
+//! `text`, `paste`, `mouse`, `wheel`, `drop`), read the UI (`screen`, `tree`
+//! with the UI Automation nodes, `access`, `size`, `perf`, `platform`),
+//! render offscreen (`png`), manage windows (`new_window`, `windows`,
+//! `close_window`; others take `"window": n`), simulate hardware events
+//! (`device-lost`, `dpi`), move windows (`place`, `placement`), set the
+//! stand-in clipboard (`clipboard`), crash on purpose (`panic`,
+//! `panic_thread`) and `quit`. See `docs/GUI.md` §3.
 
 use std::io::{BufRead, BufReader, Write};
 
@@ -112,13 +115,15 @@ pub fn tree(app: &canvas_core::app::App, view: &View, chrome: &Buffer) -> Value 
             let s = model.rect_to_screen(r);
             json!([s.x, s.y, s.w, s.h])
         };
+        let levels = crate::canvas::box_levels(&model.boxes);
         json!({
             "area": rect(model.area),
             "scale": model.scale,
             "origin": [model.origin.0, model.origin.1],
-            "boxes": model.boxes.iter().map(|b| json!({
+            // `level`: the drawing layer (a box overlapping an earlier one is drawn above it).
+            "boxes": model.boxes.iter().zip(&levels).map(|(b, level)| json!({
                 "id": b.id, "name": b.name, "prefix": b.prefix, "status": b.status.label(), "line": b.line, "rect": screen(b.rect),
-                "selected": b.selected, "attention": b.attention.is_some(), "border": format!("{:?}", b.border), "loop": b.every,
+                "selected": b.selected, "attention": b.attention.is_some(), "border": format!("{:?}", b.border), "loop": b.every, "level": level,
             })).collect::<Vec<_>>(),
             "groups": model.groups.iter().map(|g| json!({ "id": g.id, "name": g.name, "rect": screen(g.rect), "selected": g.selected, "members": g.members })).collect::<Vec<_>>(),
             "edges": model.edges.len(),

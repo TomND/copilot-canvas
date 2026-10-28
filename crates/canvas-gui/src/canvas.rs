@@ -139,16 +139,19 @@ pub fn paint(p: &mut Painter, grid: &Grid, model: &CanvasModel) {
         }
     }
 
-    for b in &model.boxes {
+    let levels = box_levels(&model.boxes);
+    let top_boxes = scene::BOXES + levels.iter().copied().max().unwrap_or(0);
+    for (b, level) in model.boxes.iter().zip(&levels) {
         let r = cx.rect(b.rect);
         if !cx.visible(r, 4.0 * ux) {
             continue;
         }
         let border = style_color(b.border_style, paint::TEXT);
         let agent = b.kind == BoxKind::Agent;
-        // Selected boxes (the ones being dragged) and their labels go above the rest.
-        let layer = if b.selected { scene::CANVAS_TOP } else { scene::CANVAS };
-        let inside = [r[0], r[1], r[0] + r[2], r[1] + r[3]];
+        // A box's fill and labels share a layer, above the boxes it overlaps;
+        // selected boxes (the ones being dragged) go above them all.
+        let layer = if b.selected { scene::CANVAS_TOP } else { scene::BOXES + level };
+        let inside = [r[0].max(clip[0]), r[1].max(clip[1]), (r[0] + r[2]).min(clip[2]), (r[1] + r[3]).min(clip[3])];
         let radius = if agent { (0.25 * uy).clamp(2.0, 6.0 * cx.dpi) } else { (0.45 * uy).clamp(2.0, 10.0 * cx.dpi) };
         let fill = theme::rgba(rgb(b.fill), 1.0);
         let thin = cx.dpi.max(1.0);
@@ -203,10 +206,11 @@ pub fn paint(p: &mut Painter, grid: &Grid, model: &CanvasModel) {
         if !cx.visible(r, 4.0 * ux) {
             continue;
         }
-        loop_arc(p, &cx, r, lp.halo, lp.phase);
+        loop_arc(p, &cx, r, lp.halo, lp.phase, top_boxes);
     }
 
     if let Some((rect, typing)) = model.halo {
+        let layer = top_boxes;
         let r = cx.rect(rect);
         let pad = halo_pad(&cx);
         let accent = rgb(paint::ACCENT);
@@ -322,7 +326,7 @@ fn glow_dot(p: &mut Painter, layer: usize, (x, y): (f32, f32), r: f32, color: [u
 
 /// The loopback on a looping box's right side: out along the top row, down,
 /// and back into the bottom row, with a lit dot running around it.
-fn loop_arc(p: &mut Painter, cx: &Ctx, r: [f32; 4], halo: bool, phase: f32) {
+fn loop_arc(p: &mut Painter, cx: &Ctx, r: [f32; 4], halo: bool, phase: f32, layer: usize) {
     let (ux, uy) = cx.unit();
     let color = rgb(paint::LOOP);
     let lit = rgb(paint::LOOP_LIT);
@@ -331,7 +335,7 @@ fn loop_arc(p: &mut Painter, cx: &Ctx, r: [f32; 4], halo: bool, phase: f32) {
         // Too small for an arc: a pulsing ↻.
         let size = (r[3] * 0.9).max(8.0 * cx.dpi);
         let on = ((phase * 4.0) as u32).is_multiple_of(2);
-        p.text(scene::CANVAS, Spec::ui("↻", size).bold(true), start + 2.0 * cx.dpi, r[1] + (r[3] - size * 1.3) / 2.0, if on { lit } else { color }, cx.clip);
+        p.text(layer, Spec::ui("↻", size).bold(true), start + 2.0 * cx.dpi, r[1] + (r[3] - size * 1.3) / 2.0, if on { lit } else { color }, cx.clip);
         return;
     }
     let (top, bottom) = (r[1] + 0.5 * uy, r[1] + r[3] - 0.5 * uy);
@@ -351,27 +355,92 @@ fn loop_arc(p: &mut Painter, cx: &Ctx, r: [f32; 4], halo: bool, phase: f32) {
     let width = 1.3 * cx.dpi;
     let line: Rgba = theme::rgba(color, 0.9);
     for pair in points.windows(2) {
-        p.under(scene::CANVAS, Quad::line(pair[0], pair[1], width, line, 0.0, cx.clip));
+        p.under(layer, Quad::line(pair[0], pair[1], width, line, 0.0, cx.clip));
     }
     // Arrow head back into the box.
     let a = 4.0 * cx.dpi;
-    p.under(scene::CANVAS, Quad::line((start, bottom), (start + a, bottom - a * 0.8), width, line, 0.0, cx.clip));
-    p.under(scene::CANVAS, Quad::line((start, bottom), (start + a, bottom + a * 0.8), width, line, 0.0, cx.clip));
+    p.under(layer, Quad::line((start, bottom), (start + a, bottom - a * 0.8), width, line, 0.0, cx.clip));
+    p.under(layer, Quad::line((start, bottom), (start + a, bottom + a * 0.8), width, line, 0.0, cx.clip));
     for (offset, size) in [(0.06, 0.55), (0.03, 0.75), (0.0, 1.0)] {
         if let Some(at) = along(&points, (phase - offset).rem_euclid(1.0)) {
             if size < 1.0 {
                 let d = 2.0 * cx.dpi * size;
-                p.under(scene::CANVAS, Quad::rounded(at.0 - d, at.1 - d, 2.0 * d, 2.0 * d, d, theme::rgba(color, 1.0), [0.0; 4], 0.0, cx.clip));
+                p.under(layer, Quad::rounded(at.0 - d, at.1 - d, 2.0 * d, 2.0 * d, d, theme::rgba(color, 1.0), [0.0; 4], 0.0, cx.clip));
             } else {
-                glow_dot(p, scene::CANVAS, at, 2.6 * cx.dpi, lit, cx.clip);
+                glow_dot(p, layer, at, 2.6 * cx.dpi, lit, cx.clip);
             }
         }
     }
 }
 
+/// Each box's drawing level (`0..BOX_LEVELS`): one above the highest earlier
+/// box it overlaps, so a later box covers the labels of the boxes under it.
+/// Selected boxes are drawn above all levels and count as level 0 here.
+pub(crate) fn box_levels(boxes: &[canvas_core::view::BoxModel]) -> Vec<usize> {
+    use std::collections::HashMap;
+    const BUCKET: f32 = 16.0;
+    let mut buckets: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+    let mut levels = vec![0; boxes.len()];
+    let span = |r: WRect| ((r.x / BUCKET).floor() as i32, (r.y / BUCKET).floor() as i32, (r.right() / BUCKET).floor() as i32, (r.bottom() / BUCKET).floor() as i32);
+    let overlap = |a: WRect, b: WRect| a.x < b.right() && b.x < a.right() && a.y < b.bottom() && b.y < a.bottom();
+    for (i, b) in boxes.iter().enumerate() {
+        if b.selected {
+            continue;
+        }
+        let (x0, y0, x1, y1) = span(b.rect);
+        let mut level = 0;
+        for bx in x0..=x1 {
+            for by in y0..=y1 {
+                for &j in buckets.get(&(bx, by)).into_iter().flatten() {
+                    if overlap(boxes[j].rect, b.rect) {
+                        level = level.max(levels[j] + 1);
+                    }
+                }
+            }
+        }
+        levels[i] = level.min(scene::BOX_LEVELS - 1);
+        for bx in x0..=x1 {
+            for by in y0..=y1 {
+                buckets.entry((bx, by)).or_default().push(i);
+            }
+        }
+    }
+    levels
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlapping_boxes_go_up_a_level() {
+        let model = |id: &str, x: f32, y: f32| canvas_core::view::BoxModel {
+            id: id.into(),
+            kind: BoxKind::Session,
+            rect: WRect::new(x, y, 30.0, 4.0),
+            prefix: "",
+            name: id.into(),
+            status: canvas_core::status::Status::Idle,
+            icon: "",
+            label: "",
+            line: String::new(),
+            line_style: Style::default(),
+            name_style: Style::default(),
+            elsewhere: false,
+            subtitle: String::new(),
+            border: Border::Round,
+            border_style: Style::default(),
+            fill: Color::Reset,
+            attention: None,
+            selected: false,
+            focused_term: false,
+            active: false,
+            every: None,
+            mailbox: 0,
+        };
+        let boxes = [model("a", 0.0, 0.0), model("b", 10.0, 2.0), model("c", 100.0, 0.0), model("d", 20.0, 3.0), model("e", 25.0, 3.5)];
+        assert_eq!(box_levels(&boxes), [0, 1, 0, 2, 2], "capped at the top level");
+    }
 
     #[test]
     fn points_along_a_polyline() {

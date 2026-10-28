@@ -159,39 +159,96 @@ fn draw_toolbar(app: &mut App, buf: &mut Buffer, area: Rect) {
     if app.render_mode == crate::view::RenderMode::Gpu {
         x = toolbar_button(app, buf, x, " ⧉ ", Action::NewWindow, area);
     }
-    let _ = toolbar_button(app, buf, x, " ⏻ Quit ", Action::Quit, area);
+    let buttons_end = toolbar_button(app, buf, x, " ⏻ Quit ", Action::Quit, area);
 
-    // Status counts on the right.
-    let now = now_ms();
-    let _ = now;
+    // Status counts on the right, never over the buttons.
     let mut counts: HashMap<Status, usize> = HashMap::new();
     for node in app.doc.nodes.iter().filter(|n| n.kind == NodeKind::Session) {
         *counts.entry(app.node_status(node)).or_default() += 1;
     }
-    let mut parts = Vec::new();
-    // Failing automations first: a red, clickable badge.
-    let failing = app.failing_automations().len();
-    if failing > 0 {
-        parts.push((format!(" ✗ {failing} automation{} failing ", if failing == 1 { "" } else { "s" }), NEGATIVE));
-    }
-    for status in [Status::Working, Status::Waiting, Status::JustFinished, Status::External, Status::Failed] {
-        if let Some(count) = counts.get(&status).filter(|c| **c > 0) {
-            parts.push((format!("{} {count} {}", status.icon(0), status.label()), status.color()));
-        }
-    }
     let sessions = app.doc.nodes.iter().filter(|n| n.kind == NodeKind::Session).count();
-    parts.push((format!("{sessions} sessions"), GRAY));
-    let total: usize = parts.iter().map(|(t, _)| crate::paint::text_width(t) + 3).sum();
+    let parts = toolbar_counts(app.failing_automations().len(), &counts, sessions, (area.right() as i32 - 2 - buttons_end).max(0) as usize);
+    let total: usize = parts.iter().map(|p| crate::paint::text_width(&p.text) + 3).sum();
     let mut rx = area.right() as i32 - total as i32 - 1;
-    for (i, (text, color)) in parts.into_iter().enumerate() {
-        if i == 0 && failing > 0 {
-            let end = put(buf, rx, area.y as i32, &text, bold(PANEL).bg(NEGATIVE), area);
+    for part in parts {
+        if part.failing {
+            let end = put(buf, rx, area.y as i32, &part.text, bold(PANEL).bg(NEGATIVE), area);
             app.layout.hits.push((Rect::new(rx.max(0) as u16, area.y, (end - rx).max(0) as u16, 1), Hit::Toolbar(Action::ShowAutomations)));
             rx = end + 3;
             continue;
         }
-        rx = put(buf, rx, area.y as i32, &text, fg(color).bg(PANEL), area) + 3;
+        rx = put(buf, rx, area.y as i32, &part.text, fg(part.color).bg(PANEL), area) + 3;
     }
+}
+
+/// One status count on the toolbar.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CountPart {
+    pub text: String,
+    pub color: Color,
+    /// The failing-automations badge (red, clickable).
+    pub failing: bool,
+}
+
+/// The toolbar's status counts that fit in `room` cells (each takes its
+/// width plus 3). The lowest-priority parts go first (sessions total, open
+/// elsewhere, done · review, working, failed); then the rest is abbreviated
+/// (icon and count); "needs you" and failing automations go last.
+pub fn toolbar_counts(failing: usize, counts: &HashMap<Status, usize>, sessions: usize, room: usize) -> Vec<CountPart> {
+    let width = |parts: &[(u8, CountPart, String)], short: bool| -> usize {
+        parts.iter().map(|(_, p, s)| crate::paint::text_width(if short { s } else { &p.text }) + 3).sum()
+    };
+    // (drop rank: lower goes first, full part, abbreviation)
+    let mut parts: Vec<(u8, CountPart, String)> = Vec::new();
+    if failing > 0 {
+        let text = format!(" ✗ {failing} automation{} failing ", if failing == 1 { "" } else { "s" });
+        parts.push((9, CountPart { text, color: NEGATIVE, failing: true }, format!(" ✗ {failing} ")));
+    }
+    let rank = |s: Status| match s {
+        Status::Waiting => 8,
+        Status::Failed => 5,
+        Status::Working => 4,
+        Status::JustFinished => 3,
+        _ => 2,
+    };
+    for status in [Status::Working, Status::Waiting, Status::JustFinished, Status::External, Status::Failed] {
+        if let Some(count) = counts.get(&status).filter(|c| **c > 0) {
+            let part = CountPart { text: format!("{} {count} {}", status.icon(0), status.label()), color: status.color(), failing: false };
+            parts.push((rank(status), part, format!("{} {count}", status.icon(0))));
+        }
+    }
+    parts.push((1, CountPart { text: format!("{sessions} sessions"), color: GRAY, failing: false }, format!("{sessions}")));
+    let mut short = false;
+    loop {
+        if width(&parts, short) <= room {
+            break;
+        }
+        // Drop the lowest-priority part until only the important ones are left, then abbreviate.
+        let lowest = parts.iter().enumerate().filter(|(_, (r, _, _))| *r < 8).min_by_key(|(_, (r, _, _))| *r).map(|(i, _)| i);
+        match (lowest, short) {
+            (Some(i), _) => {
+                parts.remove(i);
+            }
+            (None, false) => short = true,
+            (None, true) => {
+                if parts.is_empty() {
+                    break;
+                }
+                // Even the abbreviations do not fit: "needs you" before the badge.
+                let i = parts.iter().enumerate().min_by_key(|(_, (r, _, _))| *r).map(|(i, _)| i).unwrap_or(0);
+                parts.remove(i);
+            }
+        }
+    }
+    parts
+        .into_iter()
+        .map(|(_, mut part, abbreviation)| {
+            if short {
+                part.text = abbreviation;
+            }
+            part
+        })
+        .collect()
 }
 
 /// FNV-1a: much cheaper than SipHash for the short id strings of the sidebar maps.
@@ -653,6 +710,32 @@ fn draw_terminals(app: &mut App, buf: &mut Buffer, area: Rect, view_model: &mut 
     cursor
 }
 
+/// Gpu mode: finds the links of tiles `ids` again after their terminals
+/// changed without a full render (a front end that redraws only damaged
+/// tiles); the rest of the layout stays. `scratch` is reused between calls.
+pub fn rescan_tile_links(app: &mut App, ids: &[String], scratch: &mut Buffer) {
+    let tiles: Vec<(String, Rect)> = app.layout.tiles.iter().filter(|(id, _, _)| ids.contains(id)).map(|(id, _, inner)| (id.clone(), *inner)).collect();
+    if tiles.is_empty() {
+        return;
+    }
+    if scratch.area != app.layout.screen {
+        *scratch = Buffer::empty(app.layout.screen);
+    }
+    let mut links = std::mem::take(&mut app.layout.links);
+    for (id, inner) in tiles {
+        let inside = |r: &Rect| r.x >= inner.x && r.y >= inner.y && r.right() <= inner.right() && r.bottom() <= inner.bottom();
+        links.retain(|l| !(l.terminal && l.rects.iter().all(inside)));
+        let Some(view) = app.views.get(&id) else { continue };
+        fill(scratch, inner.x as i32, inner.y as i32, inner.width as i32, inner.height as i32, Style::default(), inner);
+        let drawn = canvas_termview::tui::draw(view, scratch, inner, &canvas_termview::tui::Options { tint: None, selection: None, cursor: false });
+        for (rect, target) in drawn.links {
+            links.push(crate::links::Link { rects: vec![rect], target, terminal: true });
+        }
+        crate::links::scan(scratch, inner, true, &[], &mut links);
+    }
+    app.layout.links = links;
+}
+
 /// The intent an agent shows in its terminal title, without the agent's own
 /// decoration; empty when the title adds nothing to the box name.
 pub fn title_intent(agent: crate::agents::AgentKind, title: &str, name: &str) -> String {
@@ -829,7 +912,7 @@ fn draw_status(app: &mut App, buf: &mut Buffer, area: Rect) {
 
 #[cfg(test)]
 mod tests {
-    use super::title_intent;
+    use super::{HashMap, Status, title_intent, toolbar_counts};
     use crate::agents::AgentKind;
 
     #[test]
@@ -844,5 +927,27 @@ mod tests {
         assert_eq!(title_intent(AgentKind::OpenCode, "OpenCode", "Box"), "");
         assert_eq!(title_intent(AgentKind::OpenCode, "OC | Box", "Box"), "", "the box name adds nothing");
         assert_eq!(title_intent(AgentKind::Claude, r"C:\Users\me\.local\bin\claude.exe", "Box"), "", "a bare program path");
+    }
+
+    #[test]
+    fn toolbar_counts_drop_the_least_important_parts_first() {
+        let counts: HashMap<Status, usize> = [(Status::Working, 2), (Status::Waiting, 1), (Status::JustFinished, 3), (Status::External, 1)].into_iter().collect();
+        let texts = |room: usize| -> Vec<String> { toolbar_counts(1, &counts, 7, room).into_iter().map(|p| p.text).collect() };
+        let all = texts(500);
+        assert_eq!(all.len(), 6);
+        assert!(all[0].contains("1 automation failing") && all.last().is_some_and(|s| s == "7 sessions"));
+        let width = |parts: &[String]| parts.iter().map(|t| crate::paint::text_width(t) + 3).sum::<usize>();
+        for room in [80, 60, 50, 40, 30, 20, 12, 6, 0] {
+            let parts = texts(room);
+            assert!(width(&parts) <= room, "room {room}: {parts:?}");
+        }
+        // Sessions total and open elsewhere go first; needs you and the failing badge stay.
+        let narrow = texts(width(&all) - 4);
+        assert!(!narrow.iter().any(|t| t.contains("sessions")) && narrow.iter().any(|t| t.contains("elsewhere")));
+        let tight = texts(45);
+        assert!(tight.iter().any(|t| t.contains("needs you")) && tight.iter().any(|t| t.contains("failing")), "{tight:?}");
+        // Abbreviated before dropping them.
+        let short = texts(18);
+        assert!(short.len() == 2 && short.iter().all(|t| !t.contains("needs you")), "{short:?}");
     }
 }

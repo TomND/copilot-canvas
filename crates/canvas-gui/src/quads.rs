@@ -150,8 +150,6 @@ pub struct QuadPipeline {
     pipeline: wgpu::RenderPipeline,
     globals: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
-    instances: wgpu::Buffer,
-    capacity: usize,
 }
 
 impl QuadPipeline {
@@ -205,38 +203,32 @@ impl QuadPipeline {
             cache: None,
             multiview_mask: None,
         });
-        let capacity = 16 * 1024;
-        let instances = Self::buffer(device, capacity);
-        QuadPipeline { pipeline, globals, bind_group, instances, capacity }
+        QuadPipeline { pipeline, globals, bind_group }
     }
 
-    fn buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+    /// An instance buffer for `capacity` quads (each scene layer has its own).
+    pub fn buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
         device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("quad instances"),
-            size: (capacity * std::mem::size_of::<Quad>()) as u64,
+            size: (capacity.max(1) * std::mem::size_of::<Quad>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         })
     }
 
-    pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, quads: &[Quad], width: u32, height: u32) {
-        if quads.len() > self.capacity {
-            self.capacity = quads.len().next_power_of_two();
-            self.instances = Self::buffer(device, self.capacity);
-        }
+    /// The target size of the frame being encoded.
+    pub fn globals(&self, queue: &wgpu::Queue, width: u32, height: u32) {
         queue.write_buffer(&self.globals, 0, bytemuck::cast_slice(&[width as f32, height as f32, 0.0, 0.0]));
-        if !quads.is_empty() {
-            queue.write_buffer(&self.instances, 0, bytemuck::cast_slice(quads));
-        }
     }
 
-    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, range: std::ops::Range<u32>) {
+    /// Draws quads `range` of `instances`.
+    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, instances: &wgpu::Buffer, range: std::ops::Range<u32>) {
         if range.is_empty() {
             return;
         }
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.set_vertex_buffer(0, self.instances.slice(..));
+        pass.set_vertex_buffer(0, instances.slice(..));
         pass.draw(0..4, range);
     }
 }
