@@ -1,0 +1,149 @@
+{
+  "engine": "alacritty",
+  "events": {
+    "titles": 0,
+    "title": null,
+    "bells": 0,
+    "clipboard": [],
+    "progress": [],
+    "notifications": 0,
+    "replies": []
+  },
+  "screens": [
+    {
+      "mark": "before",
+      "cols": 30,
+      "rows": 5,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 512,
+      "mode_names": ["show_cursor"],
+      "links": [],
+      "text": [
+        "before sync",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"before sync","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "inside-sync",
+      "cols": 30,
+      "rows": 5,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 512,
+      "mode_names": ["show_cursor"],
+      "links": [],
+      "text": [
+        "before sync",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"before sync","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "after-end",
+      "cols": 30,
+      "rows": 5,
+      "cursor": [14,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 1,
+      "modes": 512,
+      "mode_names": ["show_cursor"],
+      "links": [],
+      "text": [
+        "frame 1 line a",
+        "frame 1 line b",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"frame 1 line a","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"frame 1 line b","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "after-timeout",
+      "cols": 30,
+      "rows": 5,
+      "cursor": [4,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 3,
+      "modes": 512,
+      "mode_names": ["show_cursor"],
+      "links": [],
+      "text": [
+        "unterminated",
+        "late",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"unterminated","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"late","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "end",
+      "cols": 30,
+      "rows": 5,
+      "cursor": [14,2],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 3,
+      "modes": 512,
+      "mode_names": ["show_cursor"],
+      "links": [],
+      "text": [
+        "unterminated",
+        "late",
+        "pending at end",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"unterminated","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"late","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"pending at end","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        []
+      ]
+    }
+  ]
+}

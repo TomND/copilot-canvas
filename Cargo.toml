@@ -15,6 +15,7 @@ canvas-agents = { path = "crates/canvas-agents" }
 canvas-termview = { path = "crates/canvas-termview" }
 canvas-core = { path = "crates/canvas-core" }
 canvas-tui = { path = "crates/canvas-tui" }
+canvas-corpus = { path = "crates/canvas-corpus" }
 
 alacritty_terminal = "0.26.0"
 anyhow = "1.0.104"
@@ -72,6 +73,7 @@ canvas-model.workspace = true
 canvas-agents.workspace = true
 canvas-core.workspace = true
 canvas-tui.workspace = true
+canvas-corpus.workspace = true
 anyhow.workspace = true
 crossbeam-channel.workspace = true
 dirs.workspace = true

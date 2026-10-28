@@ -432,12 +432,16 @@ fn spawn_reader(terminal: Arc<Terminal>, mut reader: Box<dyn Read + Send>, comma
         .name("pty-reader".into())
         .spawn(move || {
             let mut buffer = vec![0u8; 64 * 1024];
+            let mut tap = Tap::from_env();
             loop {
                 match reader.read(&mut buffer) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
                         bytes.fetch_add(n as u64, Ordering::Relaxed);
                         terminal.last_output_ms.store(now_ms(), Ordering::Relaxed);
+                        if tap.as_mut().is_some_and(|tap| !tap.write(&terminal, &buffer[..n])) {
+                            tap = None;
+                        }
                         // Blocks when the emulator falls behind: ConPTY then slows the program.
                         if commands.send(Cmd::Output(buffer[..n].to_vec())).is_err() {
                             break;
@@ -447,6 +451,68 @@ fn spawn_reader(terminal: Arc<Terminal>, mut reader: Box<dyn Read + Send>, comma
             }
         })
         .expect("spawn pty reader");
+}
+
+/// Directory where the service records every terminal's raw output (golden corpus).
+pub const RECORD_ENV: &str = "COPILOT_CANVAS_RECORD";
+
+/// Where the recording tap writes a terminal's output.
+pub fn recording_path(dir: &std::path::Path, id: &str) -> std::path::PathBuf {
+    let name: String = id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+    dir.join(format!("{name}.vtrec"))
+}
+
+/// Appends each PTY read to `<RECORD_ENV>/<id>.vtrec` (format: corpus/README.md;
+/// chunks as hex, which `copilot-canvas record --session` normalizes).
+struct Tap {
+    dir: std::path::PathBuf,
+    file: Option<std::fs::File>,
+    last_ms: u64,
+    size: u32,
+}
+
+impl Tap {
+    fn from_env() -> Option<Self> {
+        let dir = std::env::var_os(RECORD_ENV).filter(|dir| !dir.is_empty())?;
+        Some(Self { dir: dir.into(), file: None, last_ms: 0, size: 0 })
+    }
+
+    /// `false` on any I/O error: recording stops, the terminal carries on.
+    fn write(&mut self, terminal: &Terminal, bytes: &[u8]) -> bool {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let now = now_ms();
+        let size = terminal.size.load(Ordering::Relaxed);
+        let mut line = String::with_capacity(bytes.len() * 2 + 160);
+        if self.file.is_none() {
+            let path = recording_path(&self.dir, &terminal.id);
+            let opened = std::fs::create_dir_all(&self.dir).and_then(|_| std::fs::OpenOptions::new().create(true).append(true).open(&path));
+            let Ok(file) = opened else { return false };
+            self.file = Some(file);
+            self.last_ms = terminal.started_ms;
+            self.size = size;
+            let id = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            line.push_str(&format!(
+                "{{\"vtrec\":1,\"cols\":{},\"rows\":{},\"program\":\"{id}\",\"description\":\"live terminal {id}\",\"source\":\"service\",\"recorded_at\":\"{}\"}}\n",
+                size >> 16,
+                size & 0xffff,
+                crate::paths::rfc3339_now()
+            ));
+        }
+        let mut delta = now.saturating_sub(self.last_ms);
+        self.last_ms = now.max(self.last_ms);
+        if size != self.size {
+            self.size = size;
+            line.push_str(&format!("{{\"t\":{delta},\"resize\":[{},{}]}}\n", size >> 16, size & 0xffff));
+            delta = 0;
+        }
+        line.push_str(&format!("{{\"t\":{delta},\"x\":\""));
+        for &b in bytes {
+            line.push(HEX[(b >> 4) as usize] as char);
+            line.push(HEX[(b & 15) as usize] as char);
+        }
+        line.push_str("\"}\n");
+        self.file.as_mut().is_some_and(|file| file.write_all(line.as_bytes()).is_ok())
+    }
 }
 
 fn spawn_waiter(terminal: Arc<Terminal>, mut child: Box<dyn portable_pty::Child + Send + Sync>, exited: Sender<String>, pump: Sender<()>) {

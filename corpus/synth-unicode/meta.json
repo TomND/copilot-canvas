@@ -1,0 +1,19 @@
+{
+  "description": "Emoji (presentation selectors, skin tones, keycaps), ZWJ sequences (woman technologist, family, rainbow flag), regional-indicator flags (FR, JP, US), CJK and fullwidth, combining marks, Hangul jamo, zero-width characters, ambiguous widths, invalid UTF-8, wide characters at the right margin (wrap and leading spacer) and half-overwritten wide characters; reads split inside UTF-8 sequences",
+  "source": "synthetic",
+  "cols": 40,
+  "rows": 18,
+  "tags": [
+    "unicode",
+    "emoji",
+    "cjk",
+    "zwj",
+    "wrap"
+  ],
+  "command": [
+    "copilot-canvas",
+    "corpus",
+    "synth",
+    "synth-unicode"
+  ]
+}

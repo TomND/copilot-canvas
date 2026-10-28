@@ -1,0 +1,20 @@
+{
+  "description": "Claude Code TUI start-up in a fresh folder (ConPTY); no prompt typed, declined/quit with Esc and Ctrl+C",
+  "source": "recorded",
+  "cols": 120,
+  "rows": 40,
+  "tags": [
+    "claude",
+    "agent",
+    "tui",
+    "conpty"
+  ],
+  "command": [
+    "C:\\Users\\thoma\\.local\\bin\\claude.exe"
+  ],
+  "env": [
+    "DISABLE_AUTOUPDATER=1"
+  ],
+  "recorded_on": "Microsoft Windows [Version 10.0.26300.9711]",
+  "recorded_at": "2026-10-28T02:30:25.007Z"
+}

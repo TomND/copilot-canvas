@@ -1,0 +1,19 @@
+{
+  "description": "Mode changes with a checkpoint after each: mouse 1000/1002/1003/1006/1005, bracketed paste, focus, application cursor/keypad, cursor visibility, kitty keyboard push/query/set/pop (CSI > 1 u), DECSCUSR shapes 0..6, cursor blink, and query replies (DA1, DA2, DSR, DECRQM, XTVERSION, window size)",
+  "source": "synthetic",
+  "cols": 40,
+  "rows": 6,
+  "tags": [
+    "modes",
+    "mouse",
+    "kitty-keyboard",
+    "cursor-shape",
+    "queries"
+  ],
+  "command": [
+    "copilot-canvas",
+    "corpus",
+    "synth",
+    "synth-modes"
+  ]
+}

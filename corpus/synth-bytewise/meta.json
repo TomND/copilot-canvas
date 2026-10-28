@@ -1,0 +1,16 @@
+{
+  "description": "SGR, OSC 8, UTF-8, a combining mark, a ZWJ sequence, a title, DECSCUSR, bracketed paste, progress and OSC 52, fed one byte per read",
+  "source": "synthetic",
+  "cols": 40,
+  "rows": 4,
+  "tags": [
+    "chunking",
+    "parser"
+  ],
+  "command": [
+    "copilot-canvas",
+    "corpus",
+    "synth",
+    "synth-bytewise"
+  ]
+}

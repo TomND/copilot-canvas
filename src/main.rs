@@ -32,6 +32,16 @@ USAGE
                                         measure service/terminal/rendering performance (no Copilot)
   copilot-canvas selftest               drive the real UI end to end in a hidden pseudoconsole
 
+GOLDEN CORPUS (recorded terminal output vs. each engine's screen; see corpus/README.md)
+  copilot-canvas record (--out FILE | --entry NAME) [--cols N] [--rows M] [--input SCRIPT] [--seconds S]
+                 [--env K=V]… -- PROGRAM [ARGS…]
+                                        record a program in a pseudoconsole (scripted input optional)
+  copilot-canvas record --session ID (--out FILE | --entry NAME) [--dir DIR]
+                                        copy a live terminal's recording (service run with COPILOT_CANVAS_RECORD)
+  copilot-canvas corpus list|synth|show NAME|diff [NAME…]
+  copilot-canvas corpus check|bless [--engine NAME] [NAME…]
+                                        compare every engine with the expected screens, or rewrite them
+
 EVENTS (run by sessions on the canvas; see the canvas-events skill)
   copilot-canvas events                 this session's group: events, passive sessions, sessions
   copilot-canvas emit TYPE [--data JSON] [--to NAME]
@@ -96,6 +106,11 @@ fn parse() -> Result<Args> {
             "--canvas" => args.canvas = Some(PathBuf::from(value("--canvas")?)),
             "--cwd" => args.cwd = Some(PathBuf::from(value("--cwd")?)),
             "--yes" | "--force" => args.flags.push(arg.trim_start_matches("--").to_owned()),
+            "--" => {
+                // `record … -- PROGRAM ARGS…`: the rest belongs to the program.
+                args.command.push(arg);
+                args.command.extend(iter.by_ref());
+            }
             flag if flag.starts_with("--") => {
                 let v = value(flag)?;
                 args.rest.push((flag.trim_start_matches("--").to_owned(), v));
@@ -211,6 +226,8 @@ fn real_main() -> Result<()> {
         ["doctor"] => selftest::doctor(&instance),
         ["selftest"] => selftest::run(),
         ["selftest", "copilot"] => selftest::copilot(),
+        ["record", rest @ ..] => canvas_corpus::cli::record(&instance.home, rest, &args.rest, args.cwd.as_deref()),
+        ["corpus", rest @ ..] => canvas_corpus::cli::corpus(rest, &args.rest),
         ["bench"] => bench::run(
             option("terminals").map(|v| v.parse()).transpose()?.unwrap_or(100),
             option("seconds").map(|v| v.parse()).transpose()?.unwrap_or(10),

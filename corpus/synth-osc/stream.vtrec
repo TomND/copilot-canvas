@@ -1,0 +1,34 @@
+{"vtrec":1,"cols":60,"rows":18,"program":"copilot-canvas corpus synth synth-osc","description":"OSC 0/1/2 titles, OSC 8 hyperlinks (ids, BEL/ST, adjacent, styled, wrapped, split reads), OSC 52 clipboard write and refused read, OSC 9;4 progress states, OSC 777 and OSC 9 notifications, BEL, colour queries (OSC 4/10/11) and ignored OSC 7/133/633/104","source":"synthetic","recorded_at":""}
+{"t":1,"s":"\u001b]0;window title\u0007"}
+{"t":1,"s":"titles: OSC 0, 1, 2\r\n\u001b]1;icon name\u0007\u001b]2;final title\u001b\\"}
+{"t":1,"s":"plain \u001b]8;;https://example.com/a\u001b\\link-a\u001b]8;;\u001b\\ text\r\n"}
+{"t":1,"s":"id \u001b]8;id=doc;https://example.com/doc\u0007part1\u001b]8;;\u0007 gap \u001b]8;id=doc;https://example.com/doc\u0007part2\u001b]8;;\u0007\r\n"}
+{"t":1,"s":"adjacent \u001b]8;;https://a.test/1\u001b\\one\u001b]8;;https://a.test/2\u001b\\two\u001b]8;;\u001b\\\r\n"}
+{"t":1,"s":"styled \u001b[4;34m\u001b]8;;file:///C:/tmp/x.txt\u001b\\file\u001b]8;;\u001b\\\u001b[0m unicode \u001b]8;;https://example.jp/パス\u001b\\日本\u001b]8;;\u001b\\\r\n"}
+{"t":1,"s":"\u001b[50Gwrap \u001b]8;;https://example.com/wrapped\u001b\\wrapped-link-text\u001b]8;;\u001b\\\r\n"}
+{"t":1,"s":"spli"}
+{"t":1,"s":"t \u001b]"}
+{"t":1,"s":"8;;h"}
+{"t":1,"s":"ttps"}
+{"t":1,"s":"://e"}
+{"t":1,"s":"xamp"}
+{"t":1,"s":"le.c"}
+{"t":1,"s":"om/s"}
+{"t":1,"s":"plit"}
+{"t":1,"s":"\u001b\\sp"}
+{"t":1,"s":"lit-"}
+{"t":1,"s":"link"}
+{"t":1,"s":"\u001b]8;"}
+{"t":1,"s":";\u001b\\\r"}
+{"t":1,"s":"\n"}
+{"t":1,"s":"clipboard \u001b]52;c;aGVsbG8gY2xpcGJvYXJk\u0007 query \u001b]52;c;?\u0007\r\n"}
+{"t":1,"s":"progress \u001b]9;4;1;25\u0007"}
+{"t":1,"s":"\u001b]9"}
+{"t":1,"s":";4;"}
+{"t":1,"s":"3;0"}
+{"t":1,"s":"\u001b\\"}
+{"t":1,"s":"\u001b]9;4;2;50\u0007\u001b]9;4;4;60\u0007\u001b]9;4;0;0\u0007 states 1 3 2 4 0\r\n"}
+{"t":1,"s":"notify \u001b]777;notify;Build;done\u0007 osc9 \u001b]9;plain message\u0007\r\n"}
+{"t":1,"s":"bell \u0007\u0007 two\r\n"}
+{"t":1,"s":"\u001b]10;?\u0007\u001b]11;?\u001b\\\u001b]4;1;?\u0007\u001b]7;file://host/C:/work\u001b\\\u001b]133;A\u0007\u001b]633;P;Cwd=C:/\u0007ignored OSCs\r\n"}
+{"t":1,"s":"\u001b]4;1;rgb:12/34/56\u0007\u001b[31mpalette-red\u001b[0m\u001b]104;1\u0007"}

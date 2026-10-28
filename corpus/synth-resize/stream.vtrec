@@ -1,0 +1,15 @@
+{"vtrec":1,"cols":40,"rows":8,"program":"copilot-canvas corpus synth synth-resize","description":"Reflow on resize: wrapped plain and wide text, a coloured line and the cursor across narrower, wider and shorter sizes","source":"synthetic","recorded_at":""}
+{"t":1,"s":"short line\r\n"}
+{"t":1,"s":"The quick brown fox jumps over the lazy dog; the lazy dog sleeps through it all.\r\n"}
+{"t":1,"s":"wide: 中文字符中文字符中文字符中文字符中文字符中\r\n"}
+{"t":1,"s":"\u001b[44mcoloured background line\u001b[K\u001b[0m\r\n"}
+{"t":1,"s":"prompt> cursor-here"}
+{"t":0,"mark":"before"}
+{"t":1,"resize":[20,8]}
+{"t":0,"mark":"narrow"}
+{"t":1,"resize":[60,10]}
+{"t":0,"mark":"wide"}
+{"t":1,"resize":[40,5]}
+{"t":0,"mark":"short"}
+{"t":1,"resize":[40,8]}
+{"t":1,"s":" more"}

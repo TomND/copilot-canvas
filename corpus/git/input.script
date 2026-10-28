@@ -1,0 +1,11 @@
+# git in cmd.exe: a coloured graph log with a merge, then a coloured diff with several hunks.
+timeout 20000
+wait-for >
+wait-quiet 500
+line git --no-pager log --graph --color --oneline --all
+wait-quiet 1000
+mark log
+line git --no-pager diff --color
+wait-quiet 1000
+mark diff
+line exit

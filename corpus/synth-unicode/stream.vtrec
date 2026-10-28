@@ -1,0 +1,68 @@
+{"vtrec":1,"cols":40,"rows":18,"program":"copilot-canvas corpus synth synth-unicode","description":"Emoji (presentation selectors, skin tones, keycaps), ZWJ sequences (woman technologist, family, rainbow flag), regional-indicator flags (FR, JP, US), CJK and fullwidth, combining marks, Hangul jamo, zero-width characters, ambiguous widths, invalid UTF-8, wide characters at the right margin (wrap and leading spacer) and half-overwritten wide characters; reads split inside UTF-8 sequences","source":"synthetic","recorded_at":""}
+{"t":1,"s":"Emoji"}
+{"t":1,"x":"3a20f09f98"}
+{"t":1,"x":"8020f09f8e"}
+{"t":1,"x":"8920f09f91"}
+{"t":1,"x":"8df09f8fbd"}
+{"t":1,"x":"20e29da4ef"}
+{"t":1,"x":"b88f20e298"}
+{"t":1,"x":"baefb88e20"}
+{"t":1,"x":"31efb88fe2"}
+{"t":1,"x":"83a30d0a"}
+{"t":1,"s":"ZWJ"}
+{"t":1,"x":"3a20f0"}
+{"t":1,"x":"9f91a9"}
+{"t":1,"s":"‍"}
+{"t":1,"x":"f09f92"}
+{"t":1,"x":"bb20f0"}
+{"t":1,"x":"9f91a8"}
+{"t":1,"s":"‍"}
+{"t":1,"x":"f09f91"}
+{"t":1,"x":"a9e280"}
+{"t":1,"x":"8df09f"}
+{"t":1,"x":"91a7e2"}
+{"t":1,"x":"808df0"}
+{"t":1,"x":"9f91a6"}
+{"t":1,"x":"20f09f"}
+{"t":1,"x":"8fb3ef"}
+{"t":1,"x":"b88fe2"}
+{"t":1,"x":"808df0"}
+{"t":1,"x":"9f8c88"}
+{"t":1,"x":"20f09f"}
+{"t":1,"x":"a791f0"}
+{"t":1,"x":"9f8fbf"}
+{"t":1,"s":"‍"}
+{"t":1,"x":"f09f9a"}
+{"t":1,"x":"800d0a"}
+{"t":1,"s":"Flags: 🇫🇷 🇯🇵 🇺🇸 lone 🇦x\r\n"}
+{"t":1,"s":"CJK: 中文字符 日本語 한국어 ｆｕｌｌ\r\n"}
+{"t":1,"s":"Ma"}
+{"t":1,"s":"rk"}
+{"t":1,"s":"s:"}
+{"t":1,"s":" e"}
+{"t":1,"s":"́"}
+{"t":1,"s":" a"}
+{"t":1,"s":"̈"}
+{"t":1,"s":"̲"}
+{"t":1,"s":" n"}
+{"t":1,"s":"̃"}
+{"t":1,"x":"20e0"}
+{"t":1,"x":"a495"}
+{"t":1,"x":"e0a5"}
+{"t":1,"x":"8de0"}
+{"t":1,"x":"a4b7"}
+{"t":1,"x":"20e1"}
+{"t":1,"x":"8480"}
+{"t":1,"x":"e185"}
+{"t":1,"x":"a1e1"}
+{"t":1,"x":"86a8"}
+{"t":1,"s":"\r\n"}
+{"t":1,"s":"ZW: a​b c‍d ﻿e ́lead\r\n"}
+{"t":1,"s":"Ambiguous: ① ± ½ → ★ ○\r\n"}
+{"t":1,"s":"Tabs:\t中\t文\tx\r\n"}
+{"t":1,"x":"426164205554462d383a20ff20c32820e28220656e640d0a"}
+{"t":1,"s":"\u001b[11;39H中文"}
+{"t":1,"s":"\u001b[13;40H字x"}
+{"t":1,"s":"\u001b[15;1H中文字\u001b[15;2Hx"}
+{"t":1,"s":"\u001b[16;1H中文字\u001b[16;3Hy"}
+{"t":1,"s":"\u001b[17;1H\u001b[33m一二三四五六七八九十一二三四五六七八九十一\u001b[0m"}

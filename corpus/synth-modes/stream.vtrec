@@ -1,0 +1,57 @@
+{"vtrec":1,"cols":40,"rows":6,"program":"copilot-canvas corpus synth synth-modes","description":"Mode changes with a checkpoint after each: mouse 1000/1002/1003/1006/1005, bracketed paste, focus, application cursor/keypad, cursor visibility, kitty keyboard push/query/set/pop (CSI > 1 u), DECSCUSR shapes 0..6, cursor blink, and query replies (DA1, DA2, DSR, DECRQM, XTVERSION, window size)","source":"synthetic","recorded_at":""}
+{"t":1,"s":"modes, cursor shapes, queries\r\n"}
+{"t":1,"s":"\u001b[?1000h"}
+{"t":0,"mark":"mouse-1000"}
+{"t":1,"s":"\u001b[?1002h"}
+{"t":0,"mark":"mouse-1002"}
+{"t":1,"s":"\u001b[?1003h"}
+{"t":0,"mark":"mouse-1003"}
+{"t":1,"s":"\u001b[?1006h"}
+{"t":0,"mark":"sgr-1006"}
+{"t":1,"s":"\u001b[?1005h"}
+{"t":0,"mark":"utf8-1005"}
+{"t":1,"s":"\u001b[?1000l\u001b[?1002l\u001b[?1003l\u001b[?1006l\u001b[?1005l"}
+{"t":0,"mark":"mouse-off"}
+{"t":1,"s":"\u001b[?2004h"}
+{"t":0,"mark":"bracketed-paste"}
+{"t":1,"s":"\u001b[?2004l\u001b[?1004h"}
+{"t":0,"mark":"focus"}
+{"t":1,"s":"\u001b[?1004l\u001b[?1h\u001b="}
+{"t":0,"mark":"app-cursor-keypad"}
+{"t":1,"s":"\u001b[?1l\u001b>\u001b[?25l"}
+{"t":0,"mark":"cursor-hidden"}
+{"t":1,"s":"\u001b[?25h\u001b[>1u"}
+{"t":0,"mark":"kitty-push-1"}
+{"t":1,"s":"\u001b[?u"}
+{"t":0,"mark":"kitty-query"}
+{"t":1,"s":"\u001b[=3;1u"}
+{"t":0,"mark":"kitty-set-3"}
+{"t":1,"s":"\u001b[>8u"}
+{"t":0,"mark":"kitty-push-8"}
+{"t":1,"s":"\u001b[<u"}
+{"t":0,"mark":"kitty-pop"}
+{"t":1,"s":"\u001b[<u"}
+{"t":0,"mark":"kitty-pop-again"}
+{"t":1,"s":"\u001b[<u"}
+{"t":0,"mark":"kitty-pop-empty"}
+{"t":1,"s":"\u001b[0 q"}
+{"t":0,"mark":"cursor-0"}
+{"t":1,"s":"\u001b[1 q"}
+{"t":0,"mark":"cursor-1"}
+{"t":1,"s":"\u001b[2 q"}
+{"t":0,"mark":"cursor-2"}
+{"t":1,"s":"\u001b[3 q"}
+{"t":0,"mark":"cursor-3"}
+{"t":1,"s":"\u001b[4 q"}
+{"t":0,"mark":"cursor-4"}
+{"t":1,"s":"\u001b[5 q"}
+{"t":0,"mark":"cursor-5"}
+{"t":1,"s":"\u001b[6 q"}
+{"t":0,"mark":"cursor-6"}
+{"t":1,"s":"\u001b[2 q\u001b[?12h"}
+{"t":0,"mark":"blink-on"}
+{"t":1,"s":"\u001b[?12l"}
+{"t":0,"mark":"blink-off"}
+{"t":1,"s":"\u001b[c\u001b[>c\u001b[5n\u001b[6n\u001b[?2026$p\u001b[?2004$p\u001b[>q\u001b[14t\u001b[18t"}
+{"t":0,"mark":"queries"}
+{"t":1,"s":"\u001b[?1049h\u001b[?1000h\u001b[?1006h\u001b[?2004h\u001b[>1u\u001b[5 qtui-like modes"}

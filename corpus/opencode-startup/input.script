@@ -1,0 +1,6 @@
+# OpenCode start-up screen. No prompt is typed (no model turn, no credits): wait, keep the screen, quit with Ctrl+C.
+wait 5000
+mark startup
+key ctrl-c
+wait 1500
+key ctrl-c

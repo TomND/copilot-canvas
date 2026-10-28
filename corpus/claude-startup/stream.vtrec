@@ -1,0 +1,19 @@
+{"vtrec":1,"cols":120,"rows":40,"program":"C:\\Users\\thoma\\.local\\bin\\claude.exe","description":"Claude Code TUI start-up in a fresh folder (ConPTY); no prompt typed, declined/quit with Esc and Ctrl+C","source":"conpty","recorded_at":"2026-10-28T02:30:25.007Z"}
+{"t":18,"s":"\u001b[6n"}
+{"t":0,"s":"\u001b[?9001h\u001b[?1004h"}
+{"t":0,"s":"\u001b[m\u001b]0;C:\\Users\\thoma\\.local\\bin\\claude.exe\u0007\u001b[?25h"}
+{"t":149,"s":"\u001b]0;claude\u0007"}
+{"t":371,"s":"\u001b[?2004h\u001b[?2031h\u001b[?1004h"}
+{"t":0,"s":"\u001b[<u\u001b[>5u\u001b[>4;2m"}
+{"t":4,"s":"\u001b[?2026h\u001b[?2026l"}
+{"t":1,"s":"\u001b[>0q"}
+{"t":0,"s":"\u001b[?u"}
+{"t":0,"s":"\u001b]7501;?\u0007"}
+{"t":5,"s":"\u001b[?25l\u001b[38;2;255;193;7m\r\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[1m\u001b[3;2HAccessing\u001b[1Cworkspace:\u001b[m\u001b[1m\u001b[5;2HC:\\Users\\thoma\\AppData\\Local\\Temp\\opencode\\cc-corpus\\cl\u001b[22m\u001b[7;2HQuick\u001b[1Csafety\u001b[1Ccheck:\u001b[1CIs\u001b[1Cthis\u001b[1Ca\u001b[1Cproject\u001b[1Cyou\u001b[1Ccreated\u001b[1Cor\u001b[1Cone\u001b[1Cyou\u001b[1Ctrust?\u001b[1C(Like\u001b[1Cyour\u001b[1Cown\u001b[1Ccode,\u001b[1Ca\u001b[1Cwell-known\u001b[1Copen\u001b[1Csource\u001b[8;2Hproject,\u001b[1Cor\u001b[1Cwork\u001b[1Cfrom\u001b[1Cyour\u001b[1Cteam).\u001b[1CIf\u001b[1Cnot,\u001b[1Ctake\u001b[1Ca\u001b[1Cmoment\u001b[1Cto\u001b[1Creview\u001b[1Cwhat's\u001b[1Cin\u001b[1Cthis\u001b[1Cfolder\u001b[1Cfirst.\u001b[10;2HClaude\u001b[1CCode'll\u001b[1Cbe\u001b[1Cable\u001b[1Cto\u001b[1Cread,\u001b[1Cedit,\u001b[1Cand\u001b[1Cexecute\u001b[1Cfiles\u001b[1Chere.\u001b[38;2;153;153;153m\u001b]8;id=u-zaxmda%5166649326141359084;https://code.claude.com/docs/en/security\u001b\\\u001b[12;2HSecurity guide\u001b[38;2;177;185;249m\u001b]8;;\u001b\\\u001b[14;2H❯\u001b[1CNo,\u001b[1Cexit\u001b[m\u001b[15;4HYes,\u001b[1CI\u001b[1Ctrust\u001b[1Cthis\u001b[1Cfolder\u001b[38;2;153;153;153m\u001b[17;2HEnter\u001b[1Cto\u001b[1Cconfirm\u001b[1C·\u001b[1CEsc\u001b[1Cto\u001b[1Ccancel"}
+{"t":4480,"mark":"startup"}
+{"t":15,"in":"\u001b[27u"}
+{"t":2,"s":"\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l"}
+{"t":0,"s":"\u001b[m"}
+{"t":0,"s":"\u001b[>4m\u001b[<u\u001b[?2031l\u001b[?2004l\u001b[?1016l"}
+{"t":13,"s":"\r\n\u001b]0;\u0007\u001b[?25h"}
+{"t":641,"s":"\u001b[?9001l\u001b[?1004l"}

@@ -1,0 +1,45 @@
+{
+  "engine": "alacritty",
+  "events": {
+    "titles": 1,
+    "title": "bytewise",
+    "bells": 0,
+    "clipboard": [
+      "bytes"
+    ],
+    "progress": [
+      1
+    ],
+    "notifications": 0,
+    "replies": []
+  },
+  "screens": [
+    {
+      "mark": "end",
+      "cols": 40,
+      "rows": 4,
+      "cursor": [5,1],
+      "cursor_shape": 1,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 544,
+      "mode_names": ["bracketed_paste","show_cursor"],
+      "links": [
+        "https://b.test"
+      ],
+      "text": [
+        "green link 中文 é 👩‍💻",
+        "line2",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"green","clusters":[],"wide":false,"fg":17483806,"bg":0,"flags":1,"underline":0,"link":0},{"col":5,"text":" ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":6,"text":"link","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":1},{"col":10,"text":" ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":11,"text":"中文","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":15,"text":" é ","clusters":[[1,1]],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":18,"text":"👩‍💻","clusters":[[0,1]],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"line2","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        []
+      ]
+    }
+  ]
+}

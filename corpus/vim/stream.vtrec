@@ -1,0 +1,51 @@
+{"vtrec":1,"cols":120,"rows":40,"program":"C:\\Program Files\\Git\\usr\\bin\\vim.exe --clean notes.txt","description":"vim --clean (Git for Windows, LANG=en_US.UTF-8, ConPTY): alternate screen, mouse/focus/paste modes, appended lines with accents, CJK, emoji and a combining mark, :set number, :q!","source":"conpty","recorded_at":"2026-10-28T02:29:47.374Z"}
+{"t":14,"s":"\u001b[6n"}
+{"t":0,"s":"\u001b[?9001h\u001b[?1004h"}
+{"t":0,"s":"\u001b[m\u001b]0;C:\\Program Files\\Git\\usr\\bin\\vim.exe\u0007\u001b[?25h"}
+{"t":24,"s":"\u001b[?1006;1000h"}
+{"t":0,"s":"\u001b[?1002h"}
+{"t":0,"s":"\u001b[?1049h"}
+{"t":0,"s":"\u001b[22;0;0t"}
+{"t":0,"s":"\u001b[?1h"}
+{"t":0,"s":"\u001b="}
+{"t":0,"s":"\u001b[?2004h"}
+{"t":0,"s":"\u001b[?1004h"}
+{"t":0,"s":"\u001b[?12h"}
+{"t":0,"s":"\u001b[?12l"}
+{"t":0,"s":"\u001b[22;2t"}
+{"t":0,"s":"\u001b[22;1t"}
+{"t":4,"s":"\u001b[2J"}
+{"t":3,"s":"\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\"notes.txt\" [dos] 4L, 56B\u001b[K\u001b[?25l\u001b[95C"}
+{"t":15,"s":"\u001b[2;1H  \r\n\u001b[11X\u001b[11C"}
+{"t":10,"s":"\u001b[?4m"}
+{"t":4,"s":"\u001b[HNotes for the golden corpus\r\n\u001b[K\r\nfirst line\u001b[K\r\nsecond line\u001b[94m\r\n~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       ~                                                                                                                       \u001b[m\u001b[40;103H1,1\u001b[11CAll\u001b[H\u001b[?25h"}
+{"t":808,"mark":"opened"}
+{"t":15,"in":"Go"}
+{"t":15,"in":"Accents: héllo wörld, naïve café\r"}
+{"t":16,"in":"CJK: 中文字符 日本語 한국어\r"}
+{"t":15,"in":"Emoji: 😀 👍🏽 ✅ and a combining é"}
+{"t":42,"s":"\u001b[?25l"}
+{"t":21,"s":"\u001b[5;1HAccents: héllo wörld, naïve café                                                                                        CJK: 中文字符 日本語 한국어                                                                                             Emoji: \u001b[34m<de00> <dc4d><dffd> \u001b[m✅ and a combining e                                                                         \u001b[1m\u001b[40;1H-- INSERT --\u001b[22m                                                                                          7,42-48       All \u001b[7;48H\u001b[?25h"}
+{"t":500,"in":"\u001b"}
+{"t":46,"s":"\u001b[?25l\u001b[40;1H\u001b[?25h"}
+{"t":15,"s":"                                                                                            ^[\u001b[K\u001b[?25l\u001b[26C"}
+{"t":107,"s":"\u001b[40;93H  \u001b[8C7,39-47\u001b[7CAll\u001b[7;47H\u001b[?25h"}
+{"t":513,"mark":"inserted"}
+{"t":15,"in":":set number\r"}
+{"t":21,"s":"\u001b[?25l"}
+{"t":9,"s":"\u001b[38;5;130m\u001b[H  1 \u001b[mNotes for the golden corpus\u001b[38;5;130m\r\n  2 \r\n  3 \u001b[mfirst line\u001b[38;5;130m\r\n  4 \u001b[msecond line\u001b[38;5;130m\r\n  5 \u001b[mAccents: héllo wörld, naïve café\u001b[38;5;130m\r\n  6 \u001b[mCJK: 中文字符 日本語 한국어\u001b[38;5;130m\r\n  7 \u001b[mEmoji: \u001b[34m<de00> <dc4d><dffd> \u001b[m✅\u001b[2Cnd a combining é\u001b[40;1H:set number\u001b[91C7,39-47       All \u001b[7;51H\u001b[?25h"}
+{"t":812,"mark":"numbered"}
+{"t":15,"in":":q!\r"}
+{"t":17,"s":"\u001b[?25l"}
+{"t":0,"s":"\u001b[?1006;1000l"}
+{"t":0,"s":"\u001b[?1002l"}
+{"t":0,"s":"\u001b[?2004l"}
+{"t":0,"s":"\u001b[23;2t"}
+{"t":0,"s":"\u001b[23;1t"}
+{"t":0,"s":"\u001b[?2004l"}
+{"t":0,"s":"\u001b[?1l"}
+{"t":0,"s":"\u001b>"}
+{"t":0,"s":"\u001b[40;1H\u001b[K\u001b[120C\u001b[?1049l"}
+{"t":0,"s":"\u001b[23;0;0t"}
+{"t":13,"s":"\u001b[H\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\u001b[H\u001b[?25h"}
+{"t":314,"s":"\u001b[?9001l\u001b[?1004l"}

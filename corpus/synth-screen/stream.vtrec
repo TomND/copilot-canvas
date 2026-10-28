@@ -1,0 +1,20 @@
+{"vtrec":1,"cols":50,"rows":14,"program":"copilot-canvas corpus synth synth-screen","description":"Scrollback, alternate screen (1049) with cursor save/restore, DECALN and erase variants, DEC special graphics and box drawing, scroll region with LF/RI/SU/SD/IL/DL, ICH/DCH/ECH, origin mode, DECSC/DECRC and SCOSC/SCORC, autowrap off, tab stops (HTS/TBC/CBT), REP and insert mode","source":"synthetic","recorded_at":""}
+{"t":1,"s":"primary line 01\r\nprimary line 02\r\nprimary line 03\r\nprimary line 04\r\nprimary line 05\r\nprimary line 06\r\nprimary line 07\r\nprimary line 08\r\nprimary line 09\r\nprimary line 10\r\nprimary line 11\r\nprimary line 12\r\nprimary line 13\r\nprimary line 14\r\nprimary line 15\r\nprimary line 16\r\nprimary line 17\r\nprimary line 18\r\nprimary line 19\r\nprimary line 20\r\nprimary line 21\r\nprimary line 22\r\nprimary line 23\r\nprimary line 24\r\nprimary line 25\r\nprimary line 26\r\nprimary line 27\r\nprimary line 28\r\nprimary line 29\r\nprimary line 30\r\n"}
+{"t":1,"s":"\u001b[1;31mprompt>\u001b[0m "}
+{"t":0,"mark":"primary"}
+{"t":1,"s":"\u001b7\u001b[?1049h\u001b[2J\u001b[H"}
+{"t":1,"s":"\u001b#8\u001b[3;3H\u001b[1J\u001b[12;10H\u001b[0J\u001b[5;5H\u001b[1K\u001b[6;20H\u001b[K\u001b[7;1H\u001b[2K"}
+{"t":0,"mark":"decaln-erase"}
+{"t":1,"s":"\u001b[2J\u001b[H\u001b(0lqqqqqqqqk\r\nx  dec   x\r\nmqqqqqqqqj\u001b(B ┌──┐\u001b[1B\u001b[4D└──┘"}
+{"t":1,"s":"\u001b[4;1Hheader (fixed)\u001b[13;1Hfooter (fixed)\u001b[5;12r\u001b[5;1H"}
+{"t":1,"s":"region line 1\r\nregion line 2\r\nregion line 3\r\nregion line 4\r\nregion line 5\r\nregion line 6\r\nregion line 7\r\nregion line 8\r\nregion line 9\r\nregion line 10\r\nregion line 11\r\nregion line 12\r\n"}
+{"t":1,"s":"\u001b[5;1H\u001bMreverse-index\u001b[2S\u001b[1T\u001b[7;1H\u001b[2L\u001b[9;1H\u001b[M"}
+{"t":1,"s":"\u001b[10;1Hinsert-delete-chars\u001b[10;3H\u001b[3@\u001b[10;12H\u001b[2P\u001b[10;15H\u001b[3X"}
+{"t":0,"mark":"scroll-region"}
+{"t":1,"s":"\u001b[?6h\u001b[1;1Horigin-home\u001b[?6l\u001b[r"}
+{"t":1,"s":"\u001b[2;30H\u001b7saved\u001b[14;1H\u001b8<-restored\u001b[3;30H\u001b[ssco\u001b[1;1H\u001b[u<-sco"}
+{"t":1,"s":"\u001b[?7l\u001b[1;40Hno-wrap-overflowing-text\u001b[?7h"}
+{"t":1,"s":"\u001b[3g\u001b[1;5H\u001bH\u001b[1;15H\u001bH\u001b[11;1H\tA\tB\u001b[ZC"}
+{"t":1,"s":"\u001b[12;1H=\u001b[9b\u001b[12;3H\u001b[4hINS\u001b[4l"}
+{"t":0,"mark":"alt-screen"}
+{"t":1,"s":"\u001b[?1049lback on primary\r\n"}

@@ -1,0 +1,23 @@
+{
+  "description": "OpenCode 1.19.4 TUI start-up screen in an empty folder (ConPTY); no prompt typed, quit with Ctrl+C",
+  "source": "recorded",
+  "cols": 120,
+  "rows": 40,
+  "tags": [
+    "opencode",
+    "agent",
+    "tui",
+    "alt-screen",
+    "mouse",
+    "kitty-keyboard",
+    "conpty"
+  ],
+  "command": [
+    "C:\\Users\\thoma\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\bin\\opencode.exe"
+  ],
+  "env": [
+    "OPENCODE_DISABLE_AUTOUPDATE=1"
+  ],
+  "recorded_on": "Microsoft Windows [Version 10.0.26300.9711]",
+  "recorded_at": "2026-10-28T02:30:12.352Z"
+}
