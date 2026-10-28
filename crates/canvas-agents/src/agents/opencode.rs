@@ -115,6 +115,7 @@ fn servers_lock() -> std::sync::MutexGuard<'static, Vec<Slot>> {
 
 /// Remembers a TUI server (replacing any earlier one of that terminal).
 pub fn register_server(server: Server) {
+    opencode_server::resume(server.port);
     let mut servers = servers_lock();
     servers.retain(|s| s.server.terminal != server.terminal);
     let sessions = server.session.iter().cloned().collect();
@@ -125,6 +126,15 @@ pub fn register_server(server: Server) {
 /// at its next round). The service calls this when the terminal exits.
 pub fn unregister_terminal(terminal: &str) {
     servers_lock().retain(|s| s.server.terminal != terminal);
+}
+
+/// The TUI in canvas terminal `terminal` is asked to quit: stop polling its
+/// server and wait until no request is in flight (see `opencode_server::quiesce`).
+pub fn quiesce_terminal(terminal: &str) {
+    if let Some(server) = server(terminal) {
+        opencode_server::quiesce(server.port, Duration::from_millis(800));
+        unregister_terminal(terminal);
+    }
 }
 
 /// The server registered for canvas terminal `terminal`.
@@ -171,10 +181,18 @@ impl Drop for Watching {
 fn watch(server: Server) {
     let _watching = Watching(server.clone());
     let mut round = 0u32;
+    // Every request is scoped to the TUI's folder (see `opencode_server::live_with`).
+    let mut directory: Option<String> = None;
     loop {
         // Root sessions change rarely (the first prompt, `/new`): list them every few rounds.
         let known = servers_lock().iter().find(|s| s.server == server).is_some_and(|s| !s.state.sessions.is_empty());
-        let result = opencode_server::live_with(server.port, &server.password, !known || round.is_multiple_of(5));
+        if directory.is_none() {
+            directory = opencode_server::directory(server.port, &server.password).ok();
+        }
+        let result = match directory.as_deref() {
+            Some(dir) => opencode_server::live_with(server.port, &server.password, dir, !known || round.is_multiple_of(5)),
+            None => Err(anyhow::anyhow!("the TUI's server has not answered yet")),
+        };
         round = round.wrapping_add(1);
         let ok = result.is_ok();
         {
@@ -405,6 +423,10 @@ impl Provider for OpenCode {
 
     fn terminal_exited(&self, id: &str, _home: &Path) {
         unregister_terminal(id);
+    }
+
+    fn terminal_stopping(&self, id: &str) {
+        quiesce_terminal(id);
     }
 }
 

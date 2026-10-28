@@ -140,6 +140,9 @@ pub trait Provider: Send + Sync {
     /// A terminal that ran this agent exited: drop what its launch left
     /// behind. `home` is the canvas data folder.
     fn terminal_exited(&self, _id: &str, _home: &Path) {}
+    /// A terminal that runs this agent is about to be asked to quit (it may
+    /// block briefly, e.g. until nobody talks to the agent's own server).
+    fn terminal_stopping(&self, _id: &str) {}
 }
 
 /// `program` from `env` or the first of `names` on PATH.

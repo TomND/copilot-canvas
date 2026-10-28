@@ -68,6 +68,9 @@ pub trait HostApp: Send + Sync {
     fn terminals_changed(&self);
     /// A terminal's program exited (after `terminals_changed`).
     fn terminal_exited(&self, _id: &str) {}
+    /// A terminal is about to be stopped gracefully; may block briefly (it
+    /// runs on its own thread).
+    fn terminal_stopping(&self, _id: &str) {}
     /// Pending work that keeps the service running without clients or terminals.
     fn has_work(&self) -> bool;
     /// The secret of a paired remote client (`ClientInfo::remote_id`); `None` refuses it.
@@ -444,6 +447,7 @@ impl Host {
         log(&self.instance, "shutdown requested");
         let terms: Vec<Arc<Terminal>> = lock(&self.terms).values().cloned().collect();
         for terminal in &terms {
+            self.app().terminal_stopping(&terminal.id);
             terminal.stop(false);
         }
         let deadline = Instant::now() + Duration::from_secs(6);
@@ -474,6 +478,22 @@ impl Host {
             return Engine::Alacritty;
         }
         self.engine
+    }
+
+    /// Stops a terminal; a graceful stop first lets the backend prepare the
+    /// agent (on a helper thread, so the client's messages keep flowing).
+    pub fn stop_terminal(self: &Arc<Self>, id: &str, force: bool) -> Result<()> {
+        let terminal = self.terminal(id)?;
+        if force || !terminal.copilot {
+            terminal.stop(force);
+            return Ok(());
+        }
+        let host = self.clone();
+        spawn_named("stop", move || {
+            host.app().terminal_stopping(&terminal.id);
+            terminal.stop(false);
+        });
+        Ok(())
     }
 
     fn note_active(&self, id: &str) {
@@ -730,7 +750,7 @@ fn dispatch(host: &Arc<Host>, client: &Arc<Client>, message: ClientMsg) -> Resul
             host.terminal(&id)?.click(button, col, row, mods)?;
             let _ = host.pump.try_send(());
         }
-        ClientMsg::Stop { id, force } => host.terminal(&id)?.stop(force),
+        ClientMsg::Stop { id, force } => host.stop_terminal(&id, force)?,
         ClientMsg::Forget { id } => {
             let mut terms = lock(&host.terms);
             if terms.get(&id).is_some_and(|t| !t.alive.load(Ordering::Acquire)) {
@@ -940,7 +960,13 @@ fn exit_loop(host: Arc<Host>, exited: Receiver<String>) {
         // Not holding `terms` while broadcasting (lock order: clients before terms).
         let terminal = lock(&host.terms).get(&id).cloned();
         if let Some(terminal) = terminal {
-            log(&host.instance, &format!("terminal {id} exited with {:?}", *lock(&terminal.exit_code)));
+            let (code, raw) = (*lock(&terminal.exit_code), *lock(&terminal.raw_exit_code));
+            let note = match (raw != code, terminal.was_forced()) {
+                (_, true) => format!(" (stopped; process code {}, killed after the grace period)", raw.unwrap_or_default()),
+                (true, false) => format!(" (stopped; process code {})", raw.unwrap_or_default()),
+                (false, false) => String::new(),
+            };
+            log(&host.instance, &format!("terminal {id} exited with {code:?}{note}"));
             host.broadcast(ServiceMsg::Terminals(vec![terminal.info()]));
         }
         host.app().terminals_changed();

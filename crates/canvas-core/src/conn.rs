@@ -522,9 +522,12 @@ fn adapt(message: ClientMsg, v8: bool, session: &ClientSession) -> Option<Client
 }
 
 /// Runs the service from a per-build copy so rebuilding or upgrading the
-/// client never fights a running service for the executable file.
+/// client never fights a running service for the executable file. The copy
+/// is made from the build's executable (`paths::build_exe`: this one, or the
+/// `copilot-canvas.exe` next to the GUI client).
 fn service_executable(instance: &Instance) -> Result<std::path::PathBuf> {
-    let exe = std::env::current_exe()?;
+    let exe = crate::paths::build_exe()?;
+    anyhow::ensure!(exe.is_file(), "the service executable {} is missing", exe.display());
     let dir = instance.bin_dir();
     std::fs::create_dir_all(&dir)?;
     let target = dir.join(format!("copilot-canvas-service-{}.exe", build_id()));

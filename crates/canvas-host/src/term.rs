@@ -74,7 +74,13 @@ pub struct Terminal {
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     pub pid: u32,
     pub alive: AtomicBool,
+    /// The exit code clients see: 0 when the canvas stopped the program
+    /// (whatever its own code: a stop is not a failure).
     pub exit_code: Mutex<Option<u32>>,
+    /// The process's own exit code (`exit_code` may report a requested stop as 0).
+    pub raw_exit_code: Mutex<Option<u32>>,
+    /// The process was killed (a stop's grace period ran out, or a forced stop).
+    forced: AtomicBool,
     state: Arc<State>,
     pub started_ms: u64,
     pub last_output_ms: AtomicU64,
@@ -214,6 +220,8 @@ impl Terminal {
             pid,
             alive: AtomicBool::new(true),
             exit_code: Mutex::new(None),
+            raw_exit_code: Mutex::new(None),
+            forced: AtomicBool::new(false),
             state: state.clone(),
             started_ms: now_ms(),
             last_output_ms: AtomicU64::new(0),
@@ -335,7 +343,9 @@ impl Terminal {
 
     /// Graceful stop for agents: Ctrl+D (encoded by the emulator, so programs
     /// using the kitty keyboard protocol read it as a key), again after 2 s
-    /// (some agents ask for a second one), then force after 5 s.
+    /// (some agents ask for a second one), Ctrl+C after 3.5 s (ConPTY turns it
+    /// into a console Ctrl+C event, which ends a program stuck after its UI
+    /// has quit), then force after 5 s.
     pub fn stop(self: &Arc<Self>, force: bool) {
         if !self.alive.load(Ordering::Acquire) {
             return;
@@ -360,13 +370,25 @@ impl Terminal {
                 if tick == 20 && me.command(Ctl::Input(ctrl_d())).is_err() {
                     let _ = me.input.try_send(vec![0x04]);
                 }
+                if tick == 35 {
+                    let ctrl_c = Input::Key { key: crate::protocol::Key::Char('c'), mods: crate::protocol::MOD_CTRL };
+                    if me.command(Ctl::Input(ctrl_c)).is_err() {
+                        let _ = me.input.try_send(vec![0x03]);
+                    }
+                }
                 std::thread::sleep(Duration::from_millis(100));
             }
             me.force_kill();
         });
     }
 
+    /// The program had to be killed (a stop's grace period ran out, or a forced stop).
+    pub fn was_forced(&self) -> bool {
+        self.forced.load(Ordering::Acquire)
+    }
+
     pub fn force_kill(&self) {
+        self.forced.store(true, Ordering::Release);
         if self.pid != 0 {
             let _ = crate::win::kill_tree(self.pid);
         }
@@ -806,7 +828,12 @@ fn spawn_waiter(terminal: Arc<Terminal>, mut child: Box<dyn portable_pty::Child 
                     1
                 }
             };
-            *lock(&terminal.exit_code) = Some(code);
+            *lock(&terminal.raw_exit_code) = Some(code);
+            // An agent the canvas stopped is stopped, not failed, even when its
+            // shutdown returns an error code (OpenCode exits with 1, or hangs,
+            // when it is asked to quit while its own requests are pending).
+            let requested = terminal.stopping.load(Ordering::Acquire);
+            *lock(&terminal.exit_code) = Some(if requested { 0 } else { code });
             // Let the last output drain before closing the pseudoconsole.
             std::thread::sleep(Duration::from_millis(150));
             terminal.alive.store(false, Ordering::Release);
@@ -1137,6 +1164,48 @@ mod tests {
         let (clipboard, c) = bounded::<String>(16);
         let (changed, d) = bounded::<String>(1024);
         (Hooks { pump, exited, clipboard, bytes: Arc::new(AtomicU64::new(0)), changed }, vec![Box::new(a), Box::new(b), Box::new(c), Box::new(d)])
+    }
+
+    fn wait_exit(terminal: &Terminal, within: Duration) -> (Option<u32>, Option<u32>) {
+        let started = Instant::now();
+        while terminal.alive.load(Ordering::Acquire) && started.elapsed() < within {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        (*lock(&terminal.exit_code), *lock(&terminal.raw_exit_code))
+    }
+
+    #[test]
+    fn agents_the_canvas_stops_are_stopped_whatever_their_exit_code() {
+        let cwd = std::env::temp_dir().display().to_string();
+        // Quits with code 3 on the first key (the stop's Ctrl+D).
+        let (hooks_a, _keep_a) = hooks();
+        let args = ["/d".to_owned(), "/c".to_owned(), "pause >nul & exit 3".to_owned()];
+        let spec = Spawn { id: "quits", program: "cmd.exe", args: &args, env: &[], cwd: &cwd, cols: 80, rows: 24, copilot: true, engine: Engine::Alacritty };
+        let quits = Terminal::spawn(spec, hooks_a).expect("spawn cmd.exe");
+        std::thread::sleep(Duration::from_millis(500));
+        quits.stop(false);
+        assert_eq!(wait_exit(&quits, Duration::from_secs(4)), (Some(0), Some(3)), "quit on request: reported as a clean stop");
+        assert!(!quits.was_forced());
+        // Stuck: ignores Ctrl+D but ends on the stop's Ctrl+C (ping handles the console event).
+        let (hooks_b, _keep_b) = hooks();
+        let args = ["-n".to_owned(), "30".to_owned(), "127.0.0.1".to_owned()];
+        let spec = Spawn { id: "stuck", program: "ping.exe", args: &args, env: &[], cwd: &cwd, cols: 80, rows: 24, copilot: true, engine: Engine::Alacritty };
+        let stuck = Terminal::spawn(spec, hooks_b).expect("spawn ping.exe");
+        std::thread::sleep(Duration::from_millis(300));
+        let asked = Instant::now();
+        stuck.stop(false);
+        let (code, raw) = wait_exit(&stuck, Duration::from_secs(10));
+        assert_eq!(code, Some(0), "stopped by the canvas: not a failure ({raw:?})");
+        assert!(!stuck.was_forced() && asked.elapsed() < Duration::from_millis(4_900), "Ctrl+C ended it before the kill");
+        // Ignores everything: killed when the grace period runs out, still reported as stopped.
+        let (hooks_c, _keep_c) = hooks();
+        let args = ["-NoProfile".to_owned(), "-Command".to_owned(), "[Console]::TreatControlCAsInput = $true; Start-Sleep 30".to_owned()];
+        let spec = Spawn { id: "ignores", program: "powershell.exe", args: &args, env: &[], cwd: &cwd, cols: 80, rows: 24, copilot: true, engine: Engine::Alacritty };
+        let ignores = Terminal::spawn(spec, hooks_c).expect("spawn powershell.exe");
+        std::thread::sleep(Duration::from_millis(1_500));
+        ignores.stop(false);
+        let (code, raw) = wait_exit(&ignores, Duration::from_secs(10));
+        assert!(ignores.was_forced() && code == Some(0) && raw.is_some_and(|c| c != 0), "killed after the grace period: {code:?} {raw:?}");
     }
 
     #[test]

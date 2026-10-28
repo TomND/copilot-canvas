@@ -302,6 +302,15 @@ impl HostApp for Agents {
         let _ = self.index_wake.try_send(());
     }
 
+    fn terminal_stopping(&self, id: &str) {
+        let kind = lock(&self.agent_terms).get(id).copied();
+        if let Some(kind) = kind {
+            let started = std::time::Instant::now();
+            kind.provider().terminal_stopping(id);
+            log(&self.instance, &format!("stopping {id} ({}), prepared in {} ms", kind.id(), started.elapsed().as_millis()));
+        }
+    }
+
     fn terminal_exited(&self, id: &str) {
         // Already relaunched: what is registered now belongs to the new run.
         if lock(&self.terms).get(id).is_some_and(|t| t.alive.load(Ordering::Acquire)) {

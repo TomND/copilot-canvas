@@ -160,7 +160,7 @@ impl App {
         if text.is_empty() {
             return;
         }
-        match crate::clipboard::set_text(&text) {
+        match self.platform.set_clipboard_text(&text) {
             Ok(()) => self.notify(format!("Copied {} characters", text.chars().count()), false),
             Err(error) => self.notify(format!("Copy failed: {error:#}"), true),
         }
@@ -173,10 +173,10 @@ impl App {
         // Like Windows Terminal: text is pasted; anything else (an image, copied
         // files) sends Ctrl+V itself, and the agent (Copilot, Claude Code,
         // OpenCode) reads the clipboard to attach it.
-        if !crate::clipboard::has_text() {
+        if !self.platform.clipboard_has_text() {
             return self.send_ctrl_v(id);
         }
-        match crate::clipboard::get_text() {
+        match self.platform.clipboard_text() {
             Ok(text) if !text.is_empty() => self.send(ClientMsg::Input { id: id.to_owned(), input: crate::protocol::Input::Paste(text) }),
             Ok(_) => self.send_ctrl_v(id),
             Err(error) => self.notify(format!("Paste failed: {error:#}"), true),
@@ -577,7 +577,7 @@ impl App {
                         2 => paths.log,
                         _ => paths.dir,
                     };
-                    match crate::links::open(&path.display().to_string()) {
+                    match self.platform.open_link(&path.display().to_string()) {
                         Ok(message) => self.notify(message, false),
                         Err(error) => self.notify(format!("{error:#}"), true),
                     }
@@ -591,7 +591,7 @@ impl App {
             })),
             Action::OpenEvents(group) => match self.doc.group(&group).and_then(|g| g.folder.clone()) {
                 Some(folder) => match self.backend.ensure_catalog(&folder) {
-                    Ok(path) => match crate::links::open(&path) {
+                    Ok(path) => match self.platform.open_link(&path) {
                         Ok(message) => self.notify(message, false),
                         Err(error) => self.notify(format!("{error:#}"), true),
                     },

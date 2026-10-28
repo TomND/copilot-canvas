@@ -47,12 +47,29 @@ impl Live {
 
 /// Status, permissions, questions and recent root sessions of the server.
 pub fn live(port: u16, password: &str) -> Result<Live> {
-    live_with(port, password, true)
+    let directory = directory(port, password)?;
+    live_with(port, password, &directory, true)
 }
 
-/// Like [`live`]; `sessions` also lists the instance's recent root sessions.
-pub fn live_with(port: u16, password: &str, sessions: bool) -> Result<Live> {
-    let status = get_json(port, password, "/session/status")?;
+/// The folder the TUI works in (`GET /path`).
+pub fn directory(port: u16, password: &str) -> Result<String> {
+    let path = get_json(port, password, "/path")?;
+    path["directory"].as_str().filter(|d| !d.is_empty()).map(str::to_owned).context("GET /path: no directory")
+}
+
+/// `path` scoped to the TUI's own folder. OpenCode's server keeps one
+/// instance per folder; a request without one starts a separate default
+/// instance (project scan, MCP connections), and a TUI asked to quit while
+/// that is still starting fails with an unhandled `AbortError` and hangs.
+fn scoped(path: &str, directory: &str) -> String {
+    let separator = if path.contains('?') { '&' } else { '?' };
+    format!("{path}{separator}directory={}", percent_encoding::utf8_percent_encode(directory, percent_encoding::NON_ALPHANUMERIC))
+}
+
+/// Like [`live`] for a TUI in `directory`; `sessions` also lists the
+/// instance's recent root sessions.
+pub fn live_with(port: u16, password: &str, directory: &str, sessions: bool) -> Result<Live> {
+    let status = get_json(port, password, &scoped("/session/status", directory))?;
     let mut live = Live::default();
     if let Some(map) = status.as_object() {
         for (id, value) in map {
@@ -62,11 +79,11 @@ pub fn live_with(port: u16, password: &str, sessions: bool) -> Result<Live> {
             }
         }
     }
-    live.permissions = requests(&get_json(port, password, "/permission")?);
+    live.permissions = requests(&get_json(port, password, &scoped("/permission", directory))?);
     // Older servers have no question endpoint.
-    live.questions = get_json(port, password, "/question").map(|v| requests(&v)).unwrap_or_default();
+    live.questions = get_json(port, password, &scoped("/question", directory)).map(|v| requests(&v)).unwrap_or_default();
     if sessions {
-        live.sessions = get_json(port, password, "/session?roots=true&limit=20").map(|v| parse_sessions(&v)).unwrap_or_default();
+        live.sessions = get_json(port, password, &scoped("/session?roots=true&limit=20", directory)).map(|v| parse_sessions(&v)).unwrap_or_default();
     }
     Ok(live)
 }
@@ -104,8 +121,75 @@ pub fn get_json(port: u16, password: &str, path: &str) -> Result<serde_json::Val
     serde_json::from_slice(&body).with_context(|| format!("GET {path}: invalid JSON"))
 }
 
+/// Ports the canvas stopped talking to (their TUI is quitting) and the
+/// number of requests in flight per port.
+/// (paused ports, requests in flight, when the last request to a port ended).
+type Traffic = (std::collections::BTreeSet<u16>, std::collections::BTreeMap<u16, u32>, std::collections::BTreeMap<u16, Instant>);
+static TRAFFIC: std::sync::Mutex<Traffic> =
+    std::sync::Mutex::new((std::collections::BTreeSet::new(), std::collections::BTreeMap::new(), std::collections::BTreeMap::new()));
+
+/// How long a server gets after the last request ended to finish with that
+/// connection before its TUI is asked to quit.
+const SETTLE: Duration = Duration::from_millis(300);
+
+fn traffic() -> std::sync::MutexGuard<'static, Traffic> {
+    TRAFFIC.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Counts one request in flight to a port while it lives.
+struct InFlight(u16);
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        let mut traffic = traffic();
+        traffic.2.insert(self.0, Instant::now());
+        if let Some(count) = traffic.1.get_mut(&self.0) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                traffic.1.remove(&self.0);
+            }
+        }
+    }
+}
+
+/// Stops all requests to `port` and waits (at most `max`) until those in
+/// flight have finished and the server had `SETTLE` to close them. OpenCode
+/// aborts the handlers of connections it is still finishing when it quits and
+/// then exits with an unhandled `AbortError` (exit code 1, shown as failed),
+/// so a TUI is only asked to quit once nobody has talked to its server for a
+/// moment.
+pub fn quiesce(port: u16, max: Duration) {
+    traffic().0.insert(port);
+    let deadline = Instant::now() + max;
+    loop {
+        let busy = {
+            let traffic = traffic();
+            traffic.1.contains_key(&port) || traffic.2.get(&port).is_some_and(|ended| ended.elapsed() < SETTLE)
+        };
+        if !busy || Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// A new server on `port` (ports are reused): requests are allowed again.
+pub fn resume(port: u16) {
+    let mut traffic = traffic();
+    traffic.0.remove(&port);
+    traffic.2.remove(&port);
+}
+
 /// GET `path` from `127.0.0.1:port`: (status code, body).
 pub fn get(port: u16, password: &str, path: &str) -> Result<(u16, Vec<u8>)> {
+    let _in_flight = {
+        let mut traffic = traffic();
+        if traffic.0.contains(&port) {
+            bail!("127.0.0.1:{port} is quitting");
+        }
+        *traffic.1.entry(port).or_insert(0) += 1;
+        InFlight(port)
+    };
     let started = Instant::now();
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let mut stream = TcpStream::connect_timeout(&address, TIMEOUT).with_context(|| format!("cannot connect to 127.0.0.1:{port}"))?;
@@ -262,6 +346,20 @@ pub fn base64(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_quiescing_port_refuses_requests_and_waits_for_those_in_flight() {
+        let port = serve(vec![("/slow", length("{}"))]);
+        let worker = std::thread::spawn(move || get(port, "pw", "/slow").is_ok());
+        std::thread::sleep(Duration::from_millis(20));
+        quiesce(port, Duration::from_secs(2));
+        assert!(!traffic().1.contains_key(&port), "nothing in flight after quiesce");
+        assert!(traffic().2.get(&port).is_none_or(|ended| ended.elapsed() >= SETTLE), "the server had time to close the connection");
+        assert!(get(port, "pw", "/slow").is_err(), "a quitting server gets no new requests");
+        let _ = worker.join();
+        resume(port);
+        assert!(!traffic().0.contains(&port));
+    }
     use std::net::TcpListener;
 
     /// Serves canned responses (one per connection) and returns the port.
@@ -305,12 +403,13 @@ mod tests {
     }
 
     #[test]
-    fn live_reads_status_permissions_questions_and_sessions() {
+    fn live_reads_status_permissions_questions_and_sessions_of_the_tuis_folder() {
         let port = serve(vec![
-            ("/session/status", length(r#"{"ses_a":{"type":"busy"},"ses_b":{"type":"idle"},"ses_c":{"type":"retry","attempt":1,"message":"x","next":5}}"#)),
-            ("/permission", chunked(r#"[{"id":"per_1","sessionID":"ses_a","permission":"bash","patterns":["git push"],"metadata":{},"always":[]}]"#)),
-            ("/question", length(r#"[{"id":"que_1","sessionID":"ses_d","questions":[]}]"#)),
-            ("/session?roots=true&limit=20", chunked(r#"[{"id":"ses_old","directory":"C:/r","title":"a","time":{"created":1}},{"id":"ses_new","directory":"C:/r","title":"b","time":{"created":9}}]"#)),
+            ("/path", length(r#"{"home":"C:\\Users\\u","directory":"C:\\r x"}"#)),
+            ("/session/status?directory=C%3A%5Cr%20x", length(r#"{"ses_a":{"type":"busy"},"ses_b":{"type":"idle"},"ses_c":{"type":"retry","attempt":1,"message":"x","next":5}}"#)),
+            ("/permission?directory=C%3A%5Cr%20x", chunked(r#"[{"id":"per_1","sessionID":"ses_a","permission":"bash","patterns":["git push"],"metadata":{},"always":[]}]"#)),
+            ("/question?directory=C%3A%5Cr%20x", length(r#"[{"id":"que_1","sessionID":"ses_d","questions":[]}]"#)),
+            ("/session?roots=true&limit=20&directory=C%3A%5Cr%20x", chunked(r#"[{"id":"ses_old","directory":"C:/r","title":"a","time":{"created":1}},{"id":"ses_new","directory":"C:/r","title":"b","time":{"created":9}}]"#)),
         ]);
         let live = live(port, "pw").unwrap();
         assert_eq!(live.status.len(), 2);

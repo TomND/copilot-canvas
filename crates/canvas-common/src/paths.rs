@@ -72,11 +72,29 @@ pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Content hash of the running executable; identifies compatible client/service pairs.
+/// Makes `exe` the executable of this build: its content hash is the build id
+/// and the service is started from it. The GUI client, which cannot run the
+/// service itself, sets the `copilot-canvas.exe` next to it; call it before
+/// anything reads `build_id`.
+pub fn set_build_exe(exe: PathBuf) {
+    let _ = BUILD_EXE.set(exe);
+}
+
+static BUILD_EXE: OnceLock<PathBuf> = OnceLock::new();
+
+/// The executable that identifies this build and runs its service.
+pub fn build_exe() -> std::io::Result<PathBuf> {
+    match BUILD_EXE.get() {
+        Some(exe) => Ok(exe.clone()),
+        None => std::env::current_exe(),
+    }
+}
+
+/// Content hash of the build's executable; identifies compatible client/service pairs.
 pub fn build_id() -> &'static str {
     static BUILD: OnceLock<String> = OnceLock::new();
     BUILD.get_or_init(|| {
-        let digest = std::env::current_exe()
+        let digest = build_exe()
             .ok()
             .and_then(|exe| std::fs::read(exe).ok())
             .map(|bytes| Sha256::digest(&bytes).to_vec())
