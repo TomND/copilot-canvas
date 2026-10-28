@@ -7,7 +7,7 @@ use std::hash::{Hash, Hasher};
 
 use canvas_common::protocol::{
     CURSOR_BAR, CURSOR_BLOCK_HOLLOW, CURSOR_UNDERLINE, F_BOLD, F_DIM, F_HIDDEN, F_INVERSE, F_ITALIC, F_STRIKE, F_UNDERLINE, F8_OVERLINE,
-    F8_UL_MASK, F8_UL_SHIFT, Run, Run8, UL_CURLY, UL_DASHED, UL_DOTTED, UL_DOUBLE,
+    F8_UL_MASK, F8_UL_SHIFT, HOST_CELL_PX, IMAGE_RGBA, Run, Run8, UL_CURLY, UL_DASHED, UL_DOTTED, UL_DOUBLE,
 };
 use canvas_core::app::TermSelection;
 use canvas_core::view::TileModel;
@@ -15,7 +15,7 @@ use canvas_termview::TermView;
 use unicode_width::UnicodeWidthChar;
 
 use crate::quads::Quad;
-use crate::scene::{self, Painter, cell_rect};
+use crate::scene::{self, ImageItem, Painter, cell_rect};
 use crate::text::{Grid, Spec, in_mono_run};
 use crate::theme::{self, BG, FG};
 
@@ -291,6 +291,7 @@ pub fn paint(p: &mut Painter, grid: &Grid, tiles: &[TileModel], views: &HashMap<
                 }
             }
         }
+        images(p, grid, view, (x0, y0), clip);
         // Plain-text URLs and paths: underlined on hover or with Ctrl.
         for link in input.links.iter().filter(|l| l.terminal) {
             let hover = input.hover.is_some_and(|(x, y)| link.contains(x, y));
@@ -344,6 +345,24 @@ pub fn paint(p: &mut Painter, grid: &Grid, tiles: &[TileModel], views: &HashMap<
         }
     }
     ime
+}
+
+/// A terminal's Kitty graphics placements, scaled from the host's cell
+/// geometry to this grid, below or above the text by their z-index.
+fn images(p: &mut Painter, grid: &Grid, view: &TermView, (x0, y0): (f32, f32), clip: [f32; 4]) {
+    let (cw, ch) = (grid.cell_w, grid.cell_h);
+    let (sx, sy) = (cw / HOST_CELL_PX.0 as f32, ch / HOST_CELL_PX.1 as f32);
+    let mut placements: Vec<_> = view.placements.iter().collect();
+    placements.sort_by_key(|pl| pl.z);
+    for pl in placements {
+        let Some(image) = view.images.get(&pl.image_id).filter(|i| i.format == IMAGE_RGBA) else { continue };
+        let x = x0 + pl.col as f32 * cw + pl.x_off as f32 * sx;
+        let y = y0 + pl.row as f32 * ch + pl.y_off as f32 * sy;
+        let (iw, ih) = (image.width.max(1) as f32, image.height.max(1) as f32);
+        let uv = [pl.src_x as f32 / iw, pl.src_y as f32 / ih, (pl.src_x + pl.src_w) as f32 / iw, (pl.src_y + pl.src_h) as f32 / ih];
+        let item = ImageItem { key: image.serial, width: image.width, height: image.height, rgba: image.data.clone(), rect: [x, y, pl.width as f32 * sx, pl.height as f32 * sy], uv, clip };
+        p.image(scene::TILES, pl.z >= 0, item);
+    }
 }
 
 /// An underline, strikethrough or overline from `x0` to `x1` on the row at `top`.

@@ -5,8 +5,10 @@
 mod boxdraw;
 mod canvas;
 mod chrome;
+mod clipimage;
 mod gpu;
 mod hooks;
+mod images;
 mod input;
 mod perf;
 mod platform;
@@ -23,15 +25,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use canvas_core::app::App;
+use canvas_core::app::{App, AppEvent};
 use canvas_core::conn::{self, Conn, ConnOptions, ConnTarget};
 use canvas_core::dialogs::{Action, Confirm, Modal};
 use canvas_core::paths::{self, Instance};
-use canvas_core::protocol::{ClientMsg, ServiceMsg};
+use canvas_core::protocol::{CAP_IMAGES, CAP_NOTIFY, ClientMsg, ServiceMsg};
 use canvas_core::prefs::PrefsFile;
 use canvas_core::remote::RemoteBackend;
 use canvas_core::rpc::Backend;
 use canvas_core::view::RenderMode;
+use crossbeam_channel::Receiver;
 use winit::event_loop::EventLoop;
 
 const USAGE: &str = "\
@@ -128,9 +131,86 @@ fn use_sibling_service() -> bool {
 /// How long the service may take to open the canvas.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// A window's app, ready for its window.
+pub struct Opened {
+    /// Creation order (0: the first window).
+    pub index: usize,
+    pub app: App,
+    pub app_rx: Receiver<AppEvent>,
+    pub platform: Arc<platform::GuiPlatform>,
+}
+
+/// What another window of this process connects to and opens.
+#[derive(Clone)]
+struct Launch {
+    instance: Instance,
+    target: ConnTarget,
+    cwd: String,
+    canvas: Option<String>,
+    demo: bool,
+    compress: bool,
+    /// Test hooks: a clipboard of the process stands in when Windows' is unavailable.
+    test_hooks: bool,
+}
+
+impl Launch {
+    fn conn_options(&self, rpc: Option<Arc<RemoteBackend>>) -> ConnOptions {
+        ConnOptions { start: true, compress: self.compress, name: "gui".into(), rpc, caps: CAP_IMAGES | CAP_NOTIFY, ..Default::default() }
+    }
+
+    /// The backend for a connection (remote clients ask the service, local ones run it in-process).
+    fn backend(&self) -> (Arc<dyn Backend>, Option<Arc<RemoteBackend>>) {
+        let remote = self.target.is_remote().then(RemoteBackend::new);
+        let backend: Arc<dyn Backend> = match &remote {
+            Some(remote) => remote.clone(),
+            None => Arc::new(canvas_agents::backend::LocalBackend::new(canvas_agents::backend::Ctx::new(&self.instance))),
+        };
+        (backend, remote)
+    }
+
+    /// Opens the canvas on `conn` and builds window `index`'s app (each
+    /// window keeps its own view preferences).
+    fn app(&self, index: usize, conn: Conn, backend: Arc<dyn Backend>, conn_options: ConnOptions) -> Result<Opened> {
+        let (opened, early) = conn::open_doc(&conn, self.canvas.clone(), self.demo, &self.cwd, OPEN_TIMEOUT).context("cannot open the canvas")?;
+        let client = if index == 0 { self.instance.name.clone() } else { format!("{}-window{}", self.instance.name, index + 1) };
+        let prefs = PrefsFile::path(&self.instance.home, &client, &opened.key);
+        let (app_tx, app_rx) = crossbeam_channel::unbounded();
+        let mut app = App::new(conn, backend, opened, self.demo, self.cwd.clone(), app_tx, Some(prefs));
+        app.doc_request = (self.canvas.clone(), self.demo);
+        app.render_mode = RenderMode::Gpu;
+        let zoom = canvas_core::app::ZOOMS[(app.doc.view.zoom as usize).min(2)];
+        app.view_scale = zoom.0 as f32 / zoom.1 as f32;
+        let mut platform = platform::GuiPlatform::default();
+        platform.index.store(index, std::sync::atomic::Ordering::Relaxed);
+        if self.test_hooks {
+            platform.test_clipboard = Some(Default::default());
+        }
+        let platform = Arc::new(platform);
+        app.platform = platform.clone();
+        app.instance = Some(self.instance.clone());
+        app.target = Some(self.target.clone());
+        app.conn_options = conn_options;
+        // What the service sent while the canvas was opening.
+        for message in early {
+            app.on_service(message);
+        }
+        Ok(Opened { index, app, app_rx, platform })
+    }
+
+    /// Another window on the running service (no upgrade questions: the first window asked them).
+    fn open(&self, index: usize) -> Result<Opened> {
+        let (backend, remote) = self.backend();
+        let conn_options = self.conn_options(remote);
+        let conn = conn::open(&self.target, &conn_options, &conn::ClientSession::new())?;
+        anyhow::ensure!(!conn.protocol_mismatch, "the terminal service speaks another protocol");
+        self.app(index, conn, backend, conn_options)
+    }
+}
+
 fn real_main() -> Result<i32> {
     let args = parse()?;
     let service_exe = use_sibling_service();
+    platform::set_app_id();
     // System fonts load while the service connects and the window comes up.
     let fonts = std::thread::Builder::new().name("fonts".into()).spawn(text::load)?;
     let instance = Instance::new(args.instance.clone(), args.home.clone(), args.sessions_dir.clone())?;
@@ -138,19 +218,20 @@ fn real_main() -> Result<i32> {
     let cwd = paths::absolute(&args.cwd.clone().map(Ok).unwrap_or_else(std::env::current_dir)?).to_string_lossy().into_owned();
     let target = ConnTarget::parse(args.remote.as_deref(), &instance)?;
     anyhow::ensure!(service_exe || target.is_other_machine(), "copilot-canvas.exe must be next to this program: it runs the terminal service");
-    // Remote clients ask the service for everything; local ones run the backend in-process.
-    let remote_backend = target.is_remote().then(RemoteBackend::new);
-    let backend: Arc<dyn Backend> = match &remote_backend {
-        Some(remote) => remote.clone(),
-        None => Arc::new(canvas_agents::backend::LocalBackend::new(canvas_agents::backend::Ctx::new(&instance))),
-    };
-    let conn_options = ConnOptions {
-        start: true,
+    // The canvas belongs to the service: a local `--canvas` file is named
+    // absolutely; a remote one is a path on the service's machine.
+    let canvas = args.canvas.as_ref().map(|p| if target.is_remote() { p.clone() } else { paths::absolute(p) }).map(|p| p.display().to_string());
+    let launch = Launch {
+        instance: instance.clone(),
+        target: target.clone(),
+        cwd: cwd.clone(),
+        canvas,
+        demo: args.demo,
         compress: canvas_core::settings::Settings::load(&home).compress(),
-        name: "gui".into(),
-        rpc: remote_backend,
-        ..Default::default()
+        test_hooks: args.test_hooks,
     };
+    let (backend, remote_backend) = launch.backend();
+    let conn_options = launch.conn_options(remote_backend);
     let session = conn::ClientSession::new();
     let mut conn = conn::open(&target, &conn_options, &session)?;
     let outdated = !target.is_remote() && conn.service_build != paths::build_id();
@@ -180,28 +261,11 @@ fn real_main() -> Result<i32> {
         && conn.service_build == paths::build_id()
         && backend.info().is_ok_and(|info| info.installed.contains(&canvas_core::agents::AgentKind::Copilot))
         && backend.restore_mouse().unwrap_or(false);
-    // The canvas belongs to the service: a local `--canvas` file is named
-    // absolutely; a remote one is a path on the service's machine.
-    let canvas = args.canvas.as_ref().map(|p| if target.is_remote() { p.clone() } else { paths::absolute(p) }).map(|p| p.display().to_string());
-    let (opened, early) = conn::open_doc(&conn, canvas.clone(), args.demo, &cwd, OPEN_TIMEOUT).context("cannot open the canvas")?;
-    let prefs = PrefsFile::path(&home, &instance.name, &opened.key);
     install_crash_log(home.join("crash.log"));
     canvas_core::win::raise_priority();
 
-    let (app_tx, app_rx) = crossbeam_channel::unbounded();
-    let mut app = App::new(conn, backend, opened, args.demo, cwd, app_tx, Some(prefs));
-    app.doc_request = (canvas, args.demo);
-    app.render_mode = RenderMode::Gpu;
-    app.view_scale = canvas_core::app::ZOOMS[(app.doc.view.zoom as usize).min(2)].0 as f32 / canvas_core::app::ZOOMS[(app.doc.view.zoom as usize).min(2)].1 as f32;
-    let platform = Arc::new(platform::GuiPlatform::default());
-    app.platform = platform.clone();
-    app.instance = Some(instance);
-    app.target = Some(target);
-    app.conn_options = conn_options;
-    // What the service sent while the canvas was opening.
-    for message in early {
-        app.on_service(message);
-    }
+    let mut first = launch.app(0, conn, backend, conn_options)?;
+    let app = &mut first.app;
     if !resume.is_empty() {
         let count = app.resume_terminals(&resume);
         app.notify(format!("Terminal service updated; resumed {count} session(s)."), false);
@@ -232,7 +296,8 @@ fn real_main() -> Result<i32> {
         let _ = std::io::stdout().flush();
     }
     let options = shell::Options { perf: args.perf, test_hooks: args.test_hooks, size: args.size };
-    let mut shell = shell::Shell::new(app, options, proxy, fonts, platform, app_rx);
+    let opener: shell::Opener = Arc::new(move |index| launch.open(index));
+    let mut shell = shell::Shell::new(first, options, proxy, fonts, opener);
     event_loop.run_app(&mut shell)?;
     Ok(shell.exit_code)
 }

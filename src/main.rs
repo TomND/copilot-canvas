@@ -1,8 +1,11 @@
 //! Copilot Canvas: a spatial session manager for agent CLIs.
 
 mod bench;
+mod fake_copilot;
 mod gui_bench;
+mod kitty_demo;
 mod pair_probe;
+mod parity;
 mod remote_cli;
 mod remote_probe;
 mod selftest;
@@ -49,6 +52,9 @@ USAGE
   copilot-canvas selftest [--client tui|gui] [--remote loopback]
                                         drive the real UI end to end (TUI: in a hidden pseudoconsole;
                                         GUI: over its test hooks)
+  copilot-canvas selftest --client gui --parity
+                                        one GUI check per row of the parity matrix (PLAN §8), with a
+                                        table; demo shells and a stand-in Copilot CLI only
   copilot-canvas selftest --remote faults
                                         drop, cut and delay the TCP connection while typing; check
                                         reconnect, resync and that no keystroke is lost or doubled
@@ -163,7 +169,7 @@ fn parse() -> Result<Args> {
             "--canvas" => args.canvas = Some(PathBuf::from(value("--canvas")?)),
             "--cwd" => args.cwd = Some(PathBuf::from(value("--cwd")?)),
             "--remote" => args.remote = Some(value("--remote")?),
-            "--yes" | "--force" => args.flags.push(arg.trim_start_matches("--").to_owned()),
+            "--yes" | "--force" | "--parity" => args.flags.push(arg.trim_start_matches("--").to_owned()),
             "--" => {
                 // `record … -- PROGRAM ARGS…`: the rest belongs to the program.
                 args.command.push(arg);
@@ -180,6 +186,13 @@ fn parse() -> Result<Args> {
 }
 
 fn main() {
+    if fake_copilot::active() {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        std::process::exit(match fake_copilot::run(&args) {
+            Ok(()) => 0,
+            Err(_) => 1,
+        });
+    }
     if let Err(error) = real_main() {
         eprintln!("copilot-canvas: {error:#}");
         std::process::exit(1);
@@ -329,6 +342,10 @@ fn real_main() -> Result<()> {
                 Some("gui") => selftest::Client::Gui,
                 Some(other) => bail!("selftest --client takes `tui` or `gui`, not {other:?}"),
             };
+            if flag("parity") {
+                anyhow::ensure!(client == selftest::Client::Gui, "--parity checks the GUI: add --client gui");
+                return parity::run(args.remote.as_deref());
+            }
             match args.remote.as_deref() {
                 None => selftest::run(None, client),
                 Some("loopback") => selftest::run(Some("loopback"), client),
@@ -364,6 +381,8 @@ fn real_main() -> Result<()> {
         ["noise"] => bench::noise(option("rate").map(|v| v.parse()).transpose()?.unwrap_or(20)),
         ["echo"] => bench::echo(),
         ["burn"] => bench::burn(),
+        ["kitty-demo"] => kitty_demo::run(None),
+        ["kitty-demo", mode] => kitty_demo::run(Some(mode)),
         other => bail!("unknown command {:?}\n\n{USAGE}", other.join(" ")),
     }
 }

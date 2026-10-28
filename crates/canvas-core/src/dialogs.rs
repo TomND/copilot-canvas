@@ -166,6 +166,8 @@ pub enum Action {
     RestartService,
     Help,
     Nothing,
+    /// Another window on the same canvas (front ends with windows).
+    NewWindow,
 }
 
 #[derive(Clone, Debug)]

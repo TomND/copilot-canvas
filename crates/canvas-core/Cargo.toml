@@ -10,6 +10,7 @@ canvas-common.workspace = true
 canvas-model.workspace = true
 canvas-termview.workspace = true
 anyhow.workspace = true
+base64.workspace = true
 crossbeam-channel.workspace = true
 dirs.workspace = true
 percent-encoding.workspace = true

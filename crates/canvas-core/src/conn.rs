@@ -169,11 +169,13 @@ pub struct ConnOptions {
     /// Backend requests go over this connection (remote mode): it carries
     /// them and routes their answers.
     pub rpc: Option<Arc<crate::remote::RemoteBackend>>,
+    /// Capabilities besides frames and compression (`CAP_IMAGES`, `CAP_NOTIFY`).
+    pub caps: u32,
 }
 
 impl Default for ConnOptions {
     fn default() -> Self {
-        Self { start: false, compress: true, name: "client".into(), heartbeat: wire::HEARTBEAT, dead_after: wire::DEAD_AFTER, rpc: None }
+        Self { start: false, compress: true, name: "client".into(), heartbeat: wire::HEARTBEAT, dead_after: wire::DEAD_AFTER, rpc: None, caps: 0 }
     }
 }
 
@@ -443,7 +445,7 @@ fn establish(
     let compress = remote && options.compress;
     let info = hello8.then(|| ClientInfo {
         name: options.name.clone(),
-        caps: CAP_FRAME8 | if compress { CAP_COMPRESS } else { 0 },
+        caps: CAP_FRAME8 | if compress { CAP_COMPRESS } else { 0 } | options.caps,
         session: session.id.clone(),
         remote_id,
     });

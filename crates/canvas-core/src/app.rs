@@ -50,6 +50,8 @@ pub enum AppEvent {
     Notice { text: String, error: bool },
     /// A background step's continuation on the UI thread.
     Run(Box<dyn FnOnce(&mut App) + Send>),
+    /// Dropped files were uploaded (remote mode): paste `paths` into `term`.
+    Uploaded { term: String, paths: Vec<String>, errors: Vec<String> },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -245,6 +247,12 @@ pub struct App {
     pub outer_progress: u8,
     pub progress_check_at: Instant,
     pub last_bell: Option<Instant>,
+    /// Sessions that needed you at the last mirror (`None` before the first).
+    pub waiting_sessions: Option<HashSet<String>>,
+    /// When each session last sent a desktop notification (rate limit).
+    pub notified_at: HashMap<String, Instant>,
+    /// The user asked for another window (the front end opens it).
+    pub new_window_requested: bool,
     /// Passive sessions, mailbox and recent events from the service.
     pub bus: crate::bus::Snapshot,
     /// Routing last sent to the service (JSON).
@@ -421,6 +429,9 @@ impl App {
             outer_progress: 0,
             progress_check_at: Instant::now(),
             last_bell: None,
+            waiting_sessions: None,
+            notified_at: HashMap::new(),
+            new_window_requested: false,
             bus: crate::bus::Snapshot::default(),
             routing_sent: String::new(),
             routing_check_at: Instant::now(),
@@ -1160,11 +1171,13 @@ impl App {
         self.progress_check_at = Instant::now();
         let mut state = 0;
         let mut waiting = 0;
+        let mut now_waiting = HashSet::new();
         for node in self.doc.nodes.iter().filter(|n| n.kind == NodeKind::Session) {
             match self.node_status(node) {
                 Status::Waiting => {
                     state = 4;
                     waiting += 1;
+                    now_waiting.insert(node.id.clone());
                 }
                 Status::Working if state != 4 => state = 3,
                 _ => {}
@@ -1177,6 +1190,27 @@ impl App {
             self.needs_draw = true;
         }
         self.platform.title(waiting);
+        // Sessions that started to need you since the last mirror (not the ones
+        // already waiting when the canvas opened and its history loaded).
+        if self.sessions_loaded
+            && let Some(before) = self.waiting_sessions.replace(now_waiting.clone())
+        {
+            for id in now_waiting.difference(&before) {
+                let name = self.doc.node(id).map(|n| n.name.clone()).unwrap_or_default();
+                self.platform.needs_you(&name);
+            }
+        }
+    }
+
+    /// A session's program sent a desktop notification: the platform shows it
+    /// (at most one per session every 3 s).
+    pub fn on_notification(&mut self, term: &str, title: &str, body: &str) {
+        if self.notified_at.get(term).is_some_and(|t| t.elapsed() < Duration::from_secs(3)) {
+            return;
+        }
+        self.notified_at.insert(term.to_owned(), Instant::now());
+        let name = self.doc.node(term).map(|n| n.name.clone()).unwrap_or_else(|| term.to_owned());
+        self.platform.notification(&name, title, body);
     }
 
     /// A session started inside `parent`'s terminal: show it as a linked
@@ -1524,6 +1558,11 @@ impl App {
             }
             // Answers to backend requests go to their callers on the connection's thread.
             ServiceMsg::RpcReply { .. } => {}
+            ServiceMsg::Image { term, image_id, width, height, rgba_or_png, format } => {
+                self.views.entry(term).or_default().set_image(image_id, width, height, format, rgba_or_png);
+            }
+            ServiceMsg::Placements { term, placements } => self.views.entry(term).or_default().set_placements(placements),
+            ServiceMsg::Notification { term, title, body } => self.on_notification(&term, &title, &body),
             ServiceMsg::Ready { .. } | ServiceMsg::Ready8 { .. } | ServiceMsg::Heartbeat { .. } | ServiceMsg::Challenge { .. } | ServiceMsg::Paired { .. } => {}
         }
     }

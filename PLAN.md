@@ -324,6 +324,8 @@ New in the GUI:
 
 Layer: H = terminal host, B = canvas backend, C = core, V = terminal view, G = GPU front end. "Remote" notes behaviour in remote mode.
 
+Status (Phase 5, 2026-10-28): every row ✓ in the GUI, each with a named check in `copilot-canvas selftest --client gui --parity`; the completed matrix and the GUI-only additions are in `docs/PARITY.md`.
+
 | # | Feature (today) | Layers | GUI work | Remote | Test |
 |---|---|---|---|---|---|
 | 1 | Canvas: drag boxes (subagents follow), pan (drag, middle-drag, wheel, Shift+wheel, Ctrl+arrows), zoom (Alt/Ctrl+wheel, toolbar, `+`/`-`, `F` fit, `C`/Home center), double-click creates, right-click menus | C G | continuous zoom; pixel hit testing | doc patches | gui drag, pan, zoom |

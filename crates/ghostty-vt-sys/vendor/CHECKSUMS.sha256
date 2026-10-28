@@ -5,7 +5,7 @@
 # the header diff, update src/bindings.rs, then `cargo xtask vendor-ghostty --checksums-only`.
 # ghostty-commit: 521cf2c5d30bd48028ca61546c64e7913764073d
 # zig-version: 0.17.0
-1d348496f250005ae725a1556a339d31e20167627f62867023d57bdc5e42181d  src/bindings.rs
+6e7ded9e79088bc1034365a4d959154e21b29b2fd36f98a2841c6a09ae1a453f  src/bindings.rs
 386211873e5b7a02f663ae4d7adf96285999f91608f8f9f31fecfd0f4095e6f1  vendor/LICENSE
 014813d7dba136ae6faecb515d23e7d7dc675672094174f91e2d84ab2bb55732  vendor/include/ghostty/vt.h
 77ab59b7be308454ca31fedd203bc43c219869e2ef869a8001549958906b4fd1  vendor/include/ghostty/vt/allocator.h

@@ -89,6 +89,7 @@ the connection dropped while waiting).
 | `RemoteClients` | `RemoteClients(list)`: id, name, paired, last seen, revoked, open connections | `remote clients` (pipe only) |
 | `RemoteRevoke { client }` | `Text` (what was revoked; its connections are closed) | `remote revoke` (pipe only) |
 | `SetClipboardImage { png }` (base64 in JSON, at most 20 MB) | `Done` (the image is on the service machine's clipboard as `CF_DIB` + `PNG`) | remote image paste (Ctrl+V / Alt+V), see REMOTE.md |
+| `Upload { name, id, offset, data, last }` | `Done`, the last piece `Text` (the file's path) | files dropped on a terminal in remote mode: base64 pieces of at most 4 MiB, files of at most 50 MB, written under `<home>/uploads/<date>/` with a free name |
 
 The three remote-access requests are answered by the service itself (they
 need its pairing state) and only for clients on its local pipe; TCP clients

@@ -324,6 +324,7 @@ name = "canvas-agents"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "base64",
  "canvas-common",
  "canvas-host",
  "canvas-model",
@@ -364,6 +365,7 @@ name = "canvas-core"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "base64",
  "canvas-common",
  "canvas-model",
  "canvas-termview",
@@ -406,6 +408,7 @@ dependencies = [
  "png",
  "pollster",
  "ratatui",
+ "serde",
  "serde_json",
  "unicode-width",
  "wgpu",
@@ -423,6 +426,7 @@ dependencies = [
  "canvas-common",
  "crossbeam-channel",
  "ghostty-vt-sys",
+ "png",
  "portable-pty",
  "postcard",
  "unicode-width",
@@ -577,6 +581,7 @@ name = "copilot-canvas"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "base64",
  "canvas-agents",
  "canvas-common",
  "canvas-core",
@@ -586,11 +591,13 @@ dependencies = [
  "canvas-tui",
  "crossbeam-channel",
  "dirs",
+ "png",
  "portable-pty",
  "postcard",
  "ratatui",
  "serde_json",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

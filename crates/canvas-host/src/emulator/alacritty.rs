@@ -190,7 +190,10 @@ impl Emulator for AlacrittyEmulator {
         for event in self.osc.feed(bytes) {
             match event {
                 OscEvent::Progress(state) => events.progress(state),
-                OscEvent::Notify => events.notify(),
+                OscEvent::Notify(title, body) => {
+                    events.notify();
+                    events.notification(title, body);
+                }
             }
         }
         self.parser.advance(&mut self.term, bytes);
@@ -316,6 +319,7 @@ impl Emulator for AlacrittyEmulator {
             display_offset: offset as u32,
             history: grid.history_size() as u32,
             modes: self.modes(),
+            images: Vec::new(),
         }
     }
 
@@ -389,8 +393,8 @@ pub fn modes(mode: TermMode) -> u32 {
 pub enum OscEvent {
     /// OSC 9;4 taskbar progress state (0 none, 1 value, 2 error, 3 busy, 4 paused).
     Progress(u8),
-    /// OSC 777;notify desktop notification.
-    Notify,
+    /// OSC 777;notify desktop notification (title, body).
+    Notify(String, String),
 }
 
 /// Finds the OSC sequences the terminal emulator ignores (progress and
@@ -434,7 +438,7 @@ impl OscScan {
                     0x1b => self.state = Self::OSC_ESC,
                     0x18 | 0x1a => self.state = Self::GROUND,
                     _ => {
-                        if self.payload.len() < 64 {
+                        if self.payload.len() < 1024 {
                             self.payload.push(b);
                         }
                     }
@@ -456,7 +460,10 @@ impl OscScan {
             let state = rest.split(';').next()?.parse::<u8>().ok()?;
             return (state <= 4).then_some(OscEvent::Progress(state));
         }
-        text.starts_with("777;notify").then_some(OscEvent::Notify)
+        let rest = text.strip_prefix("777;notify")?;
+        let mut parts = rest.strip_prefix(';').unwrap_or(rest).splitn(2, ';');
+        let title = parts.next().unwrap_or_default().to_owned();
+        Some(OscEvent::Notify(title, parts.next().unwrap_or_default().to_owned()))
     }
 }
 
@@ -504,7 +511,7 @@ pub(super) mod tests {
         assert_eq!(scan.feed(b"text \x1b]9;4;3;0\x07 more"), vec![OscEvent::Progress(3)]);
         assert_eq!(scan.feed(b"\x1b]9;4;"), vec![]);
         assert_eq!(scan.feed(b"0;0\x1b\\"), vec![OscEvent::Progress(0)], "split read, ST terminator");
-        assert_eq!(scan.feed(b"\x1b]777;notify;T;B\x07\x1b]0;title\x07\x1b]9;4;9\x07"), vec![OscEvent::Notify]);
+        assert_eq!(scan.feed(b"\x1b]777;notify;T;B\x07\x1b]0;title\x07\x1b]9;4;9\x07"), vec![OscEvent::Notify("T".into(), "B".into())]);
     }
 
     #[test]

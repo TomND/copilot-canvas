@@ -15,6 +15,7 @@ alacritty_terminal.workspace = true
 anyhow.workspace = true
 crossbeam-channel.workspace = true
 ghostty-vt-sys = { path = "../ghostty-vt-sys", optional = true }
+png.workspace = true
 portable-pty.workspace = true
 unicode-width.workspace = true
 windows-sys.workspace = true

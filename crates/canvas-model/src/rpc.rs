@@ -131,7 +131,15 @@ pub enum Request {
         #[serde(with = "base64")]
         png: Vec<u8>,
     },
+    /// One piece of a file dropped on a terminal in remote mode, written into
+    /// `<home>/uploads/<date>/`: `data` (base64) goes at `offset` of upload
+    /// `id`; the `last` piece answers the file's path (a free name from `name`).
+    /// Files are at most [`MAX_UPLOAD`] bytes.
+    Upload { name: String, id: String, offset: u64, data: String, last: bool },
 }
+
+/// Largest file an upload writes.
+pub const MAX_UPLOAD: u64 = 50 << 20;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum Response {
@@ -315,6 +323,7 @@ impl Request {
             Request::RemoteClients => "remote clients",
             Request::RemoteRevoke { .. } => "revoke",
             Request::SetClipboardImage { .. } => "clipboard image",
+            Request::Upload { .. } => "upload",
         }
     }
 
@@ -344,6 +353,7 @@ impl Request {
             | Request::TaskRun { .. }
             | Request::GitProbe { .. }
             | Request::SetClipboardImage { .. }
+            | Request::Upload { .. }
             | Request::NewestMatches { .. } => 120,
             _ => 30,
         };
@@ -601,6 +611,15 @@ impl dyn Backend + '_ {
 
     pub fn set_clipboard_image(&self, png: Vec<u8>) -> Result<()> {
         self.done(Request::SetClipboardImage { png })
+    }
+
+    /// Sends one upload piece (see [`Request::Upload`]); the last answers the path.
+    pub fn upload_piece(&self, name: &str, id: &str, offset: u64, data: String, last: bool) -> Result<Option<String>> {
+        self.ask(Request::Upload { name: name.to_owned(), id: id.to_owned(), offset, data, last }, |r| match r {
+            Response::Done if !last => Some(None),
+            Response::Text(path) if last => Some(Some(path)),
+            _ => None,
+        })
     }
 }
 

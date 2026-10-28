@@ -775,12 +775,13 @@ impl App {
             }
             Action::Help => self.modals.push(Modal::Help),
             Action::Nothing => {}
+            Action::NewWindow => self.new_window_requested = true,
         }
     }
 
     // ---------- new session / subsession ----------
 
-    fn open_new_session(&mut self, at: Option<(i32, i32)>, parent: Option<String>) {
+    pub(crate) fn open_new_session(&mut self, at: Option<(i32, i32)>, parent: Option<String>) {
         // A subsession runs its parent's agent unless you choose another.
         let agent = parent.as_deref().and_then(|p| self.doc.node(p)).filter(|n| n.command.is_none()).map(agent_of).unwrap_or_else(|| self.default_agent());
         let can_fork = !self.demo && parent.as_deref().is_some_and(|p| self.can_fork(p));
@@ -944,6 +945,7 @@ impl App {
             }
             AppEvent::Notice { text, error } => self.notify(text, error),
             AppEvent::Run(then) => then(self),
+            AppEvent::Uploaded { term, paths, errors } => self.on_uploaded(&term, paths, errors),
             AppEvent::CliDone { label, result } => {
                 self.cli_busy = None;
                 match result {

@@ -587,11 +587,11 @@ pub fn doctor(instance: &Instance) -> Result<()> {
     Ok(())
 }
 
-fn load(path: &Path) -> Result<Doc> {
+pub(crate) fn load(path: &Path) -> Result<Doc> {
     Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
 }
 
-fn wait_doc(path: &Path, what: &str, predicate: impl Fn(&Doc) -> bool) -> Result<Doc> {
+pub(crate) fn wait_doc(path: &Path, what: &str, predicate: impl Fn(&Doc) -> bool) -> Result<Doc> {
     let deadline = Instant::now() + Duration::from_secs(8);
     while Instant::now() < deadline {
         if let Ok(doc) = load(path)
