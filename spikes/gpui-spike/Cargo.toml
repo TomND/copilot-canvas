@@ -1,0 +1,30 @@
+[package]
+name = "gpui-spike"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Phase 3 spike: Copilot Canvas GPU client prototype on GPUI (Zed's UI framework)"
+
+# Standalone: not a member of the root workspace.
+[workspace]
+
+[dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.10", default-features = false, features = ["font-kit", "windows-manifest"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.10" }
+canvas-common = { path = "../../crates/canvas-common" }
+canvas-termview = { path = "../../crates/canvas-termview" }
+canvas-core = { path = "../../crates/canvas-core" }
+anyhow = "1"
+crossbeam-channel = "0.5"
+futures = "0.3"
+raw-window-handle = "0.6"
+serde_json = "1"
+unicode-width = "0.2"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+
+[profile.dev.package."*"]
+opt-level = 2

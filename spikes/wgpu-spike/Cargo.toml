@@ -1,0 +1,31 @@
+[package]
+name = "wgpu-spike"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Phase 3 spike: Copilot Canvas GPU client prototype on wgpu + winit + glyphon"
+
+# Standalone: not a member of the root workspace.
+[workspace]
+
+[dependencies]
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "dx12", "wgsl"] }
+winit = "0.30.13"
+glyphon = "0.12"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+canvas-common = { path = "../../crates/canvas-common" }
+canvas-termview = { path = "../../crates/canvas-termview" }
+canvas-core = { path = "../../crates/canvas-core" }
+anyhow = "1"
+crossbeam-channel = "0.5"
+serde_json = "1"
+unicode-width = "0.2"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+
+[profile.dev.package."*"]
+opt-level = 2

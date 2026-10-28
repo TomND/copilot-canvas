@@ -1,0 +1,29 @@
+{
+  "machine": {
+    "cpu": "AMD Ryzen 5 7600X (6 cores / 12 threads)",
+    "ram_gb": 63,
+    "gpu": "NVIDIA GeForce RTX 3070 (plus AMD Radeon iGPU, unused)",
+    "os": "Windows 11 (NT 10.0.26300)",
+    "display": "2560x1440 at 125% (logical 2048x1152), 60 Hz",
+    "session": "console session locked during all automated runs (unattended agent)"
+  },
+  "toolchain": "rustc 1.99.1 stable x86_64-pc-windows-msvc; profile.release lto=thin, codegen-units=4 (same as the root package)",
+  "versions": {
+    "gpui": "gpui-pre 0.3.10 + gpui-pre-platform 0.3.10 (snapshot of zed@08cbb88, zed gpui 0.2.2), default features off except font-kit and windows-manifest",
+    "wgpu": "wgpu 30.0.1 (dx12 only), winit 0.30.13, glyphon 0.12.0 (cosmic-text 0.19.0, swash), pollster 0.4.0"
+  },
+  "clean_release_build_s": { "gpui-spike": 128.7, "wgpu-spike": 74.9, "baseline_canvas_crates_only": 41.0 },
+  "incremental_release_build_s_after_touching_main_rs": { "gpui-spike": 23.9, "wgpu-spike": 17.3 },
+  "release_exe_bytes": { "gpui-spike": 11282432, "wgpu-spike": 8453120, "baseline_canvas_crates_only": 476672, "copilot-canvas (root, for reference)": 8348160 },
+  "dependency_crates_cargo_tree_normal": { "gpui-spike": 444, "wgpu-spike": 268, "baseline_canvas_crates_only": 186 },
+  "source_lines": {
+    "gpui-spike/src/main.rs": 908,
+    "wgpu-spike/src/main.rs + quads.rs (incl. WGSL)": 1250,
+    "shared (scene, term, keys, service, measure; used by both)": 1468
+  },
+  "notes": [
+    "baseline = a crate with the same path dependencies (canvas-common, canvas-termview, canvas-core) that only connects and applies a frame; it shows the framework share of build time, size and crates",
+    "clean = cargo clean --release, all crates already downloaded",
+    "gpui needed no manual setup: its build script found fxc.exe through the Windows SDK registry key; rc.exe (embed-resource) was found too"
+  ]
+}

@@ -1,0 +1,95 @@
+{
+  "stack": "gpui",
+  "private_mb_at_start": 2.22,
+  "startup_ms_at_start": 29.57,
+  "mono_font": "Cascadia Mono",
+  "private_mb_after_gpu_init": 76.22,
+  "startup_ms_after_gpu_init": 128.61,
+  "adapter": "Microsoft Basic Render Driver",
+  "software_renderer": true,
+  "scale_factor": 1.25,
+  "window_logical": [
+    1800,
+    1000
+  ],
+  "gpui_force_warp_env": true,
+  "canvas_view_cached": true,
+  "first_paint_ms": 143.3,
+  "boot_to_streaming_s": 0.27,
+  "private_mb_after_10s_streaming": 100.69,
+  "working_set_mb_after_10s_streaming": 143.34,
+  "idle_cpu_percent": 0.0,
+  "idle_frames_presented": 0,
+  "idle_seconds": 10.0,
+  "frame_ms": {
+    "streaming_tiles": {
+      "p50": 49.18,
+      "p95": 96.4,
+      "max": 108.05,
+      "mean": 46.13,
+      "frames": 154,
+      "fps": 19.19,
+      "process_cpu_ms_per_frame": 436.99
+    },
+    "tiles_only_full_grid": {
+      "p50": 8.84,
+      "p95": 69.58,
+      "max": 86.56,
+      "mean": 33.16,
+      "frames": 130,
+      "fps": 25.92,
+      "process_cpu_ms_per_frame": 335.46
+    },
+    "pan_zoom": {
+      "p50": 48.0,
+      "p95": 77.97,
+      "max": 96.16,
+      "mean": 47.43,
+      "frames": 105,
+      "fps": 20.89,
+      "process_cpu_ms_per_frame": 384.67
+    }
+  },
+  "process_cpu_percent": {
+    "streaming_tiles": 838.5,
+    "tiles_only_full_grid": 869.48,
+    "pan_zoom": 803.6,
+    "idle": 0.0,
+    "latency_typing": 825.37
+  },
+  "drawn": {
+    "streaming_tiles": {
+      "boxes_avg": 217.0,
+      "tile_cells_avg": 6930.0,
+      "app_canvas_ms_avg": 0.0,
+      "app_tiles_ms_avg": 6.75
+    },
+    "tiles_only_full_grid": {
+      "boxes_avg": 0.0,
+      "tile_cells_avg": 22802.0,
+      "app_canvas_ms_avg": 0.0,
+      "app_tiles_ms_avg": 8.27
+    },
+    "pan_zoom": {
+      "boxes_avg": 765.0,
+      "tile_cells_avg": 148.0,
+      "app_canvas_ms_avg": 26.52,
+      "app_tiles_ms_avg": 0.1
+    }
+  },
+  "keystroke_to_present_ms": {
+    "p50": 120.87,
+    "p95": 164.03,
+    "max": 168.38,
+    "samples": 60,
+    "missed": 0,
+    "service_frame_p50": 52.87,
+    "key_handled_p50": 8.55,
+    "key_handled_p95": 11.73,
+    "service_frame_to_present_p50": 64.93,
+    "service_frame_to_present_p95": 109.67,
+    "path": "PostMessage WM_KEYDOWN to the window -> framework key/char handling -> ClientMsg::Input -> service -> echo -> Frame -> present"
+  },
+  "private_mb_at_end": 140.64,
+  "working_set_mb_at_end": 174.66
+}
