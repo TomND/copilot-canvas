@@ -74,6 +74,20 @@ impl Settings {
     pub fn client(&self) -> Option<String> {
         std::env::var("COPILOT_CANVAS_CLIENT").ok().filter(|v| !v.trim().is_empty()).or_else(|| self.client.clone())
     }
+
+    /// Address the service listens on for remote clients:
+    /// `COPILOT_CANVAS_LISTEN`, else `remote.listen`.
+    pub fn listen(&self) -> Option<String> {
+        std::env::var("COPILOT_CANVAS_LISTEN").ok().filter(|v| !v.trim().is_empty()).or_else(|| self.remote.listen.clone())
+    }
+
+    /// Compress remote frames: `COPILOT_CANVAS_COMPRESS` (0/off/false), else `remote.compress`.
+    pub fn compress(&self) -> bool {
+        match std::env::var("COPILOT_CANVAS_COMPRESS") {
+            Ok(value) if !value.trim().is_empty() => !matches!(value.trim().to_ascii_lowercase().as_str(), "0" | "off" | "false" | "no"),
+            _ => self.remote.compress,
+        }
+    }
 }
 
 #[cfg(test)]

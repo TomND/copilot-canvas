@@ -738,9 +738,11 @@ fn draw_status(app: &mut App, buf: &mut Buffer, area: Rect) {
         };
         (hints.to_owned(), fg(MUTED).bg(PANEL))
     };
-    let right = match (&app.perf, &app.stats) {
-        (Some(perf), _) => perf.summary(),
-        (None, stats) => match stats {
+    let right = match (&app.banner, &app.perf, &app.stats) {
+        // The connection banner replaces the (stale) service figures.
+        (Some(banner), _, _) => format!(" ● {banner} "),
+        (None, Some(perf), _) => perf.summary(),
+        (None, None, stats) => match stats {
         Some(stats) => format!(
             " svc {} MB · {} live · zoom {} ",
             stats.private_bytes / (1024 * 1024),

@@ -54,9 +54,19 @@ impl Event {
 /// One end of a connected pipe.
 pub struct Pipe {
     handle: Handle,
+    /// Set by `PipeCloser::close`: later reads end and writes fail at once.
+    closed: std::sync::atomic::AtomicBool,
 }
 
 impl Pipe {
+    fn from_handle(handle: Handle) -> Self {
+        Self { handle, closed: std::sync::atomic::AtomicBool::new(false) }
+    }
+
+    fn is_closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// Splits into independently usable read and write halves.
     pub fn split(self) -> io::Result<(PipeReader, PipeWriter, PipeCloser)> {
         let shared = Arc::new(self);
@@ -102,6 +112,9 @@ pub struct PipeReader {
 
 impl Read for PipeReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.pipe.is_closed() {
+            return Ok(0);
+        }
         let len = buf.len().min(u32::MAX as usize) as u32;
         let handle = self.pipe.handle.0;
         match self.pipe.overlapped(&self.event, |ov| unsafe {
@@ -121,6 +134,9 @@ pub struct PipeWriter {
 
 impl Write for PipeWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.pipe.is_closed() {
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "pipe closed"));
+        }
         let len = buf.len().min(1 << 20) as u32;
         let handle = self.pipe.handle.0;
         match self.pipe.overlapped(&self.event, |ov| unsafe {
@@ -145,6 +161,7 @@ pub struct PipeCloser {
 
 impl PipeCloser {
     pub fn close(&self) {
+        self.pipe.closed.store(true, std::sync::atomic::Ordering::Release);
         unsafe { CancelIoEx(self.pipe.handle.0, std::ptr::null()) };
     }
 }
@@ -231,7 +248,7 @@ impl PipeServer {
             Some(handle) => handle,
             None => self.instance(false)?,
         };
-        let pipe = Pipe { handle };
+        let pipe = Pipe::from_handle(handle);
         let event = Event::new()?;
         let raw = pipe.handle.0;
         match pipe.overlapped(&event, |ov| unsafe { ConnectNamedPipe(raw, ov) }) {
@@ -262,7 +279,7 @@ pub fn connect(name: &str, timeout: Duration) -> io::Result<Pipe> {
             )
         };
         if handle != INVALID_HANDLE_VALUE {
-            return Ok(Pipe { handle: Handle(handle) });
+            return Ok(Pipe::from_handle(Handle(handle)));
         }
         let error = io::Error::last_os_error();
         let remaining = deadline.saturating_duration_since(Instant::now());

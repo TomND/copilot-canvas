@@ -204,6 +204,11 @@ impl HostApp for Agents {
     fn has_work(&self) -> bool {
         passive::has_work(self)
     }
+
+    /// Pairing (`copilot-canvas remote pair`) is not built yet: no paired clients.
+    fn remote_secret(&self, _id: &str) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 /// True when a live process (not a recycled PID) holds the session's in-use lock.

@@ -31,11 +31,13 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
+socket2 = { version = "0.6.5", features = ["all"] }
 unicode-width = "0.2.2"
 uuid = { version = "1.28.0", features = ["v4"] }
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Ole", "Win32_System_TaskScheduler", "Win32_System_Time", "Win32_System_Variant"] }
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
+    "Win32_Networking_WinSock",
     "Win32_Storage_FileSystem",
     "Win32_System_Pipes",
     "Win32_System_IO",
@@ -54,6 +56,7 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 yaml-rust2 = "0.13.0"
+zstd = { version = "0.14.3", default-features = false }
 
 [package]
 name = "copilot-canvas"

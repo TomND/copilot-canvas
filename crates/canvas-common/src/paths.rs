@@ -54,6 +54,11 @@ impl Instance {
         self.home.join(format!("service-{}.log", self.name))
     }
 
+    /// The TCP port the service listens on for remote clients (while it does).
+    pub fn port_path(&self) -> PathBuf {
+        self.home.join(format!("service-{}.port", self.name))
+    }
+
     pub fn bin_dir(&self) -> PathBuf {
         self.home.join("bin")
     }

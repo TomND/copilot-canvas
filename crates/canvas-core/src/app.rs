@@ -29,6 +29,8 @@ pub enum AppEvent {
     /// The terminal service was restarted (new build); `mouse`: Copilot's mouse
     /// setting was switched back on.
     ServiceRestarted { result: Result<Conn, String>, mouse: bool },
+    /// A dropped connection was re-established (or reconnecting gave up).
+    Reconnected(Result<Conn, String>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -125,6 +127,17 @@ pub struct App {
     pub save_error: Option<String>,
     pub conn: Conn,
     pub connected: bool,
+    /// Where the service is (reconnects go there); `None`: never reconnect.
+    pub target: Option<crate::conn::ConnTarget>,
+    pub conn_options: crate::conn::ConnOptions,
+    /// A reconnect is in progress.
+    pub reconnecting: bool,
+    /// Connection banner for front ends ("Offline — reconnecting…").
+    pub banner: Option<String>,
+    /// The first terminal list after a reconnect replaces the known terminals.
+    pub resync_terms: bool,
+    /// Focused tile last sent with `Subscribe8`.
+    pub last_focused_sub: Option<String>,
     pub sessions: HashMap<String, SessionSummary>,
     pub sessions_loaded: bool,
     pub terms: HashMap<String, TermInfo>,
@@ -207,7 +220,8 @@ pub struct App {
 
 impl App {
     pub fn new(conn: Conn, store: Store, doc: Doc, demo: bool, default_cwd: String, app_tx: Sender<AppEvent>, instance_home: std::path::PathBuf) -> Self {
-        let build_mismatch = conn.service_build != crate::paths::build_id();
+        // Remote clients never restart or upgrade the service.
+        let build_mismatch = !conn.remote && conn.service_build != crate::paths::build_id();
         let selection = doc.selected.clone().into_iter().collect();
         let mut app = Self {
             demo,
@@ -218,6 +232,12 @@ impl App {
             save_error: None,
             conn,
             connected: true,
+            target: None,
+            conn_options: crate::conn::ConnOptions::default(),
+            reconnecting: false,
+            banner: None,
+            resync_terms: false,
+            last_focused_sub: None,
             sessions: HashMap::new(),
             sessions_loaded: false,
             terms: HashMap::new(),
@@ -327,12 +347,105 @@ impl App {
     }
 
     pub fn send(&mut self, message: ClientMsg) {
+        let input = is_terminal_input(&message);
+        if !self.connected {
+            // Nothing is queued while offline: typing into a screen that changed
+            // in the meantime is worse than typing again.
+            if input && !matches!(message, ClientMsg::Input { input: Input::Focus(_), .. }) {
+                self.notify("Offline: input not sent.", true);
+            }
+            return;
+        }
         if let ClientMsg::Input { id, .. } | ClientMsg::Wheel { id, .. } = &message {
             self.last_input_at.insert(id.clone(), Instant::now());
         }
-        if self.conn.tx.try_send(message).is_err() && self.connected && self.restarting.is_none() {
-            self.connected = false;
-            self.notify("Lost connection to the terminal service. Restart Copilot Canvas to reconnect.", true);
+        match self.conn.tx.try_send(message) {
+            Ok(()) => {}
+            Err(crossbeam_channel::TrySendError::Full(_)) => {
+                if input {
+                    self.notify("Offline: input not sent.", true);
+                }
+            }
+            Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                if self.restarting.is_none() {
+                    self.connection_lost();
+                }
+            }
+        }
+    }
+
+    /// The connection to the service dropped: input is blocked, a banner shows
+    /// and a background thread reconnects with backoff. Front ends call this
+    /// when the service channel closes.
+    pub fn connection_lost(&mut self) {
+        self.connected = false;
+        self.needs_draw = true;
+        if self.reconnecting {
+            return;
+        }
+        let Some(target) = self.target.clone() else {
+            self.notify("The terminal service disconnected. Restart Copilot Canvas to reconnect; your canvas is saved.", true);
+            return;
+        };
+        self.reconnecting = true;
+        self.banner = Some("Offline — reconnecting…".into());
+        // A local service that is gone for good is started again.
+        let options = crate::conn::ConnOptions { start: true, ..self.conn_options.clone() };
+        let session = self.conn.session.clone();
+        let tx = self.app_tx.clone();
+        let spawned = std::thread::Builder::new().name("reconnect".into()).spawn(move || {
+            let result = crate::conn::reconnect(&target, &options, &session, |_, _| true).map_err(|e| format!("{e:#}"));
+            let _ = tx.send(AppEvent::Reconnected(result));
+        });
+        if spawned.is_err() {
+            self.reconnecting = false;
+            self.notify("Cannot reconnect to the terminal service; restart Copilot Canvas.", true);
+        }
+    }
+
+    /// Switches to a re-established connection. The service starts this client
+    /// from scratch, so subscriptions, sizes, tracking and routing are sent
+    /// again (full frames follow). Keystrokes the service never confirmed are
+    /// reported, never resent.
+    pub fn on_reconnected(&mut self, result: Result<Conn, String>) {
+        self.reconnecting = false;
+        self.needs_draw = true;
+        let conn = match result {
+            Ok(conn) => conn,
+            Err(error) => {
+                self.banner = Some("Offline".into());
+                self.notify(format!("Could not reconnect to the terminal service: {error}"), true);
+                return;
+            }
+        };
+        if conn.remote && conn.protocol_mismatch {
+            self.banner = Some("Offline: incompatible service".into());
+            self.notify(
+                format!(
+                    "The service speaks protocol {} and this client {}; update this client (remote clients never restart the service).",
+                    conn.protocol,
+                    crate::protocol::PROTOCOL
+                ),
+                true,
+            );
+            return;
+        }
+        let lost = conn.session.settle();
+        self.build_mismatch = !conn.remote && conn.service_build != crate::paths::build_id();
+        self.new_service_rx = Some(conn.rx.clone());
+        self.conn = conn;
+        self.connected = true;
+        self.banner = None;
+        self.last_subscribed.clear();
+        self.last_focused_sub = None;
+        self.last_sizes.clear();
+        self.last_tracked.clear();
+        self.routing_sent.clear();
+        self.resync_terms = true;
+        if lost > 0 {
+            self.notify(format!("Reconnected. {lost} keystroke(s) were not delivered."), true);
+        } else {
+            self.notify("Reconnected to the terminal service.", false);
         }
     }
 
@@ -892,8 +1005,18 @@ impl App {
                 let id = frame.id.clone();
                 self.views.entry(id).or_default().apply(frame);
             }
+            ServiceMsg::Frame8(frame) => {
+                let id = frame.id.clone();
+                self.views.entry(id).or_default().apply8(frame);
+            }
             ServiceMsg::Terminals(infos) => {
                 self.terms_rev += 1;
+                // After a reconnect the first list is complete: forget the rest.
+                if std::mem::take(&mut self.resync_terms) {
+                    let known: HashSet<&str> = infos.iter().map(|i| i.id.as_str()).collect();
+                    self.terms.retain(|id, _| known.contains(id.as_str()));
+                    self.views.retain(|id, _| known.contains(id.as_str()));
+                }
                 for info in infos {
                     // Bells and notifications from a session ring the outer terminal
                     // (at most once a second).
@@ -962,7 +1085,7 @@ impl App {
             ServiceMsg::Subsession { parent, child, name, cwd } => self.link_subsession(&parent, &child, &name, &cwd),
             ServiceMsg::Bus { json } => self.on_bus(&json),
             ServiceMsg::BusEvent { json } => self.on_bus_event(&json),
-            ServiceMsg::Ready { .. } | ServiceMsg::Challenge { .. } => {}
+            ServiceMsg::Ready { .. } | ServiceMsg::Ready8 { .. } | ServiceMsg::Heartbeat { .. } | ServiceMsg::Challenge { .. } => {}
         }
     }
 
@@ -1178,9 +1301,12 @@ impl App {
 
     pub fn after_draw(&mut self) {
         let visible: Vec<String> = self.layout.tiles.iter().map(|(id, _, _)| id.clone()).collect();
-        if visible != self.last_subscribed {
-            self.send(ClientMsg::Subscribe { ids: visible.clone() });
+        // The focused tile gets frames at a higher rate over remote links.
+        let focused = self.focused_term.clone().filter(|id| visible.contains(id));
+        if visible != self.last_subscribed || focused != self.last_focused_sub {
+            self.send(ClientMsg::Subscribe8 { ids: visible.clone(), focused: focused.clone() });
             self.last_subscribed = visible;
+            self.last_focused_sub = focused;
         }
         if !matches!(self.drag, Some(Drag::SidebarDivider | Drag::TermDivider)) {
             let tiles = self.layout.tiles.clone();
@@ -1279,6 +1405,15 @@ pub fn short_interval(ms: u64) -> String {
 fn repeats(schedule: &str) -> bool {
     !schedule.is_empty() && schedule != "manual" && !schedule.starts_with("once")
 }
+
+/// Terminal input: blocked while offline, never queued.
+fn is_terminal_input(message: &ClientMsg) -> bool {
+    matches!(
+        message,
+        ClientMsg::Input { .. } | ClientMsg::Input8 { .. } | ClientMsg::Click { .. } | ClientMsg::Wheel { .. } | ClientMsg::Scroll { .. }
+    )
+}
+
 /// Client-side frame statistics (`--perf`).
 #[derive(Default)]
 pub struct Perf {
@@ -1392,4 +1527,68 @@ pub struct Seed {
     pub name: String,
     pub cwd: String,
     pub source: Option<String>,
+}
+
+#[cfg(test)]
+mod connection_tests {
+    use super::*;
+    use crossbeam_channel::{Receiver, bounded, unbounded};
+
+    fn detached() -> (Conn, Receiver<ClientMsg>) {
+        let (tx, rx) = bounded(64);
+        let (_service, service_rx) = bounded(1);
+        (Conn::detached(tx, service_rx), rx)
+    }
+
+    #[test]
+    fn offline_input_is_dropped_and_a_reconnect_resends_state_and_reports_lost_keys() {
+        let dir = std::env::temp_dir().join(format!("cc-conn-app-{}", uuid::Uuid::new_v4()));
+        let store = Store::open(&dir.join("canvas.json")).unwrap();
+        let (conn, sent) = detached();
+        let (app_tx, _app_rx) = unbounded();
+        let mut app = App::new(conn, store, Doc::default(), false, ".".into(), app_tx, dir.clone());
+        app.connected = false;
+        app.send(ClientMsg::Input { id: "t".into(), input: Input::Paste("rm".into()) });
+        app.send(ClientMsg::Wheel { id: "t".into(), up: true, col: 0, row: 0, mods: 0 });
+        app.send(ClientMsg::Stats);
+        assert!(sent.try_recv().is_err(), "nothing is queued while offline");
+        assert_eq!(app.notice.as_ref().map(|n| n.text.as_str()), Some("Offline: input not sent."));
+
+        let (conn, sent) = detached();
+        for _ in 0..5 {
+            conn.session.next_seq();
+        }
+        conn.session.ack(3);
+        app.last_subscribed = vec!["t".into()];
+        app.last_focused_sub = Some("t".into());
+        app.last_sizes.insert("t".into(), (80, 24));
+        app.last_tracked = vec!["t".into()];
+        app.routing_sent = "{}".into();
+        app.reconnecting = true;
+        app.banner = Some("Offline — reconnecting…".into());
+        app.on_reconnected(Ok(conn));
+        assert!(app.connected && !app.reconnecting && app.banner.is_none());
+        assert!(app.last_subscribed.is_empty() && app.last_focused_sub.is_none() && app.last_sizes.is_empty());
+        assert!(app.last_tracked.is_empty() && app.routing_sent.is_empty() && app.resync_terms);
+        assert_eq!(app.notice.as_ref().map(|n| n.text.as_str()), Some("Reconnected. 2 keystroke(s) were not delivered."));
+        app.send(ClientMsg::Input { id: "t".into(), input: Input::Paste("ls".into()) });
+        assert!(matches!(sent.try_recv(), Ok(ClientMsg::Input { .. })), "online input goes out");
+
+        // The first terminal list after a reconnect is complete.
+        app.terms.insert("gone".into(), TermInfo { id: "gone".into(), alive: true, ..Default::default() });
+        app.views.insert("gone".into(), TermView::default());
+        app.on_service(ServiceMsg::Terminals(vec![TermInfo { id: "t".into(), alive: true, ..Default::default() }]));
+        assert!(!app.terms.contains_key("gone") && !app.views.contains_key("gone") && app.terms.contains_key("t"));
+
+        // A drop without a reconnect target says so; with one, the banner shows.
+        drop(sent);
+        app.target = None;
+        app.send(ClientMsg::Stats);
+        assert!(!app.connected && app.banner.is_none());
+        app.target = Some(crate::conn::ConnTarget::Tcp { addr: "127.0.0.1:1".into(), remote_id: None, secret: vec![1] });
+        app.reconnecting = false;
+        app.connection_lost();
+        assert!(app.reconnecting && app.banner.as_deref() == Some("Offline — reconnecting…"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

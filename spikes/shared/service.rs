@@ -81,6 +81,7 @@ impl Service {
             for message in rx {
                 match message {
                     ServiceMsg::Frame(frame) => on_event(SvcEvent::Frame(frame)),
+                    ServiceMsg::Frame8(frame) => on_event(SvcEvent::Frame(frame.to_v7())),
                     ServiceMsg::Terminals(infos) => on_event(SvcEvent::Terminals(infos)),
                     ServiceMsg::Error { message, .. } => on_event(SvcEvent::Error(message)),
                     _ => {}

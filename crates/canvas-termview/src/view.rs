@@ -1,15 +1,27 @@
 //! The client-side model of one hosted terminal, built from L1 frames.
 
-use canvas_common::protocol::{F_ITALIC, Frame, Run};
+use canvas_common::protocol::{F_ITALIC, Frame, Frame8, Run, Run8, runs_v7};
+
+/// Hyperlink targets kept before the table is rebuilt from the rows.
+const MAX_LINKS: usize = 1024;
 
 #[derive(Default, Debug)]
 pub struct TermView {
     pub cols: u16,
     pub rows: u16,
+    /// Protocol-7 rows (what the TUI draws), also derived from protocol-8 frames.
     pub lines: Vec<Vec<Run>>,
     pub cursor: Option<(u16, u16)>,
     pub display_offset: u32,
     pub history: u32,
+    /// Protocol-8 rows (empty when the service sends protocol-7 frames);
+    /// `Run8::link` indexes `links`.
+    pub rows8: Vec<Vec<Run8>>,
+    pub links: Vec<String>,
+    pub cursor_shape: u8,
+    pub cursor_blink: bool,
+    /// `MODE_*` bits.
+    pub modes: u32,
 }
 
 impl TermView {
@@ -17,6 +29,8 @@ impl TermView {
         if frame.full || frame.rows != self.rows || frame.cols != self.cols {
             self.lines = vec![Vec::new(); frame.rows as usize];
         }
+        self.rows8.clear();
+        self.links.clear();
         self.cols = frame.cols;
         self.rows = frame.rows;
         for (y, runs) in frame.changed {
@@ -27,6 +41,50 @@ impl TermView {
         self.cursor = frame.cursor;
         self.display_offset = frame.display_offset;
         self.history = frame.history;
+    }
+
+    /// Applies a protocol-8 frame; `lines` gets the same protocol-7 rows a
+    /// protocol-7 frame of this screen would carry.
+    pub fn apply8(&mut self, frame: Frame8) {
+        let resized = frame.rows != self.rows || frame.cols != self.cols || self.rows8.len() != frame.rows as usize;
+        if frame.full || resized {
+            self.lines = vec![Vec::new(); frame.rows as usize];
+            self.rows8 = vec![Vec::new(); frame.rows as usize];
+            self.links.clear();
+        }
+        self.cols = frame.cols;
+        self.rows = frame.rows;
+        for (y, mut row) in frame.changed {
+            if let Some(line) = self.lines.get_mut(y as usize) {
+                *line = runs_v7(&row, &frame.links);
+            }
+            for run in row.iter_mut().filter(|r| r.link > 0) {
+                run.link = match frame.links.get(run.link as usize - 1) {
+                    Some(target) => intern(&mut self.links, target),
+                    None => 0,
+                };
+            }
+            if let Some(slot) = self.rows8.get_mut(y as usize) {
+                *slot = row;
+            }
+        }
+        if self.links.len() > MAX_LINKS {
+            self.compact_links();
+        }
+        self.cursor = frame.cursor;
+        self.display_offset = frame.display_offset;
+        self.history = frame.history;
+        self.cursor_shape = frame.cursor_shape;
+        self.cursor_blink = frame.cursor_blink;
+        self.modes = frame.modes;
+    }
+
+    /// Drops link targets no row references any more.
+    fn compact_links(&mut self) {
+        let old = std::mem::take(&mut self.links);
+        for run in self.rows8.iter_mut().flatten().filter(|r| r.link > 0) {
+            run.link = old.get(run.link as usize - 1).map(|target| intern(&mut self.links, target)).unwrap_or(0);
+        }
     }
 
     /// One string per cell of a viewport row; the second cell of a wide
@@ -74,6 +132,17 @@ impl TermView {
             }
         }
         out
+    }
+}
+
+/// Index + 1 of `target` in `table`, adding it when new.
+fn intern(table: &mut Vec<String>, target: &str) -> u32 {
+    match table.iter().position(|t| t == target) {
+        Some(index) => index as u32 + 1,
+        None => {
+            table.push(target.to_owned());
+            table.len() as u32
+        }
     }
 }
 
@@ -169,6 +238,44 @@ mod tests {
         ];
         let marked = user_message_rows(&lines);
         assert_eq!(marked, [true, true, true, true, false, false, false, false, false, false]);
+    }
+
+    #[test]
+    fn protocol8_frames_keep_the_protocol7_view_and_a_consistent_link_table() {
+        use canvas_common::protocol::Frame8;
+        let run8 = |col: u16, text: &str, link: u32| Run8 { col, text: text.into(), link, ..Default::default() };
+        let frame = |full: bool, changed: Vec<(u16, Vec<Run8>)>, links: &[&str]| Frame8 {
+            id: "t".into(),
+            cols: 20,
+            rows: 3,
+            full,
+            changed,
+            cursor: Some((1, 2)),
+            cursor_shape: 2,
+            cursor_blink: true,
+            display_offset: 0,
+            history: 4,
+            modes: 1,
+            links: links.iter().map(|s| s.to_string()).collect(),
+        };
+        let mut view = TermView::default();
+        let rows = vec![
+            (0, vec![run8(0, "ab", 0), run8(2, "cd", 0)]),
+            (1, vec![run8(0, "PR 1", 1)]),
+            (2, vec![run8(3, "x", 2)]),
+        ];
+        let first = frame(true, rows.clone(), &["https://a", "https://b"]);
+        let expected: Vec<Vec<Run>> = rows.iter().map(|(_, row)| runs_v7(row, &first.links)).collect();
+        view.apply8(first);
+        assert_eq!(view.lines, expected, "the protocol-7 view equals the service's protocol-7 rows");
+        assert_eq!(view.lines[0], vec![run(0, "abcd")], "adjacent runs merge as protocol 7 did");
+        assert_eq!((view.cursor_shape, view.cursor_blink, view.modes, view.history), (2, true, 1, 4));
+        // A later frame with its own link numbering.
+        view.apply8(frame(false, vec![(2, vec![run8(0, "y", 1)])], &["https://a"]));
+        assert_eq!(view.links[view.rows8[2][0].link as usize - 1], "https://a");
+        assert_eq!(view.links[view.rows8[1][0].link as usize - 1], "https://a");
+        assert_eq!(view.lines[2][0].link.as_deref(), Some("https://a"));
+        assert_eq!(view.lines[1][0].text, "PR 1");
     }
 
     #[test]
