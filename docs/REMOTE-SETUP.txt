@@ -1,0 +1,47 @@
+Copilot Canvas - remote setup (agents on the Cloud PC, canvas at home)
+=======================================================================
+
+Both programs are self-contained (no Visual C++ runtime, no Rust needed).
+Put the SAME build on both machines: older clients cannot pair with it.
+
+1. Install on both PCs
+   Unzip into a folder of your choice, e.g. C:\Tools\CopilotCanvas, and add
+   that folder to your PATH (or call the .exe with its full path).
+   Run `copilot-canvas doctor` to check what was found.
+
+2. Cloud PC (where the agents run)
+   copilot-canvas remote tunnel-setup                 (writes the tunnel automation; remote.listen = 127.0.0.1:47600)
+   devtunnel user login -g                            (once; GitHub sign-in)
+   devtunnel create copilot-canvas
+   devtunnel port create copilot-canvas -p 47600
+   devtunnel show copilot-canvas                      (port 47600 listed; no anonymous access)
+   copilot-canvas automations apply CopilotCanvas-Tunnel --yes
+   copilot-canvas automations run CopilotCanvas-Tunnel
+   copilot-canvas service stop                        (then start it so it listens on 127.0.0.1:47600)
+   copilot-canvas service start
+   copilot-canvas remote pair --name home-pc          (prints a code XXXX-XXXX-XXXX, valid 10 minutes)
+   copilot-canvas doctor                              (listening, devtunnel signed in, tunnel task running)
+
+   If `devtunnel` is not on PATH, `remote tunnel-setup` prints its full path.
+
+3. Home PC
+   winget install Microsoft.devtunnel
+   devtunnel user login -g                            (the SAME account as on the Cloud PC)
+   copilot-canvas remote add cloudpc --tunnel copilot-canvas --port 47600 --code XXXX-XXXX-XXXX
+   copilot-canvas --remote cloudpc                    (terminal UI)
+   copilot-canvas --gui --remote cloudpc              (GPU client)
+
+   Optional: `--vscode-tunnel NAME` on `remote add` opens Cloud PC files in
+   VS Code through that VS Code tunnel; otherwise they open in a read-only viewer.
+
+4. Everyday use
+   - The canvas reconnects by itself after network drops ("Offline,
+     reconnecting..."); typing is blocked while offline, never queued.
+   - Sessions keep running on the Cloud PC when the home client closes.
+   - copilot-canvas remote clients / remote revoke NAME   (Cloud PC)
+   - copilot-canvas remote servers / remote forget NAME   (home)
+
+If something fails: `copilot-canvas doctor` and the service log
+(%USERPROFILE%\.copilot-canvas\service-default.log) on the Cloud PC;
+`devtunnel user show` at home should say "Logged in as ... using GitHub".
+More: docs/REMOTE.md in the repository.
