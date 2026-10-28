@@ -6,14 +6,15 @@ publish.workspace = true
 description = "L1 terminal host: ConPTY sessions, terminal emulation, frames and input encoding"
 
 [features]
-# libghostty-vt engine (Phase 2).
-ghostty = []
+# libghostty-vt engine (Phase 2); build the library first with `cargo xtask build-ghostty`.
+ghostty = ["dep:ghostty-vt-sys"]
 
 [dependencies]
 canvas-common.workspace = true
 alacritty_terminal.workspace = true
 anyhow.workspace = true
 crossbeam-channel.workspace = true
+ghostty-vt-sys = { path = "../ghostty-vt-sys", optional = true }
 portable-pty.workspace = true
 unicode-width.workspace = true
 windows-sys.workspace = true

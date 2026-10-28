@@ -1,0 +1,44 @@
+# libghostty-vt pin and the vendored files of ghostty-vt-sys (sha256sum format,
+# paths relative to crates/ghostty-vt-sys). Verified by `cargo test -p ghostty-vt-sys`.
+# Engine updates are one reviewed change together with the golden corpus: change
+# the pin, run `cargo xtask build-ghostty` and `cargo xtask vendor-ghostty`, review
+# the header diff, update src/bindings.rs, then `cargo xtask vendor-ghostty --checksums-only`.
+# ghostty-commit: 521cf2c5d30bd48028ca61546c64e7913764073d
+# zig-version: 0.17.0
+1d348496f250005ae725a1556a339d31e20167627f62867023d57bdc5e42181d  src/bindings.rs
+386211873e5b7a02f663ae4d7adf96285999f91608f8f9f31fecfd0f4095e6f1  vendor/LICENSE
+014813d7dba136ae6faecb515d23e7d7dc675672094174f91e2d84ab2bb55732  vendor/include/ghostty/vt.h
+77ab59b7be308454ca31fedd203bc43c219869e2ef869a8001549958906b4fd1  vendor/include/ghostty/vt/allocator.h
+535e44c29b5fd9c8df172605f58616df735432f7786ca24e3cc58d7cb3ba8361  vendor/include/ghostty/vt/build_info.h
+73e0db10e4b324122be1a8a46bb6619fe5ab264bf6713543336c3e5deb7035f3  vendor/include/ghostty/vt/color.h
+eab0dc56e057dfc03334cba109da6e7ae118513cb2be9dc4f3b0bffc7bdad465  vendor/include/ghostty/vt/color_scheme.h
+79c61cd5d54fc15c60d0ce87c69adf89c85b7b748b912c41b91230979f4319fe  vendor/include/ghostty/vt/device.h
+ddc28ead578ca9f683a4140420807ec9988a45f669d719e28cdf840913ea56b4  vendor/include/ghostty/vt/focus.h
+632819d6136e797036d1b6fafe5cafc5767cccbf76ba3dc602af597a27e49af8  vendor/include/ghostty/vt/formatter.h
+80cc49f02d63025605d605c86f1207638ad9534ce74e9a14766299e0518d4987  vendor/include/ghostty/vt/grid_ref.h
+78c65cf69c1a6ee439849175221084366ca4392455503cc44e93cfdf9ddbc021  vendor/include/ghostty/vt/grid_ref_tracked.h
+2d79995aadc23ce175b519e3ff401ca20664da9068177aac117e0b490f45daee  vendor/include/ghostty/vt/io.h
+2de93a84da8e9c1c1f6ac8d1d281ba054869225858a5d88ec8ec5f0d091b5eac  vendor/include/ghostty/vt/key.h
+6963a275e2ba154a647382c462c416840dcdc2beb6d59aa200d80f37f9a5e196  vendor/include/ghostty/vt/key/encoder.h
+0eb11bfab67b887f4b409557b396a5da6ea17e9e62d92b97a38e723b46db635d  vendor/include/ghostty/vt/key/event.h
+782d3907e8960488a64822df7bbcbd4b356550973e722cdc3c4a2e85d75024d3  vendor/include/ghostty/vt/kitty_graphics.h
+bd40aa01f76e4351e09a1825693b27c1e4a53539411968432fc3e59e0f890f66  vendor/include/ghostty/vt/modes.h
+271fc3af121eb323f28d3e467b6d9cde1075b3ac3c400f7e25cc05dd5af03663  vendor/include/ghostty/vt/mouse.h
+2e409c50fcd06806dd1a86cf66751ff35362c65e14ff588e2592e8a09141c017  vendor/include/ghostty/vt/mouse/encoder.h
+68f14cd03109919cb8da36b17f70670334a3369af5c685496118c913c3049abf  vendor/include/ghostty/vt/mouse/event.h
+bc47daeb2c5c1ebc32aca0946be01e26d70fa2677e56f933c7a0b45083e50918  vendor/include/ghostty/vt/osc.h
+d82f8fd498a296220caf39b2aeeedf195fa287b020955c27613b6c55cf80eeba  vendor/include/ghostty/vt/paste.h
+1ed7b2cda14904814727b93d406f39284e8392af706f938cf0fa1dbeaa42e774  vendor/include/ghostty/vt/point.h
+577beb4e1c787b13650ba66413991fed0c1ac9a732b77a2ef21def4e1ab2dc37  vendor/include/ghostty/vt/render.h
+d9a3ab36f8410184fd0af4a20de1c1d3a0f09e8bd28ec2de89cb243dbd008fa3  vendor/include/ghostty/vt/screen.h
+0a7ff9bd9079f351ff2d255f8d60d33638a5ebc79c1c8076b47b332b47e40c21  vendor/include/ghostty/vt/search.h
+3314f794faa08e1d709313ad18c02ce8a749471dbfe78a7d7a20f172c11fc2ce  vendor/include/ghostty/vt/selection.h
+8292084973e64ce61555c6721591411dba9cf968ea9ae2d9820b4f6c381f1ce5  vendor/include/ghostty/vt/sgr.h
+7f7a77311ab155ad13e934ed6a94274e2b02207dba529a951c8f8319b0ac9ab7  vendor/include/ghostty/vt/size_report.h
+da28242bd1cebfa2e313cbbaee160c06573c7990119c8e021b4433d9b3d90b40  vendor/include/ghostty/vt/snapshot.h
+ebb50a1821952dd954dd51d5897f9881c6927abd73b909e2e2f1deb3a52f31a9  vendor/include/ghostty/vt/style.h
+8f83a9f4e7132d917559b3ceb9dc8145c318e2ce419c2948cbab7cc6faafd69b  vendor/include/ghostty/vt/sys.h
+e5e4a44c842a04036df0b2026cb395297022d56ff3cb2867859f9c64ed5f8ff4  vendor/include/ghostty/vt/terminal.h
+46244c4d09f8d499d43f4f7f086a2a988e6671193f538a7d73e8c0ba4687e8d0  vendor/include/ghostty/vt/types.h
+d5533c9abcebc9284033eb9c6acc0ed707a3a68a98f0d2e3d8c9b28a2beae796  vendor/include/ghostty/vt/unicode.h
+0136093c504af9fb2a33b7e50a70cb6b4cee0c2375beed3d73b579c092195fee  vendor/include/ghostty/vt/wasm.h

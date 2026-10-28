@@ -1,0 +1,3 @@
+# Checksummed files must keep their exact bytes on every checkout.
+vendor/** -text
+src/bindings.rs -text
