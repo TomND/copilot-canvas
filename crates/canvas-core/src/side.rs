@@ -960,9 +960,7 @@ impl App {
             return self.notify(format!("{error:#}"), true);
         }
         let path = if outputs { group.outputs() } else { group.ai_docs() }.expect("folder set");
-        if let Err(error) = self.backend.open_folder(&path.display().to_string()) {
-            self.notify(format!("{error:#}"), true);
-        }
+        self.open_folder(&path.display().to_string());
     }
 
     /// Group the session belongs to (geometric membership).

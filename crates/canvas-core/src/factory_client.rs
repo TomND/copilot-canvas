@@ -263,9 +263,7 @@ impl App {
             2 => live.logs.first().map(|p| p.display().to_string()).unwrap_or_default(),
             _ => live.status_path.display().to_string(),
         };
-        if let Err(error) = self.backend.open_target(&target) {
-            self.notify(format!("{error:#}"), true);
-        }
+        self.open_target(&target);
     }
 
     /// Wakes the group's doctor for this automation (`automation.check`).

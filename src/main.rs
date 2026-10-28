@@ -2,8 +2,11 @@
 
 mod bench;
 mod gui_bench;
+mod pair_probe;
+mod remote_cli;
 mod remote_probe;
 mod selftest;
+mod standin;
 
 use canvas_agents::{automations, cli, factory_cli, index, service, vscode};
 #[cfg(test)]
@@ -29,6 +32,8 @@ USAGE
   copilot-canvas --gui [options]        open the GPU client (copilot-canvas-gui.exe next to this program)
   copilot-canvas --remote loopback      open the canvas over TCP to the local service (remote mode
                                         without a tunnel; starts the service listening on loopback)
+  copilot-canvas --remote NAME          open the canvas on a paired service (see REMOTE; runs
+                                        `devtunnel connect` for a tunnel and reconnects through it)
   copilot-canvas --remote HOST:PORT     open the canvas on a remote service (a forwarded tunnel port;
                                         credentials: COPILOT_CANVAS_REMOTE_ID, COPILOT_CANVAS_REMOTE_SECRET)
   copilot-canvas service status|stop    inspect or stop the terminal service (stop ends its sessions)
@@ -47,6 +52,25 @@ USAGE
   copilot-canvas selftest --remote faults
                                         drop, cut and delay the TCP connection while typing; check
                                         reconnect, resync and that no keystroke is lost or doubled
+  copilot-canvas selftest --remote paired
+                                        pairing, a Dev Tunnel stand-in, the canvas through it, drops,
+                                        a killed tunnel child, revocation, wrong secrets
+
+REMOTE (docs/REMOTE.md; agents on the Cloud PC, the canvas at home over a private Dev Tunnel)
+  on the Cloud PC:
+  copilot-canvas remote tunnel-setup [--tunnel ID] [--port PORT]
+                                        write the CopilotCanvas-Tunnel automation, set remote.listen,
+                                        print the one-time devtunnel commands
+  copilot-canvas remote pair [--name NAME]
+                                        print a one-time pairing code (10 minutes, single use)
+  copilot-canvas remote clients         paired clients (last seen, connected, revoked)
+  copilot-canvas remote revoke ID|NAME  revoke a client and drop its connections
+  at home:
+  copilot-canvas remote add NAME (--tunnel ID [--port PORT] | --addr HOST:PORT) --code CODE
+                 [--vscode-tunnel NAME] [--client-name NAME]
+                                        pair with the service; the secret is stored with DPAPI
+  copilot-canvas remote servers         paired services
+  copilot-canvas remote forget NAME     remove a paired service from this machine
 
 GOLDEN CORPUS (recorded terminal output vs. each engine's screen; see corpus/README.md)
   copilot-canvas record (--out FILE | --entry NAME) [--cols N] [--rows M] [--input SCRIPT] [--seconds S]
@@ -84,7 +108,7 @@ OPTIONS
   --sessions-dir DIR   Copilot session history to index (default: ~/.copilot/session-state)
   --canvas FILE        canvas file (default: <home>/canvas.json; with --remote, a path on the service's machine)
   --cwd DIR            default folder for new sessions (default: current folder)
-  --remote TARGET      connect over TCP: `loopback` or HOST:PORT (see above)
+  --remote TARGET      connect over TCP: `loopback`, a paired server's name or HOST:PORT (see above)
   -h, --help · -V, --version
 ";
 
@@ -177,12 +201,19 @@ fn real_main() -> Result<()> {
     if args.gui && args.command.is_empty() {
         return launch_gui();
     }
+    // The tunnel stand-in touches no data folder.
+    if let [first, rest @ ..] = args.command.as_slice()
+        && first == "devtunnel-standin"
+    {
+        return standin::run(&rest.iter().map(String::as_str).collect::<Vec<_>>());
+    }
     let instance = paths::Instance::new(args.instance.clone(), args.home.clone(), args.sessions_dir.clone())?;
     let option = |name: &str| args.rest.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
     let options = |name: &str| args.rest.iter().filter(|(k, _)| k == name).map(|(_, v)| v.clone()).collect::<Vec<_>>();
     let flag = |name: &str| args.flags.iter().any(|f| f == name);
     let dir = || factory_cli::configured_dir(&instance.home, option("dir"));
     let owned = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let port = |name: &str| -> Result<Option<u16>> { option(name).map(|p| p.parse::<u16>().with_context(|| format!("--{name} takes a port number"))).transpose() };
     match args.command.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         [] => {
             let cwd = args.cwd.clone().map(Ok).unwrap_or_else(std::env::current_dir)?;
@@ -274,6 +305,24 @@ fn real_main() -> Result<()> {
             },
         ),
         ["doctor"] => selftest::doctor(&instance),
+        ["remote", "pair"] => remote_cli::pair(&instance, option("name")),
+        ["remote", "clients"] => remote_cli::clients(&instance),
+        ["remote", "revoke", client] => remote_cli::revoke(&instance, client),
+        ["remote", "tunnel-setup"] => remote_cli::tunnel_setup(&instance, &dir(), option("tunnel"), port("port")?),
+        ["remote", "add", name] => remote_cli::add(
+            &instance,
+            remote_cli::AddArgs {
+                name: name.to_string(),
+                tunnel: option("tunnel"),
+                port: port("port")?,
+                addr: option("addr"),
+                code: option("code").context("--code CODE is required (from `copilot-canvas remote pair` on the service's machine)")?,
+                vscode_tunnel: option("vscode-tunnel"),
+                client_name: option("client-name"),
+            },
+        ),
+        ["remote", "servers"] => remote_cli::servers(&instance),
+        ["remote", "forget", name] => remote_cli::forget(&instance, name),
         ["selftest"] => {
             let client = match option("client").as_deref() {
                 None | Some("tui") => selftest::Client::Tui,
@@ -284,7 +333,8 @@ fn real_main() -> Result<()> {
                 None => selftest::run(None, client),
                 Some("loopback") => selftest::run(Some("loopback"), client),
                 Some("faults") => remote_probe::faults(&std::env::current_exe()?),
-                Some(other) => bail!("selftest --remote takes `loopback` or `faults`, not {other:?}"),
+                Some("paired") => pair_probe::run(&std::env::current_exe()?),
+                Some(other) => bail!("selftest --remote takes `loopback`, `faults` or `paired`, not {other:?}"),
             }
         }
         ["selftest", "agent"] => selftest::agent(option("agent").as_deref()),

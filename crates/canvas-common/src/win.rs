@@ -150,6 +150,50 @@ pub fn contain_descendants() -> io::Result<()> {
     }
 }
 
+/// A job that kills the processes put in it when it is dropped (or when this
+/// process exits, which closes the handle): managed helper processes never
+/// outlive their owner.
+pub struct KillOnClose(HANDLE);
+
+// SAFETY: a job handle may be used and closed from any thread.
+unsafe impl Send for KillOnClose {}
+unsafe impl Sync for KillOnClose {}
+
+impl KillOnClose {
+    /// Puts `child` (and the processes it starts) in a new kill-on-close job.
+    pub fn new(child: &std::process::Child) -> io::Result<Self> {
+        use std::os::windows::io::AsRawHandle;
+        // SAFETY: a fresh job with a valid limit structure; `child` holds a live process handle.
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            let guard = KillOnClose(job);
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info as *const _ as *const _, std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32) == 0
+                || AssignProcessToJobObject(job, child.as_raw_handle() as HANDLE) == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(guard)
+        }
+    }
+}
+
+impl Drop for KillOnClose {
+    fn drop(&mut self) {
+        // SAFETY: the job handle this guard owns; closing it kills the job's processes.
+        unsafe { CloseHandle(self.0) };
+    }
+}
+
+/// True while `pid` runs.
+pub fn alive(pid: u32) -> bool {
+    process_start_ms(pid).is_some()
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Usage {
     pub working_set: u64,
@@ -325,6 +369,19 @@ mod tests {
         let usage = process_usage(None);
         assert!(usage.working_set > 0);
         assert!(current_user_sid().unwrap().starts_with("S-1-"));
+    }
+
+    #[test]
+    fn a_kill_on_close_job_ends_its_process_when_dropped() {
+        let mut child = std::process::Command::new("cmd.exe").args(["/d", "/c", "ping -n 30 127.0.0.1 >nul"]).spawn().unwrap();
+        let job = KillOnClose::new(&child).unwrap();
+        assert!(alive(child.id()));
+        drop(job);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while child.try_wait().unwrap().is_none() {
+            assert!(std::time::Instant::now() < deadline, "the process outlived its job");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
 
     #[test]

@@ -72,6 +72,26 @@ pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Bytes of hex text (`None`: odd length or not hex).
+pub fn unhex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..text.len()).step_by(2).map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok()).collect()
+}
+
+/// Writes a file atomically (a temporary file renamed over it).
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temp = path.with_extension(format!("{}.tmp", std::process::id()));
+    std::fs::write(&temp, bytes)?;
+    std::fs::rename(&temp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temp);
+    })
+}
+
 /// Makes `exe` the executable of this build: its content hash is the build id
 /// and the service is started from it. The GUI client, which cannot run the
 /// service itself, sets the `copilot-canvas.exe` next to it; call it before

@@ -48,7 +48,7 @@ OPTIONS
   --instance NAME       separate service + canvas namespace (default: default)
   --home DIR            data directory (default: ~/.copilot-canvas, or COPILOT_CANVAS_HOME)
   --sessions-dir DIR    Copilot session history to index
-  --remote TARGET       connect over TCP: `loopback` or HOST:PORT
+  --remote TARGET       connect over TCP: `loopback`, a paired server's name, or HOST:PORT
   --size COLSxROWS      initial window size in cells
   --test-hooks          automation pipe (input, screen, tree, PNG); prints its name
   -h, --help · -V, --version
@@ -137,7 +137,7 @@ fn real_main() -> Result<i32> {
     let home = instance.home.clone();
     let cwd = paths::absolute(&args.cwd.clone().map(Ok).unwrap_or_else(std::env::current_dir)?).to_string_lossy().into_owned();
     let target = ConnTarget::parse(args.remote.as_deref(), &instance)?;
-    anyhow::ensure!(service_exe || matches!(target, ConnTarget::Tcp { .. }), "copilot-canvas.exe must be next to this program: it runs the terminal service");
+    anyhow::ensure!(service_exe || target.is_other_machine(), "copilot-canvas.exe must be next to this program: it runs the terminal service");
     // Remote clients ask the service for everything; local ones run the backend in-process.
     let remote_backend = target.is_remote().then(RemoteBackend::new);
     let backend: Arc<dyn Backend> = match &remote_backend {

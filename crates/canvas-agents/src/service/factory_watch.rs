@@ -70,6 +70,14 @@ fn event(route: &AutoRoute, kind: &str, data: serde_json::Value, now: u64) -> Ev
     Event { kind: kind.into(), group: route.group.clone(), source: format!("automation:{}", route.name), source_name: route.name.clone(), data, ms: now, ..Default::default() }
 }
 
+/// What the doctor should check first for automations Copilot Canvas itself installs.
+fn hint(name: &str) -> Option<&'static str> {
+    name.eq_ignore_ascii_case(canvas_common::remote::TUNNEL_TASK).then_some(
+        "This hosts the Dev Tunnel for remote canvases. Check the sign-in first (`devtunnel user show`; sign in again with `devtunnel user login -g`), \
+         then the tunnel and its port (`devtunnel show copilot-canvas`), then `copilot-canvas doctor` (remote listening). Never make the tunnel anonymous.",
+    )
+}
+
 /// Checks every watched automation (at most every few seconds); returns the
 /// events to handle and whether the watch state changed.
 pub fn poll(routing: &Routing, watch: &mut Watch, now: u64) -> (Vec<Event>, bool) {
@@ -131,30 +139,29 @@ pub fn poll(routing: &Routing, watch: &mut Watch, now: u64) -> (Vec<Event>, bool
                 if remind {
                     w.notified_ms = now;
                     let logs: Vec<String> = route.logs.iter().filter_map(|p| factory::newest_match(p)).map(|p| p.display().to_string()).collect();
-                    events.push(event(
-                        route,
-                        "automation.failed",
-                        serde_json::json!({
-                            "name": route.name,
-                            "family": route.family,
-                            "reason": reason,
-                            "exit": latest.exit,
-                            "started": latest.started,
-                            "ended": latest.ended,
-                            "failed_runs_in_a_row": w.consecutive,
-                            "failing_since": w.failing_since,
-                            "report": report.as_ref().map(|r| serde_json::json!({"state": r.state, "headline": r.headline, "at": r.at})),
-                            "manifest": route.manifest,
-                            "command": route.command,
-                            "uses_ai": route.ai,
-                            "launcher_log": route.log,
-                            "status_file": route.status,
-                            "workload_logs": logs,
-                            "docs": route.docs,
-                            "rerun": format!("copilot-canvas automations run \"{}\"", route.name),
-                        }),
-                        now,
-                    ));
+                    let mut data = serde_json::json!({
+                        "name": route.name,
+                        "family": route.family,
+                        "reason": reason,
+                        "exit": latest.exit,
+                        "started": latest.started,
+                        "ended": latest.ended,
+                        "failed_runs_in_a_row": w.consecutive,
+                        "failing_since": w.failing_since,
+                        "report": report.as_ref().map(|r| serde_json::json!({"state": r.state, "headline": r.headline, "at": r.at})),
+                        "manifest": route.manifest,
+                        "command": route.command,
+                        "uses_ai": route.ai,
+                        "launcher_log": route.log,
+                        "status_file": route.status,
+                        "workload_logs": logs,
+                        "docs": route.docs,
+                        "rerun": format!("copilot-canvas automations run \"{}\"", route.name),
+                    });
+                    if let Some(hint) = hint(&route.name) {
+                        data["hint"] = hint.into();
+                    }
+                    events.push(event(route, "automation.failed", data, now));
                 }
             }
         }
@@ -237,6 +244,17 @@ mod tests {
         let (events, _) = poll(&routing, &mut watch, 1_010_000);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].data["reason"], "reported failed: no data");
+        assert!(events[0].data.get("hint").is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_tunnel_host_failing_carries_a_hint_for_the_doctor() {
+        let (dir, mut routing) = setup();
+        routing.automations[0].name = canvas_common::remote::TUNNEL_TASK.into();
+        append(&routing.automations[0].log, "2026-10-27T06:00:00-07:00 Starting task.\n2026-10-27T06:01:00-07:00 Exited with code 3.\n");
+        let (events, _) = poll(&routing, &mut Watch::default(), 1_000_000);
+        assert!(events[0].data["hint"].as_str().unwrap().contains("devtunnel user show"));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

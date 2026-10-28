@@ -115,6 +115,22 @@ pub enum Request {
     DocBackup { path: String, label: String, doc: Box<Doc> },
     /// Backups of a canvas, oldest first.
     DocBackups { path: String },
+
+    /// Opens a one-time pairing code for a new remote client (`name`: what
+    /// `remote clients` calls it); the service starts listening on its remote
+    /// port if it was not. Only over the local pipe.
+    PairCode { name: Option<String> },
+    /// The paired remote clients. Only over the local pipe.
+    RemoteClients,
+    /// Revokes a paired client (id or name) and closes its connections. Only
+    /// over the local pipe.
+    RemoteRevoke { client: String },
+    /// Puts an image (PNG, at most `clipimage::MAX_PNG`) on the clipboard of
+    /// the service's machine (a remote image paste).
+    SetClipboardImage {
+        #[serde(with = "base64")]
+        png: Vec<u8>,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -133,6 +149,82 @@ pub enum Response {
     MigratePlan(Vec<Item>),
     Path(PathInfo),
     Git(Option<GitInfo>),
+    Pairing(PairingCode),
+    RemoteClients(Vec<RemoteClient>),
+}
+
+/// An open pairing code (`Request::PairCode`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct PairingCode {
+    /// `ABCD-EFGH`.
+    pub code: String,
+    pub expires_ms: u64,
+    /// Where the service listens for remote clients (`127.0.0.1:47600`).
+    pub listen: String,
+    /// The name the client gets (`None`: the client's own machine name).
+    pub name: Option<String>,
+}
+
+/// A paired remote client (`Request::RemoteClients`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct RemoteClient {
+    pub id: String,
+    pub name: String,
+    pub created_ms: u64,
+    /// When it last authenticated (0: never).
+    pub last_seen_ms: u64,
+    /// When it was revoked (0: it is not).
+    pub revoked_ms: u64,
+    /// Connections it has open now.
+    pub connections: u32,
+}
+
+/// `Vec<u8>` as a base64 string in JSON (images in requests).
+mod base64 {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    pub fn encode(bytes: &[u8]) -> String {
+        let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+        for chunk in bytes.chunks(3) {
+            let n = (chunk[0] as u32) << 16 | (*chunk.get(1).unwrap_or(&0) as u32) << 8 | *chunk.get(2).unwrap_or(&0) as u32;
+            for i in 0..4 {
+                if i <= chunk.len() {
+                    out.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char);
+                } else {
+                    out.push('=');
+                }
+            }
+        }
+        out
+    }
+
+    pub fn decode(text: &str) -> Option<Vec<u8>> {
+        let text = text.trim_end_matches('=');
+        let mut out = Vec::with_capacity(text.len() * 3 / 4);
+        let (mut bits, mut count) = (0u32, 0);
+        for byte in text.bytes() {
+            let value = ALPHABET.iter().position(|&a| a == byte)? as u32;
+            bits = bits << 6 | value;
+            count += 6;
+            if count >= 8 {
+                count -= 8;
+                out.push((bits >> count) as u8);
+                bits &= (1 << count) - 1;
+            }
+        }
+        Some(out)
+    }
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        decode(&text).ok_or_else(|| D::Error::custom("invalid base64"))
+    }
 }
 
 /// The machine the backend runs on.
@@ -219,7 +311,17 @@ impl Request {
             Request::CreatePassive { .. } => "passive session files",
             Request::DocBackup { .. } => "canvas backup",
             Request::DocBackups { .. } => "canvas backups",
+            Request::PairCode { .. } => "pairing code",
+            Request::RemoteClients => "remote clients",
+            Request::RemoteRevoke { .. } => "revoke",
+            Request::SetClipboardImage { .. } => "clipboard image",
         }
+    }
+
+    /// Requests about the service's own remote access: answered by the
+    /// service itself, only to clients on its local pipe.
+    pub fn is_remote_admin(&self) -> bool {
+        matches!(self, Request::PairCode { .. } | Request::RemoteClients | Request::RemoteRevoke { .. })
     }
 
     /// How long a remote caller waits for the answer (CLI runs can be slow).
@@ -241,6 +343,7 @@ impl Request {
             | Request::TaskSetEnabled { .. }
             | Request::TaskRun { .. }
             | Request::GitProbe { .. }
+            | Request::SetClipboardImage { .. }
             | Request::NewestMatches { .. } => 120,
             _ => 30,
         };
@@ -477,6 +580,28 @@ impl dyn Backend + '_ {
     pub fn doc_backups(&self, path: &str) -> Result<Vec<String>> {
         self.texts(Request::DocBackups { path: path.to_owned() })
     }
+
+    pub fn pair_code(&self, name: Option<String>) -> Result<PairingCode> {
+        self.ask(Request::PairCode { name }, |r| match r {
+            Response::Pairing(code) => Some(code),
+            _ => None,
+        })
+    }
+
+    pub fn remote_clients(&self) -> Result<Vec<RemoteClient>> {
+        self.ask(Request::RemoteClients, |r| match r {
+            Response::RemoteClients(list) => Some(list),
+            _ => None,
+        })
+    }
+
+    pub fn remote_revoke(&self, client: &str) -> Result<String> {
+        self.text(Request::RemoteRevoke { client: client.to_owned() })
+    }
+
+    pub fn set_clipboard_image(&self, png: Vec<u8>) -> Result<()> {
+        self.done(Request::SetClipboardImage { png })
+    }
 }
 
 /// The answer to a request this build does not know (from a newer client).
@@ -532,5 +657,25 @@ mod tests {
         let reply = answer_json(r#"{"FutureThing":{"x":1}}"#, |_| Response::Done);
         assert!(matches!(serde_json::from_str::<Response>(&reply).unwrap(), Response::Error(e) if e.contains("does not support")));
         assert!(Request::MigrateApply { items: vec![] }.timeout() > Request::Info.timeout());
+    }
+
+    #[test]
+    fn images_travel_as_base64_and_admin_requests_are_marked() {
+        for len in 0..10 {
+            let bytes: Vec<u8> = (0..len as u8).map(|b| b.wrapping_mul(97)).collect();
+            assert_eq!(base64::decode(&base64::encode(&bytes)).unwrap(), bytes);
+        }
+        assert_eq!(base64::encode(b"Man"), "TWFu");
+        assert_eq!(base64::encode(b"Ma"), "TWE=");
+        assert_eq!(base64::decode("TWE="), Some(b"Ma".to_vec()));
+        assert_eq!(base64::decode("T!=="), None);
+        let request = Request::SetClipboardImage { png: vec![0x89, b'P', b'N', b'G', 0, 255] };
+        let json = serde_json::to_string(&request).unwrap();
+        assert_eq!(json, r#"{"SetClipboardImage":{"png":"iVBORwD/"}}"#);
+        assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), request);
+        assert!(!request.is_quick() && !request.is_remote_admin());
+        assert!(Request::PairCode { name: None }.is_remote_admin() && Request::RemoteClients.is_remote_admin() && Request::RemoteRevoke { client: "x".into() }.is_remote_admin());
+        let reply = Response::Pairing(PairingCode { code: "ABCD-EFGH".into(), expires_ms: 1, listen: "127.0.0.1:47600".into(), name: None });
+        assert_eq!(serde_json::from_str::<Response>(&serde_json::to_string(&reply).unwrap()).unwrap(), reply);
     }
 }

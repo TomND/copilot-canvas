@@ -48,6 +48,8 @@ pub enum AppEvent {
     Tails(Vec<(String, String)>),
     /// A background step has something to say.
     Notice { text: String, error: bool },
+    /// A background step's continuation on the UI thread.
+    Run(Box<dyn FnOnce(&mut App) + Send>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1522,7 +1524,7 @@ impl App {
             }
             // Answers to backend requests go to their callers on the connection's thread.
             ServiceMsg::RpcReply { .. } => {}
-            ServiceMsg::Ready { .. } | ServiceMsg::Ready8 { .. } | ServiceMsg::Heartbeat { .. } | ServiceMsg::Challenge { .. } => {}
+            ServiceMsg::Ready { .. } | ServiceMsg::Ready8 { .. } | ServiceMsg::Heartbeat { .. } | ServiceMsg::Challenge { .. } | ServiceMsg::Paired { .. } => {}
         }
     }
 

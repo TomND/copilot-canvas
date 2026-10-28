@@ -187,6 +187,7 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
         }
         Modal::NewSession(dialog) => draw_new_session(app, buf, screen, dialog, ctx),
         Modal::Mcp(picker) => draw_mcp_picker(app, buf, screen, picker, ctx),
+        Modal::Viewer(viewer) => draw_viewer(app, buf, screen, viewer, ctx),
         Modal::Folder(browser) => {
             let rect = centered(screen, 76, screen.height.saturating_sub(6).min(28));
             panel(buf, rect, "Choose a folder");
@@ -361,6 +362,49 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
             (rect, None)
         }
     }
+}
+
+/// The read-only viewer: path, a status line, numbered lines, buttons.
+fn draw_viewer(app: &mut App, buf: &mut Buffer, screen: Rect, viewer: &crate::viewer::Viewer, ctx: &mut Ctx) -> (Rect, Option<(u16, u16)>) {
+    let rect = centered(screen, screen.width.saturating_sub(6).min(160), screen.height.saturating_sub(2));
+    let title = if viewer.folder { "Folder on the service's machine" } else { "File on the service's machine (read-only)" };
+    panel(buf, rect, title);
+    let (x, width) = (rect.x as i32 + 2, rect.width as i32 - 4);
+    put(buf, x, rect.y as i32 + 1, &truncate_left(&viewer.path, width.max(1) as usize), bold(TEXT).bg(MODAL), rect);
+    let rows = rect.height.saturating_sub(6) as usize;
+    let lines = viewer.lines.as_deref().unwrap_or_default();
+    let status = match (&viewer.lines, &viewer.error) {
+        (_, Some(error)) => error.clone(),
+        (None, None) => "Loading…".into(),
+        (Some(_), None) => {
+            let last = (viewer.top + rows).min(lines.len());
+            let range = if lines.is_empty() { "empty".into() } else { format!("lines {}–{last} of {}", viewer.top + 1, lines.len()) };
+            format!("{range}{}   ·   ↑↓ PgUp/PgDn scroll · ←→ sideways · Tab buttons · Esc close", viewer.note.as_deref().map(|n| format!(" · {n}")).unwrap_or_default())
+        }
+    };
+    let status_style = if viewer.error.is_some() { fg(NEGATIVE).bg(MODAL) } else { fg(MUTED).bg(MODAL) };
+    put(buf, x, rect.y as i32 + 2, &truncate(&status, width.max(1) as usize), status_style, rect);
+    let gutter = if viewer.folder { 0 } else { lines.len().max(1).to_string().len() + 1 };
+    for (row, line) in lines.iter().enumerate().skip(viewer.top).take(rows) {
+        let y = rect.y as i32 + 3 + (row - viewer.top) as i32;
+        if gutter > 0 {
+            put(buf, x, y, &format!("{:>w$}", row + 1, w = gutter - 1), fg(MUTED).bg(MODAL), rect);
+        }
+        let visible: String = line.chars().skip(viewer.left).collect();
+        let text_x = x + gutter as i32 + 1;
+        put(buf, text_x, y, &truncate(&visible, (width - gutter as i32 - 1).max(1) as usize), fg(TEXT).bg(MODAL), rect);
+    }
+    let mut bx = x;
+    let y = rect.bottom() as i32 - 2;
+    for (i, label) in viewer.buttons().iter().enumerate() {
+        bx = button(buf, ctx, bx, y, label, i == viewer.sel, i == 0, i, rect);
+    }
+    if ctx.top
+        && let Some(Modal::Viewer(top)) = app.modals.last_mut()
+    {
+        top.rows = rows.max(1);
+    }
+    (rect, None)
 }
 
 fn draw_mcp_picker(app: &App, buf: &mut Buffer, screen: Rect, picker: &crate::dialogs::McpPicker, ctx: &mut Ctx) -> (Rect, Option<(u16, u16)>) {

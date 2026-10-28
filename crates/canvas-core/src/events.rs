@@ -377,6 +377,10 @@ impl App {
             return;
         }
         if let Some((wire, mods)) = input::to_wire(&key) {
+            // Alt+V pastes an image in agents: a remote one needs this machine's image first.
+            if mods & crate::protocol::MOD_ALT != 0 && mods & crate::protocol::MOD_CTRL == 0 && matches!(wire, crate::protocol::Key::Char('v' | 'V')) {
+                return self.paste_key(&id, Input::Key { key: wire, mods });
+            }
             self.send(ClientMsg::Input { id, input: Input::Key { key: wire, mods } });
         }
     }
@@ -456,10 +460,7 @@ impl App {
             && let Some(link) = self.layout.links.iter().find(|l| l.contains(x, y)).cloned()
             && (!link.terminal || modifiers.contains(Modifiers::CONTROL))
         {
-            match self.platform.open_link(&link.target) {
-                Ok(message) => self.notify(message, false),
-                Err(error) => self.notify(format!("{error:#}"), true),
-            }
+            self.open_link(&link.target);
             return;
         }
         let hit = self.layout.hits.iter().find(|(r, _)| rect_contains(*r, x, y)).map(|(_, h)| h.clone());

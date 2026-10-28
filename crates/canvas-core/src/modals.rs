@@ -137,6 +137,12 @@ impl App {
             Modal::Folder(browser) => self.folder_key(browser, key),
             Modal::Pick(pick) => self.pick_key(pick, key),
             Modal::Mcp(picker) => self.mcp_key(picker, key),
+            Modal::Viewer(viewer) => match viewer.key(&key) {
+                crate::viewer::ViewerKey::Keep => Outcome::Keep,
+                crate::viewer::ViewerKey::Close => Outcome::Close,
+                crate::viewer::ViewerKey::Button(button) if self.viewer_button(viewer, button) => Outcome::Close,
+                crate::viewer::ViewerKey::Button(_) => Outcome::Keep,
+            },
             Modal::ImportCopilot(dialog) => {
                 let candidates = self.copilot_import_candidates(&dialog.filter.text);
                 let ctrl = key.modifiers.contains(Modifiers::CONTROL);
@@ -730,6 +736,10 @@ impl App {
             }
             (Some(Modal::Mcp(_)), Hit::Button(0)) => self.modal_key(enter),
             (Some(Modal::Mcp(_)), Hit::Button(1)) => self.modal_key(KeyEvent::new(KeyCode::Char('s'), Modifiers::CONTROL)),
+            (Some(Modal::Viewer(viewer)), Hit::Button(i)) => {
+                viewer.sel = i;
+                self.modal_key(enter);
+            }
             (Some(_), Hit::Button(_)) => {
                 self.modals.pop();
             }

@@ -2,9 +2,11 @@
 //! survive client restarts; streams only visible terminals to clients as row
 //! diffs; keeps the session you type in responsive (priority manager).
 //!
-//! Clients connect over the named pipe (local) or, when `remote.listen` is
-//! set, over TCP on loopback (remote clients behind a Dev Tunnel). Both carry
-//! the same framed protocol and handshake. Protocol-8 clients send and get
+//! Clients connect over the named pipe (local) or, when remote listening is
+//! on (`remote.listen`, or once a pairing code was opened), over TCP on
+//! loopback (remote clients behind a Dev Tunnel). Both carry the same framed
+//! protocol and handshake; TCP connections may also pair a new client.
+//! Protocol-8 clients send and get
 //! heartbeats, number their input (applied at most once per client session)
 //! and, over TCP, get frames coalesced per tile and optionally compressed.
 //!
@@ -29,6 +31,7 @@ use crate::paths::{Instance, build_id, now_ms};
 use crate::pipe::{Pipe, PipeServer};
 use crate::protocol::{self, CAP_COMPRESS, CAP_FRAME8, ClientMsg, Frame8, Input, LaunchKind, Run8, ServiceMsg, ServiceStats};
 use crate::term::{Hooks, Spawn, Terminal, lock};
+use canvas_common::handshake::{Opening, PairGrant, PairRequest};
 use canvas_common::wire::{Beat, Closer, FrameReader, FrameWriter, Liveness};
 use canvas_common::{handshake, tcp};
 
@@ -75,6 +78,14 @@ pub trait HostApp: Send + Sync {
     fn has_work(&self) -> bool;
     /// The secret of a paired remote client (`ClientInfo::remote_id`); `None` refuses it.
     fn remote_secret(&self, id: &str) -> Option<Vec<u8>>;
+    /// Why a remote client id is refused (sent to the client before closing).
+    fn remote_refusal(&self, id: &str) -> String {
+        format!("unknown remote client {id:?}")
+    }
+    /// Pairs a new remote client (`ClientMsg::Pair`); `Err` says why not.
+    fn pair(&self, _request: &PairRequest) -> Result<PairGrant, String> {
+        Err("this service does not pair clients".into())
+    }
     /// The service is about to exit: persist what must not be lost.
     fn shutdown(&self) {}
 }
@@ -124,6 +135,8 @@ pub struct Client {
     pub protocol: u32,
     /// Connected over TCP: frames are coalesced per tile.
     pub remote: bool,
+    /// The paired remote client this connection authenticated as.
+    pub remote_id: Option<String>,
     /// Reads `Frame8` (else protocol-7 frames).
     frame8: bool,
     out: Sender<ServiceMsg>,
@@ -141,6 +154,7 @@ impl Client {
             id,
             protocol,
             remote,
+            remote_id: None,
             frame8: caps & CAP_FRAME8 != 0,
             out,
             subs: Mutex::new(HashMap::new()),
@@ -183,10 +197,12 @@ pub struct Host {
     /// Wakes the frame pump.
     pub pump: Sender<()>,
     exited: Sender<String>,
-    clipboard: Sender<String>,
+    clipboard: Sender<(String, String)>,
     /// Terminal ids whose title, progress or bell count changed.
     changed: Sender<String>,
     last_input_client: AtomicU64,
+    /// The client that last sent input to each terminal (gets its OSC 52 copies).
+    input_clients: Mutex<HashMap<String, u64>>,
     /// Terminal that most recently received keyboard input (gets CPU priority).
     active_input: Mutex<Option<String>>,
     priority_wake: Sender<()>,
@@ -202,6 +218,8 @@ pub struct Host {
     compress: bool,
     /// Input deduplication per client session id.
     input_sessions: Mutex<HashMap<Vec<u8>, Arc<Mutex<InputSession>>>>,
+    /// The loopback port remote clients connect to, while listening.
+    remote_port: Mutex<Option<u16>>,
     app: OnceLock<Arc<dyn HostApp>>,
 }
 
@@ -254,7 +272,7 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
 
     let (pump_tx, pump_rx) = bounded::<()>(1);
     let (exited_tx, exited_rx) = unbounded::<String>();
-    let (clip_tx, clip_rx) = bounded::<String>(16);
+    let (clip_tx, clip_rx) = bounded::<(String, String)>(16);
     let (changed_tx, changed_rx) = bounded::<String>(256);
     let (prio_tx, prio_rx) = bounded::<()>(1);
     let host = Arc::new(Host {
@@ -268,6 +286,7 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
         clipboard: clip_tx,
         changed: changed_tx,
         last_input_client: AtomicU64::new(0),
+        input_clients: Mutex::new(HashMap::new()),
         active_input: Mutex::new(None),
         priority_wake: prio_tx,
         bytes: Arc::new(AtomicU64::new(0)),
@@ -279,6 +298,7 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
         fallback_logged: AtomicBool::new(false),
         compress: settings.compress(),
         input_sessions: Mutex::new(HashMap::new()),
+        remote_port: Mutex::new(None),
         app: OnceLock::new(),
     });
     let app = make_app(&host);
@@ -291,8 +311,10 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
     spawn_named("idle", { let h = host.clone(); move || idle_loop(h) });
     spawn_named("priority", { let h = host.clone(); move || priority_loop(h, prio_rx) });
     spawn_named("liveness", { let h = host.clone(); move || liveness_loop(h) });
-    if let Some(addr) = settings.listen() {
-        listen_tcp(&host, &addr);
+    if let Some(addr) = settings.listen()
+        && let Err(error) = host.listen_remote(&addr)
+    {
+        log(&host.instance, &format!("not listening for remote clients on {addr}: {error:#}"));
     }
 
     loop {
@@ -313,46 +335,50 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
     }
 }
 
-/// Also serves clients on a loopback TCP port (non-loopback addresses are
-/// refused) and publishes the port in `<home>/service-<instance>.port`.
-fn listen_tcp(host: &Arc<Host>, addr: &str) {
-    let listener = match tcp::listen_loopback(addr) {
-        Ok(listener) => listener,
-        Err(error) => {
-            log(&host.instance, &format!("not listening for remote clients on {addr}: {error}"));
-            return;
-        }
-    };
-    let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
-    let path = host.instance.port_path();
-    let temp = path.with_extension(format!("port.{}.tmp", std::process::id()));
-    if let Err(error) = std::fs::write(&temp, port.to_string()).and_then(|_| std::fs::rename(&temp, &path)) {
-        log(&host.instance, &format!("cannot publish the remote port: {error}"));
-    }
-    log(&host.instance, &format!("listening for remote clients on 127.0.0.1:{port}"));
-    let host = host.clone();
-    spawn_named("tcp-accept", move || {
-        for stream in listener.incoming() {
-            match stream {
-                Ok(stream) => {
-                    let host = host.clone();
-                    spawn_named("remote-client", move || {
-                        let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_default();
-                        if let Err(error) = serve_client(&host, Link::Tcp(stream)) {
-                            log(&host.instance, &format!("remote client {peer} ended: {error:#}"));
-                        }
-                    });
-                }
-                Err(error) => {
-                    log(&host.instance, &format!("remote accept failed: {error}"));
-                    std::thread::sleep(Duration::from_millis(200));
-                }
+/// Serves clients on a loopback TCP listener (remote clients behind a tunnel).
+fn accept_tcp(host: Arc<Host>, listener: std::net::TcpListener) {
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => {
+                let host = host.clone();
+                spawn_named("remote-client", move || {
+                    let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_default();
+                    if let Err(error) = serve_client(&host, Link::Tcp(stream)) {
+                        log(&host.instance, &format!("remote client {peer} ended: {error:#}"));
+                    }
+                });
+            }
+            Err(error) => {
+                log(&host.instance, &format!("remote accept failed: {error}"));
+                std::thread::sleep(Duration::from_millis(200));
             }
         }
-    });
+    }
 }
 
 impl Host {
+    /// Also serves clients on a loopback TCP port (non-loopback addresses are
+    /// refused) and publishes it in `<home>/service-<instance>.port`. Returns
+    /// the port; listening twice keeps the first listener.
+    pub fn listen_remote(self: &Arc<Self>, addr: &str) -> Result<u16> {
+        let mut current = lock(&self.remote_port);
+        if let Some(port) = *current {
+            return Ok(port);
+        }
+        let listener = tcp::listen_loopback(addr)?;
+        let port = listener.local_addr()?.port();
+        let path = self.instance.port_path();
+        let temp = path.with_extension(format!("port.{}.tmp", std::process::id()));
+        if let Err(error) = std::fs::write(&temp, port.to_string()).and_then(|_| std::fs::rename(&temp, &path)) {
+            log(&self.instance, &format!("cannot publish the remote port: {error}"));
+        }
+        log(&self.instance, &format!("listening for remote clients on 127.0.0.1:{port}"));
+        *current = Some(port);
+        let host = self.clone();
+        spawn_named("tcp-accept", move || accept_tcp(host, listener));
+        Ok(port)
+    }
+
     /// The backend; its threads may call in while `run` is still installing it.
     fn app(&self) -> &Arc<dyn HostApp> {
         loop {
@@ -496,6 +522,15 @@ impl Host {
         Ok(())
     }
 
+    /// `client` sent input to terminal `id` (its OSC 52 copies go there).
+    fn input_from(&self, client: u64, id: &str) {
+        self.last_input_client.store(client, Ordering::Relaxed);
+        let mut clients = lock(&self.input_clients);
+        if clients.get(id) != Some(&client) {
+            clients.insert(id.to_owned(), client);
+        }
+    }
+
     fn note_active(&self, id: &str) {
         let mut active = lock(&self.active_input);
         if active.as_deref() != Some(id) {
@@ -560,13 +595,25 @@ fn serve_client(host: &Arc<Host>, link: Link) -> Result<()> {
             }
         });
     }
-    let accepted = handshake::accept(&mut reader, &mut writer, remote, build_id(), |remote_id| match remote_id {
-        Some(id) => host.app().remote_secret(id),
-        None => Some(host.token.clone()),
-    });
+    let opening = handshake::serve(
+        &mut reader,
+        &mut writer,
+        remote,
+        build_id(),
+        |remote_id| match remote_id {
+            Some(id) => host.app().remote_secret(id).ok_or_else(|| host.app().remote_refusal(id)),
+            None => Ok(host.token.clone()),
+        },
+        |request| host.app().pair(request),
+    );
     authenticated.store(true, Ordering::Release);
-    let accepted = match accepted {
-        Ok(accepted) => accepted,
+    let accepted = match opening {
+        Ok(Opening::Client(accepted)) => accepted,
+        Ok(Opening::Paired { client_id }) => {
+            log(&host.instance, &format!("paired remote client {client_id}"));
+            closer.close();
+            return Ok(());
+        }
         Err(error) => {
             closer.close();
             return Err(error);
@@ -584,6 +631,7 @@ fn serve_client(host: &Arc<Host>, link: Link) -> Result<()> {
     let (out_tx, out_rx) = bounded::<ServiceMsg>(CLIENT_QUEUE);
     let id = host.next_client.fetch_add(1, Ordering::Relaxed);
     let mut client = Client::new(id, accepted.protocol, remote, info.caps, out_tx, closer.clone());
+    client.remote_id = info.remote_id.clone();
     // The newest connection of a client session owns its input; the previous
     // one (half-open after a network drop) stops applying input and is closed.
     let mut ready_ack = 0;
@@ -608,7 +656,8 @@ fn serve_client(host: &Arc<Host>, link: Link) -> Result<()> {
     }
     spawn_writer(writer, out_rx, &client);
     if remote {
-        log(&host.instance, &format!("remote client {id} connected ({}, protocol {}, compression {})", info.name, accepted.protocol, host.compress && info.caps & CAP_COMPRESS != 0));
+        let paired = info.remote_id.as_deref().map(|r| format!(" as paired client {r}")).unwrap_or_default();
+        log(&host.instance, &format!("remote client {id} connected ({}, protocol {}, compression {}){paired}", info.name, accepted.protocol, host.compress && info.caps & CAP_COMPRESS != 0));
     }
     client.send(ServiceMsg::Ready8 { pid: std::process::id(), input_ack: ready_ack });
     let infos: Vec<_> = lock(&host.terms).values().map(|t| t.info()).collect();
@@ -701,7 +750,7 @@ fn subscribe(host: &Host, client: &Client, ids: Vec<String>, focused: Option<Str
 }
 
 fn apply_input(host: &Host, client: &Client, id: &str, input: &Input) -> Result<()> {
-    host.last_input_client.store(client.id, Ordering::Relaxed);
+    host.input_from(client.id, id);
     if !matches!(input, Input::Focus(_)) {
         host.note_active(id);
         host.app().input_noted(id);
@@ -741,12 +790,12 @@ fn dispatch(host: &Arc<Host>, client: &Arc<Client>, message: ClientMsg) -> Resul
             let _ = host.pump.try_send(());
         }
         ClientMsg::Wheel { id, up, col, row, mods } => {
-            host.last_input_client.store(client.id, Ordering::Relaxed);
+            host.input_from(client.id, &id);
             host.terminal(&id)?.wheel(up, col, row, mods)?;
             let _ = host.pump.try_send(());
         }
         ClientMsg::Click { id, col, row, button, mods } => {
-            host.last_input_client.store(client.id, Ordering::Relaxed);
+            host.input_from(client.id, &id);
             host.terminal(&id)?.click(button, col, row, mods)?;
             let _ = host.pump.try_send(());
         }
@@ -756,6 +805,7 @@ fn dispatch(host: &Arc<Host>, client: &Arc<Client>, message: ClientMsg) -> Resul
             if terms.get(&id).is_some_and(|t| !t.alive.load(Ordering::Acquire)) {
                 terms.remove(&id);
                 drop(terms);
+                lock(&host.input_clients).remove(&id);
                 host.broadcast(ServiceMsg::TerminalGone(id));
             }
         }
@@ -991,10 +1041,20 @@ fn change_loop(host: Arc<Host>, changed: Receiver<String>) {
     }
 }
 
-fn clipboard_loop(host: Arc<Host>, clipboard: Receiver<String>) {
-    for text in clipboard {
-        let target = host.last_input_client.load(Ordering::Relaxed);
-        let client = lock(&host.clients).get(&target).cloned();
+/// Who gets a terminal's OSC 52 copy: the client that last sent input to that
+/// terminal while it is connected, else the client that last sent any input.
+/// In remote mode that is the machine you typed on (its clipboard, PLAN.md §6).
+fn clipboard_target(per_terminal: Option<u64>, last: u64, connected: impl Fn(u64) -> bool) -> Option<u64> {
+    per_terminal.filter(|c| connected(*c)).or_else(|| connected(last).then_some(last))
+}
+
+fn clipboard_loop(host: Arc<Host>, clipboard: Receiver<(String, String)>) {
+    for (terminal, text) in clipboard {
+        let per_terminal = lock(&host.input_clients).get(&terminal).copied();
+        let last = host.last_input_client.load(Ordering::Relaxed);
+        let clients = lock(&host.clients);
+        let client = clipboard_target(per_terminal, last, |id| clients.contains_key(&id)).and_then(|id| clients.get(&id).cloned());
+        drop(clients);
         if let Some(client) = client {
             client.send(ServiceMsg::Clipboard(text));
         }
@@ -1095,6 +1155,16 @@ mod tests {
         assert!(third.changed.is_empty() && third.cursor_shape == protocol::CURSOR_BAR, "cursor shape alone is a frame");
         let resized = frame_of(&mut sub, snapshot(&["a", "b"], None)).unwrap();
         assert!(resized.full);
+    }
+
+    #[test]
+    fn osc52_copies_go_to_the_client_that_typed_into_the_terminal() {
+        let connected = |ids: &'static [u64]| move |id: u64| ids.contains(&id);
+        // Home typed into this terminal; the Cloud PC's window typed last elsewhere.
+        assert_eq!(clipboard_target(Some(2), 1, connected(&[1, 2])), Some(2));
+        assert_eq!(clipboard_target(Some(2), 1, connected(&[1])), Some(1), "that client is gone: the last typist");
+        assert_eq!(clipboard_target(None, 1, connected(&[1, 2])), Some(1));
+        assert_eq!(clipboard_target(None, 3, connected(&[1, 2])), None, "nobody connected typed");
     }
 
     #[test]

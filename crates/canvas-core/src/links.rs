@@ -191,7 +191,55 @@ pub fn resolve(target: &str) -> Result<Target> {
     Ok(if meta.is_dir() { Target::Folder(path) } else { Target::File(path, line) })
 }
 
-fn vscode_installed() -> bool {
+/// A web or mail link (opened on the client's machine, also in remote mode).
+pub fn is_url(target: &str) -> bool {
+    let lower = target.trim().to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("mailto:")
+}
+
+/// A path link on another machine (a remote service's): the absolute path
+/// and line, without touching this machine's file system.
+pub fn remote_path(target: &str) -> Result<(String, Option<u32>)> {
+    let target = target.trim();
+    anyhow::ensure!(target.len() < 4096 && !target.chars().any(|c| c.is_control() || c == '"'), "unsupported link");
+    let (raw, line) = split_line(target);
+    let path = if target.to_ascii_lowercase().starts_with("file://") { file_url_to_path(raw).context("bad file link")? } else { PathBuf::from(raw) };
+    let text = path.display().to_string();
+    let bytes = text.as_bytes();
+    let drive = bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/');
+    anyhow::ensure!(drive || text.starts_with(r"\\"), "only absolute paths can be opened");
+    Ok((text, line))
+}
+
+/// Characters escaped in a VS Code URI path.
+const URI_PATH: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS.add(b' ').add(b'"').add(b'#').add(b'%').add(b'<').add(b'>').add(b'?').add(b'`').add(b'{').add(b'}');
+
+/// `vscode://vscode-remote/tunnel+NAME/C:/path/file.rs:LINE`: opens a file or
+/// folder of the machine that runs the VS Code tunnel `NAME`.
+pub fn vscode_tunnel_uri(tunnel: &str, path: &str, line: Option<u32>) -> String {
+    let path = path.replace('\\', "/");
+    let path = path.trim_start_matches('/');
+    let encoded = percent_encoding::utf8_percent_encode(path, URI_PATH).to_string();
+    let tunnel = percent_encoding::utf8_percent_encode(tunnel, URI_PATH);
+    let mut uri = format!("vscode://vscode-remote/tunnel+{tunnel}/{encoded}");
+    if let Some(line) = line {
+        uri.push_str(&format!(":{line}"));
+    }
+    uri
+}
+
+/// Hands a `vscode://` URI to VS Code (nothing else is opened this way).
+pub fn open_vscode_uri(uri: &str) -> Result<()> {
+    let lower = uri.to_ascii_lowercase();
+    anyhow::ensure!(lower.starts_with("vscode://") || lower.starts_with("vscode-insiders://"), "not a VS Code link");
+    anyhow::ensure!(uri.len() < 8192 && !uri.chars().any(|c| c.is_control() || c == '"' || c == ' '), "unsupported link");
+    anyhow::ensure!(vscode_installed(), "VS Code is not installed on this machine");
+    spawn_open(uri.to_owned());
+    Ok(())
+}
+
+/// VS Code's `vscode://` handler is registered on this machine.
+pub fn vscode_installed() -> bool {
     use std::sync::OnceLock;
     static INSTALLED: OnceLock<bool> = OnceLock::new();
     *INSTALLED.get_or_init(|| {
@@ -304,6 +352,20 @@ mod tests {
         let mut out = Vec::new();
         scan(&mut buf, Rect::new(0, 0, 10, 3), false, &[], &mut out);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn remote_paths_map_to_vscode_tunnel_uris_without_local_checks() {
+        assert_eq!(remote_path(r"C:\definitely\missing\x.rs:42:3").unwrap(), (r"C:\definitely\missing\x.rs".to_owned(), Some(42)));
+        assert_eq!(remote_path("file:///C:/a%20b/c.md").unwrap(), (r"C:\a b\c.md".to_owned(), None));
+        assert_eq!(remote_path(r"\\server\share\f.txt").unwrap().0, r"\\server\share\f.txt");
+        assert!(remote_path(r"relative\x.rs").is_err());
+        assert!(remote_path("C:\\a\"b").is_err());
+        assert_eq!(vscode_tunnel_uri("cloud-pc", r"C:\Repos\my app\main.rs", Some(12)), "vscode://vscode-remote/tunnel+cloud-pc/C:/Repos/my%20app/main.rs:12");
+        assert_eq!(vscode_tunnel_uri("cpc", r"C:\Notes\#1.md", None), "vscode://vscode-remote/tunnel+cpc/C:/Notes/%231.md");
+        assert!(is_url("HTTPS://x.io") && is_url("mailto:a@b") && !is_url(r"C:\x") && !is_url("file:///C:/x"));
+        assert!(open_vscode_uri("https://x.io").is_err(), "only VS Code links");
+        assert!(open_vscode_uri("vscode://x/\"a").is_err());
     }
 
     #[test]

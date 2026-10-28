@@ -180,6 +180,14 @@ fn run(ctx: &Ctx, request: Request) -> Result<Response> {
 
         Request::DocBackup { path, label, doc } => text(&doc::write_backup(Path::new(&path), &doc, &label)?),
         Request::DocBackups { path } => Response::Texts(doc::list_backups(Path::new(&path))?.iter().map(|p| p.display().to_string()).collect()),
+
+        Request::PairCode { .. } | Request::RemoteClients | Request::RemoteRevoke { .. } => {
+            anyhow::bail!("remote clients are managed by the running service (copilot-canvas remote …)")
+        }
+        Request::SetClipboardImage { png } => {
+            crate::clipboard::set_image_png(&png)?;
+            Response::Done
+        }
     })
 }
 
