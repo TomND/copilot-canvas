@@ -13,8 +13,14 @@ use canvas_common::protocol::{AgentLaunch, SessionSummary};
 use serde::{Deserialize, Serialize};
 
 pub mod claude;
+pub mod claude_history;
+pub mod config;
 pub mod copilot;
 pub mod opencode;
+pub mod opencode_history;
+pub mod opencode_server;
+#[cfg(test)]
+mod probes;
 
 /// Which agent CLI a session runs.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
