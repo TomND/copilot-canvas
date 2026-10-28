@@ -18,9 +18,10 @@ use anyhow::{Context, Result};
 use canvas_host::server::{self, Client, Host, HostApp, Resolved};
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 
-use crate::index::{Index, is_session_id};
+use crate::index::is_session_id;
 use crate::paths::Instance;
-use crate::protocol::{ClientMsg, LaunchKind, ServiceMsg, SessionSummary};
+use crate::agents::{AgentKind, Integration};
+use crate::protocol::{AgentLaunch, ClientMsg, LaunchKind, ServiceMsg, SessionSummary};
 pub use canvas_common::auth::{read_token, write_token};
 pub use server::log;
 use term::lock;
@@ -59,6 +60,7 @@ pub fn run(instance: Instance) -> Result<()> {
 impl Agents {
     fn start(host: Arc<Host>) -> Arc<dyn HostApp> {
         let instance = host.instance.clone();
+        crate::agents::copilot::set_sessions_dir(instance.sessions_dir.clone());
         let (index_tx, index_rx) = bounded::<()>(1);
         let (bus_tx, bus_rx) = unbounded::<crate::bus::Event>();
         let agents = Arc::new(Agents {
@@ -86,11 +88,48 @@ impl Agents {
     }
 }
 
+impl Agents {
+    /// The canvas integration every session gets: the skills plugin, its
+    /// identity and the `copilot-canvas` command on PATH.
+    pub fn integration(&self, id: &str) -> Integration {
+        let home = &self.instance.home;
+        let plugin = home.join("plugin");
+        Integration {
+            plugin_dir: plugin.is_dir().then_some(plugin),
+            env: vec![
+                ("COPILOT_CANVAS_HOME".to_owned(), home.display().to_string()),
+                ("COPILOT_CANVAS_SESSION".to_owned(), id.to_owned()),
+                ("PATH".to_owned(), format!("{};{}", home.join("cli").display(), std::env::var("PATH").unwrap_or_default())),
+            ],
+        }
+    }
+
+    fn resolve_agent(&self, id: &str, launch: AgentLaunch) -> Result<Resolved> {
+        let kind = AgentKind::parse(&launch.agent).with_context(|| format!("unknown agent {:?}", launch.agent))?;
+        let provider = kind.provider();
+        let session = launch.native_id.clone().unwrap_or_else(|| id.to_owned());
+        // Never become a second writer for a session running elsewhere.
+        anyhow::ensure!(
+            !launch.resume || !provider.is_live(&session),
+            "this session is already running in another terminal; use that terminal"
+        );
+        // Structured launches carry no free-form arguments; the environment
+        // must not impersonate another session.
+        anyhow::ensure!(
+            !launch.env.iter().any(|(k, _)| k.trim_start_matches('-').eq_ignore_ascii_case("COPILOT_CANVAS_SESSION")),
+            "launch options may not select a different session"
+        );
+        let command = provider.command(id, &launch, &self.integration(id))?;
+        Ok(Resolved { program: command.program, args: command.args, env: command.env, agent: true })
+    }
+}
+
 impl HostApp for Agents {
     fn resolve_launch(&self, id: &str, kind: LaunchKind) -> Result<Resolved> {
         let (new_name, prompt, resume, extra, env) = match kind {
             LaunchKind::Copilot { new_name, prompt, resume } => (new_name, prompt, resume, Vec::new(), Vec::new()),
             LaunchKind::CopilotWith { new_name, prompt, resume, args, env } => (new_name, prompt, resume, args, env),
+            LaunchKind::Agent(launch) => return self.resolve_agent(id, *launch),
             LaunchKind::Command { .. } => anyhow::bail!("plain commands are launched by the host"),
         };
         anyhow::ensure!(is_session_id(id), "refusing to launch an invalid session id");
@@ -134,7 +173,7 @@ impl HostApp for Agents {
     fn message(&self, client: &Arc<Client>, message: ClientMsg) -> Result<()> {
         match message {
             ClientMsg::Track { ids } => {
-                lock(&self.tracked).insert(client.id, ids.into_iter().filter(|id| is_session_id(id)).collect());
+                lock(&self.tracked).insert(client.id, ids.into_iter().filter(|id| crate::agents::ALL.iter().any(|k| k.provider().is_session_id(id))).collect());
                 let _ = self.index_wake.try_send(());
             }
             ClientMsg::RefreshSessions => {
@@ -271,20 +310,25 @@ fn subsession_loop(shared: Arc<Agents>) {
 }
 
 fn index_loop(shared: Arc<Agents>, wake: Receiver<()>) {
-    let mut index = Index::new(shared.instance.sessions_dir.clone());
+    let mut histories: Vec<Box<dyn crate::agents::History>> = crate::agents::ALL.iter().map(|kind| kind.provider().history()).collect();
     loop {
         let tracked: HashSet<String> = lock(&shared.tracked)
             .values()
             .flat_map(|ids| ids.iter().cloned())
             .chain(lock(&shared.terms).values().filter(|t| t.copilot).map(|t| t.id.clone()))
             .collect();
-        let (changed, removed) = index.poll(&tracked, Duration::from_secs(15));
-        for (session, kind, data) in index.take_detected() {
-            log(&shared.instance, &format!("detected {kind} in {session}"));
-            let _ = shared.bus_tx.send(crate::bus::Event { kind, source: session, data, ..Default::default() });
-        }
-        for warning in index.warnings.drain(..) {
-            log(&shared.instance, &warning);
+        let (mut changed, mut removed) = (Vec::new(), Vec::new());
+        for history in histories.iter_mut() {
+            let (c, r) = history.poll(&tracked, Duration::from_secs(15));
+            changed.extend(c);
+            removed.extend(r);
+            for (session, kind, data) in history.take_detected() {
+                log(&shared.instance, &format!("detected {kind} in {session}"));
+                let _ = shared.bus_tx.send(crate::bus::Event { kind, source: session, data, ..Default::default() });
+            }
+            for warning in history.take_warnings() {
+                log(&shared.instance, &warning);
+            }
         }
         if !changed.is_empty() || !removed.is_empty() {
             {

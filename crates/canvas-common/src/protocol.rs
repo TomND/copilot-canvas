@@ -50,6 +50,42 @@ pub enum LaunchKind {
     /// Protocol 2: Copilot with extra CLI arguments and environment (appended
     /// last so protocol-1 messages keep their encoding).
     CopilotWith { new_name: Option<String>, prompt: Option<String>, resume: bool, args: Vec<String>, env: Vec<(String, String)> },
+    /// Protocol 8: any agent CLI; the backend builds the command line.
+    Agent(Box<AgentLaunch>),
+}
+
+/// What to launch, independent of the agent CLI's flags (protocol 8). The
+/// backend turns it into a command line with the agent's provider.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct AgentLaunch {
+    /// "copilot", "opencode" or "claude".
+    pub agent: String,
+    /// The agent's own session id when it differs from the terminal id.
+    pub native_id: Option<String>,
+    /// Continue an existing conversation (false: start a new one).
+    pub resume: bool,
+    /// Start as a fork of this session (agents that fork natively).
+    pub fork_from: Option<String>,
+    pub name: Option<String>,
+    /// First prompt, typed into the new session.
+    pub prompt: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub mode: Option<String>,
+    pub custom_agent: Option<String>,
+    pub context: Option<String>,
+    /// Run tools without asking (permissions = allow-all).
+    pub allow_all: bool,
+    pub add_dirs: Vec<String>,
+    /// MCP servers to turn off for this session.
+    pub mcp_off: Vec<String>,
+    /// The canvas group's folder (ai-docs, human-outputs, instructions).
+    pub group_folder: Option<String>,
+    pub group_name: Option<String>,
+    /// Passive run: one non-interactive turn with this prompt.
+    pub headless_prompt: Option<String>,
+    /// Extra environment from the canvas.
+    pub env: Vec<(String, String)>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

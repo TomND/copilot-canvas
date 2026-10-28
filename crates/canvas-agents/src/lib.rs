@@ -5,6 +5,7 @@
 pub use canvas_common::{paths, pipe, protocol, win};
 pub use canvas_model::{bus, doc};
 
+pub mod agents;
 pub mod automations;
 pub mod cli;
 pub mod copilot_cfg;

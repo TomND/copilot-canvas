@@ -106,7 +106,7 @@ fn default_runs_per_day() -> u32 {
     24
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Group {
     pub id: String,
     pub name: String,
