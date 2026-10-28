@@ -19,12 +19,25 @@ use canvas_host::server::{self, Client, Host, HostApp, Resolved};
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 
 use crate::index::is_session_id;
-use crate::paths::Instance;
+use crate::paths::{Instance, now_ms};
 use crate::agents::{AgentKind, Integration};
 use crate::protocol::{AgentLaunch, ClientMsg, LaunchKind, ServiceMsg, SessionSummary};
 pub use canvas_common::auth::{read_token, write_token};
 pub use server::log;
 use term::lock;
+
+/// A terminal whose agent session is not known yet: OpenCode creates its
+/// session on the first prompt (a fork at start).
+#[derive(Clone, Debug, PartialEq)]
+struct PendingSession {
+    launched_ms: u64,
+    /// The agent's folder (asked from the TUI's server; known up front for passive runs).
+    cwd: Option<String>,
+    /// A fork: its session exists from the start.
+    fork: bool,
+    /// Sessions the TUI's own server reported busy or waiting (proof they are its own).
+    busy: HashSet<String>,
+}
 
 /// The backend's state; dereferences to the terminal host it runs in.
 pub struct Agents {
@@ -41,6 +54,12 @@ pub struct Agents {
     input_at: Mutex<HashMap<String, u64>>,
     /// Sessions each client wants indexed (its canvas members).
     tracked: Mutex<HashMap<u64, HashSet<String>>>,
+    /// The agent each terminal runs (for its exit hook).
+    agent_terms: Mutex<HashMap<String, AgentKind>>,
+    /// Terminals whose agent session is not known yet.
+    pending_sessions: Mutex<HashMap<String, PendingSession>>,
+    /// Terminal id → the agent's own session id, once learned (told to every client).
+    agent_sessions: Mutex<HashMap<String, String>>,
 }
 
 /// Passive sessions and the factory watch use the backend under this name.
@@ -73,9 +92,13 @@ impl Agents {
             bus_tx,
             input_at: Mutex::new(HashMap::new()),
             tracked: Mutex::new(HashMap::new()),
+            agent_terms: Mutex::new(HashMap::new()),
+            pending_sessions: Mutex::new(HashMap::new()),
+            agent_sessions: Mutex::new(HashMap::new()),
         });
         server::spawn_named("index", { let a = agents.clone(); move || index_loop(a, index_rx) });
         server::spawn_named("subsessions", { let a = agents.clone(); move || subsession_loop(a) });
+        server::spawn_named("agent-sessions", { let a = agents.clone(); move || agent_session_loop(a) });
         // The skills and the `copilot-canvas` command that canvas sessions use for events.
         if let Err(error) = crate::cli::write_plugin(&instance.home) {
             log(&instance, &format!("cannot write the canvas plugin: {error:#}"));
@@ -104,7 +127,7 @@ impl Agents {
         }
     }
 
-    fn resolve_agent(&self, id: &str, launch: AgentLaunch) -> Result<Resolved> {
+    fn resolve_agent(&self, id: &str, mut launch: AgentLaunch) -> Result<Resolved> {
         let kind = AgentKind::parse(&launch.agent).with_context(|| format!("unknown agent {:?}", launch.agent))?;
         let provider = kind.provider();
         let session = launch.native_id.clone().unwrap_or_else(|| id.to_owned());
@@ -119,8 +142,37 @@ impl Agents {
             !launch.env.iter().any(|(k, _)| k.trim_start_matches('-').eq_ignore_ascii_case("COPILOT_CANVAS_SESSION")),
             "launch options may not select a different session"
         );
+        // A conversation that never got its first prompt has nothing to resume:
+        // it starts now (Copilot's `--session-id` does either by itself).
+        if launch.resume && launch.fork_from.is_none() && kind != AgentKind::Copilot && !provider.has_history(&session) {
+            launch.resume = false;
+        }
         let command = provider.command(id, &launch, &self.integration(id))?;
+        lock(&self.agent_terms).insert(id.to_owned(), kind);
+        if kind == AgentKind::OpenCode && launch.headless_prompt.is_none() && (!launch.resume || launch.fork_from.is_some()) {
+            self.expect_session(id, None, launch.fork_from.is_some());
+        }
         Ok(Resolved { program: command.program, args: command.args, env: command.env, agent: true })
+    }
+
+    /// Learns the agent session `id` is about to create (see [`agent_session_loop`]).
+    fn expect_session(&self, id: &str, cwd: Option<String>, fork: bool) {
+        lock(&self.agent_sessions).remove(id);
+        lock(&self.pending_sessions).insert(id.to_owned(), PendingSession { launched_ms: now_ms(), cwd, fork, busy: HashSet::new() });
+    }
+
+    /// The agent's own session id of a terminal (the terminal id unless learned otherwise).
+    fn native_of(&self, id: &str) -> String {
+        lock(&self.agent_sessions).get(id).cloned().unwrap_or_else(|| id.to_owned())
+    }
+
+    /// Records a learned agent session and tells every client.
+    fn learned_session(&self, id: &str, native: &str) {
+        lock(&self.pending_sessions).remove(id);
+        lock(&self.agent_sessions).insert(id.to_owned(), native.to_owned());
+        log(&self.instance, &format!("terminal {id} runs agent session {native}"));
+        self.broadcast(ServiceMsg::AgentSession { id: id.to_owned(), native: native.to_owned() });
+        let _ = self.index_wake.try_send(());
     }
 }
 
@@ -162,6 +214,9 @@ impl HostApp for Agents {
         for link in lock(&self.subsessions).values() {
             client.send(link.clone());
         }
+        for (id, native) in lock(&self.agent_sessions).iter() {
+            client.send(ServiceMsg::AgentSession { id: id.clone(), native: native.clone() });
+        }
         client.send(ServiceMsg::Bus { json: passive::snapshot(self) });
     }
 
@@ -199,6 +254,17 @@ impl HostApp for Agents {
 
     fn terminals_changed(&self) {
         let _ = self.index_wake.try_send(());
+    }
+
+    fn terminal_exited(&self, id: &str) {
+        // Already relaunched: what is registered now belongs to the new run.
+        if lock(&self.terms).get(id).is_some_and(|t| t.alive.load(Ordering::Acquire)) {
+            return;
+        }
+        let kind = lock(&self.agent_terms).remove(id);
+        if let Some(kind) = kind {
+            kind.provider().terminal_exited(id, &self.instance.home);
+        }
     }
 
     fn has_work(&self) -> bool {
@@ -314,24 +380,122 @@ fn subsession_loop(shared: Arc<Agents>) {
     }
 }
 
-fn index_loop(shared: Arc<Agents>, wake: Receiver<()>) {
-    let mut histories: Vec<Box<dyn crate::agents::History>> = crate::agents::ALL.iter().map(|kind| kind.provider().history()).collect();
+fn same_dir(a: &str, b: &str) -> bool {
+    let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_lowercase();
+    norm(a) == norm(b)
+}
+
+/// A new session counts as a pending terminal's without proof once it is this
+/// old (a first turn that ended before the TUI's server was asked).
+const SETTLED_MS: u64 = 10_000;
+
+/// The session a terminal started, among the new top-level `candidates` in
+/// its folder ((id, created ms), oldest first): one its own server reported
+/// busy or waiting; else, unless another pending terminal works in the same
+/// folder, the oldest one once `settled` (a fork, or the terminal is gone) or
+/// old enough.
+fn pick_session(candidates: &[(String, u64)], claimed: &HashSet<String>, proof: &HashSet<String>, contested: bool, settled: bool, now: u64) -> Option<String> {
+    let open: Vec<&(String, u64)> = candidates.iter().filter(|(id, _)| !claimed.contains(id)).collect();
+    if let Some((id, _)) = open.iter().find(|(id, _)| proof.contains(id)) {
+        return Some(id.clone());
+    }
+    if contested {
+        return None;
+    }
+    open.first().filter(|(_, created)| settled || now.saturating_sub(*created) >= SETTLED_MS).map(|(id, _)| id.clone())
+}
+
+/// Learns the sessions new OpenCode terminals create (on the first prompt, or
+/// at start for a fork) and tells the clients, so their boxes follow them.
+fn agent_session_loop(shared: Arc<Agents>) {
     loop {
+        std::thread::sleep(Duration::from_secs(1));
+        if shared.shutting_down.load(Ordering::Relaxed) {
+            return;
+        }
+        let pending: Vec<(String, PendingSession)> = lock(&shared.pending_sessions).iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        if pending.is_empty() {
+            continue;
+        }
+        let servers = crate::agents::opencode::servers();
+        let now = now_ms();
+        for (id, mut entry) in pending {
+            let server = servers.iter().find(|(s, _)| s.terminal == id);
+            if entry.cwd.is_none()
+                && let Some((server, _)) = server
+                && let Ok(path) = crate::agents::opencode_server::get_json(server.port, &server.password, "/path")
+                && let Some(dir) = path["directory"].as_str().filter(|d| !d.is_empty())
+            {
+                entry.cwd = Some(dir.to_owned());
+                log(&shared.instance, &format!("terminal {id} works in {dir}; waiting for its session"));
+            }
+            // Sessions busy in this TUI's own process are its own.
+            if let Some(live) = server.and_then(|(_, state)| state.live.as_ref()) {
+                entry.busy.extend(live.status.keys().cloned().chain(live.waiting().map(str::to_owned)));
+            }
+            if let Some(stored) = lock(&shared.pending_sessions).get_mut(&id).filter(|p| p.launched_ms == entry.launched_ms) {
+                stored.cwd.clone_from(&entry.cwd);
+                stored.busy.clone_from(&entry.busy);
+            }
+            let alive = lock(&shared.terms).get(&id).is_some_and(|t| t.alive.load(Ordering::Acquire));
+            let gone = !alive && now.saturating_sub(entry.launched_ms) > SETTLED_MS;
+            if let Some(cwd) = entry.cwd.as_deref() {
+                let candidates = crate::agents::opencode::discover_new_sessions(cwd, entry.launched_ms.saturating_sub(2_000));
+                let claimed: HashSet<String> = lock(&shared.agent_sessions).iter().filter(|(k, _)| **k != id).map(|(_, v)| v.clone()).collect();
+                let contested = lock(&shared.pending_sessions).iter().any(|(other, p)| *other != id && p.cwd.as_deref().is_some_and(|c| same_dir(c, cwd)));
+                if let Some(native) = pick_session(&candidates, &claimed, &entry.busy, contested, entry.fork || gone, now) {
+                    shared.learned_session(&id, &native);
+                    continue;
+                }
+            }
+            // Gone without a session (no prompt was sent): stop looking.
+            if gone {
+                let mut pending = lock(&shared.pending_sessions);
+                if pending.get(&id).is_some_and(|p| p.launched_ms == entry.launched_ms) {
+                    pending.remove(&id);
+                }
+            }
+        }
+    }
+}
+
+fn index_loop(shared: Arc<Agents>, wake: Receiver<()>) {
+    let mut histories: Vec<(AgentKind, Box<dyn crate::agents::History>)> = crate::agents::ALL.iter().map(|kind| (*kind, kind.provider().history())).collect();
+    loop {
+        let natives: Vec<String> = {
+            let terms = lock(&shared.terms);
+            let sessions = lock(&shared.agent_sessions);
+            sessions.iter().filter(|(id, _)| terms.get(*id).is_some_and(|t| t.alive.load(Ordering::Acquire))).map(|(_, native)| native.clone()).collect()
+        };
         let tracked: HashSet<String> = lock(&shared.tracked)
             .values()
             .flat_map(|ids| ids.iter().cloned())
             .chain(lock(&shared.terms).values().filter(|t| t.copilot).map(|t| t.id.clone()))
+            .chain(natives)
             .collect();
         let (mut changed, mut removed) = (Vec::new(), Vec::new());
-        for history in histories.iter_mut() {
-            let (c, r) = history.poll(&tracked, Duration::from_secs(15));
+        for (kind, history) in histories.iter_mut() {
+            // One agent's broken store must not stop status updates for the others.
+            let polled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let result = history.poll(&tracked, Duration::from_secs(15));
+                (result, history.take_detected(), history.take_warnings())
+            }));
+            let ((c, r), detected, warnings) = match polled {
+                Ok(polled) => polled,
+                Err(panic) => {
+                    let message = panic.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| panic.downcast_ref::<String>().cloned()).unwrap_or_default();
+                    log(&shared.instance, &format!("{} history panicked ({message}); starting it over", kind.label()));
+                    *history = kind.provider().history();
+                    continue;
+                }
+            };
             changed.extend(c);
             removed.extend(r);
-            for (session, kind, data) in history.take_detected() {
+            for (session, kind, data) in detected {
                 log(&shared.instance, &format!("detected {kind} in {session}"));
                 let _ = shared.bus_tx.send(crate::bus::Event { kind, source: session, data, ..Default::default() });
             }
-            for warning in history.take_warnings() {
+            for warning in warnings {
                 log(&shared.instance, &warning);
             }
         }
@@ -357,6 +521,24 @@ fn index_loop(shared: Arc<Agents>, wake: Receiver<()>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_sessions_go_to_the_terminal_that_made_them() {
+        let set = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<HashSet<_>>();
+        let now = 100_000;
+        let fresh = vec![("ses_a".to_owned(), now - 1_000), ("ses_b".to_owned(), now - 500)];
+        let none = set(&[]);
+        assert_eq!(pick_session(&fresh, &none, &set(&["ses_b"]), false, false, now).as_deref(), Some("ses_b"), "its own server reported it busy");
+        assert_eq!(pick_session(&fresh, &none, &set(&["ses_b"]), true, false, now).as_deref(), Some("ses_b"), "proof wins even in a shared folder");
+        assert_eq!(pick_session(&fresh, &none, &none, false, false, now), None, "a just-created session may be someone else's: wait");
+        assert_eq!(pick_session(&fresh, &none, &none, false, true, now).as_deref(), Some("ses_a"), "a fork (or a finished run): the oldest new one");
+        assert_eq!(pick_session(&fresh, &set(&["ses_a"]), &none, false, true, now).as_deref(), Some("ses_b"), "never one another terminal runs");
+        assert_eq!(pick_session(&fresh, &none, &none, true, true, now), None, "another new terminal in the folder: wait for proof");
+        let settled = vec![("ses_old".to_owned(), now - SETTLED_MS)];
+        assert_eq!(pick_session(&settled, &none, &none, false, false, now).as_deref(), Some("ses_old"), "a quick first turn is still found");
+        assert_eq!(pick_session(&[], &none, &set(&["ses_x"]), false, true, now), None, "busy elsewhere is not new here");
+        assert!(same_dir(r"C:\Repos\Demo\", "c:/repos/demo"));
+    }
 
     #[test]
     fn nested_copilots_are_session_processes_not_workers() {

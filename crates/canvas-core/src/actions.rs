@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::agents::{AgentKind, agent_of, native_id};
 use crate::app::{App, AppEvent, Focus};
 use crate::dialogs::{
     Action, Confirm, FolderBrowser, GitState, Grouping, ImportCopilot, Menu, MenuItem, Modal, NewSession, NsField, Rename, Target,
@@ -27,7 +28,7 @@ impl App {
         let Some(node) = self.doc.node(id) else { return (String::new(), Vec::new()) };
         let session = self.session_of(id).unwrap_or_default();
         let alive = self.owned_alive(&session);
-        let external = self.sessions.get(&session).is_some_and(|s| s.live) && !alive;
+        let external = self.summary(node).is_some_and(|s| s.live) && !alive;
         let mut items = Vec::new();
         if node.kind == NodeKind::Automation {
             let key = node.automation.clone().unwrap_or_default();
@@ -82,7 +83,7 @@ impl App {
         let group_label = if self.selection.len() > 1 { "Group selected sessions" } else { "New group around this" };
         items.push(item(group_label, "G", Action::GroupSelection, true));
         if !self.demo {
-            items.push(item("Copy session ID", "", Action::Copy(id.to_owned()), true));
+            items.push(item("Copy session ID", "", Action::Copy(native_id(node).to_owned()), true));
         }
         items.push(item("Stop session", "X", Action::Stop { id: id.to_owned(), force: false }, alive));
         items.push(item("Force stop", "", Action::Stop { id: id.to_owned(), force: true }, alive));
@@ -124,7 +125,7 @@ impl App {
             vec![
                 item("New session here", "N", Action::NewSession { at: Some((wx, wy)), parent: None }, true),
                 item("New group here", "", Action::NewGroupAt(wx, wy), true),
-                item("Import Copilot sessions…", "I", Action::ImportCopilot, !self.demo),
+                item("Import sessions…", "I", Action::ImportCopilot, !self.demo),
                 item("Sync VS Code sessions", "V", Action::SyncVs, !self.demo),
                 item("Undo last sync", "Ctrl+Z", Action::UndoSync, self.undo.is_some()),
                 item("Migrate VS Code skills & settings…", "", Action::Migrate, !self.demo),
@@ -169,7 +170,8 @@ impl App {
             return;
         }
         // Like Windows Terminal: text is pasted; anything else (an image, copied
-        // files) sends Ctrl+V itself, and Copilot reads the clipboard to attach it.
+        // files) sends Ctrl+V itself, and the agent (Copilot, Claude Code,
+        // OpenCode) reads the clipboard to attach it.
         if !crate::clipboard::has_text() {
             return self.send_ctrl_v(id);
         }
@@ -189,9 +191,10 @@ impl App {
 
     pub fn confirm_stop(&mut self, id: String) {
         let name = self.doc.node(&id).map(|n| n.name.clone()).unwrap_or_else(|| id.clone());
+        let agent = self.doc.node(&id).map(agent_of).unwrap_or_default();
         self.modals.push(Modal::Confirm(Confirm {
             title: format!("Stop “{name}”?"),
-            body: vec!["Copilot exits gracefully; its conversation stays resumable.".into()],
+            body: vec![format!("{} exits gracefully; its conversation stays resumable.", agent.label())],
             buttons: vec![
                 ("Stop".into(), Action::Stop { id: id.clone(), force: false }),
                 ("Force stop".into(), Action::Stop { id, force: true }),
@@ -201,31 +204,41 @@ impl App {
         }));
     }
 
-    /// A Copilot session with history on disk (its conversation can be forked).
+    /// A session whose conversation can be forked: Copilot copies its history
+    /// on disk; OpenCode and Claude Code fork natively once it has history.
     pub fn can_fork(&self, id: &str) -> bool {
-        crate::index::is_session_id(id)
-            && self.doc.node(id).is_some_and(|n| n.kind == NodeKind::Session && n.command.is_none())
-            && self.instance.as_ref().is_some_and(|i| i.sessions_dir.join(id).join("events.jsonl").is_file())
+        let Some(node) = self.doc.node(id).filter(|n| n.kind == NodeKind::Session && n.command.is_none()) else { return false };
+        let kind = agent_of(node);
+        let caps = kind.provider().caps();
+        let native = native_id(node);
+        if caps.copy_fork {
+            crate::index::is_session_id(native) && self.instance.as_ref().is_some_and(|i| i.sessions_dir.join(native).join("events.jsonl").is_file())
+        } else {
+            caps.native_fork && kind.provider().is_session_id(native) && self.sessions.contains_key(native)
+        }
     }
 
     /// Opens the MCP server checklist for a new session or an existing one.
     pub fn open_mcp_picker(&mut self, target: crate::dialogs::McpTarget) {
-        if self.config.is_none() {
-            self.refresh_config();
-        }
-        let off = match &target {
+        let (agent, off) = match &target {
             crate::dialogs::McpTarget::NewSession => match self.modals.last() {
-                Some(Modal::NewSession(dialog)) => dialog.mcp_off.clone(),
-                _ => self.doc.mcp.last_off.clone(),
+                Some(Modal::NewSession(dialog)) => (dialog.agent, dialog.mcp_off.clone()),
+                _ => (self.default_agent(), self.doc.mcp.last_off.clone()),
             },
-            crate::dialogs::McpTarget::Node(id) => self.doc.node(id).and_then(|n| n.mcp_off.clone()).unwrap_or_default(),
+            crate::dialogs::McpTarget::Node(id) => {
+                let node = self.doc.node(id);
+                (node.map(agent_of).unwrap_or_default(), node.and_then(|n| n.mcp_off.clone()).unwrap_or_default())
+            }
         };
-        self.modals.push(Modal::Mcp(crate::dialogs::McpPicker { target, off, sel: 0 }));
+        if !self.agent_configs.contains_key(&agent) {
+            self.refresh_config_for(agent);
+        }
+        self.modals.push(Modal::Mcp(crate::dialogs::McpPicker { target, agent, off, sel: 0 }));
         self.needs_draw = true;
     }
 
     /// Applies a picker's choice to the new-session dialog under it or to a session.
-    pub fn apply_mcp_choice(&mut self, target: &crate::dialogs::McpTarget, off: Vec<String>) {
+    pub fn apply_mcp_choice(&mut self, target: &crate::dialogs::McpTarget, agent: AgentKind, off: Vec<String>) {
         let off = crate::doc::normalize_off(&off);
         match target {
             crate::dialogs::McpTarget::NewSession => {
@@ -239,7 +252,7 @@ impl App {
                     node.mcp_off = Some(off.clone());
                 }
                 self.mark_dirty();
-                let summary = self.mcp_summary(&off);
+                let summary = self.mcp_summary(agent, &off);
                 let when = if alive { " Applies the next time it starts (stop it and click it to restart now)." } else { "" };
                 self.notify(format!("MCP servers for this session: {summary}.{when}"), false);
             }
@@ -274,6 +287,8 @@ impl App {
         }
         let resume: Vec<String> = self.terms.iter().filter(|(id, t)| t.alive && self.doc.node(id).is_some()).map(|(id, _)| id.clone()).collect();
         let demo = self.demo;
+        // Only Copilot has the mouse setting an old service could switch off.
+        let copilot = self.installed_agents.contains(&AgentKind::Copilot);
         self.notify(format!("Restarting the terminal service… {} session(s) will resume.", resume.len()), false);
         self.restarting = Some(resume);
         self.send(ClientMsg::Shutdown);
@@ -283,7 +298,7 @@ impl App {
             while Instant::now() < deadline && crate::conn::try_connect(&instance).is_ok() {
                 std::thread::sleep(Duration::from_millis(300));
             }
-            let mouse = !demo && crate::copilot_cfg::restore_mouse().unwrap_or(false);
+            let mouse = !demo && copilot && crate::copilot_cfg::restore_mouse().unwrap_or(false);
             let result = crate::conn::connect(&instance, true).map_err(|e| format!("{e:#}"));
             let _ = tx.send(AppEvent::ServiceRestarted { result, mouse });
         });
@@ -420,8 +435,8 @@ impl App {
             }
             Action::Stop { id, force } => {
                 if self.owned_alive(&id) {
-                    self.send(ClientMsg::Stop { id, force });
-                    self.notify(if force { "Force stopping…" } else { "Stopping (Copilot exits gracefully)…" }, false);
+                    self.stop_terminal(&id, force);
+                    self.notify(if force { "Force stopping…" } else { "Stopping (the agent exits gracefully)…" }, false);
                 }
             }
             Action::Copy(text) => self.copy_to_clipboard(&text),
@@ -445,10 +460,7 @@ impl App {
             Action::CopySelection => self.copy_selection(),
             Action::Paste(id) => self.paste_clipboard(&id),
             Action::View(view) => self.set_view(view),
-            Action::RemoveConfig(kind, name) => {
-                let label = format!("Removing {name}");
-                self.run_cli_op(label, move || crate::copilot_cfg::remove(kind, &name));
-            }
+            Action::RemoveConfig(kind, name) => self.remove_config(kind, name),
             Action::ToggleAutomation(key) => self.toggle_automation(&key),
             Action::RunAutomation(key) => self.run_automation(&key),
             Action::OpenAutomationFile(key, which) => self.open_automation_file(&key, which),
@@ -459,11 +471,11 @@ impl App {
             }
             Action::AskDoctor(key) => self.ask_doctor(&key),
             Action::ShowAutomations => self.set_view(crate::side::SideView::Automations),
-            Action::ToggleConfig(kind, name, enable) => {
-                let label = format!("{} {name}", if enable { "Enabling" } else { "Disabling" });
-                self.run_cli_op(label, move || crate::copilot_cfg::set_enabled(kind, &name, enable));
-            }
+            Action::ToggleConfig(kind, name, enable) => self.set_config_enabled(kind, name, enable),
             Action::UpdatePlugin(name) => {
+                if self.config_agent != AgentKind::Copilot {
+                    return self.notify(format!("Not supported for {}.", self.config_agent.label()), true);
+                }
                 let label = format!("Updating plugin {name}");
                 self.run_cli_op(label, move || crate::copilot_cfg::update_plugin(&name));
             }
@@ -527,7 +539,7 @@ impl App {
                 if self.owned_alive(&id) {
                     self.show_terminal(&id);
                     self.set_focus(Focus::Terminal);
-                } else if self.sessions.get(&id).is_some_and(|s| s.live) {
+                } else if self.doc.node(&id).and_then(|n| self.summary(n)).is_some_and(|s| s.live) {
                     self.notify("This passive session is running elsewhere right now.", true);
                 } else {
                     self.launch(&id);
@@ -602,7 +614,7 @@ impl App {
             Action::StopAllAndQuit => {
                 let alive: Vec<String> = self.terms.values().filter(|t| t.alive).map(|t| t.id.clone()).collect();
                 for id in alive {
-                    self.send(ClientMsg::Stop { id, force: false });
+                    self.stop_terminal(&id, false);
                 }
                 self.quit = true;
             }
@@ -614,11 +626,13 @@ impl App {
     // ---------- new session / subsession ----------
 
     fn open_new_session(&mut self, at: Option<(i32, i32)>, parent: Option<String>) {
+        // A subsession runs its parent's agent unless you choose another.
+        let agent = parent.as_deref().and_then(|p| self.doc.node(p)).filter(|n| n.command.is_none()).map(agent_of).unwrap_or_else(|| self.default_agent());
         let can_fork = !self.demo && parent.as_deref().is_some_and(|p| self.can_fork(p));
         let folder = parent
             .as_ref()
             .and_then(|p| self.doc.node(p))
-            .and_then(|n| n.cwd.clone().or_else(|| self.sessions.get(&n.id).map(|s| s.cwd.clone())))
+            .and_then(|n| n.cwd.clone().or_else(|| self.summary(n).map(|s| s.cwd.clone())))
             .filter(|c| !c.is_empty())
             .or_else(|| self.doc.recent_folders.first().map(|f| f.path.clone()))
             .unwrap_or_else(|| self.default_cwd.clone());
@@ -642,11 +656,27 @@ impl App {
             mcp_off: self.doc.mcp.last_off.clone(),
             can_fork,
             fork: can_fork,
+            agent,
         };
-        if self.config.is_none() {
-            self.refresh_config();
+        if !self.agent_configs.contains_key(&agent) {
+            self.refresh_config_for(agent);
         }
         self.modals.push(Modal::NewSession(Box::new(dialog)));
+    }
+
+    /// Switches the new-session dialog to the next agent (`forward`) or the previous one.
+    pub fn cycle_dialog_agent(&mut self, dialog: &mut NewSession, forward: bool) {
+        let all = crate::agents::ALL;
+        let index = all.iter().position(|k| *k == dialog.agent).unwrap_or(0);
+        dialog.agent = all[if forward { (index + 1) % all.len() } else { (index + all.len() - 1) % all.len() }];
+        // Forking needs the parent's own agent.
+        let parent_agent = dialog.parent.as_deref().and_then(|p| self.doc.node(p)).map(agent_of);
+        dialog.can_fork = !self.demo && parent_agent == Some(dialog.agent) && dialog.parent.as_deref().is_some_and(|p| self.can_fork(p));
+        dialog.fork = dialog.can_fork;
+        if !self.agent_configs.contains_key(&dialog.agent) {
+            self.refresh_config_for(dialog.agent);
+        }
+        dialog.error = (!self.demo && !self.installed_agents.contains(&dialog.agent)).then(|| format!("{} was not found on this machine.", dialog.agent.label()));
     }
 
     /// Starts a Git probe once the folder field has been stable for a moment.
@@ -748,10 +778,7 @@ impl App {
                     }
                 }
             }
-            AppEvent::Config(snapshot) => {
-                self.config_loading = false;
-                self.config = Some(*snapshot);
-            }
+            AppEvent::Config(kind, snapshot) => self.on_config(kind, *snapshot),
             AppEvent::Automations(load) => self.on_automations(load),
             AppEvent::CliDone { label, result } => {
                 self.cli_busy = None;
@@ -782,14 +809,21 @@ impl App {
                         });
                     }
                 }
-                self.config = None;
-                self.refresh_config();
+                // Migration changes Copilot's configuration.
+                self.agent_configs.remove(&AgentKind::Copilot);
+                if self.config_agent == AgentKind::Copilot {
+                    self.config = None;
+                }
+                self.refresh_config_for(AgentKind::Copilot);
             }
         }
     }
 
     /// Validates the dialog and creates the session (and worktree if requested).
     pub fn submit_new_session(&mut self, dialog: &NewSession) -> Result<(), String> {
+        if !self.demo && !self.installed_agents.contains(&dialog.agent) {
+            return Err(format!("{} was not found on this machine; choose another agent.", dialog.agent.label()));
+        }
         let folder = dialog.folder.text.trim().trim_matches('"').to_owned();
         if !Path::new(&folder).is_dir() {
             return Err(format!("Folder not found: {folder}"));
@@ -826,7 +860,15 @@ impl App {
             folder.clone()
         };
         let id = if self.demo { format!("demo-{}", uuid::Uuid::new_v4()) } else { uuid::Uuid::new_v4().to_string() };
-        let fork_from = dialog.parent.clone().filter(|p| dialog.fork && dialog.can_fork && self.can_fork(p));
+        let agent = dialog.agent;
+        let caps = agent.provider().caps();
+        let fork_parent = dialog
+            .parent
+            .clone()
+            .filter(|p| dialog.fork && dialog.can_fork && self.can_fork(p) && self.doc.node(p).map(agent_of) == Some(agent))
+            .and_then(|p| self.doc.node(&p).map(|n| native_id(n).to_owned()));
+        // Copilot forks by copying the parent's history; the others fork it themselves on first start.
+        let (copy_fork, native_fork) = if caps.copy_fork { (fork_parent, None) } else { (None, fork_parent) };
         let sessions_dir = self.instance.as_ref().map(|i| i.sessions_dir.clone());
         let (x, y) = match (&dialog.parent, dialog.at) {
             (Some(parent), _) => match self.doc.node(parent) {
@@ -855,13 +897,15 @@ impl App {
             agent_key: None,
             source: Some("canvas".into()),
             command: self.demo.then(|| vec!["powershell.exe".into(), "-NoLogo".into(), "-NoProfile".into()]),
-            // A fork resumes its own copy of the parent's history.
-            fresh: !fork_from.is_some(),
+            // A copied fork resumes its own copy of the parent's history.
+            fresh: copy_fork.is_none(),
             automation: None,
             synced_name: None, reviewed_ms: None,
             mcp_off: Some(crate::doc::normalize_off(&dialog.mcp_off)),
             passive: None,
             no_messages: false,
+            agent: (!self.demo).then(|| agent.id().to_owned()),
+            agent_session: None,
         };
         self.doc.mcp.last_off = crate::doc::normalize_off(&dialog.mcp_off);
         self.doc.nodes.push(node);
@@ -870,24 +914,27 @@ impl App {
         if !prompt.is_empty() {
             self.pending_prompts.insert(id.clone(), prompt.to_owned());
         }
+        if let Some(parent) = native_fork {
+            self.pending_forks.insert(id.clone(), parent);
+        }
         self.select_node(&id, false);
         self.reveal_node(&id);
         self.mark_dirty();
         // Forking copies the parent's history first (off the UI thread: it can be large).
-        let fork_job = match (fork_from, sessions_dir) {
+        let fork_job = match (copy_fork, sessions_dir) {
             (Some(parent), Some(dir)) => {
                 let node = self.doc.node(&id).cloned();
                 Some((dir, parent, node.as_ref().map(|n| n.name.clone()).unwrap_or_default(), node.and_then(|n| n.cwd)))
             }
             _ => None,
         };
+        let forking = fork_job.is_some();
         let fork = move |child: &str| -> Result<(), String> {
             match &fork_job {
                 Some((dir, parent, name, cwd)) => crate::fork::fork_session(dir, parent, child, name, cwd.as_deref()).map_err(|e| format!("{e:#}")),
                 None => Ok(()),
             }
         };
-        let forking = dialog.fork && dialog.can_fork;
         match worktree_job {
             Some((root, path, new_branch, base)) => {
                 self.preparing.insert(id.clone());
@@ -915,15 +962,17 @@ impl App {
 
     pub fn copilot_import_candidates(&self, filter: &str) -> Vec<String> {
         let needle = filter.to_lowercase();
+        let present = self.native_ids();
         let mut list: Vec<&crate::protocol::SessionSummary> = self
             .sessions
             .values()
-            .filter(|s| self.doc.node(&s.id).is_none())
+            .filter(|s| !present.contains(s.id.as_str()))
             .filter(|s| {
                 needle.is_empty()
                     || s.name.to_lowercase().contains(&needle)
                     || s.cwd.to_lowercase().contains(&needle)
                     || s.branch.to_lowercase().contains(&needle)
+                    || crate::app::client_label(s).to_lowercase().contains(&needle)
                     || s.id.starts_with(&needle)
             })
             .collect();

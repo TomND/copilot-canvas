@@ -310,6 +310,11 @@ impl Provider for Claude {
     fn history_root(&self) -> PathBuf {
         claude_dir().join("projects")
     }
+
+    fn terminal_exited(&self, id: &str, home: &Path) {
+        // The session's MCP choice (secrets included) is written again on every launch.
+        cleanup_session_files(home, id);
+    }
 }
 
 impl History for ClaudeHistory {
@@ -402,6 +407,11 @@ mod tests {
         assert!(file.is_file(), "invalid ids touch nothing");
         cleanup_session_files(&root.join("home"), ID);
         assert!(!file.exists() && !leftover.exists());
+        // The service removes it when the session's terminal exits.
+        Claude.command_in(&home, ID, &launch, &integration).unwrap();
+        assert!(file.is_file());
+        Claude.terminal_exited(ID, &root.join("home"));
+        assert!(!file.exists(), "the per-session file is removed when its terminal exits");
         std::fs::remove_dir_all(root).unwrap();
     }
 

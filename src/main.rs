@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 
 const USAGE: &str = "\
-Copilot Canvas — spatial session manager for GitHub Copilot CLI
+Copilot Canvas — spatial session manager for agent CLIs (GitHub Copilot, OpenCode, Claude Code)
 
 USAGE
   copilot-canvas [options]              open the canvas (starts the terminal service if needed)
@@ -256,7 +256,8 @@ fn real_main() -> Result<()> {
             Some("faults") => remote_probe::faults(&std::env::current_exe()?),
             Some(other) => bail!("selftest --remote takes `loopback` or `faults`, not {other:?}"),
         },
-        ["selftest", "copilot"] => selftest::copilot(),
+        ["selftest", "agent"] => selftest::agent(option("agent").as_deref()),
+        ["selftest", "copilot"] => selftest::agent(Some("copilot")),
         ["record", rest @ ..] => canvas_corpus::cli::record(&instance.home, rest, &args.rest, args.cwd.as_deref()),
         ["corpus", rest @ ..] => canvas_corpus::cli::corpus(rest, &args.rest),
         ["bench"] => bench::run(bench::Options {

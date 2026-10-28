@@ -333,7 +333,9 @@ impl Terminal {
         let _ = self.command(Ctl::Scroll(scroll));
     }
 
-    /// Graceful stop for agents (Ctrl+D, then force after a grace period).
+    /// Graceful stop for agents: Ctrl+D (encoded by the emulator, so programs
+    /// using the kitty keyboard protocol read it as a key), again after 2 s
+    /// (some agents ask for a second one), then force after 5 s.
     pub fn stop(self: &Arc<Self>, force: bool) {
         if !self.alive.load(Ordering::Acquire) {
             return;
@@ -345,12 +347,18 @@ impl Terminal {
         if self.stopping.swap(true, Ordering::AcqRel) {
             return;
         }
-        let _ = self.input.try_send(vec![0x04]);
+        let ctrl_d = || Input::Key { key: crate::protocol::Key::Char('d'), mods: crate::protocol::MOD_CTRL };
+        if self.command(Ctl::Input(ctrl_d())).is_err() {
+            let _ = self.input.try_send(vec![0x04]);
+        }
         let me = self.clone();
         std::thread::spawn(move || {
-            for _ in 0..50 {
+            for tick in 0..50 {
                 if !me.alive.load(Ordering::Acquire) {
                     return;
+                }
+                if tick == 20 && me.command(Ctl::Input(ctrl_d())).is_err() {
+                    let _ = me.input.try_send(vec![0x04]);
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }

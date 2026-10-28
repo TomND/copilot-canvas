@@ -1,7 +1,7 @@
 //! L3 canvas core: the app state machine (canvas, sidebar, dialogs, terminal
 //! panes) shared by the front ends.
 
-pub use canvas_agents::{automations, copilot_cfg, factory, factory_cli, fork, git, index, migrate, taskschd, vscode};
+pub use canvas_agents::{agents, automations, copilot_cfg, factory, factory_cli, fork, git, index, migrate, taskschd, vscode};
 pub use canvas_common::{paths, pipe, protocol, settings, win};
 pub use canvas_model::{bus, doc};
 

@@ -66,6 +66,8 @@ pub trait HostApp: Send + Sync {
     fn input_noted(&self, id: &str);
     /// A terminal was launched or exited.
     fn terminals_changed(&self);
+    /// A terminal's program exited (after `terminals_changed`).
+    fn terminal_exited(&self, _id: &str) {}
     /// Pending work that keeps the service running without clients or terminals.
     fn has_work(&self) -> bool;
     /// The secret of a paired remote client (`ClientInfo::remote_id`); `None` refuses it.
@@ -939,6 +941,7 @@ fn exit_loop(host: Arc<Host>, exited: Receiver<String>) {
             host.broadcast(ServiceMsg::Terminals(vec![terminal.info()]));
         }
         host.app().terminals_changed();
+        host.app().terminal_exited(&id);
     }
 }
 

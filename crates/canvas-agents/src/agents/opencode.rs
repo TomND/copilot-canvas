@@ -15,7 +15,7 @@ use canvas_common::protocol::{AgentLaunch, SessionSummary};
 use serde_json::{Value, json};
 
 use super::opencode_history::{OpenCodeHistory, db_path};
-pub use super::opencode_history::discover_new_session;
+pub use super::opencode_history::{discover_new_session, discover_new_sessions};
 use super::opencode_server::{self, Live};
 use super::{AgentKind, Caps, Command, History, Integration, Provider};
 use crate::paths::now_ms;
@@ -411,6 +411,10 @@ impl Provider for OpenCode {
 
     fn history_root(&self) -> PathBuf {
         db_path()
+    }
+
+    fn terminal_exited(&self, id: &str, _home: &Path) {
+        unregister_terminal(id);
     }
 }
 

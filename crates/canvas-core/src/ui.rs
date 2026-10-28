@@ -260,7 +260,7 @@ pub fn build_side_rows(app: &App) -> Vec<SideRow> {
             }
         }
         for node in app.doc.nodes.iter().filter(|n| n.kind == NodeKind::Session) {
-            let summary = app.sessions.get(&node.id);
+            let summary = app.summary(node);
             let haystack = format!(
                 "{} {} {} {}",
                 node.name,
@@ -327,7 +327,7 @@ pub fn build_side_rows(app: &App) -> Vec<SideRow> {
         let expanded = tree.expanded.contains(node.id.as_str());
         // Subagents shown when the session is expanded or the subagent is working
         // (decided from the parent's summary once, not per subagent box).
-        let summary = app.sessions.get(&node.id);
+        let summary = app.summary(node);
         let running = app.owned_alive(&node.id) || summary.is_some_and(|s| s.live);
         let agents: FastMap<&str, &crate::protocol::AgentSummary> = summary.map(|s| s.agents.iter().map(|a| (a.key.as_str(), a)).collect()).unwrap_or_default();
         let now = now_ms();
@@ -561,15 +561,11 @@ fn draw_terminals(app: &mut App, buf: &mut Buffer, area: Rect) -> Option<(u16, u
         let view = app.views.get(id);
         let scroll = view.filter(|v| v.display_offset > 0).map(|v| format!(" · ↑{}", v.display_offset)).unwrap_or_default();
         let exit = if info.alive { String::new() } else { format!(" · exited {}", info.exit_code.map(|c| c.to_string()).unwrap_or_default()) };
-        // Copilot's terminal title is its current intent (its default title and
-        // a bare program path add nothing).
-        let intent = info.title.trim();
-        let intent = intent.strip_suffix(" - GitHub Copilot").unwrap_or(intent).trim();
-        let intent = if intent.is_empty() || intent == "GitHub Copilot" || intent == name || intent.contains(":\\") {
-            String::new()
-        } else {
-            format!(" · {intent}")
-        };
+        // The agent's terminal title is its current intent (its default title
+        // and a bare program path add nothing).
+        let agent = node.as_ref().filter(|n| n.command.is_none()).map(crate::agents::agent_of);
+        let intent = title_intent(agent.unwrap_or_default(), &info.title, &name);
+        let intent = if intent.is_empty() { String::new() } else { format!(" · {intent}") };
         let title = format!(" {} {name} · {}{intent}{scroll}{exit} ", status.icon(app.tick), status.label());
         let title_end = put(buf, outer.x as i32 + 1, outer.y as i32, &truncate(&title, outer.width.saturating_sub(6) as usize), border, outer);
         app.layout.hits.push((Rect::new(outer.x, outer.y, (title_end - outer.x as i32).max(1) as u16, 1), Hit::TileHeader(id.clone())));
@@ -584,7 +580,8 @@ fn draw_terminals(app: &mut App, buf: &mut Buffer, area: Rect) -> Option<(u16, u
                     buf,
                     inner,
                     &canvas_termview::tui::Options {
-                        tint: info.copilot.then_some((crate::paint::USER_BG, crate::paint::ACCENT)),
+                        // Copilot's own user-message rows get the canvas tint.
+                        tint: (info.copilot && agent == Some(crate::agents::AgentKind::Copilot)).then_some((crate::paint::USER_BG, crate::paint::ACCENT)),
                         selection: app.term_select.as_ref().filter(|s| s.id == *id),
                         cursor: focused && info.alive,
                     },
@@ -608,6 +605,33 @@ fn draw_terminals(app: &mut App, buf: &mut Buffer, area: Rect) -> Option<(u16, u
         }
     }
     cursor
+}
+
+/// The intent an agent shows in its terminal title, without the agent's own
+/// decoration; empty when the title adds nothing to the box name.
+pub fn title_intent(agent: crate::agents::AgentKind, title: &str, name: &str) -> String {
+    use crate::agents::AgentKind;
+    let mut text = title.trim();
+    match agent {
+        AgentKind::Copilot => text = text.strip_suffix(" - GitHub Copilot").unwrap_or(text).trim(),
+        AgentKind::OpenCode => text = text.strip_prefix("OC | ").unwrap_or(text).trim(),
+        AgentKind::Claude => {
+            // A leading status glyph ("✳ ", spinner frames) changes as it works.
+            let mut chars = text.chars();
+            if let (Some(glyph), Some(' ')) = (chars.next(), chars.next())
+                && !glyph.is_ascii()
+                && !glyph.is_alphanumeric()
+            {
+                text = chars.as_str().trim();
+            }
+        }
+    }
+    let default = match agent {
+        AgentKind::Copilot => "GitHub Copilot",
+        AgentKind::OpenCode => "OpenCode",
+        AgentKind::Claude => "Claude Code",
+    };
+    if text.is_empty() || text == default || text == name || text.contains(":\\") { String::new() } else { text.to_owned() }
 }
 
 fn draw_details(app: &mut App, buf: &mut Buffer, area: Rect) {
@@ -656,8 +680,7 @@ fn draw_details(app: &mut App, buf: &mut Buffer, area: Rect) {
         lines.push((String::new(), Style::default()));
         lines.push(("Enter: show running terminals · R: rename · Del: delete group".into(), fg(MUTED)));
     } else if let Some(node) = app.primary().cloned() {
-        let session = app.session_of(&node.id).unwrap_or_default();
-        let summary = app.sessions.get(&session).cloned();
+        let summary = app.summary(&node).cloned();
         let status = app.node_status(&node);
         lines.push((node.name.clone(), bold(TEXT)));
         lines.push((format!("{} {}", status.icon(app.tick), status.label()), fg(status.color())));
@@ -680,12 +703,7 @@ fn draw_details(app: &mut App, buf: &mut Buffer, area: Rect) {
                 if !s.repository.is_empty() {
                     lines.push((format!("Repo     {}", s.repository), fg(TEXT)));
                 }
-                let client = match s.client.as_str() {
-                    "vscode-agent-host" => "VS Code agent",
-                    "github/cli" => "Copilot CLI",
-                    "" => "unknown",
-                    other => other,
-                };
+                let client = if s.client.is_empty() && crate::agents::agent_of_summary(s) == crate::agents::AgentKind::Copilot { "unknown" } else { crate::app::client_label(s) };
                 lines.push((format!("Client   {client}"), fg(TEXT)));
                 if s.updated_ms > 0 {
                     lines.push((format!("Updated  {} ago", format_age(s.updated_ms, now)), fg(TEXT)));
@@ -698,7 +716,8 @@ fn draw_details(app: &mut App, buf: &mut Buffer, area: Rect) {
                 }
             }
             if !app.demo && node.command.is_none() {
-                lines.push((format!("Session  {session}"), fg(MUTED)));
+                lines.push((format!("Agent    {}", crate::agents::agent_of(&node).label()), fg(TEXT)));
+                lines.push((format!("Session  {}", crate::agents::native_id(&node)), fg(MUTED)));
             }
             lines.push((String::new(), Style::default()));
             if status == Status::External || app.live_elsewhere(&node) {
@@ -757,4 +776,24 @@ fn draw_status(app: &mut App, buf: &mut Buffer, area: Rect) {
     put(buf, area.width as i32 - right_w, area.y as i32, &right, fg(if app.connected { DARK } else { NEGATIVE }).bg(PANEL), area);
     let _ = GRAY;
     let _ = SELECT;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::title_intent;
+    use crate::agents::AgentKind;
+
+    #[test]
+    fn pane_titles_lose_each_agents_decoration() {
+        assert_eq!(title_intent(AgentKind::Copilot, "Fixing the build - GitHub Copilot", "Box"), "Fixing the build");
+        assert_eq!(title_intent(AgentKind::Copilot, "GitHub Copilot", "Box"), "");
+        assert_eq!(title_intent(AgentKind::Claude, "✳ Refactor the parser", "Box"), "Refactor the parser");
+        assert_eq!(title_intent(AgentKind::Claude, "◐ Refactor the parser", "Box"), "Refactor the parser");
+        assert_eq!(title_intent(AgentKind::Claude, "◑ Claude Code", "Box"), "");
+        assert_eq!(title_intent(AgentKind::Claude, "A plain title", "Box"), "A plain title");
+        assert_eq!(title_intent(AgentKind::OpenCode, "OC | Review the diff", "Box"), "Review the diff");
+        assert_eq!(title_intent(AgentKind::OpenCode, "OpenCode", "Box"), "");
+        assert_eq!(title_intent(AgentKind::OpenCode, "OC | Box", "Box"), "", "the box name adds nothing");
+        assert_eq!(title_intent(AgentKind::Claude, r"C:\Users\me\.local\bin\claude.exe", "Box"), "", "a bare program path");
+    }
 }

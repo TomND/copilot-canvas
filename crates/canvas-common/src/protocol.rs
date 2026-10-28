@@ -182,6 +182,9 @@ pub enum ServiceMsg {
     /// Protocol 8: authentication succeeded (instead of `Ready`); `input_ack` is
     /// the last input of this client session applied so far (0 if unknown).
     Ready8 { pid: u32, input_ack: u64 },
+    /// Protocol 8: the agent session a terminal runs became known (OpenCode
+    /// creates its session on the first prompt): terminal id -> the agent's id.
+    AgentSession { id: String, native: String },
 }
 
 /// Index of the first `ServiceMsg` variant protocol-7 clients cannot decode.
@@ -196,6 +199,7 @@ impl ServiceMsg {
             ServiceMsg::Frame8(frame) if protocol < 8 || !frame8 => Some(ServiceMsg::Frame(frame.to_v7())),
             ServiceMsg::Heartbeat { .. } if protocol < 8 => None,
             ServiceMsg::Ready8 { pid, .. } if protocol < 8 => Some(ServiceMsg::Ready { pid }),
+            ServiceMsg::AgentSession { .. } if protocol < 8 => None,
             other => Some(other),
         }
     }

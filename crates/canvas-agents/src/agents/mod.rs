@@ -80,6 +80,36 @@ pub fn default_agent() -> AgentKind {
     ALL.into_iter().find(|kind| kind.provider().program().is_ok()).unwrap_or(AgentKind::Copilot)
 }
 
+/// The machine's agent for new sessions: `COPILOT_CANVAS_AGENT`, else
+/// settings.json `agent` in `home`, else the first installed agent.
+pub fn machine_default(home: &Path) -> AgentKind {
+    if let Some(kind) = std::env::var("COPILOT_CANVAS_AGENT").ok().and_then(|v| AgentKind::parse(&v)) {
+        return kind;
+    }
+    canvas_common::settings::Settings::load(home).agent.as_deref().and_then(AgentKind::parse).unwrap_or_else(default_agent)
+}
+
+/// The agent a canvas box runs (`None`: Copilot, as on canvases from before
+/// agents were selectable).
+pub fn agent_of(node: &canvas_model::doc::Node) -> AgentKind {
+    node.agent.as_deref().and_then(AgentKind::parse).unwrap_or(AgentKind::Copilot)
+}
+
+/// The agent's own session id of a box: `agent_session`, else the box id.
+pub fn native_id(node: &canvas_model::doc::Node) -> &str {
+    node.agent_session.as_deref().filter(|s| !s.is_empty()).unwrap_or(&node.id)
+}
+
+/// The agent a session summary comes from.
+pub fn agent_of_summary(summary: &SessionSummary) -> AgentKind {
+    match summary.client.as_str() {
+        "opencode" => AgentKind::OpenCode,
+        "claude-code" => AgentKind::Claude,
+        _ if opencode::is_session_id(&summary.id) => AgentKind::OpenCode,
+        _ => AgentKind::Copilot,
+    }
+}
+
 /// What a provider supports (the UI hides what it cannot do).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Caps {
@@ -177,6 +207,9 @@ pub trait Provider: Send + Sync {
     fn has_history(&self, native_id: &str) -> bool;
     /// Default root of the history store (shown by `doctor`).
     fn history_root(&self) -> PathBuf;
+    /// A terminal that ran this agent exited: drop what its launch left
+    /// behind. `home` is the canvas data folder.
+    fn terminal_exited(&self, _id: &str, _home: &Path) {}
 }
 
 /// `program` from `env` or the first of `names` on PATH.
@@ -260,5 +293,24 @@ mod tests {
         assert!(!is_batch(Path::new(r"C:\x\a.exe")) && ensure_not_batch(Path::new("cmd"), "X").is_ok());
         assert_eq!((short_id("12345678-abcd"), short_id("abc"), short_id("")), ("12345678", "abc", ""));
         assert_eq!(short_id("\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}"), "\u{e9}\u{e9}\u{e9}\u{e9}", "never splits a character");
+    }
+
+    #[test]
+    fn summaries_and_boxes_name_their_agent() {
+        let summary = |id: &str, client: &str| SessionSummary { id: id.into(), client: client.into(), ..Default::default() };
+        assert_eq!(agent_of_summary(&summary("ses_e7fbbd911ffeOynBIm3IrWFsUl", "")), AgentKind::OpenCode);
+        assert_eq!(agent_of_summary(&summary("x", "opencode")), AgentKind::OpenCode);
+        assert_eq!(agent_of_summary(&summary("12345678-1234-1234-1234-123456789abc", "claude-code")), AgentKind::Claude);
+        for client in ["github/cli", "vscode-agent-host", ""] {
+            assert_eq!(agent_of_summary(&summary("12345678-1234-1234-1234-123456789abc", client)), AgentKind::Copilot, "{client}");
+        }
+        let mut node: canvas_model::doc::Node =
+            serde_json::from_value(serde_json::json!({ "id": "n1", "kind": "session", "name": "n", "x": 0, "y": 0 })).unwrap();
+        assert_eq!((agent_of(&node), native_id(&node)), (AgentKind::Copilot, "n1"));
+        node.agent = Some("opencode".into());
+        node.agent_session = Some("ses_abc".into());
+        assert_eq!((agent_of(&node), native_id(&node)), (AgentKind::OpenCode, "ses_abc"));
+        node.agent = Some("unknown".into());
+        assert_eq!(agent_of(&node), AgentKind::Copilot);
     }
 }

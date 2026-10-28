@@ -156,6 +156,8 @@ impl App {
                 mcp_off: None,
                 passive: None,
                 no_messages: false,
+                agent: None,
+                agent_session: None,
             });
             rows.entry(family).or_default().push((x, y));
             bottom = Some(bottom.unwrap_or(i32::MIN).max(y + SESSION_H));

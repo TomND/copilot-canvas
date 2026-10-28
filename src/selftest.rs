@@ -11,6 +11,7 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 use crate::client::doc::Doc;
 use crate::paths::Instance;
+use canvas_agents::agents::{self, AgentKind};
 use canvas_host::emulator::alacritty::AlacrittyEmulator;
 use canvas_host::emulator::{Emulator, feed_collect};
 use crate::service::term::{headless, lock, screen_text};
@@ -159,24 +160,59 @@ impl Console {
     }
 }
 
+/// Sessions in an agent's history, where counting is cheap.
+fn session_count(kind: AgentKind, instance: &Instance) -> Option<u64> {
+    match kind {
+        AgentKind::Copilot => std::fs::read_dir(&instance.sessions_dir)
+            .ok()
+            .map(|d| d.filter_map(|e| e.ok()).filter(|e| crate::index::is_session_id(&e.file_name().to_string_lossy())).count() as u64),
+        AgentKind::OpenCode => canvas_agents::agents::opencode_history::root_session_count(&kind.provider().history_root()),
+        AgentKind::Claude => {
+            let projects = std::fs::read_dir(kind.provider().history_root()).ok()?;
+            let transcripts = |dir: &Path| std::fs::read_dir(dir).map(|d| d.filter_map(|e| e.ok()).filter(|e| e.path().extension().is_some_and(|x| x == "jsonl")).count()).unwrap_or(0);
+            Some(projects.filter_map(|e| e.ok()).map(|e| transcripts(&e.path()) as u64).sum())
+        }
+    }
+}
+
 pub fn doctor(instance: &Instance) -> Result<()> {
     let mut ok = true;
     let mut line = |good: bool, label: &str, detail: String| {
         ok &= good;
         println!("{} {label:<20} {detail}", if good { "✓" } else { "✗" });
     };
-    match crate::service::find_on_path("copilot.exe") {
-        Some(path) => line(true, "Copilot CLI", path.display().to_string()),
-        None => line(false, "Copilot CLI", "copilot.exe not found on PATH".into()),
+    let mut installed = 0;
+    for kind in agents::ALL {
+        let provider = kind.provider();
+        let label = kind.label();
+        match provider.program() {
+            Ok(program) => {
+                installed += 1;
+                let root = if kind == AgentKind::Copilot { instance.sessions_dir.clone() } else { provider.history_root() };
+                let count = session_count(kind, instance).map(|n| format!("{n} sessions in ")).unwrap_or_default();
+                line(true, label, format!("{program} · history: {count}{}", root.display()));
+            }
+            Err(_) => println!("- {label:<20} not installed"),
+        }
     }
+    if installed == 0 {
+        line(false, "Agents", "no agent CLI found: install GitHub Copilot CLI, OpenCode or Claude Code".into());
+    }
+    let configured = canvas_common::settings::Settings::load(&instance.home).agent;
+    let source = if std::env::var("COPILOT_CANVAS_AGENT").ok().and_then(|v| AgentKind::parse(&v)).is_some() {
+        "COPILOT_CANVAS_AGENT".to_owned()
+    } else if configured.as_deref().and_then(AgentKind::parse).is_some() {
+        "settings.json".to_owned()
+    } else {
+        "auto-detected: first installed".to_owned()
+    };
+    let default = agents::machine_default(&instance.home);
+    line(default.provider().program().is_ok(), "Default agent", format!("{} ({source}; a canvas can choose another in Settings)", default.label()));
+    line(true, "Terminal engine", canvas_host::server::configured_engine(instance).name().to_owned());
     match std::process::Command::new("git").arg("--version").output() {
         Ok(out) => line(out.status.success(), "Git", String::from_utf8_lossy(&out.stdout).trim().to_owned()),
         Err(error) => line(false, "Git", error.to_string()),
     }
-    let sessions = std::fs::read_dir(&instance.sessions_dir)
-        .map(|d| d.filter_map(|e| e.ok()).filter(|e| crate::index::is_session_id(&e.file_name().to_string_lossy())).count())
-        .unwrap_or(0);
-    line(true, "Session history", format!("{sessions} sessions in {}", instance.sessions_dir.display()));
     let started = Instant::now();
     let probe = (|| -> Result<String> {
         let mut console = Console::start(Path::new("cmd.exe"), &["/d".into(), "/c".into(), "echo CANVAS_CONPTY_OK".into()], 60, 10)?;
@@ -224,27 +260,73 @@ fn wait_doc(path: &Path, what: &str, predicate: impl Fn(&Doc) -> bool) -> Result
     bail!("canvas never satisfied: {what}\n{}", std::fs::read_to_string(path).unwrap_or_default())
 }
 
-/// Real Copilot check (no prompts are sent): launches a new Copilot session from
-/// the canvas, verifies its UI renders, verifies live sessions elsewhere are not
-/// duplicated, stops it gracefully, and removes the generated session folder.
-pub fn copilot() -> Result<()> {
+/// Name of the session the real-agent check creates.
+const CHECK_NAME: &str = "Canvas agent check";
+
+/// Real-agent check (no prompt is ever submitted, so nothing is spent): on a
+/// fresh canvas the agent's recent sessions are imported, its configuration
+/// views load, a new session starts the real TUI with allow-all and takes
+/// typing, everything stops gracefully, and a session the test created is
+/// removed when it holds no prompt. `agent`: copilot, opencode or claude
+/// (default: the detected default agent).
+pub fn agent(agent: Option<&str>) -> Result<()> {
+    let kind = match agent {
+        Some(name) => AgentKind::parse(name).with_context(|| format!("unknown agent {name:?} (copilot, opencode or claude)"))?,
+        None => agents::default_agent(),
+    };
+    let program = kind.provider().program().with_context(|| format!("{} is not installed on this machine", kind.label()))?;
     let root = std::env::temp_dir().join(format!("copilot-canvas-check-{}", uuid::Uuid::new_v4()));
     let work = root.join("work");
+    let home = root.join("home");
     std::fs::create_dir_all(&work)?;
-    let instance = Instance::new(Some(format!("check{}", std::process::id())), Some(root.join("home")), None)?;
-    let result = copilot_scenario(&instance, &work);
+    std::fs::create_dir_all(&home)?;
+    // The machine setting picks the agent for new sessions on the fresh canvas.
+    canvas_common::settings::Settings { agent: Some(kind.id().to_owned()), ..Default::default() }.save(&home)?;
+    let mut env: Vec<(&str, std::path::PathBuf)> = Vec::new();
+    if kind == AgentKind::Claude {
+        // Claude Code stops at its folder-trust and bypass-mode dialogs in a new folder: it runs
+        // against a throw-away configuration that trusts the work folder, so ~/.claude stays untouched.
+        let config = root.join("claude-config");
+        std::fs::create_dir_all(&config)?;
+        let trusted = work.display().to_string().replace('\\', "/");
+        let seed = serde_json::json!({ "hasCompletedOnboarding": true, "theme": "dark", "bypassPermissionsModeAccepted": true, "projects": { trusted: { "hasTrustDialogAccepted": true } } });
+        std::fs::write(config.join(".claude.json"), seed.to_string())?;
+        env.push(("CLAUDE_CONFIG_DIR", config));
+    }
+    let instance = Instance::new(Some(format!("check{}", std::process::id())), Some(home.clone()), None)?;
+    println!("Copilot Canvas real-agent check: {} ({program}); no prompt is submitted", kind.label());
+    let started_ms = crate::paths::now_ms();
+    let env: Vec<(&str, &Path)> = env.iter().map(|(k, v)| (*k, v.as_path())).collect();
+    let result = agent_scenario(&instance, &work, kind, &env);
     if let Ok(conn) = crate::client::conn::try_connect(&instance) {
         let _ = conn.tx.send(crate::protocol::ClientMsg::Shutdown);
         std::thread::sleep(Duration::from_secs(7));
     }
-    let cleanup = cleanup_generated(&instance, &root.join("home").join("canvas.json"));
-    let _ = std::fs::remove_dir_all(&root);
+    let cleanup = cleanup_generated(kind, &instance, &home.join("canvas.json"), &work, started_ms);
+    if result.is_ok() || std::env::var_os("CANVAS_SELFTEST_KEEP").is_none() {
+        let _ = std::fs::remove_dir_all(&root);
+    } else {
+        eprintln!("artifacts kept in {}", root.display());
+    }
     result.and(cleanup)
 }
 
-fn cleanup_generated(instance: &Instance, canvas: &Path) -> Result<()> {
+/// Removes the session the check created when it holds no prompt.
+fn cleanup_generated(kind: AgentKind, instance: &Instance, canvas: &Path, work: &Path, started_ms: u64) -> Result<()> {
+    match kind {
+        AgentKind::OpenCode => {
+            // OpenCode creates a session on the first prompt only.
+            let created = agents::opencode::discover_new_sessions(&work.display().to_string(), started_ms.saturating_sub(2_000));
+            anyhow::ensure!(created.is_empty(), "OpenCode recorded session(s) {created:?} in the test folder; left in place");
+            println!("  · no OpenCode session was created (none is until the first prompt)");
+            return Ok(());
+        }
+        // Claude Code writes no transcript before the first prompt (and ran in a throw-away configuration).
+        AgentKind::Claude => return Ok(()),
+        AgentKind::Copilot => {}
+    }
     let Ok(doc) = load(canvas) else { return Ok(()) };
-    let Some(node) = doc.nodes.iter().find(|n| n.name == "Canvas copilot check") else { return Ok(()) };
+    let Some(node) = doc.nodes.iter().find(|n| n.name == CHECK_NAME) else { return Ok(()) };
     let dir = instance.sessions_dir.join(&node.id);
     if !dir.is_dir() {
         return Ok(());
@@ -263,7 +345,35 @@ fn cleanup_generated(instance: &Instance, canvas: &Path) -> Result<()> {
     bail!("could not remove the generated test session {}", dir.display())
 }
 
-fn copilot_scenario(instance: &Instance, work: &Path) -> Result<()> {
+/// Words an agent's TUI shows once it is up (or a dialog that stops it).
+fn agent_ui_up(kind: AgentKind, text: &str) -> bool {
+    match kind {
+        AgentKind::Copilot => text.contains("Copilot v") || text.contains("trust") || text.contains("Trust") || text.contains("❯"),
+        AgentKind::OpenCode => text.contains("ctrl+p") || text.contains("Ask anything") || text.contains("tab agents"),
+        AgentKind::Claude => text.contains("Claude Code v") || text.contains("bypass permissions") || text.contains("? for shortcuts") || text.contains("Select login method"),
+    }
+}
+
+/// A screen that waits for an answer before the agent takes input (a trust or sign-in dialog).
+fn agent_blocked(kind: AgentKind, text: &str) -> Option<&'static str> {
+    match kind {
+        AgentKind::Copilot if text.contains("trust") || text.contains("Trust") => Some("Copilot asks to trust the folder"),
+        // Not being signed in only stops prompts; its input box still takes typing.
+        AgentKind::Claude if text.contains("Select login method") || text.contains("Do you trust") => Some("Claude Code shows a sign-in or trust dialog"),
+        _ => None,
+    }
+}
+
+/// The flag that makes an agent run tools without asking.
+fn allow_all_flag(kind: AgentKind) -> &'static str {
+    match kind {
+        AgentKind::Copilot => "--allow-all",
+        AgentKind::OpenCode => "--auto",
+        AgentKind::Claude => "--dangerously-skip-permissions",
+    }
+}
+
+fn agent_scenario(instance: &Instance, work: &Path, kind: AgentKind, env: &[(&str, &Path)]) -> Result<()> {
     let exe = std::env::current_exe()?;
     let args: Vec<String> = vec![
         "--instance".into(),
@@ -273,10 +383,31 @@ fn copilot_scenario(instance: &Instance, work: &Path) -> Result<()> {
         "--cwd".into(),
         work.to_string_lossy().into_owned(),
     ];
-    println!("Copilot Canvas real-Copilot check (no prompts are sent)");
-    let mut ui = Console::start(&exe, &args, 170, 46)?;
-    step("recent sessions are indexed and placed on a fresh canvas");
-    ui.wait("auto-import", Duration::from_secs(30), |t| t.contains("8 sessions"))?;
+    let label = kind.label();
+    let canvas = instance.home.join("canvas.json");
+    let mut ui = Console::start_with_env(&exe, &args, env, 170, 46)?;
+    ui.wait("the canvas", Duration::from_secs(30), |t| t.contains("Copilot Canvas"))?;
+    step(&format!("recent {label} sessions are indexed and placed on a fresh canvas"));
+    let throwaway = env.iter().any(|(k, _)| *k == "CLAUDE_CONFIG_DIR");
+    let deadline = Instant::now() + Duration::from_secs(if throwaway { 5 } else { 60 });
+    let mut imported = None;
+    while Instant::now() < deadline {
+        let sessions = load(&canvas).ok().map(|d| d.nodes.into_iter().filter(|n| n.kind == crate::client::doc::NodeKind::Session).collect::<Vec<_>>());
+        if let Some(doc) = sessions.filter(|n| !n.is_empty()) {
+            imported = Some(doc);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    match imported {
+        Some(nodes) => {
+            anyhow::ensure!(nodes.len() <= 8, "auto-import added {} boxes", nodes.len());
+            anyhow::ensure!(nodes.iter().all(|n| agents::agent_of(n) == kind), "auto-import took another agent's sessions: {:?}", nodes.iter().map(|n| &n.agent).collect::<Vec<_>>());
+            println!("    {} most recent {label} sessions imported", nodes.len());
+        }
+        None if throwaway => println!("    (the throw-away {label} configuration has no history; skipped)"),
+        None => println!("    (no {label} sessions in its history; skipped)"),
+    }
     step("a session that is live elsewhere is shown as such and never duplicated");
     let deadline = Instant::now() + Duration::from_secs(10);
     while ui.find_in("↗", SIDEBAR.0, SIDEBAR.1).is_none() && Instant::now() < deadline {
@@ -288,6 +419,130 @@ fn copilot_scenario(instance: &Instance, work: &Path) -> Result<()> {
     } else {
         println!("    (no session is currently open elsewhere; skipped)");
     }
+    if kind == AgentKind::Copilot {
+        vs_code_steps(&mut ui, instance)?;
+    }
+    step(&format!("plugins / MCP / skills views load {label}'s configuration"));
+    let header = format!("Agent: {label}");
+    let loaded = |t: &str| t.contains(&header) && !t.contains("Loading from");
+    ui.send(b"\x1b3")?;
+    ui.wait("plugins view", Duration::from_secs(90), |t| loaded(t) && t.contains("Install plugin"))?;
+    let rows = |ui: &Console| {
+        let sidebar = |l: &str| l.chars().skip(SIDEBAR.0 as usize).take((SIDEBAR.1 - SIDEBAR.0) as usize).collect::<String>();
+        ui.text().lines().map(sidebar).filter(|l| l.contains('●') || l.contains('○')).count()
+    };
+    let mut counts = vec![format!("{} plugins", rows(&ui))];
+    ui.send(b"\x1b4")?;
+    ui.wait("mcp view", Duration::from_secs(30), |t| loaded(t) && t.contains("Add MCP server"))?;
+    counts.push(format!("{} MCP servers", rows(&ui)));
+    ui.send(b"\x1b5")?;
+    ui.wait("skills view", Duration::from_secs(30), |t| loaded(t) && t.contains("SKILLS") && t.contains("Add skill"))?;
+    counts.push(format!("{} skills", rows(&ui)));
+    println!("    {} (first screen of each)", counts.join(", "));
+    for warning in ui.text().lines().filter_map(|l| l.split('⚠').nth(1)) {
+        println!("    note: {}", warning.trim());
+    }
+    if kind == AgentKind::Copilot {
+        migration_preview_step(&mut ui)?;
+    }
+    ui.send(b"\x1b1")?;
+    step(&format!("new {label} session from the dialog renders the real {label} UI"));
+    ui.send(b"\x1d")?;
+    let focus = ui.text();
+    if focus.contains("Typing goes to the terminal") {
+        ui.send(b"\x1d")?;
+    }
+    ui.send(b"n")?;
+    let chosen = format!("◉ {label}");
+    ui.wait("new session dialog with the agent chosen", Duration::from_secs(5), |t| t.contains("New session") && t.contains(&chosen))?;
+    ui.send(format!("{CHECK_NAME}\r").as_bytes())?;
+    let header = format!("{CHECK_NAME} · ");
+    ui.wait(&format!("{label} UI"), Duration::from_secs(90), |t| t.contains(&header) && agent_ui_up(kind, t))?;
+    // Let the TUI settle (OpenCode draws its home screen in steps).
+    std::thread::sleep(Duration::from_secs(2));
+    if std::env::var_os("CANVAS_SELFTEST_DEBUG").is_some() {
+        println!("--- screen ---\n{}", ui.text());
+    }
+    let id = load(&canvas)?.nodes.iter().find(|n| n.name == CHECK_NAME).map(|n| n.id.clone()).context("the test session's box")?;
+    if kind == AgentKind::OpenCode {
+        step("the service follows the new OpenCode TUI through its server (its session id arrives with the first prompt)");
+        let following = format!("terminal {id} works in ");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !std::fs::read_to_string(instance.log_path()).unwrap_or_default().contains(&following) {
+            anyhow::ensure!(Instant::now() < deadline, "the service never reached the OpenCode TUI's server");
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let node = load(&canvas)?.nodes.into_iter().find(|n| n.id == id).context("box")?;
+        anyhow::ensure!(node.agent_session.is_none(), "no session may exist before a prompt: {:?}", node.agent_session);
+    }
+    let flag = allow_all_flag(kind);
+    step(&format!("new sessions start with {flag} (Settings → Permissions default)"));
+    let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
+    let pid = log.lines().rev().find_map(|l| l.split(" pid ").nth(1)).and_then(|p| p.trim().parse::<u32>().ok()).context("launched pid in the service log")?;
+    let query = format!("(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine");
+    let out = std::process::Command::new("powershell.exe").args(["-NoProfile", "-Command", &query]).output()?;
+    let command_line = String::from_utf8_lossy(&out.stdout).to_string();
+    anyhow::ensure!(command_line.split_whitespace().any(|a| a == flag), "{label} was launched without {flag}: {command_line}");
+    step(&format!("typing reaches {label}'s input (not submitted)"));
+    let blocked = agent_blocked(kind, &ui.text());
+    if let Some(reason) = blocked {
+        println!("    ({reason}; skipped)");
+    } else {
+        let probe = "canvas typing probe";
+        ui.send(probe.as_bytes())?;
+        ui.wait(&format!("typed text echoed by {label}"), Duration::from_secs(15), |t| t.contains(probe))?;
+        // Erase it again: never Enter (no prompt is ever submitted).
+        ui.send(&vec![0x7f; probe.len()])?;
+        ui.wait("typed text erased", Duration::from_secs(10), |t| !t.contains(probe))?;
+    }
+    if kind == AgentKind::Copilot && blocked.is_none() {
+        step("mouse wheel over the terminal scrolls Copilot's timeline (local ! command, no prompt)");
+        ui.send(b"!1..120 | % ToString 'canvasrow000'")?;
+        std::thread::sleep(Duration::from_millis(400));
+        ui.send(b"\r")?;
+        ui.wait("command output", Duration::from_secs(30), |t| t.contains("canvasrow120"))?;
+        std::thread::sleep(Duration::from_millis(800));
+        let lowest = |text: &str| -> Option<u32> {
+            text.lines().filter_map(|l| l.split("canvasrow").nth(1)).filter_map(|r| r.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()).min()
+        };
+        let before = lowest(&ui.text()).context("visible output")?;
+        let (x, y) = ui.find("canvasrow120").context("output position")?;
+        for notch in 0..3 {
+            ui.send(format!("\x1b[<64;{};{}M", x + 2, y + 1).as_bytes())?;
+            std::thread::sleep(Duration::from_millis(500));
+            println!("    after notch {}: first visible line {:?}", notch + 1, lowest(&ui.text()));
+        }
+        ui.wait("earlier lines after wheel up", Duration::from_secs(10), |t| lowest(t).is_some_and(|n| n < before))?;
+        println!("    first visible line went from {before} to {}", lowest(&ui.text()).unwrap_or(0));
+    } else {
+        step("mouse wheel over the terminal");
+        println!("    (needs output that only a prompt would produce in {label}; skipped)");
+    }
+    step(&format!("stop all and quit ({label} exits gracefully)"));
+    ui.send(b"\x1d")?;
+    ui.send(b"q")?;
+    ui.wait("quit dialog", Duration::from_secs(5), |t| t.contains("Stop all and quit"))?;
+    ui.send(b"\x1b[C\r")?;
+    ui.wait_exit(Duration::from_secs(15))?;
+    // The service logs the exit; a forced stop would end it after 5 s with another code.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let exited = format!("terminal {id} exited with ");
+    let code = loop {
+        let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
+        if let Some(code) = log.lines().rev().find_map(|l| l.split(&exited).nth(1).map(|c| c.trim().to_owned())) {
+            break code;
+        }
+        anyhow::ensure!(Instant::now() < deadline, "{label} did not exit after the stop");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    println!("    {label} exited with {code}");
+    anyhow::ensure!(blocked.is_some() || code == "Some(0)", "{label} did not exit gracefully ({code})");
+    println!("PASS");
+    Ok(())
+}
+
+/// VS Code sync and its idempotence (Copilot sessions only).
+fn vs_code_steps(ui: &mut Console, instance: &Instance) -> Result<()> {
     step("VS Code sync adds agent sessions active in the last 48 h, grouped like the Agents window (read-only)");
     ui.send(b"v")?;
     ui.wait("sync summary", Duration::from_secs(60), |t| t.contains("VS Code sync: added") || t.contains("No VS Code"))?;
@@ -312,13 +567,11 @@ fn copilot_scenario(instance: &Instance, work: &Path) -> Result<()> {
     ui.wait("second sync", Duration::from_secs(60), |t| t.contains("VS Code sync: added 0 session(s)"))?;
     let again = ui.text().lines().find(|l| l.contains("VS Code sync: added 0")).unwrap_or_default().to_owned();
     anyhow::ensure!(!again.contains("renamed") && !again.contains("links") && !again.contains("moved"), "second sync changed boxes: {again}");
-    step("plugins / MCP / skills views load from the Copilot CLI");
-    ui.send(b"\x1b3")?;
-    ui.wait("plugins view", Duration::from_secs(60), |t| t.contains("Install plugin"))?;
-    ui.send(b"\x1b4")?;
-    ui.wait("mcp view", Duration::from_secs(10), |t| t.contains("Add MCP server"))?;
-    ui.send(b"\x1b5")?;
-    ui.wait("skills view", Duration::from_secs(10), |t| t.contains("SKILLS") && (t.contains("Add skill") || t.contains(" of ")))?;
+    Ok(())
+}
+
+/// The VS Code → Copilot migration preview (read-only).
+fn migration_preview_step(ui: &mut Console) -> Result<()> {
     ui.send(b"\x1b7")?;
     ui.wait("vs code view", Duration::from_secs(5), |t| t.contains("Migrate skills"))?;
     step("migration preview lists VS Code items without changing anything");
@@ -330,57 +583,6 @@ fn copilot_scenario(instance: &Instance, work: &Path) -> Result<()> {
     println!("    preview: {} new, {} already in Copilot, {} need attention", count("[x]") + count("[ ]"), count("[=]"), count("[!]") + count("[?]"));
     ui.send(b"\x1b")?;
     ui.wait("preview closed", Duration::from_secs(5), |t| !t.contains("Space toggle · Enter apply"))?;
-    ui.send(b"\x1b1")?;
-    step("new Copilot session from the dialog renders the real Copilot UI");
-    ui.send(b"\x1d")?;
-    let focus = ui.text();
-    if focus.contains("Typing goes to the terminal") {
-        ui.send(b"\x1d")?;
-    }
-    ui.send(b"n")?;
-    ui.wait("new session dialog", Duration::from_secs(5), |t| t.contains("New session"))?;
-    ui.send(b"Canvas copilot check\r")?;
-    ui.wait("Copilot UI", Duration::from_secs(90), |t| {
-        t.contains("Canvas copilot check · ") && (t.contains("Copilot v") || t.contains("trust") || t.contains("Trust") || t.contains("❯"))
-    })?;
-    step("new sessions start with --allow-all (Settings → Permissions default)");
-    let log = std::fs::read_to_string(instance.home.join(format!("service-{}.log", instance.name))).unwrap_or_default();
-    let pid = log.lines().rev().find_map(|l| l.split(" pid ").nth(1)).and_then(|p| p.trim().parse::<u32>().ok()).context("launched pid in the service log")?;
-    let query = format!("(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine");
-    let out = std::process::Command::new("powershell.exe").args(["-NoProfile", "-Command", &query]).output()?;
-    let command_line = String::from_utf8_lossy(&out.stdout).to_string();
-    anyhow::ensure!(command_line.contains("--allow-all"), "Copilot was launched without --allow-all: {command_line}");
-    step("typing reaches Copilot's input (not submitted)");
-    if !(ui.text().contains("trust") || ui.text().contains("Trust")) {
-        ui.send(b"canvas typing probe")?;
-        ui.wait("typed text echoed by Copilot", Duration::from_secs(15), |t| t.contains("canvas typing probe"))?;
-        ui.send(b"\x15")?;
-        step("mouse wheel over the terminal scrolls Copilot's timeline (local ! command, no prompt)");
-        ui.send(b"!1..120 | % ToString 'canvasrow000'")?;
-        std::thread::sleep(Duration::from_millis(400));
-        ui.send(b"\r")?;
-        ui.wait("command output", Duration::from_secs(30), |t| t.contains("canvasrow120"))?;
-        std::thread::sleep(Duration::from_millis(800));
-        let lowest = |text: &str| -> Option<u32> {
-            text.lines().filter_map(|l| l.split("canvasrow").nth(1)).filter_map(|r| r.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()).min()
-        };
-        let before = lowest(&ui.text()).context("visible output")?;
-        let (x, y) = ui.find("canvasrow120").context("output position")?;
-        for notch in 0..3 {
-            ui.send(format!("\x1b[<64;{};{}M", x + 2, y + 1).as_bytes())?;
-            std::thread::sleep(Duration::from_millis(500));
-            println!("    after notch {}: first visible line {:?}", notch + 1, lowest(&ui.text()));
-        }
-        ui.wait("earlier lines after wheel up", Duration::from_secs(10), |t| lowest(t).is_some_and(|n| n < before))?;
-        println!("    first visible line went from {before} to {}", lowest(&ui.text()).unwrap_or(0));
-    }
-    step("stop all and quit (Copilot exits gracefully)");
-    ui.send(b"\x1d")?;
-    ui.send(b"q")?;
-    ui.wait("quit dialog", Duration::from_secs(5), |t| t.contains("Stop all and quit"))?;
-    ui.send(b"\x1b[C\r")?;
-    ui.wait_exit(Duration::from_secs(15))?;
-    println!("PASS");
     Ok(())
 }
 
@@ -877,7 +1079,7 @@ mod stress_probe {
                 command: None,
                 fresh: false,
                 automation: None,
-                synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false,
+                synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None,
             });
         }
         for g in 0..n_sessions.div_ceil(10) as i32 {
@@ -983,7 +1185,7 @@ mod user_message_canvas_probe {
         let mut doc = crate::client::doc::Doc::default();
         doc.nodes.push(crate::client::doc::Node {
             id: id.clone(), kind: crate::client::doc::NodeKind::Session, name: "Probe".into(), x: 2, y: 2,
-            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false,
+            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -1229,7 +1431,7 @@ mod canvas_image_paste_probe {
         let mut doc = crate::client::doc::Doc::default();
         doc.nodes.push(crate::client::doc::Node {
             id: id.clone(), kind: crate::client::doc::NodeKind::Session, name: "Paste probe".into(), x: 2, y: 2,
-            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: true, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false,
+            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: true, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -1401,7 +1603,7 @@ mod fork_canvas_probe {
         let mut doc = crate::client::doc::Doc::default();
         doc.nodes.push(crate::client::doc::Node {
             id: id.clone(), kind: crate::client::doc::NodeKind::Session, name: "Fork parent".into(), x: 2, y: 2,
-            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false,
+            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -1680,7 +1882,7 @@ mod loop_canvas_probe {
             cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None,
             mcp_off: Some(crate::copilot_cfg::snapshot().mcp.into_iter().map(|s| s.name).collect()),
             passive: None,
-            no_messages: false,
+            no_messages: false, agent: None, agent_session: None,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -1808,7 +2010,7 @@ mod passive_probe {
         doc.nodes.push(crate::client::doc::Node {
             id: active.clone(), kind: crate::client::doc::NodeKind::Session, name: "Active probe".into(), x: 2, y: 2,
             cwd: Some(work.display().to_string()), parent: None, agent_key: None, source: None, command: None, fresh: true, automation: None, synced_name: None, reviewed_ms: None,
-            mcp_off: Some(off.clone()), passive: None, no_messages: false,
+            mcp_off: Some(off.clone()), passive: None, no_messages: false, agent: None, agent_session: None,
         });
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
         let instance = crate::paths::Instance::new(Some(format!("psv{}", std::process::id())), Some(home.clone()), Some(sessions.clone())).unwrap();

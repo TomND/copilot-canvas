@@ -23,7 +23,7 @@ const HELP: &[(&str, &str)] = &[
     ("Keys", ""),
     ("N / S", "new session / subsession of the selection"),
     ("G", "group the selection (box drawn around it)"),
-    ("I / V", "import Copilot sessions / sync VS Code agent sessions"),
+    ("I / V", "import agent sessions / sync VS Code agent sessions"),
     ("Alt+1…8 or activity bar", "Sessions · Automations · Plugins · MCP · Skills · Agents · VS Code · Settings"),
     ("Lists: Enter · Space · Del", "open/edit · enable/disable · remove"),
     ("Enter / Tab", "open selection / cycle sessions"),
@@ -247,7 +247,7 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
         }
         Modal::ImportCopilot(dialog) => {
             let rect = centered(screen, screen.width.saturating_sub(10).min(110), screen.height.saturating_sub(4).min(34));
-            panel(buf, rect, "Import Copilot sessions");
+            panel(buf, rect, "Import sessions (Copilot, OpenCode, Claude Code)");
             let cursor = field(buf, rect.x as i32 + 2, rect.y as i32 + 1, rect.width as i32 - 4, &dialog.filter, true, "", rect);
             let candidates = app.copilot_import_candidates(&dialog.filter.text);
             let rows = rect.height.saturating_sub(6) as usize;
@@ -265,7 +265,7 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
                 if summary.live {
                     x = put(buf, x, y, "LIVE", fg(PURPLE).bg(bg), rect) + 1;
                 }
-                let client = if summary.client == "vscode-agent-host" { "VS Code" } else { "CLI" };
+                let client = crate::app::client_label(summary);
                 let right = format!("{client} · {} ago", format_age(summary.updated_ms, now));
                 let right_w = crate::paint::text_width(&right) as i32;
                 let folder = summary.cwd.rsplit(['\\', '/']).find(|s| !s.is_empty()).unwrap_or_default();
@@ -364,17 +364,17 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
 }
 
 fn draw_mcp_picker(app: &App, buf: &mut Buffer, screen: Rect, picker: &crate::dialogs::McpPicker, ctx: &mut Ctx) -> (Rect, Option<(u16, u16)>) {
-    let choices = app.mcp_choices();
+    let choices = app.mcp_choices(picker.agent);
     let count = choices.as_ref().map(|c| c.len()).unwrap_or(0) as u16;
     let rect = centered(screen, 80, (count + 9).clamp(12, screen.height.saturating_sub(4)));
     let title = match &picker.target {
-        crate::dialogs::McpTarget::NewSession => "MCP servers for the new session".to_owned(),
+        crate::dialogs::McpTarget::NewSession => format!("{} MCP servers for the new session", picker.agent.label()),
         crate::dialogs::McpTarget::Node(id) => format!("MCP servers for “{}”", truncate(&app.doc.node(id).map(|n| n.name.clone()).unwrap_or_default(), 40)),
     };
     panel(buf, rect, &title);
     let (left, inner_w) = (rect.x as i32 + 2, rect.width as i32 - 4);
     // Preset chips: the one matching the current choice is highlighted.
-    let known = app.mcp_available();
+    let known = app.mcp_available(picker.agent);
     let current = app.doc.mcp.matching(&picker.off, &known);
     let mut x = put(buf, left, rect.y as i32 + 1, "Preset ", fg(GRAY).bg(MODAL), rect);
     for (i, name) in app.doc.mcp.names().iter().enumerate() {
@@ -386,7 +386,7 @@ fn draw_mcp_picker(app: &App, buf: &mut Buffer, screen: Rect, picker: &crate::di
         x = end + 1;
     }
     let Some(choices) = choices else {
-        put(buf, left, rect.y as i32 + 3, "Loading your MCP servers (copilot mcp list)…", fg(MUTED).bg(MODAL), rect);
+        put(buf, left, rect.y as i32 + 3, &format!("Loading {}'s MCP servers…", picker.agent.label()), fg(MUTED).bg(MODAL), rect);
         return (rect, None);
     };
     let on = known.iter().filter(|k| !picker.off.contains(k)).count();
@@ -408,7 +408,7 @@ fn draw_mcp_picker(app: &App, buf: &mut Buffer, screen: Rect, picker: &crate::di
             ("[x]", POSITIVE)
         };
         let x = put(buf, left, y, check, fg(color).bg(bg), rect) + 1;
-        let note = if *enabled { source.clone() } else { "off in Copilot's config".into() };
+        let note = if *enabled { source.clone() } else { format!("off in {}'s config", picker.agent.label()) };
         let note_w = (crate::paint::text_width(&note) as i32).min(inner_w / 2);
         let name_style = if !enabled { fg(MUTED).bg(bg) } else if selected { bold(SELECT).bg(bg) } else { fg(TEXT).bg(bg) };
         put(buf, x, y, &truncate(name, (rect.right() as i32 - note_w - 4 - x).max(4) as usize), name_style, rect);
@@ -416,7 +416,7 @@ fn draw_mcp_picker(app: &App, buf: &mut Buffer, screen: Rect, picker: &crate::di
         ctx.hit(Rect::new(rect.x + 1, y as u16, rect.width - 2, 1), Hit::ListRow(row));
     }
     if choices.is_empty() {
-        put(buf, left, rect.y as i32 + 3, "No MCP servers are configured in Copilot.", fg(MUTED).bg(MODAL), rect);
+        put(buf, left, rect.y as i32 + 3, &format!("No MCP servers are configured in {}.", picker.agent.label()), fg(MUTED).bg(MODAL), rect);
     }
     let y = rect.bottom() as i32 - 3;
     let help = "Space toggle · A all · N none · ←/→ preset · Ctrl+S save preset · Del delete preset · Enter done · Esc cancel";
@@ -429,7 +429,7 @@ fn draw_mcp_picker(app: &App, buf: &mut Buffer, screen: Rect, picker: &crate::di
 
 fn draw_new_session(app: &App, buf: &mut Buffer, screen: Rect, dialog: &crate::dialogs::NewSession, ctx: &mut Ctx) -> (Rect, Option<(u16, u16)>) {
     let repo = matches!(dialog.git, GitState::Repo(_));
-    let height = 18 + if repo { 2 } else { 0 } + if repo && dialog.worktree { 4 } else { 0 } + if dialog.can_fork { 2 } else { 0 };
+    let height = 20 + if repo { 2 } else { 0 } + if repo && dialog.worktree { 4 } else { 0 } + if dialog.can_fork { 2 } else { 0 };
     let rect = centered(screen, 84, height);
     let title = match dialog.parent.as_ref().and_then(|p| app.doc.node(p)) {
         Some(parent) => format!("New subsession of “{}”", truncate(&parent.name, 40)),
@@ -501,6 +501,20 @@ fn draw_new_session(app: &App, buf: &mut Buffer, screen: Rect, dialog: &crate::d
         }
     }
 
+    label(buf, y, "Agent", focus == NsField::Agent);
+    {
+        let style = if focus == NsField::Agent { bold(SELECT).bg(MODAL) } else { fg(TEXT).bg(MODAL) };
+        let mut x = field_x;
+        for kind in crate::agents::ALL {
+            let on = kind == dialog.agent;
+            let missing = !app.demo && !app.installed_agents.contains(&kind);
+            let text = format!("{} {}{}", if on { "◉" } else { "○" }, kind.label(), if missing { " (not installed)" } else { "" });
+            x = put(buf, x, y, &text, if missing && !on { fg(MUTED).bg(MODAL) } else { style }, rect) + 3;
+        }
+        ctx.hit(Rect::new(field_x as u16, y as u16, (x - field_x).max(1) as u16, 1), Hit::Field(NsField::Agent));
+        y += 2;
+    }
+
     if dialog.can_fork {
         label(buf, y, "Context", focus == NsField::Context);
         let option = |on: bool, text: &str| format!("{} {text}", if on { "◉" } else { "○" });
@@ -514,7 +528,7 @@ fn draw_new_session(app: &App, buf: &mut Buffer, screen: Rect, dialog: &crate::d
     label(buf, y, "MCP servers", focus == NsField::Mcp);
     let style = if focus == NsField::Mcp { Style::default().fg(TEXT).bg(PANEL_HI).add_modifier(Modifier::UNDERLINED) } else { Style::default().fg(TEXT).bg(PANEL_HI) };
     fill(buf, field_x, y, field_w, 1, style, rect);
-    let summary = format!("{}  ▾ choose", app.mcp_summary(&dialog.mcp_off));
+    let summary = format!("{}  ▾ choose", app.mcp_summary(dialog.agent, &dialog.mcp_off));
     put(buf, field_x, y, &truncate(&summary, field_w as usize), style, rect);
     ctx.hit(Rect::new(field_x as u16, y as u16, field_w as u16, 1), Hit::Field(NsField::Mcp));
     y += 2;
@@ -527,8 +541,8 @@ fn draw_new_session(app: &App, buf: &mut Buffer, screen: Rect, dialog: &crate::d
     if let Some(error) = &dialog.error {
         put(buf, label_x, y, &truncate(error, rect.width as usize - 6), fg(NEGATIVE).bg(MODAL), rect);
     } else {
-        let hint = "Tab/↑↓ move · Enter create · Esc cancel · normal Copilot permissions apply";
-        put(buf, label_x, y, hint, fg(MUTED).bg(MODAL), rect);
+        let hint = format!("Tab/↑↓ move · Space/←→ agent · Enter create · Esc cancel · {} permissions per Settings", dialog.agent.label());
+        put(buf, label_x, y, &truncate(&hint, rect.width as usize - 6), fg(MUTED).bg(MODAL), rect);
     }
     let y = rect.bottom() as i32 - 2;
     let create = if dialog.worktree && repo { "Create worktree & start" } else { "Create & start" };

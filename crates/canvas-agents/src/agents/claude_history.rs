@@ -925,7 +925,7 @@ fn summarize(id: &str, entry: &Entry, tracked: bool, now: u64, git_root: String)
         cwd,
         branch,
         git_root,
-        client: "claude".to_owned(),
+        client: "claude-code".to_owned(),
         created_ms: if meta.created_ms > 0 { meta.created_ms } else { pid.map(|p| p.started_ms).unwrap_or(0) },
         updated_ms: meta.updated_ms.max(pid.map(|p| p.updated_ms).unwrap_or(0)),
         tracked,
@@ -1125,7 +1125,7 @@ mod tests {
         let (changed, _) = history.poll(&HashSet::new(), std::time::Duration::ZERO);
         assert_eq!(changed.len(), 1);
         assert_eq!(changed[0].name, "Fix the flaky test", "first prompt until a title exists");
-        assert_eq!((changed[0].cwd.as_str(), changed[0].branch.as_str(), changed[0].client.as_str()), (r"C:\repos\demo", "main", "claude"));
+        assert_eq!((changed[0].cwd.as_str(), changed[0].branch.as_str(), changed[0].client.as_str()), (r"C:\repos\demo", "main", "claude-code"));
         assert_eq!(changed[0].created_ms, ms("2026-10-27T10:00:00Z"));
         assert_eq!(changed[0].activity, Activity::Unknown, "untracked sessions are not tailed");
         append(&transcript, "{\"type\":\"ai-title\",\"aiTitle\":\"Flaky test fix\",\"sessionId\":\"x\"}\n");
