@@ -76,7 +76,7 @@ OPTIONS
   --instance NAME      separate service + canvas namespace (default: default)
   --home DIR           data directory (default: ~/.copilot-canvas, or COPILOT_CANVAS_HOME)
   --sessions-dir DIR   Copilot session history to index (default: ~/.copilot/session-state)
-  --canvas FILE        canvas file (default: <home>/canvas.json)
+  --canvas FILE        canvas file (default: <home>/canvas.json; with --remote, a path on the service's machine)
   --cwd DIR            default folder for new sessions (default: current folder)
   --remote TARGET      connect over TCP: `loopback` or HOST:PORT (see above)
   -h, --help · -V, --version
@@ -164,6 +164,7 @@ fn real_main() -> Result<()> {
     match args.command.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         [] => {
             let cwd = args.cwd.clone().map(Ok).unwrap_or_else(std::env::current_dir)?;
+            let local_backend = std::sync::Arc::new(canvas_agents::backend::LocalBackend::new(canvas_agents::backend::Ctx::new(&instance)));
             client::run(client::Options {
                 instance,
                 demo: args.demo,
@@ -171,6 +172,7 @@ fn real_main() -> Result<()> {
                 canvas: args.canvas.clone(),
                 cwd: paths::absolute(&cwd).to_string_lossy().into_owned(),
                 remote: args.remote.clone(),
+                local_backend,
             })
         }
         ["service"] => service::run(instance),

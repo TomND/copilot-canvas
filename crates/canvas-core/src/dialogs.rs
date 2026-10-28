@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use crate::agents::AgentKind;
 use crate::side::{DefaultField, SideView};
-use crate::copilot_cfg::Kind;
+use crate::config::Kind;
 use crate::git::GitInfo;
 use crate::input::{KeyCode, KeyEvent, Modifiers};
 

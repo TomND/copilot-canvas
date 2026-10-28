@@ -75,6 +75,17 @@ pub enum ClientMsg {
     Input8 { id: String, input: Input, seq: u64 },
     /// Protocol 8: `Subscribe` plus the focused tile (frames at a higher rate remotely).
     Subscribe8 { ids: Vec<String>, focused: Option<String> },
+    /// Protocol 8: opens a canvas document owned by the service: `path` (on
+    /// the service's machine; `None`: its default canvas), created from the
+    /// demo layout when `demo`. Answered with `ServiceMsg::Doc`; the client
+    /// then gets every `DocPatch` of it.
+    DocOpen { path: Option<String>, demo: bool, cwd: String },
+    /// Protocol 8: changes to an open document (`canvas_model::sync::Op`
+    /// list as JSON) made on top of version `base`.
+    DocEdit { key: String, base: u64, ops_json: String },
+    /// Protocol 8: a backend request (`canvas_model::rpc::Request` as JSON),
+    /// answered with `ServiceMsg::RpcReply` carrying the same `id`.
+    Rpc { id: u64, json: String },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -185,6 +196,17 @@ pub enum ServiceMsg {
     /// Protocol 8: the agent session a terminal runs became known (OpenCode
     /// creates its session on the first prompt): terminal id -> the agent's id.
     AgentSession { id: String, native: String },
+    /// Protocol 8: a whole canvas document (`canvas_model::sync::DocReply` as
+    /// JSON) at `version`: the answer to `DocOpen`, or sent again when the
+    /// client must resynchronize.
+    Doc { key: String, version: u64, json: String },
+    /// Protocol 8: an edit the service applied to an open document, sent to
+    /// every client that opened it; `origin` is the editing connection's id.
+    DocPatch { key: String, version: u64, origin: u64, ops_json: String },
+    /// Protocol 8: the document was saved up to `version`, or `error` says why not.
+    DocSaved { key: String, version: u64, error: Option<String> },
+    /// Protocol 8: the answer to `ClientMsg::Rpc` (`canvas_model::rpc::Response` as JSON).
+    RpcReply { id: u64, json: String },
 }
 
 /// Index of the first `ServiceMsg` variant protocol-7 clients cannot decode.
@@ -199,7 +221,15 @@ impl ServiceMsg {
             ServiceMsg::Frame8(frame) if protocol < 8 || !frame8 => Some(ServiceMsg::Frame(frame.to_v7())),
             ServiceMsg::Heartbeat { .. } if protocol < 8 => None,
             ServiceMsg::Ready8 { pid, .. } if protocol < 8 => Some(ServiceMsg::Ready { pid }),
-            ServiceMsg::AgentSession { .. } if protocol < 8 => None,
+            ServiceMsg::AgentSession { .. }
+            | ServiceMsg::Doc { .. }
+            | ServiceMsg::DocPatch { .. }
+            | ServiceMsg::DocSaved { .. }
+            | ServiceMsg::RpcReply { .. }
+                if protocol < 8 =>
+            {
+                None
+            }
             other => Some(other),
         }
     }
@@ -640,6 +670,9 @@ pub(crate) mod tests {
             (18, ClientMsg::Heartbeat),
             (19, ClientMsg::Input8 { id: "t".into(), input: Input::Key { key: Key::Char('x'), mods: MOD_CTRL }, seq: 1 << 40 }),
             (20, ClientMsg::Subscribe8 { ids: vec!["a".into(), "b".into()], focused: Some("b".into()) }),
+            (21, ClientMsg::DocOpen { path: Some(r"C:\c.json".into()), demo: false, cwd: r"C:\w".into() }),
+            (22, ClientMsg::DocEdit { key: "canvas-1".into(), base: 7, ops_json: "[]".into() }),
+            (23, ClientMsg::Rpc { id: 9, json: "\"Info\"".into() }),
         ];
         for (index, message) in client {
             let bytes = postcard::to_stdvec(&message).unwrap();
@@ -650,6 +683,11 @@ pub(crate) mod tests {
             (SERVICE_V7_VARIANTS, ServiceMsg::Frame8(sample_frame8())),
             (13, ServiceMsg::Heartbeat { input_ack: 42 }),
             (14, ServiceMsg::Ready8 { pid: 9, input_ack: 3 }),
+            (15, ServiceMsg::AgentSession { id: "t".into(), native: "ses_x".into() }),
+            (16, ServiceMsg::Doc { key: "canvas-1".into(), version: 1, json: "{}".into() }),
+            (17, ServiceMsg::DocPatch { key: "canvas-1".into(), version: 2, origin: 3, ops_json: "[]".into() }),
+            (18, ServiceMsg::DocSaved { key: "canvas-1".into(), version: 2, error: Some("disk full".into()) }),
+            (19, ServiceMsg::RpcReply { id: 9, json: "\"Done\"".into() }),
         ];
         for (index, message) in service {
             let bytes = postcard::to_stdvec(&message).unwrap();
@@ -669,11 +707,20 @@ pub(crate) mod tests {
             ServiceMsg::Heartbeat { input_ack: 1 },
             ServiceMsg::Ready8 { pid: 1, input_ack: 1 },
             ServiceMsg::Clipboard("x".into()),
+            ServiceMsg::AgentSession { id: "t".into(), native: "n".into() },
+            ServiceMsg::Doc { key: "k".into(), version: 1, json: "{}".into() },
+            ServiceMsg::DocPatch { key: "k".into(), version: 2, origin: 1, ops_json: "[]".into() },
+            ServiceMsg::DocSaved { key: "k".into(), version: 2, error: None },
+            ServiceMsg::RpcReply { id: 1, json: "\"Done\"".into() },
         ];
         for message in all.clone() {
             let Some(shaped) = message.shaped(7, true) else { continue };
             let bytes = postcard::to_stdvec(&shaped).unwrap();
             assert!(bytes[0] < SERVICE_V7_VARIANTS, "a protocol-7 client got {shaped:?}");
+        }
+        for message in &all[5..] {
+            assert_eq!(message.clone().shaped(7, true), None, "{message:?} is protocol 8 only");
+            assert_eq!(message.clone().shaped(8, true).as_ref(), Some(message));
         }
         assert_eq!(ServiceMsg::Heartbeat { input_ack: 1 }.shaped(7, true), None);
         let ServiceMsg::Frame(frame) = ServiceMsg::Frame8(sample_frame8()).shaped(7, true).unwrap() else { panic!("frame") };

@@ -15,6 +15,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded, unbounded};
 use crate::paths::{Instance, build_id};
 use crate::pipe;
 use crate::protocol::{self, CAP_COMPRESS, CAP_FRAME8, ClientInfo, ClientMsg, Input, PROTOCOL, PROTOCOL_MIN, ServiceMsg};
+use crate::sync::Opened;
 pub use canvas_common::handshake::{AuthError, NoChallenge};
 use canvas_common::wire::{self, Beat, Closer, FrameReader, FrameWriter, Liveness, WireStats};
 use canvas_common::{handshake, tcp};
@@ -142,11 +143,14 @@ pub struct ConnOptions {
     pub name: String,
     pub heartbeat: Duration,
     pub dead_after: Duration,
+    /// Backend requests go over this connection (remote mode): it carries
+    /// them and routes their answers.
+    pub rpc: Option<Arc<crate::remote::RemoteBackend>>,
 }
 
 impl Default for ConnOptions {
     fn default() -> Self {
-        Self { start: false, compress: true, name: "client".into(), heartbeat: wire::HEARTBEAT, dead_after: wire::DEAD_AFTER }
+        Self { start: false, compress: true, name: "client".into(), heartbeat: wire::HEARTBEAT, dead_after: wire::DEAD_AFTER, rpc: None }
     }
 }
 
@@ -229,6 +233,24 @@ pub fn reconnect(target: &ConnTarget, options: &ConnOptions, session: &Arc<Clien
             }
         }
         attempt += 1;
+    }
+}
+
+/// Opens a canvas document on the service (`DocOpen`) and waits for it.
+/// Messages that arrive first are returned for the caller to handle.
+pub fn open_doc(conn: &Conn, path: Option<String>, demo: bool, cwd: &str, timeout: Duration) -> Result<(Opened, Vec<ServiceMsg>)> {
+    conn.tx.send(ClientMsg::DocOpen { path, demo, cwd: cwd.to_owned() }).context("the service connection closed")?;
+    let deadline = Instant::now() + timeout;
+    let mut early = Vec::new();
+    loop {
+        match conn.rx.recv_deadline(deadline) {
+            Ok(ServiceMsg::Doc { key, version, json }) => return Ok((Opened::from_message(key, version, &json)?, early)),
+            Ok(other) => early.push(other),
+            Err(RecvTimeoutError::Timeout) => bail!("the service did not send the canvas"),
+            Err(RecvTimeoutError::Disconnected) => {
+                bail!("the service closed the connection when asked for the canvas; it may be an older build (stop it with `copilot-canvas service stop` and reopen)")
+            }
+        }
     }
 }
 
@@ -393,6 +415,11 @@ fn establish(
     // A service of another protocol (about to be upgraded) sends messages this
     // build cannot decode; skip them so its answers (stats) still arrive.
     let lenient = protocol != PROTOCOL;
+    // Backend answers go straight to their callers (who may be the UI thread).
+    let rpc = options.rpc.clone().filter(|_| v8).map(|backend| {
+        let generation = backend.attach(out_tx.clone());
+        (backend, generation)
+    });
     {
         let (liveness, reading, closer, session) = (liveness.clone(), reading.clone(), closer.clone(), session.clone());
         std::thread::Builder::new().name("service-reader".into()).spawn(move || {
@@ -410,12 +437,21 @@ fn establish(
                     session.ack(input_ack);
                     continue;
                 }
+                if let ServiceMsg::RpcReply { id, json } = message {
+                    if let Some((backend, _)) = &rpc {
+                        backend.deliver(id, json);
+                    }
+                    continue;
+                }
                 if in_tx.send(message).is_err() {
                     break;
                 }
             }
             reading.store(false, Ordering::Release);
             closer.close();
+            if let Some((backend, generation)) = &rpc {
+                backend.detach(*generation);
+            }
         })?;
     }
     {

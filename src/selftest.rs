@@ -11,7 +11,7 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 use crate::client::doc::Doc;
 use crate::paths::Instance;
-use canvas_agents::agents::{self, AgentKind};
+use canvas_agents::agents::{self, AgentKind, Provide};
 use canvas_host::emulator::alacritty::AlacrittyEmulator;
 use canvas_host::emulator::{Emulator, feed_collect};
 use crate::service::term::{headless, lock, screen_text};
@@ -1227,6 +1227,7 @@ mod upgrade_probe {
 
     use super::Console;
 
+
     /// The old build must speak the same protocol (otherwise the restart is required at startup).
     /// Manual (after `cargo build --release`): `UPGRADE_OLD_EXE=<older copilot-canvas.exe> cargo test --release upgrade_probe -- --ignored --nocapture`.
     /// An older build's service keeps a shell running; the new client keeps it at
@@ -2245,6 +2246,89 @@ mod factory_probe {
         }
         quit(&mut ui, &instance);
         let _ = crate::taskschd::delete(&task);
+        if result.is_ok() {
+            let _ = std::fs::remove_dir_all(&root);
+        } else {
+            println!("artifacts kept in {}", root.display());
+        }
+        result.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod two_clients_probe {
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use super::Console;
+
+    /// Manual: `cargo build --release; cargo test --release two_clients_probe -- --ignored --nocapture`.
+    /// Two TUI clients on one instance in hidden pseudoconsoles, one over
+    /// `--remote loopback` and one over the local pipe: a box renamed in
+    /// either shows in the other (the service owns the canvas and patches both).
+    #[test]
+    #[ignore]
+    fn two_clients_probe() {
+        let root = std::env::temp_dir().join(format!("cc-two-clients-{}", uuid::Uuid::new_v4()));
+        let (home, sessions, work) = (root.join("home"), root.join("sessions"), root.join("work"));
+        for d in [&sessions, &work] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let instance = crate::paths::Instance::new(Some(format!("two{}", std::process::id())), Some(home), Some(sessions)).unwrap();
+        let exe = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\copilot-canvas.exe");
+        let args = |remote: bool| -> Vec<String> {
+            let mut args: Vec<String> = vec![
+                "--demo".into(), "--instance".into(), instance.name.clone(), "--home".into(), instance.home.to_string_lossy().into_owned(),
+                "--sessions-dir".into(), instance.sessions_dir.to_string_lossy().into_owned(), "--cwd".into(), work.to_string_lossy().into_owned(),
+            ];
+            if remote {
+                args.extend(["--remote".into(), "loopback".into()]);
+            }
+            args
+        };
+        let result = (|| -> anyhow::Result<()> {
+            // The remote client starts the service listening on loopback; the local one joins over the pipe.
+            let mut remote = Console::start(&exe, &args(true), 150, 40)?;
+            remote.wait("remote canvas", Duration::from_secs(20), |t| t.contains("Build session canvas"))?;
+            let mut local = Console::start(&exe, &args(false), 150, 40)?;
+            local.wait("local canvas", Duration::from_secs(20), |t| t.contains("Build session canvas"))?;
+            println!("  · rename in the remote client, see it in the local one");
+            remote.send(b"r")?;
+            remote.wait("rename dialog", Duration::from_secs(5), |t| t.contains("Rename (canvas label)"))?;
+            remote.send(b"\x15Renamed remotely\r")?;
+            if let Err(error) = local.wait("the remote rename", Duration::from_secs(5), |t| t.contains("Renamed remotely")) {
+                println!("--- remote ---\n{}", remote.text());
+                println!("--- saved ---\n{}", std::fs::read_to_string(instance.home.join("demo-canvas.json")).unwrap_or_default().lines().filter(|l| l.contains("\"name\"")).collect::<Vec<_>>().join("\n"));
+                println!("--- service log ---\n{}", std::fs::read_to_string(instance.log_path()).unwrap_or_default());
+                return Err(error);
+            }
+            println!("  · rename in the local client, see it in the remote one");
+            local.send(b"r")?;
+            local.wait("rename dialog", Duration::from_secs(5), |t| t.contains("Rename (canvas label)"))?;
+            local.send(b"\x15Renamed locally\r")?;
+            remote.wait("the local rename", Duration::from_secs(5), |t| t.contains("Renamed locally"))?;
+            println!("  · panning one client leaves the other's view alone");
+            // The box on the canvas (left of the detail panel on the right).
+            let label = |ui: &Console| ui.find_in("Renamed locally", 34, 84);
+            let (before, moved) = (label(&remote), label(&local));
+            anyhow::ensure!(before.is_some() && moved.is_some(), "the box is on both canvases");
+            local.send(b"\x1b[1;5D")?;
+            local.wait("the local view panned", Duration::from_secs(5), |_| label(&local) != moved)?;
+            std::thread::sleep(Duration::from_millis(500));
+            anyhow::ensure!(label(&remote) == before, "the remote view moved with the local one");
+            for ui in [&mut remote, &mut local] {
+                ui.send(b"q")?;
+                anyhow::ensure!(ui.wait_exit(Duration::from_secs(10))? == 0, "client exit code");
+            }
+            let saved: crate::client::doc::Doc = serde_json::from_str(&std::fs::read_to_string(instance.home.join("demo-canvas.json"))?)?;
+            anyhow::ensure!(saved.node("demo-main").is_some_and(|n| n.name == "Renamed locally"), "the service saved the last rename");
+            println!("PASS");
+            Ok(())
+        })();
+        if let Ok(conn) = crate::client::conn::try_connect(&instance) {
+            let _ = conn.tx.send(crate::protocol::ClientMsg::Shutdown);
+            std::thread::sleep(Duration::from_millis(1500));
+        }
         if result.is_ok() {
             let _ = std::fs::remove_dir_all(&root);
         } else {

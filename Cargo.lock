@@ -221,7 +221,6 @@ name = "canvas-core"
 version = "0.3.0"
 dependencies = [
  "anyhow",
- "canvas-agents",
  "canvas-common",
  "canvas-model",
  "canvas-termview",

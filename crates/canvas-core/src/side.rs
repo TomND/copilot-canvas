@@ -9,13 +9,14 @@ use ratatui::style::Color;
 
 use crate::agents::{AgentKind, agent_of};
 use crate::app::{App, AppEvent, Seed};
+use crate::automation::Automation;
+use crate::config::{self, Kind};
 use crate::dialogs::{Confirm, Modal, Pick, PickPurpose, Prompt, PromptPurpose, TextInput};
 use crate::doc::{CONTEXTS, EFFORTS, GRID_X, GRID_Y, Group, LaunchDefaults, MODES, Node, NodeKind, Rect, SESSION_H, SESSION_W};
 use crate::paint::{BLUE, DARK, GRAY, POSITIVE, MUTED, PURPLE, NEGATIVE, TEXT, ATTENTION};
-use crate::status::Status;
-use crate::automations::{self, Automation};
-use crate::copilot_cfg::{self, Kind};
 use crate::paths::{format_age, now_ms, parse_rfc3339_ms};
+use crate::rpc::Backend;
+use crate::status::Status;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SideView {
@@ -236,21 +237,20 @@ impl App {
         if !self.configs_loading.insert(kind) {
             return;
         }
-        let tx = self.app_tx.clone();
         if self.demo {
             // Demo mode never runs an agent CLI.
-            let snapshot = copilot_cfg::Snapshot { errors: vec![format!("demo mode: {} settings are not loaded", kind.label())], ..Default::default() };
-            let _ = tx.send(AppEvent::Config(kind, Box::new(snapshot)));
+            let snapshot = config::Snapshot { errors: vec![format!("demo mode: {} settings are not loaded", kind.label())], ..Default::default() };
+            let _ = self.app_tx.send(AppEvent::Config(kind, Box::new(snapshot)));
             return;
         }
-        std::thread::spawn(move || {
-            let snapshot = crate::agents::config::snapshot(kind).unwrap_or_else(|e| copilot_cfg::Snapshot { errors: vec![format!("{e:#}")], ..Default::default() });
-            let _ = tx.send(AppEvent::Config(kind, Box::new(snapshot)));
-        });
+        self.in_background(
+            move |backend| backend.config(kind).unwrap_or_else(|e| config::Snapshot { errors: vec![format!("{e:#}")], ..Default::default() }),
+            move |snapshot| AppEvent::Config(kind, Box::new(snapshot)),
+        );
     }
 
     /// A configuration arrived.
-    pub fn on_config(&mut self, kind: AgentKind, snapshot: copilot_cfg::Snapshot) {
+    pub fn on_config(&mut self, kind: AgentKind, snapshot: config::Snapshot) {
         self.configs_loading.remove(&kind);
         if kind == self.config_agent {
             self.config = Some(snapshot.clone());
@@ -283,14 +283,10 @@ impl App {
     }
 
     /// Runs a CLI change in the background; refreshes the config afterwards.
-    pub fn run_cli_op(&mut self, label: String, op: impl FnOnce() -> anyhow::Result<String> + Send + 'static) {
+    pub fn run_cli_op(&mut self, label: String, op: impl FnOnce(&dyn Backend) -> anyhow::Result<String> + Send + 'static) {
         self.cli_busy = Some(label.clone());
         self.notify(format!("{label}…"), false);
-        let tx = self.app_tx.clone();
-        std::thread::spawn(move || {
-            let result = op().map_err(|e| format!("{e:#}"));
-            let _ = tx.send(AppEvent::CliDone { label, result });
-        });
+        self.in_background(move |backend| op(backend).map_err(|e| format!("{e:#}")), move |result| AppEvent::CliDone { label, result });
     }
 
     pub fn automation(&self, key: &str) -> Option<&Automation> {
@@ -343,7 +339,7 @@ impl App {
                     }
                 }
                 rows.push(ListRow::header("Manifests"));
-                rows.push(ListRow::row(ItemRef::AutomationsDir, "›", TEXT, "Folder", self.automations_dir().display().to_string()));
+                rows.push(ListRow::row(ItemRef::AutomationsDir, "›", TEXT, "Folder", self.automations_folder.clone()));
                 rows.push(ListRow::row(ItemRef::Refresh, "⟳", BLUE, "Refresh", ""));
             }
             SideView::Plugins => match &self.config {
@@ -459,7 +455,7 @@ impl App {
                     let value = if minutes == 0 { "never".to_owned() } else { format!("after {minutes} min idle") };
                     rows.push(ListRow::row(ItemRef::IdleStop, "›", TEXT, "Stop idle sessions", value));
                     rows.push(ListRow::header("Automations"));
-                    rows.push(ListRow::row(ItemRef::AutomationsDir, "›", TEXT, "Manifest folder", self.automations_dir().display().to_string()));
+                    rows.push(ListRow::row(ItemRef::AutomationsDir, "›", TEXT, "Manifest folder", self.automations_folder.clone()));
                 }
                 rows.push(ListRow::header(if self.config_agent == AgentKind::Copilot { "Copilot settings (copilot config)".to_owned() } else { format!("{label} settings (read-only)") }));
                 rows.push(ListRow::row(ItemRef::ConfigAgent, "⇄", BLUE, format!("Agent: {label}"), "A: switch"));
@@ -610,7 +606,7 @@ impl App {
             ItemRef::AutomationsDir => self.modals.push(Modal::Prompt(Prompt {
                 title: "Automation manifest folder".into(),
                 hint: "one YAML manifest per automation (see copilot-canvas automations import); empty: default".into(),
-                input: TextInput::new(&self.doc.automations_dir.clone().unwrap_or_else(|| self.automations_dir().display().to_string())),
+                input: TextInput::new(&self.doc.automations_dir.clone().unwrap_or_else(|| self.automations_folder.clone())),
                 purpose: PromptPurpose::AutomationsDir,
             })),
             ItemRef::ConfigAgent => self.cycle_config_agent(),
@@ -662,7 +658,7 @@ impl App {
     /// Turns a plugin, MCP server or skill of `config_agent` on or off.
     pub fn set_config_enabled(&mut self, what: Kind, name: String, enabled: bool) {
         let agent = self.config_agent;
-        if !self.supported(crate::agents::config::caps_for_changes(agent, what).0) {
+        if !self.supported(config::caps_for_changes(agent, what).0) {
             return;
         }
         let noun = match what {
@@ -670,16 +666,16 @@ impl App {
             Kind::Mcp => "MCP server",
             Kind::Skill => "skill",
         };
-        self.run_cli_op(format!("{} {noun} {name}", if enabled { "Enabling" } else { "Disabling" }), move || crate::agents::config::set_enabled(agent, what, &name, enabled));
+        self.run_cli_op(format!("{} {noun} {name}", if enabled { "Enabling" } else { "Disabling" }), move |backend| backend.config_set_enabled(agent, what, &name, enabled));
     }
 
     /// Removes a plugin, MCP server or skill of `config_agent`.
     pub fn remove_config(&mut self, what: Kind, name: String) {
         let agent = self.config_agent;
-        if !self.supported(crate::agents::config::caps_for_changes(agent, what).1) {
+        if !self.supported(config::caps_for_changes(agent, what).1) {
             return;
         }
-        self.run_cli_op(format!("Removing {name}"), move || crate::agents::config::remove(agent, what, &name));
+        self.run_cli_op(format!("Removing {name}"), move |backend| backend.config_remove(agent, what, &name));
     }
 
     /// Del: remove (always confirmed).
@@ -692,7 +688,7 @@ impl App {
             ItemRef::Skill(_) => Kind::Skill,
             _ => return,
         };
-        if !self.supported(crate::agents::config::caps_for_changes(self.config_agent, what).1) {
+        if !self.supported(config::caps_for_changes(self.config_agent, what).1) {
             return;
         }
         let (what, action) = match &row.item {
@@ -734,15 +730,13 @@ impl App {
         }
         let enabled = !automation.enabled;
         let key = key.to_owned();
-        let tx = self.app_tx.clone();
-        let dir = (!self.demo).then(|| self.automations_dir());
+        let (backend, tx) = (self.backend.clone(), self.app_tx.clone());
+        let (dir, tasks) = (self.doc.automations_dir.clone(), !self.demo);
         self.notify(format!("{} “{}”…", if enabled { "Enabling" } else { "Disabling" }, automation.name), false);
         std::thread::spawn(move || {
-            let result = automations::set_enabled(&automations::db_path(), &key, enabled).map(|_| String::new()).map_err(|e| format!("{e:#}"));
+            let result = backend.automation_set_enabled(&key, enabled).map(|_| String::new()).map_err(|e| format!("{e:#}"));
             let _ = tx.send(AppEvent::CliDone { label: format!("{} automation", if enabled { "Enabled" } else { "Disabled" }), result });
-            let factory_loaded = dir.as_ref().is_some_and(|d| d.is_dir());
-            let (list, errors) = automations::load_all(&automations::db_path(), dir.as_deref());
-            let _ = tx.send(AppEvent::Automations(crate::factory_client::AutoLoad { list, errors, factory_loaded }));
+            let _ = tx.send(crate::factory_client::loaded(backend.automations(dir, tasks)));
         });
     }
 
@@ -802,11 +796,11 @@ impl App {
                 if value.is_empty() {
                     return Err("enter a path or URL".into());
                 }
-                self.run_cli_op(format!("Adding skill {value}"), move || copilot_cfg::add_skill(&value));
+                self.run_cli_op(format!("Adding skill {value}"), move |backend| backend.skill_add(&value));
             }
             PromptPurpose::AddMcp => {
-                copilot_cfg::parse_mcp_add(&value).map_err(|e| e.to_string())?;
-                self.run_cli_op("Adding MCP server".into(), move || copilot_cfg::add_mcp(&value));
+                config::parse_mcp_add(&value).map_err(|e| e.to_string())?;
+                self.run_cli_op("Adding MCP server".into(), move |backend| backend.mcp_add(&value));
             }
             PromptPurpose::InstallPlugin => {
                 if value.is_empty() {
@@ -817,23 +811,26 @@ impl App {
             }
             PromptPurpose::CopilotSetting(key) => {
                 if value.is_empty() {
-                    self.run_cli_op(format!("Removing setting {key}"), move || copilot_cfg::config_remove(&key));
+                    self.run_cli_op(format!("Removing setting {key}"), move |backend| backend.config_unset(&key));
                 } else {
-                    self.run_cli_op(format!("Setting {key}"), move || copilot_cfg::config_set(&key, &value));
+                    self.run_cli_op(format!("Setting {key}"), move |backend| backend.config_set(&key, &value));
                 }
             }
             PromptPurpose::NewCopilotSetting => {
                 let Some((key, rest)) = value.split_once(char::is_whitespace) else { return Err("enter: key value".into()) };
                 let (key, rest) = (key.to_owned(), rest.trim().to_owned());
-                self.run_cli_op(format!("Setting {key}"), move || copilot_cfg::config_set(&key, &rest));
+                self.run_cli_op(format!("Setting {key}"), move |backend| backend.config_set(&key, &rest));
             }
             PromptPurpose::Default(field, group) => self.apply_default(field, group, &value),
             PromptPurpose::AutomationsDir => {
                 let value = value.trim().trim_matches('"').to_owned();
-                if !value.is_empty() && !std::path::Path::new(&value).is_dir() {
+                if !value.is_empty() && !self.backend.path_info(&value).map_err(|e| format!("{e:#}"))?.dir {
                     return Err(format!("{value} is not a folder"));
                 }
                 self.doc.automations_dir = (!value.is_empty()).then_some(value);
+                if let Ok(folder) = self.backend.automations_dir(self.doc.automations_dir.clone()) {
+                    self.automations_folder = folder;
+                }
                 self.mark_dirty();
                 self.load_automations();
             }
@@ -896,20 +893,24 @@ impl App {
 
     /// Runs an interactive Copilot CLI command in a canvas terminal tile.
     pub fn open_cli_terminal(&mut self, title: &str, args: Vec<String>) {
-        let Some(exe) = copilot_cfg::copilot_exe() else { return self.notify("copilot.exe was not found on PATH", true) };
+        let name = format!("{title}: {}", args.last().cloned().unwrap_or_default());
+        let command = match self.backend.cli_command(args) {
+            Ok(command) => command,
+            Err(error) => return self.notify(format!("{error:#}"), true),
+        };
         let id = format!("cli-{}", uuid::Uuid::new_v4());
         let (x, y) = self.doc.free_slot(self.doc.view.x + 2, self.doc.view.y + 1, 3, NodeKind::Session);
         self.doc.nodes.push(Node {
             id: id.clone(),
             kind: NodeKind::Session,
-            name: format!("{title}: {}", args.last().cloned().unwrap_or_default()),
+            name,
             x,
             y,
             cwd: Some(self.default_cwd.clone()),
             parent: None,
             agent_key: None,
             source: Some("cli".into()),
-            command: Some(std::iter::once(exe.to_string_lossy().into_owned()).chain(args).collect()),
+            command: Some(command),
             fresh: true,
             automation: None,
             synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None,
@@ -920,21 +921,22 @@ impl App {
 
     // ---------- group folders ----------
 
+    /// `<backend home>\groups\<slug of the group name>`.
     pub fn suggested_group_folder(&self, group_id: &str) -> String {
         let name = self.doc.group(group_id).map(|g| g.name.clone()).unwrap_or_else(|| "group".into());
         let slug = crate::git::slug(&name).replace('/', "-");
         let slug = if slug.is_empty() { "group".to_owned() } else { slug };
-        self.instance_home.join("groups").join(slug).display().to_string()
+        PathBuf::from(&self.info.home).join("groups").join(slug).display().to_string()
     }
 
     pub fn set_group_folder(&mut self, group_id: &str, path: &str) -> Result<(), String> {
-        let path = crate::paths::absolute(std::path::Path::new(path.trim().trim_matches('"')));
+        let path = self.backend.path_info(path.trim().trim_matches('"')).map_err(|e| format!("{e:#}"))?.absolute;
         let Some(group) = self.doc.group_mut(group_id) else { return Err("group not found".into()) };
-        group.folder = Some(path.display().to_string());
+        group.folder = Some(path.clone());
         let group = group.clone();
-        crate::doc::prepare_group_folders(&group).map_err(|e| format!("{e:#}"))?;
+        self.backend.prepare_group(&group).map_err(|e| format!("{e:#}"))?;
         self.mark_dirty();
-        self.notify(format!("“{}” uses {} for ai-docs and human-outputs.", group.name, path.display()), false);
+        self.notify(format!("“{}” uses {path} for ai-docs and human-outputs.", group.name), false);
         Ok(())
     }
 
@@ -954,11 +956,11 @@ impl App {
         if group.folder.is_none() {
             return self.ask_group_folder(group_id);
         }
-        if let Err(error) = crate::doc::prepare_group_folders(&group) {
+        if let Err(error) = self.backend.prepare_group(&group) {
             return self.notify(format!("{error:#}"), true);
         }
         let path = if outputs { group.outputs() } else { group.ai_docs() }.expect("folder set");
-        if let Err(error) = copilot_cfg::open_in_explorer(&path) {
+        if let Err(error) = self.backend.open_folder(&path.display().to_string()) {
             self.notify(format!("{error:#}"), true);
         }
     }
@@ -986,7 +988,7 @@ pub fn agent_launch(
     resume: bool,
 ) -> crate::protocol::AgentLaunch {
     let kind = agent_of(node);
-    let caps = kind.provider().caps();
+    let caps = kind.caps();
     let defaults = canvas.merged(group.and_then(|g| g.defaults.as_ref()));
     let fresh = |value: &Option<String>, supported: bool| value.clone().filter(|v| !resume && supported && !v.trim().is_empty());
     let group = group.filter(|g| g.folder.is_some());
@@ -1099,6 +1101,13 @@ mod launch_tests {
 impl App {
     // ---------- automations on the canvas ----------
 
+    /// An id derived from `key` (so windows creating the same box at the same
+    /// time create one), or a random one when the canvas already uses it.
+    pub fn shared_id(&self, prefix: &str, key: &str) -> String {
+        let id = crate::sync::stable_id(prefix, key);
+        if self.doc.node(&id).is_some() || self.doc.group(&id).is_some() { format!("{prefix}-{}", uuid::Uuid::new_v4()) } else { id }
+    }
+
     /// Keeps one box per automation inside a dedicated "Automations" group.
     pub fn sync_automation_nodes(&mut self) {
         let keys: Vec<String> = self.automations.iter().map(|a| a.key.clone()).collect();
@@ -1118,7 +1127,8 @@ impl App {
                         Some(b) => (b.x, b.y + b.h + 4),
                         None => (self.doc.view.x + 2, self.doc.view.y + 1),
                     };
-                    let id = format!("g-automations-{}", uuid::Uuid::new_v4());
+                    // Windows adding it at the same time add the same group.
+                    let id = self.shared_id("g-automations", "automations");
                     self.doc.groups.push(Group {
                         id: id.clone(),
                         name: "Automations".into(),
@@ -1154,8 +1164,9 @@ impl App {
     fn add_automation_boxes(&mut self, group_id: &str, seeds: Vec<(String, String)>) {
         for (key, name) in seeds {
             let (_, (x, y)) = self.slot_or_overflow(group_id);
+            let id = self.shared_id("auto", &key);
             self.doc.nodes.push(Node {
-                id: format!("auto-{}", uuid::Uuid::new_v4()),
+                id,
                 kind: NodeKind::Automation,
                 name,
                 x,
@@ -1251,17 +1262,13 @@ impl App {
             })
             .collect();
         let since = now_ms().saturating_sub(self.doc.vscode.window_hours as u64 * 3_600_000);
-        let tx = self.app_tx.clone();
-        std::thread::spawn(move || {
-            let (workspaces, mut warnings) = crate::vscode::scan(&crate::vscode::default_roots());
-            let (groups, group_warnings) = crate::vscode::agent_groups(&crate::vscode::default_user_dirs());
-            warnings.extend(group_warnings);
-            let grouped: std::collections::HashSet<String> = groups.iter().flat_map(|g| g.sessions.iter().cloned()).collect();
-            let (containers, container_warnings) = crate::vscode::read_containers(&crate::vscode::default_container_roots(), since, &grouped);
-            warnings.extend(container_warnings);
-            let candidates = crate::vscode::sync_candidates(&workspaces, &groups, &containers, &created);
-            let _ = tx.send(AppEvent::VsSync(candidates, warnings));
-        });
+        self.in_background(
+            move |backend| backend.vscode_scan(created, since),
+            |scan| match scan {
+                Ok((candidates, warnings)) => AppEvent::VsSync(candidates, warnings),
+                Err(error) => AppEvent::VsSync(Vec::new(), vec![format!("{error:#}")]),
+            },
+        );
     }
 
     pub fn apply_vs_sync(&mut self, candidates: Vec<crate::vscode::SyncCandidate>, warnings: Vec<String>) {
@@ -1379,9 +1386,7 @@ impl App {
         self.sync_agents();
         let changed = added + renamed + linked > 0;
         if changed {
-            if let Err(error) = self.store.backup(&before, "before-vscode-sync") {
-                self.notify(format!("Could not back up the canvas: {error:#}"), true);
-            }
+            self.backup_doc(before.clone(), "before-vscode-sync", true);
             self.undo = Some(("VS Code sync".into(), Box::new(before)));
         }
         if let Some(first) = first {
@@ -1418,7 +1423,7 @@ impl App {
         let Some((label, doc)) = self.undo.take() else {
             return self.notify("Nothing to undo.", false);
         };
-        let _ = self.store.backup(&self.doc, "before-undo");
+        self.backup_doc(self.doc.clone(), "before-undo", false);
         // Keep view and preferences that changed meanwhile; restore the layout.
         let (view, ui, vscode) = (self.doc.view.clone(), self.doc.ui.clone(), self.doc.vscode.clone());
         self.doc = *doc;
@@ -1474,41 +1479,22 @@ impl App {
 
     pub fn start_migration(&mut self) {
         self.modals.push(Modal::Migrate(crate::dialogs::Migrate { items: None, chosen: Vec::new(), sel: 0, applying: false, result: None }));
-        let tx = self.app_tx.clone();
-        std::thread::spawn(move || {
-            let snapshot = copilot_cfg::snapshot();
-            let items = crate::migrate::plan(&crate::migrate::vscode_user_dirs(), &copilot_cfg::copilot_home(), &snapshot.mcp, &snapshot.skills);
-            let _ = tx.send(AppEvent::MigratePlan(items));
-        });
+        self.in_background(
+            |backend| backend.migrate_plan(),
+            |plan| match plan {
+                Ok(items) => AppEvent::MigratePlan(items),
+                Err(error) => AppEvent::MigrateDone(Err(format!("{error:#}"))),
+            },
+        );
     }
 
     pub fn apply_migration(&mut self, items: Vec<crate::migrate::Item>) {
-        let tx = self.app_tx.clone();
-        let backups = self.instance_home.join("backups");
-        std::thread::spawn(move || {
-            let refs: Vec<&crate::migrate::Item> = items.iter().collect();
-            let runner = |args: &[String]| -> anyhow::Result<String> {
-                let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-                copilot_cfg::run_cli(&refs, Duration::from_secs(120))
-            };
-            let result = crate::migrate::apply(&refs, &copilot_cfg::copilot_home(), &backups, &runner)
-                .map(|(backup, outcomes)| {
-                    let mut lines = vec![format!("Backup: {}", backup.display())];
-                    for outcome in outcomes {
-                        lines.push(match outcome.result {
-                            Ok(_) => format!("✓ {}", outcome.name),
-                            Err(error) => format!("✗ {} — {error}", outcome.name),
-                        });
-                    }
-                    lines
-                })
-                .map_err(|e| format!("{e:#}"));
-            let _ = tx.send(AppEvent::MigrateDone(result));
-        });
+        self.in_background(move |backend| backend.migrate_apply(items).map_err(|e| format!("{e:#}")), AppEvent::MigrateDone);
     }
 
+    /// Copilot's automation database on the backend's machine.
     pub fn automation_db(&self) -> PathBuf {
-        automations::db_path()
+        PathBuf::from(&self.info.automation_db)
     }
 
     pub fn tick_side(&mut self) {
@@ -1519,6 +1505,27 @@ impl App {
             self.auto_synced = true;
             self.start_vs_sync();
         }
+        self.refresh_tails();
+    }
+
+    /// Keeps the log tails of the automation info page fresh (read on the
+    /// backend's machine, every 2 s while the page shows).
+    fn refresh_tails(&mut self) {
+        let Some(RightDetail::Automation(key)) = &self.right_detail else { return };
+        let Some(live) = self.automation(key).and_then(|a| a.factory.as_ref()) else { return };
+        let mut files = vec![(live.log_path.display().to_string(), 4096)];
+        files.extend(live.logs.first().map(|log| (log.display().to_string(), 2048)));
+        let missing = files.iter().any(|(path, _)| !self.tails.contains_key(path));
+        if self.tails_loading || (!missing && self.tails_at.elapsed() < Duration::from_secs(2)) {
+            return;
+        }
+        self.tails_loading = true;
+        self.tails_at = std::time::Instant::now();
+        let paths: Vec<String> = files.iter().map(|(path, _)| path.clone()).collect();
+        self.in_background(
+            move |backend| backend.tails(files).unwrap_or_default(),
+            move |tails| AppEvent::Tails(paths.into_iter().zip(tails.into_iter().chain(std::iter::repeat(String::new()))).collect()),
+        );
     }
 }
 

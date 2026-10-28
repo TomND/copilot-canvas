@@ -7,17 +7,17 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::app::{App, AppEvent};
+use crate::automation::{AutoLoad, Automation};
+use crate::bus::AutoRoute;
 use crate::doc::{GRID_X, GRID_Y, Node, NodeKind, Rect, SESSION_H, SESSION_W};
 use crate::status::Status;
-use crate::automations::{self, Automation};
-use crate::bus::AutoRoute;
 
-/// Result of a background load.
-pub struct AutoLoad {
-    pub list: Vec<Automation>,
-    pub errors: Vec<String>,
-    /// The manifest folder was readable (otherwise task boxes are kept as they are).
-    pub factory_loaded: bool,
+/// The event for a background load.
+pub fn loaded(load: anyhow::Result<AutoLoad>) -> AppEvent {
+    match load {
+        Ok(load) => AppEvent::Automations(load),
+        Err(error) => AppEvent::AutomationsFailed(format!("{error:#}")),
+    }
 }
 
 /// Index of the doctor in `passive::TEMPLATES`.
@@ -34,7 +34,7 @@ pub fn task_status(a: &Automation) -> Option<Status> {
     }
     let finished = live.runs.iter().find(|r| !r.ended.is_empty());
     let failed_run = finished.is_some_and(|r| !live.manifest.succeeded(r));
-    let report = live.report.as_ref().filter(|r| finished.is_some_and(|f| crate::factory::report_is_for(r, &f.started)));
+    let report = live.report.as_ref().filter(|r| finished.is_some_and(|f| crate::automation::report_is_for(r, &f.started)));
     if failed_run || report.is_some_and(|r| matches!(r.state.as_str(), "failed" | "alert")) {
         return Some(Status::Failed);
     }
@@ -64,22 +64,10 @@ pub fn task_subtitle(a: &Automation) -> Option<String> {
     }
 }
 
-/// Opens a file or URL with its default program.
-pub fn open_target(target: &str) -> Result<(), String> {
-    let target = target.trim();
-    if target.is_empty() {
-        return Err("nothing to open".into());
-    }
-    let is_url = target.starts_with("http://") || target.starts_with("https://");
-    if !is_url && !std::path::Path::new(target).exists() {
-        return Err(format!("{target} does not exist"));
-    }
-    std::process::Command::new("explorer.exe").arg(target).spawn().map(|_| ()).map_err(|e| format!("cannot open {target}: {e}"))
-}
-
 impl App {
+    /// The automation manifest folder in use (resolved by the backend).
     pub fn automations_dir(&self) -> PathBuf {
-        crate::factory_cli::configured_dir(&self.instance_home, self.doc.automations_dir.clone())
+        PathBuf::from(&self.automations_folder)
     }
 
     /// Loads Copilot's automations and the manifest-managed tasks in the background.
@@ -89,18 +77,16 @@ impl App {
         }
         self.automations_loading = true;
         self.automations_at = std::time::Instant::now();
-        let tx = self.app_tx.clone();
-        let dir = (!self.demo).then(|| self.automations_dir());
-        std::thread::spawn(move || {
-            let factory_loaded = dir.as_ref().is_some_and(|d| d.is_dir());
-            let (list, errors) = automations::load_all(&automations::db_path(), dir.as_deref());
-            let _ = tx.send(AppEvent::Automations(AutoLoad { list, errors, factory_loaded }));
-        });
+        let (dir, tasks) = (self.doc.automations_dir.clone(), !self.demo);
+        self.in_background(move |backend| backend.automations(dir, tasks), loaded);
     }
 
     pub fn on_automations(&mut self, load: AutoLoad) {
         self.automations_loading = false;
         self.automations_factory_ok = load.factory_loaded;
+        if !load.dir.is_empty() {
+            self.automations_folder = load.dir;
+        }
         self.automations = load.list;
         self.automations_error = if load.errors.is_empty() { None } else { Some(load.errors.join(" · ")) };
         self.sync_automation_nodes();
@@ -138,8 +124,9 @@ impl App {
             let target = Rect { x: wanted.0, y: wanted.1, w: SESSION_W, h: SESSION_H };
             let collides = self.doc.nodes.iter().any(|n| n.rect().intersects(&target)) || self.doc.groups.iter().any(|g| g.id != group.id && g.rect().intersects(&target));
             let (x, y) = if collides { self.slot_or_overflow(group_id).1 } else { wanted };
+            let id = self.shared_id("auto", &key);
             self.doc.nodes.push(Node {
-                id: format!("auto-{}", uuid::Uuid::new_v4()),
+                id,
                 kind: NodeKind::Automation,
                 name,
                 x,
@@ -195,12 +182,9 @@ impl App {
             return;
         }
         if self.doc.group(group_id).is_some_and(|g| g.folder.is_none()) {
-            let folder = self.instance_home.join("factory");
-            if std::fs::create_dir_all(&folder).is_err() {
-                return;
-            }
+            let Ok(folder) = self.backend.doctor_folder() else { return };
             if let Some(g) = self.doc.group_mut(group_id) {
-                g.folder = Some(folder.display().to_string());
+                g.folder = Some(folder);
             }
         }
         let (selection, detail, selected) = (self.selection.clone(), self.right_detail.clone(), self.doc.selected.clone());
@@ -251,28 +235,22 @@ impl App {
             return self.notify("Copilot automations run from VS Code or the Copilot app.", false);
         }
         let name = a.name.clone();
-        let tx = self.app_tx.clone();
         self.notify(format!("Starting {name}…"), false);
-        std::thread::spawn(move || {
-            let result = crate::taskschd::run(&name).map(|_| String::new()).map_err(|e| format!("{e:#}"));
-            let _ = tx.send(AppEvent::CliDone { label: format!("Run {name}"), result });
-        });
+        let label = format!("Run {name}");
+        self.in_background(move |backend| backend.task_run(&name).map(|_| String::new()).map_err(|e| format!("{e:#}")), move |result| AppEvent::CliDone { label, result });
         self.automations_at = std::time::Instant::now() - std::time::Duration::from_secs(12);
     }
 
     /// Enables or disables a task: the manifest (source of truth) and the task.
     pub fn toggle_task(&mut self, a: &Automation) {
         let Some(live) = a.factory.as_ref() else { return };
-        let (name, path, enabled) = (a.name.clone(), live.manifest.path.clone(), !a.enabled);
-        let tx = self.app_tx.clone();
+        let (name, path, enabled) = (a.name.clone(), live.manifest.path.display().to_string(), !a.enabled);
         self.notify(format!("{} {name}…", if enabled { "Enabling" } else { "Disabling" }), false);
-        std::thread::spawn(move || {
-            let result = crate::factory_cli::set_manifest_enabled(&path, enabled)
-                .and_then(|_| crate::taskschd::set_enabled(&name, enabled))
-                .map(|_| String::new())
-                .map_err(|e| format!("{e:#}"));
-            let _ = tx.send(AppEvent::CliDone { label: format!("{} {name}", if enabled { "Enabled" } else { "Disabled" }), result });
-        });
+        let label = format!("{} {name}", if enabled { "Enabled" } else { "Disabled" });
+        self.in_background(
+            move |backend| backend.task_set_enabled(&name, &path, enabled).map(|_| String::new()).map_err(|e| format!("{e:#}")),
+            move |result| AppEvent::CliDone { label, result },
+        );
         self.automations_at = std::time::Instant::now() - std::time::Duration::from_secs(13);
     }
 
@@ -285,8 +263,8 @@ impl App {
             2 => live.logs.first().map(|p| p.display().to_string()).unwrap_or_default(),
             _ => live.status_path.display().to_string(),
         };
-        if let Err(error) = open_target(&target) {
-            self.notify(error, true);
+        if let Err(error) = self.backend.open_target(&target) {
+            self.notify(format!("{error:#}"), true);
         }
     }
 
@@ -300,7 +278,7 @@ impl App {
         if !has_doctor {
             return self.notify("No passive session in this group reacts to automation.check (add the Doctor template).", false);
         }
-        let logs: Vec<String> = route.logs.iter().filter_map(|p| crate::factory::newest_match(p)).map(|p| p.display().to_string()).collect();
+        let logs: Vec<String> = self.backend.newest_matches(route.logs.clone()).unwrap_or_default();
         self.bus_action(serde_json::json!({"action": "emit", "event": {
             "type": "automation.check",
             "group": route.group,

@@ -195,7 +195,7 @@ impl App {
             Modal::Prompt(prompt) => match key.code {
                 KeyCode::Esc => Outcome::Close,
                 KeyCode::Tab if matches!(prompt.purpose, PromptPurpose::GroupFolder(_)) => {
-                    let start = if prompt.input.text.trim().is_empty() { self.instance_home.display().to_string() } else { prompt.input.text.clone() };
+                    let start = if prompt.input.text.trim().is_empty() { self.info.home.clone() } else { prompt.input.text.clone() };
                     self.modals.push(Modal::Prompt(prompt.clone()));
                     self.open_folder_browser(&start);
                     Outcome::Close
@@ -478,13 +478,13 @@ impl App {
         (0..browser.entries.len()).filter(|&i| needle.is_empty() || browser.entries[i].to_lowercase().contains(&needle)).collect()
     }
 
-    fn folder_open(browser: &mut FolderBrowser, name: &str) {
+    fn folder_open(backend: &dyn crate::rpc::Backend, browser: &mut FolderBrowser, name: &str) {
         let target = match (&browser.dir, name) {
             (Some(dir), "..") => dir.parent().map(PathBuf::from),
             (Some(dir), name) => Some(dir.join(name)),
             (None, drive) => Some(PathBuf::from(drive)),
         };
-        Self::folder_navigate(browser, target);
+        Self::folder_navigate(backend, browser, target);
     }
 
     fn choose_folder(&mut self, path: String) {
@@ -501,6 +501,7 @@ impl App {
     fn folder_key(&mut self, browser: &mut FolderBrowser, key: KeyEvent) -> Outcome {
         let ctrl = key.modifiers.contains(Modifiers::CONTROL);
         let visible = Self::folder_visible(browser);
+        let backend = self.backend.clone();
         match key.code {
             KeyCode::Esc => Outcome::Close,
             KeyCode::Char('s') if ctrl => match &browser.dir {
@@ -513,16 +514,16 @@ impl App {
             KeyCode::Enter | KeyCode::Right => {
                 if let Some(&index) = visible.get(browser.sel) {
                     let name = browser.entries[index].clone();
-                    Self::folder_open(browser, &name);
+                    Self::folder_open(&*backend, browser, &name);
                 }
                 Outcome::Keep
             }
             KeyCode::Left => {
-                Self::folder_open(browser, "..");
+                Self::folder_open(&*backend, browser, "..");
                 Outcome::Keep
             }
             KeyCode::Backspace if browser.filter.is_empty() => {
-                Self::folder_open(browser, "..");
+                Self::folder_open(&*backend, browser, "..");
                 Outcome::Keep
             }
             KeyCode::Backspace => {

@@ -88,77 +88,7 @@ fn list<T: for<'de> Deserialize<'de>>(args: &[&str]) -> Result<T> {
     serde_json::from_str(json).with_context(|| format!("unexpected output from copilot {}", args.join(" ")))
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq)]
-pub struct Plugin {
-    pub name: String,
-    #[serde(default)]
-    pub marketplace: String,
-    #[serde(default)]
-    pub version: String,
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default)]
-    pub source: String,
-}
-
-#[derive(Deserialize, Debug, Clone, PartialEq)]
-pub struct Skill {
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub source: String,
-    #[serde(default)]
-    pub path: String,
-    #[serde(default)]
-    pub enabled: bool,
-}
-
-#[derive(Deserialize, Debug, Clone, PartialEq)]
-pub struct Instruction {
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub label: String,
-    #[serde(default)]
-    pub location: String,
-    #[serde(rename = "type", default)]
-    pub kind: String,
-    #[serde(rename = "sourcePath", default)]
-    pub source_path: String,
-    #[serde(rename = "defaultDisabled", default)]
-    pub default_disabled: bool,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct McpServer {
-    pub name: String,
-    pub source: String,
-    pub transport: String,
-    /// Command line or URL; never environment values or headers.
-    pub target: String,
-    pub enabled: bool,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Agent {
-    pub name: String,
-    pub description: String,
-    pub source: String,
-    pub path: String,
-}
-
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Snapshot {
-    pub plugins: Vec<Plugin>,
-    pub skills: Vec<Skill>,
-    pub mcp: Vec<McpServer>,
-    pub instructions: Vec<Instruction>,
-    pub agents: Vec<Agent>,
-    /// Copilot user settings (`copilot config --list --json`), secrets redacted by Copilot.
-    pub settings: Vec<(String, String)>,
-    pub errors: Vec<String>,
-}
+pub use canvas_model::config::{Agent, Instruction, Kind, McpServer, Plugin, Skill, Snapshot, parse_mcp_add, split_words};
 
 fn mcp_from_value(value: &serde_json::Value) -> Vec<McpServer> {
     let mut servers = Vec::new();
@@ -321,23 +251,6 @@ pub fn snapshot() -> Snapshot {
     snapshot
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
-    Plugin,
-    Skill,
-    Mcp,
-}
-
-impl Kind {
-    fn word(self) -> &'static str {
-        match self {
-            Kind::Plugin => "plugin",
-            Kind::Skill => "skill",
-            Kind::Mcp => "mcp",
-        }
-    }
-}
-
 pub fn set_enabled(kind: Kind, name: &str, enabled: bool) -> Result<String> {
     run_cli(&[kind.word(), if enabled { "enable" } else { "disable" }, name], Duration::from_secs(60))
 }
@@ -364,61 +277,10 @@ pub fn config_remove(key: &str) -> Result<String> {
     run_cli(&["config", "--rm", key], Duration::from_secs(30))
 }
 
-/// `name -- command args` (stdio) or `name https://url` (http), like `copilot mcp add`.
-pub fn parse_mcp_add(line: &str) -> Result<Vec<String>> {
-    let words = split_words(line)?;
-    let Some((name, rest)) = words.split_first() else { bail!("enter: name -- command [args]   or   name https://url") };
-    anyhow::ensure!(name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'), "invalid server name");
-    let mut args = vec!["mcp".to_owned(), "add".to_owned()];
-    match rest {
-        [url] if url.starts_with("http://") || url.starts_with("https://") => {
-            args.extend(["--transport".into(), "http".into(), name.clone(), url.clone()]);
-        }
-        [dashes, command @ ..] if dashes == "--" && !command.is_empty() => {
-            args.push(name.clone());
-            args.push("--".into());
-            args.extend(command.iter().cloned());
-        }
-        _ => bail!("enter: name -- command [args]   or   name https://url"),
-    }
-    Ok(args)
-}
-
 pub fn add_mcp(line: &str) -> Result<String> {
     let args = parse_mcp_add(line)?;
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     run_cli(&refs, Duration::from_secs(60))
-}
-
-/// Splits on whitespace, honoring double quotes.
-pub fn split_words(line: &str) -> Result<Vec<String>> {
-    let mut words = Vec::new();
-    let mut current = String::new();
-    let mut quoted = false;
-    let mut has = false;
-    for c in line.chars() {
-        match c {
-            '"' => {
-                quoted = !quoted;
-                has = true;
-            }
-            c if c.is_whitespace() && !quoted => {
-                if has {
-                    words.push(std::mem::take(&mut current));
-                    has = false;
-                }
-            }
-            c => {
-                current.push(c);
-                has = true;
-            }
-        }
-    }
-    anyhow::ensure!(!quoted, "unbalanced quotes");
-    if has {
-        words.push(current);
-    }
-    Ok(words)
 }
 
 pub fn open_in_explorer(path: &Path) -> Result<()> {
@@ -454,15 +316,6 @@ mod tests {
         let grouped = serde_json::json!({"Plugin": [{"name": "p1", "type": "stdio", "command": "x"}], "User": {"u1": {"url": "https://y"}}});
         let servers = mcp_from_value(&grouped);
         assert_eq!(servers.iter().map(|s| (s.name.as_str(), s.source.as_str())).collect::<Vec<_>>(), vec![("p1", "Plugin"), ("u1", "User")]);
-    }
-
-    #[test]
-    fn mcp_add_lines_follow_cli_syntax() {
-        assert_eq!(parse_mcp_add("ctx -- npx -y \"@scope/server name\"").unwrap(), ["mcp", "add", "ctx", "--", "npx", "-y", "@scope/server name"]);
-        assert_eq!(parse_mcp_add("web https://mcp.example/v1").unwrap(), ["mcp", "add", "--transport", "http", "web", "https://mcp.example/v1"]);
-        assert!(parse_mcp_add("bad name -- x").is_err());
-        assert!(parse_mcp_add("only").is_err());
-        assert!(split_words("a \"b").is_err());
     }
 
     #[test]

@@ -7,6 +7,7 @@ pub use canvas_model::{bus, doc};
 
 pub mod agents;
 pub mod automations;
+pub mod backend;
 pub mod cli;
 pub mod copilot_cfg;
 pub mod factory;

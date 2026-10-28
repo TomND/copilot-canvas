@@ -266,17 +266,7 @@ impl Provider for Claude {
     }
 
     fn caps(&self) -> Caps {
-        Caps {
-            preassigned_ids: true,
-            native_fork: true,
-            copy_fork: false,
-            mcp_select: true,
-            progress: true,
-            config: true,
-            automations: false,
-            effort: true,
-            modes: false,
-        }
+        AgentKind::Claude.caps()
     }
 
     fn program(&self) -> Result<String> {

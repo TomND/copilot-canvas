@@ -13,6 +13,7 @@ use crate::doc::{GRID_X, Node, NodeKind};
 use crate::git;
 use crate::paths::now_ms;
 use crate::protocol::ClientMsg;
+use crate::rpc::Backend;
 
 fn item(label: &str, hint: &str, action: Action, enabled: bool) -> MenuItem {
     MenuItem { label: label.to_owned(), hint: hint.to_owned(), action, enabled }
@@ -209,12 +210,12 @@ impl App {
     pub fn can_fork(&self, id: &str) -> bool {
         let Some(node) = self.doc.node(id).filter(|n| n.kind == NodeKind::Session && n.command.is_none()) else { return false };
         let kind = agent_of(node);
-        let caps = kind.provider().caps();
+        let caps = kind.caps();
         let native = native_id(node);
         if caps.copy_fork {
-            crate::index::is_session_id(native) && self.instance.as_ref().is_some_and(|i| i.sessions_dir.join(native).join("events.jsonl").is_file())
+            kind.is_session_id(native) && self.backend.has_history(kind, native).unwrap_or(false)
         } else {
-            caps.native_fork && kind.provider().is_session_id(native) && self.sessions.contains_key(native)
+            caps.native_fork && kind.is_session_id(native) && self.sessions.contains_key(native)
         }
     }
 
@@ -292,13 +293,13 @@ impl App {
         self.notify(format!("Restarting the terminal service… {} session(s) will resume.", resume.len()), false);
         self.restarting = Some(resume);
         self.send(ClientMsg::Shutdown);
-        let tx = self.app_tx.clone();
+        let (tx, backend) = (self.app_tx.clone(), self.backend.clone());
         std::thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(20);
             while Instant::now() < deadline && crate::conn::try_connect(&instance).is_ok() {
                 std::thread::sleep(Duration::from_millis(300));
             }
-            let mouse = !demo && copilot && crate::copilot_cfg::restore_mouse().unwrap_or(false);
+            let mouse = !demo && copilot && backend.restore_mouse().unwrap_or(false);
             let result = crate::conn::connect(&instance, true).map_err(|e| format!("{e:#}"));
             let _ = tx.send(AppEvent::ServiceRestarted { result, mouse });
         });
@@ -323,6 +324,8 @@ impl App {
         self.views.clear();
         self.launching.clear();
         self.terms_rev += 1;
+        // The new service opens the document again (local changes are kept).
+        self.request_doc();
         let count = self.resume_terminals(&resume);
         let mouse = if mouse { " Copilot's mouse setting was off (forced by the old service); it is on again, so the wheel scrolls smoothly." } else { "" };
         self.notify(format!("Terminal service updated; resumed {count} session(s).{mouse}"), false);
@@ -465,8 +468,8 @@ impl App {
             Action::RunAutomation(key) => self.run_automation(&key),
             Action::OpenAutomationFile(key, which) => self.open_automation_file(&key, which),
             Action::OpenTarget(target) => {
-                if let Err(error) = crate::factory_client::open_target(&target) {
-                    self.notify(error, true);
+                if let Err(error) = self.backend.open_target(&target) {
+                    self.notify(format!("{error:#}"), true);
                 }
             }
             Action::AskDoctor(key) => self.ask_doctor(&key),
@@ -477,7 +480,7 @@ impl App {
                     return self.notify(format!("Not supported for {}.", self.config_agent.label()), true);
                 }
                 let label = format!("Updating plugin {name}");
-                self.run_cli_op(label, move || crate::copilot_cfg::update_plugin(&name));
+                self.run_cli_op(label, move |backend| backend.plugin_update(&name));
             }
             Action::CloseDetail => {
                 self.right_detail = None;
@@ -485,7 +488,7 @@ impl App {
                 self.selection = keep;
             }
             Action::OpenPath(path) => {
-                if let Err(error) = crate::copilot_cfg::open_in_explorer(std::path::Path::new(&path)) {
+                if let Err(error) = self.backend.open_folder(&path) {
                     self.notify(format!("{error:#}"), true);
                 }
             }
@@ -587,8 +590,8 @@ impl App {
                 purpose: crate::dialogs::PromptPurpose::SendEvent(group),
             })),
             Action::OpenEvents(group) => match self.doc.group(&group).and_then(|g| g.folder.clone()) {
-                Some(folder) => match crate::bus::ensure_catalog(std::path::Path::new(&folder)) {
-                    Ok(path) => match crate::links::open(&path.display().to_string()) {
+                Some(folder) => match self.backend.ensure_catalog(&folder) {
+                    Ok(path) => match crate::links::open(&path) {
                         Ok(message) => self.notify(message, false),
                         Err(error) => self.notify(format!("{error:#}"), true),
                     },
@@ -692,18 +695,17 @@ impl App {
             return;
         }
         dialog.probed = folder.clone();
-        if !Path::new(&folder).is_dir() {
-            dialog.git = GitState::Error("folder not found".into());
-            return;
-        }
         self.git_req += 1;
         let req = self.git_req;
         dialog.git = GitState::Checking(req);
-        let tx = self.app_tx.clone();
-        std::thread::spawn(move || {
-            let result = git::probe(Path::new(&folder)).map_err(|e| format!("{e:#}"));
-            let _ = tx.send(AppEvent::Git { req, folder, result });
-        });
+        let probed = folder.clone();
+        self.in_background(
+            move |backend| match backend.path_info(&folder) {
+                Ok(info) if !info.dir => Err("folder not found".to_owned()),
+                _ => backend.git_probe(&folder).map_err(|e| format!("{e:#}")),
+            },
+            move |result| AppEvent::Git { req, folder: probed, result },
+        );
     }
 
     pub fn refresh_worktree_defaults(dialog: &mut NewSession) {
@@ -780,6 +782,15 @@ impl App {
             }
             AppEvent::Config(kind, snapshot) => self.on_config(kind, *snapshot),
             AppEvent::Automations(load) => self.on_automations(load),
+            AppEvent::AutomationsFailed(error) => {
+                self.automations_loading = false;
+                self.automations_error = Some(error);
+            }
+            AppEvent::Tails(tails) => {
+                self.tails_loading = false;
+                self.tails = tails.into_iter().collect();
+            }
+            AppEvent::Notice { text, error } => self.notify(text, error),
             AppEvent::CliDone { label, result } => {
                 self.cli_busy = None;
                 match result {
@@ -825,10 +836,11 @@ impl App {
             return Err(format!("{} was not found on this machine; choose another agent.", dialog.agent.label()));
         }
         let folder = dialog.folder.text.trim().trim_matches('"').to_owned();
-        if !Path::new(&folder).is_dir() {
+        let found = self.backend.path_info(&folder).map_err(|e| format!("{e:#}"))?;
+        if !found.dir {
             return Err(format!("Folder not found: {folder}"));
         }
-        let folder = crate::paths::absolute(Path::new(&folder)).to_string_lossy().into_owned();
+        let folder = found.absolute;
         let mut name = dialog.name.text.trim().to_owned();
         if name.is_empty() {
             name = Path::new(&folder).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Session".into());
@@ -851,17 +863,17 @@ impl App {
                 return Err("Enter a worktree folder.".into());
             }
             let path = PathBuf::from(&path);
-            if path.exists() && path.read_dir().map(|mut d| d.next().is_some()).unwrap_or(true) {
+            if self.backend.path_info(&path.to_string_lossy()).map_err(|e| format!("{e:#}"))?.occupied {
                 return Err(format!("{} already exists and is not empty.", path.display()));
             }
-            worktree_job = Some((info.root.clone(), path.clone(), (!new_branch.is_empty()).then_some(new_branch), dialog.base.clone()));
+            worktree_job = Some((info.root.to_string_lossy().into_owned(), path.to_string_lossy().into_owned(), (!new_branch.is_empty()).then_some(new_branch), dialog.base.clone()));
             path.to_string_lossy().into_owned()
         } else {
             folder.clone()
         };
         let id = if self.demo { format!("demo-{}", uuid::Uuid::new_v4()) } else { uuid::Uuid::new_v4().to_string() };
         let agent = dialog.agent;
-        let caps = agent.provider().caps();
+        let caps = agent.caps();
         let fork_parent = dialog
             .parent
             .clone()
@@ -869,7 +881,6 @@ impl App {
             .and_then(|p| self.doc.node(&p).map(|n| native_id(n).to_owned()));
         // Copilot forks by copying the parent's history; the others fork it themselves on first start.
         let (copy_fork, native_fork) = if caps.copy_fork { (fork_parent, None) } else { (None, fork_parent) };
-        let sessions_dir = self.instance.as_ref().map(|i| i.sessions_dir.clone());
         let (x, y) = match (&dialog.parent, dialog.at) {
             (Some(parent), _) => match self.doc.node(parent) {
                 Some(p) => self.doc.free_slot(p.x + GRID_X + 4, p.y, 1, NodeKind::Session),
@@ -921,17 +932,14 @@ impl App {
         self.reveal_node(&id);
         self.mark_dirty();
         // Forking copies the parent's history first (off the UI thread: it can be large).
-        let fork_job = match (copy_fork, sessions_dir) {
-            (Some(parent), Some(dir)) => {
-                let node = self.doc.node(&id).cloned();
-                Some((dir, parent, node.as_ref().map(|n| n.name.clone()).unwrap_or_default(), node.and_then(|n| n.cwd)))
-            }
-            _ => None,
-        };
+        let fork_job = copy_fork.map(|parent| {
+            let node = self.doc.node(&id).cloned();
+            (parent, node.as_ref().map(|n| n.name.clone()).unwrap_or_default(), node.and_then(|n| n.cwd))
+        });
         let forking = fork_job.is_some();
-        let fork = move |child: &str| -> Result<(), String> {
+        let fork = move |backend: &dyn Backend, child: &str| -> Result<(), String> {
             match &fork_job {
-                Some((dir, parent, name, cwd)) => crate::fork::fork_session(dir, parent, child, name, cwd.as_deref()).map_err(|e| format!("{e:#}")),
+                Some((parent, name, cwd)) => backend.fork(parent, child, name, cwd.as_deref()).map_err(|e| format!("{e:#}")),
                 None => Ok(()),
             }
         };
@@ -939,19 +947,16 @@ impl App {
             Some((root, path, new_branch, base)) => {
                 self.preparing.insert(id.clone());
                 self.notify("Creating the worktree… (large repositories can take a while)", false);
-                let tx = self.app_tx.clone();
-                std::thread::spawn(move || {
-                    let result = git::add_worktree(&root, &path, new_branch.as_deref(), &base).map_err(|e| format!("{e:#}")).and_then(|_| fork(&id));
-                    let _ = tx.send(AppEvent::Worktree { node: id, result });
-                });
+                let node = id.clone();
+                self.in_background(
+                    move |backend| backend.worktree_add(&root, &path, new_branch.as_deref(), &base).map_err(|e| format!("{e:#}")).and_then(|_| fork(backend, &id)),
+                    move |result| AppEvent::Worktree { node, result },
+                );
             }
             None if forking => {
                 self.preparing.insert(id.clone());
-                let tx = self.app_tx.clone();
-                std::thread::spawn(move || {
-                    let result = fork(&id);
-                    let _ = tx.send(AppEvent::Forked { node: id, result });
-                });
+                let node = id.clone();
+                self.in_background(move |backend| fork(backend, &id), move |result| AppEvent::Forked { node, result });
             }
             None => self.launch(&id),
         }
@@ -980,43 +985,30 @@ impl App {
         list.into_iter().map(|s| s.id.clone()).collect()
     }
 
-    pub fn list_dir(dir: &Option<PathBuf>) -> Result<Vec<String>, String> {
-        match dir {
-            None => {
-                let mask = unsafe { windows_sys::Win32::Storage::FileSystem::GetLogicalDrives() };
-                Ok((0..26u8).filter(|i| mask & (1 << i) != 0).map(|i| format!("{}:\\", (b'A' + i) as char)).collect())
-            }
-            Some(dir) => {
-                let mut names: Vec<String> = std::fs::read_dir(dir)
-                    .map_err(|e| e.to_string())?
-                    .filter_map(|e| e.ok())
-                    .filter(|e| std::fs::metadata(e.path()).map(|m| m.is_dir()).unwrap_or(false))
-                    .map(|e| e.file_name().to_string_lossy().into_owned())
-                    .filter(|n| !n.starts_with('$') && n != "System Volume Information")
-                    .collect();
-                names.sort_by_key(|n| n.to_lowercase());
-                names.insert(0, "..".into());
-                Ok(names)
-            }
-        }
+    /// Folders in `dir` (the drives when `None`), on the backend's machine.
+    pub fn list_dir(backend: &dyn Backend, dir: &Option<PathBuf>) -> Result<Vec<String>, String> {
+        backend.list_dir(dir.as_ref().map(|d| d.display().to_string())).map_err(|e| format!("{e:#}"))
     }
 
     pub fn open_folder_browser(&mut self, start: &str) {
-        let start = PathBuf::from(start.trim());
-        let dir = if start.is_dir() { Some(crate::paths::absolute(&start)) } else { dirs::home_dir() };
-        let (entries, error) = match Self::list_dir(&dir) {
+        let start = self.backend.path_info(start.trim()).ok().filter(|info| info.dir);
+        let dir = match start {
+            Some(info) => Some(PathBuf::from(info.absolute)),
+            None => (!self.info.user_home.is_empty()).then(|| PathBuf::from(&self.info.user_home)),
+        };
+        let (entries, error) = match Self::list_dir(&*self.backend, &dir) {
             Ok(entries) => (entries, None),
             Err(error) => (Vec::new(), Some(error)),
         };
         self.modals.push(Modal::Folder(FolderBrowser { dir, entries, filter: String::new(), sel: 0, scroll: 0, error }));
     }
 
-    pub fn folder_navigate(browser: &mut FolderBrowser, target: Option<PathBuf>) {
+    pub fn folder_navigate(backend: &dyn Backend, browser: &mut FolderBrowser, target: Option<PathBuf>) {
         browser.dir = target;
         browser.filter.clear();
         browser.sel = 0;
         browser.scroll = 0;
-        match Self::list_dir(&browser.dir) {
+        match Self::list_dir(backend, &browser.dir) {
             Ok(entries) => {
                 browser.entries = entries;
                 browser.error = None;

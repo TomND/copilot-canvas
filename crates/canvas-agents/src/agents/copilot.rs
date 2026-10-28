@@ -29,17 +29,7 @@ impl Provider for Copilot {
     }
 
     fn caps(&self) -> Caps {
-        Caps {
-            preassigned_ids: true,
-            native_fork: false,
-            copy_fork: true,
-            mcp_select: true,
-            progress: true,
-            config: true,
-            automations: true,
-            effort: true,
-            modes: true,
-        }
+        AgentKind::Copilot.caps()
     }
 
     fn program(&self) -> Result<String> {

@@ -19,9 +19,7 @@ const MAX_AGENTS: usize = 12;
 /// Silence after a turn ends before the session counts as finished.
 const SETTLE_MS: u64 = 4_000;
 
-pub fn is_session_id(text: &str) -> bool {
-    uuid::Uuid::try_parse(text).is_ok() && text.len() == 36
-}
+pub use canvas_model::agent::is_session_id;
 
 #[derive(Default, Debug, Clone)]
 struct Meta {

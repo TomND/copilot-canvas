@@ -236,11 +236,19 @@ windowless `python`) and its `state` folder (`tasks/`, `logs/`, `status/`,
 copilot-canvas.exe (TUI client)            copilot-canvas service (persistent, per user)
   ratatui canvas · sidebar · tiles   ◀──▶    owner-only named pipe, HMAC-authenticated
   draws only what is visible                 ConPTY per session (portable-pty)
-  ~/.copilot-canvas/canvas.json              alacritty_terminal emulator per session
+  ~/.copilot-canvas/prefs (own view)         alacritty_terminal emulator per session
                                              row-diff frames for visible terminals only
                                              incremental session-history index
+                                             ~/.copilot-canvas/canvas.json (owner)
 ```
 
+- **The service owns the canvas document.** It is the single writer of
+  `canvas.json`; every open window sends its edits and applies the patches the
+  service broadcasts, so two windows (say one at home over `--remote`, one on
+  the Cloud PC) can edit one canvas at once. Each window keeps its own view
+  (position, zoom, panels, tiles). Everything else a window needs from the
+  machine (folders, Git, agent configuration, automations, VS Code) goes
+  through the backend API. See [docs/BACKEND.md](docs/BACKEND.md).
 - **The service owns all terminals.** Closing or crashing the UI never stops a
   session; reopening shows the same live terminal with its history. It runs
   from a per-build copy in `~/.copilot-canvas/bin`, so rebuilding is never

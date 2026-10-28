@@ -9,46 +9,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 
-#[derive(Clone, Debug, PartialEq, Default)]
-pub struct Run {
-    pub id: String,
-    pub status: String,
-    pub trigger: String,
-    pub started_at: String,
-    pub completed_at: String,
-    pub error: String,
-    pub session_id: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Default)]
-pub struct Automation {
-    /// `wf:<id>` for workflows, `session:<session id>` for session schedules.
-    pub key: String,
-    pub name: String,
-    pub prompt: String,
-    pub kind: String,
-    pub enabled: bool,
-    pub toggleable: bool,
-    pub schedule: String,
-    pub model: String,
-    pub reasoning_effort: String,
-    pub mode: String,
-    pub project: String,
-    pub workspace: String,
-    pub last_run_at: String,
-    pub next_run_at: String,
-    pub updated_at: String,
-    pub runs: Vec<Run>,
-    pub session_id: String,
-    /// Manifest-managed scheduled task (`task:<name>`).
-    pub factory: Option<Box<crate::factory::Live>>,
-}
-
-impl Automation {
-    pub fn last_status(&self) -> &str {
-        self.runs.first().map(|r| r.status.as_str()).unwrap_or("")
-    }
-}
+pub use canvas_model::automation::{Automation, Run};
 
 pub fn db_path() -> PathBuf {
     crate::copilot_cfg::copilot_home().join("data.db")
