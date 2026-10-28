@@ -733,7 +733,11 @@ fn scenario(instance: &Instance, work: &Path) -> Result<()> {
         d.nodes.iter().any(|n| n.name == "Worktree session" && n.cwd.as_deref().is_some_and(|c| c.ends_with(r"repo.worktrees\worktree-session")))
     })?;
     let expected = std::path::PathBuf::from(doc.nodes.iter().find(|n| n.name == "Worktree session").and_then(|n| n.cwd.clone()).unwrap_or_default());
-    ui.wait("shell running inside the worktree", Duration::from_secs(30), |t| t.contains(r"repo.worktrees\worktree-session"))?;
+    // The prompt's end is enough: a narrow tile wraps the long temp path
+    // (its length depends on the user name), so the full path may span rows.
+    ui.wait("shell running inside the worktree", Duration::from_secs(30), |t| {
+        t.contains(r"repo.worktrees\worktree-session") || t.contains(r"\worktree-session>")
+    })?;
     let branches = std::process::Command::new("git").arg("-C").arg(&expected).args(["branch", "--show-current"]).output()?;
     anyhow::ensure!(String::from_utf8_lossy(&branches.stdout).trim() == "worktree-session", "worktree is on the new branch");
 
