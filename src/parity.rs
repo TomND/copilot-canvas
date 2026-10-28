@@ -998,12 +998,22 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         let r: Vec<f64> = image["rect"].as_array().map(|a| a.iter().filter_map(|v| v.as_f64()).collect()).unwrap_or_default();
         let (_, begin_row) = gui.driver.text().lines().enumerate().filter(|(_, l)| l.contains(crate::kitty_demo::BEGIN) && !l.contains("kitty-demo")).map(|(i, l)| (l.to_owned(), i)).last().context("begin marker")?;
         anyhow::ensure!(r[1] as usize == begin_row + 1 && r[2] as u16 == crate::kitty_demo::DEMO_COLS && r[3] as u16 == crate::kitty_demo::DEMO_ROWS, "image at {r:?}, marker row {begin_row}");
-        let path = gui.png(0, "inline-image")?;
+        // Nothing may sit over the tile: an earlier check's dialog can still be
+        // closing on a busy machine. Then the image must show within 5 s.
+        gui.wait_tree("no dialog over the terminal", 10, |t| t["modals"] == 0)?;
         let (cw, ch) = gui.cell()?;
         let mid_y = ((r[1] + r[3] / 2.0) * ch) as u32;
-        let left = pixel(&path, ((r[0] + r[2] * 0.25) * cw) as u32, mid_y)?;
-        let right = pixel(&path, ((r[0] + r[2] * 0.75) * cw) as u32, mid_y)?;
-        anyhow::ensure!(close(left, crate::kitty_demo::LEFT, 10) && close(right, crate::kitty_demo::RIGHT, 10), "pixels {left:?} {right:?}");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (left, right) = loop {
+            let path = gui.png(0, "inline-image")?;
+            let left = pixel(&path, ((r[0] + r[2] * 0.25) * cw) as u32, mid_y)?;
+            let right = pixel(&path, ((r[0] + r[2] * 0.75) * cw) as u32, mid_y)?;
+            if close(left, crate::kitty_demo::LEFT, 10) && close(right, crate::kitty_demo::RIGHT, 10) {
+                break (left, right);
+            }
+            anyhow::ensure!(Instant::now() < deadline, "pixels {left:?} {right:?}; tree: {}", gui.tree()?);
+            std::thread::sleep(Duration::from_millis(250));
+        };
         // A client without CAP_IMAGES (the TUI) gets the frames but no images.
         let id = tree["tiles"].as_array().and_then(|t| t.iter().find(|t| t["focused"] == true)).and_then(|t| t["id"].as_str()).unwrap_or_default().to_owned();
         let (images, frames) = plain_client_sees(&sb.instance, &id)?;

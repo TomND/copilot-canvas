@@ -628,24 +628,36 @@ fn scenario<U: Ui>(instance: &Instance, paths: &Paths, model: &str, steps: &[Str
 
     if steps.iter().any(|s| s == "push") {
         step("git push from OpenCode's bash tool becomes a pr.pushed event of the box");
-        let (_, ms) = submit(&mut ui, &command_line, model, PROMPT_PUSH)?;
-        let started = Instant::now();
         let needle = format!("detected pr.pushed in {native}");
-        let mut ended: Option<Instant> = None;
-        let line = loop {
-            if let Some(line) = service_log(instance).lines().find(|l| l.contains(&needle)) {
-                break line.to_owned();
+        // A free model sometimes runs something else than the command it was
+        // given: then it is asked once more. A push that ran but was not
+        // detected fails at once.
+        let mut attempt = 0;
+        let (line, started, ms) = 'attempts: loop {
+            attempt += 1;
+            let (_, ms) = submit(&mut ui, &command_line, model, PROMPT_PUSH)?;
+            let started = Instant::now();
+            let mut ended: Option<Instant> = None;
+            loop {
+                if let Some(line) = service_log(instance).lines().find(|l| l.contains(&needle)) {
+                    break 'attempts (line.to_owned(), started, ms);
+                }
+                if ended.is_none() && turn_end(&native, ms)?.is_some() {
+                    ended = Some(Instant::now());
+                }
+                // The history is read about once a second: a few seconds after the turn are enough.
+                if ended.is_some_and(|t| t.elapsed() > Duration::from_secs(8)) || started.elapsed() > TURN {
+                    let calls: Vec<String> = bash_calls(&native)?.iter().map(ToString::to_string).collect();
+                    let pushed = std::process::Command::new("git").arg("-C").arg(&paths.remote).args(["rev-parse", "main"]).output()?.status.success();
+                    if !pushed && attempt < 2 && !calls.iter().any(|c| c.contains("git push")) {
+                        println!("    the model did not run the push (its bash calls: {}); asking once more", calls.join("; "));
+                        settle(&ui, instance, MAIN, &main, &native)?;
+                        continue 'attempts;
+                    }
+                    bail!("no pr.pushed for {native} (the remote has main: {pushed}); its bash calls: {}", calls.join("; "));
+                }
+                std::thread::sleep(Duration::from_millis(200));
             }
-            if ended.is_none() && turn_end(&native, ms)?.is_some() {
-                ended = Some(Instant::now());
-            }
-            // The history is read about once a second: a few seconds after the turn are enough.
-            if ended.is_some_and(|t| t.elapsed() > Duration::from_secs(8)) || started.elapsed() > TURN {
-                let calls: Vec<String> = bash_calls(&native)?.iter().map(ToString::to_string).collect();
-                let pushed = std::process::Command::new("git").arg("-C").arg(&paths.remote).args(["rev-parse", "main"]).output()?.status.success();
-                bail!("no pr.pushed for {native} (the remote has main: {pushed}); its bash calls: {}", calls.join("; "));
-            }
-            std::thread::sleep(Duration::from_millis(200));
         };
         let detected = started.elapsed();
         anyhow::ensure!(line.contains(&format!("(terminal {main})")), "the event comes from the box: {line}");
