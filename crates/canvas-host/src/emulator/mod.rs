@@ -112,6 +112,16 @@ pub struct ImageData {
     pub rgba: Vec<u8>,
 }
 
+/// Longest side of an image the host keeps or sends (GPU textures are at most 8192 wide by default).
+pub const MAX_IMAGE_SIDE: u32 = 8192;
+/// Most pixels of an image the host keeps or sends.
+pub const MAX_IMAGE_PIXELS: u64 = 4096 * 4096;
+
+/// Whether an image of this size may be kept and sent to clients.
+pub fn image_size_ok(width: u32, height: u32) -> bool {
+    width > 0 && height > 0 && width <= MAX_IMAGE_SIDE && height <= MAX_IMAGE_SIDE && width as u64 * height as u64 <= MAX_IMAGE_PIXELS
+}
+
 impl Snapshot {
     /// One row in protocol-7 shape.
     pub fn row_v7(&self, y: usize) -> Vec<Run> {
@@ -248,4 +258,18 @@ pub fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Option<Vec<u8>> {
     writer.write_image_data(rgba).ok()?;
     writer.finish().ok()?;
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_sizes_are_limited_per_side_and_in_total() {
+        assert!(image_size_ok(1, 1) && image_size_ok(8192, 1) && image_size_ok(4096, 4096) && image_size_ok(8192, 2048));
+        assert!(!image_size_ok(8193, 1), "wider than a texture may be");
+        assert!(!image_size_ok(1, 8193));
+        assert!(!image_size_ok(8192, 2049), "more pixels than 4096 x 4096");
+        assert!(!image_size_ok(0, 5) && !image_size_ok(5, 0));
+    }
 }

@@ -86,12 +86,21 @@ pub fn build_sibling(name: &str) -> Result<std::path::PathBuf> {
     Ok(fallback)
 }
 
+/// `COPILOT_CANVAS_OTHER_CLIENT_DRYRUN=FILE`: where a test wants the command
+/// line of a client this one would start. Only honoured together with
+/// `COPILOT_CANVAS_SELFTEST=1` (the self-tests set both), so a stray
+/// variable never stops a real client from starting.
+pub fn other_client_dryrun() -> Option<std::ffi::OsString> {
+    let selftest = std::env::var("COPILOT_CANVAS_SELFTEST").is_ok_and(|v| v.trim() == "1");
+    std::env::var_os("COPILOT_CANVAS_OTHER_CLIENT_DRYRUN").filter(|file| selftest && !file.is_empty())
+}
+
 /// Starts a front end detached from this one (`console`: in a new console
-/// window, for the TUI). `COPILOT_CANVAS_OTHER_CLIENT_DRYRUN=FILE` writes the
-/// command line to FILE instead (tests).
+/// window, for the TUI). Under a self-test ([`other_client_dryrun`]) the
+/// command line is written to a file instead.
 pub fn spawn_client(exe: &std::path::Path, args: &[String], console: bool) -> Result<()> {
     use std::os::windows::process::CommandExt;
-    if let Some(file) = std::env::var_os("COPILOT_CANVAS_OTHER_CLIENT_DRYRUN") {
+    if let Some(file) = other_client_dryrun() {
         let line = std::iter::once(exe.display().to_string()).chain(args.iter().cloned()).collect::<Vec<_>>().join("\u{1f}");
         std::fs::write(file, line)?;
         return Ok(());

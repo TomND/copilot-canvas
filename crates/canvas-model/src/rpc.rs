@@ -164,7 +164,7 @@ pub enum Response {
 /// An open pairing code (`Request::PairCode`).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct PairingCode {
-    /// `ABCD-EFGH`.
+    /// `ABCD-EFGH-JKMN`.
     pub code: String,
     pub expires_ms: u64,
     /// Where the service listens for remote clients (`127.0.0.1:47600`).
@@ -185,6 +185,12 @@ pub struct RemoteClient {
     pub revoked_ms: u64,
     /// Connections it has open now.
     pub connections: u32,
+    /// Who opened the code it paired with (a local process, or a command in a canvas terminal).
+    #[serde(default)]
+    pub paired_by: String,
+    /// When that code was opened.
+    #[serde(default)]
+    pub code_opened_ms: u64,
 }
 
 /// `Vec<u8>` as a base64 string in JSON (images in requests).
@@ -694,7 +700,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), request);
         assert!(!request.is_quick() && !request.is_remote_admin());
         assert!(Request::PairCode { name: None }.is_remote_admin() && Request::RemoteClients.is_remote_admin() && Request::RemoteRevoke { client: "x".into() }.is_remote_admin());
-        let reply = Response::Pairing(PairingCode { code: "ABCD-EFGH".into(), expires_ms: 1, listen: "127.0.0.1:47600".into(), name: None });
+        let reply = Response::Pairing(PairingCode { code: "ABCD-EFGH-JKMN".into(), expires_ms: 1, listen: "127.0.0.1:47600".into(), name: None });
         assert_eq!(serde_json::from_str::<Response>(&serde_json::to_string(&reply).unwrap()).unwrap(), reply);
     }
 }

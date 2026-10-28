@@ -59,9 +59,9 @@ pub fn run(args: &[&str]) -> Result<()> {
             }
         });
     }
+    // What `devtunnel connect` 1.0.2115 prints once it forwards (its binary's strings).
     println!("Connected to tunnel: {tunnel}.standin");
     println!("Forwarding from 127.0.0.1:{port} to host port {host_port}.");
-    println!("Ready to accept connections for tunnel: {tunnel}");
     for client in listener.incoming().flatten() {
         let Ok(upstream) = TcpStream::connect(&target) else { continue };
         let _ = (client.set_nodelay(true), upstream.set_nodelay(true));

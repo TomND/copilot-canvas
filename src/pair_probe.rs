@@ -128,10 +128,13 @@ fn scenario(exe: &Path, cloud: &Instance, root: &Path) -> Result<()> {
     println!("    code {code}; the service now listens on {addr}");
 
     step("a wrong code is refused; the right one pairs once (direct address)");
-    let wrong = if code.starts_with('A') { "BBBB-BBBB" } else { "AAAA-AAAA" };
+    anyhow::ensure!(code.len() == 14 && code.matches('-').count() == 2, "codes read XXXX-XXXX-XXXX: {code}");
+    let wrong = if code.starts_with('A') { "BBBB-BBBB-BBBB" } else { "AAAA-AAAA-AAAA" };
     let refused = fails(exe, &args(&home_args, &["remote", "add", "test", "--addr", &addr, "--code", wrong]), &[])?;
     anyhow::ensure!(refused.contains("wrong or expired pairing code"), "unexpected refusal:\n{refused}");
-    let added = ok(exe, &args(&home_args, &["remote", "add", "test", "--addr", &addr, "--code", &code, "--client-name", "probe-direct"]), &[])?;
+    // Typed in lower case without dashes: the same code.
+    let typed = code.replace('-', "").to_lowercase();
+    let added = ok(exe, &args(&home_args, &["remote", "add", "test", "--addr", &addr, "--code", &typed, "--client-name", "probe-direct"]), &[])?;
     anyhow::ensure!(added.contains("Paired this machine"), "{added}");
     let reused = fails(exe, &args(&home_args, &["remote", "add", "again", "--addr", &addr, "--code", &code]), &[])?;
     anyhow::ensure!(reused.contains("no pairing code is open") || reused.contains("wrong or expired"), "a used code was accepted again:\n{reused}");
@@ -160,21 +163,25 @@ fn scenario(exe: &Path, cloud: &Instance, root: &Path) -> Result<()> {
     anyhow::ensure!(!secrets.contains(&crate::paths::hex(&test.secret()?)), "the secret is stored in the clear");
     println!("    {} and {} paired; secrets DPAPI-protected in servers.json", test.client_id, stored.find("test2").map(|s| s.client_id.as_str()).unwrap_or("?"));
 
-    step("wrong secrets and unpaired clients are refused");
+    step("wrong secrets and unpaired clients are refused (without being told anything)");
     let options = ConnOptions { name: "probe".into(), ..Default::default() };
     let wrong_secret = ConnTarget::Tcp { addr: addr.clone(), remote_id: Some(test.client_id.clone()), secret: crate::protocol::nonce() };
     let error = conn::open(&wrong_secret, &options, &ClientSession::new()).err().context("a wrong secret was accepted")?;
-    anyhow::ensure!(error.is::<AuthError>(), "wrong secret: {error:#}");
+    anyhow::ensure!(error.is::<AuthError>() && !conn::is_final(&error), "wrong secret: {error:#}");
     let stranger = ConnTarget::Tcp { addr: addr.clone(), remote_id: Some("pc-0000000000000000".into()), secret: crate::protocol::nonce() };
     let error = conn::open(&stranger, &options, &ClientSession::new()).err().context("an unpaired client was accepted")?;
-    anyhow::ensure!(error.is::<Refused>() && error.to_string().contains("not paired"), "unpaired client: {error:#}");
+    anyhow::ensure!(
+        error.downcast_ref::<Refused>().is_some_and(|r| !r.verified) && !conn::is_final(&error) && !error.to_string().contains("pc-0000"),
+        "unpaired client: an unproven, generic refusal that is retried: {error:#}"
+    );
     let tokenless = ConnTarget::Tcp { addr: addr.clone(), remote_id: None, secret: crate::protocol::nonce() };
     anyhow::ensure!(conn::open(&tokenless, &options, &ClientSession::new()).err().is_some_and(|e| e.is::<AuthError>()), "a client without credentials was accepted");
     let paired = conn::open(&ConnTarget::parse(Some("test"), &home_instance)?, &options, &ClientSession::new())?;
     anyhow::ensure!(paired.protocol == crate::protocol::PROTOCOL && paired.remote, "paired connection");
     drop(paired);
     let log = std::fs::read_to_string(cloud.log_path()).unwrap_or_default();
-    anyhow::ensure!(log.contains(&format!("as paired client {}", test.client_id)), "the service saw the paired client:\n{log}");
+    anyhow::ensure!(log.contains(&format!("as paired client {:?}", test.client_id)), "the service saw the paired client:\n{log}");
+    anyhow::ensure!(log.contains("PAIRED a new remote client") && log.contains("PAIRING CODE OPENED"), "pairings are logged prominently:\n{log}");
     println!("    wrong secret: service failed to prove it (AuthError); unknown id: “{error}”");
 
     if std::env::var_os("CANVAS_PROBE_CLIPBOARD").is_some() {

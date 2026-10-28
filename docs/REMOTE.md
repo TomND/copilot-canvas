@@ -31,17 +31,24 @@ The service listens on TCP only when asked:
   running service; without a setting it saves `remote.listen =
   127.0.0.1:47600` first), or `remote tunnel-setup` (saves the setting).
 
-Only loopback addresses are accepted; anything else is logged and skipped.
-Remote access always goes through a Dev Tunnel that forwards to that port. The
-bound port is written to `<home>/service-<instance>.port` and removed when the
-service exits.
+Only loopback IP literals are accepted (`127.0.0.1:PORT`, `[::1]:PORT`; names
+such as `localhost` and other addresses are refused). Remote access always
+goes through a Dev Tunnel that forwards to that port. The port is bound with
+`SO_EXCLUSIVEADDRUSE`, so no other process (another user's included) can bind
+it as well, and the service holds it for as long as it runs. The bound port is
+written to `<home>/service-<instance>.port` (an owner-only file: a protected
+DACL that names only this user, whatever the folder allows) and removed when
+the service exits. When binding fails (the port is taken) the service logs
+`NOT LISTENING for remote clients: …` and keeps the reason in
+`<home>/service-<instance>.listen-error`; `copilot-canvas doctor` shows it as
+a failure.
 
 Clients:
 
 | Command | Transport | Credential |
 |---|---|---|
 | `copilot-canvas` | named pipe | per-start service token |
-| `copilot-canvas --remote loopback` | TCP to the local service; starts it with `COPILOT_CANVAS_LISTEN=127.0.0.1:0` when it is not running (a running service without listening is reported, not restarted) | service token (same machine) |
+| `copilot-canvas --remote loopback` | TCP to the local service; starts it with `COPILOT_CANVAS_LISTEN=127.0.0.1:0` when it is not running (a running service without listening is reported, not restarted) | service token (same machine, same Windows user only) |
 | `copilot-canvas --remote NAME` | a server paired with `remote add`: through its Dev Tunnel (`devtunnel connect`, managed by the client) or its direct address | the paired client id and secret (DPAPI) |
 | `copilot-canvas --remote HOST:PORT` | TCP, e.g. a forwarded tunnel port | `COPILOT_CANVAS_REMOTE_SECRET` (hex) and `COPILOT_CANVAS_REMOTE_ID` |
 
@@ -60,22 +67,49 @@ postcard body. Enums are append-only.
    - `caps`: `CAP_FRAME8` (applies `Frame8`), `CAP_COMPRESS`, `CAP_IMAGES` (reserved);
    - `session`: 16 random bytes naming this client across reconnects;
    - `remote_id`: a paired client (`None`: the service token).
+
+   The service checks every field before it looks anything up: a 32-byte
+   nonce, a 16-byte session, `build` and `name` of at most 256 bytes, and a
+   `remote_id` of the paired-client form (1–40 of `[A-Za-z0-9_.-]`).
 2. Service → `Challenge { protocol: 8, build, nonce, proof }`; the proof is an
    HMAC-SHA256 over the client's nonce with the secret. The secret is the
-   paired client's (`HostApp::remote_secret(id)`: known, not revoked; it also
-   records when the client was last seen) or the per-start token. A refused
-   client (unknown or revoked id) gets `Error { message }` with the reason
-   instead, and the connection closes; the client reports it as `Refused` and
-   stops reconnecting.
-3. Client checks the proof (a wrong one is an impostor, or a secret the
-   service no longer has: the client stops) and sends `Auth { proof }` over
-   the service's nonce.
-4. Service → `Ready8 { pid, input_ack }`, then the terminal list and the
-   backend snapshots, as for every client.
+   paired client's (`HostApp::remote_credential(id)`: known, not revoked) or
+   the per-start token. Over TCP the token is only accepted from a process of
+   the service's own Windows user on this machine: the service finds the
+   process at the other end of the loopback connection
+   (`GetExtendedTcpTable`, `TCP_TABLE_OWNER_PID_CONNECTIONS`) and compares
+   its token's user SID with its own; anything else is refused. Over TCP
+   `build` is empty here: the service tells it only to authenticated clients
+   (`Welcome`, step 4).
 
-TCP clients that have not authenticated within 5 s are dropped; protocol-7
-`Hello` is refused on TCP. A TCP connection may open with `Pair` instead of
-`Hello8` (see [Pairing](#pairing)).
+   A refused client gets `Refusal { proof }` and the connection closes. For a
+   revoked paired client the proof is an HMAC over the client's nonce with
+   that client's revocation key (`pairing::revocation_key(secret)`; the
+   service keeps only that key once it revokes a client), so only the client
+   itself can check it; for anything else it is random. The client treats a
+   refusal it could verify ("this client was revoked on the service; pair it
+   again") as final. An unverified refusal (an unknown id, a refused token, or
+   anything else that answers on the port) is retried and shown generically
+   ("the service refused this client"): it carries no text, so nothing that
+   squats on a port can put words in front of the user or stop a client for
+   good.
+3. Client checks the proof and sends `Auth { proof }` over the service's
+   nonce. A wrong proof (`AuthError`: an impostor, or a secret the service no
+   longer has) is retried like an unverified refusal.
+4. Service (TCP) → `Welcome { build }`, then (both) `Ready8 { pid,
+   input_ack }`, the terminal list and the backend snapshots, as for every
+   client. Last seen is recorded only now, after the client's proof.
+
+Before authentication the service reads frames of at most 16 KiB
+(`PRE_AUTH_FRAME`; 32 MiB afterwards), and bodies are read as they arrive, so
+a claimed length allocates nothing. At most 16 TCP connections may be in their
+handshake at once; more are closed at once (logged at most every 10 s). The
+handshake must finish within 5 s: a read deadline on the socket, no thread per
+connection. Thread creation failures in the accept loops are logged and the
+connection is dropped. Protocol-7 `Hello` is refused on TCP. A TCP connection
+may open with `PairStart` instead of `Hello8` (see [Pairing](#pairing)).
+Compressed bodies are decompressed with a bounded output (at most the size the
+frame announced, a 16 MiB zstd window).
 
 Compatibility:
 
@@ -91,9 +125,15 @@ Variants added by protocol 8 (appended):
 
 - `ClientMsg`: `Hello8`, `Heartbeat`, `Input8 { id, input, seq }`,
   `Subscribe8 { ids, focused }`, … (see BACKEND.md), `Pair { code_proof, name,
-  nonce }` (index 24).
+  nonce }` (index 24; the first pairing scheme, now refused), `PairStart {
+  name, nonce }` (25), `PairProof { proof }` (26).
 - `ServiceMsg`: `Frame8(Frame8)`, `Heartbeat { input_ack }`, `Ready8 { pid,
-  input_ack }`, … , `Paired { client_id, nonce, secret }` (index 20).
+  input_ack }`, … , `Paired { client_id, nonce, secret }` (index 20),
+  `PairChallenge { nonce, proofs }` (24), `Refusal { proof }` (25), `Welcome {
+  build }` (26).
+
+Both ends of a TCP connection need this build or a later one: an older client
+cannot read `Welcome` and cannot pair with this service.
 
 ### Frames
 
@@ -147,11 +187,13 @@ as a backstop and Nagle is off.
   and reports the highest applied number in `Heartbeat` and `Ready8`. After a
   reconnect the client compares `Ready8.input_ack` with what it sent and shows
   "Reconnected. N keystroke(s) were not delivered." It never resends them.
-- A refused client (revoked, unknown) and a service that fails authentication
-  end reconnecting at once: the banner says "Offline" and the notice gives the
-  service's reason, e.g. "Could not reconnect to the terminal service: this
-  client (home-pc) was revoked on CLOUDPC; pair it again (`copilot-canvas
-  remote pair` there)".
+- Only a refusal the service proved (a revoked client, above) ends
+  reconnecting: the banner says "Offline" and the notice "Could not reconnect
+  to the terminal service: this client was revoked on the service; pair it
+  again (…)". An unverified refusal or a failed service proof keeps the client
+  retrying every 5 s with the banner "Offline — reconnecting… (the service
+  refused this client)" or "… (the service did not prove it knows this
+  client's secret)".
 - Through a Dev Tunnel every attempt first asks for the forwarded address: a
   `devtunnel connect` child that died is started again, and one whose
   connections failed twice in a row (the tunnel is up locally but the relay is
@@ -165,77 +207,185 @@ Paired clients authenticate with their own long-lived secret (PLAN.md D5
 1. On the Cloud PC, `copilot-canvas remote pair [--name NAME]` asks the
    running service (over its pipe, `Request::PairCode`; the service is
    started when needed) for a one-time code and prints it with the commands to
-   run at home. Codes are 8 characters from `ABCDEFGHJKMNPQRSTUVWXYZ23456789`
-   (no 0/O/1/I/L; shown as `ABCD-EFGH`, typed in any case, dashes optional),
-   valid for 10 minutes, used up by one pairing, at most 3 open at once.
-   Opening a code also turns remote listening on in the running service.
+   run at home. Codes are 12 characters from `ABCDEFGHJKMNPQRSTUVWXYZ23456789`
+   (31^12, about 59 bits; no 0/O/1/I/L), shown as `ABCD-EFGH-JKMN` and typed
+   in any case, with or without dashes or spaces; valid for 10 minutes, used
+   up by one pairing, at most 3 open at once. Opening a code also turns remote
+   listening on in the running service. The service log records it
+   prominently: `PAIRING CODE OPENED by a local process (copilot-canvas.exe
+   pid N)` (or "a command in canvas terminal …" when the request came from a
+   process inside one of its own terminals).
 2. At home, `copilot-canvas remote add NAME --tunnel TUNNEL_ID [--port PORT]
    --code CODE` (or `--addr HOST:PORT` for a direct connection) connects (for
-   a tunnel: through a `devtunnel connect` child) and sends
-   `ClientMsg::Pair { code_proof, name, nonce }` instead of `Hello8`.
-   `code_proof` is HMAC-SHA256(code, "pair" ‖ nonce): the code itself never
-   travels. `name` is the home PC's name (`--client-name`; a name given to
-   `remote pair --name` wins), made unique among active clients.
-3. The service compares the proof with every open code (constant time each).
-   A miss is answered with "wrong or expired pairing code" after 300 ms; the
-   fifth miss cancels every open code ("too many wrong pairing codes"). A match
-   uses the code up, creates a client id (`pc-` + 16 hex digits) and a 32-byte
-   secret, stores them in `<home>\remote\clients.json` with the secret
-   DPAPI-protected (user scope, extra entropy), and answers `ServiceMsg::Paired
-   { client_id, nonce, secret }`: the secret is sealed under keys derived from
-   HMAC-SHA256(code, context ‖ client nonce ‖ server nonce) (HMAC-SHA256 in
-   counter mode as the keystream, then an HMAC tag over the client id and the
-   ciphertext). The tunnel is TLS already; the seal keeps the secret out of
-   anything that only sees frames. The service then closes the connection.
-4. The client opens the seal, stores `{name, tunnel or addr, port, client_id,
+   a tunnel: through a `devtunnel connect` child) and sends `ClientMsg::PairStart
+   { name, nonce }` instead of `Hello8`. `name` is the home PC's name
+   (`--client-name`; a name given to `remote pair --name` wins), made unique
+   among active clients.
+3. Both sides derive keys from a code with PBKDF2-HMAC-SHA256, 200,000 rounds,
+   salted with a context string and both nonces (one 32-byte master key, then
+   HMAC-expanded into a proof key, an encryption key and a seal key). The
+   service answers `PairChallenge { nonce, proofs }`: for every open code an
+   HMAC with its proof key over the transcript (SHA-256 of the context, both
+   nonces and the client's name, each length-prefixed), padded with random
+   values to 3 and sorted. **The service proves it knows the code first**: the
+   client derives its keys and only continues when one of the proofs matches;
+   otherwise it stops with "wrong or expired pairing code (or too many recent
+   attempts: wait a minute) …" and never sends anything that depends on the
+   code. A service that has no open code answers exactly like one whose codes
+   do not match.
+4. Client → `PairProof { proof }` over the same transcript (its own role
+   label). The service finds the code it matches, uses it up, creates a client
+   id (`pc-` + 16 hex digits) and a 32-byte secret, stores them in
+   `<home>\remote\clients.json` with the secret DPAPI-protected (user scope,
+   extra entropy), and answers `ServiceMsg::Paired { client_id, nonce, secret
+   }`: the secret is encrypted with the encryption key (HMAC-SHA256 in counter
+   mode as the keystream) and tagged with the seal key over the transcript,
+   the client id and the ciphertext. The tunnel is TLS already; the seal keeps
+   the secret out of anything that only sees frames. The service logs
+   `PAIRED a new remote client "pc-…" named "…" (it calls itself "…") with the
+   code opened by … at …` and closes the connection.
+5. The client opens the seal, stores `{name, tunnel or addr, port, client_id,
    secret (DPAPI), vscode_tunnel}` in `<home>\remote\servers.json` and makes a
    first normal connection (`Hello8 { remote_id }`, HMAC challenge with the
    secret) to check it.
 
+Guessing: an attempt whose proof matches no code (or that ends early) counts
+as a failure; the next attempt waits 250 ms, doubling up to 30 s, and a
+success resets it. An attempt that would wait more than 2 s is answered with
+random proofs at once (no derivation; the codes stay open). Derivations run
+one at a time. Because the service proves first, anyone who can reach the port
+can collect proofs and test guesses offline, but each guess costs 200,000
+PBKDF2 rounds against a 59-bit code that lives 10 minutes; a captured
+`PairStart` alone is worth nothing.
+
 On the Cloud PC, `remote clients` lists the clients (paired, last seen,
-connected now, revoked) and `remote revoke ID|NAME` revokes one: its secret is
-erased, its live connections are closed at once, and every later attempt is
-refused with "this client (NAME) was revoked on MACHINE; pair it again". At
-home, `remote servers` lists the paired services and `remote forget NAME`
-removes one (revoke it on the service too). The pairing requests are only
-answered on the service's own pipe, never to TCP clients.
+connected now, revoked, and who opened the code each paired with, and when)
+and `remote revoke ID|NAME` revokes one: its secret is erased (only its
+revocation key is kept), its live connections are closed at once, and every
+later attempt gets a refusal only that client can verify ("this client was
+revoked on the service; pair it again"). A client admitted while it was being
+revoked is checked again once it is listed and dropped. When the last active
+client is revoked and no code is open, remote listening is turned off (setting
+and listener) unless `COPILOT_CANVAS_LISTEN` asks for it; `remote pair` turns
+it on again. At home, `remote servers` lists the paired services and `remote
+forget NAME` removes one (revoke it on the service too). The pairing requests
+are only answered on the service's own pipe, never to TCP clients.
+`remote pair` and `remote revoke` change `settings.json` only when it parses:
+a malformed file is reported and left alone.
 
 | File | Side | Contents |
 |---|---|---|
-| `<home>\remote\clients.json` | service | `id`, `name`, `created_ms`, `last_seen_ms`, `revoked_ms`, `secret` (DPAPI, hex; empty once revoked) |
+| `<home>\remote\clients.json` | service | `id`, `name`, `created_ms`, `last_seen_ms`, `revoked_ms`, `secret` (DPAPI, hex; empty once revoked), `revoked_key` (DPAPI, hex), `paired_by`, `code_opened_ms` |
 | `<home>\remote\servers.json` | client | `name`, `tunnel`, `port`, `addr`, `vscode_tunnel`, `client_id`, `secret` (DPAPI, hex), `added_ms` |
 
 DPAPI ties both files to the Windows user (and machine, unless the profile
-roams): copying them elsewhere does not copy the secrets.
+roams): copying them elsewhere does not copy the secrets. Tunnel ids in
+`remote add` and in `servers.json` must be lower-case letters, digits, `-`
+and `.` starting with a letter or digit (they become `devtunnel` arguments, so
+one can never read as an option); a record with another id makes the file an
+error.
+
+## Security notes
+
+What is protected:
+
+- Only processes of the same Windows user reach the service's pipe, the
+  token file and the port file (owner-only DACLs). Over loopback TCP the token
+  is refused unless the connecting process belongs to the service's user, so
+  other users of a shared Cloud PC cannot use it even if they could read it.
+- Everything else on the TCP port must prove a paired client's secret (or pair
+  with a code). Before that, a peer can make the service read at most 16 KiB
+  per frame, hold at most 16 handshakes for at most 5 s, and learn nothing
+  about the service (no build, machine or client names; refusals carry no
+  text).
+- The Dev Tunnel provides TLS and owner-only access: `devtunnel create` makes a
+  private tunnel that only the signed-in owner (GitHub or Microsoft account)
+  can connect to; never add `--allow-anonymous` (`-a`) or access entries.
+- A client never acts on what an unauthenticated peer says: refusals count only
+  when proven, and the managed `devtunnel connect` child's port is used only
+  from its own output or when the child itself owns the listener.
+
+What is not:
+
+- **A paired client is as trusted as you are on the Cloud PC**: it can open
+  terminals, run anything, read files through the backend and change the
+  canvas. Pair only your own machines, and revoke one you no longer use
+  (`remote clients` shows when each was paired and by which code). Every
+  pairing is logged prominently in `service-<instance>.log`.
+- Frames after the handshake are neither authenticated nor encrypted by
+  Copilot Canvas (only the handshake is): between the machines they rely on
+  the Dev Tunnel's TLS, and on each machine on loopback TCP between
+  `devtunnel` and Copilot Canvas.
+- Local processes of the same user are trusted (they can read the token and
+  the DPAPI secrets anyway).
+- Anyone who can reach the port can slow pairing down (failed attempts back
+  off for everyone) and can collect proofs of open codes for offline guessing
+  (see above: 200,000 PBKDF2 rounds per guess, 59-bit codes, 10 minutes).
 
 ## Tunnel setup (Cloud PC)
+
+The commands below are those of the installed Dev Tunnels CLI (`devtunnel
+--version`: `Tunnel CLI version: 1.0.2115+e16833f284`), checked against its
+`--help` and the strings in its binary:
+
+| Command | Syntax (from `--help`) |
+|---|---|
+| `devtunnel user login` | `-g, --github` (GitHub), `-e, --entra` (Entra ID / Microsoft account, the default), `-d, --use-device-code-auth` |
+| `devtunnel user show` | prints `Logged in as NAME using PROVIDER.` or `Not logged in.` (exit code 0 either way); `-j` prints `{"status": "Not logged in"}` |
+| `devtunnel create [<tunnel-id>]` | private unless `-a, --allow-anonymous` |
+| `devtunnel port create [<tunnel-id>] -p, --port-number <port-number>` | the port number is required |
+| `devtunnel host [<tunnel-id>]` | `-p, --port-number, --port-numbers <port-numbers>`; with an existing tunnel and no `-p` it hosts the ports made with `port create` (the setup's way) |
+| `devtunnel connect [<tunnel-id>]` | options: only `-t, --access-token` and `-v, --verbose`; no local port option |
+| `devtunnel show <tunnel-id>`, `devtunnel list` | the tunnel, its ports and access |
 
 `copilot-canvas remote tunnel-setup [--tunnel ID] [--port PORT]` (defaults:
 `copilot-canvas`, the `remote.listen` port or 47600):
 
-- writes the automation manifest `<automations>\copilot-canvas\CopilotCanvas-Tunnel.yaml`:
-  `devtunnel.exe host ID --port-numbers PORT` (the `devtunnel host` syntax of
-  CLI 1.0.2115; the CLI's full path), schedule `logon` and `every 1h` (with
-  `overlap: ignore` an hourly start does nothing while the host runs, and
-  starts it again when it is gone), `restart_on_failure: 10 every 1m`, no time
-  limit;
+- writes the automation manifest `<automations>\copilot-canvas\CopilotCanvas-Tunnel.yaml`
+  that runs `<full path of devtunnel.exe> host ID` with schedule `logon` and
+  `every 1h` (with `overlap: ignore` an hourly start does nothing while the
+  host runs, and starts it again when it is gone), `restart_on_failure: 10
+  every 1m`, no time limit;
 - sets `remote.listen = 127.0.0.1:PORT` and `remote.tunnel = ID` in
-  `settings.json`;
-- prints the one-time commands: `devtunnel user login -g` (GitHub; avoids the
-  401s seen with Microsoft accounts), `devtunnel create ID` (private: only the
-  owner can connect; never `--allow-anonymous`), `devtunnel port create ID -p
-  PORT`, then `copilot-canvas automations apply CopilotCanvas-Tunnel --yes`
-  and `copilot-canvas automations run CopilotCanvas-Tunnel`.
+  `settings.json` (refusing to touch a malformed one);
+- prints the one-time commands:
+
+```powershell
+devtunnel user login -g                     # GitHub (`devtunnel user login` alone: Microsoft/Entra account)
+devtunnel create copilot-canvas             # private: only your account can connect (never add -a)
+devtunnel port create copilot-canvas -p 47600
+devtunnel show copilot-canvas               # check: port 47600, no anonymous access
+copilot-canvas automations apply CopilotCanvas-Tunnel --yes
+copilot-canvas automations run CopilotCanvas-Tunnel
+```
+
+When `devtunnel.exe` is not on `PATH` (WinGet installs it under
+`%LOCALAPPDATA%\Microsoft\WinGet\Packages\Microsoft.devtunnel_*`), the
+printed lines start with `$dt = "<full path>"` and use `& $dt` instead.
+
+`devtunnel host copilot-canvas` prints, once it is up (strings from the
+binary): `Hosting port: 47600`, `Connect via browser: …`, `Inspect network
+activity: …` and `Ready to accept connections for tunnel: copilot-canvas.REGION.`
+(`Warning: Tunnel does not have any ports!` when `port create` was skipped).
 
 The tunnel host is an ordinary manifest automation: it shows on the canvas,
 the automation doctor watches its launcher log, and a failure event for it
 carries a hint (check `devtunnel user show`, sign in again, `devtunnel show
-ID`). `copilot-canvas doctor` reports remote listening, paired clients and
-servers, whether the Dev Tunnels CLI is installed and signed in (`devtunnel
-user show --json`; it exits 0 even when signed out, so its status is read),
-and the tunnel manifest and its Task Scheduler state.
+ID`). `copilot-canvas doctor` reports remote listening (including a port it
+could not bind), paired clients and servers, whether the Dev Tunnels CLI is
+installed and signed in (the first line of `devtunnel user show`: signed in
+when it starts with `Logged in`; `Not logged in.`, `Login token expired` and
+`Previously logged in as …` are not), and the tunnel manifest and its Task
+Scheduler state.
 
 ## Connecting from home
+
+```powershell
+winget install Microsoft.devtunnel
+devtunnel user login -g                     # the same account that created the tunnel
+copilot-canvas remote add cloudpc --tunnel copilot-canvas --port 47600 --code ABCD-EFGH-JKMN [--vscode-tunnel NAME]
+copilot-canvas --remote cloudpc             # or: copilot-canvas --gui --remote cloudpc
+```
 
 `copilot-canvas --remote NAME` (or the GUI with the same option) resolves
 `NAME` in `servers.json` and connects as the paired client:
@@ -247,12 +397,32 @@ and the tunnel manifest and its Task Scheduler state.
   arguments separated by `|` (`C:\…\copilot-canvas.exe|devtunnel-standin`).
   It runs without a console window, inside a kill-on-close job, so it ends
   with the client (also when the client crashes).
-- The client reads the child's output for `Forwarding from 127.0.0.1:LOCAL to
-  host port PORT` (the local port may differ when PORT is taken here) and
-  connects there; without such a line it probes `127.0.0.1:PORT` after 8 s.
-  A child that exits first is reported with its last lines, e.g. "`devtunnel
-  connect copilot-canvas` exited (exit code: 3): Login required. Sign in once
-  with `devtunnel user login -g`".
+- `devtunnel connect` has no option for the local port: it listens on each of
+  the tunnel's port numbers here, and when one is taken it logs `Listening on
+  port 47600 failed: …` and `Incrementing port and trying again` and takes the
+  next free one. It then prints lines built from the strings `Connected to
+  tunnel: `, `Forwarding from ` and ` to host port ` in its binary (a line
+  may carry a prefix such as `SSH: `), e.g.:
+
+  ```text
+  Connected to tunnel: copilot-canvas.REGION
+  Forwarding from 127.0.0.1:47600 to host port 47600.
+  Forwarding from [::1]:47600 to host port 47600.
+  ```
+
+  The client connects to the address of the `Forwarding from … to host port
+  PORT.` line for the record's port (IPv4 first; a single forwarded port is
+  used even when the numbers differ). If no such line appears within 8 s (a
+  CLI that words it differently), it looks up which process listens where
+  (`GetExtendedTcpTable`, `TCP_TABLE_OWNER_PID_LISTENER`) and uses a loopback
+  port only when the `devtunnel connect` child itself (or a process it
+  started) listens on it: whatever else answers on `127.0.0.1:47600` is never
+  used. After 30 s without either it gives up with the child's last lines.
+- A child that exits first is reported with its last lines and a hint, e.g.
+  "`devtunnel connect copilot-canvas` exited (exit code: 3): Login required.
+  Sign in once with `devtunnel user login -g` (GitHub) or `devtunnel user
+  login` (Microsoft), as the account that created the tunnel." (`Login
+  required.` and exit code 3 are what the CLI does when signed out.)
 - Reconnecting (above) restarts the child when it died or kept failing.
 - `--addr` records connect directly (an SSH forward; the loopback tests).
 - The old `--remote HOST:PORT` with `COPILOT_CANVAS_REMOTE_ID` /
@@ -261,9 +431,10 @@ and the tunnel manifest and its Task Scheduler state.
 For tests without a signed-in CLI, `copilot-canvas devtunnel-standin connect
 TUNNEL` (hidden) emulates `devtunnel connect`: it forwards a free local port
 (`COPILOT_CANVAS_STANDIN_PORT` to choose one) to
-`COPILOT_CANVAS_STANDIN_TARGET` (`HOST:PORT`), prints the same lines, and with
-`COPILOT_CANVAS_STANDIN_CONTROL=DIR` writes its pid to `DIR\standin.pid` and
-drops every connection when `DIR\drop` appears.
+`COPILOT_CANVAS_STANDIN_TARGET` (`HOST:PORT`), prints the real CLI's
+`Connected to tunnel: …` and `Forwarding from … to host port ….` lines, and
+with `COPILOT_CANVAS_STANDIN_CONTROL=DIR` writes its pid to `DIR\standin.pid`
+and drops every connection when `DIR\drop` appears.
 
 ## Local vs remote behaviours
 
@@ -306,10 +477,11 @@ copilot-canvas remote tunnel-setup                  # manifest + remote.listen; 
 devtunnel user login -g                             # once (GitHub)
 devtunnel create copilot-canvas                     # once; private
 devtunnel port create copilot-canvas -p 47600       # once
+devtunnel show copilot-canvas                       # port 47600, no anonymous access
 copilot-canvas automations apply CopilotCanvas-Tunnel --yes
 copilot-canvas automations run CopilotCanvas-Tunnel
 copilot-canvas service start
-copilot-canvas remote pair --name home-pc           # note the code
+copilot-canvas remote pair --name home-pc           # note the code (ABCD-EFGH-JKMN)
 copilot-canvas doctor                               # listening, CLI signed in, task running
 ```
 
@@ -318,7 +490,7 @@ At home:
 ```powershell
 winget install Microsoft.devtunnel
 devtunnel user login -g                             # the same GitHub account
-copilot-canvas remote add cloudpc --tunnel copilot-canvas --port 47600 --code ABCD-EFGH [--vscode-tunnel NAME]
+copilot-canvas remote add cloudpc --tunnel copilot-canvas --port 47600 --code ABCD-EFGH-JKMN [--vscode-tunnel NAME]
 copilot-canvas --remote cloudpc                     # or: copilot-canvas --gui --remote cloudpc
 ```
 
@@ -343,22 +515,38 @@ Checklist (over a day):
    in): the canvas reconnects once it is back.
 10. Leave it overnight; check the next morning (sleep, token expiry).
 11. `copilot-canvas remote revoke home-pc` on the Cloud PC: the canvas drops
-    with "this client (home-pc) was revoked"; pair again.
+    with "this client was revoked on the service"; pair again.
 12. Quit the canvas: no `devtunnel.exe` stays behind.
 
 ## Testing
 
-- Unit tests: DPAPI round trip and tampering (`canvas-common::dpapi`); codes,
-  proofs and sealing (`canvas-common::pairing`); `servers.json` persistence
-  (`canvas-common::remote`); DIB↔PNG (`canvas-common::clipimage`); pairing over
-  TCP, refusals with reasons, pairing only over TCP
-  (`canvas-common::handshake`); code expiry, single use, attempt limits,
-  `clients.json`, unique names, revocation and the tunnel manifest
-  (`canvas-agents::remote`); OSC 52 routing (`canvas-host::server`); named
-  servers and a refused client ending reconnects, forward-line parsing
-  (`canvas-core::conn`, `canvas-core::tunnel`); remote image paste, remote
-  links, folders and automation files, the viewer (`canvas-core::actions`,
-  `canvas-core::viewer`, `canvas-core::links`).
+- Unit tests: DPAPI round trip and tampering (`canvas-common::dpapi`); code
+  format, PBKDF2 derivation, proofs bound to the transcript, sealing and the
+  failure backoff (`canvas-common::pairing`); `servers.json` persistence and
+  tunnel id validation (`canvas-common::remote`); DIB↔PNG and oversized images
+  (`canvas-common::clipimage`); pairing over TCP with the service proving the
+  code first, "no code open" and "wrong code" answered alike, the refusal of
+  the old `Pair`, pairing only over TCP, opening fields checked before any
+  lookup, verified and unverified refusals, the build told after
+  authentication (`canvas-common::handshake`); owner-only token files
+  (`canvas-common::auth`); loopback IP literals only, `SO_EXCLUSIVEADDRUSE`
+  against a squatter, read deadlines, the token peer decision (same user, on
+  loopback) and the peer process and listener owner lookups
+  (`canvas-common::tcp`); the pre-authentication frame limit, claimed lengths
+  not allocated, and a zstd bomb refused (`canvas-common::wire`); code expiry,
+  single use, backoff and reset, `clients.json`, unique names, revocation keys
+  and the tunnel manifest (`canvas-agents::remote`); answers too large for a
+  frame (`canvas-agents::service`); a flood of unauthenticated connections
+  with huge length prefixes and silent peers that neither stops the service
+  nor locks out a legitimate token client over TCP, the image budget, OSC 52
+  routing (`canvas-host::server`); named servers, an unproven refusal retried
+  and a proven one ending reconnects (`canvas-core::conn`); the real CLI's
+  `Forwarding from` lines and others, a squatter on the tunnel's port never
+  used, a listener of the child's own process tree used, login hints
+  (`canvas-core::tunnel`); `devtunnel user show` states and the setup commands
+  (`remote_cli`); remote image paste, remote links, folders and automation
+  files, the viewer (`canvas-core::actions`, `canvas-core::viewer`,
+  `canvas-core::links`).
 - Transport unit tests: framing with and without compression, oversized and truncated
   frames (`canvas-common::wire`); the handshake for protocol 7 and 8, wrong
   secrets, unknown paired clients and `Hello` over TCP
@@ -381,15 +569,18 @@ Checklist (over a day):
 - `copilot-canvas selftest --remote paired`: a real service in a temporary
   data folder plays the Cloud PC, a second folder the home PC, the stand-in
   plays `devtunnel connect`. It checks that listening is off until a code is
-  opened; a wrong code and a used code are refused; `remote add` over a
-  direct address and through the stand-in (whose child ends with `remote
-  add`); secrets are not stored in the clear; a wrong secret (AuthError), an
-  unknown id (refused with a reason) and a client without credentials are
-  refused; then the canvas with `--remote NAME` through the stand-in: a shell,
+  opened; codes read `XXXX-XXXX-XXXX` and pair when typed in lower case
+  without dashes; a wrong code and a used code are refused; `remote add` over
+  a direct address and through the stand-in (whose child ends with `remote
+  add`); secrets are not stored in the clear; a wrong secret (AuthError,
+  retried), an unknown id (an unproven, generic refusal, retried) and a client
+  without credentials are refused; pairings are logged prominently; then the
+  canvas with `--remote NAME` through the stand-in: a shell,
   a dropped connection (reconnected 0.5 s later), a killed tunnel child
   (started again, reconnected 0.6 s later), a path Ctrl+clicked in the
   terminal opening in the viewer through `ReadText`, `remote revoke` dropping
-  the canvas with "was revoked" and no further retries, the tunnel child ending
+  the canvas with "was revoked" (a refusal the client verified) and no further
+  retries, the tunnel child ending
   with the canvas; `remote clients` and `remote forget`. With
   `CANVAS_PROBE_CLIPBOARD=1` it also puts an image on the service's clipboard
   over the paired connection and reads it back (this replaces your clipboard,

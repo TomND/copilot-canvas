@@ -67,6 +67,13 @@ impl Pipe {
         self.closed.load(std::sync::atomic::Ordering::Acquire)
     }
 
+    /// The process at the client end of a server pipe.
+    pub fn client_pid(&self) -> Option<u32> {
+        let mut pid = 0u32;
+        // SAFETY: a connected pipe handle and a valid output pointer.
+        (unsafe { windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId(self.handle.0, &mut pid) } != 0 && pid != 0).then_some(pid)
+    }
+
     /// Splits into independently usable read and write halves.
     pub fn split(self) -> io::Result<(PipeReader, PipeWriter, PipeCloser)> {
         let shared = Arc::new(self);
@@ -314,6 +321,7 @@ mod tests {
             read.join().unwrap()
         });
         let pipe = server.accept().unwrap();
+        assert_eq!(pipe.client_pid(), Some(std::process::id()), "the client is this process");
         let (mut reader, mut writer, closer) = pipe.split().unwrap();
         let mut buf = [0u8; 5];
         reader.read_exact(&mut buf).unwrap();

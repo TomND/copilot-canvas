@@ -27,6 +27,15 @@ pub fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 40 && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
+/// Dev Tunnel ids: 1–70 lower-case letters, digits, '-' and '.' (a cluster
+/// suffix, `copilot-canvas.usw2`), starting with a letter or digit: an id
+/// becomes an argument of `devtunnel`, so it can never read as an option.
+pub fn valid_tunnel_id(id: &str) -> bool {
+    id.len() <= 70
+        && id.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '.'))
+}
+
 /// This machine's name (what a service lists for a client it paired).
 pub fn machine_name() -> String {
     std::env::var("COMPUTERNAME").ok().filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "client".into())
@@ -85,14 +94,19 @@ impl Servers {
         dir(home).join("servers.json")
     }
 
-    /// A missing file is an empty list.
+    /// A missing file is an empty list; a record with an invalid tunnel id
+    /// makes the file an error (it would become a `devtunnel` argument).
     pub fn load(home: &Path) -> Result<Self> {
         let path = Self::path(home);
-        match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| format!("{} is not readable", path.display())),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(error) => Err(error).with_context(|| format!("cannot read {}", path.display())),
+        let servers: Self = match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| format!("{} is not readable", path.display()))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(error) => return Err(error).with_context(|| format!("cannot read {}", path.display())),
+        };
+        if let Some(bad) = servers.servers.iter().find(|s| s.tunnel.as_deref().is_some_and(|t| !valid_tunnel_id(t))) {
+            anyhow::bail!("{}: the server {:?} has an invalid tunnel id {:?}; add it again", path.display(), bad.name, bad.tunnel.as_deref().unwrap_or_default());
         }
+        Ok(servers)
     }
 
     pub fn save(&self, home: &Path) -> Result<()> {
@@ -190,8 +204,22 @@ mod tests {
         assert!(changed.find("direct").is_none());
         std::fs::write(Servers::path(&home), "{broken").unwrap();
         assert!(Servers::load(&home).is_err(), "a broken file is an error, not an empty list");
+        let mut injected = servers.clone();
+        injected.servers[0].tunnel = Some("--help".into());
+        std::fs::write(Servers::path(&home), serde_json::to_string(&injected).unwrap()).unwrap();
+        assert!(Servers::load(&home).unwrap_err().to_string().contains("invalid tunnel id"));
         std::fs::remove_dir_all(home).unwrap();
         assert!(valid_name("cloud-pc_1.x") && !valid_name("a b") && !valid_name("") && !valid_name("host:1"));
+    }
+
+    #[test]
+    fn tunnel_ids_follow_the_setup_rule() {
+        for good in ["copilot-canvas", "a", "x1-2", "copilot-canvas.usw2", &"a".repeat(70)] {
+            assert!(valid_tunnel_id(good), "{good}");
+        }
+        for bad in ["", "-x", "--port", ".x", "Copilot", "a b", "a;b", "a/b", &"a".repeat(71)] {
+            assert!(!valid_tunnel_id(bad), "{bad}");
+        }
     }
 
     #[test]

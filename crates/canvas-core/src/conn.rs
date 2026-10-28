@@ -236,8 +236,8 @@ pub fn open(target: &ConnTarget, options: &ConnOptions, session: &Arc<ClientSess
                 .and_then(|stream| open_stream(stream, server.secret(), Some(server.client_id().to_owned()), options, session));
             match &opened {
                 Ok(_) => server.succeeded(),
-                // The service answered: the path to it works.
-                Err(error) if error.is::<Refused>() || error.is::<AuthError>() => server.succeeded(),
+                // The service proved who it is: the path to it works.
+                Err(error) if is_final(error) => server.succeeded(),
                 Err(_) => server.failed(),
             }
             opened
@@ -245,10 +245,27 @@ pub fn open(target: &ConnTarget, options: &ConnOptions, session: &Arc<ClientSess
     }
 }
 
-/// Retrying cannot help: the service is an impostor or refused this client.
+/// Retrying cannot help: the service proved that it refuses this client (a
+/// revoked paired client). An unproven refusal or a failed service proof may
+/// come from anything that answers on the port, so those are retried.
 pub fn is_final(error: &anyhow::Error) -> bool {
-    error.is::<AuthError>() || error.is::<Refused>()
+    error.downcast_ref::<Refused>().is_some_and(|refused| refused.verified)
 }
+
+/// Why reconnecting keeps failing, for the user, when the service (or
+/// whatever answers) refused this client or failed to prove who it is.
+pub fn retry_reason(error: &anyhow::Error) -> Option<&'static str> {
+    if error.is::<AuthError>() {
+        Some("the service did not prove it knows this client's secret")
+    } else if error.is::<Refused>() {
+        Some("the service refused this client")
+    } else {
+        None
+    }
+}
+
+/// Wait between attempts while the service refuses this client.
+const REFUSED_RETRY: Duration = Duration::from_secs(5);
 
 /// Connects, retrying a refused connection for a moment (a forwarder that
 /// announced its port may need a little longer to accept).
@@ -271,22 +288,10 @@ fn connect_soon(addr: &str) -> std::io::Result<std::net::TcpStream> {
 pub fn pair(addr: &str, code: &str, name: &str) -> Result<(String, Vec<u8>)> {
     let stream = connect_soon(addr).with_context(|| format!("cannot reach {addr}"))?;
     let (reader, writer, closer) = tcp::split(stream)?;
-    let (mut reader, mut writer) = (FrameReader::new(Box::new(reader)), FrameWriter::new(Box::new(writer)));
-    let done = Arc::new(AtomicBool::new(false));
-    {
-        let (done, closer) = (done.clone(), closer.clone());
-        std::thread::Builder::new().name("pair-timeout".into()).spawn(move || {
-            let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
-            while Instant::now() < deadline && !done.load(Ordering::Acquire) {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            if !done.load(Ordering::Acquire) {
-                closer.close();
-            }
-        })?;
-    }
+    let (mut reader, mut writer) = (FrameReader::new(Box::new(reader)).with_limit(wire::PRE_AUTH_FRAME), FrameWriter::new(Box::new(writer)));
+    // A service that never answers must not hang the client.
+    closer.set_deadline(Some(HANDSHAKE_TIMEOUT));
     let result = handshake::pair(&mut reader, &mut writer, code, name);
-    done.store(true, Ordering::Release);
     closer.close();
     result
 }
@@ -312,17 +317,19 @@ pub fn backoff(attempt: u32) -> Duration {
     }
 }
 
-/// Reconnects with backoff until a connection succeeds, the service fails
-/// authentication or refuses this client, or `retry` (shown each failed
-/// attempt) returns false.
+/// Reconnects with backoff until a connection succeeds, the service proves
+/// it refuses this client, or `retry` (shown each failed attempt) returns
+/// false. While refused without proof, attempts are [`REFUSED_RETRY`] apart.
 pub fn reconnect(target: &ConnTarget, options: &ConnOptions, session: &Arc<ClientSession>, mut retry: impl FnMut(u32, &anyhow::Error) -> bool) -> Result<Conn> {
     let mut attempt = 0;
+    let mut refused = false;
     loop {
-        std::thread::sleep(backoff(attempt));
+        std::thread::sleep(if refused { REFUSED_RETRY } else { backoff(attempt) });
         match open(target, options, session) {
             Ok(conn) => return Ok(conn),
             Err(error) if is_final(&error) => return Err(error),
             Err(error) => {
+                refused = retry_reason(&error).is_some();
                 if !retry(attempt, &error) {
                     return Err(error);
                 }
@@ -451,7 +458,8 @@ fn establish(
     hello8: bool,
 ) -> Result<Conn> {
     let stats = Arc::new(WireStats::default());
-    let mut reader = FrameReader::new(reader).with_stats(stats.clone());
+    // Until the service proved itself, its frames are held to the small limit.
+    let mut reader = FrameReader::new(reader).with_stats(stats.clone()).with_limit(wire::PRE_AUTH_FRAME);
     let mut writer = FrameWriter::new(writer).with_stats(stats.clone());
     let compress = remote && options.compress;
     let info = hello8.then(|| ClientInfo {
@@ -476,6 +484,7 @@ fn establish(
     }
     let result = (|| -> Result<(handshake::Greeting, bool)> {
         let greeting = handshake::open(&mut reader, &mut writer, secret, build_id(), info)?;
+        reader.set_limit(wire::MAX_FRAME);
         let usable = (PROTOCOL_MIN..=PROTOCOL).contains(&greeting.protocol);
         let v8 = usable && greeting.protocol >= 8;
         if v8 {
@@ -783,22 +792,28 @@ mod tests {
     }
 
     #[test]
-    fn named_servers_resolve_and_a_refusal_ends_reconnecting() {
+    fn named_servers_resolve_and_only_a_proven_refusal_ends_reconnecting() {
+        use canvas_common::handshake::Credential;
         use canvas_common::remote::{ServerRecord, Servers};
         let home = std::env::temp_dir().join(format!("cc-server-{}", uuid::Uuid::new_v4()));
         let instance = Instance::new(Some("t".into()), Some(home.clone()), Some(home.clone())).unwrap();
         let listener = tcp::listen_loopback("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         let attempts = Arc::new(AtomicU64::new(0));
+        // The first two connections are refused without proof (anything on the
+        // port could do that), the rest as a revoked client (proven).
         {
             let attempts = attempts.clone();
             std::thread::spawn(move || {
                 for stream in listener.incoming().flatten() {
-                    attempts.fetch_add(1, Ordering::Relaxed);
+                    let attempt = attempts.fetch_add(1, Ordering::Relaxed);
                     let (reader, writer, closer) = tcp::split(stream).unwrap();
                     let (mut reader, mut writer) = (FrameReader::new(Box::new(reader)), FrameWriter::new(Box::new(writer)));
-                    let refused = handshake::serve(&mut reader, &mut writer, true, "svc", |id| Err(format!("{} was revoked", id.unwrap_or_default())), |_| Err("no".into()));
-                    assert!(refused.is_err());
+                    let credential = |_: Option<&str>| match attempt {
+                        0 | 1 => Credential::Refused,
+                        _ => Credential::Revoked(canvas_common::pairing::revocation_key(&[7; 32])),
+                    };
+                    assert!(handshake::serve(&mut reader, &mut writer, true, "svc", credential, None).is_err());
                     closer.close();
                 }
             });
@@ -811,9 +826,19 @@ mod tests {
         assert!(matches!(&target, ConnTarget::Server(s) if s.secret() == [7; 32]));
         assert!(target.is_remote() && target.is_other_machine() && !ConnTarget::Loopback(instance.clone()).is_other_machine());
         assert_eq!(target.vscode_tunnel().as_deref(), Some("cpc"));
-        let error = reconnect(&target, &ConnOptions::default(), &ClientSession::new(), |_, _| true).err().expect("refused");
-        assert!(error.is::<Refused>() && error.to_string() == "pc-1 was revoked", "{error:#}");
-        assert_eq!(attempts.load(Ordering::Relaxed), 1, "a refused client does not retry");
+        let first = open(&target, &ConnOptions::default(), &ClientSession::new()).err().expect("refused");
+        assert!(!is_final(&first) && retry_reason(&first).is_some(), "an unproven refusal is retried: {first:#}");
+        assert!(!first.to_string().contains("pc-1"), "the client is told nothing the service did not prove");
+        let mut reasons = Vec::new();
+        let error = reconnect(&target, &ConnOptions::default(), &ClientSession::new(), |_, error| {
+            reasons.push(retry_reason(error));
+            true
+        })
+        .err()
+        .expect("refused");
+        assert!(is_final(&error) && error.to_string().contains("was revoked"), "{error:#}");
+        assert_eq!(reasons, [Some("the service refused this client")], "retried once more, then the proven refusal ended it");
+        assert_eq!(attempts.load(Ordering::Relaxed), 3);
         let _ = std::fs::remove_dir_all(home);
     }
 }

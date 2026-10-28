@@ -8,8 +8,8 @@ use anyhow::{Context, Result, bail, ensure};
 
 /// Largest image sent to a remote service's clipboard (PNG bytes).
 pub const MAX_PNG: usize = 20 << 20;
-/// Largest bitmap accepted on either side (pixels).
-const MAX_PIXELS: u64 = 100_000_000;
+/// Largest bitmap accepted on either side (pixels; 128 MiB as 32-bit pixels).
+const MAX_PIXELS: u64 = 32 << 20;
 
 const BI_RGB: u32 = 0;
 const BI_BITFIELDS: u32 = 3;
@@ -104,8 +104,8 @@ pub fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// A PNG as (width, height, RGBA pixels).
-pub fn decode_png(png: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
+/// A decoded PNG frame: (width, height, colour type, rows as decoded).
+fn decode_frame(png: &[u8]) -> Result<(u32, u32, png::ColorType, Vec<u8>)> {
     let mut decoder = png::Decoder::new(Cursor::new(png));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().context("not a PNG image")?;
@@ -113,23 +113,45 @@ pub fn decode_png(png: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     ensure!(width > 0 && height > 0 && (width as u64) * (height as u64) <= MAX_PIXELS, "the image is empty or too large");
     let mut buf = vec![0u8; reader.output_buffer_size().context("the image is too large")?];
     let frame = reader.next_frame(&mut buf).context("the PNG image is damaged")?;
-    let data = &buf[..frame.buffer_size()];
-    let pixels = (width * height) as usize;
-    let rgba = match frame.color_type {
-        png::ColorType::Rgba => data.to_vec(),
-        png::ColorType::Rgb => data.chunks(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
-        png::ColorType::GrayscaleAlpha => data.chunks(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
-        png::ColorType::Grayscale => data.iter().flat_map(|&g| [g, g, g, 255]).collect(),
+    buf.truncate(frame.buffer_size());
+    let channels = match frame.color_type {
+        png::ColorType::Rgba => 4,
+        png::ColorType::Rgb => 3,
+        png::ColorType::GrayscaleAlpha => 2,
+        png::ColorType::Grayscale => 1,
         other => bail!("unsupported PNG colour type {other:?}"),
     };
-    ensure!(rgba.len() == pixels * 4, "the PNG image is damaged");
+    ensure!(buf.len() == (width * height) as usize * channels, "the PNG image is damaged");
+    Ok((width, height, frame.color_type, buf))
+}
+
+/// Calls `pixel` with each (r, g, b, a) of decoded rows in order.
+fn each_pixel(color: png::ColorType, data: &[u8], mut pixel: impl FnMut([u8; 4])) {
+    match color {
+        png::ColorType::Rgba => data.as_chunks::<4>().0.iter().for_each(|&[r, g, b, a]| pixel([r, g, b, a])),
+        png::ColorType::Rgb => data.as_chunks::<3>().0.iter().for_each(|&[r, g, b]| pixel([r, g, b, 255])),
+        png::ColorType::GrayscaleAlpha => data.as_chunks::<2>().0.iter().for_each(|&[g, a]| pixel([g, g, g, a])),
+        _ => data.iter().for_each(|&g| pixel([g, g, g, 255])),
+    }
+}
+
+/// A PNG as (width, height, RGBA pixels).
+pub fn decode_png(png: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
+    let (width, height, color, data) = decode_frame(png)?;
+    if color == png::ColorType::Rgba {
+        return Ok((width, height, data));
+    }
+    let mut rgba = Vec::with_capacity((width * height) as usize * 4);
+    each_pixel(color, &data, |p| rgba.extend_from_slice(&p));
     Ok((width, height, rgba))
 }
 
-/// A PNG as a packed 32-bit top-down `CF_DIB` (`BITMAPINFOHEADER` + BGRA rows).
+/// A PNG as a packed 32-bit top-down `CF_DIB` (`BITMAPINFOHEADER` + BGRA
+/// rows), converted straight from the decoded rows into the bitmap.
 pub fn png_to_dib(png: &[u8]) -> Result<Vec<u8>> {
-    let (width, height, rgba) = decode_png(png)?;
-    let mut dib = Vec::with_capacity(40 + rgba.len());
+    let (width, height, color, data) = decode_frame(png)?;
+    let pixels = (width * height) as usize * 4;
+    let mut dib = Vec::with_capacity(40 + pixels);
     dib.extend_from_slice(&40u32.to_le_bytes());
     dib.extend_from_slice(&(width as i32).to_le_bytes());
     // Negative height: rows top-down.
@@ -137,11 +159,9 @@ pub fn png_to_dib(png: &[u8]) -> Result<Vec<u8>> {
     dib.extend_from_slice(&1u16.to_le_bytes());
     dib.extend_from_slice(&32u16.to_le_bytes());
     dib.extend_from_slice(&BI_RGB.to_le_bytes());
-    dib.extend_from_slice(&(rgba.len() as u32).to_le_bytes());
+    dib.extend_from_slice(&(pixels as u32).to_le_bytes());
     dib.extend_from_slice(&[0u8; 16]);
-    for pixel in rgba.chunks(4) {
-        dib.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
-    }
+    each_pixel(color, &data, |[r, g, b, a]| dib.extend_from_slice(&[b, g, r, a]));
     Ok(dib)
 }
 
@@ -200,5 +220,51 @@ mod tests {
         let mut eight = dib(24, false);
         eight[14] = 8;
         assert!(dib_to_png(&eight).is_err(), "palette bitmaps are not supported");
+    }
+
+    /// A 1x1 PNG whose header claims `width` x `height` (CRC fixed up).
+    fn claimed_png(width: u32, height: u32) -> Vec<u8> {
+        let mut png = encode_png(1, 1, &[1, 2, 3, 255]).unwrap();
+        png[16..20].copy_from_slice(&width.to_be_bytes());
+        png[20..24].copy_from_slice(&height.to_be_bytes());
+        let crc = png[12..29].iter().fold(!0u32, |mut crc, &byte| {
+            crc ^= byte as u32;
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 { (crc >> 1) ^ 0xedb8_8320 } else { crc >> 1 };
+            }
+            crc
+        });
+        png[29..33].copy_from_slice(&(!crc).to_be_bytes());
+        png
+    }
+
+    #[test]
+    fn oversized_images_are_refused_before_their_pixels_are_allocated() {
+        assert!(decode_png(&claimed_png(1, 1)).is_ok(), "the patched header is valid");
+        for (w, h) in [(8192, 8192), (100_000, 400)] {
+            assert!(decode_png(&claimed_png(w, h)).unwrap_err().to_string().contains("too large"), "{w}x{h}");
+            assert!(png_to_dib(&claimed_png(w, h)).is_err());
+        }
+        let mut huge = dib(32, false);
+        huge[4..8].copy_from_slice(&8192i32.to_le_bytes());
+        huge[8..12].copy_from_slice(&8192i32.to_le_bytes());
+        assert!(dib_to_png(&huge).unwrap_err().to_string().contains("too large"));
+    }
+
+    #[test]
+    fn every_png_colour_type_becomes_the_same_bitmap() {
+        let encode = |color: png::ColorType, data: &[u8]| {
+            let mut out = Vec::new();
+            let mut encoder = png::Encoder::new(&mut out, 2, 1);
+            encoder.set_color(color);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.write_header().unwrap().write_image_data(data).unwrap();
+            out
+        };
+        let rgb = png_to_dib(&encode(png::ColorType::Rgb, &[10, 20, 30, 40, 50, 60])).unwrap();
+        assert_eq!(&rgb[40..], &[30, 20, 10, 255, 60, 50, 40, 255]);
+        let gray = png_to_dib(&encode(png::ColorType::GrayscaleAlpha, &[7, 128, 9, 255])).unwrap();
+        assert_eq!(&gray[40..], &[7, 7, 7, 128, 9, 9, 9, 255]);
+        assert_eq!(decode_png(&encode(png::ColorType::Grayscale, &[5, 6])).unwrap().2, [5, 5, 5, 255, 6, 6, 6, 255]);
     }
 }

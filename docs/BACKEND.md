@@ -224,7 +224,9 @@ All new messages are protocol 8 and appended at the end of the enums:
 | `DocOpen { path, demo, cwd }` | 21 |
 | `DocEdit { key, base, ops_json }` | 22 |
 | `Rpc { id, json }` | 23 |
-| `Pair { code_proof, name, nonce }` (REMOTE.md, Pairing) | 24 |
+| `Pair { code_proof, name, nonce }` (the first pairing scheme; refused now) | 24 |
+| `PairStart { name, nonce }` (REMOTE.md, Pairing) | 25 |
+| `PairProof { proof }` (REMOTE.md, Pairing) | 26 |
 
 | Service → client | Index |
 |---|---|
@@ -233,10 +235,15 @@ All new messages are protocol 8 and appended at the end of the enums:
 | `DocSaved { key, version, error }` | 18 |
 | `RpcReply { id, json }` | 19 |
 | `Paired { client_id, nonce, secret }` (REMOTE.md, Pairing) | 20 |
+| `PairChallenge { nonce, proofs }` (REMOTE.md, Pairing) | 24 |
+| `Refusal { proof }` (REMOTE.md, handshake) | 25 |
+| `Welcome { build }` (REMOTE.md, handshake) | 26 |
 
 `ServiceMsg::shaped` never sends them to protocol-7 clients. The connection's
 reader thread routes `RpcReply` to the waiting caller by id; a dropped
-connection fails the calls waiting on it.
+connection fails the calls waiting on it. An answer too large for one frame
+(32 MiB) becomes an error answer; the connection stays up. `Tails` reads at
+most 8 files and 4 MiB in all.
 
 ## Tests
 

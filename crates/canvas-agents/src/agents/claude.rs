@@ -120,52 +120,10 @@ pub fn cleanup_session_files(home: &Path, id: &str) {
     }
 }
 
-/// Writes `path` atomically (a temporary file in the same folder, renamed
-/// over it) with a protected DACL that grants access to the current user only.
+/// Writes `path` atomically with a protected DACL that grants access to the
+/// current user only ([`crate::win::write_private`]).
 fn write_private(path: &Path, contents: &[u8]) -> Result<()> {
-    use std::io::Write;
-    let name = path.file_name().context("no file name")?.to_string_lossy().into_owned();
-    let temp = path.with_file_name(format!("{name}.{}.tmp", uuid::Uuid::new_v4().simple()));
-    let written = create_private(&temp).and_then(|mut file| {
-        file.write_all(contents)?;
-        file.sync_all()?;
-        drop(file);
-        std::fs::rename(&temp, path)
-    });
-    if written.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    written.with_context(|| format!("cannot write {}", path.display()))
-}
-
-/// Creates a new file that only the current user can open.
-fn create_private(path: &Path) -> std::io::Result<std::fs::File> {
-    use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::io::FromRawHandle;
-    use windows_sys::Win32::Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree};
-    use windows_sys::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
-    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
-    use windows_sys::Win32::Storage::FileSystem::{CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL};
-
-    let sid = crate::win::current_user_sid()?;
-    let sddl: Vec<u16> = format!("D:P(A;;FA;;;{sid})").encode_utf16().chain(Some(0)).collect();
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-    // SAFETY: `sddl` is NUL-terminated; the descriptor is freed below.
-    if unsafe { ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), SDDL_REVISION_1, &mut descriptor, std::ptr::null_mut()) } == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    let attributes = SECURITY_ATTRIBUTES { nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: descriptor, bInheritHandle: 0 };
-    // SAFETY: `wide` is NUL-terminated and `attributes` outlives the call.
-    let handle = unsafe { CreateFileW(wide.as_ptr(), GENERIC_WRITE, 0, &attributes, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, std::ptr::null_mut()) };
-    let error = std::io::Error::last_os_error();
-    // SAFETY: allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW.
-    unsafe { LocalFree(descriptor) };
-    if handle == INVALID_HANDLE_VALUE {
-        return Err(error);
-    }
-    // SAFETY: a new, owned file handle.
-    Ok(unsafe { std::fs::File::from_raw_handle(handle) })
+    crate::win::write_private(path, contents).with_context(|| format!("cannot write {}", path.display()))
 }
 
 impl Claude {

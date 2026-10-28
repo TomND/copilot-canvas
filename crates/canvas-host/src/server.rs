@@ -10,6 +10,12 @@
 //! heartbeats, number their input (applied at most once per client session)
 //! and, over TCP, get frames coalesced per tile and optionally compressed.
 //!
+//! Unauthenticated TCP connections are limited: at most
+//! [`MAX_UNAUTHENTICATED`] at once (more are closed at once), frames of at
+//! most `PRE_AUTH_FRAME` bytes, and [`HANDSHAKE_TIMEOUT`] to finish (a read
+//! deadline on the socket, no thread of its own). Over TCP the service token
+//! only authenticates this user's own processes on this machine.
+//!
 //! Everything that is not about terminals (session history, the canvas
 //! document, the event bus, …) is delegated to a [`HostApp`], the L3 backend
 //! that shares this process.
@@ -18,8 +24,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
-use std::net::TcpStream;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::net::{SocketAddr, TcpStream};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -29,9 +35,9 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounde
 use crate::emulator::{Engine, Snapshot, SnapshotImage};
 use crate::paths::{Instance, build_id, now_ms};
 use crate::pipe::{Pipe, PipeServer};
-use crate::protocol::{self, CAP_COMPRESS, CAP_IMAGES, ClientMsg, Frame8, IMAGE_PNG, Input, LaunchKind, Placement, Run8, ServiceMsg, ServiceStats};
-use crate::term::{Hooks, Notice, Spawn, Terminal, lock};
-use canvas_common::handshake::{Opening, PairGrant, PairRequest};
+use crate::protocol::{self, CAP_COMPRESS, CAP_IMAGES, ClientMsg, Frame8, ImageRef, Input, LaunchKind, MAX_FRAME, PRE_AUTH_FRAME, Placement, Run8, ServiceMsg, ServiceStats};
+use crate::term::{EncodedImage, Hooks, ImagePng, Notice, Spawn, Terminal, lock};
+use canvas_common::handshake::{Credential, Opening, Pairing};
 use canvas_common::wire::{Beat, Closer, FrameReader, FrameWriter, Liveness};
 use canvas_common::{handshake, tcp};
 
@@ -42,10 +48,16 @@ const BACKGROUND_INTERVAL: Duration = Duration::from_millis(100);
 const PUMP_POLL: Duration = Duration::from_millis(50);
 /// TCP clients that have not authenticated by then are dropped.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+/// TCP connections in their handshake at once; more are closed at once.
+pub const MAX_UNAUTHENTICATED: usize = 16;
 const IDLE_EXIT: Duration = Duration::from_secs(10 * 60);
 /// Client sessions remembered for input deduplication.
 const MAX_INPUT_SESSIONS: usize = 256;
 pub const CLIENT_QUEUE: usize = 1024;
+/// Bytes of image messages queued for one client at most; more wait.
+const IMAGE_BUDGET: usize = 32 << 20;
+/// When images left out for the budget are tried again.
+const IMAGE_RETRY: Duration = Duration::from_millis(50);
 
 /// A launch the backend resolved into a concrete program.
 pub struct Resolved {
@@ -76,15 +88,19 @@ pub trait HostApp: Send + Sync {
     fn terminal_stopping(&self, _id: &str) {}
     /// Pending work that keeps the service running without clients or terminals.
     fn has_work(&self) -> bool;
-    /// The secret of a paired remote client (`ClientInfo::remote_id`); `None` refuses it.
-    fn remote_secret(&self, id: &str) -> Option<Vec<u8>>;
-    /// Why a remote client id is refused (sent to the client before closing).
-    fn remote_refusal(&self, id: &str) -> String {
-        format!("unknown remote client {id:?}")
+    /// What the service knows about a paired remote client id
+    /// (`ClientInfo::remote_id`, already checked to be a valid name).
+    fn remote_credential(&self, id: &str) -> Credential;
+    /// A paired remote client authenticated (notes when it was last seen).
+    fn remote_seen(&self, _id: &str) {}
+    /// Whether a paired remote client may still be connected (checked again
+    /// once it was admitted, against a revocation meanwhile).
+    fn remote_active(&self, id: &str) -> bool {
+        matches!(self.remote_credential(id), Credential::Secret(_))
     }
-    /// Pairs a new remote client (`ClientMsg::Pair`); `Err` says why not.
-    fn pair(&self, _request: &PairRequest) -> Result<PairGrant, String> {
-        Err("this service does not pair clients".into())
+    /// Pairs new remote clients (`None`: this service does not).
+    fn pairing(&self) -> Option<&dyn Pairing> {
+        None
     }
     /// The service is about to exit: persist what must not be lost.
     fn shutdown(&self) {}
@@ -106,8 +122,13 @@ struct Sub {
     sent_at: Option<Instant>,
     /// Image placements last sent (CAP_IMAGES).
     placements: Vec<Placement>,
+    /// The placements the client was last sent (those whose image it has).
+    visible: Vec<Placement>,
     /// Images of the current placements: id -> (generation, delivered).
     images: HashMap<u32, (u64, bool)>,
+    /// An image waits (being encoded, or over the client's image budget):
+    /// the terminal is looked at again then even when it did not change.
+    images_due: Option<Instant>,
 }
 
 /// Keyboard input applied for one client session; outlives its connections.
@@ -132,6 +153,13 @@ impl InputSession {
     }
 }
 
+/// A message waiting for a client's writer: an ordinary one, or an image
+/// whose PNG is shared by every client it is queued for.
+pub enum Outgoing {
+    Message(ServiceMsg),
+    Image { term: String, image_id: u32, width: u32, height: u32, png: Arc<[u8]> },
+}
+
 /// One connected client.
 pub struct Client {
     pub id: u64,
@@ -141,9 +169,13 @@ pub struct Client {
     pub remote: bool,
     /// The paired remote client this connection authenticated as.
     pub remote_id: Option<String>,
+    /// The process at the other end of a pipe connection.
+    pub peer_pid: Option<u32>,
     /// `CAP_*` bits from the handshake.
     caps: u32,
-    out: Sender<ServiceMsg>,
+    out: Sender<Outgoing>,
+    /// Bytes of image messages queued and not written yet.
+    image_bytes: Arc<AtomicUsize>,
     subs: Mutex<HashMap<String, Sub>>,
     /// The focused tile (`Subscribe8`).
     focused: Mutex<Option<String>>,
@@ -153,14 +185,16 @@ pub struct Client {
 }
 
 impl Client {
-    fn new(id: u64, protocol: u32, remote: bool, caps: u32, out: Sender<ServiceMsg>, closer: Closer) -> Self {
+    fn new(id: u64, protocol: u32, remote: bool, caps: u32, out: Sender<Outgoing>, closer: Closer) -> Self {
         Self {
             id,
             protocol,
             remote,
             remote_id: None,
+            peer_pid: None,
             caps,
             out,
+            image_bytes: Arc::default(),
             subs: Mutex::new(HashMap::new()),
             focused: Mutex::new(None),
             session: None,
@@ -174,11 +208,28 @@ impl Client {
         !matches!(self.try_send(message), Err(TrySendError::Disconnected(_)))
     }
 
-    fn try_send(&self, message: ServiceMsg) -> Result<(), TrySendError<ServiceMsg>> {
+    fn try_send(&self, message: ServiceMsg) -> Result<(), TrySendError<Outgoing>> {
         match message.shaped_for(self.protocol, self.caps) {
-            Some(message) => self.out.try_send(message),
+            Some(message) => self.out.try_send(Outgoing::Message(message)),
             None => Ok(()),
         }
+    }
+
+    /// Queues an encoded image (`CAP_IMAGES` clients) and counts it against the image budget.
+    fn try_send_image(&self, term: &str, image_id: u32, image: &EncodedImage) -> Result<(), TrySendError<Outgoing>> {
+        if self.protocol < 8 || self.caps & CAP_IMAGES == 0 {
+            return Ok(());
+        }
+        let message = Outgoing::Image { term: term.to_owned(), image_id, width: image.width, height: image.height, png: image.png.clone() };
+        self.out.try_send(message)?;
+        self.image_bytes.fetch_add(image.png.len(), Ordering::AcqRel);
+        Ok(())
+    }
+
+    /// Whether an image of `len` bytes fits the image budget now (one image always fits an empty queue).
+    fn image_fits(&self, len: usize) -> bool {
+        let queued = self.image_bytes.load(Ordering::Acquire);
+        queued == 0 || queued + len <= IMAGE_BUDGET
     }
 
     /// Ends the connection.
@@ -224,9 +275,37 @@ pub struct Host {
     compress: bool,
     /// Input deduplication per client session id.
     input_sessions: Mutex<HashMap<Vec<u8>, Arc<Mutex<InputSession>>>>,
-    /// The loopback port remote clients connect to, while listening.
-    remote_port: Mutex<Option<u16>>,
+    /// The loopback listener for remote clients, while listening.
+    remote: Mutex<Option<RemoteListener>>,
+    /// TCP connections in their handshake.
+    unauthenticated: Arc<AtomicUsize>,
+    /// When a refused surplus connection was last logged.
+    surplus_logged: Mutex<Option<Instant>>,
+    /// This service's user (SID): over TCP the token only authenticates it.
+    user_sid: String,
     app: OnceLock<Arc<dyn HostApp>>,
+}
+
+/// The loopback listener's address and the flag that stops its accept loop.
+struct RemoteListener {
+    addr: SocketAddr,
+    stop: Arc<AtomicBool>,
+}
+
+/// A place among the [`MAX_UNAUTHENTICATED`] handshakes; freed when dropped.
+struct HandshakeSlot(Arc<AtomicUsize>);
+
+impl HandshakeSlot {
+    fn take(count: &Arc<AtomicUsize>) -> Option<Self> {
+        count.try_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < MAX_UNAUTHENTICATED).then_some(n + 1)).ok()?;
+        Some(Self(count.clone()))
+    }
+}
+
+impl Drop for HandshakeSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 pub fn log(instance: &Instance, message: &str) {
@@ -254,6 +333,11 @@ pub fn spawn_named<F: FnOnce() + Send + 'static>(name: &str, body: F) {
     std::thread::Builder::new().name(name.into()).spawn(body).expect("spawn service thread");
 }
 
+/// Starts a thread; an error (no resources) is returned instead of a panic.
+pub fn try_spawn<F: FnOnce() + Send + 'static>(name: &str, body: F) -> std::io::Result<()> {
+    std::thread::Builder::new().name(name.into()).spawn(body).map(|_| ())
+}
+
 /// Runs the service: binds the pipe (and the TCP port when remote listening
 /// is configured), starts the host threads, lets `make_app` build the
 /// backend, then serves clients until shutdown.
@@ -271,8 +355,9 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
     }
     let token = protocol::nonce();
     canvas_common::auth::write_token(&instance.token_path(), &token)?;
-    // A port file left by a service that did not exit cleanly.
+    // Files left by a service that did not exit cleanly.
     let _ = std::fs::remove_file(instance.port_path());
+    let _ = std::fs::remove_file(instance.listen_error_path());
     let settings = canvas_common::settings::Settings::load(&instance.home);
     log(&instance, &format!("service started, build {}", build_id()));
 
@@ -306,7 +391,10 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
         fallback_logged: AtomicBool::new(false),
         compress: settings.compress(),
         input_sessions: Mutex::new(HashMap::new()),
-        remote_port: Mutex::new(None),
+        remote: Mutex::new(None),
+        unauthenticated: Arc::default(),
+        surplus_logged: Mutex::new(None),
+        user_sid: crate::win::current_user_sid().unwrap_or_default(),
         app: OnceLock::new(),
     });
     let app = make_app(&host);
@@ -320,21 +408,25 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
     spawn_named("idle", { let h = host.clone(); move || idle_loop(h) });
     spawn_named("priority", { let h = host.clone(); move || priority_loop(h, prio_rx) });
     spawn_named("liveness", { let h = host.clone(); move || liveness_loop(h) });
-    if let Some(addr) = settings.listen()
-        && let Err(error) = host.listen_remote(&addr)
-    {
-        log(&host.instance, &format!("not listening for remote clients on {addr}: {error:#}"));
+    if let Some(addr) = settings.listen() {
+        // Failures are logged and recorded for `doctor` by `listen_remote`.
+        let _ = host.listen_remote(&addr);
     }
 
     loop {
         match server.accept() {
             Ok(pipe) => {
                 let host = host.clone();
-                spawn_named("client", move || {
-                    if let Err(error) = serve_client(&host, Link::Pipe(pipe)) {
+                let spawned = try_spawn("client", move || {
+                    if let Err(error) = serve_client(&host, Link::Pipe(pipe), None) {
                         log(&host.instance, &format!("client ended: {error:#}"));
                     }
                 });
+                // The connection (moved into the closure) is dropped and closes.
+                if let Err(error) = spawned {
+                    log(&instance, &format!("cannot start a client thread: {error}; connection dropped"));
+                    std::thread::sleep(Duration::from_millis(50));
+                }
             }
             Err(error) => {
                 log(&instance, &format!("accept failed: {error}"));
@@ -344,18 +436,32 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
     }
 }
 
-/// Serves clients on a loopback TCP listener (remote clients behind a tunnel).
-fn accept_tcp(host: Arc<Host>, listener: std::net::TcpListener) {
+/// Serves clients on a loopback TCP listener (remote clients behind a tunnel)
+/// until `stop` is set. Connections beyond [`MAX_UNAUTHENTICATED`] handshakes
+/// are closed at once.
+fn accept_tcp(host: Arc<Host>, listener: std::net::TcpListener, stop: Arc<AtomicBool>) {
     for stream in listener.incoming() {
+        if stop.load(Ordering::Acquire) {
+            break;
+        }
         match stream {
             Ok(stream) => {
-                let host = host.clone();
-                spawn_named("remote-client", move || {
+                let Some(slot) = HandshakeSlot::take(&host.unauthenticated) else {
+                    drop(stream);
+                    host.log_surplus();
+                    continue;
+                };
+                let client_host = host.clone();
+                let spawned = try_spawn("remote-client", move || {
                     let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_default();
-                    if let Err(error) = serve_client(&host, Link::Tcp(stream)) {
-                        log(&host.instance, &format!("remote client {peer} ended: {error:#}"));
+                    if let Err(error) = serve_client(&client_host, Link::Tcp(stream), Some(slot)) {
+                        log(&client_host.instance, &format!("remote client {peer} ended: {error:#}"));
                     }
                 });
+                if let Err(error) = spawned {
+                    log(&host.instance, &format!("cannot start a remote client thread: {error}; connection dropped"));
+                    std::thread::sleep(Duration::from_millis(50));
+                }
             }
             Err(error) => {
                 log(&host.instance, &format!("remote accept failed: {error}"));
@@ -363,29 +469,82 @@ fn accept_tcp(host: Arc<Host>, listener: std::net::TcpListener) {
             }
         }
     }
+    log(&host.instance, "stopped listening for remote clients");
 }
 
 impl Host {
-    /// Also serves clients on a loopback TCP port (non-loopback addresses are
-    /// refused) and publishes it in `<home>/service-<instance>.port`. Returns
-    /// the port; listening twice keeps the first listener.
+    /// Also serves clients on a loopback TCP port (an IP literal; other
+    /// addresses are refused; bound exclusively) and publishes it in
+    /// `<home>/service-<instance>.port` (owner-only). Returns the port;
+    /// listening twice keeps the first listener. A failure is logged and
+    /// kept in `service-<instance>.listen-error` (for `doctor`) until a
+    /// later attempt succeeds.
     pub fn listen_remote(self: &Arc<Self>, addr: &str) -> Result<u16> {
-        let mut current = lock(&self.remote_port);
-        if let Some(port) = *current {
-            return Ok(port);
+        let mut current = lock(&self.remote);
+        if let Some(listener) = &*current {
+            return Ok(listener.addr.port());
         }
-        let listener = tcp::listen_loopback(addr)?;
-        let port = listener.local_addr()?.port();
-        let path = self.instance.port_path();
-        let temp = path.with_extension(format!("port.{}.tmp", std::process::id()));
-        if let Err(error) = std::fs::write(&temp, port.to_string()).and_then(|_| std::fs::rename(&temp, &path)) {
+        let started = (|| -> Result<(SocketAddr, Arc<AtomicBool>)> {
+            let listener = tcp::listen_loopback(addr).with_context(|| {
+                format!("cannot listen on {addr} (another program, or another user's service, may hold the port; pick another with `copilot-canvas remote tunnel-setup --port PORT`)")
+            })?;
+            let bound = listener.local_addr()?;
+            let stop = Arc::new(AtomicBool::new(false));
+            let (host, flag) = (self.clone(), stop.clone());
+            try_spawn("tcp-accept", move || accept_tcp(host, listener, flag)).context("cannot start the remote accept thread")?;
+            Ok((bound, stop))
+        })();
+        let (bound, stop) = match started {
+            Ok(started) => started,
+            Err(error) => {
+                log(&self.instance, &format!("NOT LISTENING for remote clients: {error:#}"));
+                let _ = canvas_common::win::write_private(&self.instance.listen_error_path(), format!("{} {error:#}", now_ms()).as_bytes());
+                return Err(error);
+            }
+        };
+        let _ = std::fs::remove_file(self.instance.listen_error_path());
+        if let Err(error) = canvas_common::win::write_private(&self.instance.port_path(), bound.port().to_string().as_bytes()) {
             log(&self.instance, &format!("cannot publish the remote port: {error}"));
         }
-        log(&self.instance, &format!("listening for remote clients on 127.0.0.1:{port}"));
-        *current = Some(port);
-        let host = self.clone();
-        spawn_named("tcp-accept", move || accept_tcp(host, listener));
-        Ok(port)
+        log(&self.instance, &format!("listening for remote clients on {bound}"));
+        *current = Some(RemoteListener { addr: bound, stop });
+        Ok(bound.port())
+    }
+
+    /// Stops listening for remote clients (connections stay); false when it was not listening.
+    pub fn stop_remote(&self) -> bool {
+        let Some(listener) = lock(&self.remote).take() else { return false };
+        listener.stop.store(true, Ordering::Release);
+        // Wakes the accept loop, which sees the flag and closes the listener.
+        let _ = TcpStream::connect_timeout(&listener.addr, Duration::from_millis(500));
+        let _ = std::fs::remove_file(self.instance.port_path());
+        true
+    }
+
+    /// The loopback port remote clients connect to, while listening.
+    pub fn remote_port(&self) -> Option<u16> {
+        lock(&self.remote).as_ref().map(|l| l.addr.port())
+    }
+
+    /// Logs refused surplus connections at most every 10 s.
+    fn log_surplus(&self) {
+        let mut last = lock(&self.surplus_logged);
+        if last.is_none_or(|at| at.elapsed() >= Duration::from_secs(10)) {
+            *last = Some(Instant::now());
+            log(&self.instance, &format!("more than {MAX_UNAUTHENTICATED} TCP connections are authenticating; closing new ones"));
+        }
+    }
+
+    /// Whether the TCP peer at `tcp` may authenticate with the token: a
+    /// process of this user on this machine.
+    fn token_allowed(&self, tcp: &TcpEnds) -> bool {
+        let owner = tcp::peer_process(tcp.local, tcp.peer).ok();
+        let user = owner.and_then(|pid| crate::win::process_user_sid(pid).ok());
+        let allowed = tcp::token_peer_allowed(tcp.peer, user.as_deref(), &self.user_sid);
+        if !allowed {
+            log(&self.instance, &format!("refused token authentication over TCP from {} (process {owner:?}, user {user:?})", tcp.peer));
+        }
+        allowed
     }
 
     /// The backend; its threads may call in while `run` is still installing it.
@@ -499,10 +658,11 @@ impl Host {
         std::process::exit(0);
     }
 
-    /// The token and port files are only valid while this process runs.
+    /// The token, port and listen-error files are only valid while this process runs.
     fn remove_published_files(&self) {
         let _ = std::fs::remove_file(self.instance.token_path());
         let _ = std::fs::remove_file(self.instance.port_path());
+        let _ = std::fs::remove_file(self.instance.listen_error_path());
     }
 
     /// The configured engine, or alacritty once Ghostty failed to start (logged once).
@@ -575,52 +735,68 @@ enum Link {
 
 type Halves = (Box<dyn Read + Send>, Box<dyn Write + Send>, Closer);
 
+/// The ends of a TCP connection and its closer (read deadlines, the token check).
+struct TcpEnds {
+    closer: tcp::TcpCloser,
+    local: SocketAddr,
+    peer: SocketAddr,
+}
+
 impl Link {
-    fn split(self) -> std::io::Result<Halves> {
+    fn split(self) -> std::io::Result<(Halves, Option<TcpEnds>)> {
         Ok(match self {
             Link::Pipe(pipe) => {
                 let (reader, writer, closer) = pipe.split()?;
-                (Box::new(reader), Box::new(writer), Closer::new(move || closer.close()))
+                ((Box::new(reader), Box::new(writer), Closer::new(move || closer.close())), None)
             }
             Link::Tcp(stream) => {
+                let (local, peer) = (stream.local_addr()?, stream.peer_addr()?);
                 let (reader, writer, closer) = tcp::split(stream)?;
-                (Box::new(reader), Box::new(writer), Closer::new(move || closer.close()))
+                let ends = TcpEnds { closer: closer.clone(), local, peer };
+                ((Box::new(reader), Box::new(writer), Closer::new(move || closer.close())), Some(ends))
             }
         })
     }
 }
 
-fn serve_client(host: &Arc<Host>, link: Link) -> Result<()> {
+/// A client's name for the log (control characters escaped).
+fn printable(name: &str) -> String {
+    name.escape_debug().to_string()
+}
+
+fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Result<()> {
     let remote = matches!(link, Link::Tcp(_));
-    let (reader, writer, closer) = link.split()?;
-    let mut reader = FrameReader::new(reader);
+    let peer_pid = match &link {
+        Link::Pipe(pipe) => pipe.client_pid(),
+        Link::Tcp(_) => None,
+    };
+    let ((reader, writer, closer), tcp_ends) = link.split()?;
+    let mut reader = FrameReader::new(reader).with_limit(PRE_AUTH_FRAME);
     let mut writer = FrameWriter::new(writer);
-    let authenticated = Arc::new(AtomicBool::new(false));
-    if remote {
-        let (done, closer) = (authenticated.clone(), closer.clone());
-        spawn_named("handshake-timeout", move || {
-            std::thread::sleep(HANDSHAKE_TIMEOUT);
-            if !done.load(Ordering::Acquire) {
-                closer.close();
-            }
-        });
+    if let Some(ends) = &tcp_ends {
+        ends.closer.set_deadline(Some(HANDSHAKE_TIMEOUT));
     }
     let opening = handshake::serve(
         &mut reader,
         &mut writer,
         remote,
         build_id(),
-        |remote_id| match remote_id {
-            Some(id) => host.app().remote_secret(id).ok_or_else(|| host.app().remote_refusal(id)),
-            None => Ok(host.token.clone()),
+        |remote_id| match (remote_id, &tcp_ends) {
+            (Some(id), _) => host.app().remote_credential(id),
+            // Over TCP the token only authenticates this user's processes here.
+            (None, Some(ends)) if !host.token_allowed(ends) => Credential::Refused,
+            (None, _) => Credential::Secret(host.token.clone()),
         },
-        |request| host.app().pair(request),
+        host.app().pairing(),
     );
-    authenticated.store(true, Ordering::Release);
+    if let Some(ends) = &tcp_ends {
+        ends.closer.set_deadline(None);
+    }
+    drop(slot);
     let accepted = match opening {
         Ok(Opening::Client(accepted)) => accepted,
-        Ok(Opening::Paired { client_id }) => {
-            log(&host.instance, &format!("paired remote client {client_id}"));
+        Ok(Opening::Paired { client_id, name }) => {
+            log(&host.instance, &format!("paired remote client {client_id:?} (it calls itself {name:?})"));
             closer.close();
             return Ok(());
         }
@@ -629,8 +805,12 @@ fn serve_client(host: &Arc<Host>, link: Link) -> Result<()> {
             return Err(error);
         }
     };
+    reader.set_limit(MAX_FRAME);
     let v8 = accepted.protocol >= 8;
     let info = accepted.client.unwrap_or_default();
+    if let Some(remote_id) = &info.remote_id {
+        host.app().remote_seen(remote_id);
+    }
     if remote && v8 {
         reader.accept_compressed()?;
         if host.compress && info.caps & CAP_COMPRESS != 0 {
@@ -638,10 +818,11 @@ fn serve_client(host: &Arc<Host>, link: Link) -> Result<()> {
         }
     }
 
-    let (out_tx, out_rx) = bounded::<ServiceMsg>(CLIENT_QUEUE);
+    let (out_tx, out_rx) = bounded::<Outgoing>(CLIENT_QUEUE);
     let id = host.next_client.fetch_add(1, Ordering::Relaxed);
     let mut client = Client::new(id, accepted.protocol, remote, info.caps, out_tx, closer.clone());
     client.remote_id = info.remote_id.clone();
+    client.peer_pid = peer_pid;
     // The newest connection of a client session owns its input; the previous
     // one (half-open after a network drop) stops applying input and is closed.
     let mut ready_ack = 0;
@@ -664,16 +845,29 @@ fn serve_client(host: &Arc<Host>, link: Link) -> Result<()> {
     if let Some(liveness) = &client.liveness {
         liveness.received();
     }
-    spawn_writer(writer, out_rx, &client);
+    if let Err(error) = spawn_writer(writer, out_rx, &client) {
+        closer.close();
+        bail!("cannot start the client's writer thread: {error}");
+    }
     if remote {
-        let paired = info.remote_id.as_deref().map(|r| format!(" as paired client {r}")).unwrap_or_default();
-        log(&host.instance, &format!("remote client {id} connected ({}, protocol {}, compression {}){paired}", info.name, accepted.protocol, host.compress && info.caps & CAP_COMPRESS != 0));
+        let paired = info.remote_id.as_deref().map(|r| format!(" as paired client {r:?}")).unwrap_or_default();
+        log(&host.instance, &format!("remote client {id} connected ({}, protocol {}, compression {}){paired}", printable(&info.name), accepted.protocol, host.compress && info.caps & CAP_COMPRESS != 0));
     }
     client.send(ServiceMsg::Ready8 { pid: std::process::id(), input_ack: ready_ack });
     let infos: Vec<_> = lock(&host.terms).values().map(|t| t.info()).collect();
     client.send(ServiceMsg::Terminals(infos));
     host.app().client_connected(&client);
     lock(&host.clients).insert(id, client.clone());
+    // A revocation between the handshake and now closed only the clients
+    // listed then: check again now that this one is listed.
+    if let Some(remote_id) = &client.remote_id
+        && !host.app().remote_active(remote_id)
+    {
+        lock(&host.clients).remove(&id);
+        closer.close();
+        host.app().client_disconnected(id);
+        bail!("remote client {remote_id:?} was revoked while it connected");
+    }
     host.touch();
 
     let result = (|| -> Result<()> {
@@ -698,11 +892,13 @@ fn serve_client(host: &Arc<Host>, link: Link) -> Result<()> {
 }
 
 /// Writes queued messages; protocol-8 clients also get a heartbeat every 2 s.
-fn spawn_writer(mut writer: FrameWriter, out: Receiver<ServiceMsg>, client: &Arc<Client>) {
+/// A message that cannot be encoded (too large) is skipped, not fatal.
+fn spawn_writer(mut writer: FrameWriter, out: Receiver<Outgoing>, client: &Arc<Client>) -> std::io::Result<()> {
     let heartbeat = client.liveness.as_ref().map(|l| l.interval);
     let session = client.session.clone();
     let closer = client.closer.clone();
-    spawn_named("client-writer", move || {
+    let image_bytes = client.image_bytes.clone();
+    try_spawn("client-writer", move || {
         let mut beat = heartbeat.map(Beat::new);
         loop {
             let message = match &beat {
@@ -716,10 +912,20 @@ fn spawn_writer(mut writer: FrameWriter, out: Receiver<ServiceMsg>, client: &Arc
                     Err(_) => break,
                 },
             };
-            if let Some(message) = message
-                && writer.send(&message).is_err()
-            {
-                break;
+            let sent = match message {
+                None => Ok(0),
+                Some(Outgoing::Message(message)) => writer.send(&message),
+                Some(Outgoing::Image { term, image_id, width, height, png }) => {
+                    let sent = writer.send(&ImageRef { term: &term, image_id, width, height, png: &png });
+                    image_bytes.fetch_sub(png.len(), Ordering::AcqRel);
+                    sent
+                }
+            };
+            match sent {
+                Ok(_) => {}
+                // Nothing was written: the connection is still in sync.
+                Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {}
+                Err(_) => break,
             }
             if beat.as_mut().is_some_and(|b| b.due(Instant::now())) {
                 let input_ack = session.as_ref().map(|s| lock(s).applied).unwrap_or(0);
@@ -729,7 +935,7 @@ fn spawn_writer(mut writer: FrameWriter, out: Receiver<ServiceMsg>, client: &Arc
             }
         }
         closer.close();
-    });
+    })
 }
 
 /// Closes protocol-8 connections that stayed silent too long (no heartbeat).
@@ -893,7 +1099,9 @@ fn diff_frame(id: &str, sub: &Sub, snap: Snapshot, hashes: Vec<u64>) -> Option<(
         modes,
         sent_at: sub.sent_at,
         placements: sub.placements.clone(),
+        visible: sub.visible.clone(),
         images: sub.images.clone(),
+        images_due: sub.images_due,
     };
     let frame = Frame8 { id: id.to_owned(), cols, rows, full, changed, cursor, cursor_shape, cursor_blink, display_offset, history, modes, links };
     Some((frame, next))
@@ -921,21 +1129,37 @@ fn pump(host: Arc<Host>, wake: Receiver<()>) {
     }
 }
 
+/// The earlier of two optional times.
+fn sooner(a: Option<Instant>, b: Instant) -> Option<Instant> {
+    Some(a.map_or(b, |a| a.min(b)))
+}
+
 /// Sends one client the frames its subscriptions need. Never holds a lock
-/// while snapshotting a terminal. Returns when a coalesced tile is due.
+/// while snapshotting a terminal and never waits for an image. Returns when
+/// a coalesced tile or a waiting image is due.
 fn pump_client(host: &Host, client: &Client) -> Option<Instant> {
     // Backpressure: a slow client gets fewer, newer frames instead of a growing queue.
     if client.out.len() > CLIENT_QUEUE / 2 {
         return None;
     }
     let focused = lock(&client.focused).clone();
-    let wanted: Vec<(String, u64, Option<Instant>)> = lock(&client.subs).iter().map(|(id, s)| (id.clone(), s.generation, s.sent_at)).collect();
+    let wanted: Vec<(String, u64, Option<Instant>, Option<Instant>)> =
+        lock(&client.subs).iter().map(|(id, s)| (id.clone(), s.generation, s.sent_at, s.images_due)).collect();
     let mut due: Option<Instant> = None;
-    for (id, seen, sent_at) in wanted {
+    for (id, seen, sent_at, images_due) in wanted {
         let terminal = lock(&host.terms).get(&id).cloned();
         let Some(terminal) = terminal else { continue };
         let generation = terminal.generation();
-        if generation == seen {
+        // Images that waited are looked at again once due, even if nothing else changed.
+        let images_now = match images_due {
+            Some(at) if at > Instant::now() => {
+                due = sooner(due, at);
+                false
+            }
+            Some(_) => true,
+            None => false,
+        };
+        if generation == seen && !images_now {
             continue;
         }
         if client.remote
@@ -944,14 +1168,18 @@ fn pump_client(host: &Host, client: &Client) -> Option<Instant> {
             let interval = if focused.as_deref() == Some(id.as_str()) { FOCUSED_INTERVAL } else { BACKGROUND_INTERVAL };
             let ready = at + interval;
             if Instant::now() < ready {
-                due = Some(due.map_or(ready, |d| d.min(ready)));
+                due = sooner(due, ready);
                 continue;
             }
         }
         let Some(mut snap) = terminal.snapshot() else { continue };
         let images = std::mem::take(&mut snap.images);
-        if client.caps & CAP_IMAGES != 0 && !send_images(client, &terminal, &id, &images) {
-            break;
+        if client.caps & CAP_IMAGES != 0 {
+            match send_images(client, &terminal, &id, &images) {
+                ImagesSent::Full => break,
+                ImagesSent::Later(at) => due = sooner(due, at),
+                ImagesSent::Done => {}
+            }
         }
         let hashes: Vec<u64> = snap.lines.iter().map(|row| row_hash8(row, &snap.links)).collect();
         let mut subs = lock(&client.subs);
@@ -971,21 +1199,35 @@ fn pump_client(host: &Host, client: &Client) -> Option<Instant> {
     due
 }
 
+/// What [`send_images`] did.
+enum ImagesSent {
+    /// Every placed image the client can get is queued.
+    Done,
+    /// Some wait (being encoded, or over the client's image budget): look again then.
+    Later(Instant),
+    /// The client's queue is full.
+    Full,
+}
+
 /// Sends a `CAP_IMAGES` client the images a terminal's placements need that
-/// it does not have, then the placements when they changed. Images that
-/// cannot be sent (gone, too large) are remembered with their generation and
-/// left out of the placements. False when the client's queue is full.
-fn send_images(client: &Client, terminal: &Terminal, id: &str, images: &[SnapshotImage]) -> bool {
-    let (known, shown) = {
+/// it does not have, then the placements when what it can show changed.
+/// Images that cannot be sent (gone, too large) are remembered with their
+/// generation and left out of the placements. An image still being encoded,
+/// or over the client's queued-image budget, waits; meanwhile the client keeps
+/// the pixels it has. Encoded images are shared, not copied per client.
+fn send_images(client: &Client, terminal: &Arc<Terminal>, id: &str, images: &[SnapshotImage]) -> ImagesSent {
+    let (known, shown, visible_sent, waiting) = {
         let subs = lock(&client.subs);
-        let Some(sub) = subs.get(id) else { return true };
-        (sub.images.clone(), sub.placements.clone())
+        let Some(sub) = subs.get(id) else { return ImagesSent::Done };
+        (sub.images.clone(), sub.placements.clone(), sub.visible.clone(), sub.images_due.is_some())
     };
     let placements: Vec<Placement> = images.iter().map(|i| i.placement.clone()).collect();
     let current = |i: &SnapshotImage| known.get(&i.placement.image_id).is_some_and(|(generation, _)| *generation == i.generation);
-    if placements == shown && images.iter().all(current) {
-        return true;
+    if placements == shown && images.iter().all(current) && !waiting {
+        return ImagesSent::Done;
     }
+    let now = Instant::now();
+    let mut retry: Option<Instant> = None;
     // Only images placed now are kept: the client may forget the others,
     // and they are sent again when placed again.
     let mut have: HashMap<u32, (u64, bool)> = HashMap::new();
@@ -998,27 +1240,38 @@ fn send_images(client: &Client, terminal: &Terminal, id: &str, images: &[Snapsho
             have.insert(image_id, known[&image_id]);
             continue;
         }
-        let delivered = match terminal.image_png(image_id, image.generation) {
-            Some(encoded) => {
-                let message = ServiceMsg::Image { term: id.to_owned(), image_id, width: encoded.width, height: encoded.height, rgba_or_png: encoded.png.to_vec(), format: IMAGE_PNG };
-                if client.try_send(message).is_err() {
-                    return false;
+        let wait = match terminal.image_png(image_id, image.generation) {
+            ImagePng::Ready(encoded) if client.image_fits(encoded.png.len()) => {
+                if client.try_send_image(id, image_id, &encoded).is_err() {
+                    return ImagesSent::Full;
                 }
-                true
+                have.insert(image_id, (encoded.generation, true));
+                continue;
             }
-            None => false,
+            ImagePng::Ready(_) => now + IMAGE_RETRY,
+            ImagePng::Pending(at) => at,
+            ImagePng::Unavailable => {
+                have.insert(image_id, (image.generation, false));
+                continue;
+            }
         };
-        have.insert(image_id, (image.generation, delivered));
+        retry = sooner(retry, wait);
+        // Until the new pixels go out the client shows the ones it has.
+        if let Some(old) = known.get(&image_id).filter(|(_, delivered)| *delivered) {
+            have.insert(image_id, *old);
+        }
     }
     let visible: Vec<Placement> = placements.iter().filter(|p| have.get(&p.image_id).is_some_and(|(_, ok)| *ok)).cloned().collect();
-    if client.try_send(ServiceMsg::Placements { term: id.to_owned(), placements: visible }).is_err() {
-        return false;
+    if visible != visible_sent && client.try_send(ServiceMsg::Placements { term: id.to_owned(), placements: visible.clone() }).is_err() {
+        return ImagesSent::Full;
     }
     if let Some(sub) = lock(&client.subs).get_mut(id) {
         sub.images = have;
         sub.placements = placements;
+        sub.visible = visible;
+        sub.images_due = retry;
     }
-    true
+    retry.map_or(ImagesSent::Done, ImagesSent::Later)
 }
 
 /// Keeps the session you type in responsive on a busy machine: its whole
@@ -1153,9 +1406,19 @@ mod tests {
     use super::*;
     use crate::protocol::{CAP_FRAME8, SERVICE_V7_VARIANTS, TermInfo};
 
-    fn client(protocol: u32, caps: u32) -> (Client, Receiver<ServiceMsg>) {
-        let (tx, rx) = bounded(64);
+    fn client(protocol: u32, caps: u32) -> (Client, Receiver<Outgoing>) {
+        let (tx, rx) = bounded::<Outgoing>(64);
         (Client::new(1, protocol, false, caps, tx, Closer::new(|| {})), rx)
+    }
+
+    /// The ordinary messages a test client was sent so far.
+    fn drain(rx: &Receiver<Outgoing>) -> Vec<ServiceMsg> {
+        rx.try_iter()
+            .filter_map(|item| match item {
+                Outgoing::Message(message) => Some(message),
+                Outgoing::Image { .. } => None,
+            })
+            .collect()
     }
 
     fn snapshot(rows: &[&str], link_row: Option<usize>) -> Snapshot {
@@ -1194,7 +1457,7 @@ mod tests {
         ] {
             assert!(old.send(message));
         }
-        let received: Vec<ServiceMsg> = rx.try_iter().collect();
+        let received: Vec<ServiceMsg> = drain(&rx);
         assert_eq!(received.len(), 4, "the heartbeat is dropped");
         for message in &received {
             assert!(postcard::to_stdvec(message).unwrap()[0] < SERVICE_V7_VARIANTS, "protocol-7 client got {message:?}");
@@ -1205,8 +1468,9 @@ mod tests {
         let (new, rx) = client(8, CAP_FRAME8);
         new.send(ServiceMsg::Frame8(frame));
         new.send(ServiceMsg::Heartbeat { input_ack: 3 });
-        assert!(matches!(rx.try_recv(), Ok(ServiceMsg::Frame8(_))));
-        assert!(matches!(rx.try_recv(), Ok(ServiceMsg::Heartbeat { input_ack: 3 })));
+        let received = drain(&rx);
+        assert!(matches!(received[0], ServiceMsg::Frame8(_)));
+        assert!(matches!(received[1], ServiceMsg::Heartbeat { input_ack: 3 }));
     }
 
     #[test]
@@ -1251,5 +1515,139 @@ mod tests {
         assert!(!session.admit(1, 3), "the replaced connection no longer applies input");
         assert!(session.admit(2, 5));
         assert_eq!(session.applied, 5);
+    }
+
+    /// A write end that appends to a shared buffer.
+    #[derive(Clone, Default)]
+    struct Shared(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Shared {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            lock(&self.0).extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_image_budget_counts_queued_bytes() {
+        let (client, _rx) = client(8, CAP_IMAGES);
+        assert!(client.image_fits(100 << 20), "one image always fits an empty queue");
+        client.image_bytes.store(IMAGE_BUDGET - (1 << 20), Ordering::Release);
+        assert!(client.image_fits(1 << 20));
+        assert!(!client.image_fits((1 << 20) + 1), "over the budget: it waits");
+    }
+
+    #[test]
+    fn queued_images_are_shared_and_written_as_image_messages() {
+        let sink = Shared::default();
+        let (tx, rx) = bounded::<Outgoing>(8);
+        let client = Arc::new(Client::new(1, 8, true, CAP_IMAGES | protocol::CAP_FRAME8, tx, Closer::new(|| {})));
+        let png: Arc<[u8]> = vec![7u8; 3 << 20].into();
+        let image = EncodedImage { generation: 4, width: 2, height: 3, png: png.clone() };
+        client.try_send_image("t", 5, &image).unwrap();
+        client.try_send_image("t", 6, &image).unwrap();
+        assert_eq!(client.image_bytes.load(Ordering::Acquire), 2 * png.len());
+        assert_eq!(Arc::strong_count(&png), 4, "queued twice without a copy");
+        spawn_writer(FrameWriter::new(Box::new(sink.clone())), rx, &client).unwrap();
+        let started = Instant::now();
+        while client.image_bytes.load(Ordering::Acquire) != 0 {
+            assert!(started.elapsed() < Duration::from_secs(5), "the writer took the images off the budget");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        drop(client);
+        let bytes = lock(&sink.0).clone();
+        let mut reader = FrameReader::new(Box::new(std::io::Cursor::new(bytes)));
+        let mut ids = Vec::new();
+        while let Ok(Some(message)) = reader.recv::<ServiceMsg>() {
+            if let ServiceMsg::Image { image_id, width, height, rgba_or_png, format, .. } = message {
+                assert_eq!((width, height, format, rgba_or_png.len()), (2, 3, protocol::IMAGE_PNG, 3 << 20));
+                ids.push(image_id);
+            }
+        }
+        assert_eq!(ids, [5, 6]);
+    }
+
+    /// A backend with nothing but the host.
+    struct NoApp;
+
+    impl HostApp for NoApp {
+        fn resolve_launch(&self, _: &str, _: LaunchKind) -> Result<Resolved> {
+            bail!("no agents here")
+        }
+        fn client_connected(&self, _: &Arc<Client>) {}
+        fn client_disconnected(&self, _: u64) {}
+        fn message(&self, _: &Arc<Client>, _: ClientMsg) -> Result<()> {
+            Ok(())
+        }
+        fn input_noted(&self, _: &str) {}
+        fn terminals_changed(&self) {}
+        fn has_work(&self) -> bool {
+            false
+        }
+        fn remote_credential(&self, _: &str) -> Credential {
+            Credential::Refused
+        }
+    }
+
+    /// Whether the service closed `stream` within `within` (end of stream or a reset).
+    fn closed_within(stream: &mut TcpStream, within: Duration) -> bool {
+        stream.set_read_timeout(Some(within)).unwrap();
+        let mut byte = [0u8; 1];
+        match stream.read(&mut byte) {
+            Ok(0) => true,
+            Ok(_) => false,
+            Err(error) => !matches!(error.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock),
+        }
+    }
+
+    #[test]
+    fn a_flood_of_unauthenticated_connections_neither_stops_the_service_nor_locks_out_clients() {
+        let home = std::env::temp_dir().join(format!("cc-flood-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("settings.json"), r#"{"remote":{"listen":"127.0.0.1:0"}}"#).unwrap();
+        let instance = Instance::new(Some("flood".into()), Some(home.clone()), Some(home.clone())).unwrap();
+        let service = instance.clone();
+        std::thread::spawn(move || run(service, |_| Arc::new(NoApp)));
+        let started = Instant::now();
+        let port = loop {
+            if let Some(port) = std::fs::read_to_string(instance.port_path()).ok().and_then(|p| p.trim().parse::<u16>().ok()) {
+                break port;
+            }
+            assert!(started.elapsed() < Duration::from_secs(10), "the service listens");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        // Bodies claimed far above the pre-authentication limit are refused at once.
+        let mut huge: Vec<TcpStream> = (0..64)
+            .map(|_| {
+                let mut stream = TcpStream::connect(addr).unwrap();
+                let _ = stream.write_all(&0x7fff_fff0u32.to_le_bytes());
+                stream
+            })
+            .collect();
+        // Silent peers: a few wait for their handshake; the surplus is closed at once.
+        let mut silent: Vec<TcpStream> = (0..48).map(|_| TcpStream::connect(addr).unwrap()).collect();
+        assert!(huge.iter_mut().all(|s| closed_within(s, Duration::from_secs(3))), "oversized frames end their connections");
+        let waiting: Vec<TcpStream> = silent.drain(..).filter_map(|mut s| (!closed_within(&mut s, Duration::from_millis(300))).then_some(s)).collect();
+        assert!(waiting.len() <= MAX_UNAUTHENTICATED, "{} connections were allowed to authenticate at once", waiting.len());
+        // The handshake deadline frees the rest without a thread per connection.
+        for mut stream in waiting {
+            assert!(closed_within(&mut stream, HANDSHAKE_TIMEOUT + Duration::from_secs(2)), "the handshake deadline closes it");
+        }
+        // The service still serves a legitimate client: the token, from this user.
+        let token = canvas_common::auth::read_token(&instance.token_path()).unwrap();
+        let (reader, writer, closer) = tcp::split(TcpStream::connect(addr).unwrap()).unwrap();
+        let (mut reader, mut writer) = (FrameReader::new(Box::new(reader)), FrameWriter::new(Box::new(writer)));
+        let info = protocol::ClientInfo { name: "test".into(), caps: protocol::CAP_FRAME8, session: vec![3; 16], remote_id: None };
+        let greeting = handshake::open(&mut reader, &mut writer, &token, "test", Some(info)).expect("a legitimate client connects");
+        assert_eq!(greeting.build, build_id(), "the build is told after authentication");
+        assert!(matches!(reader.recv::<ServiceMsg>().unwrap(), Some(ServiceMsg::Ready8 { .. })));
+        closer.close();
+        let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
+        assert!(log.contains("frame too large") || log.contains("closing new ones"), "{log}");
     }
 }

@@ -26,6 +26,7 @@ crossbeam-channel = "0.5.17"
 dirs = "7.0.0"
 getrandom = "0.4.3"
 hmac = "0.13.0"
+pbkdf2 = { version = "0.13.0", default-features = false, features = ["hmac"] }
 percent-encoding = "2.3.2"
 portable-pty = "0.9.0"
 postcard = { version = "1.1.3", features = ["use-std"] }
@@ -40,6 +41,7 @@ uuid = { version = "1.28.0", features = ["v4"] }
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Ole", "Win32_System_TaskScheduler", "Win32_System_Time", "Win32_System_Variant"] }
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
     "Win32_Networking_WinSock",
     "Win32_Storage_FileSystem",
     "Win32_System_Pipes",

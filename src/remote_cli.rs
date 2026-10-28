@@ -52,6 +52,7 @@ pub fn pair(instance: &Instance, name: Option<String>) -> Result<()> {
     let port = code.listen.rsplit_once(':').map(|(_, p)| p.to_owned()).unwrap_or_default();
     let minutes = pairing::CODE_TTL_MS / 60_000;
     println!("Pairing code: {}   (one use, valid for {minutes} minutes)", code.code);
+    println!("Whoever enters it first can use this machine as you do: type it only on your own PC.");
     if let Some(name) = &code.name {
         println!("The client will be listed as {name}.");
     }
@@ -69,7 +70,7 @@ pub fn pair(instance: &Instance, name: Option<String>) -> Result<()> {
     Ok(())
 }
 
-/// `remote clients`: the paired clients.
+/// `remote clients`: the paired clients, who opened the code each paired with, and when.
 pub fn clients(instance: &Instance) -> Result<()> {
     let (_conn, backend) = service(instance)?;
     let backend: &dyn Backend = &*backend;
@@ -88,7 +89,11 @@ pub fn clients(instance: &Instance) -> Result<()> {
             (at, _) => format!("revoked {}", date(at)),
         };
         println!("{:<20} {:<24} {:<22} {:<12} {state}", c.id, c.name, date(c.created_ms), seen);
+        if !c.paired_by.is_empty() {
+            println!("{:<20} code opened {} by {}", "", date(c.code_opened_ms), c.paired_by);
+        }
     }
+    println!("Paired clients can do everything you can on this machine; revoke one with `copilot-canvas remote revoke ID`.");
     Ok(())
 }
 
@@ -101,14 +106,12 @@ pub fn revoke(instance: &Instance, client: &str) -> Result<()> {
 }
 
 /// `remote tunnel-setup [--tunnel NAME] [--port PORT]`: the tunnel
-/// automation's manifest, `remote.listen`, and the one-time Dev Tunnels steps.
+/// automation's manifest, `remote.listen`, and the one-time Dev Tunnels steps
+/// (the syntax of Dev Tunnels CLI 1.0.2115).
 pub fn tunnel_setup(instance: &Instance, dir: &Path, tunnel: Option<String>, port: Option<u16>) -> Result<()> {
-    let mut settings = Settings::load(&instance.home);
+    let mut settings = Settings::load_checked(&instance.home)?;
     let tunnel = tunnel.or_else(|| settings.remote.tunnel.clone()).unwrap_or_else(|| remote::DEFAULT_TUNNEL.into());
-    anyhow::ensure!(
-        !tunnel.is_empty() && tunnel.len() <= 60 && tunnel.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
-        "a tunnel id is lower-case letters, digits and '-'"
-    );
+    anyhow::ensure!(remote::valid_tunnel_id(&tunnel), "a tunnel id is lower-case letters, digits, '-' and '.', starting with a letter or digit");
     let port = port.unwrap_or_else(|| listen_port(&settings));
     anyhow::ensure!(port != 0, "--port must not be 0");
     let devtunnel = remote::find_devtunnel_exe();
@@ -122,6 +125,7 @@ pub fn tunnel_setup(instance: &Instance, dir: &Path, tunnel: Option<String>, por
     settings.remote.tunnel = Some(tunnel.clone());
     settings.save(&instance.home).context("cannot save settings.json")?;
     println!("{} {}", if existed { "Updated" } else { "Wrote" }, path.display());
+    println!("  (it runs `devtunnel host {tunnel}` at logon and every hour, and restarts it when it fails)");
     println!("Set remote.listen = 127.0.0.1:{port} in {} (the service listens there; `remote pair` also turns it on in a running service).", canvas_common::settings::path(&instance.home).display());
     match &devtunnel {
         Some(exe) => println!("Dev Tunnels CLI: {}", exe.display()),
@@ -136,15 +140,25 @@ pub fn tunnel_setup(instance: &Instance, dir: &Path, tunnel: Option<String>, por
         println!("  $dt = \"{}\"", program.display());
         "& $dt".to_owned()
     };
-    println!("  {dt} user login -g                  # GitHub (`user login` for a Microsoft account)");
-    println!("  {dt} create {tunnel}         # private: only you can connect");
-    println!("  {dt} port create {tunnel} -p {port}");
+    for (command, note) in setup_commands(&dt, &tunnel, port) {
+        println!("  {command:<52} # {note}");
+    }
     println!("Then register and start the tunnel host:");
     println!("  copilot-canvas automations apply {} --yes", remote::TUNNEL_TASK);
     println!("  copilot-canvas automations run {}", remote::TUNNEL_TASK);
     println!("Then pair the home PC: copilot-canvas remote pair --name home-pc");
     println!("Check it any time with: copilot-canvas doctor");
     Ok(())
+}
+
+/// The one-time Dev Tunnels commands on the service's machine: (command, note).
+fn setup_commands(dt: &str, tunnel: &str, port: u16) -> [(String, &'static str); 4] {
+    [
+        (format!("{dt} user login -g"), "GitHub (`user login` alone: Microsoft/Entra account)"),
+        (format!("{dt} create {tunnel}"), "private: only your account can connect (never add -a)"),
+        (format!("{dt} port create {tunnel} -p {port}"), "the port the service listens on"),
+        (format!("{dt} show {tunnel}"), "check: the port is listed and access is not anonymous"),
+    ]
 }
 
 /// What `remote add` was given.
@@ -165,9 +179,15 @@ pub struct AddArgs {
 pub fn add(instance: &Instance, args: AddArgs) -> Result<()> {
     anyhow::ensure!(remote::valid_name(&args.name), "a server name is 1-40 characters of letters, digits, '-', '_' and '.'");
     anyhow::ensure!(!RESERVED.iter().any(|r| r.eq_ignore_ascii_case(&args.name)), "{:?} is reserved; choose another name", args.name);
-    let code = pairing::normalize_code(&args.code).context("the code looks like ABCD-EFGH (from `copilot-canvas remote pair` on the service's machine)")?;
+    let code = pairing::normalize_code(&args.code).context("the code looks like ABCD-EFGH-JKMN: 12 letters and digits from `copilot-canvas remote pair` on the service's machine")?;
     if args.tunnel.is_some() == args.addr.is_some() {
         bail!("give either --tunnel TUNNEL_ID [--port PORT] or --addr HOST:PORT");
+    }
+    if let Some(tunnel) = &args.tunnel {
+        anyhow::ensure!(
+            remote::valid_tunnel_id(tunnel),
+            "--tunnel takes a Dev Tunnel id: lower-case letters, digits, '-' and '.', starting with a letter or digit (`devtunnel list` on the service's machine shows it)"
+        );
     }
     if let Some(addr) = &args.addr {
         anyhow::ensure!(addr.rsplit_once(':').is_some_and(|(h, p)| !h.is_empty() && p.parse::<u16>().is_ok()), "--addr takes HOST:PORT");
@@ -248,11 +268,15 @@ pub enum Mark {
 /// Doctor lines about remote mode: (mark, label, detail).
 pub fn doctor_lines(instance: &Instance, dir: &Path) -> Vec<(Mark, &'static str, String)> {
     let mut lines = Vec::new();
-    let settings = Settings::load(&instance.home);
-    lines.push(match (settings.listen(), conn::listening_port(instance)) {
-        (_, Some(port)) => (Mark::Ok, "Remote listening", format!("listening on 127.0.0.1:{port}")),
-        (Some(addr), None) => (Mark::Info, "Remote listening", format!("configured ({addr}); the service is not running or not listening yet")),
-        (None, None) => (Mark::Info, "Remote listening", "off (remote.listen not set; `remote tunnel-setup` or `remote pair` turns it on)".into()),
+    let settings = Settings::load_checked(&instance.home);
+    let configured = settings.as_ref().ok().and_then(Settings::listen);
+    let listen_error = std::fs::read_to_string(instance.listen_error_path()).ok().map(|text| text.split_once(' ').map_or(text.clone(), |(_, error)| error.trim().to_owned()));
+    lines.push(match (&settings, configured, conn::listening_port(instance), listen_error) {
+        (Err(error), ..) => (Mark::Fail, "Remote listening", format!("{error:#}")),
+        (_, _, Some(port), _) => (Mark::Ok, "Remote listening", format!("listening on 127.0.0.1:{port}")),
+        (_, _, None, Some(error)) => (Mark::Fail, "Remote listening", format!("NOT listening: {error}")),
+        (_, Some(addr), None, None) => (Mark::Info, "Remote listening", format!("configured ({addr}); the service is not running or not listening yet")),
+        (_, None, None, None) => (Mark::Info, "Remote listening", "off (remote.listen not set; `remote tunnel-setup` or `remote pair` turns it on)".into()),
     });
     lines.push(match canvas_agents::remote::ClientsFile::load(&instance.home) {
         Ok(file) => {
@@ -271,7 +295,7 @@ pub fn doctor_lines(instance: &Instance, dir: &Path) -> Vec<(Mark, &'static str,
     lines.push(match remote::find_devtunnel_exe() {
         None => (Mark::Info, "Dev Tunnels CLI", "not installed (remote mode needs it: `winget install Microsoft.devtunnel`)".into()),
         Some(exe) => match devtunnel_user(&exe) {
-            Ok(status) if status.to_ascii_lowercase().starts_with("logged in") => (Mark::Ok, "Dev Tunnels CLI", format!("{} · {status}", exe.display())),
+            Ok(status) if signed_in(&status) => (Mark::Ok, "Dev Tunnels CLI", format!("{} · {status}", exe.display())),
             Ok(status) => (Mark::Info, "Dev Tunnels CLI", format!("{} · {status} (sign in once: devtunnel user login -g)", exe.display())),
             Err(error) => (Mark::Info, "Dev Tunnels CLI", format!("{} · `devtunnel user show` failed: {error:#}", exe.display())),
         },
@@ -288,14 +312,24 @@ pub fn doctor_lines(instance: &Instance, dir: &Path) -> Vec<(Mark, &'static str,
     });
     lines
 }
-/// `devtunnel user show --json` → its status line ("Logged in as … using GitHub.", "Not logged in").
+
+/// Whether a `devtunnel user show` status means signed in: "Logged in as
+/// NAME using PROVIDER." or "Logged in using …" (Dev Tunnels CLI 1.0.2115).
+/// "Not logged in.", "Login token expired" and "Previously logged in as …"
+/// are not.
+fn signed_in(status: &str) -> bool {
+    status.trim_start().starts_with("Logged in")
+}
+
+/// The first line `devtunnel user show` prints ("Logged in as … using GitHub.",
+/// "Not logged in."; it exits 0 either way).
 fn devtunnel_user(exe: &Path) -> Result<String> {
     use std::os::windows::process::CommandExt;
     let mut child = std::process::Command::new(exe)
-        .args(["user", "show", "--json"])
+        .args(["user", "show"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .creation_flags(0x0800_0000)
         .spawn()?;
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
@@ -308,8 +342,29 @@ fn devtunnel_user(exe: &Path) -> Result<String> {
     }
     let mut text = String::new();
     std::io::Read::read_to_string(&mut child.stdout.take().context("output")?, &mut text)?;
-    let json: serde_json::Value = serde_json::from_str(text.trim()).with_context(|| format!("unexpected output {:?}", text.trim()))?;
-    let status = json["status"].as_str().unwrap_or("unknown").to_owned();
-    let who = [&json["username"], &json["provider"]].iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" via ");
-    Ok(if who.is_empty() { status } else { format!("{status} ({who})") })
+    if text.trim().is_empty() {
+        std::io::Read::read_to_string(&mut child.stderr.take().context("output")?, &mut text)?;
+    }
+    text.lines().map(str::trim).find(|line| !line.is_empty()).map(str::to_owned).with_context(|| "no output".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn devtunnel_sign_in_states_are_read_from_the_real_wording() {
+        assert!(signed_in("Logged in as octocat using GitHub."));
+        assert!(signed_in("Logged in using a service principal."));
+        for not in ["Not logged in.", "Login token expired", "Previously logged in as octocat", "Logged out", ""] {
+            assert!(!signed_in(not), "{not}");
+        }
+    }
+
+    #[test]
+    fn setup_commands_use_the_real_cli_syntax() {
+        let commands: Vec<String> = setup_commands("devtunnel", "copilot-canvas", 47600).into_iter().map(|(c, _)| c).collect();
+        assert_eq!(commands, ["devtunnel user login -g", "devtunnel create copilot-canvas", "devtunnel port create copilot-canvas -p 47600", "devtunnel show copilot-canvas"]);
+        assert!(!commands.iter().any(|c| c.contains(" -a") || c.contains("anonymous")), "the tunnel stays private");
+    }
 }

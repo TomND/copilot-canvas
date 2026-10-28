@@ -292,7 +292,7 @@ impl HostApp for Agents {
                     && request.is_remote_admin()
                 {
                     let response = self.remote_admin(client, request.clone());
-                    client.send(ServiceMsg::RpcReply { id, json: serde_json::to_string(&response).unwrap_or_default() });
+                    client.send(rpc_reply(id, serde_json::to_string(&response).unwrap_or_default()));
                     return Ok(());
                 }
                 let quick = request.as_ref().is_ok_and(|r| r.is_quick());
@@ -336,23 +336,24 @@ impl HostApp for Agents {
         passive::has_work(self)
     }
 
-    fn remote_secret(&self, id: &str) -> Option<Vec<u8>> {
-        self.remote.secret(id, now_ms())
-    }
-
-    fn remote_refusal(&self, id: &str) -> String {
-        let reason = self.remote.refusal(id);
-        log(&self.instance, &format!("refused remote client {id}: {reason}"));
-        reason
-    }
-
-    fn pair(&self, request: &canvas_common::handshake::PairRequest) -> Result<canvas_common::handshake::PairGrant, String> {
-        let result = self.remote.pair(request, now_ms());
-        match &result {
-            Ok(grant) => log(&self.instance, &format!("paired a new remote client {} ({})", grant.client_id, request.name)),
-            Err(reason) => log(&self.instance, &format!("pairing refused: {reason}")),
+    fn remote_credential(&self, id: &str) -> canvas_common::handshake::Credential {
+        let credential = self.remote.credential(id);
+        if !matches!(credential, canvas_common::handshake::Credential::Secret(_)) {
+            log(&self.instance, &format!("refused remote client {id:?}: {}", self.remote.describe(id)));
         }
-        result
+        credential
+    }
+
+    fn remote_seen(&self, id: &str) {
+        self.remote.seen(id, now_ms());
+    }
+
+    fn remote_active(&self, id: &str) -> bool {
+        self.remote.secret(id).is_some()
+    }
+
+    fn pairing(&self) -> Option<&dyn canvas_common::handshake::Pairing> {
+        Some(self)
     }
 
     fn shutdown(&self) {
@@ -378,7 +379,7 @@ impl Agents {
                 Request::PairCode { name } => {
                     // Remote listening is off until a client is paired.
                     let home = &self.instance.home;
-                    let mut settings = canvas_common::settings::Settings::load(home);
+                    let mut settings = canvas_common::settings::Settings::load_checked(home)?;
                     let addr = match settings.listen() {
                         Some(addr) => addr,
                         None => {
@@ -389,8 +390,13 @@ impl Agents {
                         }
                     };
                     let port = self.host.listen_remote(&addr)?;
-                    let (code, expires_ms) = self.remote.open_code(name.clone(), now)?;
-                    log(&self.instance, &format!("opened a pairing code{}", name.as_deref().map(|n| format!(" for {n}")).unwrap_or_default()));
+                    let who = self.requester(client);
+                    let (code, expires_ms) = self.remote.open_code(name.clone(), &who, now)?;
+                    log(&self.instance, &format!(
+                        "PAIRING CODE OPENED by {who}{}; whoever enters it within {} minutes is paired",
+                        name.as_deref().map(|n| format!(" for a client to be called {n:?}")).unwrap_or_default(),
+                        canvas_common::pairing::CODE_TTL_MS / 60_000
+                    ));
                     Response::Pairing(PairingCode { code: canvas_common::pairing::format_code(&code), expires_ms, listen: format!("127.0.0.1:{port}"), name })
                 }
                 Request::RemoteClients => {
@@ -406,6 +412,8 @@ impl Agents {
                                 created_ms: c.created_ms,
                                 last_seen_ms: c.last_seen_ms,
                                 revoked_ms: c.revoked_ms,
+                                paired_by: c.paired_by,
+                                code_opened_ms: c.code_opened_ms,
                             })
                             .collect(),
                     )
@@ -416,8 +424,14 @@ impl Agents {
                     for connection in &connected {
                         connection.close();
                     }
-                    log(&self.instance, &format!("revoked remote client {} ({}); closed {} connection(s)", revoked.id, revoked.name, connected.len()));
-                    Response::Text(format!("Revoked {} ({}); {} live connection(s) closed.", revoked.name, revoked.id, connected.len()))
+                    log(&self.instance, &format!("revoked remote client {:?} ({:?}); closed {} connection(s)", revoked.id, revoked.name, connected.len()));
+                    let mut text = format!("Revoked {} ({}); {} live connection(s) closed.", revoked.name, revoked.id, connected.len());
+                    match self.listen_only_while_needed() {
+                        Ok(Some(off)) => text = format!("{text}\n{off}"),
+                        Ok(None) => {}
+                        Err(error) => text = format!("{text}\nRemote listening stays on: {error:#}"),
+                    }
+                    Response::Text(text)
                 }
                 other => anyhow::bail!("{} is not a remote-access request", other.name()),
             })
@@ -444,6 +458,76 @@ impl Agents {
             });
             client.send(ServiceMsg::Error { id: None, message: format!("A canvas change was refused: {error:#}") });
         }
+    }
+}
+
+/// Pairing through the registry, with every outcome in the service log.
+impl canvas_common::handshake::Pairing for Agents {
+    fn wait(&self) -> Duration {
+        self.remote.wait()
+    }
+
+    fn codes(&self) -> Vec<String> {
+        self.remote.codes()
+    }
+
+    fn grant(&self, code: &str, name: &str) -> Result<canvas_common::handshake::PairGrant, String> {
+        let result = self.remote.grant(code, name);
+        match &result {
+            Ok(grant) => {
+                let record = self.remote.list().ok().and_then(|list| list.into_iter().find(|c| c.id == grant.client_id)).unwrap_or_default();
+                log(&self.instance, &format!(
+                    "PAIRED a new remote client {:?} named {:?} (it calls itself {name:?}) with the code opened by {} at {}",
+                    grant.client_id,
+                    record.name,
+                    record.paired_by,
+                    crate::paths::format_rfc3339_ms(record.code_opened_ms)
+                ));
+            }
+            Err(reason) => log(&self.instance, &format!("pairing failed after the code matched: {reason}")),
+        }
+        result
+    }
+
+    fn failed(&self) {
+        self.remote.failed();
+        log(&self.instance, &format!("a pairing attempt failed (no open code matched); the next one waits {} ms", self.remote.wait().as_millis()));
+    }
+}
+
+impl Agents {
+    /// Who asked for something over the pipe: the hosted terminal whose
+    /// process tree contains the client (a command typed in a canvas
+    /// terminal, possibly by a remote client), else the local process.
+    fn requester(&self, client: &Client) -> String {
+        let Some(pid) = client.peer_pid else { return format!("client {} (process unknown)", client.id) };
+        let entries = crate::win::process_entries();
+        let exe = entries.iter().find(|(p, _, _)| *p == pid).map(|(_, _, name)| name.clone()).unwrap_or_default();
+        let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (child, parent, _) in &entries {
+            children.entry(*parent).or_default().push(*child);
+        }
+        let terms: Vec<(String, u32)> = lock(&self.terms).values().filter(|t| t.pid != 0).map(|t| (t.id.clone(), t.pid)).collect();
+        match terms.into_iter().find(|(_, root)| crate::win::process_tree(*root, &children).contains(&pid)) {
+            Some((terminal, _)) => format!("a command in canvas terminal {terminal:?} ({exe} pid {pid})"),
+            None => format!("a local process ({exe} pid {pid})"),
+        }
+    }
+
+    /// Turns remote listening off (setting and listener) once no paired
+    /// client is left and no code is open, unless `COPILOT_CANVAS_LISTEN` asks for it.
+    fn listen_only_while_needed(&self) -> Result<Option<String>> {
+        if self.remote.active_count() > 0 || self.remote.open_codes(now_ms()) > 0 || std::env::var_os("COPILOT_CANVAS_LISTEN").is_some_and(|v| !v.is_empty()) {
+            return Ok(None);
+        }
+        let home = &self.instance.home;
+        let mut settings = canvas_common::settings::Settings::load_checked(home)?;
+        if settings.remote.listen.take().is_some() {
+            settings.save(home).context("cannot turn off remote listening in settings.json")?;
+        }
+        let stopped = self.host.stop_remote();
+        log(&self.instance, "no paired client is left and no pairing code is open: remote listening is off");
+        Ok(stopped.then(|| "No paired client is left: remote listening is off (`copilot-canvas remote pair` turns it on again).".to_owned()))
     }
 }
 
@@ -477,8 +561,19 @@ fn rpc_worker(ctx: Ctx, jobs: Receiver<RpcJob>) {
             Err(error) => unsupported(&error),
         };
         let json = serde_json::to_string(&response).unwrap_or_else(|e| serde_json::to_string(&Response::Error(format!("cannot encode the answer: {e}"))).unwrap_or_default());
-        job.client.send(ServiceMsg::RpcReply { id: job.id, json });
+        job.client.send(rpc_reply(job.id, json));
     }
+}
+
+/// An `RpcReply`; an answer too large for one frame becomes an error answer
+/// (the connection stays up and the caller learns why).
+fn rpc_reply(id: u64, json: String) -> ServiceMsg {
+    const LIMIT: usize = canvas_common::protocol::MAX_FRAME - 4096;
+    if json.len() <= LIMIT {
+        return ServiceMsg::RpcReply { id, json };
+    }
+    let error = canvas_model::rpc::Response::Error(format!("the answer is too large to send ({} MB; at most {} MB)", json.len() >> 20, LIMIT >> 20));
+    ServiceMsg::RpcReply { id, json: serde_json::to_string(&error).unwrap_or_default() }
 }
 
 /// True when a live process (not a recycled PID) holds the session's in-use lock.
@@ -762,6 +857,19 @@ mod tests {
         .collect();
         let tree = [10, 11, 12, 20, 21, 22, 23, 24];
         assert_eq!(nested_copilots(&tree, &procs), vec![10, 11, 21, 22]);
+    }
+
+    #[test]
+    fn answers_too_large_for_a_frame_become_errors() {
+        let small = rpc_reply(3, "\"Done\"".into());
+        assert_eq!(small, ServiceMsg::RpcReply { id: 3, json: "\"Done\"".into() });
+        let huge = format!("\"{}\"", "x".repeat(canvas_common::protocol::MAX_FRAME));
+        let ServiceMsg::RpcReply { id, json } = rpc_reply(4, huge) else { panic!("a reply") };
+        assert_eq!(id, 4, "the caller still gets its answer");
+        assert!(matches!(serde_json::from_str::<canvas_model::rpc::Response>(&json).unwrap(), canvas_model::rpc::Response::Error(e) if e.contains("too large")));
+        // What stays is always sendable.
+        let mut writer = canvas_common::wire::FrameWriter::new(Box::new(std::io::sink()));
+        assert!(writer.send(&rpc_reply(5, format!("\"{}\"", "y".repeat(canvas_common::protocol::MAX_FRAME - 4096 - 2)))).is_ok());
     }
 
     #[test]
