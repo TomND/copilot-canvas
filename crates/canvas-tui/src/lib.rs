@@ -3,24 +3,28 @@
 mod input;
 mod stable;
 
-use canvas_core::{app, conn, doc, ui};
+use canvas_core::{app, conn, ui};
 use canvas_core::input::InputEvent;
 
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use crossbeam_channel::{bounded, never, select, unbounded};
+use crossbeam_channel::{RecvTimeoutError, bounded, never, select, unbounded};
 use ratatui::crossterm::event::{
     DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture,
 };
 use ratatui::crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use ratatui::crossterm::{execute, queue};
 
+use canvas_core::agents::AgentKind;
 use canvas_core::paths::Instance;
+use canvas_core::prefs::PrefsFile;
+use canvas_core::remote::RemoteBackend;
+use canvas_core::rpc::Backend;
 use app::App;
-use doc::{Doc, Group, Node, NodeKind, Store};
 
 pub struct Options {
     pub instance: Instance,
@@ -31,6 +35,9 @@ pub struct Options {
     pub cwd: String,
     /// `--remote`: `loopback` or `HOST:PORT` (TCP); `None`: the local pipe.
     pub remote: Option<String>,
+    /// The backend for local connections (in-process); remote connections
+    /// use the service's own.
+    pub local_backend: Arc<dyn Backend>,
 }
 
 /// ratatui renders into this buffer; the bytes go to the console on the
@@ -96,58 +103,25 @@ const REPAINT_EVERY: Duration = Duration::from_secs(10);
 const SLOW_CONSOLE: Duration = Duration::from_millis(100);
 const BACKGROUND_FRAME: Duration = Duration::from_millis(16);
 const TICK: Duration = Duration::from_millis(40);
-
-fn demo_doc(cwd: &str) -> Doc {
-    let shell = Some(vec!["powershell.exe".to_owned(), "-NoLogo".to_owned(), "-NoProfile".to_owned()]);
-    let session = |id: &str, name: &str, x: i32, y: i32| Node {
-        id: id.into(),
-        kind: NodeKind::Session,
-        name: name.into(),
-        x,
-        y,
-        cwd: Some(cwd.to_owned()),
-        parent: None,
-        agent_key: None,
-        source: Some("demo".into()),
-        command: shell.clone(),
-        fresh: true,
-        automation: None,
-        synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None,
-    };
-    let mut doc = Doc::default();
-    doc.nodes.push(session("demo-main", "Build session canvas", 2, 2));
-    doc.nodes.push(Node {
-        kind: NodeKind::Agent,
-        parent: Some("demo-main".into()),
-        agent_key: Some("explore".into()),
-        command: None,
-        ..session("demo-main:explore", "Explore terminal APIs", 6, 7)
-    });
-    doc.nodes.push(session("demo-review", "Review implementation", 36, 2));
-    let mut sub = session("demo-sub", "Write tests", 36, 9);
-    sub.parent = Some("demo-review".into());
-    doc.nodes.push(sub);
-    doc.groups.push(Group { id: "g-demo".into(), name: "Canvas project".into(), x: 0, y: 0, w: 70, h: 15, color: 0, folder: None, source: None, defaults: None });
-    doc.view.x = -2;
-    doc.view.y = -1;
-    doc.selected = Some("demo-main".into());
-    doc
-}
+/// How long the service may take to open the canvas.
+const OPEN_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long quitting waits for the last edits to reach the service.
+const FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub fn run(options: Options) -> Result<()> {
     let home = options.instance.home.clone();
-    let canvas_path = options.canvas.clone().unwrap_or_else(|| home.join(if options.demo { "demo-canvas.json" } else { "canvas.json" }));
-    let store = Store::open(&canvas_path)?;
-    let doc = match store.load()? {
-        Some(doc) => doc,
-        None if options.demo => demo_doc(&options.cwd),
-        None => doc::migrate_v1(&home.join("layout.json")).unwrap_or_default(),
-    };
     let target = conn::ConnTarget::parse(options.remote.as_deref(), &options.instance)?;
+    // Remote clients ask the service for everything; local ones run the backend in-process.
+    let remote_backend = target.is_remote().then(RemoteBackend::new);
+    let backend: Arc<dyn Backend> = match &remote_backend {
+        Some(remote) => remote.clone(),
+        None => options.local_backend.clone(),
+    };
     let conn_options = conn::ConnOptions {
         start: true,
         compress: canvas_core::settings::Settings::load(&home).compress(),
         name: "tui".into(),
+        rpc: remote_backend,
         ..Default::default()
     };
     let session = conn::ClientSession::new();
@@ -172,9 +146,16 @@ pub fn run(options: Options) -> Result<()> {
         (conn, resume) = upgrade_service(&options.instance, conn, false)?;
     }
     // Replaced an older service: undo the `mouse: false` it forced on Copilot (when installed).
-    let copilot = canvas_core::agents::AgentKind::Copilot.provider().program().is_ok();
-    let mouse_restored =
-        outdated && !options.demo && copilot && conn.service_build == canvas_core::paths::build_id() && canvas_core::copilot_cfg::restore_mouse().unwrap_or(false);
+    let mouse_restored = outdated
+        && !options.demo
+        && conn.service_build == canvas_core::paths::build_id()
+        && backend.info().is_ok_and(|info| info.installed.contains(&AgentKind::Copilot))
+        && backend.restore_mouse().unwrap_or(false);
+    // The canvas belongs to the service: a local `--canvas` file is named
+    // absolutely; a remote one is a path on the service's machine.
+    let canvas = options.canvas.as_ref().map(|p| if target.is_remote() { p.clone() } else { canvas_core::paths::absolute(p) }).map(|p| p.display().to_string());
+    let (opened, early) = conn::open_doc(&conn, canvas.clone(), options.demo, &options.cwd, OPEN_TIMEOUT).context("cannot open the canvas")?;
+    let prefs = PrefsFile::path(&home, &options.instance.name, &opened.key);
 
     let previous_hook = std::panic::take_hook();
     let crash_log = home.join("crash.log");
@@ -225,10 +206,15 @@ pub fn run(options: Options) -> Result<()> {
         input::spawn(input_tx);
         let (app_tx, app_rx) = unbounded();
         let mut service_rx = conn.rx.clone();
-        let mut app = App::new(conn, store, doc, options.demo, options.cwd.clone(), app_tx, home.clone());
+        let mut app = App::new(conn, backend, opened, options.demo, options.cwd.clone(), app_tx, Some(prefs));
+        app.doc_request = (canvas, options.demo);
         app.instance = Some(options.instance.clone());
         app.target = Some(target);
         app.conn_options = conn_options;
+        // What the service sent while the canvas was opening.
+        for message in early {
+            app.on_service(message);
+        }
         if !resume.is_empty() {
             let count = app.resume_terminals(&resume);
             app.notify(format!("Terminal service updated; resumed {count} session(s)."), false);
@@ -399,6 +385,15 @@ pub fn run(options: Options) -> Result<()> {
         drop(frame_tx);
         let _ = writer.join();
         app.save_now();
+        // The last edits reach the service (it saves them) before the client goes.
+        let deadline = Instant::now() + FLUSH_TIMEOUT;
+        while app.replica.in_flight() > 0 && app.connected && Instant::now() < deadline {
+            match service_rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(message) => app.on_service(message),
+                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+        }
         if let Some(error) = &app.save_error {
             bail!("the canvas could not be saved: {error}");
         }

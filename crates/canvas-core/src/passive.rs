@@ -2,7 +2,6 @@
 //! telling the service about groups and passive sessions, and following its
 //! snapshots (status, rollovers, mailbox, event pulses).
 
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::app::App;
@@ -270,39 +269,17 @@ impl App {
         line
     }
 
-    /// New passive session in a group from a template.
+    /// New passive session in a group from a template (its files are created
+    /// on the backend's machine, in the group's folder).
     pub fn create_passive(&mut self, group_id: &str, template: usize, name: &str) -> Result<String, String> {
         let group = self.doc.group(group_id).cloned().ok_or("the group no longer exists")?;
-        let folder = group.folder.clone().map(PathBuf::from).ok_or("set the group's folder first (group menu → Change group folder…)")?;
+        let folder = group.folder.clone().ok_or("set the group's folder first (group menu → Change group folder…)")?;
         let template = TEMPLATES.get(template).ok_or("unknown template")?;
         let name = if name.trim().is_empty() { template.name.to_owned() } else { name.trim().chars().take(80).collect() };
-        let mut slug = slugify(&name);
-        let taken = |s: &str| self.doc.nodes.iter().any(|n| n.passive.as_ref().is_some_and(|p| p.group == group_id && p.slug == s));
-        let base = slug.clone();
-        let mut n = 2;
-        while taken(&slug) || bus::passive_paths(&folder, &slug).dir.exists() {
-            slug = format!("{base}-{n}");
-            n += 1;
-        }
-        crate::doc::prepare_group_folders(&group).map_err(|e| format!("{e:#}"))?;
-        let paths = bus::passive_paths(&folder, &slug);
-        let write = || -> std::io::Result<()> {
-            std::fs::create_dir_all(&paths.dir)?;
-            let rules = if template.name == "Custom" { template.rules.replacen("# Rules", &format!("# Rules for {name}"), 1) } else { template.rules.to_owned() };
-            std::fs::write(&paths.rules, rules)?;
-            std::fs::write(&paths.state, "# Memory\n\n(Nothing yet.)\n")?;
-            std::fs::write(&paths.log, format!("# Run log of {name}\n\n"))?;
-            if !paths.goals.exists() {
-                std::fs::create_dir_all(paths.goals.parent().unwrap_or(&folder))?;
-                std::fs::write(
-                    &paths.goals,
-                    format!("# Goals of {}\n\nWrite the project's goals and non-goals here. Passive sessions such as the drift guard compare changes against this file; if it is still this template, the drift guard drafts it for you to confirm.\n", group.name),
-                )?;
-            }
-            Ok(())
-        };
-        write().map_err(|e| format!("cannot create the passive session's files: {e}"))?;
-        bus::ensure_catalog(&folder).map_err(|e| format!("{e:#}"))?;
+        let taken = self.doc.nodes.iter().filter_map(|n| n.passive.as_ref().filter(|p| p.group == group_id).map(|p| p.slug.clone())).collect();
+        let rules = if template.name == "Custom" { template.rules.replacen("# Rules", &format!("# Rules for {name}"), 1) } else { template.rules.to_owned() };
+        let files = crate::rpc::PassiveFiles { folder: folder.clone(), group_name: group.name.clone(), base_slug: slugify(&name), taken, name: name.clone(), rules };
+        let slug = self.backend.create_passive(files).map_err(|e| format!("{e:#}"))?;
         let id = uuid::Uuid::new_v4().to_string();
         let columns = ((group.w - 2) / crate::doc::GRID_X).max(1);
         let (x, y) = self.doc.free_slot(group.x + 2, group.y + group.h.saturating_sub(crate::doc::SESSION_H + 2).max(2), columns, NodeKind::Session);
@@ -312,7 +289,7 @@ impl App {
             name: name.clone(),
             x,
             y,
-            cwd: Some(folder.display().to_string()),
+            cwd: Some(folder),
             parent: None,
             agent_key: None,
             source: Some("passive".into()),

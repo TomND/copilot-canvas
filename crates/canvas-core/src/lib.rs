@@ -1,9 +1,11 @@
 //! L3 canvas core: the app state machine (canvas, sidebar, dialogs, terminal
-//! panes) shared by the front ends.
+//! panes) shared by the front ends. Everything that touches the machine the
+//! agents run on goes through the backend ([`rpc::Backend`]); the canvas
+//! document is the service's and is kept in sync with patches ([`sync`]).
 
-pub use canvas_agents::{agents, automations, copilot_cfg, factory, factory_cli, fork, git, index, migrate, taskschd, vscode};
 pub use canvas_common::{paths, pipe, protocol, settings, win};
-pub use canvas_model::{bus, doc};
+pub use canvas_model::agent as agents;
+pub use canvas_model::{automation, bus, config, doc, git, migrate, rpc, sync, vscode};
 
 pub mod actions;
 pub mod app;
@@ -17,6 +19,8 @@ pub mod links;
 pub mod modals;
 pub mod paint;
 pub mod passive;
+pub mod prefs;
+pub mod remote;
 pub mod side;
 pub mod status;
 pub mod ui;

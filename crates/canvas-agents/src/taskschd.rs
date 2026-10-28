@@ -14,18 +14,7 @@ use windows::Win32::System::Time::TzSpecificLocalTimeToSystemTime;
 use windows::Win32::System::Variant::{VARIANT, VariantTimeToSystemTime};
 use windows::core::BSTR;
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct TaskInfo {
-    pub name: String,
-    /// `ready`, `running`, `queued`, `disabled`, `unknown`.
-    pub state: String,
-    pub enabled: bool,
-    /// Unix ms; 0 when never / none.
-    pub last_run_ms: u64,
-    pub next_run_ms: u64,
-    pub last_result: i32,
-    pub xml: String,
-}
+pub use canvas_model::automation::TaskInfo;
 
 struct Com;
 

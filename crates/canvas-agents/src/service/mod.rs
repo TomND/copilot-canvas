@@ -3,6 +3,7 @@
 //! bus and passive sessions. The terminals themselves belong to the L1 host
 //! (`canvas_host::server`); this module plugs into it as its [`HostApp`].
 
+mod docs;
 mod factory_watch;
 mod passive;
 pub use canvas_host::{keys, term};
@@ -18,13 +19,27 @@ use anyhow::{Context, Result};
 use canvas_host::server::{self, Client, Host, HostApp, Resolved};
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 
+use crate::agents::{AgentKind, Integration, Provide};
+use crate::backend::Ctx;
 use crate::index::is_session_id;
 use crate::paths::{Instance, now_ms};
-use crate::agents::{AgentKind, Integration};
 use crate::protocol::{AgentLaunch, ClientMsg, LaunchKind, ServiceMsg, SessionSummary};
 pub use canvas_common::auth::{read_token, write_token};
 pub use server::log;
 use term::lock;
+
+/// Threads answering backend requests (`ClientMsg::Rpc`): slow ones (CLI
+/// runs, scans) and quick ones (file checks, listings) on their own.
+const RPC_WORKERS: usize = 8;
+const QUICK_RPC_WORKERS: usize = 4;
+
+/// A backend request waiting for a worker.
+struct RpcJob {
+    client: Arc<Client>,
+    id: u64,
+    /// The request, or why its JSON is not one this build knows.
+    request: Result<canvas_model::rpc::Request, String>,
+}
 
 /// A terminal whose agent session is not known yet: OpenCode creates its
 /// session on the first prompt (a fork at start).
@@ -60,6 +75,10 @@ pub struct Agents {
     pending_sessions: Mutex<HashMap<String, PendingSession>>,
     /// Terminal id → the agent's own session id, once learned (told to every client).
     agent_sessions: Mutex<HashMap<String, String>>,
+    /// Canvas documents clients opened.
+    docs: docs::Docs,
+    /// Backend requests for the worker threads (slow, quick).
+    rpc: (Sender<RpcJob>, Sender<RpcJob>),
 }
 
 /// Passive sessions and the factory watch use the backend under this name.
@@ -82,6 +101,8 @@ impl Agents {
         crate::agents::copilot::set_sessions_dir(instance.sessions_dir.clone());
         let (index_tx, index_rx) = bounded::<()>(1);
         let (bus_tx, bus_rx) = unbounded::<crate::bus::Event>();
+        let (rpc_tx, rpc_rx) = unbounded::<RpcJob>();
+        let (quick_tx, quick_rx) = unbounded::<RpcJob>();
         let agents = Arc::new(Agents {
             host,
             sessions: Mutex::new(HashMap::new()),
@@ -95,10 +116,19 @@ impl Agents {
             agent_terms: Mutex::new(HashMap::new()),
             pending_sessions: Mutex::new(HashMap::new()),
             agent_sessions: Mutex::new(HashMap::new()),
+            docs: docs::Docs::default(),
+            rpc: (rpc_tx, quick_tx),
         });
         server::spawn_named("index", { let a = agents.clone(); move || index_loop(a, index_rx) });
         server::spawn_named("subsessions", { let a = agents.clone(); move || subsession_loop(a) });
         server::spawn_named("agent-sessions", { let a = agents.clone(); move || agent_session_loop(a) });
+        server::spawn_named("docs", { let a = agents.clone(); move || docs_loop(a) });
+        for (count, jobs) in [(RPC_WORKERS, &rpc_rx), (QUICK_RPC_WORKERS, &quick_rx)] {
+            for _ in 0..count {
+                let (ctx, jobs) = (Ctx::new(&instance), jobs.clone());
+                server::spawn_named("rpc", move || rpc_worker(ctx, jobs));
+            }
+        }
         // The skills and the `copilot-canvas` command that canvas sessions use for events.
         if let Err(error) = crate::cli::write_plugin(&instance.home) {
             log(&instance, &format!("cannot write the canvas plugin: {error:#}"));
@@ -222,6 +252,7 @@ impl HostApp for Agents {
 
     fn client_disconnected(&self, client: u64) {
         lock(&self.tracked).remove(&client);
+        self.docs.leave(client);
         let _ = self.index_wake.try_send(());
     }
 
@@ -243,6 +274,21 @@ impl HostApp for Agents {
                 }
             }
             ClientMsg::Bus { json } => passive::action(self, &json, &self.bus_tx),
+            ClientMsg::DocOpen { path, demo, cwd } => self.docs.open(&self.instance.home, path.as_deref(), demo, &cwd, client.id, |key, version, reply| {
+                if let Some(error) = &reply.error {
+                    log(&self.instance, &format!("cannot open the canvas {}: {error}", reply.path));
+                }
+                let json = serde_json::to_string(&reply).unwrap_or_default();
+                client.send(ServiceMsg::Doc { key, version, json });
+            }),
+            ClientMsg::DocEdit { key, base: _, ops_json } => self.doc_edit(client, key, ops_json),
+            ClientMsg::Rpc { id, json } => {
+                // Read once here: the worker gets the request (or why it is not one).
+                let request = serde_json::from_str::<canvas_model::rpc::Request>(&json).map_err(|e| e.to_string());
+                let quick = request.as_ref().is_ok_and(|r| r.is_quick());
+                let queue = if quick { &self.rpc.1 } else { &self.rpc.0 };
+                let _ = queue.send(RpcJob { client: client.clone(), id, request });
+            }
             other => anyhow::bail!("unexpected message {other:?}"),
         }
         Ok(())
@@ -274,6 +320,71 @@ impl HostApp for Agents {
     /// Pairing (`copilot-canvas remote pair`) is not built yet: no paired clients.
     fn remote_secret(&self, _id: &str) -> Option<Vec<u8>> {
         None
+    }
+
+    fn shutdown(&self) {
+        for saved in self.docs.save(true) {
+            if let Some(error) = saved.error {
+                log(&self.instance, &format!("cannot save the canvas {}: {error}", saved.key));
+            }
+        }
+    }
+}
+
+impl Agents {
+    /// Applies a client's document edit and sends the patch to every client
+    /// that has the document open; a refused edit resynchronizes its sender.
+    fn doc_edit(&self, client: &Arc<Client>, key: String, ops_json: String) {
+        let applied = serde_json::from_str::<Vec<canvas_model::sync::Op>>(&ops_json).context("unreadable canvas edit").and_then(|ops| {
+            self.docs.edit(&key, client.id, &ops, |version, clients| {
+                let targets: Vec<Arc<Client>> = lock(&self.clients).values().filter(|c| clients.contains(&c.id)).cloned().collect();
+                for target in targets {
+                    target.send(ServiceMsg::DocPatch { key: key.clone(), version, origin: client.id, ops_json: ops_json.clone() });
+                }
+            })
+        });
+        if let Err(error) = applied {
+            log(&self.instance, &format!("refused a canvas edit from client {}: {error:#}", client.id));
+            self.docs.snapshot(&key, client.id, |version, reply| {
+                let json = serde_json::to_string(&reply).unwrap_or_default();
+                client.send(ServiceMsg::Doc { key: key.clone(), version, json });
+            });
+            client.send(ServiceMsg::Error { id: None, message: format!("A canvas change was refused: {error:#}") });
+        }
+    }
+}
+
+/// Saves canvas documents shortly after they change and tells their clients
+/// when saving starts or stops failing.
+fn docs_loop(shared: Arc<Agents>) {
+    loop {
+        std::thread::sleep(Duration::from_millis(100));
+        for saved in shared.docs.save(false) {
+            if let Some(error) = &saved.error {
+                log(&shared.instance, &format!("cannot save the canvas {}: {error}", saved.key));
+            }
+            let targets: Vec<Arc<Client>> = lock(&shared.clients).values().filter(|c| saved.clients.contains(&c.id)).cloned().collect();
+            for target in targets {
+                target.send(ServiceMsg::DocSaved { key: saved.key.clone(), version: saved.version, error: saved.error.clone() });
+            }
+        }
+    }
+}
+
+/// Answers backend requests (the same handler as the in-process backend).
+fn rpc_worker(ctx: Ctx, jobs: Receiver<RpcJob>) {
+    use canvas_model::rpc::{Response, unsupported};
+    for job in jobs {
+        let response = match job.request {
+            Ok(request) => {
+                let name = request.name();
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::backend::handle(&ctx, request)))
+                    .unwrap_or_else(|_| Response::Error(format!("the service failed answering {name}")))
+            }
+            Err(error) => unsupported(&error),
+        };
+        let json = serde_json::to_string(&response).unwrap_or_else(|e| serde_json::to_string(&Response::Error(format!("cannot encode the answer: {e}"))).unwrap_or_default());
+        job.client.send(ServiceMsg::RpcReply { id: job.id, json });
     }
 }
 

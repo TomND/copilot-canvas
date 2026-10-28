@@ -10,7 +10,6 @@ use std::time::Duration;
 
 use anyhow::Result;
 use canvas_common::protocol::{AgentLaunch, SessionSummary};
-use serde::{Deserialize, Serialize};
 
 pub mod claude;
 pub mod claude_history;
@@ -22,46 +21,15 @@ pub mod opencode_server;
 #[cfg(test)]
 mod probes;
 
-/// Which agent CLI a session runs.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
-#[serde(rename_all = "lowercase")]
-pub enum AgentKind {
-    #[default]
-    Copilot,
-    OpenCode,
-    Claude,
+pub use canvas_model::agent::{ALL, AgentKind, Caps, agent_of, agent_of_summary, native_id};
+
+/// The provider of an agent kind (`kind.provider()`).
+pub trait Provide {
+    fn provider(self) -> &'static dyn Provider;
 }
 
-pub const ALL: [AgentKind; 3] = [AgentKind::Copilot, AgentKind::OpenCode, AgentKind::Claude];
-
-impl AgentKind {
-    /// The protocol / settings name.
-    pub fn id(self) -> &'static str {
-        match self {
-            AgentKind::Copilot => "copilot",
-            AgentKind::OpenCode => "opencode",
-            AgentKind::Claude => "claude",
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            AgentKind::Copilot => "GitHub Copilot",
-            AgentKind::OpenCode => "OpenCode",
-            AgentKind::Claude => "Claude Code",
-        }
-    }
-
-    pub fn parse(text: &str) -> Option<Self> {
-        match text.trim().to_ascii_lowercase().as_str() {
-            "copilot" | "github copilot" | "gh-copilot" => Some(AgentKind::Copilot),
-            "opencode" | "open-code" => Some(AgentKind::OpenCode),
-            "claude" | "claude code" | "claude-code" => Some(AgentKind::Claude),
-            _ => None,
-        }
-    }
-
-    pub fn provider(self) -> &'static dyn Provider {
+impl Provide for AgentKind {
+    fn provider(self) -> &'static dyn Provider {
         match self {
             AgentKind::Copilot => &copilot::Copilot,
             AgentKind::OpenCode => &opencode::OpenCode,
@@ -89,47 +57,9 @@ pub fn machine_default(home: &Path) -> AgentKind {
     canvas_common::settings::Settings::load(home).agent.as_deref().and_then(AgentKind::parse).unwrap_or_else(default_agent)
 }
 
-/// The agent a canvas box runs (`None`: Copilot, as on canvases from before
-/// agents were selectable).
-pub fn agent_of(node: &canvas_model::doc::Node) -> AgentKind {
-    node.agent.as_deref().and_then(AgentKind::parse).unwrap_or(AgentKind::Copilot)
-}
-
-/// The agent's own session id of a box: `agent_session`, else the box id.
-pub fn native_id(node: &canvas_model::doc::Node) -> &str {
-    node.agent_session.as_deref().filter(|s| !s.is_empty()).unwrap_or(&node.id)
-}
-
-/// The agent a session summary comes from.
-pub fn agent_of_summary(summary: &SessionSummary) -> AgentKind {
-    match summary.client.as_str() {
-        "opencode" => AgentKind::OpenCode,
-        "claude-code" => AgentKind::Claude,
-        _ if opencode::is_session_id(&summary.id) => AgentKind::OpenCode,
-        _ => AgentKind::Copilot,
-    }
-}
-
-/// What a provider supports (the UI hides what it cannot do).
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub struct Caps {
-    /// The canvas can choose the session id before launch.
-    pub preassigned_ids: bool,
-    /// Forks a conversation itself (launch flag).
-    pub native_fork: bool,
-    /// Forks by copying the history on disk (`fork::fork_session`).
-    pub copy_fork: bool,
-    /// Per-session MCP server selection.
-    pub mcp_select: bool,
-    /// Reports turn start and end with OSC 9;4 progress.
-    pub progress: bool,
-    /// Lists of plugins / MCP servers / skills / agents / settings.
-    pub config: bool,
-    /// Scheduled automations and `/every` loops (Copilot's `data.db`).
-    pub automations: bool,
-    /// Reasoning effort / mode / context flags.
-    pub effort: bool,
-    pub modes: bool,
+/// Agents whose CLI is installed.
+pub fn installed() -> Vec<AgentKind> {
+    ALL.into_iter().filter(|k| k.provider().program().is_ok()).collect()
 }
 
 /// The command line for a launch.
@@ -296,21 +226,10 @@ mod tests {
     }
 
     #[test]
-    fn summaries_and_boxes_name_their_agent() {
-        let summary = |id: &str, client: &str| SessionSummary { id: id.into(), client: client.into(), ..Default::default() };
-        assert_eq!(agent_of_summary(&summary("ses_e7fbbd911ffeOynBIm3IrWFsUl", "")), AgentKind::OpenCode);
-        assert_eq!(agent_of_summary(&summary("x", "opencode")), AgentKind::OpenCode);
-        assert_eq!(agent_of_summary(&summary("12345678-1234-1234-1234-123456789abc", "claude-code")), AgentKind::Claude);
-        for client in ["github/cli", "vscode-agent-host", ""] {
-            assert_eq!(agent_of_summary(&summary("12345678-1234-1234-1234-123456789abc", client)), AgentKind::Copilot, "{client}");
+    fn providers_report_the_model_caps() {
+        for kind in ALL {
+            assert_eq!(kind.provider().caps(), kind.caps(), "{kind:?}");
+            assert_eq!(kind.provider().kind(), kind);
         }
-        let mut node: canvas_model::doc::Node =
-            serde_json::from_value(serde_json::json!({ "id": "n1", "kind": "session", "name": "n", "x": 0, "y": 0 })).unwrap();
-        assert_eq!((agent_of(&node), native_id(&node)), (AgentKind::Copilot, "n1"));
-        node.agent = Some("opencode".into());
-        node.agent_session = Some("ses_abc".into());
-        assert_eq!((agent_of(&node), native_id(&node)), (AgentKind::OpenCode, "ses_abc"));
-        node.agent = Some("unknown".into());
-        assert_eq!(agent_of(&node), AgentKind::Copilot);
     }
 }

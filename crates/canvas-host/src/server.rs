@@ -72,6 +72,8 @@ pub trait HostApp: Send + Sync {
     fn has_work(&self) -> bool;
     /// The secret of a paired remote client (`ClientInfo::remote_id`); `None` refuses it.
     fn remote_secret(&self, id: &str) -> Option<Vec<u8>>;
+    /// The service is about to exit: persist what must not be lost.
+    fn shutdown(&self) {}
 }
 
 /// What a client last received of one subscribed terminal.
@@ -451,6 +453,7 @@ impl Host {
         for terminal in &terms {
             terminal.force_kill();
         }
+        self.app().shutdown();
         self.remove_published_files();
         log(&self.instance, "service exiting");
         std::process::exit(0);
@@ -979,6 +982,7 @@ fn idle_loop(host: Arc<Host>) {
         let clients = !lock(&host.clients).is_empty();
         if !alive && !clients && lock(&host.last_activity).elapsed() >= IDLE_EXIT && !host.app().has_work() {
             log(&host.instance, "idle with no clients or terminals; exiting");
+            host.app().shutdown();
             host.remove_published_files();
             std::process::exit(0);
         }

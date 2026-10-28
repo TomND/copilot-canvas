@@ -17,28 +17,10 @@ use serde_json::Value;
 
 use super::AgentKind;
 use crate::copilot_cfg::{self, Agent, Kind, McpServer, Plugin, Skill, Snapshot, json_payload};
+pub use canvas_model::config::{caps_for_changes, caps_for_views};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Which configuration views an agent has: (plugins, MCP, skills, agents, settings).
-pub fn caps_for_views(kind: AgentKind) -> (bool, bool, bool, bool, bool) {
-    match kind {
-        AgentKind::Copilot => (true, true, true, true, true),
-        AgentKind::OpenCode => (true, true, true, true, true),
-        AgentKind::Claude => (true, true, true, true, true),
-    }
-}
-
-/// Which changes an agent's CLI supports for a view: (enable/disable, remove).
-pub fn caps_for_changes(kind: AgentKind, what: Kind) -> (bool, bool) {
-    match (kind, what) {
-        (AgentKind::Copilot, _) => (true, true),
-        (AgentKind::Claude, Kind::Plugin) => (true, true),
-        (AgentKind::Claude, Kind::Mcp) => (false, true),
-        _ => (false, false),
-    }
-}
 
 /// Output kept per stream of a CLI run; the rest is dropped.
 const MAX_OUTPUT: usize = 4 << 20;
@@ -430,7 +412,7 @@ fn opencode_config(config: &Value, snapshot: &mut Snapshot) {
             Some((name, version)) => (name.to_owned(), version.to_owned()),
             None => (plugin.to_owned(), String::new()),
         };
-        snapshot.plugins.push(Plugin { name, marketplace: "npm".into(), version, enabled: true, source: plugin.to_owned() });
+        snapshot.plugins.push(Plugin { name, marketplace: "npm".into(), version, enabled: true, source: plugin.to_owned(), ..Default::default() });
     }
     if let Some(agents) = config["agent"].as_object() {
         for (name, agent) in agents {
@@ -529,6 +511,7 @@ fn claude_plugins(value: &Value) -> Vec<Plugin> {
                 version: p["version"].as_str().unwrap_or_default().to_owned(),
                 enabled: p["enabled"].as_bool().unwrap_or(true),
                 source: p["scope"].as_str().or(p["installPath"].as_str()).unwrap_or_default().to_owned(),
+                ..Default::default()
             })
         })
         .collect()

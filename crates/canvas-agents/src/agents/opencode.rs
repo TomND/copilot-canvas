@@ -23,7 +23,7 @@ use crate::paths::now_ms;
 pub struct OpenCode;
 
 pub fn is_session_id(id: &str) -> bool {
-    id.len() > 4 && id.len() <= 64 && id.starts_with("ses_") && id[4..].chars().all(|c| c.is_ascii_alphanumeric())
+    canvas_model::agent::is_opencode_session_id(id)
 }
 
 /// The OpenCode executable: `COPILOT_CANVAS_OPENCODE`, else `opencode.exe` on
@@ -367,17 +367,7 @@ impl Provider for OpenCode {
     }
 
     fn caps(&self) -> Caps {
-        Caps {
-            preassigned_ids: false,
-            native_fork: true,
-            copy_fork: false,
-            mcp_select: true,
-            progress: false,
-            config: true,
-            automations: false,
-            effort: false,
-            modes: false,
-        }
+        AgentKind::OpenCode.caps()
     }
 
     fn program(&self) -> Result<String> {

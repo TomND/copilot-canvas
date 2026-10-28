@@ -18,7 +18,7 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers
 
 use crate::client::app::{App, TermView};
 use crate::client::conn::{self, ClientSession, Conn, ConnOptions, ConnTarget};
-use crate::client::doc::{Doc, GRID_X, GRID_Y, Group, Node, NodeKind, Store};
+use crate::client::doc::{Doc, GRID_X, GRID_Y, Group, Node, NodeKind};
 use crate::paths::Instance;
 use crate::protocol::{
     Activity, AgentStatus, AgentSummary, ClientMsg, Input, Key, LaunchKind, Run, ServiceMsg, ServiceStats, SessionSummary, TermInfo,
@@ -351,7 +351,6 @@ fn render_bench() -> Result<serde_json::Value> {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     let dir = std::env::temp_dir().join(format!("copilot-canvas-render-{}", uuid::Uuid::new_v4()));
-    let store = Store::open(&dir.join("canvas.json"))?;
     let mut doc = Doc::default();
     let mut sessions = HashMap::new();
     for i in 0..100 {
@@ -409,7 +408,8 @@ fn render_bench() -> Result<serde_json::Value> {
     let (_service, rx) = crossbeam_channel::bounded(1);
     let conn = Conn::detached(tx, rx);
     let (app_tx, _app_rx) = crossbeam_channel::unbounded();
-    let mut app = App::new(conn, store, doc, false, r"C:\".into(), app_tx, dir.clone());
+    let backend = std::sync::Arc::new(canvas_agents::backend::LocalBackend::new(canvas_agents::backend::Ctx { home: dir.clone(), sessions_dir: dir.clone() }));
+    let mut app = App::new(conn, backend, crate::client::sync::Opened::detached(doc), false, r"C:\".into(), app_tx, None);
     app.sessions = sessions;
     app.doc.ui.tiled = true;
     let ids: Vec<String> = app.doc.nodes.iter().filter(|n| n.kind == NodeKind::Session).take(4).map(|n| n.id.clone()).collect();

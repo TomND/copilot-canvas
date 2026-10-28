@@ -13,7 +13,7 @@ use std::time::Duration;
 use crossbeam_channel::Receiver;
 
 use super::{Shared, lock, log};
-use crate::agents::AgentKind;
+use crate::agents::{AgentKind, Provide};
 use crate::bus::{self, BusState, Event, Mail, PassiveSpec, Routing, Target};
 use crate::paths::now_ms;
 use crate::protocol::{Activity, AgentLaunch, Input, Key, LaunchKind, ServiceMsg};

@@ -10,7 +10,7 @@ use crate::dialogs::{Action, Hit};
 use crate::paint::{ACCENT, FAINT, GRAY, POSITIVE, LIGHT, MUTED, NEGATIVE, PANEL, PANEL_HI, SELECT, SPINNER, TEXT, ATTENTION, bold, fg, fill, outline, put, truncate};
 use crate::status::Status;
 use crate::side::{ItemRef, RightDetail, SideView, VIEWS, automation_status, status_color, when};
-use crate::copilot_cfg::Kind;
+use crate::config::Kind;
 
 pub const BAR_W: u16 = 3;
 
@@ -185,7 +185,7 @@ impl Lines {
 }
 
 /// Info and health page of a manifest-managed automation.
-fn task_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>, a: &crate::automations::Automation, live: &crate::factory::Live) {
+fn task_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>, a: &crate::automation::Automation, live: &crate::automation::Live) {
     let status = automation_status(a);
     let m = &live.manifest;
     out.text(format!("◷ {}", a.name), bold(TEXT));
@@ -215,7 +215,7 @@ fn task_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>, 
     out.text(format!("{} {headline}", status.icon(app.tick)), bold(status.color()));
     out.text(format!("{} · {}{}", m.family, a.schedule, if m.ai { " · uses AI" } else { "" }), fg(MUTED));
     // Run history, oldest to newest.
-    let history: Vec<&crate::factory::LogRun> = live.runs.iter().take(24).collect();
+    let history: Vec<&crate::automation::LogRun> = live.runs.iter().take(24).collect();
     if !history.is_empty() {
         let mut spans = vec![("Runs  ".to_owned(), fg(MUTED))];
         for r in history.iter().rev() {
@@ -232,7 +232,7 @@ fn task_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>, 
     }
     out.gap();
     if let Some(report) = &live.report {
-        let current = finished.is_some_and(|f| crate::factory::report_is_for(report, &f.started)) || finished.is_none();
+        let current = finished.is_some_and(|f| crate::automation::report_is_for(report, &f.started)) || finished.is_none();
         let color = match report.state.as_str() {
             "ok" => POSITIVE,
             "warn" => ATTENTION,
@@ -279,7 +279,8 @@ fn task_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>, 
     out.field("Command", &format!("{} {}", m.command, m.args));
     out.field("Folder", &m.cwd);
     out.field("Manifest", &m.path.display().to_string());
-    let tail = crate::factory::tail(&live.log_path, 4096);
+    // Tails are read on the backend's machine in the background (`App::tails`).
+    let tail = app.tails.get(&live.log_path.display().to_string()).cloned().unwrap_or_default();
     let last: Vec<&str> = tail.lines().rev().take(4).collect();
     if !last.is_empty() {
         out.gap();
@@ -289,7 +290,7 @@ fn task_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>, 
         }
     }
     if let Some(log) = live.logs.first() {
-        let tail = crate::factory::tail(log, 2048);
+        let tail = app.tails.get(&log.display().to_string()).cloned().unwrap_or_default();
         out.gap();
         out.text(format!("WORKLOAD LOG {}", log.display()), bold(MUTED));
         for line in tail.lines().filter(|l| !l.trim().is_empty()).rev().take(6).collect::<Vec<_>>().into_iter().rev() {
@@ -461,12 +462,11 @@ pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &R
                     out.field("Version", &p.version);
                     out.field("Marketplace", &p.marketplace);
                     out.field("Source", &p.source);
-                    let plugins = crate::copilot_cfg::copilot_home().join("installed-plugins");
-                    let folder = [plugins.join(&p.name), plugins.join(&p.marketplace)].into_iter().find(|d| !p.marketplace.is_empty() && d.is_dir() || d.is_dir()).unwrap_or(plugins);
                     actions.push((if p.enabled { "Disable".into() } else { "Enable".into() }, Action::ToggleConfig(Kind::Plugin, p.name.clone(), !p.enabled)));
                     actions.push(("Update".into(), Action::UpdatePlugin(p.name.clone())));
-                    if folder.is_dir() {
-                        actions.push(("Open folder".into(), Action::OpenPath(folder.display().to_string())));
+                    // The backend found its folder when it listed the plugins.
+                    if !p.local_folder.is_empty() {
+                        actions.push(("Open folder".into(), Action::OpenPath(p.local_folder.clone())));
                     }
                 }
                 None => out.text("Plugin not found; refresh the list.", fg(MUTED)),

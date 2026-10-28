@@ -11,51 +11,7 @@ use anyhow::{Context, Result};
 
 use crate::copilot_cfg::{McpServer, Skill};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ItemKind {
-    Mcp,
-    Instruction,
-    PromptSkill,
-    Agent,
-    SkillFolder,
-}
-
-impl ItemKind {
-    pub fn label(self) -> &'static str {
-        match self {
-            ItemKind::Mcp => "MCP server",
-            ItemKind::Instruction => "Instructions",
-            ItemKind::PromptSkill => "Prompt → skill",
-            ItemKind::Agent => "Agent",
-            ItemKind::SkillFolder => "Skill folder",
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Status {
-    New,
-    AlreadyPresent,
-    Conflict(String),
-    Manual(String),
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum Action {
-    Cli(Vec<String>),
-    Write { path: PathBuf, content: String },
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Item {
-    pub kind: ItemKind,
-    pub name: String,
-    pub products: String,
-    pub source: String,
-    pub target: String,
-    pub status: Status,
-    pub action: Option<Action>,
-}
+pub use canvas_model::migrate::{Action, Item, ItemKind, Status};
 
 /// Removes `//` and `/* */` comments and trailing commas (VS Code JSONC).
 pub fn strip_jsonc(text: &str) -> String {

@@ -792,42 +792,115 @@ impl Store {
     /// Writes `backups/<canvas>-<ms>-<label>.json` next to the canvas, keeping
     /// the newest 30.
     pub fn backup(&self, doc: &Doc, label: &str) -> Result<PathBuf> {
-        let dir = self.path.parent().unwrap_or(Path::new(".")).join("backups");
-        std::fs::create_dir_all(&dir)?;
-        let stem = self.path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "canvas".into());
-        let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-        let file = dir.join(format!("{stem}-{ms:013}-{label}.json"));
-        std::fs::write(&file, serde_json::to_string_pretty(doc)?)?;
-        let mut existing: Vec<PathBuf> = std::fs::read_dir(&dir)?
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&format!("{stem}-")) && n.to_string_lossy().ends_with(".json")))
-            .collect();
-        existing.sort();
-        while existing.len() > 30 {
-            let _ = std::fs::remove_file(existing.remove(0));
-        }
-        Ok(file)
+        write_backup(&self.path, doc, label)
     }
 
     pub fn save(&self, doc: &Doc) -> Result<()> {
-        doc.validate()?;
-        let text = serde_json::to_string_pretty(doc)?;
-        let temp = self.path.with_extension(format!("json.{}.tmp", std::process::id()));
-        std::fs::write(&temp, text)?;
-        let mut last = None;
-        // Antivirus/indexers can briefly hold the target open on Windows.
-        for attempt in 0..5 {
-            match std::fs::rename(&temp, &self.path) {
-                Ok(()) => return Ok(()),
-                Err(error) => {
-                    last = Some(error);
-                    std::thread::sleep(std::time::Duration::from_millis(20 << attempt));
-                }
+        save_doc(&self.path, doc)
+    }
+}
+
+/// Writes a canvas file atomically (a temporary file renamed over it).
+pub fn save_doc(path: &Path, doc: &Doc) -> Result<()> {
+    doc.validate()?;
+    let text = serde_json::to_string_pretty(doc)?;
+    let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    std::fs::write(&temp, text)?;
+    let mut last = None;
+    // Antivirus/indexers can briefly hold the target open on Windows.
+    for attempt in 0..5 {
+        match std::fs::rename(&temp, path) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last = Some(error);
+                std::thread::sleep(std::time::Duration::from_millis(20 << attempt));
             }
         }
-        let _ = std::fs::remove_file(&temp);
-        Err(last.expect("at least one attempt")).context("cannot replace the canvas file")
     }
+    let _ = std::fs::remove_file(&temp);
+    Err(last.expect("at least one attempt")).context("cannot replace the canvas file")
+}
+
+fn backup_dir(canvas: &Path) -> (PathBuf, String) {
+    let dir = canvas.parent().unwrap_or(Path::new(".")).join("backups");
+    let stem = canvas.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "canvas".into());
+    (dir, stem)
+}
+
+/// Writes `backups/<canvas>-<ms>-<label>.json` next to the canvas file,
+/// keeping the newest 30.
+pub fn write_backup(canvas: &Path, doc: &Doc, label: &str) -> Result<PathBuf> {
+    anyhow::ensure!(!label.is_empty() && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'), "invalid backup label");
+    let (dir, stem) = backup_dir(canvas);
+    std::fs::create_dir_all(&dir)?;
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let file = dir.join(format!("{stem}-{ms:013}-{label}.json"));
+    std::fs::write(&file, serde_json::to_string_pretty(doc)?)?;
+    let mut existing = list_backups(canvas)?;
+    while existing.len() > 30 {
+        let _ = std::fs::remove_file(existing.remove(0));
+    }
+    Ok(file)
+}
+
+/// Backups of a canvas file, oldest first.
+pub fn list_backups(canvas: &Path) -> Result<Vec<PathBuf>> {
+    let (dir, stem) = backup_dir(canvas);
+    let prefix = format!("{stem}-");
+    let mut existing: Vec<PathBuf> = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&prefix) && n.to_string_lossy().ends_with(".json")))
+            .collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error.into()),
+    };
+    existing.sort();
+    Ok(existing)
+}
+
+/// The `--demo` canvas: PowerShell sessions in `cwd`, a subagent and a group.
+pub fn demo_doc(cwd: &str) -> Doc {
+    let shell = Some(vec!["powershell.exe".to_owned(), "-NoLogo".to_owned(), "-NoProfile".to_owned()]);
+    let session = |id: &str, name: &str, x: i32, y: i32| Node {
+        id: id.into(),
+        kind: NodeKind::Session,
+        name: name.into(),
+        x,
+        y,
+        cwd: Some(cwd.to_owned()),
+        parent: None,
+        agent_key: None,
+        source: Some("demo".into()),
+        command: shell.clone(),
+        fresh: true,
+        automation: None,
+        synced_name: None,
+        reviewed_ms: None,
+        mcp_off: None,
+        passive: None,
+        no_messages: false,
+        agent: None,
+        agent_session: None,
+    };
+    let mut doc = Doc::default();
+    doc.nodes.push(session("demo-main", "Build session canvas", 2, 2));
+    doc.nodes.push(Node {
+        kind: NodeKind::Agent,
+        parent: Some("demo-main".into()),
+        agent_key: Some("explore".into()),
+        command: None,
+        ..session("demo-main:explore", "Explore terminal APIs", 6, 7)
+    });
+    doc.nodes.push(session("demo-review", "Review implementation", 36, 2));
+    let mut sub = session("demo-sub", "Write tests", 36, 9);
+    sub.parent = Some("demo-review".into());
+    doc.nodes.push(sub);
+    doc.groups.push(Group { id: "g-demo".into(), name: "Canvas project".into(), x: 0, y: 0, w: 70, h: 15, color: 0, folder: None, source: None, defaults: None });
+    doc.view.x = -2;
+    doc.view.y = -1;
+    doc.selected = Some("demo-main".into());
+    doc
 }
 
 /// Imports the Node prototype's `layout.json` (version 1) if present.
@@ -1075,6 +1148,22 @@ mod tests {
             assert!(store.load().is_err());
         }
         assert!(Store::open(&path).is_ok(), "lock released on drop");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn backups_are_listed_oldest_first_and_capped() {
+        let dir = std::env::temp_dir().join(format!("cc-backup-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("canvas.json");
+        assert!(list_backups(&path).unwrap().is_empty());
+        let doc = demo_doc(r"C:\work");
+        let first = write_backup(&path, &doc, "before-vscode-sync").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let second = write_backup(&path, &Doc::default(), "before-undo").unwrap();
+        assert_eq!(list_backups(&path).unwrap(), vec![first.clone(), second]);
+        let back: Doc = serde_json::from_str(&std::fs::read_to_string(&first).unwrap()).unwrap();
+        assert_eq!(back, doc);
+        assert!(write_backup(&path, &doc, "../escape").is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

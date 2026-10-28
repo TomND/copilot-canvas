@@ -2,7 +2,7 @@
 //! `events.rs`, dialogs/actions in `actions.rs`, drawing in `ui.rs`.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Sender;
@@ -11,19 +11,29 @@ use ratatui::layout::Rect;
 use crate::agents::{AgentKind, agent_of, native_id};
 use crate::conn::Conn;
 use crate::dialogs::{Hit, Modal};
-use crate::doc::{Doc, GRID_X, Node, NodeKind, Store};
-use crate::status::{self, Status};
+use crate::doc::{Doc, GRID_X, Node, NodeKind};
 use crate::git::GitInfo;
 use crate::paths::now_ms;
+use crate::prefs::PrefsFile;
 use crate::protocol::{ClientMsg, Input, LaunchKind, ServiceMsg, ServiceStats, SessionSummary, TermInfo};
+use crate::rpc::{Backend, BackendInfo};
+use crate::status::{self, Status};
+use crate::sync::{ClientPrefs, Opened, Replica};
+
+/// Local document changes are sent to the service this soon.
+const DOC_FLUSH: Duration = Duration::from_millis(100);
+/// View and panel changes are written to the client's preferences this soon.
+const PREFS_FLUSH: Duration = Duration::from_millis(400);
 
 pub enum AppEvent {
     Git { req: u64, folder: String, result: Result<Option<GitInfo>, String> },
     Worktree { node: String, result: Result<(), String> },
     Forked { node: String, result: Result<(), String> },
     /// An agent's configuration (plugins, MCP servers, skills, agents, settings).
-    Config(AgentKind, Box<crate::copilot_cfg::Snapshot>),
-    Automations(crate::factory_client::AutoLoad),
+    Config(AgentKind, Box<crate::config::Snapshot>),
+    Automations(crate::automation::AutoLoad),
+    /// Loading the automations failed (the boxes stay as they are).
+    AutomationsFailed(String),
     CliDone { label: String, result: Result<String, String> },
     VsSync(Vec<crate::vscode::SyncCandidate>, Vec<String>),
     MigratePlan(Vec<crate::migrate::Item>),
@@ -33,6 +43,10 @@ pub enum AppEvent {
     ServiceRestarted { result: Result<Conn, String>, mouse: bool },
     /// A dropped connection was re-established (or reconnecting gave up).
     Reconnected(Result<Conn, String>),
+    /// Log tails for the automation info page: (path, text).
+    Tails(Vec<(String, String)>),
+    /// A background step has something to say.
+    Notice { text: String, error: bool },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -123,10 +137,24 @@ pub struct App {
     pub last_input_at: HashMap<String, Instant>,
     pub idle_check_at: Instant,
     pub default_cwd: String,
+    /// The working copy of the canvas document (the service owns it; see `replica`).
     pub doc: Doc,
-    pub store: Store,
+    /// The service's document and this client's edits in flight.
+    pub replica: Replica,
+    /// How the document was opened (`DocOpen` path and demo), asked again after reconnecting.
+    pub doc_request: (Option<String>, bool),
+    /// Waiting for the service to send the whole document again.
+    pub doc_resync: bool,
+    /// When local document changes started waiting to be sent.
     pub dirty_at: Option<Instant>,
+    /// When view or panel changes started waiting to be written.
+    pub prefs_dirty_at: Option<Instant>,
+    /// This client's own view of the canvas.
+    pub prefs: Option<PrefsFile>,
     pub save_error: Option<String>,
+    /// Paths, settings and agents of the machine the agents run on.
+    pub backend: Arc<dyn Backend>,
+    pub info: BackendInfo,
     pub conn: Conn,
     pub connected: bool,
     /// Where the service is (reconnects go there); `None`: never reconnect.
@@ -181,7 +209,6 @@ pub struct App {
     pub build_mismatch: bool,
     pub needs_draw: bool,
     pub auto_imported: bool,
-    pub instance_home: std::path::PathBuf,
     pub instance: Option<crate::paths::Instance>,
     /// Receiver of a new service connection for the run loop to switch to.
     pub new_service_rx: Option<crossbeam_channel::Receiver<crate::protocol::ServiceMsg>>,
@@ -205,11 +232,11 @@ pub struct App {
     pub list_sel: usize,
     pub list_scroll: usize,
     /// Configuration of `config_agent` (what the configuration views show).
-    pub config: Option<crate::copilot_cfg::Snapshot>,
+    pub config: Option<crate::config::Snapshot>,
     /// The agent whose configuration the views show.
     pub config_agent: AgentKind,
     /// Every agent configuration loaded so far (MCP choices for new sessions).
-    pub agent_configs: HashMap<AgentKind, crate::copilot_cfg::Snapshot>,
+    pub agent_configs: HashMap<AgentKind, crate::config::Snapshot>,
     pub configs_loading: HashSet<AgentKind>,
     /// The machine's agent for new sessions (settings.json, else the first installed).
     pub detected_agent: AgentKind,
@@ -217,12 +244,18 @@ pub struct App {
     pub installed_agents: Vec<AgentKind>,
     /// New subsessions that fork their parent natively: node → parent's agent session.
     pub pending_forks: HashMap<String, String>,
-    pub automations: Vec<crate::automations::Automation>,
+    pub automations: Vec<crate::automation::Automation>,
     pub automations_loading: bool,
     pub automations_at: Instant,
     pub automations_error: Option<String>,
     /// The manifest folder loaded (task boxes are only removed when it did).
     pub automations_factory_ok: bool,
+    /// The automation manifest folder in use.
+    pub automations_folder: String,
+    /// Log tails on the automation info page: path → text.
+    pub tails: HashMap<String, String>,
+    pub tails_at: Instant,
+    pub tails_loading: bool,
     pub right_detail: Option<crate::side::RightDetail>,
     pub cli_busy: Option<String>,
     pub vs_syncing: bool,
@@ -232,20 +265,47 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(conn: Conn, store: Store, doc: Doc, demo: bool, default_cwd: String, app_tx: Sender<AppEvent>, instance_home: std::path::PathBuf) -> Self {
+    /// A client on an opened document. `prefs`: the file with this client's
+    /// view of it (seeded from the document's own view fields the first time).
+    pub fn new(
+        conn: Conn,
+        backend: Arc<dyn Backend>,
+        opened: Opened,
+        demo: bool,
+        default_cwd: String,
+        app_tx: Sender<AppEvent>,
+        prefs: Option<std::path::PathBuf>,
+    ) -> Self {
         // Remote clients never restart or upgrade the service.
         let build_mismatch = !conn.remote && conn.service_build != crate::paths::build_id();
+        let replica = Replica::new(&opened);
+        let mut doc = opened.doc;
+        let mut prefs = prefs.map(PrefsFile::new);
+        if let Some(file) = prefs.as_mut() {
+            file.load().unwrap_or_else(|| ClientPrefs::of(&doc)).apply(&mut doc);
+        }
+        let (info, info_error) = match backend.info() {
+            Ok(info) => (info, None),
+            Err(error) => (BackendInfo::default(), Some(format!("{error:#}"))),
+        };
+        let automations_folder = backend.automations_dir(doc.automations_dir.clone()).unwrap_or_default();
         let selection = doc.selected.clone().into_iter().collect();
-        let detected_agent = crate::agents::machine_default(&instance_home);
-        let installed_agents: Vec<AgentKind> = crate::agents::ALL.into_iter().filter(|k| k.provider().program().is_ok()).collect();
+        let detected_agent = info.default_agent;
+        let installed_agents = info.installed.clone();
         let config_agent = doc.default_agent.as_deref().and_then(AgentKind::parse).unwrap_or(detected_agent);
         let mut app = Self {
             demo,
             default_cwd,
             doc,
-            store,
+            replica,
+            doc_request: (None, demo),
+            doc_resync: false,
             dirty_at: None,
+            prefs_dirty_at: None,
+            prefs,
             save_error: None,
+            backend,
+            info,
             conn,
             connected: true,
             target: None,
@@ -300,7 +360,6 @@ impl App {
             build_mismatch,
             needs_draw: true,
             auto_imported: false,
-            instance_home,
             side_view: crate::side::SideView::Sessions,
             list_sel: 0,
             list_scroll: 0,
@@ -316,6 +375,10 @@ impl App {
             automations_at: Instant::now() - Duration::from_secs(60),
             automations_error: None,
             automations_factory_ok: false,
+            automations_folder,
+            tails: HashMap::new(),
+            tails_at: Instant::now() - Duration::from_secs(60),
+            tails_loading: false,
             right_detail: None,
             cli_busy: None,
             vs_syncing: false,
@@ -336,6 +399,9 @@ impl App {
         if app.build_mismatch {
             app.notify("The terminal service is from an older build: click ⟳ Update service in the toolbar to get its fixes.", false);
         }
+        if let Some(error) = info_error {
+            app.notify(format!("The backend did not answer: {error}"), true);
+        }
         app
     }
 
@@ -348,23 +414,126 @@ impl App {
         self.needs_draw = true;
     }
 
+    /// The document or this client's view of it changed: edits go to the
+    /// service shortly, preferences to the client's own file.
     pub fn mark_dirty(&mut self) {
         self.dirty_at.get_or_insert_with(Instant::now);
+        self.prefs_dirty_at.get_or_insert_with(Instant::now);
         self.needs_draw = true;
     }
 
+    /// Sends pending edits and writes changed preferences now.
     pub fn save_now(&mut self) {
-        self.doc.selected = self.selection.last().cloned();
-        match self.store.save(&self.doc) {
-            Ok(()) => {
-                self.dirty_at = None;
-                self.save_error = None;
-            }
-            Err(error) => {
-                self.save_error = Some(format!("{error:#}"));
-                self.dirty_at = Some(Instant::now());
-            }
+        self.flush_doc();
+        self.save_prefs();
+    }
+
+    /// Sends local document changes to the service (as one edit).
+    pub fn flush_doc(&mut self) {
+        self.dirty_at = None;
+        // Offline or resynchronizing: the changes stay and go out after the
+        // service sent the document again (see `on_doc`).
+        if !self.connected || self.doc_resync || self.restarting.is_some() || self.replica.key == "detached" {
+            return;
         }
+        let Some((base, ops)) = self.replica.take_edit(&self.doc) else { return };
+        let message = match serde_json::to_string(&ops) {
+            Ok(ops_json) => ClientMsg::DocEdit { key: self.replica.key.clone(), base, ops_json },
+            Err(error) => return self.notify(format!("Cannot send a canvas change: {error}"), true),
+        };
+        if self.conn.tx.try_send(message).is_err() {
+            // The edit is lost: start over from the service's document.
+            self.request_doc();
+        }
+    }
+
+    /// Writes this client's view of the canvas when it changed.
+    pub fn save_prefs(&mut self) {
+        self.prefs_dirty_at = None;
+        self.doc.selected = self.selection.last().cloned();
+        let prefs = ClientPrefs::of(&self.doc);
+        if let Some(Err(error)) = self.prefs.as_mut().map(|file| file.save(&prefs)) {
+            self.save_error = Some(format!("cannot save the view: {error:#}"));
+        }
+    }
+
+    /// Asks the service for the whole document again (after reconnecting or
+    /// when a patch went missing); local changes are kept on top of it.
+    pub fn request_doc(&mut self) {
+        if self.replica.key == "detached" {
+            return;
+        }
+        self.doc_resync = true;
+        let (path, demo) = self.doc_request.clone();
+        let cwd = self.default_cwd.clone();
+        self.send(ClientMsg::DocOpen { path, demo, cwd });
+    }
+
+    /// The whole document from the service.
+    fn on_doc(&mut self, key: String, version: u64, json: &str) {
+        self.doc_resync = false;
+        match Opened::from_message(key, version, json) {
+            Ok(opened) => {
+                self.replica.resync(&mut self.doc, opened);
+                self.after_remote_change();
+                // Local changes kept on top go out now.
+                self.mark_dirty();
+            }
+            Err(error) => self.notify(format!("The canvas could not be loaded again: {error:#}"), true),
+        }
+    }
+
+    /// An edit the service applied (another window's, or this one's coming back).
+    fn on_doc_patch(&mut self, key: &str, version: u64, origin: u64, ops_json: &str) {
+        if key != self.replica.key || self.doc_resync {
+            return;
+        }
+        let Ok(ops) = serde_json::from_str::<Vec<crate::sync::Op>>(ops_json) else { return self.request_doc() };
+        let patched = self.replica.apply_patch(&mut self.doc, version, origin, &ops);
+        if patched.resync {
+            return self.request_doc();
+        }
+        if patched.changed {
+            self.after_remote_change();
+        }
+        if let Some(name) = patched.overwritten.first() {
+            let more = match patched.overwritten.len() {
+                1 => String::new(),
+                n => format!(" (and {} more)", n - 1),
+            };
+            self.notify(format!("{name}{more} was changed in another window."), false);
+        }
+    }
+
+    /// Another window changed the document: forget what is gone.
+    fn after_remote_change(&mut self) {
+        self.selection.retain(|id| self.doc.node(id).is_some());
+        self.selected_group = self.selected_group.take().filter(|g| self.doc.group(g).is_some());
+        self.needs_draw = true;
+    }
+
+    /// Writes a backup of `doc` next to the canvas file (in the background).
+    pub fn backup_doc(&self, doc: Doc, label: &'static str, report: bool) {
+        if self.replica.path.is_empty() {
+            return;
+        }
+        let (backend, tx, path) = (self.backend.clone(), self.app_tx.clone(), self.replica.path.clone());
+        std::thread::spawn(move || {
+            if let Err(error) = backend.doc_backup(&path, label, doc)
+                && report
+            {
+                let _ = tx.send(AppEvent::Notice { text: format!("Could not back up the canvas: {error:#}"), error: true });
+            }
+        });
+    }
+
+    /// Runs a backend call off the UI thread; `done` turns its result into an event.
+    pub fn in_background<T: Send + 'static>(&self, call: impl FnOnce(&dyn Backend) -> T + Send + 'static, done: impl FnOnce(T) -> AppEvent + Send + 'static) {
+        let (backend, tx) = (self.backend.clone(), self.app_tx.clone());
+        std::thread::spawn(move || {
+            let result = call(&*backend);
+            let _ = tx.send(done(result));
+        });
     }
 
     pub fn send(&mut self, message: ClientMsg) {
@@ -463,6 +632,8 @@ impl App {
         self.last_tracked.clear();
         self.routing_sent.clear();
         self.resync_terms = true;
+        // The new connection opens the document again (local changes are kept).
+        self.request_doc();
         if lost > 0 {
             self.notify(format!("Reconnected. {lost} keystroke(s) were not delivered."), true);
         } else {
@@ -993,7 +1164,11 @@ impl App {
             .filter(|c| !c.is_empty())
             .or_else(|| self.summary(&node).map(|s| s.cwd.clone()).filter(|c| !c.is_empty()))
             .unwrap_or_else(|| self.default_cwd.clone());
-        if !Path::new(&cwd).is_dir() {
+        let (cols, rows) = self.pane_size();
+        self.node_errors.remove(id);
+        // The folder is on the service's machine; when it cannot be asked, the
+        // launch itself reports a missing folder.
+        if self.backend.path_info(&cwd).is_ok_and(|info| !info.dir) {
             self.node_errors.insert(id.to_owned(), "folder missing".into());
             self.notify(format!("Cannot open: folder not found: {cwd}"), true);
             return;
@@ -1009,8 +1184,6 @@ impl App {
                 LaunchKind::Agent(Box::new(launch))
             }
         };
-        let (cols, rows) = self.pane_size();
-        self.node_errors.remove(id);
         self.send(ClientMsg::Launch { id: id.to_owned(), kind, cwd: cwd.clone(), cols, rows });
         self.launching.insert(id.to_owned(), Instant::now());
         if let Some(n) = self.doc.node_mut(id) {
@@ -1134,6 +1307,15 @@ impl App {
             ServiceMsg::Bus { json } => self.on_bus(&json),
             ServiceMsg::BusEvent { json } => self.on_bus_event(&json),
             ServiceMsg::AgentSession { id, native } => self.set_agent_session(&id, &native),
+            ServiceMsg::Doc { key, version, json } => self.on_doc(key, version, &json),
+            ServiceMsg::DocPatch { key, version, origin, ops_json } => self.on_doc_patch(&key, version, origin, &ops_json),
+            ServiceMsg::DocSaved { key, error, .. } => {
+                if key == self.replica.key {
+                    self.save_error = error.map(|e| format!("the service cannot save the canvas: {e}"));
+                }
+            }
+            // Answers to backend requests go to their callers on the connection's thread.
+            ServiceMsg::RpcReply { .. } => {}
             ServiceMsg::Ready { .. } | ServiceMsg::Ready8 { .. } | ServiceMsg::Heartbeat { .. } | ServiceMsg::Challenge { .. } => {}
         }
     }
@@ -1397,8 +1579,11 @@ impl App {
         let frame = (START.get_or_init(Instant::now).elapsed().as_millis() / 80) as usize;
         let spun = frame != self.tick;
         self.tick = frame;
-        if self.dirty_at.is_some_and(|t| t.elapsed() >= Duration::from_millis(400)) {
-            self.save_now();
+        if self.dirty_at.is_some_and(|t| t.elapsed() >= DOC_FLUSH) {
+            self.flush_doc();
+        }
+        if self.prefs_dirty_at.is_some_and(|t| t.elapsed() >= PREFS_FLUSH) {
+            self.save_prefs();
         }
         if self.notice.as_ref().is_some_and(|n| Instant::now() >= n.until) {
             self.notice = None;
@@ -1651,11 +1836,9 @@ mod connection_tests {
 
     #[test]
     fn offline_input_is_dropped_and_a_reconnect_resends_state_and_reports_lost_keys() {
-        let dir = std::env::temp_dir().join(format!("cc-conn-app-{}", uuid::Uuid::new_v4()));
-        let store = Store::open(&dir.join("canvas.json")).unwrap();
         let (conn, sent) = detached();
         let (app_tx, _app_rx) = unbounded();
-        let mut app = App::new(conn, store, Doc::default(), false, ".".into(), app_tx, dir.clone());
+        let mut app = App::new(conn, Arc::new(crate::rpc::Offline), Opened::detached(Doc::default()), false, ".".into(), app_tx, None);
         app.connected = false;
         app.send(ClientMsg::Input { id: "t".into(), input: Input::Paste("rm".into()) });
         app.send(ClientMsg::Wheel { id: "t".into(), up: true, col: 0, row: 0, mods: 0 });
@@ -1698,6 +1881,65 @@ mod connection_tests {
         app.reconnecting = false;
         app.connection_lost();
         assert!(app.reconnecting && app.banner.as_deref() == Some("Offline — reconnecting…"));
-        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn node(id: &str) -> Node {
+        serde_json::from_value(serde_json::json!({ "id": id, "kind": "session", "name": id, "x": 0, "y": 0, "reviewed_ms": 1 })).unwrap()
+    }
+
+    fn edits(sent: &Receiver<ClientMsg>) -> Vec<(u64, Vec<crate::sync::Op>)> {
+        sent.try_iter().filter_map(|m| if let ClientMsg::DocEdit { base, ops_json, .. } = m { Some((base, serde_json::from_str(&ops_json).unwrap())) } else { None }).collect()
+    }
+
+    #[test]
+    fn document_edits_go_to_the_service_and_other_windows_patches_come_back() {
+        use crate::sync::Op;
+        let (conn, sent) = detached();
+        let (app_tx, _app_rx) = unbounded();
+        let doc = Doc { nodes: vec![node("a"), node("b")], ..Doc::default() };
+        let opened = Opened { key: "k".into(), version: 1, path: String::new(), client: 7, doc };
+        let mut app = App::new(conn, Arc::new(crate::rpc::Offline), opened, false, ".".into(), app_tx, None);
+        // A move becomes one edit; view changes are this client's own.
+        app.doc.node_mut("a").unwrap().x = 5;
+        app.doc.view.x = 99;
+        app.mark_dirty();
+        app.flush_doc();
+        let sent_edits = edits(&sent);
+        assert_eq!(sent_edits.len(), 1);
+        let (base, ops) = &sent_edits[0];
+        assert!(*base == 1 && matches!(ops.as_slice(), [Op::NodeFields(n, f)] if n.id == "a" && n.x == 5 && *f == ["x"]), "{ops:?}");
+        app.flush_doc();
+        assert!(edits(&sent).is_empty(), "nothing new to send");
+        // The service applied it (our own patch), then another window moved and renamed "a" and removed "b".
+        let own = serde_json::to_string(ops).unwrap();
+        app.on_service(ServiceMsg::DocPatch { key: "k".into(), version: 2, origin: 7, ops_json: own });
+        assert_eq!(app.replica.in_flight(), 0);
+        app.selection = vec!["b".into()];
+        let mut renamed = app.doc.node("a").unwrap().clone();
+        renamed.name = "renamed elsewhere".into();
+        renamed.x = 7;
+        let theirs = serde_json::to_string(&[Op::NodeFields(Box::new(renamed), vec!["name".into(), "x".into()]), Op::DelNode("b".into())]).unwrap();
+        app.on_service(ServiceMsg::DocPatch { key: "k".into(), version: 3, origin: 8, ops_json: theirs });
+        assert_eq!((app.doc.node("a").unwrap().name.as_str(), app.doc.node("a").unwrap().x), ("renamed elsewhere", 7));
+        assert!(app.doc.node("b").is_none() && app.selection.is_empty(), "a removed box leaves the selection");
+        assert_eq!(app.notice.as_ref().map(|n| n.text.as_str()), Some("“a” was changed in another window."));
+        assert_eq!(app.doc.view.x, 99, "patches never touch the view");
+        // A missing patch asks for the whole document; it comes back with local changes kept.
+        app.doc.node_mut("a").unwrap().y = 3;
+        app.on_service(ServiceMsg::DocPatch { key: "k".into(), version: 9, origin: 8, ops_json: "[]".into() });
+        assert!(app.doc_resync && matches!(sent.try_recv(), Ok(ClientMsg::DocOpen { .. })));
+        app.flush_doc();
+        assert!(edits(&sent).is_empty(), "no edits while resynchronizing");
+        let fresh = Doc { nodes: vec![node("a"), node("c")], ..Doc::default() };
+        let reply = crate::sync::DocReply { path: "p".into(), client: 9, doc: Some(fresh), error: None };
+        app.on_service(ServiceMsg::Doc { key: "k".into(), version: 9, json: serde_json::to_string(&reply).unwrap() });
+        assert!(!app.doc_resync && app.replica.client == 9 && app.doc.node("c").is_some());
+        assert_eq!(app.doc.node("a").unwrap().y, 3, "the local change survives the resync");
+        app.flush_doc();
+        let resent = edits(&sent);
+        assert!(matches!(resent.as_slice(), [(9, ops)] if ops.len() == 1), "{resent:?}");
+        // Save errors from the service are shown.
+        app.on_service(ServiceMsg::DocSaved { key: "k".into(), version: 9, error: Some("disk full".into()) });
+        assert_eq!(app.save_error.as_deref(), Some("the service cannot save the canvas: disk full"));
     }
 }

@@ -2,9 +2,10 @@
 
 Remote mode runs the service (terminals, history, bus, automations) on the
 Cloud PC and the canvas on the home PC. See PLAN.md §2, §4 (D2, D5) and §5
-Phase 1. Pairing, the `CopilotCanvas-Tunnel` automation, `devtunnel connect`
-management and moving the canvas document to the backend come later; this page
-describes the transport they build on.
+Phase 1. Pairing, the `CopilotCanvas-Tunnel` automation and `devtunnel connect`
+management come later; this page describes the transport they build on. The
+canvas document (owned by the service, synced with patches) and the backend
+requests remote clients make are described in [BACKEND.md](BACKEND.md).
 
 ## Remote mode (loopback / direct TCP)
 
