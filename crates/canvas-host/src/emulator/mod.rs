@@ -112,6 +112,9 @@ impl Snapshot {
     }
 }
 
+/// Set once Ghostty failed to start: later terminals use alacritty.
+static GHOSTTY_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Which engine a terminal runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Engine {
@@ -135,12 +138,17 @@ impl Engine {
         }
     }
 
-    /// Whether this build includes the engine.
+    /// Whether this build includes the engine and it has not failed to start.
     pub fn available(self) -> bool {
         match self {
             Engine::Alacritty => true,
-            Engine::Ghostty => cfg!(feature = "ghostty"),
+            Engine::Ghostty => cfg!(feature = "ghostty") && !GHOSTTY_FAILED.load(std::sync::atomic::Ordering::Acquire),
         }
+    }
+
+    /// Ghostty when this build includes it, else alacritty.
+    pub fn default_engine() -> Self {
+        if Engine::Ghostty.available() { Engine::Ghostty } else { Engine::Alacritty }
     }
 }
 
@@ -181,7 +189,10 @@ pub fn create(engine: Engine, config: &Config) -> Box<dyn Emulator> {
     if engine == Engine::Ghostty {
         match ghostty::GhosttyEmulator::new(config) {
             Ok(emulator) => return Box::new(emulator),
-            Err(error) => eprintln!("ghostty engine unavailable ({error}); using alacritty"),
+            Err(error) => {
+                GHOSTTY_FAILED.store(true, std::sync::atomic::Ordering::Release);
+                eprintln!("ghostty engine unavailable ({error}); using alacritty");
+            }
         }
     }
     let _ = engine;

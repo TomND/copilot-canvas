@@ -97,6 +97,7 @@ pub struct Host {
     pub shutting_down: AtomicBool,
     /// Terminal engine for new terminals (`COPILOT_CANVAS_ENGINE`).
     pub engine: Engine,
+    fallback_logged: AtomicBool,
     app: OnceLock<Arc<dyn HostApp>>,
 }
 
@@ -110,14 +111,15 @@ pub fn log(instance: &Instance, message: &str) {
     }
 }
 
-/// The engine new terminals use: `COPILOT_CANVAS_ENGINE=alacritty|ghostty`,
-/// else the build's default.
-pub fn configured_engine() -> Engine {
-    std::env::var("COPILOT_CANVAS_ENGINE")
-        .ok()
+/// The engine new terminals use: `COPILOT_CANVAS_ENGINE`, else
+/// `terminal.engine` in settings.json, else the build's default (Ghostty when
+/// it is compiled in).
+pub fn configured_engine(instance: &Instance) -> Engine {
+    canvas_common::settings::Settings::load(&instance.home)
+        .engine()
         .and_then(|name| Engine::parse(&name))
         .filter(|engine| engine.available())
-        .unwrap_or(Engine::Alacritty)
+        .unwrap_or_else(Engine::default_engine)
 }
 
 pub fn spawn_named<F: FnOnce() + Send + 'static>(name: &str, body: F) {
@@ -165,7 +167,8 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
         last_activity: Mutex::new(Instant::now()),
         started: Instant::now(),
         shutting_down: AtomicBool::new(false),
-        engine: configured_engine(),
+        engine: configured_engine(&instance),
+        fallback_logged: AtomicBool::new(false),
         app: OnceLock::new(),
     });
     let app = make_app(&host);
@@ -248,7 +251,7 @@ impl Host {
                 cols,
                 rows,
                 copilot: resolved.agent,
-                engine: self.engine,
+                engine: self.effective_engine(),
             },
             Hooks {
                 pump: self.pump.clone(),
@@ -302,6 +305,17 @@ impl Host {
         let _ = std::fs::remove_file(self.instance.token_path());
         log(&self.instance, "service exiting");
         std::process::exit(0);
+    }
+
+    /// The configured engine, or alacritty once Ghostty failed to start (logged once).
+    fn effective_engine(&self) -> Engine {
+        if self.engine == Engine::Ghostty && !Engine::Ghostty.available() {
+            if !self.fallback_logged.swap(true, Ordering::AcqRel) {
+                log(&self.instance, "the ghostty engine failed to start; new terminals use alacritty");
+            }
+            return Engine::Alacritty;
+        }
+        self.engine
     }
 
     fn note_active(&self, id: &str) {

@@ -152,8 +152,9 @@ chunks as text and prints the final screen. Without a recording it prints these 
   the scrollback: a debug assertion (`storage.rs:225`), stale rows in release, and an out-of-bounds panic once the
   offset outgrows the allocated rows. Reachable in the service when a user has scrolled back and the program
   scrolls a region on the primary screen. Fix in the adapter: clamp the offset to `history_size()` after feeding
-  (or when snapshotting). Regression test: `scrolled_view_survives_output_in_a_scroll_region` (ignored until
-  fixed); the robustness test feeds output with the view at the bottom meanwhile.
+  (or when snapshotting). Regression test: `scrolled_view_survives_output_in_a_scroll_region` (passes).
+  **Fixed:** `AlacrittyEmulator::clamp_offset` runs after every feed; the robustness test now also feeds output
+  while the view is scrolled back.
 
 ## Entries and gaps
 

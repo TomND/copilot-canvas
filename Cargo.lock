@@ -208,6 +208,7 @@ dependencies = [
  "hmac",
  "postcard",
  "serde",
+ "serde_json",
  "sha2 0.11.1",
  "uuid",
  "windows-sys 0.61.2",

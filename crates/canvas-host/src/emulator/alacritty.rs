@@ -105,6 +105,18 @@ pub struct AlacrittyEmulator {
 }
 
 impl AlacrittyEmulator {
+    /// alacritty_terminal 0.26 keeps a scrolled-back view in place by moving
+    /// the display offset up whenever content scrolls, even when a scroll
+    /// region below the top line scrolls and no line enters the history. The
+    /// offset can then exceed the history; bring it back within bounds.
+    fn clamp_offset(&mut self) {
+        let grid = self.term.grid();
+        let (offset, history) = (grid.display_offset(), grid.history_size());
+        if offset > history {
+            self.term.scroll_display(GridScroll::Delta(-((offset - history) as i32)));
+        }
+    }
+
     pub fn new(config: &Config) -> Self {
         let pending = Arc::new(Mutex::new(Vec::new()));
         let size = Arc::new(AtomicU32::new(((config.cols as u32) << 16) | config.rows as u32));
@@ -177,6 +189,7 @@ impl Emulator for AlacrittyEmulator {
             }
         }
         self.parser.advance(&mut self.term, bytes);
+        self.clamp_offset();
         self.drain(events);
     }
 

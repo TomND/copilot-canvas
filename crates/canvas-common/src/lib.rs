@@ -5,4 +5,5 @@ pub mod auth;
 pub mod paths;
 pub mod pipe;
 pub mod protocol;
+pub mod settings;
 pub mod win;

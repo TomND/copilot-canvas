@@ -1,0 +1,67 @@
+{
+  "engine": "ghostty",
+  "events": {
+    "titles": 0,
+    "title": null,
+    "bells": 0,
+    "clipboard": [],
+    "progress": [],
+    "notifications": 0,
+    "replies": []
+  },
+  "screens": [
+    {
+      "mark": "end",
+      "cols": 40,
+      "rows": 18,
+      "cursor": [2,17],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 512,
+      "mode_names": ["show_cursor"],
+      "links": [],
+      "text": [
+        "Emoji: 😀 🎉 👍🏽 ❤️ ☺︎ 1⃣",
+        "ZWJ: 👩‍💻 👨‍👩‍👧‍👦 🏳️‍🌈 🧑🏿‍🚀",
+        "Flags: 🇫🇷 🇯🇵 🇺🇸 lone 🇦x",
+        "CJK: 中文字符 日本語 한국어 ｆｕｌｌ",
+        "Marks: é ä̲ ñ क्ष 각",
+        "ZW: a​b c‍d ﻿e ́lead",
+        "Ambiguous: ① ± ½ → ★ ○",
+        "Tabs:   中      文      x",
+        "Bad UTF-8: � �( � end",
+        "",
+        "                                      中",
+        "文",
+        "",
+        "字x",
+        " x文字",
+        "中y 字",
+        "一二三四五六七八九十一二三四五六七八九十",
+        "一"
+      ],
+      "lines": [
+        [{"col":0,"text":"Emoji: ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":7,"text":"😀","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":9,"text":" ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":10,"text":"🎉","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":12,"text":" ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":13,"text":"👍🏽","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":17,"text":" ❤️ ☺︎ 1⃣","clusters":[[1,1],[3,1],[5,1]],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"ZWJ: ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":5,"text":"👩‍💻","clusters":[[0,1]],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":9,"text":" ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":10,"text":"👨‍👩‍👧‍👦","clusters":[[0,1],[1,1],[2,1]],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":18,"text":" 🏳️‍","clusters":[[1,2]],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":20,"text":"🌈","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":22,"text":" ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":23,"text":"🧑🏿‍🚀","clusters":[[1,1]],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"Flags: ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":7,"text":"🇫🇷","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":11,"text":" ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":12,"text":"🇯🇵","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":16,"text":" ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":17,"text":"🇺🇸","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":21,"text":" lone ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":27,"text":"🇦","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":29,"text":"x","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"CJK: ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":5,"text":"中文字符","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":13,"text":" ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":14,"text":"日本語","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":20,"text":" ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":21,"text":"한국어","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":27,"text":" ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":28,"text":"ｆｕｌｌ","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"Marks: é ä̲ ñ क्ष ","clusters":[[7,1],[9,2],[11,1],[13,1]],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":16,"text":"각","clusters":[[0,2]],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"ZW: a​b c‍d ﻿e ́lead","clusters":[[4,1],[7,1],[9,1],[11,1]],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"Ambiguous: ① ± ½ → ★ ○","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"Tabs:   ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":8,"text":"中","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":10,"text":"      ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":16,"text":"文","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":18,"text":"      x","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"Bad UTF-8: � �( � end","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [{"col":0,"text":"                                      ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":38,"text":"中","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"文","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [{"col":0,"text":"字","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":2,"text":"x","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":" x","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":2,"text":"文字","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"中","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":2,"text":"y ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":4,"text":"字","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"一二三四五六七八九十一二三四五六七八九十","clusters":[],"wide":true,"fg":4,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"一","clusters":[],"wide":true,"fg":4,"bg":0,"flags":0,"underline":0,"link":0}]
+      ]
+    }
+  ]
+}

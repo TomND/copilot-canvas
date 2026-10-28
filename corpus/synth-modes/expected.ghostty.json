@@ -1,0 +1,837 @@
+{
+  "engine": "ghostty",
+  "events": {
+    "titles": 0,
+    "title": null,
+    "bells": 0,
+    "clipboard": [],
+    "progress": [],
+    "notifications": 0,
+    "replies": [
+      "\u001b[?1u",
+      "\u001b[?62;22c",
+      "\u001b[>1;10;0c",
+      "\u001b[0n",
+      "\u001b[2;1R",
+      "\u001b[?2026;2$y",
+      "\u001b[?2004;2$y",
+      "\u001bP>|libghostty\u001b\\",
+      "\u001b[4;96;320t",
+      "\u001b[8;6;40t"
+    ]
+  },
+  "screens": [
+    {
+      "mark": "mouse-1000",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 513,
+      "mode_names": ["mouse","show_cursor"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "mouse-1002",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 515,
+      "mode_names": ["mouse","mouse_drag","show_cursor"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "mouse-1003",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 519,
+      "mode_names": ["mouse","mouse_drag","mouse_motion","show_cursor"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "sgr-1006",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 527,
+      "mode_names": ["mouse","mouse_drag","mouse_motion","sgr_mouse","show_cursor"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "utf8-1005",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 543,
+      "mode_names": ["mouse","mouse_drag","mouse_motion","sgr_mouse","utf8_mouse","show_cursor"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "mouse-off",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 512,
+      "mode_names": ["show_cursor"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "bracketed-paste",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 544,
+      "mode_names": ["bracketed_paste","show_cursor"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "focus",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 768,
+      "mode_names": ["focus","show_cursor"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "app-cursor-keypad",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 1664,
+      "mode_names": ["app_cursor","show_cursor","app_keypad"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "cursor-hidden",
+      "cols": 40,
+      "rows": 6,
+      "cursor": null,
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 0,
+      "mode_names": [],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "kitty-push-1",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 66048,
+      "mode_names": ["show_cursor","kitty_keyboard=1"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "kitty-query",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 66048,
+      "mode_names": ["show_cursor","kitty_keyboard=1"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "kitty-set-3",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 197120,
+      "mode_names": ["show_cursor","kitty_keyboard=3"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "kitty-push-8",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 524800,
+      "mode_names": ["show_cursor","kitty_keyboard=8"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "kitty-pop",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 197120,
+      "mode_names": ["show_cursor","kitty_keyboard=3"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "kitty-pop-again",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 512,
+      "mode_names": ["show_cursor"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "kitty-pop-empty",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 512,
+      "mode_names": ["show_cursor"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "cursor-0",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 512,
+      "mode_names": ["show_cursor"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "cursor-1",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": true,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 512,
+      "mode_names": ["show_cursor"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "cursor-2",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 512,
+      "mode_names": ["show_cursor"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "cursor-3",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 1,
+      "cursor_blink": true,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 512,
+      "mode_names": ["show_cursor"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "cursor-4",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 1,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 512,
+      "mode_names": ["show_cursor"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "cursor-5",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 2,
+      "cursor_blink": true,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 512,
+      "mode_names": ["show_cursor"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "cursor-6",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 2,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 512,
+      "mode_names": ["show_cursor"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "blink-on",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": true,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 512,
+      "mode_names": ["show_cursor"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "blink-off",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 512,
+      "mode_names": ["show_cursor"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "queries",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [0,1],
+      "cursor_shape": 0,
+      "cursor_blink": false,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 512,
+      "mode_names": ["show_cursor"],
+      "links": [],
+      "text": [
+        "modes, cursor shapes, queries",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [{"col":0,"text":"modes, cursor shapes, queries","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "mark": "end",
+      "cols": 40,
+      "rows": 6,
+      "cursor": [14,1],
+      "cursor_shape": 2,
+      "cursor_blink": true,
+      "display_offset": 0,
+      "history": 0,
+      "modes": 66153,
+      "mode_names": ["mouse","sgr_mouse","bracketed_paste","alt_screen","show_cursor","kitty_keyboard=1"],
+      "links": [],
+      "text": [
+        "",
+        "tui-like modes",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "lines": [
+        [],
+        [{"col":0,"text":"tui-like modes","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [],
+        [],
+        [],
+        []
+      ]
+    }
+  ]
+}

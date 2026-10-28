@@ -210,10 +210,6 @@ fn exercise(engine: Engine, rng: &mut Rng, bytes: &[u8]) {
         };
         let (chunk, tail) = rest.split_at(size.min(rest.len()));
         rest = tail;
-        // Output arrives at the live bottom: see `scrolled_view_survives_output_in_a_scroll_region`.
-        if emu.display_offset() != 0 {
-            emu.scroll(Scroll::Bottom);
-        }
         emu.feed(chunk, &mut events);
         match rng.below(48) {
             0 => emu.resize(rng.range(20, 200), rng.range(5, 60)),
@@ -283,10 +279,9 @@ fn engines_survive_mutated_streams() {
 /// `display_offset` when a scroll region that does not start at the top
 /// scrolls (`Grid::scroll_up`), although no line enters the history. With the
 /// view scrolled back, the adapter's snapshot then indexes past the scrollback:
-/// a debug assertion, stale rows or an out-of-bounds panic in release. Remove
-/// `ignore` once the adapter clamps the offset to the history.
+/// a debug assertion, stale rows or an out-of-bounds panic in release. Fixed: the
+/// alacritty adapter clamps the offset to the history after every feed.
 #[test]
-#[ignore = "known engine issue: display offset beyond history (corpus/README.md, Known issues)"]
 fn scrolled_view_survives_output_in_a_scroll_region() {
     for engine in available_engines() {
         let mut emu = new_emulator(engine, 40, 10).unwrap();

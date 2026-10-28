@@ -67,7 +67,9 @@ name = "copilot-canvas"
 path = "src/main.rs"
 
 [features]
-# libghostty-vt terminal engine (build the library first: `cargo xtask build-ghostty`).
+# The default terminal engine is libghostty-vt (build the library once with
+# `cargo xtask build-ghostty`); `--no-default-features` builds with alacritty only.
+default = ["ghostty"]
 ghostty = ["canvas-host/ghostty"]
 
 [dependencies]
