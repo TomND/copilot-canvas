@@ -96,6 +96,8 @@ pub struct Terminal {
     pub raw_exit_code: Mutex<Option<u32>>,
     /// The process was killed (a stop's grace period ran out, or a forced stop).
     forced: AtomicBool,
+    /// It was ended after its UI had quit on a stop request (see `stop`).
+    ui_quit: AtomicBool,
     state: Arc<State>,
     pub started_ms: u64,
     pub last_output_ms: AtomicU64,
@@ -148,6 +150,8 @@ struct State {
     progress_seen: AtomicBool,
     progress_ms: AtomicU64,
     bells: AtomicU32,
+    /// The program shows its full-screen (alternate) view.
+    alt_screen: AtomicBool,
 }
 
 pub struct Spawn<'a> {
@@ -281,6 +285,7 @@ impl Terminal {
             exit_code: Mutex::new(None),
             raw_exit_code: Mutex::new(None),
             forced: AtomicBool::new(false),
+            ui_quit: AtomicBool::new(false),
             state: state.clone(),
             started_ms: now_ms(),
             last_output_ms: AtomicU64::new(0),
@@ -457,7 +462,9 @@ impl Terminal {
     /// using the kitty keyboard protocol read it as a key), again after 2 s
     /// (some agents ask for a second one), Ctrl+C after 3.5 s (ConPTY turns it
     /// into a console Ctrl+C event, which ends a program stuck after its UI
-    /// has quit), then force after 5 s.
+    /// has quit), then force after 5 s. A program that left its full-screen
+    /// view on the request (its UI quit) but whose process lingers is ended 3 s
+    /// later (OpenCode 1.19 can linger for minutes on a busy machine).
     pub fn stop(self: &Arc<Self>, force: bool) {
         if !self.alive.load(Ordering::Acquire) {
             return;
@@ -474,10 +481,19 @@ impl Terminal {
             let _ = self.input.try_send(vec![0x04]);
         }
         let me = self.clone();
+        let full_screen = self.state.alt_screen.load(Ordering::Acquire);
         std::thread::spawn(move || {
+            let mut ui_quit_at: Option<u32> = None;
             for tick in 0..50 {
                 if !me.alive.load(Ordering::Acquire) {
                     return;
+                }
+                if full_screen && ui_quit_at.is_none() && !me.state.alt_screen.load(Ordering::Acquire) {
+                    ui_quit_at = Some(tick);
+                }
+                if ui_quit_at.is_some_and(|at| tick >= at + 30) {
+                    me.ui_quit.store(true, Ordering::Release);
+                    break;
                 }
                 if tick == 20 && me.command(Ctl::Input(ctrl_d())).is_err() {
                     let _ = me.input.try_send(vec![0x04]);
@@ -492,6 +508,12 @@ impl Terminal {
             }
             me.force_kill();
         });
+    }
+
+    /// The program quit its UI on a stop request but its process lingered and
+    /// was ended (not a failure to honour the request).
+    pub fn ui_quit_lingered(&self) -> bool {
+        self.ui_quit.load(Ordering::Acquire)
     }
 
     /// The program had to be killed (a stop's grace period ran out, or a forced stop).
@@ -699,6 +721,7 @@ impl EmulatorThread {
                 let mut sink = self.sink();
                 emu.feed(&bytes, &mut sink);
                 sink.finish();
+                self.state.alt_screen.store(emu.modes() & crate::protocol::MODE_ALT_SCREEN != 0, Ordering::Release);
                 self.bump();
             }
             Msg::Control(ctl) => self.control(emu, ctl),
@@ -1362,6 +1385,29 @@ mod tests {
         ignores.stop(false);
         let (code, raw) = wait_exit(&ignores, Duration::from_secs(10));
         assert!(ignores.was_forced() && code == Some(0) && raw.is_some_and(|c| c != 0), "killed after the grace period: {code:?} {raw:?}");
+    }
+
+    #[test]
+    fn an_agent_whose_ui_quit_but_whose_process_lingers_is_ended_promptly() {
+        let cwd = std::env::temp_dir().display().to_string();
+        let (hooks, _keep) = hooks();
+        // Full-screen view; the first key leaves it, then the process lingers.
+        let script = "$e=[char]27; [Console]::Write(\"$e[?1049hfull screen\"); [Console]::TreatControlCAsInput = $true; \
+                      $null = [Console]::ReadKey($true); [Console]::Write(\"$e[?1049l\"); Start-Sleep 30";
+        let args = ["-NoProfile".to_owned(), "-Command".to_owned(), script.to_owned()];
+        let spec = Spawn { id: "lingers", program: "powershell.exe", args: &args, env: &[], cwd: &cwd, cols: 80, rows: 24, copilot: true, engine: Engine::Alacritty };
+        let lingers = Terminal::spawn(spec, hooks).expect("spawn powershell.exe");
+        let started = Instant::now();
+        while !lingers.state.alt_screen.load(Ordering::Acquire) && started.elapsed() < Duration::from_secs(15) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(lingers.state.alt_screen.load(Ordering::Acquire), "the program entered its full-screen view");
+        let asked = Instant::now();
+        lingers.stop(false);
+        let (code, _) = wait_exit(&lingers, Duration::from_secs(10));
+        assert_eq!(code, Some(0), "stopped, not failed");
+        assert!(lingers.ui_quit_lingered(), "ended because its UI had quit");
+        assert!(asked.elapsed() < Duration::from_millis(4_900), "ended 3 s after its UI quit, before the grace period ran out: {:?}", asked.elapsed());
     }
 
     #[test]

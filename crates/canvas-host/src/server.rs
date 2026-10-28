@@ -1333,6 +1333,7 @@ fn exit_loop(host: Arc<Host>, exited: Receiver<String>) {
         if let Some(terminal) = terminal {
             let (code, raw) = (*lock(&terminal.exit_code), *lock(&terminal.raw_exit_code));
             let note = match (raw != code, terminal.was_forced()) {
+                (_, true) if terminal.ui_quit_lingered() => format!(" (stopped; its UI quit on request, process code {} ended 3 s later)", raw.unwrap_or_default()),
                 (_, true) => format!(" (stopped; process code {}, killed after the grace period)", raw.unwrap_or_default()),
                 (true, false) => format!(" (stopped; process code {})", raw.unwrap_or_default()),
                 (false, false) => String::new(),
