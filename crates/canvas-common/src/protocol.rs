@@ -161,6 +161,128 @@ pub const F_DIM: u16 = 16;
 pub const F_HIDDEN: u16 = 32;
 pub const F_STRIKE: u16 = 64;
 
+/// Protocol 8 cell flags (`Run8::flags`): the protocol-7 bits plus these.
+pub const F8_OVERLINE: u32 = 1 << 7;
+pub const F8_BLINK: u32 = 1 << 8;
+/// Underline style (bits 9..11); `F_UNDERLINE` is also set for any style.
+pub const F8_UL_SHIFT: u32 = 9;
+pub const F8_UL_MASK: u32 = 7 << F8_UL_SHIFT;
+pub const UL_SINGLE: u32 = 1;
+pub const UL_DOUBLE: u32 = 2;
+pub const UL_CURLY: u32 = 3;
+pub const UL_DOTTED: u32 = 4;
+pub const UL_DASHED: u32 = 5;
+
+/// Terminal modes (`Frame8::modes`, `Snapshot::modes`).
+pub const MODE_MOUSE: u32 = 1;
+pub const MODE_MOUSE_DRAG: u32 = 1 << 1;
+pub const MODE_MOUSE_MOTION: u32 = 1 << 2;
+pub const MODE_SGR_MOUSE: u32 = 1 << 3;
+pub const MODE_UTF8_MOUSE: u32 = 1 << 4;
+pub const MODE_BRACKETED_PASTE: u32 = 1 << 5;
+pub const MODE_ALT_SCREEN: u32 = 1 << 6;
+pub const MODE_APP_CURSOR: u32 = 1 << 7;
+pub const MODE_FOCUS: u32 = 1 << 8;
+pub const MODE_SHOW_CURSOR: u32 = 1 << 9;
+pub const MODE_APP_KEYPAD: u32 = 1 << 10;
+/// Kitty keyboard protocol flags (5 bits) start here; bit 0 = disambiguate.
+pub const MODE_KITTY_SHIFT: u32 = 16;
+pub const MODE_KITTY_DISAMBIGUATE: u32 = 1 << MODE_KITTY_SHIFT;
+
+/// Cursor shapes (`Frame8::cursor_shape`).
+pub const CURSOR_BLOCK: u8 = 0;
+pub const CURSOR_UNDERLINE: u8 = 1;
+pub const CURSOR_BAR: u8 = 2;
+pub const CURSOR_BLOCK_HOLLOW: u8 = 3;
+
+/// Protocol 8: a run of cells with one style. Each cell is one grapheme
+/// cluster; widths come from the engine, never from the client's tables.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct Run8 {
+    pub col: u16,
+    /// The cells' code points in order.
+    pub text: String,
+    /// Cells of more than one code point: (cell index in this run, extra code points).
+    pub clusters: Vec<(u16, u8)>,
+    /// Every cell of this run is two columns wide (the next column is its spacer).
+    pub wide: bool,
+    pub fg: u32,
+    pub bg: u32,
+    pub flags: u32,
+    /// Underline colour (`COLOR_DEFAULT`: the foreground).
+    pub underline: u32,
+    /// Hyperlink (OSC 8): index + 1 into the frame's `links`; 0 = none.
+    pub link: u32,
+}
+
+impl Run8 {
+    /// The run's cells (grapheme clusters) in order.
+    pub fn cells(&self) -> Vec<&str> {
+        let mut out = Vec::new();
+        let mut extra = self.clusters.iter().copied().peekable();
+        let mut rest = self.text.as_str();
+        let mut index = 0u16;
+        while let Some(first) = rest.chars().next() {
+            let mut len = first.len_utf8();
+            if let Some(&(cell, more)) = extra.peek()
+                && cell == index
+            {
+                extra.next();
+                for c in rest[len..].chars().take(more as usize) {
+                    len += c.len_utf8();
+                }
+            }
+            out.push(&rest[..len]);
+            rest = &rest[len..];
+            index += 1;
+        }
+        out
+    }
+
+    /// Columns the run covers.
+    pub fn width(&self) -> u16 {
+        let cells = self.text.chars().count() - self.clusters.iter().map(|(_, n)| *n as usize).sum::<usize>();
+        cells as u16 * if self.wide { 2 } else { 1 }
+    }
+}
+
+/// Protocol 8 frame: rows of `Run8`, cursor shape and the terminal's modes.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Frame8 {
+    pub id: String,
+    pub cols: u16,
+    pub rows: u16,
+    pub full: bool,
+    pub changed: Vec<(u16, Vec<Run8>)>,
+    pub cursor: Option<(u16, u16)>,
+    pub cursor_shape: u8,
+    pub cursor_blink: bool,
+    pub display_offset: u32,
+    pub history: u32,
+    pub modes: u32,
+    /// Hyperlink targets referenced by `Run8::link` in this frame's rows.
+    pub links: Vec<String>,
+}
+
+/// Protocol-7 runs of a protocol-8 row (adjacent runs that differ only in
+/// what protocol 7 cannot express are merged, as protocol-7 hosts did).
+pub fn runs_v7(row: &[Run8], links: &[String]) -> Vec<Run> {
+    let mut out: Vec<Run> = Vec::with_capacity(row.len());
+    let mut end = 0u16;
+    for run in row {
+        let flags = (run.flags & 0x7f) as u16;
+        let link = (run.link > 0).then(|| links.get(run.link as usize - 1).cloned()).flatten();
+        match out.last_mut() {
+            Some(last) if end == run.col && last.fg == run.fg && last.bg == run.bg && last.flags == flags && last.link == link => {
+                last.text.push_str(&run.text)
+            }
+            _ => out.push(Run { col: run.col, text: run.text.clone(), fg: run.fg, bg: run.bg, flags, link }),
+        }
+        end = run.col + run.width();
+    }
+    out
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Frame {
     pub id: String,

@@ -1,28 +1,29 @@
 //! Encodes structured key input into the byte sequences a terminal application
-//! expects, honoring the application's current terminal modes.
+//! expects, honoring the application's current terminal modes (`MODE_*` bits).
 
-use alacritty_terminal::term::TermMode;
-
-use crate::protocol::{Input, Key, MOD_ALT, MOD_CTRL, MOD_SHIFT};
+use crate::protocol::{
+    Input, Key, MOD_ALT, MOD_CTRL, MOD_SHIFT, MODE_ALT_SCREEN, MODE_APP_CURSOR, MODE_BRACKETED_PASTE, MODE_FOCUS, MODE_KITTY_DISAMBIGUATE,
+    MODE_MOUSE, MODE_SGR_MOUSE, MODE_UTF8_MOUSE,
+};
 
 fn modifier_param(mods: u8) -> u8 {
     1 + if mods & MOD_SHIFT != 0 { 1 } else { 0 } + if mods & MOD_ALT != 0 { 2 } else { 0 } + if mods & MOD_CTRL != 0 { 4 } else { 0 }
 }
 
-pub fn encode(input: &Input, mode: TermMode) -> Vec<u8> {
+pub fn encode(input: &Input, mode: u32) -> Vec<u8> {
     match input {
         Input::Raw(bytes) => bytes.clone(),
         Input::Paste(text) => {
             // A pasted end marker would let pasted text inject keystrokes.
             let clean = text.replace("\x1b[201~", "").replace("\x1b[200~", "");
-            if mode.contains(TermMode::BRACKETED_PASTE) {
+            if mode & MODE_BRACKETED_PASTE != 0 {
                 format!("\x1b[200~{clean}\x1b[201~").into_bytes()
             } else {
                 clean.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
             }
         }
         Input::Focus(focused) => {
-            if mode.contains(TermMode::FOCUS_IN_OUT) {
+            if mode & MODE_FOCUS != 0 {
                 if *focused { b"\x1b[I".to_vec() } else { b"\x1b[O".to_vec() }
             } else {
                 Vec::new()
@@ -34,11 +35,11 @@ pub fn encode(input: &Input, mode: TermMode) -> Vec<u8> {
 
 /// Bytes for a mouse-wheel notch, or `None` when the wheel should scroll the
 /// terminal's own scrollback (normal screen, or Shift held).
-pub fn encode_wheel(up: bool, col: u16, row: u16, mods: u8, mode: TermMode) -> Option<Vec<u8>> {
+pub fn encode_wheel(up: bool, col: u16, row: u16, mods: u8, mode: u32) -> Option<Vec<u8>> {
     if mods & MOD_SHIFT != 0 {
         return None;
     }
-    if mode.intersects(TermMode::MOUSE_MODE) {
+    if mode & MODE_MOUSE != 0 {
         let mut button: u32 = if up { 64 } else { 65 };
         if mods & MOD_ALT != 0 {
             button += 8;
@@ -47,11 +48,11 @@ pub fn encode_wheel(up: bool, col: u16, row: u16, mods: u8, mode: TermMode) -> O
             button += 16;
         }
         let (x, y) = (col as u32 + 1, row as u32 + 1);
-        if mode.contains(TermMode::SGR_MOUSE) {
+        if mode & MODE_SGR_MOUSE != 0 {
             return Some(format!("\x1b[<{button};{x};{y}M").into_bytes());
         }
         let mut bytes = b"\x1b[M".to_vec();
-        if mode.contains(TermMode::UTF8_MOUSE) {
+        if mode & MODE_UTF8_MOUSE != 0 {
             for value in [32 + button, 32 + x.min(2015), 32 + y.min(2015)] {
                 let mut buf = [0u8; 4];
                 bytes.extend_from_slice(char::from_u32(value).unwrap_or(' ').encode_utf8(&mut buf).as_bytes());
@@ -61,7 +62,7 @@ pub fn encode_wheel(up: bool, col: u16, row: u16, mods: u8, mode: TermMode) -> O
         }
         return Some(bytes);
     }
-    if mode.contains(TermMode::ALT_SCREEN) {
+    if mode & MODE_ALT_SCREEN != 0 {
         // Full-screen apps without mouse support (e.g. Copilot with `mouse` off) page with these.
         return Some(if up { b"\x1b[5~".to_vec() } else { b"\x1b[6~".to_vec() });
     }
@@ -70,8 +71,8 @@ pub fn encode_wheel(up: bool, col: u16, row: u16, mods: u8, mode: TermMode) -> O
 
 /// Press + release of a mouse button, or `None` when the app did not ask for
 /// mouse reports (then a click only focuses and selects in the canvas).
-pub fn encode_click(button: u8, col: u16, row: u16, mods: u8, mode: TermMode) -> Option<Vec<u8>> {
-    if !mode.intersects(TermMode::MOUSE_MODE) || button > 2 {
+pub fn encode_click(button: u8, col: u16, row: u16, mods: u8, mode: u32) -> Option<Vec<u8>> {
+    if !mode & MODE_MOUSE != 0 || button > 2 {
         return None;
     }
     let mut code = button as u32;
@@ -85,14 +86,14 @@ pub fn encode_click(button: u8, col: u16, row: u16, mods: u8, mode: TermMode) ->
         code += 16;
     }
     let (x, y) = (col as u32 + 1, row as u32 + 1);
-    if mode.contains(TermMode::SGR_MOUSE) {
+    if mode & MODE_SGR_MOUSE != 0 {
         return Some(format!("\x1b[<{code};{x};{y}M\x1b[<{code};{x};{y}m").into_bytes());
     }
     let release = (code & !3) | 3;
     let mut bytes = Vec::new();
     for value in [code, release] {
         bytes.extend_from_slice(b"\x1b[M");
-        if mode.contains(TermMode::UTF8_MOUSE) {
+        if mode & MODE_UTF8_MOUSE != 0 {
             for v in [32 + value, 32 + x.min(2015), 32 + y.min(2015)] {
                 let mut buf = [0u8; 4];
                 bytes.extend_from_slice(char::from_u32(v).unwrap_or(' ').encode_utf8(&mut buf).as_bytes());
@@ -112,8 +113,8 @@ fn tilde(code: u8, mods: u8) -> Vec<u8> {
     if mods == 0 { format!("\x1b[{code}~").into_bytes() } else { format!("\x1b[{code};{}~", modifier_param(mods)).into_bytes() }
 }
 
-fn encode_key(key: Key, mods: u8, mode: TermMode) -> Vec<u8> {
-    let kitty = mode.contains(TermMode::DISAMBIGUATE_ESC_CODES);
+fn encode_key(key: Key, mods: u8, mode: u32) -> Vec<u8> {
+    let kitty = mode & MODE_KITTY_DISAMBIGUATE != 0;
     let alt = mods & MOD_ALT != 0;
     let ctrl = mods & MOD_CTRL != 0;
     let with_alt = |mut bytes: Vec<u8>| {
@@ -175,7 +176,7 @@ fn encode_key(key: Key, mods: u8, mode: TermMode) -> Vec<u8> {
             };
             if mods != 0 {
                 csi_mod(final_byte, mods)
-            } else if mode.contains(TermMode::APP_CURSOR) {
+            } else if mode & MODE_APP_CURSOR != 0 {
                 format!("\x1bO{final_byte}").into_bytes()
             } else {
                 format!("\x1b[{final_byte}").into_bytes()
@@ -208,7 +209,7 @@ mod tests {
     use super::*;
 
     fn key(k: Key, mods: u8) -> Vec<u8> {
-        encode(&Input::Key { key: k, mods }, TermMode::default())
+        encode(&Input::Key { key: k, mods }, 0)
     }
 
     #[test]
@@ -227,7 +228,7 @@ mod tests {
     #[test]
     fn cursor_keys_follow_application_mode_and_modifiers() {
         assert_eq!(key(Key::Up, 0), b"\x1b[A");
-        assert_eq!(encode(&Input::Key { key: Key::Up, mods: 0 }, TermMode::default() | TermMode::APP_CURSOR), b"\x1bOA");
+        assert_eq!(encode(&Input::Key { key: Key::Up, mods: 0 }, MODE_APP_CURSOR), b"\x1bOA");
         assert_eq!(key(Key::Left, MOD_CTRL), b"\x1b[1;5D");
         assert_eq!(key(Key::Delete, 0), b"\x1b[3~");
         assert_eq!(key(Key::PageUp, MOD_SHIFT), b"\x1b[5;2~");
@@ -237,48 +238,48 @@ mod tests {
 
     #[test]
     fn clicks_reach_the_app_only_when_it_asked_for_mouse_reports() {
-        assert_eq!(encode_click(0, 4, 2, 0, TermMode::default()), None);
-        let sgr = TermMode::default() | TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
+        assert_eq!(encode_click(0, 4, 2, 0, 0), None);
+        let sgr = MODE_MOUSE | MODE_SGR_MOUSE;
         assert_eq!(encode_click(0, 4, 2, 0, sgr).unwrap(), b"\x1b[<0;5;3M\x1b[<0;5;3m");
         assert_eq!(encode_click(0, 0, 0, MOD_CTRL, sgr).unwrap(), b"\x1b[<16;1;1M\x1b[<16;1;1m");
-        let x10 = TermMode::default() | TermMode::MOUSE_REPORT_CLICK;
+        let x10 = MODE_MOUSE;
         assert_eq!(encode_click(0, 0, 0, 0, x10).unwrap(), b"\x1b[M !!\x1b[M#!!");
     }
 
     #[test]
     fn shift_enter_uses_kitty_protocol_when_enabled() {
         assert_eq!(key(Key::Enter, MOD_SHIFT), b"\x1b\r");
-        let kitty = TermMode::default() | TermMode::DISAMBIGUATE_ESC_CODES;
+        let kitty = MODE_KITTY_DISAMBIGUATE;
         assert_eq!(encode(&Input::Key { key: Key::Enter, mods: MOD_SHIFT }, kitty), b"\x1b[13;2u");
         assert_eq!(encode(&Input::Key { key: Key::Esc, mods: 0 }, kitty), b"\x1b[27u");
     }
 
     #[test]
     fn paste_is_bracketed_and_cannot_terminate_early() {
-        let bracketed = TermMode::default() | TermMode::BRACKETED_PASTE;
+        let bracketed = MODE_BRACKETED_PASTE;
         let encoded = encode(&Input::Paste("a\x1b[201~b\nc".into()), bracketed);
         assert_eq!(encoded, b"\x1b[200~ab\nc\x1b[201~");
-        assert_eq!(encode(&Input::Paste("a\nb".into()), TermMode::default()), b"a\rb");
+        assert_eq!(encode(&Input::Paste("a\nb".into()), 0), b"a\rb");
     }
 
     #[test]
     fn focus_reports_only_when_requested() {
-        assert!(encode(&Input::Focus(true), TermMode::default()).is_empty());
-        assert_eq!(encode(&Input::Focus(true), TermMode::default() | TermMode::FOCUS_IN_OUT), b"\x1b[I");
+        assert!(encode(&Input::Focus(true), 0).is_empty());
+        assert_eq!(encode(&Input::Focus(true), MODE_FOCUS), b"\x1b[I");
     }
 
     #[test]
     fn wheel_reaches_full_screen_apps_and_scrolls_history_otherwise() {
-        let plain = TermMode::empty();
+        let plain = 0;
         assert_eq!(encode_wheel(true, 4, 2, 0, plain), None, "normal screen: scrollback");
-        let alt = TermMode::ALT_SCREEN;
+        let alt = MODE_ALT_SCREEN;
         assert_eq!(encode_wheel(true, 0, 0, 0, alt).as_deref(), Some(&b"\x1b[5~"[..]));
         assert_eq!(encode_wheel(false, 0, 0, 0, alt).as_deref(), Some(&b"\x1b[6~"[..]));
         assert_eq!(encode_wheel(true, 0, 0, MOD_SHIFT, alt), None, "Shift forces scrollback");
-        let sgr = TermMode::ALT_SCREEN | TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
+        let sgr = MODE_ALT_SCREEN | MODE_MOUSE | MODE_SGR_MOUSE;
         assert_eq!(encode_wheel(true, 4, 2, 0, sgr).as_deref(), Some(&b"\x1b[<64;5;3M"[..]));
         assert_eq!(encode_wheel(false, 4, 2, MOD_CTRL, sgr).as_deref(), Some(&b"\x1b[<81;5;3M"[..]));
-        let x10 = TermMode::MOUSE_REPORT_CLICK;
+        let x10 = MODE_MOUSE;
         assert_eq!(encode_wheel(true, 0, 0, 0, x10).as_deref(), Some(&[0x1b, b'[', b'M', 96, 33, 33][..]));
     }
 }

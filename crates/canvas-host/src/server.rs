@@ -18,7 +18,8 @@ use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
 use crate::paths::{Instance, build_id, now_ms};
 use crate::pipe::{Pipe, PipeServer};
 use crate::protocol::{self, ClientMsg, Frame, Input, LaunchKind, PROTOCOL, ServiceMsg, ServiceStats, read_frame, write_frame};
-use crate::term::{Hooks, Spawn, Terminal, lock, row_hash, snapshot};
+use crate::emulator::Engine;
+use crate::term::{Hooks, Spawn, Terminal, lock, row_hash};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(4);
 const IDLE_EXIT: Duration = Duration::from_secs(10 * 60);
@@ -94,6 +95,8 @@ pub struct Host {
     last_activity: Mutex<Instant>,
     started: Instant,
     pub shutting_down: AtomicBool,
+    /// Terminal engine for new terminals (`COPILOT_CANVAS_ENGINE`).
+    pub engine: Engine,
     app: OnceLock<Arc<dyn HostApp>>,
 }
 
@@ -105,6 +108,16 @@ pub fn log(instance: &Instance, message: &str) {
     if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
         let _ = writeln!(file, "{} [{}] {message}", now_ms(), std::process::id());
     }
+}
+
+/// The engine new terminals use: `COPILOT_CANVAS_ENGINE=alacritty|ghostty`,
+/// else the build's default.
+pub fn configured_engine() -> Engine {
+    std::env::var("COPILOT_CANVAS_ENGINE")
+        .ok()
+        .and_then(|name| Engine::parse(&name))
+        .filter(|engine| engine.available())
+        .unwrap_or(Engine::Alacritty)
 }
 
 pub fn spawn_named<F: FnOnce() + Send + 'static>(name: &str, body: F) {
@@ -152,6 +165,7 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
         last_activity: Mutex::new(Instant::now()),
         started: Instant::now(),
         shutting_down: AtomicBool::new(false),
+        engine: configured_engine(),
         app: OnceLock::new(),
     });
     let app = make_app(&host);
@@ -234,6 +248,7 @@ impl Host {
                 cols,
                 rows,
                 copilot: resolved.agent,
+                engine: self.engine,
             },
             Hooks {
                 pump: self.pump.clone(),
@@ -426,16 +441,6 @@ fn pump(host: Arc<Host>, wake: Receiver<()>) {
         if now < next_allowed {
             std::thread::sleep(next_allowed - now);
         }
-        // Complete synchronized updates whose end marker never arrived.
-        let terms: Vec<Arc<Terminal>> = lock(&host.terms).values().cloned().collect();
-        for terminal in &terms {
-            let mut inner = lock(&terminal.inner);
-            if inner.parser.sync_timeout().sync_timeout().is_some_and(|deadline| Instant::now() >= deadline) {
-                let crate::term::Inner { term, parser, generation } = &mut *inner;
-                parser.stop_sync(term);
-                *generation += 1;
-            }
-        }
         let clients: Vec<Arc<Client>> = lock(&host.clients).values().cloned().collect();
         for client in clients {
             // Backpressure: a slow client gets fewer, newer frames instead of a growing queue.
@@ -445,17 +450,15 @@ fn pump(host: Arc<Host>, wake: Receiver<()>) {
             let mut subs = lock(&client.subs);
             for (id, sub) in subs.iter_mut() {
                 let Some(terminal) = lock(&host.terms).get(id).cloned() else { continue };
-                let (generation, snap) = {
-                    let inner = lock(&terminal.inner);
-                    if inner.generation == sub.generation {
-                        continue;
-                    }
-                    (inner.generation, snapshot(&inner))
-                };
-                let hashes: Vec<u64> = snap.lines.iter().map(|runs| row_hash(runs)).collect();
+                let generation = terminal.generation();
+                if generation == sub.generation {
+                    continue;
+                }
+                let Some(snap) = terminal.snapshot() else { continue };
+                let lines = crate::term::rows_v7(&snap);
+                let hashes: Vec<u64> = lines.iter().map(|runs| row_hash(runs)).collect();
                 let full = sub.cols != snap.cols || sub.rows != snap.rows || sub.hashes.len() != hashes.len();
-                let changed: Vec<(u16, Vec<crate::protocol::Run>)> = snap
-                    .lines
+                let changed: Vec<(u16, Vec<crate::protocol::Run>)> = lines
                     .into_iter()
                     .enumerate()
                     .filter(|(y, _)| full || sub.hashes[*y] != hashes[*y])

@@ -11,14 +11,16 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 use crate::client::doc::Doc;
 use crate::paths::Instance;
-use crate::service::term::{Inner, headless_with, lock, screen_text};
+use canvas_host::emulator::alacritty::AlacrittyEmulator;
+use canvas_host::emulator::{Emulator, feed_collect};
+use crate::service::term::{headless, lock, screen_text};
 
 type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
 /// A pseudoconsole whose output feeds an emulator; emulator replies (cursor
 /// position reports that ConPTY waits for) are written back automatically.
 pub struct Console {
-    pub screen: Arc<Mutex<Inner>>,
+    pub screen: Arc<Mutex<AlacrittyEmulator>>,
     writer: SharedWriter,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     _master: Box<dyn portable_pty::MasterPty + Send>,
@@ -45,8 +47,7 @@ impl Console {
         }
         let child = pair.slave.spawn_command(command)?;
         drop(pair.slave);
-        let (inner, replies) = headless_with(cols as usize, rows as usize, kitty);
-        let screen = Arc::new(Mutex::new(inner));
+        let screen = Arc::new(Mutex::new(headless(cols, rows, kitty)));
         let mut reader = pair.master.try_clone_reader()?;
         let writer: SharedWriter = Arc::new(Mutex::new(pair.master.take_writer()?));
         let (shared, reply_writer) = (screen.clone(), writer.clone());
@@ -61,12 +62,8 @@ impl Console {
                 if let Some(file) = capture.as_mut() {
                     let _ = file.write_all(&buf[..n]);
                 }
-                {
-                    let mut inner = lock(&shared);
-                    let Inner { term, parser, .. } = &mut *inner;
-                    parser.advance(term, &buf[..n]);
-                }
-                while let Ok(reply) = replies.try_recv() {
+                let replies = feed_collect(&mut *lock(&shared), &buf[..n]).replies;
+                for reply in replies {
                     let mut w = lock(&reply_writer);
                     let _ = w.write_all(&reply).and_then(|_| w.flush());
                 }
@@ -76,7 +73,7 @@ impl Console {
     }
 
     pub fn text(&self) -> String {
-        screen_text(&lock(&self.screen))
+        screen_text(&lock(&self.screen).snapshot())
     }
 
     pub fn mode(&self) -> String {
@@ -986,7 +983,7 @@ mod user_message_canvas_probe {
         ui.send(b"\r").unwrap();
         let ok = ui.wait("resumed history", Duration::from_secs(90), |t| t.contains("❯ what is") || t.contains("❯ catch up"));
         std::thread::sleep(Duration::from_secs(4));
-        let snap = crate::service::term::snapshot(&crate::service::term::lock(&ui.screen));
+        let snap = canvas_host::emulator::Emulator::snapshot(&*crate::service::term::lock(&ui.screen));
         let user_bg = crate::protocol::COLOR_RGB | (30 << 16) | (44 << 8) | 70;
         let mut tinted = 0;
         for runs in &snap.lines {

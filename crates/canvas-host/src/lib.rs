@@ -3,6 +3,7 @@
 
 pub use canvas_common::{paths, pipe, protocol, win};
 
+pub mod emulator;
 pub mod keys;
 pub mod server;
 pub mod term;
