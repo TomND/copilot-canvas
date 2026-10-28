@@ -1,25 +1,18 @@
-//! Copilot Canvas: a spatial session manager for GitHub Copilot CLI.
+//! Copilot Canvas: a spatial session manager for agent CLIs.
 
-mod automations;
 mod bench;
-mod bus;
-mod cli;
-mod client;
-mod copilot_cfg;
-mod factory;
-mod factory_cli;
-mod fork;
-mod git;
-mod index;
-mod migrate;
-mod paths;
-mod pipe;
-mod protocol;
 mod selftest;
-mod service;
-mod taskschd;
-mod vscode;
-mod win;
+
+use canvas_agents::{automations, cli, factory_cli, index, service, vscode};
+#[cfg(test)]
+use canvas_agents::{bus, copilot_cfg, taskschd};
+use canvas_common::{paths, protocol, win};
+
+/// The TUI front end plus the shared core (`client::conn`, `client::doc`, …).
+mod client {
+    pub use canvas_core::*;
+    pub use canvas_tui::{Options, run};
+}
 
 use std::path::PathBuf;
 

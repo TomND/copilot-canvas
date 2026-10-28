@@ -1,0 +1,19 @@
+[package]
+name = "canvas-common"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Shared wire protocol, transports, paths and Windows process utilities"
+
+[dependencies]
+anyhow.workspace = true
+dirs.workspace = true
+getrandom.workspace = true
+hmac.workspace = true
+postcard.workspace = true
+serde.workspace = true
+sha2.workspace = true
+windows-sys.workspace = true
+
+[dev-dependencies]
+uuid.workspace = true

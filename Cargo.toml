@@ -1,15 +1,21 @@
-[package]
-name = "copilot-canvas"
-version = "0.2.0"
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.3.0"
 edition = "2024"
-description = "Spatial session manager for GitHub Copilot CLI with a persistent native terminal service"
 publish = false
 
-[[bin]]
-name = "copilot-canvas"
-path = "src/main.rs"
+[workspace.dependencies]
+canvas-common = { path = "crates/canvas-common" }
+canvas-host = { path = "crates/canvas-host" }
+canvas-model = { path = "crates/canvas-model" }
+canvas-agents = { path = "crates/canvas-agents" }
+canvas-termview = { path = "crates/canvas-termview" }
+canvas-core = { path = "crates/canvas-core" }
+canvas-tui = { path = "crates/canvas-tui" }
 
-[dependencies]
 alacritty_terminal = "0.26.0"
 anyhow = "1.0.104"
 crossbeam-channel = "0.5.17"
@@ -47,6 +53,33 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 yaml-rust2 = "0.13.0"
+
+[package]
+name = "copilot-canvas"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Spatial session manager for agent CLIs (GitHub Copilot, OpenCode, Claude Code) with a persistent native terminal service"
+
+[[bin]]
+name = "copilot-canvas"
+path = "src/main.rs"
+
+[dependencies]
+canvas-common.workspace = true
+canvas-host.workspace = true
+canvas-model.workspace = true
+canvas-agents.workspace = true
+canvas-core.workspace = true
+canvas-tui.workspace = true
+anyhow.workspace = true
+crossbeam-channel.workspace = true
+dirs.workspace = true
+portable-pty.workspace = true
+postcard.workspace = true
+ratatui.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
 
 [profile.dev.package."*"]
 opt-level = 2

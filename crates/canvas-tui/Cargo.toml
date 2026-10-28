@@ -1,0 +1,12 @@
+[package]
+name = "canvas-tui"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Terminal (ratatui) front end of the canvas"
+
+[dependencies]
+canvas-core.workspace = true
+anyhow.workspace = true
+crossbeam-channel.workspace = true
+ratatui.workspace = true

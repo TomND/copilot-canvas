@@ -1,0 +1,22 @@
+[package]
+name = "canvas-core"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "L3 canvas core: the app state machine shared by the TUI and GUI front ends"
+
+[dependencies]
+canvas-common.workspace = true
+canvas-model.workspace = true
+canvas-agents.workspace = true
+canvas-termview.workspace = true
+anyhow.workspace = true
+crossbeam-channel.workspace = true
+dirs.workspace = true
+percent-encoding.workspace = true
+ratatui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+unicode-width.workspace = true
+uuid.workspace = true
+windows-sys.workspace = true

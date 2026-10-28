@@ -1,0 +1,22 @@
+[package]
+name = "canvas-agents"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "L3 canvas backend: session history, agent CLIs, event bus, passive sessions, automations, VS Code"
+
+[dependencies]
+canvas-common.workspace = true
+canvas-host.workspace = true
+canvas-model.workspace = true
+anyhow.workspace = true
+crossbeam-channel.workspace = true
+dirs.workspace = true
+percent-encoding.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+windows.workspace = true
+windows-sys.workspace = true
+yaml-rust2.workspace = true
