@@ -261,6 +261,175 @@ pub struct View {
     pub banner: Option<String>,
 }
 
+// ---------- stable text dump (snapshot tests) ----------
+
+/// A number with at most three decimals: "2", "8.3", "-0.25".
+fn num(v: f32) -> String {
+    let s = format!("{v:.3}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s == "-0" { "0".to_owned() } else { s.to_owned() }
+}
+
+fn wrect(r: WRect) -> String {
+    format!("{},{} {}x{}", num(r.x), num(r.y), num(r.w), num(r.h))
+}
+
+fn cells(r: Rect) -> String {
+    format!("{},{} {}x{}", r.x, r.y, r.width, r.height)
+}
+
+fn path(points: &[(f32, f32)]) -> String {
+    points.iter().map(|(x, y)| format!("({},{})", num(*x), num(*y))).collect::<Vec<_>>().join(" ")
+}
+
+/// A colour as `#rrggbb`, `idx<n>` or its lower-case name.
+pub fn color_name(color: Color) -> String {
+    match color {
+        Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+        Color::Indexed(i) => format!("idx{i}"),
+        other => format!("{other:?}").to_lowercase(),
+    }
+}
+
+/// A style as `[fg #… bg #… +BOLD -DIM]` (`[]`: the default style).
+pub fn style_name(style: Style) -> String {
+    use ratatui::style::Modifier;
+    const MODIFIERS: [(Modifier, &str); 9] = [
+        (Modifier::BOLD, "BOLD"),
+        (Modifier::DIM, "DIM"),
+        (Modifier::ITALIC, "ITALIC"),
+        (Modifier::UNDERLINED, "UNDERLINED"),
+        (Modifier::SLOW_BLINK, "SLOW_BLINK"),
+        (Modifier::RAPID_BLINK, "RAPID_BLINK"),
+        (Modifier::REVERSED, "REVERSED"),
+        (Modifier::HIDDEN, "HIDDEN"),
+        (Modifier::CROSSED_OUT, "CROSSED_OUT"),
+    ];
+    let mut parts = Vec::new();
+    if let Some(fg) = style.fg {
+        parts.push(format!("fg {}", color_name(fg)));
+    }
+    if let Some(bg) = style.bg {
+        parts.push(format!("bg {}", color_name(bg)));
+    }
+    for (modifier, name) in MODIFIERS {
+        if style.add_modifier.contains(modifier) {
+            parts.push(format!("+{name}"));
+        }
+        if style.sub_modifier.contains(modifier) {
+            parts.push(format!("-{name}"));
+        }
+    }
+    format!("[{}]", parts.join(" "))
+}
+
+impl CanvasModel {
+    /// A stable, line-oriented text dump (snapshot tests): world units with
+    /// at most three decimals, colours as `#rrggbb`, in drawing order.
+    pub fn dump(&self) -> String {
+        let mut out = vec![format!(
+            "canvas area={} origin={},{} scale={} grid={} tick={} empty={}",
+            cells(self.area),
+            num(self.origin.0),
+            num(self.origin.1),
+            num(self.scale),
+            self.grid,
+            self.tick,
+            self.empty
+        )];
+        for g in &self.groups {
+            out.push(format!(
+                "group {} {:?} icon={} members={} rect={} color={} style={} selected={} drop_target={} automations={} folder={}",
+                g.id,
+                g.name,
+                g.icon,
+                g.members,
+                wrect(g.rect),
+                color_name(g.color),
+                style_name(g.style),
+                g.selected,
+                g.drop_target,
+                g.automations,
+                g.has_folder
+            ));
+            for chip in &g.chips {
+                out.push(format!("  chip {:?} outputs={} rect={}", chip.label, chip.outputs, wrect(chip.rect)));
+            }
+            for (x, y, family) in &g.families {
+                out.push(format!("  family {:?} at={},{}", family, num(*x), num(*y)));
+            }
+        }
+        for e in &self.edges {
+            out.push(format!("edge {:?} color={} from={} to={} path={}", e.kind, color_name(e.color), wrect(e.from), wrect(e.to), path(&e.path)));
+        }
+        for b in &self.boxes {
+            out.push(format!("box {} {:?} rect={} prefix={:?} name={:?}", b.id, b.kind, wrect(b.rect), b.prefix, b.name));
+            out.push(format!(
+                "  status={:?} icon={:?} label={:?} line={:?} subtitle={:?} elsewhere={} every={:?} mailbox={}",
+                b.status, b.icon, b.label, b.line, b.subtitle, b.elsewhere, b.every, b.mailbox
+            ));
+            out.push(format!(
+                "  border={:?} border_style={} fill={} attention={} name_style={} line_style={}",
+                b.border,
+                style_name(b.border_style),
+                color_name(b.fill),
+                b.attention.map(|(c, t)| format!("{}/{}", color_name(c), color_name(t))).unwrap_or_else(|| "none".into()),
+                style_name(b.name_style),
+                style_name(b.line_style)
+            ));
+            out.push(format!("  selected={} focused_term={} active={}", b.selected, b.focused_term, b.active));
+        }
+        for l in &self.loops {
+            out.push(format!("loop rect={} phase={} halo={}", wrect(l.rect), num(l.phase), l.halo));
+        }
+        for p in &self.pulses {
+            out.push(format!("pulse from={} to={} t={} path={}", wrect(p.from), wrect(p.to), num(p.t), path(&p.path)));
+        }
+        if let Some((rect, typing)) = self.halo {
+            out.push(format!("halo rect={} typing={typing}", wrect(rect)));
+        }
+        if let Some((x0, y0, x1, y1)) = self.rubber {
+            out.push(format!("rubber {},{} .. {},{}", num(x0), num(y0), num(x1), num(y1)));
+        }
+        out.join("\n")
+    }
+}
+
+impl TileModel {
+    /// One line for the snapshot dump.
+    pub fn dump(&self) -> String {
+        format!(
+            "tile {} outer={} inner={} focused={} alive={} cursor={} tint={} title={:?}",
+            self.id,
+            cells(self.outer),
+            cells(self.inner),
+            self.focused,
+            self.alive,
+            self.cursor,
+            self.tint,
+            self.title
+        )
+    }
+}
+
+impl View {
+    /// The whole view model as stable text (snapshot tests).
+    pub fn dump(&self) -> String {
+        let mut out = vec![format!(
+            "view cursor={} modal={} banner={:?}",
+            self.cursor.map(|(x, y)| format!("{x},{y}")).unwrap_or_else(|| "none".into()),
+            self.modal.map(cells).unwrap_or_else(|| "none".into()),
+            self.banner
+        )];
+        match &self.canvas {
+            Some(canvas) => out.push(canvas.dump()),
+            None => out.push("canvas none".into()),
+        }
+        out.extend(self.tiles.iter().map(TileModel::dump));
+        out.join("\n")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,6 +446,17 @@ mod tests {
         let mut app = App::new(Conn::detached(tx, service_rx), std::sync::Arc::new(crate::rpc::Offline), crate::sync::Opened::detached(doc), true, ".".into(), app_tx, None);
         app.layout.canvas = Rect::new(34, 1, 70, 30);
         (app, dir)
+    }
+
+    #[test]
+    fn dump_numbers_and_styles_are_stable() {
+        assert_eq!([num(2.0), num(8.3), num(-0.25), num(-0.0001), num(0.70000005), num(10.0)], ["2", "8.3", "-0.25", "0", "0.7", "10"]);
+        use ratatui::style::Modifier;
+        let style = Style::default().fg(Color::Rgb(1, 2, 255)).add_modifier(Modifier::BOLD | Modifier::DIM).remove_modifier(Modifier::ITALIC);
+        assert_eq!(style_name(style), "[fg #0102ff +BOLD +DIM -ITALIC]");
+        assert_eq!(style_name(Style::default()), "[]");
+        assert_eq!(color_name(Color::Indexed(7)), "idx7");
+        assert_eq!(color_name(Color::DarkGray), "darkgray");
     }
 
     #[test]

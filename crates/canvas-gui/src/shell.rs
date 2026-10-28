@@ -1221,6 +1221,15 @@ impl Win {
                 }
                 json!({ "ok": true })
             }
+            "freeze" => {
+                // Animations hold frame `tick` (golden screenshots); without it they run again.
+                self.app.frozen_tick = command["tick"].as_u64().map(|t| t as usize);
+                if let Some(tick) = self.app.frozen_tick {
+                    self.app.tick = tick;
+                }
+                self.app.needs_draw = true;
+                json!({ "ok": true, "tick": self.app.tick })
+            }
             "post_keys" => {
                 // Real window messages, through winit's keyboard handling.
                 let hwnd = hwnd_of(&self.window);

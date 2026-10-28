@@ -421,11 +421,11 @@ Status (Phase 5, 2026-10-28): every row ✓ in the GUI, each with a named check 
 ## 10. Testing
 
 - **Engine:** golden PTY corpus compared cell by cell for both engines; fuzz `vt_write`; key-encoding tables.
-- **Core:** existing unit tests move with the code; `ViewModel` snapshot tests for scripted states.
+- **Core:** existing unit tests move with the code; `ViewModel` snapshot tests for scripted states (done: `crates/canvas-core/tests/view_snapshots.rs`, both render modes, `UPDATE_SNAPSHOTS=1` to accept).
 - **Backend:** RPC contract tests run against both implementations (in-process and remote over loopback).
 - **TUI:** existing `selftest`, golden screens and probes, run both locally and with `--remote loopback`.
 - **Remote:** fault injection (drop the connection, delay, reorder at the frame boundary), resync assertions, a 48 h soak in Phase 6.
-- **GUI:** `--test-hooks` gives an input-injection pipe, a UI Automation tree and render-to-PNG. A port of the selftest's 26 steps plus tolerant image diffs; real-Copilot probes (passive, factory, status, fork, MCP) get GUI variants.
+- **GUI:** `--test-hooks` gives an input-injection pipe, a UI Automation tree and render-to-PNG. A port of the selftest's 26 steps plus tolerant image diffs (done: `selftest --client gui` and `selftest --client gui --golden`, goldens in `tests/golden/gui/`); real-Copilot probes (passive, factory, status, fork, MCP) get GUI variants.
 - **Performance:** `bench --client gui|tui --remote`; stress and perf probes run headless.
 
 ## 11. Risks and mitigations

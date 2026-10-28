@@ -152,3 +152,9 @@ PASS: 38 rows in 21.8s
   clipboard test on an unlocked desktop.
 - Copilot's own UI is replaced by the stand-in; the real-agent behaviours
   stay with `selftest agent` and the manual probes in `src/selftest.rs`.
+- The checks assert behaviour and a few pixels, not whole images. Visual
+  regressions are the job of `selftest --client gui --golden`
+  (`docs/GUI.md` §3), whose `all-statuses` golden screenshot is this suite's
+  sandbox canvas (every status, a subagent, loops, the automations group),
+  and of canvas-core's ViewModel snapshot tests, which pin the same states
+  as text for both render modes.

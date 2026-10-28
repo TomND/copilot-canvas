@@ -3,8 +3,9 @@
 //! line and answering one JSON line each. Commands inject input (`key`,
 //! `text`, `paste`, `mouse`, `wheel`, `drop`), read the UI (`screen`, `tree`
 //! with the UI Automation nodes, `access`, `size`, `perf`, `platform`),
-//! render offscreen (`png`), manage windows (`new_window`, `windows`,
-//! `close_window`; others take `"window": n`), simulate hardware events
+//! render offscreen (`png`), hold animations at one frame (`freeze`), manage
+//! windows (`new_window`, `windows`, `close_window`; others take
+//! `"window": n`), simulate hardware events
 //! (`device-lost`, `dpi`), move windows (`place`, `placement`), set the
 //! stand-in clipboard (`clipboard`), crash on purpose (`panic`,
 //! `panic_thread`) and `quit`. See `docs/GUI.md` §3.

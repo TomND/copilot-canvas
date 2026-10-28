@@ -1,2 +1,6 @@
 /target
 /prototype-node
+# Pending snapshot texts and failed golden comparisons (review, then accept).
+*.snap.new
+/tests/golden/gui/*.actual.png
+/tests/golden/gui/*.diff.png

@@ -2,6 +2,7 @@
 
 mod bench;
 mod fake_copilot;
+mod golden;
 mod gui_bench;
 mod hardening;
 mod kitty_demo;
@@ -72,6 +73,9 @@ USAGE
   copilot-canvas selftest --client gui --hardening
                                         GPU device loss, DPI change, window placement, the UI Automation
                                         tree, the crash log, software rendering, visual regressions
+  copilot-canvas selftest --client gui --golden [--update]
+                                        golden screenshots of scripted GUI states compared with
+                                        tests/golden/gui/*.png (tolerant image diff); --update rewrites them
   copilot-canvas selftest --remote faults
                                         drop, cut and delay the TCP connection while typing; check
                                         reconnect, resync and that no keystroke is lost or doubled
@@ -193,7 +197,7 @@ fn parse() -> Result<Args> {
             "--canvas" => args.canvas = Some(PathBuf::from(value("--canvas")?)),
             "--cwd" => args.cwd = Some(PathBuf::from(value("--cwd")?)),
             "--remote" => args.remote = Some(value("--remote")?),
-            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" => args.flags.push(arg.trim_start_matches("--").to_owned()),
+            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--golden" | "--update" => args.flags.push(arg.trim_start_matches("--").to_owned()),
             "--" => {
                 // `record … -- PROGRAM ARGS…`: the rest belongs to the program.
                 args.command.push(arg);
@@ -442,6 +446,10 @@ fn real_main() -> Result<()> {
             if flag("hardening") {
                 anyhow::ensure!(client == selftest::Client::Gui, "--hardening checks the GUI: add --client gui");
                 return hardening::run();
+            }
+            if flag("golden") {
+                anyhow::ensure!(client == selftest::Client::Gui, "--golden checks the GUI: add --client gui");
+                return golden::run(flag("update"));
             }
             match args.remote.as_deref() {
                 None => selftest::run(None, client),

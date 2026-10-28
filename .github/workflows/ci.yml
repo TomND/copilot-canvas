@@ -53,6 +53,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # Includes canvas-core's ViewModel snapshot tests (tests/view_snapshots.rs):
+      # fixed inputs, so they are the same on every machine.
       - name: unit and integration tests
         run: cargo test --workspace
       - name: alacritty-only build (no Zig)
@@ -75,3 +77,19 @@ jobs:
         run: target\release\copilot-canvas.exe selftest --client gui
       - name: GUI parity suite
         run: target\release\copilot-canvas.exe selftest --client gui --parity
+      # The goldens were captured on the reference machine (RTX 3070, 125 % DPI,
+      # its font versions). Hosted runners draw with WARP at 100 % DPI, so the
+      # size and anti-aliasing differ and this step may fail there without a
+      # regression: it reports, it does not block. The diff images are kept.
+      - name: GUI golden screenshots (reference machine only)
+        continue-on-error: true
+        run: target\release\copilot-canvas.exe selftest --client gui --golden
+      - name: keep golden diffs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-diffs
+          path: |
+            tests/golden/gui/*.actual.png
+            tests/golden/gui/*.diff.png
+          if-no-files-found: ignore

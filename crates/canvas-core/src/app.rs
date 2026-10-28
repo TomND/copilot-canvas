@@ -226,6 +226,9 @@ pub struct App {
     pub app_tx: Sender<AppEvent>,
     pub quit: bool,
     pub tick: usize,
+    /// Test hooks: animations (spinners, loop dots, pulsing borders) hold
+    /// this frame, so screenshots are reproducible.
+    pub frozen_tick: Option<usize>,
     pub git_req: u64,
     pub last_subscribed: Vec<String>,
     pub last_sizes: HashMap<String, (u16, u16)>,
@@ -379,6 +382,7 @@ impl App {
             app_tx,
             quit: false,
             tick: 0,
+            frozen_tick: None,
             git_req: 0,
             last_subscribed: Vec::new(),
             last_sizes: HashMap::new(),
@@ -1876,7 +1880,7 @@ impl App {
     pub fn on_tick(&mut self) {
         // Spinner frame: one step per 80 ms regardless of the housekeeping rate.
         static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-        let frame = (START.get_or_init(Instant::now).elapsed().as_millis() / 80) as usize;
+        let frame = self.frozen_tick.unwrap_or_else(|| (START.get_or_init(Instant::now).elapsed().as_millis() / 80) as usize);
         let spun = frame != self.tick;
         self.tick = frame;
         if self.dirty_at.is_some_and(|t| t.elapsed() >= DOC_FLUSH) {
