@@ -12,3 +12,4 @@ anyhow.workspace = true
 crossbeam-channel.workspace = true
 portable-pty.workspace = true
 unicode-width.workspace = true
+windows-sys.workspace = true

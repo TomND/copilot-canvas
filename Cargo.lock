@@ -242,6 +242,7 @@ dependencies = [
  "crossbeam-channel",
  "portable-pty",
  "unicode-width",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

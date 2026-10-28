@@ -82,8 +82,23 @@ pub fn get_text() -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    /// The clipboard is unavailable while the workstation is locked (or from a
+    /// non-interactive desktop): OpenClipboard fails with ERROR_ACCESS_DENIED.
+    fn clipboard_unavailable() -> bool {
+        // SAFETY: paired with CloseClipboard on success.
+        if unsafe { super::OpenClipboard(std::ptr::null_mut()) } != 0 {
+            unsafe { super::CloseClipboard() };
+            return false;
+        }
+        std::io::Error::last_os_error().raw_os_error() == Some(5)
+    }
+
     #[test]
     fn round_trips_unicode_text() {
+        if clipboard_unavailable() {
+            eprintln!("skipped: the clipboard is not accessible (locked workstation or non-interactive desktop)");
+            return;
+        }
         let previous = super::get_text().ok();
         let text = "copilot canvas ✓ 中文\r\nline 2";
         super::set_text(text).unwrap();

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 
 use crate::app::{App, Focus, SideKind, SideRow};
 use crate::dialogs::{Action, Hit};
@@ -16,7 +16,6 @@ use crate::paint::{
 };
 use crate::status::Status;
 use crate::paths::{format_age, now_ms};
-use crate::protocol::{COLOR_DEFAULT, COLOR_RGB, F_BOLD, F_DIM, F_HIDDEN, F_INVERSE, F_ITALIC, F_STRIKE, F_UNDERLINE};
 
 pub fn draw(app: &mut App, frame: &mut Frame) {
     let screen = frame.area();
@@ -495,28 +494,6 @@ fn draw_sidebar(app: &mut App, buf: &mut Buffer, area: Rect) {
     }
 }
 
-/// Your own messages get their own background and a left bar. The last frame
-/// can be taller than a pane that just shrank (new tile, window resize) until
-/// the session redraws at the new size, so rows past the pane are skipped.
-fn tint_user_messages(buf: &mut Buffer, inner: Rect, lines: &[Vec<crate::protocol::Run>]) {
-    let marked = crate::app::user_message_rows(lines);
-    for (row, _) in marked.iter().enumerate().take(inner.height as usize).filter(|(_, m)| **m) {
-        let y = inner.y + row as u16;
-        for col in 0..inner.width {
-            if let Some(cell) = buf.cell_mut((inner.x + col, y))
-                && cell.bg == Color::Reset
-            {
-                cell.set_bg(crate::paint::USER_BG);
-            }
-        }
-        if let Some(first) = buf.cell_mut((inner.x, y))
-            && first.symbol() == " "
-        {
-            first.set_symbol("▎").set_fg(crate::paint::ACCENT);
-        }
-    }
-}
-
 fn tile_rects(area: Rect, count: usize) -> Vec<Rect> {
     match count {
         0 => Vec::new(),
@@ -540,14 +517,6 @@ fn tile_rects(area: Rect, count: usize) -> Vec<Rect> {
             }
             rects
         }
-    }
-}
-
-fn color(value: u32) -> Color {
-    match value {
-        COLOR_DEFAULT => Color::Reset,
-        v if v & COLOR_RGB != 0 => Color::Rgb((v >> 16) as u8, (v >> 8) as u8, v as u8),
-        v => Color::Indexed((v - 1) as u8),
     }
 }
 
@@ -610,63 +579,21 @@ fn draw_terminals(app: &mut App, buf: &mut Buffer, area: Rect) -> Option<(u16, u
 
         match view {
             Some(view) => {
-                for (y, line) in view.lines.iter().enumerate().take(inner.height as usize) {
-                    let row_y = inner.y as i32 + y as i32;
-                    for run in line {
-                        let mut style = Style::default().fg(color(run.fg)).bg(color(run.bg));
-                        let f = run.flags;
-                        let mods = [
-                            (F_BOLD, Modifier::BOLD),
-                            (F_ITALIC, Modifier::ITALIC),
-                            (F_UNDERLINE, Modifier::UNDERLINED),
-                            (F_INVERSE, Modifier::REVERSED),
-                            (F_DIM, Modifier::DIM),
-                            (F_HIDDEN, Modifier::HIDDEN),
-                            (F_STRIKE, Modifier::CROSSED_OUT),
-                        ];
-                        for (flag, modifier) in mods {
-                            if f & flag != 0 {
-                                style = style.add_modifier(modifier);
-                            }
-                        }
-                        if run.link.is_some() {
-                            style = style.add_modifier(Modifier::UNDERLINED);
-                        }
-                        let x0 = inner.x as i32 + run.col as i32;
-                        let x1 = put(buf, x0, row_y, &run.text, style, inner);
-                        if let Some(target) = &run.link
-                            && x1 > x0
-                            && x0 < inner.right() as i32
-                        {
-                            let x1 = x1.min(inner.right() as i32);
-                            app.layout.links.push(crate::links::Link {
-                                rects: vec![Rect::new(x0 as u16, row_y as u16, (x1 - x0) as u16, 1)],
-                                target: target.clone(),
-                                terminal: true,
-                            });
-                        }
-                    }
+                let drawn = canvas_termview::tui::draw(
+                    view,
+                    buf,
+                    inner,
+                    &canvas_termview::tui::Options {
+                        tint: info.copilot.then_some((crate::paint::USER_BG, crate::paint::ACCENT)),
+                        selection: app.term_select.as_ref().filter(|s| s.id == *id),
+                        cursor: focused && info.alive,
+                    },
+                );
+                for (rect, target) in drawn.links {
+                    app.layout.links.push(crate::links::Link { rects: vec![rect], target, terminal: true });
                 }
-                if info.copilot {
-                    tint_user_messages(buf, inner, &view.lines);
-                }
-                if let Some(selection) = app.term_select.as_ref().filter(|s| s.id == *id) {
-                    let ((_, r0), (_, r1)) = selection.ordered();
-                    for row in r0..=r1.min(inner.height.saturating_sub(1)) {
-                        for col in 0..inner.width {
-                            if selection.contains(col, row) {
-                                buf[(inner.x + col, inner.y + row)].modifier.insert(Modifier::REVERSED);
-                            }
-                        }
-                    }
-                }
-                if focused
-                    && info.alive
-                    && let Some((cx, cy)) = view.cursor
-                    && cx < inner.width
-                    && cy < inner.height
-                {
-                    cursor = Some((inner.x + cx, inner.y + cy));
+                if drawn.cursor.is_some() {
+                    cursor = drawn.cursor;
                 }
             }
             None => {
@@ -828,26 +755,4 @@ fn draw_status(app: &mut App, buf: &mut Buffer, area: Rect) {
     put(buf, area.width as i32 - right_w, area.y as i32, &right, fg(if app.connected { DARK } else { NEGATIVE }).bg(PANEL), area);
     let _ = GRAY;
     let _ = SELECT;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::protocol::Run;
-
-    #[test]
-    fn user_message_tint_stays_inside_a_pane_that_shrank() {
-        // A 20-row frame from before the pane shrank to 5 rows at the bottom of
-        // the screen, with your message below the pane: used to index past the
-        // buffer and panic.
-        let run = |text: &str| Run { col: 0, text: text.into(), fg: 0, bg: 0, flags: 0, link: None };
-        let mut lines = vec![vec![run(" ● output")]; 20];
-        lines[2] = vec![run(" ❯ inside the pane")];
-        lines[15] = vec![run(" ❯ below the pane")];
-        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
-        let inner = Rect::new(1, 4, 28, 5);
-        tint_user_messages(&mut buf, inner, &lines);
-        assert_eq!(buf[(1, 6)].symbol(), "▎", "visible message is marked");
-        assert!((0..10).all(|y| y == 6 || buf[(1, y)].symbol() != "▎"), "nothing outside the pane");
-    }
 }
