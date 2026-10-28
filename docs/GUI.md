@@ -316,6 +316,25 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   thumbnails; canvas-host tests Kitty placements and pixels, the iTerm2
   bridge and the refused file medium; the protocol tests which clients get
   images and notifications.
+- **ViewModel snapshots** (PLAN §10 "Core";
+  `crates/canvas-core/tests/view_snapshots.rs`, part of `cargo test`):
+  scripted states built in-process (a detached connection, no backend,
+  synthetic `SessionSummary`/`TermInfo` values, fixed paths and animation
+  tick): the demo canvas at 100, 50 and 25 % and at a continuous 70 % with a
+  fractional origin; every status (working from history and from OSC 9;4,
+  needs you, done · review, idle, stopped, failed three ways, open elsewhere,
+  running, preparing); subagents (working, finished, failed), a subsession's
+  dashed edge, a loop and a queued message; groups with lit and dim folder
+  chips; a selection with a rubber band; the new-session dialog (Agent row
+  with an agent that is not installed); the MCP picker with a preset; the
+  sidebar filter; two tiled terminals. Each `tests/snapshots/<state>.snap`
+  holds the TUI screen (`RenderMode::Cells`) as text and the GPU view
+  (`RenderMode::Gpu`) as `View::dump()`: boxes with rect, name, status,
+  icon, labels, border and styles, edges with their routes, groups with
+  chips, loops, halo, rubber band, tiles, cursor and modal, plus the dialog
+  overlay. A mismatch writes `<state>.snap.new` and fails with a line diff;
+  `UPDATE_SNAPSHOTS=1 cargo test -p canvas-core --test view_snapshots`
+  accepts the new texts.
 - `copilot-canvas selftest --client gui [--remote loopback]` runs the TUI
   self-test's 26 steps against the GUI in a 170 × 46 cell window. A `Ui`
   trait has two drivers: the TUI's hidden pseudoconsole and `GuiDriver`,
@@ -349,6 +368,38 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
 - `copilot-canvas selftest --client gui --parity` runs one check per row of
   PLAN §8 plus the GUI-only features, in a sandbox with a stand-in Copilot
   CLI, and prints the table (`docs/PARITY.md`).
+- `copilot-canvas selftest --client gui --golden [--update]`: golden
+  screenshots with a tolerant image diff (about 15 s). The GUI runs at
+  170 × 46 cells on scripted states that depend neither on the machine's data
+  nor on the clock: the demo canvas (`demo-canvas`), zoomed out to 50 %
+  (`demo-zoom-50`), a box's context menu (`demo-context-menu`), the
+  new-session dialog (`demo-new-session-dialog`; the default agent is pinned
+  with `COPILOT_CANVAS_AGENT`), two tiled PowerShell terminals that clear the
+  screen, print fixed text (16, 256 and RGB colours, bold, dim, italic,
+  inverse, strikethrough, overline, single/double/curly/dotted/dashed and
+  coloured underlines, emoji, CJK, box and block characters) and set the
+  prompt to `PS> ` (`terminals-tiled`), and the parity sandbox's canvas
+  with every status, a subagent, loops and the automations group
+  (`all-statuses`). Animations hold one frame (the `freeze` hook), notices
+  are waited out, and a capture counts once the screen text has been still
+  for a second and two renders in a row are identical. Masked (hatched in
+  the stored goldens): the service's figures at the status bar's right end,
+  folders inside the temporary sandbox (details panel, dialog field) and
+  automations' next-run times ("next 7d ago"). Each capture is compared with
+  `tests/golden/gui/<name>.png`: a pixel differs when a colour channel moved
+  by more than **24**; at most **0.5 %** of the compared pixels may differ;
+  and no **8 × 8** block's mean luminance may move by more than **16**, which
+  catches text that disappears or appears while being far less than 0.5 %
+  of the image. A failure writes `<name>.actual.png` and `<name>.diff.png`
+  (differing pixels red, failing blocks outlined yellow, masks blue) next to
+  the golden and prints the statistics; `--update` rewrites the goldens
+  (review them before committing). `CANVAS_GOLDEN_DIR` points elsewhere.
+  The goldens belong to the reference machine (RTX 3070, 125 % DPI: 1700 ×
+  1012 px, Cascadia Mono, Segoe UI): another DPI changes the size, another
+  GPU or font version the anti-aliasing. Three runs in a row matched
+  pixel for pixel (0 differing pixels); changing ANSI green in
+  `canvas-gui/src/theme.rs` failed `terminals-tiled` with 0.156 % differing
+  pixels (under the fraction) and 26 blocks over the luminance limit.
 - `CANVAS_GUI_TRACE=1` prints start-up milestones (and GPU events) on stderr.
 
 **Test hooks.** With `--test-hooks` the GUI prints a pipe name
@@ -369,6 +420,7 @@ one (`"window": n`, the creation index):
 | `{"cmd":"tree"}` | automation tree: click targets with their text, canvas boxes (status, border, prefix, loop, drawing `level`) and groups with screen rects, tiles (tint, image placements as cell rects), links, terminal selection, notice, focus, modal, paste preview, and `access`: the UI Automation nodes |
 | `{"cmd":"access"}` | the UI Automation nodes (role, name, description, value, rect, children, focus) and whether a UIA client listens |
 | `{"cmd":"png","path":"…"}` | renders the current frame offscreen to a PNG (works on a locked workstation) |
+| `{"cmd":"freeze","tick":0}`, `{"cmd":"freeze"}` | animations (spinners, loop dots, pulsing borders) hold frame `tick`; without it they run again |
 | `{"cmd":"size"}`, `{"cmd":"perf","reset":true}` | cells, cell size, DPI, adapter (and details, `software`), present mode; frame statistics (all, full and damage frames), round trips, CPU, memory, first paint, textures, GPU rebuilds |
 | `{"cmd":"device-lost"}`, `{"cmd":"device-lost","destroy":true}` | rebuilds the GPU objects as after a lost device (`destroy`: the device is really destroyed first); answers the time taken |
 | `{"cmd":"dpi","scale":1.5}` | a DPI change to `scale` (without: the window's own) |
@@ -444,7 +496,8 @@ pipelines 0.38 s, first frame 0.02 s.
 
 ## 5. Screenshots
 
-`docs/gui-screens/` (offscreen renders through the test hooks):
+`docs/gui-screens/` (offscreen renders through the test hooks; the golden
+screenshots the `--golden` check compares against are in `tests/golden/gui/`):
 `terminal-and-halo.png` (a live shell, the active box's heavy halo),
 `tiled.png` (three tiles, a selected group), `zoom-50.png`,
 `context-menu.png`, `new-session-dialog.png`, `automations-loops.png`

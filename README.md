@@ -350,7 +350,8 @@ UI load tests `cargo test --release stress_probe -- --ignored --nocapture`
 --release perf_probe -- --ignored --nocapture` (panning a real canvas).
 `copilot-canvas --perf` shows the same numbers live in the status bar.
 The GPU client has the same probes (`bench --client gui --stress`,
-`--perf-canvas FILE`, `--burn N`), `selftest --client gui --hardening` and a
+`--perf-canvas FILE`, `--burn N`), `selftest --client gui --hardening`, golden
+screenshots with a tolerant image diff (`selftest --client gui --golden`) and a
 long-run remote soak (`selftest --remote soak`); numbers in `docs/GUI.md` §4
 and `docs/REMOTE.md`.
 

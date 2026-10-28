@@ -54,9 +54,11 @@ struct Sessions {
     import_b: String,
 }
 
-struct Sandbox {
-    root: PathBuf,
-    instance: Instance,
+/// The sandbox: synthetic histories for every status, a canvas of them, a
+/// stand-in Copilot CLI (also the golden screenshots' all-statuses canvas).
+pub(crate) struct Sandbox {
+    pub(crate) root: PathBuf,
+    pub(crate) instance: Instance,
     work: PathBuf,
     group_folder: PathBuf,
     copilot_home: PathBuf,
@@ -67,8 +69,8 @@ struct Sandbox {
 }
 
 /// The GUI and the helpers the checks use.
-struct Gui {
-    driver: GuiDriver,
+pub(crate) struct Gui {
+    pub(crate) driver: GuiDriver,
 }
 
 impl Gui {
@@ -329,7 +331,7 @@ fn node(id: &str, name: &str, x: i32, y: i32, cwd: &Path) -> Node {
 }
 
 impl Sandbox {
-    fn new() -> Result<Self> {
+    pub(crate) fn new() -> Result<Self> {
         let root = std::env::temp_dir().join(format!("copilot-canvas-parity-{}", uuid::Uuid::new_v4()));
         let (home, work, copilot_home, group_folder) = (root.join("home"), root.join("work"), root.join("copilot-home"), root.join("group"));
         let sessions_dir = copilot_home.join("session-state");
@@ -448,7 +450,7 @@ impl Sandbox {
         args
     }
 
-    fn start(&self, extra: &[&str], log: &str) -> Result<Gui> {
+    pub(crate) fn start(&self, extra: &[&str], log: &str) -> Result<Gui> {
         let one = PathBuf::from("1");
         let (claude, xdg) = (self.root.join("claude-home"), self.root.join("xdg-data"));
         // Only the sandbox's histories: OpenCode and Claude Code look in empty folders.
@@ -471,7 +473,7 @@ impl Sandbox {
 /// Stops an instance's service and waits (up to 15 s) until it is gone: a
 /// service left running would hold the console's output open until its idle
 /// exit 10 minutes later.
-fn stop_service(instance: &Instance) {
+pub(crate) fn stop_service(instance: &Instance) {
     let Ok(conn) = crate::client::conn::try_connect(instance) else { return };
     let _ = conn.tx.send(crate::protocol::ClientMsg::Shutdown);
     let deadline = Instant::now() + Duration::from_secs(15);

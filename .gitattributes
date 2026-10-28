@@ -1,0 +1,3 @@
+# Snapshot texts are compared as written (LF); golden screenshots are binary.
+crates/canvas-core/tests/snapshots/*.snap text eol=lf
+tests/golden/gui/*.png binary

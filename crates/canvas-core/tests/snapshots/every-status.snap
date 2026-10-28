@@ -1,0 +1,93 @@
+# every-status (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit                  ⠋ 2 working   ◆ 1 needs you   ✗ 3 failed
+    SESSIONS                     │▌·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+▌▤  / filter…                    │  ╭ Working (history) ─────────╮      ┏ Needs you ━━━━━━━━━━━━━━━━━┓      ╔ Done, review ══════════════╗
+                                 │  │ ⠋ working · ↗ elsewhere    │      ┃ ◆ needs you · ↗ elsewhere  ┃      ║ ✓ done · review · ↗ elsew… ║
+ ◷  ⠋ ↗ Working (history)        │ ·│ canvas · main              │     ·┃ canvas · main              ┃     ·║ canvas · main              ║     ·     ·
+    ◆ ↗ Needs you                │  ╰────────────────────────────╯      ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛      ╚════════════════════════════╝
+ ⧉  ✓ ↗ Done, review             │
+    ○ ↗ Idle                     │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+ ⌁  ■ Stopped (exit 0)           │
+    ✗ Failed (exit 2)            │
+ ✦  ↗ Open elsewhere             │ ·╭ Idle ──────────────────────╮     ·╭ Stopped (exit 0) ──────────╮     ·╭ Failed (exit 2) ───────────╮     ·     ·
+    ● Shell running here         │  │ ○ idle · ↗ elsewhere       │      │ ■ stopped                  │      │ ✗ failed                   │
+ ◈  ⠋ Preparing                  │  │ canvas · main              │      │ canvas                     │      │ canvas                     │
+    ✗ Launch error               │ ·╰────────────────────────────╯     ·╰────────────────────────────╯     ·╰────────────────────────────╯     ·     ·
+ ⇄  ✗ Failed (history)           │
+    ⠋ Working (OSC 9;4)          │
+ ≡                               │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │  ╭ Open elsewhere ────────────╮      ╭ Shell running here ────────╮      ╭ Preparing ─────────────────╮
+                                 │ ·│ ↗ open elsewhere           │     ·│ ● running                  │     ·│ ⠋ preparing                │     ·     ·
+                                 │  │ canvas · main              │      │ canvas                     │      │ canvas                     │
+                                 │  ╰────────────────────────────╯      ╰────────────────────────────╯      ╰────────────────────────────╯
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │  ╭ Launch error ──────────────╮      ╭ Failed (history) ──────────╮      ╭ Working (OSC 9;4) ─────────╮
+                                 │  │ ✗ failed                   │      │ ✗ failed                   │      │ ⠋ working                  │
+                                 │ ·│ copilot.exe was not found  │     ·│ canvas · main              │     ·│ canvas                     │     ·     ·
+                                 │  ╰────────────────────────────╯      ╰────────────────────────────╯      ╰────────────────────────────╯
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+ drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom · right-click menu · ? help
+## gpu view model
+view cursor=none modal=none banner=None
+canvas area=34,1 116x38 origin=-1,0 scale=1 grid=true tick=0 empty=false
+box s-working Session rect=1,1 30x4 prefix="" name="Working (history)"
+  status=Working icon="⠋" label="working" line="⠋ working" subtitle="canvas · main" elsewhere=true every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #c9d1d9]
+  selected=false focused_term=false active=false
+box s-waiting Session rect=37,1 30x4 prefix="" name="Needs you"
+  status=Waiting icon="◆" label="needs you" line="◆ needs you" subtitle="canvas · main" elsewhere=true every=None mailbox=0
+  border=Heavy border_style=[fg #ffb000 +BOLD] fill=#423006 attention=#ffb000/#423006 name_style=[fg #c9d1d9] line_style=[fg #ffb000 +BOLD]
+  selected=false focused_term=false active=false
+box s-review Session rect=73,1 30x4 prefix="" name="Done, review"
+  status=JustFinished icon="✓" label="done · review" line="✓ done · review" subtitle="canvas · main" elsewhere=true every=None mailbox=0
+  border=Double border_style=[fg #648fff +BOLD] fill=#1a244e attention=#648fff/#1a244e name_style=[fg #c9d1d9] line_style=[fg #648fff +BOLD]
+  selected=false focused_term=false active=false
+box s-idle Session rect=1,9 30x4 prefix="" name="Idle"
+  status=Idle icon="○" label="idle" line="○ idle" subtitle="canvas · main" elsewhere=true every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #8b949e]
+  selected=false focused_term=false active=false
+box s-stopped Session rect=37,9 30x4 prefix="" name="Stopped (exit 0)"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]
+  selected=false focused_term=false active=false
+box s-failed Session rect=73,9 30x4 prefix="" name="Failed (exit 2)"
+  status=Failed icon="✗" label="failed" line="✗ failed" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #e66100]
+  selected=false focused_term=false active=false
+box s-elsewhere Session rect=1,17 30x4 prefix="" name="Open elsewhere"
+  status=External icon="↗" label="open elsewhere" line="↗ open elsewhere" subtitle="canvas · main" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #a371f7]
+  selected=false focused_term=false active=false
+box s-running Session rect=37,17 30x4 prefix="" name="Shell running here"
+  status=Running icon="●" label="running" line="● running" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #c9d1d9]
+  selected=false focused_term=false active=false
+box s-preparing Session rect=73,17 30x4 prefix="" name="Preparing"
+  status=Preparing icon="⠋" label="preparing" line="⠋ preparing" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #c9d1d9]
+  selected=false focused_term=false active=false
+box s-error Session rect=1,25 30x4 prefix="" name="Launch error"
+  status=Failed icon="✗" label="failed" line="✗ failed" subtitle="copilot.exe was not found" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #e66100]
+  selected=false focused_term=false active=false
+box s-history-failed Session rect=37,25 30x4 prefix="" name="Failed (history)"
+  status=Failed icon="✗" label="failed" line="✗ failed" subtitle="canvas · main" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #e66100]
+  selected=false focused_term=false active=false
+box s-progress Session rect=73,25 30x4 prefix="" name="Working (OSC 9;4)"
+  status=Working icon="⠋" label="working" line="⠋ working" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #c9d1d9]
+  selected=false focused_term=false active=false

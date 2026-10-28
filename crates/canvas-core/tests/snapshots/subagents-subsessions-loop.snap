@@ -1,0 +1,74 @@
+# subagents-subsessions-loop (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit                                  ⠋ 1 working   3 sessions
+    SESSIONS                     │▌·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · │┌────────────────────────────────────────────┐
+▌▤  / filter…                    │  ┏ Orchestrator ━━━━━━━━━━━━━━┓                                     ││ Orchestrator                               │
+                                 │  ┃ ⠋ working · ↗ elsewhere    ┃                                     ││ ⠋ working                                  │
+ ◷  ⠋ ↗ Orchestrator             │ ·┃ canvas · main              ┃┄┄╮  ·     ·     ·     ·     ·     · ││                                            │
+      ◇ ⠋ Explore the API        │  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛  ┊                                  ││ Folder   C:\work\canvas                    │
+ ⧉    ↳ ○ ↗ Follow-up            │    │───╮                         ┊                                  ││ Branch   main                              │
+      ◇ ○ Review the diff        │ ·  │  ·│    ·     ·     ·     ·  ┊  ·     ·     ·     ·     ·     · ││ Client   unknown                           │
+ ⌁    ◇ ✗ Lint the tree          │    │─┌ ◇ Explore the API ───┐    ┊  ╭ ↳ Follow-up ───────── ✉ 2 ─╮  ││ Subagents 3                                │
+    ○ ↻ ↗ Nightly check          │    │ │ ⠋ working            │    ┊  │ ○ idle · ↗ elsewhere       │  ││ Agent    GitHub Copilot                    │
+ ✦                               │ ·  ╰─└──────────────────────┘ ·  ╰┄┄│ canvas · main              │· ││ Session  orch                              │
+                                 │        │                            ╰────────────────────────────╯  ││                                            │
+ ◈                               │      ┌ ◇ Review the diff ───┐                                       ││ Open in another terminal (CLI or VS Code). │
+                                 │ ·    │ ○ idle               │ ·     ·     ·     ·     ·     ·     · ││ Copilot Canvas will not start a second co… │
+ ⇄                               │      └──────────────────────┘                                       ││ S: subsession · R: rename · G: group · X:… │
+                                 │        │                                                            ││                                            │
+ ≡                               │ ·    ┌ ◇ Lint the tree ─────┐ ·     ╭ Nightly check ─────────────╮●┄││                                            │
+                                 │      │ ✗ failed             │       │ ○ idle · ↻ every 15m · ↗ … │  ││                                            │
+                                 │      └──────────────────────┘       │ canvas · main              │  ││                                            │
+                                 │ ·     ·     ·     ·     ·     ·     ╰────────────────────────────╯•┄││                                            │
+                                 │                                                                     ││                                            │
+                                 │                                                                     ││                                            │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││                                            │
+                                 │                                                                     ││                                            │
+                                 │                                                                     ││                                            │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││                                            │
+                                 │                                                                     ││                                            │
+                                 │                                                                     ││                                            │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││                                            │
+                                 │                                                                     ││                                            │
+                                 │                                                                     ││                                            │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││                                            │
+                                 │                                                                     ││                                            │
+                                 │                                                                     ││                                            │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││                                            │
+                                 │                                                                     ││                                            │
+                                 │                                                                     ││                                            │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││                                            │
+                                 │                                                                     │└────────────────────────────────────────────┘
+ drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom · right-click menu · ? help
+## gpu view model
+view cursor=none modal=none banner=None
+canvas area=34,1 69x38 origin=-1,0 scale=1 grid=true tick=0 empty=false
+edge Subagent color=#6e7681 from=1,1 30x4 to=5,7 24x3 path=(3.5,5) (3.5,6) (7.5,6) (7.5,7)
+edge Subagent color=#6e7681 from=1,1 30x4 to=5,11 24x3 path=(3.5,5) (3.5,8) (7.5,8) (7.5,11)
+edge Subagent color=#6e7681 from=1,1 30x4 to=5,15 24x3 path=(3.5,5) (3.5,10) (7.5,10) (7.5,15)
+edge Subsession color=#58a6ff from=1,1 30x4 to=36,7 30x4 path=(31,3) (33.5,3) (33.5,9) (36,9)
+box orch:explore Agent rect=5,7 24x3 prefix="◇ " name="Explore the API"
+  status=Working icon="⠋" label="working" line="⠋ working" subtitle="subagent" elsewhere=false every=None mailbox=0
+  border=Light border_style=[fg #6e7681] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #c9d1d9]
+  selected=false focused_term=false active=false
+box orch:review Agent rect=5,11 24x3 prefix="◇ " name="Review the diff"
+  status=Idle icon="○" label="idle" line="○ idle" subtitle="subagent" elsewhere=false every=None mailbox=0
+  border=Light border_style=[fg #6e7681] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #8b949e]
+  selected=false focused_term=false active=false
+box orch:lint Agent rect=5,15 24x3 prefix="◇ " name="Lint the tree"
+  status=Failed icon="✗" label="failed" line="✗ failed" subtitle="subagent" elsewhere=false every=None mailbox=0
+  border=Light border_style=[fg #6e7681] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #e66100]
+  selected=false focused_term=false active=false
+box follow Session rect=36,7 30x4 prefix="↳ " name="Follow-up"
+  status=Idle icon="○" label="idle" line="○ idle" subtitle="canvas · main" elsewhere=true every=None mailbox=2
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #8b949e]
+  selected=false focused_term=false active=false
+box nightly Session rect=36,15 30x4 prefix="" name="Nightly check"
+  status=Idle icon="○" label="idle" line="○ idle · ↻ every 15m" subtitle="canvas · main" elsewhere=true every=Some("every 15m") mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #8b949e]
+  selected=false focused_term=false active=false
+box orch Session rect=1,1 30x4 prefix="" name="Orchestrator"
+  status=Working icon="⠋" label="working" line="⠋ working" subtitle="canvas · main" elsewhere=true every=None mailbox=0
+  border=Heavy border_style=[fg #f0f6fc +BOLD] fill=#161b22 attention=none name_style=[fg #f0f6fc +BOLD] line_style=[fg #c9d1d9]
+  selected=true focused_term=false active=false
+loop rect=36,15 30x4 phase=0 halo=false
