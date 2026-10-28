@@ -184,9 +184,172 @@ impl App {
     }
 
     pub fn send_ctrl_v(&mut self, id: &str) {
-        if self.owned_alive(id) {
-            let input = crate::protocol::Input::Key { key: crate::protocol::Key::Char('v'), mods: crate::protocol::MOD_CTRL };
-            self.send(ClientMsg::Input { id: id.to_owned(), input });
+        let input = crate::protocol::Input::Key { key: crate::protocol::Key::Char('v'), mods: crate::protocol::MOD_CTRL };
+        self.paste_key(id, input);
+    }
+
+    /// Sends a paste key (Ctrl+V, Alt+V) so the agent reads the clipboard
+    /// itself. When the service runs on another machine, an image on this
+    /// machine's clipboard is first put on the service's clipboard (PLAN.md §6).
+    pub fn paste_key(&mut self, id: &str, input: crate::protocol::Input) {
+        if !self.owned_alive(id) {
+            return;
+        }
+        if !self.files_elsewhere() || !self.platform.clipboard_has_image() {
+            return self.send(ClientMsg::Input { id: id.to_owned(), input });
+        }
+        if !self.connected {
+            return self.notify("Offline: input not sent.", true);
+        }
+        self.notify("Sending the image to the service's clipboard…", false);
+        let (platform, id) = (self.platform.clone(), id.to_owned());
+        self.in_background(
+            move |backend| {
+                let png = platform.clipboard_image_png().map_err(|e| format!("{e:#}"))?;
+                let size = png.len();
+                backend.set_clipboard_image(png).map(|_| size).map_err(|e| format!("{e:#}"))
+            },
+            move |result| {
+                AppEvent::Run(Box::new(move |app: &mut App| match result {
+                    Ok(size) if app.owned_alive(&id) => {
+                        app.send(ClientMsg::Input { id, input });
+                        app.notify(format!("Image pasted ({} KB, through the service's clipboard).", size.div_ceil(1024)), false);
+                    }
+                    Ok(_) => {}
+                    Err(error) => app.notify(format!("Image paste failed: {error}"), true),
+                }))
+            },
+        );
+    }
+
+    // ---------- links, files and folders (local and remote) ----------
+
+    /// The service runs on another machine: paths in terminals, automation
+    /// files and folders are that machine's, not this one's.
+    pub fn files_elsewhere(&self) -> bool {
+        self.target.as_ref().is_some_and(|t| t.is_other_machine())
+    }
+
+    /// Opens a link from a terminal, a passive session or an events catalog.
+    /// Locally: its handler on this machine. Remote: URLs on this machine;
+    /// paths in VS Code through the server's VS Code tunnel, else in the
+    /// viewer. Nothing is executed.
+    pub fn open_link(&mut self, target: &str) {
+        if self.files_elsewhere() && !crate::links::is_url(target) {
+            return self.open_remote(target, false);
+        }
+        match self.platform.open_link(target) {
+            Ok(message) => self.notify(message, false),
+            Err(error) => self.notify(format!("{error:#}"), true),
+        }
+    }
+
+    /// Opens an automation output, log, manifest or report link. Locally: its
+    /// default program where the backend runs. Remote: URLs on this machine,
+    /// files in the viewer (with "Open in VS Code" when there is a tunnel).
+    pub fn open_target(&mut self, target: &str) {
+        if !self.files_elsewhere() {
+            if let Err(error) = self.backend.open_target(target) {
+                self.notify(format!("{error:#}"), true);
+            }
+        } else if crate::links::is_url(target) {
+            self.open_link(target);
+        } else {
+            self.open_remote(target, true);
+        }
+    }
+
+    /// Shows a folder. Locally: File Explorer where the backend runs. Remote:
+    /// VS Code through the tunnel, else the viewer (with "Copy path").
+    pub fn open_folder(&mut self, path: &str) {
+        if self.files_elsewhere() {
+            return self.open_remote(path, false);
+        }
+        if let Err(error) = self.backend.open_folder(path) {
+            self.notify(format!("{error:#}"), true);
+        }
+    }
+
+    /// A path on the service's machine: in VS Code through its tunnel
+    /// (unless `view`), else in the viewer.
+    fn open_remote(&mut self, target: &str, view: bool) {
+        let (path, line) = match crate::links::remote_path(target) {
+            Ok(found) => found,
+            Err(error) => return self.notify(format!("{error:#}"), true),
+        };
+        let info = match self.backend.path_info(&path) {
+            Ok(info) => info,
+            Err(error) => return self.notify(format!("Cannot check {path}: {error:#}"), true),
+        };
+        if !info.exists {
+            return self.notify(format!("{path} does not exist"), true);
+        }
+        let path = if info.absolute.is_empty() { path } else { info.absolute };
+        let line = line.filter(|_| !info.dir);
+        let uri = self.target.as_ref().and_then(|t| t.vscode_tunnel()).map(|tunnel| crate::links::vscode_tunnel_uri(&tunnel, &path, line));
+        if !view
+            && let Some(uri) = &uri
+            && crate::links::vscode_installed()
+        {
+            match self.platform.open_uri(uri) {
+                Ok(()) => self.notify(format!("Opened {path} in VS Code (tunnel)"), false),
+                Err(error) => self.notify(format!("{error:#}"), true),
+            }
+            return;
+        }
+        self.show_viewer(path, info.dir, line, uri);
+    }
+
+    /// Opens the read-only viewer on a path of the service's machine and
+    /// loads it in the background.
+    pub fn show_viewer(&mut self, path: String, folder: bool, line: Option<u32>, vscode: Option<String>) {
+        self.modals.push(Modal::Viewer(Box::new(crate::viewer::Viewer::new(path.clone(), folder, line, vscode))));
+        self.needs_draw = true;
+        let key = path.clone();
+        self.in_background(
+            move |backend| match folder {
+                true => backend.list_dir(Some(path)).map(Err).map_err(|e| format!("{e:#}")),
+                false => backend.read_text(&path, crate::viewer::MAX_VIEW_BYTES).map(Ok).map_err(|e| format!("{e:#}")),
+            },
+            move |loaded| {
+                AppEvent::Run(Box::new(move |app: &mut App| {
+                    for modal in app.modals.iter_mut() {
+                        if let Modal::Viewer(viewer) = modal
+                            && viewer.path == key
+                            && viewer.lines.is_none()
+                        {
+                            match &loaded {
+                                Ok(Ok(text)) => viewer.set_text(text, text.len() as u64 >= crate::viewer::MAX_VIEW_BYTES),
+                                Ok(Err(entries)) => viewer.set_entries(entries.clone()),
+                                Err(error) => viewer.error = Some(format!("Cannot read it: {error}")),
+                            }
+                        }
+                    }
+                }))
+            },
+        );
+    }
+
+    /// A viewer button; true closes the viewer.
+    pub fn viewer_button(&mut self, viewer: &crate::viewer::Viewer, button: &str) -> bool {
+        match button {
+            crate::viewer::OPEN_IN_VSCODE => {
+                if let Some(uri) = &viewer.vscode {
+                    match self.platform.open_uri(uri) {
+                        Ok(()) => self.notify(format!("Opened {} in VS Code (tunnel)", viewer.path), false),
+                        Err(error) => self.notify(format!("{error:#}"), true),
+                    }
+                }
+                false
+            }
+            crate::viewer::COPY_PATH => {
+                match self.platform.set_clipboard_text(&viewer.path) {
+                    Ok(()) => self.notify(format!("Copied {}", viewer.path), false),
+                    Err(error) => self.notify(format!("Copy failed: {error:#}"), true),
+                }
+                false
+            }
+            _ => true,
         }
     }
 
@@ -467,11 +630,7 @@ impl App {
             Action::ToggleAutomation(key) => self.toggle_automation(&key),
             Action::RunAutomation(key) => self.run_automation(&key),
             Action::OpenAutomationFile(key, which) => self.open_automation_file(&key, which),
-            Action::OpenTarget(target) => {
-                if let Err(error) = self.backend.open_target(&target) {
-                    self.notify(format!("{error:#}"), true);
-                }
-            }
+            Action::OpenTarget(target) => self.open_target(&target),
             Action::AskDoctor(key) => self.ask_doctor(&key),
             Action::ShowAutomations => self.set_view(crate::side::SideView::Automations),
             Action::ToggleConfig(kind, name, enable) => self.set_config_enabled(kind, name, enable),
@@ -487,11 +646,7 @@ impl App {
                 let keep: Vec<String> = self.selection.iter().filter(|id| self.doc.node(id).is_some_and(|n| n.kind != NodeKind::Automation)).cloned().collect();
                 self.selection = keep;
             }
-            Action::OpenPath(path) => {
-                if let Err(error) = self.backend.open_folder(&path) {
-                    self.notify(format!("{error:#}"), true);
-                }
-            }
+            Action::OpenPath(path) => self.open_folder(&path),
             Action::SetGroupFolder(id) => self.ask_group_folder(&id),
             Action::OpenGroupFolder(id, outputs) => self.open_group_folder(&id, outputs),
             Action::GroupDefaults(id) => {
@@ -577,9 +732,9 @@ impl App {
                         2 => paths.log,
                         _ => paths.dir,
                     };
-                    match self.platform.open_link(&path.display().to_string()) {
-                        Ok(message) => self.notify(message, false),
-                        Err(error) => self.notify(format!("{error:#}"), true),
+                    match which {
+                        3 => self.open_folder(&path.display().to_string()),
+                        _ => self.open_link(&path.display().to_string()),
                     }
                 }
             }
@@ -591,10 +746,7 @@ impl App {
             })),
             Action::OpenEvents(group) => match self.doc.group(&group).and_then(|g| g.folder.clone()) {
                 Some(folder) => match self.backend.ensure_catalog(&folder) {
-                    Ok(path) => match self.platform.open_link(&path) {
-                        Ok(message) => self.notify(message, false),
-                        Err(error) => self.notify(format!("{error:#}"), true),
-                    },
+                    Ok(path) => self.open_link(&path),
                     Err(error) => self.notify(format!("{error:#}"), true),
                 },
                 None => self.notify("Set the group's folder first (group menu → Change group folder…).", true),
@@ -791,6 +943,7 @@ impl App {
                 self.tails = tails.into_iter().collect();
             }
             AppEvent::Notice { text, error } => self.notify(text, error),
+            AppEvent::Run(then) => then(self),
             AppEvent::CliDone { label, result } => {
                 self.cli_busy = None;
                 match result {
@@ -1017,6 +1170,174 @@ impl App {
                 browser.entries = vec!["..".into()];
                 browser.error = Some(error);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod remote_tests {
+    use std::sync::{Arc, Mutex};
+
+    use crossbeam_channel::{Receiver, bounded, unbounded};
+
+    use super::*;
+    use crate::conn::{Conn, ConnTarget};
+    use crate::protocol::{Input, Key, MOD_ALT, MOD_CTRL, TermInfo};
+    use crate::rpc::{PathInfo, Request, Response};
+    use crate::sync::Opened;
+
+    /// The service's machine: one file, one folder; records clipboard images.
+    #[derive(Default)]
+    struct Service {
+        images: Mutex<Vec<Vec<u8>>>,
+    }
+
+    impl Backend for Service {
+        fn call(&self, request: Request) -> anyhow::Result<Response> {
+            Ok(match request {
+                Request::PathInfo { path } if path.ends_with("notes.md") => Response::Path(PathInfo { exists: true, file: true, absolute: path, ..Default::default() }),
+                Request::PathInfo { path } if path.ends_with("src") => Response::Path(PathInfo { exists: true, dir: true, absolute: path, ..Default::default() }),
+                Request::PathInfo { .. } => Response::Path(PathInfo::default()),
+                Request::ReadText { .. } => Response::Text("# Notes\nREMOTE".into()),
+                Request::ListDir { .. } => Response::Texts(vec!["..".into(), "lib".into()]),
+                Request::SetClipboardImage { png } => {
+                    self.images.lock().unwrap().push(png);
+                    Response::Done
+                }
+                _ => Response::Error("unexpected".into()),
+            })
+        }
+    }
+
+    /// This machine: an image on the clipboard; records what it opens.
+    #[derive(Default)]
+    struct Home {
+        opened: Mutex<Vec<String>>,
+        copied: Mutex<Vec<String>>,
+    }
+
+    impl crate::platform::Platform for Home {
+        fn clipboard_has_image(&self) -> bool {
+            true
+        }
+        fn clipboard_has_text(&self) -> bool {
+            false
+        }
+        fn clipboard_image_png(&self) -> anyhow::Result<Vec<u8>> {
+            Ok(b"\x89PNG fake".to_vec())
+        }
+        fn set_clipboard_text(&self, text: &str) -> anyhow::Result<()> {
+            self.copied.lock().unwrap().push(text.to_owned());
+            Ok(())
+        }
+        fn open_link(&self, target: &str) -> anyhow::Result<String> {
+            self.opened.lock().unwrap().push(target.to_owned());
+            Ok(format!("Opened {target}"))
+        }
+        fn open_uri(&self, uri: &str) -> anyhow::Result<()> {
+            self.opened.lock().unwrap().push(uri.to_owned());
+            Ok(())
+        }
+    }
+
+    struct Fixture {
+        app: App,
+        sent: Receiver<ClientMsg>,
+        events: Receiver<AppEvent>,
+        service: Arc<Service>,
+        home: Arc<Home>,
+    }
+
+    fn fixture(target: Option<ConnTarget>) -> Fixture {
+        let (tx, sent) = bounded(64);
+        let (_keep, service_rx) = bounded(1);
+        let (app_tx, events) = unbounded();
+        let service = Arc::new(Service::default());
+        let mut app = App::new(Conn::detached(tx, service_rx), service.clone(), Opened::detached(crate::doc::Doc::default()), false, ".".into(), app_tx, None);
+        let home = Arc::new(Home::default());
+        app.platform = home.clone();
+        app.target = target;
+        app.terms.insert("t".into(), TermInfo { id: "t".into(), alive: true, ..Default::default() });
+        Fixture { app, sent, events, service, home }
+    }
+
+    fn remote(vscode: Option<&str>) -> ConnTarget {
+        let record = canvas_common::remote::ServerRecord {
+            name: "cloud".into(),
+            addr: Some("127.0.0.1:1".into()),
+            vscode_tunnel: vscode.map(str::to_owned),
+            client_id: "pc-1".into(),
+            ..Default::default()
+        };
+        ConnTarget::Server(crate::tunnel::Server::new(record, vec![1; 32]))
+    }
+
+    /// Runs background continuations until `done`.
+    fn settle(f: &mut Fixture, done: impl Fn(&App) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !done(&f.app) {
+            assert!(std::time::Instant::now() < deadline, "background work did not finish");
+            if let Ok(event) = f.events.recv_timeout(std::time::Duration::from_millis(50)) {
+                f.app.on_app_event(event);
+            }
+        }
+    }
+
+    #[test]
+    fn image_paste_goes_through_the_service_clipboard_only_in_remote_mode() {
+        let ctrl_v = Input::Key { key: Key::Char('v'), mods: MOD_CTRL };
+        let mut local = fixture(Some(ConnTarget::Tcp { addr: "x:1".into(), remote_id: None, secret: vec![] }));
+        local.app.target = None;
+        local.app.send_ctrl_v("t");
+        assert_eq!(local.sent.try_recv().ok(), Some(ClientMsg::Input { id: "t".into(), input: ctrl_v.clone() }), "locally the agent reads this clipboard");
+        assert!(local.service.images.lock().unwrap().is_empty());
+
+        let mut f = fixture(Some(remote(None)));
+        f.app.paste_key("t", Input::Key { key: Key::Char('v'), mods: MOD_ALT });
+        assert!(f.sent.try_recv().is_err(), "the key waits for the image");
+        settle(&mut f, |app| app.notice.as_ref().is_some_and(|n| n.text.starts_with("Image pasted")));
+        assert_eq!(*f.service.images.lock().unwrap(), vec![b"\x89PNG fake".to_vec()]);
+        assert_eq!(f.sent.try_recv().ok(), Some(ClientMsg::Input { id: "t".into(), input: Input::Key { key: Key::Char('v'), mods: MOD_ALT } }));
+        // Offline: nothing is sent, nothing is queued.
+        f.app.connected = false;
+        f.app.send_ctrl_v("t");
+        assert!(f.sent.try_recv().is_err() && f.service.images.lock().unwrap().len() == 1);
+    }
+
+    #[test]
+    fn remote_paths_open_in_vscode_or_the_viewer_and_urls_open_here() {
+        let mut f = fixture(Some(remote(None)));
+        f.app.open_link("https://example.com/x");
+        assert_eq!(f.home.opened.lock().unwrap().last().map(String::as_str), Some("https://example.com/x"), "URLs open on this machine");
+        f.app.open_link(r"C:\work\missing.rs:3");
+        assert_eq!(f.app.notice.as_ref().map(|n| n.text.as_str()), Some(r"C:\work\missing.rs does not exist"), "checked on the service's machine");
+        f.app.open_link(r"C:\work\notes.md:2");
+        settle(&mut f, |app| matches!(app.modals.last(), Some(Modal::Viewer(v)) if v.lines.is_some()));
+        let Some(Modal::Viewer(viewer)) = f.app.modals.last().cloned() else { panic!("viewer") };
+        assert_eq!((viewer.path.as_str(), viewer.lines.as_deref()), (r"C:\work\notes.md", Some(&["# Notes".to_owned(), "REMOTE".to_owned()][..])));
+        assert!(viewer.vscode.is_none());
+        assert!(!f.app.viewer_button(&viewer, crate::viewer::COPY_PATH));
+        assert_eq!(*f.home.copied.lock().unwrap(), vec![r"C:\work\notes.md".to_owned()]);
+        f.app.modals.clear();
+        f.app.open_folder(r"C:\work\src");
+        settle(&mut f, |app| matches!(app.modals.last(), Some(Modal::Viewer(v)) if v.lines.is_some()));
+        let Some(Modal::Viewer(folder)) = f.app.modals.last() else { panic!("folder viewer") };
+        assert!(folder.folder && folder.lines.as_deref() == Some(&["▸ lib".to_owned()][..]));
+
+        // With a VS Code tunnel, files and folders open in VS Code (where it is installed);
+        // automation files always open in the viewer, with the button.
+        let mut f = fixture(Some(remote(Some("cpc"))));
+        f.app.open_target(r"C:\work\notes.md");
+        let Some(Modal::Viewer(viewer)) = f.app.modals.last().cloned() else { panic!("automation files use the viewer") };
+        assert_eq!(viewer.vscode.as_deref(), Some("vscode://vscode-remote/tunnel+cpc/C:/work/notes.md"));
+        assert_eq!(viewer.buttons()[0], crate::viewer::OPEN_IN_VSCODE);
+        f.app.modals.clear();
+        f.app.open_link(r"C:\work\notes.md:7");
+        if crate::links::vscode_installed() {
+            assert_eq!(f.home.opened.lock().unwrap().last().map(String::as_str), Some("vscode://vscode-remote/tunnel+cpc/C:/work/notes.md:7"));
+            assert!(f.app.modals.is_empty());
+        } else {
+            assert!(matches!(f.app.modals.last(), Some(Modal::Viewer(_))), "no VS Code here: the viewer");
         }
     }
 }

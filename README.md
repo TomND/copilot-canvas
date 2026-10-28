@@ -337,6 +337,12 @@ UI load tests `cargo test --release stress_probe -- --ignored --nocapture`
 - The pipe accepts only your user SID and local clients, and both sides prove
   knowledge of a per-start token (HMAC) so neither can be impersonated. The
   client connects with identification-only impersonation rights.
+- **Remote mode** (off until you pair a client): the service listens on
+  loopback only, behind a private Dev Tunnel (owner sign-in). Each paired
+  client has its own secret (one-time pairing code; DPAPI on both sides;
+  `remote revoke` drops it at once) and both sides prove it per connection.
+  Remote links never execute anything: URLs open at home, the Cloud PC's
+  files in VS Code through its tunnel or in a read-only viewer.
 - Stop is graceful (Ctrl+D, then the whole process tree after 5 s). The service
   sits in a kill-on-close job so nothing is orphaned if it dies.
 - **Idle auto-stop** (*Settings › Performance › Stop idle sessions*: never /
@@ -380,6 +386,11 @@ copilot-canvas selftest agent [--agent copilot|opencode|claude]
                                       syncs VS Code sessions and previews migration (applies nothing).
                                       Claude Code runs in a throw-away CLAUDE_CONFIG_DIR.
 copilot-canvas selftest copilot       same as selftest agent --agent copilot
+copilot-canvas selftest --remote loopback|faults|paired
+                                      remote mode: the UI test over TCP; drops, cut frames and delay;
+                                      pairing, a Dev Tunnel stand-in, revocation (docs/REMOTE.md)
+copilot-canvas remote tunnel-setup|pair|clients|revoke    on the Cloud PC (docs/REMOTE.md)
+copilot-canvas remote add|servers|forget                  at home; then copilot-canvas --remote NAME
 cargo test                            unit tests
 ```
 

@@ -117,7 +117,8 @@ pub struct Hooks {
     pub pump: Sender<()>,
     /// Receives the terminal id when its process exits.
     pub exited: Sender<String>,
-    pub clipboard: Sender<String>,
+    /// OSC 52 copies: (terminal id, text).
+    pub clipboard: Sender<(String, String)>,
     pub bytes: Arc<AtomicU64>,
     /// Title, progress or bell changed: the terminal's info is resent.
     pub changed: Sender<String>,
@@ -128,7 +129,7 @@ struct Sink<'a> {
     id: &'a str,
     state: &'a State,
     input: &'a Sender<Vec<u8>>,
-    clipboard: &'a Sender<String>,
+    clipboard: &'a Sender<(String, String)>,
     changed: &'a Sender<String>,
     dirty: bool,
 }
@@ -146,7 +147,7 @@ impl Events for Sink<'_> {
         self.dirty = true;
     }
     fn clipboard(&mut self, text: String) {
-        let _ = self.clipboard.try_send(text);
+        let _ = self.clipboard.try_send((self.id.to_owned(), text));
     }
     fn progress(&mut self, state: u8) {
         let first = !self.state.progress_seen.swap(true, Ordering::Relaxed);
@@ -446,7 +447,7 @@ struct EmulatorThread {
     generation: Arc<AtomicU64>,
     state: Arc<State>,
     input: Sender<Vec<u8>>,
-    clipboard: Sender<String>,
+    clipboard: Sender<(String, String)>,
     changed: Sender<String>,
     pump: Sender<()>,
     fail: Option<FailHook>,
@@ -967,7 +968,7 @@ mod tests {
         generation: Arc<AtomicU64>,
         failed: Receiver<String>,
         pending: Mutex<Option<Receiver<Snapshot>>>,
-        _keep: (Receiver<String>, Receiver<String>, Receiver<()>),
+        _keep: (Receiver<(String, String)>, Receiver<String>, Receiver<()>),
     }
 
     impl Harness {
@@ -1161,7 +1162,7 @@ mod tests {
     fn hooks() -> (Hooks, Vec<Box<dyn Any>>) {
         let (pump, a) = bounded::<()>(1);
         let (exited, b) = bounded::<String>(16);
-        let (clipboard, c) = bounded::<String>(16);
+        let (clipboard, c) = bounded::<(String, String)>(16);
         let (changed, d) = bounded::<String>(1024);
         (Hooks { pump, exited, clipboard, bytes: Arc::new(AtomicU64::new(0)), changed }, vec![Box::new(a), Box::new(b), Box::new(c), Box::new(d)])
     }

@@ -79,6 +79,8 @@ pub struct Agents {
     docs: docs::Docs,
     /// Backend requests for the worker threads (slow, quick).
     rpc: (Sender<RpcJob>, Sender<RpcJob>),
+    /// Pairing codes and paired remote clients.
+    remote: crate::remote::Registry,
 }
 
 /// Passive sessions and the factory watch use the backend under this name.
@@ -118,6 +120,7 @@ impl Agents {
             agent_sessions: Mutex::new(HashMap::new()),
             docs: docs::Docs::default(),
             rpc: (rpc_tx, quick_tx),
+            remote: crate::remote::Registry::new(&instance.home),
         });
         server::spawn_named("index", { let a = agents.clone(); move || index_loop(a, index_rx) });
         server::spawn_named("subsessions", { let a = agents.clone(); move || subsession_loop(a) });
@@ -285,6 +288,13 @@ impl HostApp for Agents {
             ClientMsg::Rpc { id, json } => {
                 // Read once here: the worker gets the request (or why it is not one).
                 let request = serde_json::from_str::<canvas_model::rpc::Request>(&json).map_err(|e| e.to_string());
+                if let Ok(request) = &request
+                    && request.is_remote_admin()
+                {
+                    let response = self.remote_admin(client, request.clone());
+                    client.send(ServiceMsg::RpcReply { id, json: serde_json::to_string(&response).unwrap_or_default() });
+                    return Ok(());
+                }
                 let quick = request.as_ref().is_ok_and(|r| r.is_quick());
                 let queue = if quick { &self.rpc.1 } else { &self.rpc.0 };
                 let _ = queue.send(RpcJob { client: client.clone(), id, request });
@@ -326,9 +336,23 @@ impl HostApp for Agents {
         passive::has_work(self)
     }
 
-    /// Pairing (`copilot-canvas remote pair`) is not built yet: no paired clients.
-    fn remote_secret(&self, _id: &str) -> Option<Vec<u8>> {
-        None
+    fn remote_secret(&self, id: &str) -> Option<Vec<u8>> {
+        self.remote.secret(id, now_ms())
+    }
+
+    fn remote_refusal(&self, id: &str) -> String {
+        let reason = self.remote.refusal(id);
+        log(&self.instance, &format!("refused remote client {id}: {reason}"));
+        reason
+    }
+
+    fn pair(&self, request: &canvas_common::handshake::PairRequest) -> Result<canvas_common::handshake::PairGrant, String> {
+        let result = self.remote.pair(request, now_ms());
+        match &result {
+            Ok(grant) => log(&self.instance, &format!("paired a new remote client {} ({})", grant.client_id, request.name)),
+            Err(reason) => log(&self.instance, &format!("pairing refused: {reason}")),
+        }
+        result
     }
 
     fn shutdown(&self) {
@@ -341,6 +365,66 @@ impl HostApp for Agents {
 }
 
 impl Agents {
+    /// Pairing codes, the client list and revocation (`copilot-canvas remote
+    /// pair|clients|revoke`), for clients on the local pipe only.
+    fn remote_admin(&self, client: &Arc<Client>, request: canvas_model::rpc::Request) -> canvas_model::rpc::Response {
+        use canvas_model::rpc::{PairingCode, RemoteClient, Request, Response};
+        if client.remote {
+            return Response::Error("remote access is managed on the service's machine (`copilot-canvas remote …` there)".into());
+        }
+        let now = now_ms();
+        let result = (|| -> Result<Response> {
+            Ok(match request {
+                Request::PairCode { name } => {
+                    // Remote listening is off until a client is paired.
+                    let home = &self.instance.home;
+                    let mut settings = canvas_common::settings::Settings::load(home);
+                    let addr = match settings.listen() {
+                        Some(addr) => addr,
+                        None => {
+                            let addr = format!("127.0.0.1:{}", canvas_common::remote::DEFAULT_PORT);
+                            settings.remote.listen = Some(addr.clone());
+                            settings.save(home).context("cannot turn on remote listening in settings.json")?;
+                            addr
+                        }
+                    };
+                    let port = self.host.listen_remote(&addr)?;
+                    let (code, expires_ms) = self.remote.open_code(name.clone(), now)?;
+                    log(&self.instance, &format!("opened a pairing code{}", name.as_deref().map(|n| format!(" for {n}")).unwrap_or_default()));
+                    Response::Pairing(PairingCode { code: canvas_common::pairing::format_code(&code), expires_ms, listen: format!("127.0.0.1:{port}"), name })
+                }
+                Request::RemoteClients => {
+                    let open: Vec<String> = lock(&self.clients).values().filter_map(|c| c.remote_id.clone()).collect();
+                    Response::RemoteClients(
+                        self.remote
+                            .list()?
+                            .into_iter()
+                            .map(|c| RemoteClient {
+                                connections: open.iter().filter(|id| **id == c.id).count() as u32,
+                                id: c.id,
+                                name: c.name,
+                                created_ms: c.created_ms,
+                                last_seen_ms: c.last_seen_ms,
+                                revoked_ms: c.revoked_ms,
+                            })
+                            .collect(),
+                    )
+                }
+                Request::RemoteRevoke { client: key } => {
+                    let revoked = self.remote.revoke(&key, now)?;
+                    let connected: Vec<Arc<Client>> = lock(&self.clients).values().filter(|c| c.remote_id.as_deref() == Some(revoked.id.as_str())).cloned().collect();
+                    for connection in &connected {
+                        connection.close();
+                    }
+                    log(&self.instance, &format!("revoked remote client {} ({}); closed {} connection(s)", revoked.id, revoked.name, connected.len()));
+                    Response::Text(format!("Revoked {} ({}); {} live connection(s) closed.", revoked.name, revoked.id, connected.len()))
+                }
+                other => anyhow::bail!("{} is not a remote-access request", other.name()),
+            })
+        })();
+        result.unwrap_or_else(|error| Response::Error(format!("{error:#}")))
+    }
+
     /// Applies a client's document edit and sends the patch to every client
     /// that has the document open; a refused edit resynchronizes its sender.
     fn doc_edit(&self, client: &Arc<Client>, key: String, ops_json: String) {

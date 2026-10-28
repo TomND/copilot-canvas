@@ -86,6 +86,12 @@ pub enum ClientMsg {
     /// Protocol 8: a backend request (`canvas_model::rpc::Request` as JSON),
     /// answered with `ServiceMsg::RpcReply` carrying the same `id`.
     Rpc { id: u64, json: String },
+    /// Protocol 8, TCP only: opens a connection that pairs a new remote client
+    /// (instead of `Hello8`). `code_proof` is an HMAC of the one-time pairing
+    /// code over `nonce` (the code itself is never sent); `name` names the
+    /// client in `remote clients`. Answered with `ServiceMsg::Paired` or
+    /// `ServiceMsg::Error`, then the service closes the connection.
+    Pair { code_proof: Vec<u8>, name: String, nonce: Vec<u8> },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -207,6 +213,10 @@ pub enum ServiceMsg {
     DocSaved { key: String, version: u64, error: Option<String> },
     /// Protocol 8: the answer to `ClientMsg::Rpc` (`canvas_model::rpc::Response` as JSON).
     RpcReply { id: u64, json: String },
+    /// Protocol 8: the answer to `ClientMsg::Pair`: the new client's id, the
+    /// service's nonce and the client secret sealed under a key derived from
+    /// the code and both nonces (`pairing::seal`).
+    Paired { client_id: String, nonce: Vec<u8>, secret: Vec<u8> },
 }
 
 /// Index of the first `ServiceMsg` variant protocol-7 clients cannot decode.
@@ -226,6 +236,7 @@ impl ServiceMsg {
             | ServiceMsg::DocPatch { .. }
             | ServiceMsg::DocSaved { .. }
             | ServiceMsg::RpcReply { .. }
+            | ServiceMsg::Paired { .. }
                 if protocol < 8 =>
             {
                 None
@@ -673,6 +684,7 @@ pub(crate) mod tests {
             (21, ClientMsg::DocOpen { path: Some(r"C:\c.json".into()), demo: false, cwd: r"C:\w".into() }),
             (22, ClientMsg::DocEdit { key: "canvas-1".into(), base: 7, ops_json: "[]".into() }),
             (23, ClientMsg::Rpc { id: 9, json: "\"Info\"".into() }),
+            (24, ClientMsg::Pair { code_proof: vec![3; 32], name: "home-pc".into(), nonce: vec![4; 32] }),
         ];
         for (index, message) in client {
             let bytes = postcard::to_stdvec(&message).unwrap();
@@ -688,6 +700,7 @@ pub(crate) mod tests {
             (17, ServiceMsg::DocPatch { key: "canvas-1".into(), version: 2, origin: 3, ops_json: "[]".into() }),
             (18, ServiceMsg::DocSaved { key: "canvas-1".into(), version: 2, error: Some("disk full".into()) }),
             (19, ServiceMsg::RpcReply { id: 9, json: "\"Done\"".into() }),
+            (20, ServiceMsg::Paired { client_id: "pc-1".into(), nonce: vec![5; 32], secret: vec![6; 64] }),
         ];
         for (index, message) in service {
             let bytes = postcard::to_stdvec(&message).unwrap();
@@ -712,6 +725,7 @@ pub(crate) mod tests {
             ServiceMsg::DocPatch { key: "k".into(), version: 2, origin: 1, ops_json: "[]".into() },
             ServiceMsg::DocSaved { key: "k".into(), version: 2, error: None },
             ServiceMsg::RpcReply { id: 1, json: "\"Done\"".into() },
+            ServiceMsg::Paired { client_id: "pc-1".into(), nonce: vec![1; 32], secret: vec![2; 64] },
         ];
         for message in all.clone() {
             let Some(shaped) = message.shaped(7, true) else { continue };

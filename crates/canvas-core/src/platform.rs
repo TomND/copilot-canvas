@@ -1,7 +1,10 @@
 //! What a front end provides from the machine it runs on: the clipboard,
 //! opening links, bells, taskbar progress and the window title. The TUI's
 //! implementation ([`TerminalPlatform`]) writes bells and progress to the
-//! outer terminal; the GUI uses the Windows shell directly.
+//! outer terminal; the GUI uses the Windows shell directly. In remote mode
+//! all of it stays on the client's machine (PLAN.md §6): text and OSC 52
+//! copies use this clipboard, bells and progress this taskbar, URLs this
+//! browser; only images are copied to the service's clipboard for a paste.
 
 use anyhow::Result;
 
@@ -23,9 +26,19 @@ pub trait Platform: Send + Sync {
         crate::clipboard::has_image()
     }
 
+    /// The clipboard's image as PNG (sent to a remote service's clipboard).
+    fn clipboard_image_png(&self) -> Result<Vec<u8>> {
+        crate::clipboard::get_image_png()
+    }
+
     /// Opens a URL or path safely (never executes it); returns a status line.
     fn open_link(&self, target: &str) -> Result<String> {
         crate::links::open(target)
+    }
+
+    /// Opens a `vscode://` URI (a remote file through a VS Code tunnel).
+    fn open_uri(&self, uri: &str) -> Result<()> {
+        crate::links::open_vscode_uri(uri)
     }
 
     /// A session rang its bell or sent a notification. `out` is the byte

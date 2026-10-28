@@ -429,6 +429,8 @@ pub enum Modal {
     Prompt(Prompt),
     Migrate(Migrate),
     Mcp(McpPicker),
+    /// A read-only file or folder of a remote service's machine.
+    Viewer(Box<crate::viewer::Viewer>),
 }
 
 /// Clickable regions registered while drawing.

@@ -36,6 +36,10 @@ pub struct RemoteSettings {
     /// Compress remote frames with zstd.
     #[serde(default = "yes")]
     pub compress: bool,
+    /// The Dev Tunnel that hosts the remote port (`remote tunnel-setup`);
+    /// shown in pairing instructions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel: Option<String>,
 }
 
 fn yes() -> bool {
@@ -44,7 +48,7 @@ fn yes() -> bool {
 
 impl Default for RemoteSettings {
     fn default() -> Self {
-        Self { listen: None, compress: true }
+        Self { listen: None, compress: true, tunnel: None }
     }
 }
 

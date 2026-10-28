@@ -573,6 +573,14 @@ pub fn doctor(instance: &Instance) -> Result<()> {
     let unreadable = if warnings.is_empty() { String::new() } else { format!(", {} unreadable", warnings.len()) };
     line(true, "VS Code agents", format!("{} workspaces, {copilot} Copilot CLI agent entries{unreadable}", workspaces.len()));
     line(true, "Data directory", instance.home.display().to_string());
+    let automations = crate::factory_cli::configured_dir(&instance.home, None);
+    for (mark, label, detail) in crate::remote_cli::doctor_lines(instance, &automations) {
+        match mark {
+            crate::remote_cli::Mark::Ok => line(true, label, detail),
+            crate::remote_cli::Mark::Fail => line(false, label, detail),
+            crate::remote_cli::Mark::Info => println!("- {label:<20} {detail}"),
+        }
+    }
     if !ok {
         bail!("some checks failed");
     }

@@ -89,6 +89,48 @@ pub fn get_text() -> Result<String> {
     text.ok_or_else(|| anyhow::anyhow!("the clipboard has no text"))
 }
 
+/// The clipboard's image as PNG: the "PNG" format when a program offers it
+/// (keeps transparency), else the bitmap (`CF_DIBV5`, `CF_DIB`) converted.
+/// At most `clipimage::MAX_PNG` bytes.
+pub fn get_image_png() -> Result<Vec<u8>> {
+    use canvas_common::clipimage;
+    use windows_sys::Win32::System::DataExchange::RegisterClipboardFormatW;
+    use windows_sys::Win32::System::Memory::GlobalSize;
+    const CF_DIB: u32 = 8;
+    const CF_DIBV5: u32 = 17;
+    let name: Vec<u16> = "PNG".encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: a null-terminated format name.
+    let png_format = unsafe { RegisterClipboardFormatW(name.as_ptr()) };
+    open()?;
+    // SAFETY: the clipboard is open; each handle stays valid until it closes.
+    let (format, bytes) = unsafe {
+        let mut found = None;
+        for format in [png_format, CF_DIBV5, CF_DIB] {
+            if format == 0 || IsClipboardFormatAvailable(format) == 0 {
+                continue;
+            }
+            let handle = GetClipboardData(format);
+            if handle.is_null() {
+                continue;
+            }
+            let data = GlobalLock(handle) as *const u8;
+            if data.is_null() {
+                continue;
+            }
+            let len = GlobalSize(handle);
+            let bytes = std::slice::from_raw_parts(data, len).to_vec();
+            GlobalUnlock(handle);
+            found = Some((format, bytes));
+            break;
+        }
+        CloseClipboard();
+        found.ok_or_else(|| anyhow::anyhow!("the clipboard has no image"))?
+    };
+    let png = if format == png_format { bytes } else { clipimage::dib_to_png(&bytes)? };
+    anyhow::ensure!(png.len() <= clipimage::MAX_PNG, "the image is larger than {} MB", clipimage::MAX_PNG >> 20);
+    Ok(png)
+}
+
 #[cfg(test)]
 mod tests {
     /// The clipboard is unavailable while the workstation is locked (or from a

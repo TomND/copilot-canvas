@@ -85,6 +85,14 @@ the connection dropped while waiting).
 | `CreatePassive { files }` | `Text` (the slug used) | new passive session (rules, memory, run log, `GOALS.md`, event catalog) |
 | `DocBackup { path, label, doc }` | `Text` (backup file) | before a VS Code sync, before its undo |
 | `DocBackups { path }` | `Texts` (oldest first) | backups of a canvas |
+| `PairCode { name }` | `Pairing(PairingCode)`: code, expiry, the remote address (listening starts if it was off) | `copilot-canvas remote pair` (the service's own pipe only) |
+| `RemoteClients` | `RemoteClients(list)`: id, name, paired, last seen, revoked, open connections | `remote clients` (pipe only) |
+| `RemoteRevoke { client }` | `Text` (what was revoked; its connections are closed) | `remote revoke` (pipe only) |
+| `SetClipboardImage { png }` (base64 in JSON, at most 20 MB) | `Done` (the image is on the service machine's clipboard as `CF_DIB` + `PNG`) | remote image paste (Ctrl+V / Alt+V), see REMOTE.md |
+
+The three remote-access requests are answered by the service itself (they
+need its pairing state) and only for clients on its local pipe; TCP clients
+and the in-process backend get an error.
 
 Slow requests (CLI runs, scans, worktrees) are made on background threads and
 their results come back as `AppEvent`s, as before. Quick ones (a folder
@@ -215,6 +223,7 @@ All new messages are protocol 8 and appended at the end of the enums:
 | `DocOpen { path, demo, cwd }` | 21 |
 | `DocEdit { key, base, ops_json }` | 22 |
 | `Rpc { id, json }` | 23 |
+| `Pair { code_proof, name, nonce }` (REMOTE.md, Pairing) | 24 |
 
 | Service → client | Index |
 |---|---|
@@ -222,6 +231,7 @@ All new messages are protocol 8 and appended at the end of the enums:
 | `DocPatch { key, version, origin, ops_json }` | 17 |
 | `DocSaved { key, version, error }` | 18 |
 | `RpcReply { id, json }` | 19 |
+| `Paired { client_id, nonce, secret }` (REMOTE.md, Pairing) | 20 |
 
 `ServiceMsg::shaped` never sends them to protocol-7 clients. The connection's
 reader thread routes `RpcReply` to the waiting caller by id; a dropped
@@ -261,10 +271,11 @@ connection fails the calls waiting on it.
 
 ## Limitations
 
-- `OpenFolder` / `OpenTarget` open Explorer where the backend runs; links and
-  passive-session files opened with `links::open` open on the client's
-  machine. Remote clients get the right behaviour (VS Code tunnel URIs, a text
-  viewer, copying paths) with the front ends' `Platform` work (§6).
+- `OpenFolder` / `OpenTarget` open Explorer where the backend runs; front ends
+  only use them locally. With a service on another machine, links, folders,
+  automation files and passive-session files open on the home PC as described
+  in REMOTE.md ("Local vs remote behaviours"): URLs in the home browser, the
+  Cloud PC's files in VS Code through a tunnel or in the canvas's viewer.
 - Quick requests made on the UI thread cost one round trip in remote mode
   (folder browsing, launching, the new-session checks).
 - A paired remote client is trusted like the local user: its requests can

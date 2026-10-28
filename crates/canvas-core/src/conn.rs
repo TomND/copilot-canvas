@@ -16,7 +16,8 @@ use crate::paths::{Instance, build_id};
 use crate::pipe;
 use crate::protocol::{self, CAP_COMPRESS, CAP_FRAME8, ClientInfo, ClientMsg, Input, PROTOCOL, PROTOCOL_MIN, ServiceMsg};
 use crate::sync::Opened;
-pub use canvas_common::handshake::{AuthError, NoChallenge};
+use crate::tunnel::Server;
+pub use canvas_common::handshake::{AuthError, NoChallenge, Refused};
 use canvas_common::wire::{self, Beat, Closer, FrameReader, FrameWriter, Liveness, WireStats};
 use canvas_common::{handshake, tcp};
 
@@ -38,20 +39,28 @@ pub enum ConnTarget {
     Loopback(Instance),
     /// A service at `HOST:PORT` (a forwarded tunnel port).
     Tcp { addr: String, remote_id: Option<String>, secret: Vec<u8> },
+    /// A service paired with `remote add` (`--remote NAME`): directly or
+    /// through a Dev Tunnel whose `devtunnel connect` child this client runs.
+    Server(Arc<Server>),
 }
 
 impl ConnTarget {
-    /// The `--remote` option: none (local pipe), `loopback`, or `HOST:PORT`
-    /// with credentials from `COPILOT_CANVAS_REMOTE_ID` (optional) and
+    /// The `--remote` option: none (local pipe), `loopback`, the name of a
+    /// paired server (`<home>/remote/servers.json`), or `HOST:PORT` with
+    /// credentials from `COPILOT_CANVAS_REMOTE_ID` (optional) and
     /// `COPILOT_CANVAS_REMOTE_SECRET` (hex).
     pub fn parse(remote: Option<&str>, instance: &Instance) -> Result<Self> {
         match remote.map(str::trim) {
             None | Some("") => Ok(ConnTarget::Local(instance.clone())),
             Some("loopback") => Ok(ConnTarget::Loopback(instance.clone())),
+            Some(name) if canvas_common::remote::valid_name(name) => match Server::load(&instance.home, name)? {
+                Some(server) => Ok(ConnTarget::Server(server)),
+                None => bail!("no server named {name:?} (pair one with `copilot-canvas remote add {name} …`; `copilot-canvas remote servers` lists them)"),
+            },
             Some(addr) => {
                 anyhow::ensure!(
                     addr.rsplit_once(':').is_some_and(|(host, port)| !host.is_empty() && port.parse::<u16>().is_ok()),
-                    "--remote takes `loopback` or HOST:PORT, not {addr:?}"
+                    "--remote takes `loopback`, a paired server's name or HOST:PORT, not {addr:?}"
                 );
                 let secret = std::env::var("COPILOT_CANVAS_REMOTE_SECRET").context("set COPILOT_CANVAS_REMOTE_SECRET (hex) to connect to a remote service")?;
                 let secret = decode_hex(secret.trim()).context("COPILOT_CANVAS_REMOTE_SECRET must be hex")?;
@@ -66,11 +75,25 @@ impl ConnTarget {
         !matches!(self, ConnTarget::Local(_))
     }
 
+    /// The service runs on another machine: its files are not this machine's.
+    pub fn is_other_machine(&self) -> bool {
+        matches!(self, ConnTarget::Tcp { .. } | ConnTarget::Server(_))
+    }
+
+    /// The VS Code tunnel on the service's machine (`remote add --vscode-tunnel`).
+    pub fn vscode_tunnel(&self) -> Option<String> {
+        match self {
+            ConnTarget::Server(server) => server.record.vscode_tunnel.clone(),
+            _ => None,
+        }
+    }
+
     pub fn describe(&self) -> String {
         match self {
             ConnTarget::Local(instance) => format!("the local service ({})", instance.name),
             ConnTarget::Loopback(instance) => format!("the local service over loopback TCP ({})", instance.name),
             ConnTarget::Tcp { addr, .. } => format!("the service at {addr}"),
+            ConnTarget::Server(server) => format!("the service “{}” ({})", server.name(), server.record.describe()),
         }
     }
 }
@@ -194,7 +217,66 @@ pub fn open(target: &ConnTarget, options: &ConnOptions, session: &Arc<ClientSess
             let stream = tcp::connect(addr, Duration::from_secs(5)).with_context(|| format!("cannot reach {addr}"))?;
             open_stream(stream, secret, remote_id.clone(), options, session)
         }
+        ConnTarget::Server(server) => {
+            let addr = server.address()?;
+            let opened = connect_soon(&addr)
+                .with_context(|| format!("cannot reach {} at {addr}", server.name()))
+                .and_then(|stream| open_stream(stream, server.secret(), Some(server.client_id().to_owned()), options, session));
+            match &opened {
+                Ok(_) => server.succeeded(),
+                // The service answered: the path to it works.
+                Err(error) if error.is::<Refused>() || error.is::<AuthError>() => server.succeeded(),
+                Err(_) => server.failed(),
+            }
+            opened
+        }
     }
+}
+
+/// Retrying cannot help: the service is an impostor or refused this client.
+pub fn is_final(error: &anyhow::Error) -> bool {
+    error.is::<AuthError>() || error.is::<Refused>()
+}
+
+/// Connects, retrying a refused connection for a moment (a forwarder that
+/// announced its port may need a little longer to accept).
+fn connect_soon(addr: &str) -> std::io::Result<std::net::TcpStream> {
+    let mut attempts = 0;
+    loop {
+        match tcp::connect(addr, Duration::from_secs(5)) {
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused && attempts < 6 => {
+                attempts += 1;
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            other => return other,
+        }
+    }
+}
+
+/// Pairs this machine with the service at `addr` with a one-time `code`
+/// (canonical form); `name` is what the service lists it as. Returns the new
+/// (client id, secret).
+pub fn pair(addr: &str, code: &str, name: &str) -> Result<(String, Vec<u8>)> {
+    let stream = connect_soon(addr).with_context(|| format!("cannot reach {addr}"))?;
+    let (reader, writer, closer) = tcp::split(stream)?;
+    let (mut reader, mut writer) = (FrameReader::new(Box::new(reader)), FrameWriter::new(Box::new(writer)));
+    let done = Arc::new(AtomicBool::new(false));
+    {
+        let (done, closer) = (done.clone(), closer.clone());
+        std::thread::Builder::new().name("pair-timeout".into()).spawn(move || {
+            let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+            while Instant::now() < deadline && !done.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            if !done.load(Ordering::Acquire) {
+                closer.close();
+            }
+        })?;
+    }
+    let result = handshake::pair(&mut reader, &mut writer, code, name);
+    done.store(true, Ordering::Release);
+    closer.close();
+    result
 }
 
 /// The local service over the pipe, without starting it.
@@ -218,14 +300,15 @@ pub fn backoff(attempt: u32) -> Duration {
 }
 
 /// Reconnects with backoff until a connection succeeds, the service fails
-/// authentication, or `retry` (shown each failed attempt) returns false.
+/// authentication or refuses this client, or `retry` (shown each failed
+/// attempt) returns false.
 pub fn reconnect(target: &ConnTarget, options: &ConnOptions, session: &Arc<ClientSession>, mut retry: impl FnMut(u32, &anyhow::Error) -> bool) -> Result<Conn> {
     let mut attempt = 0;
     loop {
         std::thread::sleep(backoff(attempt));
         match open(target, options, session) {
             Ok(conn) => return Ok(conn),
-            Err(error) if error.is::<AuthError>() => return Err(error),
+            Err(error) if is_final(&error) => return Err(error),
             Err(error) => {
                 if !retry(attempt, &error) {
                     return Err(error);
@@ -679,9 +762,45 @@ mod tests {
         let instance = Instance::new(Some("t".into()), Some(home.clone()), Some(home.clone())).unwrap();
         assert!(matches!(ConnTarget::parse(None, &instance).unwrap(), ConnTarget::Local(_)));
         assert!(matches!(ConnTarget::parse(Some("loopback"), &instance).unwrap(), ConnTarget::Loopback(_)));
-        assert!(ConnTarget::parse(Some("nonsense"), &instance).is_err());
+        assert!(ConnTarget::parse(Some("nonsense"), &instance).err().expect("unknown server").to_string().contains("no server named"));
+        assert!(ConnTarget::parse(Some("a b"), &instance).is_err());
         assert_eq!(decode_hex("00ff10"), Some(vec![0, 255, 16]));
         assert_eq!(decode_hex("0g"), None);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn named_servers_resolve_and_a_refusal_ends_reconnecting() {
+        use canvas_common::remote::{ServerRecord, Servers};
+        let home = std::env::temp_dir().join(format!("cc-server-{}", uuid::Uuid::new_v4()));
+        let instance = Instance::new(Some("t".into()), Some(home.clone()), Some(home.clone())).unwrap();
+        let listener = tcp::listen_loopback("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let attempts = Arc::new(AtomicU64::new(0));
+        {
+            let attempts = attempts.clone();
+            std::thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    attempts.fetch_add(1, Ordering::Relaxed);
+                    let (reader, writer, closer) = tcp::split(stream).unwrap();
+                    let (mut reader, mut writer) = (FrameReader::new(Box::new(reader)), FrameWriter::new(Box::new(writer)));
+                    let refused = handshake::serve(&mut reader, &mut writer, true, "svc", |id| Err(format!("{} was revoked", id.unwrap_or_default())), |_| Err("no".into()));
+                    assert!(refused.is_err());
+                    closer.close();
+                }
+            });
+        }
+        let secret = canvas_common::dpapi::protect_hex(&[7; 32], "test").unwrap();
+        let mut servers = Servers::default();
+        servers.upsert(ServerRecord { name: "cloud".into(), addr: Some(addr), client_id: "pc-1".into(), secret, vscode_tunnel: Some("cpc".into()), ..Default::default() });
+        servers.save(&home).unwrap();
+        let target = ConnTarget::parse(Some("Cloud"), &instance).unwrap();
+        assert!(matches!(&target, ConnTarget::Server(s) if s.secret() == [7; 32]));
+        assert!(target.is_remote() && target.is_other_machine() && !ConnTarget::Loopback(instance.clone()).is_other_machine());
+        assert_eq!(target.vscode_tunnel().as_deref(), Some("cpc"));
+        let error = reconnect(&target, &ConnOptions::default(), &ClientSession::new(), |_, _| true).err().expect("refused");
+        assert!(error.is::<Refused>() && error.to_string() == "pc-1 was revoked", "{error:#}");
+        assert_eq!(attempts.load(Ordering::Relaxed), 1, "a refused client does not retry");
         let _ = std::fs::remove_dir_all(home);
     }
 }
