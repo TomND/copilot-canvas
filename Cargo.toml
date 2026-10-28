@@ -107,6 +107,7 @@ png.workspace = true
 portable-pty.workspace = true
 postcard.workspace = true
 ratatui.workspace = true
+rusqlite.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 windows = { workspace = true, features = ["Win32_UI_Accessibility"] }

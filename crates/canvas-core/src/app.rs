@@ -1279,6 +1279,8 @@ impl App {
     pub fn set_agent_session(&mut self, id: &str, native: &str) {
         if apply_agent_session(&mut self.doc, id, native) {
             self.mark_dirty();
+            // The history under the new id may already list subagents.
+            self.sync_agents();
         }
     }
 
@@ -1549,6 +1551,12 @@ impl App {
                 self.sessions_loaded = true;
                 self.sessions_rev += 1;
                 self.sync_agents();
+                // A turn you watch end needs no review: never drawn as "done · review" first.
+                if self.focus == Focus::Terminal
+                    && let Some(id) = self.focused_term.clone()
+                {
+                    self.mark_reviewed(&id);
+                }
                 let agent = self.default_agent();
                 if !self.auto_imported && !self.demo && self.doc.nodes.is_empty() && self.sessions.values().any(|s| crate::agents::agent_of_summary(s) == agent) {
                     self.auto_imported = true;
@@ -2264,5 +2272,34 @@ mod connection_tests {
         // Save errors from the service are shown.
         app.on_service(ServiceMsg::DocSaved { key: "k".into(), version: 9, error: Some("disk full".into()) });
         assert_eq!(app.save_error.as_deref(), Some("the service cannot save the canvas: disk full"));
+    }
+
+    #[test]
+    fn a_turn_that_ends_while_you_watch_its_terminal_needs_no_review() {
+        use crate::protocol::Activity;
+        let (conn, _sent) = detached();
+        let (app_tx, _app_rx) = unbounded();
+        let mut box_ = node("t1");
+        box_.agent = Some("opencode".into());
+        box_.agent_session = Some("ses_x".into());
+        let doc = Doc { nodes: vec![box_], ..Doc::default() };
+        let mut app = App::new(conn, Arc::new(crate::rpc::Offline), Opened::detached(doc), false, ".".into(), app_tx, None);
+        app.terms.insert("t1".into(), TermInfo { id: "t1".into(), alive: true, ..Default::default() });
+        let working = SessionSummary { id: "ses_x".into(), activity: Activity::Working, live: true, tracked: true, ..Default::default() };
+        app.on_service(ServiceMsg::Sessions { full: true, upsert: vec![working.clone()], remove: Vec::new() });
+        app.focused_term = Some("t1".into());
+        app.focus = Focus::Terminal;
+        app.on_tick();
+        let status = |app: &App| app.node_status(app.doc.node("t1").unwrap());
+        assert_eq!(status(&app), Status::Working);
+        let done = SessionSummary { activity: Activity::Idle, finished_ms: Some(now_ms()), ..working };
+        app.on_service(ServiceMsg::Sessions { full: false, upsert: vec![done], remove: Vec::new() });
+        assert_eq!(status(&app), Status::Idle, "you saw it finish: no review flash before the next tick");
+        // Not watching it: the finished turn waits for you.
+        app.focus = Focus::Canvas;
+        let later = SessionSummary { id: "ses_x".into(), activity: Activity::Idle, finished_ms: Some(now_ms() + 1), live: true, tracked: true, ..Default::default() };
+        app.on_service(ServiceMsg::Sessions { full: false, upsert: vec![later], remove: Vec::new() });
+        app.on_tick();
+        assert_eq!(status(&app), Status::JustFinished);
     }
 }

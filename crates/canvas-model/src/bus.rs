@@ -90,6 +90,10 @@ pub struct PassiveSpec {
     /// Agent CLI that runs it ("copilot", "opencode", "claude"; empty: Copilot).
     #[serde(default)]
     pub agent: String,
+    /// Model of its runs (the canvas's new-session default, overridden by the
+    /// group's; empty: the agent's own default).
+    #[serde(default)]
+    pub model: String,
 }
 
 /// An event on the bus. CLI-written inbox files may omit the service-filled fields.

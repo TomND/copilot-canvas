@@ -1,5 +1,6 @@
 //! Copilot Canvas: a spatial session manager for agent CLIs.
 
+mod agent_prompt;
 mod bench;
 mod fake_copilot;
 mod gui_bench;
@@ -82,6 +83,14 @@ USAGE
   copilot-canvas selftest --remote paired
                                         pairing, a Dev Tunnel stand-in, the canvas through it, drops,
                                         a killed tunnel child, revocation, wrong secrets
+  copilot-canvas selftest agent [--agent copilot|opencode|claude]
+                                        the real agent TUI through the canvas; nothing is submitted
+  copilot-canvas selftest agent --agent opencode --prompt [--model ID] [--client tui|gui] [--steps LIST]
+                                        tiny prompts to a free OpenCode model (ids ending in -free;
+                                        default opencode/deepseek-v4.1-flash-free) through the canvas:
+                                        re-keying, status, wheel, push, subagent, question, resume,
+                                        permission, passive (LIST: some of them, comma-separated);
+                                        deletes every session it created
 
 REMOTE (docs/REMOTE.md; agents on the Cloud PC, the canvas at home over a private Dev Tunnel)
   on the Cloud PC:
@@ -193,7 +202,7 @@ fn parse() -> Result<Args> {
             "--canvas" => args.canvas = Some(PathBuf::from(value("--canvas")?)),
             "--cwd" => args.cwd = Some(PathBuf::from(value("--cwd")?)),
             "--remote" => args.remote = Some(value("--remote")?),
-            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" => args.flags.push(arg.trim_start_matches("--").to_owned()),
+            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" => args.flags.push(arg.trim_start_matches("--").to_owned()),
             "--" => {
                 // `record … -- PROGRAM ARGS…`: the rest belongs to the program.
                 args.command.push(arg);
@@ -456,6 +465,22 @@ fn real_main() -> Result<()> {
                 }),
                 Some(other) => bail!("selftest --remote takes `loopback`, `faults`, `paired` or `soak`, not {other:?}"),
             }
+        }
+        ["selftest", "agent"] if flag("prompt") => {
+            let agent = option("agent").unwrap_or_else(|| "opencode".into());
+            anyhow::ensure!(
+                canvas_agents::agents::AgentKind::parse(&agent) == Some(canvas_agents::agents::AgentKind::OpenCode),
+                "--prompt sends prompts, and only to OpenCode with a free model: use --agent opencode"
+            );
+            agent_prompt::run(agent_prompt::Options {
+                model: option("model"),
+                client: match option("client").as_deref() {
+                    None | Some("tui") => selftest::Client::Tui,
+                    Some("gui") => selftest::Client::Gui,
+                    Some(other) => bail!("selftest --client takes `tui` or `gui`, not {other:?}"),
+                },
+                steps: option("steps").map(|s| s.split(',').map(|p| p.trim().to_owned()).filter(|p| !p.is_empty()).collect()),
+            })
         }
         ["selftest", "agent"] => selftest::agent(option("agent").as_deref()),
         ["selftest", "copilot"] => selftest::agent(Some("copilot")),

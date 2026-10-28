@@ -59,6 +59,10 @@ impl Provider for Copilot {
             if let Some(folder) = &launch.group_folder {
                 args.extend(["--add-dir".to_owned(), folder.clone()]);
             }
+            // Every passive run uses the configured model (resumes too).
+            if let Some(model) = launch.model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+                args.extend(["--model".to_owned(), super::option_value("--model", model)?.to_owned()]);
+            }
         } else {
             // A first prompt also applies to a forked subsession (resumed from its copy).
             if let Some(prompt) = launch.prompt.as_ref().filter(|p| !p.trim().is_empty()) {
@@ -173,7 +177,10 @@ mod tests {
         assert!(!args.iter().any(|a| a == "--name" || a == "--model"), "{args:?}");
         let passive = AgentLaunch { headless_prompt: Some("run".into()), group_folder: Some(r"C:\g".into()), ..resume };
         let args = Copilot.command(id, &passive, &integration).unwrap().args;
-        assert_eq!(args[2..8], ["-p", "run", "--allow-all", "--no-ask-user", "--add-dir", r"C:\g"]);
+        assert_eq!(args[2..10], ["-p", "run", "--allow-all", "--no-ask-user", "--add-dir", r"C:\g", "--model", "ignored on resume"], "passive runs use the model every time");
+        let plain = Copilot.command(id, &AgentLaunch { model: None, ..passive.clone() }, &integration).unwrap().args;
+        assert!(!plain.iter().any(|a| a == "--model"), "{plain:?}");
+        assert!(Copilot.command(id, &AgentLaunch { model: Some("-x".into()), ..passive }, &integration).is_err());
         assert!(Copilot.command("not-a-uuid", &new, &integration).is_err());
     }
 }
