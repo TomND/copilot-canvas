@@ -264,7 +264,7 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
                 let _ = end;
                 if h >= 2 {
                     let label_style = attention.map(|(c, _)| crate::paint::bold(c)).unwrap_or(fg(MUTED));
-                    put(buf, x, y + 1, &truncate(status.label(), w as usize), label_style.bg(bg), clip);
+                    put(buf, x, y + 1, &truncate(box_label(node, status), w as usize), label_style.bg(bg), clip);
                 }
                 if selected {
                     for xx in x..x + w {
@@ -726,7 +726,7 @@ pub fn paint_model(model: &CanvasModel, buf: &mut Buffer) {
                 put(buf, end + 1, y, &truncate(&b.name, (w - 2).max(0) as usize), b.name_style.bg(bg), clip);
                 if h >= 2 {
                     let label_style = b.attention.map(|(c, _)| crate::paint::bold(c)).unwrap_or(fg(MUTED));
-                    put(buf, x, y + 1, &truncate(b.status.label(), w as usize), label_style.bg(bg), clip);
+                    put(buf, x, y + 1, &truncate(b.label, w as usize), label_style.bg(bg), clip);
                 }
                 if b.selected {
                     for xx in x..x + w {
