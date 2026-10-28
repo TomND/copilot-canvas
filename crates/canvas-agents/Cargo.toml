@@ -20,3 +20,6 @@ uuid.workspace = true
 windows.workspace = true
 windows-sys.workspace = true
 yaml-rust2.workspace = true
+
+[dev-dependencies]
+portable-pty.workspace = true

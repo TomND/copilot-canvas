@@ -188,6 +188,7 @@ dependencies = [
  "crossbeam-channel",
  "dirs",
  "percent-encoding",
+ "portable-pty",
  "rusqlite",
  "serde",
  "serde_json",

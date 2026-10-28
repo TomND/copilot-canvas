@@ -130,10 +130,13 @@ pub fn events(home: &Path) -> Result<()> {
 }
 
 /// The plugin canvas sessions load with `--plugin-dir`: the event skills.
+/// One folder serves Copilot (`plugin.json`) and Claude Code
+/// (`.claude-plugin/plugin.json`); OpenCode reads its `skills` folder.
 pub fn write_plugin(home: &Path) -> Result<std::path::PathBuf> {
     let dir = home.join("plugin");
-    let files: [(&str, &str); 3] = [
+    let files: [(&str, &str); 4] = [
         ("plugin.json", r#"{ "name": "copilot-canvas", "description": "Copilot Canvas events, messages and passive sessions.", "version": "1.0.0", "skills": "./skills/" }"#),
+        (".claude-plugin/plugin.json", CLAUDE_PLUGIN),
         ("skills/canvas-events/SKILL.md", EVENTS_SKILL),
         ("skills/canvas-passive/SKILL.md", PASSIVE_SKILL),
     ];
@@ -165,6 +168,14 @@ pub fn install_cli(home: &Path) -> Result<std::path::PathBuf> {
     }
     Ok(dir)
 }
+
+/// Claude Code's manifest; it finds `skills/` next to `.claude-plugin/` itself.
+const CLAUDE_PLUGIN: &str = r#"{
+  "name": "copilot-canvas",
+  "description": "Copilot Canvas events, messages and passive sessions.",
+  "version": "1.0.0"
+}
+"#;
 
 const EVENTS_SKILL: &str = "---
 name: canvas-events
@@ -233,6 +244,10 @@ mod tests {
         assert_eq!((second.kind.as_str(), second.to.as_str(), second.data["text"].as_str()), ("message", "Drift guard", Some("re-check")));
         let plugin = write_plugin(&home).unwrap();
         assert!(std::fs::read_to_string(plugin.join("skills/canvas-events/SKILL.md")).unwrap().starts_with("---\nname: canvas-events"));
+        let claude: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(plugin.join(".claude-plugin/plugin.json")).unwrap()).unwrap();
+        assert_eq!(claude["name"], "copilot-canvas");
+        let copilot: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(plugin.join("plugin.json")).unwrap()).unwrap();
+        assert_eq!(copilot["skills"], "./skills/");
         let _ = std::fs::remove_dir_all(home);
     }
 }
