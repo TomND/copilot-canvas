@@ -1,0 +1,77 @@
+# Continuous integration (PLAN.md §5 "Every phase ends green", §11 "Pin Zig;
+# cache the lib by checksum; a separate CI job"). Windows only: ConPTY, named
+# pipes and job objects are part of what is tested.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  ZIG_VERSION: "0.17.0"
+  ZIG_SHA256: "b5663f69581dcf391293fbf16c06cb80d81d806545ce618b4d0bab7f0eb8c428"
+
+jobs:
+  # Builds the pinned libghostty-vt once per pin; the library is cached by the
+  # checksum file that holds the Ghostty commit and Zig version.
+  ghostty:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: target/ghostty
+          key: ghostty-${{ hashFiles('crates/ghostty-vt-sys/vendor/CHECKSUMS.sha256') }}
+      - name: Install Zig ${{ env.ZIG_VERSION }}
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $zip = "$env:RUNNER_TEMP\zig.zip"
+          Invoke-WebRequest "https://ziglang.org/download/$env:ZIG_VERSION/zig-x86_64-windows-$env:ZIG_VERSION.zip" -OutFile $zip
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLower() -ne $env:ZIG_SHA256) { throw "Zig checksum mismatch" }
+          Expand-Archive $zip -DestinationPath $env:RUNNER_TEMP
+          "ZIG=$env:RUNNER_TEMP\zig-x86_64-windows-$env:ZIG_VERSION\zig.exe" >> $env:GITHUB_ENV
+      - name: cargo xtask build-ghostty
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: cargo xtask build-ghostty
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghostty
+          path: target/ghostty
+
+  test:
+    needs: ghostty
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ghostty
+          path: target/ghostty
+      - uses: Swatinem/rust-cache@v2
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: unit and integration tests
+        run: cargo test --workspace
+      - name: alacritty-only build (no Zig)
+        run: cargo build --no-default-features
+      - name: release build
+        run: cargo build --release
+      - name: golden corpus (both engines)
+        run: target\release\copilot-canvas.exe corpus check
+      - name: TUI self-test
+        run: target\release\copilot-canvas.exe selftest
+      - name: TUI self-test over loopback TCP
+        run: target\release\copilot-canvas.exe selftest --remote loopback
+      - name: remote fault injection
+        run: target\release\copilot-canvas.exe selftest --remote faults
+      - name: pairing and the Dev Tunnel stand-in
+        run: target\release\copilot-canvas.exe selftest --remote paired
+      # The GUI runs on WARP (no GPU on hosted runners); offscreen rendering and
+      # the test hooks need no interactive desktop.
+      - name: GUI self-test
+        run: target\release\copilot-canvas.exe selftest --client gui
+      - name: GUI parity suite
+        run: target\release\copilot-canvas.exe selftest --client gui --parity
