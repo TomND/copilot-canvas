@@ -1233,7 +1233,9 @@ fn late_rows(sb: &Sandbox, rows: &mut Vec<Row>) {
         std::fs::write(&file, "uploaded by the parity suite")?;
         let (_, inner) = gui.tile()?;
         gui.req(json!({ "cmd": "drop", "paths": [file.display().to_string()], "x": inner[0] + 5.5, "y": inner[1] + 2.5 }))?;
-        gui.wait("the uploaded path pasted", 15, |t| t.contains("uploads"))?;
+        // The long path wraps in the tile (how depends on the user name): rejoin its rows.
+        let joined = |t: &str| t.lines().map(str::trim_end).collect::<String>();
+        gui.wait_tile("the uploaded path pasted", 20, |t| joined(t).contains("uploads") && joined(t).contains("upload me.txt"))?;
         let uploads = sb.instance.home.join("uploads");
         let found = walk(&uploads).into_iter().find(|p| p.file_name().is_some_and(|n| n == "upload me.txt")).context("uploaded file on the service's machine")?;
         anyhow::ensure!(std::fs::read_to_string(&found)? == "uploaded by the parity suite", "content");
