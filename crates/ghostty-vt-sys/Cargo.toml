@@ -1,0 +1,15 @@
+[package]
+name = "ghostty-vt-sys"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "FFI bindings to the pinned, statically linked libghostty-vt (build it with `cargo xtask build-ghostty`)"
+links = "ghostty-vt"
+build = "build.rs"
+
+[lib]
+doctest = false
+
+[dev-dependencies]
+serde_json.workspace = true
+sha2.workspace = true

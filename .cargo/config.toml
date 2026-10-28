@@ -1,0 +1,3 @@
+[alias]
+# Workspace automation (crates/xtask), e.g. `cargo xtask build-ghostty`.
+xtask = "run -p xtask --"

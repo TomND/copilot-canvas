@@ -258,7 +258,8 @@ impl Host {
                 changed: self.changed.clone(),
             },
         )?;
-        log(&self.instance, &format!("launched {id} pid {}", terminal.pid));
+        // The pid stays last: `selftest copilot` parses the number after " pid ".
+        log(&self.instance, &format!("launched {id} engine {} pid {}", terminal.engine.name(), terminal.pid));
         let info = terminal.info();
         lock(&self.terms).insert(id.to_owned(), terminal);
         self.broadcast(ServiceMsg::Terminals(vec![info]));

@@ -1,0 +1,720 @@
+//! Hand-written FFI declarations for the part of libghostty-vt that
+//! copilot-canvas uses.
+//!
+//! Provenance: written for this repository from the vendored headers in
+//! `vendor/include/ghostty` (Ghostty commit pinned in `vendor/CHECKSUMS.sha256`;
+//! Ghostty is MIT licensed, see `vendor/LICENSE`). Names follow the C headers.
+//! Every struct layout and enum value declared here is checked against the
+//! library's own ABI manifest (`ghostty_type_json`) by the tests in `lib.rs`.
+//!
+//! C enums are `int`-sized (`GHOSTTY_ENUM_TYPED`), so they are `c_int` aliases
+//! with constants rather than Rust enums: the library may return values this
+//! file does not know about.
+
+#![allow(non_camel_case_types)]
+
+use std::ffi::{c_char, c_int, c_void};
+
+/* ---- types.h ---- */
+
+pub type GhosttyResult = c_int;
+pub const GHOSTTY_SUCCESS: GhosttyResult = 0;
+pub const GHOSTTY_OUT_OF_MEMORY: GhosttyResult = -1;
+pub const GHOSTTY_INVALID_VALUE: GhosttyResult = -2;
+pub const GHOSTTY_OUT_OF_SPACE: GhosttyResult = -3;
+pub const GHOSTTY_NO_VALUE: GhosttyResult = -4;
+
+macro_rules! opaque {
+    ($($impl_name:ident => $handle:ident),* $(,)?) => {$(
+        #[repr(C)]
+        pub struct $impl_name {
+            _private: [u8; 0],
+        }
+        pub type $handle = *mut $impl_name;
+    )*};
+}
+
+opaque! {
+    GhosttyTerminalImpl => GhosttyTerminal,
+    GhosttyRenderStateImpl => GhosttyRenderState,
+    GhosttyRenderStateRowIteratorImpl => GhosttyRenderStateRowIterator,
+    GhosttyRenderStateRowCellsImpl => GhosttyRenderStateRowCells,
+    GhosttyKeyEncoderImpl => GhosttyKeyEncoder,
+    GhosttyKeyEventImpl => GhosttyKeyEvent,
+}
+
+/// Custom allocator vtable; always passed as NULL (the default allocator).
+#[repr(C)]
+pub struct GhosttyAllocator {
+    _private: [u8; 0],
+}
+
+/// A borrowed byte string.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct GhosttyString {
+    pub ptr: *const u8,
+    pub len: usize,
+}
+
+/* ---- color.h / style.h ---- */
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GhosttyColorRgb {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+pub type GhosttyColorPaletteIndex = u8;
+
+pub type GhosttyStyleColorTag = c_int;
+pub const GHOSTTY_STYLE_COLOR_NONE: GhosttyStyleColorTag = 0;
+pub const GHOSTTY_STYLE_COLOR_PALETTE: GhosttyStyleColorTag = 1;
+pub const GHOSTTY_STYLE_COLOR_RGB: GhosttyStyleColorTag = 2;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union GhosttyStyleColorValue {
+    pub palette: GhosttyColorPaletteIndex,
+    pub rgb: GhosttyColorRgb,
+    pub _padding: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GhosttyStyleColor {
+    pub tag: GhosttyStyleColorTag,
+    pub value: GhosttyStyleColorValue,
+}
+
+pub type GhosttySgrUnderline = c_int;
+pub const GHOSTTY_SGR_UNDERLINE_NONE: GhosttySgrUnderline = 0;
+pub const GHOSTTY_SGR_UNDERLINE_SINGLE: GhosttySgrUnderline = 1;
+pub const GHOSTTY_SGR_UNDERLINE_DOUBLE: GhosttySgrUnderline = 2;
+pub const GHOSTTY_SGR_UNDERLINE_CURLY: GhosttySgrUnderline = 3;
+pub const GHOSTTY_SGR_UNDERLINE_DOTTED: GhosttySgrUnderline = 4;
+pub const GHOSTTY_SGR_UNDERLINE_DASHED: GhosttySgrUnderline = 5;
+
+/// Sized struct: create with `GhosttyStyle::sized()`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GhosttyStyle {
+    pub size: usize,
+    pub fg_color: GhosttyStyleColor,
+    pub bg_color: GhosttyStyleColor,
+    pub underline_color: GhosttyStyleColor,
+    pub bold: bool,
+    pub italic: bool,
+    pub faint: bool,
+    pub blink: bool,
+    pub inverse: bool,
+    pub invisible: bool,
+    pub strikethrough: bool,
+    pub overline: bool,
+    /// One of `GHOSTTY_SGR_UNDERLINE_*`.
+    pub underline: c_int,
+}
+
+/* ---- modes.h ---- */
+
+/// Packed mode: value in bits 0..14, ANSI flag in bit 15.
+pub type GhosttyMode = u16;
+
+/// `ghostty_mode_new` (a `static inline` in the header).
+pub const fn ghostty_mode_new(value: u16, ansi: bool) -> GhosttyMode {
+    (value & 0x7fff) | ((ansi as u16) << 15)
+}
+
+pub const GHOSTTY_MODE_INSERT: GhosttyMode = ghostty_mode_new(4, true);
+pub const GHOSTTY_MODE_DECCKM: GhosttyMode = ghostty_mode_new(1, false);
+pub const GHOSTTY_MODE_WRAPAROUND: GhosttyMode = ghostty_mode_new(7, false);
+pub const GHOSTTY_MODE_X10_MOUSE: GhosttyMode = ghostty_mode_new(9, false);
+pub const GHOSTTY_MODE_CURSOR_BLINKING: GhosttyMode = ghostty_mode_new(12, false);
+pub const GHOSTTY_MODE_CURSOR_VISIBLE: GhosttyMode = ghostty_mode_new(25, false);
+pub const GHOSTTY_MODE_KEYPAD_KEYS: GhosttyMode = ghostty_mode_new(66, false);
+pub const GHOSTTY_MODE_NORMAL_MOUSE: GhosttyMode = ghostty_mode_new(1000, false);
+pub const GHOSTTY_MODE_BUTTON_MOUSE: GhosttyMode = ghostty_mode_new(1002, false);
+pub const GHOSTTY_MODE_ANY_MOUSE: GhosttyMode = ghostty_mode_new(1003, false);
+pub const GHOSTTY_MODE_FOCUS_EVENT: GhosttyMode = ghostty_mode_new(1004, false);
+pub const GHOSTTY_MODE_UTF8_MOUSE: GhosttyMode = ghostty_mode_new(1005, false);
+pub const GHOSTTY_MODE_SGR_MOUSE: GhosttyMode = ghostty_mode_new(1006, false);
+pub const GHOSTTY_MODE_ALT_ESC_PREFIX: GhosttyMode = ghostty_mode_new(1036, false);
+pub const GHOSTTY_MODE_ALT_SCREEN: GhosttyMode = ghostty_mode_new(1047, false);
+pub const GHOSTTY_MODE_ALT_SCREEN_SAVE: GhosttyMode = ghostty_mode_new(1049, false);
+pub const GHOSTTY_MODE_BRACKETED_PASTE: GhosttyMode = ghostty_mode_new(2004, false);
+pub const GHOSTTY_MODE_SYNC_OUTPUT: GhosttyMode = ghostty_mode_new(2026, false);
+pub const GHOSTTY_MODE_GRAPHEME_CLUSTER: GhosttyMode = ghostty_mode_new(2027, false);
+
+/* ---- device.h / size_report.h ---- */
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GhosttyDeviceAttributesPrimary {
+    pub conformance_level: u16,
+    pub features: [u16; 64],
+    pub num_features: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GhosttyDeviceAttributesSecondary {
+    pub device_type: u16,
+    pub firmware_version: u16,
+    pub rom_cartridge: u16,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GhosttyDeviceAttributesTertiary {
+    pub unit_id: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GhosttyDeviceAttributes {
+    pub primary: GhosttyDeviceAttributesPrimary,
+    pub secondary: GhosttyDeviceAttributesSecondary,
+    pub tertiary: GhosttyDeviceAttributesTertiary,
+}
+
+pub const GHOSTTY_DA_CONFORMANCE_VT220: u16 = 62;
+pub const GHOSTTY_DA_FEATURE_ANSI_COLOR: u16 = 22;
+pub const GHOSTTY_DA_DEVICE_TYPE_VT220: u16 = 1;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GhosttySizeReportSize {
+    pub rows: u16,
+    pub columns: u16,
+    pub cell_width: u32,
+    pub cell_height: u32,
+}
+
+/* ---- point.h / grid_ref.h / screen.h ---- */
+
+pub type GhosttyPointTag = c_int;
+pub const GHOSTTY_POINT_TAG_ACTIVE: GhosttyPointTag = 0;
+pub const GHOSTTY_POINT_TAG_VIEWPORT: GhosttyPointTag = 1;
+pub const GHOSTTY_POINT_TAG_SCREEN: GhosttyPointTag = 2;
+pub const GHOSTTY_POINT_TAG_HISTORY: GhosttyPointTag = 3;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GhosttyPointCoordinate {
+    pub x: u16,
+    pub y: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union GhosttyPointValue {
+    pub coordinate: GhosttyPointCoordinate,
+    pub _padding: [u64; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GhosttyPoint {
+    pub tag: GhosttyPointTag,
+    pub value: GhosttyPointValue,
+}
+
+/// Untracked grid reference (sized struct); valid until the next terminal mutation.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct GhosttyGridRef {
+    pub size: usize,
+    pub node: *mut c_void,
+    pub x: u16,
+    pub y: u16,
+}
+
+/// Packed cell; decode with `ghostty_cell_get*`. All-zero is an empty default cell.
+pub type GhosttyCell = u64;
+pub type GhosttyRow = u64;
+
+/// Borrowed raw cells of one row.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct GhosttyCellsView {
+    pub ptr: *const GhosttyCell,
+    pub len: usize,
+}
+
+pub type GhosttyCellContentTag = c_int;
+pub const GHOSTTY_CELL_CONTENT_CODEPOINT: GhosttyCellContentTag = 0;
+pub const GHOSTTY_CELL_CONTENT_CODEPOINT_GRAPHEME: GhosttyCellContentTag = 1;
+pub const GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE: GhosttyCellContentTag = 2;
+pub const GHOSTTY_CELL_CONTENT_BG_COLOR_RGB: GhosttyCellContentTag = 3;
+
+pub type GhosttyCellWide = c_int;
+pub const GHOSTTY_CELL_WIDE_NARROW: GhosttyCellWide = 0;
+pub const GHOSTTY_CELL_WIDE_WIDE: GhosttyCellWide = 1;
+pub const GHOSTTY_CELL_WIDE_SPACER_TAIL: GhosttyCellWide = 2;
+pub const GHOSTTY_CELL_WIDE_SPACER_HEAD: GhosttyCellWide = 3;
+
+pub type GhosttyCellData = c_int;
+pub const GHOSTTY_CELL_DATA_INVALID: GhosttyCellData = 0;
+pub const GHOSTTY_CELL_DATA_CODEPOINT: GhosttyCellData = 1;
+pub const GHOSTTY_CELL_DATA_CONTENT_TAG: GhosttyCellData = 2;
+pub const GHOSTTY_CELL_DATA_WIDE: GhosttyCellData = 3;
+pub const GHOSTTY_CELL_DATA_HAS_TEXT: GhosttyCellData = 4;
+pub const GHOSTTY_CELL_DATA_HAS_STYLING: GhosttyCellData = 5;
+pub const GHOSTTY_CELL_DATA_STYLE_ID: GhosttyCellData = 6;
+pub const GHOSTTY_CELL_DATA_HAS_HYPERLINK: GhosttyCellData = 7;
+pub const GHOSTTY_CELL_DATA_PROTECTED: GhosttyCellData = 8;
+pub const GHOSTTY_CELL_DATA_SEMANTIC_CONTENT: GhosttyCellData = 9;
+pub const GHOSTTY_CELL_DATA_COLOR_PALETTE: GhosttyCellData = 10;
+pub const GHOSTTY_CELL_DATA_COLOR_RGB: GhosttyCellData = 11;
+
+/* ---- terminal.h ---- */
+
+pub type GhosttyTerminalScrollViewportTag = c_int;
+pub const GHOSTTY_SCROLL_VIEWPORT_TOP: GhosttyTerminalScrollViewportTag = 0;
+pub const GHOSTTY_SCROLL_VIEWPORT_BOTTOM: GhosttyTerminalScrollViewportTag = 1;
+/// Scroll by `value.delta` rows; negative is up (towards history).
+pub const GHOSTTY_SCROLL_VIEWPORT_DELTA: GhosttyTerminalScrollViewportTag = 2;
+pub const GHOSTTY_SCROLL_VIEWPORT_ROW: GhosttyTerminalScrollViewportTag = 3;
+pub const GHOSTTY_SCROLL_VIEWPORT_DELTA_PROMPT: GhosttyTerminalScrollViewportTag = 4;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union GhosttyTerminalScrollViewportValue {
+    pub delta: isize,
+    pub row: usize,
+    pub delta_prompt: isize,
+    pub _padding: [u64; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GhosttyTerminalScrollViewport {
+    pub tag: GhosttyTerminalScrollViewportTag,
+    pub value: GhosttyTerminalScrollViewportValue,
+}
+
+pub type GhosttyTerminalScreen = c_int;
+pub const GHOSTTY_TERMINAL_SCREEN_PRIMARY: GhosttyTerminalScreen = 0;
+pub const GHOSTTY_TERMINAL_SCREEN_ALTERNATE: GhosttyTerminalScreen = 1;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GhosttyTerminalScrollbar {
+    pub total: u64,
+    pub offset: u64,
+    pub len: u64,
+}
+
+pub type GhosttyClipboardLocation = c_int;
+pub const GHOSTTY_CLIPBOARD_LOCATION_STANDARD: GhosttyClipboardLocation = 0;
+pub const GHOSTTY_CLIPBOARD_LOCATION_SELECTION: GhosttyClipboardLocation = 1;
+pub const GHOSTTY_CLIPBOARD_LOCATION_PRIMARY: GhosttyClipboardLocation = 2;
+
+/// One MIME representation of a clipboard write (frozen layout).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct GhosttyClipboardContent {
+    pub mime: GhosttyString,
+    pub data: GhosttyString,
+}
+
+pub type GhosttyClipboardWriteResult = c_int;
+pub const GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS: GhosttyClipboardWriteResult = 0;
+pub const GHOSTTY_CLIPBOARD_WRITE_RESULT_DENIED: GhosttyClipboardWriteResult = 1;
+
+/// Sized struct.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct GhosttyClipboardWriteReply {
+    pub size: usize,
+    pub result: GhosttyClipboardWriteResult,
+    pub remember: bool,
+}
+
+pub type GhosttyClipboardWriteReplyFn =
+    Option<unsafe extern "C" fn(write: *const GhosttyClipboardWrite, reply: *const GhosttyClipboardWriteReply)>;
+
+/// A clipboard write request (sized struct), borrowed for the callback.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct GhosttyClipboardWrite {
+    pub size: usize,
+    pub location: GhosttyClipboardLocation,
+    pub contents: *const GhosttyClipboardContent,
+    pub contents_len: usize,
+    pub name: GhosttyString,
+    pub granted: bool,
+    pub can_remember: bool,
+    pub ctx: *const c_void,
+    pub reply: GhosttyClipboardWriteReplyFn,
+}
+
+/// Sized struct, borrowed for the callback.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct GhosttyTerminalDesktopNotification {
+    pub size: usize,
+    pub title: GhosttyString,
+    pub body: GhosttyString,
+}
+
+pub type GhosttyTerminalProgressState = c_int;
+pub const GHOSTTY_TERMINAL_PROGRESS_STATE_REMOVE: GhosttyTerminalProgressState = 0;
+pub const GHOSTTY_TERMINAL_PROGRESS_STATE_SET: GhosttyTerminalProgressState = 1;
+pub const GHOSTTY_TERMINAL_PROGRESS_STATE_ERROR: GhosttyTerminalProgressState = 2;
+pub const GHOSTTY_TERMINAL_PROGRESS_STATE_INDETERMINATE: GhosttyTerminalProgressState = 3;
+pub const GHOSTTY_TERMINAL_PROGRESS_STATE_PAUSE: GhosttyTerminalProgressState = 4;
+
+/// Sized struct, borrowed for the callback.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct GhosttyTerminalProgressReport {
+    pub size: usize,
+    pub state: GhosttyTerminalProgressState,
+    /// 0..=100, or -1 when omitted.
+    pub progress: i8,
+}
+
+/// A mode and value for `GHOSTTY_TERMINAL_OPT_MODE*` and `GHOSTTY_TERMINAL_DATA_MODE`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GhosttyTerminalModeConfig {
+    pub mode: GhosttyMode,
+    pub value: bool,
+}
+
+pub type GhosttyTerminalWritePtyFn =
+    Option<unsafe extern "C" fn(terminal: GhosttyTerminal, userdata: *mut c_void, data: *const u8, len: usize)>;
+pub type GhosttyTerminalBellFn = Option<unsafe extern "C" fn(terminal: GhosttyTerminal, userdata: *mut c_void)>;
+pub type GhosttyTerminalTitleChangedFn = Option<unsafe extern "C" fn(terminal: GhosttyTerminal, userdata: *mut c_void)>;
+pub type GhosttyTerminalResetFn = Option<unsafe extern "C" fn(terminal: GhosttyTerminal, userdata: *mut c_void)>;
+pub type GhosttyTerminalSizeFn =
+    Option<unsafe extern "C" fn(terminal: GhosttyTerminal, userdata: *mut c_void, out_size: *mut GhosttySizeReportSize) -> bool>;
+pub type GhosttyTerminalDeviceAttributesFn =
+    Option<unsafe extern "C" fn(terminal: GhosttyTerminal, userdata: *mut c_void, out_attrs: *mut GhosttyDeviceAttributes) -> bool>;
+pub type GhosttyTerminalClipboardWriteFn =
+    Option<unsafe extern "C" fn(terminal: GhosttyTerminal, userdata: *mut c_void, write: *const GhosttyClipboardWrite)>;
+pub type GhosttyTerminalDesktopNotificationFn = Option<
+    unsafe extern "C" fn(terminal: GhosttyTerminal, userdata: *mut c_void, notification: *const GhosttyTerminalDesktopNotification),
+>;
+pub type GhosttyTerminalProgressReportFn =
+    Option<unsafe extern "C" fn(terminal: GhosttyTerminal, userdata: *mut c_void, report: *const GhosttyTerminalProgressReport)>;
+pub type GhosttyTerminalRenderHoldFn = Option<unsafe extern "C" fn(terminal: GhosttyTerminal, userdata: *mut c_void, held: bool)>;
+
+pub type GhosttyTerminalOption = c_int;
+pub const GHOSTTY_TERMINAL_OPT_USERDATA: GhosttyTerminalOption = 0;
+pub const GHOSTTY_TERMINAL_OPT_WRITE_PTY: GhosttyTerminalOption = 1;
+pub const GHOSTTY_TERMINAL_OPT_BELL: GhosttyTerminalOption = 2;
+pub const GHOSTTY_TERMINAL_OPT_ENQUIRY: GhosttyTerminalOption = 3;
+pub const GHOSTTY_TERMINAL_OPT_XTVERSION: GhosttyTerminalOption = 4;
+pub const GHOSTTY_TERMINAL_OPT_TITLE_CHANGED: GhosttyTerminalOption = 5;
+pub const GHOSTTY_TERMINAL_OPT_SIZE: GhosttyTerminalOption = 6;
+pub const GHOSTTY_TERMINAL_OPT_COLOR_SCHEME: GhosttyTerminalOption = 7;
+pub const GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES: GhosttyTerminalOption = 8;
+pub const GHOSTTY_TERMINAL_OPT_TITLE: GhosttyTerminalOption = 9;
+pub const GHOSTTY_TERMINAL_OPT_PWD: GhosttyTerminalOption = 10;
+pub const GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND: GhosttyTerminalOption = 11;
+pub const GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND: GhosttyTerminalOption = 12;
+pub const GHOSTTY_TERMINAL_OPT_COLOR_CURSOR: GhosttyTerminalOption = 13;
+pub const GHOSTTY_TERMINAL_OPT_COLOR_PALETTE: GhosttyTerminalOption = 14;
+pub const GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT: GhosttyTerminalOption = 15;
+pub const GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_FILE: GhosttyTerminalOption = 16;
+pub const GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_TEMP_FILE: GhosttyTerminalOption = 17;
+pub const GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_SHARED_MEM: GhosttyTerminalOption = 18;
+pub const GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES: GhosttyTerminalOption = 19;
+pub const GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES_KITTY: GhosttyTerminalOption = 20;
+pub const GHOSTTY_TERMINAL_OPT_SELECTION: GhosttyTerminalOption = 21;
+pub const GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_STYLE: GhosttyTerminalOption = 22;
+pub const GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK: GhosttyTerminalOption = 23;
+pub const GHOSTTY_TERMINAL_OPT_GLYPH_PROTOCOL: GhosttyTerminalOption = 24;
+pub const GHOSTTY_TERMINAL_OPT_PWD_CHANGED: GhosttyTerminalOption = 25;
+pub const GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE: GhosttyTerminalOption = 26;
+pub const GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES: GhosttyTerminalOption = 27;
+pub const GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES: GhosttyTerminalOption = 28;
+pub const GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION: GhosttyTerminalOption = 29;
+pub const GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT: GhosttyTerminalOption = 30;
+pub const GHOSTTY_TERMINAL_OPT_CONTINUATION_MAX_BYTES: GhosttyTerminalOption = 31;
+pub const GHOSTTY_TERMINAL_OPT_TITLE_REPORT: GhosttyTerminalOption = 32;
+pub const GHOSTTY_TERMINAL_OPT_MODE_DEFAULT: GhosttyTerminalOption = 33;
+pub const GHOSTTY_TERMINAL_OPT_MODE: GhosttyTerminalOption = 34;
+pub const GHOSTTY_TERMINAL_OPT_UNKNOWN_SEQUENCE: GhosttyTerminalOption = 35;
+pub const GHOSTTY_TERMINAL_OPT_UNKNOWN_MAX_BYTES: GhosttyTerminalOption = 36;
+pub const GHOSTTY_TERMINAL_OPT_TERMINFO_NAME: GhosttyTerminalOption = 37;
+pub const GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ: GhosttyTerminalOption = 38;
+pub const GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE_MAX_BYTES: GhosttyTerminalOption = 39;
+pub const GHOSTTY_TERMINAL_OPT_RESIZE_PULL_SCROLLBACK: GhosttyTerminalOption = 40;
+pub const GHOSTTY_TERMINAL_OPT_RENDER_HOLD: GhosttyTerminalOption = 41;
+pub const GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT: GhosttyTerminalOption = 42;
+pub const GHOSTTY_TERMINAL_OPT_RESET: GhosttyTerminalOption = 43;
+pub const GHOSTTY_TERMINAL_OPT_XT_CHECKSUM_REPORT: GhosttyTerminalOption = 44;
+pub const GHOSTTY_TERMINAL_OPT_XT_CHECKSUM_EXTENSION: GhosttyTerminalOption = 45;
+pub const GHOSTTY_TERMINAL_OPT_PROGRAM_STATUS: GhosttyTerminalOption = 46;
+pub const GHOSTTY_TERMINAL_OPT_RESIZE_WINDOW: GhosttyTerminalOption = 47;
+
+pub type GhosttyTerminalData = c_int;
+pub const GHOSTTY_TERMINAL_DATA_INVALID: GhosttyTerminalData = 0;
+pub const GHOSTTY_TERMINAL_DATA_COLS: GhosttyTerminalData = 1;
+pub const GHOSTTY_TERMINAL_DATA_ROWS: GhosttyTerminalData = 2;
+pub const GHOSTTY_TERMINAL_DATA_CURSOR_X: GhosttyTerminalData = 3;
+pub const GHOSTTY_TERMINAL_DATA_CURSOR_Y: GhosttyTerminalData = 4;
+pub const GHOSTTY_TERMINAL_DATA_CURSOR_PENDING_WRAP: GhosttyTerminalData = 5;
+pub const GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN: GhosttyTerminalData = 6;
+pub const GHOSTTY_TERMINAL_DATA_CURSOR_VISIBLE: GhosttyTerminalData = 7;
+pub const GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS: GhosttyTerminalData = 8;
+pub const GHOSTTY_TERMINAL_DATA_SCROLLBAR: GhosttyTerminalData = 9;
+pub const GHOSTTY_TERMINAL_DATA_CURSOR_STYLE: GhosttyTerminalData = 10;
+pub const GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING: GhosttyTerminalData = 11;
+pub const GHOSTTY_TERMINAL_DATA_TITLE: GhosttyTerminalData = 12;
+pub const GHOSTTY_TERMINAL_DATA_PWD: GhosttyTerminalData = 13;
+pub const GHOSTTY_TERMINAL_DATA_TOTAL_ROWS: GhosttyTerminalData = 14;
+pub const GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS: GhosttyTerminalData = 15;
+pub const GHOSTTY_TERMINAL_DATA_WIDTH_PX: GhosttyTerminalData = 16;
+pub const GHOSTTY_TERMINAL_DATA_HEIGHT_PX: GhosttyTerminalData = 17;
+pub const GHOSTTY_TERMINAL_DATA_COLOR_FOREGROUND: GhosttyTerminalData = 18;
+pub const GHOSTTY_TERMINAL_DATA_COLOR_BACKGROUND: GhosttyTerminalData = 19;
+pub const GHOSTTY_TERMINAL_DATA_COLOR_CURSOR: GhosttyTerminalData = 20;
+pub const GHOSTTY_TERMINAL_DATA_COLOR_PALETTE: GhosttyTerminalData = 21;
+pub const GHOSTTY_TERMINAL_DATA_COLOR_FOREGROUND_DEFAULT: GhosttyTerminalData = 22;
+pub const GHOSTTY_TERMINAL_DATA_COLOR_BACKGROUND_DEFAULT: GhosttyTerminalData = 23;
+pub const GHOSTTY_TERMINAL_DATA_COLOR_CURSOR_DEFAULT: GhosttyTerminalData = 24;
+pub const GHOSTTY_TERMINAL_DATA_COLOR_PALETTE_DEFAULT: GhosttyTerminalData = 25;
+pub const GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_STORAGE_LIMIT: GhosttyTerminalData = 26;
+pub const GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_MEDIUM_FILE: GhosttyTerminalData = 27;
+pub const GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_MEDIUM_TEMP_FILE: GhosttyTerminalData = 28;
+pub const GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_MEDIUM_SHARED_MEM: GhosttyTerminalData = 29;
+pub const GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS: GhosttyTerminalData = 30;
+pub const GHOSTTY_TERMINAL_DATA_SELECTION: GhosttyTerminalData = 31;
+pub const GHOSTTY_TERMINAL_DATA_VIEWPORT_ACTIVE: GhosttyTerminalData = 32;
+pub const GHOSTTY_TERMINAL_DATA_VT_PROCESSING_ERROR: GhosttyTerminalData = 33;
+pub const GHOSTTY_TERMINAL_DATA_SCROLLBACK_MAX_BYTES: GhosttyTerminalData = 34;
+pub const GHOSTTY_TERMINAL_DATA_SCROLLBACK_MAX_LINES: GhosttyTerminalData = 35;
+pub const GHOSTTY_TERMINAL_DATA_CONTINUATION_MAX_BYTES: GhosttyTerminalData = 36;
+pub const GHOSTTY_TERMINAL_DATA_MODE: GhosttyTerminalData = 37;
+pub const GHOSTTY_TERMINAL_DATA_VT_GROUND: GhosttyTerminalData = 38;
+pub const GHOSTTY_TERMINAL_DATA_CURSOR_AT_PROMPT: GhosttyTerminalData = 39;
+pub const GHOSTTY_TERMINAL_DATA_CLIPBOARD_WRITE_MAX_BYTES: GhosttyTerminalData = 40;
+pub const GHOSTTY_TERMINAL_DATA_MOUSE_SHAPE: GhosttyTerminalData = 41;
+pub const GHOSTTY_TERMINAL_DATA_MEMORY_USAGE: GhosttyTerminalData = 42;
+
+/* ---- render.h ---- */
+
+pub type GhosttyRenderStateDirty = c_int;
+pub const GHOSTTY_RENDER_STATE_DIRTY_FALSE: GhosttyRenderStateDirty = 0;
+pub const GHOSTTY_RENDER_STATE_DIRTY_PARTIAL: GhosttyRenderStateDirty = 1;
+pub const GHOSTTY_RENDER_STATE_DIRTY_FULL: GhosttyRenderStateDirty = 2;
+
+pub type GhosttyRenderStateCursorVisualStyle = c_int;
+pub const GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR: GhosttyRenderStateCursorVisualStyle = 0;
+pub const GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK: GhosttyRenderStateCursorVisualStyle = 1;
+pub const GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE: GhosttyRenderStateCursorVisualStyle = 2;
+pub const GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW: GhosttyRenderStateCursorVisualStyle = 3;
+
+pub type GhosttyRenderStateData = c_int;
+pub const GHOSTTY_RENDER_STATE_DATA_INVALID: GhosttyRenderStateData = 0;
+pub const GHOSTTY_RENDER_STATE_DATA_COLS: GhosttyRenderStateData = 1;
+pub const GHOSTTY_RENDER_STATE_DATA_ROWS: GhosttyRenderStateData = 2;
+pub const GHOSTTY_RENDER_STATE_DATA_DIRTY: GhosttyRenderStateData = 3;
+pub const GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR: GhosttyRenderStateData = 4;
+pub const GHOSTTY_RENDER_STATE_DATA_CURSOR: GhosttyRenderStateData = 18;
+
+pub type GhosttyRenderStateRowData = c_int;
+pub const GHOSTTY_RENDER_STATE_ROW_DATA_INVALID: GhosttyRenderStateRowData = 0;
+pub const GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY: GhosttyRenderStateRowData = 1;
+pub const GHOSTTY_RENDER_STATE_ROW_DATA_RAW: GhosttyRenderStateRowData = 2;
+pub const GHOSTTY_RENDER_STATE_ROW_DATA_CELLS: GhosttyRenderStateRowData = 3;
+pub const GHOSTTY_RENDER_STATE_ROW_DATA_CELLS_RAW: GhosttyRenderStateRowData = 5;
+pub const GHOSTTY_RENDER_STATE_ROW_DATA_VIEWPORT_Y: GhosttyRenderStateRowData = 6;
+
+pub type GhosttyRenderStateRowCellsData = c_int;
+pub const GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_INVALID: GhosttyRenderStateRowCellsData = 0;
+pub const GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW: GhosttyRenderStateRowCellsData = 1;
+pub const GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE: GhosttyRenderStateRowCellsData = 2;
+pub const GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN: GhosttyRenderStateRowCellsData = 3;
+pub const GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF: GhosttyRenderStateRowCellsData = 4;
+
+/// Cursor state of a render state (sized struct).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct GhosttyRenderStateCursor {
+    pub size: usize,
+    pub viewport_has_value: bool,
+    pub viewport_x: u16,
+    pub viewport_y: u16,
+    pub wide_tail: bool,
+    pub visible: bool,
+    pub blinking: bool,
+    pub password_input: bool,
+    pub visual_style: GhosttyRenderStateCursorVisualStyle,
+}
+
+/* ---- key/event.h, key/encoder.h ---- */
+
+pub type GhosttyKeyAction = c_int;
+pub const GHOSTTY_KEY_ACTION_RELEASE: GhosttyKeyAction = 0;
+pub const GHOSTTY_KEY_ACTION_PRESS: GhosttyKeyAction = 1;
+pub const GHOSTTY_KEY_ACTION_REPEAT: GhosttyKeyAction = 2;
+
+pub type GhosttyMods = u16;
+pub const GHOSTTY_MODS_SHIFT: GhosttyMods = 1 << 0;
+pub const GHOSTTY_MODS_CTRL: GhosttyMods = 1 << 1;
+pub const GHOSTTY_MODS_ALT: GhosttyMods = 1 << 2;
+pub const GHOSTTY_MODS_SUPER: GhosttyMods = 1 << 3;
+
+/// Physical (US-layout) key codes; only the keys copilot-canvas maps.
+pub type GhosttyKey = c_int;
+pub const GHOSTTY_KEY_UNIDENTIFIED: GhosttyKey = 0;
+pub const GHOSTTY_KEY_BACKQUOTE: GhosttyKey = 1;
+pub const GHOSTTY_KEY_BACKSLASH: GhosttyKey = 2;
+pub const GHOSTTY_KEY_BRACKET_LEFT: GhosttyKey = 3;
+pub const GHOSTTY_KEY_BRACKET_RIGHT: GhosttyKey = 4;
+pub const GHOSTTY_KEY_COMMA: GhosttyKey = 5;
+pub const GHOSTTY_KEY_DIGIT_0: GhosttyKey = 6;
+pub const GHOSTTY_KEY_DIGIT_9: GhosttyKey = 15;
+pub const GHOSTTY_KEY_EQUAL: GhosttyKey = 16;
+pub const GHOSTTY_KEY_A: GhosttyKey = 20;
+pub const GHOSTTY_KEY_Z: GhosttyKey = 45;
+pub const GHOSTTY_KEY_MINUS: GhosttyKey = 46;
+pub const GHOSTTY_KEY_PERIOD: GhosttyKey = 47;
+pub const GHOSTTY_KEY_QUOTE: GhosttyKey = 48;
+pub const GHOSTTY_KEY_SEMICOLON: GhosttyKey = 49;
+pub const GHOSTTY_KEY_SLASH: GhosttyKey = 50;
+pub const GHOSTTY_KEY_BACKSPACE: GhosttyKey = 53;
+pub const GHOSTTY_KEY_ENTER: GhosttyKey = 58;
+pub const GHOSTTY_KEY_SPACE: GhosttyKey = 63;
+pub const GHOSTTY_KEY_TAB: GhosttyKey = 64;
+pub const GHOSTTY_KEY_DELETE: GhosttyKey = 68;
+pub const GHOSTTY_KEY_END: GhosttyKey = 69;
+pub const GHOSTTY_KEY_HOME: GhosttyKey = 71;
+pub const GHOSTTY_KEY_INSERT: GhosttyKey = 72;
+pub const GHOSTTY_KEY_PAGE_DOWN: GhosttyKey = 73;
+pub const GHOSTTY_KEY_PAGE_UP: GhosttyKey = 74;
+pub const GHOSTTY_KEY_ARROW_DOWN: GhosttyKey = 75;
+pub const GHOSTTY_KEY_ARROW_LEFT: GhosttyKey = 76;
+pub const GHOSTTY_KEY_ARROW_RIGHT: GhosttyKey = 77;
+pub const GHOSTTY_KEY_ARROW_UP: GhosttyKey = 78;
+pub const GHOSTTY_KEY_ESCAPE: GhosttyKey = 120;
+pub const GHOSTTY_KEY_F1: GhosttyKey = 121;
+pub const GHOSTTY_KEY_F12: GhosttyKey = 132;
+
+pub type GhosttyKeyEncoderOption = c_int;
+pub const GHOSTTY_KEY_ENCODER_OPT_CURSOR_KEY_APPLICATION: GhosttyKeyEncoderOption = 0;
+pub const GHOSTTY_KEY_ENCODER_OPT_KEYPAD_KEY_APPLICATION: GhosttyKeyEncoderOption = 1;
+pub const GHOSTTY_KEY_ENCODER_OPT_IGNORE_KEYPAD_WITH_NUMLOCK: GhosttyKeyEncoderOption = 2;
+pub const GHOSTTY_KEY_ENCODER_OPT_ALT_ESC_PREFIX: GhosttyKeyEncoderOption = 3;
+pub const GHOSTTY_KEY_ENCODER_OPT_MODIFY_OTHER_KEYS_STATE_2: GhosttyKeyEncoderOption = 4;
+pub const GHOSTTY_KEY_ENCODER_OPT_KITTY_FLAGS: GhosttyKeyEncoderOption = 5;
+pub const GHOSTTY_KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT: GhosttyKeyEncoderOption = 6;
+pub const GHOSTTY_KEY_ENCODER_OPT_BACKARROW_KEY_MODE: GhosttyKeyEncoderOption = 7;
+
+pub type GhosttyKittyKeyFlags = u8;
+pub const GHOSTTY_KITTY_KEY_DISABLED: GhosttyKittyKeyFlags = 0;
+pub const GHOSTTY_KITTY_KEY_DISAMBIGUATE: GhosttyKittyKeyFlags = 1 << 0;
+pub const GHOSTTY_KITTY_KEY_REPORT_EVENTS: GhosttyKittyKeyFlags = 1 << 1;
+pub const GHOSTTY_KITTY_KEY_REPORT_ALTERNATES: GhosttyKittyKeyFlags = 1 << 2;
+pub const GHOSTTY_KITTY_KEY_REPORT_ALL: GhosttyKittyKeyFlags = 1 << 3;
+pub const GHOSTTY_KITTY_KEY_REPORT_ASSOCIATED: GhosttyKittyKeyFlags = 1 << 4;
+
+/* ---- focus.h ---- */
+
+pub type GhosttyFocusEvent = c_int;
+pub const GHOSTTY_FOCUS_GAINED: GhosttyFocusEvent = 0;
+pub const GHOSTTY_FOCUS_LOST: GhosttyFocusEvent = 1;
+
+/* ---- build_info.h ---- */
+
+pub type GhosttyBuildInfo = c_int;
+pub const GHOSTTY_BUILD_INFO_SIMD: GhosttyBuildInfo = 1;
+pub const GHOSTTY_BUILD_INFO_KITTY_GRAPHICS: GhosttyBuildInfo = 2;
+pub const GHOSTTY_BUILD_INFO_VERSION_STRING: GhosttyBuildInfo = 5;
+
+unsafe extern "C" {
+    /* types.h, build_info.h */
+    pub fn ghostty_type_json() -> *const c_char;
+    pub fn ghostty_build_info(data: GhosttyBuildInfo, out: *mut c_void) -> GhosttyResult;
+
+    /* terminal.h */
+    pub fn ghostty_terminal_new(allocator: *const GhosttyAllocator, terminal: *mut GhosttyTerminal, cols: u16, rows: u16) -> GhosttyResult;
+    pub fn ghostty_terminal_free(terminal: GhosttyTerminal);
+    pub fn ghostty_terminal_reset(terminal: GhosttyTerminal);
+    pub fn ghostty_terminal_resize(terminal: GhosttyTerminal, cols: u16, rows: u16, cell_width_px: u32, cell_height_px: u32) -> GhosttyResult;
+    pub fn ghostty_terminal_set(terminal: GhosttyTerminal, option: GhosttyTerminalOption, value: *const c_void) -> GhosttyResult;
+    pub fn ghostty_terminal_vt_write(terminal: GhosttyTerminal, data: *const u8, len: usize);
+    pub fn ghostty_terminal_scroll_viewport(terminal: GhosttyTerminal, behavior: GhosttyTerminalScrollViewport);
+    pub fn ghostty_terminal_get(terminal: GhosttyTerminal, data: GhosttyTerminalData, out: *mut c_void) -> GhosttyResult;
+    pub fn ghostty_terminal_get_multi(
+        terminal: GhosttyTerminal,
+        count: usize,
+        keys: *const GhosttyTerminalData,
+        values: *mut *mut c_void,
+        out_written: *mut usize,
+    ) -> GhosttyResult;
+    pub fn ghostty_terminal_grid_ref(terminal: GhosttyTerminal, point: GhosttyPoint, out_ref: *mut GhosttyGridRef) -> GhosttyResult;
+
+    /* grid_ref.h, screen.h */
+    pub fn ghostty_grid_ref_hyperlink_uri(grid_ref: *const GhosttyGridRef, buf: *mut u8, buf_len: usize, out_len: *mut usize) -> GhosttyResult;
+    pub fn ghostty_cell_get(cell: GhosttyCell, data: GhosttyCellData, out: *mut c_void) -> GhosttyResult;
+    pub fn ghostty_cell_get_multi(
+        cell: GhosttyCell,
+        count: usize,
+        keys: *const GhosttyCellData,
+        values: *mut *mut c_void,
+        out_written: *mut usize,
+    ) -> GhosttyResult;
+
+    /* render.h */
+    pub fn ghostty_render_state_new(allocator: *const GhosttyAllocator, state: *mut GhosttyRenderState) -> GhosttyResult;
+    pub fn ghostty_render_state_free(state: GhosttyRenderState);
+    pub fn ghostty_render_state_update(state: GhosttyRenderState, terminal: GhosttyTerminal) -> GhosttyResult;
+    pub fn ghostty_render_state_get(state: GhosttyRenderState, data: GhosttyRenderStateData, out: *mut c_void) -> GhosttyResult;
+    pub fn ghostty_render_state_row_iterator_new(
+        allocator: *const GhosttyAllocator,
+        out_iterator: *mut GhosttyRenderStateRowIterator,
+    ) -> GhosttyResult;
+    pub fn ghostty_render_state_row_iterator_free(iterator: GhosttyRenderStateRowIterator);
+    pub fn ghostty_render_state_row_iterator_next(iterator: GhosttyRenderStateRowIterator) -> bool;
+    pub fn ghostty_render_state_row_get(iterator: GhosttyRenderStateRowIterator, data: GhosttyRenderStateRowData, out: *mut c_void) -> GhosttyResult;
+    pub fn ghostty_render_state_row_cells_new(allocator: *const GhosttyAllocator, out_cells: *mut GhosttyRenderStateRowCells) -> GhosttyResult;
+    pub fn ghostty_render_state_row_cells_free(cells: GhosttyRenderStateRowCells);
+    pub fn ghostty_render_state_row_cells_next(cells: GhosttyRenderStateRowCells) -> bool;
+    pub fn ghostty_render_state_row_cells_select(cells: GhosttyRenderStateRowCells, x: u16) -> GhosttyResult;
+    pub fn ghostty_render_state_row_cells_get(cells: GhosttyRenderStateRowCells, data: GhosttyRenderStateRowCellsData, out: *mut c_void)
+    -> GhosttyResult;
+
+    /* key/event.h, key/encoder.h */
+    pub fn ghostty_key_event_new(allocator: *const GhosttyAllocator, event: *mut GhosttyKeyEvent) -> GhosttyResult;
+    pub fn ghostty_key_event_free(event: GhosttyKeyEvent);
+    pub fn ghostty_key_event_set_action(event: GhosttyKeyEvent, action: GhosttyKeyAction);
+    pub fn ghostty_key_event_set_key(event: GhosttyKeyEvent, key: GhosttyKey);
+    pub fn ghostty_key_event_set_mods(event: GhosttyKeyEvent, mods: GhosttyMods);
+    pub fn ghostty_key_event_set_consumed_mods(event: GhosttyKeyEvent, consumed_mods: GhosttyMods);
+    pub fn ghostty_key_event_set_composing(event: GhosttyKeyEvent, composing: bool);
+    /// The event borrows `utf8`; it must stay valid until the next encode.
+    pub fn ghostty_key_event_set_utf8(event: GhosttyKeyEvent, utf8: *const c_char, len: usize);
+    pub fn ghostty_key_event_set_unshifted_codepoint(event: GhosttyKeyEvent, codepoint: u32);
+    pub fn ghostty_key_encoder_new(allocator: *const GhosttyAllocator, encoder: *mut GhosttyKeyEncoder) -> GhosttyResult;
+    pub fn ghostty_key_encoder_free(encoder: GhosttyKeyEncoder);
+    pub fn ghostty_key_encoder_setopt(encoder: GhosttyKeyEncoder, option: GhosttyKeyEncoderOption, value: *const c_void);
+    pub fn ghostty_key_encoder_setopt_from_terminal(encoder: GhosttyKeyEncoder, terminal: GhosttyTerminal);
+    pub fn ghostty_key_encoder_encode(
+        encoder: GhosttyKeyEncoder,
+        event: GhosttyKeyEvent,
+        out_buf: *mut c_char,
+        out_buf_size: usize,
+        out_len: *mut usize,
+    ) -> GhosttyResult;
+
+    /* paste.h, focus.h */
+    pub fn ghostty_paste_is_safe(data: *const c_char, len: usize) -> bool;
+    /// Rewrites `data` in place (unsafe control bytes become spaces).
+    pub fn ghostty_paste_encode(
+        data: *mut c_char,
+        data_len: usize,
+        bracketed: bool,
+        buf: *mut c_char,
+        buf_len: usize,
+        out_written: *mut usize,
+    ) -> GhosttyResult;
+    pub fn ghostty_focus_encode(event: GhosttyFocusEvent, buf: *mut c_char, buf_len: usize, out_written: *mut usize) -> GhosttyResult;
+}

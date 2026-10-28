@@ -65,6 +65,10 @@ description = "Spatial session manager for agent CLIs (GitHub Copilot, OpenCode,
 name = "copilot-canvas"
 path = "src/main.rs"
 
+[features]
+# libghostty-vt terminal engine (build the library first: `cargo xtask build-ghostty`).
+ghostty = ["canvas-host/ghostty"]
+
 [dependencies]
 canvas-common.workspace = true
 canvas-host.workspace = true
