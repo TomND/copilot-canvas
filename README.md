@@ -31,6 +31,12 @@ cargo build --release
 Optional: `cargo install --path .` puts `copilot-canvas` on your PATH.
 Use a reasonably large Windows Terminal window (≥ 140×40 is comfortable).
 
+The GPU client (preview, Phase 4): `.\target\release\copilot-canvas.exe --gui`
+(or `copilot-canvas-gui.exe`, which `cargo build --release` builds next to it)
+opens the same canvas in a native window with continuous zoom, pixel-smooth
+dragging and real fonts, on the same terminal service. See
+[docs/GUI.md](docs/GUI.md).
+
 On first run the canvas imports your 8 most recent sessions. If the Node
 prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 
@@ -349,11 +355,14 @@ UI load tests `cargo test --release stress_probe -- --ignored --nocapture`
 
 ```text
 copilot-canvas [--demo] [--perf] [--cwd DIR] [--canvas FILE] [--instance NAME] [--home DIR]
+copilot-canvas --gui [options]        the GPU client (copilot-canvas-gui.exe) with the same options
 copilot-canvas doctor                 environment checks (each agent CLI and its history, the default
                                       agent, terminal engine, Git, ConPTY, service, VS Code)
 copilot-canvas service status|stop    stop ends the service's sessions (gracefully)
 copilot-canvas bench [--terminals N] [--seconds S] [--json FILE]
+copilot-canvas bench --client gui     the GPU client's latency, frame cost, idle CPU, memory, first paint
 copilot-canvas selftest               end-to-end UI test in a hidden console (demo shells only)
+copilot-canvas selftest --client gui  the same 26 steps against the GPU client (over its test hooks)
 copilot-canvas selftest agent [--agent copilot|opencode|claude]
                                       real check with an agent CLI (default: the detected one); never
                                       submits a prompt: imports its recent sessions into a temporary

@@ -71,9 +71,8 @@ pub fn paint(p: &mut Painter, grid: &Grid, model: &CanvasModel) {
     let label_px = grid.font_px * model.scale;
     let readable = label_px >= MIN_LABEL * cx.dpi;
 
-    if model.grid {
-        dots(p, &cx);
-    }
+    // The dot grid stays while panning (cheap here; the TUI hides it).
+    dots(p, &cx);
 
     for group in &model.groups {
         let r = cx.rect(group.rect);

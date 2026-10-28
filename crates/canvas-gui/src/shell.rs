@@ -22,7 +22,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
-use crate::gpu::{Gpu, Skip};
+use crate::gpu::{Gpu, Skip, Surface};
 use crate::perf::{Perf, ms};
 use crate::platform::{GuiPlatform, Taskbar};
 use crate::quads::Quad;
@@ -34,7 +34,7 @@ use crate::tiles::{TileCache, TileInput};
 /// Housekeeping interval while anything is active (as the TUI).
 const TICK: Duration = Duration::from_millis(40);
 /// … and while nothing is.
-const IDLE_TICK: Duration = Duration::from_millis(200);
+const IDLE_TICK: Duration = Duration::from_millis(400);
 /// Longest the UI thread spends on service messages before handling input again.
 const SERVICE_BUDGET: Duration = Duration::from_millis(4);
 
@@ -64,6 +64,8 @@ pub struct Shell {
     fonts: Option<Fonts>,
     window: Option<Arc<Window>>,
     gpu: Option<Gpu>,
+    /// The window's swap chain (Phase 5: one per window, sharing `gpu`).
+    surface: Option<Surface>,
     grid: Grid,
     cols: u16,
     rows: u16,
@@ -99,6 +101,7 @@ pub struct Shell {
     typed_at: Option<Instant>,
     pub first_paint: Option<Duration>,
     pub exit_code: i32,
+    exiting: bool,
 }
 
 impl Shell {
@@ -122,6 +125,7 @@ impl Shell {
             fonts: None,
             window: None,
             gpu: None,
+            surface: None,
             grid: Grid::new(0.6, 1.0),
             cols: 0,
             rows: 0,
@@ -154,6 +158,7 @@ impl Shell {
             typed_at: None,
             first_paint: None,
             exit_code: 0,
+            exiting: false,
         };
         let rx = shell.app.conn.rx.clone();
         shell.forward_service(rx);
@@ -316,8 +321,10 @@ impl Shell {
         let (width, height) = self.surface_size();
         let (scene, ime) = self.build_scene(width, height);
         let built = Instant::now();
-        let result = match (&mut self.gpu, &self.window, &mut self.fonts) {
-            (Some(gpu), Some(window), Some(fonts)) => Some(gpu.present(window, &scene, &self.cache, fonts)),
+        // Minimized: nothing to present (the view is still built for the hooks).
+        let minimized = self.window.as_ref().is_some_and(|w| w.inner_size().width == 0 || w.inner_size().height == 0);
+        let result = match (&mut self.gpu, &self.surface, &self.window, &mut self.fonts) {
+            (Some(gpu), Some(surface), Some(window), Some(fonts)) if !minimized => Some(gpu.present(surface, window, &scene, &self.cache, fonts)),
             _ => None,
         };
         self.cache.end_frame();
@@ -371,6 +378,15 @@ impl Shell {
         let mut p = Painter { scene: &mut scene, cache: &mut self.cache, fonts };
         if let Some(model) = &self.view.canvas {
             crate::canvas::paint(&mut p, &grid, model);
+        }
+        if let Some(modal) = self.view.modal {
+            // A soft shadow lifts the top dialog or menu off what is under it.
+            let (x, y, w, h) = (modal.x as f32 * grid.cell_w, modal.y as f32 * grid.cell_h, modal.width as f32 * grid.cell_w, modal.height as f32 * grid.cell_h);
+            let full = [0.0, 0.0, width as f32, height as f32];
+            for (spread, alpha) in [(14.0, 0.12), (7.0, 0.2), (3.0, 0.3)] {
+                let s = spread * grid.scale;
+                p.under(scene::OVERLAY, Quad::rounded(x - s + 3.0 * grid.scale, y - s + 5.0 * grid.scale, w + 2.0 * s, h + 2.0 * s, s + 4.0 * grid.scale, theme::rgba([0, 0, 0], alpha), [0.0; 4], 0.0, full));
+            }
         }
         let inners: Vec<Rect> = self.view.tiles.iter().map(|t| t.inner).collect();
         let regions = crate::chrome::Regions { canvas: self.view.canvas.as_ref().map(|c| c.area), inners: &inners };
@@ -518,7 +534,7 @@ impl Shell {
             }
             "size" => json!({
                 "ok": true, "cols": self.cols, "rows": self.rows, "cell_w": self.grid.cell_w, "cell_h": self.grid.cell_h, "scale": self.grid.scale,
-                "adapter": self.gpu.as_ref().map(|g| g.adapter.name.clone()), "present_mode": self.gpu.as_ref().map(|g| format!("{:?}", g.present_mode())),
+                "adapter": self.gpu.as_ref().map(|g| g.info.name.clone()), "present_mode": self.surface.as_ref().map(|s| format!("{:?}", s.present_mode())),
             }),
             "perf" => {
                 if command["reset"].as_bool() == Some(true) {
@@ -558,8 +574,8 @@ impl Shell {
                 json!({ "ok": true })
             }
             "quit" => {
-                self.app.save_now();
-                event_loop.exit();
+                self.app.quit = true;
+                self.finish(event_loop);
                 json!({ "ok": true })
             }
             other => json!({ "ok": false, "error": format!("unknown command {other:?}") }),
@@ -588,7 +604,9 @@ impl Shell {
             self.frame_interval = Duration::from_secs_f64(1000.0 / hz as f64);
         }
         trace("window");
-        self.gpu = Some(Gpu::new(window.clone(), event_loop.owned_display_handle())?);
+        let (gpu, surface) = Gpu::new(window.clone(), event_loop.owned_display_handle())?;
+        self.gpu = Some(gpu);
+        self.surface = Some(surface);
         trace("gpu");
         let size = window.inner_size();
         self.window = Some(window);
@@ -617,6 +635,20 @@ impl Shell {
             }
             self.cursor_icon = Some(icon);
         }
+    }
+
+    /// Saves and leaves once the app quits (detach or stop all).
+    fn finish(&mut self, event_loop: &ActiveEventLoop) {
+        if !self.app.quit || self.exiting {
+            return;
+        }
+        self.exiting = true;
+        self.app.save_now();
+        if let Some(error) = &self.app.save_error {
+            eprintln!("copilot-canvas-gui: the canvas could not be saved: {error}");
+            self.exit_code = 1;
+        }
+        event_loop.exit();
     }
 
     fn mouse(&mut self, kind: MouseEventKind) {
@@ -768,7 +800,10 @@ impl ApplicationHandler<UserEvent> for Shell {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if self.window.as_ref().is_some_and(|w| w.id() != id) {
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => {
                 // As Ctrl+Q: asks to detach or stop the running sessions.
@@ -776,8 +811,8 @@ impl ApplicationHandler<UserEvent> for Shell {
                 self.input_waiting = true;
             }
             WindowEvent::Resized(size) => {
-                if let Some(gpu) = &mut self.gpu {
-                    gpu.resize(size.width, size.height);
+                if let (Some(gpu), Some(surface)) = (&self.gpu, &mut self.surface) {
+                    surface.resize(gpu, size.width, size.height);
                 }
                 self.fit(size.width, size.height);
                 self.redraw = true;
@@ -864,10 +899,7 @@ impl ApplicationHandler<UserEvent> for Shell {
             }
             _ => {}
         }
-        if self.app.quit {
-            self.app.save_now();
-            event_loop.exit();
-        }
+        self.finish(event_loop);
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -890,12 +922,7 @@ impl ApplicationHandler<UserEvent> for Shell {
             self.platform.apply(window, &mut self.taskbar);
         }
         if self.app.quit {
-            self.app.save_now();
-            if let Some(error) = &self.app.save_error {
-                eprintln!("copilot-canvas-gui: the canvas could not be saved: {error}");
-                self.exit_code = 1;
-            }
-            event_loop.exit();
+            self.finish(event_loop);
             return;
         }
         let due = |s: &Self| -> Option<Instant> {

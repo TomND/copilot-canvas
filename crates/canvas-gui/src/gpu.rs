@@ -12,12 +12,14 @@ use crate::quads::QuadPipeline;
 use crate::scene::{LAYERS, Scene};
 use crate::text::{Fonts, ShapeCache};
 
+/// The device and everything shared by all windows: pipelines, the glyph
+/// atlas and one text renderer per scene layer.
 pub struct Gpu {
-    surface: wgpu::Surface<'static>,
-    pub adapter: wgpu::AdapterInfo,
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    pub info: wgpu::AdapterInfo,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
     format: wgpu::TextureFormat,
     quads: QuadPipeline,
     viewport: Viewport,
@@ -37,13 +39,36 @@ pub struct Presented {
     pub present: Duration,
 }
 
+/// One window's swap chain.
+pub struct Surface {
+    surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+}
+
+impl Surface {
+    pub fn present_mode(&self) -> wgpu::PresentMode {
+        self.config.present_mode
+    }
+
+    pub fn resize(&mut self, gpu: &Gpu, width: u32, height: u32) {
+        if width == 0 || height == 0 || (width, height) == (self.config.width, self.config.height) {
+            return;
+        }
+        self.config.width = width;
+        self.config.height = height;
+        self.surface.configure(&gpu.device, &self.config);
+    }
+}
+
 pub enum Skip {
     /// Occluded, timed out or reconfigured: try again soon.
     Retry,
 }
 
 impl Gpu {
-    pub fn new(window: Arc<Window>, display: winit::event_loop::OwnedDisplayHandle) -> Result<Self> {
+    /// Opens the device for the first window (its surface decides the adapter
+    /// and format); later windows get theirs from `surface`.
+    pub fn new(window: Arc<Window>, display: winit::event_loop::OwnedDisplayHandle) -> Result<(Self, Surface)> {
         let mut desc = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(display));
         desc.backends = wgpu::Backends::DX12;
         let instance = wgpu::Instance::new(desc);
@@ -61,6 +86,27 @@ impl Gpu {
             .context("cannot open the GPU device")?;
         let caps = surface.get_capabilities(&adapter);
         let format = caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or(caps.formats[0]);
+        let cache = Cache::new(&device);
+        let viewport = Viewport::new(&device, &cache);
+        // Colours are sRGB values written to a non-sRGB target.
+        let mut atlas = TextAtlas::with_color_mode(&device, &queue, &cache, format, ColorMode::Web);
+        let text = (0..LAYERS).map(|_| TextRenderer::new(&mut atlas, &device, wgpu::MultisampleState::default(), None)).collect();
+        let quads = QuadPipeline::new(&device, format);
+        let info = adapter.get_info();
+        let gpu = Self { instance, adapter, info, device, queue, format, quads, viewport, atlas, text, swash: SwashCache::new() };
+        let surface = gpu.configure(surface, &window);
+        Ok((gpu, surface))
+    }
+
+    /// A swap chain for another window on the same device.
+    #[allow(dead_code)]
+    pub fn surface(&self, window: Arc<Window>) -> Result<Surface> {
+        let surface = self.instance.create_surface(window.clone()).context("cannot create the window surface")?;
+        Ok(self.configure(surface, &window))
+    }
+
+    fn configure(&self, surface: wgpu::Surface<'static>, window: &Window) -> Surface {
+        let caps = surface.get_capabilities(&self.adapter);
         // Mailbox: presenting never blocks the UI thread; frames are paced by us.
         let present_mode = [wgpu::PresentMode::Mailbox, wgpu::PresentMode::Immediate]
             .into_iter()
@@ -69,7 +115,7 @@ impl Gpu {
         let size = window.inner_size();
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
+            format: self.format,
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode,
@@ -78,29 +124,9 @@ impl Gpu {
             desired_maximum_frame_latency: if present_mode == wgpu::PresentMode::Fifo { 1 } else { 2 },
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
-        surface.configure(&device, &config);
-        let cache = Cache::new(&device);
-        let viewport = Viewport::new(&device, &cache);
-        // Colours are sRGB values written to a non-sRGB target.
-        let mut atlas = TextAtlas::with_color_mode(&device, &queue, &cache, format, ColorMode::Web);
-        let text = (0..LAYERS).map(|_| TextRenderer::new(&mut atlas, &device, wgpu::MultisampleState::default(), None)).collect();
-        let quads = QuadPipeline::new(&device, format);
-        Ok(Self { surface, adapter: adapter.get_info(), device, queue, config, format, quads, viewport, atlas, text, swash: SwashCache::new() })
+        surface.configure(&self.device, &config);
+        Surface { surface, config }
     }
-
-    pub fn present_mode(&self) -> wgpu::PresentMode {
-        self.config.present_mode
-    }
-
-    pub fn resize(&mut self, width: u32, height: u32) {
-        if width == 0 || height == 0 || (width, height) == (self.config.width, self.config.height) {
-            return;
-        }
-        self.config.width = width;
-        self.config.height = height;
-        self.surface.configure(&self.device, &self.config);
-    }
-
     /// Uploads the scene and encodes its draws into `target`.
     fn encode(&mut self, target: &wgpu::TextureView, scene: &Scene, cache: &ShapeCache, fonts: &mut Fonts) -> wgpu::CommandBuffer {
         let (width, height) = (scene.width.max(1), scene.height.max(1));
@@ -160,13 +186,13 @@ impl Gpu {
         encoder.finish()
     }
 
-    /// Draws the scene to the window and presents it.
-    pub fn present(&mut self, window: &Window, scene: &Scene, cache: &ShapeCache, fonts: &mut Fonts) -> Result<Presented, Skip> {
+    /// Draws the scene to a window and presents it.
+    pub fn present(&mut self, target: &Surface, window: &Window, scene: &Scene, cache: &ShapeCache, fonts: &mut Fonts) -> Result<Presented, Skip> {
         let started = Instant::now();
-        let frame = match self.surface.get_current_texture() {
+        let frame = match target.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface.configure(&self.device, &self.config);
+                target.surface.configure(&self.device, &target.config);
                 return Err(Skip::Retry);
             }
             _ => return Err(Skip::Retry),
