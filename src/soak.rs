@@ -7,7 +7,12 @@
 //! `echo` every 50 ms and checks every acknowledged keystroke arrived
 //! exactly once and in order, and the real canvas (TUI in a hidden
 //! pseudoconsole, or the GUI over its test hooks) showing four busy tiles and
-//! typing into `ui-echo` twice a second. Every `drop_every` seconds the proxy
+//! typing into `ui-echo` twice a second. Before every key it checks that the
+//! echo tile has the keyboard (the GUI's test hooks, the TUI's hint line and
+//! focused tile); when it does not, nothing is typed (the batch is counted as
+//! skipped) and the tile gets the keyboard back with a click on its header,
+//! so keys never reach the canvas, where letters are shortcuts. An echo
+//! terminal that ended is started again (and reported). Every `drop_every` seconds the proxy
 //! drops the connections, takes the network down for 5 or 15 s, cuts a frame
 //! in half, or delays everything by 300 ms. Checked: reconnect ≤ 2 s after
 //! the network returns, full resync ≤ 500 ms, no lost or doubled keystrokes,
@@ -80,6 +85,8 @@ struct Typist {
     awaiting_full: Option<Instant>,
     /// Bytes received by connections that are gone.
     wire_before: u64,
+    /// Whether the canvas's echo terminal runs (from the service's terminal list).
+    ui_echo_alive: Option<bool>,
 }
 
 impl Typist {
@@ -104,6 +111,7 @@ impl Typist {
             reconnects: Vec::new(),
             awaiting_full: None,
             wire_before: 0,
+            ui_echo_alive: None,
         })
     }
 
@@ -140,7 +148,20 @@ impl Typist {
     }
 
     fn on_message(&mut self, message: ServiceMsg) {
-        let ServiceMsg::Frame8(frame) = message else { return };
+        let frame = match message {
+            ServiceMsg::Terminals(infos) => {
+                if let Some(info) = infos.iter().find(|i| i.id == UI_ECHO) {
+                    self.ui_echo_alive = Some(info.alive);
+                }
+                return;
+            }
+            ServiceMsg::TerminalGone(id) if id == UI_ECHO => {
+                self.ui_echo_alive = Some(false);
+                return;
+            }
+            ServiceMsg::Frame8(frame) => frame,
+            _ => return,
+        };
         if frame.id != ECHO {
             return;
         }
@@ -242,6 +263,15 @@ enum Client {
     Gui(Box<GuiDriver>),
 }
 
+/// Where the canvas's keyboard goes.
+#[derive(Debug, PartialEq)]
+enum Keyboard {
+    /// The echo terminal has it: keys may be typed.
+    Echo,
+    /// Elsewhere (the canvas, another tile, a dialog): why. Nothing is typed then.
+    Elsewhere(String),
+}
+
 impl Client {
     fn screen(&self) -> String {
         match self {
@@ -282,6 +312,74 @@ impl Client {
         match self {
             Client::Tui(c) => c.pid(),
             Client::Gui(g) => Some(g.pid()),
+        }
+    }
+
+    /// Where the canvas's keyboard goes now (the GUI's test hooks; the TUI's
+    /// hint line and focused tile).
+    fn keyboard(&self) -> Keyboard {
+        match self {
+            Client::Gui(g) => match g.ask(json!({ "cmd": "tree" })) {
+                Ok(reply) if reply["ok"] == true => {
+                    let tree = &reply["tree"];
+                    if tree["modals"].as_u64().unwrap_or(0) > 0 {
+                        Keyboard::Elsewhere("a dialog is open".into())
+                    } else if tree["focus"] != "Terminal" {
+                        Keyboard::Elsewhere(format!("focus on the {}", tree["focus"].as_str().unwrap_or("?").to_lowercase()))
+                    } else if tree["focused_term"] != UI_ECHO {
+                        Keyboard::Elsewhere(format!("focus on terminal {}", tree["focused_term"]))
+                    } else {
+                        Keyboard::Echo
+                    }
+                }
+                other => Keyboard::Elsewhere(format!("the test hooks did not answer ({other:?})")),
+            },
+            Client::Tui(c) => {
+                let text = c.text();
+                if !text.contains("Typing goes to the terminal") {
+                    Keyboard::Elsewhere("not in a terminal (or a notice hides the hint)".into())
+                } else if text.lines().any(|l| l.contains('┏') && l.contains("Soak echo · ")) {
+                    // The focused tile has the heavy outline.
+                    Keyboard::Echo
+                } else {
+                    Keyboard::Elsewhere("another tile has the keyboard".into())
+                }
+            }
+        }
+    }
+
+    /// Gives the echo tile the keyboard: dialogs closed, then a click on its
+    /// tile's header (or on its box when no tile shows it). Never types.
+    fn refocus(&mut self) -> Result<()> {
+        match self {
+            Client::Gui(g) => {
+                let tree = g.request(json!({ "cmd": "tree" }))?["tree"].clone();
+                for _ in 0..tree["modals"].as_u64().unwrap_or(0) {
+                    g.request(json!({ "cmd": "key", "key": "Esc" }))?;
+                }
+                let rect = |v: Option<&Value>| v.and_then(|r| r.as_array()).map(|r| r.iter().filter_map(|x| x.as_f64()).collect::<Vec<_>>()).filter(|r| r.len() == 4);
+                let tile = rect(tree["tiles"].as_array().and_then(|t| t.iter().find(|t| t["id"] == UI_ECHO)).map(|t| &t["outer"]));
+                let at = match tile {
+                    Some(r) => (r[0] + 3.5, r[1] + 0.5),
+                    None => {
+                        let found = rect(tree["canvas"]["boxes"].as_array().and_then(|b| b.iter().find(|b| b["id"] == UI_ECHO)).map(|b| &b["rect"]));
+                        let r = found.context("neither a tile nor a box of the echo terminal is on screen")?;
+                        (r[0] + 1.5, r[1] + r[3] / 2.0)
+                    }
+                };
+                for kind in ["down", "up"] {
+                    g.request(json!({ "cmd": "mouse", "kind": kind, "button": "left", "x": at.0, "y": at.1, "mods": [] }))?;
+                }
+                Ok(())
+            }
+            Client::Tui(c) => {
+                // Esc closes a dialog (on the canvas it only clears the selection).
+                c.send(b"\x1b")?;
+                match c.find("Soak echo · ") {
+                    Some((x, y)) => crate::selftest::Ui::click(&mut **c, x + 1, y),
+                    None => c.send(b"\x1d"),
+                }
+            }
         }
     }
 
@@ -333,6 +431,15 @@ struct UiTyping {
     missing: u64,
     doubled: u64,
     wrong: u64,
+    /// Batches not typed because the echo tile did not have the keyboard
+    /// (it was given back each time), and the longest run of them.
+    skipped: u64,
+    skipped_run: u64,
+    longest_skipped_run: u64,
+    /// Why, the first few times (seconds into the soak, reason).
+    skip_reasons: Vec<(f64, String)>,
+    /// The echo terminal ended and was started again (seconds into the soak).
+    echo_restarts: Vec<f64>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -557,7 +664,13 @@ fn soak(exe: &Path, instance: &Instance, root: &Path, options: &Options) -> Resu
         proxy.addr.clone(),
     ];
     let secret = crate::paths::hex(&token);
-    let env = [("COPILOT_CANVAS_REMOTE_SECRET", Path::new(&secret))];
+    // `O` on the canvas would open the other client: here it only writes this file.
+    let other_client = root.join("other-client.txt");
+    let env = [
+        ("COPILOT_CANVAS_REMOTE_SECRET", Path::new(&secret)),
+        ("COPILOT_CANVAS_OTHER_CLIENT_DRYRUN", other_client.as_path()),
+        ("COPILOT_CANVAS_SELFTEST", Path::new("1")),
+    ];
     let mut client = if options.gui {
         Client::Gui(Box::new(GuiDriver::start(&args, &env, (170, 46), &root.join("gui-stderr.log"))?))
     } else {
@@ -568,19 +681,22 @@ fn soak(exe: &Path, instance: &Instance, root: &Path, options: &Options) -> Resu
         anyhow::ensure!(Instant::now() < deadline, "the canvas did not show the echo terminal\n{}", client.screen());
         typist.pump(Duration::from_millis(100))?;
     }
-    // Keyboard to the echo tile; the first key proves it.
-    client.send(b"\x1d")?;
+    // Keyboard to the echo tile (checked, never toggled blindly); the first key proves it.
     let mut ui = UiTyping { next: 0, ..Default::default() };
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        client.send(b"a")?;
-        typist.pump(Duration::from_millis(400))?;
-        if let Some((n, _)) = ui_echo(&client.screen()) {
-            ui.last_n = n;
-            break;
+        if client.keyboard() == Keyboard::Echo {
+            client.send(b"a")?;
+            typist.pump(Duration::from_millis(400))?;
+            if let Some((n, _)) = ui_echo(&client.screen()) {
+                ui.last_n = n;
+                break;
+            }
+        } else {
+            client.refocus()?;
+            typist.pump(Duration::from_millis(300))?;
         }
-        anyhow::ensure!(Instant::now() < deadline, "typing in the canvas does not reach the echo terminal\n{}", client.screen());
-        client.send(b"\x1d")?;
+        anyhow::ensure!(Instant::now() < deadline, "typing in the canvas does not reach the echo terminal ({:?})\n{}", client.keyboard(), client.screen());
     }
     let client_pid = client.pid().context("the client's pid")?;
     println!("  · service pid {service_pid}, {client_name} client pid {client_pid}, proxy {}", proxy.addr);
@@ -601,9 +717,16 @@ fn soak(exe: &Path, instance: &Instance, root: &Path, options: &Options) -> Resu
     let mut key_index = 0u64;
     let mut ui_online = true;
     let mut ui_checked = Instant::now();
+    // Half-way the keyboard is taken from the echo tile on purpose (Ctrl+]):
+    // the next batch must notice, type nothing and give it back.
+    let mut focus_taken: Option<f64> = None;
     while started.elapsed() < total {
         let now = Instant::now();
         let elapsed = started.elapsed();
+        if focus_taken.is_none() && elapsed >= total / 2 && active.is_none() {
+            client.send(b"\x1d")?;
+            focus_taken = Some(round(elapsed.as_secs_f64()));
+        }
         // Inject the next fault.
         if active.is_none() && elapsed >= next_fault {
             let kind = SCHEDULE[faults.len() % SCHEDULE.len()];
@@ -711,10 +834,40 @@ fn soak(exe: &Path, instance: &Instance, root: &Path, options: &Options) -> Resu
                 }
             }
             if ui.pending.is_none() {
-                ui.next += 1;
-                let c = (b'a' + (ui.next % 26) as u8) as char;
-                client.send(c.to_string().as_bytes())?;
-                ui.pending = Some((c, Instant::now(), ui.last_n));
+                if typist.ui_echo_alive == Some(false) {
+                    // The echo terminal ended: start it again (it counts from 1 again).
+                    if let Some(conn) = typist.conn.as_ref() {
+                        launch(conn, UI_ECHO, vec!["echo".into(), "--tag".into(), "u".into()], 30)?;
+                        typist.ui_echo_alive = None;
+                        ui.echo_restarts.push(round(elapsed.as_secs_f64()));
+                        ui.last_n = 0;
+                        println!("  ! {:>4.0} s: the canvas's echo terminal ended; started it again", elapsed.as_secs_f64());
+                    }
+                } else {
+                    // Keys go only to the echo tile: never to the canvas, where letters are shortcuts.
+                    match client.keyboard() {
+                        Keyboard::Echo => {
+                            ui.skipped_run = 0;
+                            ui.next += 1;
+                            let c = (b'a' + (ui.next % 26) as u8) as char;
+                            client.send(c.to_string().as_bytes())?;
+                            ui.pending = Some((c, Instant::now(), ui.last_n));
+                        }
+                        Keyboard::Elsewhere(why) => {
+                            ui.skipped += 1;
+                            ui.skipped_run += 1;
+                            ui.longest_skipped_run = ui.longest_skipped_run.max(ui.skipped_run);
+                            if ui.skip_reasons.len() < 10 {
+                                ui.skip_reasons.push((round(elapsed.as_secs_f64()), why));
+                            }
+                            if let Err(error) = client.refocus()
+                                && ui.skip_reasons.len() < 10
+                            {
+                                ui.skip_reasons.push((round(elapsed.as_secs_f64()), format!("refocus: {error:#}")));
+                            }
+                        }
+                    }
+                }
             }
         }
         // Memory and handles.
@@ -741,7 +894,7 @@ fn soak(exe: &Path, instance: &Instance, root: &Path, options: &Options) -> Resu
             let worst_ui = faults.iter().filter_map(|f| f.ui_reconnect).max();
             let last = samples.last();
             println!(
-                "  {:>4.0} s · {} faults · typed {} (applied {ok}, wrong {wrong}, extra {extra}, unconfirmed {}, blocked {}) · canvas keys ok {} blocked {} missing {} doubled {} · reconnect max {:.2} s (canvas {:.2} s) · client {:.0} MB {} handles · service {:.0} MB {} handles · {:.1} KB/s ({:.1} KB/s canvas)",
+                "  {:>4.0} s · {} faults · typed {} (applied {ok}, wrong {wrong}, extra {extra}, unconfirmed {}, blocked {}) · canvas keys ok {} blocked {} missing {} doubled {} skipped {} · reconnect max {:.2} s (canvas {:.2} s) · client {:.0} MB {} handles · service {:.0} MB {} handles · {:.1} KB/s ({:.1} KB/s canvas)",
                 elapsed.as_secs_f64(),
                 faults.len(),
                 typist.keys.len(),
@@ -751,6 +904,7 @@ fn soak(exe: &Path, instance: &Instance, root: &Path, options: &Options) -> Resu
                 ui.blocked,
                 ui.missing,
                 ui.doubled,
+                ui.skipped,
                 worst.map(|d| d.as_secs_f64()).unwrap_or(0.0),
                 worst_ui.map(|d| d.as_secs_f64()).unwrap_or(0.0),
                 last.map(|s| s.client_mb).unwrap_or(0.0),
@@ -775,6 +929,11 @@ fn soak(exe: &Path, instance: &Instance, root: &Path, options: &Options) -> Resu
         Client::Gui(g) => g.running(),
         Client::Tui(_) => true,
     };
+    // Letters typed into the canvas would have opened windows (O) or stopped terminals (X).
+    let windows = match &client {
+        Client::Gui(g) => g.ask(json!({ "cmd": "windows" })).ok().and_then(|r| r["windows"].as_array().map(Vec::len)),
+        Client::Tui(_) => None,
+    };
     client.quit();
 
     // The report.
@@ -798,6 +957,16 @@ fn soak(exe: &Path, instance: &Instance, root: &Path, options: &Options) -> Resu
     }
     if ui.doubled > 0 || ui.wrong > 0 || ui.missing > 0 {
         failures.push(format!("canvas: {} doubled, {} wrong, {} lost while online", ui.doubled, ui.wrong, ui.missing));
+    }
+    // 60 batches = 30 s in which the echo tile could not get the keyboard back.
+    if ui.longest_skipped_run > 60 {
+        failures.push(format!("the canvas's echo tile did not get the keyboard back for {} batches in a row", ui.longest_skipped_run));
+    }
+    if focus_taken.is_some() && ui.skipped == 0 {
+        failures.push("the keyboard was taken from the echo tile on purpose and no batch noticed".into());
+    }
+    if windows.is_some_and(|n| n > 1) || other_client.exists() {
+        failures.push(format!("keys reached the canvas: {} window(s), the other client asked for: {}", windows.unwrap_or(1), other_client.exists()));
     }
     if let Some(worst) = max(&reconnects).filter(|d| *d > RECONNECT_BUDGET) {
         failures.push(format!("protocol client reconnected {:.2} s after the network returned (budget 2 s)", worst.as_secs_f64()));
@@ -876,6 +1045,11 @@ fn soak(exe: &Path, instance: &Instance, root: &Path, options: &Options) -> Resu
             "lost_while_online": ui.missing,
             "doubled": ui.doubled,
             "wrong": ui.wrong,
+            "batches_skipped_without_keyboard": ui.skipped,
+            "longest_skipped_run": ui.longest_skipped_run,
+            "keyboard_taken_on_purpose_at_s": focus_taken,
+            "skip_reasons": ui.skip_reasons.iter().map(|(at, why)| json!({ "at_s": at, "why": why })).collect::<Vec<_>>(),
+            "echo_terminal_restarts_at_s": ui.echo_restarts,
             "reconnect_after_network_returns_ms": stats(&ui_reconnects),
             "bandwidth_kb_s_4_busy_tiles": round(canvas_bandwidth),
         },
