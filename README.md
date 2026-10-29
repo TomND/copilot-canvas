@@ -1,43 +1,145 @@
-# Copilot Canvas
+<h1 align="center">✦ Copilot Canvas</h1>
 
-A fast, native, spatial session manager for agent CLIs on Windows:
-**GitHub Copilot CLI, OpenCode and Claude Code**. Sessions are boxes on an
-infinite canvas; subagents hang off their parent; groups are boxes around
-sessions; the sidebar lists everything; clicking a box shows its **real**
-agent terminal on the right when it runs (single or tiled), or its details with
-an explicit Start / Resume button; double-click or Enter starts it. Two front ends share one
-persistent terminal service: a terminal UI (TUI) and a GPU client (GUI); both
-work locally or from another PC over a Dev Tunnel (remote mode).
+<p align="center">
+  <strong>Big agent energy. Much less tab chaos.</strong><br>
+  A native, spatial workspace for GitHub Copilot CLI, OpenCode, and Claude Code.
+</p>
 
-```
-┌ SESSIONS ──────────┐┌ canvas ─────────────────────────┐┌ terminals ───────────────┐
-│ ▾ ▣ Payments    3  ││ ┌╌ ▣ Payments · 3 ╌╌╌╌╌╌╌╌╌╌┐   ││ ● Fix flaky test · working│
-│   ⠹ Fix flaky test ││ ╎ ╭─ Fix flaky test ─╮      ╎   ││ copilot> …               │
-│     ◇ Explore      ││ ╎ │ ⠹ working        │┄┄┄╮  ╎   ││                          │
-│   ↳ ✓ Write tests  ││ ╎ ╰──────────────────╯   ┊  ╎   ││                          │
-│ ── Ungrouped (1)   ││ ╎   ┌ ◇ Explore ─┐  ╭─ ↳ Write tests╮                        │
-│ ↗ ⠸ Review PR      ││ └╌╌╌└────────────┘╌╌╰───────────────╯◢                        │
-└────────────────────┘└─────────────────────────────────┘└──────────────────────────┘
-```
+<p align="center">
+  <a href="https://github.com/TomND/copilot-canvas/releases"><strong>🚀 Grab the preview</strong></a>
+  &nbsp;&middot;&nbsp;
+  <a href="#quick-start">Get started</a>
+  &nbsp;&middot;&nbsp;
+  <a href="#in-its-element">See the app</a>
+  &nbsp;&middot;&nbsp;
+  <a href="#remote-mode">Connect from home</a>
+  &nbsp;&middot;&nbsp;
+  <a href="#documentation">Explore the docs</a>
+</p>
 
-Design and status (layers, remote mode, libghostty-vt, GPU client): see [PLAN.md](PLAN.md).
+<p align="center">
+  <a href="https://github.com/TomND/copilot-canvas/actions/workflows/ci.yml">
+    <img src="https://github.com/TomND/copilot-canvas/actions/workflows/ci.yml/badge.svg" alt="Windows CI">
+  </a>
+</p>
+
+<p align="center">
+  <img src="docs/assets/canvas-hero.svg" width="1200" alt="Canvas-inspired illustration: linked agent sessions on a charcoal dot-grid, with blue working, gold needs-you, finished subagent, and looping watcher cards.">
+</p>
+
+## Your agents called. They want more space.
+
+Give each conversation a place. Group related work, follow the subagents,
+and spot the session that needs you without opening every terminal.
+Zoom out for the whole picture; step into a box for the **real agent CLI**.
+No replacement chat UI. No conversation to copy across.
+
+The GPU client and terminal UI share one persistent service. Detach a window
+and your hosted sessions keep running; reopen locally or connect from another
+PC to the same canvas and live terminals.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>🗺️ Room for every rabbit hole</h3>
+      <p>An infinite canvas, nested groups, linked subagents, and stackable subsessions. Arrange work the way you think about it.</p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>⌨️ No terminal cosplay</h3>
+      <p>Copilot CLI, OpenCode, and Claude Code in real native terminals. Go single-pane or tile up to four sessions.</p>
+    </td>
+  </tr>
+  <tr>
+    <td valign="top">
+      <h3>🧭 Pick up the thread</h3>
+      <p>Persistent terminals, shared canvas edits, and recent-session navigation. Close the client, not the conversation.</p>
+    </td>
+    <td valign="top">
+      <h3>✨ A canvas with a sixth sense</h3>
+      <p>Gold when a session needs you. Blue when its work is ready for review. Borders and icons carry meaning alongside colour.</p>
+    </td>
+  </tr>
+  <tr>
+    <td valign="top">
+      <h3>🛰️ Put the boring bits on watch</h3>
+      <p>Passive sessions and canvas-wide agents react to events, follow schedules, and use the skills you assign them.</p>
+    </td>
+    <td valign="top">
+      <h3>💌 Findings, not scavenger hunts</h3>
+      <p>An inbox for agent reports, briefs, and updates. Read Markdown or sanitized HTML without leaving the canvas.</p>
+    </td>
+  </tr>
+</table>
+
+## In its element
+
+<p align="center">
+  <a href="tests/golden/gui/terminals-tiled.png">
+    <img src="tests/golden/gui/terminals-tiled.png" width="1200" alt="The actual Canvas GPU client: a session sidebar, linked session boxes on a dot-grid, and two live native terminal panes.">
+  </a>
+  <br>
+  <sub>The real GPU client, running demo shells. Your workspace on the left; your terminals on the right.</sub>
+</p>
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="tests/golden/gui/visuals.png"><img src="tests/golden/gui/visuals.png" width="600" alt="Canvas demo showing stacked subsessions, a looping watcher, attention effects, and dusty unused sessions."></a>
+      <h3>A canvas with a pulse</h3>
+      <p>Watchers loop, important work catches your eye, and unused sessions gather dust. Reduced motion is built in.</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="tests/golden/gui/report-viewer.png"><img src="tests/golden/gui/report-viewer.png" width="600" alt="A demo morning brief open in the Canvas read-only report viewer, with headings, a status table, links, and its source session."></a>
+      <h3>From running to readable</h3>
+      <p>Morning briefs, investigation notes, and short updates land in one shared reports inbox.</p>
+    </td>
+  </tr>
+</table>
+
+<p align="center"><sub>Actual app screenshots from the demo and golden-image fixtures. The opening artwork is an illustration; its motion respects your reduced-motion preference.</sub></p>
 
 ## Quick start
 
+### Download the Windows preview
+
+Get the ZIP from [Releases](https://github.com/TomND/copilot-canvas/releases)
+and extract it. Keep **`copilot-canvas.exe` and `copilot-canvas-gui.exe` together**.
+No Rust or Zig installation is needed to run the prebuilt programs.
+
 ```powershell
-git clone <this repository> copilot-canvas
-cd copilot-canvas
-cargo xtask build-ghostty                      # once: builds libghostty-vt (needs Zig 0.17.0; docs/GHOSTTY.md)
-cargo build --release                          # copilot-canvas.exe (service, CLI, TUI) + copilot-canvas-gui.exe
-.\target\release\copilot-canvas.exe --demo     # safe demo: PowerShell panes, no agent
-.\target\release\copilot-canvas.exe            # your real agent sessions (TUI)
-.\target\release\copilot-canvas.exe --gui      # the same canvas in the GPU client
+.\copilot-canvas.exe --gui --demo   # explore safely: demo shells, no agent prompts
+.\copilot-canvas.exe --gui          # open your real session workspace
 ```
 
-Optional: `cargo install --path .` puts `copilot-canvas` on your PATH. Use a
-reasonably large Windows Terminal window for the TUI (≥ 140×40 is comfortable).
-Without Zig, `cargo build --release --no-default-features` builds with the
-alacritty terminal engine instead of Ghostty.
+Install and sign in to at least one supported agent CLI on the machine that
+will run your sessions. A remote-only home PC needs the Canvas client and
+Dev Tunnels instead; the agent CLIs stay on the host.
+
+> [!NOTE]
+> The downloadable build is a **preview**. This README describes `main`;
+> screenshots and features can be ahead of the published preview.
+
+### Build from source
+
+Use Windows with the stable Rust MSVC toolchain, Visual C++ build tools and
+the Windows SDK. The default terminal engine also needs **Zig 0.17.0**;
+see the [Ghostty build guide](docs/GHOSTTY.md).
+
+```powershell
+git clone https://github.com/TomND/copilot-canvas.git
+cd copilot-canvas
+cargo xtask build-ghostty                 # once per pinned engine version
+cargo build --release                    # builds both executables
+.\target\release\copilot-canvas.exe --gui --demo
+```
+
+Prefer the terminal UI? Run `.\target\release\copilot-canvas.exe --tui`
+(a Windows Terminal window of at least 140 by 40 is comfortable).
+Without Zig, `cargo build --release --no-default-features` uses the alacritty
+terminal engine instead. Optional: `cargo install --path .` puts the CLI/TUI
+on your PATH; the GPU client still needs its executable beside it.
+
+### Make it yours
 
 - **Agents.** New sessions use the first installed of Copilot, OpenCode and
   Claude Code; pick another per session in the new-session dialog (*Agent*), per
@@ -62,7 +164,50 @@ alacritty terminal engine instead of Ghostty.
 On first run the canvas imports your 8 most recent sessions. If the Node
 prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 
+> [!IMPORTANT]
+> New agent launches use allow-all permissions by default. Choose
+> **Settings &rsaquo; Permissions &rsaquo; ask** if you want approval prompts.
+> A session already running in another CLI or VS Code terminal stays there;
+> Canvas never starts a second copy.
+
+## Remote mode
+
+**Run the agents on your Cloud PC. Keep the canvas at home.**
+The service owns the terminals and shared document; your client brings the
+canvas, keyboard, clipboard, and report viewer.
+
+| Where the work runs | Where you sit |
+|:---|:---|
+| Agent CLIs, repositories, session history, persistent terminal service | Native GUI or terminal UI, your own view and layout preferences |
+| Private Dev Tunnel host on loopback | Authenticated tunnel connection and a paired client |
+
+On the **host**, run `remote tunnel-setup` and complete the one-time tunnel
+creation, sign-in, and hosting steps it prints. Then pair your home PC:
+
+```powershell
+# On the host: generate a single-use code, valid for 10 minutes
+copilot-canvas remote pair --name home-pc
+
+# At home: sign in to Dev Tunnels with the same account, then connect
+copilot-canvas remote add cloudpc --tunnel TUNNEL_ID --code PAIRING_CODE
+copilot-canvas --gui --remote cloudpc
+```
+
+Follow the [complete remote guide](docs/REMOTE.md) or
+[compact setup checklist](docs/REMOTE-SETUP.txt) for installation and recovery.
+Choose **Detach** when you close the client to leave the hosted sessions running.
+
+> [!IMPORTANT]
+> Pair only your own trusted machines: a paired client can act as you on the
+> host. A restart preserves conversation history, not in-process work or loops.
+
 ## Features
+
+The highlights above are the short tour. Expand the reference for the exact
+behaviour, shortcuts, and agent-specific details.
+
+<details>
+<summary><strong>Open the full feature reference</strong></summary>
 
 | | |
 |---|---|
@@ -99,6 +244,19 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 | **Plugins · MCP · skills** | Lists come from `copilot plugin/mcp/skill/instruction list --json`; Space enables/disables, Del removes (confirmed; servers and skills that come from a plugin, the project or Copilot itself can only be disabled), **+** rows add a skill, an MCP server (`copilot mcp add` syntax) or install a plugin (runs in a canvas terminal so you can answer prompts). Secrets (env, headers) are never shown |
 | **Automations** | Reads Copilot's automations (`~/.copilot/data.db`: scheduled workflows, their last 10 runs, and per-session schedules). They appear in the Automations view and as ◷ boxes in a special **Automations** group on the canvas. Click one for its prompt, schedule, model, mode, project, last/next run and run history; Space or the button enables/disables a scheduled workflow (per-session schedules are managed with `/every` in that session). Refreshes every 15 s |
 | **Migrate from VS Code** | VS Code view → *Migrate skills & settings…* previews VS Code (Code, Insiders, all profiles) MCP servers, instruction files, prompt files (as skills), custom agents / chat modes and skill folders, marked new / already present / conflict / manual. Applies only the items you tick: backs up `~/.copilot` config first, never overwrites, writes a redacted `migration-log.txt` |
+
+</details>
+
+## Documentation
+
+| Find your way | Go deeper |
+|:---|:---|
+| [**Native GUI**](docs/GUI.md) &mdash; rendering, accessibility, screenshots | [**Agent providers**](docs/AGENTS.md) &mdash; launch, resume, models, transcripts |
+| [**Remote workspace**](docs/REMOTE.md) &mdash; pairing, reconnect, trust model | [**Backend and shared document**](docs/BACKEND.md) &mdash; one service, multiple clients |
+| [**Terminal engine**](docs/GHOSTTY.md) &mdash; libghostty-vt and its pinned build | [**Feature parity**](docs/PARITY.md) &mdash; GUI and TUI coverage |
+| [**Architecture**](#architecture) &mdash; how the pieces fit together | [**Measured performance**](#performance-measured) &mdash; workloads and reproducible probes |
+| [**Reports**](#reports) &mdash; publish briefs and updates | [**Safety**](#safety) &mdash; permissions, history, remote access |
+| [**Commands**](#commands) &mdash; the CLI reference | [**Plan and status**](PLAN.md) &mdash; roadmap and remaining work |
 
 ## Controls
 
@@ -756,3 +914,15 @@ cargo test                            unit tests
   client opens the canvas again.
 - `--perf` shows frames per second, draw time and output-to-screen latency in
   the status bar.
+
+---
+
+<p align="center">
+  <strong>Zoom out. Find your next “aha.” Step back in.</strong><br>
+  <sub>Copilot Canvas &middot; Real terminals. Shared context. Room to think.</sub><br><br>
+  <a href="#quick-start">Get started</a>
+  &nbsp;&middot;&nbsp;
+  <a href="#documentation">Documentation</a>
+  &nbsp;&middot;&nbsp;
+  <a href="https://github.com/TomND/copilot-canvas/issues">Issues &amp; ideas</a>
+</p>

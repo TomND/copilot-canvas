@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" fill="none" role="img" aria-labelledby="title description">
+  <title id="title">Copilot Canvas: your agents, one canvas</title>
+  <desc id="description">A dark dot-grid workspace with connected session cards: a blue working session, a gold session needing attention, a finished subagent, and a looping watcher. A real terminal is illustrated below the cards.</desc>
+  <style>
+    .signal { stroke-dasharray: 4 7; animation: signal 2.8s linear infinite; }
+    .halo { animation: breathe 3.6s ease-in-out infinite; }
+    .attention { animation: breathe 4.4s ease-in-out infinite; }
+    .spark { transform-box: fill-box; transform-origin: center; animation: sparkle 5s ease-in-out infinite; }
+    .spark-late { animation-delay: -2.5s; }
+    .cursor { animation: cursor 1.6s steps(2, end) infinite; }
+    .comet { offset-path: path('M1088 322h10c22 0 22 38 0 38h-6'); animation: orbit 3.8s linear infinite; }
+    @keyframes signal { to { stroke-dashoffset: -44; } }
+    @keyframes breathe { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+    @keyframes sparkle { 0%, 100% { opacity: 0.3; transform: scale(0.8) rotate(-8deg); } 50% { opacity: 1; transform: scale(1.12) rotate(8deg); } }
+    @keyframes cursor { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+    @keyframes orbit { from { offset-distance: 0%; } to { offset-distance: 100%; } }
+    @media (prefers-reduced-motion: reduce) {
+      .signal, .halo, .attention, .spark, .cursor, .comet { animation: none; }
+      .comet { display: none; }
+    }
+  </style>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1200" y2="520" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#161b22"/>
+      <stop offset="0.55" stop-color="#0d1117"/>
+      <stop offset="1" stop-color="#101c29"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="72" y1="0" x2="470" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#56b4e9"/>
+      <stop offset="1" stop-color="#a371f7"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(900 245) rotate(90) scale(280 400)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#58a6ff" stop-opacity="0.11"/>
+      <stop offset="1" stop-color="#58a6ff" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="dots" width="26" height="26" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="1" fill="#30363d"/>
+    </pattern>
+    <clipPath id="frame">
+      <rect x="1" y="1" width="1198" height="518" rx="22"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#frame)">
+    <rect width="1200" height="520" fill="url(#background)"/>
+    <rect x="520" width="680" height="520" fill="url(#dots)"/>
+    <rect width="1200" height="520" fill="url(#glow)"/>
+    <path d="M1 1H1199" stroke="#30363d"/>
+    <g font-family="'Segoe UI', Arial, sans-serif">
+      <rect x="64" y="62" width="32" height="32" rx="9" fill="#58a6ff" fill-opacity="0.13" stroke="#58a6ff" stroke-opacity="0.45"/>
+      <path d="m80 70 8 8-8 8-8-8 8-8Z" fill="#58a6ff"/>
+      <text x="109" y="84" font-size="12" font-weight="600" letter-spacing="2.4" fill="#8b949e">AGENT CHAOS, MEET YOUR CANVAS</text>
+      <text x="64" y="175" font-size="55" font-weight="700" letter-spacing="-2" fill="#f0f6fc">Your agents.</text>
+      <text x="64" y="241" font-size="55" font-weight="700" letter-spacing="-2" fill="url(#accent)">Out of their tabs.</text>
+      <text x="66" y="288" font-size="19" fill="#c9d1d9">Less tab archaeology. More aha.</text>
+      <text x="66" y="318" font-size="19" fill="#8b949e">Real terminals. A little more magic.</text>
+      <g font-size="12" font-weight="600">
+        <rect x="64" y="357" width="126" height="30" rx="15" fill="#161b22" stroke="#30363d"/>
+        <circle cx="81" cy="372" r="3" fill="#56b4e9"/>
+        <text x="92" y="376" fill="#c9d1d9">Native Windows</text>
+        <rect x="200" y="357" width="115" height="30" rx="15" fill="#161b22" stroke="#30363d"/>
+        <text x="219" y="376" fill="#c9d1d9">GUI + terminal</text>
+        <rect x="325" y="357" width="125" height="30" rx="15" fill="#161b22" stroke="#30363d"/>
+        <text x="344" y="376" fill="#c9d1d9">Local + remote</text>
+      </g>
+      <path d="M64 429H462" stroke="#30363d"/>
+      <text x="65" y="460" font-size="12" letter-spacing="0.5" fill="#8b949e">COPILOT CLI</text>
+      <circle cx="176" cy="456" r="2" fill="#484f58"/>
+      <text x="194" y="460" font-size="12" letter-spacing="0.5" fill="#8b949e">OPENCODE</text>
+      <circle cx="290" cy="456" r="2" fill="#484f58"/>
+      <text x="309" y="460" font-size="12" letter-spacing="0.5" fill="#8b949e">CLAUDE CODE</text>
+    </g>
+    <g font-family="'Cascadia Code', Consolas, monospace">
+      <rect x="561" y="65" width="577" height="334" rx="16" fill="#56b4e9" fill-opacity="0.025" stroke="#56b4e9" stroke-opacity="0.4"/>
+      <rect x="578" y="86" width="8" height="8" rx="1" stroke="#56b4e9"/>
+      <text x="597" y="94" font-size="13" fill="#56b4e9">Ship something good</text>
+      <text x="1088" y="94" font-size="12" fill="#6e7681">3 + 1</text>
+      <path d="M724 213V246H688V274" stroke="#6e7681" stroke-width="1.5"/>
+      <path class="signal" d="M842 171H879V209H910" stroke="#58a6ff" stroke-width="1.5" stroke-dasharray="4 5"/>
+      <path class="signal" d="M988 277V305H1009" stroke="#009e73" stroke-width="1.5" stroke-dasharray="4 5"/>
+      <circle cx="688" cy="274" r="3" fill="#6e7681"/>
+      <rect class="halo" x="590" y="123" width="262" height="100" rx="14" stroke="#58a6ff" stroke-opacity="0.2" stroke-width="12"/>
+      <rect x="594" y="127" width="254" height="92" rx="11" stroke="#58a6ff" stroke-opacity="0.5" stroke-width="4"/>
+      <rect x="597" y="130" width="248" height="86" rx="9" fill="#161b22" stroke="#f0f6fc" stroke-width="2"/>
+      <text x="614" y="156" font-size="14" font-weight="600" fill="#f0f6fc">Build the feature</text>
+      <circle cx="618" cy="178" r="4" fill="#56b4e9"/>
+      <text x="630" y="183" font-size="12" fill="#56b4e9">working</text>
+      <text x="614" y="202" font-size="10" fill="#6e7681">Copilot CLI</text>
+      <rect x="641" y="273" width="207" height="74" rx="9" fill="#161b22" stroke="#484f58"/>
+      <path d="m658 290 5 5-5 5-5-5 5-5Z" stroke="#8b949e"/>
+      <text x="674" y="299" font-size="12" fill="#c9d1d9">Explore the code</text>
+      <path d="m655 323 4 4 8-11" stroke="#648fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="674" y="327" font-size="11" fill="#648fff">done - review</text>
+      <rect class="attention" x="905" y="166" width="210" height="112" rx="12" fill="#ffb000" fill-opacity="0.04" stroke="#ffb000" stroke-opacity="0.16" stroke-width="10"/>
+      <rect x="910" y="171" width="200" height="102" rx="9" fill="#211c12" stroke="#ffb000" stroke-width="2"/>
+      <text x="927" y="197" font-size="13" font-weight="600" fill="#f0f6fc">Review the changes</text>
+      <path d="m932 211 5 9h-10l5-9Z" fill="#ffb000"/>
+      <text x="946" y="220" font-size="12" fill="#ffb000">needs you</text>
+      <text x="927" y="250" font-size="10" fill="#8b949e">Claude Code</text>
+      <rect x="898" y="307" width="190" height="66" rx="9" fill="#121d1b" stroke="#009e73" stroke-dasharray="5 4"/>
+      <text x="913" y="332" font-size="12" fill="#c9d1d9">Watch the builds</text>
+      <circle cx="917" cy="352" r="3" fill="#6ef0be"/>
+      <text x="928" y="356" font-size="10" fill="#8b949e">every 15m</text>
+      <path d="M1088 322h10c22 0 22 38 0 38h-6" stroke="#009e73" stroke-width="1.7"/>
+      <path d="m1096 356-5 4 5 4" stroke="#6ef0be" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="1115" cy="341" r="3" fill="#6ef0be"/>
+      <circle class="comet" r="3" fill="#6ef0be"/>
+      <rect x="594" y="418" width="546" height="63" rx="10" fill="#0b1016" stroke="#30363d"/>
+      <path d="m611 436 5 4-5 4" stroke="#58a6ff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="628" y="445" font-size="12" fill="#8b949e">The terminal you know. Still the real thing.</text>
+      <text x="611" y="467" font-size="11" fill="#56b4e9">PS&gt;</text>
+      <rect class="cursor" x="642" y="456" width="7" height="12" fill="#c9d1d9"/>
+    </g>
+    <g class="spark" stroke="#cc79a7" stroke-width="1.6" stroke-linecap="round">
+      <path d="M871 80v8m0 12v8m-14-14h8m12 0h8m-24-10 5 5m10 10 5 5m0-20-5 5m-10 10-5 5"/>
+      <circle cx="871" cy="94" r="3" fill="#cc79a7" stroke="none"/>
+    </g>
+    <g class="spark spark-late" stroke="#ffb000" stroke-width="1.6" stroke-linecap="round">
+      <path d="M577 285v6m0 10v6m-11-11h6m10 0h6m-19-8 4 4m8 8 4 4m0-16-4 4m-8 8-4 4"/>
+      <circle cx="577" cy="296" r="2" fill="#ffb000" stroke="none"/>
+    </g>
+    <path d="m1096 110 3 7 7 3-7 3-3 7-3-7-7-3 7-3 3-7Z" fill="#a371f7" fill-opacity="0.75"/>
+    <circle cx="530" cy="410" r="3" fill="#58a6ff" fill-opacity="0.55"/>
+    <circle cx="1148" cy="438" r="2" fill="#cc79a7" fill-opacity="0.65"/>
+  </g>
+  <rect x="0.5" y="0.5" width="1199" height="519" rx="22" stroke="#30363d"/>
+</svg>
