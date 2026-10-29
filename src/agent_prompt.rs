@@ -285,16 +285,18 @@ fn open_terminal<U: Ui>(ui: &mut U, name: &str) -> Result<()> {
     ui.wait("its terminal with keyboard focus", Duration::from_secs(10), |t| t.contains("Typing goes to the terminal") && t.contains(&header))
 }
 
-/// Sets a new-session default in Settings (a typed value or a choice).
+/// Sets a new-session default in Settings (OpenCode's model, typed into its
+/// picker, or a choice).
 fn set_default<U: Ui>(ui: &mut U, canvas: &Path, field: &str, value: &str) -> Result<Doc> {
     canvas_focus(ui)?;
     ui.send(b"\x1b8")?;
     ui.wait("settings view", Duration::from_secs(5), |t| t.contains("New-session defaults"))?;
     let (x, y) = ui.locate(field, SIDEBAR)?;
     ui.click(x, y)?;
-    if field == "Model" {
-        ui.wait("model prompt", Duration::from_secs(5), |t| t.contains("model id"))?;
-        ui.send(b"\x15")?;
+    let model = field == "OpenCode model";
+    if model {
+        // The picker takes any id typed into its filter (a listed one is picked).
+        ui.wait("model picker", Duration::from_secs(5), |t| t.contains("OpenCode model for new sessions") && t.contains("Type a model id"))?;
         ui.send(value.as_bytes())?;
     } else {
         // Permissions: allow-all, then ask (filtering by "ask" also matches allow-all's "asking").
@@ -302,9 +304,9 @@ fn set_default<U: Ui>(ui: &mut U, canvas: &Path, field: &str, value: &str) -> Re
         ui.send(b"\x1b[B")?;
     }
     ui.send(b"\r")?;
-    let doc = wait_doc(canvas, &format!("{field} = {value} saved"), |d| match field {
-        "Model" => d.defaults.model.as_deref() == Some(value),
-        _ => d.defaults.permissions.as_deref() == Some(value),
+    let doc = wait_doc(canvas, &format!("{field} = {value} saved"), |d| match model {
+        true => d.defaults.model(AgentKind::OpenCode) == Some(value),
+        false => d.defaults.permissions.as_deref() == Some(value),
     })?;
     ui.send(b"\x1b1")?;
     Ok(doc)
@@ -317,7 +319,8 @@ fn new_session<U: Ui>(ui: &mut U, canvas: &Path, name: &str) -> Result<String> {
     ui.send(b"n")?;
     ui.wait("new session dialog with OpenCode chosen", Duration::from_secs(5), |t| t.contains("New session") && t.contains("◉ OpenCode"))?;
     ui.send(name.as_bytes())?;
-    for _ in 0..5 {
+    // Name → Folder → Browse… → Recent → Agent → Model → MCP servers.
+    for _ in 0..6 {
         ui.send(b"\t")?;
     }
     ui.send(b"\r")?;
@@ -538,8 +541,8 @@ fn scenario<U: Ui>(instance: &Instance, paths: &Paths, model: &str, steps: &[Str
     let mut ui = start(&args, env)?;
     ui.wait("the canvas", Duration::from_secs(30), |t| t.contains("Copilot Canvas") && t.contains(PASSIVE))?;
 
-    step(&format!("Settings → Model sets {model} for new sessions"));
-    set_default(&mut ui, &canvas, "Model", model)?;
+    step(&format!("Settings → OpenCode model sets {model} for new sessions"));
+    set_default(&mut ui, &canvas, "OpenCode model", model)?;
 
     step("a new OpenCode session from the dialog runs the real TUI with -m <free model> and --auto");
     let main = new_session(&mut ui, &canvas, MAIN)?;

@@ -392,14 +392,20 @@ fn start_run(shared: &Shared, routing: &Routing, spec: &PassiveSpec, state: &mut
     }
 }
 
-/// The headless launch of one passive run (every run uses the spec's model).
+/// The headless launch of one passive run: a fresh conversation uses the
+/// spec's model (the default of its group), a resumed one the model recorded
+/// for it when there is one.
 fn passive_launch(kind: AgentKind, spec: &PassiveSpec, native: Option<String>, fresh: bool, folder: &Path, prompt: String, hop: u32) -> AgentLaunch {
+    let model = match spec.session_model.as_deref() {
+        Some(recorded) if !fresh => recorded,
+        _ => spec.model.as_str(),
+    };
     AgentLaunch {
         agent: kind.id().to_owned(),
         native_id: native,
         resume: !fresh,
         name: Some(spec.name.clone()),
-        model: Some(spec.model.trim().to_owned()).filter(|m| !m.is_empty()),
+        model: Some(model.trim().to_owned()).filter(|m| !m.is_empty()),
         allow_all: true,
         mcp_off: spec.mcp_off.clone(),
         group_folder: Some(folder.display().to_string()),
@@ -671,7 +677,15 @@ mod tests {
             assert_eq!(model.map(String::as_str), Some("opencode/x-free"), "fresh={fresh}: {args:?}");
             assert!(args.iter().any(|a| a == "--auto") && args[0] == "run", "{args:?}");
         }
-        let unset = passive_launch(AgentKind::OpenCode, &PassiveSpec { model: "  ".into(), ..spec }, None, true, Path::new(r"C:\g"), "check".into(), 1);
+        let unset = passive_launch(AgentKind::OpenCode, &PassiveSpec { model: "  ".into(), ..spec.clone() }, None, true, Path::new(r"C:\g"), "check".into(), 1);
         assert_eq!(unset.model, None, "blank: the agent's own default");
+        // A conversation with a recorded model keeps it when resumed; a fresh one (rollover) takes the default.
+        let recorded = PassiveSpec { session_model: Some("github-copilot/claude-opus-5.5".into()), ..spec.clone() };
+        let resumed = passive_launch(AgentKind::OpenCode, &recorded, Some("ses_e7fbbd911ffeOynBIm3IrWFsUl".into()), false, Path::new(r"C:\g"), "check".into(), 1);
+        assert_eq!(resumed.model.as_deref(), Some("github-copilot/claude-opus-5.5"));
+        let rolled = passive_launch(AgentKind::OpenCode, &recorded, None, true, Path::new(r"C:\g"), "check".into(), 1);
+        assert_eq!(rolled.model.as_deref(), Some("opencode/x-free"));
+        let own = passive_launch(AgentKind::Claude, &PassiveSpec { session_model: Some(String::new()), ..spec }, None, false, Path::new(r"C:\g"), "check".into(), 1);
+        assert_eq!(own.model, None, "recorded as the agent's own default: no model flag");
     }
 }

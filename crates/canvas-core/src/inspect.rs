@@ -291,7 +291,7 @@ impl App {
             agent_session: Some(native.clone()),
             // A resume is a use.
             last_used_ms: Some(crate::paths::now_ms()),
-            stacked: false,
+            stacked: false, model: None,
         });
         self.resumed_children.insert(new_id.clone());
         self.mark_dirty();

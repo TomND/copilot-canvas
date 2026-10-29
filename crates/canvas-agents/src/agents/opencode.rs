@@ -424,7 +424,11 @@ impl OpenCode {
                 push(&["--auto"]);
             }
         }
-        for (name, value) in [("-m", &launch.model), ("--agent", &launch.custom_agent)] {
+        // A resumed or forked TUI takes the model of the session's last message
+        // itself (over any `-m`), so `-m` goes to new sessions and to every
+        // headless run only.
+        let model = if headless || (resumed.is_none() && launch.fork_from.is_none()) { &launch.model } else { &None };
+        for (name, value) in [("-m", model), ("--agent", &launch.custom_agent)] {
             if let Some(value) = value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
                 args.extend([name.to_owned(), super::option_value(name, value)?.to_owned()]);
             }
@@ -579,6 +583,12 @@ mod tests {
 
         let resume = AgentLaunch { resume: true, native_id: Some(SES.into()), prompt: None, allow_all: false, model: None, ..new.clone() };
         assert_eq!(OpenCode.command_with("t1", &resume, &integration(), false).unwrap().args[..3], ["-s", SES, "--port"]);
+        // The session's recorded model is not passed: OpenCode restores the model of its last message.
+        let recorded = AgentLaunch { model: Some("github-copilot/claude-opus-5.5".into()), ..resume.clone() };
+        let args = OpenCode.command_with("t1", &recorded, &integration(), false).unwrap().args;
+        assert!(!args.iter().any(|a| a == "-m"), "{args:?}");
+        let forked = OpenCode.command_with("t1", &AgentLaunch { resume: false, fork_from: Some(PARENT.into()), ..recorded.clone() }, &integration(), false).unwrap().args;
+        assert!(!forked.iter().any(|a| a == "-m"), "a fork continues with its parent's model: {forked:?}");
         assert!(OpenCode.command_with("t1", &AgentLaunch { native_id: None, ..resume.clone() }, &integration(), false).is_err(), "no session id");
         assert_eq!(OpenCode.command_with(SES, &AgentLaunch { native_id: None, ..resume.clone() }, &integration(), false).unwrap().args[..2], ["-s", SES]);
 
@@ -589,6 +599,8 @@ mod tests {
         let passive = AgentLaunch { headless_prompt: Some("check".into()), group_folder: Some(r"C:\g".into()), ..resume };
         let cmd = OpenCode.command_with("t1", &passive, &integration(), false).unwrap();
         assert_eq!(cmd.args, ["run", "check", "-s", SES, "--auto"]);
+        let with_model = OpenCode.command_with("t1", &AgentLaunch { model: Some("opencode/x-free".into()), ..passive.clone() }, &integration(), false).unwrap().args;
+        assert_eq!(with_model, ["run", "check", "-s", SES, "--auto", "-m", "opencode/x-free"], "headless runs always carry their model");
         assert!(env(&cmd, "OPENCODE_SERVER_PASSWORD").is_none(), "no server for passive runs");
         let rules: Value = serde_json::from_str(env(&cmd, "OPENCODE_PERMISSION").unwrap()).unwrap();
         assert_eq!(rules["external_directory"]["C:/g/*"], "allow");

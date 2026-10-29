@@ -845,6 +845,8 @@ impl App {
             .filter(|c| !c.is_empty())
             .or_else(|| self.doc.recent_folders.first().map(|f| f.path.clone()))
             .unwrap_or_else(|| self.default_cwd.clone());
+        let (x, y) = self.new_session_slot(parent.as_deref(), at);
+        let group = self.doc.group_at(x + crate::doc::SESSION_W / 2, y + crate::doc::SESSION_H / 2).map(|g| g.id.clone());
         let dialog = NewSession {
             parent,
             at,
@@ -866,6 +868,8 @@ impl App {
             can_fork,
             fork: can_fork,
             agent,
+            model: None,
+            group,
         };
         if !self.agent_configs.contains_key(&agent) {
             self.refresh_config_for(agent);
@@ -873,11 +877,34 @@ impl App {
         self.modals.push(Modal::NewSession(Box::new(dialog)));
     }
 
+    /// Where a new session box goes: next to its parent, at the spot given
+    /// (or the nearest free one), else in free space in view.
+    fn new_session_slot(&self, parent: Option<&str>, at: Option<(i32, i32)>) -> (i32, i32) {
+        match (parent, at) {
+            (Some(parent), _) => match self.doc.node(parent) {
+                Some(p) => self.doc.free_slot(p.x + GRID_X + 4, p.y, 1, NodeKind::Session),
+                None => self.doc.free_slot(self.doc.view.x + 2, self.doc.view.y + 1, 4, NodeKind::Session),
+            },
+            (None, Some((x, y))) => {
+                let rect = crate::doc::Rect { x, y, w: crate::doc::SESSION_W, h: crate::doc::SESSION_H };
+                if self.doc.is_free(&rect, "") { (x, y) } else { self.doc.free_slot(x, y, 1, NodeKind::Session) }
+            }
+            (None, None) => {
+                let (n, d) = self.scale();
+                let c = self.layout.canvas;
+                let (cx, cy) = (self.doc.view.x + c.width as i32 * d / n / 3, self.doc.view.y + c.height as i32 * d / n / 3);
+                self.doc.free_slot(cx, cy, 3, NodeKind::Session)
+            }
+        }
+    }
+
     /// Switches the new-session dialog to the next agent (`forward`) or the previous one.
     pub fn cycle_dialog_agent(&mut self, dialog: &mut NewSession, forward: bool) {
         let all = crate::agents::ALL;
         let index = all.iter().position(|k| *k == dialog.agent).unwrap_or(0);
         dialog.agent = all[if forward { (index + 1) % all.len() } else { (index + all.len() - 1) % all.len() }];
+        // Model ids are the agent's own: a choice made for another agent does not carry over.
+        dialog.model = None;
         // Forking needs the parent's own agent.
         let parent_agent = dialog.parent.as_deref().and_then(|p| self.doc.node(p)).map(agent_of);
         dialog.can_fork = !self.demo && parent_agent == Some(dialog.agent) && dialog.parent.as_deref().is_some_and(|p| self.can_fork(p));
@@ -1089,23 +1116,8 @@ impl App {
             .and_then(|p| self.doc.node(&p).map(|n| native_id(n).to_owned()));
         // Copilot forks by copying the parent's history; the others fork it themselves on first start.
         let (copy_fork, native_fork) = if caps.copy_fork { (fork_parent, None) } else { (None, fork_parent) };
-        let (x, y) = match (&dialog.parent, dialog.at) {
-            (Some(parent), _) => match self.doc.node(parent) {
-                Some(p) => self.doc.free_slot(p.x + GRID_X + 4, p.y, 1, NodeKind::Session),
-                None => self.doc.free_slot(self.doc.view.x + 2, self.doc.view.y + 1, 4, NodeKind::Session),
-            },
-            (None, Some((x, y))) => {
-                let rect = crate::doc::Rect { x, y, w: crate::doc::SESSION_W, h: crate::doc::SESSION_H };
-                if self.doc.is_free(&rect, "") { (x, y) } else { self.doc.free_slot(x, y, 1, NodeKind::Session) }
-            }
-            (None, None) => {
-                let (n, d) = self.scale();
-                let c = self.layout.canvas;
-                let (cx, cy) = (self.doc.view.x + c.width as i32 * d / n / 3, self.doc.view.y + c.height as i32 * d / n / 3);
-                self.doc.free_slot(cx, cy, 3, NodeKind::Session)
-            }
-        };
-        let node = Node {
+        let (x, y) = self.new_session_slot(dialog.parent.as_deref(), dialog.at);
+        let mut node = Node {
             id: id.clone(),
             kind: NodeKind::Session,
             name,
@@ -1124,8 +1136,17 @@ impl App {
             passive: None,
             no_messages: false,
             agent: (!self.demo).then(|| agent.id().to_owned()),
-            agent_session: None, last_used_ms: None, stacked: false,
+            agent_session: None, last_used_ms: None, stacked: false, model: None,
         };
+        // The model shown in the dialog is the one it starts with (and keeps on
+        // resume); a choice made there becomes its agent's default.
+        let group = self.doc.group_of(&node).cloned();
+        let (model, remember) = self.new_session_model(dialog, group.as_ref());
+        node.model = model;
+        if let Some(choice) = remember {
+            self.doc.defaults.set_model(agent, Some(&choice));
+            self.notify(format!("New {} sessions now start with {}.", agent.label(), crate::models::shown(&choice)), false);
+        }
         self.doc.mcp.last_off = crate::doc::normalize_off(&dialog.mcp_off);
         self.doc.nodes.push(node);
         self.doc.note_folder(&folder, now_ms());

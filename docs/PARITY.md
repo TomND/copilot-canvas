@@ -158,16 +158,22 @@ row  | feature                                                        | GUI test
 31   | --perf overlay: GPU timings, round-trip time                   | perf_overlay_rtt                             | ✓
 32   | CLI (service, doctor, bench, events, emit, send, status, foll… | cli_unchanged (no front end: the same CLI b… | ✓
 33   | New: remote mode (pair, reconnect, resync, offline input bloc… | remote_loopback_gui_and_upload               | ✓
+34   | New: view versus start (a click views; double-click, Enter, S… | view_vs_start                                | ✓
+35   | New: transcript inspector (sessions and subagents, live while… | inspector_and_child_resume                   | ✓
+36   | New: removing a multi-selection (its eligible boxes after a c… | multi_remove_keeps_running                   | ✓
+37   | New: a click on a group's background or border selects it; ti… | group_background_and_border_select           | ✓
+38   | New: the default model (shown before starting; a choice appli… | remembered_default_model                     | ✓
+38b  | The remembered default model after the client restarts         | remembered_model_after_restart               | ✓
 G1   | New: inline images (Kitty graphics; iTerm2 OSC 1337 through C… | kitty_image_pixels_png (GUI only: the TUI c… | ✓
 G2   | New: taskbar progress (ITaskbarList3), FlashWindowEx, toasts   | taskbar_flash_toasts (GUI only: a console h… | ✓
 G3   | New: file drag and drop (paths pasted; uploaded in remote mod… | drop_files_local (GUI only: a console canno… | ✓
 G4   | New: several windows on one canvas (Ctrl+Shift+N, toolbar)     | second_window_rename_sync (GUI only: a cons… | ✓
-V1   | Dust: unused sessions dusty by age (static), age in the box … | dust_levels_and_select_unused (the TUI dims… | ✓
+V1   | Dust: unused sessions dusty by age (static), age in the box a… | dust_levels_and_select_unused (the TUI dims… | ✓
 V2   | Stacks: K or the menu stacks subsessions (animated), double-c… | stack_unstack_and_hide (the TUI switches wi… | ✓
 V3   | Effects: copilot-canvas effect on a box, animated ≤ 15 fps wh… | effect_fireworks_ack (the TUI shows a badge… | ✓
 V4   | Group chips at any zoom (folders, ⟲ passive), sidebar folder … | chips_low_zoom_and_sidebar (the TUI draws t… | ✓
 V5   | Remote mode: group folders in the canvas's browser, passive f… | remote_group_files_in_canvas (the TUI uses … | ✓
-PASS: 43 rows in 31.1s
+PASS: 49 rows in 49.0s
 ```
 
 ## Limits of the checks

@@ -391,7 +391,9 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   running, preparing); subagents (working, finished, failed), a subsession's
   dashed edge, a loop and a queued message; groups with lit and dim folder
   chips; a selection with a rubber band; the new-session dialog (Agent row
-  with an agent that is not installed); the MCP picker with a preset; the
+  with an agent that is not installed, the Model row with the initial
+  default), the dialog in a group with its own model, the model picker (an
+  agent's model list); the MCP picker with a preset; the
   sidebar filter; two tiled terminals. Each `tests/snapshots/<state>.snap`
   holds the TUI screen (`RenderMode::Cells`) as text and the GPU view
   (`RenderMode::Gpu`) as `View::dump()`: boxes with rect, name, status,

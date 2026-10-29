@@ -19,13 +19,13 @@
  ≡                               ║                                                                                  ║                                │
                                  ║  Agent          ◉ GitHub Copilot   ○ OpenCode   ○ Claude Code (not installed)    ║                                │
                                  ║                                                                                  ║                                │
+                                 ║  Model          claude-opus-5.5  ▾ · initial default (Claude Opus 5.5)           ║                                │
+                                 ║                                                                                  ║                                │
                                  ║  MCP servers    2 of 2 on · preset “All”  ▾ choose                               ║                                │
                                  ║                                                                                  ║                                │
                                  ║  First prompt   optional — sent when the session starts                          ║                                │
                                  ║                                                                                  ║                                │
                                  ║  Tab/↑↓ move · Space/←→ agent · Enter create · Esc cancel · GitHub Copilot per…  ║                                │
-                                 ║                                                                                  ║                                │
-                                 ║                                                                                  ║                                │
                                  ║                                                                                  ║                                │
                                  ║                                                                                  ║                                │
                                  ║   Create & start    Cancel                                                       ║                                │
@@ -74,13 +74,13 @@ box demo-main Session rect=2,2 30x4 prefix="" name="Build session canvas"
 ║                                                                                  ║
 ║  Agent          ◉ GitHub Copilot   ○ OpenCode   ○ Claude Code (not installed)    ║
 ║                                                                                  ║
+║  Model          claude-opus-5.5  ▾ · initial default (Claude Opus 5.5)           ║
+║                                                                                  ║
 ║  MCP servers    2 of 2 on · preset “All”  ▾ choose                               ║
 ║                                                                                  ║
 ║  First prompt   optional — sent when the session starts                          ║
 ║                                                                                  ║
 ║  Tab/↑↓ move · Space/←→ agent · Enter create · Esc cancel · GitHub Copilot per…  ║
-║                                                                                  ║
-║                                                                                  ║
 ║                                                                                  ║
 ║                                                                                  ║
 ║   Create & start    Cancel                                                       ║

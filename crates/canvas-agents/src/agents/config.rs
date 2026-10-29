@@ -382,6 +382,7 @@ fn opencode_snapshot() -> Snapshot {
         let config = scope.spawn(|| opencode(&["debug", "config"]).and_then(|o| json(&o, "opencode debug config")));
         let skills = scope.spawn(|| opencode(&["debug", "skill"]).and_then(|o| json(&o, "opencode debug skill")));
         let agents = scope.spawn(|| opencode(&["agent", "list"]));
+        let models = scope.spawn(|| opencode(&["models"]));
         match config.join().expect("thread") {
             Ok(config) => opencode_config(&config, &mut snapshot),
             Err(e) => snapshot.errors.push(format!("config: {e:#}")),
@@ -397,9 +398,61 @@ fn opencode_snapshot() -> Snapshot {
             }
             Err(e) => snapshot.errors.push(format!("agents: {e:#}")),
         }
+        match models.join().expect("thread") {
+            Ok(text) => snapshot.models = model_list(&text),
+            Err(e) => snapshot.errors.push(format!("models: {e:#}")),
+        }
     });
     sort(&mut snapshot);
     snapshot
+}
+
+/// `opencode models`: one `provider/model` id per line (other lines are skipped).
+pub fn model_list(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for id in text.lines().map(str::trim).filter(|l| l.contains('/') && canvas_model::models::valid_id(l)) {
+        if !out.iter().any(|o| o == id) {
+            out.push(id.to_owned());
+        }
+    }
+    out
+}
+
+/// Model ids an agent CLI's `--help` offers for its `--model` option: the
+/// quoted words of that option's description (`(choices: "a", "b")` in
+/// Copilot CLI, `(e.g. 'fable', 'opus', or 'sonnet')` in Claude Code).
+pub fn help_models(help: &str) -> Vec<String> {
+    let lines: Vec<&str> = help.lines().collect();
+    let is_model = |line: &str| {
+        let line = line.trim_start();
+        ["--model ", "--model=", "-m, --model"].iter().any(|p| line.starts_with(p))
+    };
+    let Some(start) = lines.iter().position(|l| is_model(l)) else { return Vec::new() };
+    // The description runs on to the next option (or a blank line).
+    let mut text = lines[start].to_owned();
+    for line in lines[start + 1..].iter().map(|l| l.trim_start()).take_while(|l| !l.is_empty() && !l.starts_with('-')) {
+        text.push(' ');
+        text.push_str(line);
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let quote = chars[i];
+        // A quote that opens a word (not the apostrophe in "model's").
+        if (quote == '"' || quote == '\'') && (i == 0 || !chars[i - 1].is_alphanumeric())
+            && let Some(len) = chars[i + 1..].iter().position(|c| *c == quote)
+        {
+            let word: String = chars[i + 1..i + 1 + len].iter().collect();
+            if canvas_model::models::valid_id(&word) && !out.contains(&word) {
+                out.push(word);
+            }
+            i += len + 2;
+            continue;
+        }
+        i += 1;
+    }
+    out
 }
 
 /// MCP servers, plugins, custom agents and settings from `opencode debug config`.
@@ -488,9 +541,18 @@ fn opencode_agents(text: &str, configured: &[Agent]) -> Vec<Agent> {
 
 fn claude_snapshot(dir: &Path, user_config: &Path) -> Snapshot {
     let mut snapshot = Snapshot::default();
-    match claude(&["plugin", "list", "--json"]).and_then(|o| json(&o, "claude plugin list")) {
+    let (plugins, help) = std::thread::scope(|scope| {
+        let help = scope.spawn(|| claude(&["--help"]));
+        let plugins = claude(&["plugin", "list", "--json"]).and_then(|o| json(&o, "claude plugin list"));
+        (plugins, help.join().expect("thread"))
+    });
+    match plugins {
         Ok(value) => snapshot.plugins = claude_plugins(&value),
         Err(e) => snapshot.errors.push(format!("plugins: {e:#}")),
+    }
+    // Its model aliases (a model's full name works too).
+    if let Ok(help) = help {
+        snapshot.models = help_models(&help);
     }
     claude_local(dir, user_config, &mut snapshot);
     sort(&mut snapshot);
@@ -710,6 +772,21 @@ mod tests {
         // A large output never blocks the child.
         let big = run(&comspec, &["/d", "/c", "for /l %i in (1,1,3000) do @echo 0123456789012345678901234567890123456789"], &[], TIMEOUT).unwrap();
         assert_eq!(big.lines().count(), 3000);
+    }
+
+    #[test]
+    fn model_lists_come_from_each_clis_own_output() {
+        // `opencode models` (1.19.4): provider/model per line.
+        let listed = model_list("opencode/big-pickle\r\ngithub-copilot/claude-opus-5.5\nWarning: cache refreshed\n\ngithub-copilot/claude-opus-5.5\n");
+        assert_eq!(listed, ["opencode/big-pickle", "github-copilot/claude-opus-5.5"]);
+        // Claude Code 2.1.309 `--help`: aliases in the description, the apostrophe of "model's" is no quote.
+        let claude = "  --mcp-config <configs...>  Load MCP servers\n  --model <model>                       Model for the current session. Provide\n                                        an alias for the latest model (e.g.\n                                        'fable', 'opus', or 'sonnet') or a\n                                        model's full name.\n  -n, --name <name>                     Set a display name ('not-this')\n";
+        assert_eq!(help_models(claude), ["fable", "opus", "sonnet"]);
+        // Copilot CLI (commander): `(choices: ...)`, wrapped.
+        let copilot = "Options:\n  --allow-all  Allow everything\n  --model <model>  Set the AI model to use (choices: \"claude-opus-5.5\",\n                   \"gpt-5.5\", \"claude-sonnet-5\")\n  --no-color  Disable color\n";
+        assert_eq!(help_models(copilot), ["claude-opus-5.5", "gpt-5.5", "claude-sonnet-5"]);
+        assert!(help_models("Usage: copilot [options]\n  --model <model>  Set the AI model to use\n").is_empty(), "no choices listed");
+        assert!(help_models("").is_empty());
     }
 
     #[test]

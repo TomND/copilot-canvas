@@ -765,7 +765,7 @@ mod tests {
         a.doc.node_mut("a").unwrap().x = 10;
         a.doc.node_mut("a").unwrap().name = "renamed in A".into();
         a.doc.nodes.push(node("from-a", 80));
-        a.doc.defaults.model = Some("m-a".into());
+        a.doc.defaults.set_model(crate::agent::AgentKind::OpenCode, Some("m-a"));
         b.doc.node_mut("a").unwrap().name = "renamed in B".into();
         b.doc.nodes.push(node("from-b", 120));
         let (ops_a, ops_b) = (a.take().unwrap(), b.take().unwrap());
@@ -779,7 +779,7 @@ mod tests {
         let n = server.doc.node("a").unwrap();
         assert_eq!((n.name.as_str(), n.x), ("renamed in B", 10), "the last edit wins per field; other fields keep both");
         assert_eq!(ids(&server.doc), ["a", "b", "from-a", "from-b"]);
-        assert_eq!(server.doc.defaults.model.as_deref(), Some("m-a"));
+        assert_eq!(server.doc.defaults.model(crate::agent::AgentKind::OpenCode), Some("m-a"), "the remembered model reaches every window");
         assert_eq!(a.notices, ["“renamed in A”"], "A's name was overwritten");
         assert!(b.notices.is_empty(), "B's edit won");
         // Per-client fields are never sent.

@@ -1316,7 +1316,7 @@ impl App {
             automation: None,
             synced_name: None,
             reviewed_ms: None,
-            mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, stacked: false,
+            mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, stacked: false, model: None,
         });
         self.mark_dirty();
         self.notify(format!("“{}” started subsession “{name}”.", p.name), false);
@@ -1468,6 +1468,7 @@ impl App {
             self.notify(format!("Cannot open: folder not found: {cwd}"), true);
             return;
         }
+        let mut record_model = None;
         let kind = match &node.command {
             Some(command) if !command.is_empty() => LaunchKind::Command { program: command[0].clone(), args: command[1..].to_vec() },
             _ => {
@@ -1476,6 +1477,10 @@ impl App {
                 // A native fork starts once from its parent; later launches resume it.
                 let fork_from = self.pending_forks.remove(id).filter(|_| node.fresh);
                 let launch = crate::side::agent_launch(&node, &self.doc.defaults, group.as_ref(), prompt, fork_from, !node.fresh);
+                // A new conversation records the model it starts with (resumes keep it).
+                if !launch.resume && launch.fork_from.is_none() && node.model.is_none() {
+                    record_model = Some(launch.model.clone().unwrap_or_default());
+                }
                 LaunchKind::Agent(Box::new(launch))
             }
         };
@@ -1484,6 +1489,9 @@ impl App {
         if let Some(n) = self.doc.node_mut(id) {
             n.fresh = false;
             n.cwd = Some(cwd.clone());
+            if record_model.is_some() {
+                n.model = record_model;
+            }
         }
         self.doc.note_folder(&cwd, now_ms());
         self.show_terminal(id);
@@ -1686,7 +1694,7 @@ impl App {
                     command: None,
                     fresh: false,
                     automation: None,
-                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, stacked: false,
+                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, stacked: false, model: None,
                 };
                 let rect = node.rect();
                 index.insert(rect);
@@ -1778,7 +1786,7 @@ impl App {
                     command: None,
                     fresh: false,
                     automation: None,
-                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None, last_used_ms: None, stacked: false,
+                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None, last_used_ms: None, stacked: false, model: None,
                 };
                 first.get_or_insert_with(|| node.id.clone());
                 ids.push(node.id.clone());

@@ -328,7 +328,7 @@ fn two_clients_editing_one_canvas_converge() {
     a.doc.node_mut("demo-main").unwrap().x += 6;
     a.doc.node_mut("demo-main").unwrap().name = "Renamed in A".into();
     a.doc.nodes.push(node("from-a", 0));
-    a.doc.defaults.model = Some("model-a".into());
+    a.doc.defaults.set_model(AgentKind::Claude, Some("model-a"));
     b.doc.node_mut("demo-main").unwrap().name = "Renamed in B".into();
     b.doc.nodes.push(node("from-b", 40));
     b.doc.view.zoom = 2;
@@ -348,7 +348,7 @@ fn two_clients_editing_one_canvas_converge() {
     assert_eq!(a.notices, ["“Renamed in A”"], "the overwritten side is told");
     assert!(b.notices.is_empty());
     assert_eq!(ids(&a.doc).iter().rev().take(2).collect::<Vec<_>>(), ["from-b", "from-a"]);
-    assert_eq!(a.doc.defaults.model.as_deref(), Some("model-a"));
+    assert_eq!(b.doc.defaults.model(AgentKind::Claude), Some("model-a"), "a remembered model reaches the other window");
     assert_eq!((a.doc.view.zoom, b.doc.view.zoom), (0, 2), "views stay per client");
     // A third client sees the same document; the service saved it.
     let c = Window::open(&service, r"C:\");

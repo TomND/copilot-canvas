@@ -100,6 +100,9 @@ pub fn draw_list(app: &mut App, buf: &mut Buffer, area: Rect) {
             ItemRef::Info => {
                 put(buf, area.x as i32 + 2, y, &truncate(&row.label, area.width as usize - 3), fg(MUTED).bg(bg), area);
             }
+            ItemRef::Detail => {
+                put(buf, area.x as i32 + 4, y, &crate::paint::truncate_left(&row.label, (area.width as usize).saturating_sub(5).max(4)), fg(row.color).bg(bg), area);
+            }
             _ => {
                 let mut x = put(buf, area.x as i32 + 2, y, row.icon, fg(row.color).bg(bg), area) + 1;
                 // Names win: the right column only gets what the label leaves free (min 6).
@@ -419,6 +422,7 @@ fn session_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)
     let kind = crate::agents::agent_of(node);
     let shell = node.command.is_some();
     out.field("Agent", if shell { "none (runs its command)" } else { kind.label() });
+    out.field("Model", &app.session_model_text(node));
     let cwd = node.cwd.clone().filter(|c| !c.is_empty()).or_else(|| summary.as_ref().map(|s| s.cwd.clone())).unwrap_or_default();
     out.field_left("Folder", &cwd);
     if let Some(s) = &summary {

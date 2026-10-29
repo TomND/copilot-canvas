@@ -832,7 +832,7 @@ fn draw_details(app: &mut App, buf: &mut Buffer, area: Rect) {
                     lines.push(("◧ Choose a folder for AI docs + human outputs…".into(), fg(ACCENT)));
                 }
             }
-            let overrides = group.defaults.as_ref().map(|d| d.args().join(" ")).unwrap_or_default();
+            let overrides = group.defaults.as_ref().map(|d| d.summary()).unwrap_or_default();
             if !overrides.is_empty() {
                 lines.push((format!("Launch   {overrides}"), fg(TEXT)));
             }

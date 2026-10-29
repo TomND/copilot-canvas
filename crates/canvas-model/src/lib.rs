@@ -13,6 +13,7 @@ pub mod doc;
 pub mod effects;
 pub mod git;
 pub mod migrate;
+pub mod models;
 pub mod rpc;
 pub mod sync;
 pub mod transcript;
