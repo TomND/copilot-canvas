@@ -176,6 +176,14 @@ impl Lines {
         self.lines.push((String::new(), Style::default()));
     }
 
+    /// A field on one line; a long value loses its start (paths keep their end).
+    fn field_left(&mut self, label: &str, value: &str) {
+        if !value.is_empty() {
+            let text = crate::paint::truncate_left(value, self.width.saturating_sub(11).max(8));
+            self.lines.push((format!("{label:<11}{text}"), fg(TEXT)));
+        }
+    }
+
     /// One line of differently coloured pieces (not wrapped).
     fn spans(&mut self, spans: Vec<(String, Style)>) {
         let text: String = spans.iter().map(|(t, _)| t.as_str()).collect();
@@ -412,7 +420,7 @@ fn session_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)
     let shell = node.command.is_some();
     out.field("Agent", if shell { "none (runs its command)" } else { kind.label() });
     let cwd = node.cwd.clone().filter(|c| !c.is_empty()).or_else(|| summary.as_ref().map(|s| s.cwd.clone())).unwrap_or_default();
-    out.field("Folder", &cwd);
+    out.field_left("Folder", &cwd);
     if let Some(s) = &summary {
         out.field("Branch", &s.branch);
         out.field("Repo", &s.repository);
