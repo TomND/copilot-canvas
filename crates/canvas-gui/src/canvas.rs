@@ -2,12 +2,15 @@
 //! connectors, status-styled boxes, loop arcs, pulses, the active terminal's
 //! halo and the rubber band. Labels are shaped once and scaled with the zoom;
 //! below a readable size boxes show one compact line, then shapes only.
+//! Loop arcs have a layer of their own ([`paint_loops`]): while their dots
+//! move, a frame repaints only that layer.
 
+use canvas_core::loops;
 use canvas_core::paint;
-use canvas_core::view::{Border, BoxKind, CanvasModel, EdgeKind, WRect};
+use canvas_core::view::{Border, BoxKind, CanvasModel, EdgeKind, LoopModel, Motion, WRect};
 use ratatui::style::{Color, Modifier, Style};
 
-use crate::quads::{Quad, Rgba};
+use crate::quads::Quad;
 use crate::scene::{self, Painter};
 use crate::text::{Grid, Spec};
 use crate::theme::{self, BG};
@@ -61,7 +64,8 @@ pub(crate) fn rgb(c: Color) -> [u8; 3] {
     theme::rgb(c, theme::FG)
 }
 
-pub fn paint(p: &mut Painter, grid: &Grid, model: &CanvasModel) {
+/// The canvas of a frame; animations (loop dots) at `clock_ms`.
+pub fn paint(p: &mut Painter, grid: &Grid, model: &CanvasModel, clock_ms: u64) {
     let area = model.area;
     let clip = [area.x as f32 * grid.cell_w, area.y as f32 * grid.cell_h, area.right() as f32 * grid.cell_w, area.bottom() as f32 * grid.cell_h];
     let cx = Ctx { model, grid, clip, dpi: grid.scale };
@@ -231,13 +235,7 @@ pub fn paint(p: &mut Painter, grid: &Grid, model: &CanvasModel) {
         crate::effects::paint(p, &cx, effect, model.motion);
     }
 
-    for lp in &model.loops {
-        let r = cx.rect(lp.rect);
-        if !cx.visible(r, 4.0 * ux) {
-            continue;
-        }
-        loop_arc(p, &cx, r, lp.halo, lp.phase, top_boxes);
-    }
+    loops(p, &cx, clock_ms);
 
     if let Some((rect, typing)) = model.halo {
         let layer = top_boxes;
@@ -416,58 +414,264 @@ fn along(points: &[(f32, f32)], t: f32) -> Option<(f32, f32)> {
 }
 
 pub(crate) fn glow_dot(p: &mut Painter, layer: usize, (x, y): (f32, f32), r: f32, color: [u8; 3], clip: [f32; 4]) {
-    let g = r * 2.2;
-    p.under(layer, Quad::rounded(x - g, y - g, 2.0 * g, 2.0 * g, g, theme::rgba(color, 0.22), [0.0; 4], 0.0, clip));
-    p.under(layer, Quad::rounded(x - r, y - r, 2.0 * r, 2.0 * r, r, theme::rgba(color, 1.0), [0.0; 4], 0.0, clip));
+    glow(p, layer, (x, y), r, color, 1.0, clip);
 }
 
-/// The loopback on a looping box's right side: out along the top row, down,
-/// and back into the bottom row, with a lit dot running around it.
-fn loop_arc(p: &mut Painter, cx: &Ctx, r: [f32; 4], halo: bool, phase: f32, layer: usize) {
-    let (ux, uy) = cx.unit();
-    let color = rgb(paint::LOOP);
-    let lit = rgb(paint::LOOP_LIT);
-    let start = r[0] + r[2] + if halo { halo_pad(cx) + 2.0 * cx.dpi } else { 0.0 };
-    if r[3] < 12.0 * cx.dpi {
-        // Too small for an arc: a pulsing ↻.
-        let size = (r[3] * 0.9).max(8.0 * cx.dpi);
-        let on = ((phase * 4.0) as u32).is_multiple_of(2);
-        p.text(layer, Spec::ui("↻", size).bold(true), start + 2.0 * cx.dpi, r[1] + (r[3] - size * 1.3) / 2.0, if on { lit } else { color }, cx.clip);
-        return;
+/// A dot with a soft halo, at `alpha`.
+fn glow(p: &mut Painter, layer: usize, (x, y): (f32, f32), r: f32, color: [u8; 3], alpha: f32, clip: [f32; 4]) {
+    let g = r * 2.2;
+    p.under(layer, Quad::rounded(x - g, y - g, 2.0 * g, 2.0 * g, g, theme::rgba(color, 0.22 * alpha), [0.0; 4], 0.0, clip));
+    p.under(layer, Quad::rounded(x - r, y - r, 2.0 * r, 2.0 * r, r, theme::rgba(color, alpha), [0.0; 4], 0.0, clip));
+}
+
+/// Segments per quarter circle of a loop's bends.
+const BEND: usize = 12;
+/// The comet's tail: samples, and how far back in the lap it reaches.
+const TAIL: usize = 16;
+const TAIL_LAP: f32 = 0.3;
+
+/// A polyline measured along its length.
+pub(crate) struct Path {
+    pub(crate) points: Vec<(f32, f32)>,
+    /// Length up to each point.
+    lengths: Vec<f32>,
+}
+
+impl Path {
+    fn new(points: Vec<(f32, f32)>) -> Self {
+        let mut lengths = Vec::with_capacity(points.len());
+        let mut total = 0.0;
+        for (i, p) in points.iter().enumerate() {
+            if i > 0 {
+                let q = points[i - 1];
+                total += ((p.0 - q.0).powi(2) + (p.1 - q.1).powi(2)).sqrt();
+            }
+            lengths.push(total);
+        }
+        Self { points, lengths }
     }
+
+    fn total(&self) -> f32 {
+        self.lengths.last().copied().unwrap_or(0.0)
+    }
+
+    /// The point `s` (0..1) of the way along, at sub-pixel precision.
+    pub(crate) fn at(&self, s: f32) -> (f32, f32) {
+        let want = s.clamp(0.0, 1.0) * self.total();
+        let i = self.lengths.partition_point(|l| *l < want).clamp(1, self.points.len().saturating_sub(1).max(1));
+        let (a, b) = (self.points[i - 1], self.points[i.min(self.points.len() - 1)]);
+        let span = self.lengths[i.min(self.lengths.len() - 1)] - self.lengths[i - 1];
+        let f = if span > 0.0 { (want - self.lengths[i - 1]) / span } else { 0.0 };
+        (a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f)
+    }
+
+    /// The polyline from its start to `s` of the way along.
+    fn upto(&self, s: f32) -> Vec<(f32, f32)> {
+        let want = s.clamp(0.0, 1.0) * self.total();
+        let mut out: Vec<(f32, f32)> = self.points.iter().zip(&self.lengths).take_while(|(_, l)| **l < want).map(|(p, _)| *p).collect();
+        out.push(self.at(s));
+        out
+    }
+}
+
+/// Where a loop's arc starts (px): the box's right edge, or outside the halo.
+fn loop_start(cx: &Ctx, r: [f32; 4], halo: bool) -> f32 {
+    r[0] + r[2] + if halo { halo_pad(cx) + 2.0 * cx.dpi } else { 0.0 }
+}
+
+/// The loopback beside a box (px): out along the top row, round the bend,
+/// down, and back into the bottom row; `None` when the box is too small for
+/// an arc (it gets a ↻ instead).
+pub(crate) fn loop_path(cx: &Ctx, r: [f32; 4], halo: bool) -> Option<Path> {
+    if r[3] < 12.0 * cx.dpi {
+        return None;
+    }
+    let (ux, uy) = cx.unit();
+    let start = loop_start(cx, r, halo);
     let (top, bottom) = (r[1] + 0.5 * uy, r[1] + r[3] - 0.5 * uy);
     let right = start + (2.2 * ux).max(8.0 * cx.dpi);
     let rr = ((bottom - top) / 2.0).min(1.2 * ux).max(2.0);
     let mut points = vec![(start, top), (right - rr, top)];
-    for i in 1..=6 {
-        let a = std::f32::consts::FRAC_PI_2 * (1.0 - i as f32 / 6.0);
+    for i in 1..=BEND {
+        let a = std::f32::consts::FRAC_PI_2 * (1.0 - i as f32 / BEND as f32);
         points.push((right - rr + rr * a.cos(), top + rr - rr * a.sin()));
     }
     points.push((right, bottom - rr));
-    for i in 1..=6 {
-        let a = std::f32::consts::FRAC_PI_2 * (i as f32 / 6.0);
+    for i in 1..=BEND {
+        let a = std::f32::consts::FRAC_PI_2 * (i as f32 / BEND as f32);
         points.push((right - rr + rr * a.cos(), bottom - rr + rr * a.sin()));
     }
     points.push((start, bottom));
-    let width = 1.3 * cx.dpi;
-    let line: Rgba = theme::rgba(color, 0.9);
-    for pair in points.windows(2) {
-        p.under(layer, Quad::line(pair[0], pair[1], width, line, 0.0, cx.clip));
-    }
-    // Arrow head back into the box.
-    let a = 4.0 * cx.dpi;
-    p.under(layer, Quad::line((start, bottom), (start + a, bottom - a * 0.8), width, line, 0.0, cx.clip));
-    p.under(layer, Quad::line((start, bottom), (start + a, bottom + a * 0.8), width, line, 0.0, cx.clip));
-    for (offset, size) in [(0.06, 0.55), (0.03, 0.75), (0.0, 1.0)] {
-        if let Some(at) = along(&points, (phase - offset).rem_euclid(1.0)) {
-            if size < 1.0 {
-                let d = 2.0 * cx.dpi * size;
-                p.under(layer, Quad::rounded(at.0 - d, at.1 - d, 2.0 * d, 2.0 * d, d, theme::rgba(color, 1.0), [0.0; 4], 0.0, cx.clip));
-            } else {
-                glow_dot(p, layer, at, 2.6 * cx.dpi, lit, cx.clip);
-            }
+    Some(Path::new(points))
+}
+
+/// The loop arcs of a canvas model at `clock_ms`, into the loop layer (a
+/// frame while they move repaints only this).
+pub fn paint_loops(p: &mut Painter, grid: &Grid, model: &CanvasModel, clock_ms: u64) {
+    let area = model.area;
+    let clip = [area.x as f32 * grid.cell_w, area.y as f32 * grid.cell_h, area.right() as f32 * grid.cell_w, area.bottom() as f32 * grid.cell_h];
+    loops(p, &Ctx { model, grid, clip, dpi: grid.scale }, clock_ms);
+}
+
+fn loops(p: &mut Painter, cx: &Ctx, clock_ms: u64) {
+    let (ux, _) = cx.unit();
+    for lp in &cx.model.loops {
+        let r = cx.rect(lp.rect);
+        if cx.visible(r, 4.0 * ux) {
+            loop_arc(p, cx, r, lp, clock_ms);
         }
     }
+}
+
+/// Where a loop's lit dot is at `clock_ms` (px; `None`: no arc, or no
+/// moving dot with reduced motion).
+pub(crate) fn loop_dot(cx: &Ctx, lp: &LoopModel, clock_ms: u64) -> Option<(f32, f32)> {
+    let path = loop_path(cx, cx.rect(lp.rect), lp.halo)?;
+    (cx.model.motion == Motion::On).then(|| path.at(loops::along(lp.lap_at(clock_ms))))
+}
+
+/// How often the loop layer needs a frame: so that the fastest dot in view
+/// moves about 2 px (at 100 % DPI) a frame. That is about 30 frames/s for
+/// arcs at 100 % zoom and fewer for smaller ones (zoomed out: down to 20).
+pub fn loop_interval(grid: &Grid, model: &CanvasModel) -> std::time::Duration {
+    let area = model.area;
+    let clip = [area.x as f32 * grid.cell_w, area.y as f32 * grid.cell_h, area.right() as f32 * grid.cell_w, area.bottom() as f32 * grid.cell_h];
+    let cx = Ctx { model, grid, clip, dpi: grid.scale };
+    let longest = model
+        .loops
+        .iter()
+        .filter_map(|lp| {
+            let r = cx.rect(lp.rect);
+            cx.visible(r, 4.0 * cx.unit().0).then(|| loop_path(&cx, r, lp.halo).map(|p| p.total())).flatten()
+        })
+        .fold(0.0f32, f32::max);
+    // The dot runs one arc length a lap, a third faster at its fastest.
+    let speed = longest * 1.35 / (loops::LAP_MS as f32 / 1000.0);
+    let ms = if speed > 0.0 { 2.0 * cx.dpi / speed * 1000.0 } else { 50.0 };
+    std::time::Duration::from_millis(ms.clamp(33.0, 50.0) as u64)
+}
+
+/// The loop arcs of a model at `clock_ms` as the test hooks report them:
+/// box id, lap, grow, ending, whether the dot moves, and the dot (physical
+/// px and fractional cells) with the arc's bounds (px).
+pub fn loop_info(grid: &Grid, model: &CanvasModel, clock_ms: u64) -> Vec<serde_json::Value> {
+    let area = model.area;
+    let clip = [area.x as f32 * grid.cell_w, area.y as f32 * grid.cell_h, area.right() as f32 * grid.cell_w, area.bottom() as f32 * grid.cell_h];
+    let cx = Ctx { model, grid, clip, dpi: grid.scale };
+    model
+        .loops
+        .iter()
+        .map(|lp| {
+            let r = cx.rect(lp.rect);
+            let bounds = loop_path(&cx, r, lp.halo).map(|path| {
+                let (xs, ys): (Vec<f32>, Vec<f32>) = path.points.iter().copied().unzip();
+                let min = |v: &[f32]| v.iter().copied().fold(f32::MAX, f32::min);
+                let max = |v: &[f32]| v.iter().copied().fold(f32::MIN, f32::max);
+                [min(&xs), min(&ys), max(&xs), max(&ys)]
+            });
+            let dot = loop_dot(&cx, lp, clock_ms);
+            serde_json::json!({
+                "id": lp.id,
+                "lap": lp.lap_at(clock_ms),
+                "grow": lp.grow_at(clock_ms),
+                "ending": lp.ending,
+                "moving": model.loops_move(),
+                "dot_px": dot.map(|(x, y)| [x, y]),
+                "dot": dot.map(|(x, y)| [x / grid.cell_w, y / grid.cell_h]),
+                "bounds_px": bounds,
+            })
+        })
+        .collect()
+}
+
+/// One loopback arc: the track (growing in after the loop started, fading
+/// after it stopped), the arrowhead back into the box, and with motion on a
+/// comet: a glowing head where the clock puts it, a tapering tail and a soft
+/// pulse at the arrowhead after each lap. With reduced motion: the arc, its
+/// arrowhead and a ↻ badge, still. Small boxes get a ↻ that breathes.
+fn loop_arc(p: &mut Painter, cx: &Ctx, r: [f32; 4], lp: &LoopModel, clock_ms: u64) {
+    let layer = scene::LOOPS;
+    let grow = lp.grow_at(clock_ms);
+    if grow <= 0.002 {
+        return;
+    }
+    let (color, lit) = (rgb(paint::LOOP), rgb(paint::LOOP_LIT));
+    let moving = cx.model.motion == Motion::On;
+    let fade = if lp.ending { grow } else { 1.0 };
+    let t = lp.lap_at(clock_ms);
+    let d = cx.dpi;
+    let Some(path) = loop_path(cx, r, lp.halo) else {
+        let size = (r[3] * 0.9).max(8.0 * d);
+        let (x, y) = (loop_start(cx, r, lp.halo) + 2.0 * d, r[1] + (r[3] - size * 1.3) / 2.0);
+        let breath = if moving { 0.5 + 0.5 * (4.0 * std::f32::consts::PI * t).cos() } else { 1.0 };
+        if moving {
+            let (gx, gy, rad) = (x + size * 0.45, r[1] + r[3] / 2.0, size * (0.5 + 0.15 * breath));
+            p.under(layer, Quad::rounded(gx - rad, gy - rad, 2.0 * rad, 2.0 * rad, rad, theme::rgba(lit, (0.08 + 0.2 * breath) * fade * grow), [0.0; 4], 0.0, cx.clip));
+        }
+        let glyph = theme::mix(BG, theme::mix(color, lit, breath), fade * grow);
+        p.text(layer, Spec::ui("↻", size).bold(true), x, y, glyph, cx.clip);
+        return;
+    };
+    let width = 1.3 * d;
+    // The track: dimmer while a comet runs on it.
+    let track = theme::rgba(color, if moving { 0.6 } else { 0.95 } * fade);
+    let shown = if lp.ending { 1.0 } else { grow };
+    for pair in path.upto(shown).windows(2) {
+        p.under(layer, Quad::line(pair[0], pair[1], width, track, 0.0, cx.clip));
+    }
+    if !lp.ending && grow < 1.0 {
+        // The tip drawing the arc as it grows in.
+        glow(p, layer, path.at(grow), 2.0 * d, lit, 0.9, cx.clip);
+    }
+    // The arrowhead back into the box, once the arc is whole.
+    let arrow = if lp.ending { fade } else { ((grow - 0.85) / 0.15).clamp(0.0, 1.0) };
+    let end = *path.points.last().expect("an arc has points");
+    if arrow > 0.0 {
+        let a = 4.0 * d;
+        let head = theme::rgba(if moving { color } else { lit }, 0.95 * arrow);
+        p.under(layer, Quad::line(end, (end.0 + a, end.1 - a * 0.8), width, head, 0.0, cx.clip));
+        p.under(layer, Quad::line(end, (end.0 + a, end.1 + a * 0.8), width, head, 0.0, cx.clip));
+    }
+    if !moving {
+        // Reduced motion: a still ↻ on the far side says "repeats".
+        if arrow > 0.0 {
+            let (mx, my) = path.at(0.5);
+            let size = (10.0 * d).min((r[3] * 0.5).max(8.0 * d));
+            let rad = size * 0.72;
+            p.under(layer, Quad::rounded(mx - rad, my - rad, 2.0 * rad, 2.0 * rad, rad, theme::color(paint::PANEL, arrow), theme::rgba(color, 0.95 * arrow), width, cx.clip));
+            let (key, w) = p.shape(Spec::ui("↻", size).bold(true));
+            p.place(layer, key, mx - w / 2.0, my - size * 0.74, 1.0, theme::mix(BG, lit, arrow), cx.clip);
+        }
+        return;
+    }
+    let comet = if lp.ending { fade } else { ((grow - 0.6) / 0.4).clamp(0.0, 1.0) };
+    if comet <= 0.0 {
+        return;
+    }
+    // A soft ring at the arrowhead as the dot comes home.
+    let pulse = loops::lap_pulse(t) * comet;
+    if pulse > 0.01 {
+        let rad = (3.0 + 7.0 * (1.0 - pulse)) * d;
+        p.under(layer, Quad::rounded(end.0 - rad, end.1 - rad, 2.0 * rad, 2.0 * rad, rad, theme::rgba(lit, 0.12 * pulse), theme::rgba(lit, 0.75 * pulse), 1.2 * d, cx.clip));
+    }
+    // The tail: samples back in time (so it stretches where the dot is fast),
+    // broken where it wraps into the previous lap (the dot went through the box).
+    let mut previous = (t, path.at(loops::along(t)));
+    for i in 1..=TAIL {
+        let k = i as f32 / TAIL as f32;
+        let when = t - TAIL_LAP * k;
+        let at = path.at(loops::along(when));
+        if when.floor() == previous.0.floor() {
+            let alpha = 0.85 * (1.0 - k).powf(1.3) * comet;
+            let w = (2.4 * (1.0 - k) + 0.9) * d;
+            p.under(layer, Quad::line(previous.1, at, w, theme::rgba(theme::mix(color, lit, (1.0 - k).powf(0.7)), alpha), 0.0, cx.clip));
+        }
+        previous = (when, at);
+    }
+    // The head fades in as it leaves the box and out as it enters it.
+    let s = loops::along(t);
+    let edge = (s / 0.04).min((1.0 - s) / 0.04).clamp(0.0, 1.0);
+    glow(p, layer, path.at(s), 2.6 * d, lit, comet * (0.25 + 0.75 * edge), cx.clip);
 }
 
 /// Each box's drawing level (`0..BOX_LEVELS`): one above the highest earlier
@@ -551,5 +755,65 @@ mod tests {
         assert_eq!(along(&path, 0.75), Some((10.0, 5.0)));
         assert_eq!(along(&path, 1.0), Some((10.0, 10.0)));
         assert_eq!(style_color(Style::default().fg(Color::Rgb(200, 0, 0)), Color::Reset), [200, 0, 0]);
+    }
+
+    fn loop_model(motion: Motion, scale: f32) -> CanvasModel {
+        CanvasModel {
+            area: ratatui::layout::Rect::new(0, 0, 120, 40),
+            origin: (0.0, 0.0),
+            scale,
+            grid: true,
+            groups: Vec::new(),
+            edges: Vec::new(),
+            boxes: Vec::new(),
+            loops: vec![LoopModel { id: "s".into(), rect: WRect::new(2.0, 2.0, 30.0, 4.0), halo: false, changed_ms: None, ending: false }],
+            pulses: Vec::new(),
+            halo: None,
+            rubber: None,
+            empty: false,
+            tick: 0,
+            effects: Vec::new(),
+            motion,
+            clock_ms: 0,
+            frozen: false,
+        }
+    }
+
+    #[test]
+    fn the_loop_dot_glides_along_the_curve_at_any_frame_rate() {
+        let grid = Grid::new(0.6, 1.25);
+        let model = loop_model(Motion::On, 1.0);
+        let cx = Ctx { model: &model, grid: &grid, clip: [0.0, 0.0, 2000.0, 1000.0], dpi: 1.25 };
+        let lp = &model.loops[0];
+        let path = loop_path(&cx, cx.rect(lp.rect), false).expect("an arc");
+        let r = cx.rect(lp.rect);
+        assert!(path.points.iter().all(|p| p.0 >= r[0] + r[2] - 0.01), "beside the box, on its right");
+        // At 60 frames/s the dot moves under 2 px a frame (sub-pixel positions, no jumps),
+        // except where a lap ends and the next one starts (it enters the box at the
+        // bottom and leaves it at the top).
+        let max = path.total() * 1.36 * 16.0 / loops::LAP_MS as f32 + 0.01;
+        let mut last = loop_dot(&cx, lp, 50_000).unwrap();
+        let mut fractional = false;
+        for ms in (50_016..50_000 + 2 * loops::LAP_MS).step_by(16) {
+            let dot = loop_dot(&cx, lp, ms).unwrap();
+            let step = (dot.0 - last.0).hypot(dot.1 - last.1);
+            let wrapped = lp.lap_at(ms) < lp.lap_at(ms - 16);
+            assert!(wrapped || step <= max, "{step:.2} px at {ms} ms (max {max:.2})");
+            assert!(wrapped || step > 0.0, "it never stops");
+            fractional |= dot.0.fract() != 0.0 || dot.1.fract() != 0.0;
+            last = dot;
+        }
+        assert!(fractional && max < 2.5, "sub-pixel steps of at most {max:.2} px");
+        // The same instant gives the same place, whatever the frame rate before it.
+        assert_eq!(loop_dot(&cx, lp, 61_234), loop_dot(&cx, lp, 61_234));
+        // About 2 px a frame: some 30 frames/s for this arc, fewer when zoomed out.
+        let near = loop_interval(&grid, &model);
+        let far = loop_interval(&grid, &loop_model(Motion::On, 0.4));
+        assert!((33..=45).contains(&near.as_millis()) && far > near, "{near:?} {far:?}");
+        // Reduced motion: no moving dot.
+        let still = loop_model(Motion::Reduced, 1.0);
+        let cx = Ctx { model: &still, grid: &grid, clip: [0.0, 0.0, 2000.0, 1000.0], dpi: 1.25 };
+        assert_eq!(loop_dot(&cx, &still.loops[0], 50_000), None);
+        assert!(!still.loops_busy(50_000));
     }
 }

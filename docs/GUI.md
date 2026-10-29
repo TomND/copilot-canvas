@@ -86,7 +86,8 @@ events too. Ticks run every 40 ms while anything is active (animations,
 notices, drags, unsaved changes, a paste preview, a stack transition), every 80 ms while only effects animate, and every 400 ms
 otherwise. A frame is drawn only when the app needs one: at once after input
 (and for the echo of a keystroke in the focused terminal), otherwise paced to
-the display's refresh rate. Presentation uses Mailbox (Immediate, then Fifo,
+the display's refresh rate. Moving loop dots ask the core for nothing: the
+window draws them itself in *loop frames* (below). Presentation uses Mailbox (Immediate, then Fifo,
 as fallbacks) and never blocks the UI thread. `after_draw` sends
 subscriptions, tile sizes and tracking exactly as in the TUI.
 
@@ -103,6 +104,16 @@ already on the GPU. The glyph atlas is trimmed only on full frames (a window
 whose text was prepared before another window's trim prepares all its layers
 again), so cached layers never point at evicted glyphs. Anything else (input,
 a status change, a spinner step, a resize) is a full frame as before.
+
+**Loop frames.** Loop arcs have a layer of their own (`scene::LOOPS`, above
+the box levels). While a loop in view moves (motion on, the clock running)
+or an arc grows in or fades out, the window repaints that layer alone at the
+time of drawing, as a damage frame: no core view, no rescans, no
+`after_draw`, no UI Automation update. Its pace comes from the arcs' size
+(`canvas::loop_interval`: the fastest dot in view moves about 2 px a frame,
+which is about 30 frames/s at 100 % zoom and down to 20 when zoomed out),
+never faster than the display; with no moving loop in view (scrolled away,
+reduced motion, frozen, minimized) there are none.
 
 **Inline images.** The Ghostty engine keeps Kitty graphics (storage limit
 64 MiB per terminal; only inline data: the file, temporary-file and
@@ -153,8 +164,8 @@ removed) and the remote paths are pasted. A folder dropped on the canvas opens
 the new-session dialog in it (local mode).
 
 **Drawing (`scene.rs`, `quads.rs`, `chrome.rs`, `canvas.rs`, `tiles.rs`).** A
-frame is 10 layers (base chrome · canvas: background, groups, connectors ·
-three box levels · canvas top · terminals · chrome over content · dialogs ·
+frame is 11 layers (base chrome · canvas: background, groups, connectors ·
+three box levels · loop arcs · canvas top · terminals · chrome over content · dialogs ·
 HUD), each drawn as quads, then text, then overlay quads.
 Quads come from one instanced SDF pipeline (rounded rectangles with solid or
 dashed borders, line segments with round caps). Text goes through glyphon,
@@ -171,7 +182,7 @@ and size.
   review: double blue with a tinted body; failed automation: pulsing
   vermillion; selected: heavy white; passive: dashed), group outlines with
   their title row (a selected group: a 3 px outline over a light tint of its
-  colour), connectors, the loopback arc with its moving dot (≤ 15 fps),
+  colour), connectors, the loopback arcs with their moving dots (below),
   pulses, the halo around the active terminal's box (heavier while typing),
   the rubber band. Labels (Segoe UI) are shaped once and scaled with the
   zoom; below a readable size a box shows one compact line, then only its
@@ -239,6 +250,33 @@ and size.
   compact (the passive chip first, then all) to fit next to the title, which
   is shortened for them. From 70 % up they scale with the zoom; below it they
   keep a readable size on screen (`ChipModel::fixed`) while the title shows.
+- *Loops* (`CanvasModel::loops`, `LoopModel`; canvas-core `loops.rs`,
+  canvas-gui `canvas.rs`): the loopback beside a looping box (out along its
+  top row, round a bend of 12-segment quarter circles, down, back into its
+  bottom row with an arrowhead). The lit dot's place is a pure function of
+  the clock (`loops::lap`: a 2 s lap, offset per box so neighbours do not
+  march in step; `loops::along`: s = t + 0.35 sin(2πt)/2π, fastest leaving
+  the box, slowest at the far bend, the same speed across the lap boundary),
+  so it never depends on frames, never restarts and follows a box exactly
+  while you pan, zoom or drag it (the model's rect carries the drag offset).
+  It is drawn at sub-pixel positions along the arc measured by length: a
+  glowing head that fades in as it leaves the box and out as it enters it, a
+  tail of 16 tapering segments sampled back in time over 30 % of a lap (so
+  it stretches where the dot is fast and breaks where it wraps into the
+  previous lap: the dot went through the box), and a ring through the
+  arrowhead for a fifth of a lap after each lap (`loops::lap_pulse`). Boxes
+  too small for an arc get a ↻ that breathes. `App::sync_loops` compares
+  the looping boxes (in view or not) with the last model: a loop that
+  starts grows its arc in from the box with a bright tip (450 ms, eased
+  out; the comet joins at the end), one that stops fades out
+  (`LoopModel::changed_ms`, `ending`); loops that arrive within 2 s of the
+  session history (the canvas opening) just show. Loop state follows the
+  next status update (the service polls histories every second; a
+  `/every` change also makes the client read the saved schedules again
+  instead of waiting for the 15 s automation refresh). *Reduced motion* and
+  *off*: no dot; the arc, its lit arrowhead and a ↻ badge on its far side
+  stand still, and loops switch at once. The `freeze` hook holds the clock
+  at tick × 80 ms (golden screenshots show the comet mid-lap).
 
 **Fonts (`text.rs`).** Only the needed font files are loaded (Cascadia Mono,
 Consolas, Segoe UI and Symbol, Segoe UI Emoji, Microsoft YaHei, Yu Gothic,
@@ -469,6 +507,16 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   canvas idle, with fireworks in view, attention in view and out of view, and
   after the effects are cleared: CPU, frames per second and frame times of
   each phase (§4).
+- `copilot-canvas bench --client gui --loops [--seconds S]`: eight looping
+  sessions in view (their dots moving), the same while panning, scrolled
+  out of view, and with reduced motion: CPU, loop and full frames per
+  second, frame times (§4). Unit tests check the dot's place against the
+  clock (continuous across frames and laps, the same at 30 and 60 frames/s,
+  under 2 px a frame along the GUI's curve), the TUI's cell stepping,
+  grow-in and fade-out, and that the TUI redraws only for visible dots; the
+  ViewModel snapshots `looping-sessions` and
+  `looping-sessions-reduced-motion` pin both renderings; parity row 7b
+  checks PNG captures against the clock.
 - The parity suite's rows V1–V5 and the `visuals` golden screenshot cover
   dust, stacks (with their transitions' end states), hidden subsessions,
   effects and the group chips (`docs/PARITY.md`).
@@ -489,11 +537,12 @@ one (`"window": n`, the creation index):
 | `{"cmd":"wheel","dir":"up\|down\|left\|right","x":…,"y":…,"mods":["ctrl"]}` | one wheel notch |
 | `{"cmd":"drop","paths":["…"],"x":…,"y":…}` | files dropped at a cell |
 | `{"cmd":"screen"}` | `lines`: the screen as text (chrome, canvas as TUI characters, terminal text, dialogs) |
-| `{"cmd":"tree"}` | automation tree: click targets with their text, canvas boxes (status, border, prefix, loop, drawing `level`, `dust`, `deck`, `hidden`, `alpha`), effects (kind, badge, rect) and groups (with their chips) with screen rects, tiles (tint, image placements as cell rects), links, terminal selection, notice, focus, modal, paste preview, and `access`: the UI Automation nodes |
+| `{"cmd":"tree"}` | automation tree: click targets with their text, canvas boxes (status, border, prefix, loop, drawing `level`, `dust`, `deck`, `hidden`, `alpha`), `loop_arcs` (box, lap, grow, ending, moving, the dot now), effects (kind, badge, rect) and groups (with their chips) with screen rects, tiles (tint, image placements as cell rects), links, terminal selection, notice, focus, modal, paste preview, and `access`: the UI Automation nodes |
 | `{"cmd":"access"}` | the UI Automation nodes (role, name, description, value, rect, children, focus) and whether a UIA client listens |
-| `{"cmd":"png","path":"…"}` | renders the current frame offscreen to a PNG (works on a locked workstation) |
-| `{"cmd":"freeze","tick":0}`, `{"cmd":"freeze"}` | animations (spinners, loop dots, pulsing borders, effects mid-burst) hold frame `tick`; without it they run again |
-| `{"cmd":"size"}`, `{"cmd":"perf","reset":true}` | cells, cell size, DPI, adapter (and details, `software`), present mode; frame statistics (all, full and damage frames), round trips, CPU, memory, first paint, textures, GPU rebuilds |
+| `{"cmd":"png","path":"…"}` | renders the current frame offscreen to a PNG (works on a locked workstation); `loops`: each loop arc's dot (px and cells), lap and bounds at the instant drawn |
+| `{"cmd":"freeze","tick":0}`, `{"cmd":"freeze"}` | animations (spinners, loop dots, pulsing borders, effects mid-burst) hold frame `tick` (the loop clock at tick × 80 ms); without it they run again |
+| `{"cmd":"motion","value":"on\|reduced\|off"}` | *Settings › Effects* for this window (not saved) |
+| `{"cmd":"size"}`, `{"cmd":"perf","reset":true}` | cells, cell size, DPI, adapter (and details, `software`), present mode; frame statistics (all, full, damage and loop frames, with counts), round trips, CPU, memory, first paint, textures, GPU rebuilds |
 | `{"cmd":"device-lost"}`, `{"cmd":"device-lost","destroy":true}` | rebuilds the GPU objects as after a lost device (`destroy`: the device is really destroyed first); answers the time taken |
 | `{"cmd":"dpi","scale":1.5}` | a DPI change to `scale` (without: the window's own) |
 | `{"cmd":"place","x":…,"y":…,"width":…,"height":…,"maximized":bool}`, `{"cmd":"placement"}` | moves, sizes or maximizes the window; its position, size, monitor, the tracked and saved placement, the monitors' work areas |
@@ -551,6 +600,20 @@ Effects run at 12.5 frames/s (the spinners' clock; the counts above include
 the service's statistics frames), below §9's 15: smooth enough for the
 bursts at about 1.5 ms per full frame. Stack and hide transitions draw at
 the display's rate for their 300 ms, then the window is idle.
+
+**Loops** (`bench --client gui --loops --seconds 6`, release, RTX 3070, 125 %
+DPI, 170 × 46 cells, 12 logical CPUs, the machine in use meanwhile,
+2026-10-29; eight looping sessions and four plain ones fitted at 100 %).
+Before, loop dots stepped 1/20 of a lap at the spinners' 80 ms clock
+(12.5 full frames/s, also with every loop off screen); now they move with
+the clock in loop frames of their own layer:
+
+| Phase | Loop frames/s | Full frames/s | Loop frame p50 / p95 | CPU (% of one core · of the machine) | |
+|---|---|---|---|---|---|
+| 8 loops in view, dots moving | 26.5 | 0.3 | 0.80 / 0.92 ms (0.46 ms of it submit and present) | **2.08** · 0.17 | ✓ ≤ 2 % of the machine |
+| Panning by drag (a move every 16 ms) | 4.3 | 50.8 | 0.84 / 0.99 ms | 10.4 (the pan's full frames) | ✓ |
+| Scrolled out of view | 0 | 0.3 | — | 0.00–0.52 (housekeeping) | ✓ ≈ 0 |
+| Reduced motion, in view | 0 | 0.5 | — | 0.00 | ✓ |
 
 The burn probe's priority manager matters less here than in the TUI's
 measurement (README: p99 1.26 s → 14 ms with 40 burners on a busy 16-core
@@ -641,10 +704,10 @@ and passive rows. With `CANVAS_GUI_SCREENS` the parity suite also saves
   and terminal text is a plain value (no text pattern).
 - **Box levels:** three; a fourth box stacked on three overlapping ones
   shares the top level, so its labels can still mix with the third's.
-- **Damage frames** cover terminal output only; the canvas and chrome are
-  still rebuilt whole (a spinner step on the canvas is a full frame, 2–5 ms).
-  No scissored partial presents: on WARP every frame still rasterizes the
-  whole window.
+- **Damage frames** cover terminal output and moving loop dots; the rest of
+  the canvas and the chrome are still rebuilt whole (a spinner step on the
+  canvas is a full frame, 2–5 ms). No scissored partial presents: on WARP
+  every frame still rasterizes the whole window.
 - **Device loss** is tested by rebuilding on request and by destroying the
   device (the driver's own report path); a real TDR (driver reset) or an
   unplugged GPU was not reproduced.

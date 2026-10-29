@@ -39,6 +39,8 @@ fn app(doc: Doc, demo: bool) -> App {
     app.notice = None;
     app.pan_quiet_until = None;
     app.tick = 0;
+    // Animations as with Windows' "Show animations" on, whatever this machine says.
+    app.visual.motion = Some(canvas_core::view::Motion::On);
     app.installed_agents = vec![AgentKind::Copilot, AgentKind::OpenCode];
     app.detected_agent = AgentKind::Copilot;
     app
@@ -276,7 +278,43 @@ fn subagents_subsessions_and_a_loop() {
     nightly.loop_ms = 900_000;
     app.sessions.insert("nightly".into(), nightly);
     app.bus.mailbox.insert("follow".into(), 2);
+    // The loop dot where a fixed clock puts it.
+    app.visual.clock_ms = Some(NOW);
     check("subagents-subsessions-loop", &mut app, BOTH);
+}
+
+/// Two looping sessions (`/every`) and one that does not loop: each arc with
+/// its lit dot and two-cell trail where the clock puts it (TUI), the model's
+/// loops with their lap, "↻ every …" in the status lines, ↻ in the sidebar.
+fn looping(motion: canvas_core::view::Motion) -> App {
+    let mut doc = Doc::default();
+    doc.nodes.push(node("nightly", "Nightly check", 1, 1));
+    doc.nodes.push(node("hourly", "Hourly sync", 1, 8));
+    doc.nodes.push(node("plain", "Not looping", 40, 1));
+    doc.view.x = -1;
+    doc.view.y = 0;
+    doc.ui.terminal_percent = 30;
+    let mut app = app(doc, false);
+    for (id, every) in [("nightly", 900_000), ("hourly", 3_600_000), ("plain", 0)] {
+        let mut s = summary(id, Activity::Idle, true);
+        s.loop_ms = every;
+        app.sessions.insert(id.into(), s);
+    }
+    app.visual.clock_ms = Some(NOW + 700);
+    app.visual.motion = Some(motion);
+    app
+}
+
+#[test]
+fn looping_sessions() {
+    check("looping-sessions", &mut looping(canvas_core::view::Motion::On), BOTH);
+}
+
+/// The same with reduced motion: no moving dot; the arc, its lit arrowhead
+/// and (GPU) a ↻ badge hold still.
+#[test]
+fn looping_sessions_in_reduced_motion() {
+    check("looping-sessions-reduced-motion", &mut looping(canvas_core::view::Motion::Reduced), BOTH);
 }
 
 /// Two groups: one with a folder (chips lit), one without (dim chips); the

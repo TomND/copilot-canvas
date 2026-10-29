@@ -325,6 +325,143 @@ fn close(a: [u8; 3], b: [u8; 3], tolerance: i32) -> bool {
     a.iter().zip(b).all(|(x, y)| (*x as i32 - y as i32).abs() <= tolerance)
 }
 
+/// A PNG file as (width, RGB rows).
+fn png_rgb(path: &Path) -> Result<(usize, Vec<[u8; 3]>)> {
+    let decoder = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(path)?));
+    let mut reader = decoder.read_info()?;
+    let mut buf = vec![0; reader.output_buffer_size().context("png size")?];
+    let info = reader.next_frame(&mut buf)?;
+    let channels = info.color_type.samples();
+    Ok((info.width as usize, buf.chunks(channels).map(|p| [p[0], p[1], p[2]]).collect()))
+}
+
+/// The loop dot of row 7b: PNG captures a short time apart show the lit
+/// dot where the clock put it (the hooks report its place at the capture),
+/// moving a little each time and never jumping; the loop layer is redrawn
+/// about 30 times a second while the arc is in view and not at all once it
+/// is scrolled away; reduced motion draws a still arc (identical captures,
+/// no dot, no frames).
+fn loop_dot_check(gui: &mut Gui, id: &str) -> Result<String> {
+    gui.canvas_focus()?;
+    let before = gui.tree()?["canvas"]["motion"].as_str().unwrap_or("On").to_lowercase();
+    let result = loop_dot_steps(gui, id);
+    // Whatever happened: this window's motion setting back, everything in view.
+    let _ = gui.req(json!({ "cmd": "motion", "value": before }));
+    let _ = gui.chord('f', &[]);
+    result
+}
+
+fn loop_dot_steps(gui: &mut Gui, id: &str) -> Result<String> {
+    const LIT: [u8; 3] = [110, 240, 190];
+    gui.send("f")?;
+    gui.req(json!({ "cmd": "motion", "value": "on" }))?;
+    let arc = |loops: &Value| loops.as_array().and_then(|l| l.iter().find(|a| a["id"] == id).cloned());
+    gui.wait_tree("the loop arc with its dot", 10, |t| arc(&t["canvas"]["loop_arcs"]).is_some_and(|a| !a["dot_px"].is_null()))?;
+    let dir = std::env::temp_dir().join(format!("copilot-canvas-loop-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let capture = |name: &str| -> Result<(Instant, Value, PathBuf)> {
+        let path = dir.join(format!("{name}.png"));
+        let reply = gui.req(json!({ "cmd": "png", "path": path }))?;
+        let at = Instant::now();
+        let found = arc(&reply["loops"]).context("the loop in the capture")?;
+        Ok((at, found, path))
+    };
+    let point = |v: &Value| -> Option<(f64, f64)> { Some((v[0].as_f64()?, v[1].as_f64()?)) };
+    // Motion on: five captures 90 ms apart.
+    let mut samples = Vec::new();
+    for i in 0..5 {
+        samples.push(capture(&format!("loop-dot-{i}"))?);
+        std::thread::sleep(Duration::from_millis(90));
+    }
+    let mut matched = 0;
+    for (_, found, path) in &samples {
+        let (x, y) = point(&found["dot_px"]).context("dot")?;
+        let (width, pixels) = png_rgb(path)?;
+        // The head's core is drawn where the clock put it (unless it is just leaving or entering the box).
+        let lit: Vec<(f64, f64)> = (-6i64..=6)
+            .flat_map(|dy| (-6i64..=6).map(move |dx| (dx, dy)))
+            .filter_map(|(dx, dy)| {
+                let (px, py) = ((x.round() as i64 + dx) as usize, (y.round() as i64 + dy) as usize);
+                pixels.get(py * width + px).filter(|c| close(**c, LIT, 45)).map(|_| (px as f64, py as f64))
+            })
+            .collect();
+        if !lit.is_empty() {
+            let (cx, cy) = (lit.iter().map(|p| p.0).sum::<f64>() / lit.len() as f64, lit.iter().map(|p| p.1).sum::<f64>() / lit.len() as f64);
+            anyhow::ensure!((cx - x).hypot(cy - y) <= 3.0, "the lit dot at ({cx:.1}, {cy:.1}), the clock says ({x:.1}, {y:.1})");
+            matched += 1;
+        }
+    }
+    anyhow::ensure!(matched >= 3, "the lit dot was in only {matched} of 5 captures");
+    let bounds: Vec<f64> = samples[0].1["bounds_px"].as_array().map(|b| b.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
+    anyhow::ensure!(bounds.len() == 4, "arc bounds");
+    // The arc's length bounds how far the dot can go in a moment (1.35 × the mean speed).
+    let arc_len = 2.0 * ((bounds[2] - bounds[0]) + (bounds[3] - bounds[1]));
+    let mut steps = Vec::new();
+    for pair in samples.windows(2) {
+        let (a, b) = (point(&pair[0].1["dot_px"]).context("dot")?, point(&pair[1].1["dot_px"]).context("dot")?);
+        let lap = (pair[1].1["lap"].as_f64().unwrap_or(0.0) - pair[0].1["lap"].as_f64().unwrap_or(0.0)).rem_euclid(1.0);
+        let elapsed = pair[1].0.duration_since(pair[0].0).as_secs_f64();
+        // The lap advances with the clock (2 s a lap), whatever was drawn in between.
+        anyhow::ensure!((lap * 2.0 - elapsed).abs() < 0.08, "the lap moved {lap:.3} in {elapsed:.3} s");
+        let moved = (b.0 - a.0).hypot(b.1 - a.1);
+        let wrapped = pair[1].1["lap"].as_f64() < pair[0].1["lap"].as_f64();
+        anyhow::ensure!(moved > 0.3 || wrapped, "the dot did not move in {elapsed:.3} s");
+        anyhow::ensure!(wrapped || moved <= 1.35 * arc_len * lap + 3.0, "a jump of {moved:.1} px in {elapsed:.3} s (arc ≈ {arc_len:.0} px)");
+        steps.push(format!("{moved:.1}"));
+    }
+    // Frames: the loop layer is redrawn at its pace while the arc is in view
+    // (by loop frames of its own, and by the full frames other animations need).
+    let frames = |key: &str| -> Result<u64> { Ok(gui.req(json!({ "cmd": "perf" }))?["perf"][key].as_u64().unwrap_or(0)) };
+    let count = |key: &str, secs: f64| -> Result<u64> {
+        let start = frames(key)?;
+        std::thread::sleep(Duration::from_secs_f64(secs));
+        Ok(frames(key)?.saturating_sub(start))
+    };
+    let interval = gui.tree()?["canvas"]["loop_interval_ms"].as_u64().unwrap_or(33).max(1);
+    let (start_loops, start_all) = (frames("loop_frames")?, frames("presented")?);
+    std::thread::sleep(Duration::from_secs(2));
+    let (in_view, all) = (frames("loop_frames")?.saturating_sub(start_loops), frames("presented")?.saturating_sub(start_all));
+    let want = 2000 / interval;
+    anyhow::ensure!(in_view > 0 && all * 100 >= want * 65 && all <= 2 * 75, "{all} frames ({in_view} of the loop layer alone) in 2 s while the arc is in view; its pace is every {interval} ms");
+    // Scrolled until no loop is in view: no loop frames.
+    let none_in_view = |t: &Value| t["canvas"]["loop_arcs"].as_array().is_some_and(Vec::is_empty);
+    for _ in 0..80 {
+        if none_in_view(&gui.tree()?) {
+            break;
+        }
+        gui.key("Down", &["ctrl"])?;
+    }
+    gui.wait_tree("every loop out of view", 5, none_in_view)?;
+    std::thread::sleep(Duration::from_millis(300));
+    let away = count("loop_frames", 1.5)?;
+    anyhow::ensure!(away <= 1, "{away} loop frames with every loop out of view");
+    gui.chord('f', &[])?;
+    // Reduced motion: no moving dot, the arc and its ↻ badge stand still.
+    gui.req(json!({ "cmd": "motion", "value": "reduced" }))?;
+    let still = gui.wait_tree("a still arc", 5, |t| arc(&t["canvas"]["loop_arcs"]).is_some_and(|a| a["moving"] == false && a["dot_px"].is_null()))?;
+    anyhow::ensure!(still["canvas"]["boxes"].as_array().is_some_and(|b| b.iter().any(|b| b["id"] == id && b["loop"] == "every 15m")), "the status line still says ↻ every 15m");
+    std::thread::sleep(Duration::from_millis(300));
+    let (_, first, a) = capture("loop-reduced-0")?;
+    std::thread::sleep(Duration::from_millis(400));
+    let (_, _, b) = capture("loop-reduced-1")?;
+    let bounds: Vec<f64> = first["bounds_px"].as_array().map(|b| b.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
+    anyhow::ensure!(bounds.len() == 4, "arc bounds");
+    let ((width, one), (_, two)) = (png_rgb(&a)?, png_rgb(&b)?);
+    let mut arc_pixels = 0;
+    for y in bounds[1] as usize..=bounds[3] as usize {
+        for x in bounds[0] as usize..=bounds[2] as usize + 4 {
+            let i = y * width + x;
+            anyhow::ensure!(one.get(i) == two.get(i), "the reduced-motion arc changed at ({x}, {y})");
+            arc_pixels += one.get(i).is_some_and(|c| close(*c, [0, 158, 115], 40) || close(*c, LIT, 40)) as usize;
+        }
+    }
+    anyhow::ensure!(arc_pixels >= 20, "the still arc is drawn ({arc_pixels} loop-coloured pixels)");
+    let reduced = count("loop_frames", 1.0)?;
+    anyhow::ensure!(reduced <= 1, "{reduced} loop frames with reduced motion");
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(format!("dot at the clock's place in {matched}/5 captures, steps {} px; {all} frames in 2 s in view ({in_view} of the loop layer alone, every {interval} ms), {away} away; reduced motion: still arc, {reduced} frames", steps.join(" ")))
+}
+
 fn session_files(dir: &Path, id: &str, name: &str, cwd: &Path, events: &[String], live: bool) -> Result<()> {
     let folder = dir.join(id);
     std::fs::create_dir_all(&folder)?;
@@ -755,6 +892,8 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         gui.wait("sidebar ↻", 5, |t| t.lines().any(|l| l.chars().take(36).collect::<String>().contains("↻") && l.chars().take(36).collect::<String>().contains("Looping")))?;
         Ok("↻ every 15m, arc drawn, sidebar ↻".into())
     });
+
+    check(rows, "7b", "Looping sessions: the dot follows the clock smoothly (loop layer alone, ≈30 frames/s, none off screen); reduced motion holds a still arc", "loop_dot_smooth_and_reduced_motion", || loop_dot_check(gui, &sb.sessions.looping));
 
     check(rows, "3", "Attention borders and tints; active-terminal halo (heavy while typing)", "attention_and_halo", || {
         let (waiting, _) = gui.find_box("Needs you one")?;

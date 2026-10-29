@@ -228,14 +228,31 @@ pub struct ChipModel {
     pub lit: bool,
 }
 
-/// A looping box's loopback arc with its moving dot.
+/// A looping box's loopback arc. The lit dot's place is a function of the
+/// clock (`crate::loops`), so front ends draw it at any instant.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LoopModel {
+    /// The looping box.
+    pub id: String,
     pub rect: WRect,
-    /// Position of the lit dot along the arc, 0..1.
-    pub phase: f32,
     /// The box has the active-terminal halo (the arc goes around it).
     pub halo: bool,
+    /// When the loop started (the arc grows in) or, with `ending`, stopped
+    /// (it fades out), on the animation clock (ms); `None`: steady.
+    pub changed_ms: Option<u64>,
+    pub ending: bool,
+}
+
+impl LoopModel {
+    /// The lap fraction (0..1) of the dot at `clock_ms`.
+    pub fn lap_at(&self, clock_ms: u64) -> f32 {
+        crate::loops::lap(clock_ms, crate::loops::seed(&self.id))
+    }
+
+    /// How much of the arc shows at `clock_ms` (0..1).
+    pub fn grow_at(&self, clock_ms: u64) -> f32 {
+        crate::loops::grow(clock_ms, self.changed_ms, self.ending)
+    }
 }
 
 /// An event in flight from one box to another.
@@ -276,9 +293,28 @@ pub struct CanvasModel {
     /// Effects on boxes and groups.
     pub effects: Vec<EffectModel>,
     pub motion: Motion,
+    /// The animation clock when the model was built (ms).
+    pub clock_ms: u64,
+    /// Animations stand still at `clock_ms` (the `freeze` hook, tests).
+    pub frozen: bool,
 }
 
 impl CanvasModel {
+    /// The clock to draw animations at: now, or `clock_ms` when frozen.
+    pub fn anim_clock(&self) -> u64 {
+        if self.frozen { self.clock_ms } else { crate::paths::now_ms() }
+    }
+
+    /// Loop dots move on their own (motion on, a running clock): the front
+    /// end redraws them at its own pace.
+    pub fn loops_move(&self) -> bool {
+        self.motion == Motion::On && !self.frozen && !self.loops.is_empty()
+    }
+
+    /// Some loop is moving, growing in or fading out at `clock_ms`.
+    pub fn loops_busy(&self, clock_ms: u64) -> bool {
+        self.loops_move() || self.loops.iter().any(|l| crate::loops::changing(clock_ms, l.changed_ms))
+    }
     /// World → screen (fractional cells).
     pub fn to_screen(&self, wx: f32, wy: f32) -> (f32, f32) {
         (self.area.x as f32 + (wx - self.origin.0) * self.scale, self.area.y as f32 + (wy - self.origin.1) * self.scale)
@@ -462,8 +498,13 @@ impl CanvasModel {
         if !self.effects.is_empty() {
             out.push(format!("motion {:?}", self.motion));
         }
+        if !self.loops.is_empty() {
+            out.push(format!("loops motion={:?} frozen={}", self.motion, self.frozen));
+        }
         for l in &self.loops {
-            out.push(format!("loop rect={} phase={} halo={}", wrect(l.rect), num(l.phase), l.halo));
+            // The dot's lap only on a fixed clock (else it is the time of the run).
+            let lap = if self.frozen { format!(" lap={}", num(l.lap_at(self.clock_ms))) } else { String::new() };
+            out.push(format!("loop {} rect={} halo={}{lap} grow={} ending={}", l.id, wrect(l.rect), l.halo, num(l.grow_at(self.clock_ms)), l.ending));
         }
         for p in &self.pulses {
             out.push(format!("pulse from={} to={} t={} path={}", wrect(p.from), wrect(p.to), num(p.t), path(&p.path)));

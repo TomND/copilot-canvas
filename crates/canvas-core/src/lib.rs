@@ -21,6 +21,7 @@ pub mod input;
 pub mod inspect;
 pub mod interact;
 pub mod links;
+pub mod loops;
 pub mod modals;
 pub mod paint;
 pub mod passive;

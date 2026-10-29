@@ -64,6 +64,7 @@ USAGE
   copilot-canvas bench --client gui --perf-canvas FILE|synthetic
                                         panning a copy of a canvas file at 100, 50 and 25 %
   copilot-canvas bench --client gui --effects   CPU and frame rate with effects in view, out of view, cleared
+  copilot-canvas bench --client gui --loops     CPU and frame rate with looping sessions in view, panning, out of view, reduced motion
   copilot-canvas bench --client gui --burn N
                                         keystroke to present while N sessions burn CPU, with and
                                         without the priority manager
@@ -216,7 +217,7 @@ fn parse() -> Result<Args> {
             "--canvas" => args.canvas = Some(PathBuf::from(value("--canvas")?)),
             "--cwd" => args.cwd = Some(PathBuf::from(value("--cwd")?)),
             "--remote" => args.remote = Some(value("--remote")?),
-            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" => {
+            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" => {
                 args.flags.push(arg.trim_start_matches("--").to_owned())
             }
             "--" => {
@@ -536,6 +537,8 @@ fn real_main() -> Result<()> {
                 gui_bench::Probe::PerfCanvas(file)
             } else if flag("effects") {
                 gui_bench::Probe::Effects
+            } else if flag("loops") {
+                gui_bench::Probe::Loops
             } else if let Some(burn) = option("burn") {
                 gui_bench::Probe::Burn(burn.parse()?)
             } else {

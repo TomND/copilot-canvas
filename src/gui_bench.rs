@@ -37,6 +37,9 @@ pub enum Probe {
     /// Idle CPU and frames with no effect, with fireworks or attention in view,
     /// out of view and acknowledged.
     Effects,
+    /// CPU and frames with looping sessions in view (their dots moving),
+    /// while panning, out of view, and with reduced motion.
+    Loops,
 }
 
 pub struct Options {
@@ -60,6 +63,7 @@ pub fn run(options: Options) -> Result<()> {
         Probe::PerfCanvas(file) => perf_canvas(&instance, &root, &options, file),
         Probe::Burn(burners) => burn(&instance, &root, &options, *burners),
         Probe::Effects => effects(&instance, &root, &options),
+        Probe::Loops => loops(&instance, &root, &options),
     };
     stop_service(&instance);
     match &result {
@@ -765,5 +769,109 @@ fn effects(instance: &Instance, root: &Path, options: &Options) -> Result<Value>
         "attention_in_view": attention,
         "attention_out_of_view": away,
         "cleared": cleared,
+    }))
+}
+
+/// `--loops`: the loop animation's cost. A group with eight looping
+/// (passive) sessions and four plain ones, fitted in view: CPU (% of one
+/// core), frames per second by kind and frame times with the dots moving,
+/// while panning (a drag every 16 ms), scrolled out of view, and with
+/// reduced motion.
+fn loops(instance: &Instance, root: &Path, options: &Options) -> Result<Value> {
+    let mut doc = Doc::default();
+    for i in 0..12 {
+        let (x, y) = (2 + (i % 3) * (GRID_X + 6), 2 + (i / 3) * GRID_Y);
+        let mut n = node(&format!("loop-{i:02}"), &format!("Loop {i}"), x, y, None);
+        n.reviewed_ms = Some(crate::paths::now_ms());
+        if i < 8 {
+            n.passive = Some(crate::client::doc::Passive { key: format!("loop-{i}-key"), group: "g-loops".into(), slug: format!("loop-{i}"), template: "Custom".into(), rollover_runs: 20, max_runs_per_day: 24, ..Default::default() });
+        }
+        doc.nodes.push(n);
+    }
+    doc.groups.push(Group { id: "g-loops".into(), name: "Loops".into(), x: 0, y: 0, w: 3 * (GRID_X + 6), h: 4 * GRID_Y + 2, color: 2, folder: Some(root.join("group").display().to_string()), source: None, defaults: None });
+    let canvas = instance.home.join("loops.json");
+    std::fs::create_dir_all(&instance.home)?;
+    std::fs::write(&canvas, serde_json::to_string_pretty(&doc)?)?;
+    let on = PathBuf::from("on");
+    let mut extra = vec!["--canvas", canvas.to_str().unwrap_or_default()];
+    if options.remote {
+        extra.extend(["--remote", "loopback"]);
+    }
+    let ui = GuiDriver::start(&args(instance, root, &extra), &[("COPILOT_CANVAS_EFFECTS", &on)], (170, 46), &root.join("gui-loops.log"))?;
+    ui.wait("the loops canvas", Duration::from_secs(30), |t| t.contains("Loops") && t.contains("Loop 11"))?;
+    let mut ui = ui;
+    ui.send(b"f")?;
+    std::thread::sleep(Duration::from_secs(3));
+    let seconds = options.seconds.max(5);
+    let count = |v: &Value, key: &str| v["perf"][key].as_u64().unwrap_or(0);
+    let phase = |ui: &GuiDriver, label: &str, during: &dyn Fn(&GuiDriver) -> Result<()>| -> Result<Value> {
+        let before = perf(ui, true)?;
+        let started = Instant::now();
+        during(ui)?;
+        let rest = Duration::from_secs(seconds).saturating_sub(started.elapsed());
+        std::thread::sleep(rest);
+        let after = perf(ui, false)?;
+        let elapsed = started.elapsed();
+        let fps = |key: &str| ((count(&after, key).saturating_sub(count(&before, key))) as f64 / elapsed.as_secs_f64() * 10.0).round() / 10.0;
+        let in_view = ui.request(json!({ "cmd": "tree" }))?["tree"]["canvas"]["loop_arcs"].as_array().map(Vec::len).unwrap_or(0);
+        let cpu = cpu_percent(&before, &after, elapsed);
+        eprintln!("{label}: {in_view} loops in view, {:.1} loop + {:.1} full frames/s, {cpu:.2} % of one core", fps("loop_frames"), fps("full_frames"));
+        Ok(json!({
+            "loops_in_view": in_view,
+            "cpu_percent_of_one_core": cpu,
+            "fps": fps("presented"),
+            "loop_fps": fps("loop_frames"),
+            "full_fps": fps("full_frames"),
+            "loop_frame_ms": ms(&after["perf"]["loop_ms"]),
+            "full_frame_ms": ms(&after["perf"]["full_ms"]),
+            "frame_ms": ms(&after["perf"]["frame_ms"]),
+            "present_ms": ms(&after["perf"]["present_ms"]),
+            "acquire_ms": ms(&after["perf"]["acquire_ms"]),
+        }))
+    };
+    let idle = |_: &GuiDriver| Ok(());
+    let _ = ui.screenshot("bench-loops");
+    let in_view = phase(&ui, "loops in view", &idle)?;
+    // Panning: a drag across empty canvas below the group, one step every 16 ms.
+    let pan = |ui: &GuiDriver| -> Result<()> {
+        let tree = ui.request(json!({ "cmd": "tree" }))?;
+        let area: Vec<f64> = tree["tree"]["canvas"]["area"].as_array().map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
+        let (x, y) = (area.first().copied().unwrap_or(40.0) + 4.0, area.get(1).copied().unwrap_or(2.0) + area.get(3).copied().unwrap_or(40.0) - 3.0);
+        ui.request(json!({ "cmd": "mouse", "kind": "down", "button": "middle", "x": x, "y": y }))?;
+        let started = Instant::now();
+        let mut i = 0;
+        while started.elapsed() < Duration::from_secs(seconds.saturating_sub(1)) {
+            i += 1;
+            let dx = ((i as f64) * 0.15).sin() * 6.0;
+            ui.request(json!({ "cmd": "mouse", "kind": "drag", "button": "middle", "x": x + dx, "y": y - 1.0 }))?;
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        ui.request(json!({ "cmd": "mouse", "kind": "up", "button": "middle", "x": x, "y": y - 1.0 }))?;
+        Ok(())
+    };
+    let panning = phase(&ui, "panning with loops in view", &pan)?;
+    ui.send(b"f")?;
+    std::thread::sleep(Duration::from_secs(1));
+    // Scrolled away: the loops are on the canvas, not in view.
+    for _ in 0..30 {
+        ui.request(json!({ "cmd": "key", "key": "Down", "mods": ["ctrl"] }))?;
+    }
+    std::thread::sleep(Duration::from_secs(1));
+    let away = phase(&ui, "loops out of view", &idle)?;
+    ui.send(b"f")?;
+    ui.request(json!({ "cmd": "motion", "value": "reduced" }))?;
+    std::thread::sleep(Duration::from_secs(1));
+    let _ = ui.screenshot("bench-loops-reduced-motion");
+    let reduced = phase(&ui, "reduced motion, loops in view", &idle)?;
+    let _ = ui.request(json!({ "cmd": "quit" }));
+    let _ = ui.wait_exit(Duration::from_secs(10));
+    Ok(json!({
+        "probe": "loops",
+        "seconds_per_phase": seconds,
+        "logical_cpus": std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0),
+        "loops_in_view": in_view,
+        "panning_with_loops": panning,
+        "loops_out_of_view": away,
+        "reduced_motion": reduced,
     }))
 }

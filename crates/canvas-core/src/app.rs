@@ -1565,6 +1565,13 @@ impl App {
                 self.views.remove(&id);
             }
             ServiceMsg::Sessions { full, upsert, remove } => {
+                // A loop that starts or stops (`/every`) may also have saved a
+                // session schedule: read the automations again now rather than
+                // at their next 15 s refresh.
+                let loop_changed = upsert.iter().any(|s| self.sessions.get(&s.id).map_or(s.loop_ms > 0, |old| (old.loop_ms > 0) != (s.loop_ms > 0)));
+                if loop_changed && !self.demo && self.sessions_loaded {
+                    self.load_automations();
+                }
                 if full {
                     self.sessions.clear();
                 }
@@ -1961,12 +1968,15 @@ impl App {
         self.tick_side();
         self.tick_inspector();
         self.visual_tick();
-        // Failed automations pulse until their next good run.
+        // Failed automations pulse until their next good run. Loop dots: the
+        // TUI redraws when a visible one moves to another cell; the GPU
+        // client moves them on its own (only its loop layer, only in view).
         let animated = self.doc.nodes.iter().any(|n| {
             let status = self.node_status(n);
-            status.animated() || self.node_loop(n).is_some() || n.kind == NodeKind::Automation && status == Status::Failed
+            status.animated() || n.kind == NodeKind::Automation && status == Status::Failed
         });
-        if (animated && spun) || self.flash.is_some() {
+        let loops_moved = self.loop_cells_moved();
+        if (animated && spun) || loops_moved || self.flash.is_some() {
             self.needs_draw = true;
         }
     }

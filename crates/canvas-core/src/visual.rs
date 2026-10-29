@@ -113,16 +113,23 @@ pub struct VisualState {
     used_at: Option<Instant>,
     /// When the session history first arrived (old boxes migrate a little later,
     /// once the summaries of every tracked session are in).
-    history_at: Option<Instant>,
+    pub(crate) history_at: Option<Instant>,
     effect_frame: u64,
     /// An effect is animating in view (the GUI keeps ticking).
     pub effects_live: bool,
+    /// Loops that start or stop (their arcs grow in or fade out).
+    pub loops: crate::loops::LoopState,
 }
 
 impl VisualState {
     /// A stack or hide transition is running (the GUI draws every frame).
     pub fn animating(&self) -> bool {
         !self.stacks.is_empty() || self.hide.is_some()
+    }
+
+    /// How long ago the session history first arrived.
+    pub fn history_since(&self) -> Option<Duration> {
+        self.history_at.map(|t| t.elapsed())
     }
 }
 

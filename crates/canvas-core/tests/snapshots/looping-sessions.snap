@@ -1,0 +1,60 @@
+# looping-sessions (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit                                                3 sessions
+    SESSIONS                     │▌·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+▌▤  / filter…                    │  ╭ Nightly check ─────────────╮┄┄╮      ╭ Not looping ───────────────╮
+                                 │  │ ○ idle · ↻ every 15m · ↗ … │  ┆      │ ○ idle · ↗ elsewhere       │
+ ◷  ○ ↻ ↗ Nightly check          │ ·│ canvas · main              │  •  ·   │ canvas · main              │  ·     ·     ·     ·     ·     ·     ·     ·
+    ○ ↗ Not looping              │  ╰────────────────────────────╯◂┄●      ╰────────────────────────────╯
+ ⧉  ○ ↻ ↗ Hourly sync            │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+ ⌁                               │
+                                 │  ╭ Hourly sync ───────────────╮┄•●
+ ✦                               │ ·│ ○ idle · ↻ every 1h · ↗ e… │  ┆  ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │  │ canvas · main              │  ┆
+ ◈                               │  ╰────────────────────────────╯◂┄╯
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+ ⇄                               │
+                                 │
+ ≡                               │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+ click view · double-click/Enter start · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom · right-click menu · ? he…
+## gpu view model
+view cursor=none modal=none banner=None
+canvas area=34,1 116x38 origin=-1,0 scale=1 grid=true tick=0 empty=false
+box nightly Session rect=1,1 30x4 prefix="" name="Nightly check"
+  status=Idle icon="○" label="idle" line="○ idle · ↻ every 15m" subtitle="canvas · main" elsewhere=true every=Some("every 15m") mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #8b949e]
+  selected=false focused_term=false active=false
+box hourly Session rect=1,8 30x4 prefix="" name="Hourly sync"
+  status=Idle icon="○" label="idle" line="○ idle · ↻ every 1h" subtitle="canvas · main" elsewhere=true every=Some("every 1h") mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #8b949e]
+  selected=false focused_term=false active=false
+box plain Session rect=40,1 30x4 prefix="" name="Not looping"
+  status=Idle icon="○" label="idle" line="○ idle" subtitle="canvas · main" elsewhere=true every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #8b949e]
+  selected=false focused_term=false active=false
+loops motion=On frozen=true
+loop nightly rect=1,1 30x4 halo=false lap=0.779 grow=1 ending=false
+loop hourly rect=1,8 30x4 halo=false lap=0.206 grow=1 ending=false

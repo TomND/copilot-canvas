@@ -1421,6 +1421,8 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
         ("COPILOT_CANVAS_OTHER_CLIENT_DRYRUN", other_client.as_path()),
         // The dry run is only honoured in self-tests.
         ("COPILOT_CANVAS_SELFTEST", Path::new("1")),
+        // Loop dots move whatever this machine's animation setting is.
+        ("COPILOT_CANVAS_EFFECTS", Path::new("on")),
     ];
     let started = Instant::now();
     let mut ui = start(&args, &env)?;

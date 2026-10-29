@@ -83,11 +83,13 @@ fn center(r: [f64; 4]) -> (f64, f64) {
     (r[0] + (r[2] / 2.0).min(6.0), r[1] + r[3] / 2.0)
 }
 
-/// Frames the GUI presented in `secs` seconds.
+/// Frames the GUI presented in `secs` seconds, besides those that only moved
+/// loop dots (the passive session's arc moves on its own).
 fn frames_in(gui: &Gui, secs: f64) -> Result<u64> {
-    let before = gui.req(json!({ "cmd": "perf" }))?["perf"]["presented"].as_u64().unwrap_or(0);
+    let frames = |p: &Value| p["perf"]["presented"].as_u64().unwrap_or(0).saturating_sub(p["perf"]["loop_frames"].as_u64().unwrap_or(0));
+    let before = frames(&gui.req(json!({ "cmd": "perf" }))?);
     std::thread::sleep(Duration::from_secs_f64(secs));
-    Ok(gui.req(json!({ "cmd": "perf" }))?["perf"]["presented"].as_u64().unwrap_or(0).saturating_sub(before))
+    Ok(frames(&gui.req(json!({ "cmd": "perf" }))?).saturating_sub(before))
 }
 
 /// Runs `copilot-canvas effect …` as a session of the visual group.
@@ -237,7 +239,7 @@ pub(super) fn rows(sb: &Sandbox, rows: &mut Vec<Row>) {
         anyhow::ensure!(effects == 0, "the service forgot it ({effects} left)");
         anyhow::ensure!(gui.tree()?["tiles"].as_array().is_some_and(Vec::is_empty), "no session started");
         let idle = frames_in(&gui, 2.0)?;
-        // The canvas's loop arcs still animate on their idle ticks; the effect's frames stop.
+        // The effect's frames stop (the loop arc's dot moves in frames of its own layer).
         anyhow::ensure!(motion != "On" || idle * 2 <= animated + 4, "{idle} frames in 2 s after the click, {animated} while animated");
         Ok(format!("motion {motion}: {animated} frames in 2 s while animated, {idle} after; acknowledged everywhere, nothing started"))
     });

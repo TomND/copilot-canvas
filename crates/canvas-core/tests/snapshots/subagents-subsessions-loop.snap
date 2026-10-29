@@ -16,10 +16,10 @@
                                  │ ·    │ ○ idle               │ ·     ·     ·     ·     ·     ·     · ││ Code); Copilot Canvas never starts a       │
  ⇄                               │      └──────────────────────┘                                       ││ second copy.                               │
                                  │        │                                                            ││ S subsession · R rename · G group · X stop │
- ≡                               │ ·    ┌ ◇ Lint the tree ─────┐ ·     ╭ Nightly check ─────────────╮●┄││                                            │
+ ≡                               │ ·    ┌ ◇ Lint the tree ─────┐ ·     ╭ Nightly check ─────────────╮┄┄││                                            │
                                  │      │ ✗ failed             │       │ ○ idle · ↻ every 15m · ↗ … │  ││                                            │
                                  │      └──────────────────────┘       │ canvas · main              │  ││                                            │
-                                 │ ·     ·     ·     ·     ·     ·     ╰────────────────────────────╯•┄││                                            │
+                                 │ ·     ·     ·     ·     ·     ·     ╰────────────────────────────╯◂┄││                                            │
                                  │                                                                     ││                                            │
                                  │                                                                     ││                                            │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││                                            │
@@ -71,4 +71,5 @@ box orch Session rect=1,1 30x4 prefix="" name="Orchestrator"
   status=Working icon="⠋" label="working" line="⠋ working" subtitle="canvas · main" elsewhere=true every=None mailbox=0
   border=Heavy border_style=[fg #f0f6fc +BOLD] fill=#161b22 attention=none name_style=[fg #f0f6fc +BOLD] line_style=[fg #c9d1d9]
   selected=true focused_term=false active=false
-loop rect=36,15 30x4 phase=0 halo=false
+loops motion=On frozen=true
+loop nightly rect=36,15 30x4 halo=false lap=0.429 grow=1 ending=false

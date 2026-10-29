@@ -339,7 +339,6 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
     let mut order: Vec<&Node> = app.doc.nodes.iter().filter(|n| !frame.skip(&n.id)).collect();
     order.sort_by_key(|n| app.selection.contains(&n.id));
     let zoom = app.doc.view.zoom;
-    let tick = app.tick;
     // The session whose terminal is the active one on the right.
     let active_term = boxes.active_term.clone();
     let typing = app.focus == crate::app::Focus::Terminal;
@@ -386,7 +385,10 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
     }
 
     // Looping boxes: a dotted loopback on the right side with one lit dot
-    // running around it (with a short trail), like a loading bar.
+    // running around it (a two-cell trail), like a loading bar; with reduced
+    // motion the arc and its arrowhead hold still.
+    let (clock, _) = app.anim_clock();
+    let moving = app.motion() == crate::view::Motion::On;
     for node in app.doc.nodes.iter().filter(|n| !frame.skip(&n.id)) {
         let (x, y, w, h) = app.node_screen(node);
         if x + w + 3 < area.x as i32 || x > area.right() as i32 || y + h < area.y as i32 || y > area.bottom() as i32 {
@@ -397,7 +399,8 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
         }
         // Outside the active terminal's halo, which runs one cell around the box.
         let halo = zoom < 2 && active_term.as_deref() == Some(node.id.as_str());
-        draw_loop(buf, (x, y, w + halo as i32, h), tick, clip);
+        let lap = moving.then(|| crate::loops::lap(clock, crate::loops::seed(&node.id)));
+        draw_loop(buf, (x, y, w + halo as i32, h), lap, clip);
     }
 
     // Effects: a badge on the box (or the stack that holds it), or the group.
@@ -532,26 +535,29 @@ fn draw_pulse(buf: &mut Buffer, path: &[(i32, i32)], t: f32, clip: Rect) {
     }
 }
 
-/// The loopback arc beside a box with its lit dot at animation frame `tick`.
-fn draw_loop(buf: &mut Buffer, (x, y, w, h): (i32, i32, i32, i32), tick: usize, clip: Rect) {
-    let phase = tick / 2;
+/// The loopback arc beside a box with its lit dot and a two-cell trail at
+/// lap fraction `lap` (`crate::loops`: the dot keeps one speed along the
+/// cells); `None` (reduced motion): the arc with its lit arrowhead, still.
+fn draw_loop(buf: &mut Buffer, (x, y, w, h): (i32, i32, i32, i32), lap: Option<f32>, clip: Rect) {
+    use crate::paint::{LOOP, LOOP_LIT, bold};
     let path = loop_path(x, y, w, h);
     if path.len() == 1 {
-        // One-line boxes (zoomed out): the ↻ icon pulses.
+        // One-line boxes (zoomed out): the ↻ icon pulses (steady with reduced motion).
         let (px, py, glyph) = path[0];
-        let color = if phase.is_multiple_of(2) { crate::paint::LOOP_LIT } else { crate::paint::LOOP };
-        put(buf, px, py, glyph, crate::paint::bold(color), clip);
+        let lit = lap.is_none_or(|t| ((t * 4.0) as usize).is_multiple_of(2));
+        put(buf, px, py, glyph, bold(if lit { LOOP_LIT } else { LOOP }), clip);
         return;
     }
-    let lit = phase % path.len();
-    let trail = (lit + path.len() - 1) % path.len();
+    let n = path.len();
+    let head = lap.map(|t| crate::loops::cell_at(&path, crate::loops::along(t)));
     for (i, &(px, py, glyph)) in path.iter().enumerate() {
-        let (glyph, style) = if i == lit {
-            ("●", crate::paint::bold(crate::paint::LOOP_LIT))
-        } else if i == trail {
-            ("•", fg(crate::paint::LOOP))
-        } else {
-            (glyph, fg(crate::paint::LOOP))
+        let (glyph, style) = match head.map(|h| (h + n - i) % n) {
+            Some(0) => ("●", bold(LOOP_LIT)),
+            Some(1) => ("•", fg(LOOP_LIT)),
+            Some(2) => (glyph, fg(LOOP_LIT)),
+            // The arrowhead back into the box.
+            _ if i == n - 1 => (glyph, bold(LOOP_LIT)),
+            _ => (glyph, fg(LOOP)),
         };
         put(buf, px, py, glyph, style, clip);
     }
@@ -646,6 +652,10 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
     let scale = app.scale_f();
     let origin = app.origin_f();
     let tick = app.tick;
+    // Loops that start or stop grow in or fade out (every box, in view or not).
+    let (clock_ms, frozen) = app.anim_clock();
+    let looping: HashSet<String> = app.doc.nodes.iter().filter(|n| app.node_loop(n).is_some()).map(|n| n.id.clone()).collect();
+    app.sync_loops(looping, clock_ms, frozen);
     let mut model = CanvasModel {
         area,
         origin,
@@ -662,6 +672,8 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
         tick,
         effects: Vec::new(),
         motion: app.motion(),
+        clock_ms,
+        frozen,
     };
     let visible = model.visible();
     // Loop arcs, halos and labels reach a few units past a box.
@@ -780,8 +792,18 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
         if let Some((_, alpha)) = frame.moving.get(&node.id) {
             b.alpha = alpha.clamp(0.0, 1.0);
         }
-        if b.every.is_some() && b.alpha >= 1.0 {
-            model.loops.push(LoopModel { rect, phase: (tick % 20) as f32 / 20.0, halo: active_term.as_deref() == Some(node.id.as_str()) });
+        if b.alpha >= 1.0 {
+            // A looping box's arc (growing in after the loop started), or the
+            // arc of a loop that just stopped, fading out.
+            let halo = active_term.as_deref() == Some(node.id.as_str());
+            match (b.every.is_some(), app.loop_change(&node.id)) {
+                (true, change) => {
+                    let changed_ms = change.filter(|(_, ended)| !ended).map(|(at, _)| at);
+                    model.loops.push(LoopModel { id: node.id.clone(), rect, halo, changed_ms, ending: false });
+                }
+                (false, Some((at, true))) => model.loops.push(LoopModel { id: node.id.clone(), rect, halo, changed_ms: Some(at), ending: true }),
+                (false, _) => {}
+            }
         }
         model.boxes.push(b);
     }
@@ -885,9 +907,12 @@ pub fn paint_model(model: &CanvasModel, buf: &mut Buffer) {
     for pulse in &model.pulses {
         draw_pulse(buf, &connector_path(screen_box(pulse.from), screen_box(pulse.to)), pulse.t, clip);
     }
-    for lp in &model.loops {
+    // The loops that run (a fading one is the GPU's): the dot where the clock puts it.
+    let clock = model.anim_clock();
+    for lp in model.loops.iter().filter(|l| !l.ending) {
         let (x, y, w, h) = screen_box(lp.rect);
-        draw_loop(buf, (x, y, w + (zoom < 2 && lp.halo) as i32, h), model.tick, clip);
+        let lap = (model.motion == crate::view::Motion::On).then(|| lp.lap_at(clock));
+        draw_loop(buf, (x, y, w + (zoom < 2 && lp.halo) as i32, h), lap, clip);
     }
     for effect in &model.effects {
         paint_effect(buf, effect, screen_box(effect.rect), clip);
