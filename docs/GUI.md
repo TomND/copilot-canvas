@@ -603,19 +603,26 @@ the service's statistics frames), below §9's 15: smooth enough for the
 bursts at about 1.5 ms per full frame. Stack and hide transitions draw at
 the display's rate for their 300 ms, then the window is idle.
 
-**Loops** (`bench --client gui --loops --seconds 6`, release, RTX 3070, 125 %
-DPI, 170 × 46 cells, 12 logical CPUs, the machine in use meanwhile,
-2026-10-29; eight looping sessions and four plain ones fitted at 100 %).
-Before, loop dots stepped 1/20 of a lap at the spinners' 80 ms clock
-(12.5 full frames/s, also with every loop off screen); now they move with
-the clock in loop frames of their own layer:
+**Loops** (`bench --client gui --loops --seconds 8`, two runs shown as
+run 1 · run 2, release, RTX 3070, 125 % DPI, 170 × 46 cells, 12 logical
+CPUs, the machine in use meanwhile, 2026-10-29; eight looping sessions and
+four plain ones fitted at 100 %, arcs about 100 px long, so the loop layer
+runs at about 27 frames/s). Before, loop dots stepped 1/20 of a lap at the
+spinners' 80 ms clock (12.5 full frames/s, also with every loop off screen);
+now they move with the clock in loop frames of their own layer:
 
 | Phase | Loop frames/s | Full frames/s | Loop frame p50 / p95 | CPU (% of one core · of the machine) | |
 |---|---|---|---|---|---|
-| 8 loops in view, dots moving | 26.5 | 0.3 | 0.80 / 0.92 ms (0.46 ms of it submit and present) | **2.08** · 0.17 | ✓ ≤ 2 % of the machine |
-| Panning by drag (a move every 16 ms) | 4.3 | 50.8 | 0.84 / 0.99 ms | 10.4 (the pan's full frames) | ✓ |
-| Scrolled out of view | 0 | 0.3 | — | 0.00–0.52 (housekeeping) | ✓ ≈ 0 |
-| Reduced motion, in view | 0 | 0.5 | — | 0.00 | ✓ |
+| 8 loops in view, dots moving | 26.4 · 26.4 | 0.6 | 0.49 / 0.70 · 0.48 / 0.64 ms (0.27 ms of it submit and present) | **1.95 · 1.36** (0.16 · 0.11 of the machine) | ✓ ≤ 2 % |
+| Panning by drag (a move every 16 ms) | 3.1 | 53.6 · 53.5 | 0.48 / 0.67 · 0.50 / 0.63 ms | 6.05 · 5.66 (the pan's full frames) | ✓ |
+| Scrolled out of view | 0 | 0.4 | — | 0.00 · 0.00 | ✓ ≈ 0 |
+| Reduced motion, in view | 0 | 0.4 | — | 0.00 · 0.39 | ✓ ≈ 0 |
+
+An earlier run with the machine busier measured 2.08 % of one core (loop
+frame p50 0.80 ms, of which 0.46 ms submit and present). The loop layer
+runs above §9's 15 frames/s for animations because a loop frame repaints
+one small layer (under half the cost of a full frame) and the dot moves
+about 2 px a frame; the CPU stays within §9's 2 %.
 
 The burn probe's priority manager matters less here than in the TUI's
 measurement (README: p99 1.26 s → 14 ms with 40 burners on a busy 16-core
