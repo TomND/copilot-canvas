@@ -42,9 +42,52 @@ pub fn run(args: &[String]) -> Result<()> {
             MODELS.iter().map(|m| format!("\"{m}\"")).collect::<Vec<_>>().join(", ")
         ),
         ["models", ..] => MODELS.iter().map(|m| format!("github-copilot/{m}")).collect::<Vec<_>>().join("\n"),
+        // A passive run: Copilot and Claude Code `-p PROMPT`, OpenCode `run PROMPT`.
+        ["run", ..] => return headless(args, args.get(1).cloned().unwrap_or_default()),
+        _ if args.iter().any(|a| a == "-p") => return headless(args, args.windows(2).find(|w| w[0] == "-p").map(|w| w[1].clone()).unwrap_or_default()),
         _ => return session(args),
     };
     println!("{out}");
+    Ok(())
+}
+
+/// The skills a run's plugins carry: each `--plugin-dir`'s `skills/` (Copilot,
+/// Claude Code) and OpenCode's `skills.paths`, without the canvas's own.
+pub fn plugin_skills(args: &[String], opencode_config: Option<&str>) -> Vec<String> {
+    let mut folders: Vec<std::path::PathBuf> = args.windows(2).filter(|w| w[0] == "--plugin-dir").map(|w| std::path::Path::new(&w[1]).join("skills")).collect();
+    if let Some(config) = opencode_config.and_then(|c| serde_json::from_str::<serde_json::Value>(c).ok()) {
+        folders.extend(config["skills"]["paths"].as_array().into_iter().flatten().filter_map(|p| p.as_str()).map(std::path::PathBuf::from));
+    }
+    let mut skills: Vec<String> = folders
+        .iter()
+        .filter_map(|f| std::fs::read_dir(f).ok())
+        .flat_map(|d| d.flatten().filter(|e| e.path().join("SKILL.md").is_file()).map(|e| e.file_name().to_string_lossy().into_owned()).collect::<Vec<_>>())
+        .filter(|s| !s.starts_with("canvas-"))
+        .collect();
+    skills.sort();
+    skills.dedup();
+    skills
+}
+
+/// A passive run of the stand-in: after a moment (so the canvas sees it
+/// working) it reports `ok` with what it got, the trigger's event types and
+/// the skills its plugins carry, through the canvas's own `status` command
+/// (as an agent following the prompt would), and appends the run to
+/// `fake-runs.log` in the folder it runs in. Nothing is sent anywhere.
+fn headless(args: &[String], prompt: String) -> Result<()> {
+    let wait = std::env::var("COPILOT_CANVAS_FAKE_RUN_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1_500);
+    std::thread::sleep(std::time::Duration::from_millis(wait));
+    let kinds: Vec<&str> = prompt.split("\"type\": \"").skip(1).filter_map(|rest| rest.split('"').next()).collect();
+    let skills = plugin_skills(args, std::env::var("OPENCODE_CONFIG_CONTENT").ok().as_deref());
+    let headline = format!("fake run of {} · skills: {}", if kinds.is_empty() { "nothing".to_owned() } else { kinds.join(",") }, if skills.is_empty() { "none".to_owned() } else { skills.join(",") });
+    let first = prompt.lines().next().unwrap_or_default().to_owned();
+    if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open("fake-runs.log") {
+        let _ = writeln!(log, "{headline} | {first}");
+    }
+    if let Some(home) = std::env::var_os("COPILOT_CANVAS_HOME") {
+        canvas_agents::cli::status(std::path::Path::new(&home), "ok", &headline)?;
+    }
+    println!("{headline}");
     Ok(())
 }
 

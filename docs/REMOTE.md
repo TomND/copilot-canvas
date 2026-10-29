@@ -64,7 +64,8 @@ postcard body. Enums are append-only.
 
 1. Client → `Hello8 { protocol: 8, build, nonce, client: ClientInfo }` where
    `ClientInfo { name, caps, session, remote_id }`:
-   - `caps`: `CAP_FRAME8` (applies `Frame8`), `CAP_COMPRESS`, `CAP_IMAGES` (reserved);
+   - `caps`: `CAP_FRAME8` (applies `Frame8`), `CAP_COMPRESS`, `CAP_IMAGES`,
+     `CAP_NOTIFY`, `CAP_REPORTS` (the reports inbox, BACKEND.md);
    - `session`: 16 random bytes naming this client across reconnects;
    - `remote_id`: a paired client (`None`: the service token).
 
@@ -546,6 +547,7 @@ in the canvas in any remote mode (that is how the tests check them).
 | Group files: passive rules, memory, log, group context, `GOALS.md`, the events catalog | VS Code at the file | the same in any remote mode (`loopback` included): VS Code through the tunnel, else the viewer |
 | Automation outputs, manifests, logs, status reports | their default program | always the text viewer, with "Open in VS Code" when a tunnel is configured |
 | Bell, OSC 777, taskbar progress, window title | this machine | the home PC (they are computed from terminal state the service sends) |
+| Reports (`copilot-canvas report publish` on the service's machine) | the inbox from the local service | the same inbox and read state, pushed by the service (`ServiceMsg::Reports`) and opened through `Request::ReportContent`; HTML is shown by the home GUI's own WebView2 view; links inside a report open in the home browser after you confirm them |
 | Crash log | `<home>\crash.log` of the client | each side keeps its own: the client's in its data folder at home; the service logs to `service-<instance>.log` on the Cloud PC |
 
 The folder browser is the same modal for a folder: its subfolders (▸) and
@@ -653,7 +655,7 @@ Checklist (over a day):
   tables; input dedupe and takeover; heartbeats keeping a connection and
   silence ending it with short timeouts (`canvas-core::conn`); offline input,
   reconnect resync and the lost-keystroke report (`canvas-core::app`).
-- `copilot-canvas selftest --remote loopback`: the 33-step UI self-test with
+- `copilot-canvas selftest --remote loopback`: the 35-step UI self-test with
   the client on TCP.
 - `copilot-canvas selftest --remote faults` (or, after `cargo build --release`,
   `cargo test --release fault_injection -- --ignored --nocapture`): a TCP proxy

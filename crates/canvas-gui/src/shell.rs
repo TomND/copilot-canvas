@@ -74,6 +74,8 @@ pub enum UserEvent {
     GpuCheck,
     /// A screen reader or UI Automation client asked something.
     Access(accesskit_winit::Event),
+    /// The HTML view of a report has news (ready, failed, a clicked link, Esc).
+    Web,
 }
 
 impl From<accesskit_winit::Event> for UserEvent {
@@ -86,6 +88,13 @@ impl From<accesskit_winit::Event> for UserEvent {
 pub fn wake() {
     if let Some(proxy) = PROXY.get() {
         let _ = proxy.send_event(UserEvent::GpuCheck);
+    }
+}
+
+/// Wakes the event loop for the HTML views' news.
+pub fn wake_web() {
+    if let Some(proxy) = PROXY.get() {
+        let _ = proxy.send_event(UserEvent::Web);
     }
 }
 
@@ -184,6 +193,8 @@ struct Win {
     dropped: Vec<String>,
     preview: Option<Preview>,
     focused: bool,
+    /// The HTML view of an open HTML report (WebView2, created when first needed).
+    web: crate::webview::ReportWeb,
 }
 
 pub struct Shell {
@@ -293,6 +304,7 @@ impl Shell {
         trace("gpu");
         let mut win = Win::new(opened, window.clone(), surface, grid, &self.proxy);
         win.access = Some(access);
+        win.web = crate::webview::ReportWeb::new(&self.options.home);
         win.placement_path = placement_path;
         win.placement = saved.unwrap_or_default();
         win.track_placement();
@@ -419,6 +431,35 @@ impl Shell {
             return;
         };
         let answer = match name {
+            "webview" => {
+                // The HTML view of reports: its state; `eval` (host script, the
+                // page's own never runs), `capture` (a PNG of what it shows) and
+                // `probe_raw` (unsanitized HTML: the view's own lock-down alone).
+                let win = &mut self.wins[at];
+                if let Some(script) = command["eval"].as_str() {
+                    win.web.eval(script, reply);
+                    return;
+                }
+                if let Some(path) = command["capture"].as_str() {
+                    win.web.capture(std::path::PathBuf::from(path), reply);
+                    return;
+                }
+                if let Some(html) = command["probe_raw"].as_str() {
+                    win.web.probe_raw(html)
+                } else if let Some(path) = command["window_capture"].as_str() {
+                    // The window as composed, the HTML view over the canvas included.
+                    let path = std::path::PathBuf::from(path);
+                    match crate::webview::capture_window(hwnd_of(&win.window), &path) {
+                        Ok((w, h)) => json!({ "ok": true, "path": path, "width": w, "height": h, "cell_w": win.grid.cell_w, "cell_h": win.grid.cell_h }),
+                        Err(error) => json!({ "ok": false, "error": format!("{error:#}") }),
+                    }
+                } else {
+                    let mut state = win.web.json();
+                    state["pane"] = json!(win.view.html.as_ref().map(|h| json!({ "id": h.id, "rect": [h.rect.x, h.rect.y, h.rect.width, h.rect.height], "bytes": h.document.len() })));
+                    state["core"] = json!(format!("{:?}", win.app.reports.web));
+                    state
+                }
+            }
             "close_window" => {
                 let others = self.wins.len() > 1;
                 let win = &mut self.wins[at];
@@ -578,6 +619,7 @@ impl Win {
             dropped: Vec::new(),
             preview: None,
             focused: false,
+            web: crate::webview::ReportWeb::new(std::path::Path::new(".")),
         };
         let rx = win.app.conn.rx.clone();
         win.forward_service(rx, proxy);
@@ -873,6 +915,10 @@ impl Win {
         if loops_only {
             // Nothing the core laid out changed: no subscriptions, sizes or IME position to send.
             return;
+        }
+        if !damage {
+            // An open HTML report shows in the HTML view over its area (or the view hides).
+            self.web.sync(hwnd_of(&self.window), self.view.html.as_ref(), self.grid.cell_w, self.grid.cell_h);
         }
         self.app.after_draw();
         self.app.raw_out.clear();
@@ -1219,6 +1265,7 @@ impl Win {
                 // The UI Automation tree, from the same builder AccessKit gets.
                 let (items, focus) = self.access_nodes();
                 tree["access"] = crate::access::json(&items, focus);
+                tree["html"] = json!(self.view.html.as_ref().map(|h| json!({ "id": h.id, "rect": [h.rect.x, h.rect.y, h.rect.width, h.rect.height] })));
                 json!({ "ok": true, "tree": tree })
             }
             "access" => {
@@ -1342,6 +1389,23 @@ impl Win {
         let proxy = self.app_proxy();
         if !self.gui_key(&key, &proxy) {
             self.input(vec![InputEvent::Key(key)], &proxy);
+        }
+    }
+
+    /// The HTML view's news reach the core: it is ready or failed (the
+    /// viewer says so; a failure shows the report as formatted text), a
+    /// clicked link (the canvas asks first), Esc (the report closes).
+    fn apply_web(&mut self) {
+        use canvas_core::reports::{ReportAction, WebState};
+        for event in self.web.take_events() {
+            match event {
+                crate::webview::WebEvent::Ready => self.app.reports.web = WebState::Ready,
+                crate::webview::WebEvent::Failed(why) => self.app.reports.web = WebState::Failed(why),
+                crate::webview::WebEvent::Link(url) => self.app.report_action(ReportAction::Link(url)),
+                crate::webview::WebEvent::Escape => self.app.modals.retain(|m| !matches!(m, canvas_core::dialogs::Modal::Report(_))),
+            }
+            self.app.needs_draw = true;
+            self.input_waiting = true;
         }
     }
 
@@ -1670,6 +1734,12 @@ impl ApplicationHandler<UserEvent> for Shell {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::GpuCheck => self.check_gpu(event_loop),
+            UserEvent::Web => {
+                for win in &mut self.wins {
+                    win.apply_web();
+                }
+                self.after_input(event_loop);
+            }
             UserEvent::Access(event) => {
                 let Some(at) = self.by_window(event.window_id) else { return };
                 let win = &mut self.wins[at];

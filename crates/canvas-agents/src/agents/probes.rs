@@ -262,7 +262,7 @@ fn probe_opencode_e2e() {
     let dir = temp_dir("oc");
     let home = temp_dir("oc-home");
     let plugin = crate::cli::write_plugin(&home).unwrap();
-    let integration = Integration { plugin_dir: Some(plugin), env: vec![("COPILOT_CANVAS_SESSION".into(), "probe-oc".into())] };
+    let integration = Integration { plugin_dir: Some(plugin), env: vec![("COPILOT_CANVAS_SESSION".into(), "probe-oc".into())], ..Default::default() };
     let launch = AgentLaunch { agent: "opencode".into(), model: Some(model.clone()), ..Default::default() };
     let command = OpenCode.command("probe-oc", &launch, &integration).unwrap();
     // The port and password live in the registry, not in the TUI's environment.
@@ -349,7 +349,7 @@ fn probe_claude_launch() {
     let home = temp_dir("claude-home");
     let plugin = crate::cli::write_plugin(&home).unwrap();
     let id = uuid::Uuid::new_v4().to_string();
-    let integration = Integration { plugin_dir: Some(plugin.clone()), env: vec![("COPILOT_CANVAS_SESSION".into(), id.clone())] };
+    let integration = Integration { plugin_dir: Some(plugin.clone()), env: vec![("COPILOT_CANVAS_SESSION".into(), id.clone())], ..Default::default() };
     let launch = AgentLaunch { agent: "claude".into(), name: Some("canvas probe".into()), env: vec![("CLAUDE_CONFIG_DIR".into(), config_dir.display().to_string())], ..Default::default() };
     let claude_home = ClaudeHome { dir: config_dir.clone(), user_config: config_dir.join(".claude.json") };
     let command = Claude.command_in(&claude_home, &id, &launch, &integration).unwrap();

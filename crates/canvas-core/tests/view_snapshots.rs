@@ -335,6 +335,82 @@ fn group_with_folder_chips() {
     check("group-folder-chips", &mut app, BOTH);
 }
 
+/// A canvas with a group (a session and its group passive session) and the
+/// Canvas agents frame with three canvas-wide agents: monitoring (with a
+/// skill), paused, and one that reported an alert.
+fn canvas_agents_app() -> App {
+    use canvas_core::doc::{CANVAS_AGENT, CANVAS_AGENTS, Passive, PassiveScope};
+    let mut doc = Doc { canvas_id: Some("canvas-1".into()), ..Doc::default() };
+    doc.groups.push(Group { id: "g-pay".into(), name: "Payments".into(), x: 0, y: 0, w: 70, h: 8, color: 0, folder: Some(r"C:\work\pay".into()), source: None, defaults: None });
+    doc.groups.push(Group { id: "g-agents".into(), name: "Canvas agents".into(), x: 0, y: 10, w: 104, h: 8, color: 3, folder: None, source: Some(CANVAS_AGENTS.into()), defaults: None });
+    doc.nodes.push(node("s-fix", "Fix flaky test", 2, 2));
+    let mut guard = node("p-guard", "Drift guard", 36, 2);
+    guard.passive = Some(Passive { key: "k-guard".into(), group: "g-pay".into(), slug: "drift-guard".into(), template: "Drift guard".into(), subscribe: vec!["pr.pushed".into()], max_runs_per_day: 24, rollover_runs: 20, ..Default::default() });
+    doc.nodes.push(guard);
+    for (i, (id, name, subscribe, skills, paused)) in [
+        ("a-pr", "PR coordinator", vec!["pr.*", "build.failed"], vec!["pr-etiquette"], false),
+        ("a-digest", "Cross-group digest", vec!["session.done"], vec![], true),
+        ("a-release", "Release watch", vec!["rollout.started"], vec![], false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut n = node(id, name, 2 + i as i32 * 34, 12);
+        n.source = Some(CANVAS_AGENT.into());
+        n.agent = Some("copilot".into());
+        n.passive = Some(Passive {
+            key: format!("k-{id}"),
+            group: "g-agents".into(),
+            slug: id.into(),
+            template: name.into(),
+            subscribe: subscribe.into_iter().map(str::to_owned).collect(),
+            skills: skills.into_iter().map(str::to_owned).collect(),
+            paused,
+            scope: PassiveScope::Canvas,
+            max_runs_per_day: 24,
+            rollover_runs: 20,
+            ..Default::default()
+        });
+        doc.nodes.push(n);
+    }
+    doc.view.x = -1;
+    doc.view.y = -1;
+    let mut app = app(doc, false);
+    app.info.home = r"C:\data".into();
+    app.bus.passive.insert("k-a-release".into(), canvas_core::bus::PassiveView { status: "alert".into(), headline: "ring 2 is failing".into(), ..Default::default() });
+    app.bus.passive.insert("k-a-pr".into(), canvas_core::bus::PassiveView { status: "ok".into(), headline: "2 PRs tracked".into(), ..Default::default() });
+    app.canvas_skills = Some(Ok(vec![canvas_model::canvas_wide::SkillInfo {
+        name: "pr-etiquette".into(),
+        description: "How PR feedback reaches the owning session".into(),
+        path: r"C:\data\canvas-agents\canvas-1\skills\pr-etiquette\SKILL.md".into(),
+        problem: String::new(),
+    }]));
+    app.selection.clear();
+    // The agents' loop arcs: their dots at a fixed time.
+    app.visual.clock_ms = Some(NOW);
+    app
+}
+
+/// The top bar's ◎ Agents entry (one needs attention), the frame with its
+/// chips and dashed ◎ boxes, the sidebar rows, and the management panel.
+#[test]
+fn canvas_wide_agents_panel() {
+    let mut app = canvas_agents_app();
+    app.run(Action::Agents(canvas_core::canvas_wide::AgentAction::Panel));
+    // The panel reads the library from the backend (none here): keep the test's.
+    app.canvas_skills = canvas_agents_app().canvas_skills;
+    check("canvas-agents-panel", &mut app, Sections { cells: true, painted: true });
+}
+
+/// One canvas-wide agent's panel (its box selected): what it watches, its
+/// skill, its state and every control.
+#[test]
+fn canvas_wide_agent_detail() {
+    let mut app = canvas_agents_app();
+    app.select_node("a-pr", false);
+    check("canvas-agent-detail", &mut app, BOTH);
+}
+
 /// Two boxes selected while a right-drag rubber band is open.
 #[test]
 fn selection_and_rubber_band() {
@@ -563,6 +639,92 @@ fn effects_in_reduced_motion() {
     };
     app.bus.effects = vec![effect("fx-a", "fireworks", "e1", "PR !12 approved"), effect("fx-b", "attention", "e2", ""), effect("fx-c", "alert", "", "rollout stuck")];
     check("effects-reduced-motion", &mut app, BOTH);
+}
+
+/// The Reports inbox: a session's unread morning brief (Markdown), a thread
+/// of two updates about a pull request (queued, then delivered), a read HTML
+/// triage report from a scheduled task, and a report refused after it was
+/// queued; the activity bar counts the unread rows.
+fn inbox_app() -> App {
+    use canvas_core::reports_model::{Format, Link, Rejected, Report, Snapshot};
+    let mut doc = canvas_core::demo::demo_doc(CWD);
+    doc.nodes.push(node("s-fix", "Fix flaky test", 2, 30));
+    let mut app = app(doc, true);
+    // A connection whose requests (read state) are kept, as the service would take them.
+    let (tx, rx) = crossbeam_channel::bounded(256);
+    std::mem::forget(rx);
+    let (_service, service_rx) = crossbeam_channel::bounded(1);
+    app.conn = canvas_core::conn::Conn::detached(tx, service_rx);
+    app.visual.clock_ms = Some(NOW);
+    let minutes = |m: u64| NOW - m * 60_000;
+    let report = |id: &str, title: &str, format: Format, kind: &str, ago: u64, read: bool| Report {
+        id: id.into(),
+        title: title.into(),
+        format,
+        kind: kind.into(),
+        created_ms: minutes(ago),
+        stored_ms: minutes(ago),
+        source: "s-fix".into(),
+        source_name: "Fix flaky test".into(),
+        source_kind: "session".into(),
+        read_ms: if read { minutes(1) } else { 0 },
+        ..Default::default()
+    };
+    let mut brief = report("0000000000005-aaaaaaaa", "Morning brief · day 100", Format::Markdown, "warn", 4, false);
+    brief.preview = "Morning brief Needs you PR 1234 review requested".into();
+    brief.links = vec![Link { title: "Board".into(), url: "https://example.com/board".into() }];
+    brief.pr = "https://github.com/org/repo/pull/1234".into();
+    let mut delivered = report("0000000000004-bbbbbbbb", "PR 12: the owning session got the 12 new comments", Format::Message, "delivered", 30, false);
+    delivered.thread = "pr-12-comments".into();
+    delivered.session = "demo-review".into();
+    let mut queued = report("0000000000003-cccccccc", "PR 12 received 12 new comments; dispatched the owning session", Format::Message, "queued", 45, true);
+    queued.thread = "pr-12-comments".into();
+    let mut triage = report("0000000000002-dddddddd", "Daily triage", Format::Html, "info", 600, true);
+    triage.source = String::new();
+    triage.source_name = "Daily triage".into();
+    triage.source_kind = "external".into();
+    triage.preview = "Daily triage 4 new bugs, 2 assigned".into();
+    let reports = vec![brief, delivered, queued, triage];
+    let rejected = vec![Rejected { id: "0000000000001-eeeeeeee".into(), title: "Weekly digest".into(), reason: "the report is 2.4 MiB; at most 2 MiB".into(), ms: minutes(90) }];
+    let inbox = Snapshot { version: 3, total: 4, unread: 2, reports, rejected };
+    app.on_reports(&serde_json::to_string(&inbox).unwrap());
+    app
+}
+
+#[test]
+fn reports_inbox() {
+    let mut app = inbox_app();
+    app.set_view(canvas_core::side::SideView::Reports);
+    check("reports-inbox", &mut app, BOTH);
+}
+
+/// The viewer on the morning brief: who and when, the session it came from
+/// (viewed, never started), its pull request and links, the Markdown
+/// formatted (headings, emphasis, a list, a table, code, a quote, a link).
+#[test]
+fn report_viewer_markdown() {
+    let mut app = inbox_app();
+    app.set_view(canvas_core::side::SideView::Reports);
+    app.run(Action::Report(canvas_core::reports::ReportAction::Open("0000000000005-aaaaaaaa".into())));
+    let body = "# Morning brief · day 100\n\n## Needs you\n\n- **PR 1234** review requested by *Ana*: [open it](https://github.com/org/repo/pull/1234)\n- Build `main` failed twice overnight\n\n## Status\n\n| Area | State | Note |\n|---|---|---|\n| Rollout | ring 2 | no incidents |\n| Triage | 4 new | 2 assigned |\n\n```\ncargo test -p upload\n```\n\n> Nothing else changed since yesterday.\n";
+    if let Some(canvas_core::dialogs::Modal::Report(viewer)) = app.modals.last_mut() {
+        viewer.content = Some(Arc::new(canvas_core::reports_model::Content { id: viewer.id.clone(), format: canvas_core::reports_model::Format::Markdown, body: body.into() }));
+    }
+    check("report-viewer-markdown", &mut app, BOTH);
+}
+
+/// An HTML report: the TUI shows it as formatted text and says so; the GPU
+/// view model carries the sanitized page for the GUI's HTML view over the
+/// content area.
+#[test]
+fn report_viewer_html() {
+    let mut app = inbox_app();
+    app.run(Action::Report(canvas_core::reports::ReportAction::Open("0000000000002-dddddddd".into())));
+    let body = "<html><head><style>h1{color:#ff00ff}</style><script>document.title='x'</script></head><body><h1>Daily triage</h1><p><b>4</b> new bugs, <i>2</i> assigned.</p><ul><li>Upload fails on large files</li><li>Crash on resume</li></ul><img src=\"https://example.com/beacon.png\" alt=\"chart\"></body></html>";
+    if let Some(canvas_core::dialogs::Modal::Report(viewer)) = app.modals.last_mut() {
+        viewer.content = Some(Arc::new(canvas_core::reports_model::Content { id: viewer.id.clone(), format: canvas_core::reports_model::Format::Html, body: body.into() }));
+    }
+    check("report-viewer-html", &mut app, BOTH);
 }
 
 #[test]

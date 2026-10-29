@@ -18,7 +18,7 @@
                                  │  ╎                                                 ││                                                             │
  ≡                               │  └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││                                                             │
                                  │  ·     ·     ·     ·     ·     ·     ·     ·     · ││                                                             │
-                                 │                                                    ││                                                             │
+ ✉                               │                                                    ││                                                             │
                                  │                                                    ││                                                             │
                                  │  ·     ·     ·     ·     ·     ·     ·     ·     · ││                                                             │
                                  │                                                    ││                                                             │
@@ -39,7 +39,7 @@
                                  │                                                    ││                                                             │
                                  │                                                    ││  ▸ Start    Remove    Close                                 │
                                  │  ·     ·     ·     ·     ·     ·     ·     ·     · │└─────────────────────────────────────────────────────────────┘
- click view · double-click/Enter start · ] [ or Ctrl+F6 recent · ←→ collapse · / filter · Tab canvas · Alt+1…8 views · ? help
+ click view · double-click/Enter start · ] [ or Ctrl+F6 recent · ←→ collapse · / filter · Tab canvas · Alt+1…9 views · ? help
 ## gpu view model
 view cursor=none modal=none banner=None
 canvas area=34,1 52x38 origin=-2,-1 scale=1 grid=true tick=0 empty=false

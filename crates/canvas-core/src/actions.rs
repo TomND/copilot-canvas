@@ -72,6 +72,7 @@ impl App {
         }
         if node.passive.is_some() {
             let paused = node.passive.as_ref().is_some_and(|p| p.paused);
+            let running = self.passive_view(node).is_some_and(|v| v.running);
             items.push(item("Run now", "", Action::PassiveRun(id.to_owned()), !external));
             items.push(item(if paused { "Resume" } else { "Pause" }, "", Action::PassivePause(id.to_owned()), true));
             items.push(item("Settings…", "", Action::PassiveDetail(id.to_owned()), true));
@@ -80,9 +81,12 @@ impl App {
             items.push(item("Open run log", "", Action::PassiveOpen(id.to_owned(), 2), true));
             items.push(item(if alive { "Focus chat" } else { "Open chat" }, "", Action::PassiveChat(id.to_owned()), !external));
             items.push(item("Inspect transcript", "", Action::Inspect(id.to_owned()), self.transcript_request(id).is_some()));
+            if node.is_canvas_agent() {
+                items.extend(self.agent_menu_items(node));
+            }
             items.push(item("MCP servers…", "", Action::McpServers(id.to_owned()), true));
             items.push(item("Rename", "R", Action::Rename(Target::Node(id.to_owned())), true));
-            items.push(item("Stop run", "X", Action::Stop { id: id.to_owned(), force: false }, alive));
+            items.push(item("Stop run", "X", Action::Agents(crate::canvas_wide::AgentAction::Stop(id.to_owned())), alive || running));
             items.push(self.remove_item(id, "Remove from canvas"));
             return (node.name.clone(), items);
         }
@@ -119,6 +123,9 @@ impl App {
     }
 
     pub fn group_menu(&self, id: &str) -> (String, Vec<MenuItem>) {
+        if self.doc.group(id).is_some_and(|g| g.is_canvas_agents()) {
+            return self.frame_menu(id);
+        }
         let name = self.doc.group(id).map(|g| g.name.clone()).unwrap_or_default();
         (
             name,
@@ -749,6 +756,14 @@ impl App {
                 }
             }
             Action::PassiveRun(id) => {
+                if let Some(node) = self.doc.node(&id).filter(|n| n.is_canvas_agent()).cloned() {
+                    match self.canvas_agent_state(&node) {
+                        crate::canvas_wide::AgentState::Off => return self.notify("It is disabled: enable it first.", true),
+                        crate::canvas_wide::AgentState::Unavailable(why) => return self.notify(format!("It cannot run: {why}"), true),
+                        crate::canvas_wide::AgentState::Paused => return self.notify("It is paused: resume it first (Run now waits until then).", true),
+                        _ => {}
+                    }
+                }
                 if let Some(key) = self.doc.node(&id).and_then(|n| n.passive.as_ref()).map(|p| p.key.clone()) {
                     self.sync_routing();
                     self.bus_action(serde_json::json!({ "action": "run", "key": key }));
@@ -822,6 +837,8 @@ impl App {
             Action::Nothing => {}
             Action::NewWindow => self.new_window_requested = true,
             Action::Visual(action) => self.run_visual(action),
+            Action::Agents(action) => self.run_agents(action),
+            Action::Report(action) => self.report_action(action),
             Action::OpenOtherClient => {
                 let args = self.other_client_args();
                 match self.platform.open_other_client(&args) {

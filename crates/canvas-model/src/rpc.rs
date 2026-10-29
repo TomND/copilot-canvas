@@ -156,6 +156,18 @@ pub enum Request {
     /// A folder's entries for the canvas's folder browser: `..`, then
     /// subfolders (ending in `\`), then files.
     ListEntries { dir: String },
+    /// Creates a canvas-wide agent's files (and the canvas's GOALS.md when
+    /// missing) under the service's canvas-agents folder; answers the slug.
+    CreateCanvasAgent { files: CanvasAgentFiles },
+    /// The canvas's skill library (`Response::Skills`).
+    CanvasSkills { canvas: String },
+    /// Creates a skill in the canvas's library; answers its SKILL.md.
+    CreateCanvasSkill { canvas: String, name: String, description: String },
+    /// The reports inbox ([`crate::reports::Snapshot`]: newest first, with
+    /// read state). Read only; the service pushes changes as `ServiceMsg::Reports`.
+    Reports,
+    /// One report's body ([`crate::reports::Content`]). Read only.
+    ReportContent { id: String },
 }
 
 /// Largest file an upload writes.
@@ -180,6 +192,10 @@ pub enum Response {
     Pairing(PairingCode),
     RemoteClients(Vec<RemoteClient>),
     Transcript(Box<crate::transcript::Transcript>),
+    /// A canvas's skill library.
+    Skills(Vec<crate::canvas_wide::SkillInfo>),
+    Reports(Box<crate::reports::Snapshot>),
+    Report(Box<crate::reports::Content>),
 }
 
 /// An open pairing code (`Request::PairCode`).
@@ -305,6 +321,21 @@ pub struct PassiveFiles {
     pub rules: String,
 }
 
+/// A new canvas-wide agent's files: rules, memory and run log in the first
+/// free slug from `base_slug` under the canvas's folder (`canvas`: its id;
+/// the service picks the folder, a client never names one).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct CanvasAgentFiles {
+    pub canvas: String,
+    /// For the canvas's GOALS.md when it is created.
+    pub canvas_name: String,
+    pub base_slug: String,
+    /// Slugs already used by the canvas's agents.
+    pub taken: Vec<String>,
+    pub name: String,
+    pub rules: String,
+}
+
 impl Request {
     /// Short name for messages and logs.
     pub fn name(&self) -> &'static str {
@@ -353,6 +384,11 @@ impl Request {
             Request::SetClipboardImage { .. } => "clipboard image",
             Request::Upload { .. } => "upload",
             Request::ListEntries { .. } => "folder entries",
+            Request::CreateCanvasAgent { .. } => "canvas agent files",
+            Request::CanvasSkills { .. } => "canvas skills",
+            Request::CreateCanvasSkill { .. } => "new canvas skill",
+            Request::Reports => "reports",
+            Request::ReportContent { .. } => "report",
         }
     }
 
@@ -625,6 +661,21 @@ impl dyn Backend + '_ {
         self.text(Request::CreatePassive { files })
     }
 
+    pub fn create_canvas_agent(&self, files: CanvasAgentFiles) -> Result<String> {
+        self.text(Request::CreateCanvasAgent { files })
+    }
+
+    pub fn canvas_skills(&self, canvas: &str) -> Result<Vec<crate::canvas_wide::SkillInfo>> {
+        self.ask(Request::CanvasSkills { canvas: canvas.to_owned() }, |r| match r {
+            Response::Skills(skills) => Some(skills),
+            _ => None,
+        })
+    }
+
+    pub fn create_canvas_skill(&self, canvas: &str, name: &str, description: &str) -> Result<String> {
+        self.text(Request::CreateCanvasSkill { canvas: canvas.to_owned(), name: name.to_owned(), description: description.to_owned() })
+    }
+
     pub fn doc_backup(&self, path: &str, label: &str, doc: Doc) -> Result<String> {
         self.text(Request::DocBackup { path: path.to_owned(), label: label.to_owned(), doc: Box::new(doc) })
     }
@@ -660,6 +711,22 @@ impl dyn Backend + '_ {
         self.ask(Request::Upload { name: name.to_owned(), id: id.to_owned(), offset, data, last }, |r| match r {
             Response::Done if !last => Some(None),
             Response::Text(path) if last => Some(Some(path)),
+            _ => None,
+        })
+    }
+
+    /// The reports inbox (see [`Request::Reports`]).
+    pub fn reports(&self) -> Result<crate::reports::Snapshot> {
+        self.ask(Request::Reports, |r| match r {
+            Response::Reports(snapshot) => Some(*snapshot),
+            _ => None,
+        })
+    }
+
+    /// One report's body (see [`Request::ReportContent`]).
+    pub fn report_content(&self, id: &str) -> Result<crate::reports::Content> {
+        self.ask(Request::ReportContent { id: id.to_owned() }, |r| match r {
+            Response::Report(content) => Some(*content),
             _ => None,
         })
     }
@@ -744,5 +811,34 @@ mod tests {
         assert!(Request::PairCode { name: None }.is_remote_admin() && Request::RemoteClients.is_remote_admin() && Request::RemoteRevoke { client: "x".into() }.is_remote_admin());
         let reply = Response::Pairing(PairingCode { code: "ABCD-EFGH-JKMN".into(), expires_ms: 1, listen: "127.0.0.1:47600".into(), name: None });
         assert_eq!(serde_json::from_str::<Response>(&serde_json::to_string(&reply).unwrap()).unwrap(), reply);
+    }
+
+    #[test]
+    fn report_requests_and_answers_round_trip_and_old_services_say_so() {
+        for request in [Request::Reports, Request::ReportContent { id: "0001700000000000-abcd1234".into() }] {
+            let json = serde_json::to_string(&request).unwrap();
+            assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), request);
+            assert!(request.is_quick() && !request.is_remote_admin());
+            // A service from before reports answers that it does not support them.
+            let reply = answer_json(&json.replace("Report", "FutureReport"), |_| Response::Done);
+            assert!(matches!(serde_json::from_str::<Response>(&reply).unwrap(), Response::Error(e) if e.contains("does not support")));
+        }
+        let content = crate::reports::Content { id: "1-a".into(), format: crate::reports::Format::Markdown, body: "# Brief\n\"quoted\" ✓".into() };
+        let reply = Response::Report(Box::new(content.clone()));
+        assert_eq!(serde_json::from_str::<Response>(&serde_json::to_string(&reply).unwrap()).unwrap(), reply);
+        struct Inbox;
+        impl Backend for Inbox {
+            fn call(&self, request: Request) -> Result<Response> {
+                Ok(match request {
+                    Request::Reports => Response::Reports(Box::new(crate::reports::Snapshot { version: 2, unread: 1, ..Default::default() })),
+                    Request::ReportContent { id } if id == "1-a" => Response::Report(Box::new(crate::reports::Content { id, ..Default::default() })),
+                    _ => Response::Error("no such report".into()),
+                })
+            }
+        }
+        let backend: &dyn Backend = &Inbox;
+        assert_eq!(backend.reports().unwrap().unread, 1);
+        assert_eq!(backend.report_content("1-a").unwrap().id, "1-a");
+        assert_eq!(backend.report_content("2-b").unwrap_err().to_string(), "no such report");
     }
 }

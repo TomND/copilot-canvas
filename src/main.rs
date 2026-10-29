@@ -16,7 +16,7 @@ mod selftest;
 mod soak;
 mod standin;
 
-use canvas_agents::{automations, cli, factory_cli, index, service, vscode};
+use canvas_agents::{automations, cli, factory_cli, index, reports, service, vscode};
 #[cfg(test)]
 use canvas_agents::{bus, copilot_cfg, taskschd};
 use canvas_common::{paths, protocol, win};
@@ -134,15 +134,32 @@ GOLDEN CORPUS (recorded terminal output vs. each engine's screen; see corpus/REA
                                         compare every engine with the expected screens, or rewrite them
 
 EVENTS (run by sessions on the canvas; see the canvas-events skill)
-  copilot-canvas events                 this session's group: events, passive sessions, sessions
+  copilot-canvas events                 this session's group: events, passive sessions, sessions, and the
+                                        canvas-wide agents (a canvas-wide agent: every group of the canvas)
   copilot-canvas emit TYPE [--data JSON] [--to NAME]
-  copilot-canvas send --to NAME TEXT    message a session (typed in when it is idle)
+                                        --to NAME: that passive session or canvas-wide agent only;
+                                        --to canvas: the canvas-wide agents only
+  copilot-canvas send --to NAME TEXT    message a session (typed in when it is idle): your group's
+                                        sessions and the canvas-wide agents (they reach every session)
   copilot-canvas status ok|warn|alert|done HEADLINE      (passive sessions)
   copilot-canvas followup --in 24h|--at 09:00 NOTE        (passive sessions)
   copilot-canvas effect fireworks|attention|sparkle|alert --on NAME [--note TEXT]
-                                        an effect on a box of this session's group (or --on group)
-                                        until someone clicks it; effect clear --on NAME takes it off;
+                                        an effect on a box of this session's group (or --on group;
+                                        canvas-wide agents: any box) until someone clicks it;
+                                        effect clear --on NAME takes it off;
                                         effect alone lists the effects collection
+
+REPORTS (the canvas inbox, Reports in the activity bar; see the canvas-reports skill)
+  copilot-canvas report publish (--markdown FILE|- | --html FILE|- | --message TEXT) [--title TITLE]
+                 [--kind info|ok|warn|alert|queued|delivered|failed] [--pr URL] [--link TITLE=URL]…
+                 [--session NAME|ID] [--thread KEY] [--source NAME]
+                                        publish a report or a short message (at most 2 MiB; links are
+                                        http(s) or mailto). Inside a canvas session it comes from that
+                                        session; elsewhere name the producer with --source. Prints
+                                        whether it was stored or queued (the service is not running);
+                                        exits non-zero with the reason when it is refused
+  copilot-canvas report list [--unread] [--limit N]
+                                        stored, queued and refused reports
 
 AUTOMATIONS (scheduled tasks defined by manifests; folder: --dir, COPILOT_CANVAS_AUTOMATIONS,
              the canvas setting, or <home>/automations)
@@ -221,7 +238,7 @@ fn parse() -> Result<Args> {
             "--canvas" => args.canvas = Some(PathBuf::from(value("--canvas")?)),
             "--cwd" => args.cwd = Some(PathBuf::from(value("--cwd")?)),
             "--remote" => args.remote = Some(value("--remote")?),
-            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--qr" => {
+            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--unread" | "--qr" => {
                 args.flags.push(arg.trim_start_matches("--").to_owned())
             }
             "--" => {
@@ -430,6 +447,29 @@ fn real_main() -> Result<()> {
         ["followup", note @ ..] => cli::followup(&instance.home, option("in"), option("at"), &note.join(" ")),
         ["effect"] | ["effect", "list"] => cli::effect_list(),
         ["effect", kind] => cli::effect(&instance.home, kind, option("on"), option("note"), option("kind")),
+        ["report", "publish"] => {
+            let args = reports::PublishArgs {
+                title: option("title"),
+                markdown: option("markdown"),
+                html: option("html"),
+                message: option("message"),
+                kind: option("kind"),
+                links: options("link"),
+                pr: option("pr"),
+                session: option("session"),
+                thread: option("thread"),
+                source: option("source"),
+            };
+            let outcome = reports::publish(&instance.home, args, &reports::Identity::from_env(), std::time::Duration::from_secs(10))?;
+            println!("{}", outcome.describe());
+            Ok(())
+        }
+        ["report", "list"] => {
+            let limit = option("limit").map(|v| v.parse::<usize>().context("--limit takes a number")).transpose()?.unwrap_or(50);
+            println!("{}", reports::list(&instance.home, flag("unread"), limit)?);
+            Ok(())
+        }
+        ["report", ..] => bail!("usage: copilot-canvas report publish (--markdown FILE | --html FILE | --message TEXT) [--title T] [options] · report list (see copilot-canvas --help)"),
         ["automations"] | ["automations", "list"] => factory_cli::list(&dir()),
         ["automations", "show", name] => factory_cli::show(&dir(), name),
         ["automations", "import", names @ ..] => factory_cli::import(&dir(), &owned(names), option("family"), flag("force")),

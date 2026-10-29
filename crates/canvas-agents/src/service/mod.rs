@@ -5,6 +5,7 @@
 
 mod docs;
 mod factory_watch;
+mod inbox;
 mod passive;
 mod push;
 pub use canvas_host::{keys, term};
@@ -99,12 +100,17 @@ pub struct Agents {
     pending_sessions: Mutex<HashMap<String, PendingSession>>,
     /// Terminal id → the agent's own session id, once learned (told to every client).
     agent_sessions: Mutex<HashMap<String, String>>,
+    /// Terminal id → the skills plugin its next launch gets (a canvas-wide
+    /// agent's run, set right before the launch).
+    skill_plugins: Mutex<HashMap<String, PathBuf>>,
     /// Canvas documents clients opened.
     docs: docs::Docs,
     /// Backend requests for the worker threads (slow, quick).
     rpc: (Sender<RpcJob>, Sender<RpcJob>),
     /// Pairing codes and paired remote clients.
     remote: crate::remote::Registry,
+    /// The reports inbox (`inbox.rs`).
+    reports: Mutex<crate::reports::Store>,
     /// The Dev Tunnels access token phone clients get (`CAP_TUNNEL_ACCESS`).
     tunnel_access: Mutex<Option<crate::tunnel_access::Access>>,
     /// Asks the tunnel access thread to issue a token now.
@@ -149,9 +155,11 @@ impl Agents {
             agent_terms: Mutex::new(HashMap::new()),
             pending_sessions: Mutex::new(HashMap::new()),
             agent_sessions: Mutex::new(HashMap::new()),
+            skill_plugins: Mutex::new(HashMap::new()),
             docs: docs::Docs::default(),
             rpc: (rpc_tx, quick_tx),
             remote: crate::remote::Registry::new(&instance.home),
+            reports: Mutex::new(crate::reports::Store::open(&instance.home, now_ms())),
             tunnel_access: Mutex::new(None),
             tunnel_wake: tunnel_tx,
             push: push::Push::new(&instance.home),
@@ -176,6 +184,7 @@ impl Agents {
             log(&instance, &format!("cannot install the copilot-canvas command: {error:#}"));
         }
         server::spawn_named("bus", { let a = agents.clone(); move || passive::bus_loop(a, bus_rx) });
+        server::spawn_named("reports", { let a = agents.clone(); move || inbox::run(a) });
         agents
     }
 }
@@ -193,6 +202,35 @@ impl Agents {
                 ("COPILOT_CANVAS_SESSION".to_owned(), id.to_owned()),
                 ("PATH".to_owned(), format!("{};{}", home.join("cli").display(), std::env::var("PATH").unwrap_or_default())),
             ],
+            skill_plugins: Vec::new(),
+        }
+    }
+
+    /// The skills plugin of a launch: the one a canvas-wide agent's run set
+    /// for it, else (its chat opened from the canvas) the plugin of the
+    /// canvas-wide agent whose box this is, built from the canvas library now.
+    fn skill_plugin(&self, id: &str) -> Option<PathBuf> {
+        if let Some(plugin) = lock(&self.skill_plugins).remove(id) {
+            return Some(plugin);
+        }
+        let routing = lock(&self.routing).clone();
+        let spec = routing.passive.iter().find(|p| p.canvas_wide && p.session_id == id)?;
+        if !crate::doc::valid_canvas_id(&routing.canvas) {
+            return None;
+        }
+        let dir = crate::canvas_wide::canvas_dir(&self.instance.home, &routing.canvas);
+        let paths = crate::canvas_wide::agent_paths(&dir, &spec.slug);
+        match crate::canvas_wide::prepare_plugin(&dir, &paths, &spec.slug, &spec.skills) {
+            Ok((plugin, missing)) => {
+                if !missing.is_empty() {
+                    log(&self.instance, &format!("canvas agent {}: skills not in the canvas library: {}", spec.name, missing.join(", ")));
+                }
+                plugin
+            }
+            Err(error) => {
+                log(&self.instance, &format!("canvas agent {}: cannot prepare its skills: {error}", spec.name));
+                None
+            }
         }
     }
 
@@ -216,11 +254,14 @@ impl Agents {
         if launch.resume && launch.fork_from.is_none() && kind != AgentKind::Copilot && !provider.has_history(&session) {
             launch.resume = false;
         }
-        let command = provider.command(id, &launch, &self.integration(id))?;
+        let mut integration = self.integration(id);
+        integration.skill_plugins.extend(self.skill_plugin(id));
+        let command = provider.command(id, &launch, &integration)?;
         let how = if launch.headless_prompt.is_some() { "headless run" } else if launch.fork_from.is_some() { "fork" } else if launch.resume { "resume" } else { "new session" };
         // The model as the command line carries it (agents that keep a session's model get none on resume).
         let model = launch.model.as_deref().filter(|m| command.args.iter().any(|a| a == m)).map(|m| format!(", model {m}")).unwrap_or_default();
-        log(&self.instance, &format!("terminal {id}: {} {how}{model}", kind.id()));
+        let skills = if integration.skill_plugins.is_empty() { "" } else { ", with its canvas skills" };
+        log(&self.instance, &format!("terminal {id}: {} {how}{model}{skills}", kind.id()));
         lock(&self.agent_terms).insert(id.to_owned(), kind);
         match session_plan(kind, &launch, id, &session) {
             SessionPlan::Expect { fork } => self.expect_session(id, None, fork),
@@ -288,6 +329,11 @@ fn tunnel_access_loop(agents: Arc<Agents>, wake: Receiver<()>) {
 }
 
 impl HostApp for Agents {
+    fn command_env(&self, id: &str) -> Vec<(String, String)> {
+        // Plain shells (the demo's) get the `copilot-canvas` command and their identity too.
+        self.integration(id).env
+    }
+
     fn resolve_launch(&self, id: &str, kind: LaunchKind) -> Result<Resolved> {
         let (new_name, prompt, resume, extra, env) = match kind {
             LaunchKind::Copilot { new_name, prompt, resume } => (new_name, prompt, resume, Vec::new(), Vec::new()),
@@ -329,6 +375,8 @@ impl HostApp for Agents {
             client.send(ServiceMsg::AgentSession { id: id.clone(), native: native.clone() });
         }
         client.send(ServiceMsg::Bus { json: passive::snapshot(self) });
+        // Only clients that show the inbox get it (`CAP_REPORTS`).
+        client.send(inbox::message(self));
         if client.caps() & CAP_TUNNEL_ACCESS != 0 {
             let now = now_ms();
             let access = lock(&self.tunnel_access).clone();
@@ -365,7 +413,13 @@ impl HostApp for Agents {
                     *current = routing;
                 }
             }
-            ClientMsg::Bus { json } => passive::action(self, &json, &self.bus_tx),
+            ClientMsg::Bus { json } => {
+                // Inbox requests travel as bus requests (older services ignore them).
+                let handled = serde_json::from_str::<serde_json::Value>(&json).is_ok_and(|value| inbox::action(self, &value));
+                if !handled {
+                    passive::action(self, &json, &self.bus_tx);
+                }
+            }
             ClientMsg::DocOpen { path, demo, cwd } => self.docs.open(&self.instance.home, path.as_deref(), demo, &cwd, client.id, |key, version, reply| {
                 if let Some(error) = &reply.error {
                     log(&self.instance, &format!("cannot open the canvas {}: {error}", reply.path));

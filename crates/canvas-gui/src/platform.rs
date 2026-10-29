@@ -226,6 +226,14 @@ impl Platform for GuiPlatform {
         }
         self.toast(format!("“{session}” needs you"), "Waiting for your answer in Copilot Canvas.".into());
     }
+
+    fn report_arrived(&self, title: &str, source: &str) {
+        if !self.in_front() {
+            self.flash();
+        }
+        let body = if source.is_empty() { "In Copilot Canvas › Reports.".to_owned() } else { format!("From {source} · Copilot Canvas › Reports") };
+        self.toast(format!("New report: {title}"), body);
+    }
 }
 
 /// The text was shown as a toast within [`DEDUPE`] (records it otherwise).

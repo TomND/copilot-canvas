@@ -1,6 +1,6 @@
 # mcp-picker (150x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit                                                3 sessions
+ ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit                                     3 sessions
     SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
 ▌▤  / filter…                    │  ┌╌ ▣ Canvas project · 4 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ + passive││ Build session canvas                                        │
                                  │  ╎                                                 ││ ■ stopped                                                   │
@@ -18,7 +18,7 @@
                                  ║ │ Preset  All   None   Lean                                                    │ ║                                │
  ≡                               ║ │ 2 of 2 on · each server runs as its own processes in every session           │ ║                                │
                                  ║ │ [x] github                                                       user config │ ║                                │
-                                 ║ │ [x] playwright                                                   user config │ ║                                │
+ ✉                               ║ │ [x] playwright                                                   user config │ ║                                │
                                  ║ │ [-] filesystem                                off in GitHub Copilot's config │ ║                                │
                                  ║ │                                                                              │ ║                                │
                                  ║ │                                                                              │ ║                                │

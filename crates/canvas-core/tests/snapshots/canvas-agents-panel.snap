@@ -1,0 +1,112 @@
+# canvas-agents-panel (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents 3 · ⚠ 1   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit             ◆ 1 needs you   5 sessions
+    SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
+▌▤  / filter…                    │ ┌╌ ▣ Payments · 2 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ 1 ╌ ◧ AI d││ ◎ Canvas agents · 3                                         │
+                                 │ ╎                                                  ││ Canvas-wide agents watch every group of this canvas: events │
+ ◷  ▾ ▣ Payments               2 │ ╎ ╭ Fix flaky test ────────────╮    ┌ ⟲ Drift guard││ from any session (pr.* anywhere), schedules, messages to    │
+      ◧ pay                      │ ╎ │ ■ stopped                  │    ╎ ○ waiting    ││ any session, and the canvas skills you give them. A group's │
+ ⧉    ■ Fix flaky test           │ ╎ │ canvas                     │    ╎ on pr.pushed ││ passive sessions (⟲) see only their own group.              │
+      ⟲ ○ ↻ Drift guard          │ ╎ ╰────────────────────────────╯    └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││                                                             │
+ ⌁  ▾ ◎ Canvas agents          3 │ ╎     ·     ·     ·     ·     ·     ·     ·     ·  ││ ◎ PR coordinator  ● monitoring                              │
+      ◎ ● ↻ PR coordinator       │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ on pr.*, build.failed · skills: pr-etiquette                │
+ ✦    ◎ ‖ Cross-group digest     │                                                    ││ monitoring · last: 2 PRs tracked                            │
+      ◎ ⚠ ↻ Release watch        │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││     ▸ Run now   ‖ Pause   ⏻ Disable   Open                  │
+ ◈                               │ ┌╌ ◎ Canvas agents · 3 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ ◎ Cross-group digest  ‖ paused                              │
+                                 │ ╎                                                  ││ on session.done                                             │
+ ⇄                               │ ╎ ┌ ◎ PR coordinator ╌╌╌╌╌╌╌╌╌╌┐┄•● ┌ ◎ Cross-group││     ▶ Resume   ⏻ Disable   Open                             │
+                                 │ ╎ ╎ ● monitoring · 2 PRs trac… ╎  ┆ ╎ ‖ paused     ││ ◎ Release watch  ⚠ needs attention                          │
+ ≡                               │ ╎ ╎ on pr.*, build.failed      ╎  ┆ ╎ on session.do││ on rollout.started                                          │
+                                 │ ╎ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┘◂┄╯ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ needs attention: ring 2 is failing                          │
+ ✉                               │ ╎                                                  ││     ▸ Run now   ‖ Pause   ⏻ Disable   Open                  │
+                                 │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││                                                             │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││ CANVAS SKILLS · 1                                           │
+                                 │                                                    ││ ✦ pr-etiquette — How PR feedback reaches the owning sessio… │
+                                 │                                                    ││                                                             │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││ GROUP PASSIVE SESSIONS · 1 (⟲ each sees only its own group) │
+                                 │                                                    ││ ⟲ Drift guard — Payments · waiting                          │
+                                 │                                                    ││                                                             │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││ Folder     C:\data\canvas-agents\canvas-1                   │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+                                 │                                                    ││  + New canvas agent    Skills…    New skill…                │
+                                 │                                                    ││  Send event…    Folder    Show frame    Close               │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  │└─────────────────────────────────────────────────────────────┘
+ click view · double-click/Enter start · ] [ or Ctrl+F6 recent · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom ·…
+## gpu view model
+view cursor=none modal=none banner=None
+canvas area=34,1 52x38 origin=-1,-1 scale=1 grid=true tick=0 empty=false
+group g-agents "Canvas agents" icon=◎ members=3 rect=0,10 104x8 color=#cc79a7 style=[fg #cc79a7 +DIM] selected=false drop_target=false automations=false folder=false
+  chip " ◎ 3 · manage " action=Agents(Panel) rect=76,10 14x1 fixed=false lit=true
+  chip " ✦ Skills " action=Agents(Library) rect=91,10 10x1 fixed=false lit=true
+group g-pay "Payments" icon=▣ members=2 rect=0,0 70x8 color=#56b4e9 style=[fg #56b4e9 +DIM] selected=false drop_target=false automations=false folder=true
+  chip " ⟲ 1 " action=Visual(GroupPassives("g-pay")) rect=38,0 5x1 fixed=false lit=true
+  chip " ◧ AI docs " action=OpenGroupFolder("g-pay", false) rect=44,0 11x1 fixed=false lit=true
+  chip " ◨ Outputs " action=OpenGroupFolder("g-pay", true) rect=56,0 11x1 fixed=false lit=true
+box s-fix Session rect=2,2 30x4 prefix="" name="Fix flaky test"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]
+  selected=false focused_term=false active=false
+box p-guard Passive rect=36,2 30x4 prefix="⟲ " name="Drift guard"
+  status=Idle icon="○" label="idle" line="○ waiting" subtitle="on pr.pushed" elsewhere=false every=Some("on pr.pushed") mailbox=0
+  border=Dashed border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #8b949e]
+  selected=false focused_term=false active=false
+box a-pr Passive rect=2,12 30x4 prefix="◎ " name="PR coordinator"
+  status=Idle icon="●" label="idle" line="● monitoring · 2 PRs tracked" subtitle="on pr.*, build.failed" elsewhere=false every=Some("on pr.*, build.failed") mailbox=0
+  border=Dashed border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #56b4e9]
+  selected=false focused_term=false active=false
+box a-digest Passive rect=36,12 30x4 prefix="◎ " name="Cross-group digest"
+  status=Stopped icon="‖" label="stopped" line="‖ paused" subtitle="on session.done" elsewhere=false every=None mailbox=0
+  border=Dashed border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #8b949e]
+  selected=false focused_term=false active=false
+loops motion=On frozen=true
+loop p-guard rect=36,2 30x4 halo=false lap=0.623 grow=1 ending=false
+loop a-pr rect=2,12 30x4 halo=false lap=0.153 grow=1 ending=false
+## gpu screen (chrome and the model painted as text)
+ ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents 3 · ⚠ 1   ▢ Single   ⤢ Fit   −   +   ?   ⧉   ⏻ Quit         ◆ 1 needs you   5 sessions
+    SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
+▌▤  / filter…                    │ ┌╌ ▣ Payments · 2 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ 1 ╌ ◧ AI d││ ◎ Canvas agents · 3                                         │
+                                 │ ╎                                                  ││ Canvas-wide agents watch every group of this canvas: events │
+ ◷  ▾ ▣ Payments               2 │ ╎ ╭ Fix flaky test ────────────╮    ┌ ⟲ Drift guard││ from any session (pr.* anywhere), schedules, messages to    │
+      ◧ pay                      │ ╎ │ ■ stopped                  │    ╎ ○ waiting    ││ any session, and the canvas skills you give them. A group's │
+ ⧉    ■ Fix flaky test           │ ╎ │ canvas                     │    ╎ on pr.pushed ││ passive sessions (⟲) see only their own group.              │
+      ⟲ ○ ↻ Drift guard          │ ╎ ╰────────────────────────────╯    └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││                                                             │
+ ⌁  ▾ ◎ Canvas agents          3 │ ╎     ·     ·     ·     ·     ·     ·     ·     ·  ││ ◎ PR coordinator  ● monitoring                              │
+      ◎ ● ↻ PR coordinator       │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ on pr.*, build.failed · skills: pr-etiquette                │
+ ✦    ◎ ‖ Cross-group digest     │                                                    ││ monitoring · last: 2 PRs tracked                            │
+      ◎ ⚠ ↻ Release watch        │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││     ▸ Run now   ‖ Pause   ⏻ Disable   Open                  │
+ ◈                               │ ┌╌ ◎ Canvas agents · 3 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ ◎ Cross-group digest  ‖ paused                              │
+                                 │ ╎                                                  ││ on session.done                                             │
+ ⇄                               │ ╎ ┌ ◎ PR coordinator ╌╌╌╌╌╌╌╌╌╌┐┄•● ┌ ◎ Cross-group││     ▶ Resume   ⏻ Disable   Open                             │
+                                 │ ╎ ╎ ● monitoring · 2 PRs trac… ╎  ┆ ╎ ‖ paused     ││ ◎ Release watch  ⚠ needs attention                          │
+ ≡                               │ ╎ ╎ on pr.*, build.failed      ╎  ┆ ╎ on session.do││ on rollout.started                                          │
+                                 │ ╎ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┘◂┄╯ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ needs attention: ring 2 is failing                          │
+ ✉                               │ ╎                                                  ││     ▸ Run now   ‖ Pause   ⏻ Disable   Open                  │
+                                 │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││                                                             │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││ CANVAS SKILLS · 1                                           │
+                                 │                                                    ││ ✦ pr-etiquette — How PR feedback reaches the owning sessio… │
+                                 │                                                    ││                                                             │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││ GROUP PASSIVE SESSIONS · 1 (⟲ each sees only its own group) │
+                                 │                                                    ││ ⟲ Drift guard — Payments · waiting                          │
+                                 │                                                    ││                                                             │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││ Folder     C:\data\canvas-agents\canvas-1                   │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+                                 │                                                    ││  + New canvas agent    Skills…    New skill…                │
+                                 │                                                    ││  Send event…    Folder    Show frame    Close               │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  │└─────────────────────────────────────────────────────────────┘
+ click view · double-click/Enter start · ] [ or Ctrl+F6 recent · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom ·…

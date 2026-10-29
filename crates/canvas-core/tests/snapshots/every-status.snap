@@ -1,6 +1,6 @@
 # every-status (150x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit                  ⠋ 2 working   ◆ 1 needs you   ✗ 3 failed
+ ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit       ⠋ 2 working   ◆ 1 needs you   ✗ 3 failed
     SESSIONS                     │▌·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
 ▌▤  / filter…                    │  ╭ Working (history) ─────────╮      ┏ Needs you ━━━━━━━━━━━━━━━━━┓      ╔ Done, review ══════════════╗
                                  │  │ ⠋ working · ↗ elsewhere    │      ┃ ◆ needs you · ↗ elsewhere  ┃      ║ ✓ done · review · ↗ elsew… ║
@@ -18,7 +18,7 @@
     ⠋ Working (OSC 9;4)          │
  ≡                               │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
                                  │
-                                 │  ╭ Open elsewhere ────────────╮      ╭ Shell running here ────────╮      ╭ Preparing ─────────────────╮
+ ✉                               │  ╭ Open elsewhere ────────────╮      ╭ Shell running here ────────╮      ╭ Preparing ─────────────────╮
                                  │ ·│ ↗ open elsewhere           │     ·│ ● running                  │     ·│ ⠋ preparing                │     ·     ·
                                  │  │ canvas · main              │      │ canvas                     │      │ canvas                     │
                                  │  ╰────────────────────────────╯      ╰────────────────────────────╯      ╰────────────────────────────╯

@@ -120,7 +120,7 @@ impl App {
         let ctrl = key.modifiers.contains(Modifiers::CONTROL);
         let shift = key.modifiers.contains(Modifiers::SHIFT);
         if key.modifiers.contains(Modifiers::ALT)
-            && let KeyCode::Char(c @ '1'..='8') = key.code
+            && let KeyCode::Char(c @ '1'..='9') = key.code
         {
             let view = crate::side::VIEWS[(c as u8 - b'1') as usize].0;
             return self.set_view(view);
@@ -214,6 +214,8 @@ impl App {
             }
             KeyCode::Char('i') if !ctrl => return self.run(Action::ImportCopilot),
             KeyCode::Char('v') if !ctrl => return self.run(Action::SyncVs),
+            // The canvas-wide agents' panel (the top bar's ◎ Agents).
+            KeyCode::Char('a') if !ctrl && !self.demo => return self.run(Action::Agents(crate::canvas_wide::AgentAction::Panel)),
             KeyCode::Char('z') if ctrl => return self.run(Action::UndoSync),
             KeyCode::Char('l') if ctrl => {
                 self.repaint_requested = true;
@@ -237,7 +239,10 @@ impl App {
                 return;
             }
             KeyCode::Char('x') if !ctrl => {
-                if let Some(id) = self.primary().and_then(|n| self.session_of(&n.id)).filter(|id| self.owned_alive(id)) {
+                // A passive session's headless run stops through the service (not a failure).
+                if let Some(node) = self.primary().filter(|n| n.passive.is_some() && self.passive_view(n).is_some_and(|v| v.running)).cloned() {
+                    self.stop_passive_run(&node.id);
+                } else if let Some(id) = self.primary().and_then(|n| self.session_of(&n.id)).filter(|id| self.owned_alive(id)) {
                     self.confirm_stop(id);
                 }
                 return;

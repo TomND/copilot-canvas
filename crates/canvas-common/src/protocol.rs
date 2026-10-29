@@ -32,10 +32,12 @@ pub const CAP_COMPRESS: u32 = 1 << 1;
 pub const CAP_IMAGES: u32 = 1 << 2;
 /// The client shows desktop notifications: it gets `ServiceMsg::Notification`.
 pub const CAP_NOTIFY: u32 = 1 << 3;
+/// The client shows the reports inbox: it gets `ServiceMsg::Reports`.
+pub const CAP_REPORTS: u32 = 1 << 4;
 /// The client reaches the service through Dev Tunnels web forwarding (the
 /// iPhone client) and wants fresh tunnel access tokens: it gets
 /// `ServiceMsg::TunnelAccess`.
-pub const CAP_TUNNEL_ACCESS: u32 = 1 << 4;
+pub const CAP_TUNNEL_ACCESS: u32 = 1 << 5;
 
 /// `ServiceMsg::Image::format`: raw RGBA rows.
 pub const IMAGE_RGBA: u8 = 0;
@@ -278,6 +280,9 @@ pub enum ServiceMsg {
     Refusal { proof: Vec<u8> },
     /// Protocol 8, TCP: the service's build, told once the client authenticated.
     Welcome { build: String },
+    /// Protocol 8, `CAP_REPORTS`: the reports inbox (`canvas_model::reports::Snapshot`
+    /// as JSON), sent on connect and whenever it changes.
+    Reports { json: String },
     /// Protocol 8, `CAP_TUNNEL_ACCESS`: a Dev Tunnels `connect` access token
     /// for the tunnel in front of this service (sent on connect and whenever
     /// it is renewed), its expiry, and the tunnel port's web-forwarding
@@ -334,6 +339,7 @@ impl ServiceMsg {
             | ServiceMsg::PairChallenge { .. }
             | ServiceMsg::Refusal { .. }
             | ServiceMsg::Welcome { .. }
+            | ServiceMsg::Reports { .. }
             | ServiceMsg::TunnelAccess { .. }
                 if protocol < 8 =>
             {
@@ -345,11 +351,13 @@ impl ServiceMsg {
 
     /// [`ServiceMsg::shaped`] for a client with `caps` (`CAP_*`): images go
     /// only to clients with `CAP_IMAGES`, notifications only to clients with
-    /// `CAP_NOTIFY` (a protocol-8 client of an older build cannot decode them).
+    /// `CAP_NOTIFY`, the reports inbox only to clients with `CAP_REPORTS` (a
+    /// protocol-8 client of an older build cannot decode them).
     pub fn shaped_for(self, protocol: u32, caps: u32) -> Option<ServiceMsg> {
         match &self {
             ServiceMsg::Image { .. } | ServiceMsg::Placements { .. } if caps & CAP_IMAGES == 0 => None,
             ServiceMsg::Notification { .. } if caps & CAP_NOTIFY == 0 => None,
+            ServiceMsg::Reports { .. } if caps & CAP_REPORTS == 0 => None,
             ServiceMsg::TunnelAccess { .. } if caps & CAP_TUNNEL_ACCESS == 0 => None,
             _ => self.shaped(protocol, caps & CAP_FRAME8 != 0),
         }
@@ -880,7 +888,8 @@ pub(crate) mod tests {
             (24, ServiceMsg::PairChallenge { nonce: vec![1; 32], proofs: vec![vec![2; 32]; 3] }),
             (25, ServiceMsg::Refusal { proof: vec![3; 32] }),
             (26, ServiceMsg::Welcome { build: "0.3.0-abc".into() }),
-            (27, ServiceMsg::TunnelAccess { url: "wss://copilot-canvas-47600.usw2.devtunnels.ms".into(), token: "eyJ.x.y".into(), expires_ms: 9 }),
+            (27, ServiceMsg::Reports { json: "{\"version\":1}".into() }),
+            (28, ServiceMsg::TunnelAccess { url: "wss://copilot-canvas-47600.usw2.devtunnels.ms".into(), token: "eyJ.x.y".into(), expires_ms: 9 }),
         ];
         for (index, message) in service {
             let bytes = postcard::to_stdvec(&message).unwrap();
@@ -912,6 +921,7 @@ pub(crate) mod tests {
             ServiceMsg::PairChallenge { nonce: vec![1; 32], proofs: Vec::new() },
             ServiceMsg::Refusal { proof: vec![1; 32] },
             ServiceMsg::Welcome { build: "b".into() },
+            ServiceMsg::Reports { json: "{}".into() },
             ServiceMsg::TunnelAccess { url: String::new(), token: "t".into(), expires_ms: 1 },
         ];
         for message in all.clone() {
@@ -984,6 +994,11 @@ pub(crate) mod tests {
         let note = ServiceMsg::Notification { term: "t".into(), title: "T".into(), body: "B".into() };
         assert_eq!(note.clone().shaped_for(8, v8 | CAP_IMAGES), None);
         assert_eq!(note.clone().shaped_for(8, v8 | CAP_NOTIFY).as_ref(), Some(&note));
+        // The reports inbox only reaches clients that show it (older builds cannot decode it).
+        let inbox = ServiceMsg::Reports { json: "{}".into() };
+        assert_eq!(inbox.clone().shaped_for(8, v8 | CAP_IMAGES | CAP_NOTIFY), None);
+        assert_eq!(inbox.clone().shaped_for(7, v8 | CAP_REPORTS), None, "protocol 7");
+        assert_eq!(inbox.clone().shaped_for(8, v8 | CAP_REPORTS).as_ref(), Some(&inbox));
         let access = ServiceMsg::TunnelAccess { url: String::new(), token: "t".into(), expires_ms: 1 };
         assert_eq!(access.clone().shaped_for(8, v8 | CAP_NOTIFY | CAP_IMAGES), None, "only for clients that asked");
         assert_eq!(access.clone().shaped_for(7, CAP_TUNNEL_ACCESS), None);

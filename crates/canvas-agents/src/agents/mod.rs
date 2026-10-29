@@ -79,6 +79,10 @@ pub struct Integration {
     pub plugin_dir: Option<PathBuf>,
     /// Environment: `COPILOT_CANVAS_HOME`, `COPILOT_CANVAS_SESSION`, `PATH`.
     pub env: Vec<(String, String)>,
+    /// More plugins with skills (a canvas-wide agent's assigned canvas skills):
+    /// another `--plugin-dir` for Copilot and Claude Code, their `skills`
+    /// folders for OpenCode.
+    pub skill_plugins: Vec<PathBuf>,
 }
 
 /// A group's folders, created on demand.

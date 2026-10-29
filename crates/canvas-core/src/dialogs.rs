@@ -184,6 +184,10 @@ pub enum Action {
     OpenOtherClient,
     /// Stacks, hidden subsessions, dust, effects, group folders and passive sessions.
     Visual(crate::visual::VisualAction),
+    /// Canvas-wide agents and the canvas's skills.
+    Agents(crate::canvas_wide::AgentAction),
+    /// The Reports inbox and its viewer.
+    Report(crate::reports::ReportAction),
 }
 
 #[derive(Clone, Debug)]
@@ -328,6 +332,12 @@ pub enum PickPurpose {
     Default(DefaultField, Option<String>),
     /// A model (the agent's list, plus a typed id).
     Model(ModelTarget),
+    /// Template of a new canvas-wide agent.
+    CanvasTemplate,
+    /// The skills a canvas-wide agent gets (node id).
+    AgentSkills(String),
+    /// The canvas's skill library.
+    CanvasSkills,
 }
 
 /// Whose model a model picker sets.
@@ -362,6 +372,12 @@ pub enum PromptPurpose {
     SendEvent(String),
     /// Message typed by you to a passive session (node id).
     MessagePassive(String),
+    /// Name of a new canvas-wide agent (template).
+    CanvasAgentName(usize),
+    /// Name of a new canvas skill (given to this agent).
+    NewSkill(Option<String>),
+    /// `type [json]` for the canvas-wide agents.
+    CanvasEvent,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -370,6 +386,8 @@ pub enum PassiveField {
     Schedule,
     Filter,
     Limits,
+    /// The groups a canvas-wide agent watches.
+    Groups,
 }
 
 /// Whose MCP servers the picker edits.
@@ -475,6 +493,8 @@ pub enum Modal {
     Viewer(Box<crate::viewer::Viewer>),
     /// The read-only transcript of a session or subagent.
     Inspector(Box<crate::inspect::Inspector>),
+    /// A report or message from the Reports inbox (read-only).
+    Report(Box<crate::reports::ReportViewer>),
 }
 
 /// Clickable regions registered while drawing.

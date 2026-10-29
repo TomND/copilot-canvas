@@ -92,6 +92,11 @@ the connection dropped while waiting).
 | `RemoteRevoke { client }` | `Text` (what was revoked; its connections are closed) | `remote revoke` (pipe only) |
 | `SetClipboardImage { png }` (base64 in JSON, at most 20 MB) | `Done` (the image is on the service machine's clipboard as `CF_DIB` + `PNG`) | remote image paste (Ctrl+V / Alt+V), see REMOTE.md |
 | `Upload { name, id, offset, data, last }` | `Done`, the last piece `Text` (the file's path) | files dropped on a terminal in remote mode: base64 pieces of at most 4 MiB, files of at most 50 MB, written under `<home>/uploads/<date>/` with a free name |
+| `CreateCanvasAgent { files }` | `Text` (the slug used) | a new canvas-wide agent: `rules.md`, `state.md`, `log.md` in `<home>/canvas-agents/<canvas>/agents/<slug>` (the first free slug), the canvas's `GOALS.md` and `skills/` when missing. `files` names the canvas by its id (letters, digits, `-`), never a folder |
+| `CanvasSkills { canvas }` | `Skills(list)`: name, description, SKILL.md path and any problem per skill | the canvas-agents panel, an agent's *Skills…*, the skill library |
+| `CreateCanvasSkill { canvas, name, description }` | `Text` (its SKILL.md) | *New skill…* (never over an existing skill; the name is checked) |
+| `Reports` | `Reports(Snapshot)`: the inbox (newest first, at most 600 rows, with read state and the refused submissions) | the Reports view before the service's first push (normally `ServiceMsg::Reports` brings it) |
+| `ReportContent { id }` | `Report(Content)`: the report and its body (Markdown, HTML or text; at most 2 MiB) | the report viewer, on open; also over `--remote`, so HTML is shown by the home GUI |
 
 The three remote-access requests are answered by the service itself (they
 need its pairing state) and only for clients on its local pipe; TCP clients
@@ -207,6 +212,43 @@ The file format is unchanged: canvases from earlier versions load as they
 are, and `view`, `ui`, `tiles` and `selected` stay in the file (from before)
 but are no longer written by clients.
 
+### The canvas id
+
+When the service opens a canvas without a `canvas_id` (a new one, or one from
+before canvas-wide agents), it gives it one (a UUID) and saves it at once.
+The id names the canvas's canvas-wide agents' folder,
+`<home>/canvas-agents/<canvas id>`, under the service's own data folder. It
+is not a shared field: clients read it from `Doc` and never change it (an
+older service would refuse a `SetField` it does not know). A canvas without
+an id (opened by an older service) shows its canvas-wide agents as
+unavailable and does not route them.
+
+## Canvas-wide agents on the wire
+
+All additions are JSON with defaults, so older and newer clients and services
+read each other's messages:
+
+| Where | Addition | An older peer |
+|---|---|---|
+| `Doc` | `canvas_id`; `Passive::scope` (`"canvas"`), `skills`, `groups` (group ids it watches), `disabled`; canvas-wide agents' boxes have `source: "canvas-agent"`, their frame group `source: "canvas-agents"` | ignores them; the box's `source` keeps it a canvas-wide agent for newer clients even if an older one rewrites its passive settings |
+| `ClientMsg::Routing` (`bus::Routing`) | `canvas` (the canvas id); per `PassiveSpec`: `canvas_wide`, `skills`, `groups`; disabled agents are left out | an older service treats canvas-wide agents as passive sessions of their frame (which has no folder: their runs fail visibly) |
+| `bus::Event` | `canvas` (set by windows for the events they send, and by the service for events of the routed canvas); `to` on any event: one passive session or canvas-wide agent (`emit --to NAME`), or `canvas` (the canvas-wide agents only) | ignores `canvas`; reads `to` on messages only |
+| `ClientMsg::Bus` actions | `{"action": "stop", "key": …}`: ends a passive session's headless run in progress; it ends as stopped (no failure, its events dropped). Handled in the bus loop; an inbox file can never ask for it | ignores unknown actions |
+| `ServiceMsg::Bus` (`bus::Snapshot`) | per passive session: `failures`, `retry_at_ms`, `stopped_ms` | ignores them |
+| `Request` | `CreateCanvasAgent`, `CanvasSkills`, `CreateCanvasSkill` (see the table above) | answers "does not support this request (update it)", which the panel shows |
+
+The service keeps one routing table: the canvas whose window sent it last.
+Canvas-wide agents get the events of that canvas only (`Routing::from_canvas`:
+the event names this canvas's id, or its sender is one of this canvas's
+sessions, or a window sent it for one of its groups); the bus state of
+canvas-wide agents of other canvases is kept (30 days) until their canvas is
+routed again. Who may address whom (`Routing::resolve_from`): a session or a
+group passive session reaches its own group's sessions and passive sessions
+(ungrouped sessions: the other ungrouped ones) and every canvas-wide agent; a
+canvas-wide agent and you (a window) reach every session and passive session
+of the canvas. Canvas-wide agents can put effects on any box of the canvas
+(`effects::resolve_canvas`).
+
 ## Per-client preferences
 
 The view (position, zoom), panels (sidebar width and visibility, terminal
@@ -216,6 +258,35 @@ box belong to each client. They live in the client's own data folder:
 and on quit. The first time a client opens a document it starts from the
 document's own (legacy) fields. Patches never carry them, so two windows on
 one canvas each keep their own view.
+
+## Reports inbox
+
+The service owns the inbox (`canvas_agents::reports::Store`, under
+`<home>/reports/`); clients only show it:
+
+| File | Written by | Holds |
+|---|---|---|
+| `spool/<id>.json` | `copilot-canvas report publish` (a `.tmp` file renamed) | a checked `Submission` waiting for the service |
+| `spool/<id>.rejected` | the service | why it refused a submission (the waiting command prints it; removed after) |
+| `items/<id>/meta.json` + `body.md` / `body.html` / `body.txt` | the service (a `.<id>.tmp` folder renamed) | a stored report |
+| `state.json` | the service | the read state and the last 20 refusals |
+| `service.json` | the service (at start) | its pid and start time, so the command knows whether to wait |
+
+Ids are `<13-digit ms>-<8 hex>`, so they sort by time. The service's
+`reports` thread takes the spool every 250 ms: it validates each submission
+again (size, UTF-8, kind, links, thread key), resolves the publisher's box
+name and group from routing, stores it or writes its refusal (an inbox
+holding 1,000 unread reports refuses new ones; unread reports are never
+dropped), keeps read reports for 30 days and at most 500, and broadcasts the
+inbox (`ServiceMsg::Reports`, a `reports::Snapshot` as JSON) to every client
+with `CAP_REPORTS` when it changed, and to each such client when it connects.
+
+Read state changes are bus requests, like the passive actions:
+`{"action": "reports", "op": "read" | "unread" | "read_all" | "delete", "ids":
+[…]}` (`service/inbox.rs::action`, checked before the passive actions; an
+older service ignores them). They change `state.json` (or delete the item
+folder) and broadcast the new inbox, so every window and every remote client
+shows the same read state.
 
 ## Protocol
 
@@ -240,6 +311,7 @@ All new messages are protocol 8 and appended at the end of the enums:
 | `PairChallenge { nonce, proofs }` (REMOTE.md, Pairing) | 24 |
 | `Refusal { proof }` (REMOTE.md, handshake) | 25 |
 | `Welcome { build }` (REMOTE.md, handshake) | 26 |
+| `Reports { json }` (the reports inbox; only to clients with `CAP_REPORTS`, `1 << 4`, which the TUI and the GUI set) | 27 |
 
 `ServiceMsg::shaped` never sends them to protocol-7 clients. The connection's
 reader thread routes `RpcReply` to the waiting caller by id; a dropped
@@ -259,7 +331,13 @@ most 8 files and 4 MiB in all.
   save errors are shown. `canvas_core::remote`: answers reach their callers,
   dropped connections fail pending calls.
 - `canvas_agents::service::docs`: open/join, edit order, refused edits, save,
-  close and lock release, broken files.
+  close and lock release, broken files, the canvas id given once and kept.
+- `canvas_agents::backend`: canvas-wide agents' files and skills only under
+  the backend's own folder (canvas ids, slugs and skill names checked, never
+  a client's path); `canvas_agents::service::passive`: addressed events,
+  effects of canvas-wide agents, their run folders, state kept for another
+  canvas; `canvas_model::bus`: subscribers across groups and canvases, who
+  may address whom.
 - `tests/backend_contract.rs` starts a real service (`COPILOT_CANVAS_LISTEN=
   127.0.0.1:0`, temporary home) and runs one contract suite against the
   in-process backend and against the service over loopback TCP (folder
@@ -272,7 +350,19 @@ most 8 files and 4 MiB in all.
   gone, and that two clients editing one canvas through the service converge
   (and that the service saves it and refuses a breaking edit).
   `config_snapshot_is_the_same_locally_and_remotely` needs an installed agent
-  (`cargo test --test backend_contract -- --ignored`).
+  (`cargo test --test backend_contract -- --ignored`). The contract also
+  publishes a report through the command and reads the inbox and its body
+  (`Reports`, `ReportContent`) both ways;
+  `the_inbox_reaches_clients_that_show_it_and_read_state_is_the_services`
+  checks that only `CAP_REPORTS` clients get `ServiceMsg::Reports` and that a
+  read by one client reaches the other.
+- `canvas_agents::reports`: the command's checks (oversized, empty, bad
+  links), queued then stored, waiting for stored or refused, read state and
+  retention (never an unread report), a full inbox, titles from the body.
+  `canvas_model::reports`: validation, cleaning and limits.
+  `canvas_core::reports`: threads, opening marks read and launches nothing,
+  unread/delete/links through the service; `report_html` and `richtext`: the
+  sanitizer and the layout.
 - `two_clients_probe` (manual: `cargo test --release two_clients_probe --
   --ignored`): two TUI clients in hidden pseudoconsoles, one over `--remote
   loopback`, one over the pipe; a rename in either shows in the other, panning

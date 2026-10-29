@@ -1837,6 +1837,7 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     view_and_start_steps(&mut ui, instance)?;
     recent_steps(&mut ui, instance)?;
     group_click_steps(&mut ui)?;
+    report_steps(&mut ui, instance, work)?;
 
     step("stop all and quit");
     ui.send(b"\x1d")?;
@@ -1847,11 +1848,72 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     anyhow::ensure!(code == 0, "client exited with {code}");
     let doc = load(&canvas)?;
     anyhow::ensure!(doc.groups.len() >= 2, "both groups persisted");
+    canvas_agent_steps(instance, work, &args, &env, &start)?;
     println!(
         "PASS in {:.1}s (first paint incl. service start: {} ms)",
         started.elapsed().as_secs_f64(),
         startup.as_millis()
     );
+    Ok(())
+}
+
+/// Canvas-wide agents, on a canvas of its own (the demo has no agents): the
+/// top bar's ◎ Agents opens their panel; a new Custom agent is one box in the
+/// Canvas agents frame (the sidebar and the panel show the same one), its
+/// files under the canvas's id in this instance's home; viewing it, even a
+/// double-click, starts nothing. A Custom agent has no triggers: nothing runs.
+fn canvas_agent_steps<U: Ui>(instance: &Instance, work: &Path, args: &[String], env: &[(&str, &Path)], start: &impl Fn(&[String], &[(&str, &Path)]) -> Result<U>) -> Result<()> {
+    use crate::client::doc::{Group, Node};
+    step("canvas-wide agents: ◎ Agents opens their panel; a new agent is one box in the Canvas agents frame with its files under the canvas's id; viewing it starts nothing");
+    let canvas = instance.home.join("agents-canvas.json");
+    let mut shell: Node = serde_json::from_value(serde_json::json!({ "id": "agents-shell", "kind": "session", "name": "Team shell", "x": 2, "y": 2 }))?;
+    shell.cwd = Some(work.display().to_string());
+    shell.command = Some(vec!["powershell.exe".into(), "-NoLogo".into(), "-NoProfile".into()]);
+    shell.fresh = true;
+    let mut doc = Doc::default();
+    doc.nodes.push(shell);
+    doc.groups.push(Group { id: "g-team".into(), name: "Team".into(), x: 0, y: 0, w: 36, h: 8, ..Default::default() });
+    std::fs::write(&canvas, serde_json::to_string_pretty(&doc)?)?;
+    let mut args: Vec<String> = args.iter().filter(|a| *a != "--demo").cloned().collect();
+    args.extend(["--canvas".into(), canvas.display().to_string()]);
+    let mut ui = start(&args, env)?;
+    ui.wait("the agents canvas", Duration::from_secs(20), |t| t.contains("Team shell") && t.contains("◎ Agents"))?;
+    let (x, y) = ui.find("◎ Agents").context("the top bar's ◎ Agents")?;
+    ui.click(x + 1, y)?;
+    ui.wait("the canvas agents panel", Duration::from_secs(5), |t| t.contains("Canvas agents · 0") && t.contains("+ New canvas agent"))?;
+    let (x, y) = ui.find("+ New canvas agent").context("its New button")?;
+    ui.click(x + 1, y)?;
+    ui.wait("the templates", Duration::from_secs(5), |t| t.contains("New canvas-wide agent: template") && t.contains("PR coordinator") && t.contains("Custom"))?;
+    ui.send(b"Custom")?;
+    ui.send(b"\r")?;
+    ui.wait("the name prompt", Duration::from_secs(5), |t| t.contains("Name the Custom canvas-wide agent"))?;
+    ui.send(b"\x15Selftest agent\r")?;
+    ui.wait("its panel", Duration::from_secs(10), |t| t.contains("◎ Selftest agent") && t.contains("canvas-wide agent ·"))?;
+    let doc = wait_doc(&canvas, "the agent in its frame", |d| d.nodes.iter().any(|n| n.name == "Selftest agent" && n.is_canvas_agent()) && d.canvas_frame().is_some())?;
+    let node = doc.nodes.iter().find(|n| n.name == "Selftest agent").context("the agent")?.clone();
+    let frame = doc.canvas_frame().context("the frame")?;
+    let passive = node.passive.clone().context("passive")?;
+    anyhow::ensure!(passive.group == frame.id, "the agent belongs to the Canvas agents frame");
+    let canvas_id = doc.canvas_id.clone().context("the service gave the canvas an id")?;
+    let dir = canvas_agents::canvas_wide::canvas_dir(&instance.home, &canvas_id);
+    anyhow::ensure!(canvas_agents::canvas_wide::agent_paths(&dir, &passive.slug).rules.is_file(), "its rules under {}", dir.display());
+    // The sidebar row and the box are the same agent; a double-click on the box starts nothing.
+    let (sx, sy) = ui.locate("Selftest agent", SIDEBAR)?;
+    ui.click(sx, sy)?;
+    ui.wait("its panel from the sidebar", Duration::from_secs(5), |t| t.contains("◎ Selftest agent") && t.contains("Open chat"))?;
+    let (bx, by) = ui.locate("Selftest agent", CANVAS)?;
+    ui.double_click(bx, by)?;
+    std::thread::sleep(Duration::from_millis(800));
+    let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
+    anyhow::ensure!(!log.contains(&format!("launched {} ", node.id)), "viewing the agent launched it");
+    anyhow::ensure!(ui.text().contains("◎ Selftest agent"), "its panel stays\n{}", ui.text());
+    ui.send(b"q")?;
+    std::thread::sleep(Duration::from_millis(300));
+    if ui.text().contains("Detach (keep running)") {
+        ui.send(b"\r")?;
+    }
+    let code = ui.wait_exit(Duration::from_secs(10))?;
+    anyhow::ensure!(code == 0, "client exited with {code}");
     Ok(())
 }
 
@@ -1930,6 +1992,51 @@ fn recent_steps<U: Ui>(ui: &mut U, instance: &Instance) -> Result<()> {
     ui.wait("the walk settled", Duration::from_secs(5), |t| recent_names(t).first() == names.get(1))?;
     std::thread::sleep(Duration::from_millis(300));
     anyhow::ensure!(launches() == before, "walking the recent sessions started one");
+    Ok(())
+}
+
+/// Reports: a session's terminal publishes a Markdown report and a message
+/// with the `copilot-canvas` command it has on its PATH; the activity bar
+/// counts two unread; a click opens one formatted and marks it read at the
+/// service; nothing is launched.
+fn report_steps<U: Ui>(ui: &mut U, instance: &Instance, work: &Path) -> Result<()> {
+    let launches = || std::fs::read_to_string(instance.log_path()).unwrap_or_default().matches("launched ").count();
+    step("reports: a session publishes a Markdown report and a message (copilot-canvas report publish); ✉2 unread; a click opens one formatted and marks it read; nothing launched");
+    ui.send(b"\x1d")?;
+    ui.wait("canvas focus", Duration::from_secs(5), |t| t.contains("empty-drag pan"))?;
+    let (rx, ry) = ui.locate("Renamed by selftest", SIDEBAR)?;
+    ui.click(rx, ry)?;
+    ui.wait("its terminal with the keyboard", Duration::from_secs(5), |t| t.contains("Typing goes to the terminal"))?;
+    let brief = work.join("selftest-brief.md");
+    std::fs::write(&brief, "# Selftest brief\n\n## Needs you\n\n- **one** pull request\n- build `main` green\n\n| Area | State |\n|---|---|\n| Tests | pass |\n")?;
+    let before = launches();
+    let command = format!("copilot-canvas report publish --markdown '{}'; copilot-canvas report publish --message 'Selftest message: build green' --kind ok\r", brief.display());
+    ui.send(command.as_bytes())?;
+    ui.wait("two unread reports on the activity bar", Duration::from_secs(20), |t| t.contains("✉2"))?;
+    ui.send(b"\x1d")?;
+    ui.send(b"\x1b9")?;
+    ui.wait("the inbox", Duration::from_secs(5), |t| t.contains("REPORTS") && t.contains("2 unread") && t.contains("Selftest brief") && t.contains("Selftest message"))?;
+    let (bx, by) = ui.locate("Selftest brief", (SIDEBAR.0, SIDEBAR.1 + 20))?;
+    ui.click(bx, by)?;
+    ui.wait("the brief, formatted", Duration::from_secs(10), |t| t.contains("Report · Selftest brief") && t.contains("Needs you") && t.contains("• one pull request") && t.contains("│ State"))?;
+    ui.wait("one unread left", Duration::from_secs(5), |t| t.contains("✉1"))?;
+    let read = || {
+        std::fs::read_to_string(instance.home.join("reports").join("state.json")).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).and_then(|v| v["read"].as_object().map(|o| o.len())).unwrap_or(0)
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while read() == 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    anyhow::ensure!(read() == 1, "the service keeps the brief read (and only it): {} read", read());
+    ui.send(b"\x1b")?;
+    ui.wait("the viewer closed", Duration::from_secs(5), |t| !t.contains("Report · Selftest brief"))?;
+    ui.send(b"\x1b1")?;
+    ui.wait("the sessions view", Duration::from_secs(5), |t| t.contains("Canvas project"))?;
+    anyhow::ensure!(launches() == before, "reading a report launched something");
+    // Back in a terminal, as the steps before left it.
+    let (rx, ry) = ui.locate("Renamed by selftest", SIDEBAR)?;
+    ui.click(rx, ry)?;
+    ui.wait("terminal focus", Duration::from_secs(5), |t| t.contains("Typing goes to the terminal"))?;
     Ok(())
 }
 

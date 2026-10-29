@@ -6,7 +6,7 @@ use ratatui::style::{Modifier, Style};
 
 use crate::app::App;
 use crate::dialogs::{GitState, Hit, Modal, NsField, TextInput};
-use crate::paint::{ACCENT, DOUBLE, GRAY, POSITIVE, MODAL, MUTED, PANEL_HI, PURPLE, NEGATIVE, ROUND, SELECT, TEXT, ATTENTION, bold, fg, fill, outline, put, truncate, truncate_left};
+use crate::paint::{ACCENT, BLUE, DOUBLE, GRAY, POSITIVE, MODAL, MUTED, PANEL_HI, PURPLE, NEGATIVE, ROUND, SELECT, TEXT, ATTENTION, bold, fg, fill, outline, put, truncate, truncate_left};
 use crate::paths::{format_age, now_ms};
 
 const HELP: &[(&str, &str)] = &[
@@ -27,7 +27,7 @@ const HELP: &[(&str, &str)] = &[
     ("N / S", "new session / subsession of the selection"),
     ("G", "group the selection (box drawn around it)"),
     ("I / V", "import agent sessions / sync VS Code agent sessions"),
-    ("Alt+1…8 or activity bar", "Sessions · Automations · Plugins · MCP · Skills · Agents · VS Code · Settings"),
+    ("Alt+1…9 or activity bar", "side views · Alt+9 Reports inbox"),
     ("Lists: Enter · Space · Del", "open/edit · enable/disable · remove"),
     ("Enter / Tab", "start selection / cycle sessions"),
     ("Ctrl+F6 / Ctrl+Shift+F6 · ] / [", "next / previous recent (views only)"),
@@ -39,6 +39,7 @@ const HELP: &[(&str, &str)] = &[
     ("K · H", "stack / unstack subsessions · hide / show all subsessions"),
     ("Click a stack · double-click", "view its top card · unstack (back to their places)"),
     ("Click an effect (✦ ◉ ✧ ▲)", "clear it (it never starts the session)"),
+    ("A · ◎ Agents (top bar) · ◎ frame", "canvas-wide agents: every group's events, skills"),
     ("F6 · Ctrl+]", "cycle focus · leave a terminal"),
     ("Shift+PgUp/PgDn", "terminal history"),
     ("Q / Ctrl+Q", "quit (sessions can keep running)"),
@@ -197,6 +198,7 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
         Modal::Mcp(picker) => draw_mcp_picker(app, buf, screen, picker, ctx),
         Modal::Viewer(viewer) => draw_viewer(app, buf, screen, viewer, ctx),
         Modal::Inspector(inspector) => draw_inspector(app, buf, screen, inspector, ctx),
+        Modal::Report(viewer) => draw_report(app, buf, screen, viewer, ctx),
         Modal::Folder(browser) => {
             let rect = centered(screen, 76, screen.height.saturating_sub(6).min(28));
             panel(buf, rect, "Choose a folder");
@@ -479,6 +481,146 @@ fn draw_inspector(app: &mut App, buf: &mut Buffer, screen: Rect, inspector: &cra
     }
     if ctx.top
         && let Some(Modal::Inspector(open)) = app.modals.last_mut()
+    {
+        open.rows = rows.max(1);
+        open.total = lines.len();
+        open.top = top;
+    }
+    (rect, None)
+}
+
+/// A report from the inbox: who and when, its sessions and links, the
+/// formatted text (or, in the GUI, the HTML view's area), buttons.
+fn draw_report(app: &mut App, buf: &mut Buffer, screen: Rect, viewer: &crate::reports::ReportViewer, ctx: &mut Ctx) -> (Rect, Option<(u16, u16)>) {
+    use crate::dialogs::Action;
+    use crate::reports::ReportAction;
+    let rect = centered(screen, screen.width.saturating_sub(6).min(140), screen.height.saturating_sub(2));
+    let report = app.reports.report(&viewer.id);
+    let title = report.as_ref().map(|r| r.title.clone()).unwrap_or_else(|| "(deleted)".into());
+    let kind = if report.as_ref().is_some_and(|r| r.format == crate::reports_model::Format::Message) { "Message" } else { "Report" };
+    panel(buf, rect, &format!("{kind} · {} (read-only)", truncate(&title, 90)));
+    let (x, width) = (rect.x as i32 + 2, rect.width as i32 - 4);
+    let clip = Rect::new(rect.x + 1, rect.y, rect.width.saturating_sub(2), rect.height);
+    // Who, when, which update of a thread.
+    if let Some(report) = &report {
+        let color = match report.kind.as_str() {
+            "warn" | "alert" => ATTENTION,
+            "failed" => NEGATIVE,
+            "ok" | "delivered" => POSITIVE,
+            _ => ACCENT,
+        };
+        let mut shown = report.clone();
+        shown.source_name = app.report_source(report);
+        let mut line = crate::reports::details(&shown, false, app.visual_now());
+        let at = viewer.thread.iter().position(|i| *i == viewer.id).unwrap_or(0);
+        if viewer.thread.len() > 1 {
+            line.push_str(&format!(" · update {} of {} (newest first)", at + 1, viewer.thread.len()));
+        }
+        let glyph = crate::reports_model::kind_glyph(&report.kind);
+        let end = put(buf, x, rect.y as i32 + 1, glyph, bold(color).bg(MODAL), clip);
+        put(buf, end, rect.y as i32 + 1, &truncate(&line[glyph.len()..], (width - 1).max(1) as usize), fg(GRAY).bg(MODAL), clip);
+        // Its sessions (viewed, never started) and links (opened only on a click).
+        let mut lx = x;
+        let y = rect.y as i32 + 2;
+        let piece = |buf: &mut Buffer, ctx: &mut Ctx, lx: &mut i32, text: &str, style: Style, action: Option<Action>| {
+            if *lx >= x + width {
+                return;
+            }
+            let shown = truncate(text, (x + width - *lx).max(1) as usize);
+            let end = put(buf, *lx, y, &shown, style, clip);
+            if let Some(action) = action {
+                ctx.hit(Rect::new(*lx as u16, y as u16, (end - *lx).max(1) as u16, 1), crate::dialogs::Hit::Toolbar(action));
+            }
+            *lx = end;
+        };
+        let mut first = true;
+        for (label, reference) in [("from", &report.source), ("session", &report.session)] {
+            if reference.is_empty() {
+                continue;
+            }
+            if !first {
+                piece(buf, ctx, &mut lx, "  ·  ", fg(MUTED).bg(MODAL), None);
+            }
+            first = false;
+            match app.report_node(reference) {
+                Some(node) => {
+                    let (id, name) = (node.id.clone(), node.name.clone());
+                    piece(buf, ctx, &mut lx, &format!("{label} "), fg(MUTED).bg(MODAL), None);
+                    piece(buf, ctx, &mut lx, &format!("▤ {name}"), Style::default().fg(ACCENT).bg(MODAL).add_modifier(Modifier::UNDERLINED), Some(Action::Report(ReportAction::ViewSession(id))));
+                }
+                None => {
+                    let name = if label == "from" && !report.source_name.is_empty() { report.source_name.clone() } else { reference.clone() };
+                    piece(buf, ctx, &mut lx, &format!("{label} {name} (not on this canvas)"), fg(MUTED).bg(MODAL), None);
+                }
+            }
+        }
+        let links: Vec<(String, String)> = (!report.pr.is_empty()).then(|| ("PR".to_owned(), report.pr.clone())).into_iter().chain(report.links.iter().map(|l| (l.title.clone(), l.url.clone()))).collect();
+        for (i, (label, url)) in links.iter().enumerate() {
+            if !first || i > 0 {
+                piece(buf, ctx, &mut lx, "  ·  ", fg(MUTED).bg(MODAL), None);
+            }
+            let text = if label == "PR" && i == 0 && !report.pr.is_empty() { format!("↗ PR {}", url.trim_start_matches("https://").trim_start_matches("http://")) } else { format!("↗ {label}") };
+            piece(buf, ctx, &mut lx, &text, Style::default().fg(BLUE).bg(MODAL).add_modifier(Modifier::UNDERLINED), Some(Action::Report(ReportAction::OpenUrl(url.clone()))));
+        }
+    }
+    let content = Rect::new(rect.x + 2, rect.y + 4, rect.width.saturating_sub(4), rect.height.saturating_sub(7));
+    let rows = content.height as usize;
+    let lines = app.report_lines(viewer, content.width as usize);
+    let max_top = lines.len().saturating_sub(rows);
+    let top = viewer.top.min(max_top);
+    let html = viewer.content.as_ref().is_some_and(|c| c.format == crate::reports_model::Format::Html);
+    let gpu = app.render_mode == crate::view::RenderMode::Gpu;
+    let failed = matches!(app.reports.web, crate::reports::WebState::Failed(_));
+    let document = if gpu && html && !failed { app.report_document(viewer) } else { None };
+    let too_large = document.as_ref().is_some_and(|d| d.len() > crate::reports::HTML_VIEW_MAX);
+    let web = document.is_some() && !too_large;
+    let note = match (&app.reports.web, gpu, html) {
+        (_, _, false) => String::new(),
+        _ if too_large => " · HTML shown as formatted text: too large for the HTML view".into(),
+        (crate::reports::WebState::Failed(why), true, true) => format!(" · HTML shown as formatted text: the HTML view is unavailable ({why})"),
+        (_, true, true) => " · HTML view: scripts off, nothing loaded from the network".into(),
+        (_, false, true) => " · HTML shown as formatted text (the GPU client shows its own styling)".into(),
+    };
+    let status = match (&viewer.content, &viewer.error) {
+        (_, Some(error)) => error.clone(),
+        (None, None) => "Loading…".into(),
+        (Some(_), None) if web => format!("scroll inside the page · Tab buttons · Esc close{note}"),
+        (Some(_), None) => {
+            let range = if lines.is_empty() { "empty".to_owned() } else { format!("lines {}–{} of {}", top + 1, (top + rows).min(lines.len()), lines.len()) };
+            format!("{range} · ↑↓ PgUp/PgDn scroll · Tab buttons · Esc close{note}")
+        }
+    };
+    let status_style = if viewer.error.is_some() { fg(NEGATIVE).bg(MODAL) } else { fg(MUTED).bg(MODAL) };
+    put(buf, x, rect.y as i32 + 3, &truncate(&status, width.max(1) as usize), status_style, rect);
+    for (row, line) in lines.iter().enumerate().skip(top).take(rows) {
+        let y = content.y as i32 + (row - top) as i32;
+        let mut lx = content.x as i32;
+        for (text, style, link) in &line.spans {
+            let style = if style.bg.is_none() { style.bg(MODAL) } else { *style };
+            let end = put(buf, lx, y, text, style, content);
+            if let Some(url) = link
+                && end > lx
+            {
+                ctx.hit(Rect::new(lx as u16, y as u16, (end - lx) as u16, 1), crate::dialogs::Hit::Toolbar(Action::Report(ReportAction::Link(url.clone()))));
+            }
+            lx = end;
+        }
+    }
+    // The GUI draws the HTML report itself over the content area.
+    if web
+        && ctx.top
+        && let Some(document) = document
+    {
+        app.layout.html_pane = Some((content, viewer.id.clone(), document));
+    }
+    let mut bx = x;
+    let y = rect.bottom() as i32 - 2;
+    let buttons = app.report_buttons(viewer);
+    for (i, (label, _)) in buttons.iter().enumerate() {
+        bx = button(buf, ctx, bx, y, label, i == viewer.sel, i == 0 && label.starts_with("View"), i, rect);
+    }
+    if ctx.top
+        && let Some(Modal::Report(open)) = app.modals.last_mut()
     {
         open.rows = rows.max(1);
         open.total = lines.len();

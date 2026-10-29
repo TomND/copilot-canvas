@@ -124,6 +124,28 @@ pub fn resolve(routing: &Routing, group: &str, on: &str) -> Option<Anchor> {
     (named || on.eq_ignore_ascii_case("group")).then_some(Anchor::Group)
 }
 
+/// Resolves `--on NAME` for a canvas-wide agent: any session or passive
+/// session box of the canvas (id first, then name). Answers the box's group
+/// (empty for an ungrouped session) and the box; groups themselves are not
+/// named this way.
+pub fn resolve_canvas(routing: &Routing, on: &str) -> Option<(String, Anchor)> {
+    let on = on.trim();
+    if on.is_empty() {
+        return None;
+    }
+    let passive = |exact: bool| routing.passive.iter().find(|p| if exact { p.key == on || p.session_id == on } else { p.name.eq_ignore_ascii_case(on) });
+    let session = |exact: bool| routing.names.iter().find(|(id, name)| routing.passive_by_session(id).is_none() && if exact { id.as_str() == on } else { name.eq_ignore_ascii_case(on) });
+    for exact in [true, false] {
+        if let Some((id, _)) = session(exact) {
+            return Some((routing.members.get(id).cloned().unwrap_or_default(), Anchor::Node(id.clone())));
+        }
+        if let Some(p) = passive(exact) {
+            return Some((p.group.clone(), Anchor::Node(p.session_id.clone())));
+        }
+    }
+    None
+}
+
 /// Adds an effect (the same kind on the same anchor is replaced, so it
 /// starts again), keeping at most [`MAX_EFFECTS`].
 pub fn add(effects: &mut Vec<Effect>, effect: Effect) {
@@ -205,6 +227,16 @@ mod tests {
         assert_eq!(resolve(&r, "g1", "s2"), None);
         assert_eq!(resolve(&r, "", "s1"), None, "no group, no effects");
         assert_eq!(resolve(&r, "g1", " "), None);
+    }
+
+    #[test]
+    fn canvas_wide_agents_reach_boxes_of_every_group() {
+        let r = routing();
+        assert_eq!(resolve_canvas(&r, "Elsewhere"), Some(("g2".into(), Anchor::Node("s2".into()))), "another group's session");
+        assert_eq!(resolve_canvas(&r, "s1"), Some(("g1".into(), Anchor::Node("s1".into()))));
+        assert_eq!(resolve_canvas(&r, "rollout"), Some(("g1".into(), Anchor::Node("p1".into()))), "passive sessions by name");
+        assert_eq!(resolve_canvas(&r, "payments"), None, "groups are not boxes");
+        assert_eq!(resolve_canvas(&r, "nobody"), None);
     }
 
     #[test]

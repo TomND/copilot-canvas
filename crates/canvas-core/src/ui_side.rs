@@ -16,18 +16,26 @@ pub const BAR_W: u16 = 3;
 
 pub fn draw_activity_bar(app: &mut App, buf: &mut Buffer, area: Rect) {
     fill(buf, area.x as i32, area.y as i32, area.width as i32, area.height as i32, Style::default().bg(ratatui::style::Color::Rgb(13, 17, 23)), area);
+    let unread = app.reports.unread_rows();
     for (i, (view, icon, title)) in VIEWS.iter().enumerate() {
         let y = area.y as i32 + 1 + i as i32 * 2;
         if y >= area.bottom() as i32 {
             break;
         }
         let active = app.side_view == *view && app.doc.ui.sidebar_visible;
-        let style = if active { bold(SELECT).bg(PANEL_HI) } else { fg(GRAY).bg(ratatui::style::Color::Rgb(13, 17, 23)) };
+        let bg = if active { PANEL_HI } else { ratatui::style::Color::Rgb(13, 17, 23) };
+        let style = if active { bold(SELECT).bg(PANEL_HI) } else { fg(GRAY).bg(bg) };
         if active {
             fill(buf, area.x as i32, y, area.width as i32, 1, Style::default().bg(PANEL_HI), area);
             put(buf, area.x as i32, y, "▌", fg(ACCENT).bg(PANEL_HI), area);
         }
-        put(buf, area.x as i32 + 1, y, icon, style, area);
+        // Unread reports: the icon in gold with their count beside it (9+ as "+").
+        let unread_here = *view == SideView::Reports && unread > 0;
+        put(buf, area.x as i32 + 1, y, icon, if unread_here { bold(ATTENTION).bg(bg) } else { style }, area);
+        if unread_here {
+            let count = if unread > 9 { "+".to_owned() } else { unread.to_string() };
+            put(buf, area.x as i32 + 2, y, &count, bold(ATTENTION).bg(bg), area);
+        }
         let _ = title;
         app.layout.hits.push((Rect::new(area.x, y as u16, area.width, 1), Hit::Toolbar(Action::View(*view))));
     }
@@ -50,6 +58,7 @@ fn hints(view: SideView) -> &'static str {
         SideView::Agents => "Enter details · A agent",
         SideView::VsCode => "Enter run / toggle",
         SideView::Settings => "Enter edit · A agent",
+        SideView::Reports => "Enter open · Space read/unread · Del delete",
         SideView::Sessions => "",
     }
 }
@@ -103,6 +112,9 @@ pub fn draw_list(app: &mut App, buf: &mut Buffer, area: Rect) {
             ItemRef::Detail => {
                 put(buf, area.x as i32 + 4, y, &crate::paint::truncate_left(&row.label, (area.width as usize).saturating_sub(5).max(4)), fg(row.color).bg(bg), area);
             }
+            ItemRef::ReportLine(_) => {
+                put(buf, area.x as i32 + 4, y, &truncate(&row.label, (area.width as usize).saturating_sub(5).max(4)), fg(row.color).bg(bg), area);
+            }
             _ => {
                 let mut x = put(buf, area.x as i32 + 2, y, row.icon, fg(row.color).bg(bg), area) + 1;
                 // Names win: the right column only gets what the label leaves free (min 6).
@@ -111,7 +123,9 @@ pub fn draw_list(app: &mut App, buf: &mut Buffer, area: Rect) {
                 let right = truncate(&row.right, free.min((area.width as usize / 2).saturating_sub(2)));
                 let right_w = crate::paint::text_width(&right) as i32;
                 let room = (right_edge - x - right_w - 2).max(1) as usize;
-                let style = if selected { bold(SELECT).bg(bg) } else { fg(TEXT).bg(bg) };
+                // An unread report's title is bold.
+                let unread = matches!(&row.item, ItemRef::Report(_)) && row.icon == "●";
+                let style = if selected || unread { bold(SELECT).bg(bg) } else { fg(TEXT).bg(bg) };
                 x = put(buf, x, y, &truncate(&row.label, room), style, area);
                 let _ = x;
                 if right_w > 0 {
@@ -156,6 +170,8 @@ struct Lines {
     width: usize,
     /// Lines drawn as coloured spans instead of one style (by line index).
     spans: std::collections::HashMap<usize, Vec<(String, Style)>>,
+    /// Clickable parts of lines: (line, first cell, cells, action).
+    clicks: Vec<(usize, i32, i32, Action)>,
 }
 
 impl Lines {
@@ -163,6 +179,29 @@ impl Lines {
         for line in wrap(&text.into(), self.width) {
             self.lines.push((line, style));
         }
+    }
+    /// One line that acts on a click (cut to the width).
+    fn link(&mut self, text: &str, style: Style, action: Action) {
+        let text = truncate(text, self.width);
+        self.clicks.push((self.lines.len(), 0, crate::paint::text_width(&text) as i32, action));
+        self.lines.push((text, style));
+    }
+    /// A row of small buttons (as many as fit).
+    fn buttons(&mut self, indent: usize, items: Vec<(String, Action)>) {
+        let mut spans = vec![(" ".repeat(indent), Style::default())];
+        let mut x = indent as i32;
+        for (label, action) in items {
+            let text = format!(" {label} ");
+            let w = crate::paint::text_width(&text) as i32;
+            if x + w > self.width as i32 {
+                break;
+            }
+            self.clicks.push((self.lines.len(), x, w, action));
+            spans.push((text, Style::default().fg(ACCENT).bg(PANEL_HI)));
+            spans.push((" ".into(), Style::default()));
+            x += w + 1;
+        }
+        self.spans(spans);
     }
     fn field(&mut self, label: &str, value: &str) {
         if value.is_empty() {
@@ -485,10 +524,204 @@ fn session_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)
     primary
 }
 
+/// "in 4m" / "3h ago" for a time in ms ("—" for none).
+fn at_ms(ms: u64) -> String {
+    if ms == 0 { "—".to_owned() } else { when(&crate::paths::format_rfc3339_ms(ms)) }
+}
+
+/// The management panel of the canvas-wide agents (top bar's ◎ Agents, the
+/// frame's chip): each agent's state and controls, the canvas skills, and
+/// the group passive sessions for contrast.
+fn canvas_agents_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>) {
+    use crate::canvas_wide::{AgentAction, AgentState, MARK};
+    let agents: Vec<crate::doc::Node> = app.canvas_agents().into_iter().cloned().collect();
+    out.text(format!("{MARK} Canvas agents · {}", agents.len()), bold(TEXT));
+    out.text(
+        "Canvas-wide agents watch every group of this canvas: events from any session (pr.* anywhere), schedules, messages to any session, and the canvas skills you give them. A group's passive sessions (⟲) see only their own group.",
+        fg(MUTED),
+    );
+    let unavailable = app.canvas_agents_unavailable();
+    if let Some(why) = &unavailable {
+        out.text(format!("Unavailable here: {why}"), fg(NEGATIVE));
+    }
+    out.gap();
+    if agents.is_empty() && unavailable.is_none() {
+        out.text("No canvas-wide agent yet: the New canvas agent button below makes one (PR coordinator, Cross-group digest or Custom).", fg(MUTED));
+    }
+    for node in &agents {
+        let state = app.canvas_agent_state(node);
+        let passive = node.passive.clone().unwrap_or_default();
+        let view = app.passive_view(node).cloned().unwrap_or_default();
+        out.link(&format!("{MARK} {}  {} {}", node.name, state.icon(app.tick), state.word()), bold(state.color()), Action::Agents(AgentAction::Show(node.id.clone())));
+        let mut facts = vec![App::passive_trigger(&passive)];
+        if !passive.groups.is_empty() {
+            facts.push(format!("groups: {}", app.agent_groups_text(&passive)));
+        }
+        if !passive.skills.is_empty() {
+            facts.push(format!("skills: {}", passive.skills.join(", ")));
+        }
+        if view.next_run_ms > 0 && !passive.paused && !passive.disabled {
+            facts.push(format!("next {}", at_ms(view.next_run_ms)));
+        }
+        out.text(format!("   {}", facts.join(" · ")), fg(MUTED));
+        let detail = match &state {
+            AgentState::Monitoring | AgentState::Waiting | AgentState::Paused | AgentState::Off if !view.headline.is_empty() => format!("{} · last: {}", state.label(), view.headline),
+            _ => state.label(),
+        };
+        if detail != state.word() {
+            out.text(format!("   {detail}"), fg(state.color()));
+        }
+        let mut buttons: Vec<(String, Action)> = Vec::new();
+        if !passive.disabled {
+            if !passive.paused && !matches!(state, AgentState::Unavailable(_)) {
+                buttons.push(("▸ Run now".into(), Action::PassiveRun(node.id.clone())));
+            }
+            buttons.push((if passive.paused { "▶ Resume".into() } else { "‖ Pause".into() }, Action::PassivePause(node.id.clone())));
+        }
+        if view.running || app.owned_alive(&node.id) {
+            buttons.push(("■ Stop".into(), Action::Agents(AgentAction::Stop(node.id.clone()))));
+        }
+        buttons.push((if passive.disabled { "⏻ Enable".into() } else { "⏻ Disable".into() }, Action::Agents(AgentAction::Toggle(node.id.clone()))));
+        buttons.push(("Open".into(), Action::Agents(AgentAction::Show(node.id.clone()))));
+        out.buttons(3, buttons);
+    }
+    out.gap();
+    match &app.canvas_skills {
+        Some(Ok(skills)) => {
+            out.text(format!("CANVAS SKILLS · {}", skills.len()), bold(MUTED));
+            if skills.is_empty() {
+                out.text("None yet: New skill (below) writes a SKILL.md (name, description, rules); an agent's Skills button gives it to that agent.", fg(MUTED));
+            }
+            for skill in skills {
+                let users = agents.iter().filter(|n| n.passive.as_ref().is_some_and(|p| p.skills.contains(&skill.name))).count();
+                let about = if skill.problem.is_empty() { skill.description.clone() } else { format!("⚠ {}", skill.problem) };
+                out.link(&format!("✦ {} — {about} · {users} agent(s)", skill.name), fg(if skill.problem.is_empty() { TEXT } else { ATTENTION }), Action::Agents(AgentAction::OpenSkill(skill.name.clone())));
+            }
+        }
+        Some(Err(why)) if unavailable.is_none() => out.text(format!("Canvas skills unavailable: {why}"), fg(NEGATIVE)),
+        _ => {}
+    }
+    out.gap();
+    let group_passives: Vec<&crate::doc::Node> = app.doc.nodes.iter().filter(|n| n.passive.is_some() && !n.is_canvas_agent()).collect();
+    out.text(format!("GROUP PASSIVE SESSIONS · {} (⟲ each sees only its own group)", group_passives.len()), bold(MUTED));
+    for node in group_passives.iter().take(8) {
+        let group = node.passive.as_ref().and_then(|p| app.doc.group(&p.group)).map(|g| g.name.clone()).unwrap_or_default();
+        out.link(&format!("⟲ {} — {group} · {}", node.name, app.passive_line(node)), fg(TEXT), Action::PassiveDetail(node.id.clone()));
+    }
+    if let Some(dir) = app.canvas_agents_dir() {
+        out.gap();
+        out.field_left("Folder", &dir.display().to_string());
+    }
+    if unavailable.is_none() {
+        actions.push(("+ New canvas agent".into(), Action::Agents(AgentAction::New)));
+        actions.push(("Skills…".into(), Action::Agents(AgentAction::Library)));
+        actions.push(("New skill…".into(), Action::Agents(AgentAction::NewSkill(None))));
+        actions.push(("Send event…".into(), Action::Agents(AgentAction::SendEvent)));
+        actions.push(("Folder".into(), Action::Agents(AgentAction::Folder)));
+    }
+    if app.doc.canvas_frame().is_some() {
+        actions.push(("Show frame".into(), Action::Agents(AgentAction::Reveal)));
+    }
+}
+
+/// One canvas-wide agent's panel: what it watches, its skills and state,
+/// recent events of the canvas, and every control (none starts it: Open
+/// chat is the explicit start).
+fn canvas_agent_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>, node: &crate::doc::Node) {
+    use crate::canvas_wide::{AgentAction, AgentState, MARK};
+    use crate::dialogs::PassiveField;
+    let id = node.id.clone();
+    let passive = node.passive.clone().unwrap_or_default();
+    let view = app.passive_view(node).cloned().unwrap_or_default();
+    let state = app.canvas_agent_state(node);
+    out.text(format!("{MARK} {}", node.name), bold(TEXT));
+    out.text(format!("{} canvas-wide agent · {}", state.icon(app.tick), state.label()), bold(state.color()));
+    if !view.headline.is_empty() && !matches!(state, AgentState::Attention(_) | AgentState::Done(_)) {
+        out.text(format!("Last report: {} {}", view.status, view.headline), fg(TEXT));
+    }
+    out.gap();
+    out.field("Watches", &if passive.groups.is_empty() { "every group of this canvas".to_owned() } else { format!("the groups {}", app.agent_groups_text(&passive)) });
+    out.field("Reacts to", &App::passive_trigger(&passive));
+    out.field("Filter", &passive.filter);
+    let library = app.canvas_skills.as_ref().and_then(|s| s.as_ref().ok());
+    let skills = if passive.skills.is_empty() {
+        "none yet (its Skills button gives it canvas skills)".to_owned()
+    } else {
+        passive.skills.iter().map(|s| if library.is_some_and(|l| !l.iter().any(|k| &k.name == s)) { format!("{s} (missing)") } else { s.clone() }).collect::<Vec<_>>().join(", ")
+    };
+    out.field("Skills", &skills);
+    out.field("Template", &passive.template);
+    let kind = crate::agents::agent_of(node);
+    let model = canvas_model::models::effective(kind, &app.doc.defaults, app.doc.group(&passive.group)).model;
+    let model = node.model.clone().filter(|m| !m.is_empty()).unwrap_or(model);
+    out.field("Agent", &format!("{} · runs with {}", kind.label(), if model.is_empty() { "its own default model" } else { &model }));
+    let limit = if passive.max_runs_per_day == 0 { "no daily limit".to_owned() } else { format!("of {} a day", passive.max_runs_per_day) };
+    out.field("Runs today", &format!("{} {limit}", view.runs_today));
+    let rollover = if passive.rollover_runs == 0 { "never".to_owned() } else { format!("after {} runs", passive.rollover_runs) };
+    out.field("Fresh chat", &format!("{rollover} · conversation {} ({} earlier)", view.episode + 1, passive.episodes.len()));
+    out.field("Last run", &at_ms(view.last_run_ms));
+    out.field("Next run", &if passive.disabled || passive.paused { "—".to_owned() } else if view.next_run_ms == 0 { "when an event arrives".to_owned() } else { at_ms(view.next_run_ms) });
+    if view.pending > 0 {
+        out.field("Queued", &format!("{} event(s)", view.pending));
+    }
+    out.field("Last error", &view.last_error);
+    if view.stopped_ms > 0 {
+        out.field("Stopped", &format!("by you {}", at_ms(view.stopped_ms)));
+    }
+    if let Some(paths) = app.passive_paths(node) {
+        out.field_left("Folder", &paths.dir.display().to_string());
+    }
+    let canvas = app.doc.canvas_id.clone().unwrap_or_default();
+    let recent: Vec<String> = app
+        .bus
+        .recent
+        .iter()
+        .rev()
+        .filter(|e| !e.kind.starts_with("passive.") && !e.kind.starts_with("canvas.") && (e.canvas == canvas || app.doc.group(&e.group).is_some()))
+        .take(6)
+        .map(|e| {
+            let group = app.doc.group(&e.group).map(|g| g.name.clone()).unwrap_or_else(|| "no group".into());
+            format!("{} · {} · {group} · {}", e.kind, if e.source_name.is_empty() { "canvas" } else { &e.source_name }, at_ms(e.ms))
+        })
+        .collect();
+    if !recent.is_empty() {
+        out.gap();
+        out.text("RECENT CANVAS EVENTS (every group)", bold(MUTED));
+        for line in recent {
+            out.text(line, fg(TEXT));
+        }
+    }
+    if !passive.disabled {
+        actions.push(("Run now".into(), Action::PassiveRun(id.clone())));
+        actions.push((if passive.paused { "Resume".into() } else { "Pause".into() }, Action::PassivePause(id.clone())));
+    }
+    if view.running || app.owned_alive(&id) {
+        actions.push(("Stop run".into(), Action::Agents(AgentAction::Stop(id.clone()))));
+    }
+    actions.push((if passive.disabled { "Enable".into() } else { "Disable".into() }, Action::Agents(AgentAction::Toggle(id.clone()))));
+    actions.push(("Events…".into(), Action::PassiveEdit(id.clone(), PassiveField::Events)));
+    actions.push(("Groups…".into(), Action::PassiveEdit(id.clone(), PassiveField::Groups)));
+    actions.push(("Schedule…".into(), Action::PassiveEdit(id.clone(), PassiveField::Schedule)));
+    actions.push(("Filter…".into(), Action::PassiveEdit(id.clone(), PassiveField::Filter)));
+    actions.push(("Limits…".into(), Action::PassiveEdit(id.clone(), PassiveField::Limits)));
+    actions.push(("Skills…".into(), Action::Agents(AgentAction::Skills(id.clone()))));
+    actions.push(("MCP…".into(), Action::McpServers(id.clone())));
+    actions.push(("Rules".into(), Action::PassiveOpen(id.clone(), 0)));
+    actions.push(("Memory".into(), Action::PassiveOpen(id.clone(), 1)));
+    actions.push(("Log".into(), Action::PassiveOpen(id.clone(), 2)));
+    actions.push(("Context".into(), Action::Visual(crate::visual::VisualAction::PassiveFile(id.clone(), 4))));
+    actions.push(("Goals".into(), Action::Visual(crate::visual::VisualAction::PassiveFile(id.clone(), 5))));
+    actions.push(("Folder".into(), Action::PassiveOpen(id.clone(), 3)));
+    actions.push(("Message…".into(), Action::MessagePassive(id.clone())));
+    actions.push(("Open chat".into(), Action::PassiveChat(id.clone())));
+    actions.push(("All agents".into(), Action::Agents(AgentAction::Panel)));
+    actions.push(("Remove".into(), Action::RemoveNode(id)));
+}
+
 pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &RightDetail) {
     outline(buf, area.x as i32, area.y as i32, area.width as i32, area.height as i32, &LIGHT, fg(FAINT), area);
     let inner = Rect::new(area.x + 2, area.y + 1, area.width.saturating_sub(4), area.height.saturating_sub(3));
-    let mut out = Lines { lines: Vec::new(), width: inner.width as usize, spans: Default::default() };
+    let mut out = Lines { lines: Vec::new(), width: inner.width as usize, spans: Default::default(), clicks: Vec::new() };
     let mut actions: Vec<(String, Action)> = Vec::new();
     let mut primary = false;
     let config = app.config.clone().unwrap_or_default();
@@ -542,6 +775,11 @@ pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &R
                 out.text(format!("Source: {}", app.automation_db().display()), fg(MUTED));
             }
         },
+        RightDetail::CanvasAgents => canvas_agents_panel(app, &mut out, &mut actions),
+        RightDetail::Passive(id) if app.doc.node(id).is_some_and(|n| n.is_canvas_agent()) => {
+            let node = app.doc.node(id).cloned().expect("checked");
+            canvas_agent_panel(app, &mut out, &mut actions, &node);
+        }
         RightDetail::Passive(id) => match app.doc.node(id).cloned() {
             None => out.text("This passive session was removed.", fg(MUTED)),
             Some(node) => {
@@ -562,6 +800,7 @@ pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &R
                 out.field("Reacts to", &App::passive_trigger(&passive));
                 out.field("Filter", &passive.filter);
                 out.field("Group", &app.doc.group(&passive.group).map(|g| g.name.clone()).unwrap_or_default());
+                out.field("Scope", "this group's events only (◎ Agents: canvas-wide agents)");
                 let limit = if passive.max_runs_per_day == 0 { "no daily limit".to_owned() } else { format!("of {} a day", passive.max_runs_per_day) };
                 out.field("Runs today", &format!("{} {limit}", view.runs_today));
                 let rollover = if passive.rollover_runs == 0 { "never".to_owned() } else { format!("after {} runs", passive.rollover_runs) };
@@ -704,6 +943,13 @@ pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &R
             }
             None => {
                 put(buf, inner.x as i32, y, &truncate(text, inner.width as usize), *style, inner);
+            }
+        }
+        for (_, dx, w, action) in out.clicks.iter().filter(|(line, ..)| *line == i) {
+            let x = inner.x as i32 + dx;
+            let w = (*w).min(inner.right() as i32 - x);
+            if w > 0 {
+                app.layout.hits.push((Rect::new(x as u16, y as u16, w as u16, 1), Hit::Toolbar(action.clone())));
             }
         }
     }

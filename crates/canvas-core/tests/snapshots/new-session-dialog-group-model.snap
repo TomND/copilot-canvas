@@ -1,6 +1,6 @@
 # new-session-dialog-group-model (150x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit                                                3 sessions
+ ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit                                     3 sessions
     SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
 ▌▤  / filter…                    │  ┌╌ ▣ Canvas project · 4 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ + passive││ Build session canvas                                        │
                                  │  ╎                                                 ││ ■ stopped                                                   │
@@ -18,7 +18,7 @@
                                  ║                                                                                  ║                                │
  ≡                               ║                                                                                  ║                                │
                                  ║  Agent          ◉ GitHub Copilot   ○ OpenCode   ○ Claude Code (not installed)    ║                                │
-                                 ║                                                                                  ║                                │
+ ✉                               ║                                                                                  ║                                │
                                  ║  Model          claude-sonnet-5  ▾ · from group “Canvas project”                 ║                                │
                                  ║                                                                                  ║                                │
                                  ║  MCP servers    2 of 2 on · preset “All”  ▾ choose                               ║                                │

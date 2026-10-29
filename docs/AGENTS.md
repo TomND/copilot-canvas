@@ -9,8 +9,8 @@ the provider; the canvas, the service and the event bus are shared.
 
 Every launch also gets the canvas integration: `COPILOT_CANVAS_HOME`,
 `COPILOT_CANVAS_SESSION` (the box id) and the `copilot-canvas` command on
-`PATH` (events, messages, passive status), plus the canvas skills
-(`canvas-events`, `canvas-passive`).
+`PATH` (events, messages, passive status, reports), plus the canvas skills
+(`canvas-events`, `canvas-passive`, `canvas-reports`).
 
 ## At a glance
 
@@ -24,6 +24,7 @@ Every launch also gets the canvas integration: `COPILOT_CANVAS_HOME`,
 | Model, agent | `--model` (new sessions; passive runs every time), `--agent` (new sessions) | `-m` (new sessions; passive runs every time), `--agent` (new sessions) | `--model` (new sessions; resumes and forks with the session's recorded model; passive runs every time), `--effort`, `--agent` (new sessions) |
 | MCP servers off | `--disable-mcp-server NAME` | `OPENCODE_CONFIG_CONTENT` `{"mcp": {NAME: {"enabled": false}}}` | a private `--strict-mcp-config --mcp-config` file without them |
 | Passive run | `copilot --session-id ID -p PROMPT --allow-all --no-ask-user` | `opencode run PROMPT [-s ses_…] --auto -m MODEL` | `claude -p PROMPT --session-id/-r ID --dangerously-skip-permissions` |
+| Canvas skills of a canvas-wide agent | another `--plugin-dir <agent>/plugin` (Copilot takes the option several times) | `<agent>/plugin/skills` added to `skills.paths` in `OPENCODE_CONFIG_CONTENT` | another `--plugin-dir <agent>/plugin` (`.claude-plugin/plugin.json`; repeatable) |
 | History | `~/.copilot/session-state/<id>/events.jsonl` (tailed) | `~/.local/share/opencode/opencode.db` (SQLite, read-only, indexed lookups only) | `~/.claude/projects/<dir>/<id>.jsonl` (tailed) |
 | Live state | OSC 9;4 progress; `inuse.<pid>.lock` | the TUI's own HTTP server (busy, permission prompts, questions) | `~/.claude/sessions/<pid>.json` (busy / idle / waiting) |
 
@@ -96,6 +97,40 @@ the current default.
 **Older canvases** had one `model` for every agent. It moves to the agents
 whose ids it fits when the canvas is read: a `provider/model` id to OpenCode,
 any other id to Copilot and Claude Code (which both got it before).
+
+## Canvas-wide agents and their skills
+
+A canvas-wide agent (README, *Canvas-wide passive agents and skills*) runs
+like a group passive session: headless turns of its agent (the passive run
+row above), started in its own folder
+`<home>/canvas-agents/<canvas id>/agents/<slug>` (OpenCode learns each run's
+`ses_` id from the folder a run starts in, so agents never share one) with
+the canvas-agents folder `<home>/canvas-agents/<canvas id>` allowed
+(`--add-dir` for Copilot and Claude Code, `external_directory` for OpenCode),
+so it reads the canvas's `GOALS.md` and skills. Its prompt starts with
+`[Copilot Canvas · canvas-wide agent "<name>"]` and its triggers carry the
+sending session's id and group.
+
+**Skills.** A canvas skill is `skills/<name>/SKILL.md` in the canvas-agents
+folder: YAML front matter with `name` (lowercase, digits, single hyphens; the
+folder's name) and `description` (when the skill applies), then Markdown
+instructions, plus any files beside it. Before every run, and before its chat
+starts from the canvas, the service copies the agent's assigned skills (at
+most 200 files, 8 MB, 4 levels each; no links) into the agent's `plugin/`
+folder and writes the two manifests one folder serves:
+
+| | Copilot CLI | OpenCode | Claude Code |
+|---|---|---|---|
+| Manifest | `plugin.json` (`name: canvas-agent-<slug>`, `skills: ./skills/`) | none: the folder is read directly | `.claude-plugin/plugin.json` (`name: canvas-agent-<slug>`) |
+| How the run gets it | a second `--plugin-dir <agent>/plugin` after the canvas's own plugin | `skills.paths` gets `<agent>/plugin/skills` after the canvas's own skills folder | a second `--plugin-dir <agent>/plugin` |
+| Also | the prompt lists the skills (name, description) and their folder, so an agent CLI that ignored the plugin could still read them | same | same |
+
+Skills taken away disappear from the plugin at the next run; with none the
+plugin folder is removed. A skill the library no longer has is logged by the
+service (`canvas agent …: skills not in the canvas library: …`) and marked
+*(missing)* in the agent's panel. The service log line of the launch ends in
+`, with its canvas skills` when a run (or chat) got the plugin. Group passive
+sessions and ordinary sessions get no canvas skills.
 
 ## How status is derived
 
@@ -197,6 +232,40 @@ tools never ask), the group folder allowed as an external directory, and
 `-m` with the model new OpenCode sessions in the group get (see
 [Models](#models)). Its session id is learned from the folder after the
 run starts; later runs resume it with `-s`.
+
+## Reports from agents
+
+Any agent (an ordinary or passive canvas session of any of the three CLIs, or
+a scheduled task outside the canvas) leaves something for the user to read
+with one command; the `canvas-reports` skill (plugin 1.1.0, next to
+`canvas-events` and `canvas-passive`, which both point to it) teaches it:
+
+```text
+copilot-canvas report publish (--markdown FILE|- | --html FILE|- | --message TEXT) [--title TITLE]
+               [--kind info|ok|warn|alert|queued|delivered|failed] [--pr URL] [--link TITLE=URL]…
+               [--session NAME|ID] [--thread KEY] [--source NAME]
+copilot-canvas report list [--unread] [--limit N]
+```
+
+| | |
+|---|---|
+| Publisher | `COPILOT_CANVAS_SESSION` (the box; passive runs too), else `--source NAME` or `AUTOMATION_NAME`; with none it refuses ("this is not a Copilot Canvas session: name who publishes with --source NAME") |
+| Body | Markdown, HTML (a whole page with its own styles; images inline as `data:` URIs) or a message of at most 4,000 characters; at most 2 MiB, UTF-8, not empty |
+| Title | `--title`, else the first `#` heading, the HTML `<title>`/`<h1>`, the message's first line; one line, 160 characters |
+| Links | `--pr URL`, `--link TITLE=URL` (≤ 20): `http(s)://` or `mailto:` only, ≤ 2,048 characters |
+| Kind | `info` (default), `ok`, `warn`, `alert`, `queued` (asked for), `delivered` (confirmed), `failed` |
+| Thread | `--thread KEY` (`A-Z a-z 0-9 . _ : / # -`, ≤ 120): later updates join one inbox row (e.g. `pr-123`: queued, then delivered) |
+| Answer | `Report stored in the Copilot Canvas inbox: “T” (id).` (exit 0); `Report queued, not stored yet: …` (exit 0, no service running: it is stored when the service starts); `Copilot Canvas refused the report: …` or a check's reason (exit 1) |
+
+The command checks everything before it writes; then it spools the
+submission (`<home>/reports/spool/<id>.json`, written to a temporary file and
+renamed) and, when the service is alive (`reports/service.json`), waits up to
+10 s for it to be stored or refused. The service's inbox thread validates it
+again, resolves the publisher's box name and group from routing, and stores
+it; nothing is ever started. The skill has an example morning brief and
+short message, says how to check the result (never assume a report arrived),
+and its rules: lead with what needs the user, keep messages to one or two
+lines, no secrets, and reports are for reading (links, not commands to run).
 
 ## Verified end to end
 
@@ -303,3 +372,7 @@ and prints the screen.
   machine does not have; it passed on the owner's Cloud PC (2026-10-28), and
   Copilot's paths are also covered by the demo self-tests (a stand-in CLI) and
   unit tests.
+- No real agent has been asked to publish a report yet: `selftest`, the
+  parity rows 41–41c and the backend contract publish through the same
+  `copilot-canvas report publish` from demo shells and tests, and the skill's
+  text is checked by a unit test.

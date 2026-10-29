@@ -80,14 +80,27 @@ fn border_set(border: Border) -> &'static BoxSet {
     }
 }
 
-/// Marker before a box's name: passive, subagent, automation, subsession.
+/// Marker before a box's name: canvas-wide agent, passive, subagent,
+/// automation, subsession.
 pub fn box_prefix(node: &Node) -> &'static str {
     match (node.kind, node.parent.is_some()) {
+        _ if node.is_canvas_agent() => "◎ ",
         _ if node.passive.is_some() => "⟲ ",
         (NodeKind::Agent, _) => "◇ ",
         (NodeKind::Automation, _) => "◷ ",
         (NodeKind::Session, true) => "↳ ",
         _ => "",
+    }
+}
+
+/// The icon on a group's title: the automations' ◷, the canvas agents' ◎, else ▣.
+pub fn group_icon(group: &crate::doc::Group) -> &'static str {
+    if group.is_automations() {
+        "◷"
+    } else if group.is_canvas_agents() {
+        crate::canvas_wide::MARK
+    } else {
+        "▣"
     }
 }
 
@@ -147,10 +160,12 @@ pub fn box_model(app: &App, node: &Node, rect: WRect, status: Status, selected: 
     let focused_term = app.focused_term.as_deref() == Some(&node.id) && app.owned_alive(&node.id);
     let attention = box_attention(node, status, tick);
     let dust = if attention.is_none() { app.dust_look(node, status) } else { None };
-    let icon = status.icon(tick);
+    // A canvas-wide agent shows its own state's icon and colour (paused, off, failing, …).
+    let agent_state = node.is_canvas_agent().then(|| app.canvas_agent_state(node));
+    let icon = agent_state.as_ref().map(|s| s.icon(tick)).unwrap_or_else(|| status.icon(tick));
     let label = box_label(node, status);
     let every = app.node_loop(node);
-    let status_style = fg(status.color());
+    let status_style = fg(agent_state.as_ref().map(|s| s.color()).unwrap_or_else(|| status.color()));
     let kind = match node.kind {
         _ if node.passive.is_some() => BoxKind::Passive,
         NodeKind::Session => BoxKind::Session,
@@ -272,7 +287,7 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
         let style = if selected || target { Style::default().fg(color).add_modifier(Modifier::BOLD) } else { fg(color).add_modifier(Modifier::DIM) };
         outline(buf, x, y, w, h, if selected { &HEAVY } else { &DASHED }, style, clip);
         let members = member_counts.get(group.id.as_str()).copied().unwrap_or(0);
-        let icon = if group.is_automations() { "◷" } else { "▣" };
+        let icon = group_icon(group);
         let title = format!(" {icon} {} · {members} ", group.name);
         // Chips on the title row: passive sessions and folders (compact when narrow).
         let chips = app.fit_group_chips(group, paint::text_width(&title) as i32, w);
@@ -715,7 +730,7 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
         let target = drop_target.as_deref() == Some(&group.id);
         let style = if selected || target { Style::default().fg(color).add_modifier(Modifier::BOLD) } else { fg(color).add_modifier(Modifier::DIM) };
         let members = member_counts.get(group.id.as_str()).copied().unwrap_or(0);
-        let icon = if group.is_automations() { "◷" } else { "▣" };
+        let icon = group_icon(group);
         let chips = chip_models(app, group, rect, &format!(" {icon} {} · {members} ", group.name), scale);
         for chip in &chips {
             // Clickable where the chip covers whole cells.

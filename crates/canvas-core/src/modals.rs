@@ -166,6 +166,12 @@ impl App {
                 crate::inspect::KeyOutcome::Close => Outcome::Close,
                 crate::inspect::KeyOutcome::Run(action) => Outcome::CloseAndRun(action),
             },
+            Modal::Report(viewer) => match self.report_key(viewer, &key) {
+                crate::reports::ViewerOutcome::Keep => Outcome::Keep,
+                crate::reports::ViewerOutcome::Close => Outcome::Close,
+                crate::reports::ViewerOutcome::Run(action) => Outcome::KeepAndRun(action),
+                crate::reports::ViewerOutcome::CloseAndRun(action) => Outcome::CloseAndRun(action),
+            },
             Modal::ImportCopilot(dialog) => {
                 let candidates = self.copilot_import_candidates(&dialog.filter.text);
                 let ctrl = key.modifiers.contains(Modifiers::CONTROL);
@@ -604,6 +610,9 @@ impl App {
             }));
             return;
         }
+        if matches!(purpose, PickPurpose::CanvasTemplate | PickPurpose::AgentSkills(_) | PickPurpose::CanvasSkills) {
+            return self.apply_agent_pick(purpose, &value);
+        }
         if let Some(Modal::NewSession(dialog)) = self.modals.last_mut() {
             match purpose {
                 PickPurpose::RecentFolder => {
@@ -614,7 +623,7 @@ impl App {
                     dialog.base = value;
                     Self::refresh_worktree_defaults(dialog);
                 }
-                PickPurpose::Default(..) | PickPurpose::PassiveTemplate(_) | PickPurpose::Model(_) => {}
+                PickPurpose::Default(..) | PickPurpose::PassiveTemplate(_) | PickPurpose::Model(_) | PickPurpose::CanvasTemplate | PickPurpose::AgentSkills(_) | PickPurpose::CanvasSkills => {}
             }
             dialog.error = None;
         }
@@ -794,6 +803,12 @@ impl App {
                 inspector.sel = i;
                 self.modal_key(enter);
             }
+            (Some(Modal::Report(viewer)), Hit::Button(i)) => {
+                viewer.sel = i;
+                self.modal_key(enter);
+            }
+            // A link in a report, or one of its details (they ask or only view).
+            (Some(Modal::Report(_)), Hit::Toolbar(action)) => self.run(action),
             (Some(_), Hit::Button(_)) => {
                 self.modals.pop();
             }

@@ -63,13 +63,15 @@ impl Docs {
         }
         let loaded = (|| -> Result<OpenDoc> {
             let store = Store::open(&path)?;
-            let (doc, created) = match store.load()? {
+            let (mut doc, created) = match store.load()? {
                 Some(doc) => (doc, false),
                 None if demo => (doc::demo_doc(cwd), true),
                 None => (doc::migrate_v1(&home.join("layout.json")).unwrap_or_default(), true),
             };
+            // Every canvas gets an id (its canvas-wide agents' folder), saved at once.
+            let named = doc.ensure_canvas_id();
             // A new canvas is written at once.
-            let dirty = created.then(|| Instant::now().checked_sub(SAVE_DELAY).unwrap_or_else(Instant::now));
+            let dirty = (created || named).then(|| Instant::now().checked_sub(SAVE_DELAY).unwrap_or_else(Instant::now));
             Ok(OpenDoc { path: path.clone(), _store: store, doc, version: 1, clients: HashSet::from([client]), dirty, error: None })
         })();
         match loaded {
@@ -174,6 +176,8 @@ mod tests {
         let (key, version, reply) = &opened[0];
         assert_eq!((*version, reply.client, opened[1].0 == *key, opened[1].2.client), (1, 1, true, 2));
         assert!(reply.doc.as_ref().unwrap().node("demo-main").is_some(), "a new demo canvas");
+        let id = reply.doc.as_ref().unwrap().canvas_id.clone();
+        assert!(id.as_deref().is_some_and(doc::valid_canvas_id) && opened[1].2.doc.as_ref().unwrap().canvas_id == id, "it got an id, the same for every client");
         let path = PathBuf::from(&reply.path);
         assert!(Store::open(&path).is_err(), "the service holds the lock");
         assert!(docs.save(false).is_empty() && path.is_file(), "a new canvas is saved at once");
@@ -194,7 +198,9 @@ mod tests {
         docs.open(&home, None, true, r"C:\w", 4, |_, version, reply| again = Some((version, reply)));
         let (version, reply) = again.unwrap();
         assert_eq!(version, 1);
-        assert!(reply.doc.unwrap().node("x").is_some(), "reopened from the file");
+        let reopened = reply.doc.unwrap();
+        assert!(reopened.node("x").is_some(), "reopened from the file");
+        assert_eq!(reopened.canvas_id, id, "the id is kept in the file");
         std::fs::write(home.join("broken.json"), "{").unwrap();
         let mut failed = None;
         docs.open(&home, Some(&home.join("broken.json").display().to_string()), false, "", 5, |_, _, reply| failed = reply.error);

@@ -8,14 +8,17 @@ cargo build --release
 target\release\copilot-canvas.exe selftest --client gui --parity
 ```
 
-It takes about 60 s on the development machine (RTX 3070, workstation
+It takes about 110 s on the development machine (row 40b waits out event debounces; RTX 3070, workstation
 locked), prints each check as it runs and ends with the table below;
 `CANVAS_GUI_SCREENS=DIR` keeps the PNG captures the checks inspect.
+`CANVAS_PARITY_ROWS=41,41b` (a comma-separated list of row numbers) runs only
+those rows, for work on one feature; rows outside the list are not run and
+not listed, and the full suite is what counts.
 
 ## How the suite works
 
 - **Over the test hooks.** It starts `copilot-canvas-gui.exe --test-hooks
-  --size 170x46 --perf` and drives it like the 33-step self-test
+  --size 170x46 --perf` and drives it like the 35-step self-test
   (`docs/GUI.md` §3): keys, text, mouse and wheel at cell centres, the `screen`
   text, the `tree` (boxes with status, border and loop; tiles with images,
   tint and links; selection; notices), offscreen `png` captures whose pixels
@@ -47,7 +50,7 @@ locked), prints each check as it runs and ends with the table below;
 
 ## The matrix
 
-`GUI check` is the parity suite's check; `also` lists the 33-step GUI
+`GUI check` is the parity suite's check; `also` lists the 35-step GUI
 self-test steps (`selftest --client gui`, also run with `--remote loopback`)
 and unit tests that cover the row.
 
@@ -74,7 +77,7 @@ and unit tests that cover the row.
 | 18 | Links: URLs, OSC 8, Windows paths; Ctrl+click; nothing executed | `links_osc8_and_paths`: OSC 8 and plain-path links found; Ctrl+click on a missing path gives a notice | step "links in terminals: plain click focuses, Ctrl+click opens"; canvas-gui tiles link tests | ✓ |
 | 19 | New session dialog: name, folder (type, Browse…, Recent ▾), Git detection, worktree, first prompt, MCP row, agent | `new_session_dialog_fields`: every field, the Git probe, the folder browser | steps "new session dialog", "folder browser + Git detection + new worktree session" | ✓ |
 | 20 | Import (filter, multi-select, grouping); VS Code sync (+ Ctrl+Z, auto sync) | `import_dialog_and_vscode_view`: filter, Ctrl+A, import two sessions; the VS Code view | step "VS Code view offers sync and migration" | ✓ |
-| 21 | Activity bar views (Alt+1…8) | `activity_views_alt_1_to_8`: all eight titles | steps for Automations, Settings and VS Code views | ✓ |
+| 21 | Activity bar views (Alt+1…9) | `activity_views_alt_1_to_9`: all nine titles | steps for Automations, Settings, VS Code and Reports views | ✓ |
 | 22 | Copilot defaults, group overrides, `copilot config` list and edit | `settings_defaults_and_config`: `config --list` shown, the default model edited and saved | step "Settings view edits Copilot launch defaults" | ✓ |
 | 23 | Plugins, MCP, skills: list, toggle, remove (confirmed), add, install in a terminal; secrets hidden | `mcp_view_lists_and_toggles`: servers listed from the CLI, Space toggles through it, the plugins view loads | canvas-agents `mcp_listing_shapes_are_normalized_without_secrets` | ✓ |
 | 24 | Migrate from VS Code (preview, tick, backup, redacted log) | `migration_preview_dialog`: the read-only preview opens and closes | canvas-agents migrate tests | ✓ |
@@ -83,16 +86,22 @@ and unit tests that cover the row.
 | 27 | Copilot automations (`data.db`) and session schedules | `automation_boxes_and_session_loops`: three automation boxes; the session schedule loops | | ✓ |
 | 28 | Idle auto-stop, priority manager, upgrade with resume, protocol-mismatch tolerance, crash log | `crash_log_and_build_match`: no update prompt for a current service; a crash is written to `crash.log` and the sessions keep running (idle stop, priorities and upgrades are the service's, shared with the TUI) | `upgrade_probe` (manual), canvas-host tests | ✓ |
 | 29 | Keyboard map, F6 / Ctrl+] to leave a terminal, Q / Ctrl+Q quit dialog, `?` help | `help_f6_and_quit_dialog` | steps "Ctrl+] returns keyboard focus", "detach", "stop all and quit" | ✓ |
-| 30 | `--demo` mode | `demo_mode_canvas` | the whole 33-step self-test runs in `--demo` | ✓ |
+| 30 | `--demo` mode | `demo_mode_canvas` | the whole 35-step self-test runs in `--demo` (its canvas-wide agents step opens a canvas of its own) | ✓ |
 | 31 | `--perf` overlay (GPU timings, round-trip time) | `perf_overlay_rtt`: frame timings and service round trips measured | `bench --client gui` | ✓ |
 | 32 | CLI (service, doctor, bench, events, emit, send, status, followup, automations) | `cli_unchanged` — **no front end:** the same CLI binary for both clients | existing CLI tests | ✓ |
-| 33 | **New:** remote mode (pair, reconnect, resync, offline input blocking) | `remote_loopback_gui_and_upload`: the GUI over loopback TCP; a dropped file is uploaded to the service's machine and its path pasted | `selftest --client gui --remote loopback` (33 steps over TCP); `selftest --remote faults` (the reconnect core both clients share) | ✓ |
+| 33 | **New:** remote mode (pair, reconnect, resync, offline input blocking) | `remote_loopback_gui_and_upload`: the GUI over loopback TCP; a dropped file is uploaded to the service's machine and its path pasted | `selftest --client gui --remote loopback` (35 steps over TCP); `selftest --remote faults` (the reconnect core both clients share) | ✓ |
 | 34 | **New:** view versus start: a click (canvas, sidebar) only views a box (its live terminal or its details panel); double-click, Enter, the panel's Start / Resume and menu items start it; group rows never launch | `view_vs_start`: a click on a stopped session shows its details with Resume and launches nothing (service log, no tile); a double-click, Enter and the Resume button each resume one (the stand-in Copilot); a group row shows running terminals and launches nothing | steps "a click views a stopped session without launching it", "a double-click on the box starts it", "the details panel's Start button starts a session"; canvas-core `interact` tests | ✓ |
 | 35 | **New:** transcript inspector for session and subagent boxes (live while they run); a finished child resumes as its own linked subsession, never beside a writer | `inspector_and_child_resume`: a Copilot session's transcript and a subagent's note; an OpenCode child (synthetic database) that works, whose inspector shows a new line written while it is open; with its parent running (stand-in OpenCode) a finished child offers no resume; parent stopped: **Resume as subsession** adds a linked box and the service resumes it with `-s <child>` | canvas-agents `transcript` tests (Copilot with subagent events, OpenCode with a child, Claude Code with a subagent file), canvas-core `inspect` tests (resume rules, a refused resume), `backend_contract` (local and remote answers match); `selftest agent --agent opencode --prompt` (inspect and resume a real child) | ✓ |
 | 36 | **New:** removing a multi-selection: right-click on a selected box (or Del) removes its eligible boxes after a confirmation; sessions running in a canvas terminal stay; history is never deleted; Ctrl+Z restores them | `multi_remove_keeps_running`: a 3-box selection (one running) → menu “Remove 2 from canvas” → the confirmation names the running one → two boxes gone, their history files kept → Ctrl+Z brings them back | canvas-core `remove` tests (eligibility, subagents go with their session, subsessions unlinked, undo) | ✓ |
 | 37 | **New:** a click on a group's empty background or its border selects the group (innermost; a few pixels outside the outline in the GUI); title drag, ◢ resize, folder chips, background pan and double-click are unchanged | `group_background_and_border_select`: an empty background spot and a point 0.2 cells outside the outline each select the group (its panel, nothing launched); a background drag pans; title drag and ◢ still move and resize; chips stay clickable; a double-click opens the new-session dialog | step "a click on a group's border selects the group" (heavy outline, its panel); canvas-core `interact` tests (both render modes, nested groups, gestures) | ✓ |
 | 38 | **New:** recent sessions: a RECENT section atop the Sessions panel (newest first, shared by every window through the document); Ctrl+F6 / Ctrl+Shift+F6 (terminals too) and `]` / `[` view the next or previous one and never start it | `recent_sessions_and_walk_keys`: three sessions viewed in turn are listed newest first and saved in the canvas document; Ctrl+F6, Ctrl+F6, Ctrl+Shift+F6 select the one before, the one before that and back (details panels, a "Recent 2 of N" notice) while the list keeps its order; a second later the one reached is first; `]` and `[` on the canvas do the same; no launch in the service log, no terminal for any of them | step "recent sessions: Ctrl+F6 / Ctrl+Shift+F6 view recent sessions without starting them" (from a terminal, TUI and GUI); canvas-model `recent` tests (order, clock skew, walk, removal, document round trip and two windows merging), canvas-core `recent` tests (keys never launch, the walk settles after a second or on any other input, Ctrl+F6 in a terminal, `]` reaches the agent there, the RECENT rows hold still for a double-click); snapshot `sidebar-recent` | ✓ |
 | 39 | **New:** the default model for new sessions: the new-session dialog shows the model it starts with and why (group override, remembered default, initial Claude Opus 5.5); a pick applies to that session and becomes its agent's remembered default (in a group with its own model, that session only); Settings shows and resets each agent's default; resumes keep a session's own model; 39b: still remembered after a restart | `remembered_default_model`, `remembered_model_after_restart`: the stand-in Claude Code starts with `claude-opus-5-5` (nothing chosen, nothing remembered); a model picked from the list starts the next session and is remembered and recorded on its box; a resumed older session keeps `--model claude-opus-5-5`; a Copilot resume carries no model; a group override is shown "from group", a pick there is for that session only, then reset; a restarted GUI still shows the remembered model | `selftest agent` and `selftest agent --agent claude` (the launch command line carries the default model); canvas-model `models` tests (resolution, migration of the old single model, round trip), canvas-agents launch tests (new versus resume per agent); snapshots `new-session-dialog`, group model and model picker | ✓ |
+| 41 | **New:** the Reports inbox: sessions publish reports and short messages (`copilot-canvas report publish`); an unread count on the activity bar, a notice and a toast; the viewer formats Markdown and marks it (its thread) read at the service; viewing its session starts nothing | `reports_inbox_and_viewer`: a stopped session's environment publishes a Markdown brief (`--kind warn --pr`) and a queued message in a thread; ✉2 on the activity bar, "New report from Stopped one", a toast per report asked for (quiet while the window is in front); a click on the brief shows it formatted (bullets, a table with rules, a quote), ✉1, read in the service's `state.json`, the message still unread; *View “Stopped one”* closes the viewer and shows its details panel (Resume), the message reads with one click, nothing unread; the service log shows no launch | step "reports: a session publishes a Markdown report and a message …" (TUI and GUI, also over loopback); canvas-core `reports` tests (threads, read on open, never a launch, unread/delete/links through the service), canvas-agents `reports` tests (checks, queued then stored, refusals, retention), `backend_contract` (local and remote inbox, push only to `CAP_REPORTS` clients); snapshots `reports-inbox`, `report-viewer-markdown`, `report-viewer-html`; goldens `reports-inbox`, `report-viewer` | ✓ |
+| 41b | **New, GUI only:** HTML reports in a WebView2 view with their own styles; scripts never run, nothing is fetched, navigation blocked (the TUI shows HTML as formatted text) | `html_report_locked_down`: an HTML report with a `<style>`, a `<script>`, an `onerror`, an external stylesheet, CSS and image URLs pointing at a local listener; the view shows it (the viewer says "HTML view: scripts off, nothing loaded from the network"); in the page: no script element, the image without `src`, the CSP meta, the heading magenta from the page's own CSS, the title unchanged; the view's capture has the magenta heading and the composed window (`PrintWindow`) has it only inside the viewer's content area; then an unsanitized page (`probe_raw`): its script element is there but does not run, its requests are answered 403, a `location.href` change is cancelled and the page stays; the listener got no connection; Esc hides the view | canvas-core `report_html` tests (sanitizer, CSP document), `richtext` tests (HTML as text) | ✓ |
+| 41c | **New:** remote mode lists and opens reports through the service | `remote_reports_inbox`: a message published on the service's machine; a GUI over `--remote loopback` shows ✉1, opens it (`Request::ReportContent`) and it is read in the service's `state.json` | `selftest --client gui --remote loopback` (the reports step over TCP); `backend_contract` over loopback TCP | ✓ |
+
+| 40 | **New:** canvas-wide agents: the top bar's **◎ Agents** (a management panel: each agent's state and controls, the canvas skills, the group passive sessions for contrast), the *Canvas agents* frame (◎ chips) and the sidebar show one agent per box; templates (PR coordinator, Cross-group digest, Custom); canvas skills given per agent; viewing one never starts it | `canvas_agents_one_agent_every_entry`: ◎ Agents → *+ New canvas agent* → *PR coordinator* → named: a dashed ◎ box in the new frame, its files under `<home>/canvas-agents/<canvas id>/agents/<slug>`, routed as canvas-wide for this canvas id; the panel's row, a click on the box and the sidebar row select the same box (its panel); a double-click launches nothing; a skill of the canvas library given with *Skills…* (document, routing, panel) | step "canvas-wide agents: ◎ Agents opens their panel; a new agent is one box in the Canvas agents frame …" (TUI and GUI, and over `--remote loopback`); canvas-core `canvas_wide` tests (state machine, routing per canvas id, disable, pause, stop, frame, group filter), canvas-model `canvas_wide` and `bus` tests (folders per home and canvas, skills, plugin, prompt, subscribers across groups, isolation, permissions), canvas-agents backend, CLI and provider tests; snapshots `canvas-agents-panel`, `canvas-agent-detail` | ✓ |
+| 40b | **New:** a canvas-wide agent runs on events of every group of its canvas (never another canvas's), with its skills delivered to the agent CLI; Pause, Run now, Stop run, Disable | `canvas_agent_runs_across_groups`: a `pr.published` from a session of the parity group runs the agent with the stand-in Copilot (`-p`, its skills plugin as a second `--plugin-dir`), which reports `fake run of pr.published · skills: parity-skill` through `copilot-canvas status`; paused, an event of the canvas and one from a session no canvas routes start nothing (12 s); *Run now* then *Stop run* ends the run as stopped with no failure; disabled, it is no longer routed and an event starts nothing | canvas-agents `passive` tests (addressed events, effects on any box for canvas-wide agents, run folders, state kept for another canvas), canvas-model `bus` tests | ✓ |
 
 No row is TUI-only: every feature of the TUI exists in the GUI. Row 32 is
 not a front-end feature.
@@ -149,7 +158,7 @@ row  | feature                                                        | GUI test
 18   | Links: URLs, OSC 8, Windows paths; Ctrl+click; nothing execut… | links_osc8_and_paths                         | ✓
 19   | New session dialog: name, folder (Browse…, Recent ▾), Git, wo… | new_session_dialog_fields                    | ✓
 20   | Import (filter, multi-select, grouping); VS Code sync (+ Ctrl… | import_dialog_and_vscode_view                | ✓
-21   | Activity bar views (Alt+1…8)                                   | activity_views_alt_1_to_8                    | ✓
+21   | Activity bar views (Alt+1…9)                                   | activity_views_alt_1_to_9                    | ✓
 22   | Copilot defaults, group overrides, copilot config list and ed… | settings_defaults_and_config                 | ✓
 23   | Plugins, MCP, skills: list, toggle, remove, add, install; sec… | mcp_view_lists_and_toggles                   | ✓
 24   | Migrate from VS Code (preview, tick, backup, redacted log)     | migration_preview_dialog                     | ✓
@@ -169,6 +178,11 @@ row  | feature                                                        | GUI test
 38   | New: RECENT sessions atop the Sessions panel (newest first, s… | recent_sessions_and_walk_keys                | ✓
 39   | New: the default model (shown before starting; a choice appli… | remembered_default_model                     | ✓
 39b  | The remembered default model after the client restarts         | remembered_model_after_restart               | ✓
+40   | New: canvas-wide agents: ◎ Agents (top bar), the Canvas agent… | canvas_agents_one_agent_every_entry          | ✓
+40b  | New: a canvas-wide agent runs on an event from any group (sta… | canvas_agent_runs_across_groups              | ✓
+41   | New: Reports inbox: sessions publish reports and messages (co… | reports_inbox_and_viewer                     | ✓
+41b  | New: HTML reports in the GUI's WebView2 view: their own style… | html_report_locked_down (GUI only: the TUI … | ✓
+41c  | New: remote mode lists and opens reports through the service … | remote_reports_inbox                         | ✓
 G1   | New: inline images (Kitty graphics; iTerm2 OSC 1337 through C… | kitty_image_pixels_png (GUI only: the TUI c… | ✓
 G2   | New: taskbar progress (ITaskbarList3), FlashWindowEx, toasts   | taskbar_flash_toasts (GUI only: a console h… | ✓
 G3   | New: file drag and drop (paths pasted; uploaded in remote mod… | drop_files_local (GUI only: a console canno… | ✓
@@ -178,8 +192,15 @@ V2   | Stacks: K or the menu stacks subsessions (animated), double-c… | stack_
 V3   | Effects: copilot-canvas effect on a box, animated ≤ 15 fps wh… | effect_fireworks_ack (the TUI shows a badge… | ✓
 V4   | Group chips at any zoom (folders, ⟲ passive), sidebar folder … | chips_low_zoom_and_sidebar (the TUI draws t… | ✓
 V5   | Remote mode: group folders in the canvas's browser, passive f… | remote_group_files_in_canvas (the TUI uses … | ✓
-PASS: 51 rows in 62.1s
+PASS: 56 rows in 108.8s
 ```
+
+Rows 41–41c in that run: `2 published as Stopped one, ✉2 → ✉1 → none,
+toasts ["quiet", "quiet"], read at the service, nothing launched`;
+`WebView2 ready: styles applied (5104 magenta px), composed over the content
+area (5104 px), 0 scripts kept, raw script not run, 2 request(s) answered 403
+and 0 reached the listener, navigation blocked`; `listed (✉1) and opened over
+loopback TCP; read at the service`.
 
 ## Limits of the checks
 

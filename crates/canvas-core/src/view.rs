@@ -363,6 +363,17 @@ pub struct View {
     /// The top-most dialog or menu.
     pub modal: Option<Rect>,
     pub banner: Option<String>,
+    /// An HTML report to show over the report viewer's content area (GUI).
+    pub html: Option<HtmlPane>,
+}
+
+/// An HTML report for the GUI's HTML view: where (cells), which report, and
+/// its sanitized page with its Content-Security-Policy.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HtmlPane {
+    pub rect: Rect,
+    pub id: String,
+    pub document: std::sync::Arc<String>,
 }
 
 // ---------- stable text dump (snapshot tests) ----------
@@ -554,6 +565,10 @@ impl View {
             None => out.push("canvas none".into()),
         }
         out.extend(self.tiles.iter().map(TileModel::dump));
+        if let Some(html) = &self.html {
+            // The page itself is pinned by the sanitizer's tests; its size and policy here.
+            out.push(format!("html {} rect={} bytes={} csp={}", html.id, cells(html.rect), html.document.len(), html.document.contains("script-src 'none'")));
+        }
         out.join("\n")
     }
 }
