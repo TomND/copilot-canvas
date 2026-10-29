@@ -21,8 +21,6 @@ use crate::view::{Motion, RenderMode, WRect};
 
 /// Length of a stack or hide transition (GUI).
 const ANIM_MS: f32 = 300.0;
-/// Effects animate at most this often (PLAN §9: animations ≤ 15 fps).
-pub const EFFECT_FRAME_MS: u64 = 66;
 /// How often `last_used_ms` is brought up to date.
 const USED_EVERY: Duration = Duration::from_secs(5);
 
@@ -808,8 +806,9 @@ impl App {
 
     // ---------- every tick ----------
 
-    /// Housekeeping: transitions, effect frames (≤ 15 fps while one is in
-    /// view and animated), acknowledgements the service applied, last use.
+    /// Housekeeping: transitions, effect frames (12.5 fps, the spinners'
+    /// clock, while one is in view and animated), acknowledgements the
+    /// service applied, last use.
     pub fn visual_tick(&mut self) {
         if self.visual.motion.is_none() && self.instance.is_some() {
             self.load_motion();
@@ -822,13 +821,10 @@ impl App {
         self.visual.acked.retain(|id| live.contains(id));
         self.visual.seen.retain(|id, _| live.contains(id));
         self.visual.effects_live = self.render_mode == RenderMode::Gpu && self.motion() == Motion::On && self.frozen_tick.is_none() && self.effects_in_view();
-        if self.visual.effects_live {
-            static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-            let frame = START.get_or_init(Instant::now).elapsed().as_millis() as u64 / EFFECT_FRAME_MS;
-            if frame != self.visual.effect_frame {
-                self.visual.effect_frame = frame;
-                self.needs_draw = true;
-            }
+        // On the spinners' 80 ms clock, so effects and other animations share frames.
+        if self.visual.effects_live && self.tick as u64 != self.visual.effect_frame {
+            self.visual.effect_frame = self.tick as u64;
+            self.needs_draw = true;
         }
         if self.visual.used_at.is_none_or(|t| t.elapsed() >= USED_EVERY) {
             self.visual.used_at = Some(Instant::now());

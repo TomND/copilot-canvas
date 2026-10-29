@@ -1,6 +1,6 @@
 //! Effects from the effects collection, drawn with the quad pipeline:
 //! fireworks bursts, attention rings, sparkles and alert flashes (animated
-//! at most every 66 ms), their static forms for reduced motion, and the
+//! on the spinners' 80 ms clock), their static forms for reduced motion, and the
 //! badge every mode shows (so an effect is never lost, even when they are
 //! off). Each effect is clipped to a region around its anchor.
 
@@ -47,7 +47,8 @@ pub fn paint(p: &mut Painter, cx: &Ctx, effect: &EffectModel, motion: Motion) {
     ];
     let color = kind_color(effect.kind);
     let t = effect.age_ms as f32;
-    let s = seed(&effect.id);
+    // Seeded by what it shows (stable across runs and windows).
+    let s = seed(&format!("{}|{}", effect.kind, effect.badge));
     let layer = scene::CANVAS_TOP;
     match (motion, effect.kind) {
         (Motion::Off, _) => {}
@@ -130,7 +131,7 @@ fn fireworks(p: &mut Painter, cx: &Ctx, layer: usize, r: [f32; 4], clip: [f32; 4
         let phase = (local % PERIOD) / PERIOD;
         let rs = s ^ cycle.wrapping_mul(7919).wrapping_add(k * 104_729);
         let x = r[0] + r[2] * (0.15 + 0.7 * noise(rs, 1));
-        let apex = r[1] - v * (1.0 + 2.0 * noise(rs, 2));
+        let apex = r[1] - v * (0.8 + 2.4 * noise(rs, 2));
         let base = r[1] + r[3] * 0.4;
         let color = SPARKS[(noise(rs, 3) * 6.0) as usize % 6];
         if phase < RISE {
@@ -148,13 +149,13 @@ fn fireworks(p: &mut Painter, cx: &Ctx, layer: usize, r: [f32; 4], clip: [f32; 4
         }
         let spread = 1.0 - (1.0 - q) * (1.0 - q);
         let fall = q * q * 1.3 * v;
-        for i in 0..16u32 {
-            let a = TAU * (i as f32 + noise(rs, 10 + i) * 0.5) / 16.0;
-            let reach = (2.0 + 1.4 * noise(rs, 40 + i)) * u;
+        for i in 0..20u32 {
+            let a = TAU * (i as f32 + noise(rs, 10 + i) * 0.5) / 20.0;
+            let reach = (3.2 + 2.2 * noise(rs, 40 + i)) * u;
             let at = |f: f32| (x + a.cos() * reach * spread * f, apex + a.sin() * reach * spread * f * 0.75 + fall * f);
             let spark = if i % 3 == 0 { [255, 244, 214] } else { color };
-            p.under(layer, Quad::line(at(0.8), at(1.0), 1.3 * dpi, theme::rgba(spark, 0.55 * fade), 0.0, clip));
-            let d = (1.7 * dpi * (0.4 + 0.6 * fade)).max(0.8);
+            p.under(layer, Quad::line(at(0.72), at(1.0), 1.5 * dpi, theme::rgba(spark, 0.55 * fade), 0.0, clip));
+            let d = (2.1 * dpi * (0.4 + 0.6 * fade)).max(0.8);
             let (px, py) = at(1.0);
             p.under(layer, Quad::rounded(px - d, py - d, 2.0 * d, 2.0 * d, d, theme::rgba(spark, fade), [0.0; 4], 0.0, clip));
         }

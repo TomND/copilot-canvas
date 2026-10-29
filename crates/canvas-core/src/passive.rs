@@ -184,7 +184,8 @@ impl App {
         let Ok(event) = serde_json::from_value::<bus::Event>(value["event"].clone()) else { return };
         let targets: Vec<String> = value["targets"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_owned)).collect()).unwrap_or_default();
         let now = Instant::now();
-        for target in targets.iter().filter(|t| self.doc.node(t).is_some()) {
+        // A pulse needs somewhere to go (a box never pulses to itself).
+        for target in targets.iter().filter(|t| self.doc.node(t).is_some() && **t != event.source) {
             if self.doc.node(&event.source).is_some() {
                 self.pulses.push((event.source.clone(), target.clone(), now));
             }

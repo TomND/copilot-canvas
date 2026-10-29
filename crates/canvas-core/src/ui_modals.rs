@@ -396,7 +396,11 @@ fn draw_viewer(app: &mut App, buf: &mut Buffer, screen: Rect, viewer: &crate::vi
         let text_x = x + gutter as i32 + 1;
         // The folder browser: entries are picked and opened.
         let picked = viewer.browsing() && row == viewer.pick && row < viewer.entries.len();
-        let style = if picked && !viewer.on_buttons { fg(TEXT).bg(crate::paint::PANEL_HI) } else { fg(TEXT).bg(MODAL) };
+        let style = if picked && !viewer.on_buttons { bold(SELECT).bg(PANEL_HI) } else { fg(TEXT).bg(MODAL) };
+        if picked && !viewer.on_buttons {
+            fill(buf, text_x - 1, y, width - gutter as i32, 1, Style::default().bg(PANEL_HI), rect);
+            put(buf, text_x - 1, y, "›", bold(ACCENT).bg(PANEL_HI), rect);
+        }
         put(buf, text_x, y, &truncate(&visible, (width - gutter as i32 - 1).max(1) as usize), style, rect);
         if viewer.browsing() && row < viewer.entries.len() {
             ctx.hit(Rect::new(rect.x + 1, y as u16, rect.width - 2, 1), Hit::ListRow(row));

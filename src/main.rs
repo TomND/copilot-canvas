@@ -62,6 +62,7 @@ USAGE
                                         N live sessions from busy synthetic histories (M subagents each)
   copilot-canvas bench --client gui --perf-canvas FILE|synthetic
                                         panning a copy of a canvas file at 100, 50 and 25 %
+  copilot-canvas bench --client gui --effects   CPU and frame rate with effects in view, out of view, cleared
   copilot-canvas bench --client gui --burn N
                                         keystroke to present while N sessions burn CPU, with and
                                         without the priority manager
@@ -515,6 +516,8 @@ fn real_main() -> Result<()> {
                 }
             } else if let Some(file) = option("perf-canvas") {
                 gui_bench::Probe::PerfCanvas(file)
+            } else if flag("effects") {
+                gui_bench::Probe::Effects
             } else if let Some(burn) = option("burn") {
                 gui_bench::Probe::Burn(burn.parse()?)
             } else {

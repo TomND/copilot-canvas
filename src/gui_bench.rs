@@ -34,6 +34,9 @@ pub enum Probe {
     Stress { sessions: usize, agents: usize },
     PerfCanvas(String),
     Burn(usize),
+    /// Idle CPU and frames with no effect, with fireworks or attention in view,
+    /// out of view and acknowledged.
+    Effects,
 }
 
 pub struct Options {
@@ -56,6 +59,7 @@ pub fn run(options: Options) -> Result<()> {
         Probe::Stress { sessions, agents } => stress(&instance, &root, &options, *sessions, *agents),
         Probe::PerfCanvas(file) => perf_canvas(&instance, &root, &options, file),
         Probe::Burn(burners) => burn(&instance, &root, &options, *burners),
+        Probe::Effects => effects(&instance, &root, &options),
     };
     stop_service(&instance);
     match &result {
@@ -686,5 +690,80 @@ fn burn(instance: &Instance, root: &Path, options: &Options, burners: usize) -> 
         "cpu_burners": burners,
         "logical_cpus": std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0),
         "runs": runs,
+    }))
+}
+
+/// `--effects`: the effects' cost. The visuals canvas (the parity suite's),
+/// idle; then fireworks on a box in view, attention, the canvas panned so the
+/// box is out of view, and the effects acknowledged: CPU (% of one core),
+/// frames per second and frame times of each phase.
+fn effects(instance: &Instance, root: &Path, options: &Options) -> Result<Value> {
+    let canvas = crate::parity::visual::canvas(&instance.home, &root.join("work"), &root.join("group"), false, false)?;
+    let on = PathBuf::from("on");
+    let mut extra = vec!["--canvas", canvas.to_str().unwrap_or_default()];
+    if options.remote {
+        extra.extend(["--remote", "loopback"]);
+    }
+    let ui = GuiDriver::start(&args(instance, root, &extra), &[("COPILOT_CANVAS_EFFECTS", &on)], (170, 46), &root.join("gui-effects.log"))?;
+    ui.wait("the visuals canvas", Duration::from_secs(30), |t| t.contains("Visual group"))?;
+    let mut ui = ui;
+    ui.send(b"f")?;
+    std::thread::sleep(Duration::from_secs(3));
+    let seconds = options.seconds.max(5);
+    let phase = |ui: &GuiDriver, label: &str| -> Result<Value> {
+        let before = perf(ui, true)?;
+        let started = Instant::now();
+        std::thread::sleep(Duration::from_secs(seconds));
+        let after = perf(ui, false)?;
+        let frames = after["perf"]["presented"].as_u64().unwrap_or(0).saturating_sub(before["perf"]["presented"].as_u64().unwrap_or(0));
+        let elapsed = started.elapsed();
+        eprintln!("{label}: {frames} frames in {:.1} s, {:.2} % of one core", elapsed.as_secs_f64(), cpu_percent(&before, &after, elapsed));
+        Ok(json!({
+            "cpu_percent_of_one_core": cpu_percent(&before, &after, elapsed),
+            "fps": (frames as f64 / elapsed.as_secs_f64() * 10.0).round() / 10.0,
+            "frame_ms": ms(&after["perf"]["frame_ms"]),
+            "frames": frames,
+        }))
+    };
+    let exe = std::env::current_exe()?;
+    let effect = |args: &[&str]| crate::parity::visual::effect(&exe, &instance.home, &instance.name, args);
+    let wait_effects = |ui: &GuiDriver, count: usize| -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            let tree = ui.request(json!({ "cmd": "tree" }))?;
+            if tree["tree"]["canvas"]["effects"].as_array().map(Vec::len) == Some(count) {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        bail!("the canvas does not show {count} effect(s)")
+    };
+    let idle = phase(&ui, "idle, no effects")?;
+    effect(&["fireworks", "--on", "Fresh one", "--note", "PR !7 approved"])?;
+    wait_effects(&ui, 1)?;
+    let fireworks = phase(&ui, "fireworks in view")?;
+    effect(&["clear", "--on", "Fresh one"])?;
+    effect(&["attention", "--on", "Unused 5 days", "--note", "2 comments"])?;
+    wait_effects(&ui, 1)?;
+    let attention = phase(&ui, "attention in view")?;
+    // Pan the boxes out of view (the effect stays on the canvas).
+    for _ in 0..12 {
+        ui.request(json!({ "cmd": "key", "key": "Down", "mods": ["ctrl"] }))?;
+    }
+    std::thread::sleep(Duration::from_secs(1));
+    let away = phase(&ui, "attention out of view")?;
+    effect(&["clear", "--on", "Unused 5 days"])?;
+    wait_effects(&ui, 0)?;
+    let cleared = phase(&ui, "effects cleared")?;
+    let _ = ui.request(json!({ "cmd": "quit" }));
+    let _ = ui.wait_exit(Duration::from_secs(10));
+    Ok(json!({
+        "probe": "effects",
+        "seconds_per_phase": seconds,
+        "idle_no_effects": idle,
+        "fireworks_in_view": fireworks,
+        "attention_in_view": attention,
+        "attention_out_of_view": away,
+        "cleared": cleared,
     }))
 }

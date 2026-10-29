@@ -100,7 +100,7 @@ pub fn paint(p: &mut Painter, grid: &Grid, model: &CanvasModel) {
             let pad = if chip.fixed { 0.1 * grid.cell_h } else { 0.15 * uy };
             p.under(scene::CANVAS_TOP, Quad::rounded(c[0], c[1] + pad, c[2], c[3] - 2.0 * pad, 4.0 * cx.dpi, theme::color(paint::PANEL, 1.0), theme::rgba(chip_color, 0.7), cx.dpi, clip));
             // World chips scale with the zoom; zoomed out they keep a readable size.
-            let scale = if chip.fixed { 0.95 } else { model.scale };
+            let scale = if chip.fixed { 0.85 } else { model.scale };
             let (key, width) = p.shape(Spec::ui(chip.label.trim(), grid.font_px * 0.9));
             let size = grid.font_px * 0.9 * scale;
             p.place(scene::CANVAS_TOP, key, c[0] + (c[2] - width * scale) / 2.0, c[1] + (c[3] - size * 1.3) / 2.0, scale, chip_color, clip);
@@ -217,8 +217,12 @@ pub fn paint(p: &mut Painter, grid: &Grid, model: &CanvasModel) {
                 pill(p, &cx, (r[0] + r[2] - 1.5 * ux, r[1]), true, &format!("+{}", deck.count - 1), rgb(paint::ACCENT));
             }
             if let Some((count, color)) = b.hidden {
-                let bg = color.map(rgb).unwrap_or_else(|| rgb(paint::PANEL_HI));
-                pill(p, &cx, (r[0] + r[2] - 1.5 * ux, r[1] + r[3]), true, &format!("⋯ {count} hidden"), bg);
+                // Neutral unless a hidden one needs attention (then its colour).
+                let (bg, fg) = match color {
+                    Some(color) => (rgb(color), rgb(paint::PANEL)),
+                    None => (rgb(paint::PANEL_HI), rgb(paint::TEXT)),
+                };
+                pill_with(p, &cx, (r[0] + r[2] - 1.5 * ux, r[1] + r[3]), true, &format!("⋯ {count} hidden"), bg, fg);
             }
         }
     }
@@ -318,12 +322,18 @@ fn dots(p: &mut Painter, cx: &Ctx) {
 
 /// A pill-shaped badge centred on a box edge point; `right`: it ends there.
 pub(crate) fn pill(p: &mut Painter, cx: &Ctx, (x, y): (f32, f32), right: bool, text: &str, bg: [u8; 3]) {
+    pill_with(p, cx, (x, y), right, text, bg, rgb(paint::PANEL));
+}
+
+/// A pill with its own text colour.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pill_with(p: &mut Painter, cx: &Ctx, (x, y): (f32, f32), right: bool, text: &str, bg: [u8; 3], fg: [u8; 3]) {
     let size = (cx.grid.font_px * cx.model.scale * 0.8).clamp(8.0 * cx.dpi, cx.grid.font_px * 0.9);
     let (key, width) = p.shape(Spec::ui(text, size).bold(true));
     let (w, h) = (width + size * 0.9, size * 1.35);
     let left = if right { x - w } else { x };
     p.under(scene::CANVAS_TOP, Quad::rounded(left, y - h / 2.0, w, h, h / 2.0, theme::rgba(bg, 1.0), [0.0; 4], 0.0, cx.clip));
-    p.place(scene::CANVAS_TOP, key, left + (w - width) / 2.0, y - h / 2.0 + (h - size * 1.3) / 2.0, 1.0, rgb(paint::PANEL), cx.clip);
+    p.place(scene::CANVAS_TOP, key, left + (w - width) / 2.0, y - h / 2.0 + (h - size * 1.3) / 2.0, 1.0, fg, cx.clip);
 }
 
 /// A small, stable hash of a box id (dust and effects place their specks with it).

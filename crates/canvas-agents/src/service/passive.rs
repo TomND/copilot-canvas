@@ -259,7 +259,7 @@ pub(super) fn handle_event(shared: &Shared, routing: &Routing, state: &mut BusSt
 }
 
 /// `copilot-canvas effect …`: puts an effect on a box of the sender's group
-/// (or the group), or clears them. Answers the box it went on.
+/// (or the group), or clears them. Answers the box a pulse goes to.
 fn apply_effect(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Event, now: u64) -> Option<String> {
     let (target, message) = effect_event(routing, &mut state.effects, event, now);
     log(&shared.instance, &message);
@@ -292,7 +292,8 @@ fn effect_event(routing: &Routing, list: &mut Vec<effects::Effect>, event: &Even
     };
     let from = if event.source_name.is_empty() { "Copilot Canvas" } else { &event.source_name };
     effects::add(list, effects::new_effect(spec, &event.group, &anchor, event.data["note"].as_str().unwrap_or_default(), from, now));
-    ((!target.is_empty()).then_some(target), format!("effect {name} on {on:?} from {from}"))
+    // A pulse runs from the sender to the box (none when it marks itself).
+    ((!target.is_empty() && target != event.source).then_some(target), format!("effect {name} on {on:?} from {from}"))
 }
 
 /// The group's event catalog may map event types to effects (`effects:`
