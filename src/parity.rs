@@ -963,7 +963,7 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         gui.send("Write-Host -NoNewline \"$e]9;4;0;0$([char]7)$e]777;notify;Parity;Toast body$([char]7)\"\r")?;
         // A session that starts to need you: toast (and flash in the background).
         append(&sb.sessions.review, "permission.requested", json!({ "requestId": "p9" }))?;
-        let ok = |t: Option<&Value>| t.is_some_and(|t| t["status"] == "shown" || t["status"] == "in front");
+        let ok = |t: Option<&Value>| t.is_some_and(|t| t["status"] == "shown" || t["status"] == "in front" || t["status"] == "quiet");
         let platform = gui.poll_platform("toasts and paused again", 15, &|p| {
             let toasts = p["toasts"].as_array().cloned().unwrap_or_default();
             let note = toasts.iter().find(|t| t["body"] == "Toast body");
@@ -979,14 +979,15 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         let platform = gui.req(json!({ "cmd": "platform", "history": true }))?;
         let toasts = platform["toasts"].as_array().cloned().unwrap_or_default();
         let shown = toasts.iter().filter(|t| t["status"] == "shown").count();
-        let in_front = toasts.iter().filter(|t| t["status"] == "in front").count();
+        // Test windows stay in the background and only record toasts (quiet).
+        let in_front = toasts.iter().filter(|t| t["status"] == "in front" || t["status"] == "quiet").count();
         anyhow::ensure!(shown + in_front >= 2, "toasts: {platform}");
         // Flashing happens only while the window is in the background.
         anyhow::ensure!(platform["flashes"].as_u64().unwrap_or(0) >= 1 || in_front > 0, "no flash in the background: {platform}");
         if shown > 0 {
             anyhow::ensure!(platform["toast_history"].as_u64().unwrap_or(0) >= 1, "the Action Center has no toast of the app: {platform}");
         }
-        Ok(format!("taskbar {}, {} flash(es), {shown} toast(s) shown, {in_front} skipped (window in front)", platform["taskbar"], platform["flashes"]))
+        Ok(format!("taskbar {}, {} flash(es), {shown} toast(s) shown, {in_front} recorded only (window in front or quiet test window)", platform["taskbar"], platform["flashes"]))
     });
 
     check_kind(rows, "G1", "New: inline images (Kitty graphics; iTerm2 OSC 1337 through ConPTY)", "kitty_image_pixels_png", Kind::Only("GUI only: the TUI cannot draw images"), || {

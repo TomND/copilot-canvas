@@ -255,6 +255,12 @@ impl Shell {
         if let Some(p) = &saved {
             attrs = attrs.with_position(PhysicalPosition::new(p.x, p.y));
         }
+        if self.options.test_hooks && quiet_tests() {
+            // A test run on someone's desktop: never take the focus, stay out
+            // of the taskbar and behind other windows (input comes from the hooks).
+            use winit::platform::windows::WindowAttributesExtWindows;
+            attrs = attrs.with_active(false).with_skip_taskbar(true).with_window_level(winit::window::WindowLevel::AlwaysOnBottom);
+        }
         let window = Arc::new(event_loop.create_window(attrs)?);
         let access = accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, self.proxy.clone());
         window.set_visible(true);
@@ -1385,6 +1391,12 @@ static PROXY: std::sync::OnceLock<EventLoopProxy<UserEvent>> = std::sync::OnceLo
 
 /// How long quitting waits for the last edits to reach the service.
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Test-hook windows stay in the background (`CANVAS_GUI_TEST_VISIBLE=1`: a
+/// normal window, e.g. to watch a test).
+pub fn quiet_tests() -> bool {
+    std::env::var_os("CANVAS_GUI_TEST_VISIBLE").is_none()
+}
 
 /// CANVAS_GUI_TRACE=1: start-up milestones on stderr (ms since process start).
 fn trace(what: &str) {
