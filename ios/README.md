@@ -68,7 +68,8 @@ cargo run -p canvas-mock -- --listen 0.0.0.0:47600   # reachable from a phone on
 
 In the simulator, paste the printed `ccanvas://pair?…` link, or launch with
 `-pairLink <link>`. Other launch arguments for automated runs:
-`-noNotificationPrompt`, `-noLock`, `-openSession <id>`, `-startMode canvas`.
+`-noNotificationPrompt`, `-noLock`, `-openSession <id>`, `-startMode canvas`,
+`-machine <name>` (`-pairLink` may be repeated).
 
 ## This Mac as a stand-in Cloud PC (real tunnel)
 
@@ -82,6 +83,9 @@ ios/cloud-mac.sh start      # tunnel copilot-canvas-mac, port 47700; opens the Q
 ios/cloud-mac.sh pair       # a new one-time code (pairings stay)
 ios/cloud-mac.sh status | logs | stop
 ```
+
+A second stand-in (to try several machines) needs its own tunnel, port and
+state: `NAME=personal TUNNEL=copilot-canvas-mac2 PORT=47701 STATE=~/.copilot-canvas-mock2 ios/cloud-mac.sh start`.
 
 It is the same path the Windows service uses: `wss://copilot-canvas-mac-47700.REGION.devtunnels.ms`,
 a 24 h connect token issued with this Mac's `devtunnel` (renewed while the
@@ -102,7 +106,10 @@ xcodebuild -project ios/CopilotCanvas.xcodeproj -scheme CopilotCanvas \
 ```
 
 The UI tests pair with the mock, list its sessions, open the canvas, start a
-session, type into its shell with the keyboard and check the echo.
+session, type into its shell with the keyboard and check the echo, check that
+the keyboard gets out of the way of the new-session form, and switch between
+two machines (a second mock: `cargo run -p canvas-mock -- --listen
+127.0.0.1:47601 --state /tmp/canvas-mock-personal`).
 
 ## What it does
 
@@ -111,6 +118,7 @@ session, type into its shell with the keyboard and check the echo.
 | **Sessions** | Grouped like the canvas, what wants you first: *Needs you* (gold), *Ready for review* (blue), then groups by state and activity. Subagents under their session, subsessions after their parent, loops (`↻ every 15m`), queued mail, branch and agent. Swipe to stop, remove or mark reviewed; long-press to rename. Pull to reconnect |
 | **Canvas** | The desktop canvas: groups, boxes with the same status borders (gold heavy for needs you, blue double for done · review, dashed passive), subagent and subsession edges, spinners. Drag to pan, pinch to zoom, tap a box to open it |
 | **Terminal** | The service's terminal engine (libghostty-vt on the Cloud PC) draws the screen; the phone renders its cells with Core Text: colours, bold, italic, dim, inverse, every underline style, strike-through, wide and emoji cells, box drawing as geometry, cursor shapes, your-prompt tint in Copilot, OSC 8 links. Keys are encoded on the service for the program's keyboard mode |
+| **Machines** | Pair several (work, personal): every one stays connected while the app is open. The menu at the top left switches between them and shows each one's state and what needs you there; the machine's colour runs under the bar; a strip lists the sessions of the *other* machines that need you or finished (tap: switch and open). Alerts name the machine; a notification opens its machine. Each machine gets a name and a colour when paired (Settings › Machines: rename, recolour, reorder, forget); pairing a machine again at the same address replaces it |
 | **Keyboard** | Closes with a tap outside any field, the button above it, or a swipe down on forms and lists; in terminals the key bar's hide button stays at its right end and a swipe down on the bar closes it. Picking a folder never brings it back |
 | **Typing** | iOS keyboard plus a key bar (Esc, Ctrl, Alt, Tab, ⇧Tab, arrows, ^C, ^D, Home/End, PgUp/PgDn, paste); hardware keyboards (arrows, Esc, Ctrl/Option combinations, ⌘V); a **prompt composer** (autocorrect, dictation) that sends one paste and Enter; one-hand quick keys (Esc, ↑ ↓ ⏎, 1 2 3, y n) for permission prompts |
 | **Gestures** | Swipe up/down: wheel (the agent scrolls its own view, else the scrollback); long-press and drag: select, release copies; tap: links open in Safari, clicks reach agents that read the mouse; pinch: text size |

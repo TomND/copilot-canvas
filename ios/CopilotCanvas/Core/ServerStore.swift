@@ -17,6 +17,10 @@ struct PairedServer: Codable, Identifiable, Hashable {
     /// When the token expires (ms since 1970; 0: unknown).
     var tokenExpiresMs: UInt64 = 0
     var addedMs: UInt64 = UInt64(Date().timeIntervalSince1970 * 1000)
+    /// Index into `Palette.groups` (missing in records from before machines had colours).
+    var color: Int?
+
+    var colorIndex: Int { color ?? 0 }
 
     var tokenExpired: Bool {
         !token.isEmpty && tokenExpiresMs > 0 && tokenExpiresMs < UInt64(Date().timeIntervalSince1970 * 1000)

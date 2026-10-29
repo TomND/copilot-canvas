@@ -124,6 +124,7 @@ jobs:
         run: |
           cargo build -p canvas-mock
           target/debug/canvas-mock --quiet &
+          target/debug/canvas-mock --quiet --listen 127.0.0.1:47601 --state "$RUNNER_TEMP/canvas-mock-personal" &
           cd ios
           COPILOT_CANVAS_SKIP_CORE=1 xcodebuild -project CopilotCanvas.xcodeproj -scheme CopilotCanvas \
             -destination 'platform=iOS Simulator,name=iPhone 16' test

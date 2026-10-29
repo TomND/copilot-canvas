@@ -82,12 +82,8 @@ struct PairView: View {
             }
         }
         .onAppear {
+            // (`-pairLink URI` for automated runs is handled by the app model.)
             if let initial { pair(initial) }
-            // `-pairLink URI` (simulator runs, tests).
-            let args = ProcessInfo.processInfo.arguments
-            if initial == nil, let index = args.firstIndex(of: "-pairLink"), index + 1 < args.count {
-                pairLink(args[index + 1])
-            }
         }
     }
 

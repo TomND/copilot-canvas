@@ -19,6 +19,9 @@ ROOT="$PWD"
 TUNNEL="${TUNNEL:-copilot-canvas-mac}"
 PORT="${PORT:-47700}"
 STATE="${STATE:-$HOME/.copilot-canvas-mock}"
+# What the phone calls this machine (it can be renamed in the app).
+NAME="${NAME:-$(scutil --get LocalHostName 2>/dev/null | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9-' | cut -c1-40)}"
+NAME="${NAME:-mac}"
 WORKDIR="${WORKDIR:-$HOME}"
 mkdir -p "$STATE"
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
@@ -49,7 +52,7 @@ start_mock() {
   stop_one mock
   # Real agent CLIs found on the PATH the mock starts with.
   PATH="$HOME/.local/bin:$HOME/.opencode/bin:/opt/homebrew/bin:$PATH" nohup "$ROOT/target/release/canvas-mock" \
-    --listen "127.0.0.1:$PORT" --tunnel "$TUNNEL" --real-agents --name "$(scutil --get LocalHostName 2>/dev/null | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9-' | cut -c1-40 || echo mac)" \
+    --listen "127.0.0.1:$PORT" --tunnel "$TUNNEL" --real-agents --name "$NAME" \
     --state "$STATE" --cwd "$WORKDIR" --qr "$STATE/pair-qr.png" >"$STATE/mock.log" 2>&1 </dev/null &
   echo $! >"$STATE/mock.pid"
   # Wait for the pairing link (the token comes from devtunnel).

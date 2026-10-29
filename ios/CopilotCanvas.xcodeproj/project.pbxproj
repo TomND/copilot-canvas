@@ -20,6 +20,7 @@
 		5F6300F2882B73B14270F595 /* PairView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37CA17908C7859DF5E5EC92E /* PairView.swift */; };
 		7138F9C66C98F01D5B91C149 /* Pairer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1A18FF4D04EBC4B7E3F66C /* Pairer.swift */; };
 		75578567D23442C13FACA607 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E44C0FB2065B9025E30AAA67 /* AppModel.swift */; };
+		76911BB6DCF109C03EDB4B28 /* Machines.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B9E83239559BC6B0F5A6F7A /* Machines.swift */; };
 		77305682749AAD715786B71D /* Palette.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7D43DE9F7969F9C49086093 /* Palette.swift */; };
 		7CE4BC353D6D89E5E87DC9AF /* CanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3532502B507E9C3DD275CF0A /* CanvasView.swift */; };
 		9131F82E8C5434377EAA3A41 /* CoreBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36429106D3674C507FADD6CD /* CoreBridgeTests.swift */; };
@@ -61,6 +62,7 @@
 		36429106D3674C507FADD6CD /* CoreBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreBridgeTests.swift; sourceTree = "<group>"; };
 		371B4CAFAC6D35D925863CC9 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		37CA17908C7859DF5E5EC92E /* PairView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairView.swift; sourceTree = "<group>"; };
+		3B9E83239559BC6B0F5A6F7A /* Machines.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Machines.swift; sourceTree = "<group>"; };
 		4F4108B7E513FB12B790FDD7 /* WebSocketTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketTransport.swift; sourceTree = "<group>"; };
 		587FF3C800703B9B53D3F44E /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		5D89495A983BAB0BEC1B2140 /* SystemConfiguration.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemConfiguration.framework; path = System/Library/Frameworks/SystemConfiguration.framework; sourceTree = SDKROOT; };
@@ -158,6 +160,7 @@
 			isa = PBXGroup;
 			children = (
 				9DAD523F8E7F9607E7ABF932 /* Canvas */,
+				89E5021259F9C97440BDAF40 /* Machines */,
 				B3339E13444874F8075049EA /* NewSession */,
 				12560FF933EC508AC4FBBB06 /* Pair */,
 				C7A286A3455C18DCA1732A5D /* Sessions */,
@@ -224,6 +227,14 @@
 				A7D43DE9F7969F9C49086093 /* Palette.swift */,
 			);
 			path = Support;
+			sourceTree = "<group>";
+		};
+		89E5021259F9C97440BDAF40 /* Machines */ = {
+			isa = PBXGroup;
+			children = (
+				3B9E83239559BC6B0F5A6F7A /* Machines.swift */,
+			);
+			path = Machines;
 			sourceTree = "<group>";
 		};
 		8CF723DDF6DEB17C30665BAC /* App */ = {
@@ -439,6 +450,7 @@
 				238AA111F2A58A1CA990D5BD /* HomeView.swift in Sources */,
 				AD948EEDAFFCDAEDF75F8951 /* KeyBar.swift in Sources */,
 				BF0CF98767320D25ABC31698 /* Keyboard.swift in Sources */,
+				76911BB6DCF109C03EDB4B28 /* Machines.swift in Sources */,
 				34B84F6AB7EEAAEA0595C03E /* NewSessionView.swift in Sources */,
 				5F6300F2882B73B14270F595 /* PairView.swift in Sources */,
 				7138F9C66C98F01D5B91C149 /* Pairer.swift in Sources */,

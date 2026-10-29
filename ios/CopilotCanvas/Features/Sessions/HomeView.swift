@@ -12,16 +12,22 @@ struct HomeView: View {
     @State private var mode: Mode = .list
     @State private var showNew = false
     @State private var showSettings = false
+    @State private var showPair = false
 
     enum Mode: String, CaseIterable {
         case list = "Sessions"
         case canvas = "Canvas"
+
+        var symbol: String { self == .list ? "list.bullet" : "rectangle.3.group" }
     }
 
     var body: some View {
         NavigationStack(path: $path) {
             VStack(spacing: 0) {
+                // The machine's colour: always clear which one you are on.
+                Rectangle().fill(Palette.group(UInt8(connection.server.colorIndex))).frame(height: 3)
                 ConnectionBanner(connection: connection)
+                AttentionStrip()
                 switch mode {
                 case .list:
                     SessionsView(connection: connection) { id in path.append(.terminal(id)) }
@@ -33,14 +39,16 @@ struct HomeView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button { showSettings = true } label: { Image(systemName: "gearshape") }
+                    MachineMenu(showPair: { showPair = true }, showSettings: { showSettings = true })
                 }
                 ToolbarItem(placement: .principal) {
                     Picker("View", selection: $mode) {
-                        ForEach(Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                        ForEach(Mode.allCases, id: \.self) { mode in
+                            Label(mode.rawValue, systemImage: mode.symbol).labelStyle(.iconOnly).tag(mode)
+                        }
                     }
                     .pickerStyle(.segmented)
-                    .frame(width: 210)
+                    .frame(width: 104)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showNew = true } label: { Image(systemName: "plus") }
@@ -63,19 +71,39 @@ struct HomeView: View {
             }
         }
         .sheet(isPresented: $showSettings) { SettingsView(connection: connection) }
-        .onChange(of: model.openSession) { _, id in
-            guard let id else { return }
-            model.openSession = nil
-            path = [.terminal(id)]
+        .sheet(isPresented: $showPair) {
+            NavigationStack {
+                PairView { server in
+                    showPair = false
+                    model.add(server)
+                }
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showPair = false } } }
+            }
         }
+        // Naming a machine (Settings presents it itself while it is open).
+        .sheet(item: Binding(get: { showSettings || showNew || showPair || model.locked ? nil : model.naming }, set: { model.naming = $0 })) { server in
+            MachineSheet(server: server) { name, color in
+                model.rename(server.id, to: name, color: color)
+                model.naming = nil
+            }
+        }
+        .onChange(of: model.pendingOpen) { _, _ in openPending() }
         .onAppear {
             // Nothing connects before the lock is passed.
             if !model.locked { connection.activate() }
+            openPending()
             // `-startMode canvas` / `-openSession ID`: automated simulator runs.
             let args = ProcessInfo.processInfo.arguments
             if let i = args.firstIndex(of: "-startMode"), i + 1 < args.count, let start = Mode(rawValue: args[i + 1].capitalized) { mode = start }
             if let i = args.firstIndex(of: "-openSession"), i + 1 < args.count, path.isEmpty { path = [.terminal(args[i + 1])] }
         }
+    }
+
+    /// A session to open on this machine (a notification, an attention chip).
+    private func openPending() {
+        guard let pending = model.pendingOpen, pending.server == connection.server.id else { return }
+        model.pendingOpen = nil
+        path = [.terminal(pending.session)]
     }
 }
 

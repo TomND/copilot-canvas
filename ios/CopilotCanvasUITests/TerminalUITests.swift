@@ -12,7 +12,7 @@ final class TerminalUITests: XCTestCase {
 
     private func launch(_ extra: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["-noNotificationPrompt", "-noLock", "-pairLink", link] + extra
+        app.launchArguments = ["-noNotificationPrompt", "-noLock", "-pairLink", link, "-machine", "mock"] + extra
         app.launch()
         return app
     }
@@ -87,6 +87,43 @@ final class TerminalUITests: XCTestCase {
         XCTAssertEqual(prompt.value as? String, "Explain this repository")
         attach(app, "new-session")
         app.buttons["Cancel"].tap()
+    }
+
+    /// Needs a second mock: `canvas-mock --listen 127.0.0.1:47601 --state /tmp/canvas-mock-personal`.
+    func testTwoMachinesSwitchAndShowWhatNeedsYouOnTheOther() throws {
+        let personal = "ccanvas://pair?v=1&name=personal&url=ws%3A%2F%2F127%2E0%2E0%2E1%3A47601&code=ABCDEFGHJKMN"
+        let app = XCUIApplication()
+        app.launchArguments = ["-noNotificationPrompt", "-noLock", "-pairLink", link, "-pairLink", personal, "-machine", "mock"]
+        app.launch()
+        let menu = app.buttons["machineMenu"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 45))
+        expectation(for: NSPredicate(format: "label ENDSWITH ': mock'"), evaluatedWith: menu)
+        waitForExpectations(timeout: 45)
+        // What wants you on the other machine shows at the top.
+        let fromPersonal = app.buttons.matching(identifier: "attention-chip").matching(NSPredicate(format: "label BEGINSWITH 'personal:'")).firstMatch
+        XCTAssertTrue(fromPersonal.waitForExistence(timeout: 45), "the other machine's sessions that want you")
+        attach(app, "two-machines")
+        // The switcher.
+        menu.tap()
+        let item = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'personal'")).firstMatch
+        XCTAssertTrue(item.waitForExistence(timeout: 10))
+        item.tap()
+        expectation(for: NSPredicate(format: "label ENDSWITH ': personal'"), evaluatedWith: menu)
+        waitForExpectations(timeout: 20)
+        XCTAssertTrue(app.staticTexts["Fix flaky test"].waitForExistence(timeout: 45), "the other machine's sessions")
+        let fromMock = app.buttons.matching(identifier: "attention-chip").matching(NSPredicate(format: "label BEGINSWITH 'mock:'")).firstMatch
+        XCTAssertTrue(fromMock.waitForExistence(timeout: 45))
+        attach(app, "switched")
+        // A chip switches back and opens its session there.
+        fromMock.tap()
+        let terminal = app.descendants(matching: .any).matching(identifier: "terminal").firstMatch
+        XCTAssertTrue(terminal.waitForExistence(timeout: 30), "the session opened")
+        attach(app, "opened-on-mock")
+        // Back on the list: the machine is the chip's.
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(menu.waitForExistence(timeout: 10))
+        expectation(for: NSPredicate(format: "label ENDSWITH ': mock'"), evaluatedWith: menu)
+        waitForExpectations(timeout: 20)
     }
 
     private func waitForKeyboard(_ app: XCUIApplication, shown: Bool, timeout: TimeInterval = 5) -> Bool {

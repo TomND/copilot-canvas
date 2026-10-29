@@ -13,14 +13,16 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Services") {
+                Section {
                     ForEach(model.servers) { server in
                         Button {
                             model.select(server.id)
                         } label: {
                             HStack {
+                                Circle().fill(Palette.group(UInt8(server.colorIndex))).frame(width: 10, height: 10)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(server.name).foregroundStyle(Palette.text)
+                                    Text(stateText(model.connections[server.id]?.state)).font(.caption2).foregroundStyle(.secondary)
                                     Text(server.url).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                                     if !server.token.isEmpty {
                                         Text(tokenLine(server)).font(.caption2).foregroundStyle(server.tokenExpired ? Palette.failed : .secondary)
@@ -34,9 +36,23 @@ struct SettingsView: View {
                         }
                         .swipeActions {
                             Button(role: .destructive) { forgetting = server } label: { Label("Forget", systemImage: "trash") }
+                            Button { model.naming = server } label: { Label("Rename", systemImage: "pencil") }.tint(Palette.accent)
+                        }
+                        .contextMenu {
+                            Button { model.naming = server } label: { Label("Rename and colour", systemImage: "pencil") }
+                            Button(role: .destructive) { forgetting = server } label: { Label("Forget", systemImage: "trash") }
                         }
                     }
-                    Button { pairing = true } label: { Label("Pair another service", systemImage: "plus") }
+                    .onMove { model.move(from: $0, to: $1) }
+                    Button { pairing = true } label: { Label("Pair another machine", systemImage: "plus") }
+                } header: {
+                    HStack {
+                        Text("Machines")
+                        Spacer()
+                        EditButton().font(.caption).textCase(nil)
+                    }
+                } footer: {
+                    Text("Every machine stays connected while the app is open; what needs you on the others shows at the top. Swipe a machine to rename or forget it; Edit to reorder.")
                 }
                 Section {
                     LabeledContent("Connection", value: stateText)
@@ -70,6 +86,12 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .sheet(item: Binding(get: { pairing ? nil : model.naming }, set: { model.naming = $0 })) { server in
+                MachineSheet(server: server) { name, color in
+                    model.rename(server.id, to: name, color: color)
+                    model.naming = nil
+                }
+            }
             .sheet(isPresented: $pairing) {
                 NavigationStack {
                     PairView { server in
@@ -87,6 +109,15 @@ struct SettingsView: View {
             } message: {
                 Text("This removes the pairing from this phone. Revoke it on the Cloud PC too.")
             }
+        }
+    }
+
+    private func stateText(_ state: ConnState?) -> String {
+        switch state {
+        case .online?: return "Online"
+        case .connecting?: return "Connecting"
+        case .revoked?: return "Revoked: pair it again"
+        default: return "Offline"
         }
     }
 

@@ -48,6 +48,9 @@ final class ServiceConnection: ObservableObject {
     private var screenWatchers: [String: [UUID: () -> Void]] = [:]
     /// Called when the server record changes (a fresh tunnel token).
     var onServerChanged: ((PairedServer) -> Void)?
+    /// A session started waiting for you or finished a turn (the app decides
+    /// how to tell you: toast, notification, the attention strip).
+    var onAttention: ((ServiceConnection, String, String, StatusKind) -> Void)?
 
     init(server: PairedServer) {
         self.server = server
@@ -183,6 +186,10 @@ final class ServiceConnection: ObservableObject {
         case .notification(_, let title, let body):
             notify(title: title.isEmpty ? "Terminal" : title, body: body)
         case .attention(let id, let name, let status):
+            if let onAttention {
+                onAttention(self, id, name, status)
+                return
+            }
             let what = status == .needsYou ? "needs you" : "finished — ready for review"
             if UIApplication.shared.applicationState == .active {
                 toast = Toast(text: "\(name) \(what)", error: false)
@@ -211,6 +218,11 @@ final class ServiceConnection: ObservableObject {
             self.overviewPending = false
             self.overview = self.client.overview()
         }
+    }
+
+    /// The machine was renamed or recoloured (same address and credentials).
+    func updateServer(_ updated: PairedServer) {
+        server = updated
     }
 
     // MARK: Terminals
@@ -246,7 +258,7 @@ final class ServiceConnection: ObservableObject {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
 
-    private func notify(title: String, body: String, id: String? = nil) {
+    func notify(title: String, body: String, id: String? = nil) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body

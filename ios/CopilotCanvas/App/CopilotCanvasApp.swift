@@ -15,7 +15,9 @@ struct CopilotCanvasApp: App {
                 .tint(Palette.accent)
                 .onOpenURL { model.handle(url: $0) }
                 .onReceive(NotificationCenter.default.publisher(for: .openSession)) { note in
-                    if let id = note.object as? String { model.openSession = id }
+                    guard let info = note.object as? [String: String], let session = info["session"] else { return }
+                    let server = info["server"].flatMap(UUID.init(uuidString:)) ?? model.currentID
+                    if let server { model.open(session: session, on: server) }
                 }
         }
         .onChange(of: phase) { _, newPhase in model.phaseChanged(newPhase) }
@@ -38,8 +40,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
-        if let id = response.notification.request.content.userInfo["session"] as? String {
-            await MainActor.run { NotificationCenter.default.post(name: .openSession, object: id) }
+        let info = response.notification.request.content.userInfo
+        if let session = info["session"] as? String {
+            // The machine it came from opens, then the session.
+            let target: [String: String] = ["session": session, "server": info["server"] as? String ?? ""]
+            await MainActor.run { NotificationCenter.default.post(name: .openSession, object: target) }
         }
     }
 }
@@ -66,11 +71,12 @@ struct RootView: View {
         .sheet(item: Binding(get: { model.connection == nil ? nil : model.incomingLink }, set: { model.incomingLink = $0 })) { link in
             NavigationStack {
                 PairView(initial: link) { server in
-                    model.add(server)
                     model.incomingLink = nil
+                    model.add(server)
                 }
             }
         }
+
     }
 }
 
