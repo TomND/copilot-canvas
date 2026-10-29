@@ -532,11 +532,11 @@ passive session, whose loop arc would animate on its own):
 
 | Phase | Frames/s | CPU (% of one core) | |
 |---|---|---|---|
-| Idle, no effect | 0.4 | 0.00–0.47 | ✓ ≈ 0 |
-| Fireworks in view | 14.5 | **1.72** (2.03 before effects got their own 80 ms tick) | ✓ ≤ 2 % |
+| Idle, no effect | 0.4 | 0.31–0.47 (the window's housekeeping) | ✓ ≈ 0 |
+| Fireworks in view | 13–14.5 | **1.72 · 1.87** (two runs; 2.03 before effects got their own 80 ms tick) | ✓ ≤ 2 % |
 | Attention in view | 14.6 | 1.25 | ✓ |
-| Attention out of view | 0.3 | 0.00 | ✓ |
-| Effects cleared | 0.4 | 0.00 | ✓ |
+| Attention out of view | 0.3 | 0.00–0.16 | ✓ |
+| Effects cleared | 0.4 | 0.00–0.31 | ✓ |
 
 Effects run at 12.5 frames/s (the spinners' clock; the counts above include
 the service's statistics frames), below §9's 15: smooth enough for the
