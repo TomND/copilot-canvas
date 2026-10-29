@@ -159,23 +159,26 @@ final class TerminalUITests: XCTestCase {
         let app = launch()
         let drift = app.staticTexts["Drift guard"].firstMatch
         XCTAssertTrue(drift.waitForExistence(timeout: 45))
-        drift.tap()
         let pause = app.buttons.matching(identifier: "Pause").firstMatch
         let resume = app.buttons.matching(identifier: "Resume").firstMatch
-        XCTAssertTrue(pause.waitForExistence(timeout: 10) || resume.exists)
+        drift.tap()
+        XCTAssertTrue(pause.waitForExistence(timeout: 10) || resume.exists, "its actions")
         attach(app, "passive-actions")
-        if pause.exists {
-            pause.tap()
-            XCTAssertTrue(app.staticTexts["paused"].waitForExistence(timeout: 20), "shown as paused")
+        if resume.exists {
+            // Left paused by an earlier run.
+            resume.tap()
             drift.tap()
-            XCTAssertTrue(resume.waitForExistence(timeout: 10))
-            resume.tap()
-        } else {
-            resume.tap()
         }
-        let gone = NSPredicate(format: "exists == false")
-        expectation(for: gone, evaluatedWith: app.staticTexts["paused"])
-        waitForExpectations(timeout: 20)
+        XCTAssertTrue(pause.waitForExistence(timeout: 10))
+        pause.tap()
+        // The actions follow its state: paused now, so it offers to resume.
+        drift.tap()
+        XCTAssertTrue(resume.waitForExistence(timeout: 20), "paused")
+        resume.tap()
+        drift.tap()
+        XCTAssertTrue(pause.waitForExistence(timeout: 20), "resumed")
+        let cancel = app.buttons.matching(identifier: "Cancel").firstMatch
+        if cancel.exists { cancel.tap() }
     }
 
     private func waitForKeyboard(_ app: XCUIApplication, shown: Bool, timeout: TimeInterval = 5) -> Bool {
