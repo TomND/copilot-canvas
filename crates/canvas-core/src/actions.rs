@@ -25,6 +25,16 @@ impl App {
         self.modals.push(Modal::Menu(Menu { x, y, title, items, sel }));
     }
 
+    /// The menu's remove item: this box alone, or (on a box of a
+    /// multi-selection) the selection's eligible boxes after a confirmation.
+    fn remove_item(&self, id: &str, single: &str) -> MenuItem {
+        if self.selection.len() > 1 && self.selection.iter().any(|s| s == id) {
+            let count = self.remove_plan(&self.selection).remove.len();
+            return item(&format!("Remove {count} from canvas"), "Del", Action::ConfirmRemove(self.selection.clone()), count > 0);
+        }
+        item(single, "Del", Action::RemoveNode(id.to_owned()), true)
+    }
+
     pub fn node_menu(&self, id: &str) -> (String, Vec<MenuItem>) {
         let Some(node) = self.doc.node(id) else { return (String::new(), Vec::new()) };
         let session = self.session_of(id).unwrap_or_default();
@@ -57,7 +67,7 @@ impl App {
             }
             items.push(item(if parent_alive { "Open parent terminal" } else { "Start parent session" }, "", Action::Start(parent), !external));
             items.push(item("Rename box", "R", Action::Rename(Target::Node(id.to_owned())), true));
-            items.push(item("Remove box", "Del", Action::RemoveNode(id.to_owned()), true));
+            items.push(self.remove_item(id, "Remove box"));
             return (node.name.clone(), items);
         }
         if node.passive.is_some() {
@@ -73,7 +83,7 @@ impl App {
             items.push(item("MCP servers…", "", Action::McpServers(id.to_owned()), true));
             items.push(item("Rename", "R", Action::Rename(Target::Node(id.to_owned())), true));
             items.push(item("Stop run", "X", Action::Stop { id: id.to_owned(), force: false }, alive));
-            items.push(item("Remove from canvas", "Del", Action::RemoveNode(id.to_owned()), true));
+            items.push(self.remove_item(id, "Remove from canvas"));
             return (node.name.clone(), items);
         }
         // The explicit start: Start (new), Resume (its conversation) or Open terminal (running).
@@ -103,7 +113,7 @@ impl App {
         }
         items.push(item("Stop session", "X", Action::Stop { id: id.to_owned(), force: false }, alive));
         items.push(item("Force stop", "", Action::Stop { id: id.to_owned(), force: true }, alive));
-        items.push(item("Remove from canvas", "Del", Action::RemoveNode(id.to_owned()), true));
+        items.push(self.remove_item(id, "Remove from canvas"));
         (node.name.clone(), items)
     }
 
@@ -143,7 +153,7 @@ impl App {
                 item("New group here", "", Action::NewGroupAt(wx, wy), true),
                 item("Import sessions…", "I", Action::ImportCopilot, !self.demo),
                 item("Sync VS Code sessions", "V", Action::SyncVs, !self.demo),
-                item("Undo last sync", "Ctrl+Z", Action::UndoSync, self.undo.is_some()),
+                item(self.undo_label(), "Ctrl+Z", Action::UndoSync, self.undo.is_some()),
                 item("Migrate VS Code skills & settings…", "", Action::Migrate, !self.demo),
                 item("Fit everything", "F", Action::FitAll, true),
                 item(if self.doc.ui.tiled { "Single terminal view" } else { "Tile terminals" }, "T", Action::ToggleTiled, true),
@@ -605,19 +615,9 @@ impl App {
                 }
                 self.mark_dirty();
             }
-            Action::RemoveNode(id) => {
-                let session = self.doc.node(&id).filter(|n| n.kind == NodeKind::Session).map(|n| n.id.clone());
-                if session.as_ref().is_some_and(|s| self.owned_alive(s)) {
-                    return self.notify("Stop this session (X) before removing its box. History is never deleted.", true);
-                }
-                if let Some(session) = &session {
-                    self.send(ClientMsg::Forget { id: session.clone() });
-                    self.tile_slots.retain(|t| t != session);
-                }
-                self.doc.remove_node(&id);
-                self.selection.retain(|s| *s != id);
-                self.mark_dirty();
-            }
+            Action::RemoveNode(id) => self.remove_nodes(&[id]),
+            Action::RemoveNodes(ids) => self.remove_nodes(&ids),
+            Action::ConfirmRemove(ids) => self.confirm_remove(ids),
             Action::Stop { id, force } => {
                 if self.owned_alive(&id) {
                     self.stop_terminal(&id, force);

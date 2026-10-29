@@ -26,6 +26,7 @@ pub mod passive;
 pub mod platform;
 pub mod prefs;
 pub mod remote;
+pub mod remove;
 pub mod side;
 pub mod status;
 pub mod tunnel;

@@ -235,9 +235,14 @@ impl App {
                 if let Some(group) = self.selected_group.clone() {
                     return self.run(Action::DeleteGroup(group));
                 }
-                let ids = self.selection.clone();
-                for id in ids {
-                    self.run(Action::RemoveNode(id));
+                // Several boxes: their eligible part after a confirmation.
+                match self.selection.as_slice() {
+                    [] => {}
+                    [id] => {
+                        let id = id.clone();
+                        self.run(Action::RemoveNode(id));
+                    }
+                    _ => self.confirm_remove(self.selection.clone()),
                 }
                 return;
             }

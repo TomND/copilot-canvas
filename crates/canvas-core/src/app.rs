@@ -61,6 +61,16 @@ pub enum Focus {
     Terminal,
 }
 
+/// What Ctrl+Z restores.
+#[derive(Clone, Debug)]
+pub enum Undo {
+    /// The canvas before a bulk change (a VS Code sync): label, document.
+    Doc(String, Box<Doc>),
+    /// Boxes removed together, and the subsession links (child, parent)
+    /// their removal cut.
+    Removed { nodes: Vec<Node>, links: Vec<(String, String)> },
+}
+
 pub use canvas_termview::{TermSelection, TermView, user_message_rows};
 
 pub struct Notice {
@@ -153,8 +163,8 @@ pub struct App {
     pub demo: bool,
     pub perf: Option<Perf>,
     pub term_select: Option<TermSelection>,
-    /// Canvas before the last bulk change (VS Code sync), for Ctrl+Z.
-    pub undo: Option<(String, Box<Doc>)>,
+    /// What Ctrl+Z restores (the last VS Code sync or the last removal).
+    pub undo: Option<Undo>,
     /// While wheel/trackpad panning, the dot grid is hidden until this time.
     pub pan_quiet_until: Option<Instant>,
     /// Ctrl+L: repaint every cell on the next frame.

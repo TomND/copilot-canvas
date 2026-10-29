@@ -119,6 +119,10 @@ pub enum Action {
     FitGroup(String),
     CycleGroupColor(String),
     RemoveNode(String),
+    /// Removes these boxes (a confirmed multi-selection; running sessions stay).
+    RemoveNodes(Vec<String>),
+    /// Asks before removing the eligible boxes of a multi-selection.
+    ConfirmRemove(Vec<String>),
     Stop { id: String, force: bool },
     Copy(String),
     ImportCopilot,

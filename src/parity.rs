@@ -1363,6 +1363,39 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         Ok("Copilot session + subagent, OpenCode child live-refreshed; refused beside its running parent; resumed with -s as a linked box".into())
     });
 
+    check(rows, "36", "New: removing a multi-selection (its eligible boxes after a confirmation; running sessions and history kept; Ctrl+Z)", "multi_remove_keeps_running", || {
+        gui.canvas_focus()?;
+        gui.send("f")?;
+        gui.key("Esc", &[])?;
+        let (import_b, idle, failed) = (sb.sessions.import_b.clone(), sb.sessions.idle.clone(), sb.sessions.failed.clone());
+        // "Failed one" runs (Enter resumed it above); the other two do not run here.
+        let first = gui.box_center("Import me B")?;
+        gui.click(first, &[])?;
+        for name in ["Idle one", "Failed one"] {
+            let at = gui.box_center(name)?;
+            gui.click(at, &["ctrl"])?;
+        }
+        gui.wait_tree("three boxes selected", 5, |t| t["selection"].as_array().is_some_and(|s| s.len() == 3))?;
+        let at = gui.box_center("Failed one")?;
+        gui.mouse("down", "right", at, &[])?;
+        gui.mouse("up", "right", at, &[])?;
+        gui.wait("the menu removes the eligible two", 5, |t| t.contains("Remove 2 from canvas"))?;
+        let (x, y) = gui.find("Remove 2 from canvas").context("menu item")?;
+        gui.click((x + 1.0, y), &[])?;
+        gui.wait("the confirmation", 5, |t| t.contains("Remove 2 from the canvas?") && t.contains("1 running session kept: stop it first."))?;
+        gui.key("Enter", &[])?;
+        let doc = wait_doc(&sb.canvas, "the two boxes removed", |d| d.node(&import_b).is_none() && d.node(&idle).is_none())?;
+        anyhow::ensure!(doc.node(&failed).is_some(), "the running session stays");
+        for id in [&import_b, &idle] {
+            anyhow::ensure!(sb.instance.sessions_dir.join(id).join("events.jsonl").is_file(), "history is kept ({id})");
+        }
+        gui.canvas_focus()?;
+        gui.chord('z', &["ctrl"])?;
+        wait_doc(&sb.canvas, "Ctrl+Z restores them", |d| d.node(&import_b).is_some() && d.node(&idle).is_some())?;
+        gui.key("Esc", &[])?;
+        Ok("menu “Remove 2 from canvas” on a 3-box selection; confirmation names the running one; history kept; Ctrl+Z restored both".into())
+    });
+
     check_kind(rows, "G4", "New: several windows on one canvas (Ctrl+Shift+N, toolbar)", "second_window_rename_sync", Kind::Only("GUI only: a console has one window"), || {
         let opened = gui.req(json!({ "cmd": "new_window" }))?;
         let window = opened["window"].as_u64().context("window index")? as usize;

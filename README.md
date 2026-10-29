@@ -106,6 +106,7 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 | Group selection | context menu | `G` |
 | New session / subsession | toolbar **+ New**, double-click, menu | `N` / `S` |
 | Rename · remove · stop | context menu | `R` · Del · `X` |
+| Remove several boxes (running sessions kept, history kept; asks first) | select them, right-click one → **Remove N from canvas** | Del; Ctrl+Z restores them |
 | Import · sync VS Code | toolbar **Import**, **⟳ VS Code** | `I`, `V` |
 | Switch side view | activity bar | `Alt+1` … `Alt+8` |
 | In a list view | click row | ↑↓, Enter open/edit, Space enable/disable, Del remove, Esc back |
@@ -113,7 +114,7 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 | Leave a terminal | click canvas/sidebar | **Ctrl+]** or F6 |
 | Copy / paste in a terminal | drag to select; pane menu | Ctrl+C (with selection) · Ctrl+V |
 | Open a link | click (Ctrl+click in terminals) | — |
-| Undo the last VS Code sync | canvas menu, VS Code view | Ctrl+Z |
+| Undo the last VS Code sync or removal | canvas menu, VS Code view | Ctrl+Z |
 | Quit (sessions keep running) | toolbar **⏻ Quit** | `Q` / Ctrl+Q, even while filtering (asks: detach or stop all) |
 | Help | toolbar `?` | `?` |
 
