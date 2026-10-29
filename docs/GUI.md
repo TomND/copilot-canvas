@@ -170,7 +170,8 @@ and size.
 - *Canvas:* rounded boxes with status borders (needs you: heavy gold; done ·
   review: double blue with a tinted body; failed automation: pulsing
   vermillion; selected: heavy white; passive: dashed), group outlines with
-  their title row, connectors, the loopback arc with its moving dot (≤ 15 fps),
+  their title row (a selected group: a 3 px outline over a light tint of its
+  colour), connectors, the loopback arc with its moving dot (≤ 15 fps),
   pulses, the halo around the active terminal's box (heavier while typing),
   the rubber band. Labels (Segoe UI) are shaped once and scaled with the
   zoom; below a readable size a box shows one compact line, then only its
@@ -296,6 +297,10 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
 | Zoom | Ctrl+wheel or Alt+wheel: continuous, around the pointer (1/8 of a doubling per notch); toolbar − / + and the `-` / `+` keys step 25 % · 50 % · 100 % · 200 %; `F` fits everything (at most 100 %); `C` / Home centres the selection |
 | Pan | drag empty canvas or middle-drag, pixel-smooth; wheel / Shift+wheel; Ctrl+arrows |
 | Move | drag a box (its subagents follow) or a group title, pixel-smooth; the document stores whole units |
+| View / start | a click (canvas or sidebar) only views a box: its live terminal, else its details panel; a double-click, Enter, the panel's **▸ Start** / **▸ Resume** or the box menu starts it. An exited terminal stays on screen while it has the focus |
+| Select a group | click its empty background (a drag there still pans) or its outline, up to about half a cell outside it (`BORDER_SLACK`); the innermost group wins; the selected group is drawn heavier |
+| Inspect | the box menu's or details panel's **Inspect transcript**: a read-only modal (wheel scrolls, Copy, Close); a finished OpenCode child offers **Resume as subsession** there |
+| Remove | right-click on a selected box (or Del) with several selected: "Remove N from canvas" after a confirmation; running sessions stay; Ctrl+Z restores |
 | Pointer | hand over buttons and links, resize arrows over the dividers, text beam over terminals |
 | Paste | Ctrl+V / Shift+Insert: into a terminal (images as in the TUI, with a thumbnail of the image) or the focused text field |
 | Drop files | on a terminal: quoted paths pasted (remote mode: uploaded first); a folder on the canvas: new session there |
@@ -336,7 +341,7 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   `UPDATE_SNAPSHOTS=1 cargo test -p canvas-core --test view_snapshots`
   accepts the new texts.
 - `copilot-canvas selftest --client gui [--remote loopback]` runs the TUI
-  self-test's 27 steps against the GUI in a 170 × 46 cell window. A `Ui`
+  self-test's 31 steps against the GUI in a 170 × 46 cell window. A `Ui`
   trait has two drivers: the TUI's hidden pseudoconsole and `GuiDriver`,
   which starts `copilot-canvas-gui.exe --test-hooks --size 170x46` and turns
   the terminal input the scenario sends (keys, Alt+digits, Ctrl+letters, SGR

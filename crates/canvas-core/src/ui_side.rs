@@ -395,7 +395,7 @@ fn session_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)
         }
         match app.child_resume(node) {
             crate::inspect::ChildResume::Allowed { native } => {
-                out.text(format!("Finished and not running anywhere: Resume as subsession opens this conversation in a terminal of its own ({native}), linked to its parent."), fg(ACCENT));
+                out.text(format!("Finished and not running anywhere: it can resume in a terminal of its own ({native}), as a subsession linked to its parent."), fg(ACCENT));
                 actions.push(("Resume as subsession".into(), Action::ResumeChild(node.id.clone())));
             }
             crate::inspect::ChildResume::Existing(id) => {

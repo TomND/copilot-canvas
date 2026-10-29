@@ -23,7 +23,7 @@ installed agent (OpenCode on the development machine, which has no Copilot).
 
 | Phase | State | Verified by |
 |---|---|---|
-| 0 Layer split | Done: workspace crates (§3), `Emulator` trait, `Backend` RPC trait (local and remote), `InputEvent`, `RenderMode`/`CanvasModel` view model, golden corpus (13 entries, both engines) | `cargo test --workspace`; `corpus check`; `selftest` (TUI, 27 steps) |
+| 0 Layer split | Done: workspace crates (§3), `Emulator` trait, `Backend` RPC trait (local and remote), `InputEvent`, `RenderMode`/`CanvasModel` view model, golden corpus (13 entries, both engines) | `cargo test --workspace`; `corpus check`; `selftest` (TUI, 31 steps) |
 | 1 Remote mode | Done: protocol 8, TCP + zstd, heartbeat, reconnect (backoff capped at 1.5 s, see D5), input acks, offline blocking, per-tile coalescing, backend-owned document with patches, pairing (DPAPI), `CopilotCanvas-Tunnel` manifest, managed `devtunnel connect`, §6 behaviours | `selftest --remote` `loopback`, `faults`, `paired`; backend contract tests; 20-minute soaks (docs/soak) |
 | 2 libghostty-vt | Done and default: pinned Ghostty `521cf2c5`, Zig 0.17.0, `cargo xtask build-ghostty`, vendored headers with checksums; corpus differences reviewed (corpus/reviewed-differences.md) | `bench --terminals 100`: equal CPU, about 58 % less memory per terminal, keystroke p50 ~1.1 ms |
 | 3 GPU spike | Done: wgpu 30 + winit + glyphon chosen over GPUI (docs/GPU-SPIKE.md) | measured on the RTX 3070 and WARP |

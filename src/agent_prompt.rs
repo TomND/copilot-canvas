@@ -40,7 +40,8 @@ const PROMPT_STATUS: &str = "Use the bash tool to run: sleep 6 ; then reply with
 const PROMPT_LONG: &str = "Use the bash tool to run: sleep 40 ; then reply with just OK";
 const PROMPT_STREAM: &str = "Reply with 400 lines: the word canvasline immediately followed by the line number, from 1 to 400, one per line, nothing else.";
 const PROMPT_ROWS: &str = "Reply with 80 lines: the word canvasrow immediately followed by the line number, from 1 to 80, one per line, nothing else.";
-const PROMPT_PUSH: &str = "Use the bash tool to run exactly this command once: cd repo && git push origin main ; then reply with just DONE";
+/// `;` separates commands in every shell OpenCode may run (bash, PowerShell 5.1 has no `&&`).
+const PROMPT_PUSH: &str = "Use the bash tool once to run this exact command: `cd repo; git push origin main` and then reply with just DONE";
 const PROMPT_TASK: &str = "Use the task tool once to start a general subagent with the prompt: Reply with just OK. When it returns, reply with just DONE.";
 const PROMPT_QUESTION: &str = "Use the question tool once to ask me: Which canvas color? with the options Red and Blue. After my answer, reply with just DONE.";
 const PROMPT_ASK: &str = "Use the bash tool to run: echo canvasask ; then reply with just DONE";
@@ -709,6 +710,8 @@ fn scenario<U: Ui>(instance: &Instance, paths: &Paths, model: &str, steps: &[Str
             anyhow::ensure!(log_count(instance, "launched ") == launches, "inspecting launched something");
             println!("    the child's transcript opened read-only ({shown} prompt/tool line(s) on screen), nothing launched");
             child = Some((kids[0].clone(), names[0].clone()));
+            // Back in the session's terminal for the next prompt.
+            open_terminal(&mut ui, MAIN)?;
         }
     }
 
@@ -943,7 +946,11 @@ fn resume_child<U: Ui>(ui: &mut U, instance: &Instance, canvas: &Path, main: &st
     let (_, line) = launched_command_line(instance, &resumed.0)?;
     let words: Vec<&str> = line.split_whitespace().collect();
     anyhow::ensure!(words.windows(2).any(|w| w[0] == "-s" && w[1] == kid), "resumed without -s {kid}: {line}");
-    ui.wait("its own OpenCode", Duration::from_secs(60), |t| t.contains(&format!("{} · ", resumed.1)) && agent_ui_up(AgentKind::OpenCode, t))?;
+    // The box takes the child's title once OpenCode reports it; a child's
+    // view in OpenCode has "Parent up" in place of the prompt's key hints.
+    let name = |fallback: &str| load(canvas).ok().and_then(|d| d.node(&resumed.0).map(|n| n.name.clone())).unwrap_or_else(|| fallback.to_string());
+    ui.wait("its own OpenCode", Duration::from_secs(60), |t| t.contains(&format!("{} · ", name(&resumed.1))) && (t.contains("Parent up") || agent_ui_up(AgentKind::OpenCode, t)))?;
+    let resumed = (resumed.0.clone(), name(&resumed.1));
     anyhow::ensure!(doc.node(&format!("{main}:{kid}")).is_some(), "the subagent box stays");
     // Stopped again (no prompt was sent), so only the parent resumes next.
     canvas_focus(ui)?;
