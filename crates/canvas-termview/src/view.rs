@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use canvas_common::protocol::{F_ITALIC, Frame, Frame8, Placement, Run, Run8, runs_v7};
+use canvas_common::protocol::{F_ITALIC, Frame, Frame8, MODE_ALT_SCREEN, Placement, Run, Run8, row_soft_wrap, runs_v7};
 
 /// Hyperlink targets kept before the table is rebuilt from the rows.
 const MAX_LINKS: usize = 1024;
@@ -156,23 +156,110 @@ impl TermView {
         cells
     }
 
-    /// Selected text; rows that fill the width are soft-wrapped and rejoin.
+    /// Selected text, copied by the rules of [`TermView::selection_text_with`]
+    /// without program-specific ones.
     pub fn selection_text(&self, selection: &TermSelection) -> String {
+        self.selection_text_with(selection, CopyRules::default())
+    }
+
+    /// Selected text, line by line:
+    ///
+    /// - a soft-wrapped row (the engine's wrap state, [`row_soft_wrap`])
+    ///   continues on the next row: the two rejoin without a break, keeping
+    ///   the wrapped row's spaces up to where its text ends (a wide character
+    ///   that moved on to the next row leaves no gap);
+    /// - every other row ends a line: CR LF (the Windows clipboard's line
+    ///   break), with its trailing blanks trimmed; blank lines, leading
+    ///   indentation and spaces inside lines stay;
+    /// - on a full-screen view (the alternate screen) every row ends a line:
+    ///   such programs lay out and wrap their text themselves and often paint
+    ///   whole rows (padding, borders, Copilot's scrollbar) straight into the
+    ///   next one, so the wrap state says nothing about their text;
+    /// - a wide character or grapheme cluster is copied once, also when the
+    ///   selection starts on its right half;
+    /// - only the terminal's cells are read: nothing the client draws over
+    ///   them (selection, cursor, the user-message bar) is copied.
+    ///
+    /// Protocol-7 rows carry no wrap state: each of them ends a line.
+    pub fn selection_text_with(&self, selection: &TermSelection, rules: CopyRules) -> String {
         let ((c0, r0), (c1, r1)) = selection.ordered();
+        let cols = self.cols as usize;
+        let full_screen = self.modes & MODE_ALT_SCREEN != 0;
+        let scrollbar = rules.edge_scrollbar && full_screen;
         let mut out = String::new();
         for row in r0..=r1 {
-            let cells = self.row_cells(row as usize);
-            let Some(last) = cells.len().checked_sub(1) else { continue };
-            let start = if row == r0 { c0 as usize } else { 0 };
-            let end = if row == r1 { (c1 as usize).min(last) } else { last };
-            let text: String = if start <= end { cells[start..=end].concat() } else { String::new() };
-            let wrapped = row < r1 && !cells[last].trim().is_empty();
-            out.push_str(if wrapped { &text } else { text.trim_end() });
-            if row < r1 && !wrapped {
-                out.push_str("\r\n");
+            let (cells, wrap) = self.text_cells(row as usize);
+            let last = row == r1;
+            let soft = if last || full_screen { None } else { wrap };
+            let mut start = if row == r0 { c0 as usize } else { 0 };
+            if start > 0 && cells.get(start).is_some_and(Option::is_none) {
+                start -= 1;
+            }
+            let mut end = if last { (c1 as usize + 1).min(cols) } else { cols };
+            if let Some(wrap_end) = soft {
+                end = end.min(wrap_end as usize);
+            } else if scrollbar && end == cols && is_edge_scrollbar(&cells) {
+                end -= 1;
+            }
+            let text: String = cells.get(start..end.max(start)).unwrap_or_default().iter().flatten().map(String::as_str).collect();
+            if soft.is_some() {
+                out.push_str(&text);
+            } else {
+                out.push_str(text.trim_end_matches(' '));
+                if !last {
+                    out.push_str("\r\n");
+                }
             }
         }
         out
+    }
+
+    /// One string per column of a viewport row (`None`: the right half of a
+    /// wide character; a grapheme cluster is one string) and, for a
+    /// soft-wrapped row, the column where its text ends.
+    pub fn text_cells(&self, row: usize) -> (Vec<Option<String>>, Option<u16>) {
+        let cols = self.cols as usize;
+        let mut cells = vec![Some(" ".to_owned()); cols];
+        if self.rows8.is_empty() {
+            for (cell, text) in cells.iter_mut().zip(self.row_cells(row)) {
+                *cell = (!text.is_empty()).then_some(text);
+            }
+            return (cells, None);
+        }
+        let Some(runs) = self.rows8.get(row) else { return (cells, None) };
+        for run in runs {
+            let step = if run.wide { 2 } else { 1 };
+            for (i, text) in run.cells().into_iter().enumerate() {
+                let col = run.col as usize + i * step;
+                if let Some(cell) = cells.get_mut(col) {
+                    *cell = Some(text.to_owned());
+                }
+                if run.wide
+                    && let Some(cell) = cells.get_mut(col + 1)
+                {
+                    *cell = None;
+                }
+            }
+        }
+        (cells, row_soft_wrap(runs))
+    }
+}
+
+/// Program-specific copy rules ([`TermView::selection_text_with`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CopyRules {
+    /// The program draws a scrollbar in the last column of its full-screen
+    /// view (Copilot CLI): on the alternate screen, a `┃` or `│` alone in
+    /// the last column of a row that ends its line (the cell before it is
+    /// blank) is the scrollbar and is not copied.
+    pub edge_scrollbar: bool,
+}
+
+/// The row's last cell is a vertical bar standing apart from its text.
+fn is_edge_scrollbar(cells: &[Option<String>]) -> bool {
+    match cells {
+        [.., Some(before), Some(bar)] => before == " " && matches!(bar.as_str(), "┃" | "│"),
+        _ => false,
     }
 }
 
@@ -333,20 +420,117 @@ mod tests {
         assert!(view.images.is_empty() && view.placements.is_empty());
     }
 
-    #[test]
-    fn selection_copies_reading_order_text_and_rejoins_wrapped_rows() {
-        let view = TermView {
-            cols: 8,
-            rows: 4,
-            lines: vec![vec![run(0, "hello 中")], vec![run(0, "abcdefgh")], vec![run(0, "ij")], vec![run(2, "tail")]],
-            ..Default::default()
+    fn run8(col: u16, text: &str) -> Run8 {
+        Run8 { col, text: text.into(), ..Default::default() }
+    }
+
+    fn view8(cols: u16, rows: Vec<Vec<Run8>>) -> TermView {
+        let mut view = TermView::default();
+        let frame = Frame8 {
+            id: "t".into(),
+            cols,
+            rows: rows.len() as u16,
+            full: true,
+            changed: rows.into_iter().enumerate().map(|(y, row)| (y as u16, row)).collect(),
+            cursor: None,
+            cursor_shape: 0,
+            cursor_blink: false,
+            display_offset: 0,
+            history: 0,
+            modes: 0,
+            links: Vec::new(),
         };
-        let sel = |a, b| TermSelection { id: "t".into(), anchor: a, head: b };
+        view.apply8(frame);
+        view
+    }
+
+    fn sel(a: (u16, u16), b: (u16, u16)) -> TermSelection {
+        TermSelection { id: "t".into(), anchor: a, head: b }
+    }
+
+    #[test]
+    fn selection_copies_reading_order_text_and_wide_characters_once() {
+        let mut wide = run8(6, "中");
+        wide.wide = true;
+        let view = view8(8, vec![vec![run8(0, "hello "), wide], vec![run8(0, "abcdefgh")], vec![run8(0, "ij")], vec![run8(2, "tail")]]);
         assert_eq!(view.selection_text(&sel((0, 0), (4, 0))), "hello");
         assert_eq!(view.selection_text(&sel((6, 0), (7, 0))), "中", "wide character copied once");
-        // Backwards drag; row 1 fills the width so it joins row 2 without a newline.
-        assert_eq!(view.selection_text(&sel((1, 2), (3, 1))), "defghij");
+        assert_eq!(view.selection_text(&sel((7, 0), (7, 0))), "中", "starting on its right half");
+        // Backwards drag; row 1 fills the width but ends its line (no wrap state).
+        assert_eq!(view.selection_text(&sel((1, 2), (3, 1))), "defgh\r\nij");
         assert_eq!(view.selection_text(&sel((0, 2), (7, 3))), "ij\r\n  tail");
         assert!(sel((5, 1), (2, 2)).contains(0, 2) && !sel((5, 1), (2, 2)).contains(4, 1));
+    }
+
+    #[test]
+    fn soft_wrapped_rows_rejoin_and_hard_breaks_blank_lines_and_indentation_stay() {
+        let view = view8(10, vec![
+            // "The quick brown fox jumps" wrapped at 10 columns (the engines trim the wrapped rows' trailing spaces).
+            vec![run8(0, "The quick"), Run8::soft_wrap(10)],
+            vec![run8(0, "brown fox"), Run8::soft_wrap(10)],
+            vec![run8(0, "jumps")],
+            vec![],
+            vec![run8(0, "    let x;"), Run8::soft_wrap(10)],
+            vec![run8(0, "  y")],
+            // Exactly the width, then a new line: not joined.
+            vec![run8(0, "0123456789")],
+            vec![run8(0, "next  "), run8(8, "x")],
+        ]);
+        assert_eq!(
+            view.selection_text(&sel((0, 0), (9, 7))),
+            "The quick brown fox jumps\r\n\r\n    let x;  y\r\n0123456789\r\nnext    x",
+            "soft wraps rejoin; hard breaks, the blank line, indentation and inner spaces stay"
+        );
+        assert_eq!(view.selection_text(&sel((4, 0), (3, 1))), "quick brow", "a selection inside a wrapped line");
+        assert_eq!(view.selection_text(&sel((0, 2), (9, 2))), "jumps", "trailing padding of a line is trimmed");
+        assert_eq!(view.selection_text(&sel((0, 3), (9, 3))), "");
+        // A row of blanks that wraps keeps its spaces.
+        let blanks = view8(4, vec![vec![run8(0, "a"), Run8::soft_wrap(4)], vec![Run8::soft_wrap(4)], vec![run8(0, "b")]]);
+        assert_eq!(blanks.selection_text(&sel((0, 0), (3, 2))), "a       b");
+    }
+
+    #[test]
+    fn a_wide_character_that_moved_on_leaves_no_gap_and_clusters_stay_whole() {
+        let mut wide = run8(0, "中");
+        wide.wide = true;
+        let mut cluster = run8(3, "e\u{301}!");
+        cluster.clusters = vec![(0, 1)];
+        // "123456789" then a wide character that did not fit in the last column.
+        let view = view8(10, vec![vec![run8(0, "123456789"), Run8::soft_wrap(9)], vec![wide, run8(2, "x"), cluster]]);
+        assert_eq!(view.selection_text(&sel((0, 0), (9, 1))), "123456789中xe\u{301}!");
+        assert_eq!(view.selection_text(&sel((3, 1), (3, 1))), "e\u{301}", "a cluster is one cell");
+    }
+
+    #[test]
+    fn full_screen_rows_never_rejoin() {
+        // vim and OpenCode paint whole rows into the next one: every row wraps.
+        let rows = vec![vec![run8(0, "~"), Run8::soft_wrap(6)], vec![run8(0, "~"), Run8::soft_wrap(6)], vec![run8(0, "a b c"), Run8::soft_wrap(6)], vec![run8(0, "d")]];
+        let mut view = view8(6, rows);
+        assert_eq!(view.selection_text(&sel((0, 0), (5, 3))), "~     ~     a b c d", "a shell's soft wraps rejoin");
+        view.modes = MODE_ALT_SCREEN;
+        assert_eq!(view.selection_text(&sel((0, 0), (5, 3))), "~\r\n~\r\na b c\r\nd");
+    }
+
+    #[test]
+    fn copilots_scrollbar_column_is_not_copied_on_its_full_screen_view() {
+        let rows = vec![
+            vec![run8(0, " ● reply line one"), run8(19, "┃")],
+            vec![run8(0, "   more│"), run8(19, "│")],
+            vec![run8(0, " ❯ a│b"), run8(18, "x┃")],
+        ];
+        let mut view = view8(20, rows);
+        let all = sel((0, 0), (19, 2));
+        let copilot = CopyRules { edge_scrollbar: true };
+        assert_eq!(view.selection_text_with(&all, copilot), " ● reply line one  ┃\r\n   more│           │\r\n ❯ a│b            x┃", "only on the alternate screen");
+        view.modes = MODE_ALT_SCREEN;
+        assert_eq!(view.selection_text_with(&all, copilot), " ● reply line one\r\n   more│\r\n ❯ a│b            x┃", "a bar right after text stays");
+        assert_eq!(view.selection_text(&all), " ● reply line one  ┃\r\n   more│           │\r\n ❯ a│b            x┃", "other programs keep it");
+    }
+
+    #[test]
+    fn protocol7_rows_have_no_wrap_state() {
+        let view = TermView { cols: 4, rows: 2, lines: vec![vec![run(0, "abcd")], vec![run(0, "ef")]], ..Default::default() };
+        assert_eq!(view.selection_text(&sel((0, 0), (3, 1))), "abcd\r\nef");
+        assert_eq!(view.text_cells(0), (vec![Some("a".into()), Some("b".into()), Some("c".into()), Some("d".into())], None));
     }
 }

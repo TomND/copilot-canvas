@@ -135,7 +135,7 @@ impl Snapshot {
             .map(|row| {
                 let mut line = String::new();
                 let mut col = 0u16;
-                for run in row {
+                for run in row.iter().filter(|run| !run.is_soft_wrap()) {
                     if run.col > col {
                         line.push_str(&" ".repeat((run.col - col) as usize));
                     }

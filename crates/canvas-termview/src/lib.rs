@@ -4,4 +4,4 @@
 pub mod tui;
 mod view;
 
-pub use view::{TermImage, TermSelection, TermView, user_message_rows};
+pub use view::{CopyRules, TermImage, TermSelection, TermView, user_message_rows};

@@ -47,11 +47,13 @@ JSON lines, UTF-8. The first line is the header, every further line one event:
   `cursor_shape` (0 block, 1 underline, 2 bar, 3 hollow), `cursor_blink`, `display_offset`, `history`
   (scrollback lines), `modes` (`MODE_*` bits; `mode_names` spells them out), `links` (OSC 8 targets),
   `text` (plain rows for reading) and `lines` (protocol-8 `Run8` rows: text, grapheme clusters, width,
-  colours, flags, underline colour, link).
+  colours, flags, underline colour, link; a soft-wrapped row ends with an empty marker run with flag
+  `F8_SOFTWRAP` = 4096 whose `col` is where the row's text ends).
 
 `text` and `mode_names` are derived for reviewers and not compared. Everything else is: cells are
 compared on a full cols x rows grid (blank default cells and trailing-blank trimming are equivalent, links
-by target URL), plus cursor, shape, blink, modes, history, display offset and the events.
+by target URL), plus each row's soft-wrap state, cursor, shape, blink, modes, history, display offset and
+the events. `corpus show` marks soft-wrapped rows with `↩`.
 
 Replay uses the hosted terminal's configuration (scrollback 5000, kitty keyboard answered), applies resizes
 in stream order and flushes a synchronized update (DEC 2026) that is still open 150 ms of stream time later

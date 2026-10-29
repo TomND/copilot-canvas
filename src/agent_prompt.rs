@@ -72,7 +72,7 @@ fn model_arg(command_line: &str) -> Option<&str> {
 }
 
 /// Whether a prompt may be typed into a TUI started with `command_line`.
-fn may_prompt(command_line: &str, model: &str) -> Result<()> {
+pub(crate) fn may_prompt(command_line: &str, model: &str) -> Result<()> {
     ensure_free(model)?;
     match model_arg(command_line) {
         Some(arg) if arg == model => Ok(()),
@@ -84,7 +84,7 @@ fn may_prompt(command_line: &str, model: &str) -> Result<()> {
 /// no network refresh or update, tools that ask unless the session runs with
 /// `--auto`, and the free model as every default (title generation and
 /// subagents included) in case a launch lacked `-m`.
-fn opencode_env(model: &str) -> Vec<(&'static str, String)> {
+pub(crate) fn opencode_env(model: &str) -> Vec<(&'static str, String)> {
     let config = serde_json::json!({
         "model": model,
         "small_model": model,
@@ -235,7 +235,7 @@ fn wait_log_after(instance: &Instance, what: &str, needle: &str, skip: usize, ti
 }
 
 /// The command line of the program the service launched for terminal `id`.
-fn launched_command_line(instance: &Instance, id: &str) -> Result<(u32, String)> {
+pub(crate) fn launched_command_line(instance: &Instance, id: &str) -> Result<(u32, String)> {
     let marker = format!("launched {id} ");
     let pid = service_log(instance)
         .lines()
@@ -901,7 +901,7 @@ fn scenario<U: Ui>(instance: &Instance, paths: &Paths, model: &str, steps: &[Str
 /// Deletes every OpenCode session created in `folders` since `started_ms`
 /// (`opencode session delete`), after reporting the models it used and its
 /// cost; fails when one used another model, cost anything, or stays.
-fn cleanup(program: &str, env: &[(&str, &str)], model: &str, folders: &[&Path], started_ms: u64) -> Result<()> {
+pub(crate) fn cleanup(program: &str, env: &[(&str, &str)], model: &str, folders: &[&Path], started_ms: u64) -> Result<()> {
     let mut roots: Vec<String> = Vec::new();
     for folder in folders {
         roots.extend(opencode_history::discover_new_sessions(&folder.display().to_string(), started_ms.saturating_sub(5_000)).into_iter().map(|(id, _)| id));

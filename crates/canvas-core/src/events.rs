@@ -45,7 +45,7 @@ impl App {
                     // image): let the agent read the clipboard itself.
                     self.send_ctrl_v(&id);
                 } else {
-                    self.send(ClientMsg::Input { id, input: Input::Paste(text) });
+                    self.paste_text(&id, &text);
                 }
             }
         } else if self.side_filter_active {
@@ -54,7 +54,17 @@ impl App {
     }
 
     /// Committed text (IME): typed into a terminal, inserted into text fields.
+    /// Text with line breaks reaches a terminal as a paste, so they do not
+    /// act as Enter.
     fn on_text(&mut self, text: &str) {
+        if self.modals.is_empty()
+            && self.focus == Focus::Terminal
+            && text.contains(['\r', '\n'])
+            && let Some(id) = self.focused_term.clone().filter(|id| self.owned_alive(id))
+        {
+            self.term_select = None;
+            return self.paste_text(&id, text);
+        }
         let text: String = text.chars().filter(|c| !c.is_control()).collect();
         if text.is_empty() {
             return;

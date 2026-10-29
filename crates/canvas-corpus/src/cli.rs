@@ -173,8 +173,10 @@ fn print_expected(expected: &Expected, mark: Option<&str>) {
             screen.history,
             screen.mode_names
         );
-        for line in &screen.text {
-            println!("|{line}");
+        // `↩` ends a soft-wrapped row (its line continues on the next row).
+        for (line, row) in screen.text.iter().zip(&screen.lines) {
+            let wrap = if canvas_common::protocol::row_soft_wrap(row).is_some() { " ↩" } else { "" };
+            println!("|{line}{wrap}");
         }
         if !screen.links.is_empty() {
             println!("links: {:?}", screen.links);

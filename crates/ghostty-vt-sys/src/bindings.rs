@@ -244,6 +244,13 @@ pub struct GhosttyGridRef {
 pub type GhosttyCell = u64;
 pub type GhosttyRow = u64;
 
+pub type GhosttyRowData = c_int;
+pub const GHOSTTY_ROW_DATA_INVALID: GhosttyRowData = 0;
+/// The row is soft-wrapped (bool): its line continues on the next row.
+pub const GHOSTTY_ROW_DATA_WRAP: GhosttyRowData = 1;
+/// The row continues a soft-wrapped row (bool).
+pub const GHOSTTY_ROW_DATA_WRAP_CONTINUATION: GhosttyRowData = 2;
+
 /// Borrowed raw cells of one row.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -744,6 +751,7 @@ unsafe extern "C" {
         values: *mut *mut c_void,
         out_written: *mut usize,
     ) -> GhosttyResult;
+    pub fn ghostty_row_get(row: GhosttyRow, data: GhosttyRowData, out: *mut c_void) -> GhosttyResult;
 
     /* render.h */
     pub fn ghostty_render_state_new(allocator: *const GhosttyAllocator, state: *mut GhosttyRenderState) -> GhosttyResult;

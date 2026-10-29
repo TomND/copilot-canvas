@@ -155,9 +155,11 @@ impl App {
     }
 
     /// Copies the terminal selection to the clipboard (the highlight stays).
+    /// Copilot's scrollbar column is left out (see `CopyRules`).
     pub fn copy_selection(&mut self) {
         let Some(selection) = self.term_select.clone() else { return };
-        let Some(text) = self.views.get(&selection.id).map(|v| v.selection_text(&selection)) else { return };
+        let rules = canvas_termview::CopyRules { edge_scrollbar: self.runs_copilot(&selection.id) };
+        let Some(text) = self.views.get(&selection.id).map(|v| v.selection_text_with(&selection, rules)) else { return };
         if text.is_empty() {
             return;
         }
@@ -167,6 +169,13 @@ impl App {
         }
     }
 
+    /// The terminal runs Copilot CLI (as for its user-message tint).
+    pub fn runs_copilot(&self, id: &str) -> bool {
+        let agent = self.doc.node(id).filter(|n| n.command.is_none()).map(crate::agents::agent_of);
+        self.terms.get(id).is_some_and(|info| info.copilot) && agent == Some(crate::agents::AgentKind::Copilot)
+    }
+
+    /// Pastes the clipboard's text into a terminal (an image: Ctrl+V for the agent).
     pub fn paste_clipboard(&mut self, id: &str) {
         if !self.owned_alive(id) {
             return;
@@ -178,9 +187,19 @@ impl App {
             return self.send_ctrl_v(id);
         }
         match self.platform.clipboard_text() {
-            Ok(text) if !text.is_empty() => self.send(ClientMsg::Input { id: id.to_owned(), input: crate::protocol::Input::Paste(text) }),
+            Ok(text) if !text.is_empty() => self.paste_text(id, &text),
             Ok(_) => self.send_ctrl_v(id),
             Err(error) => self.notify(format!("Paste failed: {error:#}"), true),
+        }
+    }
+
+    /// Text pasted into a terminal: one paste, never ending with a line
+    /// break (the service encodes it so no line break acts as Enter; see
+    /// `canvas_host::keys::paste_lines`). Line breaks alone paste nothing.
+    pub fn paste_text(&mut self, id: &str, text: &str) {
+        let text = crate::input::paste_body(text);
+        if !text.is_empty() {
+            self.send(ClientMsg::Input { id: id.to_owned(), input: crate::protocol::Input::Paste(text.to_owned()) });
         }
     }
 

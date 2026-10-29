@@ -433,6 +433,12 @@ pub const UL_DOUBLE: u32 = 2;
 pub const UL_CURLY: u32 = 3;
 pub const UL_DOTTED: u32 = 4;
 pub const UL_DASHED: u32 = 5;
+/// Set only on a row's soft-wrap marker: an empty run after the row's cells
+/// whose `col` is where the row's text ends (the width, or one less when a
+/// wide character moved on to the next row). The row is soft-wrapped: the
+/// next row continues its line. Rows without the marker end their line.
+/// Protocol-7 rows never carry it (`runs_v7` drops empty runs).
+pub const F8_SOFTWRAP: u32 = 1 << 12;
 
 /// Terminal modes (`Frame8::modes`, `Snapshot::modes`).
 pub const MODE_MOUSE: u32 = 1;
@@ -505,6 +511,22 @@ impl Run8 {
         let cells = self.text.chars().count() - self.clusters.iter().map(|(_, n)| *n as usize).sum::<usize>();
         cells as u16 * if self.wide { 2 } else { 1 }
     }
+
+    /// The soft-wrap marker of a row whose text ends at column `end` ([`F8_SOFTWRAP`]).
+    pub fn soft_wrap(end: u16) -> Self {
+        Run8 { col: end, flags: F8_SOFTWRAP, ..Default::default() }
+    }
+
+    /// This run is a soft-wrap marker.
+    pub fn is_soft_wrap(&self) -> bool {
+        self.flags & F8_SOFTWRAP != 0 && self.text.is_empty()
+    }
+}
+
+/// Where a soft-wrapped row's text ends (its marker's column), or `None`
+/// when the row ends its line ([`F8_SOFTWRAP`]).
+pub fn row_soft_wrap(row: &[Run8]) -> Option<u16> {
+    row.last().filter(|run| run.is_soft_wrap()).map(|run| run.col)
 }
 
 /// Protocol 8 frame: rows of `Run8`, cursor shape and the terminal's modes.
@@ -542,11 +564,12 @@ impl Frame8 {
 }
 
 /// Protocol-7 runs of a protocol-8 row (adjacent runs that differ only in
-/// what protocol 7 cannot express are merged, as protocol-7 hosts did).
+/// what protocol 7 cannot express are merged, as protocol-7 hosts did; empty
+/// runs such as the soft-wrap marker are dropped).
 pub fn runs_v7(row: &[Run8], links: &[String]) -> Vec<Run> {
     let mut out: Vec<Run> = Vec::with_capacity(row.len());
     let mut end = 0u16;
-    for run in row {
+    for run in row.iter().filter(|run| !run.text.is_empty()) {
         let flags = (run.flags & 0x7f) as u16;
         let link = (run.link > 0).then(|| links.get(run.link as usize - 1).cloned()).flatten();
         match out.last_mut() {
@@ -877,6 +900,36 @@ pub(crate) mod tests {
         assert!(matches!(ServiceMsg::Frame8(sample_frame8()).shaped(8, false), Some(ServiceMsg::Frame(_))));
         assert!(matches!(ServiceMsg::Frame8(sample_frame8()).shaped(8, true), Some(ServiceMsg::Frame8(_))));
         assert_eq!(ServiceMsg::Heartbeat { input_ack: 1 }.shaped(8, true), Some(ServiceMsg::Heartbeat { input_ack: 1 }));
+    }
+
+    #[test]
+    fn soft_wrap_markers_reach_protocol8_clients_only() {
+        let text = |col: u16, s: &str| Run8 { col, text: s.into(), ..Default::default() };
+        let mut frame = sample_frame8();
+        frame.changed = vec![
+            (0, vec![text(0, "a long line that "), Run8::soft_wrap(20)]),
+            (1, vec![text(0, "wraps")]),
+            (2, vec![text(0, "中文中文中文中文中"), Run8::soft_wrap(19)]),
+            (3, vec![Run8::soft_wrap(20)]),
+        ];
+        assert_eq!(frame.changed.iter().map(|(_, row)| row_soft_wrap(row)).collect::<Vec<_>>(), [Some(20), None, Some(19), Some(20)]);
+        let message = ServiceMsg::Frame8(frame.clone());
+        let bytes = postcard::to_stdvec(&message).unwrap();
+        assert_eq!(postcard::from_bytes::<ServiceMsg>(&bytes).unwrap(), message, "the marker survives the wire");
+        // A plain run with the bit is not a marker, nor is a marker that is not last.
+        let mut flagged = text(0, "x");
+        flagged.flags = F8_SOFTWRAP;
+        assert_eq!(row_soft_wrap(&[flagged]), None);
+        assert_eq!(row_soft_wrap(&[Run8::soft_wrap(3), text(4, "y")]), None);
+        // Protocol 7 never sees it: the rows are what they were without wrap state.
+        let Some(ServiceMsg::Frame(v7)) = message.shaped(7, true) else { panic!("frame") };
+        let plain = |s: &str| vec![Run { col: 0, text: s.into(), fg: 0, bg: 0, flags: 0, link: None }];
+        assert_eq!(v7.changed, vec![(0, plain("a long line that ")), (1, plain("wraps")), (2, plain("中文中文中文中文中")), (3, Vec::new())]);
+        let mut unwrapped = frame.clone();
+        for (_, row) in &mut unwrapped.changed {
+            row.retain(|r| !r.is_soft_wrap());
+        }
+        assert_eq!(unwrapped.to_v7(), frame.to_v7());
     }
 
     fn sample_image() -> ServiceMsg {
