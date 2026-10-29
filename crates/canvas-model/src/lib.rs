@@ -8,6 +8,7 @@ pub use canvas_common::paths;
 pub mod agent;
 pub mod automation;
 pub mod bus;
+pub mod canvas_wide;
 pub mod config;
 pub mod doc;
 pub mod effects;

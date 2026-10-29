@@ -130,14 +130,19 @@ GOLDEN CORPUS (recorded terminal output vs. each engine's screen; see corpus/REA
                                         compare every engine with the expected screens, or rewrite them
 
 EVENTS (run by sessions on the canvas; see the canvas-events skill)
-  copilot-canvas events                 this session's group: events, passive sessions, sessions
+  copilot-canvas events                 this session's group: events, passive sessions, sessions, and the
+                                        canvas-wide agents (a canvas-wide agent: every group of the canvas)
   copilot-canvas emit TYPE [--data JSON] [--to NAME]
-  copilot-canvas send --to NAME TEXT    message a session (typed in when it is idle)
+                                        --to NAME: that passive session or canvas-wide agent only;
+                                        --to canvas: the canvas-wide agents only
+  copilot-canvas send --to NAME TEXT    message a session (typed in when it is idle): your group's
+                                        sessions and the canvas-wide agents (they reach every session)
   copilot-canvas status ok|warn|alert|done HEADLINE      (passive sessions)
   copilot-canvas followup --in 24h|--at 09:00 NOTE        (passive sessions)
   copilot-canvas effect fireworks|attention|sparkle|alert --on NAME [--note TEXT]
-                                        an effect on a box of this session's group (or --on group)
-                                        until someone clicks it; effect clear --on NAME takes it off;
+                                        an effect on a box of this session's group (or --on group;
+                                        canvas-wide agents: any box) until someone clicks it;
+                                        effect clear --on NAME takes it off;
                                         effect alone lists the effects collection
 
 AUTOMATIONS (scheduled tasks defined by manifests; folder: --dir, COPILOT_CANVAS_AUTOMATIONS,

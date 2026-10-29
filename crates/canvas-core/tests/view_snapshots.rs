@@ -335,6 +335,82 @@ fn group_with_folder_chips() {
     check("group-folder-chips", &mut app, BOTH);
 }
 
+/// A canvas with a group (a session and its group passive session) and the
+/// Canvas agents frame with three canvas-wide agents: monitoring (with a
+/// skill), paused, and one that reported an alert.
+fn canvas_agents_app() -> App {
+    use canvas_core::doc::{CANVAS_AGENT, CANVAS_AGENTS, Passive, PassiveScope};
+    let mut doc = Doc { canvas_id: Some("canvas-1".into()), ..Doc::default() };
+    doc.groups.push(Group { id: "g-pay".into(), name: "Payments".into(), x: 0, y: 0, w: 70, h: 8, color: 0, folder: Some(r"C:\work\pay".into()), source: None, defaults: None });
+    doc.groups.push(Group { id: "g-agents".into(), name: "Canvas agents".into(), x: 0, y: 10, w: 104, h: 8, color: 3, folder: None, source: Some(CANVAS_AGENTS.into()), defaults: None });
+    doc.nodes.push(node("s-fix", "Fix flaky test", 2, 2));
+    let mut guard = node("p-guard", "Drift guard", 36, 2);
+    guard.passive = Some(Passive { key: "k-guard".into(), group: "g-pay".into(), slug: "drift-guard".into(), template: "Drift guard".into(), subscribe: vec!["pr.pushed".into()], max_runs_per_day: 24, rollover_runs: 20, ..Default::default() });
+    doc.nodes.push(guard);
+    for (i, (id, name, subscribe, skills, paused)) in [
+        ("a-pr", "PR coordinator", vec!["pr.*", "build.failed"], vec!["pr-etiquette"], false),
+        ("a-digest", "Cross-group digest", vec!["session.done"], vec![], true),
+        ("a-release", "Release watch", vec!["rollout.started"], vec![], false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut n = node(id, name, 2 + i as i32 * 34, 12);
+        n.source = Some(CANVAS_AGENT.into());
+        n.agent = Some("copilot".into());
+        n.passive = Some(Passive {
+            key: format!("k-{id}"),
+            group: "g-agents".into(),
+            slug: id.into(),
+            template: name.into(),
+            subscribe: subscribe.into_iter().map(str::to_owned).collect(),
+            skills: skills.into_iter().map(str::to_owned).collect(),
+            paused,
+            scope: PassiveScope::Canvas,
+            max_runs_per_day: 24,
+            rollover_runs: 20,
+            ..Default::default()
+        });
+        doc.nodes.push(n);
+    }
+    doc.view.x = -1;
+    doc.view.y = -1;
+    let mut app = app(doc, false);
+    app.info.home = r"C:\data".into();
+    app.bus.passive.insert("k-a-release".into(), canvas_core::bus::PassiveView { status: "alert".into(), headline: "ring 2 is failing".into(), ..Default::default() });
+    app.bus.passive.insert("k-a-pr".into(), canvas_core::bus::PassiveView { status: "ok".into(), headline: "2 PRs tracked".into(), ..Default::default() });
+    app.canvas_skills = Some(Ok(vec![canvas_model::canvas_wide::SkillInfo {
+        name: "pr-etiquette".into(),
+        description: "How PR feedback reaches the owning session".into(),
+        path: r"C:\data\canvas-agents\canvas-1\skills\pr-etiquette\SKILL.md".into(),
+        problem: String::new(),
+    }]));
+    app.selection.clear();
+    // The agents' loop arcs: their dots at a fixed time.
+    app.visual.clock_ms = Some(NOW);
+    app
+}
+
+/// The top bar's ◎ Agents entry (one needs attention), the frame with its
+/// chips and dashed ◎ boxes, the sidebar rows, and the management panel.
+#[test]
+fn canvas_wide_agents_panel() {
+    let mut app = canvas_agents_app();
+    app.run(Action::Agents(canvas_core::canvas_wide::AgentAction::Panel));
+    // The panel reads the library from the backend (none here): keep the test's.
+    app.canvas_skills = canvas_agents_app().canvas_skills;
+    check("canvas-agents-panel", &mut app, Sections { cells: true, painted: true });
+}
+
+/// One canvas-wide agent's panel (its box selected): what it watches, its
+/// skill, its state and every control.
+#[test]
+fn canvas_wide_agent_detail() {
+    let mut app = canvas_agents_app();
+    app.select_node("a-pr", false);
+    check("canvas-agent-detail", &mut app, BOTH);
+}
+
 /// Two boxes selected while a right-drag rubber band is open.
 #[test]
 fn selection_and_rubber_band() {

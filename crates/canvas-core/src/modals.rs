@@ -604,6 +604,9 @@ impl App {
             }));
             return;
         }
+        if matches!(purpose, PickPurpose::CanvasTemplate | PickPurpose::AgentSkills(_) | PickPurpose::CanvasSkills) {
+            return self.apply_agent_pick(purpose, &value);
+        }
         if let Some(Modal::NewSession(dialog)) = self.modals.last_mut() {
             match purpose {
                 PickPurpose::RecentFolder => {
@@ -614,7 +617,7 @@ impl App {
                     dialog.base = value;
                     Self::refresh_worktree_defaults(dialog);
                 }
-                PickPurpose::Default(..) | PickPurpose::PassiveTemplate(_) | PickPurpose::Model(_) => {}
+                PickPurpose::Default(..) | PickPurpose::PassiveTemplate(_) | PickPurpose::Model(_) | PickPurpose::CanvasTemplate | PickPurpose::AgentSkills(_) | PickPurpose::CanvasSkills => {}
             }
             dialog.error = None;
         }

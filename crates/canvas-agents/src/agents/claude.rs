@@ -211,6 +211,10 @@ impl Claude {
         if let Some(plugin) = &integration.plugin_dir {
             args.extend(["--plugin-dir".to_owned(), plugin.display().to_string()]);
         }
+        // Claude Code takes --plugin-dir again for each more plugin.
+        for plugin in &integration.skill_plugins {
+            args.extend(["--plugin-dir".to_owned(), plugin.display().to_string()]);
+        }
         let mut env = integration.env.clone();
         // Claude Code reports turns with OSC 9;4 only outside Windows Terminal
         // and VS Code; the canvas terminal is neither.
@@ -298,7 +302,7 @@ mod tests {
         )
         .unwrap();
         let home = ClaudeHome { dir: root.join(".claude"), user_config: config };
-        let integration = Integration { plugin_dir: Some(root.join("home").join("plugin")), env: vec![("COPILOT_CANVAS_SESSION".into(), ID.into())] };
+        let integration = Integration { plugin_dir: Some(root.join("home").join("plugin")), env: vec![("COPILOT_CANVAS_SESSION".into(), ID.into())], ..Default::default() };
         // SAFETY: tests in this crate only read this variable.
         unsafe { std::env::set_var("COPILOT_CANVAS_CLAUDE", r"C:\bin\claude.exe") };
         (home, integration, root)
@@ -331,6 +335,11 @@ mod tests {
         let first_run = AgentLaunch { resume: false, ..passive };
         assert_eq!(Claude.command_in(&home, ID, &first_run, &integration).unwrap().args[2..4], ["--session-id", ID]);
         assert!(Claude.command_in(&home, "not-a-uuid", &new, &integration).is_err());
+        // A canvas-wide agent's skills: --plugin-dir again (Claude Code takes it repeatedly).
+        let extra = root.join("skills-plugin");
+        let skilled = Integration { skill_plugins: vec![extra.clone()], ..integration.clone() };
+        let args = Claude.command_in(&home, ID, &new, &skilled).unwrap().args;
+        assert_eq!(args[args.len() - 4..], ["--plugin-dir", &plugin, "--plugin-dir", &extra.display().to_string()]);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -371,12 +380,12 @@ mod tests {
     fn the_mcp_file_never_falls_back_to_temp() {
         let (home, _, root) = setup();
         let launch = AgentLaunch { agent: "claude".into(), mcp_off: vec!["github".into()], ..Default::default() };
-        let homeless = Integration { plugin_dir: None, env: Vec::new() };
+        let homeless = Integration::default();
         let args = Claude.command_in(&home, ID, &launch, &homeless).unwrap().args;
         assert!(!args.iter().any(|a| a.contains("mcp")), "no canvas home: the selection is refused, not written to %TEMP%");
         // COPILOT_CANVAS_HOME names the home when the plugin folder is missing.
         let canvas = root.join("canvas");
-        let env_only = Integration { plugin_dir: None, env: vec![("COPILOT_CANVAS_HOME".into(), canvas.display().to_string())] };
+        let env_only = Integration { env: vec![("COPILOT_CANVAS_HOME".into(), canvas.display().to_string())], ..Default::default() };
         let args = Claude.command_in(&home, ID, &launch, &env_only).unwrap().args;
         let file = canvas.join("mcp").join(format!("claude-{ID}.json"));
         assert_eq!(args.last().unwrap(), &file.display().to_string());

@@ -92,6 +92,9 @@ the connection dropped while waiting).
 | `RemoteRevoke { client }` | `Text` (what was revoked; its connections are closed) | `remote revoke` (pipe only) |
 | `SetClipboardImage { png }` (base64 in JSON, at most 20 MB) | `Done` (the image is on the service machine's clipboard as `CF_DIB` + `PNG`) | remote image paste (Ctrl+V / Alt+V), see REMOTE.md |
 | `Upload { name, id, offset, data, last }` | `Done`, the last piece `Text` (the file's path) | files dropped on a terminal in remote mode: base64 pieces of at most 4 MiB, files of at most 50 MB, written under `<home>/uploads/<date>/` with a free name |
+| `CreateCanvasAgent { files }` | `Text` (the slug used) | a new canvas-wide agent: `rules.md`, `state.md`, `log.md` in `<home>/canvas-agents/<canvas>/agents/<slug>` (the first free slug), the canvas's `GOALS.md` and `skills/` when missing. `files` names the canvas by its id (letters, digits, `-`), never a folder |
+| `CanvasSkills { canvas }` | `Skills(list)`: name, description, SKILL.md path and any problem per skill | the canvas-agents panel, an agent's *Skills…*, the skill library |
+| `CreateCanvasSkill { canvas, name, description }` | `Text` (its SKILL.md) | *New skill…* (never over an existing skill; the name is checked) |
 
 The three remote-access requests are answered by the service itself (they
 need its pairing state) and only for clients on its local pipe; TCP clients
@@ -207,6 +210,43 @@ The file format is unchanged: canvases from earlier versions load as they
 are, and `view`, `ui`, `tiles` and `selected` stay in the file (from before)
 but are no longer written by clients.
 
+### The canvas id
+
+When the service opens a canvas without a `canvas_id` (a new one, or one from
+before canvas-wide agents), it gives it one (a UUID) and saves it at once.
+The id names the canvas's canvas-wide agents' folder,
+`<home>/canvas-agents/<canvas id>`, under the service's own data folder. It
+is not a shared field: clients read it from `Doc` and never change it (an
+older service would refuse a `SetField` it does not know). A canvas without
+an id (opened by an older service) shows its canvas-wide agents as
+unavailable and does not route them.
+
+## Canvas-wide agents on the wire
+
+All additions are JSON with defaults, so older and newer clients and services
+read each other's messages:
+
+| Where | Addition | An older peer |
+|---|---|---|
+| `Doc` | `canvas_id`; `Passive::scope` (`"canvas"`), `skills`, `groups` (group ids it watches), `disabled`; canvas-wide agents' boxes have `source: "canvas-agent"`, their frame group `source: "canvas-agents"` | ignores them; the box's `source` keeps it a canvas-wide agent for newer clients even if an older one rewrites its passive settings |
+| `ClientMsg::Routing` (`bus::Routing`) | `canvas` (the canvas id); per `PassiveSpec`: `canvas_wide`, `skills`, `groups`; disabled agents are left out | an older service treats canvas-wide agents as passive sessions of their frame (which has no folder: their runs fail visibly) |
+| `bus::Event` | `canvas` (set by windows for the events they send, and by the service for events of the routed canvas); `to` on any event: one passive session or canvas-wide agent (`emit --to NAME`), or `canvas` (the canvas-wide agents only) | ignores `canvas`; reads `to` on messages only |
+| `ClientMsg::Bus` actions | `{"action": "stop", "key": …}`: ends a passive session's headless run in progress; it ends as stopped (no failure, its events dropped). Handled in the bus loop; an inbox file can never ask for it | ignores unknown actions |
+| `ServiceMsg::Bus` (`bus::Snapshot`) | per passive session: `failures`, `retry_at_ms`, `stopped_ms` | ignores them |
+| `Request` | `CreateCanvasAgent`, `CanvasSkills`, `CreateCanvasSkill` (see the table above) | answers "does not support this request (update it)", which the panel shows |
+
+The service keeps one routing table: the canvas whose window sent it last.
+Canvas-wide agents get the events of that canvas only (`Routing::from_canvas`:
+the event names this canvas's id, or its sender is one of this canvas's
+sessions, or a window sent it for one of its groups); the bus state of
+canvas-wide agents of other canvases is kept (30 days) until their canvas is
+routed again. Who may address whom (`Routing::resolve_from`): a session or a
+group passive session reaches its own group's sessions and passive sessions
+(ungrouped sessions: the other ungrouped ones) and every canvas-wide agent; a
+canvas-wide agent and you (a window) reach every session and passive session
+of the canvas. Canvas-wide agents can put effects on any box of the canvas
+(`effects::resolve_canvas`).
+
 ## Per-client preferences
 
 The view (position, zoom), panels (sidebar width and visibility, terminal
@@ -259,7 +299,13 @@ most 8 files and 4 MiB in all.
   save errors are shown. `canvas_core::remote`: answers reach their callers,
   dropped connections fail pending calls.
 - `canvas_agents::service::docs`: open/join, edit order, refused edits, save,
-  close and lock release, broken files.
+  close and lock release, broken files, the canvas id given once and kept.
+- `canvas_agents::backend`: canvas-wide agents' files and skills only under
+  the backend's own folder (canvas ids, slugs and skill names checked, never
+  a client's path); `canvas_agents::service::passive`: addressed events,
+  effects of canvas-wide agents, their run folders, state kept for another
+  canvas; `canvas_model::bus`: subscribers across groups and canvases, who
+  may address whom.
 - `tests/backend_contract.rs` starts a real service (`COPILOT_CANVAS_LISTEN=
   127.0.0.1:0`, temporary home) and runs one contract suite against the
   in-process backend and against the service over loopback TCP (folder

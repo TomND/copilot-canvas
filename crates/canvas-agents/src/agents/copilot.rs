@@ -96,6 +96,9 @@ impl Provider for Copilot {
         if let Some(plugin) = &integration.plugin_dir {
             args.extend(["--plugin-dir".to_owned(), plugin.display().to_string()]);
         }
+        for plugin in &integration.skill_plugins {
+            args.extend(["--plugin-dir".to_owned(), plugin.display().to_string()]);
+        }
         env.extend(integration.env.iter().cloned());
         if launch.headless_prompt.is_none()
             && let (Some(folder), Some(name)) = (&launch.group_folder, &launch.group_name)
@@ -153,7 +156,7 @@ mod tests {
     #[test]
     fn new_resume_and_headless_command_lines_match_copilot_flags() {
         let id = "12345678-1234-1234-1234-123456789abc";
-        let integration = Integration { plugin_dir: Some(PathBuf::from(r"C:\h\plugin")), env: vec![("COPILOT_CANVAS_SESSION".into(), id.into())] };
+        let integration = Integration { plugin_dir: Some(PathBuf::from(r"C:\h\plugin")), env: vec![("COPILOT_CANVAS_SESSION".into(), id.into())], ..Default::default() };
         // SAFETY: tests in this module are the only readers of this variable.
         unsafe { std::env::set_var("COPILOT_CANVAS_COPILOT", r"C:\bin\copilot.exe") };
         let new = AgentLaunch {
@@ -184,5 +187,10 @@ mod tests {
         assert!(!plain.iter().any(|a| a == "--model"), "{plain:?}");
         assert!(Copilot.command(id, &AgentLaunch { model: Some("-x".into()), ..passive }, &integration).is_err());
         assert!(Copilot.command("not-a-uuid", &new, &integration).is_err());
+        // A canvas-wide agent's skills: one more --plugin-dir (Copilot takes several).
+        let skilled = Integration { skill_plugins: vec![PathBuf::from(r"C:\h\canvas-agents\c\agents\a\plugin")], ..integration };
+        let args = Copilot.command(id, &new, &skilled).unwrap().args;
+        let dirs: Vec<&String> = args.windows(2).filter(|w| w[0] == "--plugin-dir").map(|w| &w[1]).collect();
+        assert_eq!(dirs, [r"C:\h\plugin", r"C:\h\canvas-agents\c\agents\a\plugin"]);
     }
 }

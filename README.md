@@ -93,6 +93,7 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 | **Dusty sessions** | Sessions you have not used for a while (started, typed into, or agent activity; looking at one does not count) gather dust: the TUI dims them, the GUI drains their colour and adds specks and a cobweb that grow with age (from *Settings › Dust unused sessions after*: off / 1 / 3 (default) / 7 / 14 days; medium from 14 days, heavy from 60), and the status line and the sidebar show **unused 12d**. Anything important (working, needs you, done · review, failed, open elsewhere, looping, passive sessions, an effect) is never dusty. The canvas menu's *Select unused sessions* selects them for a cleanup; nothing is ever removed automatically |
 | **Effects** | Passive sessions (and sessions) can put an effect on a box of their group until you click it: **fireworks** (an approved pull request), **attention** (a pulsing beacon: review requested, changes requested, comments), **sparkle** (a short success), **alert** (`copilot-canvas effect`, below). The service keeps them, so every window and the TUI show them, also after a restart. A click on the effect (or its box) clears it everywhere and only selects the box. GUI: fireworks bursts and rings at 12.5 frames/s, only while in view; *Settings › Effects*: on, reduced motion (still rings and badges) or off (badges only); the default follows Windows' *Show animations*. TUI: a badge (✦ ◉ ✧ ▲) on the box |
 | **Group folders** | Each group has a folder (asked when you create the group; suggested `~/.copilot-canvas/groups/<name>`) with `ai-docs/` and `human-outputs/`. Open them from the group's title chips **◧ AI docs** / **◨ Outputs** (compact **◧** / **◨** when zoomed out or narrow, **◧ Set folder…** before a folder is chosen; the chips stay clickable at every zoom while the title shows), the sidebar's **◧** row under the group (a menu: AI docs, outputs, the group folder, `GOALS.md`, change folder), its menu, or its details panel. In remote mode (any `--remote`, `loopback` included) folders open in VS Code through the server's tunnel or in the canvas's **folder browser** (subfolders and files; Enter or a click opens a file in the read-only viewer, Backspace goes up, *Copy path*), never in Explorer on the service's machine. Sessions launched in the group get `--add-dir` for both and group instructions (via `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`) telling Copilot to write notes to `ai-docs` and deliverables to `human-outputs` |
+| **Canvas-wide agents** | Passive agents that watch the whole canvas, not one group: the top bar's **◎ Agents** lists them with their state (monitoring, working, paused, needs attention, failing, done, off, unavailable), triggers, skills, next run and last report, and controls (Run now, Pause / Resume, Stop, Disable / Enable, Open); each is also a dashed **◎** box in the **Canvas agents** frame (the same agent). They get events of every group, message any session, and use the canvas skills (SKILL.md) you give them. See [Canvas-wide passive agents and skills](#canvas-wide-passive-agents-and-skills) |
 | **Copilot defaults** | Settings view: permissions (`allow-all` by default, or `ask`), each agent's model for new sessions, reasoning effort, start mode, custom agent, context tier, extra `--add-dir` folders for new sessions; any group can override them (group menu → *Launch defaults*). Also lists `copilot config` settings and edits them through `copilot config` |
 | **Plugins · MCP · skills** | Lists come from `copilot plugin/mcp/skill/instruction list --json`; Space enables/disables, Del removes (confirmed; servers and skills that come from a plugin, the project or Copilot itself can only be disabled), **+** rows add a skill, an MCP server (`copilot mcp add` syntax) or install a plugin (runs in a canvas terminal so you can answer prompts). Secrets (env, headers) are never shown |
 | **Automations** | Reads Copilot's automations (`~/.copilot/data.db`: scheduled workflows, their last 10 runs, and per-session schedules). They appear in the Automations view and as ◷ boxes in a special **Automations** group on the canvas. Click one for its prompt, schedule, model, mode, project, last/next run and run history; Space or the button enables/disables a scheduled workflow (per-session schedules are managed with `/every` in that session). Refreshes every 15 s |
@@ -126,6 +127,7 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 | Stack / unstack subsessions | session menu; double-click the stack | `K` |
 | Hide / show all subsessions | canvas menu; toolbar **↳ N hidden** | `H` |
 | Clear an effect | click it (or its box; nothing starts) | — |
+| Canvas-wide agents (their panel) | top bar **◎ Agents**; the *Canvas agents* frame's **◎ N · manage** chip | `A` |
 | Select unused (dusty) sessions | canvas menu › *Select unused sessions* | then Del removes them from the canvas |
 | Help | toolbar `?` | `?` |
 
@@ -209,15 +211,18 @@ folder).
   lists them under their group; the panel opens rules, memory, log, the group
   context and `GOALS.md` (in remote mode in VS Code through the tunnel or the
   read-only viewer).
-- **Messages**: passive sessions (and sessions) can message any session in the
-  group with `copilot-canvas send`. A message is typed in only when the target
+- **Messages**: sessions and passive sessions can message the sessions and
+  passive sessions of their own group, and any canvas-wide agent (see below),
+  with `copilot-canvas send`; canvas-wide agents reach every session of the
+  canvas. A message is typed in only when the target
   is idle (never mid-turn); otherwise it waits with a ✉ badge (menu: *Deliver queued
   messages* / *Discard queued messages*). *Mute passive messages* turns this off
   per session.
 
 ```text
-copilot-canvas events                         this session's group: events, passive sessions, sessions
-copilot-canvas emit TYPE [--data JSON] [--to NAME]
+copilot-canvas events                         this session's group: events, passive sessions, sessions,
+                                              the canvas-wide agents (an agent: every group of the canvas)
+copilot-canvas emit TYPE [--data JSON] [--to NAME|canvas]   (--to: one passive session or agent; canvas: the agents)
 copilot-canvas send --to NAME TEXT
 copilot-canvas status ok|warn|alert|done HEADLINE      (passive sessions; alert rings the bell)
 copilot-canvas followup --in 24h|--at 09:00 NOTE        (passive sessions)
@@ -227,6 +232,104 @@ copilot-canvas effect fireworks|attention|sparkle|alert --on NAME [--note TEXT] 
 The bus lives in `~/.copilot-canvas/bus/` (`inbox/`, `routing.json`,
 `state.json`, `log.jsonl`). The service keeps running while passive sessions
 have schedules or pending work.
+
+## Canvas-wide passive agents and skills
+
+A group's passive sessions (⟲) watch their group. **Canvas-wide agents** (◎)
+watch the whole canvas: the events of every group (`pr.*` from any session),
+their schedules, and messages; they can message any session of the canvas and
+mark any box. Use them for work across groups, such as following the pull
+requests the canvas's sessions publish and passing review comments and build
+failures to the session that owns each (a *PR coordinator*), or a daily digest
+of all groups. Both kinds coexist: a group passive session never sees another
+group's events, and a canvas-wide agent never sees another canvas's.
+
+- **Where**: the top bar's **◎ Agents** (with **⚠ N** while one needs
+  attention, a spinner while one works) opens the management panel: every
+  agent with its state, what it reacts to, the groups it watches, its skills,
+  its next run and last report, and **Run now**, **Pause / Resume**, **Stop**,
+  **Disable / Enable** and **Open**; then the canvas skills, and the group
+  passive sessions for comparison. Each agent is also a dashed **◎** box in
+  the **Canvas agents** frame (made with the first agent, above the canvas;
+  its chips: **◎ N · manage** and **✦ Skills**; its menu: new agent, skills,
+  *Send event to canvas agents…*, folder), listed under the frame in the
+  sidebar with its state. The panel's row, the box and the sidebar row are the
+  same agent: a click shows its panel (state, triggers, skills, the latest
+  events of every group; Run now, Pause, Stop run, Disable, Events…, Groups…,
+  Schedule…, Filter…, Limits…, Skills…, MCP…, Rules, Memory, Log, Context,
+  Goals, Folder, Message…, Open chat, Remove). Viewing never starts it, a
+  double-click neither: **Open chat** is the explicit start of its
+  conversation and **Run now** of a run.
+- **New**: *+ New canvas agent* (panel, frame chip or menu) and a template:
+  *PR coordinator* (`pr.*`, `build.failed`: example rules that keep a table
+  of pull requests and their owning sessions and pass review comments and
+  build failures on to them, read-only toward the pull requests), *Cross-group
+  digest* (daily at 17:00 and `session.done`) or *Custom*. Templates are only
+  starting rules; nothing about pull requests is built in.
+- **States**: *monitoring* (enabled, waiting for its events or schedule),
+  *waiting for messages* (no triggers), *queued* (events wait for the debounce,
+  or for tomorrow when today's run budget is used), *working* (a run or its
+  open chat is busy), *paused* (no triggers until you resume it; a run in
+  progress finishes), *needs attention* (it reported `alert`), *failing* (its
+  last run failed; it retries after 1, 5 and 30 minutes), *done* (it reported
+  its job complete; schedules stop), *off* (disabled: the service does not
+  route it at all) and *unavailable* (with why: its agent CLI is not installed
+  where the service runs, the service is too old to give the canvas an id, the
+  demo). The box, the sidebar and the top bar use the same state.
+- **Files** (on the service's machine): `<home>/canvas-agents/<canvas id>/`
+  holds `GOALS.md` (the canvas's goals, read on every run), `skills/<name>/SKILL.md`
+  (the canvas's skill library) and, per agent, `agents/<slug>/` with
+  `rules.md`, `state.md` (its memory), `log.md`, `canvas-context.md` (a digest
+  of every group's sessions, written before each run) and `plugin/` (its
+  skills, rebuilt before each run). The service gives a canvas its id the
+  first time it opens it (`canvas_id` in the canvas file), so another canvas,
+  another instance (`--instance`, `--home`), a remote service or a self-test
+  sandbox never shares them.
+- **Skills** are folders with a `SKILL.md`: YAML front matter with `name`
+  (lowercase words joined by hyphens, the folder's name) and `description`
+  (when it applies: agents decide from it), then the rules, triggers and
+  coordination instructions in Markdown, plus any files it needs:
+
+  ```markdown
+  ---
+  name: pr-etiquette
+  description: How canvas agents pass pull-request feedback to the session that owns the pull request.
+  ---
+  # pr-etiquette
+  - On pr.changes_requested: send the owning session one short message with what the reviewer asks.
+  ```
+
+  *New skill…* (the panel, or *+ New skill…* in an agent's *Skills…*) creates
+  one and opens its SKILL.md (VS Code; remotely through the tunnel or the
+  viewer); *Skills…* on an agent's panel gives or takes skills (✓ / ○); the
+  panel lists the library with any problem (no front matter, a name other than
+  its folder's, no description) and marks an agent's skills that left the
+  library *(missing)*. An agent's runs and its chat get exactly its skills,
+  copied into its `plugin/` (plugin `canvas-agent-<slug>`): a second
+  `--plugin-dir` for Copilot CLI and Claude Code, another `skills.paths`
+  folder for OpenCode ([docs/AGENTS.md](docs/AGENTS.md#canvas-wide-agents-and-their-skills));
+  the run prompt names them too.
+- **Events and messages**: a canvas-wide agent gets every event of its canvas
+  that matches its subscriptions (exact names, `pr.*`, `*`; a text filter;
+  *Groups…* limits it to some groups), whichever group (or no group) sent it:
+  events sessions emit, events detected from their history, events you send;
+  never its own and never another canvas's. Its trigger names the sending
+  session's id and group. `copilot-canvas emit TYPE --to "<agent>"` sends an
+  event to one passive session or canvas-wide agent only (whatever it
+  subscribes to), `--to canvas` to the canvas-wide agents only (*Send event to
+  canvas agents…* does it from the canvas). A session or group passive session
+  reaches its own group and every canvas-wide agent; a canvas-wide agent (and
+  you) reaches every session of the canvas with `copilot-canvas send --to
+  "<name or id>"` (idle-only delivery and queueing as above) and can mark any
+  box with `copilot-canvas effect … --on "<name or id>"`. The command checks
+  `--to` before posting; `copilot-canvas events` run by an agent lists every
+  group with its sessions (names and ids) and passive sessions.
+- **Runs** work as for group passive sessions (headless turns of the canvas's
+  default agent, 8 s debounce, at most 2 runs at a time, daily budget,
+  back-off, rollover), started in the agent's own folder with the canvas-agents
+  folder allowed, with the model new sessions of its agent get (the frame's
+  *Session defaults for its agents…* can set one). **Stop run** ends a run in
+  progress without counting it as a failure (its events are dropped).
 
 ## Automations (scheduled tasks from manifests)
 
@@ -432,6 +535,9 @@ and `docs/REMOTE.md`.
   instructions (the run prompt quotes them as such); their templates are
   read-only by default (report, don't push or comment). Event chains stop after
   3 hops, a session's own events never trigger it, and runs are capped per day.
+  Canvas-wide agents only get events of their own canvas; only they (and you)
+  reach sessions of other groups, and clients never name their folders (the
+  service derives them from the canvas id).
 - **Automations**: the canvas only reads Task Scheduler, launcher logs and
   reports; it changes tasks when you run, enable or disable one, or `apply`
   (preview first, backups kept). The doctor follows each automation's owner
@@ -459,7 +565,7 @@ copilot-canvas service status|stop    stop ends the service's sessions (graceful
 copilot-canvas bench [--terminals N] [--seconds S] [--json FILE]
 copilot-canvas bench --client gui     the GPU client's latency, frame cost, idle CPU, memory, first paint
 copilot-canvas selftest               end-to-end UI test in a hidden console (demo shells only)
-copilot-canvas selftest --client gui  the same 33 steps against the GPU client (over its test hooks)
+copilot-canvas selftest --client gui  the same 34 steps against the GPU client (over its test hooks)
 copilot-canvas selftest --client gui --parity
                                       one GUI check per row of the parity matrix (docs/PARITY.md)
 copilot-canvas kitty-demo             print a small test image (iTerm2 inline image; the GPU client shows it)
@@ -547,5 +653,17 @@ cargo test                            unit tests
   `copilot-canvas service start` from a scheduled task). Rollover is by run count, not context size. Copilot plugin hooks
   don't fire from `--plugin-dir`, so PR activity is detected from session
   history (a few seconds later) rather than hooks.
+- Canvas-wide agents: a service routes one canvas at a time, the one a window
+  last opened (as for group passive sessions); the agents of its other
+  canvases keep their state and run again once their canvas is open. A
+  canvas opened by a service from before canvas-wide agents has no id, so
+  they are shown as unavailable there. A copied canvas file keeps its id
+  (and so shares the agents' folder) until you remove `canvas_id` from the
+  copy. A client from before canvas-wide agents that edits an agent's settings
+  writes its passive settings without the skills and group filter (the box
+  stays a canvas-wide agent); while such a client is the last to send the
+  service its canvas, the agents are routed as passive sessions of their
+  frame, which has no folder, so their runs fail visibly until a current
+  client opens the canvas again.
 - `--perf` shows frames per second, draw time and output-to-screen latency in
   the status bar.

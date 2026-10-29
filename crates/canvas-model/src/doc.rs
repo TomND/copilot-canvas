@@ -122,6 +122,52 @@ pub struct Passive {
     /// Earlier conversations (before each rollover), oldest first.
     #[serde(default)]
     pub episodes: Vec<String>,
+    /// What it watches: its group (the default) or the whole canvas.
+    #[serde(default, skip_serializing_if = "PassiveScope::is_group")]
+    pub scope: PassiveScope,
+    /// Canvas skills (folder names in the canvas's `skills/`) its runs get.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
+    /// A canvas-wide agent only takes events of these groups (ids; empty: all).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
+    /// Switched off: no events, schedules, messages or runs (it is not routed).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
+}
+
+/// Whose events a passive session gets.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PassiveScope {
+    /// Its own group's (a group passive session).
+    #[default]
+    Group,
+    /// Every group's of this canvas (a canvas-wide agent).
+    Canvas,
+}
+
+impl PassiveScope {
+    pub fn is_group(&self) -> bool {
+        *self == PassiveScope::Group
+    }
+}
+
+/// `Group::source` of the frame that holds a canvas's canvas-wide agents.
+pub const CANVAS_AGENTS: &str = "canvas-agents";
+/// `Node::source` of a canvas-wide agent's box (kept by clients that do not
+/// know `Passive::scope`).
+pub const CANVAS_AGENT: &str = "canvas-agent";
+
+impl Passive {
+    pub fn is_canvas(&self) -> bool {
+        self.scope == PassiveScope::Canvas
+    }
+}
+
+/// A canvas id names a folder: letters, digits and `-` (1 to 64).
+pub fn valid_canvas_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 fn default_rollover() -> u32 {
@@ -370,6 +416,10 @@ impl Group {
     pub fn is_automations(&self) -> bool {
         self.source.as_deref().is_some_and(|s| s == "automations" || s.starts_with("automations#"))
     }
+    /// The frame of the canvas's canvas-wide agents.
+    pub fn is_canvas_agents(&self) -> bool {
+        self.source.as_deref() == Some(CANVAS_AGENTS)
+    }
 }
 
 /// Creates the group's folders and the instructions file Copilot loads through
@@ -438,6 +488,10 @@ pub struct Doc {
     /// Sessions unused for this many days are drawn dusty (0: never).
     #[serde(default = "default_dust_days")]
     pub dust_after_days: u32,
+    /// This canvas's identity (its canvas-wide agents' folder). The service
+    /// assigns it when it opens a canvas without one; clients never change it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas_id: Option<String>,
 }
 
 fn default_dust_days() -> u32 {
@@ -537,6 +591,7 @@ impl Default for Doc {
             doctor_created: false,
             default_agent: None,
             dust_after_days: default_dust_days(),
+            canvas_id: None,
         }
     }
 }
@@ -610,6 +665,11 @@ impl Node {
             NodeKind::Session | NodeKind::Automation => Rect { x: self.x, y: self.y, w: SESSION_W, h: SESSION_H },
             NodeKind::Agent => Rect { x: self.x, y: self.y, w: AGENT_W, h: AGENT_H },
         }
+    }
+
+    /// A canvas-wide agent (a passive session that watches the whole canvas).
+    pub fn is_canvas_agent(&self) -> bool {
+        self.passive.as_ref().is_some_and(|p| p.is_canvas() || self.source.as_deref() == Some(CANVAS_AGENT))
     }
 }
 
@@ -843,6 +903,20 @@ impl Doc {
             }
             self.idle_stop_v2 = true;
         }
+    }
+
+    /// Gives the canvas an id when it has none (or an unusable one); true when it changed.
+    pub fn ensure_canvas_id(&mut self) -> bool {
+        if self.canvas_id.as_deref().is_some_and(valid_canvas_id) {
+            return false;
+        }
+        self.canvas_id = Some(uuid::Uuid::new_v4().to_string());
+        true
+    }
+
+    /// The canvas-wide agents' frame, if the canvas has one.
+    pub fn canvas_frame(&self) -> Option<&Group> {
+        self.groups.iter().find(|g| g.is_canvas_agents())
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -1086,6 +1160,35 @@ mod tests {
         doc.default_agent = Some("claude".into());
         let back: Doc = serde_json::from_str(&serde_json::to_string(&doc).unwrap()).unwrap();
         assert_eq!(back, doc);
+    }
+
+    #[test]
+    fn canvases_get_an_id_and_canvas_wide_agents_round_trip() {
+        let mut old: Doc = serde_json::from_str(r#"{"version":2,"nodes":[{"id":"p","kind":"session","name":"P","x":0,"y":0,"passive":{"key":"k","group":"g","slug":"s"}}],"groups":[],"view":{"x":0,"y":0}}"#).unwrap();
+        let passive = old.nodes[0].passive.clone().unwrap();
+        assert_eq!((passive.scope, passive.skills.len(), passive.disabled, old.canvas_id.clone()), (PassiveScope::Group, 0, false, None), "older canvases: group passive sessions, no id");
+        let text = serde_json::to_string(&old).unwrap();
+        assert!(!text.contains("scope") && !text.contains("canvas_id") && !text.contains("disabled"), "unset fields are left out: {text}");
+        assert!(old.ensure_canvas_id() && valid_canvas_id(old.canvas_id.as_deref().unwrap()));
+        let id = old.canvas_id.clone();
+        assert!(!old.ensure_canvas_id() && old.canvas_id == id, "an id is kept");
+        old.canvas_id = Some("../escape".into());
+        assert!(old.ensure_canvas_id() && old.canvas_id != Some("../escape".into()), "an unusable id is replaced");
+        let p = old.nodes[0].passive.as_mut().unwrap();
+        p.scope = PassiveScope::Canvas;
+        p.skills = vec!["pr-etiquette".into()];
+        p.groups = vec!["g1".into()];
+        p.disabled = true;
+        assert!(old.nodes[0].is_canvas_agent());
+        let back: Doc = serde_json::from_str(&serde_json::to_string(&old).unwrap()).unwrap();
+        assert_eq!(back, old);
+        // A client that does not know the scope keeps the box's source: still a canvas-wide agent.
+        let mut plain = back.nodes[0].clone();
+        plain.passive.as_mut().unwrap().scope = PassiveScope::Group;
+        assert!(!plain.is_canvas_agent());
+        plain.source = Some(CANVAS_AGENT.into());
+        assert!(plain.is_canvas_agent());
+        assert!(!valid_canvas_id("") && !valid_canvas_id("a/b") && valid_canvas_id("3f2c-9a"));
     }
 
     #[test]

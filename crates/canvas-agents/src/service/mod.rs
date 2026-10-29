@@ -98,6 +98,9 @@ pub struct Agents {
     pending_sessions: Mutex<HashMap<String, PendingSession>>,
     /// Terminal id → the agent's own session id, once learned (told to every client).
     agent_sessions: Mutex<HashMap<String, String>>,
+    /// Terminal id → the skills plugin its next launch gets (a canvas-wide
+    /// agent's run, set right before the launch).
+    skill_plugins: Mutex<HashMap<String, PathBuf>>,
     /// Canvas documents clients opened.
     docs: docs::Docs,
     /// Backend requests for the worker threads (slow, quick).
@@ -141,6 +144,7 @@ impl Agents {
             agent_terms: Mutex::new(HashMap::new()),
             pending_sessions: Mutex::new(HashMap::new()),
             agent_sessions: Mutex::new(HashMap::new()),
+            skill_plugins: Mutex::new(HashMap::new()),
             docs: docs::Docs::default(),
             rpc: (rpc_tx, quick_tx),
             remote: crate::remote::Registry::new(&instance.home),
@@ -180,6 +184,35 @@ impl Agents {
                 ("COPILOT_CANVAS_SESSION".to_owned(), id.to_owned()),
                 ("PATH".to_owned(), format!("{};{}", home.join("cli").display(), std::env::var("PATH").unwrap_or_default())),
             ],
+            skill_plugins: Vec::new(),
+        }
+    }
+
+    /// The skills plugin of a launch: the one a canvas-wide agent's run set
+    /// for it, else (its chat opened from the canvas) the plugin of the
+    /// canvas-wide agent whose box this is, built from the canvas library now.
+    fn skill_plugin(&self, id: &str) -> Option<PathBuf> {
+        if let Some(plugin) = lock(&self.skill_plugins).remove(id) {
+            return Some(plugin);
+        }
+        let routing = lock(&self.routing).clone();
+        let spec = routing.passive.iter().find(|p| p.canvas_wide && p.session_id == id)?;
+        if !crate::doc::valid_canvas_id(&routing.canvas) {
+            return None;
+        }
+        let dir = crate::canvas_wide::canvas_dir(&self.instance.home, &routing.canvas);
+        let paths = crate::canvas_wide::agent_paths(&dir, &spec.slug);
+        match crate::canvas_wide::prepare_plugin(&dir, &paths, &spec.slug, &spec.skills) {
+            Ok((plugin, missing)) => {
+                if !missing.is_empty() {
+                    log(&self.instance, &format!("canvas agent {}: skills not in the canvas library: {}", spec.name, missing.join(", ")));
+                }
+                plugin
+            }
+            Err(error) => {
+                log(&self.instance, &format!("canvas agent {}: cannot prepare its skills: {error}", spec.name));
+                None
+            }
         }
     }
 
@@ -203,11 +236,14 @@ impl Agents {
         if launch.resume && launch.fork_from.is_none() && kind != AgentKind::Copilot && !provider.has_history(&session) {
             launch.resume = false;
         }
-        let command = provider.command(id, &launch, &self.integration(id))?;
+        let mut integration = self.integration(id);
+        integration.skill_plugins.extend(self.skill_plugin(id));
+        let command = provider.command(id, &launch, &integration)?;
         let how = if launch.headless_prompt.is_some() { "headless run" } else if launch.fork_from.is_some() { "fork" } else if launch.resume { "resume" } else { "new session" };
         // The model as the command line carries it (agents that keep a session's model get none on resume).
         let model = launch.model.as_deref().filter(|m| command.args.iter().any(|a| a == m)).map(|m| format!(", model {m}")).unwrap_or_default();
-        log(&self.instance, &format!("terminal {id}: {} {how}{model}", kind.id()));
+        let skills = if integration.skill_plugins.is_empty() { "" } else { ", with its canvas skills" };
+        log(&self.instance, &format!("terminal {id}: {} {how}{model}{skills}", kind.id()));
         lock(&self.agent_terms).insert(id.to_owned(), kind);
         match session_plan(kind, &launch, id, &session) {
             SessionPlan::Expect { fork } => self.expect_session(id, None, fork),

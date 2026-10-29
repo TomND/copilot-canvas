@@ -24,6 +24,7 @@ Every launch also gets the canvas integration: `COPILOT_CANVAS_HOME`,
 | Model, agent | `--model` (new sessions; passive runs every time), `--agent` (new sessions) | `-m` (new sessions; passive runs every time), `--agent` (new sessions) | `--model` (new sessions; resumes and forks with the session's recorded model; passive runs every time), `--effort`, `--agent` (new sessions) |
 | MCP servers off | `--disable-mcp-server NAME` | `OPENCODE_CONFIG_CONTENT` `{"mcp": {NAME: {"enabled": false}}}` | a private `--strict-mcp-config --mcp-config` file without them |
 | Passive run | `copilot --session-id ID -p PROMPT --allow-all --no-ask-user` | `opencode run PROMPT [-s ses_…] --auto -m MODEL` | `claude -p PROMPT --session-id/-r ID --dangerously-skip-permissions` |
+| Canvas skills of a canvas-wide agent | another `--plugin-dir <agent>/plugin` (Copilot takes the option several times) | `<agent>/plugin/skills` added to `skills.paths` in `OPENCODE_CONFIG_CONTENT` | another `--plugin-dir <agent>/plugin` (`.claude-plugin/plugin.json`; repeatable) |
 | History | `~/.copilot/session-state/<id>/events.jsonl` (tailed) | `~/.local/share/opencode/opencode.db` (SQLite, read-only, indexed lookups only) | `~/.claude/projects/<dir>/<id>.jsonl` (tailed) |
 | Live state | OSC 9;4 progress; `inuse.<pid>.lock` | the TUI's own HTTP server (busy, permission prompts, questions) | `~/.claude/sessions/<pid>.json` (busy / idle / waiting) |
 
@@ -96,6 +97,40 @@ the current default.
 **Older canvases** had one `model` for every agent. It moves to the agents
 whose ids it fits when the canvas is read: a `provider/model` id to OpenCode,
 any other id to Copilot and Claude Code (which both got it before).
+
+## Canvas-wide agents and their skills
+
+A canvas-wide agent (README, *Canvas-wide passive agents and skills*) runs
+like a group passive session: headless turns of its agent (the passive run
+row above), started in its own folder
+`<home>/canvas-agents/<canvas id>/agents/<slug>` (OpenCode learns each run's
+`ses_` id from the folder a run starts in, so agents never share one) with
+the canvas-agents folder `<home>/canvas-agents/<canvas id>` allowed
+(`--add-dir` for Copilot and Claude Code, `external_directory` for OpenCode),
+so it reads the canvas's `GOALS.md` and skills. Its prompt starts with
+`[Copilot Canvas · canvas-wide agent "<name>"]` and its triggers carry the
+sending session's id and group.
+
+**Skills.** A canvas skill is `skills/<name>/SKILL.md` in the canvas-agents
+folder: YAML front matter with `name` (lowercase, digits, single hyphens; the
+folder's name) and `description` (when the skill applies), then Markdown
+instructions, plus any files beside it. Before every run, and before its chat
+starts from the canvas, the service copies the agent's assigned skills (at
+most 200 files, 8 MB, 4 levels each; no links) into the agent's `plugin/`
+folder and writes the two manifests one folder serves:
+
+| | Copilot CLI | OpenCode | Claude Code |
+|---|---|---|---|
+| Manifest | `plugin.json` (`name: canvas-agent-<slug>`, `skills: ./skills/`) | none: the folder is read directly | `.claude-plugin/plugin.json` (`name: canvas-agent-<slug>`) |
+| How the run gets it | a second `--plugin-dir <agent>/plugin` after the canvas's own plugin | `skills.paths` gets `<agent>/plugin/skills` after the canvas's own skills folder | a second `--plugin-dir <agent>/plugin` |
+| Also | the prompt lists the skills (name, description) and their folder, so an agent CLI that ignored the plugin could still read them | same | same |
+
+Skills taken away disappear from the plugin at the next run; with none the
+plugin folder is removed. A skill the library no longer has is logged by the
+service (`canvas agent …: skills not in the canvas library: …`) and marked
+*(missing)* in the agent's panel. The service log line of the launch ends in
+`, with its canvas skills` when a run (or chat) got the plugin. Group passive
+sessions and ordinary sessions get no canvas skills.
 
 ## How status is derived
 

@@ -133,6 +133,29 @@ fn toolbar_button(app: &mut App, buf: &mut Buffer, x: i32, label: &str, action: 
     end + 1
 }
 
+/// The canvas-wide agents' entry: their count, a spinner while one works,
+/// gold while one needs attention (or cannot run).
+pub fn agents_button_label(app: &App) -> (String, bool) {
+    let states: Vec<crate::canvas_wide::AgentState> = app.canvas_agents().iter().map(|n| app.canvas_agent_state(n)).collect();
+    let attention = states.iter().filter(|s| s.needs_attention()).count();
+    let working = states.iter().any(|s| matches!(s, crate::canvas_wide::AgentState::Working(_)));
+    let mark = if working { crate::paint::SPINNER[app.tick % crate::paint::SPINNER.len()] } else { crate::canvas_wide::MARK };
+    let label = match (states.len(), attention) {
+        (0, _) => format!(" {mark} Agents "),
+        (n, 0) => format!(" {mark} Agents {n} "),
+        (n, a) => format!(" {mark} Agents {n} · ⚠ {a} "),
+    };
+    (label, attention > 0)
+}
+
+fn agents_button(app: &mut App, buf: &mut Buffer, x: i32, area: Rect) -> i32 {
+    let (label, attention) = agents_button_label(app);
+    let style = if attention { bold(PANEL).bg(ATTENTION) } else { Style::default().fg(crate::canvas_wide::COLOR).bg(PANEL_HI) };
+    let end = put(buf, x, area.y as i32, &label, style, area);
+    app.layout.hits.push((Rect::new(x as u16, area.y, (end - x).max(0) as u16, 1), Hit::Toolbar(Action::Agents(crate::canvas_wide::AgentAction::Panel))));
+    end + 1
+}
+
 fn draw_toolbar(app: &mut App, buf: &mut Buffer, area: Rect) {
     fill(buf, area.x as i32, area.y as i32, area.width as i32, 1, Style::default().bg(PANEL), area);
     let mut x = put(buf, 1, area.y as i32, "◆ Copilot Canvas", bold(ACCENT).bg(PANEL), area) + 2;
@@ -150,6 +173,7 @@ fn draw_toolbar(app: &mut App, buf: &mut Buffer, area: Rect) {
     if !app.demo {
         x = toolbar_button(app, buf, x, " ⇩ Import ", Action::ImportCopilot, area);
         x = toolbar_button(app, buf, x, " ⟳ VS Code ", Action::SyncVs, area);
+        x = agents_button(app, buf, x, area);
     }
     x = toolbar_button(app, buf, x, if app.doc.ui.tiled { " ▦ Tiled " } else { " ▢ Single " }, Action::ToggleTiled, area);
     x = toolbar_button(app, buf, x, " ⤢ Fit ", Action::FitAll, area);
@@ -487,7 +511,7 @@ pub fn build_side_rows(app: &App) -> Vec<SideRow> {
             return;
         }
         // The group's folders (a click opens their menu).
-        if !group.is_automations() {
+        if !group.is_automations() && !group.is_canvas_agents() {
             let label = match group.folder.as_deref() {
                 Some(folder) => folder.trim_end_matches(['\\', '/']).rsplit(['\\', '/']).next().unwrap_or(folder).to_owned(),
                 None => "Set folder…".to_owned(),
@@ -581,10 +605,12 @@ fn draw_sidebar(app: &mut App, buf: &mut Buffer, area: Rect) {
                 put(buf, area.x as i32 + 1, y, &format!("── {} ({}) ", row.label, row.count.unwrap_or(0)), fg(MUTED).bg(bg), area);
             }
             SideKind::Group(id) => {
-                let color = app.doc.group(id).map(|g| crate::paint::GROUP_COLORS[g.color as usize % 6]).unwrap_or(ACCENT);
+                let group = app.doc.group(id);
+                let frame = group.is_some_and(|g| g.is_canvas_agents());
+                let color = group.map(|g| crate::paint::GROUP_COLORS[g.color as usize % 6]).unwrap_or(ACCENT);
                 let caret = if row.collapsed { "▸" } else { "▾" };
                 let end = put(buf, x, y, caret, fg(MUTED).bg(bg), area);
-                let end = put(buf, end + 1, y, "▣", fg(color).bg(bg), area);
+                let end = put(buf, end + 1, y, if frame { crate::canvas_wide::MARK } else { "▣" }, fg(color).bg(bg), area);
                 let count = format!(" {}", row.count.unwrap_or(0));
                 let room = (width - end - 2 - count.len() as i32).max(1) as usize;
                 put(buf, end + 1, y, &truncate(&row.label, room), bold(TEXT).bg(bg), area);
@@ -647,12 +673,18 @@ fn draw_sidebar(app: &mut App, buf: &mut Buffer, area: Rect) {
                 let mut end = x;
                 if agent {
                     end = put(buf, end, y, "◇", fg(MUTED).bg(bg), area) + 1;
+                } else if node.is_some_and(|n| n.is_canvas_agent()) {
+                    end = put(buf, end, y, crate::canvas_wide::MARK, fg(crate::canvas_wide::COLOR).bg(bg), area) + 1;
                 } else if passive {
                     end = put(buf, end, y, "⟲", fg(MUTED).bg(bg), area) + 1;
                 } else if sub {
                     end = put(buf, end, y, "↳", fg(if tucked { MUTED } else { ACCENT }).bg(bg), area) + 1;
                 }
-                end = put(buf, end, y, status.icon(app.tick), fg(status.color()).bg(bg), area) + 1;
+                // A canvas-wide agent shows its own state (off, paused, needs attention, …).
+                match node.filter(|n| n.is_canvas_agent()).map(|n| app.canvas_agent_state(n)) {
+                    Some(state) => end = put(buf, end, y, state.icon(app.tick), fg(state.color()).bg(bg), area) + 1,
+                    None => end = put(buf, end, y, status.icon(app.tick), fg(status.color()).bg(bg), area) + 1,
+                }
                 if let Some(node) = app.doc.node(id)
                     && app.node_loop(node).is_some()
                 {
@@ -880,7 +912,28 @@ fn draw_details(app: &mut App, buf: &mut Buffer, area: Rect) {
     let mut lines: Vec<(String, Style)> = Vec::new();
     // Lines that act as buttons.
     let mut clicks: Vec<(usize, crate::dialogs::Action)> = Vec::new();
-    if let Some(group) = app.selected_group.as_deref().and_then(|g| app.doc.group(g)).cloned() {
+    if let Some(group) = app.selected_group.as_deref().and_then(|g| app.doc.group(g)).cloned().filter(|g| g.is_canvas_agents()) {
+        use crate::canvas_wide::{AgentAction, MARK};
+        let agents: Vec<Node> = app.canvas_agents().into_iter().cloned().collect();
+        lines.push((format!("{MARK} {}", group.name), bold(TEXT)));
+        lines.push((format!("{} canvas-wide agent(s): each sees the events of every group of this canvas", agents.len()), fg(MUTED)));
+        clicks.push((lines.len(), crate::dialogs::Action::Agents(AgentAction::Panel)));
+        lines.push((format!("{MARK} Manage canvas agents…"), fg(ACCENT)));
+        if app.canvas_agents_unavailable().is_none() {
+            clicks.push((lines.len(), crate::dialogs::Action::Agents(AgentAction::New)));
+            lines.push(("+ New canvas-wide agent…".into(), fg(ACCENT)));
+            clicks.push((lines.len(), crate::dialogs::Action::Agents(AgentAction::Library)));
+            lines.push(("✦ Canvas skills…".into(), fg(ACCENT)));
+        }
+        lines.push((String::new(), Style::default()));
+        for agent in agents.iter().take(inner.height as usize) {
+            let state = app.canvas_agent_state(agent);
+            clicks.push((lines.len(), crate::dialogs::Action::Agents(AgentAction::Show(agent.id.clone()))));
+            lines.push((format!("{} {} — {}", state.icon(app.tick), agent.name, state.label()), fg(state.color())));
+        }
+        lines.push((String::new(), Style::default()));
+        lines.push(("R: rename · Del: delete the frame (the agents stay)".into(), fg(MUTED)));
+    } else if let Some(group) = app.selected_group.as_deref().and_then(|g| app.doc.group(g)).cloned() {
         use crate::dialogs::Action;
         let members = app.doc.members(&group.id);
         let shown = |n: &&Node| n.kind == NodeKind::Session || (group.is_automations() && n.kind == NodeKind::Automation);

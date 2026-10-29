@@ -87,15 +87,20 @@ fn slugify(name: &str) -> String {
 }
 
 impl App {
-    /// Groups, members and passive sessions as the service needs them.
+    /// Groups, members and passive sessions as the service needs them, with
+    /// this canvas's id. Canvas-wide agents are routed only when the canvas
+    /// has an id (a service that gives it one); disabled ones never.
     pub fn build_routing(&self) -> Routing {
         let mut routing = Routing { groups: self.doc.groups.iter().map(|g| RouteGroup { id: g.id.clone(), name: g.name.clone(), folder: g.folder.clone() }).collect(), ..Default::default() };
+        routing.canvas = self.doc.canvas_id.clone().filter(|id| crate::doc::valid_canvas_id(id)).unwrap_or_default();
         for node in self.doc.nodes.iter().filter(|n| n.kind == NodeKind::Session && n.command.is_none()) {
             routing.names.insert(node.id.clone(), node.name.clone());
             if node.no_messages {
                 routing.no_messages.push(node.id.clone());
             }
             match &node.passive {
+                Some(p) if p.disabled => {}
+                Some(_) if node.is_canvas_agent() && routing.canvas.is_empty() => {}
                 Some(p) => routing.passive.push(PassiveSpec {
                     key: p.key.clone(),
                     session_id: node.id.clone(),
@@ -115,6 +120,9 @@ impl App {
                     // runs that resume a conversation with a recorded model keep that one.
                     model: canvas_model::models::effective(crate::agents::agent_of(node), &self.doc.defaults, self.doc.group(&p.group)).model,
                     session_model: node.model.clone(),
+                    canvas_wide: node.is_canvas_agent(),
+                    skills: if node.is_canvas_agent() { p.skills.clone() } else { Vec::new() },
+                    groups: if node.is_canvas_agent() { p.groups.clone() } else { Vec::new() },
                 }),
                 None => {
                     if let Some(group) = self.doc.group_of(node) {
@@ -260,6 +268,19 @@ impl App {
     pub fn passive_line(&self, node: &Node) -> String {
         let Some(passive) = node.passive.as_ref() else { return String::new() };
         let view = self.passive_view(node).cloned().unwrap_or_default();
+        if node.is_canvas_agent() {
+            let state = self.canvas_agent_state(node);
+            let mut line = state.label();
+            if matches!(state, crate::canvas_wide::AgentState::Monitoring | crate::canvas_wide::AgentState::Waiting | crate::canvas_wide::AgentState::Queued(_, false)) {
+                if !view.headline.is_empty() {
+                    line.push_str(&format!(" · {}", view.headline));
+                }
+                if view.next_run_ms > 0 {
+                    line.push_str(&format!(" · next {}", crate::side::when(&crate::paths::format_rfc3339_ms(view.next_run_ms))));
+                }
+            }
+            return line;
+        }
         if passive.paused {
             return "paused".into();
         }
@@ -331,8 +352,12 @@ impl App {
         Ok(id)
     }
 
-    /// Starts "New passive session": choose a template, then a name.
+    /// Starts "New passive session": choose a template, then a name. The
+    /// canvas-agents frame makes canvas-wide agents instead.
     pub fn new_passive(&mut self, group: &str) {
+        if self.doc.group(group).is_some_and(|g| g.is_canvas_agents()) {
+            return self.run_agents(crate::canvas_wide::AgentAction::New);
+        }
         if self.doc.group(group).is_some_and(|g| g.folder.is_none()) {
             self.notify("A passive session keeps its rules and memory in the group's folder: choose one first.", false);
             return self.run(crate::dialogs::Action::SetGroupFolder(group.to_owned()));
@@ -374,6 +399,7 @@ impl App {
                 "two numbers, for example: 24 20 (0 = no limit / never)",
                 format!("{} {}", passive.max_runs_per_day, passive.rollover_runs),
             ),
+            PassiveField::Groups => ("Groups it watches", "group names, comma-separated; empty: every group of this canvas", self.agent_groups_text(&passive)),
         };
         self.modals.push(crate::dialogs::Modal::Prompt(crate::dialogs::Prompt {
             title: title.into(),
@@ -387,8 +413,10 @@ impl App {
     pub fn apply_passive_setting(&mut self, id: &str, field: crate::dialogs::PassiveField, value: &str) -> Result<(), String> {
         use crate::dialogs::PassiveField;
         let value = value.trim();
+        let groups = if field == PassiveField::Groups { self.parse_agent_groups(value)? } else { Vec::new() };
         let Some(passive) = self.doc.node_mut(id).and_then(|n| n.passive.as_mut()) else { return Err("the passive session no longer exists".into()) };
         match field {
+            PassiveField::Groups => passive.groups = groups,
             PassiveField::Events => {
                 passive.subscribe = value.split([',', ' ']).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect();
             }
@@ -429,7 +457,7 @@ impl App {
             return Err("start with an event name such as pr.merged".into());
         }
         let data = serde_json::from_str::<serde_json::Value>(rest.trim()).unwrap_or_else(|_| if rest.trim().is_empty() { serde_json::Value::Null } else { serde_json::Value::String(rest.trim().to_owned()) });
-        let event = bus::Event { kind: kind.to_owned(), group: group.to_owned(), source_name: "you".into(), data, ..Default::default() };
+        let event = bus::Event { kind: kind.to_owned(), group: group.to_owned(), source_name: "you".into(), data, canvas: self.doc.canvas_id.clone().unwrap_or_default(), ..Default::default() };
         self.sync_routing();
         self.bus_action(serde_json::json!({ "action": "emit", "event": event }));
         self.notify(format!("Sent {kind}."), false);
@@ -443,14 +471,26 @@ impl App {
         if text.trim().is_empty() {
             return Err("type a message".into());
         }
-        let event = bus::Event { kind: "message".into(), group, to: id.to_owned(), source_name: "you".into(), data: serde_json::json!({ "text": text.trim() }), ..Default::default() };
+        let event = bus::Event {
+            kind: "message".into(),
+            group,
+            to: id.to_owned(),
+            source_name: "you".into(),
+            data: serde_json::json!({ "text": text.trim() }),
+            canvas: self.doc.canvas_id.clone().unwrap_or_default(),
+            ..Default::default()
+        };
         self.bus_action(serde_json::json!({ "action": "emit", "event": event }));
         Ok(())
     }
 
-    /// Files of a passive session (rules, memory, log).
+    /// Files of a passive session (rules, memory, log): in its group's
+    /// folder, or a canvas-wide agent's in the canvas-agents folder.
     pub fn passive_paths(&self, node: &Node) -> Option<bus::PassivePaths> {
         let passive = node.passive.as_ref()?;
+        if node.is_canvas_agent() {
+            return self.canvas_agents_dir().map(|dir| canvas_model::canvas_wide::agent_paths(&dir, &passive.slug));
+        }
         let folder = self.doc.group(&passive.group)?.folder.clone()?;
         Some(bus::passive_paths(std::path::Path::new(&folder), &passive.slug))
     }

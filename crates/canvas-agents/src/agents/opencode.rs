@@ -450,6 +450,10 @@ impl OpenCode {
             // The canvas skills (OpenCode reads `skills/<name>/SKILL.md` below these paths).
             merge(&mut config, json!({ "skills": { "paths": [path_text(&plugin.join("skills"))] } }));
         }
+        for plugin in &integration.skill_plugins {
+            // A canvas-wide agent's skills (merging appends to the list).
+            merge(&mut config, json!({ "skills": { "paths": [path_text(&plugin.join("skills"))] } }));
+        }
         let mut env = integration.env.clone();
         env.push(("OPENCODE_DISABLE_AUTOUPDATE".to_owned(), "1".to_owned()));
         let mut server = None;
@@ -553,7 +557,7 @@ mod tests {
     const PARENT: &str = "ses_0bd2fb5f8ffezRuY9i1WNnJajX";
 
     fn integration() -> Integration {
-        Integration { plugin_dir: Some(PathBuf::from(r"C:\h\plugin")), env: vec![("COPILOT_CANVAS_SESSION".into(), "t1".into())] }
+        Integration { plugin_dir: Some(PathBuf::from(r"C:\h\plugin")), env: vec![("COPILOT_CANVAS_SESSION".into(), "t1".into())], ..Default::default() }
     }
 
     fn env<'a>(cmd: &'a Command, key: &str) -> Option<&'a str> {
@@ -606,6 +610,11 @@ mod tests {
         assert_eq!(rules["external_directory"]["C:/g/*"], "allow");
         let first = AgentLaunch { resume: false, native_id: None, ..passive };
         assert_eq!(OpenCode.command_with("t1", &first, &integration(), false).unwrap().args, ["run", "check", "--title", "Fix", "--auto"]);
+        // A canvas-wide agent's skills: their folder joins the canvas skills.
+        let skilled = Integration { skill_plugins: vec![PathBuf::from(r"C:\h\canvas-agents\c\agents\a\plugin")], ..integration() };
+        let cmd = OpenCode.command_with("t1", &first, &skilled, false).unwrap();
+        let config: Value = serde_json::from_str(env(&cmd, "OPENCODE_CONFIG_CONTENT").unwrap()).unwrap();
+        assert_eq!(config["skills"]["paths"], json!(["C:/h/plugin/skills", "C:/h/canvas-agents/c/agents/a/plugin/skills"]));
     }
 
     #[test]

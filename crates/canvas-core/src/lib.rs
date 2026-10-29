@@ -9,6 +9,7 @@ pub use canvas_model::{automation, bus, config, doc, effects, git, migrate, rpc,
 
 pub mod actions;
 pub mod app;
+pub mod canvas_wide;
 pub mod clipboard;
 pub mod conn;
 pub mod demo;

@@ -8,11 +8,11 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use canvas_model::automation::AutoLoad;
 use canvas_model::doc::Group;
-use canvas_model::rpc::{Backend, BackendInfo, PassiveFiles, PathInfo, Request, Response};
+use canvas_model::rpc::{Backend, BackendInfo, CanvasAgentFiles, PassiveFiles, PathInfo, Request, Response};
 
 use crate::agents::{AgentKind, Provide};
 use crate::paths::Instance;
-use crate::{agents, automations, bus, copilot_cfg, doc, factory, factory_cli, fork, git, migrate, taskschd, vscode};
+use crate::{agents, automations, bus, canvas_wide, copilot_cfg, doc, factory, factory_cli, fork, git, migrate, taskschd, vscode};
 
 /// Largest text file the viewer reads.
 const MAX_TEXT: u64 = 4 << 20;
@@ -216,7 +216,59 @@ fn run(ctx: &Ctx, request: Request) -> Result<Response> {
             Response::Done
         }
         Request::Upload { name, id, offset, data, last } => upload(&ctx.home, &name, &id, offset, &data, last)?,
+        Request::CreateCanvasAgent { files } => Response::Text(create_canvas_agent(&ctx.home, &files)?),
+        Request::CanvasSkills { canvas } => Response::Skills(canvas_wide::list_skills(&canvas_folder(&ctx.home, &canvas)?)),
+        Request::CreateCanvasSkill { canvas, name, description } => text(&create_canvas_skill(&ctx.home, &canvas, &name, &description)?),
     })
+}
+
+/// The folder of a canvas's canvas-wide agents under the backend's own data
+/// folder (a client names the canvas, never a folder).
+fn canvas_folder(home: &Path, canvas: &str) -> Result<PathBuf> {
+    anyhow::ensure!(doc::valid_canvas_id(canvas), "invalid canvas id {canvas:?}");
+    Ok(canvas_wide::canvas_dir(home, canvas))
+}
+
+/// Creates a canvas-wide agent's files in the first free slug (and the
+/// canvas's GOALS.md and skills folder when missing); returns the slug.
+fn create_canvas_agent(home: &Path, files: &CanvasAgentFiles) -> Result<String> {
+    let canvas = canvas_folder(home, &files.canvas)?;
+    let base: String = files.base_slug.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(40).collect();
+    let base = if base.trim_matches('-').is_empty() { "agent".to_owned() } else { base };
+    let mut slug = base.clone();
+    let mut n = 2;
+    while files.taken.contains(&slug) || canvas_wide::agent_paths(&canvas, &slug).dir.exists() {
+        slug = format!("{base}-{n}");
+        n += 1;
+    }
+    let paths = canvas_wide::agent_paths(&canvas, &slug);
+    let write = || -> std::io::Result<()> {
+        std::fs::create_dir_all(&paths.dir)?;
+        std::fs::create_dir_all(canvas_wide::skills_dir(&canvas))?;
+        std::fs::write(&paths.rules, &files.rules)?;
+        std::fs::write(&paths.state, "# Memory\n\n(Nothing yet.)\n")?;
+        std::fs::write(&paths.log, format!("# Run log of {}\n\n", files.name))?;
+        if !paths.goals.exists() {
+            std::fs::write(&paths.goals, canvas_wide::goals_template(&files.canvas_name))?;
+        }
+        Ok(())
+    };
+    write().map_err(|e| anyhow!("cannot create the canvas agent's files: {e}"))?;
+    Ok(slug)
+}
+
+/// Creates `skills/<name>/SKILL.md` in a canvas's library (never over an
+/// existing skill); returns the file.
+fn create_canvas_skill(home: &Path, canvas: &str, name: &str, description: &str) -> Result<PathBuf> {
+    anyhow::ensure!(canvas_wide::valid_skill_name(name), "skill names use lowercase letters, digits and single hyphens (for example pr-etiquette)");
+    let folder = canvas_wide::skills_dir(&canvas_folder(home, canvas)?).join(name);
+    let file = folder.join("SKILL.md");
+    anyhow::ensure!(!file.exists(), "the canvas already has a skill {name:?}");
+    let description = description.replace(['\r', '\n'], " ");
+    let description = if description.trim().is_empty() { format!("Canvas rules for {name}: when and how canvas-wide agents apply them.") } else { description.trim().to_owned() };
+    std::fs::create_dir_all(&folder).with_context(|| format!("cannot create {}", folder.display()))?;
+    std::fs::write(&file, canvas_wide::skill_template(name, &description)).with_context(|| format!("cannot write {}", file.display()))?;
+    Ok(file)
 }
 
 /// The folder of each upload in progress (by id), fixed when it starts so a
@@ -455,6 +507,40 @@ mod tests {
         assert!(std::fs::read_to_string(&paths.goals).unwrap().starts_with("# Goals of Team"));
         assert!(bus::catalog_path(&dir).is_file() && dir.join("ai-docs").is_dir());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn canvas_agents_and_skills_live_under_the_backends_own_folder() {
+        let home = temp("canvas-agents");
+        let ctx = Ctx { home: home.clone(), sessions_dir: home.join("sessions") };
+        let files = CanvasAgentFiles { canvas: "c1".into(), canvas_name: "Work".into(), base_slug: "pr-coordinator".into(), taken: vec![], name: "PR coordinator".into(), rules: "# PR rules\n".into() };
+        let slug = |r: Response| match r {
+            Response::Text(s) => s,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(slug(handle(&ctx, Request::CreateCanvasAgent { files: files.clone() })), "pr-coordinator");
+        assert_eq!(slug(handle(&ctx, Request::CreateCanvasAgent { files: files.clone() })), "pr-coordinator-2", "an existing folder is never reused");
+        let dir = canvas_wide::canvas_dir(&home, "c1");
+        let paths = canvas_wide::agent_paths(&dir, "pr-coordinator");
+        assert_eq!(std::fs::read_to_string(&paths.rules).unwrap(), "# PR rules\n");
+        assert!(std::fs::read_to_string(&paths.goals).unwrap().contains("\"Work\"") && paths.state.is_file() && paths.log.is_file());
+        // Folders come from the canvas id, never from a client's path.
+        for canvas in ["..\\x", "", "c1/../../etc"] {
+            let bad = handle(&ctx, Request::CreateCanvasAgent { files: CanvasAgentFiles { canvas: canvas.into(), ..files.clone() } });
+            assert!(matches!(bad, Response::Error(e) if e.contains("invalid canvas id")), "{canvas:?}");
+        }
+        let odd = slug(handle(&ctx, Request::CreateCanvasAgent { files: CanvasAgentFiles { base_slug: "..\\..".into(), ..files.clone() } }));
+        assert_eq!(odd, "agent");
+        // Skills: created in the library, listed, never overwritten, names checked.
+        let path = slug(handle(&ctx, Request::CreateCanvasSkill { canvas: "c1".into(), name: "pr-etiquette".into(), description: "Routes\nPR feedback".into() }));
+        assert!(path.ends_with(r"canvas-agents\c1\skills\pr-etiquette\SKILL.md"), "{path}");
+        assert!(matches!(handle(&ctx, Request::CreateCanvasSkill { canvas: "c1".into(), name: "pr-etiquette".into(), description: String::new() }), Response::Error(e) if e.contains("already")));
+        assert!(matches!(handle(&ctx, Request::CreateCanvasSkill { canvas: "c1".into(), name: "../evil".into(), description: String::new() }), Response::Error(_)));
+        let Response::Skills(skills) = handle(&ctx, Request::CanvasSkills { canvas: "c1".into() }) else { panic!("skills") };
+        assert_eq!(skills.iter().map(|s| (s.name.as_str(), s.description.as_str(), s.problem.is_empty())).collect::<Vec<_>>(), [("pr-etiquette", "Routes PR feedback", true)]);
+        let Response::Skills(other) = handle(&ctx, Request::CanvasSkills { canvas: "c2".into() }) else { panic!("skills") };
+        assert!(other.is_empty(), "another canvas has its own library");
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

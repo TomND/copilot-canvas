@@ -24,6 +24,10 @@ pub const RECENT_EVENTS: usize = 40;
 /// What the canvas tells the service (from the canvas document).
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Routing {
+    /// The canvas these groups and sessions belong to (`Doc::canvas_id`;
+    /// empty from clients before canvas-wide agents).
+    #[serde(default)]
+    pub canvas: String,
     pub groups: Vec<RouteGroup>,
     /// Active (non-passive) session id → group id.
     pub members: BTreeMap<String, String>,
@@ -99,7 +103,20 @@ pub struct PassiveSpec {
     /// after you opened its chat); runs that resume it prefer this one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_model: Option<String>,
+    /// A canvas-wide agent: events of every group of the canvas (`group` is
+    /// its frame), files under `<home>/canvas-agents/<canvas>/agents/<slug>`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub canvas_wide: bool,
+    /// Canvas skills its runs get (canvas-wide agents).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
+    /// Only events of these groups (canvas-wide agents; empty: every group).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
 }
+
+/// `emit --to canvas`: an event for the canvas-wide agents only.
+pub const CANVAS_TARGET: &str = "canvas";
 
 /// An event on the bus. CLI-written inbox files may omit the service-filled fields.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -124,6 +141,10 @@ pub struct Event {
     pub ms: u64,
     #[serde(default)]
     pub hop: u32,
+    /// The canvas it belongs to (set by windows for the events they send,
+    /// and by the service for events of the routed canvas).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub canvas: String,
 }
 
 /// Service-side state of one passive session (persisted).
@@ -159,6 +180,16 @@ pub struct PassiveState {
     /// `session_id` (OpenCode names its sessions itself).
     #[serde(default)]
     pub native_id: String,
+    /// The canvas of a canvas-wide agent (its state is kept while another
+    /// canvas is routed); empty for group passive sessions.
+    #[serde(default)]
+    pub canvas: String,
+    /// You stopped the run in progress (it ends without counting as a failure).
+    #[serde(default)]
+    pub stop_requested: bool,
+    /// When you last stopped a run.
+    #[serde(default)]
+    pub stopped_ms: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -209,6 +240,15 @@ pub struct PassiveView {
     /// `session_id` (OpenCode).
     #[serde(default)]
     pub native_id: String,
+    /// Failed runs in a row (it retries after 1, 5, 30 minutes).
+    #[serde(default)]
+    pub failures: u32,
+    /// When it tries again after a failure (0: not waiting).
+    #[serde(default)]
+    pub retry_at_ms: u64,
+    /// When you last stopped a run (0: never).
+    #[serde(default)]
+    pub stopped_ms: u64,
 }
 
 /// Local calendar time (for daily schedules).
@@ -311,17 +351,95 @@ impl Routing {
     }
 
     /// Passive sessions an event triggers (messages are resolved separately).
+    /// Group passive sessions get their group's events; canvas-wide agents
+    /// every event of this canvas (any group, or the groups they filter on),
+    /// never another canvas's. `emit --to canvas` reaches canvas-wide agents only.
     pub fn subscribers(&self, event: &Event) -> Vec<String> {
         if event.hop >= MAX_HOP || event.kind == "message" || event.kind.starts_with("passive.") {
             return Vec::new();
         }
+        let canvas = self.from_canvas(event);
+        let to_canvas = event.to.trim().eq_ignore_ascii_case(CANVAS_TARGET);
         self.passive
             .iter()
-            .filter(|p| !p.paused && p.group == event.group && p.session_id != event.source)
+            .filter(|p| !p.paused && p.session_id != event.source)
+            .filter(|p| if p.canvas_wide { canvas && (p.groups.is_empty() || p.groups.contains(&event.group)) } else { !to_canvas && p.group == event.group })
             .filter(|p| p.subscribe.iter().any(|s| type_matches(s, &event.kind)))
             .filter(|p| p.filter.trim().is_empty() || event.data.to_string().to_lowercase().contains(&p.filter.trim().to_lowercase()))
             .map(|p| p.key.clone())
             .collect()
+    }
+
+    /// The event belongs to this canvas: a window of it sent it, or its
+    /// sender is one of its sessions, or (sent by a window or the service
+    /// without a canvas) it names one of its groups. Events of other
+    /// canvases and of sessions no canvas routes never reach canvas-wide agents.
+    pub fn from_canvas(&self, event: &Event) -> bool {
+        if !event.canvas.is_empty() {
+            return !self.canvas.is_empty() && event.canvas == self.canvas;
+        }
+        if event.source.is_empty() || event.source == "timer" {
+            return !event.group.is_empty() && self.group(&event.group).is_some();
+        }
+        self.names.contains_key(&event.source) || self.passive_by_session(&event.source).is_some()
+    }
+
+    /// A canvas-wide agent's spec by its session.
+    fn canvas_agent(&self, session: &str) -> Option<&PassiveSpec> {
+        self.passive_by_session(session).filter(|p| p.canvas_wide)
+    }
+
+    /// Resolves a message or event target as `source` (in `group`) may
+    /// address it: you (no source) and canvas-wide agents reach every session
+    /// and passive session of the canvas; a session or group passive session
+    /// reaches its own group's (ungrouped sessions: the other ungrouped ones)
+    /// and the canvas-wide agents. Ids first, then names (its own group's
+    /// first). `Err` says why nothing was found.
+    pub fn resolve_from(&self, to: &str, source: &str, group: &str) -> Result<Target, String> {
+        let to = to.trim();
+        if to.is_empty() {
+            return Err("no target given".into());
+        }
+        let wide = source.is_empty() || self.canvas_agent(source).is_some();
+        let home = if source.is_empty() { group.to_owned() } else { self.group_of(source).unwrap_or_default() };
+        let session_group = |id: &str| self.members.get(id).cloned().unwrap_or_default();
+        let passive_ok = |p: &PassiveSpec| wide || p.canvas_wide || p.group == home;
+        let session_ok = |id: &str| wide || session_group(id) == home;
+        let passives = |exact: bool| self.passive.iter().filter(move |p| if exact { p.key == to || p.session_id == to } else { p.name.eq_ignore_ascii_case(to) });
+        let sessions = |exact: bool| {
+            self.names
+                .iter()
+                .filter(move |(id, name)| self.passive_by_session(id).is_none() && if exact { id.as_str() == to } else { name.eq_ignore_ascii_case(to) })
+                .map(|(id, _)| id)
+        };
+        let mut refused = false;
+        for exact in [true, false] {
+            // The sender's own group first, then the canvas-wide agents, then (for wide senders) the rest.
+            let mut found: Vec<(u8, Target)> = Vec::new();
+            for p in passives(exact) {
+                if passive_ok(p) {
+                    let rank = if p.group == home { 0 } else if p.canvas_wide { 1 } else { 2 };
+                    found.push((rank, Target::Passive(p.key.clone())));
+                } else {
+                    refused = true;
+                }
+            }
+            for id in sessions(exact) {
+                if session_ok(id) {
+                    found.push((if session_group(id) == home { 0 } else { 2 }, Target::Session(id.clone())));
+                } else {
+                    refused = true;
+                }
+            }
+            if let Some((_, target)) = found.into_iter().min_by_key(|(rank, _)| *rank) {
+                return Ok(target);
+            }
+        }
+        Err(if refused {
+            format!("{to:?} is in another group (sessions reach their own group and the canvas-wide agents; canvas-wide agents reach every group)")
+        } else {
+            format!("no session or passive session is called {to:?}")
+        })
     }
 }
 
@@ -451,6 +569,9 @@ impl BusState {
                     runs_today: state.runs_today,
                     last_error: state.last_error.clone(),
                     native_id: state.native_id.clone(),
+                    failures: state.failures,
+                    retry_at_ms: state.retry_at_ms,
+                    stopped_ms: state.stopped_ms,
                 },
             );
         }
@@ -463,6 +584,7 @@ impl BusState {
 }
 
 /// Paths of a passive session's files.
+#[derive(Clone, Debug, PartialEq)]
 pub struct PassivePaths {
     pub dir: PathBuf,
     pub rules: PathBuf,
@@ -484,18 +606,35 @@ pub fn passive_paths(group_folder: &Path, slug: &str) -> PassivePaths {
     }
 }
 
+/// The trigger events of a run as JSON (each event's data cut at 2,000
+/// characters, the whole at about 12,000: a command line holds 32,767).
+/// `routing`: canvas-wide runs also get the sending session's id and group.
+pub fn trigger_json(events: &[Event], routing: Option<&Routing>) -> String {
+    const BUDGET: usize = 12_000;
+    let mut used = 0;
+    let mut trigger: Vec<serde_json::Value> = Vec::new();
+    for (i, e) in events.iter().enumerate() {
+        let mut data = e.data.to_string();
+        if data.len() > 2_000 {
+            data = format!("{}…", data.chars().take(2_000).collect::<String>());
+        }
+        let mut item = serde_json::json!({ "type": e.kind, "from": if e.source_name.is_empty() { &e.source } else { &e.source_name }, "data": data });
+        if let Some(routing) = routing {
+            item["session"] = serde_json::Value::String(e.source.clone());
+            item["group"] = serde_json::Value::String(routing.group(&e.group).map(|g| g.name.clone()).unwrap_or_default());
+        }
+        used += item.to_string().len();
+        if used > BUDGET && !trigger.is_empty() {
+            trigger.push(serde_json::json!({ "note": format!("{} more event(s) left out (too long for one run)", events.len() - i) }));
+            break;
+        }
+        trigger.push(item);
+    }
+    serde_json::to_string_pretty(&trigger).unwrap_or_default()
+}
+
 /// The prompt of a passive run.
 pub fn run_prompt(spec: &PassiveSpec, group: &RouteGroup, paths: &PassivePaths, events: &[Event], fresh: bool) -> String {
-    let trigger: Vec<serde_json::Value> = events
-        .iter()
-        .map(|e| {
-            let mut data = e.data.to_string();
-            if data.len() > 2_000 {
-                data = format!("{}…", data.chars().take(2_000).collect::<String>());
-            }
-            serde_json::json!({ "type": e.kind, "from": if e.source_name.is_empty() { &e.source } else { &e.source_name }, "data": data })
-        })
-        .collect();
     let episode = if fresh { "\nThis is a fresh conversation: everything you know is in your memory file and the group files.\n" } else { "" };
     format!(
         "[Copilot Canvas · passive session \"{name}\" · group \"{group}\"]\n\
@@ -516,7 +655,7 @@ pub fn run_prompt(spec: &PassiveSpec, group: &RouteGroup, paths: &PassivePaths, 
         goals = paths.goals.display(),
         context = paths.context.display(),
         log = paths.log.display(),
-        trigger = serde_json::to_string_pretty(&trigger).unwrap_or_default(),
+        trigger = trigger_json(events, None),
     )
 }
 
@@ -693,6 +832,70 @@ mod tests {
         assert_eq!(routing.resolve("Main work", "g2"), Some(Target::Session("s2".into())), "the sender's group first");
         assert_eq!(routing.resolve("s1", ""), Some(Target::Session("s1".into())));
         assert_eq!(routing.resolve("nobody", "g1"), None);
+    }
+
+    /// Two groups and an ungrouped session, a group passive session in g1 and
+    /// a canvas-wide agent (in its frame `gf`) on canvas c1.
+    fn canvas_routing() -> Routing {
+        let wide = PassiveSpec { canvas_wide: true, group: "gf".into(), name: "PR coordinator".into(), ..spec("w", &["pr.*"]) };
+        Routing {
+            canvas: "c1".into(),
+            groups: ["g1", "g2", "gf"].iter().map(|g| RouteGroup { id: (*g).into(), name: format!("Group {g}"), folder: None }).collect(),
+            members: [("s1".to_owned(), "g1".to_owned()), ("s2".to_owned(), "g2".to_owned())].into(),
+            names: [("s1", "Main work"), ("s2", "Other work"), ("s3", "Loose"), ("s-a", "Guard a"), ("s-w", "PR coordinator")].iter().map(|(a, b)| (a.to_string(), b.to_string())).collect(),
+            passive: vec![spec("a", &["pr.*"]), wide],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn canvas_wide_agents_get_every_groups_events_of_their_canvas_only() {
+        let mut routing = canvas_routing();
+        let from = |source: &str, group: &str| Event { kind: "pr.published".into(), source: source.into(), group: group.into(), ..Default::default() };
+        assert_eq!(routing.subscribers(&from("s1", "g1")), vec!["a", "w"], "its own group's passive session and the canvas-wide agent");
+        assert_eq!(routing.subscribers(&from("s2", "g2")), vec!["w"], "another group: only the canvas-wide agent");
+        assert_eq!(routing.subscribers(&from("s3", "")), vec!["w"], "an ungrouped session of the canvas");
+        assert!(routing.subscribers(&from("stranger", "")).is_empty(), "a session no canvas routes");
+        let mut other_canvas = from("s2", "g2");
+        other_canvas.canvas = "c2".into();
+        assert!(routing.subscribers(&other_canvas).is_empty(), "a window of another canvas sent it");
+        let mut ours = from("", "");
+        ours.canvas = "c1".into();
+        assert_eq!(routing.subscribers(&ours), vec!["w"], "a window of this canvas sent it");
+        assert_eq!(routing.subscribers(&from("", "g1")), vec!["a", "w"], "the canvas itself, naming a group of it");
+        assert_eq!(routing.subscribers(&from("s-w", "gf")), Vec::<String>::new(), "an agent never triggers itself");
+        let mut to_canvas = from("s1", "g1");
+        to_canvas.to = CANVAS_TARGET.into();
+        assert_eq!(routing.subscribers(&to_canvas), vec!["w"], "emit --to canvas: canvas-wide agents only");
+        routing.passive[1].groups = vec!["g1".into()];
+        assert!(routing.subscribers(&from("s2", "g2")).is_empty(), "a group filter");
+        routing.passive[1].paused = true;
+        assert!(routing.subscribers(&from("s1", "g1")) == vec!["a"], "paused: no trigger");
+        // A canvas never routed (an older window) has no canvas-wide events.
+        routing.canvas.clear();
+        assert!(!routing.from_canvas(&ours));
+    }
+
+    #[test]
+    fn only_canvas_wide_agents_and_you_message_across_groups() {
+        let routing = canvas_routing();
+        let resolve = |to: &str, source: &str| routing.resolve_from(to, source, "");
+        // A session of g1: its own group and the canvas-wide agents.
+        assert_eq!(resolve("Guard a", "s1"), Ok(Target::Passive("a".into())));
+        assert_eq!(resolve("pr coordinator", "s1"), Ok(Target::Passive("w".into())), "any session reaches a canvas-wide agent");
+        assert!(resolve("Other work", "s1").unwrap_err().contains("another group"), "not another group's session");
+        assert!(resolve("s2", "s1").is_err(), "not even by id");
+        // The group passive session is bound to its group too.
+        assert!(resolve("Other work", "s-a").is_err());
+        // Ungrouped sessions reach each other and the agents.
+        assert!(resolve("Main work", "s3").is_err());
+        assert_eq!(resolve("PR coordinator", "s3"), Ok(Target::Passive("w".into())));
+        // A canvas-wide agent and you reach every session.
+        assert_eq!(resolve("Other work", "s-w"), Ok(Target::Session("s2".into())));
+        assert_eq!(resolve("s3", "s-w"), Ok(Target::Session("s3".into())));
+        assert_eq!(resolve("Guard a", "s-w"), Ok(Target::Passive("a".into())));
+        assert_eq!(routing.resolve_from("Other work", "", "g1"), Ok(Target::Session("s2".into())), "the canvas window");
+        assert!(resolve("nobody", "s-w").unwrap_err().contains("no session"));
     }
 
     #[test]

@@ -187,6 +187,59 @@ fn ensure_files(paths: &bus::PassivePaths, spec: &PassiveSpec) {
     }
 }
 
+/// Writes what every group of the canvas is doing for a canvas-wide run:
+/// each group's sessions (as a group passive session sees its own), the
+/// ungrouped sessions, and the passive sessions and canvas-wide agents.
+fn write_canvas_context(shared: &Shared, routing: &Routing, state: &BusState, path: &Path) {
+    let mut text = format!(
+        "# The canvas: every group and its sessions\n\nWritten by Copilot Canvas at {} (UTC) for canvas-wide agents. Message a session with `copilot-canvas send --to \"<name or id>\"`.\n",
+        crate::paths::rfc3339_now()
+    );
+    let sessions = lock(&shared.sessions).clone();
+    let describe = |text: &mut String, id: &str| {
+        let name = routing.names.get(id).cloned().unwrap_or_else(|| id.to_owned());
+        text.push_str(&format!("\n### {name}\n- session: `{id}`\n"));
+        if let Some(s) = sessions.get(&shared.native_of(id)) {
+            text.push_str(&format!("- status: {:?}{} · folder: {} · branch: {}\n", s.activity, if s.live { " (running)" } else { "" }, s.cwd, if s.branch.is_empty() { "—" } else { &s.branch }));
+        }
+        let (first, last) = digest(&shared.instance.sessions_dir.join(id).join("events.jsonl"));
+        if !first.is_empty() {
+            text.push_str(&format!("- first request: {first}\n"));
+        }
+        if !last.is_empty() {
+            text.push_str(&format!("- latest: {last}\n"));
+        }
+    };
+    for group in &routing.groups {
+        let members: Vec<&String> = routing.members.iter().filter(|(_, g)| **g == group.id).map(|(id, _)| id).collect();
+        let passives: Vec<&PassiveSpec> = routing.passive.iter().filter(|p| p.group == group.id && !p.canvas_wide).collect();
+        if members.is_empty() && passives.is_empty() {
+            continue;
+        }
+        text.push_str(&format!("\n## Group \"{}\" (`{}`)\n", group.name, group.id));
+        for id in members {
+            describe(&mut text, id);
+        }
+        for p in passives {
+            let status = state.passive.get(&p.key).map(|s| format!("{} {}", s.status, s.headline)).unwrap_or_default();
+            text.push_str(&format!("- passive session {} (on {}){}\n", p.name, if p.subscribe.is_empty() { "schedule".into() } else { p.subscribe.join(", ") }, if status.trim().is_empty() { String::new() } else { format!(": {}", status.trim()) }));
+        }
+    }
+    let loose: Vec<&String> = routing.names.keys().filter(|id| !routing.members.contains_key(*id) && routing.passive_by_session(id).is_none()).collect();
+    if !loose.is_empty() {
+        text.push_str("\n## Sessions in no group\n");
+        for id in loose {
+            describe(&mut text, id);
+        }
+    }
+    text.push_str("\n## Canvas-wide agents\n");
+    for p in routing.passive.iter().filter(|p| p.canvas_wide) {
+        let status = state.passive.get(&p.key).map(|s| format!("{} {}", s.status, s.headline)).unwrap_or_default();
+        text.push_str(&format!("- {} (on {}){}\n", p.name, if p.subscribe.is_empty() { "schedule".into() } else { p.subscribe.join(", ") }, if status.trim().is_empty() { String::new() } else { format!(": {}", status.trim()) }));
+    }
+    write_atomic(path, text.as_bytes());
+}
+
 pub(super) fn handle_event(shared: &Shared, routing: &Routing, state: &mut BusState, mut event: Event, now: u64) {
     event.id = uuid::Uuid::new_v4().to_string();
     event.ms = now;
@@ -195,6 +248,10 @@ pub(super) fn handle_event(shared: &Shared, routing: &Routing, state: &mut BusSt
     }
     if event.source_name.is_empty() {
         event.source_name = routing.names.get(&event.source).cloned().or_else(|| routing.passive_by_session(&event.source).map(|p| p.name.clone())).unwrap_or_default();
+    }
+    // Events of the routed canvas carry its id (clients and canvas-wide agents tell canvases apart by it).
+    if event.canvas.is_empty() && !routing.canvas.is_empty() && routing.from_canvas(&event) {
+        event.canvas = routing.canvas.clone();
     }
     let mut targets: Vec<String> = Vec::new();
     match event.kind.as_str() {
@@ -217,8 +274,8 @@ pub(super) fn handle_event(shared: &Shared, routing: &Routing, state: &mut BusSt
         }
         "message" => {
             let text = event.data["text"].as_str().map(str::to_owned).unwrap_or_else(|| event.data.to_string());
-            match routing.resolve(&event.to, &event.group) {
-                Some(Target::Passive(key)) => {
+            match routing.resolve_from(&event.to, &event.source, &event.group) {
+                Ok(Target::Passive(key)) => {
                     if let Some(spec) = routing.passive.iter().find(|p| p.key == key) {
                         targets.push(spec.session_id.clone());
                     }
@@ -226,19 +283,34 @@ pub(super) fn handle_event(shared: &Shared, routing: &Routing, state: &mut BusSt
                     forwarded.hop += 1;
                     state.passive.entry(key).or_default().enqueue(forwarded, now);
                 }
-                Some(Target::Session(id)) if !routing.no_messages.contains(&id) => {
+                Ok(Target::Session(id)) if !routing.no_messages.contains(&id) => {
                     targets.push(id.clone());
                     let from = if event.source_name.is_empty() { "Copilot Canvas".to_owned() } else { event.source_name.clone() };
                     state.mailbox.push(Mail { id: event.id.clone(), to: id, from, text, ms: now });
                 }
-                Some(Target::Session(id)) => log(&shared.instance, &format!("message for {id} dropped: it does not accept messages")),
-                None => log(&shared.instance, &format!("message for {:?} dropped: no such session", event.to)),
+                Ok(Target::Session(id)) => log(&shared.instance, &format!("message for {id} dropped: it does not accept messages")),
+                Err(why) => log(&shared.instance, &format!("message for {:?} dropped: {why}", event.to)),
             }
         }
         effects::EVENT => {
             if let Some(target) = apply_effect(shared, routing, state, &event, now) {
                 targets.push(target);
             }
+        }
+        // `emit TYPE --to NAME`: that passive session or canvas-wide agent only.
+        _ if !event.to.trim().is_empty() && !event.to.trim().eq_ignore_ascii_case(bus::CANVAS_TARGET) => {
+            match addressed(routing, &event) {
+                Ok(key) => {
+                    if let Some(spec) = routing.passive.iter().find(|p| p.key == key) {
+                        targets.push(spec.session_id.clone());
+                    }
+                    let mut forwarded = event.clone();
+                    forwarded.hop += 1;
+                    state.passive.entry(key).or_default().enqueue(forwarded, now);
+                }
+                Err(why) => log(&shared.instance, &format!("{} for {:?} dropped: {why}", event.kind, event.to)),
+            }
+            catalog_effect(shared, routing, state, &event, now);
         }
         _ => {
             for key in routing.subscribers(&event) {
@@ -258,6 +330,21 @@ pub(super) fn handle_event(shared: &Shared, routing: &Routing, state: &mut BusSt
     shared.broadcast(ServiceMsg::BusEvent { json: pulse.to_string() });
 }
 
+/// The passive session an addressed event (`emit TYPE --to NAME`) goes to,
+/// as its sender may address it (see `Routing::resolve_from`); it arrives
+/// whatever the session subscribes to, but never past the hop limit and
+/// never back to its sender.
+fn addressed(routing: &Routing, event: &Event) -> Result<String, String> {
+    if event.hop >= bus::MAX_HOP {
+        return Err(format!("the event chain is longer than {} hops", bus::MAX_HOP));
+    }
+    match routing.resolve_from(&event.to, &event.source, &event.group)? {
+        Target::Passive(key) if routing.passive.iter().any(|p| p.key == key && p.session_id == event.source) => Err("a session never sends itself events".into()),
+        Target::Passive(key) => Ok(key),
+        Target::Session(_) => Err("events go to passive sessions and canvas-wide agents (use copilot-canvas send for a session)".into()),
+    }
+}
+
 /// `copilot-canvas effect …`: puts an effect on a box of the sender's group
 /// (or the group), or clears them. Answers the box a pulse goes to.
 fn apply_effect(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Event, now: u64) -> Option<String> {
@@ -267,16 +354,26 @@ fn apply_effect(shared: &Shared, routing: &Routing, state: &mut BusState, event:
 }
 
 /// The pure part of [`apply_effect`]: a session can only reach its own group
-/// (the canvas's own events name theirs) and the note is untrusted text (one
-/// short line). Answers the box and what to log.
+/// (the canvas's own events name theirs), a canvas-wide agent any box of the
+/// canvas, and the note is untrusted text (one short line). Answers the box
+/// and what to log.
 fn effect_event(routing: &Routing, list: &mut Vec<effects::Effect>, event: &Event, now: u64) -> (Option<String>, String) {
     let name = event.data["effect"].as_str().unwrap_or_default().to_ascii_lowercase();
     let on = event.data["on"].as_str().unwrap_or_default();
-    if !event.source.is_empty() && routing.group_of(&event.source).as_deref() != Some(event.group.as_str()) {
-        return (None, format!("effect {name} on {on:?} dropped: {} is in no group (or another one)", event.source));
-    }
-    let Some(anchor) = effects::resolve(routing, &event.group, on) else {
-        return (None, format!("effect {name} on {on:?} dropped: no such box in the sender's group"));
+    let wide = routing.passive_by_session(&event.source).is_some_and(|p| p.canvas_wide);
+    let (group, anchor) = if wide {
+        match effects::resolve_canvas(routing, on) {
+            Some(found) => found,
+            None => return (None, format!("effect {name} on {on:?} dropped: no such box on this canvas")),
+        }
+    } else {
+        if !event.source.is_empty() && routing.group_of(&event.source).as_deref() != Some(event.group.as_str()) {
+            return (None, format!("effect {name} on {on:?} dropped: {} is in no group (or another one)", event.source));
+        }
+        match effects::resolve(routing, &event.group, on) {
+            Some(anchor) => (event.group.clone(), anchor),
+            None => return (None, format!("effect {name} on {on:?} dropped: no such box in the sender's group")),
+        }
     };
     let target = match &anchor {
         effects::Anchor::Node(id) => id.clone(),
@@ -284,14 +381,14 @@ fn effect_event(routing: &Routing, list: &mut Vec<effects::Effect>, event: &Even
     };
     if name == "clear" {
         let only = event.data["kind"].as_str().and_then(effects::kind).map(|k| k.name);
-        let cleared = effects::clear(list, &event.group, &target, only);
+        let cleared = effects::clear(list, &group, &target, only);
         return (None, format!("cleared {cleared} effect(s) on {on:?}"));
     }
     let Some(spec) = effects::kind(&name) else {
         return (None, format!("effect {name:?} dropped: not in the effects collection"));
     };
     let from = if event.source_name.is_empty() { "Copilot Canvas" } else { &event.source_name };
-    effects::add(list, effects::new_effect(spec, &event.group, &anchor, event.data["note"].as_str().unwrap_or_default(), from, now));
+    effects::add(list, effects::new_effect(spec, &group, &anchor, event.data["note"].as_str().unwrap_or_default(), from, now));
     // A pulse runs from the sender to the box (none when it marks itself).
     ((!target.is_empty() && target != event.source).then_some(target), format!("effect {name} on {on:?} from {from}"))
 }
@@ -320,17 +417,41 @@ fn mapped_effect(routing: &Routing, event: &Event, catalog: &str, now: u64) -> O
     };
     Some(effects::new_effect(spec, &event.group, &anchor, &note, &event.source_name, now))
 }
+/// Where a run happens: its files, the folder its agent may use (the group's,
+/// or the canvas's canvas-agents folder), the folder it starts in, and its prompt.
+#[derive(Debug)]
+struct RunPlace {
+    paths: bus::PassivePaths,
+    allowed: PathBuf,
+    cwd: PathBuf,
+}
+
+/// The files and folders of a passive session's runs; `Err`: why it cannot run.
+fn run_place(home: &Path, routing: &Routing, spec: &PassiveSpec) -> Result<RunPlace, String> {
+    if spec.canvas_wide {
+        if !crate::doc::valid_canvas_id(&routing.canvas) {
+            return Err("this canvas has no id yet (reopen it with an up-to-date Copilot Canvas)".into());
+        }
+        let dir = crate::canvas_wide::canvas_dir(home, &routing.canvas);
+        let paths = crate::canvas_wide::agent_paths(&dir, &spec.slug);
+        // Its own folder: OpenCode learns each run's session from the folder it starts in.
+        return Ok(RunPlace { cwd: paths.dir.clone(), paths, allowed: dir });
+    }
+    let group = routing.group(&spec.group).ok_or("its group is no longer on the canvas")?;
+    let folder = group.folder.clone().map(PathBuf::from).ok_or("the group has no folder (set one from the group's menu)")?;
+    Ok(RunPlace { paths: bus::passive_paths(&folder, &spec.slug), allowed: folder.clone(), cwd: folder })
+}
+
 /// Starts (or types in) one passive run with its pending events.
 fn start_run(shared: &Shared, routing: &Routing, spec: &PassiveSpec, state: &mut BusState, now: u64) {
     let snapshot_state = state.clone();
     let Some(s) = state.passive.get_mut(&spec.key) else { return };
-    let Some(group) = routing.group(&spec.group).cloned() else { return };
-    let Some(folder) = group.folder.clone().map(PathBuf::from) else {
-        s.fail("the group has no folder (set one from the group's menu)", now);
-        return;
+    let place = match run_place(&shared.instance.home, routing, spec) {
+        Ok(place) => place,
+        Err(why) => return s.fail(&why, now),
     };
-    let paths = bus::passive_paths(&folder, &spec.slug);
-    ensure_files(&paths, spec);
+    let paths = &place.paths;
+    ensure_files(paths, spec);
     if s.session_id.is_empty() {
         s.session_id = spec.session_id.clone();
     }
@@ -347,11 +468,31 @@ fn start_run(shared: &Shared, routing: &Routing, spec: &PassiveSpec, state: &mut
     let session = s.session_id.clone();
     let events = std::mem::take(&mut s.pending);
     let hop = events.iter().map(|e| e.hop).max().unwrap_or(0) + 1;
-    write_context(shared, routing, &group, &snapshot_state, &paths.context);
-    let prompt = bus::run_prompt(spec, &group, &paths, &events, fresh);
+    let prompt = if spec.canvas_wide {
+        write_canvas_context(shared, routing, &snapshot_state, &paths.context);
+        // Its assigned skills, as a plugin its agent CLI loads (and named in the prompt).
+        let (plugin, missing) = crate::canvas_wide::prepare_plugin(&place.allowed, paths, &spec.slug, &spec.skills).unwrap_or_else(|error| {
+            log(&shared.instance, &format!("canvas agent {}: cannot prepare its skills: {error}", spec.name));
+            (None, Vec::new())
+        });
+        if !missing.is_empty() {
+            log(&shared.instance, &format!("canvas agent {}: skills not in the canvas library: {}", spec.name, missing.join(", ")));
+        }
+        let library = crate::canvas_wide::list_skills(&place.allowed);
+        let skills: Vec<crate::canvas_wide::SkillInfo> = library.into_iter().filter(|k| spec.skills.contains(&k.name) && !missing.contains(&k.name)).collect();
+        if let Some(plugin) = &plugin {
+            lock(&shared.skill_plugins).insert(session.clone(), plugin.clone());
+        }
+        crate::canvas_wide::run_prompt(spec, routing, paths, &skills, plugin.as_deref(), &events, fresh)
+    } else {
+        let Some(group) = routing.group(&spec.group).cloned() else { return };
+        write_context(shared, routing, &group, &snapshot_state, &paths.context);
+        bus::run_prompt(spec, &group, paths, &events, fresh)
+    };
     // You have it open: type the run in when it is idle (never mid-turn).
     let open = lock(&shared.terms).get(&session).is_some_and(|t| t.alive.load(Ordering::Acquire));
     if open {
+        lock(&shared.skill_plugins).remove(&session);
         if idle(shared, &session) && type_in(shared, &session, &prompt) {
             s.last_run_ms = now;
             s.runs_today += 1;
@@ -367,25 +508,29 @@ fn start_run(shared: &Shared, routing: &Routing, spec: &PassiveSpec, state: &mut
     let native = (!s.native_id.is_empty()).then(|| s.native_id.clone());
     if kind.provider().is_live(native.as_deref().unwrap_or(&session)) {
         // Open in another terminal or VS Code: try later.
+        lock(&shared.skill_plugins).remove(&session);
         s.pending = events;
         s.retry_at_ms = now + 60_000;
         return;
     }
     // The agent's provider adds its headless flags (Copilot: -p … --allow-all
     // --no-ask-user) and the canvas integration (skills, identity, PATH).
-    let launch = passive_launch(kind, spec, native.clone(), fresh, &folder, prompt, hop);
-    match shared.launch(&session, LaunchKind::Agent(Box::new(launch)), &folder.display().to_string(), 120, 40) {
+    let launch = passive_launch(kind, spec, native.clone(), fresh, &place.allowed, prompt, hop);
+    let cwd = place.cwd.display().to_string();
+    match shared.launch(&session, LaunchKind::Agent(Box::new(launch)), &cwd, 120, 40) {
         Ok(()) => {
             if kind == AgentKind::OpenCode && native.is_none() {
                 // `opencode run` names its session itself: learn it from the folder.
-                shared.expect_session(&session, Some(folder.display().to_string()), false);
+                shared.expect_session(&session, Some(cwd), false);
             }
             s.running = true;
             s.started = true;
+            s.stop_requested = false;
             s.inflight = events;
             log(&shared.instance, &format!("passive {} run started ({} event(s))", spec.name, s.inflight.len()));
         }
         Err(error) => {
+            lock(&shared.skill_plugins).remove(&session);
             s.pending = events;
             s.fail(&format!("{error:#}"), now);
         }
@@ -425,7 +570,8 @@ fn reap(shared: &Shared, routing: &Routing, state: &mut BusState, now: u64) {
             Some(t) => t.info().exit_code,
             None => None,
         };
-        if exit == Some(0) {
+        let stopped = std::mem::take(&mut s.stop_requested);
+        if exit == Some(0) && !stopped {
             s.running = false;
             s.inflight.clear();
             s.failures = 0;
@@ -433,6 +579,14 @@ fn reap(shared: &Shared, routing: &Routing, state: &mut BusState, now: u64) {
             s.last_run_ms = now;
             s.runs_today += 1;
             s.runs_since_rollover += 1;
+        } else if stopped {
+            // You stopped it: its events are dropped, nothing counts as failed.
+            s.running = false;
+            s.inflight.clear();
+            s.stopped_ms = now;
+            s.runs_today += 1;
+            s.runs_since_rollover += 1;
+            log(&shared.instance, &format!("passive {} run stopped by you", spec.name));
         } else {
             let inflight = std::mem::take(&mut s.inflight);
             s.pending.splice(0..0, inflight);
@@ -451,6 +605,20 @@ fn deliver_mail(shared: &Shared, state: &mut BusState) {
             break;
         }
     }
+}
+
+/// Keeps the state of the routed passive sessions, and of canvas-wide agents
+/// of another canvas (the service routes the canvas a window last opened;
+/// theirs continue when their canvas is open again) that were active in the
+/// last 30 days. Removed and disabled ones of the routed canvas are forgotten.
+fn retain_states(state: &mut BusState, routing: &Routing, now: u64) {
+    const KEEP_MS: u64 = 30 * 86_400_000;
+    state.passive.retain(|key, s| {
+        let routed = routing.passive.iter().any(|p| &p.key == key);
+        let elsewhere = !s.canvas.is_empty() && s.canvas != routing.canvas;
+        let recent = now.saturating_sub(s.last_run_ms.max(s.status_ms).max(s.first_pending_ms)) < KEEP_MS;
+        routed || (elsewhere && recent)
+    });
 }
 
 pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
@@ -476,6 +644,7 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
         for file in files {
             if let Ok(bytes) = std::fs::read(&file) {
                 match serde_json::from_slice::<Event>(&bytes) {
+                    Ok(event) if event.kind == STOP_RUN => log(&shared.instance, &format!("ignored {} from the inbox (only windows stop runs)", file.display())),
                     Ok(event) => events.push(event),
                     Err(error) => log(&shared.instance, &format!("unreadable event {}: {error}", file.display())),
                 }
@@ -501,6 +670,10 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
                 state.effects.retain(|e| !ids.contains(&e.id.as_str()));
                 continue;
             }
+            if event.kind == STOP_RUN {
+                stop_run(&shared, &mut state, event.data["key"].as_str().unwrap_or_default());
+                continue;
+            }
             handle_event(&shared, &routing, &mut state, event, now);
         }
         state.effects.retain(|e| e.alive(now));
@@ -508,6 +681,9 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
             let s = state.passive.entry(spec.key.clone()).or_default();
             if s.session_id.is_empty() {
                 s.session_id = spec.session_id.clone();
+            }
+            if spec.canvas_wide {
+                s.canvas.clone_from(&routing.canvas);
             }
             if s.native_id.is_empty()
                 && let Some(native) = lock(&shared.agent_sessions).get(&s.session_id)
@@ -533,7 +709,7 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
             }
         }
         // Forget state of removed passive sessions; mail for gone sessions stays a day.
-        state.passive.retain(|key, _| routing.passive.iter().any(|p| &p.key == key));
+        retain_states(&mut state, &routing, now);
         state.mailbox.retain(|m| now.saturating_sub(m.ms) < 86_400_000);
         deliver_mail(&shared, &mut state);
         *lock(&shared.bus) = state.clone();
@@ -594,7 +770,25 @@ pub(super) fn action(shared: &Shared, json: &str, incoming: &crossbeam_channel::
             let event = Event { kind: effects::ACK.into(), data: serde_json::json!({ "ids": value["ids"].clone() }), ms: now, ..Default::default() };
             let _ = incoming.try_send(event);
         }
+        "stop" => {
+            // Stop the run in progress: in the bus loop too (only a window asks, never the inbox).
+            let event = Event { kind: STOP_RUN.into(), data: serde_json::json!({ "key": key }), ms: now, ..Default::default() };
+            let _ = incoming.try_send(event);
+        }
         _ => {}
+    }
+}
+
+/// The bus loop's own event for a window's "Stop run" (never read from the inbox).
+const STOP_RUN: &str = "canvas.stop_run";
+
+/// Ends a passive session's headless run now; it ends as stopped, not failed.
+fn stop_run(shared: &Shared, state: &mut BusState, key: &str) {
+    let Some(s) = state.passive.get_mut(key).filter(|s| s.running) else { return };
+    s.stop_requested = true;
+    let session = s.session_id.clone();
+    if let Err(error) = shared.host.stop_terminal(&session, true) {
+        log(&shared.instance, &format!("cannot stop the run of {key}: {error:#}"));
     }
 }
 
@@ -650,6 +844,74 @@ mod tests {
         assert_eq!((target, list.len()), (None, 2), "the canvas itself (no source) marks the group");
         effect_event(&r, &mut list, &effect("s1", "g1", serde_json::json!({ "effect": "clear", "on": "Main" })), 6);
         assert_eq!(list.len(), 1, "cleared from inside the group");
+    }
+
+    /// The routing of `routing()` with a canvas-wide agent `w` (in its frame) on canvas c1.
+    fn canvas() -> Routing {
+        let mut r = routing();
+        r.canvas = "c1".into();
+        r.groups.push(bus::RouteGroup { id: "gf".into(), name: "Canvas agents".into(), folder: None });
+        r.names.insert("w".into(), "PR coordinator".into());
+        r.passive.push(PassiveSpec { key: "kw".into(), session_id: "w".into(), name: "PR coordinator".into(), group: "gf".into(), slug: "pr-coordinator".into(), canvas_wide: true, ..Default::default() });
+        r
+    }
+
+    #[test]
+    fn canvas_wide_agents_mark_boxes_of_any_group() {
+        let r = canvas();
+        let mut list = Vec::new();
+        let (target, _) = effect_event(&r, &mut list, &effect("w", "gf", serde_json::json!({ "effect": "attention", "on": "Elsewhere", "note": "PR 7: changes requested" })), 5);
+        assert_eq!((target.as_deref(), list[0].group.as_str(), list[0].target.as_str()), (Some("s2"), "g2", "s2"), "another group's box, filed under its group");
+        let (_, why) = effect_event(&r, &mut list, &effect("w", "gf", serde_json::json!({ "effect": "attention", "on": "group" })), 5);
+        assert!(why.contains("no such box on this canvas"), "{why}");
+        effect_event(&r, &mut list, &effect("w", "gf", serde_json::json!({ "effect": "clear", "on": "s2" })), 6);
+        assert!(list.is_empty(), "and clears it again");
+        // A group's passive session still cannot.
+        let (_, why) = effect_event(&r, &mut list, &effect("p1", "g1", serde_json::json!({ "effect": "attention", "on": "Elsewhere" })), 5);
+        assert!(why.contains("no such box in the sender's group"));
+    }
+
+    #[test]
+    fn addressed_events_reach_one_passive_session_as_their_sender_may() {
+        let r = canvas();
+        let event = |source: &str, to: &str| Event { kind: "pr.published".into(), source: source.into(), group: r.group_of(source).unwrap_or_default(), to: to.into(), ..Default::default() };
+        assert_eq!(addressed(&r, &event("s2", "PR coordinator")), Ok("kw".into()), "any session reaches a canvas-wide agent");
+        assert!(addressed(&r, &event("s2", "Rollout")).unwrap_err().contains("another group"), "not another group's passive session");
+        assert_eq!(addressed(&r, &event("s1", "Rollout")), Ok("k1".into()));
+        assert!(addressed(&r, &event("w", "Main")).unwrap_err().contains("use copilot-canvas send"), "sessions get messages");
+        assert!(addressed(&r, &event("w", "PR coordinator")).unwrap_err().contains("never sends itself"));
+        let deep = Event { hop: bus::MAX_HOP, ..event("s2", "PR coordinator") };
+        assert!(addressed(&r, &deep).is_err(), "chains stop");
+    }
+
+    #[test]
+    fn canvas_wide_runs_happen_in_the_canvas_folder_of_this_home() {
+        let r = canvas();
+        let home = Path::new(r"C:\h");
+        let wide = r.passive.iter().find(|p| p.canvas_wide).unwrap();
+        let place = run_place(home, &r, wide).unwrap();
+        assert_eq!(place.allowed, PathBuf::from(r"C:\h\canvas-agents\c1"));
+        assert_eq!(place.cwd, PathBuf::from(r"C:\h\canvas-agents\c1\agents\pr-coordinator"));
+        assert_eq!(place.paths.rules, place.cwd.join("rules.md"));
+        let unnamed = Routing { canvas: String::new(), ..r.clone() };
+        assert!(run_place(home, &unnamed, wide).unwrap_err().contains("no id"), "an older window's routing: no canvas, no run");
+        assert!(run_place(home, &r, &r.passive[0]).unwrap_err().contains("no folder"), "a group passive session still needs its group's folder");
+        let launch = passive_launch(AgentKind::Copilot, wide, None, true, &place.allowed, "run".into(), 1);
+        assert_eq!(launch.group_folder.as_deref(), Some(r"C:\h\canvas-agents\c1"), "the canvas folder is allowed (skills, goals)");
+    }
+
+    #[test]
+    fn states_of_another_canvas_are_kept_removed_ones_forgotten() {
+        let r = canvas();
+        let now = 100 * 86_400_000;
+        let mut state = BusState::default();
+        state.passive.insert("kw".into(), bus::PassiveState { canvas: "c1".into(), ..Default::default() });
+        state.passive.insert("other".into(), bus::PassiveState { canvas: "c2".into(), last_run_ms: now - 86_400_000, ..Default::default() });
+        state.passive.insert("stale".into(), bus::PassiveState { canvas: "c2".into(), last_run_ms: now - 40 * 86_400_000, ..Default::default() });
+        state.passive.insert("gone".into(), bus::PassiveState { canvas: "c1".into(), last_run_ms: now, ..Default::default() });
+        state.passive.insert("old-group".into(), bus::PassiveState { last_run_ms: now, ..Default::default() });
+        retain_states(&mut state, &r, now);
+        assert_eq!(state.passive.keys().collect::<Vec<_>>(), ["kw", "other"]);
     }
 
     #[test]

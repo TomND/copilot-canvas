@@ -328,6 +328,8 @@ pub struct App {
     pub visual: crate::visual::VisualState,
     /// Recently used sessions: the walk and the RECENT rows (`recent.rs`).
     pub recent: crate::recent::RecentState,
+    /// The canvas's skill library (canvas-wide agents), or why it could not be read.
+    pub canvas_skills: Option<Result<Vec<canvas_model::canvas_wide::SkillInfo>, String>>,
 }
 
 impl App {
@@ -461,6 +463,7 @@ impl App {
             settings_group: None,
             visual: Default::default(),
             recent: Default::default(),
+            canvas_skills: None,
             instance: None,
             new_service_rx: None,
             restarting: None,
@@ -1116,6 +1119,7 @@ impl App {
     pub fn node_status(&self, node: &Node) -> Status {
         let now = now_ms();
         match node.kind {
+            NodeKind::Session if node.is_canvas_agent() => self.canvas_agent_status(node),
             NodeKind::Session if node.passive.is_some() => {
                 // A passive session shows its reported state; runs show as working.
                 let view = self.passive_view(node);

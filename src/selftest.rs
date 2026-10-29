@@ -1847,11 +1847,72 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     anyhow::ensure!(code == 0, "client exited with {code}");
     let doc = load(&canvas)?;
     anyhow::ensure!(doc.groups.len() >= 2, "both groups persisted");
+    canvas_agent_steps(instance, work, &args, &env, &start)?;
     println!(
         "PASS in {:.1}s (first paint incl. service start: {} ms)",
         started.elapsed().as_secs_f64(),
         startup.as_millis()
     );
+    Ok(())
+}
+
+/// Canvas-wide agents, on a canvas of its own (the demo has no agents): the
+/// top bar's ◎ Agents opens their panel; a new Custom agent is one box in the
+/// Canvas agents frame (the sidebar and the panel show the same one), its
+/// files under the canvas's id in this instance's home; viewing it, even a
+/// double-click, starts nothing. A Custom agent has no triggers: nothing runs.
+fn canvas_agent_steps<U: Ui>(instance: &Instance, work: &Path, args: &[String], env: &[(&str, &Path)], start: &impl Fn(&[String], &[(&str, &Path)]) -> Result<U>) -> Result<()> {
+    use crate::client::doc::{Group, Node};
+    step("canvas-wide agents: ◎ Agents opens their panel; a new agent is one box in the Canvas agents frame with its files under the canvas's id; viewing it starts nothing");
+    let canvas = instance.home.join("agents-canvas.json");
+    let mut shell: Node = serde_json::from_value(serde_json::json!({ "id": "agents-shell", "kind": "session", "name": "Team shell", "x": 2, "y": 2 }))?;
+    shell.cwd = Some(work.display().to_string());
+    shell.command = Some(vec!["powershell.exe".into(), "-NoLogo".into(), "-NoProfile".into()]);
+    shell.fresh = true;
+    let mut doc = Doc::default();
+    doc.nodes.push(shell);
+    doc.groups.push(Group { id: "g-team".into(), name: "Team".into(), x: 0, y: 0, w: 36, h: 8, ..Default::default() });
+    std::fs::write(&canvas, serde_json::to_string_pretty(&doc)?)?;
+    let mut args: Vec<String> = args.iter().filter(|a| *a != "--demo").cloned().collect();
+    args.extend(["--canvas".into(), canvas.display().to_string()]);
+    let mut ui = start(&args, env)?;
+    ui.wait("the agents canvas", Duration::from_secs(20), |t| t.contains("Team shell") && t.contains("◎ Agents"))?;
+    let (x, y) = ui.find("◎ Agents").context("the top bar's ◎ Agents")?;
+    ui.click(x + 1, y)?;
+    ui.wait("the canvas agents panel", Duration::from_secs(5), |t| t.contains("Canvas agents · 0") && t.contains("+ New canvas agent"))?;
+    let (x, y) = ui.find("+ New canvas agent").context("its New button")?;
+    ui.click(x + 1, y)?;
+    ui.wait("the templates", Duration::from_secs(5), |t| t.contains("New canvas-wide agent: template") && t.contains("PR coordinator") && t.contains("Custom"))?;
+    ui.send(b"Custom")?;
+    ui.send(b"\r")?;
+    ui.wait("the name prompt", Duration::from_secs(5), |t| t.contains("Name the Custom canvas-wide agent"))?;
+    ui.send(b"\x15Selftest agent\r")?;
+    ui.wait("its panel", Duration::from_secs(10), |t| t.contains("◎ Selftest agent") && t.contains("canvas-wide agent ·"))?;
+    let doc = wait_doc(&canvas, "the agent in its frame", |d| d.nodes.iter().any(|n| n.name == "Selftest agent" && n.is_canvas_agent()) && d.canvas_frame().is_some())?;
+    let node = doc.nodes.iter().find(|n| n.name == "Selftest agent").context("the agent")?.clone();
+    let frame = doc.canvas_frame().context("the frame")?;
+    let passive = node.passive.clone().context("passive")?;
+    anyhow::ensure!(passive.group == frame.id, "the agent belongs to the Canvas agents frame");
+    let canvas_id = doc.canvas_id.clone().context("the service gave the canvas an id")?;
+    let dir = canvas_agents::canvas_wide::canvas_dir(&instance.home, &canvas_id);
+    anyhow::ensure!(canvas_agents::canvas_wide::agent_paths(&dir, &passive.slug).rules.is_file(), "its rules under {}", dir.display());
+    // The sidebar row and the box are the same agent; a double-click on the box starts nothing.
+    let (sx, sy) = ui.locate("Selftest agent", SIDEBAR)?;
+    ui.click(sx, sy)?;
+    ui.wait("its panel from the sidebar", Duration::from_secs(5), |t| t.contains("◎ Selftest agent") && t.contains("Open chat"))?;
+    let (bx, by) = ui.locate("Selftest agent", CANVAS)?;
+    ui.double_click(bx, by)?;
+    std::thread::sleep(Duration::from_millis(800));
+    let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
+    anyhow::ensure!(!log.contains(&format!("launched {} ", node.id)), "viewing the agent launched it");
+    anyhow::ensure!(ui.text().contains("◎ Selftest agent"), "its panel stays\n{}", ui.text());
+    ui.send(b"q")?;
+    std::thread::sleep(Duration::from_millis(300));
+    if ui.text().contains("Detach (keep running)") {
+        ui.send(b"\r")?;
+    }
+    let code = ui.wait_exit(Duration::from_secs(10))?;
+    anyhow::ensure!(code == 0, "client exited with {code}");
     Ok(())
 }
 

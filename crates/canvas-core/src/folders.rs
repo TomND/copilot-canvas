@@ -35,15 +35,19 @@ pub fn chips_width(chips: &[Chip]) -> i32 {
 }
 
 impl App {
-    /// The passive sessions of a group (by their own group, wherever their box is).
+    /// The passive sessions of a group (by their own group, wherever their box
+    /// is; the canvas-wide agents are not a group's).
     pub fn group_passives(&self, group: &str) -> Vec<&Node> {
-        self.doc.nodes.iter().filter(|n| n.passive.as_ref().is_some_and(|p| p.group == group)).collect()
+        self.doc.nodes.iter().filter(|n| !n.is_canvas_agent() && n.passive.as_ref().is_some_and(|p| p.group == group)).collect()
     }
 
     /// A group's chips: passive sessions ("⟲ 2", or "+ passive"), then its
     /// folders ("◧ AI docs", "◨ Outputs", or "Set folder…"). `compact`: the
     /// short forms for small sizes.
     pub fn group_chips(&self, group: &Group, compact: bool) -> Vec<Chip> {
+        if group.is_canvas_agents() {
+            return if self.demo { Vec::new() } else { self.frame_chips(compact) };
+        }
         let mut chips = Vec::new();
         let chip = |label: &str, action: Action, lit: bool| Chip { label: label.to_owned(), action, lit };
         let passives = self.group_passives(&group.id).len();
@@ -75,7 +79,7 @@ impl App {
             return full;
         }
         let mut compact = self.group_chips(group, true);
-        let passive_first = compact.first().is_some_and(|c| matches!(c.action, Action::NewPassive(_) | Action::Visual(VisualAction::GroupPassives(_))));
+        let passive_first = compact.first().is_some_and(|c| matches!(c.action, Action::NewPassive(_) | Action::Visual(VisualAction::GroupPassives(_)) | Action::Agents(_)));
         if passive_first && compact.len() == full.len() && compact.len() > 1 {
             let mixed: Vec<Chip> = compact[..1].iter().chain(&full[1..]).cloned().collect();
             if title + chips_width(&mixed) <= room {

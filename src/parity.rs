@@ -761,9 +761,11 @@ impl Sandbox {
 
     pub(crate) fn start(&self, extra: &[&str], log: &str) -> Result<Gui> {
         let one = PathBuf::from("1");
+        // The stand-in's passive runs last long enough to be stopped (row 40b).
+        let run_ms = PathBuf::from("6000");
         let (claude, xdg) = (self.root.join("claude-home"), self.root.join("xdg-data"));
         // Only the sandbox's histories: OpenCode and Claude Code look in empty folders.
-        let env: [(&str, &Path); 7] = [
+        let env: [(&str, &Path); 8] = [
             ("COPILOT_HOME", &self.copilot_home),
             ("COPILOT_CANVAS_COPILOT", &self.fake),
             ("COPILOT_CANVAS_OPENCODE", &self.fake_opencode),
@@ -771,6 +773,7 @@ impl Sandbox {
             (crate::fake_copilot::ENV, &one),
             ("CLAUDE_CONFIG_DIR", &claude),
             ("XDG_DATA_HOME", &xdg),
+            ("COPILOT_CANVAS_FAKE_RUN_MS", &run_ms),
         ];
         let driver = GuiDriver::start(&self.args(extra), &env, (COLS, ROWS), &self.root.join(log))?;
         Ok(Gui { driver })
@@ -1769,6 +1772,7 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         gui.canvas_focus()?;
         Ok(format!("initial {initial} shown and launched; {picked} picked → B and remembered; A resumed with {initial}; group override shown, {listed} for C only, reset"))
     });
+    agents::rows(sb, gui, rows);
 
     check_kind(rows, "G4", "New: several windows on one canvas (Ctrl+Shift+N, toolbar)", "second_window_rename_sync", Kind::Only("GUI only: a console has one window"), || {
         let opened = gui.req(json!({ "cmd": "new_window" }))?;
@@ -1978,6 +1982,9 @@ fn late_rows(sb: &Sandbox, rows: &mut Vec<Row>) {
 
 #[path = "parity_visual.rs"]
 pub(crate) mod visual;
+
+#[path = "parity_agents.rs"]
+mod agents;
 
 fn walk(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
