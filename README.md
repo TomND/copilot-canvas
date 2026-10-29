@@ -24,7 +24,10 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/canvas-hero.svg" width="1200" alt="Canvas-inspired illustration: linked agent sessions on a charcoal dot-grid, with blue working, gold needs-you, finished subagent, and looping watcher cards.">
+  <picture>
+    <source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/canvas-hero.svg">
+    <img src="docs/assets/canvas-hero.gif" width="1200" alt="Canvas-inspired illustration: linked agent sessions on a charcoal dot-grid, with blue working, gold needs-you, finished subagent, and looping watcher cards.">
+  </picture>
 </p>
 
 ## Your agents called. They want more space.

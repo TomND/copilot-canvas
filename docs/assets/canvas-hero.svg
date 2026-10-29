@@ -2,13 +2,13 @@
   <title id="title">Copilot Canvas: your agents, one canvas</title>
   <desc id="description">A dark dot-grid workspace with connected session cards: a blue working session, a gold session needing attention, a finished subagent, and a looping watcher. A real terminal is illustrated below the cards.</desc>
   <style>
-    .signal { stroke-dasharray: 4 7; animation: signal 2.8s linear infinite; }
-    .halo { animation: breathe 3.6s ease-in-out infinite; }
-    .attention { animation: breathe 4.4s ease-in-out infinite; }
+    .signal { stroke-dasharray: 4 7; animation: signal 2.5s linear infinite; }
+    .halo { animation: breathe 5s ease-in-out infinite; }
+    .attention { animation: breathe 5s ease-in-out infinite; }
     .spark { transform-box: fill-box; transform-origin: center; animation: sparkle 5s ease-in-out infinite; }
     .spark-late { animation-delay: -2.5s; }
-    .cursor { animation: cursor 1.6s steps(2, end) infinite; }
-    .comet { offset-path: path('M1088 322h10c22 0 22 38 0 38h-6'); animation: orbit 3.8s linear infinite; }
+    .cursor { animation: cursor 1.25s steps(2, end) infinite; }
+    .comet { offset-path: path('M1088 322h10c22 0 22 38 0 38h-6'); animation: orbit 5s linear infinite; }
     @keyframes signal { to { stroke-dashoffset: -44; } }
     @keyframes breathe { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
     @keyframes sparkle { 0%, 100% { opacity: 0.3; transform: scale(0.8) rotate(-8deg); } 50% { opacity: 1; transform: scale(1.12) rotate(8deg); } }
