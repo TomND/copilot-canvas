@@ -9,12 +9,12 @@
  ⧉    ■ Write the spec           │ ┃ │ canvas                     │               ┃   ││ ◨ Open human outputs (human-outputs)                        │
       ■ Draft the docs           │ ┃ ╰────────────────────────────╯               ┃   ││   Change folder…                                            │
  ⌁  ▾ ▣ Ideas                  1 │ ┃     ·     ·     ·     ·     ·     ·     ·    ┃·  ││ ⚙ Launch defaults for this group…                           │
-      ◧ Set folder…              │ ┃ ╭ Draft the docs ────────────╮               ┃   ││                                                             │
- ✦    ■ Unfiled idea             │ ┃ │ ■ stopped                  │               ┃   ││ ■ Write the spec — stopped                                  │
-                                 │ ┃ │ canvas                     │    ·     ·    ┃·  ││ ■ Draft the docs — stopped                                  │
- ◈                               │ ┃ ╰────────────────────────────╯               ┃   ││                                                             │
-                                 │ ┃                                              ┃   ││ Enter: show running terminals · R: rename · Del: delete gr… │
- ⇄                               │ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━◢·  ││                                                             │
+      ◧ Set folder…              │ ┃ ╭ Draft the docs ────────────╮               ┃   ││ ⟲ New passive session…                                      │
+ ✦    ■ Unfiled idea             │ ┃ │ ■ stopped                  │               ┃   ││                                                             │
+                                 │ ┃ │ canvas                     │    ·     ·    ┃·  ││ ■ Write the spec — stopped                                  │
+ ◈                               │ ┃ ╰────────────────────────────╯               ┃   ││ ■ Draft the docs — stopped                                  │
+                                 │ ┃                                              ┃   ││                                                             │
+ ⇄                               │ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━◢·  ││ Enter: show running terminals · R: rename · Del: delete gr… │
                                  │                                                    ││                                                             │
  ≡                               │                                                    ││                                                             │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │

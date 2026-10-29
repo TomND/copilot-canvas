@@ -83,7 +83,7 @@ connection into a queue (PNG images are decoded to RGBA on the way) and wake
 the loop with one coalesced proxy event; the UI drains them with a 4 ms
 budget, as the TUI does. App events and test-hook commands arrive as proxy
 events too. Ticks run every 40 ms while anything is active (animations,
-notices, drags, unsaved changes, a paste preview) and every 400 ms
+notices, drags, unsaved changes, a paste preview, a stack transition), every 80 ms while only effects animate, and every 400 ms
 otherwise. A frame is drawn only when the app needs one: at once after input
 (and for the echo of a keystroke in the focused terminal), otherwise paced to
 the display's refresh rate. Presentation uses Mailbox (Immediate, then Fifo,
@@ -185,6 +185,59 @@ and size.
   / hollow cursors, selection, Copilot's user-message tint, a scroll thumb
   when scrolled back, and the IME composition at the cursor. Row layouts are
   cached by row content; only changed rows are rebuilt.
+
+**Canvas visuals (`canvas.rs`, `effects.rs`; canvas-core `visual.rs`,
+`folders.rs`).** The core describes them in the model; the GUI draws them:
+
+- *Dust* (`BoxModel::dust`, 1–3): a static treatment, so it shows with
+  effects off: the box's fill drained of blue (`visual::DUST_FILL`), a dimmed
+  outline, specks over the body and a cobweb in its top-right corner, both
+  growing with the level (placed from a hash of the box id, so a box keeps
+  its dust between frames and windows), plus "· unused 12d" in the status
+  line. `App::dust_of` decides: idle, stopped or unknown sessions whose
+  `Node::last_used_ms` is older than *Settings › Dust unused sessions after*
+  (canvas setting `dust_after_days`, default 3; medium from max(14, 2 ×) days,
+  heavy from max(60, 4 ×)); working, needs you, done · review, failed, open
+  elsewhere, looping, passive sessions and boxes with an effect never are.
+  `App::sync_last_used` records use every 5 s from the terminal (start,
+  output), your typing and the history's newest event, in steps of at least
+  10 minutes (a quiet doc field: no notices); old boxes start from their
+  history, else from when you last looked at them.
+- *Stacks* (`Node::stacked`; `BoxModel::deck`): the stacked sessions keep
+  their positions in the document (moving the parent moves them too), so
+  unstacking restores them exactly. The top card is drawn beneath the parent
+  (and its subagents) with up to two cards behind it, a **+N** pill, the
+  stack's most important status and the effects of its sessions. *Hidden
+  subsessions* (`UiPrefs::hide_subsessions`, this window's) are left out and
+  counted on the visible ancestor (`BoxModel::hidden`, a "⋯ N hidden" pill in
+  the colour of the most important hidden status). `App::visual_frame`
+  compares the stacked parents and the hide toggle with the last frame, so a
+  change from any window (a document patch) starts a *transition*: 300 ms,
+  eased in and out, reversible from wherever it is; the boxes fly between
+  their places and the deck (or shrink into their ancestor) and fade
+  (`BoxModel::alpha`). While one runs the window draws at the display's rate;
+  then it is idle again. Clicks and rubber bands use the end state at once.
+  With reduced motion (or in the TUI) they switch instantly.
+- *Effects* (`CanvasModel::effects`, `EffectModel`): the service's effects
+  (bus snapshot) on their anchors: a box, the deck holding it, the visible
+  ancestor of a hidden one, or the group. *On*: fireworks (three staggered
+  rockets that burst into falling, fading sparks in the Okabe-Ito colours),
+  attention (two gold rings pulsing out of the box and a blinking beacon on
+  its corner), sparkle (twinkling stars round the edge, fading at the end of
+  their 6 s), alert (a pulsing vermillion ring); all quads of the instanced
+  pipeline, clipped to a region a few units around the anchor, in the layer
+  above the boxes. They advance on the spinners' 80 ms clock (12.5 frames/s;
+  the window then wakes every 80 ms instead of 40) and only while one is in
+  view; out of view or acknowledged, the window is idle again. *Reduced
+  motion*: a still starburst, rings or stars. *Off*: the badge alone. Every
+  mode draws the badge ("✦ PR !7 approved") on the anchor's bottom edge.
+  Particles are seeded from the effect's kind and text (stable in every
+  window and run); the `freeze` hook holds them at a mid-burst frame.
+- *Group chips* (`GroupModel::chips`, `folders.rs`): ⟲ N passive sessions
+  (or ⟲ + passive), ◧ AI docs and ◨ Outputs (or ◧ Set folder…), full or
+  compact (the passive chip first, then all) to fit next to the title, which
+  is shortened for them. From 70 % up they scale with the zoom; below it they
+  keep a readable size on screen (`ChipModel::fixed`) while the title shows.
 
 **Fonts (`text.rs`).** Only the needed font files are loaded (Cascadia Mono,
 Consolas, Segoe UI and Symbol, Segoe UI Emoji, Microsoft YaHei, Yu Gothic,
@@ -303,6 +356,9 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
 | IME | composition drawn at the terminal cursor or field; committed text typed |
 | Close button | as Ctrl+Q: detach or stop all (the last window) |
 | `--perf` | frame time (view, scene, encode), present and acquire, input → present, keystroke → echo → present, service round trip |
+| Stacks | `K` or the session menu stacks or unstacks; a click on the deck shows its top card (never starts it), a drag moves the parent with its stack, a double-click unstacks; `H` hides or shows every subsession |
+| Effects | a click on an effect or its box clears it (in every window) and only selects the box; *Settings › Effects*: on · reduced motion · off |
+| Group chips | ⟲ N lists the passive sessions (each opens its panel), ⟲ + passive creates one, ◧ / ◨ open the folders (remote: the folder browser) |
 
 ## 3. Testing
 
@@ -400,6 +456,13 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   pixel for pixel (0 differing pixels); changing ANSI green in
   `canvas-gui/src/theme.rs` failed `terminals-tiled` with 0.156 % differing
   pixels (under the fraction) and 26 blocks over the luminance limit.
+- `copilot-canvas bench --client gui --effects [--seconds S]`: the visuals
+  canvas idle, with fireworks in view, attention in view and out of view, and
+  after the effects are cleared: CPU, frames per second and frame times of
+  each phase (§4).
+- The parity suite's rows V1–V5 and the `visuals` golden screenshot cover
+  dust, stacks (with their transitions' end states), hidden subsessions,
+  effects and the group chips (`docs/PARITY.md`).
 - `CANVAS_GUI_TRACE=1` prints start-up milestones (and GPU events) on stderr.
 
 **Test hooks.** With `--test-hooks` the GUI prints a pipe name
@@ -417,10 +480,10 @@ one (`"window": n`, the creation index):
 | `{"cmd":"wheel","dir":"up\|down\|left\|right","x":…,"y":…,"mods":["ctrl"]}` | one wheel notch |
 | `{"cmd":"drop","paths":["…"],"x":…,"y":…}` | files dropped at a cell |
 | `{"cmd":"screen"}` | `lines`: the screen as text (chrome, canvas as TUI characters, terminal text, dialogs) |
-| `{"cmd":"tree"}` | automation tree: click targets with their text, canvas boxes (status, border, prefix, loop, drawing `level`) and groups with screen rects, tiles (tint, image placements as cell rects), links, terminal selection, notice, focus, modal, paste preview, and `access`: the UI Automation nodes |
+| `{"cmd":"tree"}` | automation tree: click targets with their text, canvas boxes (status, border, prefix, loop, drawing `level`, `dust`, `deck`, `hidden`, `alpha`), effects (kind, badge, rect) and groups (with their chips) with screen rects, tiles (tint, image placements as cell rects), links, terminal selection, notice, focus, modal, paste preview, and `access`: the UI Automation nodes |
 | `{"cmd":"access"}` | the UI Automation nodes (role, name, description, value, rect, children, focus) and whether a UIA client listens |
 | `{"cmd":"png","path":"…"}` | renders the current frame offscreen to a PNG (works on a locked workstation) |
-| `{"cmd":"freeze","tick":0}`, `{"cmd":"freeze"}` | animations (spinners, loop dots, pulsing borders) hold frame `tick`; without it they run again |
+| `{"cmd":"freeze","tick":0}`, `{"cmd":"freeze"}` | animations (spinners, loop dots, pulsing borders, effects mid-burst) hold frame `tick`; without it they run again |
 | `{"cmd":"size"}`, `{"cmd":"perf","reset":true}` | cells, cell size, DPI, adapter (and details, `software`), present mode; frame statistics (all, full and damage frames), round trips, CPU, memory, first paint, textures, GPU rebuilds |
 | `{"cmd":"device-lost"}`, `{"cmd":"device-lost","destroy":true}` | rebuilds the GPU objects as after a lost device (`destroy`: the device is really destroyed first); answers the time taken |
 | `{"cmd":"dpi","scale":1.5}` | a DPI change to `scale` (without: the window's own) |
@@ -462,6 +525,23 @@ the `redraw` hook every 10 ms.
 | Private memory: 4 tiles + 1,304 boxes · `--stress` 1,600 boxes | ≤ 250 MB | **164 MB** · 162–185 MB | ✓ |
 | First paint, process start → first frame: service started by the GUI · running | ≤ 1.5 s | **0.89 s** · 0.44 s | ✓ |
 | Remote: reconnect after the network returns · full resync · canvas bandwidth with 4 busy tiles (20-minute soaks, `docs/REMOTE.md`) | ≤ 2 s · ≤ 500 ms · ≤ 200 KB/s | GUI canvas p95 1.06 s, max 1.52 s · max 33 ms · 2.4 KB/s | ✓ |
+
+**Effects** (`bench --client gui --effects --seconds 10`, release, RTX 3070,
+the machine in use meanwhile, 2026-10-29; the visuals canvas without its
+passive session, whose loop arc would animate on its own):
+
+| Phase | Frames/s | CPU (% of one core) | |
+|---|---|---|---|
+| Idle, no effect | 0.4 | 0.00–0.47 | ✓ ≈ 0 |
+| Fireworks in view | 14.5 | **1.72** (2.03 before effects got their own 80 ms tick) | ✓ ≤ 2 % |
+| Attention in view | 14.6 | 1.25 | ✓ |
+| Attention out of view | 0.3 | 0.00 | ✓ |
+| Effects cleared | 0.4 | 0.00 | ✓ |
+
+Effects run at 12.5 frames/s (the spinners' clock; the counts above include
+the service's statistics frames), below §9's 15: smooth enough for the
+bursts at about 1.5 ms per full frame. Stack and hide transitions draw at
+the display's rate for their 300 ms, then the window is idle.
 
 The burn probe's priority manager matters less here than in the TUI's
 measurement (README: p99 1.26 s → 14 ms with 40 burners on a busy 16-core
@@ -525,6 +605,13 @@ covers them), `software-renderer.png` (WARP, with its notice),
 `stress-1600-boxes-fit.png` (`--stress`: 100 busy sessions with their
 subagents at 8 %) and `perf-canvas-synthetic-25.png` (`--perf-canvas
 synthetic` at 25 %).
+
+The golden screenshot `tests/golden/gui/visuals.png` shows the canvas
+visuals: three dust levels, a stack with an attention effect on a stacked
+session, fireworks held mid-burst, the group chips and the sidebar's folder
+and passive rows. With `CANVAS_GUI_SCREENS` the parity suite also saves
+`visual-stack.png`, `visual-hidden.png`, `visual-fireworks.png`,
+`visual-chips-25.png` and `visual-remote-browser.png`.
 
 ## 6. Known gaps (after Phase 6)
 

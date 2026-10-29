@@ -440,7 +440,8 @@ and drops every connection when `DIR\drop` appears.
 
 What happens where (PLAN.md §6). "Remote" means a service on another machine
 (`--remote NAME` or `HOST:PORT`); `--remote loopback` is the same machine and
-behaves like local mode here.
+behaves like local mode here, except for folders and group files, which open
+in the canvas in any remote mode (that is how the tests check them).
 
 | What | Local | Remote |
 |---|---|---|
@@ -449,10 +450,16 @@ behaves like local mode here.
 | Image paste (Ctrl+V / Alt+V with an image, pane menu Paste) | the key goes to the agent, which reads the local clipboard | the client reads the home clipboard image (`PNG` format, else `CF_DIBV5`/`CF_DIB` converted to PNG; at most 20 MB and 32 M pixels), sends `Request::SetClipboardImage`, the service puts it on the Cloud PC clipboard in its user session as `CF_DIB` (32-bit) and `PNG`, then the client sends the same key. Offline: nothing is sent |
 | URLs in terminals (Ctrl+click), report links | this machine's browser | the home browser |
 | Paths in terminals, passive-session files (rules, memory, log), the events catalog | VS Code at the line / Explorer | checked on the service (`PathInfo`, so a missing file says "… does not exist"); with `--vscode-tunnel NAME` on the server record and VS Code installed at home: `vscode://vscode-remote/tunnel+NAME/C:/path:LINE`; otherwise the text viewer |
-| Folders (config views' "Open folder", group folders, passive folder) | Explorer | VS Code through the tunnel, else the viewer (subfolders, "Copy path") |
+| Folders (config views' "Open folder", group folders and their chips, the sidebar's folder rows, passive folder) | Explorer | VS Code through the tunnel, else the canvas's folder browser (subfolders and files, `ListEntries`; a file opens in the viewer through `ReadText`; "Copy path"). Folders follow this in any remote mode, `--remote loopback` included, so the service never opens Explorer for a client |
+| Group files: passive rules, memory, log, group context, `GOALS.md`, the events catalog | VS Code at the file | the same in any remote mode (`loopback` included): VS Code through the tunnel, else the viewer |
 | Automation outputs, manifests, logs, status reports | their default program | always the text viewer, with "Open in VS Code" when a tunnel is configured |
 | Bell, OSC 777, taskbar progress, window title | this machine | the home PC (they are computed from terminal state the service sends) |
 | Crash log | `<home>\crash.log` of the client | each side keeps its own: the client's in its data folder at home; the service logs to `service-<instance>.log` on the Cloud PC |
+
+The folder browser is the same modal for a folder: its subfolders (▸) and
+files, ↑↓ pick one, Enter or a click opens it (a subfolder in place, a file
+in the viewer on top), Backspace goes up, Tab reaches the buttons. An older
+service that cannot list files shows the subfolders only.
 
 The text viewer is a canvas modal (TUI and GUI): read-only, monospace (the
 cell grid), the first 2 MB of a file (`ReadText`), tabs expanded and control

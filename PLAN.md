@@ -28,7 +28,7 @@ installed agent (OpenCode on the development machine, which has no Copilot).
 | 2 libghostty-vt | Done and default: pinned Ghostty `521cf2c5`, Zig 0.17.0, `cargo xtask build-ghostty`, vendored headers with checksums; corpus differences reviewed (corpus/reviewed-differences.md) | `bench --terminals 100`: equal CPU, about 58 % less memory per terminal, keystroke p50 ~1.1 ms |
 | 3 GPU spike | Done: wgpu 30 + winit + glyphon chosen over GPUI (docs/GPU-SPIKE.md) | measured on the RTX 3070 and WARP |
 | 4 GUI MVP | Done: `copilot-canvas-gui.exe` | `selftest --client gui` (+ `--remote loopback`) |
-| 5 Parity | Done: all 33 rows of §8 plus images, taskbar/flash/toasts, drag and drop, several windows (docs/PARITY.md) | `selftest --client gui --parity` (38 checks) |
+| 5 Parity | Done: all 33 rows of §8 plus images, taskbar/flash/toasts, drag and drop, several windows (docs/PARITY.md) | `selftest --client gui --parity` (38 checks; 43 with the canvas visuals V1–V5) |
 | 6 Hardening | Done: damage frames, device-lost and DPI recovery, window placement, UI Automation (AccessKit), crash log, GUI stress/perf/burn probes | `selftest --client gui --hardening`; §9 budgets all met (docs/GUI.md) |
 | 7 Rollout | Done except the time-gated step: `client` setting (`tui`, `gui`, `auto`; `copilot-canvas config client …`), `--tui`/`--gui`, **O** opens the same canvas in the other client | `selftest` step "O opens this canvas in the other client" (TUI and GUI) |
 

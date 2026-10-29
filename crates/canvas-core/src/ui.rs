@@ -159,7 +159,15 @@ fn draw_toolbar(app: &mut App, buf: &mut Buffer, area: Rect) {
     if app.render_mode == crate::view::RenderMode::Gpu {
         x = toolbar_button(app, buf, x, " ⧉ ", Action::NewWindow, area);
     }
-    let buttons_end = toolbar_button(app, buf, x, " ⏻ Quit ", Action::Quit, area);
+    let mut x = toolbar_button(app, buf, x, " ⏻ Quit ", Action::Quit, area);
+    // Subsessions are hidden: say so, and show them with a click.
+    if app.doc.ui.hide_subsessions {
+        let hidden = canvas_model::visual::hidden_subsessions(&app.doc).keys().filter(|id| app.doc.node(id).is_some_and(|n| n.kind == NodeKind::Session)).count();
+        let end = put(buf, x, area.y as i32, &format!(" ↳ {hidden} hidden "), bold(PANEL).bg(GRAY), area);
+        app.layout.hits.push((Rect::new(x as u16, area.y, (end - x).max(0) as u16, 1), Hit::Toolbar(Action::Visual(crate::visual::VisualAction::ToggleHideSubsessions))));
+        x = end + 1;
+    }
+    let buttons_end = x;
 
     // Status counts on the right, never over the buttons.
     let mut counts: HashMap<Status, usize> = HashMap::new();
@@ -831,6 +839,14 @@ fn draw_details(app: &mut App, buf: &mut Buffer, area: Rect) {
             }
             clicks.push((lines.len(), Action::GroupDefaults(group.id.clone())));
             lines.push(("⚙ Launch defaults for this group…".into(), fg(ACCENT)));
+            let passives = app.group_passives(&group.id).len();
+            if passives > 0 {
+                clicks.push((lines.len(), Action::Visual(crate::visual::VisualAction::GroupPassives(group.id.clone()))));
+                lines.push((format!("⟲ {passives} passive session(s)…"), fg(ACCENT)));
+            } else if !app.demo {
+                clicks.push((lines.len(), Action::NewPassive(group.id.clone())));
+                lines.push(("⟲ New passive session…".into(), fg(ACCENT)));
+            }
         }
         lines.push((String::new(), Style::default()));
         for member in members.iter().filter_map(|m| app.doc.node(m)).filter(shown).take(inner.height as usize) {
