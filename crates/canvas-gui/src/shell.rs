@@ -46,6 +46,11 @@ use crate::tiles::{TileCache, TileInput};
 const TICK: Duration = Duration::from_millis(40);
 /// … and while nothing is.
 const IDLE_TICK: Duration = Duration::from_millis(400);
+/// Housekeeping while only effects animate (their frames are 80 ms apart).
+const EFFECT_TICK: Duration = Duration::from_millis(80);
+/// Moving loop dots are redrawn at most this often (30 frames/s, the loop
+/// layer alone; small arcs less often, see `canvas::loop_interval`).
+const LOOP_FRAME: Duration = Duration::from_millis(33);
 /// Longest the UI thread spends on service messages before handling input again.
 const SERVICE_BUDGET: Duration = Duration::from_millis(4);
 /// How long the preview of a pasted image stays.
@@ -155,6 +160,11 @@ struct Win {
     cursor_icon: Option<winit::window::CursorIcon>,
     next_tick: Instant,
     last_draw: Instant,
+    /// When the loop layer was last drawn, and the clock it was drawn at.
+    loop_drawn: Instant,
+    scene_clock: u64,
+    /// How often the loop layer is redrawn while its dots move (from the arcs' size).
+    loop_interval: Duration,
     input_waiting: bool,
     /// Present again even though the app has nothing new (resize, hover, retry).
     redraw: bool,
@@ -423,7 +433,8 @@ impl Shell {
                     return;
                 };
                 match self.wins[at].png(gpu, fonts, &self.options, &path) {
-                    Ok((w, h)) => json!({ "ok": true, "path": path, "width": w, "height": h }),
+                    // With the loop dots where this capture drew them.
+                    Ok((w, h)) => json!({ "ok": true, "path": path, "width": w, "height": h, "loops": self.wins[at].loops_json(self.wins[at].scene_clock) }),
                     Err(error) => json!({ "ok": false, "error": format!("{error:#}") }),
                 }
             }
@@ -548,6 +559,9 @@ impl Win {
             cursor_icon: None,
             next_tick: Instant::now(),
             last_draw: Instant::now() - Duration::from_secs(1),
+            loop_drawn: Instant::now() - Duration::from_secs(1),
+            scene_clock: 0,
+            loop_interval: LOOP_FRAME,
             input_waiting: true,
             redraw: true,
             retry_at: None,
@@ -746,7 +760,8 @@ impl Win {
     }
 
     /// Builds the view, draws it and presents. When only terminal contents
-    /// changed, the previous frame's other layers stay (a damage frame).
+    /// changed or loop dots moved, the previous frame's other layers stay (a
+    /// damage frame: the tiles and HUD, and the loop layer).
     fn frame(&mut self, gpu: &mut Gpu, fonts: &mut Fonts, options: &Options) {
         if self.cols == 0 || self.surface.is_none() {
             return;
@@ -754,14 +769,13 @@ impl Win {
         let started = Instant::now();
         let (width, height) = self.surface_size();
         let damage = !(self.app.needs_draw || self.redraw) && self.scene.as_ref().is_some_and(|s| (s.width, s.height) == (width, height));
+        // Only loop dots moved: the loop layer alone (nothing else is rebuilt or rescanned).
+        let mut loops_only = false;
         let (scene, ime, dirty, viewed) = if damage {
-            // Links in the damaged terminals are found again; the rest of the layout stays.
             let ids = std::mem::take(&mut self.damaged);
-            canvas_core::ui::rescan_tile_links(&mut self.app, &ids, &mut self.scratch);
+            let tiles = !ids.is_empty();
             let viewed = Instant::now();
             let mut scene = self.scene.take().unwrap_or_else(|| Scene::new(width, height, BG));
-            scene.layers[scene::TILES] = Default::default();
-            scene.layers[scene::HUD] = Default::default();
             self.damage_frames += 1;
             if self.damage_frames.is_multiple_of(64) {
                 // The kept layers' shaped text stays in the cache.
@@ -771,10 +785,26 @@ impl Win {
                     }
                 }
             }
-            let ime = self.paint_dynamic(&mut scene, fonts, options, width, height);
             let mut dirty = [false; scene::LAYERS];
-            dirty[scene::TILES] = true;
-            dirty[scene::HUD] = true;
+            let mut ime = None;
+            if tiles {
+                // Links in the damaged terminals are found again; the rest of the layout stays.
+                canvas_core::ui::rescan_tile_links(&mut self.app, &ids, &mut self.scratch);
+                scene.layers[scene::TILES] = Default::default();
+                scene.layers[scene::HUD] = Default::default();
+                ime = self.paint_dynamic(&mut scene, fonts, options, width, height);
+                dirty[scene::TILES] = true;
+                dirty[scene::HUD] = true;
+            }
+            if let Some(model) = self.view.canvas.as_ref().filter(|m| m.loops_busy(m.anim_clock())) {
+                scene.layers[scene::LOOPS] = Default::default();
+                self.scene_clock = model.anim_clock();
+                let mut p = Painter { scene: &mut scene, cache: &mut self.cache, fonts };
+                crate::canvas::paint_loops(&mut p, &self.grid, model, self.scene_clock);
+                dirty[scene::LOOPS] = true;
+                self.loop_drawn = Instant::now();
+                loops_only = !tiles;
+            }
             (scene, ime, dirty, viewed)
         } else {
             self.damaged.clear();
@@ -798,13 +828,18 @@ impl Win {
                 self.retries = 0;
                 self.retry_at = None;
                 let cost = ms(now - started - presented.acquire);
-                if damage {
+                if loops_only {
+                    self.perf.loop_ms.push(cost);
+                    self.perf.loop_frames += 1;
+                } else if damage {
                     self.perf.damage_ms.push(cost);
+                    self.perf.damage_frames += 1;
                 } else {
                     self.perf.view_ms.push(ms(viewed - started));
                     self.perf.scene_ms.push(ms(built - viewed));
                     self.perf.encode_ms.push(ms(presented.encode));
                     self.perf.full_ms.push(cost);
+                    self.perf.full_frames += 1;
                 }
                 self.perf.acquire_ms.push(ms(presented.acquire));
                 self.perf.present_ms.push(ms(presented.present));
@@ -815,7 +850,8 @@ impl Win {
                 }
                 self.first_paint.get_or_insert_with(crate::perf::since_start);
                 self.scene = Some(scene);
-                self.access_due = true;
+                // Moving loop dots change nothing UI Automation shows.
+                self.access_due |= !loops_only;
             }
             Some(Err(Skip::Retry)) => {
                 // Occluded or resized: try again (all layers), backing off while it lasts.
@@ -833,6 +869,10 @@ impl Win {
             None => {
                 self.scene = None;
             }
+        }
+        if loops_only {
+            // Nothing the core laid out changed: no subscriptions, sizes or IME position to send.
+            return;
         }
         self.app.after_draw();
         self.app.raw_out.clear();
@@ -954,7 +994,10 @@ impl Win {
         let grid = self.grid;
         let mut p = Painter { scene: &mut scene, cache: &mut self.cache, fonts };
         if let Some(model) = &self.view.canvas {
-            crate::canvas::paint(&mut p, &grid, model);
+            self.scene_clock = model.anim_clock();
+            crate::canvas::paint(&mut p, &grid, model, self.scene_clock);
+            self.loop_drawn = Instant::now();
+            self.loop_interval = crate::canvas::loop_interval(&grid, model);
         }
         if let Some(modal) = self.view.modal {
             // A soft shadow lifts the top dialog or menu off what is under it.
@@ -1021,6 +1064,26 @@ impl Win {
         let rgba = gpu.capture(&scene, &self.cache, fonts)?;
         crate::gpu::write_png(path, width, height, &rgba)?;
         Ok((width, height))
+    }
+
+    /// The loop arcs in view at `clock_ms` (test hooks): their box, lap,
+    /// how much shows, and the lit dot in px and cells.
+    fn loops_json(&self, clock_ms: u64) -> Value {
+        let Some(model) = &self.view.canvas else { return json!([]) };
+        json!(crate::canvas::loop_info(&self.grid, model, clock_ms))
+    }
+
+    /// When the loop layer is due again: loop dots in view move (or an arc
+    /// grows in or fades out), every `loop_interval` and never faster
+    /// than the display; `None` while nothing moves or the window is
+    /// minimized.
+    fn loops_due(&self) -> Option<Instant> {
+        let model = self.view.canvas.as_ref()?;
+        let size = self.window.inner_size();
+        if self.surface.is_none() || size.width == 0 || size.height == 0 || !model.loops_busy(model.anim_clock()) {
+            return None;
+        }
+        Some((self.loop_drawn + self.loop_interval).max(self.last_draw + self.frame_interval))
     }
 
     /// Builds the view for the hooks when something changed since the last frame.
@@ -1149,6 +1212,10 @@ impl Win {
                 let mut tree = crate::hooks::tree(&self.app, &self.view, &self.chrome);
                 tree["window"] = json!(self.index);
                 tree["paste_preview"] = json!(self.preview.as_ref().map(|p| json!({ "width": p.size.0, "height": p.size.1, "rect": p.item.rect })));
+                if !tree["canvas"].is_null() {
+                    tree["canvas"]["loop_arcs"] = self.loops_json(self.view.canvas.as_ref().map(|m| m.anim_clock()).unwrap_or_default());
+                    tree["canvas"]["loop_interval_ms"] = json!(self.loop_interval.as_millis() as u64);
+                }
                 // The UI Automation tree, from the same builder AccessKit gets.
                 let (items, focus) = self.access_nodes();
                 tree["access"] = crate::access::json(&items, focus);
@@ -1235,6 +1302,18 @@ impl Win {
                 }
                 self.app.needs_draw = true;
                 json!({ "ok": true, "tick": self.app.tick })
+            }
+            "motion" => {
+                // Settings › Effects for this window: "on", "reduced" or "off" (not saved).
+                let motion = match command["value"].as_str().unwrap_or_default() {
+                    "on" => canvas_core::view::Motion::On,
+                    "reduced" => canvas_core::view::Motion::Reduced,
+                    "off" => canvas_core::view::Motion::Off,
+                    other => return Some(json!({ "ok": false, "error": format!("unknown motion {other:?}") })),
+                };
+                self.app.visual.motion = Some(motion);
+                self.app.needs_draw = true;
+                json!({ "ok": true, "motion": motion.name() })
             }
             "post_keys" => {
                 // Real window messages, through winit's keyboard handling.
@@ -1346,18 +1425,26 @@ impl Win {
                 self.redraw = true;
             }
             let app = &self.app;
-            let busy = app.needs_draw
+            // Effects alone tick on their own 80 ms clock (fewer wake-ups while they animate).
+            let effects_only = app.visual.effects_live && !app.visual.animating();
+            let busy = (app.needs_draw && !effects_only)
                 || app.notice.is_some()
                 || app.flash.is_some()
                 || !app.pulses.is_empty()
                 || app.dirty_at.is_some()
                 || app.drag.is_some()
+                || app.visual.animating()
+                || app.recent_pending()
                 || app.reconnecting
                 || app.restarting.is_some()
                 || self.preview.is_some();
-            self.next_tick = now + if busy { TICK } else { IDLE_TICK };
+            self.next_tick = now + if busy { TICK } else if effects_only { EFFECT_TICK } else { IDLE_TICK };
             let proxy = self.app_proxy();
             self.after_events(&proxy);
+        }
+        // Stack and hide transitions draw at the display's rate until they end.
+        if self.app.visual.animating() {
+            self.app.needs_draw = true;
         }
         self.platform.apply(&self.window, &mut self.taskbar);
         if self.placement_dirty.is_some_and(|t| t.elapsed() >= PLACEMENT_SAVE) {
@@ -1366,7 +1453,8 @@ impl Win {
         self.update_access(false);
         let due = |s: &Self| -> Option<Instant> {
             if !(s.app.needs_draw || s.redraw || !s.damaged.is_empty()) {
-                return None;
+                // Moving loop dots: a frame of the loop layer alone.
+                return s.loops_due();
             }
             if let Some(at) = s.retry_at {
                 return Some(at);

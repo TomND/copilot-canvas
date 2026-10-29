@@ -2,13 +2,13 @@
 ## cells (the TUI screen)
  ◆ Copilot Canvas  DEMO · native shells   + New   ▦ Tiled   ⤢ Fit   −   +   ?   ⏻ Quit                                                  3 sessions
     SESSIONS                     │                                                    │╭ ● Build session canvas · running · Windows PowerShell ───[×]╮
-▌▤  / filter…                    │  ┌╌ ▣ Canvas project · 4 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ◧ AI ││PS> Write-Output colours                                     │
+▌▤  / filter…                    │  ┌╌ ▣ Canvas project · 4 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││PS> Write-Output colours                                     │
                                  │  ╎                                  ┏━━━━━━━━━━━━━━││red green bold                                               │
  ◷  ▾ ▣ Canvas project         3 │  ╎ ╭ Build session canvas ──────╮   ┃┏ Review imple││wide: 中文                                                   │
-      ● Build session canvas     │  ╎ │ ● running                  │   ┃┃ ● running   ││PS>                                                          │
- ⧉    ● Review implementation    │  ╎ │ canvas                     │   ┃┃ canvas      ││                                                             │
-        ↳ ■ Write tests          │  ╎ ╰────────────────────────────╯   ┃┗━━━━━━━━━━━━━││                                                             │
- ⌁                               │  ╎   ─────   ·     ·     ·     ·    ┗━━━━━━━━━━━━━━││                                                             │
+      ◧ Set folder…              │  ╎ │ ● running                  │   ┃┃ ● running   ││PS>                                                          │
+ ⧉    ● Build session canvas     │  ╎ │ canvas                     │   ┃┃ canvas      ││                                                             │
+      ● Review implementation    │  ╎ ╰────────────────────────────╯   ┃┗━━━━━━━━━━━━━││                                                             │
+ ⌁      ↳ ■ Write tests          │  ╎   ─────   ·     ·     ·     ·    ┗━━━━━━━━━━━━━━││                                                             │
                                  │  ╎     ┌ ◇ Explore terminal A…┐        ┊           ││                                                             │
  ✦                               │  ╎     │ ✓ just finished      │        ┊           ││                                                             │
                                  │  ╎     └──────────────────────┘·     ╭ ↳ Write test││                                                             │
@@ -39,13 +39,12 @@
                                  │                                                    │┃                                                             ┃
                                  │                                                    │┃                                                             ┃
                                  │  ·     ·     ·     ·     ·     ·     ·     ·     · │┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
- Typing goes to the terminal · Ctrl+] or F6 back to canvas · drag to copy · Ctrl+V paste · Alt+V image · Ctrl+click links · Shift+PgUp history · cli…
+ Typing goes to the terminal · Ctrl+] or F6 back to canvas · Ctrl+F6 / Ctrl+Shift+F6 recent sessions · drag to copy · Ctrl+V paste · Alt+V image · C…
 ## gpu view model
 view cursor=92,23 modal=none banner=None
 canvas area=34,1 52x38 origin=-2,-1 scale=1 grid=true tick=0 empty=false
 group g-demo "Canvas project" icon=▣ members=4 rect=0,0 70x15 color=#56b4e9 style=[fg #56b4e9 +DIM] selected=false drop_target=false automations=false folder=false
-  chip " ◧ AI docs " outputs=false rect=44,0 11x1
-  chip " ◨ Outputs " outputs=true rect=56,0 11x1
+  chip " ◧ Set folder… " action=SetGroupFolder("g-demo") rect=52,0 15x1 fixed=false lit=false
 edge Subagent color=#6e7681 from=2,2 30x4 to=6,7 24x3 path=(4.5,6) (4.5,6.5) (8.5,6.5) (8.5,7)
 edge Subsession color=#58a6ff from=36,2 30x4 to=36,9 30x4 path=(38.5,6) (38.5,7.5) (38.5,7.5) (38.5,9)
 box demo-main Session rect=2,2 30x4 prefix="" name="Build session canvas"

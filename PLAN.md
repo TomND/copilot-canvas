@@ -23,12 +23,12 @@ installed agent (OpenCode on the development machine, which has no Copilot).
 
 | Phase | State | Verified by |
 |---|---|---|
-| 0 Layer split | Done: workspace crates (§3), `Emulator` trait, `Backend` RPC trait (local and remote), `InputEvent`, `RenderMode`/`CanvasModel` view model, golden corpus (13 entries, both engines) | `cargo test --workspace`; `corpus check`; `selftest` (TUI, 27 steps) |
+| 0 Layer split | Done: workspace crates (§3), `Emulator` trait, `Backend` RPC trait (local and remote), `InputEvent`, `RenderMode`/`CanvasModel` view model, golden corpus (13 entries, both engines) | `cargo test --workspace`; `corpus check`; `selftest` (TUI, 31 steps) |
 | 1 Remote mode | Done: protocol 8, TCP + zstd, heartbeat, reconnect (backoff capped at 1.5 s, see D5), input acks, offline blocking, per-tile coalescing, backend-owned document with patches, pairing (DPAPI), `CopilotCanvas-Tunnel` manifest, managed `devtunnel connect`, §6 behaviours | `selftest --remote` `loopback`, `faults`, `paired`; backend contract tests; 20-minute soaks (docs/soak) |
 | 2 libghostty-vt | Done and default: pinned Ghostty `521cf2c5`, Zig 0.17.0, `cargo xtask build-ghostty`, vendored headers with checksums; corpus differences reviewed (corpus/reviewed-differences.md) | `bench --terminals 100`: equal CPU, about 58 % less memory per terminal, keystroke p50 ~1.1 ms |
 | 3 GPU spike | Done: wgpu 30 + winit + glyphon chosen over GPUI (docs/GPU-SPIKE.md) | measured on the RTX 3070 and WARP |
 | 4 GUI MVP | Done: `copilot-canvas-gui.exe` | `selftest --client gui` (+ `--remote loopback`) |
-| 5 Parity | Done: all 33 rows of §8 plus images, taskbar/flash/toasts, drag and drop, several windows (docs/PARITY.md) | `selftest --client gui --parity` (38 checks) |
+| 5 Parity | Done: all 33 rows of §8 plus images, taskbar/flash/toasts, drag and drop, several windows (docs/PARITY.md) | `selftest --client gui --parity` (38 checks; 43 with the canvas visuals V1–V5) |
 | 6 Hardening | Done: damage frames, device-lost and DPI recovery, window placement, UI Automation (AccessKit), crash log, GUI stress/perf/burn probes | `selftest --client gui --hardening`; §9 budgets all met (docs/GUI.md) |
 | 7 Rollout | Done except the time-gated step: `client` setting (`tui`, `gui`, `auto`; `copilot-canvas config client …`), `--tui`/`--gui`, **O** opens the same canvas in the other client | `selftest` step "O opens this canvas in the other client" (TUI and GUI) |
 
@@ -47,13 +47,25 @@ Claude Code launched and stopped through the canvas, never prompted.
 
 Still running or time-gated:
 
-- **The 48 h remote soak** (Phase 6): 20-minute soaks passed for both clients;
-  the 48 h run with the GUI client started on 2026-10-28 11:46 (report:
-  `%TEMP%\cc-soak48\soak-gui-48h.json`; after 4 h, 500 faults: 0 keystrokes
-  lost or doubled, reconnects ≤ 1.55 s, flat memory and handles).
+- **The 48 h remote soak** (Phase 6): 20-minute soaks passed for both clients.
+  The 48 h run with the GUI client (started 2026-10-28 11:46) was stopped and
+  must be repeated: from about 20:29 the soak's typed keys reached the canvas
+  itself (x stopped its echo terminal, O opened a TUI window), so its data
+  after that is invalid. The first ~8.7 h were clean (0 keystrokes lost or
+  doubled, flat memory and handles) except one reconnect of 6.32 s at 16:19
+  under heavy build load (budget ≤ 2 s; not investigated yet). Rerun it on an
+  otherwise idle machine.
 - **Switching the built-in default** from `tui` to `gui` (or `auto`, which
   keeps the TUI over remote desktop and SSH as D4 asks) after the dogfood week
   with no open parity bugs.
+
+The owner's backlog (`Canvas App/TODOs.md`, WI-001 to WI-012) was
+implemented on 2026-10-29: group background/border selection, multi-selection
+removal, subsession stacks, inspecting and resuming agent-created child
+conversations, GPU event effects, visible group folders and passive sessions,
+view versus start, dusty unused sessions, multi-line copy and paste, the
+smooth loop animation, recent sessions with Ctrl+F6 / `]` `[`, and the
+remembered default model per agent (parity rows 34 to 39b, docs/PARITY.md).
 
 ## 1. Goals and non-goals
 

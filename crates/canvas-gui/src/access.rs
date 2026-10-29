@@ -145,6 +145,9 @@ pub fn items(app: &App, view: &View, chrome: &Buffer, overlay: &Buffer, grid: &G
                 let key = match &row.kind {
                     SideKind::Group(id) | SideKind::Session(id) | SideKind::Agent(id) => format!("side/{id}"),
                     SideKind::Section => format!("side/section/{}", row.label),
+                    SideKind::Folder(id) => format!("side/folder/{id}"),
+                    SideKind::RecentHeader => "side/recent".to_owned(),
+                    SideKind::Recent(id) => format!("side/recent/{id}"),
                 };
                 let r = Rect::new(layout.sidebar.x, y, layout.sidebar.width, 1);
                 let i = b.add(side_id, &key, Role::TreeItem, row.label.clone(), b.cells(r));

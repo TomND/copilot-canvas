@@ -70,7 +70,7 @@ fn columns(connection: &Connection, table: &str) -> HashSet<String> {
 
 /// What the open database supports, checked once per connection.
 #[derive(Clone, Debug, Default, PartialEq)]
-struct Schema {
+pub(crate) struct Schema {
     /// `SELECT` list of a session [`Row`]; missing optional columns read as defaults.
     row: String,
     /// `AND time_archived IS NULL` when the column exists.
@@ -78,13 +78,13 @@ struct Schema {
     /// The root-session list can use an index.
     list: bool,
     /// Messages and parts can be read by index.
-    indexed: bool,
+    pub(crate) indexed: bool,
     /// Event sequence numbers can be looked up by index.
     seq: bool,
 }
 
 impl Schema {
-    fn read(connection: &Connection) -> Self {
+    pub(crate) fn read(connection: &Connection) -> Self {
         let session = columns(connection, "session");
         let column = |name: &str, default: &str| if session.contains(name) { name.to_owned() } else { format!("{default} AS {name}") };
         let row = [("parent_id", "NULL"), ("directory", "''"), ("title", "''"), ("agent", "NULL"), ("time_created", "0"), ("time_updated", "0")]
@@ -155,12 +155,12 @@ struct Row {
 }
 
 /// A column as text when it holds text (lenient about types and NULL).
-fn text(r: &rusqlite::Row, index: usize) -> rusqlite::Result<Option<String>> {
+pub(crate) fn text(r: &rusqlite::Row, index: usize) -> rusqlite::Result<Option<String>> {
     Ok(r.get_ref(index)?.as_str().ok().map(str::to_owned))
 }
 
 /// A column as a non-negative integer when it holds a number.
-fn number(r: &rusqlite::Row, index: usize) -> rusqlite::Result<Option<u64>> {
+pub(crate) fn number(r: &rusqlite::Row, index: usize) -> rusqlite::Result<Option<u64>> {
     Ok(match r.get_ref(index)? {
         ValueRef::Integer(n) => Some(n.max(0) as u64),
         ValueRef::Real(n) if n.is_finite() => Some(n.max(0.0) as u64),

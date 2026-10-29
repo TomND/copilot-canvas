@@ -101,6 +101,23 @@ pub enum Request {
     HasHistory { agent: AgentKind, id: String },
     /// Copies a Copilot session's history to a new session id (fork).
     Fork { parent: String, child: String, name: String, cwd: Option<String> },
+    /// A read-only transcript (`Response::Transcript`) of the agent session
+    /// `session` (its own id). With `agent_key`: the subagent recorded under
+    /// that key inside `session`'s history (Copilot's `agentId`, Claude
+    /// Code's `Agent` tool call id). OpenCode's children are sessions of
+    /// their own: their id with `parent` set. `cwd` helps find Claude Code
+    /// transcripts; at most the newest `limit` entries. Nothing is started.
+    Transcript {
+        agent: AgentKind,
+        session: String,
+        #[serde(default)]
+        parent: Option<String>,
+        #[serde(default)]
+        agent_key: Option<String>,
+        #[serde(default)]
+        cwd: Option<String>,
+        limit: u32,
+    },
 
     /// Creates a group's `ai-docs`, `human-outputs` and instructions file.
     PrepareGroup { group: Group },
@@ -136,6 +153,9 @@ pub enum Request {
     /// `id`; the `last` piece answers the file's path (a free name from `name`).
     /// Files are at most [`MAX_UPLOAD`] bytes.
     Upload { name: String, id: String, offset: u64, data: String, last: bool },
+    /// A folder's entries for the canvas's folder browser: `..`, then
+    /// subfolders (ending in `\`), then files.
+    ListEntries { dir: String },
 }
 
 /// Largest file an upload writes.
@@ -159,6 +179,7 @@ pub enum Response {
     Git(Option<GitInfo>),
     Pairing(PairingCode),
     RemoteClients(Vec<RemoteClient>),
+    Transcript(Box<crate::transcript::Transcript>),
 }
 
 /// An open pairing code (`Request::PairCode`).
@@ -319,6 +340,7 @@ impl Request {
             Request::WorktreeAdd { .. } => "worktree",
             Request::HasHistory { .. } => "history check",
             Request::Fork { .. } => "fork",
+            Request::Transcript { .. } => "transcript",
             Request::PrepareGroup { .. } => "group folders",
             Request::EnsureCatalog { .. } => "event catalog",
             Request::DoctorFolder => "doctor folder",
@@ -330,6 +352,7 @@ impl Request {
             Request::RemoteRevoke { .. } => "revoke",
             Request::SetClipboardImage { .. } => "clipboard image",
             Request::Upload { .. } => "upload",
+            Request::ListEntries { .. } => "folder entries",
         }
     }
 
@@ -528,6 +551,10 @@ impl dyn Backend + '_ {
         self.texts(Request::ListDir { dir })
     }
 
+    pub fn list_entries(&self, dir: &str) -> Result<Vec<String>> {
+        self.texts(Request::ListEntries { dir: dir.to_owned() })
+    }
+
     pub fn path_info(&self, path: &str) -> Result<PathInfo> {
         self.ask(Request::PathInfo { path: path.to_owned() }, |r| match r {
             Response::Path(info) => Some(info),
@@ -571,6 +598,15 @@ impl dyn Backend + '_ {
 
     pub fn fork(&self, parent: &str, child: &str, name: &str, cwd: Option<&str>) -> Result<()> {
         self.done(Request::Fork { parent: parent.to_owned(), child: child.to_owned(), name: name.to_owned(), cwd: cwd.map(str::to_owned) })
+    }
+
+    /// A read-only transcript (see [`Request::Transcript`]).
+    pub fn transcript(&self, request: Request) -> Result<crate::transcript::Transcript> {
+        anyhow::ensure!(matches!(request, Request::Transcript { .. }), "not a transcript request");
+        self.ask(request, |r| match r {
+            Response::Transcript(transcript) => Some(*transcript),
+            _ => None,
+        })
     }
 
     pub fn prepare_group(&self, group: &Group) -> Result<()> {
@@ -682,6 +718,12 @@ mod tests {
         let reply = answer_json(r#"{"FutureThing":{"x":1}}"#, |_| Response::Done);
         assert!(matches!(serde_json::from_str::<Response>(&reply).unwrap(), Response::Error(e) if e.contains("does not support")));
         assert!(Request::MigrateApply { items: vec![] }.timeout() > Request::Info.timeout());
+        // Transcripts travel as JSON too; older clients may leave the optional fields out.
+        let request = Request::Transcript { agent: AgentKind::OpenCode, session: "ses_c".into(), parent: Some("ses_p".into()), agent_key: None, cwd: None, limit: 50 };
+        assert_eq!(serde_json::from_str::<Request>(&serde_json::to_string(&request).unwrap()).unwrap(), request);
+        assert!(request.is_quick());
+        let short = serde_json::from_str::<Request>(r#"{"Transcript":{"agent":"copilot","session":"x","limit":5}}"#).unwrap();
+        assert!(matches!(short, Request::Transcript { parent: None, agent_key: None, cwd: None, limit: 5, .. }));
     }
 
     #[test]

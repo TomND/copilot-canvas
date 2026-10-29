@@ -90,10 +90,15 @@ pub struct PassiveSpec {
     /// Agent CLI that runs it ("copilot", "opencode", "claude"; empty: Copilot).
     #[serde(default)]
     pub agent: String,
-    /// Model of its runs (the canvas's new-session default, overridden by the
-    /// group's; empty: the agent's own default).
+    /// Model of its runs: the one new sessions of its agent in its group get
+    /// (the group's, else the canvas's remembered, else the initial default;
+    /// empty: the agent's own default).
     #[serde(default)]
     pub model: String,
+    /// The model recorded for its current conversation (its box's model, e.g.
+    /// after you opened its chat); runs that resume it prefer this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_model: Option<String>,
 }
 
 /// An event on the bus. CLI-written inbox files may omit the service-filled fields.
@@ -171,6 +176,9 @@ pub struct BusState {
     pub passive: BTreeMap<String, PassiveState>,
     pub mailbox: Vec<Mail>,
     pub recent: VecDeque<Event>,
+    /// Effects on the canvas until acknowledged or timed out.
+    #[serde(default)]
+    pub effects: Vec<crate::effects::Effect>,
 }
 
 /// What the client shows (sent as JSON).
@@ -180,6 +188,8 @@ pub struct Snapshot {
     /// Session id → queued messages.
     pub mailbox: BTreeMap<String, u32>,
     pub recent: Vec<Event>,
+    #[serde(default)]
+    pub effects: Vec<crate::effects::Effect>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -468,7 +478,7 @@ impl BusState {
         for mail in &self.mailbox {
             *mailbox.entry(mail.to.clone()).or_insert(0) += 1;
         }
-        Snapshot { passive, mailbox, recent: self.recent.iter().cloned().collect() }
+        Snapshot { passive, mailbox, recent: self.recent.iter().cloned().collect(), effects: self.effects.iter().filter(|e| e.alive(now)).cloned().collect() }
     }
 }
 
@@ -572,6 +582,15 @@ events:
   - name: pr.merged
     when: A pull request completed or merged.
     data: pr, repo, target_branch
+  - name: pr.approved
+    when: A reviewer approved a pull request.
+    data: pr, repo, reviewer
+  - name: pr.changes_requested
+    when: A reviewer asked for changes on a pull request.
+    data: pr, repo, reviewer, comment
+  - name: pr.review_requested
+    when: Someone asked for a review of a pull request.
+    data: pr, repo, from
   - name: build.failed
     when: A build or pipeline you care about failed.
     data: pipeline, run, url, reason
@@ -590,6 +609,12 @@ events:
   - name: automation.check
     when: Someone asked for a health check of an automation (the Ask doctor button on the canvas).
     data: name, manifest, launcher_log, workload_logs, docs, rerun
+# Canvas effects shown on the sending session's box when these events arrive
+# (fireworks, attention, sparkle, alert; copilot-canvas effect sets them by hand).
+effects:
+  pr.approved: fireworks
+  pr.changes_requested: attention
+  pr.review_requested: attention
 ";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -747,7 +772,10 @@ mod tests {
         assert_eq!(parse_hhmm("25:00"), None);
         let catalog = parse_catalog(DEFAULT_CATALOG);
         assert!(catalog.iter().any(|e| e.name == "pr.pushed" && e.when.contains("git push")));
-        assert_eq!(catalog.len(), 11);
+        assert_eq!(catalog.len(), 14);
+        let effects = crate::effects::catalog_effects(DEFAULT_CATALOG);
+        assert_eq!(effects.iter().map(|(e, k)| format!("{e}={}", k.name)).collect::<Vec<_>>(), ["pr.approved=fireworks", "pr.changes_requested=attention", "pr.review_requested=attention"]);
+        assert!(effects.iter().all(|(e, _)| catalog.iter().any(|c| &c.name == e)), "mapped events are in the catalog");
     }
 
     #[test]

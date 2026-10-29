@@ -83,10 +83,11 @@ connection into a queue (PNG images are decoded to RGBA on the way) and wake
 the loop with one coalesced proxy event; the UI drains them with a 4 ms
 budget, as the TUI does. App events and test-hook commands arrive as proxy
 events too. Ticks run every 40 ms while anything is active (animations,
-notices, drags, unsaved changes, a paste preview) and every 400 ms
+notices, drags, unsaved changes, a paste preview, a stack transition), every 80 ms while only effects animate, and every 400 ms
 otherwise. A frame is drawn only when the app needs one: at once after input
 (and for the echo of a keystroke in the focused terminal), otherwise paced to
-the display's refresh rate. Presentation uses Mailbox (Immediate, then Fifo,
+the display's refresh rate. Moving loop dots ask the core for nothing: the
+window draws them itself in *loop frames* (below). Presentation uses Mailbox (Immediate, then Fifo,
 as fallbacks) and never blocks the UI thread. `after_draw` sends
 subscriptions, tile sizes and tracking exactly as in the TUI.
 
@@ -103,6 +104,16 @@ already on the GPU. The glyph atlas is trimmed only on full frames (a window
 whose text was prepared before another window's trim prepares all its layers
 again), so cached layers never point at evicted glyphs. Anything else (input,
 a status change, a spinner step, a resize) is a full frame as before.
+
+**Loop frames.** Loop arcs have a layer of their own (`scene::LOOPS`, above
+the box levels). While a loop in view moves (motion on, the clock running)
+or an arc grows in or fades out, the window repaints that layer alone at the
+time of drawing, as a damage frame: no core view, no rescans, no
+`after_draw`, no UI Automation update. Its pace comes from the arcs' size
+(`canvas::loop_interval`: the fastest dot in view moves about 2 px a frame,
+which is about 30 frames/s at 100 % zoom and down to 20 when zoomed out),
+never faster than the display; with no moving loop in view (scrolled away,
+reduced motion, frozen, minimized) there are none.
 
 **Inline images.** The Ghostty engine keeps Kitty graphics (storage limit
 64 MiB per terminal; only inline data: the file, temporary-file and
@@ -153,8 +164,8 @@ removed) and the remote paths are pasted. A folder dropped on the canvas opens
 the new-session dialog in it (local mode).
 
 **Drawing (`scene.rs`, `quads.rs`, `chrome.rs`, `canvas.rs`, `tiles.rs`).** A
-frame is 10 layers (base chrome · canvas: background, groups, connectors ·
-three box levels · canvas top · terminals · chrome over content · dialogs ·
+frame is 11 layers (base chrome · canvas: background, groups, connectors ·
+three box levels · loop arcs · canvas top · terminals · chrome over content · dialogs ·
 HUD), each drawn as quads, then text, then overlay quads.
 Quads come from one instanced SDF pipeline (rounded rectangles with solid or
 dashed borders, line segments with round caps). Text goes through glyphon,
@@ -170,7 +181,8 @@ and size.
 - *Canvas:* rounded boxes with status borders (needs you: heavy gold; done ·
   review: double blue with a tinted body; failed automation: pulsing
   vermillion; selected: heavy white; passive: dashed), group outlines with
-  their title row, connectors, the loopback arc with its moving dot (≤ 15 fps),
+  their title row (a selected group: a 3 px outline over a light tint of its
+  colour), connectors, the loopback arcs with their moving dots (below),
   pulses, the halo around the active terminal's box (heavier while typing),
   the rubber band. Labels (Segoe UI) are shaped once and scaled with the
   zoom; below a readable size a box shows one compact line, then only its
@@ -186,6 +198,87 @@ and size.
   when scrolled back, and the IME composition at the cursor. Row layouts are
   cached by row content; only changed rows are rebuilt.
 
+**Canvas visuals (`canvas.rs`, `effects.rs`; canvas-core `visual.rs`,
+`folders.rs`).** The core describes them in the model; the GUI draws them:
+
+- *Dust* (`BoxModel::dust`, 1–3): a static treatment, so it shows with
+  effects off: the box's fill drained of blue (`visual::DUST_FILL`), a dimmed
+  outline, specks over the body and a cobweb in its top-right corner, both
+  growing with the level (placed from a hash of the box id, so a box keeps
+  its dust between frames and windows), plus "· unused 12d" in the status
+  line. `App::dust_of` decides: idle, stopped or unknown sessions whose
+  `Node::last_used_ms` is older than *Settings › Dust unused sessions after*
+  (canvas setting `dust_after_days`, default 3; medium from max(14, 2 ×) days,
+  heavy from max(60, 4 ×)); working, needs you, done · review, failed, open
+  elsewhere, looping, passive sessions and boxes with an effect never are.
+  `App::sync_last_used` records use every 5 s from the terminal (start,
+  output), your typing and the history's newest event, in steps of at least
+  10 minutes (a quiet doc field: no notices); old boxes start from their
+  history, else from when you last looked at them.
+- *Stacks* (`Node::stacked`; `BoxModel::deck`): the stacked sessions keep
+  their positions in the document (moving the parent moves them too), so
+  unstacking restores them exactly. The top card is drawn beneath the parent
+  (and its subagents) with up to two cards behind it, a **+N** pill, the
+  stack's most important status and the effects of its sessions. *Hidden
+  subsessions* (`UiPrefs::hide_subsessions`, this window's) are left out and
+  counted on the visible ancestor (`BoxModel::hidden`, a "⋯ N hidden" pill in
+  the colour of the most important hidden status). `App::visual_frame`
+  compares the stacked parents and the hide toggle with the last frame, so a
+  change from any window (a document patch) starts a *transition*: 300 ms,
+  eased in and out, reversible from wherever it is; the boxes fly between
+  their places and the deck (or shrink into their ancestor) and fade
+  (`BoxModel::alpha`). While one runs the window draws at the display's rate;
+  then it is idle again. Clicks and rubber bands use the end state at once.
+  With reduced motion (or in the TUI) they switch instantly.
+- *Effects* (`CanvasModel::effects`, `EffectModel`): the service's effects
+  (bus snapshot) on their anchors: a box, the deck holding it, the visible
+  ancestor of a hidden one, or the group. *On*: fireworks (three staggered
+  rockets that burst into falling, fading sparks in the Okabe-Ito colours),
+  attention (two gold rings pulsing out of the box and a blinking beacon on
+  its corner), sparkle (twinkling stars round the edge, fading at the end of
+  their 6 s), alert (a pulsing vermillion ring); all quads of the instanced
+  pipeline, clipped to a region a few units around the anchor, in the layer
+  above the boxes. They advance on the spinners' 80 ms clock (12.5 frames/s;
+  the window then wakes every 80 ms instead of 40) and only while one is in
+  view; out of view or acknowledged, the window is idle again. *Reduced
+  motion*: a still starburst, rings or stars. *Off*: the badge alone. Every
+  mode draws the badge ("✦ PR !7 approved") on the anchor's bottom edge.
+  Particles are seeded from the effect's kind and text (stable in every
+  window and run); the `freeze` hook holds them at a mid-burst frame.
+- *Group chips* (`GroupModel::chips`, `folders.rs`): ⟲ N passive sessions
+  (or ⟲ + passive), ◧ AI docs and ◨ Outputs (or ◧ Set folder…), full or
+  compact (the passive chip first, then all) to fit next to the title, which
+  is shortened for them. From 70 % up they scale with the zoom; below it they
+  keep a readable size on screen (`ChipModel::fixed`) while the title shows.
+- *Loops* (`CanvasModel::loops`, `LoopModel`; canvas-core `loops.rs`,
+  canvas-gui `canvas.rs`): the loopback beside a looping box (out along its
+  top row, round a bend of 12-segment quarter circles, down, back into its
+  bottom row with an arrowhead). The lit dot's place is a pure function of
+  the clock (`loops::lap`: a 2 s lap, offset per box so neighbours do not
+  march in step; `loops::along`: s = t + 0.35 sin(2πt)/2π, fastest leaving
+  the box, slowest at the far bend, the same speed across the lap boundary),
+  so it never depends on frames, never restarts and follows a box exactly
+  while you pan, zoom or drag it (the model's rect carries the drag offset).
+  It is drawn at sub-pixel positions along the arc measured by length: a
+  glowing head that fades in as it leaves the box and out as it enters it, a
+  tail of 16 tapering segments sampled back in time over 30 % of a lap (so
+  it stretches where the dot is fast and breaks where it wraps into the
+  previous lap: the dot went through the box), and a ring through the
+  arrowhead for a fifth of a lap after each lap (`loops::lap_pulse`). Boxes
+  too small for an arc get a ↻ that breathes. `App::sync_loops` compares
+  the looping boxes (in view or not) with the last model: a loop that
+  starts grows its arc in from the box with a bright tip (450 ms, eased
+  out; the comet joins at the end), one that stops fades out
+  (`LoopModel::changed_ms`, `ending`); loops that arrive within 2 s of the
+  session history (the canvas opening) just show. Loop state follows the
+  next status update (the service polls histories every second; a
+  `/every` change also makes the client read the saved schedules again
+  instead of waiting for the 15 s automation refresh). *Reduced motion* and
+  *off*: no dot; the arc, its lit arrowhead and a ↻ badge on its far side
+  stand still, and loops switch at once. The `freeze` hook holds the clock
+  at tick × 80 ms with no offsets per box (golden screenshots show every
+  comet at the same place mid-lap, whatever the boxes' ids).
+
 **Fonts (`text.rs`).** Only the needed font files are loaded (Cascadia Mono,
 Consolas, Segoe UI and Symbol, Segoe UI Emoji, Microsoft YaHei, Yu Gothic,
 Malgun Gothic, plus per-user fonts); cosmic-text falls back between them per
@@ -194,11 +287,15 @@ character. They load on a thread while the service connects.
 **Input (`input.rs`).** winit keys become core `KeyEvent`s from the logical
 key (all modifiers but Ctrl applied; AltGr compositions arrive composed);
 text of several characters and IME commits become `InputEvent::Text` (a
-terminal gets the characters, a field inserts them). Mouse positions are
-fractional cells; wheel pixel deltas accumulate into notches (three rows
-each). Ctrl+V and Shift+Insert outside a terminal paste the clipboard into
-the focused field; in a terminal the core pastes (or sends Ctrl+V for an
-image) as in the TUI.
+terminal gets the characters, a field inserts them; committed text with a
+line break reaches a terminal as one paste, so the break is never Enter).
+Mouse positions are fractional cells; wheel pixel deltas accumulate into
+notches (three rows each). Ctrl+V and Shift+Insert outside a terminal paste
+the clipboard into the focused field; in a terminal the core pastes (or
+sends Ctrl+V for an image) as in the TUI: one paste without its trailing
+line break (`docs/AGENTS.md#pasting`). The GUI needs no burst detection:
+its clipboard paste is one event (the TUI's console delivers a paste as
+key presses, see `canvas_core::input::coalesce`).
 
 **Platform (`canvas-core platform.rs`, `canvas-gui platform.rs`).** The core
 reaches the machine through `trait Platform`: clipboard text, "clipboard has
@@ -296,6 +393,11 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
 | Zoom | Ctrl+wheel or Alt+wheel: continuous, around the pointer (1/8 of a doubling per notch); toolbar − / + and the `-` / `+` keys step 25 % · 50 % · 100 % · 200 %; `F` fits everything (at most 100 %); `C` / Home centres the selection |
 | Pan | drag empty canvas or middle-drag, pixel-smooth; wheel / Shift+wheel; Ctrl+arrows |
 | Move | drag a box (its subagents follow) or a group title, pixel-smooth; the document stores whole units |
+| View / start | a click (canvas or sidebar) only views a box: its live terminal, else its details panel; a double-click, Enter, the panel's **▸ Start** / **▸ Resume** or the box menu starts it. An exited terminal stays on screen while it has the focus |
+| Recent sessions | the sidebar's **RECENT** rows (newest first; a click views, a double-click starts; the header folds them); **Ctrl+F6** / **Ctrl+Shift+F6** anywhere (a terminal too) and `]` / `[` on the canvas or sidebar view the next older or newer one without starting it; the list reorders a second after the last step |
+| Select a group | click its empty background (a drag there still pans) or its outline, up to about half a cell outside it (`BORDER_SLACK`); the innermost group wins; the selected group is drawn heavier |
+| Inspect | the box menu's or details panel's **Inspect transcript**: a read-only modal (wheel scrolls, Copy, Close); a finished OpenCode child offers **Resume as subsession** there |
+| Remove | right-click on a selected box (or Del) with several selected: "Remove N from canvas" after a confirmation; running sessions stay; Ctrl+Z restores |
 | Pointer | hand over buttons and links, resize arrows over the dividers, text beam over terminals |
 | Paste | Ctrl+V / Shift+Insert: into a terminal (images as in the TUI, with a thumbnail of the image) or the focused text field |
 | Drop files | on a terminal: quoted paths pasted (remote mode: uploaded first); a folder on the canvas: new session there |
@@ -303,6 +405,9 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
 | IME | composition drawn at the terminal cursor or field; committed text typed |
 | Close button | as Ctrl+Q: detach or stop all (the last window) |
 | `--perf` | frame time (view, scene, encode), present and acquire, input → present, keystroke → echo → present, service round trip |
+| Stacks | `K` or the session menu stacks or unstacks; a click on the deck shows its top card (never starts it), a drag moves the parent with its stack, a double-click unstacks; `H` hides or shows every subsession |
+| Effects | a click on an effect or its box clears it (in every window) and only selects the box; *Settings › Effects*: on · reduced motion · off |
+| Group chips | ⟲ N lists the passive sessions (each opens its panel), ⟲ + passive creates one, ◧ / ◨ open the folders (remote: the folder browser) |
 
 ## 3. Testing
 
@@ -326,7 +431,9 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   running, preparing); subagents (working, finished, failed), a subsession's
   dashed edge, a loop and a queued message; groups with lit and dim folder
   chips; a selection with a rubber band; the new-session dialog (Agent row
-  with an agent that is not installed); the MCP picker with a preset; the
+  with an agent that is not installed, the Model row with the initial
+  default), the dialog in a group with its own model, the model picker (an
+  agent's model list); the MCP picker with a preset; the
   sidebar filter; two tiled terminals. Each `tests/snapshots/<state>.snap`
   holds the TUI screen (`RenderMode::Cells`) as text and the GPU view
   (`RenderMode::Gpu`) as `View::dump()`: boxes with rect, name, status,
@@ -336,7 +443,7 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   `UPDATE_SNAPSHOTS=1 cargo test -p canvas-core --test view_snapshots`
   accepts the new texts.
 - `copilot-canvas selftest --client gui [--remote loopback]` runs the TUI
-  self-test's 27 steps against the GUI in a 170 × 46 cell window. A `Ui`
+  self-test's 33 steps against the GUI in a 170 × 46 cell window. A `Ui`
   trait has two drivers: the TUI's hidden pseudoconsole and `GuiDriver`,
   which starts `copilot-canvas-gui.exe --test-hooks --size 170x46` and turns
   the terminal input the scenario sends (keys, Alt+digits, Ctrl+letters, SGR
@@ -400,6 +507,23 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   pixel for pixel (0 differing pixels); changing ANSI green in
   `canvas-gui/src/theme.rs` failed `terminals-tiled` with 0.156 % differing
   pixels (under the fraction) and 26 blocks over the luminance limit.
+- `copilot-canvas bench --client gui --effects [--seconds S]`: the visuals
+  canvas idle, with fireworks in view, attention in view and out of view, and
+  after the effects are cleared: CPU, frames per second and frame times of
+  each phase (§4).
+- `copilot-canvas bench --client gui --loops [--seconds S]`: eight looping
+  sessions in view (their dots moving), the same while panning, scrolled
+  out of view, and with reduced motion: CPU, loop and full frames per
+  second, frame times (§4). Unit tests check the dot's place against the
+  clock (continuous across frames and laps, the same at 30 and 60 frames/s,
+  under 2 px a frame along the GUI's curve), the TUI's cell stepping,
+  grow-in and fade-out, and that the TUI redraws only for visible dots; the
+  ViewModel snapshots `looping-sessions` and
+  `looping-sessions-reduced-motion` pin both renderings; parity row 7b
+  checks PNG captures against the clock.
+- The parity suite's rows V1–V5 and the `visuals` golden screenshot cover
+  dust, stacks (with their transitions' end states), hidden subsessions,
+  effects and the group chips (`docs/PARITY.md`).
 - `CANVAS_GUI_TRACE=1` prints start-up milestones (and GPU events) on stderr.
 
 **Test hooks.** With `--test-hooks` the GUI prints a pipe name
@@ -417,11 +541,12 @@ one (`"window": n`, the creation index):
 | `{"cmd":"wheel","dir":"up\|down\|left\|right","x":…,"y":…,"mods":["ctrl"]}` | one wheel notch |
 | `{"cmd":"drop","paths":["…"],"x":…,"y":…}` | files dropped at a cell |
 | `{"cmd":"screen"}` | `lines`: the screen as text (chrome, canvas as TUI characters, terminal text, dialogs) |
-| `{"cmd":"tree"}` | automation tree: click targets with their text, canvas boxes (status, border, prefix, loop, drawing `level`) and groups with screen rects, tiles (tint, image placements as cell rects), links, terminal selection, notice, focus, modal, paste preview, and `access`: the UI Automation nodes |
+| `{"cmd":"tree"}` | automation tree: click targets with their text, canvas boxes (status, border, prefix, loop, drawing `level`, `dust`, `deck`, `hidden`, `alpha`), `loop_arcs` (box, lap, grow, ending, moving, the dot now), effects (kind, badge, rect) and groups (with their chips) with screen rects, tiles (tint, image placements as cell rects), links, terminal selection, notice, focus, modal, paste preview, and `access`: the UI Automation nodes |
 | `{"cmd":"access"}` | the UI Automation nodes (role, name, description, value, rect, children, focus) and whether a UIA client listens |
-| `{"cmd":"png","path":"…"}` | renders the current frame offscreen to a PNG (works on a locked workstation) |
-| `{"cmd":"freeze","tick":0}`, `{"cmd":"freeze"}` | animations (spinners, loop dots, pulsing borders) hold frame `tick`; without it they run again |
-| `{"cmd":"size"}`, `{"cmd":"perf","reset":true}` | cells, cell size, DPI, adapter (and details, `software`), present mode; frame statistics (all, full and damage frames), round trips, CPU, memory, first paint, textures, GPU rebuilds |
+| `{"cmd":"png","path":"…"}` | renders the current frame offscreen to a PNG (works on a locked workstation); `loops`: each loop arc's dot (px and cells), lap and bounds at the instant drawn |
+| `{"cmd":"freeze","tick":0}`, `{"cmd":"freeze"}` | animations (spinners, loop dots, pulsing borders, effects mid-burst) hold frame `tick` (the loop clock at tick × 80 ms); without it they run again |
+| `{"cmd":"motion","value":"on\|reduced\|off"}` | *Settings › Effects* for this window (not saved) |
+| `{"cmd":"size"}`, `{"cmd":"perf","reset":true}` | cells, cell size, DPI, adapter (and details, `software`), present mode; frame statistics (all, full, damage and loop frames, with counts), round trips, CPU, memory, first paint, textures, GPU rebuilds |
 | `{"cmd":"device-lost"}`, `{"cmd":"device-lost","destroy":true}` | rebuilds the GPU objects as after a lost device (`destroy`: the device is really destroyed first); answers the time taken |
 | `{"cmd":"dpi","scale":1.5}` | a DPI change to `scale` (without: the window's own) |
 | `{"cmd":"place","x":…,"y":…,"width":…,"height":…,"maximized":bool}`, `{"cmd":"placement"}` | moves, sizes or maximizes the window; its position, size, monitor, the tracked and saved placement, the monitors' work areas |
@@ -462,6 +587,44 @@ the `redraw` hook every 10 ms.
 | Private memory: 4 tiles + 1,304 boxes · `--stress` 1,600 boxes | ≤ 250 MB | **164 MB** · 162–185 MB | ✓ |
 | First paint, process start → first frame: service started by the GUI · running | ≤ 1.5 s | **0.89 s** · 0.44 s | ✓ |
 | Remote: reconnect after the network returns · full resync · canvas bandwidth with 4 busy tiles (20-minute soaks, `docs/REMOTE.md`) | ≤ 2 s · ≤ 500 ms · ≤ 200 KB/s | GUI canvas p95 1.06 s, max 1.52 s · max 33 ms · 2.4 KB/s | ✓ |
+
+**Effects** (`bench --client gui --effects --seconds 10`, release, RTX 3070,
+the machine in use meanwhile, 2026-10-29; the visuals canvas without its
+passive session, whose loop arc would animate on its own):
+
+| Phase | Frames/s | CPU (% of one core) | |
+|---|---|---|---|
+| Idle, no effect | 0.4 | 0.31–0.47 (the window's housekeeping) | ✓ ≈ 0 |
+| Fireworks in view | 13–14.5 | **1.72 · 1.87** (two runs; 2.03 before effects got their own 80 ms tick) | ✓ ≤ 2 % |
+| Attention in view | 14.6 | 1.25 | ✓ |
+| Attention out of view | 0.3 | 0.00–0.16 | ✓ |
+| Effects cleared | 0.4 | 0.00–0.31 | ✓ |
+
+Effects run at 12.5 frames/s (the spinners' clock; the counts above include
+the service's statistics frames), below §9's 15: smooth enough for the
+bursts at about 1.5 ms per full frame. Stack and hide transitions draw at
+the display's rate for their 300 ms, then the window is idle.
+
+**Loops** (`bench --client gui --loops --seconds 8`, two runs shown as
+run 1 · run 2, release, RTX 3070, 125 % DPI, 170 × 46 cells, 12 logical
+CPUs, the machine in use meanwhile, 2026-10-29; eight looping sessions and
+four plain ones fitted at 100 %, arcs about 100 px long, so the loop layer
+runs at about 27 frames/s). Before, loop dots stepped 1/20 of a lap at the
+spinners' 80 ms clock (12.5 full frames/s, also with every loop off screen);
+now they move with the clock in loop frames of their own layer:
+
+| Phase | Loop frames/s | Full frames/s | Loop frame p50 / p95 | CPU (% of one core · of the machine) | |
+|---|---|---|---|---|---|
+| 8 loops in view, dots moving | 26.4 · 26.4 | 0.6 | 0.49 / 0.70 · 0.48 / 0.64 ms (0.27 ms of it submit and present) | **1.95 · 1.36** (0.16 · 0.11 of the machine) | ✓ ≤ 2 % |
+| Panning by drag (a move every 16 ms) | 3.1 | 53.6 · 53.5 | 0.48 / 0.67 · 0.50 / 0.63 ms | 6.05 · 5.66 (the pan's full frames) | ✓ |
+| Scrolled out of view | 0 | 0.4 | — | 0.00 · 0.00 | ✓ ≈ 0 |
+| Reduced motion, in view | 0 | 0.4 | — | 0.00 · 0.39 | ✓ ≈ 0 |
+
+An earlier run with the machine busier measured 2.08 % of one core (loop
+frame p50 0.80 ms, of which 0.46 ms submit and present). The loop layer
+runs above §9's 15 frames/s for animations because a loop frame repaints
+one small layer (under half the cost of a full frame) and the dot moves
+about 2 px a frame; the CPU stays within §9's 2 %.
 
 The burn probe's priority manager matters less here than in the TUI's
 measurement (README: p99 1.26 s → 14 ms with 40 burners on a busy 16-core
@@ -526,6 +689,13 @@ covers them), `software-renderer.png` (WARP, with its notice),
 subagents at 8 %) and `perf-canvas-synthetic-25.png` (`--perf-canvas
 synthetic` at 25 %).
 
+The golden screenshot `tests/golden/gui/visuals.png` shows the canvas
+visuals: three dust levels, a stack with an attention effect on a stacked
+session, fireworks held mid-burst, the group chips and the sidebar's folder
+and passive rows. With `CANVAS_GUI_SCREENS` the parity suite also saves
+`visual-stack.png`, `visual-hidden.png`, `visual-fireworks.png`,
+`visual-chips-25.png` and `visual-remote-browser.png`.
+
 ## 6. Known gaps (after Phase 6)
 
 - **Kitty graphics through ConPTY:** Windows' inbox ConPTY drops APC, so only
@@ -545,10 +715,10 @@ synthetic` at 25 %).
   and terminal text is a plain value (no text pattern).
 - **Box levels:** three; a fourth box stacked on three overlapping ones
   shares the top level, so its labels can still mix with the third's.
-- **Damage frames** cover terminal output only; the canvas and chrome are
-  still rebuilt whole (a spinner step on the canvas is a full frame, 2–5 ms).
-  No scissored partial presents: on WARP every frame still rasterizes the
-  whole window.
+- **Damage frames** cover terminal output and moving loop dots; the rest of
+  the canvas and the chrome are still rebuilt whole (a spinner step on the
+  canvas is a full frame, 2–5 ms). No scissored partial presents: on WARP
+  every frame still rasterizes the whole window.
 - **Device loss** is tested by rebuilding on request and by destroying the
   device (the driver's own report path); a real TDR (driver reset) or an
   unplugged GPU was not reproduced.

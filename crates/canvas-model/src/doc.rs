@@ -2,12 +2,14 @@
 //! and UI preferences. Group membership is geometric (a node belongs to the
 //! smallest group containing its center), like Obsidian canvas groups.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+
+use crate::agent::AgentKind;
 
 pub const SESSION_W: i32 = 30;
 pub const SESSION_H: i32 = 4;
@@ -76,6 +78,23 @@ pub struct Node {
     /// its sessions itself, on the first prompt).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session: Option<String>,
+    /// When the session was last used: started, typed into, or agent activity
+    /// (looking at it does not count). Unused sessions are drawn dusty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_ms: Option<u64>,
+    /// When you last viewed, started or typed into this session (the
+    /// Sessions panel's RECENT list; every window and client shares it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accessed_ms: Option<u64>,
+    /// Its subsessions (recursively) are drawn as a deck beneath it. They keep
+    /// their own positions (which move with it), so unstacking restores them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stacked: bool,
+    /// The model its conversation started with, as its agent names it (empty:
+    /// the agent's own default; `None`: not recorded). Resumes keep it; a new
+    /// default never changes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// Passive session settings (the service keeps its run state).
@@ -151,11 +170,14 @@ pub struct UiPrefs {
     pub tiled: bool,
     #[serde(default)]
     pub collapsed: Vec<String>,
+    /// Subsession boxes are hidden on this client's canvas (shown again in place).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hide_subsessions: bool,
 }
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        Self { sidebar_width: 30, sidebar_visible: true, terminal_percent: 55, tiled: false, collapsed: Vec::new() }
+        Self { sidebar_width: 30, sidebar_visible: true, terminal_percent: 55, tiled: false, collapsed: Vec::new(), hide_subsessions: false }
     }
 }
 
@@ -165,25 +187,69 @@ pub struct RecentFolder {
     pub used_ms: u64,
 }
 
+/// Settings for new sessions: the canvas's (`Doc::defaults`) or a group's
+/// overrides (`Group::defaults`).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(from = "RawLaunchDefaults")]
 pub struct LaunchDefaults {
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
+    /// Model per agent id ("copilot", "opencode", "claude"); an empty id is
+    /// the agent's own default (no model flag). On the canvas: the remembered
+    /// choice (unset: [`crate::models::initial`]); in a group: its override.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub models: BTreeMap<String, String>,
     pub reasoning_effort: Option<String>,
     /// interactive | plan | autopilot
-    #[serde(default)]
     pub mode: Option<String>,
-    #[serde(default)]
     pub agent: Option<String>,
     /// default | long_context
-    #[serde(default)]
     pub context: Option<String>,
-    #[serde(default)]
     pub add_dirs: Vec<String>,
     /// allow-all | ask. Unset means allow-all (applies to every launch, resumed too).
-    #[serde(default)]
     pub permissions: Option<String>,
+}
+
+/// [`LaunchDefaults`] as stored, including the single `model` of canvases
+/// from before models were kept per agent.
+#[derive(Deserialize, Default)]
+struct RawLaunchDefaults {
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    models: BTreeMap<String, String>,
+    #[serde(default)]
+    reasoning_effort: Option<String>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    agent: Option<String>,
+    #[serde(default)]
+    context: Option<String>,
+    #[serde(default)]
+    add_dirs: Vec<String>,
+    #[serde(default)]
+    permissions: Option<String>,
+}
+
+impl From<RawLaunchDefaults> for LaunchDefaults {
+    /// The old single model moves to the agents whose ids it fits
+    /// ([`crate::models::legacy_agents`]); per-agent entries win.
+    fn from(raw: RawLaunchDefaults) -> Self {
+        let mut models = raw.models;
+        if let Some(model) = raw.model.map(|m| m.trim().to_owned()).filter(|m| !m.is_empty()) {
+            for kind in crate::models::legacy_agents(&model) {
+                models.entry(kind.id().to_owned()).or_insert_with(|| model.clone());
+            }
+        }
+        LaunchDefaults {
+            models,
+            reasoning_effort: raw.reasoning_effort,
+            mode: raw.mode,
+            agent: raw.agent,
+            context: raw.context,
+            add_dirs: raw.add_dirs,
+            permissions: raw.permissions,
+        }
+    }
 }
 
 pub const PERMISSIONS: [&str; 2] = ["allow-all", "ask"];
@@ -192,7 +258,7 @@ pub const MODES: [&str; 3] = ["interactive", "plan", "autopilot"];
 pub const CONTEXTS: [&str; 2] = ["default", "long_context"];
 
 impl LaunchDefaults {
-    /// `self` overridden field-by-field by `over`; folders are combined.
+    /// `self` overridden field-by-field by `over` (models per agent); folders are combined.
     pub fn merged(&self, over: Option<&LaunchDefaults>) -> LaunchDefaults {
         let Some(over) = over else { return self.clone() };
         let pick = |a: &Option<String>, b: &Option<String>| b.clone().filter(|v| !v.is_empty()).or_else(|| a.clone());
@@ -202,8 +268,10 @@ impl LaunchDefaults {
                 add_dirs.push(dir.clone());
             }
         }
+        let mut models = self.models.clone();
+        models.extend(over.models.iter().map(|(k, v)| (k.clone(), v.clone())));
         LaunchDefaults {
-            model: pick(&self.model, &over.model),
+            models,
             reasoning_effort: pick(&self.reasoning_effort, &over.reasoning_effort),
             mode: pick(&self.mode, &over.mode),
             agent: pick(&self.agent, &over.agent),
@@ -213,12 +281,25 @@ impl LaunchDefaults {
         }
     }
 
+    /// The model set for `kind` (`Some("")`: the agent's own default; `None`: not set).
+    pub fn model(&self, kind: AgentKind) -> Option<&str> {
+        self.models.get(kind.id()).map(String::as_str)
+    }
+
+    /// Sets the model for `kind` (`None` unsets it).
+    pub fn set_model(&mut self, kind: AgentKind, model: Option<&str>) {
+        match model {
+            Some(model) => self.models.insert(kind.id().to_owned(), model.trim().to_owned()),
+            None => self.models.remove(kind.id()),
+        };
+    }
+
     /// Copilot's permission flag for every launch: `--allow-all` unless set to ask.
     pub fn permission_args(&self) -> Vec<String> {
         if self.permissions.as_deref() == Some("ask") { Vec::new() } else { vec!["--allow-all".to_owned()] }
     }
 
-    /// Copilot CLI arguments for these defaults.
+    /// Copilot CLI arguments for these defaults (models are per agent: see [`Self::summary`]).
     pub fn args(&self) -> Vec<String> {
         let mut args = Vec::new();
         let mut flag = |name: &str, value: &Option<String>| {
@@ -227,7 +308,6 @@ impl LaunchDefaults {
                 args.push(value.trim().to_owned());
             }
         };
-        flag("--model", &self.model);
         flag("--reasoning-effort", &self.reasoning_effort);
         flag("--mode", &self.mode);
         flag("--agent", &self.agent);
@@ -239,8 +319,21 @@ impl LaunchDefaults {
         args
     }
 
+    /// One line for panels: the models per agent, then the other flags.
+    pub fn summary(&self) -> String {
+        let mut parts: Vec<String> = crate::agent::ALL
+            .iter()
+            .filter_map(|kind| self.model(*kind).map(|m| format!("{} {}", kind.label(), if m.is_empty() { "(its default)" } else { m })))
+            .collect();
+        let args = self.args().join(" ");
+        if !args.is_empty() {
+            parts.push(args);
+        }
+        parts.join(" · ")
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.args().is_empty() && self.permissions.is_none()
+        self.models.is_empty() && self.args().is_empty() && self.permissions.is_none()
     }
 }
 
@@ -342,6 +435,13 @@ pub struct Doc {
     /// setting, else the first installed agent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_agent: Option<String>,
+    /// Sessions unused for this many days are drawn dusty (0: never).
+    #[serde(default = "default_dust_days")]
+    pub dust_after_days: u32,
+}
+
+fn default_dust_days() -> u32 {
+    crate::visual::DEFAULT_DUST_DAYS
 }
 
 /// MCP server choice for new sessions: the last one used and named presets.
@@ -436,6 +536,7 @@ impl Default for Doc {
             automations_dir: None,
             doctor_created: false,
             default_agent: None,
+            dust_after_days: default_dust_days(),
         }
     }
 }
@@ -535,7 +636,12 @@ impl Doc {
     /// Smallest group containing the node's center.
     pub fn group_of(&self, node: &Node) -> Option<&Group> {
         let (cx, cy) = node.rect().center();
-        self.groups.iter().filter(|g| g.rect().contains(cx, cy)).min_by_key(|g| (g.w as i64) * (g.h as i64))
+        self.group_at(cx, cy)
+    }
+
+    /// Smallest group containing the point (where a box centred there belongs).
+    pub fn group_at(&self, x: i32, y: i32) -> Option<&Group> {
+        self.groups.iter().filter(|g| g.rect().contains(x, y)).min_by_key(|g| (g.w as i64) * (g.h as i64))
     }
 
     /// Smallest group that strictly contains `group` (for nesting).
@@ -569,7 +675,10 @@ impl Doc {
     }
 
     pub fn move_group(&mut self, group_id: &str, dx: i32, dy: i32) {
-        let (nodes, groups) = self.group_contents(group_id);
+        let (mut nodes, groups) = self.group_contents(group_id);
+        // A stack moves with its parent, wherever its boxes' own positions are.
+        let follow: Vec<String> = nodes.iter().filter(|id| self.node(id).is_some_and(|n| n.stacked)).flat_map(|id| crate::visual::stack_members(self, id)).collect();
+        nodes.extend(follow);
         for node in self.nodes.iter_mut().filter(|n| nodes.contains(&n.id)) {
             node.x += dx;
             node.y += dy;
@@ -580,9 +689,15 @@ impl Doc {
         }
     }
 
-    /// Moves nodes together with their subagent boxes (each at most once).
+    /// Moves nodes together with their subagent boxes and stacked
+    /// subsessions (each at most once).
     pub fn move_nodes(&mut self, ids: &[String], dx: i32, dy: i32) {
         let mut moving: HashSet<String> = ids.iter().cloned().collect();
+        for id in ids {
+            if self.node(id).is_some_and(|n| n.stacked) {
+                moving.extend(crate::visual::stack_members(self, id));
+            }
+        }
         for node in &self.nodes {
             if node.kind == NodeKind::Agent && node.parent.as_ref().is_some_and(|p| ids.contains(p)) {
                 moving.insert(node.id.clone());
@@ -881,7 +996,7 @@ pub fn demo_doc(cwd: &str) -> Doc {
         passive: None,
         no_messages: false,
         agent: None,
-        agent_session: None,
+        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
     };
     let mut doc = Doc::default();
     doc.nodes.push(session("demo-main", "Build session canvas", 2, 2));
@@ -936,7 +1051,7 @@ pub fn migrate_v1(path: &Path) -> Option<Doc> {
             command: None,
             fresh: false,
             automation: None,
-            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None,
+            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
         });
     }
     // The prototype stacked boxes 7 rows apart; v2 boxes are 4 tall, so keep positions.
@@ -950,7 +1065,7 @@ mod tests {
     use super::*;
 
     fn session(id: &str, x: i32, y: i32) -> Node {
-        Node { id: id.into(), kind: NodeKind::Session, name: id.into(), x, y, cwd: None, parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None }
+        Node { id: id.into(), kind: NodeKind::Session, name: id.into(), x, y, cwd: None, parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None }
     }
 
     fn agent(id: &str, parent: &str, x: i32, y: i32) -> Node {
@@ -1030,15 +1145,61 @@ mod tests {
 
     #[test]
     fn launch_defaults_merge_and_render_cli_flags() {
-        let base = LaunchDefaults { model: Some("gpt-x".into()), reasoning_effort: Some("high".into()), add_dirs: vec![r"C:\shared".into()], ..Default::default() };
-        let group = LaunchDefaults { model: Some("claude-y".into()), mode: Some("autopilot".into()), add_dirs: vec![r"c:\SHARED".into(), r"D:\docs".into()], ..Default::default() };
+        let models = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<BTreeMap<_, _>>();
+        let base = LaunchDefaults { models: models(&[("copilot", "gpt-x"), ("claude", "opus")]), reasoning_effort: Some("high".into()), add_dirs: vec![r"C:\shared".into()], ..Default::default() };
+        let group = LaunchDefaults { models: models(&[("copilot", "claude-y"), ("opencode", "")]), mode: Some("autopilot".into()), add_dirs: vec![r"c:\SHARED".into(), r"D:\docs".into()], ..Default::default() };
         let merged = base.merged(Some(&group));
-        assert_eq!(
-            merged.args(),
-            ["--model", "claude-y", "--reasoning-effort", "high", "--mode", "autopilot", "--add-dir", r"C:\shared", "--add-dir", r"D:\docs"]
-        );
+        assert_eq!(merged.args(), ["--reasoning-effort", "high", "--mode", "autopilot", "--add-dir", r"C:\shared", "--add-dir", r"D:\docs"]);
+        assert_eq!((merged.model(AgentKind::Copilot), merged.model(AgentKind::OpenCode), merged.model(AgentKind::Claude)), (Some("claude-y"), Some(""), Some("opus")), "the group wins per agent");
+        assert_eq!(merged.summary(), "GitHub Copilot claude-y · OpenCode (its default) · Claude Code opus · --reasoning-effort high --mode autopilot --add-dir C:\\shared --add-dir D:\\docs");
         assert!(LaunchDefaults::default().is_empty());
+        assert!(!LaunchDefaults { models: models(&[("claude", "opus")]), ..Default::default() }.is_empty(), "a model alone is an override");
         assert_eq!(base.merged(None), base);
+    }
+
+    #[test]
+    fn the_old_single_model_moves_to_the_agents_its_id_fits() {
+        let old: LaunchDefaults = serde_json::from_str(r#"{"model":"github-copilot/claude-opus-5.5","reasoning_effort":"high"}"#).unwrap();
+        assert_eq!(old.models, BTreeMap::from([("opencode".to_owned(), "github-copilot/claude-opus-5.5".to_owned())]));
+        assert_eq!(old.reasoning_effort.as_deref(), Some("high"));
+        let bare: LaunchDefaults = serde_json::from_str(r#"{"model":" opus ","models":{"claude":"sonnet"}}"#).unwrap();
+        assert_eq!((bare.model(AgentKind::Copilot), bare.model(AgentKind::Claude), bare.model(AgentKind::OpenCode)), (Some("opus"), Some("sonnet"), None), "per-agent entries win");
+        let blank: LaunchDefaults = serde_json::from_str(r#"{"model":null,"reasoning_effort":null,"mode":null,"agent":null,"context":null,"add_dirs":[],"permissions":null}"#).unwrap();
+        assert!(blank.is_empty(), "canvases saved before per-agent models load unchanged");
+        // Written back without the old field; read again unchanged.
+        let text = serde_json::to_string(&bare).unwrap();
+        assert!(!text.contains("\"model\""), "{text}");
+        assert_eq!(serde_json::from_str::<LaunchDefaults>(&text).unwrap(), bare);
+        let mut set = LaunchDefaults::default();
+        set.set_model(AgentKind::OpenCode, Some(" x/y "));
+        set.set_model(AgentKind::Claude, Some(""));
+        assert_eq!((set.model(AgentKind::OpenCode), set.model(AgentKind::Claude)), (Some("x/y"), Some("")));
+        set.set_model(AgentKind::OpenCode, None);
+        assert_eq!(set.model(AgentKind::OpenCode), None);
+    }
+
+    #[test]
+    fn a_whole_canvas_round_trips_models_per_agent_and_per_session() {
+        let dir = std::env::temp_dir().join(format!("cc-models-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("canvas.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        // A canvas from before: one model for every agent, in the canvas and a group.
+        std::fs::write(
+            &path,
+            r#"{"version":2,"nodes":[{"id":"a","kind":"session","name":"A","x":0,"y":0,"agent":"claude"}],"groups":[{"id":"g","name":"G","x":0,"y":0,"w":40,"h":10,"defaults":{"model":"opencode/big-pickle"}}],"view":{"x":0,"y":0},"defaults":{"model":"claude-opus-4.5"}}"#,
+        )
+        .unwrap();
+        let store = Store::open(&path).unwrap();
+        let mut doc = store.load().unwrap().unwrap();
+        assert_eq!((doc.defaults.model(AgentKind::Copilot), doc.defaults.model(AgentKind::Claude), doc.defaults.model(AgentKind::OpenCode)), (Some("claude-opus-4.5"), Some("claude-opus-4.5"), None));
+        assert_eq!(doc.groups[0].defaults.as_ref().unwrap().model(AgentKind::OpenCode), Some("opencode/big-pickle"));
+        assert_eq!(doc.nodes[0].model, None, "not recorded for older boxes");
+        doc.defaults.set_model(AgentKind::OpenCode, Some("github-copilot/gpt-6-sol"));
+        doc.nodes[0].model = Some("claude-opus-5-5".into());
+        store.save(&doc).unwrap();
+        assert_eq!(store.load().unwrap(), Some(doc));
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1049,7 +1210,7 @@ mod tests {
         let asking = LaunchDefaults { permissions: Some("ask".into()), ..Default::default() };
         assert!(!asking.is_empty(), "a group override is kept");
         assert!(canvas.merged(Some(&asking)).permission_args().is_empty());
-        let unset_group = LaunchDefaults { model: Some("m".into()), ..Default::default() };
+        let unset_group = LaunchDefaults { models: BTreeMap::from([("copilot".to_owned(), "m".to_owned())]), ..Default::default() };
         assert_eq!(asking.merged(Some(&unset_group)).permission_args(), Vec::<String>::new(), "groups inherit the canvas setting");
         // Canvases saved before this setting existed load as allow-all.
         let old: LaunchDefaults = serde_json::from_str(r#"{"model":"x"}"#).unwrap();

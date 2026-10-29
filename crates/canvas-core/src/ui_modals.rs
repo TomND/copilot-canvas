@@ -11,13 +11,16 @@ use crate::paths::{format_age, now_ms};
 
 const HELP: &[(&str, &str)] = &[
     ("Canvas (mouse)", ""),
-    ("Click a box", "open / focus its real terminal"),
+    ("Click a box or sidebar row", "select and view it (never starts it)"),
+    ("Double-click a box or row · Enter", "start / resume it, focus its terminal"),
+    ("RECENT (top of the sidebar)", "your last-used sessions, newest first"),
     ("Drag a box", "move it (its subagents follow)"),
     ("Drag empty space / middle-drag", "pan"),
     ("Shift-drag or right-drag", "select several sessions"),
     ("Wheel / Shift+wheel", "pan vertical / horizontal"),
     ("Alt+wheel or Ctrl+wheel · toolbar − +", "zoom (100% · 50% · 25%)"),
     ("Drag a group title / ◢ corner", "move / resize the group"),
+    ("Click a group's background / border", "select it (arrows move, Del deletes)"),
     ("Double-click empty space", "new session there"),
     ("Right-click", "context menu"),
     ("Keys", ""),
@@ -26,12 +29,16 @@ const HELP: &[(&str, &str)] = &[
     ("I / V", "import agent sessions / sync VS Code agent sessions"),
     ("Alt+1…8 or activity bar", "Sessions · Automations · Plugins · MCP · Skills · Agents · VS Code · Settings"),
     ("Lists: Enter · Space · Del", "open/edit · enable/disable · remove"),
-    ("Enter / Tab", "open selection / cycle sessions"),
+    ("Enter / Tab", "start selection / cycle sessions"),
+    ("Ctrl+F6 / Ctrl+Shift+F6 · ] / [", "next / previous recent (views only)"),
     ("Arrows / Shift / Ctrl", "move selection / faster / pan"),
     ("R · Del · X", "rename · remove box or group · stop session"),
     ("T · F · + − · C", "tile terminals · fit all · zoom · center"),
     ("/ · B", "filter sidebar · toggle sidebar"),
     ("O", "open this canvas in the other client (GUI / TUI)"),
+    ("K · H", "stack / unstack subsessions · hide / show all subsessions"),
+    ("Click a stack · double-click", "view its top card · unstack (back to their places)"),
+    ("Click an effect (✦ ◉ ✧ ▲)", "clear it (it never starts the session)"),
     ("F6 · Ctrl+]", "cycle focus · leave a terminal"),
     ("Shift+PgUp/PgDn", "terminal history"),
     ("Q / Ctrl+Q", "quit (sessions can keep running)"),
@@ -189,6 +196,7 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
         Modal::NewSession(dialog) => draw_new_session(app, buf, screen, dialog, ctx),
         Modal::Mcp(picker) => draw_mcp_picker(app, buf, screen, picker, ctx),
         Modal::Viewer(viewer) => draw_viewer(app, buf, screen, viewer, ctx),
+        Modal::Inspector(inspector) => draw_inspector(app, buf, screen, inspector, ctx),
         Modal::Folder(browser) => {
             let rect = centered(screen, 76, screen.height.saturating_sub(6).min(28));
             panel(buf, rect, "Choose a folder");
@@ -223,7 +231,12 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
         Modal::Pick(pick) => {
             let rect = centered(screen, 72, screen.height.saturating_sub(8).min(24));
             panel(buf, rect, &pick.title);
-            let filter = if pick.filter.is_empty() { "type to filter".to_owned() } else { format!("filter: {}", pick.filter) };
+            let model = matches!(pick.purpose, crate::dialogs::PickPurpose::Model(_));
+            let filter = match (pick.filter.is_empty(), model) {
+                (true, true) => "type to filter, or type any model id".to_owned(),
+                (true, false) => "type to filter".to_owned(),
+                (false, _) => format!("filter: {}", pick.filter),
+            };
             put(buf, rect.x as i32 + 2, rect.y as i32 + 1, &filter, fg(MUTED).bg(MODAL), rect);
             let visible = pick.visible();
             let rows = rect.height.saturating_sub(4) as usize;
@@ -243,7 +256,8 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
                 ctx.hit(Rect::new(rect.x + 1, y as u16, rect.width - 2, 1), Hit::ListRow(index));
             }
             if visible.is_empty() {
-                put(buf, rect.x as i32 + 2, rect.y as i32 + 2, "No matches.", fg(MUTED).bg(MODAL), rect);
+                let text = if model { format!("Enter uses “{}” as the model id.", pick.filter.trim()) } else { "No matches.".to_owned() };
+                put(buf, rect.x as i32 + 2, rect.y as i32 + 2, &truncate(&text, rect.width as usize - 4), fg(MUTED).bg(MODAL), rect);
             }
             (rect, None)
         }
@@ -380,7 +394,8 @@ fn draw_viewer(app: &mut App, buf: &mut Buffer, screen: Rect, viewer: &crate::vi
         (Some(_), None) => {
             let last = (viewer.top + rows).min(lines.len());
             let range = if lines.is_empty() { "empty".into() } else { format!("lines {}–{last} of {}", viewer.top + 1, lines.len()) };
-            format!("{range}{}   ·   ↑↓ PgUp/PgDn scroll · ←→ sideways · Tab buttons · Esc close", viewer.note.as_deref().map(|n| format!(" · {n}")).unwrap_or_default())
+            let keys = if viewer.browsing() { "↑↓ pick · Enter open · Backspace up · Tab buttons · Esc close" } else { "↑↓ PgUp/PgDn scroll · ←→ sideways · Tab buttons · Esc close" };
+            format!("{range}{}   ·   {keys}", viewer.note.as_deref().map(|n| format!(" · {n}")).unwrap_or_default())
         }
     };
     let status_style = if viewer.error.is_some() { fg(NEGATIVE).bg(MODAL) } else { fg(MUTED).bg(MODAL) };
@@ -393,17 +408,81 @@ fn draw_viewer(app: &mut App, buf: &mut Buffer, screen: Rect, viewer: &crate::vi
         }
         let visible: String = line.chars().skip(viewer.left).collect();
         let text_x = x + gutter as i32 + 1;
-        put(buf, text_x, y, &truncate(&visible, (width - gutter as i32 - 1).max(1) as usize), fg(TEXT).bg(MODAL), rect);
+        // The folder browser: entries are picked and opened.
+        let picked = viewer.browsing() && row == viewer.pick && row < viewer.entries.len();
+        let style = if picked && !viewer.on_buttons { bold(SELECT).bg(PANEL_HI) } else { fg(TEXT).bg(MODAL) };
+        if picked && !viewer.on_buttons {
+            fill(buf, text_x - 1, y, width - gutter as i32, 1, Style::default().bg(PANEL_HI), rect);
+            put(buf, text_x - 1, y, "›", bold(ACCENT).bg(PANEL_HI), rect);
+        }
+        put(buf, text_x, y, &truncate(&visible, (width - gutter as i32 - 1).max(1) as usize), style, rect);
+        if viewer.browsing() && row < viewer.entries.len() {
+            ctx.hit(Rect::new(rect.x + 1, y as u16, rect.width - 2, 1), Hit::ListRow(row));
+        }
     }
     let mut bx = x;
     let y = rect.bottom() as i32 - 2;
     for (i, label) in viewer.buttons().iter().enumerate() {
-        bx = button(buf, ctx, bx, y, label, i == viewer.sel, i == 0, i, rect);
+        let focused = i == viewer.sel && (!viewer.browsing() || viewer.on_buttons);
+        bx = button(buf, ctx, bx, y, label, focused, i == 0, i, rect);
     }
     if ctx.top
         && let Some(Modal::Viewer(top)) = app.modals.last_mut()
     {
         top.rows = rows.max(1);
+    }
+    (rect, None)
+}
+
+/// The transcript inspector: what may resume, the status, the transcript
+/// (newest at the bottom while it follows), buttons.
+fn draw_inspector(app: &mut App, buf: &mut Buffer, screen: Rect, inspector: &crate::inspect::Inspector, ctx: &mut Ctx) -> (Rect, Option<(u16, u16)>) {
+    use crate::inspect::Line;
+    let rect = centered(screen, screen.width.saturating_sub(6).min(150), screen.height.saturating_sub(2));
+    panel(buf, rect, &format!("Transcript · {} (read-only)", truncate(&inspector.title, 70)));
+    let (x, width) = (rect.x as i32 + 2, rect.width as i32 - 4);
+    let note = app.inspector_note(inspector);
+    put(buf, x, rect.y as i32 + 1, &truncate(&note, width.max(1) as usize), fg(PURPLE).bg(MODAL), rect);
+    let rows = rect.height.saturating_sub(6) as usize;
+    let lines = inspector.transcript.as_ref().map(|t| crate::inspect::lines(t, width.max(16) as usize)).unwrap_or_default();
+    let max_top = lines.len().saturating_sub(rows);
+    let top = if inspector.follow { max_top } else { inspector.top.min(max_top) };
+    let status = match (&inspector.transcript, &inspector.error) {
+        (_, Some(error)) => error.clone(),
+        (None, None) => "Loading…".into(),
+        (Some(t), None) => {
+            let range = if lines.is_empty() { "empty".to_owned() } else { format!("lines {}–{} of {}", top + 1, (top + rows).min(lines.len()), lines.len()) };
+            let older = if t.truncated { " (the newest part)" } else { "" };
+            let live = if t.running { " · running: refreshing" } else { "" };
+            format!("{} entries{older}{live} · {range}   ·   ↑↓ PgUp/PgDn scroll · End newest · Tab buttons · Esc close", t.entries.len())
+        }
+    };
+    let status_style = if inspector.error.is_some() { fg(NEGATIVE).bg(MODAL) } else { fg(MUTED).bg(MODAL) };
+    put(buf, x, rect.y as i32 + 2, &truncate(&status, width.max(1) as usize), status_style, rect);
+    for (row, (text, kind)) in lines.iter().enumerate().skip(top).take(rows) {
+        let style = match kind {
+            Line::User => bold(ACCENT).bg(MODAL),
+            Line::Assistant => fg(TEXT).bg(MODAL),
+            Line::Tool => fg(GRAY).bg(MODAL),
+            Line::Result | Line::Blank => fg(MUTED).bg(MODAL),
+            Line::Failed => fg(NEGATIVE).bg(MODAL),
+            Line::Note => fg(PURPLE).bg(MODAL),
+        };
+        put(buf, x, rect.y as i32 + 3 + (row - top) as i32, &truncate(text, width.max(1) as usize), style, rect);
+    }
+    let mut bx = x;
+    let y = rect.bottom() as i32 - 2;
+    let buttons = app.inspector_buttons(inspector);
+    // The first button is the primary one when it resumes (Copy and Close follow it).
+    for (i, (label, _)) in buttons.iter().enumerate() {
+        bx = button(buf, ctx, bx, y, label, i == inspector.sel, i == 0 && buttons.len() > 2, i, rect);
+    }
+    if ctx.top
+        && let Some(Modal::Inspector(open)) = app.modals.last_mut()
+    {
+        open.rows = rows.max(1);
+        open.total = lines.len();
+        open.top = top;
     }
     (rect, None)
 }
@@ -557,6 +636,19 @@ fn draw_new_session(app: &App, buf: &mut Buffer, screen: Rect, dialog: &crate::d
             x = put(buf, x, y, &text, if missing && !on { fg(MUTED).bg(MODAL) } else { style }, rect) + 3;
         }
         ctx.hit(Rect::new(field_x as u16, y as u16, (x - field_x).max(1) as u16, 1), Hit::Field(NsField::Agent));
+        y += 2;
+    }
+
+    // The model it starts with (and why), before starting.
+    label(buf, y, "Model", focus == NsField::Model);
+    {
+        let style = if focus == NsField::Model { Style::default().fg(TEXT).bg(PANEL_HI).add_modifier(Modifier::UNDERLINED) } else { Style::default().fg(TEXT).bg(PANEL_HI) };
+        fill(buf, field_x, y, field_w, 1, style, rect);
+        let shown = app.dialog_model(dialog);
+        let model = shown.model.as_deref().map(crate::models::shown).unwrap_or_else(|| "the parent's model".to_owned());
+        let text = if dialog.forks() { format!("{model} · {}", shown.note) } else { format!("{model}  ▾ · {}", shown.note) };
+        put(buf, field_x, y, &truncate(&text, field_w as usize), style, rect);
+        ctx.hit(Rect::new(field_x as u16, y as u16, field_w as u16, 1), Hit::Field(NsField::Model));
         y += 2;
     }
 

@@ -82,6 +82,10 @@ pub struct Snapshot {
     /// User settings, secrets redacted.
     pub settings: Vec<(String, String)>,
     pub errors: Vec<String>,
+    /// Model ids the agent's CLI lists (`opencode models`, the choices in
+    /// `copilot --help`, the aliases in `claude --help`); may be empty.
+    #[serde(default)]
+    pub models: Vec<String>,
 }
 
 /// What a configuration change applies to.

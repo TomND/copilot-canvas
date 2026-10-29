@@ -197,6 +197,14 @@ fn contract(backend: &dyn Backend, ctx: &Ctx, work: &Path, tag: &str) -> Vec<Str
     assert!(yaml.contains(&format!("id: {child}")) && yaml.contains("name: \"Forked\""), "{yaml}");
     assert!(backend.fork(parent, child, "Again", None).is_err(), "never overwrites a session");
 
+    // The read-only transcript of that history (what the inspector shows).
+    let request = canvas_model::rpc::Request::Transcript { agent: AgentKind::Copilot, session: parent.into(), parent: None, agent_key: None, cwd: None, limit: 50 };
+    let transcript = backend.transcript(request).unwrap();
+    assert_eq!(transcript.entries.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(), ["hi"]);
+    answers.push(serde_json::to_string(&transcript).unwrap());
+    let bad = canvas_model::rpc::Request::Transcript { agent: AgentKind::Copilot, session: "not-a-session".into(), parent: None, agent_key: None, cwd: None, limit: 50 };
+    answers.push(backend.transcript(bad).unwrap_err().to_string());
+
     // Canvas backups.
     let canvas = mine.join("canvas.json");
     let backup = backend.doc_backup(&canvas.display().to_string(), "before-test", Doc::default()).unwrap();
@@ -320,7 +328,7 @@ fn two_clients_editing_one_canvas_converge() {
     a.doc.node_mut("demo-main").unwrap().x += 6;
     a.doc.node_mut("demo-main").unwrap().name = "Renamed in A".into();
     a.doc.nodes.push(node("from-a", 0));
-    a.doc.defaults.model = Some("model-a".into());
+    a.doc.defaults.set_model(AgentKind::Claude, Some("model-a"));
     b.doc.node_mut("demo-main").unwrap().name = "Renamed in B".into();
     b.doc.nodes.push(node("from-b", 40));
     b.doc.view.zoom = 2;
@@ -340,7 +348,7 @@ fn two_clients_editing_one_canvas_converge() {
     assert_eq!(a.notices, ["“Renamed in A”"], "the overwritten side is told");
     assert!(b.notices.is_empty());
     assert_eq!(ids(&a.doc).iter().rev().take(2).collect::<Vec<_>>(), ["from-b", "from-a"]);
-    assert_eq!(a.doc.defaults.model.as_deref(), Some("model-a"));
+    assert_eq!(b.doc.defaults.model(AgentKind::Claude), Some("model-a"), "a remembered model reaches the other window");
     assert_eq!((a.doc.view.zoom, b.doc.view.zoom), (0, 2), "views stay per client");
     // A third client sees the same document; the service saved it.
     let c = Window::open(&service, r"C:\");

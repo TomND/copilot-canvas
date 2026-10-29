@@ -72,6 +72,8 @@ impl Provider for Copilot {
             if launch.allow_all {
                 args.push("--allow-all".to_owned());
             }
+            // New sessions only: Copilot keeps a session's model (and the rest)
+            // itself, so a resume never gets the current default.
             if !launch.resume {
                 let mut flag = |name: &str, value: &Option<String>| {
                     if let Some(value) = value.as_ref().filter(|v| !v.trim().is_empty()) {
@@ -172,12 +174,12 @@ mod tests {
                 "--plugin-dir", r"C:\h\plugin"
             ]
         );
-        let resume = AgentLaunch { resume: true, model: Some("ignored on resume".into()), ..new.clone() };
+        let resume = AgentLaunch { resume: true, model: Some("the session's recorded model".into()), ..new.clone() };
         let args = Copilot.command(id, &resume, &integration).unwrap().args;
         assert!(!args.iter().any(|a| a == "--name" || a == "--model"), "{args:?}");
         let passive = AgentLaunch { headless_prompt: Some("run".into()), group_folder: Some(r"C:\g".into()), ..resume };
         let args = Copilot.command(id, &passive, &integration).unwrap().args;
-        assert_eq!(args[2..10], ["-p", "run", "--allow-all", "--no-ask-user", "--add-dir", r"C:\g", "--model", "ignored on resume"], "passive runs use the model every time");
+        assert_eq!(args[2..10], ["-p", "run", "--allow-all", "--no-ask-user", "--add-dir", r"C:\g", "--model", "the session's recorded model"], "passive runs use the model every time");
         let plain = Copilot.command(id, &AgentLaunch { model: None, ..passive.clone() }, &integration).unwrap().args;
         assert!(!plain.iter().any(|a| a == "--model"), "{plain:?}");
         assert!(Copilot.command(id, &AgentLaunch { model: Some("-x".into()), ..passive }, &integration).is_err());

@@ -216,6 +216,8 @@ pub fn snapshot() -> Snapshot {
         let mcp = scope.spawn(|| list::<serde_json::Value>(&["mcp", "list", "--json"]));
         let instructions = scope.spawn(|| list::<serde_json::Value>(&["instruction", "list", "--json"]));
         let settings = scope.spawn(|| list::<serde_json::Value>(&["config", "--list", "--json"]));
+        // The model choices its help lists (when this version lists them).
+        let help = scope.spawn(|| run_cli(&["--help"], Duration::from_secs(30)));
         match plugins.join().expect("thread") {
             Ok(v) => snapshot.plugins = v,
             Err(e) => snapshot.errors.push(format!("plugins: {e:#}")),
@@ -245,6 +247,9 @@ pub fn snapshot() -> Snapshot {
         match settings.join().expect("thread") {
             Ok(v) => flatten("", &v, &mut snapshot.settings),
             Err(e) => snapshot.errors.push(format!("settings: {e:#}")),
+        }
+        if let Ok(help) = help.join().expect("thread") {
+            snapshot.models = crate::agents::config::help_models(&help);
         }
     });
     snapshot.agents = scan_agents(&copilot_home());

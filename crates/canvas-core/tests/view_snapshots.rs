@@ -39,6 +39,8 @@ fn app(doc: Doc, demo: bool) -> App {
     app.notice = None;
     app.pan_quiet_until = None;
     app.tick = 0;
+    // Animations as with Windows' "Show animations" on, whatever this machine says.
+    app.visual.motion = Some(canvas_core::view::Motion::On);
     app.installed_agents = vec![AgentKind::Copilot, AgentKind::OpenCode];
     app.detected_agent = AgentKind::Copilot;
     app
@@ -64,7 +66,7 @@ fn node(id: &str, name: &str, x: i32, y: i32) -> Node {
         passive: None,
         no_messages: false,
         agent: None,
-        agent_session: None,
+        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
     }
 }
 
@@ -276,7 +278,43 @@ fn subagents_subsessions_and_a_loop() {
     nightly.loop_ms = 900_000;
     app.sessions.insert("nightly".into(), nightly);
     app.bus.mailbox.insert("follow".into(), 2);
+    // The loop dot where a fixed clock puts it.
+    app.visual.clock_ms = Some(NOW);
     check("subagents-subsessions-loop", &mut app, BOTH);
+}
+
+/// Two looping sessions (`/every`) and one that does not loop: each arc with
+/// its lit dot and two-cell trail where the clock puts it (TUI), the model's
+/// loops with their lap, "↻ every …" in the status lines, ↻ in the sidebar.
+fn looping(motion: canvas_core::view::Motion) -> App {
+    let mut doc = Doc::default();
+    doc.nodes.push(node("nightly", "Nightly check", 1, 1));
+    doc.nodes.push(node("hourly", "Hourly sync", 1, 8));
+    doc.nodes.push(node("plain", "Not looping", 40, 1));
+    doc.view.x = -1;
+    doc.view.y = 0;
+    doc.ui.terminal_percent = 30;
+    let mut app = app(doc, false);
+    for (id, every) in [("nightly", 900_000), ("hourly", 3_600_000), ("plain", 0)] {
+        let mut s = summary(id, Activity::Idle, true);
+        s.loop_ms = every;
+        app.sessions.insert(id.into(), s);
+    }
+    app.visual.clock_ms = Some(NOW + 700);
+    app.visual.motion = Some(motion);
+    app
+}
+
+#[test]
+fn looping_sessions() {
+    check("looping-sessions", &mut looping(canvas_core::view::Motion::On), BOTH);
+}
+
+/// The same with reduced motion: no moving dot; the arc, its lit arrowhead
+/// and (GPU) a ↻ badge hold still.
+#[test]
+fn looping_sessions_in_reduced_motion() {
+    check("looping-sessions-reduced-motion", &mut looping(canvas_core::view::Motion::Reduced), BOTH);
 }
 
 /// Two groups: one with a folder (chips lit), one without (dim chips); the
@@ -309,13 +347,44 @@ fn selection_and_rubber_band() {
 }
 
 /// The new-session dialog: name, folder, the Agent row (one agent not
-/// installed), MCP servers, first prompt.
+/// installed), the model it starts with (the initial default), MCP servers,
+/// first prompt.
 #[test]
 fn new_session_dialog() {
     let mut app = app(canvas_core::demo::demo_doc(CWD), false);
     configs(&mut app);
     app.run(Action::NewSession { at: None, parent: None });
     check("new-session-dialog", &mut app, BOTH);
+}
+
+/// A new session in a group that sets its own model: the dialog says so.
+#[test]
+fn new_session_dialog_in_a_group_with_its_own_model() {
+    let mut doc = canvas_core::demo::demo_doc(CWD);
+    let mut overrides = canvas_core::doc::LaunchDefaults::default();
+    overrides.set_model(AgentKind::Copilot, Some("claude-sonnet-5"));
+    doc.groups[0].defaults = Some(overrides);
+    doc.defaults.set_model(AgentKind::Copilot, Some("gpt-6-sol"));
+    let mut app = app(doc, false);
+    configs(&mut app);
+    // Below the first session, inside the demo group.
+    app.run(Action::NewSession { at: Some((2, 11)), parent: None });
+    check("new-session-dialog-group-model", &mut app, BOTH);
+}
+
+/// The model picker over the new-session dialog: OpenCode's own list (`opencode
+/// models`), the initial default, the agent's own default and a typed id.
+#[test]
+fn model_picker() {
+    let mut app = app(canvas_core::demo::demo_doc(CWD), false);
+    configs(&mut app);
+    app.agent_configs.get_mut(&AgentKind::OpenCode).unwrap().models =
+        ["opencode/big-pickle", "github-copilot/claude-opus-5.5", "github-copilot/gpt-6-sol", "openai/gpt-6.1-sol"].map(str::to_owned).to_vec();
+    app.doc.default_agent = Some("opencode".into());
+    app.doc.defaults.set_model(AgentKind::OpenCode, Some("github-copilot/gpt-6-sol"));
+    app.run(Action::NewSession { at: None, parent: None });
+    app.open_model_picker(canvas_core::dialogs::ModelTarget::Dialog);
+    check("model-picker", &mut app, BOTH);
 }
 
 /// The MCP picker over the new-session dialog, with a saved preset.
@@ -337,6 +406,22 @@ fn sidebar_filter() {
     app.side_filter = TextInput::new("rev");
     app.side_filter_active = true;
     check("sidebar-filter", &mut app, BOTH);
+}
+
+/// The Sessions panel's RECENT section above the tree: the sessions used
+/// last (newest first) with status, agent and age; the walk keys in its
+/// header; the selected one highlighted.
+#[test]
+fn sidebar_recent_sessions() {
+    let mut doc = canvas_core::demo::demo_doc(CWD);
+    for (id, minutes) in [("demo-review", 2), ("demo-main", 30), ("demo-sub", 180)] {
+        doc.node_mut(id).unwrap().accessed_ms = Some(NOW - minutes * 60_000);
+    }
+    let mut app = app(doc, true);
+    app.visual.clock_ms = Some(NOW);
+    app.selection = vec!["demo-main".into()];
+    app.focus = Focus::Sidebar;
+    check("sidebar-recent", &mut app, BOTH);
 }
 
 /// Two live terminals tiled, with known rows (colours, a wide character),
@@ -366,6 +451,118 @@ fn tiled_terminals() {
     app.focused_term = Some("demo-review".into());
     app.focus = Focus::Terminal;
     check("tiled-terminals", &mut app, BOTH);
+}
+
+/// A fixed "now" for dust ages (day 100 after the epoch).
+const NOW: u64 = 100 * 86_400_000;
+
+fn days_ago(days: u64) -> Option<u64> {
+    Some(NOW - days * 86_400_000)
+}
+
+/// Unused sessions gather dust by age (light, medium, heavy) with their age in
+/// the status line; working, needs-you and looping ones never do.
+#[test]
+fn dusty_sessions() {
+    let mut doc = Doc::default();
+    let rows = [
+        ("d-fresh", "Used yesterday", 1),
+        ("d-light", "Unused for 5 days", 5),
+        ("d-medium", "Unused for 20 days", 20),
+        ("d-heavy", "Unused for 90 days", 90),
+        ("d-working", "Working, old", 90),
+        ("d-waiting", "Needs you, old", 90),
+    ];
+    for (i, (id, name, age)) in rows.iter().enumerate() {
+        let mut n = node(id, name, 1 + (i as i32 % 2) * 36, 1 + (i as i32 / 2) * 7);
+        n.last_used_ms = days_ago(*age);
+        n.reviewed_ms = days_ago(*age);
+        doc.nodes.push(n);
+    }
+    doc.view.x = -1;
+    doc.view.y = 0;
+    doc.ui.terminal_percent = 30;
+    let mut app = app(doc, false);
+    app.visual.clock_ms = Some(NOW);
+    app.sessions.insert("d-working".into(), summary("d-working", Activity::Working, true));
+    let mut waiting = summary("d-waiting", Activity::Working, true);
+    waiting.pending = 1;
+    app.sessions.insert("d-waiting".into(), waiting);
+    check("dusty-sessions", &mut app, BOTH);
+}
+
+/// A family of subsessions: the parent and a nested subsession.
+fn family(stacked: bool) -> Doc {
+    let mut doc = Doc::default();
+    doc.nodes.push(node("p", "Orchestrator", 1, 1));
+    for (i, (id, name)) in [("c1", "First follow-up"), ("c2", "Second follow-up"), ("c3", "Newest follow-up")].iter().enumerate() {
+        let mut child = node(id, name, 40, 1 + i as i32 * 7);
+        child.parent = Some("p".into());
+        doc.nodes.push(child);
+    }
+    let mut nested = node("c3a", "Nested follow-up", 76, 15);
+    nested.parent = Some("c3".into());
+    doc.nodes.push(nested);
+    doc.nodes[0].stacked = stacked;
+    doc.view.x = -1;
+    doc.view.y = 0;
+    doc.ui.terminal_percent = 30;
+    doc
+}
+
+/// A stack beneath its parent: offset cards, the newest on top, a +N badge,
+/// the most important status of the stack (needs you) and an effect on a
+/// stacked child shown on the stack.
+#[test]
+fn stacked_subsessions() {
+    let mut app = app(family(true), false);
+    let mut waiting = summary("c1", Activity::Working, true);
+    waiting.pending = 1;
+    app.sessions.insert("c1".into(), waiting);
+    app.visual.motion = Some(canvas_core::view::Motion::Reduced);
+    app.frozen_tick = Some(0);
+    app.bus.effects.push(canvas_core::effects::Effect { id: "fx-1".into(), kind: "attention".into(), group: "g".into(), target: "c2".into(), note: "2 comments".into(), ms: 1, until_ms: u64::MAX, ..Default::default() });
+    check("stacked-subsessions", &mut app, BOTH);
+}
+
+/// Every subsession hidden: "⋯ N hidden" on the parent, the boxes' places kept.
+#[test]
+fn hidden_subsessions() {
+    let mut doc = family(false);
+    doc.ui.hide_subsessions = true;
+    let mut app = app(doc, false);
+    let mut failed = summary("c3a", Activity::Failed, false);
+    failed.live = false;
+    app.sessions.insert("c3a".into(), failed);
+    check("hidden-subsessions", &mut app, BOTH);
+}
+
+/// Effects in reduced-motion mode: fireworks on a box, attention on another,
+/// an alert on a group (badges in the TUI, still shapes in the GUI).
+#[test]
+fn effects_in_reduced_motion() {
+    let mut doc = Doc::default();
+    doc.nodes.push(node("e1", "Payments API", 2, 2));
+    doc.nodes.push(node("e2", "Billing UI", 2, 9));
+    doc.groups.push(Group { id: "g-pay".into(), name: "Payments".into(), x: 0, y: 0, w: 48, h: 16, color: 2, folder: Some(r"C:\work\pay".into()), source: None, defaults: None });
+    doc.view.x = -1;
+    doc.view.y = -1;
+    doc.ui.terminal_percent = 30;
+    let mut app = app(doc, false);
+    app.visual.motion = Some(canvas_core::view::Motion::Reduced);
+    app.frozen_tick = Some(0);
+    let effect = |id: &str, kind: &str, target: &str, note: &str| canvas_core::effects::Effect {
+        id: id.into(),
+        kind: kind.into(),
+        group: "g-pay".into(),
+        target: target.into(),
+        note: note.into(),
+        from: "Rollout tracker".into(),
+        ms: 1,
+        until_ms: u64::MAX,
+    };
+    app.bus.effects = vec![effect("fx-a", "fireworks", "e1", "PR !12 approved"), effect("fx-b", "attention", "e2", ""), effect("fx-c", "alert", "", "rollout stuck")];
+    check("effects-reduced-motion", &mut app, BOTH);
 }
 
 #[test]

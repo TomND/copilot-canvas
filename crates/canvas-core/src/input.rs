@@ -235,42 +235,101 @@ impl MouseEvent {
     }
 }
 
-/// The character a key contributes to a paste, if it can be part of one.
+/// The character a key contributes to a paste, if it can be part of one:
+/// text (Shift allowed; AltGr compositions arrive with Ctrl+Alt), Enter, Tab.
 pub fn paste_char(key: &KeyEvent) -> Option<char> {
     if key.kind == KeyEventKind::Release {
         return None;
     }
     let plain = key.modifiers.difference(Modifiers::SHIFT).is_empty();
+    let altgr = key.modifiers.difference(Modifiers::SHIFT) == Modifiers::CONTROL | Modifiers::ALT;
     match key.code {
-        KeyCode::Char(c) if plain => Some(c),
+        KeyCode::Char(c) if plain && !c.is_control() => Some(c),
+        KeyCode::Char(c) if altgr && !c.is_control() && !c.is_ascii_alphabetic() => Some(c),
         KeyCode::Enter if plain => Some('\n'),
         KeyCode::Tab if plain => Some('\t'),
         _ => None,
     }
 }
 
-/// A burst containing a newline and several printable keys that arrived in one
-/// read is a paste, not typing: delivering it as keys would submit early. (The
-/// Windows console delivers a paste as individual key presses.)
-pub fn coalesce(batch: Vec<InputEvent>) -> Vec<InputEvent> {
-    let presses: Vec<Option<char>> = batch
-        .iter()
-        .filter_map(|e| match e {
-            InputEvent::Key(k) if k.kind != KeyEventKind::Release => Some(paste_char(k)),
-            _ => None,
-        })
-        .collect();
-    let all_text = !presses.is_empty() && presses.iter().all(Option::is_some);
-    // A newline only at the very end is a typed/pasted line followed by Enter,
-    // which must reach the application as a real Enter key.
-    let inner_newline = presses.len() > 1 && presses[..presses.len() - 1].contains(&Some('\n'));
-    if all_text && inner_newline && presses.len() >= 3 {
-        let text: String = presses.into_iter().flatten().collect();
-        let mut out: Vec<InputEvent> = batch.into_iter().filter(|e| !matches!(e, InputEvent::Key(_))).collect();
-        out.push(InputEvent::Paste(text.trim_end_matches('\n').to_owned()));
-        return out;
+/// Pasted text without its trailing line breaks: a paste never ends with
+/// Enter, so pasting a copied line does not send it.
+pub fn paste_body(text: &str) -> &str {
+    text.trim_end_matches(['\r', '\n'])
+}
+
+/// How long the console reader waits for the rest of a burst of keys, and
+/// how soon after a burst a batch still continues it. Pasted text arrives in
+/// a few writes microseconds apart; nobody types two keys this fast.
+pub const BURST_GAP: std::time::Duration = std::time::Duration::from_millis(8);
+
+/// The key events of a batch, in order.
+fn keys(batch: &[InputEvent]) -> impl Iterator<Item = &KeyEvent> {
+    batch.iter().filter_map(|e| match e {
+        InputEvent::Key(k) => Some(k),
+        _ => None,
+    })
+}
+
+/// The batch's key presses are all text ([`paste_char`]), at least one.
+pub fn is_text(batch: &[InputEvent]) -> bool {
+    let mut presses = keys(batch).filter(|k| k.kind != KeyEventKind::Release).peekable();
+    presses.peek().is_some() && presses.all(|k| paste_char(k).is_some())
+}
+
+/// The console reader should keep reading for [`BURST_GAP`] before it
+/// decides: the batch is text with at least two key presses, or it
+/// `continues` a text batch read less than [`BURST_GAP`] before.
+pub fn is_burst(batch: &[InputEvent], continues: bool) -> bool {
+    is_text(batch) && (continues || keys(batch).filter(|k| k.kind != KeyEventKind::Release).count() >= 2)
+}
+
+/// Each key is released before the next is pressed: the Windows console
+/// delivers pasted text as press/release pairs, while keys typed in a row
+/// overlap, and the last typed key is usually still down when it is read.
+fn paired(batch: &[InputEvent]) -> bool {
+    let same = |a: KeyCode, b: KeyCode| match (a, b) {
+        (KeyCode::Char(x), KeyCode::Char(y)) => x.to_lowercase().eq(y.to_lowercase()),
+        _ => a == b,
+    };
+    let mut held: Option<KeyCode> = None;
+    for key in keys(batch) {
+        match key.kind {
+            KeyEventKind::Release => {
+                if held.is_some_and(|h| same(h, key.code)) {
+                    held = None;
+                }
+            }
+            _ if held.is_some() => return false,
+            _ => held = Some(key.code),
+        }
     }
-    batch
+    held.is_none()
+}
+
+/// Turns a burst of keys from the Windows console (which delivers a paste
+/// as individual key presses) into one [`InputEvent::Paste`], so that no
+/// pasted line break reaches the program as Enter. The rule:
+///
+/// - the batch is a burst ([`is_burst`]: text keys only, at least two
+///   presses, or continuing a text batch that came less than [`BURST_GAP`]
+///   earlier, i.e. a paste the console split across reads);
+/// - it contains a line break (Enter), anywhere, also at the end;
+/// - its keys come in press/release pairs ([`paired`]).
+///
+/// Typing never meets it: keys typed one after another arrive in batches of
+/// their own (one press each), and keys that piled up while the reader was
+/// busy overlap or end with a key still held. Bursts without a line break
+/// stay keys (harmless). The paste keeps its text as typed (`\n` for each
+/// Enter); [`paste_body`] drops the trailing line breaks when it is sent.
+pub fn coalesce(batch: Vec<InputEvent>, continues: bool) -> Vec<InputEvent> {
+    let text: String = keys(&batch).filter_map(paste_char).collect();
+    if !is_burst(&batch, continues) || !text.contains('\n') || !paired(&batch) {
+        return batch;
+    }
+    let mut out: Vec<InputEvent> = batch.into_iter().filter(|e| !matches!(e, InputEvent::Key(_))).collect();
+    out.push(InputEvent::Paste(text));
+    out
 }
 
 /// Modifier bits for the terminal protocol (Super has no wire bit).
@@ -336,51 +395,86 @@ mod tests {
         InputEvent::Key(KeyEvent::new(code, modifiers))
     }
 
-    #[test]
-    fn bursts_with_newlines_become_pastes() {
-        let batch = vec![key(KeyCode::Char('a'), Modifiers::NONE), key(KeyCode::Enter, Modifiers::NONE), key(KeyCode::Char('B'), Modifiers::SHIFT)];
-        match coalesce(batch).as_slice() {
-            [InputEvent::Paste(text)] => assert_eq!(text, "a\nB"),
-            other => panic!("unexpected {other:?}"),
+    fn release(code: KeyCode) -> InputEvent {
+        InputEvent::Key(KeyEvent::with_kind(code, Modifiers::NONE, KeyEventKind::Release))
+    }
+
+    fn code(c: char) -> KeyCode {
+        match c {
+            '\n' => KeyCode::Enter,
+            '\t' => KeyCode::Tab,
+            c => KeyCode::Char(c),
         }
     }
 
+    /// Text as the Windows console delivers a paste: a press and a release per character.
+    fn pasted(text: &str) -> Vec<InputEvent> {
+        text.chars()
+            .flat_map(|c| {
+                let shift = if c.is_ascii_uppercase() { Modifiers::SHIFT } else { Modifiers::NONE };
+                [key(code(c), shift), release(code(c))]
+            })
+            .collect()
+    }
+
     #[test]
-    fn pastes_keep_other_events_and_drop_releases() {
-        let release = InputEvent::Key(KeyEvent::with_kind(KeyCode::Char('a'), Modifiers::NONE, KeyEventKind::Release));
-        let batch = vec![
-            key(KeyCode::Char('a'), Modifiers::NONE),
-            release,
-            InputEvent::Resize(80, 24),
-            key(KeyCode::Tab, Modifiers::NONE),
-            key(KeyCode::Enter, Modifiers::NONE),
-            key(KeyCode::Char('b'), Modifiers::NONE),
-            key(KeyCode::Enter, Modifiers::NONE),
-        ];
-        assert_eq!(coalesce(batch), vec![InputEvent::Resize(80, 24), InputEvent::Paste("a\t\nb".into())]);
+    fn pasted_bursts_become_one_paste_with_their_trailing_line_break() {
+        assert_eq!(coalesce(pasted("a\nB\n"), false), vec![InputEvent::Paste("a\nB\n".into())]);
+        assert_eq!(coalesce(pasted("x\n"), false), vec![InputEvent::Paste("x\n".into())], "short pastes too");
+        assert_eq!(coalesce(pasted("\n\n  indented\n"), false), vec![InputEvent::Paste("\n\n  indented\n".into())]);
+        assert_eq!(paste_body("a\nB\n"), "a\nB");
+        assert_eq!(paste_body("x\r\n\r\n"), "x");
+        assert_eq!(paste_body("\r\n"), "");
+        assert_eq!(paste_body("a\n\nb"), "a\n\nb", "inner blank lines stay");
+    }
+
+    #[test]
+    fn a_paste_split_across_reads_continues_as_a_paste() {
+        // The console wrote "a", then "\n", then "b": the first batch was a single key.
+        assert_eq!(coalesce(pasted("a"), false), pasted("a"));
+        assert!(is_burst(&pasted("\n"), true), "a text batch right after another is read as a burst");
+        assert_eq!(coalesce(pasted("\n"), true), vec![InputEvent::Paste("\n".into())], "its line break is not Enter");
+        assert_eq!(coalesce(pasted("\nb"), true), vec![InputEvent::Paste("\nb".into())]);
+        assert!(!is_burst(&pasted("\n"), false), "on its own it is a key");
     }
 
     #[test]
     fn typing_and_shortcuts_are_not_pastes() {
-        let typed = coalesce(vec![key(KeyCode::Char('a'), Modifiers::NONE), key(KeyCode::Char('b'), Modifiers::NONE)]);
-        assert_eq!(typed.len(), 2);
-        let line_then_enter =
-            coalesce(vec![key(KeyCode::Char('a'), Modifiers::NONE), key(KeyCode::Char('b'), Modifiers::NONE), key(KeyCode::Enter, Modifiers::NONE)]);
-        assert_eq!(line_then_enter.len(), 3, "a trailing Enter stays a key press");
-        let enter = coalesce(vec![key(KeyCode::Enter, Modifiers::NONE)]);
-        assert!(matches!(enter.as_slice(), [InputEvent::Key(_)]));
-        let shortcut =
-            coalesce(vec![key(KeyCode::Char('a'), Modifiers::NONE), key(KeyCode::Enter, Modifiers::NONE), key(KeyCode::Char('c'), Modifiers::CONTROL)]);
-        assert_eq!(shortcut.len(), 3, "control keys break paste detection");
+        assert_eq!(coalesce(pasted("\n"), false), pasted("\n"), "Enter on its own stays Enter");
+        assert_eq!(coalesce(vec![key(KeyCode::Enter, Modifiers::NONE)], false).len(), 1);
+        assert_eq!(coalesce(pasted("abc"), false), pasted("abc"), "a burst without a line break stays keys");
+        // Typed keys that piled up while the reader was busy: the Enter is still held.
+        let held = vec![key(code('l'), Modifiers::NONE), release(code('l')), key(code('s'), Modifiers::NONE), release(code('s')), key(KeyCode::Enter, Modifiers::NONE)];
+        assert_eq!(coalesce(held.clone(), false), held);
+        // Overlapping keys (rolled over while typing).
+        let rolled = vec![key(code('l'), Modifiers::NONE), key(code('s'), Modifiers::NONE), release(code('l')), release(code('s')), key(KeyCode::Enter, Modifiers::NONE), release(KeyCode::Enter)];
+        assert_eq!(coalesce(rolled.clone(), false), rolled);
+        // Presses without releases (a console that reports none) overlap too.
+        let unreleased = vec![key(code('a'), Modifiers::NONE), key(KeyCode::Enter, Modifiers::NONE), key(code('b'), Modifiers::NONE)];
+        assert_eq!(coalesce(unreleased.clone(), false), unreleased);
+        let mut shortcut = pasted("a\n");
+        shortcut.push(key(KeyCode::Char('c'), Modifiers::CONTROL));
+        assert_eq!(coalesce(shortcut.clone(), false), shortcut, "control keys break paste detection");
+        assert!(!is_burst(&[key(KeyCode::Up, Modifiers::NONE)], true));
     }
 
     #[test]
-    fn paste_chars_allow_only_shift() {
+    fn pastes_keep_other_events() {
+        let mut batch = vec![InputEvent::Resize(80, 24)];
+        batch.extend(pasted("a\tb\n"));
+        assert_eq!(coalesce(batch, false), vec![InputEvent::Resize(80, 24), InputEvent::Paste("a\tb\n".into())]);
+    }
+
+    #[test]
+    fn paste_chars_allow_only_shift_and_altgr() {
         assert_eq!(paste_char(&KeyEvent::new(KeyCode::Char('X'), Modifiers::SHIFT)), Some('X'));
         assert_eq!(paste_char(&KeyEvent::new(KeyCode::Enter, Modifiers::NONE)), Some('\n'));
         assert_eq!(paste_char(&KeyEvent::new(KeyCode::Tab, Modifiers::NONE)), Some('\t'));
+        assert_eq!(paste_char(&KeyEvent::new(KeyCode::Char('{'), Modifiers::CONTROL | Modifiers::ALT)), Some('{'), "AltGr");
+        assert_eq!(paste_char(&KeyEvent::new(KeyCode::Char('x'), Modifiers::CONTROL | Modifiers::ALT)), None);
         assert_eq!(paste_char(&KeyEvent::new(KeyCode::Char('x'), Modifiers::ALT)), None);
         assert_eq!(paste_char(&KeyEvent::new(KeyCode::Char('x'), Modifiers::SUPER)), None);
+        assert_eq!(paste_char(&KeyEvent::new(KeyCode::Char('\x1d'), Modifiers::NONE)), None);
         assert_eq!(paste_char(&KeyEvent::new(KeyCode::Up, Modifiers::NONE)), None);
         assert_eq!(paste_char(&KeyEvent::with_kind(KeyCode::Char('x'), Modifiers::NONE, KeyEventKind::Release)), None);
     }

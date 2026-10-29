@@ -53,13 +53,13 @@
         [{"col":0,"text":"Tabs:   ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":8,"text":"中","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":10,"text":"      ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":16,"text":"文","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":18,"text":"      x","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
         [{"col":0,"text":"Bad UTF-8: � �( � end","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
         [],
-        [{"col":0,"text":"                                      ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":38,"text":"中","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"                                      ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":38,"text":"中","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":40,"text":"","clusters":[],"wide":false,"fg":0,"bg":0,"flags":4096,"underline":0,"link":0}],
         [{"col":0,"text":"文","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
-        [],
+        [{"col":39,"text":"","clusters":[],"wide":false,"fg":0,"bg":0,"flags":4096,"underline":0,"link":0}],
         [{"col":0,"text":"字","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":2,"text":"x","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
         [{"col":0,"text":" x","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":2,"text":"文字","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
         [{"col":0,"text":"中","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":2,"text":"y ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":4,"text":"字","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
-        [{"col":0,"text":"一二三四五六七八九十一二三四五六七八九十","clusters":[],"wide":true,"fg":4,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"一二三四五六七八九十一二三四五六七八九十","clusters":[],"wide":true,"fg":4,"bg":0,"flags":0,"underline":0,"link":0},{"col":40,"text":"","clusters":[],"wide":false,"fg":0,"bg":0,"flags":4096,"underline":0,"link":0}],
         [{"col":0,"text":"一","clusters":[],"wide":true,"fg":4,"bg":0,"flags":0,"underline":0,"link":0}]
       ]
     }

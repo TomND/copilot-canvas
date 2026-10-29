@@ -15,7 +15,7 @@ use crate::paint::{
     put_sym, truncate, truncate_left,
 };
 use crate::status::{Status, StatusStyle};
-use crate::paths::{format_age, now_ms};
+use crate::paths::now_ms;
 use crate::view::{RenderMode, View};
 
 pub fn draw(app: &mut App, frame: &mut Frame) {
@@ -159,7 +159,15 @@ fn draw_toolbar(app: &mut App, buf: &mut Buffer, area: Rect) {
     if app.render_mode == crate::view::RenderMode::Gpu {
         x = toolbar_button(app, buf, x, " ⧉ ", Action::NewWindow, area);
     }
-    let buttons_end = toolbar_button(app, buf, x, " ⏻ Quit ", Action::Quit, area);
+    let mut x = toolbar_button(app, buf, x, " ⏻ Quit ", Action::Quit, area);
+    // Subsessions are hidden: say so, and show them with a click.
+    if app.doc.ui.hide_subsessions {
+        let hidden = canvas_model::visual::hidden_subsessions(&app.doc).keys().filter(|id| app.doc.node(id).is_some_and(|n| n.kind == NodeKind::Session)).count();
+        let end = put(buf, x, area.y as i32, &format!(" ↳ {hidden} hidden "), bold(PANEL).bg(GRAY), area);
+        app.layout.hits.push((Rect::new(x as u16, area.y, (end - x).max(0) as u16, 1), Hit::Toolbar(Action::Visual(crate::visual::VisualAction::ToggleHideSubsessions))));
+        x = end + 1;
+    }
+    let buttons_end = x;
 
     // Status counts on the right, never over the buttons.
     let mut counts: HashMap<Status, usize> = HashMap::new();
@@ -302,12 +310,14 @@ fn refresh_side_rows(app: &mut App) {
         h.write_i32(node.y);
         h.write_usize(node.name.len() * 2 + node.parent.is_some() as usize);
         h.write_u64(node.reviewed_ms.unwrap_or(0));
+        h.write_u64(node.accessed_ms.unwrap_or(0));
     }
     for group in &app.doc.groups {
         (group.x, group.y, group.w, group.h, group.name.len()).hash(&mut h);
     }
     (&app.selection, &app.selected_group, &app.side_filter.text, &app.doc.ui.collapsed).hash(&mut h);
     (app.sessions_rev, app.terms_rev, app.preparing.len(), app.launching.len(), app.node_errors.len(), app.automations.len(), app.demo).hash(&mut h);
+    (app.recent.hold_until.is_some(), app.recent_room()).hash(&mut h);
     (now_ms() / 1000).hash(&mut h);
     let key = h.finish();
     if let Some(perf) = &mut app.perf {
@@ -315,12 +325,39 @@ fn refresh_side_rows(app: &mut App) {
     }
     if key != app.side_rows_key {
         let t = std::time::Instant::now();
+        // The highlighted row stays on the same entry when rows come or go above it.
+        let current = app.side_rows.get(app.side_sel).map(|r| r.kind.clone());
         app.side_rows = build_side_rows(app);
         app.side_rows_key = key;
+        if let Some(index) = current.and_then(|kind| app.side_rows.iter().position(|r| r.kind == kind)) {
+            app.side_sel = index;
+        }
+        if app.recent.hold_until.is_none() {
+            app.recent.shown = app.side_rows.iter().filter_map(|r| if let SideKind::Recent(id) = &r.kind { Some(id.clone()) } else { None }).collect();
+        }
         if let Some(perf) = &mut app.perf {
             perf.phase("side-build", t.elapsed());
         }
     }
+}
+
+/// The RECENT section (when anything was used yet): its header, the
+/// recently used sessions newest first (unless folded), and a line before
+/// the tree.
+fn recent_rows(app: &App, rows: &mut Vec<SideRow>) {
+    let recent = app.recent_ids();
+    if recent.is_empty() {
+        return;
+    }
+    let collapsed = app.doc.ui.collapsed.iter().any(|c| c == crate::recent::COLLAPSED);
+    rows.push(SideRow { kind: SideKind::RecentHeader, label: "RECENT".into(), depth: 0, status: None, count: Some(recent.len()), collapsed });
+    if !collapsed {
+        for node in recent.iter().filter_map(|id| app.doc.node(id)) {
+            rows.push(SideRow { kind: SideKind::Recent(node.id.clone()), label: node.name.clone(), depth: 0, status: Some(app.node_status(node)), count: None, collapsed: false });
+        }
+    }
+    let sessions = app.doc.nodes.iter().filter(|n| n.kind == NodeKind::Session).count();
+    rows.push(SideRow { kind: SideKind::Section, label: "All sessions".into(), depth: 0, status: None, count: Some(sessions), collapsed: false });
 }
 
 /// Sidebar tree: groups (nested) → sessions → subsessions → active subagents.
@@ -357,6 +394,8 @@ pub fn build_side_rows(app: &App) -> Vec<SideRow> {
         }
         return rows;
     }
+    // Recently used sessions first, then the tree.
+    recent_rows(app, &mut rows);
     // Everything below is built once per frame so the tree costs O(boxes),
     // whatever the number of sessions, subagents and groups.
     // Only sessions/automations need their group (subagents follow their parent).
@@ -447,14 +486,26 @@ pub fn build_side_rows(app: &App) -> Vec<SideRow> {
         if collapsed {
             return;
         }
+        // The group's folders (a click opens their menu).
+        if !group.is_automations() {
+            let label = match group.folder.as_deref() {
+                Some(folder) => folder.trim_end_matches(['\\', '/']).rsplit(['\\', '/']).next().unwrap_or(folder).to_owned(),
+                None => "Set folder…".to_owned(),
+            };
+            rows.push(SideRow { kind: SideKind::Folder(group.id.clone()), label, depth: depth + 1, status: None, count: None, collapsed: false });
+        }
         for child in tree.groups.iter().filter(|g| tree.parent_of_group.get(g.id.as_str()).copied().flatten() == Some(group.id.as_str())) {
             emit_group(app, child, depth + 1, rows, tree, row);
         }
-        for node in members {
+        for node in members.iter().filter(|n| n.passive.is_none()) {
             let parent_here = node.parent.as_deref().is_some_and(|p| tree.group_of.get(p) == tree.group_of.get(node.id.as_str()) && tree.ids.contains(p));
             if !parent_here {
                 emit_session(app, node, depth + 1, rows, tree, row);
             }
+        }
+        // Its passive sessions, wherever their boxes are (a click opens their panel).
+        for node in app.doc.nodes.iter().filter(|n| n.passive.as_ref().is_some_and(|p| p.group == group.id)) {
+            rows.push(row(node, depth + 1));
         }
     }
 
@@ -464,7 +515,7 @@ pub fn build_side_rows(app: &App) -> Vec<SideRow> {
     }
     let group_of = &tree.group_of;
     let ungrouped: Vec<&&Node> =
-        by_position.iter().filter(|n| n.kind == NodeKind::Session && group_of.get(n.id.as_str()).copied().flatten().is_none()).collect();
+        by_position.iter().filter(|n| n.kind == NodeKind::Session && group_of.get(n.id.as_str()).copied().flatten().is_none() && !n.passive.as_ref().is_some_and(|p| app.doc.group(&p.group).is_some())).collect();
     if !ungrouped.is_empty() {
         if !app.doc.groups.is_empty() {
             rows.push(SideRow { kind: SideKind::Section, label: "Ungrouped".into(), depth: 0, status: None, count: Some(ungrouped.len()), collapsed: false });
@@ -507,13 +558,14 @@ fn draw_sidebar(app: &mut App, buf: &mut Buffer, area: Rect) {
     app.side_scroll = app.side_scroll.min(total.saturating_sub(visible));
     app.layout.sidebar_rows.clear();
     let width = area.right() as i32;
+    let concealed = app.concealed_now();
     for (i, row) in app.side_rows.iter().enumerate().skip(app.side_scroll).take(visible) {
         let y = list_top as i32 + (i - app.side_scroll) as i32;
         app.layout.sidebar_rows.push((y as u16, i));
         let is_selected = match &row.kind {
             SideKind::Group(id) => app.selected_group.as_deref() == Some(id),
-            SideKind::Session(id) | SideKind::Agent(id) => app.selection.contains(id),
-            SideKind::Section => false,
+            SideKind::Session(id) | SideKind::Agent(id) | SideKind::Recent(id) => app.selection.contains(id),
+            SideKind::Section | SideKind::Folder(_) | SideKind::RecentHeader => false,
         };
         let highlight = focused && i == app.side_sel;
         let bg = if is_selected { PANEL_HI } else { PANEL };
@@ -538,15 +590,67 @@ fn draw_sidebar(app: &mut App, buf: &mut Buffer, area: Rect) {
                 put(buf, end + 1, y, &truncate(&row.label, room), bold(TEXT).bg(bg), area);
                 put(buf, width - count.len() as i32 - 1, y, &count, fg(MUTED).bg(bg), area);
             }
+            SideKind::Folder(id) => {
+                let set = app.doc.group(id).is_some_and(|g| g.folder.is_some());
+                let color = app.doc.group(id).map(|g| crate::paint::GROUP_COLORS[g.color as usize % 6]).unwrap_or(ACCENT);
+                let end = put(buf, x, y, "◧", fg(if set { color } else { MUTED }).bg(bg), area) + 1;
+                put(buf, end, y, &truncate(&row.label, (width - end - 1).max(1) as usize), fg(if set { GRAY } else { MUTED }).bg(bg), area);
+            }
+            SideKind::RecentHeader => {
+                // ▾ RECENT 5 … and the keys that walk it.
+                let caret = if row.collapsed { "▸" } else { "▾" };
+                let end = put(buf, x, y, caret, fg(MUTED).bg(bg), area) + 1;
+                let end = put(buf, end, y, "RECENT", bold(GRAY).bg(bg), area);
+                let end = put(buf, end + 1, y, &row.count.unwrap_or(0).to_string(), fg(MUTED).bg(bg), area);
+                let hint = "Ctrl+F6 · [ ]";
+                let hint_w = crate::paint::text_width(hint) as i32;
+                if width - 1 - hint_w > end + 1 {
+                    put(buf, width - 1 - hint_w, y, hint, fg(MUTED).bg(bg), area);
+                }
+            }
+            SideKind::Recent(id) => {
+                // Status icon and name, then the agent and how long ago.
+                let status = row.status.unwrap_or(Status::Unknown);
+                let node = app.doc.node(id);
+                let end = put(buf, x, y, status.icon(app.tick), fg(status.color()).bg(bg), area) + 1;
+                let agent = match node {
+                    Some(n) if n.command.is_some() => "shell",
+                    Some(n) => crate::agents::agent_of(n).id(),
+                    None => "",
+                };
+                // "now" within a minute (no ticking seconds), then 2m, 3h, 5d.
+                let now = app.visual_now();
+                let age = node.and_then(|n| n.accessed_ms).map(|at| if now.saturating_sub(at) < 60_000 { "now".to_owned() } else { crate::paths::format_age(at, now) }).unwrap_or_default();
+                let right = format!(" {agent} {age}");
+                let right_w = crate::paint::text_width(&right) as i32;
+                let style = match status.attention() {
+                    _ if is_selected => bold(SELECT).bg(bg),
+                    Some((color, _)) => bold(color).bg(bg),
+                    _ => fg(TEXT).bg(bg),
+                };
+                let room = width - end - 1 - right_w;
+                if room >= 6 {
+                    put(buf, end, y, &truncate(&row.label, room as usize), style, area);
+                    put(buf, width - right_w - 1, y, &right, fg(MUTED).bg(bg), area);
+                } else {
+                    put(buf, end, y, &truncate(&row.label, (width - end - 1).max(1) as usize), style, area);
+                }
+            }
             SideKind::Session(id) | SideKind::Agent(id) => {
                 let status = row.status.unwrap_or(Status::Unknown);
                 let agent = matches!(row.kind, SideKind::Agent(_));
-                let sub = !agent && app.doc.node(id).is_some_and(|n| n.parent.is_some());
+                let node = app.doc.node(id);
+                let passive = node.is_some_and(|n| n.passive.is_some());
+                let sub = !agent && !passive && node.is_some_and(|n| n.parent.is_some());
+                // Stacked or hidden subsessions are listed dimmed.
+                let tucked = concealed.contains_key(id.as_str());
                 let mut end = x;
                 if agent {
                     end = put(buf, end, y, "◇", fg(MUTED).bg(bg), area) + 1;
+                } else if passive {
+                    end = put(buf, end, y, "⟲", fg(MUTED).bg(bg), area) + 1;
                 } else if sub {
-                    end = put(buf, end, y, "↳", fg(ACCENT).bg(bg), area) + 1;
+                    end = put(buf, end, y, "↳", fg(if tucked { MUTED } else { ACCENT }).bg(bg), area) + 1;
                 }
                 end = put(buf, end, y, status.icon(app.tick), fg(status.color()).bg(bg), area) + 1;
                 if let Some(node) = app.doc.node(id)
@@ -560,13 +664,19 @@ fn draw_sidebar(app: &mut App, buf: &mut Buffer, area: Rect) {
                 {
                     end = put(buf, end, y, "↗", fg(crate::paint::PURPLE).bg(bg), area) + 1;
                 }
+                // An unused session shows how long ago it was used.
+                let age = node.and_then(|n| app.dust_of(n, status)).map(|(_, last)| format!(" {}", crate::paths::format_age(last, app.visual_now())));
                 let style = match status.attention() {
                     _ if is_selected => bold(SELECT).bg(bg),
                     Some((color, _)) if !agent => bold(color).bg(bg),
-                    _ if agent => fg(GRAY).bg(bg),
+                    _ if agent || tucked || age.is_some() => fg(GRAY).bg(bg),
                     _ => fg(TEXT).bg(bg),
                 };
-                put(buf, end, y, &truncate(&row.label, (width - end - 1).max(1) as usize), style, area);
+                let age_w = age.as_deref().map(|a| crate::paint::text_width(a) as i32).unwrap_or(0);
+                put(buf, end, y, &truncate(&row.label, (width - end - 1 - age_w).max(1) as usize), style, area);
+                if let Some(age) = &age {
+                    put(buf, width - age_w - 1, y, age, fg(MUTED).bg(bg), area);
+                }
             }
         }
     }
@@ -702,7 +812,7 @@ fn draw_terminals(app: &mut App, buf: &mut Buffer, area: Rect, view_model: &mut 
             });
         }
         if !info.alive && !app.launching.contains_key(id) {
-            let hint = " Exited — press Enter or click the box to restart ";
+            let hint = " Exited — press Enter or double-click the box to restart ";
             let x = inner.x as i32 + (inner.width as i32 - crate::paint::text_width(hint) as i32).max(0) / 2;
             put(buf, x, inner.bottom() as i32 - 1, hint, Style::default().fg(Color::Black).bg(ATTENTION), inner);
         }
@@ -770,7 +880,6 @@ fn draw_details(app: &mut App, buf: &mut Buffer, area: Rect) {
     let mut lines: Vec<(String, Style)> = Vec::new();
     // Lines that act as buttons.
     let mut clicks: Vec<(usize, crate::dialogs::Action)> = Vec::new();
-    let now = now_ms();
     if let Some(group) = app.selected_group.as_deref().and_then(|g| app.doc.group(g)).cloned() {
         use crate::dialogs::Action;
         let members = app.doc.members(&group.id);
@@ -794,12 +903,20 @@ fn draw_details(app: &mut App, buf: &mut Buffer, area: Rect) {
                     lines.push(("◧ Choose a folder for AI docs + human outputs…".into(), fg(ACCENT)));
                 }
             }
-            let overrides = group.defaults.as_ref().map(|d| d.args().join(" ")).unwrap_or_default();
+            let overrides = group.defaults.as_ref().map(|d| d.summary()).unwrap_or_default();
             if !overrides.is_empty() {
                 lines.push((format!("Launch   {overrides}"), fg(TEXT)));
             }
             clicks.push((lines.len(), Action::GroupDefaults(group.id.clone())));
             lines.push(("⚙ Launch defaults for this group…".into(), fg(ACCENT)));
+            let passives = app.group_passives(&group.id).len();
+            if passives > 0 {
+                clicks.push((lines.len(), Action::Visual(crate::visual::VisualAction::GroupPassives(group.id.clone()))));
+                lines.push((format!("⟲ {passives} passive session(s)…"), fg(ACCENT)));
+            } else if !app.demo {
+                clicks.push((lines.len(), Action::NewPassive(group.id.clone())));
+                lines.push(("⟲ Add a passive session…".into(), fg(ACCENT)));
+            }
         }
         lines.push((String::new(), Style::default()));
         for member in members.iter().filter_map(|m| app.doc.node(m)).filter(shown).take(inner.height as usize) {
@@ -809,56 +926,12 @@ fn draw_details(app: &mut App, buf: &mut Buffer, area: Rect) {
         lines.push((String::new(), Style::default()));
         lines.push(("Enter: show running terminals · R: rename · Del: delete group".into(), fg(MUTED)));
     } else if let Some(node) = app.primary().cloned() {
-        let summary = app.summary(&node).cloned();
-        let status = app.node_status(&node);
-        lines.push((node.name.clone(), bold(TEXT)));
-        lines.push((format!("{} {}", status.icon(app.tick), status.label()), fg(status.color())));
-        lines.push((String::new(), Style::default()));
-        if node.kind == NodeKind::Agent {
-            if let Some(agent) = summary.as_ref().and_then(|s| s.agents.iter().find(|a| Some(&a.key) == node.agent_key.as_ref()))
-                && !agent.description.is_empty()
-            {
-                lines.push((agent.description.clone(), fg(TEXT)));
-            }
-            lines.push(("Subagents run inside their parent session's terminal.".into(), fg(MUTED)));
-            lines.push(("Enter / click opens the parent terminal.".into(), fg(MUTED)));
-        } else {
-            let cwd = node.cwd.clone().or_else(|| summary.as_ref().map(|s| s.cwd.clone())).unwrap_or_default();
-            lines.push((format!("Folder   {}", truncate_left(&cwd, w.saturating_sub(9))), fg(TEXT)));
-            if let Some(s) = &summary {
-                if !s.branch.is_empty() {
-                    lines.push((format!("Branch   {}", s.branch), fg(TEXT)));
-                }
-                if !s.repository.is_empty() {
-                    lines.push((format!("Repo     {}", s.repository), fg(TEXT)));
-                }
-                let client = if s.client.is_empty() && crate::agents::agent_of_summary(s) == crate::agents::AgentKind::Copilot { "unknown" } else { crate::app::client_label(s) };
-                lines.push((format!("Client   {client}"), fg(TEXT)));
-                if s.updated_ms > 0 {
-                    lines.push((format!("Updated  {} ago", format_age(s.updated_ms, now)), fg(TEXT)));
-                }
-                if !s.agents.is_empty() {
-                    lines.push((format!("Subagents {}", s.agents.len()), fg(TEXT)));
-                }
-                if s.truncated {
-                    lines.push(("Activity from the most recent 1 MiB of history.".into(), fg(MUTED)));
-                }
-            }
-            if !app.demo && node.command.is_none() {
-                lines.push((format!("Agent    {}", crate::agents::agent_of(&node).label()), fg(TEXT)));
-                lines.push((format!("Session  {}", crate::agents::native_id(&node)), fg(MUTED)));
-            }
-            lines.push((String::new(), Style::default()));
-            if status == Status::External || app.live_elsewhere(&node) {
-                lines.push(("Open in another terminal (CLI or VS Code).".into(), fg(crate::paint::PURPLE)));
-                lines.push(("Copilot Canvas will not start a second copy.".into(), fg(MUTED)));
-            } else if let Some(error) = app.node_errors.get(&node.id) {
-                lines.push((format!("Problem: {error}"), fg(NEGATIVE)));
-            } else {
-                lines.push(("Enter or click the box to open its terminal.".into(), fg(ACCENT)));
-            }
-            lines.push(("S: subsession · R: rename · G: group · X: stop".into(), fg(MUTED)));
-        }
+        // The same panel a click on the box opens (automations keep their own).
+        let detail = match (&node.automation, node.kind) {
+            (Some(key), NodeKind::Automation) => crate::side::RightDetail::Automation(key.clone()),
+            _ => crate::side::RightDetail::Session(node.id.clone()),
+        };
+        return crate::ui_side::draw_right_detail(app, buf, area, &detail);
     } else {
         lines.push(("Select a session to see it here.".into(), fg(MUTED)));
     }
@@ -879,10 +952,10 @@ fn draw_status(app: &mut App, buf: &mut Buffer, area: Rect) {
         (notice.text.clone(), if notice.error { fg(NEGATIVE).bg(PANEL) } else { fg(TEXT).bg(PANEL) })
     } else {
         let hints = match app.focus {
-            Focus::Terminal => "Typing goes to the terminal · Ctrl+] or F6 back to canvas · drag to copy · Ctrl+V paste · Alt+V image · Ctrl+click links · Shift+PgUp history · click canvas to leave",
+            Focus::Terminal => "Typing goes to the terminal · Ctrl+] or F6 back to canvas · Ctrl+F6 / Ctrl+Shift+F6 recent sessions · drag to copy · Ctrl+V paste · Alt+V image · Ctrl+click links · Shift+PgUp history · click canvas to leave",
             Focus::Sidebar if app.side_view != crate::side::SideView::Sessions => "↑↓ move · Enter open/edit · Space enable/disable · Del remove · Esc back · Alt+1…8 views · ? help",
-            Focus::Sidebar => "↑↓ move · Enter open · ←→ collapse · / filter · Tab canvas · Alt+1…8 views · ? help",
-            Focus::Canvas => "drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom · right-click menu · ? help",
+            Focus::Sidebar => "click view · double-click/Enter start · ] [ or Ctrl+F6 recent · ←→ collapse · / filter · Tab canvas · Alt+1…8 views · ? help",
+            Focus::Canvas => "click view · double-click/Enter start · ] [ or Ctrl+F6 recent · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom · right-click menu · ? help",
         };
         (hints.to_owned(), fg(MUTED).bg(PANEL))
     };

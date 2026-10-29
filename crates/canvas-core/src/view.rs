@@ -115,6 +115,63 @@ pub struct BoxModel {
     pub every: Option<String>,
     /// Queued messages (passive bus).
     pub mailbox: u32,
+    /// Dust of an unused session: 0 none … 3 heavy (static, never animated).
+    pub dust: u8,
+    /// Opacity while a stack or hidden subsession animates (1: opaque).
+    pub alpha: f32,
+    /// This box is the top card of a stack of subsessions.
+    pub deck: Option<DeckInfo>,
+    /// Subsessions hidden into this box: (count, attention colour of the
+    /// most important one).
+    pub hidden: Option<(u32, Option<Color>)>,
+}
+
+/// A stack of subsessions drawn beneath their parent.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeckInfo {
+    /// The stacked parent.
+    pub root: String,
+    /// Stacked sessions (the top card included).
+    pub count: u32,
+    /// Cards drawn behind the top one (0 … 2).
+    pub back: u8,
+}
+
+/// An effect from the effects collection, drawn on its anchor.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EffectModel {
+    pub id: String,
+    /// The registry name (`fireworks`, `attention`, `sparkle`, `alert`).
+    pub kind: &'static str,
+    /// The anchor: a box, a stack's top card or a group's title row.
+    pub rect: WRect,
+    pub group: bool,
+    /// Glyph and note ("✦ PR !12 approved").
+    pub badge: String,
+    /// Animation time (ms since this client first showed it).
+    pub age_ms: u64,
+}
+
+/// How effects are drawn on this machine (Settings › Effects).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Motion {
+    /// Animated (GPU particles and rings; TUI badges).
+    #[default]
+    On,
+    /// Static rings and badges, no animation (also for stacks).
+    Reduced,
+    /// Badges only.
+    Off,
+}
+
+impl Motion {
+    pub fn name(self) -> &'static str {
+        match self {
+            Motion::On => "on",
+            Motion::Reduced => "reduced motion",
+            Motion::Off => "off",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -151,30 +208,55 @@ pub struct GroupModel {
     /// A dragged box would land in this group.
     pub drop_target: bool,
     pub automations: bool,
-    /// Folder chips on the title row (clickable; dim until a folder is set).
+    /// Clickable chips on the title row: folders, passive sessions.
     pub chips: Vec<ChipModel>,
     pub has_folder: bool,
     /// Automation family labels: (world x, world y, name).
     pub families: Vec<(f32, f32, String)>,
 }
 
-/// A clickable chip on a group's title row ("◧ AI docs", "◨ Outputs").
+/// A clickable chip on a group's title row ("◧ AI docs", "⟲ 2", "+ passive").
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChipModel {
-    pub label: &'static str,
-    /// Opens human-outputs (else ai-docs).
-    pub outputs: bool,
+    pub label: String,
+    pub action: crate::dialogs::Action,
+    /// Where it is (world units); `fixed`: sized in screen cells (zoomed
+    /// out, so it stays readable), else scaled with the zoom.
     pub rect: WRect,
+    pub fixed: bool,
+    /// Drawn in the group's colour (else muted: nothing set up yet).
+    pub lit: bool,
 }
 
-/// A looping box's loopback arc with its moving dot.
+/// A looping box's loopback arc. The lit dot's place is a function of the
+/// clock (`crate::loops`), so front ends draw it at any instant.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LoopModel {
+    /// The looping box.
+    pub id: String,
     pub rect: WRect,
-    /// Position of the lit dot along the arc, 0..1.
-    pub phase: f32,
     /// The box has the active-terminal halo (the arc goes around it).
     pub halo: bool,
+    /// When the loop started (the arc grows in) or, with `ending`, stopped
+    /// (it fades out), on the animation clock (ms); `None`: steady.
+    pub changed_ms: Option<u64>,
+    pub ending: bool,
+    /// Offsets this loop's lap from its neighbours' (`crate::loops::seed`;
+    /// 0 while the `freeze` hook holds animations, so screenshots do not
+    /// depend on box ids).
+    pub seed: u32,
+}
+
+impl LoopModel {
+    /// The lap fraction (0..1) of the dot at `clock_ms`.
+    pub fn lap_at(&self, clock_ms: u64) -> f32 {
+        crate::loops::lap(clock_ms, self.seed)
+    }
+
+    /// How much of the arc shows at `clock_ms` (0..1).
+    pub fn grow_at(&self, clock_ms: u64) -> f32 {
+        crate::loops::grow(clock_ms, self.changed_ms, self.ending)
+    }
 }
 
 /// An event in flight from one box to another.
@@ -212,9 +294,31 @@ pub struct CanvasModel {
     pub empty: bool,
     /// Spinner and animation frame (80 ms steps).
     pub tick: usize,
+    /// Effects on boxes and groups.
+    pub effects: Vec<EffectModel>,
+    pub motion: Motion,
+    /// The animation clock when the model was built (ms).
+    pub clock_ms: u64,
+    /// Animations stand still at `clock_ms` (the `freeze` hook, tests).
+    pub frozen: bool,
 }
 
 impl CanvasModel {
+    /// The clock to draw animations at: now, or `clock_ms` when frozen.
+    pub fn anim_clock(&self) -> u64 {
+        if self.frozen { self.clock_ms } else { crate::paths::now_ms() }
+    }
+
+    /// Loop dots move on their own (motion on, a running clock): the front
+    /// end redraws them at its own pace.
+    pub fn loops_move(&self) -> bool {
+        self.motion == Motion::On && !self.frozen && !self.loops.is_empty()
+    }
+
+    /// Some loop is moving, growing in or fading out at `clock_ms`.
+    pub fn loops_busy(&self, clock_ms: u64) -> bool {
+        self.loops_move() || self.loops.iter().any(|l| crate::loops::changing(clock_ms, l.changed_ms))
+    }
     /// World → screen (fractional cells).
     pub fn to_screen(&self, wx: f32, wy: f32) -> (f32, f32) {
         (self.area.x as f32 + (wx - self.origin.0) * self.scale, self.area.y as f32 + (wy - self.origin.1) * self.scale)
@@ -353,7 +457,7 @@ impl CanvasModel {
                 g.has_folder
             ));
             for chip in &g.chips {
-                out.push(format!("  chip {:?} outputs={} rect={}", chip.label, chip.outputs, wrect(chip.rect)));
+                out.push(format!("  chip {:?} action={:?} rect={} fixed={} lit={}", chip.label, chip.action, wrect(chip.rect), chip.fixed, chip.lit));
             }
             for (x, y, family) in &g.families {
                 out.push(format!("  family {:?} at={},{}", family, num(*x), num(*y)));
@@ -378,9 +482,33 @@ impl CanvasModel {
                 style_name(b.line_style)
             ));
             out.push(format!("  selected={} focused_term={} active={}", b.selected, b.focused_term, b.active));
+            // Visual extras only when present (older snapshots stay as they were).
+            if b.dust > 0 {
+                out.push(format!("  dust={}", b.dust));
+            }
+            if b.alpha < 1.0 {
+                out.push(format!("  alpha={}", num(b.alpha)));
+            }
+            if let Some(deck) = &b.deck {
+                out.push(format!("  deck root={} count={} back={}", deck.root, deck.count, deck.back));
+            }
+            if let Some((count, color)) = b.hidden {
+                out.push(format!("  hidden={count} color={}", color.map(color_name).unwrap_or_else(|| "none".into())));
+            }
+        }
+        for e in &self.effects {
+            out.push(format!("effect {} {} rect={} group={} badge={:?} age_ms={}", e.id, e.kind, wrect(e.rect), e.group, e.badge, e.age_ms));
+        }
+        if !self.effects.is_empty() {
+            out.push(format!("motion {:?}", self.motion));
+        }
+        if !self.loops.is_empty() {
+            out.push(format!("loops motion={:?} frozen={}", self.motion, self.frozen));
         }
         for l in &self.loops {
-            out.push(format!("loop rect={} phase={} halo={}", wrect(l.rect), num(l.phase), l.halo));
+            // The dot's lap only on a fixed clock (else it is the time of the run).
+            let lap = if self.frozen { format!(" lap={}", num(l.lap_at(self.clock_ms))) } else { String::new() };
+            out.push(format!("loop {} rect={} halo={}{lap} grow={} ending={}", l.id, wrect(l.rect), l.halo, num(l.grow_at(self.clock_ms)), l.ending));
         }
         for p in &self.pulses {
             out.push(format!("pulse from={} to={} t={} path={}", wrect(p.from), wrect(p.to), num(p.t), path(&p.path)));

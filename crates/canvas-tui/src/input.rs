@@ -2,30 +2,43 @@
 //! to the core's platform-neutral [`InputEvent`]s and batches them (detecting
 //! pastes the Windows console delivers as individual key presses).
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::Sender;
 use ratatui::crossterm::event::{self as ct, Event};
 
 use canvas_core::input::{self, InputEvent, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind};
 
+/// Most events in one batch (a long paste is several batches that continue each other).
+const MAX_BATCH: usize = 1 << 18;
+
 pub fn spawn(tx: Sender<Vec<InputEvent>>) {
     std::thread::Builder::new()
         .name("input".into())
         .spawn(move || {
+            // When the last batch of text keys was read (see `input::coalesce`).
+            let mut last_text: Option<Instant> = None;
             while let Ok(first) = ct::read() {
-                let mut batch = vec![first];
-                while batch.len() < 4096 && ct::poll(Duration::ZERO).unwrap_or(false) {
+                let continues = last_text.is_some_and(|at| at.elapsed() < input::BURST_GAP);
+                let mut events: Vec<InputEvent> = from_crossterm(first).into_iter().collect();
+                let mut burst = false;
+                while events.len() < MAX_BATCH {
+                    // A burst of text keys may be a paste the console split
+                    // across writes: wait a moment for the rest.
+                    burst = burst || input::is_burst(&events, continues);
+                    if !ct::poll(if burst { input::BURST_GAP } else { Duration::ZERO }).unwrap_or(false) {
+                        break;
+                    }
                     match ct::read() {
-                        Ok(event) => batch.push(event),
+                        Ok(event) => events.extend(from_crossterm(event)),
                         Err(_) => break,
                     }
                 }
-                let events: Vec<InputEvent> = batch.into_iter().filter_map(from_crossterm).collect();
                 if events.is_empty() {
                     continue;
                 }
-                if tx.send(input::coalesce(events)).is_err() {
+                last_text = input::is_text(&events).then(Instant::now);
+                if tx.send(input::coalesce(events, continues)).is_err() {
                     break;
                 }
             }
@@ -188,7 +201,7 @@ mod tests {
         let altgr = key(ct_key(ct::KeyCode::Char('@'), ct::KeyModifiers::CONTROL | ct::KeyModifiers::ALT));
         assert_eq!(altgr, KeyEvent::new(KeyCode::Char('@'), Modifiers::CONTROL | Modifiers::ALT));
         assert_eq!(input::to_wire(&altgr), Some((Key::Char('@'), 0)));
-        assert_eq!(input::paste_char(&altgr), None);
+        assert_eq!(input::paste_char(&altgr), Some('@'), "pasted text typed with AltGr stays text");
         let ctrl_alt_x = key(ct_key(ct::KeyCode::Char('x'), ct::KeyModifiers::CONTROL | ct::KeyModifiers::ALT));
         assert_eq!(input::to_wire(&ctrl_alt_x), Some((Key::Char('x'), MOD_CTRL | MOD_ALT)));
         let leave = key(ct_key(ct::KeyCode::Char(']'), ct::KeyModifiers::CONTROL));
@@ -249,14 +262,19 @@ mod tests {
 
     #[test]
     fn converted_bursts_are_coalesced_into_pastes() {
+        let release = |code: ct::KeyCode| Event::Key(ct::KeyEvent::new_with_kind(code, ct::KeyModifiers::NONE, ct::KeyEventKind::Release));
         let batch = [
             ct_key(ct::KeyCode::Char('a'), ct::KeyModifiers::NONE),
-            Event::Key(ct::KeyEvent::new_with_kind(ct::KeyCode::Char('a'), ct::KeyModifiers::NONE, ct::KeyEventKind::Release)),
+            release(ct::KeyCode::Char('a')),
             ct_key(ct::KeyCode::Enter, ct::KeyModifiers::NONE),
+            release(ct::KeyCode::Enter),
             Event::FocusGained,
             ct_key(ct::KeyCode::Char('B'), ct::KeyModifiers::SHIFT),
+            release(ct::KeyCode::Char('B')),
+            ct_key(ct::KeyCode::Enter, ct::KeyModifiers::NONE),
+            release(ct::KeyCode::Enter),
         ];
         let events: Vec<InputEvent> = batch.into_iter().filter_map(from_crossterm).collect();
-        assert_eq!(input::coalesce(events), vec![InputEvent::Focus(true), InputEvent::Paste("a\nB".into())]);
+        assert_eq!(input::coalesce(events, false), vec![InputEvent::Focus(true), InputEvent::Paste("a\nB\n".into())]);
     }
 }

@@ -164,8 +164,8 @@ impl Agents {
         server::spawn_named("docs", { let a = agents.clone(); move || docs_loop(a) });
         for (count, jobs) in [(RPC_WORKERS, &rpc_rx), (QUICK_RPC_WORKERS, &quick_rx)] {
             for _ in 0..count {
-                let (ctx, jobs) = (Ctx::new(&instance), jobs.clone());
-                server::spawn_named("rpc", move || rpc_worker(ctx, jobs));
+                let (ctx, jobs, owner) = (Ctx::new(&instance), jobs.clone(), instance.clone());
+                server::spawn_named("rpc", move || rpc_worker(ctx, jobs, owner));
             }
         }
         // The skills and the `copilot-canvas` command that canvas sessions use for events.
@@ -218,7 +218,8 @@ impl Agents {
         }
         let command = provider.command(id, &launch, &self.integration(id))?;
         let how = if launch.headless_prompt.is_some() { "headless run" } else if launch.fork_from.is_some() { "fork" } else if launch.resume { "resume" } else { "new session" };
-        let model = launch.model.as_deref().map(|m| format!(", model {m}")).unwrap_or_default();
+        // The model as the command line carries it (agents that keep a session's model get none on resume).
+        let model = launch.model.as_deref().filter(|m| command.args.iter().any(|a| a == m)).map(|m| format!(", model {m}")).unwrap_or_default();
         log(&self.instance, &format!("terminal {id}: {} {how}{model}", kind.id()));
         lock(&self.agent_terms).insert(id.to_owned(), kind);
         match session_plan(kind, &launch, id, &session) {
@@ -645,12 +646,16 @@ fn docs_loop(shared: Arc<Agents>) {
 }
 
 /// Answers backend requests (the same handler as the in-process backend).
-fn rpc_worker(ctx: Ctx, jobs: Receiver<RpcJob>) {
-    use canvas_model::rpc::{Response, unsupported};
+fn rpc_worker(ctx: Ctx, jobs: Receiver<RpcJob>, instance: Instance) {
+    use canvas_model::rpc::{Request, Response, unsupported};
     for job in jobs {
         let response = match job.request {
             Ok(request) => {
                 let name = request.name();
+                // Remote clients never ask for these (they open the files in the canvas): logged to tell.
+                if let Request::OpenFolder { path } | Request::OpenTarget { target: path } = &request {
+                    log(&instance, &format!("{name} for a client: {path}"));
+                }
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::backend::handle(&ctx, request)))
                     .unwrap_or_else(|_| Response::Error(format!("the service failed answering {name}")))
             }

@@ -48,6 +48,12 @@ pub struct Perf {
     pub full_ms: Samples,
     /// … and frames in which only terminal contents changed (the other layers stay on the GPU).
     pub damage_ms: Samples,
+    /// … and frames that only moved loop dots (the loop layer alone).
+    pub loop_ms: Samples,
+    /// Frames presented of each kind.
+    pub full_frames: u64,
+    pub damage_frames: u64,
+    pub loop_frames: u64,
     /// Building the view (core) only.
     pub view_ms: Samples,
     pub scene_ms: Samples,
@@ -102,7 +108,7 @@ impl Perf {
     /// The overlay's lines.
     pub fn lines(&self, remote: bool) -> Vec<String> {
         let mut lines = vec![
-            format!("{} fps · frame {:.2} ms p95 (view {:.2} · scene {:.2} · encode {:.2}) · damage {:.2} ms p95", self.fps(), self.frame_ms.percentile(95.0), self.view_ms.percentile(95.0), self.scene_ms.percentile(95.0), self.encode_ms.percentile(95.0), self.damage_ms.percentile(95.0)),
+            format!("{} fps · frame {:.2} ms p95 (view {:.2} · scene {:.2} · encode {:.2}) · damage {:.2} · loops {:.2} ms p95", self.fps(), self.frame_ms.percentile(95.0), self.view_ms.percentile(95.0), self.scene_ms.percentile(95.0), self.encode_ms.percentile(95.0), self.damage_ms.percentile(95.0), self.loop_ms.percentile(95.0)),
             format!("present {:.2} ms · acquire {:.2} ms · input→present {:.1} ms p95", self.present_ms.percentile(95.0), self.acquire_ms.percentile(95.0), self.input_ms.percentile(95.0)),
             format!("key→echo→present p50 {:.1} / p99 {:.1} ms · output→present {:.1} ms p95", self.key_ms.percentile(50.0), self.key_ms.percentile(99.0), self.output_ms.percentile(95.0)),
         ];
@@ -116,10 +122,14 @@ impl Perf {
         serde_json::json!({
             "fps": self.fps(),
             "presented": self.presented,
+            "full_frames": self.full_frames,
+            "damage_frames": self.damage_frames,
+            "loop_frames": self.loop_frames,
             "skipped": self.skipped,
             "frame_ms": self.frame_ms.json(),
             "full_ms": self.full_ms.json(),
             "damage_ms": self.damage_ms.json(),
+            "loop_ms": self.loop_ms.json(),
             "view_ms": self.view_ms.json(),
             "scene_ms": self.scene_ms.json(),
             "encode_ms": self.encode_ms.json(),
@@ -132,9 +142,9 @@ impl Perf {
         })
     }
 
-    /// Starts a measurement from scratch.
+    /// Starts a measurement from scratch (the frame counts keep running).
     pub fn reset(&mut self) {
-        *self = Perf { presented: self.presented, ..Perf::default() };
+        *self = Perf { presented: self.presented, full_frames: self.full_frames, damage_frames: self.damage_frames, loop_frames: self.loop_frames, ..Perf::default() };
     }
 }
 

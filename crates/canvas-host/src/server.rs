@@ -1630,6 +1630,19 @@ mod tests {
     }
 
     #[test]
+    fn a_row_that_starts_or_stops_wrapping_is_sent_again() {
+        let mut sub = Sub::default();
+        frame_of(&mut sub, snapshot(&["0123456789", "x"], None)).unwrap();
+        let mut wrapped = snapshot(&["0123456789", "x"], None);
+        wrapped.lines[0].push(Run8::soft_wrap(10));
+        let frame = frame_of(&mut sub, wrapped.clone()).expect("the wrap state changed: a frame");
+        assert_eq!(frame.changed, vec![(0, wrapped.lines[0].clone())]);
+        assert!(frame_of(&mut sub, wrapped).is_none());
+        let frame = frame_of(&mut sub, snapshot(&["0123456789", "x"], None)).expect("unwrapped again (a resize reflowed it)");
+        assert_eq!(frame.changed.iter().map(|(y, _)| *y).collect::<Vec<_>>(), [0]);
+    }
+
+    #[test]
     fn osc52_copies_go_to_the_client_that_typed_into_the_terminal() {
         let connected = |ids: &'static [u64]| move |id: u64| ids.contains(&id);
         // Home typed into this terminal; the Cloud PC's window typed last elsewhere.

@@ -2,15 +2,15 @@
 ## cells (the TUI screen)
  ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit                                                3 sessions
     SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
-▌▤  / filter…                    │  ┌╌ ▣ Canvas project · 4 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ◧ AI ││ Build session canvas                                        │
+▌▤  / filter…                    │  ┌╌ ▣ Canvas project · 4 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ + passive││ Build session canvas                                        │
                                  │  ╎                                                 ││ ■ stopped                                                   │
  ◷  ▾ ▣ Canvas project         3 │  ╎ ┏ Build session canvas ━━━━━━┓    ╭ Review imple││                                                             │
-      ■ Build session canvas     │  ╎ ┃ ■ stopped                  ┃    │ ■ stopped   ││ Folder   C:\work\canvas                                     │
- ⧉      ◇ · Explore terminal AP… │  ╎ ┃ canvas                     ┃    │ canvas      ││                                                             │
-      ■ Review implementation    │  ╎ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛    ╰─────────────││ Enter or click the box to open its terminal.                │
- ⌁      ↳ ■ Write tests          │  ╎   ─────   ·     ·     ·     ·     · ┊   ·     · ││ S: subsession · R: rename · G: group · X: stop              │
-                                 │  ╎     ┌ ◇ Explore terminal A…┐        ┊           ││                                                             │
- ✦                               ╔═ New session ════════════════════════════════════════════════════════════════════╗                                │
+      ◧ Set folder…              │  ╎ ┃ ■ stopped                  ┃    │ ■ stopped   ││ Agent      none (runs its command)                          │
+ ⧉    ■ Build session canvas     │  ╎ ┃ canvas                     ┃    │ canvas      ││ Folder     C:\work\canvas                                   │
+        ◇ · Explore terminal AP… │  ╎ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛    ╰─────────────││                                                             │
+ ⌁    ■ Review implementation    │  ╎   ─────   ·     ·     ·     ·     · ┊   ·     · ││ Start runs its command in a new canvas terminal.            │
+        ↳ ■ Write tests          │  ╎     ┌ ◇ Explore terminal A…┐        ┊           ││ Double-click the box or press Enter to start it.            │
+ ✦                               ╔═ New session ════════════════════════════════════════════════════════════════════╗group · X stop                  │
                                  ║                                                                                  ║                                │
  ◈                               ║  Name                                                                            ║                                │
                                  ║                                                                                  ║                                │
@@ -19,13 +19,13 @@
  ≡                               ║                                                                                  ║                                │
                                  ║  Agent          ◉ GitHub Copilot   ○ OpenCode   ○ Claude Code (not installed)    ║                                │
                                  ║                                                                                  ║                                │
+                                 ║  Model          claude-opus-5.5  ▾ · initial default (Claude Opus 5.5)           ║                                │
+                                 ║                                                                                  ║                                │
                                  ║  MCP servers    2 of 2 on · preset “All”  ▾ choose                               ║                                │
                                  ║                                                                                  ║                                │
                                  ║  First prompt   optional — sent when the session starts                          ║                                │
                                  ║                                                                                  ║                                │
                                  ║  Tab/↑↓ move · Space/←→ agent · Enter create · Esc cancel · GitHub Copilot per…  ║                                │
-                                 ║                                                                                  ║                                │
-                                 ║                                                                                  ║                                │
                                  ║                                                                                  ║                                │
                                  ║                                                                                  ║                                │
                                  ║   Create & start    Cancel                                                       ║                                │
@@ -37,15 +37,15 @@
                                  │                                                    ││                                                             │
                                  │  ·     ·     ·     ·     ·     ·     ·     ·     · ││                                                             │
                                  │                                                    ││                                                             │
-                                 │                                                    ││                                                             │
+                                 │                                                    ││  ▸ Start    Remove    Close                                 │
                                  │  ·     ·     ·     ·     ·     ·     ·     ·     · │└─────────────────────────────────────────────────────────────┘
- drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom · right-click menu · ? help
+ click view · double-click/Enter start · ] [ or Ctrl+F6 recent · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom ·…
 ## gpu view model
 view cursor=51,12 modal=33,10 84x20 banner=None
 canvas area=34,1 52x38 origin=-2,-1 scale=1 grid=true tick=0 empty=false
 group g-demo "Canvas project" icon=▣ members=4 rect=0,0 70x15 color=#56b4e9 style=[fg #56b4e9 +DIM] selected=false drop_target=false automations=false folder=false
-  chip " ◧ AI docs " outputs=false rect=44,0 11x1
-  chip " ◨ Outputs " outputs=true rect=56,0 11x1
+  chip " ⟲ + passive " action=NewPassive("g-demo") rect=38,0 13x1 fixed=false lit=false
+  chip " ◧ Set folder… " action=SetGroupFolder("g-demo") rect=52,0 15x1 fixed=false lit=false
 edge Subagent color=#6e7681 from=2,2 30x4 to=6,7 24x3 path=(4.5,6) (4.5,6.5) (8.5,6.5) (8.5,7)
 edge Subsession color=#58a6ff from=36,2 30x4 to=36,9 30x4 path=(38.5,6) (38.5,7.5) (38.5,7.5) (38.5,9)
 box demo-main:explore Agent rect=6,7 24x3 prefix="◇ " name="Explore terminal APIs"
@@ -74,13 +74,13 @@ box demo-main Session rect=2,2 30x4 prefix="" name="Build session canvas"
 ║                                                                                  ║
 ║  Agent          ◉ GitHub Copilot   ○ OpenCode   ○ Claude Code (not installed)    ║
 ║                                                                                  ║
+║  Model          claude-opus-5.5  ▾ · initial default (Claude Opus 5.5)           ║
+║                                                                                  ║
 ║  MCP servers    2 of 2 on · preset “All”  ▾ choose                               ║
 ║                                                                                  ║
 ║  First prompt   optional — sent when the session starts                          ║
 ║                                                                                  ║
 ║  Tab/↑↓ move · Space/←→ agent · Enter create · Esc cancel · GitHub Copilot per…  ║
-║                                                                                  ║
-║                                                                                  ║
 ║                                                                                  ║
 ║                                                                                  ║
 ║   Create & start    Cancel                                                       ║

@@ -212,7 +212,7 @@ fn watched(name: &str, input: &Value) -> Option<(String, Value)> {
 }
 
 /// Text of a tool result: the tool's stdout and stderr when recorded, else the result content.
-fn result_text(block: &Value, tool_use_result: &Value) -> String {
+pub(crate) fn result_text(block: &Value, tool_use_result: &Value) -> String {
     if let Some(out) = tool_use_result.get("stdout").and_then(|s| s.as_str()) {
         let err = tool_use_result["stderr"].as_str().unwrap_or_default();
         return if err.is_empty() { out.to_owned() } else { format!("{out}\n{err}") };
@@ -232,7 +232,7 @@ fn tag<'a>(text: &'a str, name: &str) -> Option<&'a str> {
 }
 
 /// A subagent id safe to use in a file name: 1-128 of `[A-Za-z0-9_-]`.
-fn is_agent_id(id: &str) -> bool {
+pub(crate) fn is_agent_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 

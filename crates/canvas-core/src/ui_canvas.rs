@@ -1,6 +1,8 @@
-//! Canvas rendering: groups, connectors, session and subagent boxes. Cells
-//! mode draws characters ([`draw_canvas`]); Gpu mode describes the same canvas
-//! in world units ([`canvas_model`]) for the front end to draw at any scale.
+//! Canvas rendering: groups, connectors, session and subagent boxes, stacks,
+//! hidden subsessions, dust and effects. Cells mode draws characters
+//! ([`draw_canvas`]); Gpu mode describes the same canvas in world units
+//! ([`canvas_model`]) for the front end to draw at any scale. Both build the
+//! same [`BoxModel`]s, and [`paint_box`] draws one as characters.
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -16,13 +18,12 @@ use crate::paint::{
     truncate,
 };
 use crate::status::{Status, StatusStyle};
-use crate::view::{Border, BoxKind, BoxModel, CanvasModel, ChipModel, EdgeKind, EdgeModel, GroupModel, LoopModel, PulseModel, WRect};
+use crate::view::{Border, BoxKind, BoxModel, CanvasModel, ChipModel, DeckInfo, EdgeKind, EdgeModel, EffectModel, GroupModel, LoopModel, PulseModel, WRect};
+use crate::visual::{Deck, VisualFrame};
 
-/// Gpu mode: folder chips show (and click) from this scale up.
+/// Gpu mode: chips are laid out in world units (scaled with the zoom) from
+/// this scale up; below it they keep a readable size on screen.
 pub const CHIP_SCALE: f32 = 0.7;
-
-/// Folder chips on a group's title row: label, opens human-outputs.
-const CHIPS: [(&str, bool); 2] = [(" ◧ AI docs ", false), (" ◨ Outputs ", true)];
 
 /// Coloured border and tint of a box that wants your eyes (needs you, done ·
 /// review); a failed automation pulses until its next good run.
@@ -116,8 +117,122 @@ fn box_subtitle(app: &App, node: &Node) -> String {
     }
 }
 
+/// What every box of a frame shares: the animation tick, the active
+/// terminal and the flashing box.
+pub struct Boxes {
+    pub tick: usize,
+    pub active_term: Option<String>,
+    flash: Option<(String, Duration)>,
+}
+
+impl Boxes {
+    pub fn new(app: &App) -> Self {
+        Self {
+            tick: app.tick,
+            active_term: app.focused_term.clone().filter(|id| app.visible_terminals().contains(id)),
+            flash: app.flash.as_ref().filter(|(_, t)| t.elapsed() < Duration::from_millis(1500)).map(|(id, t)| (id.clone(), t.elapsed())),
+        }
+    }
+
+    /// A box or group a sidebar click revealed blinks for 1.5 s.
+    pub fn flashing(&self, id: &str) -> bool {
+        self.flash.as_ref().is_some_and(|(f, t)| f == id && (t.as_millis() / 250) % 2 == 0)
+    }
+}
+
+/// The box of a node (or of a stack's top card) at `rect`: labels, status
+/// styles, attention colours and the dust of an unused session.
+pub fn box_model(app: &App, node: &Node, rect: WRect, status: Status, selected: bool, boxes: &Boxes) -> BoxModel {
+    let tick = boxes.tick;
+    let focused_term = app.focused_term.as_deref() == Some(&node.id) && app.owned_alive(&node.id);
+    let attention = box_attention(node, status, tick);
+    let dust = if attention.is_none() { app.dust_look(node, status) } else { None };
+    let icon = status.icon(tick);
+    let label = box_label(node, status);
+    let every = app.node_loop(node);
+    let status_style = fg(status.color());
+    let kind = match node.kind {
+        _ if node.passive.is_some() => BoxKind::Passive,
+        NodeKind::Session => BoxKind::Session,
+        NodeKind::Agent => BoxKind::Agent,
+        NodeKind::Automation => BoxKind::Automation,
+    };
+    let mut line = box_line(app, node, icon, label, every.as_deref());
+    let mut line_style = if attention.is_some() { status_style.add_modifier(Modifier::BOLD) } else { status_style };
+    let mut name_style = if selected { Style::default().fg(SELECT).add_modifier(Modifier::BOLD) } else { fg(TEXT) };
+    let mut border_style = box_border_style(node, attention, selected, focused_term);
+    let mut fill = attention.map(|(_, bg)| bg).unwrap_or(PANEL);
+    if let Some(dust) = &dust {
+        // Dust: drained colours and the age, never over anything important.
+        line.push_str(&dust.suffix);
+        line_style = fg(MUTED);
+        if !selected {
+            name_style = fg(MUTED);
+        }
+        if !selected && !focused_term {
+            border_style = dust.edge;
+        }
+        fill = dust.fill;
+    }
+    BoxModel {
+        id: node.id.clone(),
+        kind,
+        rect,
+        prefix: box_prefix(node),
+        name: node.name.clone(),
+        status,
+        icon,
+        label,
+        line,
+        line_style,
+        name_style,
+        elsewhere: app.live_elsewhere(node) && status != Status::External,
+        subtitle: box_subtitle(app, node),
+        border: box_border(node, status, selected, attention.is_some()),
+        border_style,
+        fill,
+        attention,
+        selected,
+        focused_term,
+        active: boxes.active_term.as_deref() == Some(node.id.as_str()),
+        every,
+        mailbox: app.bus.mailbox.get(&node.id).copied().unwrap_or(0),
+        dust: dust.map(|d| d.dust.level()).unwrap_or(0),
+        alpha: 1.0,
+        deck: None,
+        hidden: None,
+    }
+}
+
+/// A stack's top card: the newest stacked session with the most important
+/// status of the stack (needs you, failed, done · review, working).
+pub fn deck_model(app: &App, deck: &Deck, rect: WRect, boxes: &Boxes) -> Option<BoxModel> {
+    let top = app.doc.node(&deck.top)?;
+    let status = app.aggregate_status(&deck.sessions).unwrap_or_else(|| app.node_status(top));
+    let selected = deck.sessions.iter().any(|s| app.selection.contains(s)) || boxes.flashing(&deck.top);
+    let mut b = box_model(app, top, rect, status, selected, boxes);
+    let count = deck.sessions.len() as u32;
+    b.subtitle = format!("stack of {count} · double-click to unstack");
+    b.dust = 0;
+    b.alpha = deck.alpha;
+    b.mailbox = deck.sessions.iter().map(|s| app.bus.mailbox.get(s).copied().unwrap_or(0)).sum();
+    b.active = deck.sessions.iter().any(|s| boxes.active_term.as_deref() == Some(s.as_str()));
+    b.deck = Some(DeckInfo { root: deck.root.clone(), count, back: deck.back() });
+    Some(b)
+}
+
+/// Subsessions hidden into a box: their count and the attention colour of
+/// the most important one.
+fn hidden_badge(app: &App, frame: &VisualFrame, id: &str) -> Option<(u32, Option<Color>)> {
+    let ids = frame.hidden.get(id)?;
+    let color = app.aggregate_status(ids).and_then(|s| s.attention().map(|(c, _)| c).or((s == Status::Failed).then_some(crate::paint::NEGATIVE)));
+    Some((ids.len() as u32, color))
+}
+
 pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
     let clip = area;
+    let frame = app.visual_frame();
+    app.prepare_effects();
     // Dot grid anchored to world coordinates so it moves with panning. It is
     // hidden while panning: shifting it rewrites nearly every cell each frame.
     let (n, d) = app.scale();
@@ -129,8 +244,7 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
         draw_grid(buf, area, (ox, oy), (step_x, step_y));
     }
 
-    let flash = app.flash.as_ref().filter(|(_, t)| t.elapsed() < Duration::from_millis(1500)).map(|(id, t)| (id.clone(), t.elapsed()));
-    let flashing = |id: &str| flash.as_ref().is_some_and(|(f, t)| f == id && (t.as_millis() / 250) % 2 == 0);
+    let boxes = Boxes::new(app);
 
     // Group under a dragged node (drop target).
     let drop_target = match &app.drag {
@@ -153,14 +267,17 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
             continue;
         }
         let color = GROUP_COLORS[group.color as usize % GROUP_COLORS.len()];
-        let selected = app.selected_group.as_deref() == Some(&group.id) || flashing(&group.id);
+        let selected = app.selected_group.as_deref() == Some(&group.id) || boxes.flashing(&group.id);
         let target = drop_target.as_deref() == Some(&group.id);
         let style = if selected || target { Style::default().fg(color).add_modifier(Modifier::BOLD) } else { fg(color).add_modifier(Modifier::DIM) };
         outline(buf, x, y, w, h, if selected { &HEAVY } else { &DASHED }, style, clip);
         let members = member_counts.get(group.id.as_str()).copied().unwrap_or(0);
         let icon = if group.is_automations() { "◷" } else { "▣" };
         let title = format!(" {icon} {} · {members} ", group.name);
-        let title_end = put(buf, x + 2, y, &truncate(&title, (w - 4).max(0) as usize), Style::default().fg(color).add_modifier(Modifier::BOLD), clip);
+        // Chips on the title row: passive sessions and folders (compact when narrow).
+        let chips = app.fit_group_chips(group, paint::text_width(&title) as i32, w);
+        let chips_w = crate::folders::chips_width(&chips);
+        put(buf, x + 2, y, &truncate(&title, (w - 4 - chips_w).max(0) as usize), Style::default().fg(color).add_modifier(Modifier::BOLD), clip);
         // Family names above each row of automation boxes.
         if group.is_automations() && app.doc.view.zoom == 0 {
             for (fx, fy, family) in app.family_labels(group) {
@@ -170,23 +287,14 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
                 }
             }
         }
-        // Folder chips: open the group's ai-docs / human-outputs in File Explorer.
-        if !group.is_automations() && w >= 44 {
-            let total: i32 = CHIPS.iter().map(|(t, _)| crate::paint::text_width(t) as i32 + 1).sum();
-            let mut cx = x + w - 2 - total;
-            if cx > title_end {
-                let style = if group.folder.is_some() { Style::default().fg(color).bg(PANEL) } else { fg(MUTED).bg(PANEL) };
-                for (text, outputs) in CHIPS {
-                    let end = put(buf, cx, y, text, style, clip);
-                    if cx >= clip.x as i32 && end <= clip.right() as i32 && y >= clip.y as i32 && y < clip.bottom() as i32 {
-                        chip_hits.push((
-                            ratatui::layout::Rect::new(cx as u16, y as u16, (end - cx) as u16, 1),
-                            crate::dialogs::Hit::Toolbar(crate::dialogs::Action::OpenGroupFolder(group.id.clone(), outputs)),
-                        ));
-                    }
-                    cx = end + 1;
-                }
+        let mut cx = x + w - 2 - chips_w;
+        for chip in chips {
+            let style = if chip.lit { Style::default().fg(color).bg(PANEL) } else { fg(MUTED).bg(PANEL) };
+            let end = put(buf, cx, y, &chip.label, style, clip);
+            if cx >= clip.x as i32 && end <= clip.right() as i32 && y >= clip.y as i32 && y < clip.bottom() as i32 {
+                chip_hits.push((ratatui::layout::Rect::new(cx as u16, y as u16, (end - cx) as u16, 1), crate::dialogs::Hit::Toolbar(chip.action)));
             }
+            cx = end + 1;
         }
         put_sym(buf, x + w - 1, y + h - 1, "◢", fg(color), clip);
     }
@@ -196,17 +304,31 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
     // Connectors: parent → subagent (thin) and parent → subsession (accent),
     // routed between facing edges in whichever direction the child lies.
     let by_id: std::collections::HashMap<&str, &Node> = app.doc.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let deck_screen = |deck: &Deck| {
+        let (x, y) = app.to_screen(deck.rect.x as i32, deck.rect.y as i32);
+        let (w, h) = app.scaled(deck.rect.w as i32, deck.rect.h as i32, 4, 1);
+        (x, y, w, h)
+    };
+    let mut links: Vec<(BoxRect, BoxRect, bool)> = Vec::new();
     for node in &app.doc.nodes {
         let Some(parent) = node.parent.as_deref().and_then(|p| by_id.get(p).copied()) else { continue };
-        let (px, py, pw, ph) = app.node_screen(parent);
-        let (cx, cy, cw, ch) = app.node_screen(node);
+        if frame.skip(&node.id) || frame.skip(&parent.id) {
+            continue;
+        }
+        links.push((app.node_screen(parent), app.node_screen(node), node.kind == NodeKind::Session));
+    }
+    for deck in &frame.decks {
+        if let Some(root) = app.doc.node(&deck.root) {
+            links.push((app.node_screen(root), deck_screen(deck), true));
+        }
+    }
+    for ((px, py, pw, ph), (cx, cy, cw, ch), subsession) in links {
         // Skip connectors entirely off screen (their bounding box misses the canvas).
         let (lx, ly) = (px.min(cx) - 1, py.min(cy) - 1);
         let (hx, hy) = ((px + pw).max(cx + cw) + 1, (py + ph).max(cy + ch) + 1);
         if hx < clip.x as i32 || lx > clip.right() as i32 || hy < clip.y as i32 || ly > clip.bottom() as i32 {
             continue;
         }
-        let subsession = node.kind == NodeKind::Session;
         let style = if subsession { fg(ACCENT) } else { fg(MUTED) };
         let (vertical, horizontal) = if subsession { ("┊", "┄") } else { ("│", "─") };
         let path = connector_path((px, py, pw, ph), (cx, cy, cw, ch));
@@ -214,12 +336,11 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
     }
 
     // Nodes; selected ones on top.
-    let mut order: Vec<&Node> = app.doc.nodes.iter().collect();
+    let mut order: Vec<&Node> = app.doc.nodes.iter().filter(|n| !frame.skip(&n.id)).collect();
     order.sort_by_key(|n| app.selection.contains(&n.id));
     let zoom = app.doc.view.zoom;
-    let tick = app.tick;
     // The session whose terminal is the active one on the right.
-    let active_term = app.focused_term.clone().filter(|id| app.visible_terminals().contains(id));
+    let active_term = boxes.active_term.clone();
     let typing = app.focus == crate::app::Focus::Terminal;
     for node in order {
         let (x, y, w, h) = app.node_screen(node);
@@ -227,68 +348,26 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
             continue;
         }
         let status = app.node_status(node);
-        let selected = app.selection.contains(&node.id) || flashing(&node.id);
-        let focused_term = app.focused_term.as_deref() == Some(&node.id) && app.owned_alive(&node.id);
-        // Sessions that need you or finished a turn you have not looked at yet get a
-        // coloured border (gold heavy / blue double) and tinted body, which stay
-        // even when selected.
-        let attention = box_attention(node, status, tick);
-        let border = box_border_style(node, attention, selected, focused_term);
-        let icon = status.icon(tick);
-        let status_style = fg(status.color());
-        let name_style = if selected { Style::default().fg(SELECT).add_modifier(Modifier::BOLD) } else { fg(TEXT) };
-        match zoom {
-            0 => {
-                let body = attention.map(|(_, bg)| bg).unwrap_or(PANEL);
-                fill(buf, x + 1, y + 1, w - 2, h - 2, Style::default().bg(body), clip);
-                let set = border_set(box_border(node, status, selected, attention.is_some()));
-                outline(buf, x, y, w, h, set, border, clip);
-                let title = format!(" {}{} ", box_prefix(node), node.name);
-                put(buf, x + 1, y, &truncate(&title, (w - 2) as usize), name_style, clip);
-                let label = box_label(node, status);
-                let line = box_line(app, node, icon, label, app.node_loop(node).as_deref());
-                let label_style = if attention.is_some() { status_style.add_modifier(Modifier::BOLD) } else { status_style };
-                let end = put(buf, x + 2, y + 1, &truncate(&line, (w - 4) as usize), label_style.bg(body), clip);
-                if app.live_elsewhere(node) && status != crate::status::Status::External {
-                    put(buf, end, y + 1, &truncate(" · ↗ elsewhere", (x + w - 2 - end).max(0) as usize), fg(crate::paint::PURPLE).bg(body), clip);
-                }
-                if h >= 4 {
-                    put(buf, x + 2, y + 2, &truncate(&box_subtitle(app, node), (w - 4) as usize), fg(MUTED).bg(body), clip);
-                }
-            }
-            1 => {
-                let bg = attention.map(|(_, bg)| bg).unwrap_or(PANEL);
-                fill(buf, x, y, w, h, Style::default().bg(bg), clip);
-                let mut end = put(buf, x, y, icon, status_style.bg(bg), clip);
-                end = put(buf, end + 1, y, &truncate(&node.name, (w - 2).max(0) as usize), name_style.bg(bg), clip);
-                let _ = end;
-                if h >= 2 {
-                    let label_style = attention.map(|(c, _)| crate::paint::bold(c)).unwrap_or(fg(MUTED));
-                    put(buf, x, y + 1, &truncate(box_label(node, status), w as usize), label_style.bg(bg), clip);
-                }
-                if selected {
-                    for xx in x..x + w {
-                        paint::style_at(buf, xx, y + h - 1, Style::default().add_modifier(Modifier::UNDERLINED), clip);
-                    }
-                }
-            }
-            _ => {
-                let active = active_term.as_deref() == Some(node.id.as_str());
-                let style = if active {
-                    crate::paint::bold(ACCENT).add_modifier(Modifier::UNDERLINED)
-                } else {
-                    attention.map(|(c, bg)| crate::paint::bold(c).bg(bg)).unwrap_or(name_style)
-                };
-                let end = put(buf, x, y, icon, attention.map(|(_, bg)| status_style.bg(bg)).unwrap_or(status_style), clip);
-                put(buf, end, y, &truncate(&node.name, (w - 1).max(0) as usize), style, clip);
-            }
+        let selected = app.selection.contains(&node.id) || boxes.flashing(&node.id);
+        let mut b = box_model(app, node, WRect::from(node.rect()), status, selected, &boxes);
+        b.hidden = hidden_badge(app, &frame, &node.id);
+        paint_box(buf, &b, (x, y, w, h), zoom, clip);
+    }
+    // Stacks: the top card beneath its parent, the other cards behind it.
+    for deck in &frame.decks {
+        let (x, y, w, h) = deck_screen(deck);
+        if x + w + 2 < area.x as i32 || x > area.right() as i32 || y + h + 2 < area.y as i32 || y > area.bottom() as i32 {
+            continue;
+        }
+        if let Some(b) = deck_model(app, deck, deck.rect, &boxes) {
+            paint_box(buf, &b, (x, y, w, h), zoom, clip);
         }
     }
 
     // Queued messages for a session: a badge on its top edge.
     if zoom < 2 {
         for (id, count) in app.bus.mailbox.iter().filter(|(_, c)| **c > 0) {
-            if let Some(node) = app.doc.node(id) {
+            if let Some(node) = app.doc.node(id).filter(|n| !frame.skip(&n.id)) {
                 let (x, y, w, _) = app.node_screen(node);
                 draw_mailbox(buf, (x, y, w), *count, clip);
             }
@@ -298,7 +377,7 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
     // Events in flight: a bright dot runs from the sender to each receiver.
     for (from, to, start) in &app.pulses {
         let (Some(a), Some(b)) = (app.doc.node(from), app.doc.node(to)) else { continue };
-        if from == to {
+        if from == to || frame.skip(from) || frame.skip(to) {
             continue;
         }
         let path = connector_path(app.node_screen(a), app.node_screen(b));
@@ -306,8 +385,11 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
     }
 
     // Looping boxes: a dotted loopback on the right side with one lit dot
-    // running around it (with a short trail), like a loading bar.
-    for node in app.doc.nodes.iter() {
+    // running around it (a two-cell trail), like a loading bar; with reduced
+    // motion the arc and its arrowhead hold still.
+    let (clock, _) = app.anim_clock();
+    let moving = app.motion() == crate::view::Motion::On;
+    for node in app.doc.nodes.iter().filter(|n| !frame.skip(&n.id)) {
         let (x, y, w, h) = app.node_screen(node);
         if x + w + 3 < area.x as i32 || x > area.right() as i32 || y + h < area.y as i32 || y > area.bottom() as i32 {
             continue;
@@ -317,13 +399,22 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
         }
         // Outside the active terminal's halo, which runs one cell around the box.
         let halo = zoom < 2 && active_term.as_deref() == Some(node.id.as_str());
-        draw_loop(buf, (x, y, w + halo as i32, h), tick, clip);
+        let lap = moving.then(|| crate::loops::lap(clock, app.loop_seed(&node.id)));
+        draw_loop(buf, (x, y, w + halo as i32, h), lap, clip);
+    }
+
+    // Effects: a badge on the box (or the stack that holds it), or the group.
+    let effects = app.effect_models(&frame, &|n: &Node| WRect::from(n.rect()));
+    for effect in &effects {
+        let (x, y) = app.to_screen(effect.rect.x as i32, effect.rect.y as i32);
+        let (w, h) = app.scaled(effect.rect.w as i32, effect.rect.h as i32, 4, 1);
+        paint_effect(buf, effect, (x, y, w, h), clip);
     }
 
     // Halo one cell outside the active terminal's box (drawn last so neighbours
     // cannot cover it): thin while its terminal is showing, heavy while typing.
     if zoom < 2
-        && let Some(node) = active_term.as_deref().and_then(|id| app.doc.node(id))
+        && let Some(node) = active_term.as_deref().filter(|id| !frame.skip(id)).and_then(|id| app.doc.node(id))
     {
         let (x, y, w, h) = app.node_screen(node);
         let set = if typing { &HEAVY } else { &LIGHT };
@@ -339,6 +430,78 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
     if app.doc.nodes.is_empty() && app.doc.groups.is_empty() {
         draw_empty_hint(buf, area);
     }
+}
+
+/// One box as characters at screen cells `(x, y, w, h)` for a zoom step
+/// (0: full, 1: compact, 2: one line), with a stack's back cards and the
+/// stack and hidden-subsession badges.
+pub fn paint_box(buf: &mut Buffer, b: &BoxModel, (x, y, w, h): (i32, i32, i32, i32), zoom: u8, clip: Rect) {
+    let status_style = fg(b.status.color());
+    match zoom {
+        0 => {
+            if let Some(deck) = &b.deck {
+                for i in (1..=deck.back as i32).rev() {
+                    fill(buf, x + i + 1, y + i + 1, w - 2, h - 2, Style::default().bg(PANEL), clip);
+                    outline(buf, x + i, y + i, w, h, &ROUND, fg(MUTED), clip);
+                }
+            }
+            fill(buf, x + 1, y + 1, w - 2, h - 2, Style::default().bg(b.fill), clip);
+            outline(buf, x, y, w, h, border_set(b.border), b.border_style, clip);
+            put(buf, x + 1, y, &truncate(&format!(" {}{} ", b.prefix, b.name), (w - 2) as usize), b.name_style, clip);
+            let end = put(buf, x + 2, y + 1, &truncate(&b.line, (w - 4) as usize), b.line_style.bg(b.fill), clip);
+            if b.elsewhere {
+                put(buf, end, y + 1, &truncate(" · ↗ elsewhere", (x + w - 2 - end).max(0) as usize), fg(crate::paint::PURPLE).bg(b.fill), clip);
+            }
+            if h >= 4 {
+                put(buf, x + 2, y + 2, &truncate(&b.subtitle, (w - 4) as usize), fg(MUTED).bg(b.fill), clip);
+            }
+        }
+        1 => {
+            let bg = b.fill;
+            fill(buf, x, y, w, h, Style::default().bg(bg), clip);
+            let end = put(buf, x, y, b.icon, status_style.bg(bg), clip);
+            put(buf, end + 1, y, &truncate(&b.name, (w - 2).max(0) as usize), b.name_style.bg(bg), clip);
+            if h >= 2 {
+                let label_style = b.attention.map(|(c, _)| crate::paint::bold(c)).unwrap_or(fg(MUTED));
+                put(buf, x, y + 1, &truncate(b.label, w as usize), label_style.bg(bg), clip);
+            }
+            if b.selected {
+                for xx in x..x + w {
+                    paint::style_at(buf, xx, y + h - 1, Style::default().add_modifier(Modifier::UNDERLINED), clip);
+                }
+            }
+        }
+        _ => {
+            let style = if b.active {
+                crate::paint::bold(ACCENT).add_modifier(Modifier::UNDERLINED)
+            } else {
+                b.attention.map(|(c, bg)| crate::paint::bold(c).bg(bg)).unwrap_or(b.name_style)
+            };
+            let end = put(buf, x, y, b.icon, b.attention.map(|(_, bg)| status_style.bg(bg)).unwrap_or(status_style), clip);
+            put(buf, end, y, &truncate(&b.name, (w - 1).max(0) as usize), style, clip);
+        }
+    }
+    if zoom < 2 {
+        if let Some(deck) = b.deck.as_ref().filter(|d| d.count > 1) {
+            let badge = format!(" +{} ", deck.count - 1);
+            put(buf, x + w - 2 - paint::text_width(&badge) as i32, y, &badge, crate::paint::bold(PANEL).bg(ACCENT), clip);
+        }
+        if let Some((count, color)) = b.hidden {
+            let badge = format!(" ⋯ {count} hidden ");
+            let style = match color {
+                Some(color) => crate::paint::bold(PANEL).bg(color),
+                None => fg(TEXT).bg(crate::paint::PANEL_HI),
+            };
+            put(buf, x + w - 2 - paint::text_width(&badge) as i32, y + h - 1, &badge, style, clip);
+        }
+    }
+}
+
+/// An effect's badge on its anchor's bottom edge (a box, a stack or a group).
+pub fn paint_effect(buf: &mut Buffer, effect: &EffectModel, (x, y, w, h): (i32, i32, i32, i32), clip: Rect) {
+    let text = format!(" {} ", effect.badge);
+    let room = (w - 4).max(4) as usize;
+    put(buf, x + 2, y + h.max(1) - 1, &truncate(&text, room), crate::visual::effect_style(effect.kind), clip);
 }
 
 fn draw_grid(buf: &mut Buffer, area: Rect, (ox, oy): (i32, i32), (step_x, step_y): (i32, i32)) {
@@ -372,26 +535,29 @@ fn draw_pulse(buf: &mut Buffer, path: &[(i32, i32)], t: f32, clip: Rect) {
     }
 }
 
-/// The loopback arc beside a box with its lit dot at animation frame `tick`.
-fn draw_loop(buf: &mut Buffer, (x, y, w, h): (i32, i32, i32, i32), tick: usize, clip: Rect) {
-    let phase = tick / 2;
+/// The loopback arc beside a box with its lit dot and a two-cell trail at
+/// lap fraction `lap` (`crate::loops`: the dot keeps one speed along the
+/// cells); `None` (reduced motion): the arc with its lit arrowhead, still.
+fn draw_loop(buf: &mut Buffer, (x, y, w, h): (i32, i32, i32, i32), lap: Option<f32>, clip: Rect) {
+    use crate::paint::{LOOP, LOOP_LIT, bold};
     let path = loop_path(x, y, w, h);
     if path.len() == 1 {
-        // One-line boxes (zoomed out): the ↻ icon pulses.
+        // One-line boxes (zoomed out): the ↻ icon pulses (steady with reduced motion).
         let (px, py, glyph) = path[0];
-        let color = if phase.is_multiple_of(2) { crate::paint::LOOP_LIT } else { crate::paint::LOOP };
-        put(buf, px, py, glyph, crate::paint::bold(color), clip);
+        let lit = lap.is_none_or(|t| ((t * 4.0) as usize).is_multiple_of(2));
+        put(buf, px, py, glyph, bold(if lit { LOOP_LIT } else { LOOP }), clip);
         return;
     }
-    let lit = phase % path.len();
-    let trail = (lit + path.len() - 1) % path.len();
+    let n = path.len();
+    let head = lap.map(|t| crate::loops::cell_at(&path, crate::loops::along(t)));
     for (i, &(px, py, glyph)) in path.iter().enumerate() {
-        let (glyph, style) = if i == lit {
-            ("●", crate::paint::bold(crate::paint::LOOP_LIT))
-        } else if i == trail {
-            ("•", fg(crate::paint::LOOP))
-        } else {
-            (glyph, fg(crate::paint::LOOP))
+        let (glyph, style) = match head.map(|h| (h + n - i) % n) {
+            Some(0) => ("●", bold(LOOP_LIT)),
+            Some(1) => ("•", fg(LOOP_LIT)),
+            Some(2) => (glyph, fg(LOOP_LIT)),
+            // The arrowhead back into the box.
+            _ if i == n - 1 => (glyph, bold(LOOP_LIT)),
+            _ => (glyph, fg(LOOP)),
         };
         put(buf, px, py, glyph, style, clip);
     }
@@ -450,13 +616,46 @@ fn dragged(app: &App) -> (HashSet<&str>, HashSet<&str>) {
     (nodes, groups)
 }
 
+/// Chips of a group in Gpu mode: in world units from [`CHIP_SCALE`] up,
+/// else sized in screen cells (readable at any zoom) while the title shows.
+fn chip_models(app: &App, group: &crate::doc::Group, rect: WRect, title: &str, scale: f32) -> Vec<ChipModel> {
+    let title_w = paint::text_width(title) as i32;
+    let fixed = scale < CHIP_SCALE;
+    // Cells per chip cell: 1 at a readable size, else the zoom's.
+    let (row, title_cells, unit) = if fixed {
+        ((rect.w * scale) as i32, (title_w as f32 * scale.max(0.6)) as i32, 1.0 / scale)
+    } else {
+        (group.w, title_w, 1.0)
+    };
+    if fixed && (row < 12 || rect.h * scale < 1.5) {
+        return Vec::new();
+    }
+    let chips = app.fit_group_chips(group, title_cells, row);
+    let total = crate::folders::chips_width(&chips) as f32 * unit;
+    let mut cx = rect.right() - 2.0 * unit - total;
+    let mut out = Vec::new();
+    for chip in chips {
+        let w = chip.width() as f32 * unit;
+        out.push(ChipModel { rect: WRect::new(cx, rect.y, w, unit), label: chip.label, action: chip.action, fixed, lit: chip.lit });
+        cx += w + unit;
+    }
+    out
+}
+
 /// The canvas as a model in world units (Gpu mode): the same groups,
 /// connectors, boxes, styles and animations `draw_canvas` draws, culled to
-/// `area`. Registers the folder chips' click targets.
+/// `area`, plus stacks, hidden subsessions, effects and transitions.
+/// Registers the chips' click targets.
 pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
+    let frame = app.visual_frame();
+    app.prepare_effects();
     let scale = app.scale_f();
     let origin = app.origin_f();
     let tick = app.tick;
+    // Loops that start or stop grow in or fade out (every box, in view or not).
+    let (clock_ms, frozen) = app.anim_clock();
+    let looping: HashSet<String> = app.doc.nodes.iter().filter(|n| app.node_loop(n).is_some()).map(|n| n.id.clone()).collect();
+    app.sync_loops(looping, clock_ms, frozen);
     let mut model = CanvasModel {
         area,
         origin,
@@ -471,22 +670,28 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
         rubber: None,
         empty: app.doc.nodes.is_empty() && app.doc.groups.is_empty(),
         tick,
+        effects: Vec::new(),
+        motion: app.motion(),
+        clock_ms,
+        frozen,
     };
     let visible = model.visible();
     // Loop arcs, halos and labels reach a few units past a box.
     let shows = |r: WRect| r.right() + 4.0 >= visible.x && r.x - 1.0 <= visible.right() && r.bottom() + 2.0 >= visible.y && r.y - 2.0 <= visible.bottom();
-    let flash = app.flash.as_ref().filter(|(_, t)| t.elapsed() < Duration::from_millis(1500)).map(|(id, t)| (id.clone(), t.elapsed()));
-    let flashing = |id: &str| flash.as_ref().is_some_and(|(f, t)| f == id && (t.as_millis() / 250) % 2 == 0);
+    let boxes = Boxes::new(app);
     let drop_target = match &app.drag {
         Some(Drag::Nodes { ids, moved: true, .. }) => ids.first().and_then(|id| app.doc.node(id)).and_then(|n| app.doc.group_of(n)).map(|g| g.id.clone()),
         _ => None,
     };
     let offset = app.drag_offset();
     let (moving_nodes, moving_groups) = dragged(app);
-    let node_rect = |node: &Node| {
+    let home_rect = |node: &Node| {
         let rect = WRect::from(node.rect());
         if moving_nodes.contains(node.id.as_str()) { rect.offset(offset) } else { rect }
     };
+    // Boxes in a stack or hide transition fly; the rest sit at home.
+    let node_rect = |node: &Node| frame.moving.get(&node.id).map(|(r, _)| *r).unwrap_or_else(|| home_rect(node));
+    let deck_rect = |deck: &Deck| if moving_nodes.contains(deck.root.as_str()) { deck.rect.offset(offset) } else { deck.rect };
 
     let mut member_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     for node in &app.doc.nodes {
@@ -506,31 +711,20 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
             continue;
         }
         let color = GROUP_COLORS[group.color as usize % GROUP_COLORS.len()];
-        let selected = app.selected_group.as_deref() == Some(&group.id) || flashing(&group.id);
+        let selected = app.selected_group.as_deref() == Some(&group.id) || boxes.flashing(&group.id);
         let target = drop_target.as_deref() == Some(&group.id);
         let style = if selected || target { Style::default().fg(color).add_modifier(Modifier::BOLD) } else { fg(color).add_modifier(Modifier::DIM) };
         let members = member_counts.get(group.id.as_str()).copied().unwrap_or(0);
         let icon = if group.is_automations() { "◷" } else { "▣" };
-        let title_w = crate::paint::text_width(&format!(" {icon} {} · {members} ", group.name)) as f32;
-        let mut chips = Vec::new();
-        if !group.is_automations() && group.w >= 44 {
-            let total: f32 = CHIPS.iter().map(|(t, _)| crate::paint::text_width(t) as f32 + 1.0).sum();
-            let mut cx = rect.right() - 2.0 - total;
-            if cx > rect.x + 2.0 + title_w {
-                for (label, outputs) in CHIPS {
-                    let w = crate::paint::text_width(label) as f32;
-                    let chip = WRect::new(cx, rect.y, w, 1.0);
-                    chips.push(ChipModel { label, outputs, rect: chip });
-                    // Clickable where a readable chip covers whole cells.
-                    let (sx, sy) = model.to_screen(chip.x, chip.y);
-                    let (ex, ey) = model.to_screen(chip.right(), chip.bottom());
-                    let cell = Rect::new(sx.round().max(0.0) as u16, sy.round().max(0.0) as u16, (ex.round() - sx.round()).max(0.0) as u16, (ey - sy).round().max(1.0) as u16);
-                    let inside = cell.x >= area.x && cell.right() <= area.right() && cell.y >= area.y && cell.y < area.bottom();
-                    if scale >= CHIP_SCALE && cell.width > 0 && inside {
-                        chip_hits.push((cell, crate::dialogs::Hit::Toolbar(crate::dialogs::Action::OpenGroupFolder(group.id.clone(), outputs))));
-                    }
-                    cx += w + 1.0;
-                }
+        let chips = chip_models(app, group, rect, &format!(" {icon} {} · {members} ", group.name), scale);
+        for chip in &chips {
+            // Clickable where the chip covers whole cells.
+            let (sx, sy) = model.to_screen(chip.rect.x, chip.rect.y);
+            let (ex, ey) = model.to_screen(chip.rect.right(), chip.rect.bottom());
+            let cell = Rect::new(sx.round().max(0.0) as u16, sy.round().max(0.0) as u16, (ex.round() - sx.round()).max(0.0) as u16, (ey - sy).round().max(1.0) as u16);
+            let inside = cell.x >= area.x && cell.right() <= area.right() && cell.y >= area.y && cell.y < area.bottom();
+            if cell.width > 0 && inside {
+                chip_hits.push((cell, crate::dialogs::Hit::Toolbar(chip.action.clone())));
             }
         }
         let families = if group.is_automations() {
@@ -557,26 +751,34 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
     }
 
     let by_id: std::collections::HashMap<&str, &Node> = app.doc.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let edge = |model: &mut CanvasModel, a: WRect, b: WRect, subsession: bool| {
+        let bounds = WRect::new(a.x.min(b.x), a.y.min(b.y), a.right().max(b.right()) - a.x.min(b.x), a.bottom().max(b.bottom()) - a.y.min(b.y));
+        if shows(bounds) {
+            model.edges.push(EdgeModel {
+                kind: if subsession { EdgeKind::Subsession } else { EdgeKind::Subagent },
+                color: if subsession { ACCENT } else { MUTED },
+                from: a,
+                to: b,
+                path: connector_path_f(a, b),
+            });
+        }
+    };
     for node in &app.doc.nodes {
         let Some(parent) = node.parent.as_deref().and_then(|p| by_id.get(p).copied()) else { continue };
-        let (a, b) = (node_rect(parent), node_rect(node));
-        let bounds = WRect::new(a.x.min(b.x), a.y.min(b.y), a.right().max(b.right()) - a.x.min(b.x), a.bottom().max(b.bottom()) - a.y.min(b.y));
-        if !shows(bounds) {
+        if frame.skip(&node.id) || frame.skip(&parent.id) {
             continue;
         }
-        let subsession = node.kind == NodeKind::Session;
-        model.edges.push(EdgeModel {
-            kind: if subsession { EdgeKind::Subsession } else { EdgeKind::Subagent },
-            color: if subsession { ACCENT } else { MUTED },
-            from: a,
-            to: b,
-            path: connector_path_f(a, b),
-        });
+        edge(&mut model, node_rect(parent), node_rect(node), node.kind == NodeKind::Session);
+    }
+    for deck in &frame.decks {
+        if let Some(root) = app.doc.node(&deck.root) {
+            edge(&mut model, node_rect(root), deck_rect(deck), true);
+        }
     }
 
-    let active_term = app.focused_term.clone().filter(|id| app.visible_terminals().contains(id));
+    let active_term = boxes.active_term.clone().filter(|id| !frame.skip(id));
     let typing = app.focus == crate::app::Focus::Terminal;
-    let mut order: Vec<&Node> = app.doc.nodes.iter().collect();
+    let mut order: Vec<&Node> = app.doc.nodes.iter().filter(|n| !frame.skip(&n.id)).collect();
     order.sort_by_key(|n| app.selection.contains(&n.id));
     for node in order {
         let rect = node_rect(node);
@@ -584,51 +786,40 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
             continue;
         }
         let status = app.node_status(node);
-        let selected = app.selection.contains(&node.id) || flashing(&node.id);
-        let focused_term = app.focused_term.as_deref() == Some(&node.id) && app.owned_alive(&node.id);
-        let attention = box_attention(node, status, tick);
-        let icon = status.icon(tick);
-        let label = box_label(node, status);
-        let every = app.node_loop(node);
-        let status_style = fg(status.color());
-        let kind = match node.kind {
-            _ if node.passive.is_some() => BoxKind::Passive,
-            NodeKind::Session => BoxKind::Session,
-            NodeKind::Agent => BoxKind::Agent,
-            NodeKind::Automation => BoxKind::Automation,
-        };
-        if every.is_some() {
-            model.loops.push(LoopModel { rect, phase: (tick % 20) as f32 / 20.0, halo: active_term.as_deref() == Some(node.id.as_str()) });
+        let selected = app.selection.contains(&node.id) || boxes.flashing(&node.id);
+        let mut b = box_model(app, node, rect, status, selected, &boxes);
+        b.hidden = hidden_badge(app, &frame, &node.id);
+        if let Some((_, alpha)) = frame.moving.get(&node.id) {
+            b.alpha = alpha.clamp(0.0, 1.0);
         }
-        model.boxes.push(BoxModel {
-            id: node.id.clone(),
-            kind,
-            rect,
-            prefix: box_prefix(node),
-            name: node.name.clone(),
-            status,
-            icon,
-            label,
-            line: box_line(app, node, icon, label, every.as_deref()),
-            line_style: if attention.is_some() { status_style.add_modifier(Modifier::BOLD) } else { status_style },
-            name_style: if selected { Style::default().fg(SELECT).add_modifier(Modifier::BOLD) } else { fg(TEXT) },
-            elsewhere: app.live_elsewhere(node) && status != Status::External,
-            subtitle: box_subtitle(app, node),
-            border: box_border(node, status, selected, attention.is_some()),
-            border_style: box_border_style(node, attention, selected, focused_term),
-            fill: attention.map(|(_, bg)| bg).unwrap_or(PANEL),
-            attention,
-            selected,
-            focused_term,
-            active: active_term.as_deref() == Some(node.id.as_str()),
-            every,
-            mailbox: app.bus.mailbox.get(&node.id).copied().unwrap_or(0),
-        });
+        if b.alpha >= 1.0 {
+            // A looping box's arc (growing in after the loop started), or the
+            // arc of a loop that just stopped, fading out.
+            let halo = active_term.as_deref() == Some(node.id.as_str());
+            match (b.every.is_some(), app.loop_change(&node.id)) {
+                (true, change) => {
+                    let changed_ms = change.filter(|(_, ended)| !ended).map(|(at, _)| at);
+                    model.loops.push(LoopModel { id: node.id.clone(), rect, halo, changed_ms, ending: false, seed: app.loop_seed(&node.id) });
+                }
+                (false, Some((at, true))) => model.loops.push(LoopModel { id: node.id.clone(), rect, halo, changed_ms: Some(at), ending: true, seed: app.loop_seed(&node.id) }),
+                (false, _) => {}
+            }
+        }
+        model.boxes.push(b);
+    }
+    for deck in &frame.decks {
+        let rect = deck_rect(deck);
+        if !shows(WRect::new(rect.x, rect.y, rect.w + 2.0, rect.h + 2.0)) {
+            continue;
+        }
+        if let Some(b) = deck_model(app, deck, rect, &boxes) {
+            model.boxes.push(b);
+        }
     }
 
     for (from, to, start) in &app.pulses {
         let (Some(a), Some(b)) = (app.doc.node(from), app.doc.node(to)) else { continue };
-        if from != to {
+        if from != to && !frame.skip(from) && !frame.skip(to) {
             let (a, b) = (node_rect(a), node_rect(b));
             model.pulses.push(PulseModel { from: a, to: b, path: connector_path_f(a, b), t: (start.elapsed().as_millis() as f32 / 1_200.0).min(1.0) });
         }
@@ -640,6 +831,7 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
         let (o, p) = (app.drag_origin, app.pointer);
         model.rubber = Some((o.0.min(p.0), o.1.min(p.1), o.0.max(p.0), o.1.max(p.1)));
     }
+    model.effects = app.effect_models(&frame, &node_rect);
     app.layout.hits.extend(chip_hits);
     model
 }
@@ -676,7 +868,8 @@ pub fn paint_model(model: &CanvasModel, buf: &mut Buffer) {
         }
         outline(buf, x, y, w, h, if group.selected { &HEAVY } else { &DASHED }, group.style, clip);
         let title = format!(" {} {} · {} ", group.icon, group.name, group.members);
-        put(buf, x + 2, y, &truncate(&title, (w - 4).max(0) as usize), Style::default().fg(group.color).add_modifier(Modifier::BOLD), clip);
+        let chips_w: i32 = group.chips.iter().map(|c| paint::text_width(&c.label) as i32 + 1).sum();
+        put(buf, x + 2, y, &truncate(&title, (w - 4 - chips_w).max(0) as usize), Style::default().fg(group.color).add_modifier(Modifier::BOLD), clip);
         if zoom == 0 {
             for (fx, fy, family) in &group.families {
                 let (sx, sy) = at(*fx, *fy);
@@ -685,12 +878,10 @@ pub fn paint_model(model: &CanvasModel, buf: &mut Buffer) {
                 }
             }
         }
-        if w >= 44 {
-            let style = if group.has_folder { Style::default().fg(group.color).bg(PANEL) } else { fg(MUTED).bg(PANEL) };
-            for chip in &group.chips {
-                let (cx, _) = at(chip.rect.x, chip.rect.y);
-                put(buf, cx, y, chip.label, style, clip);
-            }
+        for chip in &group.chips {
+            let style = if chip.lit { Style::default().fg(group.color).bg(PANEL) } else { fg(MUTED).bg(PANEL) };
+            let (cx, _) = at(chip.rect.x, chip.rect.y);
+            put(buf, cx, y, &chip.label, style, clip);
         }
         put_sym(buf, x + w - 1, y + h - 1, "◢", fg(group.color), clip);
     }
@@ -705,45 +896,7 @@ pub fn paint_model(model: &CanvasModel, buf: &mut Buffer) {
         if off(x, y, w, h) {
             continue;
         }
-        let status_style = fg(b.status.color());
-        match zoom {
-            0 => {
-                fill(buf, x + 1, y + 1, w - 2, h - 2, Style::default().bg(b.fill), clip);
-                outline(buf, x, y, w, h, border_set(b.border), b.border_style, clip);
-                put(buf, x + 1, y, &truncate(&format!(" {}{} ", b.prefix, b.name), (w - 2) as usize), b.name_style, clip);
-                let end = put(buf, x + 2, y + 1, &truncate(&b.line, (w - 4) as usize), b.line_style.bg(b.fill), clip);
-                if b.elsewhere {
-                    put(buf, end, y + 1, &truncate(" · ↗ elsewhere", (x + w - 2 - end).max(0) as usize), fg(crate::paint::PURPLE).bg(b.fill), clip);
-                }
-                if h >= 4 {
-                    put(buf, x + 2, y + 2, &truncate(&b.subtitle, (w - 4) as usize), fg(MUTED).bg(b.fill), clip);
-                }
-            }
-            1 => {
-                let bg = b.attention.map(|(_, bg)| bg).unwrap_or(PANEL);
-                fill(buf, x, y, w, h, Style::default().bg(bg), clip);
-                let end = put(buf, x, y, b.icon, status_style.bg(bg), clip);
-                put(buf, end + 1, y, &truncate(&b.name, (w - 2).max(0) as usize), b.name_style.bg(bg), clip);
-                if h >= 2 {
-                    let label_style = b.attention.map(|(c, _)| crate::paint::bold(c)).unwrap_or(fg(MUTED));
-                    put(buf, x, y + 1, &truncate(b.label, w as usize), label_style.bg(bg), clip);
-                }
-                if b.selected {
-                    for xx in x..x + w {
-                        paint::style_at(buf, xx, y + h - 1, Style::default().add_modifier(Modifier::UNDERLINED), clip);
-                    }
-                }
-            }
-            _ => {
-                let style = if b.active {
-                    crate::paint::bold(ACCENT).add_modifier(Modifier::UNDERLINED)
-                } else {
-                    b.attention.map(|(c, bg)| crate::paint::bold(c).bg(bg)).unwrap_or(b.name_style)
-                };
-                let end = put(buf, x, y, b.icon, b.attention.map(|(_, bg)| status_style.bg(bg)).unwrap_or(status_style), clip);
-                put(buf, end, y, &truncate(&b.name, (w - 1).max(0) as usize), style, clip);
-            }
-        }
+        paint_box(buf, b, (x, y, w, h), zoom, clip);
     }
     if zoom < 2 {
         for b in model.boxes.iter().filter(|b| b.mailbox > 0) {
@@ -754,9 +907,15 @@ pub fn paint_model(model: &CanvasModel, buf: &mut Buffer) {
     for pulse in &model.pulses {
         draw_pulse(buf, &connector_path(screen_box(pulse.from), screen_box(pulse.to)), pulse.t, clip);
     }
-    for lp in &model.loops {
+    // The loops that run (a fading one is the GPU's): the dot where the clock puts it.
+    let clock = model.anim_clock();
+    for lp in model.loops.iter().filter(|l| !l.ending) {
         let (x, y, w, h) = screen_box(lp.rect);
-        draw_loop(buf, (x, y, w + (zoom < 2 && lp.halo) as i32, h), model.tick, clip);
+        let lap = (model.motion == crate::view::Motion::On).then(|| lp.lap_at(clock));
+        draw_loop(buf, (x, y, w + (zoom < 2 && lp.halo) as i32, h), lap, clip);
+    }
+    for effect in &model.effects {
+        paint_effect(buf, effect, screen_box(effect.rect), clip);
     }
     if zoom < 2
         && let Some((rect, heavy)) = model.halo
@@ -772,7 +931,6 @@ pub fn paint_model(model: &CanvasModel, buf: &mut Buffer) {
         draw_empty_hint(buf, clip);
     }
 }
-
 /// Orthogonal route (world units) from a parent box to a child box, leaving
 /// and entering through the edges that face each other (`connector_path` in
 /// fractional coordinates).

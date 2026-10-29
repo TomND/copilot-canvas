@@ -15,8 +15,11 @@ pub const CANVAS: usize = 1;
 /// earlier one goes one level up, so its fill covers the labels below it.
 pub const BOXES: usize = 2;
 pub const BOX_LEVELS: usize = 3;
+/// Loop arcs and their moving dots (above the boxes): while loops move, a
+/// frame repaints this layer alone.
+pub const LOOPS: usize = BOXES + BOX_LEVELS;
 /// Selected boxes, badges, pulses and the rubber band above the canvas.
-pub const CANVAS_TOP: usize = BOXES + BOX_LEVELS;
+pub const CANVAS_TOP: usize = LOOPS + 1;
 /// Terminal grids.
 pub const TILES: usize = CANVAS_TOP + 1;
 /// Chrome cells drawn over the canvas or a terminal (markers, hints).

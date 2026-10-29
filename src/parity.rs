@@ -22,6 +22,23 @@ use crate::selftest::{GuiDriver, Ui, load, wait_doc};
 const COLS: u16 = 170;
 const ROWS: u16 = 46;
 
+/// OpenCode sessions of the inspector check: a session and its two children.
+const OC_PARENT: &str = "ses_parityparent";
+const OC_RUNNING: &str = "ses_parityrunning";
+const OC_DONE: &str = "ses_paritydone";
+
+/// OpenCode's tables with the indexes the canvas reads by.
+const OPENCODE_SCHEMA: &str = "
+    CREATE TABLE session (id text PRIMARY KEY, project_id text NOT NULL, parent_id text, slug text NOT NULL, directory text NOT NULL,
+        title text NOT NULL, version text NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, time_archived integer, agent text);
+    CREATE INDEX session_parent_idx ON session (parent_id);
+    CREATE TABLE message (id text PRIMARY KEY, session_id text NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL);
+    CREATE INDEX message_session_time_created_id_idx ON message (session_id, time_created, id);
+    CREATE TABLE part (id text PRIMARY KEY, message_id text NOT NULL, session_id text NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL);
+    CREATE INDEX part_message_id_id_idx ON part (message_id, id);
+    CREATE TABLE event_sequence (aggregate_id text PRIMARY KEY, seq integer NOT NULL);
+";
+
 /// How a row is tested.
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
@@ -59,13 +76,17 @@ struct Sessions {
 pub(crate) struct Sandbox {
     pub(crate) root: PathBuf,
     pub(crate) instance: Instance,
-    work: PathBuf,
-    group_folder: PathBuf,
+    pub(crate) work: PathBuf,
+    pub(crate) group_folder: PathBuf,
     copilot_home: PathBuf,
     fake: PathBuf,
+    /// The stand-in as `opencode.exe` (the OpenCode boxes of the inspector check).
+    fake_opencode: PathBuf,
+    /// The stand-in as `claude.exe` (the model check's Claude Code sessions).
+    fake_claude: PathBuf,
     canvas: PathBuf,
     sessions: Sessions,
-    exe: PathBuf,
+    pub(crate) exe: PathBuf,
 }
 
 /// The GUI and the helpers the checks use.
@@ -135,6 +156,12 @@ impl Gui {
         self.mouse("up", "left", at, mods)
     }
 
+    /// Two clicks at one point (the explicit start of a box).
+    fn double_click(&self, at: (f64, f64)) -> Result<()> {
+        self.click(at, &[])?;
+        self.click(at, &[])
+    }
+
     fn drag(&self, button: &str, from: (f64, f64), to: (f64, f64), mods: &[&str]) -> Result<()> {
         self.mouse("down", button, from, mods)?;
         for i in 1..=4 {
@@ -185,9 +212,17 @@ impl Gui {
         Ok((found, [r[0], r[1], r[2], r[3]]))
     }
 
+    /// A point inside a box's visible part (boxes half under the sidebar or
+    /// the right panel are clicked where they show).
     fn box_center(&self, name: &str) -> Result<(f64, f64)> {
         let (_, r) = self.find_box(name)?;
-        Ok((r[0] + (r[2] / 2.0).min(4.0), r[1] + r[3] / 2.0))
+        let tree = self.tree()?;
+        let area: Vec<f64> = tree["canvas"]["area"].as_array().map(|a| a.iter().filter_map(|v| v.as_f64()).collect()).unwrap_or_default();
+        anyhow::ensure!(area.len() == 4, "canvas area");
+        let (x0, x1) = (r[0].max(area[0]), (r[0] + r[2]).min(area[0] + area[2]));
+        let (y0, y1) = (r[1].max(area[1]), (r[1] + r[3]).min(area[1] + area[3]));
+        anyhow::ensure!(x1 - x0 >= 1.0 && y1 - y0 >= 0.5, "box {name:?} at {r:?} is not in view (canvas {area:?})");
+        Ok((x0 + ((x1 - x0) / 2.0).min(4.0), (y0 + y1) / 2.0))
     }
 
     /// The focused tile's inner rect.
@@ -220,11 +255,15 @@ impl Gui {
         }
     }
 
-    /// Opens a box's terminal (click), waits for `ready` in the screen.
+    /// Starts (or focuses) a box's terminal with a double-click, waits for
+    /// its terminal to have the keyboard and for `ready` in the screen.
     fn open(&mut self, name: &str, ready: &str) -> Result<()> {
         self.canvas_focus()?;
+        let (found, rect) = self.find_box(name)?;
+        let id = found["id"].as_str().unwrap_or_default().to_owned();
         let at = self.box_center(name)?;
-        self.click(at, &[])?;
+        self.double_click(at)?;
+        self.wait_tree(&format!("{name}'s terminal with the keyboard (box {rect:?}, double-click at {at:?})"), 25, |t| t["focus"] == "Terminal" && t["focused_term"] == id.as_str())?;
         self.wait(&format!("{name}'s terminal"), 25, |t| t.contains(ready))
     }
 
@@ -288,6 +327,199 @@ fn close(a: [u8; 3], b: [u8; 3], tolerance: i32) -> bool {
     a.iter().zip(b).all(|(x, y)| (*x as i32 - y as i32).abs() <= tolerance)
 }
 
+/// A PNG file as (width, RGB rows).
+fn png_rgb(path: &Path) -> Result<(usize, Vec<[u8; 3]>)> {
+    let decoder = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(path)?));
+    let mut reader = decoder.read_info()?;
+    let mut buf = vec![0; reader.output_buffer_size().context("png size")?];
+    let info = reader.next_frame(&mut buf)?;
+    let channels = info.color_type.samples();
+    Ok((info.width as usize, buf.chunks(channels).map(|p| [p[0], p[1], p[2]]).collect()))
+}
+
+/// The loop dot of row 7b: PNG captures a short time apart show the lit
+/// dot where the clock put it (the hooks report its place at the capture),
+/// moving a little each time and never jumping; the loop layer is redrawn
+/// about 30 times a second while the arc is in view and not at all once it
+/// is scrolled away; reduced motion draws a still arc (identical captures,
+/// no dot, no frames).
+fn loop_dot_check(gui: &mut Gui, id: &str) -> Result<String> {
+    gui.canvas_focus()?;
+    let before = gui.tree()?["canvas"]["motion"].as_str().unwrap_or("On").to_lowercase();
+    let result = loop_dot_steps(gui, id);
+    // Whatever happened: this window's motion setting back, everything in view.
+    let _ = gui.req(json!({ "cmd": "motion", "value": before }));
+    let _ = gui.chord('f', &[]);
+    result
+}
+
+fn loop_dot_steps(gui: &mut Gui, id: &str) -> Result<String> {
+    const LIT: [u8; 3] = [110, 240, 190];
+    gui.send("f")?;
+    gui.req(json!({ "cmd": "motion", "value": "on" }))?;
+    let arc = |loops: &Value| loops.as_array().and_then(|l| l.iter().find(|a| a["id"] == id).cloned());
+    gui.wait_tree("the loop arc with its dot", 10, |t| arc(&t["canvas"]["loop_arcs"]).is_some_and(|a| !a["dot_px"].is_null()))?;
+    let dir = std::env::temp_dir().join(format!("copilot-canvas-loop-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let capture = |name: &str| -> Result<(Instant, Value, PathBuf)> {
+        let path = dir.join(format!("{name}.png"));
+        let reply = gui.req(json!({ "cmd": "png", "path": path }))?;
+        let at = Instant::now();
+        let found = arc(&reply["loops"]).context("the loop in the capture")?;
+        Ok((at, found, path))
+    };
+    let point = |v: &Value| -> Option<(f64, f64)> { Some((v[0].as_f64()?, v[1].as_f64()?)) };
+    // Motion on: five captures 90 ms apart.
+    let mut samples = Vec::new();
+    for i in 0..5 {
+        samples.push(capture(&format!("loop-dot-{i}"))?);
+        std::thread::sleep(Duration::from_millis(90));
+    }
+    let mut matched = 0;
+    for (_, found, path) in &samples {
+        let (x, y) = point(&found["dot_px"]).context("dot")?;
+        let (width, pixels) = png_rgb(path)?;
+        // The head's core is drawn where the clock put it (unless it is just leaving or entering the box).
+        let lit: Vec<(f64, f64)> = (-6i64..=6)
+            .flat_map(|dy| (-6i64..=6).map(move |dx| (dx, dy)))
+            .filter_map(|(dx, dy)| {
+                let (px, py) = ((x.round() as i64 + dx) as usize, (y.round() as i64 + dy) as usize);
+                pixels.get(py * width + px).filter(|c| close(**c, LIT, 45)).map(|_| (px as f64, py as f64))
+            })
+            .collect();
+        if !lit.is_empty() {
+            let (cx, cy) = (lit.iter().map(|p| p.0).sum::<f64>() / lit.len() as f64, lit.iter().map(|p| p.1).sum::<f64>() / lit.len() as f64);
+            anyhow::ensure!((cx - x).hypot(cy - y) <= 3.0, "the lit dot at ({cx:.1}, {cy:.1}), the clock says ({x:.1}, {y:.1})");
+            matched += 1;
+        }
+    }
+    anyhow::ensure!(matched >= 3, "the lit dot was in only {matched} of 5 captures");
+    let bounds: Vec<f64> = samples[0].1["bounds_px"].as_array().map(|b| b.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
+    anyhow::ensure!(bounds.len() == 4, "arc bounds");
+    // The arc's length bounds how far the dot can go in a moment (1.35 × the mean speed).
+    let arc_len = 2.0 * ((bounds[2] - bounds[0]) + (bounds[3] - bounds[1]));
+    let mut steps = Vec::new();
+    for pair in samples.windows(2) {
+        let (a, b) = (point(&pair[0].1["dot_px"]).context("dot")?, point(&pair[1].1["dot_px"]).context("dot")?);
+        let lap = (pair[1].1["lap"].as_f64().unwrap_or(0.0) - pair[0].1["lap"].as_f64().unwrap_or(0.0)).rem_euclid(1.0);
+        let elapsed = pair[1].0.duration_since(pair[0].0).as_secs_f64();
+        // The lap advances with the clock (2 s a lap), whatever was drawn in between.
+        anyhow::ensure!((lap * 2.0 - elapsed).abs() < 0.08, "the lap moved {lap:.3} in {elapsed:.3} s");
+        let moved = (b.0 - a.0).hypot(b.1 - a.1);
+        let wrapped = pair[1].1["lap"].as_f64() < pair[0].1["lap"].as_f64();
+        anyhow::ensure!(moved > 0.3 || wrapped, "the dot did not move in {elapsed:.3} s");
+        anyhow::ensure!(wrapped || moved <= 1.35 * arc_len * lap + 3.0, "a jump of {moved:.1} px in {elapsed:.3} s (arc ≈ {arc_len:.0} px)");
+        steps.push(format!("{moved:.1}"));
+    }
+    // Frames: the loop layer is redrawn at its pace while the arc is in view
+    // (by loop frames of its own, and by the full frames other animations need).
+    let frames = |key: &str| -> Result<u64> { Ok(gui.req(json!({ "cmd": "perf" }))?["perf"][key].as_u64().unwrap_or(0)) };
+    let count = |key: &str, secs: f64| -> Result<u64> {
+        let start = frames(key)?;
+        std::thread::sleep(Duration::from_secs_f64(secs));
+        Ok(frames(key)?.saturating_sub(start))
+    };
+    let interval = gui.tree()?["canvas"]["loop_interval_ms"].as_u64().unwrap_or(33).max(1);
+    let (start_loops, start_all) = (frames("loop_frames")?, frames("presented")?);
+    std::thread::sleep(Duration::from_secs(2));
+    let (in_view, all) = (frames("loop_frames")?.saturating_sub(start_loops), frames("presented")?.saturating_sub(start_all));
+    let want = 2000 / interval;
+    anyhow::ensure!(in_view > 0 && all * 100 >= want * 65 && all <= 2 * 75, "{all} frames ({in_view} of the loop layer alone) in 2 s while the arc is in view; its pace is every {interval} ms");
+    // Scrolled until no loop is in view: no loop frames.
+    let none_in_view = |t: &Value| t["canvas"]["loop_arcs"].as_array().is_some_and(Vec::is_empty);
+    for _ in 0..80 {
+        if none_in_view(&gui.tree()?) {
+            break;
+        }
+        gui.key("Down", &["ctrl"])?;
+    }
+    gui.wait_tree("every loop out of view", 5, none_in_view)?;
+    std::thread::sleep(Duration::from_millis(300));
+    let away = count("loop_frames", 1.5)?;
+    anyhow::ensure!(away <= 1, "{away} loop frames with every loop out of view");
+    gui.chord('f', &[])?;
+    // Reduced motion: no moving dot, the arc and its ↻ badge stand still.
+    gui.req(json!({ "cmd": "motion", "value": "reduced" }))?;
+    let still = gui.wait_tree("a still arc", 5, |t| arc(&t["canvas"]["loop_arcs"]).is_some_and(|a| a["moving"] == false && a["dot_px"].is_null()))?;
+    anyhow::ensure!(still["canvas"]["boxes"].as_array().is_some_and(|b| b.iter().any(|b| b["id"] == id && b["loop"] == "every 15m")), "the status line still says ↻ every 15m");
+    std::thread::sleep(Duration::from_millis(300));
+    let (_, first, a) = capture("loop-reduced-0")?;
+    std::thread::sleep(Duration::from_millis(400));
+    let (_, _, b) = capture("loop-reduced-1")?;
+    let bounds: Vec<f64> = first["bounds_px"].as_array().map(|b| b.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
+    anyhow::ensure!(bounds.len() == 4, "arc bounds");
+    let ((width, one), (_, two)) = (png_rgb(&a)?, png_rgb(&b)?);
+    let mut arc_pixels = 0;
+    for y in bounds[1] as usize..=bounds[3] as usize {
+        for x in bounds[0] as usize..=bounds[2] as usize + 4 {
+            let i = y * width + x;
+            anyhow::ensure!(one.get(i) == two.get(i), "the reduced-motion arc changed at ({x}, {y})");
+            arc_pixels += one.get(i).is_some_and(|c| close(*c, [0, 158, 115], 40) || close(*c, LIT, 40)) as usize;
+        }
+    }
+    anyhow::ensure!(arc_pixels >= 20, "the still arc is drawn ({arc_pixels} loop-coloured pixels)");
+    let reduced = count("loop_frames", 1.0)?;
+    anyhow::ensure!(reduced <= 1, "{reduced} loop frames with reduced motion");
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(format!("dot at the clock's place in {matched}/5 captures, steps {} px; {all} frames in 2 s in view ({in_view} of the loop layer alone, every {interval} ms), {away} away; reduced motion: still arc, {reduced} frames", steps.join(" ")))
+}
+
+/// Row 38: three sessions viewed in turn are listed newest first under
+/// RECENT and saved in the canvas document every window shares; Ctrl+F6
+/// views the one used before, again the one before that, Ctrl+Shift+F6 goes
+/// back, `]` and `[` do the same on the canvas, each showing the session
+/// (details panel) and starting nothing (no launch in the service log, no
+/// new terminal); a second after a walk the session it reached is first.
+fn recent_check(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
+    use crate::selftest::recent_names;
+    gui.canvas_focus()?;
+    gui.chord('f', &[])?;
+    let log = || std::fs::read_to_string(sb.instance.log_path()).unwrap_or_default();
+    let launches = log().matches("launched ").count();
+    let selected = |t: &Value, id: &str| t["selection"].as_array().is_some_and(|s| s.len() == 1 && s[0] == id);
+    let mut ids = Vec::new();
+    for name in ["Idle one", "Review me", "Needs you one"] {
+        let (found, _) = gui.find_box(name)?;
+        let id = found["id"].as_str().unwrap_or_default().to_owned();
+        gui.click(gui.box_center(name)?, &[])?;
+        gui.wait_tree(&format!("{name} viewed"), 5, |t| selected(t, &id))?;
+        ids.push(id);
+    }
+    let first = |t: &str, name: &str| recent_names(t).first().is_some_and(|n| name.starts_with(n.as_str()));
+    gui.wait("RECENT, newest first", 5, |t| {
+        let r = recent_names(t);
+        r.len() >= 3 && "Needs you one".starts_with(r[0].as_str()) && "Review me".starts_with(r[1].as_str()) && "Idle one".starts_with(r[2].as_str())
+    })?;
+    // Shared: the service saved the uses in the canvas document every window opens.
+    wait_doc(&sb.canvas, "the uses in the canvas document", |d| {
+        let mut used: Vec<&Node> = d.nodes.iter().filter(|n| n.accessed_ms.is_some()).collect();
+        used.sort_by_key(|n| std::cmp::Reverse(n.accessed_ms));
+        used.len() >= 3 && used[0].id == ids[2] && used[1].id == ids[1] && used[2].id == ids[0]
+    })?;
+    // Ctrl+F6, Ctrl+F6, Ctrl+Shift+F6: the one before, the one before that, back; the order holds meanwhile.
+    gui.key("F6", &["ctrl"])?;
+    gui.wait_tree("Ctrl+F6: the session used before", 5, |t| selected(t, &ids[1]))?;
+    gui.wait("its details and the walk's notice", 5, |t| t.contains("Recent 2 of") && t.contains("Review me"))?;
+    gui.key("F6", &["ctrl"])?;
+    gui.wait_tree("Ctrl+F6 again: the one before that", 5, |t| selected(t, &ids[0]))?;
+    gui.key("F6", &["ctrl", "shift"])?;
+    gui.wait_tree("Ctrl+Shift+F6: back", 5, |t| selected(t, &ids[1]))?;
+    anyhow::ensure!(first(&gui.screen(), "Needs you one"), "the list kept its order during the walk: {:?}", recent_names(&gui.screen()));
+    gui.wait("the walk settled", 5, |t| first(t, "Review me"))?;
+    // ] and [ on the canvas.
+    gui.chord(']', &[])?;
+    gui.wait_tree("]: the session used before", 5, |t| selected(t, &ids[2]))?;
+    gui.chord('[', &[])?;
+    gui.wait_tree("[: back", 5, |t| selected(t, &ids[1]))?;
+    gui.key("Esc", &[])?;
+    std::thread::sleep(Duration::from_millis(500));
+    anyhow::ensure!(log().matches("launched ").count() == launches, "walking the recent sessions launched one");
+    let tree = gui.tree()?;
+    let shown: Vec<&str> = tree["tiles"].as_array().into_iter().flatten().filter_map(|t| t["id"].as_str()).collect();
+    anyhow::ensure!(!shown.iter().any(|id| ids.iter().any(|i| i == id)), "a walked session got a terminal: {shown:?}");
+    Ok("three views listed newest first (and in the shared document); Ctrl+F6 ×2, Ctrl+Shift+F6, ] and [ viewed them in MRU order; settled after 1 s; nothing launched".into())
+}
+
 fn session_files(dir: &Path, id: &str, name: &str, cwd: &Path, events: &[String], live: bool) -> Result<()> {
     let folder = dir.join(id);
     std::fs::create_dir_all(&folder)?;
@@ -326,7 +558,7 @@ fn node(id: &str, name: &str, x: i32, y: i32, cwd: &Path) -> Node {
         passive: None,
         no_messages: false,
         agent: None,
-        agent_session: None,
+        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
     }
 }
 
@@ -344,6 +576,10 @@ impl Sandbox {
         let fake = root.join("fake").join("copilot.exe");
         std::fs::create_dir_all(fake.parent().unwrap_or(&root))?;
         std::fs::copy(&exe, &fake)?;
+        let fake_opencode = root.join("fake").join("opencode.exe");
+        std::fs::copy(&exe, &fake_opencode)?;
+        let fake_claude = root.join("fake").join("claude.exe");
+        std::fs::copy(&exe, &fake_claude)?;
         let instance = Instance::new(Some(format!("parity{}", std::process::id())), Some(home.clone()), Some(sessions_dir.clone()))?;
         let id = || uuid::Uuid::new_v4().to_string();
         let sessions = Sessions {
@@ -432,7 +668,80 @@ impl Sandbox {
         std::fs::write(&canvas, serde_json::to_string_pretty(&doc)?)?;
         // The service also listens on loopback TCP (the remote rows connect there).
         std::fs::write(home.join("settings.json"), r#"{"remote":{"listen":"127.0.0.1:0"}}"#)?;
-        Ok(Self { root, instance, work, group_folder, copilot_home, fake, canvas, sessions, exe })
+        Ok(Self { root, instance, work, group_folder, copilot_home, fake, fake_opencode, fake_claude, canvas, sessions, exe })
+    }
+
+    /// OpenCode's database with a session and two task-tool children (one
+    /// still working, one finished), and the session's box on the canvas
+    /// (the inspector check; the golden screenshots leave it out).
+    fn add_opencode(&self) -> Result<()> {
+        let dir = self.root.join("xdg-data").join("opencode");
+        std::fs::create_dir_all(&dir)?;
+        let db = rusqlite::Connection::open(dir.join("opencode.db"))?;
+        db.execute_batch(OPENCODE_SCHEMA)?;
+        let now = crate::paths::now_ms() as i64;
+        let work = self.work.display().to_string().replace('\\', "/");
+        let mut seq = 0;
+        let mut bump = |id: &str| -> Result<()> {
+            seq += 1;
+            db.execute("INSERT OR REPLACE INTO event_sequence (aggregate_id, seq) VALUES (?1, ?2)", rusqlite::params![id, seq])?;
+            Ok(())
+        };
+        for (id, parent, title, at) in [
+            (OC_PARENT, None, "OpenCode parent", now - 60_000),
+            (OC_RUNNING, Some(OC_PARENT), "Find callers (@explore subagent)", now - 50_000),
+            (OC_DONE, Some(OC_PARENT), "Summarize the diff (@general subagent)", now - 40_000),
+        ] {
+            db.execute(
+                "INSERT INTO session (id, project_id, parent_id, slug, directory, title, version, time_created, time_updated) VALUES (?1, 'p', ?2, 's', ?3, ?4, '1', ?5, ?5)",
+                rusqlite::params![id, parent, work, title, at],
+            )?;
+            bump(id)?;
+        }
+        let message = |id: &str, session: &str, at: i64, data: Value| -> Result<()> {
+            db.execute("INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?1, ?2, ?3, ?3, ?4)", rusqlite::params![id, session, at, data.to_string()])?;
+            Ok(())
+        };
+        let part = |id: &str, message: &str, session: &str, data: Value| -> Result<()> {
+            db.execute("INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?1, ?2, ?3, 0, 0, ?4)", rusqlite::params![id, message, session, data.to_string()])?;
+            Ok(())
+        };
+        let user = |at: i64| json!({ "role": "user", "time": { "created": at } });
+        let done = |at: i64| json!({ "role": "assistant", "time": { "created": at, "completed": at + 1000 }, "finish": "stop" });
+        message("msg_p1", OC_PARENT, now - 59_000, user(now - 59_000))?;
+        part("prt_p1", "msg_p1", OC_PARENT, json!({ "type": "text", "text": "Review the parity sandbox" }))?;
+        message("msg_p2", OC_PARENT, now - 58_000, done(now - 58_000))?;
+        part("prt_p2", "msg_p2", OC_PARENT, json!({ "type": "text", "text": "Two subagents are on it." }))?;
+        message("msg_r1", OC_RUNNING, now - 49_000, user(now - 49_000))?;
+        part("prt_r1", "msg_r1", OC_RUNNING, json!({ "type": "text", "text": "Find the callers of parity_probe" }))?;
+        message("msg_r2", OC_RUNNING, now - 48_000, json!({ "role": "assistant", "time": { "created": now - 48_000 } }))?;
+        part("prt_r2", "msg_r2", OC_RUNNING, json!({ "type": "tool", "tool": "grep", "state": { "status": "running", "input": { "pattern": "parity_probe" }, "time": { "start": now - 47_000 } } }))?;
+        message("msg_d1", OC_DONE, now - 39_000, user(now - 39_000))?;
+        part("prt_d1", "msg_d1", OC_DONE, json!({ "type": "text", "text": "Summarize the diff in one line" }))?;
+        message("msg_d2", OC_DONE, now - 38_000, done(now - 38_000))?;
+        part("prt_d2", "msg_d2", OC_DONE, json!({ "type": "text", "text": "PARITY_DONE_SUMMARY: nothing changed." }))?;
+        for id in [OC_PARENT, OC_RUNNING, OC_DONE] {
+            bump(id)?;
+        }
+        let mut doc = self.doc()?;
+        let mut parent = node("oc-parent", "OpenCode parent", 2, 2 + 4 * (GRID_Y + 2) + 6, &self.work);
+        parent.agent = Some("opencode".into());
+        parent.agent_session = Some(OC_PARENT.into());
+        parent.reviewed_ms = Some(crate::paths::now_ms());
+        doc.nodes.push(parent);
+        std::fs::write(&self.canvas, serde_json::to_string_pretty(&doc)?)?;
+        Ok(())
+    }
+
+    /// Adds a text part to the working child (its transcript grows while you look).
+    fn grow_running_child(&self, text: &str) -> Result<()> {
+        let db = rusqlite::Connection::open(self.root.join("xdg-data").join("opencode").join("opencode.db"))?;
+        db.execute(
+            "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?1, 'msg_r2', ?2, 0, 0, ?3)",
+            rusqlite::params![format!("prt_r9{}", crate::paths::now_ms()), OC_RUNNING, json!({ "type": "text", "text": text }).to_string()],
+        )?;
+        db.execute("UPDATE event_sequence SET seq = seq + 100 WHERE aggregate_id = ?1", [OC_RUNNING])?;
+        Ok(())
     }
 
     fn args(&self, extra: &[&str]) -> Vec<String> {
@@ -454,9 +763,11 @@ impl Sandbox {
         let one = PathBuf::from("1");
         let (claude, xdg) = (self.root.join("claude-home"), self.root.join("xdg-data"));
         // Only the sandbox's histories: OpenCode and Claude Code look in empty folders.
-        let env: [(&str, &Path); 5] = [
+        let env: [(&str, &Path); 7] = [
             ("COPILOT_HOME", &self.copilot_home),
             ("COPILOT_CANVAS_COPILOT", &self.fake),
+            ("COPILOT_CANVAS_OPENCODE", &self.fake_opencode),
+            ("COPILOT_CANVAS_CLAUDE", &self.fake_claude),
             (crate::fake_copilot::ENV, &one),
             ("CLAUDE_CONFIG_DIR", &claude),
             ("XDG_DATA_HOME", &xdg),
@@ -488,6 +799,7 @@ pub(crate) fn stop_service(instance: &Instance) {
 pub fn run(remote: Option<&str>) -> Result<()> {
     anyhow::ensure!(remote.is_none(), "--parity runs locally (it starts its own loopback client for the remote rows)");
     let sandbox = Sandbox::new()?;
+    sandbox.add_opencode()?;
     println!("Copilot Canvas GUI parity suite (PLAN §8; demo shells and a stand-in Copilot only; sandbox {})", sandbox.root.display());
     let saved_clipboard = crate::client::clipboard::get_text().ok();
     let started = Instant::now();
@@ -642,6 +954,8 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         Ok("↻ every 15m, arc drawn, sidebar ↻".into())
     });
 
+    check(rows, "7b", "Looping sessions: the dot follows the clock smoothly (loop layer alone, ≈30 frames/s, none off screen); reduced motion holds a still arc", "loop_dot_smooth_and_reduced_motion", || loop_dot_check(gui, &sb.sessions.looping));
+
     check(rows, "3", "Attention borders and tints; active-terminal halo (heavy while typing)", "attention_and_halo", || {
         let (waiting, _) = gui.find_box("Needs you one")?;
         let (review, _) = gui.find_box("Review me")?;
@@ -669,13 +983,15 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         gui.chord('8', &["alt"])?;
         gui.wait("settings view", 10, |t| t.contains("New-session defaults") && t.contains("Reasoning effort"))?;
         gui.wait("copilot config list (stand-in CLI)", 20, |t| t.contains("fake-model"))?;
-        let (x, y) = gui.find("Model").context("Model row")?;
+        gui.wait("each agent's model, the initial default", 5, |t| t.contains("Copilot model") && t.contains("initial") && t.contains("claude-opus-5.5") && t.contains("claude-opus-5-5"))?;
+        let (x, y) = gui.find("Copilot model").context("Copilot model row")?;
         gui.click((x, y), &[])?;
-        gui.wait("model prompt", 5, |t| t.contains("model id"))?;
-        gui.send("\x15parity-model\r")?;
-        wait_doc(&sb.canvas, "default model saved", |d| d.defaults.model.as_deref() == Some("parity-model"))?;
+        gui.wait("model picker with the stand-in's choices", 10, |t| t.contains("Copilot model for new sessions") && t.contains(crate::fake_copilot::MODELS[1]))?;
+        // An id the list does not have: the picker takes it as typed.
+        gui.send("parity-model\r")?;
+        wait_doc(&sb.canvas, "default model saved", |d| d.defaults.model(crate::client::agents::AgentKind::Copilot) == Some("parity-model"))?;
         gui.chord('1', &["alt"])?;
-        Ok("defaults saved; config listed".into())
+        Ok("Copilot's model set (typed), config listed".into())
     });
 
     check(rows, "23", "Plugins, MCP, skills: list, toggle, remove, add, install; secrets hidden", "mcp_view_lists_and_toggles", || {
@@ -930,7 +1246,21 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         gui.wait("Ctrl+V pasted", 5, |t| t.contains("PASTED_BY_PARITY"))?;
         gui.chord('u', &["ctrl"])?;
         gui.send("\x1b")?;
-        Ok(format!("selection copied on release; Ctrl+V pasted ({})", gui.clipboard_source()))
+        // Multi-line: copy exactly, paste without Enter (PowerShell and a program with bracketed paste).
+        let multi = crate::selftest::copy_paste_check(&mut gui.driver)?;
+        // IME text with a line break is a paste too.
+        let exe = std::env::current_exe()?;
+        gui.send(&format!("& '{}' paste-probe\r", exe.display()))?;
+        gui.wait("the paste probe", 20, |t| t.contains(crate::paste_probe::READY))?;
+        gui.req(json!({ "cmd": "ime", "commit": "ime one\nime two" }))?;
+        gui.wait("the IME text as one paste", 10, |t| t.contains("PASTE 2 lines: ime one\\rime two"))?;
+        anyhow::ensure!(!gui.screen().contains(crate::paste_probe::ENTER), "the IME text sent Enter");
+        gui.send("\x04")?;
+        gui.wait("the probe ended", 10, |t| t.contains("BYE"))?;
+        // Later rows print near the top again (the --perf overlay covers the tile's last rows).
+        gui.send("Clear-Host\r")?;
+        gui.wait("the screen cleared", 10, |t| !t.contains("PASTE 2 lines"))?;
+        Ok(format!("selection copied on release; Ctrl+V pasted ({}); {multi}; IME text with a line break pasted", gui.clipboard_source()))
     });
 
     check(rows, "18", "Links: URLs, OSC 8, Windows paths; Ctrl+click; nothing executed", "links_osc8_and_paths", || {
@@ -1134,6 +1464,312 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         }
     });
 
+    check(rows, "34", "New: view versus start (a click views; double-click, Enter, Start / Resume start; group rows never launch)", "view_vs_start", || {
+        gui.canvas_focus()?;
+        gui.send("f")?;
+        let log = || std::fs::read_to_string(sb.instance.log_path()).unwrap_or_default();
+        let launched = |id: &str| log().contains(&format!("launched {id} "));
+        // A click shows the details panel; nothing starts.
+        let stopped = sb.sessions.stopped.clone();
+        let at = gui.box_center("Stopped one")?;
+        gui.click(at, &[])?;
+        gui.wait("its details with Resume", 5, |t| t.contains("▸ Resume") && t.contains("Double-click the box"))?;
+        std::thread::sleep(Duration::from_millis(800));
+        anyhow::ensure!(!launched(&stopped), "a click launched the session");
+        anyhow::ensure!(gui.tree()?["tiles"].as_array().is_some_and(|t| t.iter().all(|t| t["id"] != stopped.as_str())), "no terminal tile for a viewed session");
+        // A double-click resumes it (the stand-in Copilot).
+        gui.double_click(at)?;
+        gui.wait("the double-click resumed it", 25, |t| t.contains("Stopped one · ") && t.contains("Fake Copilot"))?;
+        anyhow::ensure!(launched(&stopped), "the double-click launched it");
+        // Enter on the selected box.
+        gui.canvas_focus()?;
+        let failed = sb.sessions.failed.clone();
+        let at = gui.box_center("Failed one")?;
+        gui.click(at, &[])?;
+        gui.wait("its details with Resume", 5, |t| t.contains("▸ Resume") && t.contains("Failed one"))?;
+        anyhow::ensure!(!launched(&failed), "a click launched the session");
+        gui.key("Enter", &[])?;
+        gui.wait("Enter resumed it", 25, |t| t.contains("Failed one · ") && t.contains("Fake Copilot"))?;
+        // The details panel's primary button.
+        gui.canvas_focus()?;
+        let imported = sb.sessions.import_a.clone();
+        let at = gui.box_center("Import me A")?;
+        gui.click(at, &[])?;
+        gui.wait("its details with Resume", 5, |t| t.contains("▸ Resume") && t.contains("Import me A"))?;
+        anyhow::ensure!(!launched(&imported), "a click launched the session");
+        let (x, y) = gui.find("▸ Resume").context("the Resume button")?;
+        gui.click((x + 1.0, y), &[])?;
+        gui.wait("Resume resumed it", 25, |t| t.contains("Import me A · ") && t.contains("Fake Copilot"))?;
+        // A group row shows its running terminals and starts nothing.
+        gui.canvas_focus()?;
+        let before = log().matches("launched ").count();
+        let (x, y) = gui.driver.find_in("Parity group", 3, 33).map(|(x, y)| (x as f64 + 0.5, y as f64 + 0.5)).context("group row")?;
+        gui.click((x + 2.0, y), &[])?;
+        gui.wait_tree("the group selected", 5, |t| t["canvas"]["groups"].as_array().is_some_and(|g| g.iter().any(|g| g["id"] == "g-parity" && g["selected"] == true)))?;
+        std::thread::sleep(Duration::from_millis(500));
+        anyhow::ensure!(log().matches("launched ").count() == before, "viewing a group launched something");
+        gui.canvas_focus()?;
+        Ok("click → details (no launch); double-click, Enter and Resume each resumed one; group row launched nothing".into())
+    });
+
+    check(rows, "35", "New: transcript inspector (sessions and subagents, live while they run); a finished child resumes as its own subsession", "inspector_and_child_resume", || {
+        gui.canvas_focus()?;
+        gui.send("f")?;
+        gui.wait_tree("the OpenCode session's subagent boxes", 20, |t| {
+            let boxes = t["canvas"]["boxes"].as_array().cloned().unwrap_or_default();
+            boxes.iter().any(|b| b["name"] == "explore") && boxes.iter().any(|b| b["name"] == "general")
+        })?;
+        let log = || std::fs::read_to_string(sb.instance.log_path()).unwrap_or_default();
+        let launches = log().matches("launched ").count();
+        let inspect = |gui: &mut Gui, name: &str| -> Result<()> {
+            gui.canvas_focus()?;
+            let at = gui.box_center(name)?;
+            gui.click(at, &[])?;
+            gui.wait(&format!("{name}'s details"), 5, |t| t.contains("Inspect transcript"))?;
+            let (x, y) = gui.find("Inspect transcript").context("the Inspect button")?;
+            gui.click((x + 1.0, y), &[])?;
+            gui.wait("the inspector", 10, |t| t.contains("Transcript · ") && !t.contains("Loading…"))
+        };
+        // A Copilot session's own transcript, and a subagent known only by its start and end.
+        inspect(gui, "With agents")?;
+        gui.wait("its prompt", 5, |t| t.contains("❯ parity"))?;
+        gui.key("Esc", &[])?;
+        inspect(gui, "Parity explorer")?;
+        gui.wait("why it does not resume on its own", 5, |t| t.contains("part of its parent's conversation") && !t.contains("Resume as subsession"))?;
+        gui.key("Esc", &[])?;
+        // An OpenCode child that works: its transcript grows while it is open.
+        inspect(gui, "explore")?;
+        gui.wait("the child's task and its running tool", 5, |t| t.contains("Find the callers of parity_probe") && t.contains("… running") && t.contains("running: refreshing"))?;
+        sb.grow_running_child("PARITY_LIVE_LINE found 3 callers")?;
+        gui.wait("the live refresh", 10, |t| t.contains("PARITY_LIVE_LINE"))?;
+        gui.key("Esc", &[])?;
+        anyhow::ensure!(log().matches("launched ").count() == launches, "inspecting launched something");
+        // While its parent runs here, a finished child does not resume on its own.
+        gui.open("OpenCode parent", "Fake Copilot")?;
+        inspect(gui, "general")?;
+        gui.wait("no resume beside the running parent", 5, |t| t.contains("PARITY_DONE_SUMMARY") && t.contains("stop the parent") && !t.contains("Resume as subsession"))?;
+        gui.key("Esc", &[])?;
+        // The parent stops: the finished child resumes in a terminal of its own, as a new linked box.
+        gui.canvas_focus()?;
+        let at = gui.box_center("OpenCode parent")?;
+        gui.click(at, &[])?;
+        gui.canvas_focus()?;
+        gui.send("x")?;
+        gui.wait("the stop dialog", 5, |t| t.contains("Stop “OpenCode parent”?"))?;
+        gui.key("Enter", &[])?;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !log().contains("terminal oc-parent exited with ") {
+            anyhow::ensure!(Instant::now() < deadline, "the parent did not stop");
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        inspect(gui, "general")?;
+        gui.wait("Resume as subsession", 10, |t| t.contains("Resume as subsession") && t.contains("PARITY_DONE_SUMMARY"))?;
+        let (x, y) = gui.find("Resume as subsession").context("the Resume button")?;
+        gui.click((x + 1.0, y), &[])?;
+        let doc = wait_doc(&sb.canvas, "a new subsession box that follows the child", |d| d.nodes.iter().any(|n| n.agent_session.as_deref() == Some(OC_DONE) && n.parent.as_deref() == Some("oc-parent")))?;
+        let child = doc.nodes.iter().find(|n| n.agent_session.as_deref() == Some(OC_DONE)).map(|n| n.id.clone()).unwrap_or_default();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !log().contains(&format!("terminal {child}: opencode resume")) {
+            anyhow::ensure!(Instant::now() < deadline, "the child was not resumed (-s {OC_DONE})");
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        gui.wait("its own terminal", 25, |t| t.contains("Summarize the diff · ") && t.contains("Fake Copilot"))?;
+        anyhow::ensure!(doc.nodes.iter().any(|n| n.kind == NodeKind::Agent && n.agent_key.as_deref() == Some(OC_DONE)), "the subagent box stays");
+        gui.canvas_focus()?;
+        Ok("Copilot session + subagent, OpenCode child live-refreshed; refused beside its running parent; resumed with -s as a linked box".into())
+    });
+
+    check(rows, "36", "New: removing a multi-selection (its eligible boxes after a confirmation; running sessions and history kept; Ctrl+Z)", "multi_remove_keeps_running", || {
+        gui.canvas_focus()?;
+        gui.send("f")?;
+        gui.key("Esc", &[])?;
+        let (import_b, idle, failed) = (sb.sessions.import_b.clone(), sb.sessions.idle.clone(), sb.sessions.failed.clone());
+        // "Failed one" runs (Enter resumed it above); the other two do not run here.
+        let first = gui.box_center("Import me B")?;
+        gui.click(first, &[])?;
+        for name in ["Idle one", "Failed one"] {
+            let at = gui.box_center(name)?;
+            gui.click(at, &["ctrl"])?;
+        }
+        gui.wait_tree("three boxes selected", 5, |t| t["selection"].as_array().is_some_and(|s| s.len() == 3))?;
+        let at = gui.box_center("Failed one")?;
+        gui.mouse("down", "right", at, &[])?;
+        gui.mouse("up", "right", at, &[])?;
+        gui.wait("the menu removes the eligible two", 5, |t| t.contains("Remove 2 from canvas"))?;
+        let (x, y) = gui.find("Remove 2 from canvas").context("menu item")?;
+        gui.click((x + 1.0, y), &[])?;
+        gui.wait("the confirmation", 5, |t| t.contains("Remove 2 from the canvas?") && t.contains("1 running session kept: stop it first."))?;
+        gui.key("Enter", &[])?;
+        let doc = wait_doc(&sb.canvas, "the two boxes removed", |d| d.node(&import_b).is_none() && d.node(&idle).is_none())?;
+        anyhow::ensure!(doc.node(&failed).is_some(), "the running session stays");
+        for id in [&import_b, &idle] {
+            anyhow::ensure!(sb.instance.sessions_dir.join(id).join("events.jsonl").is_file(), "history is kept ({id})");
+        }
+        gui.canvas_focus()?;
+        gui.chord('z', &["ctrl"])?;
+        wait_doc(&sb.canvas, "Ctrl+Z restores them", |d| d.node(&import_b).is_some() && d.node(&idle).is_some())?;
+        gui.key("Esc", &[])?;
+        Ok("menu “Remove 2 from canvas” on a 3-box selection; confirmation names the running one; history kept; Ctrl+Z restored both".into())
+    });
+
+    check(rows, "37", "New: a click on a group's background or border selects it; title drag, ◢ resize, chips and double-click keep working", "group_background_and_border_select", || {
+        gui.canvas_focus()?;
+        gui.send("f")?;
+        gui.key("Esc", &[])?;
+        // The single view, where a selected group shows its panel.
+        if gui.screen().contains("▦ Tiled") {
+            gui.send("t")?;
+        }
+        let rect = |t: &Value, path: &str, id: &str| -> Option<[f64; 4]> {
+            let items = t["canvas"][path].as_array()?;
+            let found = items.iter().find(|g| g["id"] == id)?;
+            let r: Vec<f64> = found["rect"].as_array()?.iter().filter_map(|v| v.as_f64()).collect();
+            (r.len() == 4).then(|| [r[0], r[1], r[2], r[3]])
+        };
+        let selected = |t: &Value| t["canvas"]["groups"].as_array().is_some_and(|g| g.iter().any(|g| g["id"] == "g-parity" && g["selected"] == true));
+        let tree = gui.tree()?;
+        let g = rect(&tree, "groups", "g-parity").context("the group in view")?;
+        let boxes: Vec<[f64; 4]> = tree["canvas"]["boxes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|b| b["rect"].as_array().map(|r| r.iter().filter_map(|v| v.as_f64()).collect::<Vec<_>>()))
+            .filter(|r| r.len() == 4)
+            .map(|r| [r[0], r[1], r[2], r[3]])
+            .collect();
+        let free = |x: f64, y: f64| !boxes.iter().any(|b| x >= b[0] - 0.5 && x < b[0] + b[2] + 0.5 && y >= b[1] - 0.5 && y < b[1] + b[3] + 0.5);
+        // An empty spot of its background (below the title, away from boxes and the ◢ corner).
+        let spot = (0..((g[3] - 2.0).max(0.0) as usize))
+            .flat_map(|dy| (0..((g[2] - 3.0).max(0.0) as usize)).map(move |dx| (g[0] + 1.5 + dx as f64, g[1] + 1.5 + dy as f64)))
+            .find(|(x, y)| free(*x, *y))
+            .context("no empty spot in the group")?;
+        let before = std::fs::read_to_string(sb.instance.log_path()).unwrap_or_default().matches("launched ").count();
+        gui.click(spot, &[])?;
+        gui.wait_tree("selected by its background", 5, |t| selected(t) && t["selection"].as_array().is_some_and(Vec::is_empty))?;
+        gui.wait("its panel", 5, |t| t.contains("Del: delete group"))?;
+        // Just outside its left outline (a few pixels) is its border too.
+        gui.key("Esc", &[])?;
+        gui.wait_tree("cleared", 5, |t| !selected(t))?;
+        let area: Vec<f64> = gui.tree()?["canvas"]["area"].as_array().map(|a| a.iter().filter_map(|v| v.as_f64()).collect()).unwrap_or_default();
+        // Its left outline, or its bottom one when the left is at the canvas's edge.
+        let border = if g[0] - 0.2 > area.first().copied().unwrap_or(0.0) + 0.3 { (g[0] - 0.2, g[1] + g[3] / 2.0) } else { (g[0] + g[2] / 2.0, g[1] + g[3] + 0.15) };
+        anyhow::ensure!(free(border.0, border.1), "the border at {border:?} is covered");
+        gui.click(border, &[])?;
+        gui.wait_tree("selected by its border", 5, selected)?;
+        anyhow::ensure!(std::fs::read_to_string(sb.instance.log_path()).unwrap_or_default().matches("launched ").count() == before, "a group click launched something");
+        // A drag on its background pans (and selects nothing).
+        gui.key("Esc", &[])?;
+        let origin = gui.tree()?["canvas"]["origin"].clone();
+        gui.drag("left", spot, (spot.0 + 3.0, spot.1 + 1.0), &[])?;
+        let tree = gui.tree()?;
+        anyhow::ensure!(tree["canvas"]["origin"] != origin && !selected(&tree), "a background drag pans");
+        // Title drag, ◢ resize and the folder chips are as before.
+        let g = rect(&gui.tree()?, "groups", "g-parity").context("group")?;
+        let doc = sb.doc()?;
+        let group = doc.groups.iter().find(|x| x.id == "g-parity").cloned().context("group")?;
+        gui.drag("left", (g[0] + 3.5, g[1] + 0.5), (g[0] + 5.5, g[1] + 0.5), &[])?;
+        wait_doc(&sb.canvas, "moved by its title", |d| d.groups.iter().any(|x| x.id == "g-parity" && x.x != group.x))?;
+        let g = rect(&gui.tree()?, "groups", "g-parity").context("group")?;
+        let corner = (g[0] + g[2] - 0.5, g[1] + g[3] - 0.5);
+        gui.drag("left", corner, (corner.0 + 2.0, corner.1 + 1.0), &[])?;
+        wait_doc(&sb.canvas, "resized by ◢", |d| d.groups.iter().any(|x| x.id == "g-parity" && (x.w, x.h) != (group.w, group.h)))?;
+        anyhow::ensure!(gui.tree()?["hits"].as_array().is_some_and(|h| h.iter().any(|h| h["hit"].as_str().is_some_and(|s| s.contains("OpenGroupFolder")))), "folder chips are clickable");
+        // A double-click on the background still creates a session there.
+        let tree = gui.tree()?;
+        let g = rect(&tree, "groups", "g-parity").context("group")?;
+        let boxes: Vec<[f64; 4]> = tree["canvas"]["boxes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|b| b["rect"].as_array().map(|r| r.iter().filter_map(|v| v.as_f64()).collect::<Vec<_>>()))
+            .filter(|r| r.len() == 4)
+            .map(|r| [r[0], r[1], r[2], r[3]])
+            .collect();
+        let free = |x: f64, y: f64| !boxes.iter().any(|b| x >= b[0] - 0.5 && x < b[0] + b[2] + 0.5 && y >= b[1] - 0.5 && y < b[1] + b[3] + 0.5);
+        let spot = (0..((g[3] - 2.0).max(0.0) as usize))
+            .flat_map(|dy| (0..((g[2] - 3.0).max(0.0) as usize)).map(move |dx| (g[0] + 1.5 + dx as f64, g[1] + 1.5 + dy as f64)))
+            .find(|(x, y)| free(*x, *y))
+            .context("no empty spot in the group")?;
+        gui.double_click(spot)?;
+        gui.wait("the new-session dialog", 5, |t| t.contains("New session") && t.contains("Folder"))?;
+        gui.key("Esc", &[])?;
+        gui.canvas_focus()?;
+        Ok(format!("background at {spot:?} and the border selected it (panel); background drag pans; title, ◢, chips, double-click unchanged"))
+    });
+
+    check(rows, "38", "New: RECENT sessions atop the Sessions panel (newest first, shared); Ctrl+F6 / Ctrl+Shift+F6 and ] / [ view the next or previous one without starting it", "recent_sessions_and_walk_keys", || recent_check(sb, gui));
+    check(rows, "39", "New: the default model (shown before starting; a choice applies to its session and is remembered for its agent; group overrides; resumes keep their model)", "remembered_default_model", || {
+        use crate::client::agents::AgentKind;
+        let log = || std::fs::read_to_string(sb.instance.log_path()).unwrap_or_default();
+        let [initial, listed, picked] = ["claude-opus-5-5", crate::fake_copilot::MODELS[1], crate::fake_copilot::MODELS[2]];
+        // Nothing chosen for Claude Code yet: the dialog shows Opus 5.5 (its id) as the initial default, and the session starts with it.
+        model_dialog(gui, "Model check A", false)?;
+        gui.wait("the initial default before starting", 5, |t| t.contains(&format!("{initial}  ▾ · initial default (Claude Opus 5.5)")))?;
+        let a = create_from_dialog(gui, sb, "Model check A")?;
+        gui.wait("the stand-in Claude Code started with it", 25, |t| t.contains("Model check A · ") && t.contains(&format!("Model: {initial}")))?;
+        anyhow::ensure!(log().contains(&format!("terminal {a}: claude new session, model {initial}")), "the launch carries --model {initial}");
+        let doc = sb.doc()?;
+        anyhow::ensure!(doc.node(&a).and_then(|n| n.model.as_deref()) == Some(initial), "the box records its model");
+        anyhow::ensure!(doc.defaults.model(AgentKind::Claude).is_none(), "no choice made: nothing remembered");
+        // Another model picked in the dialog (from the CLI's list): that session gets it and it becomes Claude Code's default.
+        model_dialog(gui, "Model check B", false)?;
+        pick_model(gui, "Claude Code", picked)?;
+        gui.wait("the choice", 5, |t| t.contains(&format!("{picked}  ▾ · your choice; becomes the default")))?;
+        let b = create_from_dialog(gui, sb, "Model check B")?;
+        gui.wait("B started with the choice", 25, |t| t.contains("Model check B · ") && t.contains(&format!("Model: {picked}")))?;
+        wait_doc(&sb.canvas, "remembered for Claude Code, recorded on B", |d| d.defaults.model(AgentKind::Claude) == Some(picked) && d.node(&b).and_then(|n| n.model.as_deref()) == Some(picked))?;
+        model_dialog(gui, "", false)?;
+        gui.wait("the next dialog shows it", 5, |t| t.contains(&format!("{picked}  ▾ · remembered default for Claude Code")))?;
+        gui.canvas_focus()?;
+        // A stays on its model: resuming it (a transcript makes it a real `claude -r`) passes its own model, not the new default.
+        stop_box(gui, &log, "Model check A", &a)?;
+        let projects = sb.root.join("claude-home").join("projects").join("parity");
+        std::fs::create_dir_all(&projects)?;
+        std::fs::write(projects.join(format!("{a}.jsonl")), json!({ "type": "user", "sessionId": a, "message": { "role": "user", "content": "parity" } }).to_string() + "\n")?;
+        gui.open("Model check A", &format!("Model: {initial}"))?;
+        anyhow::ensure!(log().contains(&format!("terminal {a}: claude resume, model {initial}")), "the resume keeps --model {initial}:\n{}", log().lines().filter(|l| l.contains(&a)).collect::<Vec<_>>().join("\n"));
+        // Copilot keeps a session's model itself: its resume carries none ("MCP parity" started in row 8).
+        let mcp = sb.doc()?.nodes.iter().find(|n| n.name == "MCP parity").map(|n| n.id.clone());
+        if let Some(id) = mcp.filter(|id| log().matches(&format!("launched {id} ")).count() > log().matches(&format!("terminal {id} exited with ")).count()) {
+            stop_box(gui, &log, "MCP parity", &id)?;
+            gui.open("MCP parity", "Model: none")?;
+            anyhow::ensure!(log().lines().any(|l| l.ends_with(&format!("terminal {id}: copilot resume"))), "a Copilot resume carries no model");
+        }
+        // A group's override wins in the group ("from group …"); a choice there is for that session only.
+        group_menu(gui, "Session defaults for group…")?;
+        gui.wait("the group's overrides", 5, |t| t.contains("SETTINGS · Parity group") && t.contains("Claude Code model"))?;
+        let (x, y) = gui.find("Claude Code model").context("Claude Code model row")?;
+        gui.click((x, y), &[])?;
+        gui.wait("the group's picker", 5, |t| t.contains("Claude Code model for group “Parity group”"))?;
+        gui.send("claude-group-parity\r")?;
+        wait_doc(&sb.canvas, "the group's override", |d| d.group("g-parity").and_then(|g| g.defaults.as_ref()).and_then(|d| d.model(AgentKind::Claude)) == Some("claude-group-parity"))?;
+        gui.key("Esc", &[])?;
+        gui.chord('1', &["alt"])?;
+        gui.canvas_focus()?;
+        group_menu(gui, "New session in group")?;
+        model_dialog(gui, "Model check C", true)?;
+        gui.wait("the group's model", 5, |t| t.contains("claude-group-parity  ▾ · from group “Parity group”"))?;
+        pick_model(gui, "Claude Code", listed)?;
+        gui.wait("this session only", 5, |t| t.contains(&format!("{listed}  ▾ · this session only")))?;
+        let c = create_from_dialog(gui, sb, "Model check C")?;
+        let doc = wait_doc(&sb.canvas, "C recorded its model", |d| d.node(&c).and_then(|n| n.model.as_deref()) == Some(listed))?;
+        anyhow::ensure!(doc.defaults.model(AgentKind::Claude) == Some(picked), "the canvas default is untouched");
+        anyhow::ensure!(doc.group("g-parity").and_then(|g| g.defaults.as_ref()).and_then(|d| d.model(AgentKind::Claude)) == Some("claude-group-parity"), "the group's override is untouched");
+        // Reset the group's override: its sessions get the canvas's default again.
+        group_menu(gui, "Session defaults for group…")?;
+        gui.wait("the group's overrides", 5, |t| t.contains("SETTINGS · Parity group") && t.contains("claude-group-parity"))?;
+        let (x, y) = gui.find("Claude Code model").context("Claude Code model row")?;
+        gui.click((x, y), &[])?;
+        gui.wait("the group's picker", 5, |t| t.contains("Claude Code model for group “Parity group”"))?;
+        gui.send(crate::client::models::NOT_SET)?;
+        gui.send("\r")?;
+        wait_doc(&sb.canvas, "the override reset", |d| d.group("g-parity").is_some_and(|g| g.defaults.is_none()))?;
+        gui.key("Esc", &[])?;
+        gui.chord('1', &["alt"])?;
+        gui.canvas_focus()?;
+        Ok(format!("initial {initial} shown and launched; {picked} picked → B and remembered; A resumed with {initial}; group override shown, {listed} for C only, reset"))
+    });
+
     check_kind(rows, "G4", "New: several windows on one canvas (Ctrl+Shift+N, toolbar)", "second_window_rename_sync", Kind::Only("GUI only: a console has one window"), || {
         let opened = gui.req(json!({ "cmd": "new_window" }))?;
         let window = opened["window"].as_u64().context("window index")? as usize;
@@ -1163,6 +1799,80 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
 
 }
 
+/// The new-session dialog (opened with `n` unless `opened`) with `name`
+/// typed and Claude Code (the stand-in) chosen as its agent.
+fn model_dialog(gui: &mut Gui, name: &str, opened: bool) -> Result<()> {
+    if !opened {
+        gui.canvas_focus()?;
+        gui.send("n")?;
+    }
+    gui.wait("the new-session dialog", 5, |t| t.contains("New session") && t.contains("Model"))?;
+    gui.send(name)?;
+    // A click on the Agent row picks the next agent.
+    for _ in 0..3 {
+        if gui.screen().contains("◉ Claude Code") {
+            break;
+        }
+        let at = gui.find("○ Claude Code").context("the Agent row")?;
+        gui.click(at, &[])?;
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    gui.wait("Claude Code chosen", 5, |t| t.contains("◉ Claude Code"))
+}
+
+/// Picks `model` in the dialog's model picker (typed into its filter).
+fn pick_model(gui: &mut Gui, agent: &str, model: &str) -> Result<()> {
+    let at = gui.find("▾ · ").context("the Model row")?;
+    gui.click(at, &[])?;
+    gui.wait("the model picker", 5, |t| t.contains(&format!("Model of the new {agent} session")) && t.contains("Type a model id"))?;
+    gui.send(model)?;
+    gui.send("\r")
+}
+
+/// Creates the dialog's session; returns its box id.
+fn create_from_dialog(gui: &mut Gui, sb: &Sandbox, name: &str) -> Result<String> {
+    let (x, y) = gui.find("Create & start").context("the create button")?;
+    gui.click((x + 1.0, y), &[])?;
+    let doc = wait_doc(&sb.canvas, &format!("the box “{name}”"), |d| d.nodes.iter().any(|n| n.name == name))?;
+    Ok(doc.nodes.iter().find(|n| n.name == name).map(|n| n.id.clone()).unwrap_or_default())
+}
+
+/// Stops a running box (X, confirmed) and waits for its terminal to exit.
+fn stop_box(gui: &mut Gui, log: &dyn Fn() -> String, name: &str, id: &str) -> Result<()> {
+    let exited = format!("terminal {id} exited with ");
+    let before = log().matches(&exited).count();
+    gui.canvas_focus()?;
+    gui.send("f")?;
+    let at = gui.box_center(name)?;
+    gui.click(at, &[])?;
+    gui.canvas_focus()?;
+    gui.send("x")?;
+    gui.wait("the stop dialog", 5, |t| t.contains(&format!("Stop “{name}”?")))?;
+    gui.key("Enter", &[])?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while log().matches(&exited).count() == before {
+        anyhow::ensure!(Instant::now() < deadline, "{name} did not stop");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    Ok(())
+}
+
+/// Runs an item of the parity group's menu (a right-click on its title).
+fn group_menu(gui: &mut Gui, item: &str) -> Result<()> {
+    gui.canvas_focus()?;
+    gui.send("f")?;
+    let tree = gui.tree()?;
+    let g = tree["canvas"]["groups"].as_array().and_then(|g| g.iter().find(|g| g["id"] == "g-parity").cloned()).context("group")?;
+    let r: Vec<f64> = g["rect"].as_array().map(|a| a.iter().filter_map(|v| v.as_f64()).collect()).unwrap_or_default();
+    anyhow::ensure!(r.len() == 4, "group rect");
+    let title = (r[0] + 3.5, r[1] + 0.5);
+    gui.mouse("down", "right", title, &[])?;
+    gui.mouse("up", "right", title, &[])?;
+    gui.wait("group menu", 5, |t| t.contains(item))?;
+    let at = gui.find(item).context("menu item")?;
+    gui.click(at, &[])
+}
+
 /// Rows that restart the GUI or use other clients.
 fn late_rows(sb: &Sandbox, rows: &mut Vec<Row>) {
     check(rows, "11b", "Terminals survive client exit (detach, reattach)", "detach_and_reattach", || {
@@ -1177,6 +1887,23 @@ fn late_rows(sb: &Sandbox, rows: &mut Vec<Row>) {
         let code = gui.driver.wait_exit(Duration::from_secs(10))?;
         anyhow::ensure!(code == 0, "exit code {code}");
         Ok("reattached with output; detached cleanly".into())
+    });
+
+    check(rows, "39b", "The remembered default model after the client restarts", "remembered_model_after_restart", || {
+        let saved = sb.doc()?;
+        let remembered = saved.defaults.model(crate::client::agents::AgentKind::Claude).map(str::to_owned).context("row 38 remembered a model for Claude Code in the canvas file")?;
+        let mut gui = sb.start(&[], "gui-model.log")?;
+        gui.wait("canvas again", 25, |t| t.contains("Parity group"))?;
+        model_dialog(&mut gui, "", false)?;
+        gui.wait("the remembered model", 10, |t| t.contains(&format!("{remembered}  ▾ · remembered default for Claude Code")))?;
+        gui.key("Esc", &[])?;
+        gui.canvas_focus()?;
+        gui.send("q")?;
+        gui.wait("quit dialog", 5, |t| t.contains("Detach (keep running)"))?;
+        gui.send("\r")?;
+        let code = gui.driver.wait_exit(Duration::from_secs(10))?;
+        anyhow::ensure!(code == 0, "exit code {code}");
+        Ok(format!("{remembered} kept in the canvas file and shown again"))
     });
 
     check(rows, "28", "Idle auto-stop, priority manager, upgrade with resume, protocol tolerance, crash log", "crash_log_and_build_match", || {
@@ -1245,7 +1972,12 @@ fn late_rows(sb: &Sandbox, rows: &mut Vec<Row>) {
         let _ = gui.driver.wait_exit(Duration::from_secs(10));
         Ok(format!("GUI over loopback TCP; drop uploaded to {}", found.strip_prefix(&sb.instance.home).unwrap_or(&found).display()))
     });
+
+    visual::rows(sb, rows);
 }
+
+#[path = "parity_visual.rs"]
+pub(crate) mod visual;
 
 fn walk(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();

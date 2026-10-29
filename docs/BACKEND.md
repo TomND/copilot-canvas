@@ -70,15 +70,17 @@ the connection dropped while waiting).
 | `MigratePlan` | `MigratePlan(items)` | migration preview |
 | `MigrateApply { items }` | `Texts` (result lines; backup under the data folder) | migration |
 | `ListDir { dir }` | `Texts` (".." then folders; drives when `None`) | folder browser |
+| `ListEntries { dir }` | `Texts` (".." then subfolders ending in `\`, then files; at most 5,000) | the remote folder browser (group folders, folder links); older services answer "does not support" and the browser lists `ListDir` |
 | `PathInfo { path }` | `Path(PathInfo)`: exists, folder, file, absolute form, occupied | launch (folder missing), new-session checks, worktree target, group folder, manifest folder |
 | `DirsExist { paths }` | `Flags` | recent-folder validity (for front ends) |
 | `ReadText { path, max_bytes }` | `Text` (at most 4 MB from the start) | a text viewer (remote mode) |
-| `OpenFolder { path }` | `Done` | "Open folder" (Explorer where the backend runs) |
+| `OpenFolder { path }` | `Done` | "Open folder" (Explorer where the backend runs; local clients only: the service logs `open folder for a client: …` if a remote one ever asks) |
 | `OpenTarget { target }` | `Done` | automation outputs, logs, report links |
 | `GitProbe { dir }` | `Git(Option<GitInfo>)` (root, branch, local then remote branches) | new-session dialog |
 | `WorktreeAdd { root, path, new_branch, base }` | `Done` | new worktree session |
 | `HasHistory { agent, id }` | `Flag` | can a Copilot session be forked |
 | `Fork { parent, child, name, cwd }` | `Done` | forked Copilot subsession |
+| `Transcript { agent, session, parent, agent_key, cwd, limit }` | `Transcript(Transcript)`: `entries` oldest first (prompt, answer, tool call with a few words of arguments and the start of its result or exit code, note), `truncated` (only the newest part was read), `running` (an unfinished turn or open tool call), `note`. `session` is the agent's own id; `agent_key` a subagent inside its history (Copilot `agentId`, Claude Code `Agent` call id); OpenCode children are their own `session` with `parent`. Bounded: the newest 2 MiB of a JSONL history, the newest 150 OpenCode messages by index (refused without OpenCode's indexes) | the transcript inspector, every 1.5 s while the conversation runs, else every 5 s (docs/AGENTS.md) |
 | `PrepareGroup { group }` | `Done` | group folder chosen, "Open AI docs / human outputs" |
 | `EnsureCatalog { folder }` | `Text` (path) | "Edit events…" |
 | `DoctorFolder` | `Text` (`<data>\factory`, created) | the automation doctor's group |
@@ -137,7 +139,7 @@ A client changes its working copy and marks it dirty; within 100 ms
 | `PutNode(node)` / `PutGroup(group)` | insert (appended), or replace the whole object |
 | `NodeFields(node, fields)` / `GroupFields(group, fields)` | set those fields of the object; dropped when it no longer exists |
 | `DelNode(id)` / `DelGroup(id)` | delete |
-| `SetField(name, json)` | set a shared top-level field: `recent_folders`, `defaults`, `vscode`, `idle_stop_minutes`, `idle_stop_v2`, `mcp`, `automations_dir`, `doctor_created`, `default_agent` |
+| `SetField(name, json)` | set a shared top-level field: `recent_folders`, `defaults`, `vscode`, `idle_stop_minutes`, `idle_stop_v2`, `mcp`, `automations_dir`, `doctor_created`, `default_agent`, `dust_after_days` |
 
 `ClientMsg::DocEdit { key, base, ops_json }` carries the list (`base`: the
 version the client had). The service applies the edits of all clients in
@@ -169,7 +171,7 @@ which objects are in flight. For each patch:
   document again (`DocOpen` on the same connection).
 
 When another window overwrites a field this client changed in the last 30 s
-(a box's name, position, …; not review times), the client shows "“name” was
+(a box's name, position, …; not review or last-use times), the client shows "“name” was
 changed in another window." The same goes for user-facing settings
 (defaults, VS Code settings, MCP presets, idle stop, automations folder,
 default agent).
@@ -263,7 +265,8 @@ most 8 files and 4 MiB in all.
   in-process backend and against the service over loopback TCP (folder
   browsing, paths, text and tails, Git probe and worktree in a temporary
   repository, group folders, catalog and passive files, automations from the
-  sample `data.db` and toggling, fork of a synthetic Copilot history, backups,
+  sample `data.db` and toggling, fork of a synthetic Copilot history and its
+  transcript, backups,
   errors); both must give the same answers. It also checks that an unknown
   request leaves the connection usable, that calls fail once the service is
   gone, and that two clients editing one canvas through the service converge

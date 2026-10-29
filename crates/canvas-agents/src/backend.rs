@@ -155,6 +155,7 @@ fn run(ctx: &Ctx, request: Request) -> Result<Response> {
         }
 
         Request::ListDir { dir } => Response::Texts(list_dir(dir.as_deref())?),
+        Request::ListEntries { dir } => Response::Texts(list_entries(Path::new(&dir))?),
         Request::PathInfo { path } => Response::Path(path_info(Path::new(&path))),
         Request::DirsExist { paths } => Response::Flags(paths.iter().map(|p| Path::new(p).is_dir()).collect()),
         Request::ReadText { path, max_bytes } => Response::Text(read_text(Path::new(&path), max_bytes.min(MAX_TEXT))?),
@@ -182,6 +183,15 @@ fn run(ctx: &Ctx, request: Request) -> Result<Response> {
             fork::fork_session(&ctx.sessions_dir, &parent, &child, &name, cwd.as_deref())?;
             Response::Done
         }
+        Request::Transcript { agent, session, parent, agent_key, cwd, limit } => Response::Transcript(Box::new(agents::transcript::read(
+            &ctx.sessions_dir,
+            agent,
+            &session,
+            parent.as_deref(),
+            agent_key.as_deref(),
+            cwd.as_deref(),
+            limit as usize,
+        )?)),
 
         Request::PrepareGroup { group } => {
             doc::prepare_group_folders(&group)?;
@@ -336,6 +346,27 @@ fn list_dir(dir: Option<&str>) -> Result<Vec<String>> {
     names.sort_by_key(|n| n.to_lowercase());
     names.insert(0, "..".into());
     Ok(names)
+}
+
+/// Entries of a folder for the canvas's browser: `..`, subfolders (with a
+/// trailing `\`), then files, each sorted by name (at most 5,000).
+fn list_entries(dir: &Path) -> Result<Vec<String>> {
+    let mut folders = Vec::new();
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| anyhow!("cannot list {}: {e}", dir.display()))?.filter_map(|e| e.ok()).take(5_000) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('$') || name == "System Volume Information" {
+            continue;
+        }
+        match std::fs::metadata(entry.path()) {
+            Ok(meta) if meta.is_dir() => folders.push(format!("{name}\\")),
+            Ok(_) => files.push(name),
+            Err(_) => {}
+        }
+    }
+    folders.sort_by_key(|n| n.to_lowercase());
+    files.sort_by_key(|n| n.to_lowercase());
+    Ok(std::iter::once("..".to_owned()).chain(folders).chain(files).collect())
 }
 
 fn path_info(path: &Path) -> PathInfo {

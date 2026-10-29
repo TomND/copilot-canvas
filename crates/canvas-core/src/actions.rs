@@ -25,6 +25,16 @@ impl App {
         self.modals.push(Modal::Menu(Menu { x, y, title, items, sel }));
     }
 
+    /// The menu's remove item: this box alone, or (on a box of a
+    /// multi-selection) the selection's eligible boxes after a confirmation.
+    fn remove_item(&self, id: &str, single: &str) -> MenuItem {
+        if self.selection.len() > 1 && self.selection.iter().any(|s| s == id) {
+            let count = self.remove_plan(&self.selection).remove.len();
+            return item(&format!("Remove {count} from canvas"), "Del", Action::ConfirmRemove(self.selection.clone()), count > 0);
+        }
+        item(single, "Del", Action::RemoveNode(id.to_owned()), true)
+    }
+
     pub fn node_menu(&self, id: &str) -> (String, Vec<MenuItem>) {
         let Some(node) = self.doc.node(id) else { return (String::new(), Vec::new()) };
         let session = self.session_of(id).unwrap_or_default();
@@ -48,9 +58,16 @@ impl App {
             return (node.name.clone(), items);
         }
         if node.kind == NodeKind::Agent {
-            items.push(item("Open parent terminal", "Enter", Action::Open(id.to_owned()), !external));
+            let parent = node.parent.clone().unwrap_or_default();
+            let parent_alive = self.owned_alive(&parent);
+            items.push(item("Inspect transcript", "", Action::Inspect(id.to_owned()), self.transcript_request(id).is_some()));
+            if self.doc.node(&parent).is_some_and(|p| p.command.is_none() && agent_of(p) == AgentKind::OpenCode) {
+                let resumable = !matches!(self.child_resume(node), crate::inspect::ChildResume::No(_));
+                items.push(item("Resume as subsession", "", Action::ResumeChild(id.to_owned()), resumable));
+            }
+            items.push(item(if parent_alive { "Open parent terminal" } else { "Start parent session" }, "", Action::Start(parent), !external));
             items.push(item("Rename box", "R", Action::Rename(Target::Node(id.to_owned())), true));
-            items.push(item("Remove box", "Del", Action::RemoveNode(id.to_owned()), true));
+            items.push(self.remove_item(id, "Remove box"));
             return (node.name.clone(), items);
         }
         if node.passive.is_some() {
@@ -62,22 +79,31 @@ impl App {
             items.push(item("Edit rules", "", Action::PassiveOpen(id.to_owned(), 0), true));
             items.push(item("Open run log", "", Action::PassiveOpen(id.to_owned(), 2), true));
             items.push(item(if alive { "Focus chat" } else { "Open chat" }, "", Action::PassiveChat(id.to_owned()), !external));
+            items.push(item("Inspect transcript", "", Action::Inspect(id.to_owned()), self.transcript_request(id).is_some()));
             items.push(item("MCP servers…", "", Action::McpServers(id.to_owned()), true));
             items.push(item("Rename", "R", Action::Rename(Target::Node(id.to_owned())), true));
             items.push(item("Stop run", "X", Action::Stop { id: id.to_owned(), force: false }, alive));
-            items.push(item("Remove from canvas", "Del", Action::RemoveNode(id.to_owned()), true));
+            items.push(self.remove_item(id, "Remove from canvas"));
             return (node.name.clone(), items);
         }
-        let open_label = if alive { "Focus terminal" } else { "Open terminal" };
-        items.push(item(open_label, "Enter", Action::Open(id.to_owned()), !external));
+        // The explicit start: Start (new), Resume (its conversation) or Open terminal (running).
+        let (start, startable) = match self.start_plan(node).label() {
+            Some(label) => (label, true),
+            None => ("Open terminal", false),
+        };
+        items.push(item(start, "Enter", Action::Start(id.to_owned()), startable));
+        if self.transcript_request(id).is_some() {
+            items.push(item("Inspect transcript", "", Action::Inspect(id.to_owned()), true));
+        }
         items.push(item("New subsession", "S", Action::NewSession { at: None, parent: Some(id.to_owned()) }, true));
+        items.extend(self.visual_node_items(id));
         items.push(item("Rename", "R", Action::Rename(Target::Node(id.to_owned())), true));
         if !self.demo {
             items.push(item("MCP servers…", "", Action::McpServers(id.to_owned()), true));
             items.push(item(if node.no_messages { "Accept passive messages" } else { "Mute passive messages" }, "", Action::ToggleMessages(id.to_owned()), true));
             let queued = self.bus.mailbox.get(id).copied().unwrap_or(0);
             if queued > 0 {
-                items.push(item(&format!("Deliver {queued} queued message(s)"), "", Action::Open(id.to_owned()), !external));
+                items.push(item(&format!("Deliver {queued} queued message(s)"), "", Action::Start(id.to_owned()), !external));
                 items.push(item("Discard queued messages", "", Action::DiscardMail(id.to_owned()), true));
             }
         }
@@ -88,7 +114,7 @@ impl App {
         }
         items.push(item("Stop session", "X", Action::Stop { id: id.to_owned(), force: false }, alive));
         items.push(item("Force stop", "", Action::Stop { id: id.to_owned(), force: true }, alive));
-        items.push(item("Remove from canvas", "Del", Action::RemoveNode(id.to_owned()), true));
+        items.push(self.remove_item(id, "Remove from canvas"));
         (node.name.clone(), items)
     }
 
@@ -121,21 +147,20 @@ impl App {
     }
 
     pub fn canvas_menu(&self, wx: i32, wy: i32) -> (String, Vec<MenuItem>) {
-        (
-            "Canvas".into(),
-            vec![
-                item("New session here", "N", Action::NewSession { at: Some((wx, wy)), parent: None }, true),
-                item("New group here", "", Action::NewGroupAt(wx, wy), true),
-                item("Import sessions…", "I", Action::ImportCopilot, !self.demo),
-                item("Sync VS Code sessions", "V", Action::SyncVs, !self.demo),
-                item("Undo last sync", "Ctrl+Z", Action::UndoSync, self.undo.is_some()),
-                item("Migrate VS Code skills & settings…", "", Action::Migrate, !self.demo),
-                item("Fit everything", "F", Action::FitAll, true),
-                item(if self.doc.ui.tiled { "Single terminal view" } else { "Tile terminals" }, "T", Action::ToggleTiled, true),
-                item("Open in the other client", "O", Action::OpenOtherClient, true),
-                item("Help", "?", Action::Help, true),
-            ],
-        )
+        let mut items = vec![
+            item("New session here", "N", Action::NewSession { at: Some((wx, wy)), parent: None }, true),
+            item("New group here", "", Action::NewGroupAt(wx, wy), true),
+            item("Import sessions…", "I", Action::ImportCopilot, !self.demo),
+            item("Sync VS Code sessions", "V", Action::SyncVs, !self.demo),
+            item(self.undo_label(), "Ctrl+Z", Action::UndoSync, self.undo.is_some()),
+            item("Migrate VS Code skills & settings…", "", Action::Migrate, !self.demo),
+            item("Fit everything", "F", Action::FitAll, true),
+            item(if self.doc.ui.tiled { "Single terminal view" } else { "Tile terminals" }, "T", Action::ToggleTiled, true),
+            item("Open in the other client", "O", Action::OpenOtherClient, true),
+            item("Help", "?", Action::Help, true),
+        ];
+        items.splice(items.len() - 3..items.len() - 3, self.visual_canvas_items());
+        ("Canvas".into(), items)
     }
 
     pub fn tile_menu(&self, id: &str) -> (String, Vec<MenuItem>) {
@@ -155,9 +180,11 @@ impl App {
     }
 
     /// Copies the terminal selection to the clipboard (the highlight stays).
+    /// Copilot's scrollbar column is left out (see `CopyRules`).
     pub fn copy_selection(&mut self) {
         let Some(selection) = self.term_select.clone() else { return };
-        let Some(text) = self.views.get(&selection.id).map(|v| v.selection_text(&selection)) else { return };
+        let rules = canvas_termview::CopyRules { edge_scrollbar: self.runs_copilot(&selection.id) };
+        let Some(text) = self.views.get(&selection.id).map(|v| v.selection_text_with(&selection, rules)) else { return };
         if text.is_empty() {
             return;
         }
@@ -167,6 +194,13 @@ impl App {
         }
     }
 
+    /// The terminal runs Copilot CLI (as for its user-message tint).
+    pub fn runs_copilot(&self, id: &str) -> bool {
+        let agent = self.doc.node(id).filter(|n| n.command.is_none()).map(crate::agents::agent_of);
+        self.terms.get(id).is_some_and(|info| info.copilot) && agent == Some(crate::agents::AgentKind::Copilot)
+    }
+
+    /// Pastes the clipboard's text into a terminal (an image: Ctrl+V for the agent).
     pub fn paste_clipboard(&mut self, id: &str) {
         if !self.owned_alive(id) {
             return;
@@ -178,9 +212,19 @@ impl App {
             return self.send_ctrl_v(id);
         }
         match self.platform.clipboard_text() {
-            Ok(text) if !text.is_empty() => self.send(ClientMsg::Input { id: id.to_owned(), input: crate::protocol::Input::Paste(text) }),
+            Ok(text) if !text.is_empty() => self.paste_text(id, &text),
             Ok(_) => self.send_ctrl_v(id),
             Err(error) => self.notify(format!("Paste failed: {error:#}"), true),
+        }
+    }
+
+    /// Text pasted into a terminal: one paste, never ending with a line
+    /// break (the service encodes it so no line break acts as Enter; see
+    /// `canvas_host::keys::paste_lines`). Line breaks alone paste nothing.
+    pub fn paste_text(&mut self, id: &str, text: &str) {
+        let text = crate::input::paste_body(text);
+        if !text.is_empty() {
+            self.send(ClientMsg::Input { id: id.to_owned(), input: crate::protocol::Input::Paste(text.to_owned()) });
         }
     }
 
@@ -260,10 +304,11 @@ impl App {
         }
     }
 
-    /// Shows a folder. Locally: File Explorer where the backend runs. Remote:
-    /// VS Code through the tunnel, else the viewer (with "Copy path").
+    /// Shows a folder. Locally: File Explorer where the backend runs. Remote
+    /// (any `--remote`, loopback included): VS Code through the tunnel, else
+    /// the canvas's folder browser (with "Copy path").
     pub fn open_folder(&mut self, path: &str) {
-        if self.files_elsewhere() {
+        if self.service_is_remote() {
             return self.open_remote(path, false);
         }
         if let Err(error) = self.backend.open_folder(path) {
@@ -273,7 +318,7 @@ impl App {
 
     /// A path on the service's machine: in VS Code through its tunnel
     /// (unless `view`), else in the viewer.
-    fn open_remote(&mut self, target: &str, view: bool) {
+    pub(crate) fn open_remote(&mut self, target: &str, view: bool) {
         let (path, line) = match crate::links::remote_path(target) {
             Ok(found) => found,
             Err(error) => return self.notify(format!("{error:#}"), true),
@@ -309,7 +354,7 @@ impl App {
         let key = path.clone();
         self.in_background(
             move |backend| match folder {
-                true => backend.list_dir(Some(path)).map(Err).map_err(|e| format!("{e:#}")),
+                true => crate::folders::list_entries(backend, &path).map(Err),
                 false => backend.read_text(&path, crate::viewer::MAX_VIEW_BYTES).map(Ok).map_err(|e| format!("{e:#}")),
             },
             move |loaded| {
@@ -321,7 +366,7 @@ impl App {
                         {
                             match &loaded {
                                 Ok(Ok(text)) => viewer.set_text(text, text.len() as u64 >= crate::viewer::MAX_VIEW_BYTES),
-                                Ok(Err(entries)) => viewer.set_entries(entries.clone()),
+                                Ok(Err((entries, typed))) => viewer.set_listing(entries.clone(), *typed),
                                 Err(error) => viewer.error = Some(format!("Cannot read it: {error}")),
                             }
                         }
@@ -418,7 +463,7 @@ impl App {
                 }
                 self.mark_dirty();
                 let summary = self.mcp_summary(agent, &off);
-                let when = if alive { " Applies the next time it starts (stop it and click it to restart now)." } else { "" };
+                let when = if alive { " Applies the next time it starts (stop it and double-click it to restart now)." } else { "" };
                 self.notify(format!("MCP servers for this session: {summary}.{when}"), false);
             }
         }
@@ -535,8 +580,11 @@ impl App {
         match action {
             Action::Open(id) => {
                 self.reveal_node(&id);
-                self.open_node(&id);
+                self.view_node(&id);
             }
+            Action::Start(id) => self.start_node(&id),
+            Action::Inspect(id) => self.inspect(&id),
+            Action::ResumeChild(id) => self.resume_child(&id),
             Action::OpenGroup(id) => self.open_group(&id),
             Action::NewSession { at, parent } => self.open_new_session(at, parent),
             Action::Rename(target) => {
@@ -587,19 +635,9 @@ impl App {
                 }
                 self.mark_dirty();
             }
-            Action::RemoveNode(id) => {
-                let session = self.doc.node(&id).filter(|n| n.kind == NodeKind::Session).map(|n| n.id.clone());
-                if session.as_ref().is_some_and(|s| self.owned_alive(s)) {
-                    return self.notify("Stop this session (X) before removing its box. History is never deleted.", true);
-                }
-                if let Some(session) = &session {
-                    self.send(ClientMsg::Forget { id: session.clone() });
-                    self.tile_slots.retain(|t| t != session);
-                }
-                self.doc.remove_node(&id);
-                self.selection.retain(|s| *s != id);
-                self.mark_dirty();
-            }
+            Action::RemoveNode(id) => self.remove_nodes(&[id]),
+            Action::RemoveNodes(ids) => self.remove_nodes(&ids),
+            Action::ConfirmRemove(ids) => self.confirm_remove(ids),
             Action::Stop { id, force } => {
                 if self.owned_alive(&id) {
                     self.stop_terminal(&id, force);
@@ -643,8 +681,14 @@ impl App {
                 self.run_cli_op(label, move |backend| backend.plugin_update(&name));
             }
             Action::CloseDetail => {
+                // A session's details close with its selection (they would show again).
+                let session = matches!(self.right_detail, None | Some(crate::side::RightDetail::Session(_)));
                 self.right_detail = None;
-                let keep: Vec<String> = self.selection.iter().filter(|id| self.doc.node(id).is_some_and(|n| n.kind != NodeKind::Automation)).cloned().collect();
+                let keep: Vec<String> = if session {
+                    Vec::new()
+                } else {
+                    self.selection.iter().filter(|id| self.doc.node(id).is_some_and(|n| n.kind != NodeKind::Automation)).cloned().collect()
+                };
                 self.selection = keep;
             }
             Action::OpenPath(path) => self.open_folder(&path),
@@ -735,7 +779,7 @@ impl App {
                     };
                     match which {
                         3 => self.open_folder(&path.display().to_string()),
-                        _ => self.open_link(&path.display().to_string()),
+                        _ => self.open_service_file(&path.display().to_string()),
                     }
                 }
             }
@@ -747,7 +791,7 @@ impl App {
             })),
             Action::OpenEvents(group) => match self.doc.group(&group).and_then(|g| g.folder.clone()) {
                 Some(folder) => match self.backend.ensure_catalog(&folder) {
-                    Ok(path) => self.open_link(&path),
+                    Ok(path) => self.open_service_file(&path),
                     Err(error) => self.notify(format!("{error:#}"), true),
                 },
                 None => self.notify("Set the group's folder first (group menu → Change group folder…).", true),
@@ -777,6 +821,7 @@ impl App {
             Action::Help => self.modals.push(Modal::Help),
             Action::Nothing => {}
             Action::NewWindow => self.new_window_requested = true,
+            Action::Visual(action) => self.run_visual(action),
             Action::OpenOtherClient => {
                 let args = self.other_client_args();
                 match self.platform.open_other_client(&args) {
@@ -800,6 +845,8 @@ impl App {
             .filter(|c| !c.is_empty())
             .or_else(|| self.doc.recent_folders.first().map(|f| f.path.clone()))
             .unwrap_or_else(|| self.default_cwd.clone());
+        let (x, y) = self.new_session_slot(parent.as_deref(), at);
+        let group = self.doc.group_at(x + crate::doc::SESSION_W / 2, y + crate::doc::SESSION_H / 2).map(|g| g.id.clone());
         let dialog = NewSession {
             parent,
             at,
@@ -821,6 +868,8 @@ impl App {
             can_fork,
             fork: can_fork,
             agent,
+            model: None,
+            group,
         };
         if !self.agent_configs.contains_key(&agent) {
             self.refresh_config_for(agent);
@@ -828,11 +877,34 @@ impl App {
         self.modals.push(Modal::NewSession(Box::new(dialog)));
     }
 
+    /// Where a new session box goes: next to its parent, at the spot given
+    /// (or the nearest free one), else in free space in view.
+    fn new_session_slot(&self, parent: Option<&str>, at: Option<(i32, i32)>) -> (i32, i32) {
+        match (parent, at) {
+            (Some(parent), _) => match self.doc.node(parent) {
+                Some(p) => self.doc.free_slot(p.x + GRID_X + 4, p.y, 1, NodeKind::Session),
+                None => self.doc.free_slot(self.doc.view.x + 2, self.doc.view.y + 1, 4, NodeKind::Session),
+            },
+            (None, Some((x, y))) => {
+                let rect = crate::doc::Rect { x, y, w: crate::doc::SESSION_W, h: crate::doc::SESSION_H };
+                if self.doc.is_free(&rect, "") { (x, y) } else { self.doc.free_slot(x, y, 1, NodeKind::Session) }
+            }
+            (None, None) => {
+                let (n, d) = self.scale();
+                let c = self.layout.canvas;
+                let (cx, cy) = (self.doc.view.x + c.width as i32 * d / n / 3, self.doc.view.y + c.height as i32 * d / n / 3);
+                self.doc.free_slot(cx, cy, 3, NodeKind::Session)
+            }
+        }
+    }
+
     /// Switches the new-session dialog to the next agent (`forward`) or the previous one.
     pub fn cycle_dialog_agent(&mut self, dialog: &mut NewSession, forward: bool) {
         let all = crate::agents::ALL;
         let index = all.iter().position(|k| *k == dialog.agent).unwrap_or(0);
         dialog.agent = all[if forward { (index + 1) % all.len() } else { (index + all.len() - 1) % all.len() }];
+        // Model ids are the agent's own: a choice made for another agent does not carry over.
+        dialog.model = None;
         // Forking needs the parent's own agent.
         let parent_agent = dialog.parent.as_deref().and_then(|p| self.doc.node(p)).map(agent_of);
         dialog.can_fork = !self.demo && parent_agent == Some(dialog.agent) && dialog.parent.as_deref().is_some_and(|p| self.can_fork(p));
@@ -924,7 +996,7 @@ impl App {
                             n.fresh = true;
                         }
                         self.node_errors.insert(node, "fork failed".into());
-                        self.notify(format!("Could not fork the parent's conversation: {error}. Click the box to start it fresh."), true);
+                        self.notify(format!("Could not fork the parent's conversation: {error}. Double-click the box to start it fresh."), true);
                     }
                 }
             }
@@ -1044,23 +1116,8 @@ impl App {
             .and_then(|p| self.doc.node(&p).map(|n| native_id(n).to_owned()));
         // Copilot forks by copying the parent's history; the others fork it themselves on first start.
         let (copy_fork, native_fork) = if caps.copy_fork { (fork_parent, None) } else { (None, fork_parent) };
-        let (x, y) = match (&dialog.parent, dialog.at) {
-            (Some(parent), _) => match self.doc.node(parent) {
-                Some(p) => self.doc.free_slot(p.x + GRID_X + 4, p.y, 1, NodeKind::Session),
-                None => self.doc.free_slot(self.doc.view.x + 2, self.doc.view.y + 1, 4, NodeKind::Session),
-            },
-            (None, Some((x, y))) => {
-                let rect = crate::doc::Rect { x, y, w: crate::doc::SESSION_W, h: crate::doc::SESSION_H };
-                if self.doc.is_free(&rect, "") { (x, y) } else { self.doc.free_slot(x, y, 1, NodeKind::Session) }
-            }
-            (None, None) => {
-                let (n, d) = self.scale();
-                let c = self.layout.canvas;
-                let (cx, cy) = (self.doc.view.x + c.width as i32 * d / n / 3, self.doc.view.y + c.height as i32 * d / n / 3);
-                self.doc.free_slot(cx, cy, 3, NodeKind::Session)
-            }
-        };
-        let node = Node {
+        let (x, y) = self.new_session_slot(dialog.parent.as_deref(), dialog.at);
+        let mut node = Node {
             id: id.clone(),
             kind: NodeKind::Session,
             name,
@@ -1079,8 +1136,17 @@ impl App {
             passive: None,
             no_messages: false,
             agent: (!self.demo).then(|| agent.id().to_owned()),
-            agent_session: None,
+            agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
         };
+        // The model shown in the dialog is the one it starts with (and keeps on
+        // resume); a choice made there becomes its agent's default.
+        let group = self.doc.group_of(&node).cloned();
+        let (model, remember) = self.new_session_model(dialog, group.as_ref());
+        node.model = model;
+        if let Some(choice) = remember {
+            self.doc.defaults.set_model(agent, Some(&choice));
+            self.notify(format!("New {} sessions now start with {}.", agent.label(), crate::models::shown(&choice)), false);
+        }
         self.doc.mcp.last_off = crate::doc::normalize_off(&dialog.mcp_off);
         self.doc.nodes.push(node);
         self.doc.note_folder(&folder, now_ms());

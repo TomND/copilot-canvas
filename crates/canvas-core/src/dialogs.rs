@@ -101,7 +101,15 @@ pub enum Target {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
+    /// Flies to a box and views it (never launches).
     Open(String),
+    /// Starts or resumes a box's session and focuses its terminal (the
+    /// explicit start: Enter, double-click, Start / Resume buttons).
+    Start(String),
+    /// The read-only transcript of a session or subagent box.
+    Inspect(String),
+    /// A subagent's own conversation in a terminal of its own (a new linked subsession).
+    ResumeChild(String),
     OpenGroup(String),
     NewSession { at: Option<(i32, i32)>, parent: Option<String> },
     Rename(Target),
@@ -111,6 +119,10 @@ pub enum Action {
     FitGroup(String),
     CycleGroupColor(String),
     RemoveNode(String),
+    /// Removes these boxes (a confirmed multi-selection; running sessions stay).
+    RemoveNodes(Vec<String>),
+    /// Asks before removing the eligible boxes of a multi-selection.
+    ConfirmRemove(Vec<String>),
     Stop { id: String, force: bool },
     Copy(String),
     ImportCopilot,
@@ -170,6 +182,8 @@ pub enum Action {
     NewWindow,
     /// This canvas in the other front end (the TUI from the GUI and back).
     OpenOtherClient,
+    /// Stacks, hidden subsessions, dust, effects, group folders and passive sessions.
+    Visual(crate::visual::VisualAction),
 }
 
 #[derive(Clone, Debug)]
@@ -223,6 +237,7 @@ pub enum NsField {
     NewBranch,
     WtPath,
     Agent,
+    Model,
     Context,
     Mcp,
     Prompt,
@@ -256,6 +271,11 @@ pub struct NewSession {
     pub fork: bool,
     /// The agent CLI the session runs.
     pub agent: AgentKind,
+    /// The model chosen here for this session (`Some("")`: the agent's own
+    /// default); `None`: the effective default (group, remembered, initial).
+    pub model: Option<String>,
+    /// The group the new box lands in (its launch defaults apply).
+    pub group: Option<String>,
 }
 
 impl NewSession {
@@ -267,12 +287,17 @@ impl NewSession {
                 fields.extend([NsField::Base, NsField::NewBranch, NsField::WtPath]);
             }
         }
-        fields.push(NsField::Agent);
+        fields.extend([NsField::Agent, NsField::Model]);
         if self.can_fork {
             fields.push(NsField::Context);
         }
         fields.extend([NsField::Mcp, NsField::Prompt, NsField::Create, NsField::Cancel]);
         fields
+    }
+
+    /// Forks its parent's conversation (and so its model).
+    pub fn forks(&self) -> bool {
+        self.fork && self.can_fork
     }
 
     pub fn cycle(&mut self, forward: bool) {
@@ -301,6 +326,17 @@ pub enum PickPurpose {
     RecentFolder,
     Branch,
     Default(DefaultField, Option<String>),
+    /// A model (the agent's list, plus a typed id).
+    Model(ModelTarget),
+}
+
+/// Whose model a model picker sets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ModelTarget {
+    /// The new-session dialog below it (that session; remembered for its agent).
+    Dialog,
+    /// A new-session default of an agent: the canvas's (`None`) or a group's.
+    Default(AgentKind, Option<String>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -311,6 +347,8 @@ pub enum PromptPurpose {
     CopilotSetting(String),
     NewCopilotSetting,
     Default(DefaultField, Option<String>),
+    /// A model id typed by hand.
+    Model(ModelTarget),
     SyncWindow,
     AutomationsDir,
     GroupFolder(String),
@@ -435,6 +473,8 @@ pub enum Modal {
     Mcp(McpPicker),
     /// A read-only file or folder of a remote service's machine.
     Viewer(Box<crate::viewer::Viewer>),
+    /// The read-only transcript of a session or subagent.
+    Inspector(Box<crate::inspect::Inspector>),
 }
 
 /// Clickable regions registered while drawing.
@@ -506,9 +546,13 @@ mod tests {
             can_fork: false,
             fork: false,
             agent: AgentKind::OpenCode,
+            model: None,
+            group: None,
         };
         assert!(!dialog.fields().contains(&NsField::Base));
         assert!(dialog.fields().contains(&NsField::Agent), "every session chooses its agent");
+        let fields = dialog.fields();
+        assert_eq!(fields.iter().position(|f| *f == NsField::Model), fields.iter().position(|f| *f == NsField::Agent).map(|i| i + 1), "its model right after the agent");
         dialog.git = GitState::Repo(GitInfo { root: PathBuf::from("C:\\r"), branch: None, branches: vec![], local_count: 0 });
         assert!(dialog.fields().contains(&NsField::WtPath));
         // Worktree fields come before the agent (the Tab order selftests rely on).

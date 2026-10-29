@@ -1,0 +1,61 @@
+# effects-reduced-motion (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit                                                2 sessions
+    SESSIONS                     │▌
+▌▤  / filter…                    │ ┌╌ ▣ Payments · 2 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ⟲+ ╌ ◧ ╌ ◨ ╌╌┐·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │ ╎                                              ╎
+ ◷  ▾ ▣ Payments               2 │ ╎ ╭ Payments API ──────────────╮               ╎
+      ◧ pay                      │ ╎ │ ■ stopped                  │    ·     ·    ╎·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+ ⧉    ■ Payments API             │ ╎ │ canvas                     │               ╎
+      ■ Billing UI               │ ╎ ╰─ ✦ PR !12 approved ────────╯               ╎
+ ⌁                               │ ╎     ·     ·     ·     ·     ·     ·     ·    ╎·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │ ╎                                              ╎
+ ✦                               │ ╎                                              ╎
+                                 │ ╎ ╭ Billing UI ────────────────╮    ·     ·    ╎·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+ ◈                               │ ╎ │ ■ stopped                  │               ╎
+                                 │ ╎ │ canvas                     │               ╎
+ ⇄                               │ ╎ ╰─ ◉ attention ──────────────╯    ·     ·    ╎·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │ ╎                                              ╎
+ ≡                               │ ╎                                              ╎
+                                 │ └╌ ▲ rollout stuck ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌◢·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+ click view · double-click/Enter start · ] [ or Ctrl+F6 recent · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom ·…
+## gpu view model
+view cursor=none modal=none banner=None
+canvas area=34,1 116x38 origin=-1,-1 scale=1 grid=true tick=0 empty=false
+group g-pay "Payments" icon=▣ members=2 rect=0,0 48x16 color=#20be96 style=[fg #20be96 +DIM] selected=false drop_target=false automations=false folder=true
+  chip " ⟲+ " action=NewPassive("g-pay") rect=33,0 4x1 fixed=false lit=false
+  chip " ◧ " action=OpenGroupFolder("g-pay", false) rect=38,0 3x1 fixed=false lit=true
+  chip " ◨ " action=OpenGroupFolder("g-pay", true) rect=42,0 3x1 fixed=false lit=true
+box e1 Session rect=2,2 30x4 prefix="" name="Payments API"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]
+  selected=false focused_term=false active=false
+box e2 Session rect=2,9 30x4 prefix="" name="Billing UI"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]
+  selected=false focused_term=false active=false
+effect fx-a fireworks rect=2,2 30x4 group=false badge="✦ PR !12 approved" age_ms=1100
+effect fx-b attention rect=2,9 30x4 group=false badge="◉ attention" age_ms=1100
+effect fx-c alert rect=0,0 48x16 group=true badge="▲ rollout stuck" age_ms=1100
+motion Reduced

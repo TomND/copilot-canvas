@@ -532,7 +532,8 @@ what they sent for terminals they stopped showing.
 
 What happens where (PLAN.md §6). "Remote" means a service on another machine
 (`--remote NAME` or `HOST:PORT`); `--remote loopback` is the same machine and
-behaves like local mode here.
+behaves like local mode here, except for folders and group files, which open
+in the canvas in any remote mode (that is how the tests check them).
 
 | What | Local | Remote |
 |---|---|---|
@@ -541,10 +542,16 @@ behaves like local mode here.
 | Image paste (Ctrl+V / Alt+V with an image, pane menu Paste) | the key goes to the agent, which reads the local clipboard | the client reads the home clipboard image (`PNG` format, else `CF_DIBV5`/`CF_DIB` converted to PNG; at most 20 MB and 32 M pixels), sends `Request::SetClipboardImage`, the service puts it on the Cloud PC clipboard in its user session as `CF_DIB` (32-bit) and `PNG`, then the client sends the same key. Offline: nothing is sent |
 | URLs in terminals (Ctrl+click), report links | this machine's browser | the home browser |
 | Paths in terminals, passive-session files (rules, memory, log), the events catalog | VS Code at the line / Explorer | checked on the service (`PathInfo`, so a missing file says "… does not exist"); with `--vscode-tunnel NAME` on the server record and VS Code installed at home: `vscode://vscode-remote/tunnel+NAME/C:/path:LINE`; otherwise the text viewer |
-| Folders (config views' "Open folder", group folders, passive folder) | Explorer | VS Code through the tunnel, else the viewer (subfolders, "Copy path") |
+| Folders (config views' "Open folder", group folders and their chips, the sidebar's folder rows, passive folder) | Explorer | VS Code through the tunnel, else the canvas's folder browser (subfolders and files, `ListEntries`; a file opens in the viewer through `ReadText`; "Copy path"). Folders follow this in any remote mode, `--remote loopback` included, so the service never opens Explorer for a client |
+| Group files: passive rules, memory, log, group context, `GOALS.md`, the events catalog | VS Code at the file | the same in any remote mode (`loopback` included): VS Code through the tunnel, else the viewer |
 | Automation outputs, manifests, logs, status reports | their default program | always the text viewer, with "Open in VS Code" when a tunnel is configured |
 | Bell, OSC 777, taskbar progress, window title | this machine | the home PC (they are computed from terminal state the service sends) |
 | Crash log | `<home>\crash.log` of the client | each side keeps its own: the client's in its data folder at home; the service logs to `service-<instance>.log` on the Cloud PC |
+
+The folder browser is the same modal for a folder: its subfolders (▸) and
+files, ↑↓ pick one, Enter or a click opens it (a subfolder in place, a file
+in the viewer on top), Backspace goes up, Tab reaches the buttons. An older
+service that cannot list files shows the subfolders only.
 
 The text viewer is a canvas modal (TUI and GUI): read-only, monospace (the
 cell grid), the first 2 MB of a file (`ReadText`), tabs expanded and control
@@ -646,7 +653,7 @@ Checklist (over a day):
   tables; input dedupe and takeover; heartbeats keeping a connection and
   silence ending it with short timeouts (`canvas-core::conn`); offline input,
   reconnect resync and the lost-keystroke report (`canvas-core::app`).
-- `copilot-canvas selftest --remote loopback`: the 27-step UI self-test with
+- `copilot-canvas selftest --remote loopback`: the 33-step UI self-test with
   the client on TCP.
 - `copilot-canvas selftest --remote faults` (or, after `cargo build --release`,
   `cargo test --release fault_injection -- --ignored --nocapture`): a TCP proxy
@@ -712,7 +719,16 @@ through the proxy:
   test hooks) with four busy tiles (`ui-echo` and the three streams), typing a
   key into `ui-echo` every 500 ms and checking each one: applied once, or not
   applied near a fault (blocked or unconfirmed), never doubled, never lost
-  while online.
+  while online. Before every key it checks that the echo tile has the
+  keyboard (the GUI's `tree`: focus, focused terminal, no dialog; the TUI's
+  hint line and the heavy outline of the focused tile). When it does not,
+  nothing is typed (the batch is counted as skipped, with the reason) and a
+  click on the tile's header gives it the keyboard back, so keys never reach
+  the canvas, where letters are shortcuts (`x` stops a terminal, `o` opens the
+  other client). Half-way the harness takes the keyboard away once on purpose
+  (Ctrl+]) and the next batch must notice. An echo terminal that ended is
+  started again and reported. The GUI runs with the other-client dry run, so
+  an `o` that slipped through would show up as a failure instead of a window.
 
 Every S seconds the proxy injects the next fault of a cycle: drop every
 connection; take the network down for 5 s; cut the next frame in half; delay
@@ -765,8 +781,10 @@ The memory slopes are below the leak threshold and within the noise of a
 20-minute run (the GUI's 6 MB over 16 minutes is consistent with its glyph
 atlas and shape cache filling); a slow leak would need the long run to show.
 
-**The 48 h soak (PLAN §5 Phase 6) was not performed in this session.** Run
-it with:
+**The 48 h soak (PLAN §5 Phase 6) is still to be done.** A 48 h GUI run
+(2026-10-28) was stopped after its typed keys started reaching the canvas
+itself; its first ~8.7 h were clean apart from one 6.32 s reconnect under
+heavy build load (PLAN §0). Run it on an otherwise idle machine with:
 
 ```powershell
 copilot-canvas selftest --remote soak --minutes 2880 --drop-every 300 --client gui --json soak-gui-48h.json

@@ -34,9 +34,9 @@
       ],
       "lines": [
         [{"col":0,"text":"short line","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
-        [{"col":0,"text":"The quick brown fox jumps over the lazy","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"The quick brown fox jumps over the lazy","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":40,"text":"","clusters":[],"wide":false,"fg":0,"bg":0,"flags":4096,"underline":0,"link":0}],
         [{"col":0,"text":"dog; the lazy dog sleeps through it all.","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
-        [{"col":0,"text":"wide: ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":6,"text":"中文字符中文字符中文字符中文字符中","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"wide: ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":6,"text":"中文字符中文字符中文字符中文字符中","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":40,"text":"","clusters":[],"wide":false,"fg":0,"bg":0,"flags":4096,"underline":0,"link":0}],
         [{"col":0,"text":"文字符中","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
         [{"col":0,"text":"coloured background line                ","clusters":[],"wide":false,"fg":0,"bg":5,"flags":0,"underline":0,"link":0}],
         [{"col":0,"text":"prompt> cursor-here","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
@@ -67,10 +67,10 @@
       ],
       "lines": [
         [{"col":0,"text":"eeps through it all.","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
-        [{"col":0,"text":"wide: ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":6,"text":"中文字符中文字","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
-        [{"col":0,"text":"符中文字符中文字符中","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"wide: ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":6,"text":"中文字符中文字","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":20,"text":"","clusters":[],"wide":false,"fg":0,"bg":0,"flags":4096,"underline":0,"link":0}],
+        [{"col":0,"text":"符中文字符中文字符中","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":20,"text":"","clusters":[],"wide":false,"fg":0,"bg":0,"flags":4096,"underline":0,"link":0}],
         [{"col":0,"text":"文字符中","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
-        [{"col":0,"text":"coloured background ","clusters":[],"wide":false,"fg":0,"bg":5,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"coloured background ","clusters":[],"wide":false,"fg":0,"bg":5,"flags":0,"underline":0,"link":0},{"col":20,"text":"","clusters":[],"wide":false,"fg":0,"bg":0,"flags":4096,"underline":0,"link":0}],
         [{"col":0,"text":"line                ","clusters":[],"wide":false,"fg":0,"bg":5,"flags":0,"underline":0,"link":0}],
         [{"col":0,"text":"prompt> cursor-here","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
         []
@@ -102,7 +102,7 @@
       ],
       "lines": [
         [{"col":0,"text":"short line","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
-        [{"col":0,"text":"The quick brown fox jumps over the lazy dog; the lazy dog sl","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"The quick brown fox jumps over the lazy dog; the lazy dog sl","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":60,"text":"","clusters":[],"wide":false,"fg":0,"bg":0,"flags":4096,"underline":0,"link":0}],
         [{"col":0,"text":"eeps through it all.","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
         [{"col":0,"text":"wide: ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":6,"text":"中文字符中文字符中文字符中文字符中文字符中","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
         [{"col":0,"text":"coloured background line                ","clusters":[],"wide":false,"fg":0,"bg":5,"flags":0,"underline":0,"link":0}],
@@ -134,7 +134,7 @@
       ],
       "lines": [
         [{"col":0,"text":"dog; the lazy dog sleeps through it all.","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
-        [{"col":0,"text":"wide: ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":6,"text":"中文字符中文字符中文字符中文字符中","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"wide: ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":6,"text":"中文字符中文字符中文字符中文字符中","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":40,"text":"","clusters":[],"wide":false,"fg":0,"bg":0,"flags":4096,"underline":0,"link":0}],
         [{"col":0,"text":"文字符中","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
         [{"col":0,"text":"coloured background line                ","clusters":[],"wide":false,"fg":0,"bg":5,"flags":0,"underline":0,"link":0}],
         [{"col":0,"text":"prompt> cursor-here","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}]
@@ -164,9 +164,9 @@
       ],
       "lines": [
         [{"col":0,"text":"short line","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
-        [{"col":0,"text":"The quick brown fox jumps over the lazy","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"The quick brown fox jumps over the lazy","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":40,"text":"","clusters":[],"wide":false,"fg":0,"bg":0,"flags":4096,"underline":0,"link":0}],
         [{"col":0,"text":"dog; the lazy dog sleeps through it all.","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
-        [{"col":0,"text":"wide: ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":6,"text":"中文字符中文字符中文字符中文字符中","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
+        [{"col":0,"text":"wide: ","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":6,"text":"中文字符中文字符中文字符中文字符中","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0},{"col":40,"text":"","clusters":[],"wide":false,"fg":0,"bg":0,"flags":4096,"underline":0,"link":0}],
         [{"col":0,"text":"文字符中","clusters":[],"wide":true,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],
         [{"col":0,"text":"coloured background line                ","clusters":[],"wide":false,"fg":0,"bg":5,"flags":0,"underline":0,"link":0}],
         [{"col":0,"text":"prompt> cursor-here more","clusters":[],"wide":false,"fg":0,"bg":0,"flags":0,"underline":0,"link":0}],

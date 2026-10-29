@@ -3,8 +3,9 @@
 A fast, native, spatial session manager for agent CLIs on Windows:
 **GitHub Copilot CLI, OpenCode and Claude Code**. Sessions are boxes on an
 infinite canvas; subagents hang off their parent; groups are boxes around
-sessions; the sidebar lists everything; clicking a box opens the **real**
-agent terminal on the right (single or tiled). Two front ends share one
+sessions; the sidebar lists everything; clicking a box shows its **real**
+agent terminal on the right when it runs (single or tiled), or its details with
+an explicit Start / Resume button; double-click or Enter starts it. Two front ends share one
 persistent terminal service: a terminal UI (TUI) and a GPU client (GUI); both
 work locally or from another PC over a Dev Tunnel (remote mode).
 
@@ -74,23 +75,30 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 | **Status** | Accurate within a fraction of a second for canvas sessions: Copilot's own progress report (set when a turn starts, cleared when it ends) drives working and done; history events add needs-you, failures and sessions running elsewhere; a session whose subagents are still running stays working. States: working (spinner), needs you (permission / question), **done · review** (finished a turn you haven't looked at yet; stays until you open, click or type in that session), idle, stopped, failed, and **↗ open elsewhere** for sessions running in another terminal or VS Code. Sessions that **need you** get a gold heavy ━ border and sessions that are **done · review** a blue double ═ border with a blue-tinted box (boxes, terminal panes and sidebar names). Pressing Esc in Copilot (abort) doesn't count as done. The session whose terminal is active on the right has a blue halo around its box (heavy while you type in it) |
 | **Colour-blind safe** | The palette avoids red/green: OK is sky blue, failure is vermillion, attention is gold, finished is blue, selection is white, groups use the Okabe-Ito colours; every state also has its own icon and border shape |
 | **Subagents** | Discovered from session history and drawn as linked child boxes |
+| **Inspect transcript** | Any session or subagent box (menu, details panel): a read-only transcript of its conversation (prompts, answers, tool calls with their result or exit code), newest at the bottom, refreshing every 1.5 s while it runs; nothing starts, nothing is written, it works remotely too. A finished OpenCode child session whose parent is stopped resumes in a terminal of its own as a new linked subsession (**Resume as subsession** or a double-click); Copilot and Claude Code subagents are part of their parent's conversation (see [docs/AGENTS.md](docs/AGENTS.md#inspecting-and-resuming-child-conversations)) |
 | **Subsessions** | `S` or menu → a new Copilot session linked to its parent (dotted connector, nested in the sidebar). By default it **forks the parent's conversation** (as Copilot's `/fork` and VS Code do: history and checkpoints are copied, the running parent is untouched); choose *Start fresh* for an empty one. Sessions an agent starts itself from inside a canvas session (`copilot -p …`, `copilot --resume …`) are detected from the process tree and added as linked subsessions automatically |
-| **Looping sessions** | A session that repeats on a schedule gets a dotted loopback arc on its right side with one lit dot running around it (bluish green), `↻ every 15m` in its status line and `↻` in the sidebar. Detected from Copilot's schedule events (`/every`, the `manage_schedule` tool: created → looping, cancelled or session ended → not), Copilot's saved session schedules, and enabled repeating automations. Zoomed out, a pulsing `↻` |
+| **Stacks and hidden subsessions** | Right-click a session › *Stack subsessions* (or `K`) gathers all its subsessions (recursively, with their subagents) into a deck beneath it: offset cards, the newest on top, a **+N** badge, and the stack's most important status (needs you, failed, done · review, working) on the top card, so stacking never hides activity; effects on a stacked session show on the deck. A click on the deck shows its top card (it never starts anything); dragging it moves the parent with its stack; a double-click, `K` or the deck's menu unstacks: the boxes go back exactly where they were (their positions stay in the canvas, so this survives restarts and every window sees it). `H`, the canvas menu or the toolbar's **↳ N hidden** hides every subsession box (each parent shows **⋯ N hidden**) and shows them again in place. The GUI animates both (about 300 ms, eased, reversible mid-way, then idle); the TUI switches at once |
+| **Looping sessions** | A session that repeats on a schedule gets a loopback arc on its right side with a lit dot running around it (bluish green), `↻ every 15m` in its status line and `↻` in the sidebar. The dot's place comes from the clock, not from frames, so it never jumps or restarts and keeps gliding while you pan, zoom or drag the box. GUI: a comet with a fading tail that leaves the box quickly, eases round the far bend and sends a soft ring through the arrowhead after each lap; a loop that starts grows its arc in, one that stops fades it out; only loops in view move, redrawing their own layer at about 30 frames/s (fewer when zoomed out). TUI: the dot steps cell by cell at one speed with a two-cell trail, redrawn only when it changes cell. With reduced motion (*Settings › Effects*, or Windows' *Show animations* off) the arc, its lit arrowhead and a `↻` badge stand still and loops switch at once. Detected from Copilot's schedule events (`/every`, the `manage_schedule` tool: created → looping, cancelled or session ended → not; the next status update shows it, and the saved schedules are read again then), Copilot's saved session schedules, and enabled repeating automations. Zoomed out, a breathing `↻` |
 | **MCP servers per session** | The new-session dialog has an *MCP servers* row: a checklist of your servers with presets (*All*, *None*, and your own: `Ctrl+S` saves the current choice, `←/→` switches, `Del` deletes). The last choice is the default next time; each session remembers its own choice for every resume (`--disable-mcp-server`). Change it later from the session's menu → *MCP servers…*. Every server is several processes in every session, so trimming them is the biggest saving in memory and CPU |
-| **Groups** | Shift-drag or right-drag to select, then `G` (or menu) draws a group box around them; drag the title to move everything inside, drag `◢` to resize; nested groups work; membership is geometric, like Obsidian canvas |
-| **Sidebar** | Groups → sessions → subsessions → active subagents; `/` filters; click any row to fly the canvas to it, highlight it and open its terminal (group rows tile the group's running terminals) |
+| **Groups** | Shift-drag or right-drag to select, then `G` (or menu) draws a group box around them; a click on a group's empty background or its border (a few pixels around the outline in the GUI) selects it (the innermost of nested groups; a drag there still pans); drag the title to move everything inside, drag `◢` to resize; nested groups work; membership is geometric, like Obsidian canvas |
+| **Sidebar** | Groups → their folder row (◧) → sessions → subsessions → active subagents → the group's passive sessions (⟲, a click opens their panel); stacked and hidden subsessions are listed dimmed, unused sessions with their age; `/` filters; click any row to fly the canvas to it, highlight it and view it (its live terminal, or its details); double-click or Enter starts it; group rows tile the group's running terminals (never starting stopped ones) |
+| **Recent sessions** | A **RECENT** section tops the Sessions panel: the sessions you used last (viewed, started or typed into), newest first, up to 8 (fewer in a short window), each with its status, agent and how long ago; a click on its header folds it. It is kept in the canvas document, so every window and client of the canvas (the home GUI and the Cloud PC alike) shows the same list, and removed boxes leave it. A click views a row, a double-click or Enter starts it (as elsewhere). **Ctrl+F6** / **Ctrl+Shift+F6** (anywhere, also while a terminal has the keyboard) and **`]`** / **`[`** (on the canvas and in the sidebar) step to the next older or newer recent session and only view it (its live terminal, or its details panel with Start / Resume); repeated presses walk the list without reordering it, and a second after the last one (or at any other key or click) the session you stopped on becomes the most recent, as with Alt+Tab |
+| **View versus start** | A click (canvas or sidebar), Tab, the arrows and the recent-session keys (Ctrl+F6, Ctrl+Shift+F6, `]`, `[`) only select and show: a running session's terminal comes into view with the keyboard, anything else shows a details panel (agent, status, folder and branch, last used, what starting it would do) with one primary button: **Start** (a new conversation or a box's command), **Resume** (its conversation) or **Open terminal**, plus Stop, MCP servers… and Remove. Only a double-click, Enter, that button or a menu item starts a session. Restoring tiles, reconnecting and clicks on exited terminals start nothing; sessions open elsewhere (↗) never get a Start / Resume |
 | **Terminals** | Real Copilot CLI in ConPTY; single view or up to four tiles (`T`); terminals keep running when you close the canvas and reappear when you reopen it |
 | **Scrolling** | The wheel goes to the app like in Windows Terminal: mouse-wheel events when Copilot's `mouse` setting is on (its default; 3 lines per notch), PageUp/PageDown on its full-screen view when it is off, scrollback otherwise; Shift+wheel or Shift+PgUp always scroll the scrollback |
 | **Your messages** | In Copilot terminals your own prompts get a navy background and a blue ▎ bar so they stand out from Copilot's output (recognised from how Copilot draws them: " ❯ text" and its indented continuation lines) |
-| **Copy & paste** | Drag inside a terminal to select (soft-wrapped lines rejoin); releasing copies it. Ctrl+C / Ctrl+Shift+C copy while text is selected (otherwise Ctrl+C reaches Copilot); Ctrl+V pastes; the pane's right-click menu has Copy / Paste |
+| **Copy & paste** | Drag inside a terminal to select; releasing copies it. Copies keep line breaks (CR LF), blank lines, indentation and spaces inside lines; lines a shell soft-wrapped rejoin (the terminal engine's own wrap state, so a line that just fills the width or a border in the last column never joins the next row). On full-screen views (Copilot, OpenCode, vim) every row is a line, and Copilot's scrollbar column is left out. Ctrl+C / Ctrl+Shift+C copy while text is selected (otherwise Ctrl+C reaches Copilot); Ctrl+V / Ctrl+Shift+V paste; the pane's right-click menu has Copy / Paste. **A paste never sends a message**: multi-line text (Ctrl+V, the pane menu, Windows Terminal's paste, IME text) reaches the agent as one bracketed paste whose line breaks stay text, a trailing line break is dropped, and a program without bracketed paste gets Shift+Enter or Alt+Enter between lines, never Enter ([docs/AGENTS.md](docs/AGENTS.md#pasting)) |
 | **Images** | Copy a screenshot and press **Alt+V** (or Ctrl+V, or the pane menu's *Paste*): Copilot attaches it (`[📷 …png]`). With no text on the clipboard the canvas sends the keystroke and Copilot reads the image itself. Windows Terminal keeps Ctrl+V for its own text paste, so with only an image on the clipboard Ctrl+V never reaches any app there; use Alt+V |
 | **Copilot's terminal features** | Clicks reach Copilot when its `mouse` setting is on (its tab bar, "click here" actions); drags still select text in the canvas. Copilot's title (its current intent) shows in the pane header. Its progress report (OSC 9;4) drives the spinner instantly and the canvas mirrors overall state to the Windows Terminal tab and taskbar (busy while any session works, yellow while one needs you). Bells and OSC 777 notifications (Copilot's `beep` / `terminalNotifications` settings) ring Windows Terminal |
 | **Links** | URLs, OSC 8 hyperlinks and absolute Windows paths are underlined. In terminals Ctrl+click opens them, elsewhere a click does. Web links open in your browser, folders in Explorer, files in VS Code at the line (or revealed in Explorer); nothing is ever executed |
-| **New session** | Name, folder (type, **Browse…** folder picker, or **Recent ▾**), Git detection with current branch, **New Git worktree** (base branch picker, new branch, path), optional first prompt |
+| **New session** | Name, folder (type, **Browse…** folder picker, or **Recent ▾**), Git detection with current branch, **New Git worktree** (base branch picker, new branch, path), the **Model** it starts with (see below), optional first prompt |
+| **Default model** | The new-session dialog shows the model a session will start with and why: the group's (*from group X*), the one you chose before (*remembered default*), or the initial default, **Claude Opus 5.5** in each agent's own id (`claude-opus-5.5` for Copilot, `github-copilot/claude-opus-5.5` for OpenCode, `claude-opus-5-5` for Claude Code). Its picker lists the agent's models (`opencode models`, the choices in `copilot --help`, Claude Code's aliases) and takes any id you type. A model you pick there starts that session and becomes that agent's default for every later new session (kept in the canvas, so it survives restarts and reaches your other windows) until you pick another, there or in *Settings › Copilot / OpenCode / Claude Code model* (which also resets it). A group's own model (*Session defaults for group…*) wins in that group; picking another there applies to that session only and changes neither the group nor the canvas default. Every session records the model it started with (details panel) and keeps it: a new default never changes existing sessions or their resumes ([docs/AGENTS.md](docs/AGENTS.md#models)) |
 | **Import / sync** | `I` Copilot sessions (filter, multi-select, group by folder or client); `V` or toolbar **⟳ VS Code** syncs VS Code agent sessions (see below) |
 | **Activity bar** | VS Code-style icons on the far left (`Alt+1…8`): ▤ Sessions · ◷ Automations · ⧉ Plugins · ⌁ MCP servers · ✦ Skills · ◈ Agents & instructions · ⇄ VS Code · ≡ Settings |
-| **Group folders** | Each group has a folder (asked when you create the group; suggested `~/.copilot-canvas/groups/<name>`) with `ai-docs/` and `human-outputs/`. Open them from the group's title chips **◧ AI docs** / **◨ Outputs**, its menu, or its details panel. Sessions launched in the group get `--add-dir` for both and group instructions (via `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`) telling Copilot to write notes to `ai-docs` and deliverables to `human-outputs` |
-| **Copilot defaults** | Settings view: permissions (`allow-all` by default, or `ask`), model, reasoning effort, start mode, custom agent, context tier, extra `--add-dir` folders for new sessions; any group can override them (group menu → *Launch defaults*). Also lists `copilot config` settings and edits them through `copilot config` |
+| **Dusty sessions** | Sessions you have not used for a while (started, typed into, or agent activity; looking at one does not count) gather dust: the TUI dims them, the GUI drains their colour and adds specks and a cobweb that grow with age (from *Settings › Dust unused sessions after*: off / 1 / 3 (default) / 7 / 14 days; medium from 14 days, heavy from 60), and the status line and the sidebar show **unused 12d**. Anything important (working, needs you, done · review, failed, open elsewhere, looping, passive sessions, an effect) is never dusty. The canvas menu's *Select unused sessions* selects them for a cleanup; nothing is ever removed automatically |
+| **Effects** | Passive sessions (and sessions) can put an effect on a box of their group until you click it: **fireworks** (an approved pull request), **attention** (a pulsing beacon: review requested, changes requested, comments), **sparkle** (a short success), **alert** (`copilot-canvas effect`, below). The service keeps them, so every window and the TUI show them, also after a restart. A click on the effect (or its box) clears it everywhere and only selects the box. GUI: fireworks bursts and rings at 12.5 frames/s, only while in view; *Settings › Effects*: on, reduced motion (still rings and badges) or off (badges only); the default follows Windows' *Show animations*. TUI: a badge (✦ ◉ ✧ ▲) on the box |
+| **Group folders** | Each group has a folder (asked when you create the group; suggested `~/.copilot-canvas/groups/<name>`) with `ai-docs/` and `human-outputs/`. Open them from the group's title chips **◧ AI docs** / **◨ Outputs** (compact **◧** / **◨** when zoomed out or narrow, **◧ Set folder…** before a folder is chosen; the chips stay clickable at every zoom while the title shows), the sidebar's **◧** row under the group (a menu: AI docs, outputs, the group folder, `GOALS.md`, change folder), its menu, or its details panel. In remote mode (any `--remote`, `loopback` included) folders open in VS Code through the server's tunnel or in the canvas's **folder browser** (subfolders and files; Enter or a click opens a file in the read-only viewer, Backspace goes up, *Copy path*), never in Explorer on the service's machine. Sessions launched in the group get `--add-dir` for both and group instructions (via `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`) telling Copilot to write notes to `ai-docs` and deliverables to `human-outputs` |
+| **Copilot defaults** | Settings view: permissions (`allow-all` by default, or `ask`), each agent's model for new sessions, reasoning effort, start mode, custom agent, context tier, extra `--add-dir` folders for new sessions; any group can override them (group menu → *Launch defaults*). Also lists `copilot config` settings and edits them through `copilot config` |
 | **Plugins · MCP · skills** | Lists come from `copilot plugin/mcp/skill/instruction list --json`; Space enables/disables, Del removes (confirmed; servers and skills that come from a plugin, the project or Copilot itself can only be disabled), **+** rows add a skill, an MCP server (`copilot mcp add` syntax) or install a plugin (runs in a canvas terminal so you can answer prompts). Secrets (env, headers) are never shown |
 | **Automations** | Reads Copilot's automations (`~/.copilot/data.db`: scheduled workflows, their last 10 runs, and per-session schedules). They appear in the Automations view and as ◷ boxes in a special **Automations** group on the canvas. Click one for its prompt, schedule, model, mode, project, last/next run and run history; Space or the button enables/disables a scheduled workflow (per-session schedules are managed with `/every` in that session). Refreshes every 15 s |
 | **Migrate from VS Code** | VS Code view → *Migrate skills & settings…* previews VS Code (Code, Insiders, all profiles) MCP servers, instruction files, prompt files (as skills), custom agents / chat modes and skill folders, marked new / already present / conflict / manual. Applies only the items you tick: backs up `~/.copilot` config first, never overwrites, writes a redacted `migration-log.txt` |
@@ -99,28 +107,38 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 
 | Action | Mouse | Keys |
 |---|---|---|
-| Open / focus a session's terminal | click box or sidebar row | Enter |
+| View a session (its live terminal, or its details) | click box or sidebar row | Tab cycles, arrows move |
+| View the next / previous recent session (never starts it) | sidebar **RECENT** row | **Ctrl+F6** / **Ctrl+Shift+F6** (also in a terminal), `]` / `[` on the canvas or sidebar |
+| Start / resume a session and focus its terminal | double-click box or sidebar row; details panel **Start** / **Resume**; menu | Enter |
 | Move | drag box (or group title) | arrows (Shift = faster) |
 | Pan | drag empty space, middle-drag, wheel | Ctrl+arrows |
 | Zoom | Alt+wheel, toolbar − + | `+` `-`, `F` fit all, `C`/Home center |
 | Select several | Shift-drag or right-drag | Tab cycles sessions |
 | Group selection | context menu | `G` |
+| Select a group | click its empty background or its border (or its title, its sidebar row) | arrows move it, Del deletes the group box, `R` renames |
 | New session / subsession | toolbar **+ New**, double-click, menu | `N` / `S` |
 | Rename · remove · stop | context menu | `R` · Del · `X` |
+| Remove several boxes (running sessions kept, history kept; asks first) | select them, right-click one → **Remove N from canvas** | Del; Ctrl+Z restores them |
 | Import · sync VS Code | toolbar **Import**, **⟳ VS Code** | `I`, `V` |
 | Switch side view | activity bar | `Alt+1` … `Alt+8` |
 | In a list view | click row | ↑↓, Enter open/edit, Space enable/disable, Del remove, Esc back |
 | Tile terminals | toolbar | `T` |
 | Leave a terminal | click canvas/sidebar | **Ctrl+]** or F6 |
-| Copy / paste in a terminal | drag to select; pane menu | Ctrl+C (with selection) · Ctrl+V |
+| Copy / paste in a terminal | drag to select; pane menu | Ctrl+C (with selection) · Ctrl+V / Ctrl+Shift+V |
 | Open a link | click (Ctrl+click in terminals) | — |
-| Undo the last VS Code sync | canvas menu, VS Code view | Ctrl+Z |
+| Undo the last VS Code sync or removal | canvas menu, VS Code view | Ctrl+Z |
 | Quit (sessions keep running) | toolbar **⏻ Quit** | `Q` / Ctrl+Q, even while filtering (asks: detach or stop all) |
+| Stack / unstack subsessions | session menu; double-click the stack | `K` |
+| Hide / show all subsessions | canvas menu; toolbar **↳ N hidden** | `H` |
+| Clear an effect | click it (or its box; nothing starts) | — |
+| Select unused (dusty) sessions | canvas menu › *Select unused sessions* | then Del removes them from the canvas |
 | Help | toolbar `?` | `?` |
 
 While a terminal has focus, every key goes to Copilot (including Ctrl+G and
-Ctrl+Q). Only **Ctrl+]** and **F6** are reserved, plus Ctrl+C while text is
-selected and Ctrl+V (paste), as in Windows Terminal.
+Ctrl+Q). Only **Ctrl+]** and **F6** are reserved, plus **Ctrl+F6** /
+**Ctrl+Shift+F6** (recent sessions; the agents do not use them, and Windows
+Terminal and the console host pass them on), Ctrl+C while text is selected
+and Ctrl+V (paste), as in Windows Terminal.
 
 ## VS Code sync
 
@@ -167,8 +185,10 @@ folder).
   service (no process stays alive between runs, at most 2 at a time), so it is
   one continuous conversation. A passive session runs the canvas's default
   agent (`opencode run -s ses_… --auto`, `claude -p -r …` for the others) with
-  the model new sessions in its group would get (Settings › Model, or the
-  group's defaults), on every run. After *rollover* runs (default 20) it starts a
+  the model new sessions of that agent in its group get (the group's, the
+  remembered or the initial default), on every run; a conversation whose
+  model is recorded on its box (you started its chat) keeps that model when a
+  run resumes it. After *rollover* runs (default 20) it starts a
   fresh conversation that reads its files; old ones are kept as episodes. If
   you have its chat open and idle, the run is typed in there instead.
   Budget: *max runs per day* (default 24); failures back off 1 / 5 / 30 min
@@ -179,6 +199,21 @@ folder).
   (git, `gh`, `az repos`, ADO MCP tools) are also **detected from session
   history** automatically. You can send one by hand from a group's menu
   (*Send event…*). Events pulse on the canvas.
+- **Effects**: `copilot-canvas effect fireworks|attention|sparkle|alert --on NAME
+  [--note TEXT]` puts an effect on a box of the sender's group (`--on group`:
+  the group) until someone clicks it; `effect clear --on NAME [--kind K]`
+  takes it off. Only boxes of the sender's own group can be named, and the
+  note is one short line of untrusted text. The group's event catalog can map
+  event types to effects (`effects:` `pr.approved: fireworks`; new catalogs map
+  `pr.approved`, `pr.changes_requested` and `pr.review_requested`), shown on
+  the sending session's box. The *Rollout tracker* template celebrates
+  approvals with fireworks and marks review requests and comments with
+  attention; the *Drift guard* marks scope creep.
+- **Within reach**: a group's title row shows **⟲ N** (its passive sessions;
+  a click lists them, each opens its panel) or **⟲ + passive**; the sidebar
+  lists them under their group; the panel opens rules, memory, log, the group
+  context and `GOALS.md` (in remote mode in VS Code through the tunnel or the
+  read-only viewer).
 - **Messages**: passive sessions (and sessions) can message any session in the
   group with `copilot-canvas send`. A message is typed in only when the target
   is idle (never mid-turn); otherwise it waits with a ✉ badge (menu: *Deliver queued
@@ -191,6 +226,7 @@ copilot-canvas emit TYPE [--data JSON] [--to NAME]
 copilot-canvas send --to NAME TEXT
 copilot-canvas status ok|warn|alert|done HEADLINE      (passive sessions; alert rings the bell)
 copilot-canvas followup --in 24h|--at 09:00 NOTE        (passive sessions)
+copilot-canvas effect fireworks|attention|sparkle|alert --on NAME [--note TEXT]   (until clicked; effect clear --on NAME)
 ```
 
 The bus lives in `~/.copilot-canvas/bus/` (`inbox/`, `routing.json`,
@@ -398,7 +434,7 @@ and `docs/REMOTE.md`.
   or looping on a schedule),
   not shown in a pane, and has had no output, typing or history events for that
   long. Each one frees its ~30 helper processes; the conversation stays
-  resumable with a click.
+  resumable with a double-click.
 - **Passive sessions** treat event data and messages as untrusted data, never
   instructions (the run prompt quotes them as such); their templates are
   read-only by default (report, don't push or comment). Event chains stop after
@@ -430,7 +466,7 @@ copilot-canvas service status|stop    stop ends the service's sessions (graceful
 copilot-canvas bench [--terminals N] [--seconds S] [--json FILE]
 copilot-canvas bench --client gui     the GPU client's latency, frame cost, idle CPU, memory, first paint
 copilot-canvas selftest               end-to-end UI test in a hidden console (demo shells only)
-copilot-canvas selftest --client gui  the same 27 steps against the GPU client (over its test hooks)
+copilot-canvas selftest --client gui  the same 33 steps against the GPU client (over its test hooks)
 copilot-canvas selftest --client gui --parity
                                       one GUI check per row of the parity matrix (docs/PARITY.md)
 copilot-canvas kitty-demo             print a small test image (iTerm2 inline image; the GPU client shows it)
@@ -438,11 +474,18 @@ copilot-canvas selftest agent [--agent copilot|opencode|claude]
                                       real check with an agent CLI (default: the detected one); never
                                       submits a prompt: imports its recent sessions into a temporary
                                       canvas, loads its plugin/MCP/skill views, starts a session with
-                                      allow-all, types (and erases) text, stops it gracefully, and
+                                      allow-all and the initial default model (Opus 5.5, its own id),
+                                      types (and erases) text, stops it gracefully, and
                                       removes a test session only if it holds no prompt. Copilot also
                                       syncs VS Code sessions and previews migration (applies nothing).
                                       Claude Code runs in a throw-away CLAUDE_CONFIG_DIR.
 copilot-canvas selftest copilot       same as selftest agent --agent copilot
+copilot-canvas selftest agent --paste [--agent copilot|opencode|claude]
+                                      pastes multi-line text (a blank line, indentation, a trailing line
+                                      break) into the real agent's input box through the canvas and
+                                      checks it arrived as lines and nothing was sent; erases it again
+                                      (OpenCode runs with a free model as every default, Claude Code in a
+                                      throw-away CLAUDE_CONFIG_DIR; docs/AGENTS.md#pasting)
 copilot-canvas selftest agent --agent opencode --prompt [--model ID] [--client tui|gui] [--steps LIST]
                                       OpenCode through the canvas with tiny prompts to a free model only
                                       (ids ending in -free; default opencode/deepseek-v4.1-flash-free):
@@ -464,7 +507,8 @@ cargo test                            unit tests
 - Sessions already running in another terminal can't be attached to (no
   Copilot API for that); open them where they run.
 - Subagents run inside their parent's terminal; their boxes show status and
-  open the parent.
+  their transcript (Inspect). Only OpenCode's child sessions resume on their
+  own (as a linked subsession, once the parent is stopped).
 - VS Code sync and migration are Copilot-only (VS Code's agent sessions are
   Copilot CLI sessions); OpenCode and Claude Code sessions are imported from
   their own history. Automations (`data.db`), `/every` loops and the
@@ -481,6 +525,11 @@ cargo test                            unit tests
   pipes, job objects); the iPhone app is a remote client of a Windows
   service (the protocol, model and terminal-view crates also build for
   macOS and iOS).
+- A terminal selection covers the rows in view (dragging does not scroll).
+  On full-screen views every row is copied as its own line: such programs
+  wrap their paragraphs themselves, so a paragraph copied from Copilot or
+  OpenCode keeps their line breaks. cmd.exe has no multi-line input: a
+  pasted line break ends its line (docs/AGENTS.md#pasting).
 - Stopping a session sends the agent Ctrl+D (twice), then Ctrl+C, and ends its
   process tree after 5 s; a session the canvas stopped always shows as stopped.
   OpenCode 1.19 sometimes quits its screen but leaves its process running (on a

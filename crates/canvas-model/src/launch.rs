@@ -12,7 +12,11 @@ use crate::doc::{Group, LaunchDefaults, Node};
 ///
 /// Launch defaults (canvas, overridden by the box's group) apply to new
 /// conversations only, and only those the agent supports; permissions and the
-/// box's MCP choice apply to every run.
+/// box's MCP choice apply to every run. The model: a new conversation gets the
+/// box's own (chosen in the new-session dialog), else the effective default
+/// ([`crate::models::effective`]); a resume or fork carries the model
+/// recorded on the box (never the current default), which the provider passes
+/// only where its agent does not keep it itself.
 pub fn agent_launch(
     node: &Node,
     canvas: &LaunchDefaults,
@@ -25,6 +29,11 @@ pub fn agent_launch(
     let caps = kind.caps();
     let defaults = canvas.merged(group.and_then(|g| g.defaults.as_ref()));
     let fresh = |value: &Option<String>, supported: bool| value.clone().filter(|v| !resume && supported && !v.trim().is_empty());
+    let model = if resume || fork_from.is_some() {
+        node.model.clone()
+    } else {
+        node.model.clone().or_else(|| Some(crate::models::effective(kind, canvas, group).model))
+    };
     let group = group.filter(|g| g.folder.is_some());
     AgentLaunch {
         agent: kind.id().to_owned(),
@@ -33,7 +42,7 @@ pub fn agent_launch(
         fork_from,
         name: Some(node.name.clone()).filter(|n| !n.trim().is_empty()),
         prompt: prompt.filter(|p| !p.trim().is_empty()),
-        model: fresh(&defaults.model, true),
+        model: model.map(|m| m.trim().to_owned()).filter(|m| !m.is_empty()),
         effort: fresh(&defaults.reasoning_effort, caps.effort),
         mode: fresh(&defaults.mode, caps.modes),
         custom_agent: fresh(&defaults.agent, true),

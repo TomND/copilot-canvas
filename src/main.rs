@@ -9,6 +9,7 @@ mod hardening;
 mod kitty_demo;
 mod pair_probe;
 mod parity;
+mod paste_probe;
 mod remote_cli;
 mod remote_probe;
 mod selftest;
@@ -62,6 +63,8 @@ USAGE
                                         N live sessions from busy synthetic histories (M subagents each)
   copilot-canvas bench --client gui --perf-canvas FILE|synthetic
                                         panning a copy of a canvas file at 100, 50 and 25 %
+  copilot-canvas bench --client gui --effects   CPU and frame rate with effects in view, out of view, cleared
+  copilot-canvas bench --client gui --loops     CPU and frame rate with looping sessions in view, panning, out of view, reduced motion
   copilot-canvas bench --client gui --burn N
                                         keystroke to present while N sessions burn CPU, with and
                                         without the priority manager
@@ -89,6 +92,10 @@ USAGE
                                         a killed tunnel child, revocation, wrong secrets
   copilot-canvas selftest agent [--agent copilot|opencode|claude]
                                         the real agent TUI through the canvas; nothing is submitted
+  copilot-canvas selftest agent --paste [--agent copilot|opencode|claude]
+                                        a multi-line paste into the real agent's input box arrives as
+                                        lines and sends nothing (OpenCode with a free model as every
+                                        default; Claude Code in a throw-away configuration)
   copilot-canvas selftest agent --agent opencode --prompt [--model ID] [--client tui|gui] [--steps LIST]
                                         tiny prompts to a free OpenCode model (ids ending in -free;
                                         default opencode/deepseek-v4.1-flash-free) through the canvas:
@@ -132,6 +139,10 @@ EVENTS (run by sessions on the canvas; see the canvas-events skill)
   copilot-canvas send --to NAME TEXT    message a session (typed in when it is idle)
   copilot-canvas status ok|warn|alert|done HEADLINE      (passive sessions)
   copilot-canvas followup --in 24h|--at 09:00 NOTE        (passive sessions)
+  copilot-canvas effect fireworks|attention|sparkle|alert --on NAME [--note TEXT]
+                                        an effect on a box of this session's group (or --on group)
+                                        until someone clicks it; effect clear --on NAME takes it off;
+                                        effect alone lists the effects collection
 
 AUTOMATIONS (scheduled tasks defined by manifests; folder: --dir, COPILOT_CANVAS_AUTOMATIONS,
              the canvas setting, or <home>/automations)
@@ -210,7 +221,9 @@ fn parse() -> Result<Args> {
             "--canvas" => args.canvas = Some(PathBuf::from(value("--canvas")?)),
             "--cwd" => args.cwd = Some(PathBuf::from(value("--cwd")?)),
             "--remote" => args.remote = Some(value("--remote")?),
-            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--qr" => args.flags.push(arg.trim_start_matches("--").to_owned()),
+            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--qr" => {
+                args.flags.push(arg.trim_start_matches("--").to_owned())
+            }
             "--" => {
                 // `record … -- PROGRAM ARGS…`: the rest belongs to the program.
                 args.command.push(arg);
@@ -327,6 +340,16 @@ fn real_main() -> Result<()> {
     {
         return standin::run(&rest.iter().map(String::as_str).collect::<Vec<_>>());
     }
+    // So does the paste probe.
+    if args.command.first().map(String::as_str) == Some("paste-probe") {
+        let flag = |name: &str| args.flags.iter().any(|f| f == name);
+        let flags: Vec<&str> = ["plain", "kitty", "keys", "raw"].into_iter().filter(|f| flag(f)).collect();
+        let option = |name: &str| args.rest.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+        return match option("drive") {
+            Some(text) => paste_probe::drive(text, &flags, option("program"), option("ready")),
+            None => paste_probe::run(flag("plain"), flag("kitty"), flag("keys"), flag("raw")),
+        };
+    }
     let instance = paths::Instance::new(args.instance.clone(), args.home.clone(), args.sessions_dir.clone())?;
     let option = |name: &str| args.rest.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
     let options = |name: &str| args.rest.iter().filter(|(k, _)| k == name).map(|(_, v)| v.clone()).collect::<Vec<_>>();
@@ -405,6 +428,8 @@ fn real_main() -> Result<()> {
         ["send", text @ ..] => cli::send(&instance.home, &option("to").unwrap_or_default(), &text.join(" ")),
         ["status", state, headline @ ..] => cli::status(&instance.home, state, &headline.join(" ")),
         ["followup", note @ ..] => cli::followup(&instance.home, option("in"), option("at"), &note.join(" ")),
+        ["effect"] | ["effect", "list"] => cli::effect_list(),
+        ["effect", kind] => cli::effect(&instance.home, kind, option("on"), option("note"), option("kind")),
         ["automations"] | ["automations", "list"] => factory_cli::list(&dir()),
         ["automations", "show", name] => factory_cli::show(&dir(), name),
         ["automations", "import", names @ ..] => factory_cli::import(&dir(), &owned(names), option("family"), flag("force")),
@@ -496,6 +521,7 @@ fn real_main() -> Result<()> {
                 steps: option("steps").map(|s| s.split(',').map(|p| p.trim().to_owned()).filter(|p| !p.is_empty()).collect()),
             })
         }
+        ["selftest", "agent"] if flag("paste") => selftest::agent_paste(option("agent").as_deref()),
         ["selftest", "agent"] => selftest::agent(option("agent").as_deref()),
         ["selftest", "copilot"] => selftest::agent(Some("copilot")),
         ["record", rest @ ..] => canvas_corpus::cli::record(&instance.home, rest, &args.rest, args.cwd.as_deref()),
@@ -515,6 +541,10 @@ fn real_main() -> Result<()> {
                 }
             } else if let Some(file) = option("perf-canvas") {
                 gui_bench::Probe::PerfCanvas(file)
+            } else if flag("effects") {
+                gui_bench::Probe::Effects
+            } else if flag("loops") {
+                gui_bench::Probe::Loops
             } else if let Some(burn) = option("burn") {
                 gui_bench::Probe::Burn(burn.parse()?)
             } else {

@@ -32,19 +32,21 @@ On pr.pushed, pr.updated or pr.commented:\n\
 2. Look at what changed: the pull request's latest commits or iteration and new comments (git or the Azure DevOps tools, read-only).\n\
 3. Flag drift: changes or comments that add scope the goals do not ask for, contradict them, or leave goals unaddressed. Review comments (AI or human) that push unrelated refactors or extra features count as drift.\n\
 4. Keep your memory short: the last commit or iteration you checked, and open concerns.\n\n\
-Report: `ok` when aligned; `warn` for small drift (send the session that owns the pull request a one-line note); `alert` for significant scope creep.\n\
+Report: `ok` when aligned; `warn` for small drift (send the session that owns the pull request a one-line note); `alert` for significant scope creep, and mark its box: `copilot-canvas effect attention --on \"<session name>\" --note \"scope creep: <in a few words>\"`.\n\
 Never comment on, vote on or change the pull request yourself.\n",
     },
     Template {
         name: "Rollout tracker",
-        about: "after a PR merges: follows its rollout daily, checks logs, alerts on problems",
-        subscribe: &["pr.merged"],
+        about: "after a PR merges: follows its rollout daily, checks logs, alerts on problems; fireworks for approvals",
+        subscribe: &["pr.merged", "pr.approved", "pr.changes_requested", "pr.commented"],
         every_minutes: 0,
         daily_at: "",
         rules: "# Rollout tracker\n\n\
 Job: after a pull request merges, follow its rollout until it is fully deployed, and alert on problems.\n\n\
 On pr.merged: record the pull request, repository and merge commit in your memory; work out how it ships (builds, releases, flights or ECS, rings) and which logs or dashboards show its health; then schedule `copilot-canvas followup --in 24h \"check rollout\"`.\n\n\
 On timer.followup (daily): check the rollout's progress and the related logs and errors; summarize the current stage in your memory; schedule the next follow-up. When it is fully rolled out with no issues, report `done`.\n\n\
+On pr.approved: celebrate on the box of the session that owns the pull request: `copilot-canvas effect fireworks --on \"<session name>\" --note \"PR <number> approved\"`.\n\
+On pr.changes_requested, or pr.commented with a reviewer's comment (not the session's own): `copilot-canvas effect attention --on \"<session name>\" --note \"PR <number>: <what the reviewer asks, in a few words>\"`. Effects stay until Thomas clicks them; do not repeat one for the same pull request and comment.\n\n\
 Report: `ok` with the current stage; `warn` for slow or stuck stages; `alert` for errors, regressions or rollbacks, and message the session that made the pull request.\n\
 Read-only: never change flights, releases or settings.\n",
     },
@@ -109,8 +111,10 @@ impl App {
                     max_runs_per_day: p.max_runs_per_day,
                     mcp_off: node.mcp_off.clone().unwrap_or_default(),
                     agent: crate::agents::agent_of(node).id().to_owned(),
-                    // Runs use the model new sessions in its group would get.
-                    model: self.doc.defaults.merged(self.doc.group(&p.group).and_then(|g| g.defaults.as_ref())).model.map(|m| m.trim().to_owned()).unwrap_or_default(),
+                    // Runs use the model new sessions of its agent in its group get;
+                    // runs that resume a conversation with a recorded model keep that one.
+                    model: canvas_model::models::effective(crate::agents::agent_of(node), &self.doc.defaults, self.doc.group(&p.group)).model,
+                    session_model: node.model.clone(),
                 }),
                 None => {
                     if let Some(group) = self.doc.group_of(node) {
@@ -148,8 +152,9 @@ impl App {
         for (old, new) in moves {
             self.rename_node_id(&old, &new);
             if let Some(node) = self.doc.node_mut(&new) {
-                // A fresh conversation: the agent names it anew.
+                // A fresh conversation: the agent names it anew, and it starts with the current default model.
                 node.agent_session = None;
+                node.model = None;
                 if let Some(p) = node.passive.as_mut() {
                     p.episodes.push(old);
                 }
@@ -182,7 +187,8 @@ impl App {
         let Ok(event) = serde_json::from_value::<bus::Event>(value["event"].clone()) else { return };
         let targets: Vec<String> = value["targets"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_owned)).collect()).unwrap_or_default();
         let now = Instant::now();
-        for target in targets.iter().filter(|t| self.doc.node(t).is_some()) {
+        // A pulse needs somewhere to go (a box never pulses to itself).
+        for target in targets.iter().filter(|t| self.doc.node(t).is_some() && **t != event.source) {
             if self.doc.node(&event.source).is_some() {
                 self.pulses.push((event.source.clone(), target.clone(), now));
             }
@@ -316,7 +322,7 @@ impl App {
             no_messages: false,
             // Passive sessions (the automation doctor too) run the canvas's default agent.
             agent: Some(self.default_agent().id().to_owned()),
-            agent_session: None,
+            agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
         });
         self.mark_dirty();
         self.select_node(&id, false);
@@ -466,23 +472,30 @@ mod tests {
 
     #[test]
     fn passive_runs_use_the_model_new_sessions_in_their_group_get() {
+        use crate::agents::AgentKind;
         use crate::doc::{Doc, Group, LaunchDefaults};
         let (tx, _sent) = crossbeam_channel::bounded(64);
         let (_service, service_rx) = crossbeam_channel::bounded(1);
         let (app_tx, _app_rx) = crossbeam_channel::unbounded();
-        let mut doc = Doc { defaults: LaunchDefaults { model: Some("opencode/x-free".into()), ..Default::default() }, ..Doc::default() };
+        let mut doc = Doc::default();
+        doc.defaults.set_model(AgentKind::OpenCode, Some("opencode/x-free"));
+        let mut overrides = LaunchDefaults::default();
+        overrides.set_model(AgentKind::OpenCode, Some(" big "));
         doc.groups.push(Group { id: "g1".into(), name: "G".into(), folder: Some(r"C:\g".into()), ..Default::default() });
-        doc.groups.push(Group { id: "g2".into(), name: "H".into(), defaults: Some(LaunchDefaults { model: Some(" big ".into()), ..Default::default() }), ..Default::default() });
-        for (id, group) in [("p1", "g1"), ("p2", "g2")] {
-            let mut node: Node = serde_json::from_value(serde_json::json!({ "id": id, "kind": "session", "name": id, "x": 0, "y": 0, "agent": "opencode" })).unwrap();
+        doc.groups.push(Group { id: "g2".into(), name: "H".into(), defaults: Some(overrides), ..Default::default() });
+        for (id, group, agent) in [("p1", "g1", "opencode"), ("p2", "g2", "opencode"), ("p3", "g2", "claude"), ("p4", "g1", "opencode")] {
+            let mut node: Node = serde_json::from_value(serde_json::json!({ "id": id, "kind": "session", "name": id, "x": 0, "y": 0, "agent": agent })).unwrap();
             node.passive = Some(Passive { key: format!("k{id}"), group: group.into(), ..Default::default() });
             doc.nodes.push(node);
         }
+        doc.nodes[3].model = Some("github-copilot/claude-opus-5.5".into());
         let app = App::new(crate::conn::Conn::detached(tx, service_rx), std::sync::Arc::new(crate::rpc::Offline), crate::sync::Opened::detached(doc), false, ".".into(), app_tx, None);
         let routing = app.build_routing();
-        let model = |key: &str| routing.passive.iter().find(|p| p.key == key).map(|p| (p.agent.clone(), p.model.clone()));
-        assert_eq!(model("kp1"), Some(("opencode".into(), "opencode/x-free".into())), "the canvas default");
-        assert_eq!(model("kp2"), Some(("opencode".into(), "big".into())), "the group's default wins");
+        let model = |key: &str| routing.passive.iter().find(|p| p.key == key).map(|p| (p.agent.clone(), p.model.clone(), p.session_model.clone()));
+        assert_eq!(model("kp1"), Some(("opencode".into(), "opencode/x-free".into(), None)), "the canvas default");
+        assert_eq!(model("kp2"), Some(("opencode".into(), "big".into(), None)), "the group's default wins");
+        assert_eq!(model("kp3"), Some(("claude".into(), "claude-opus-5-5".into(), None)), "its agent's default: nothing chosen, so Opus 5.5");
+        assert_eq!(model("kp4"), Some(("opencode".into(), "opencode/x-free".into(), Some("github-copilot/claude-opus-5.5".into()))), "its own recorded model for resumes");
     }
 
     #[test]

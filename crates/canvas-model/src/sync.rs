@@ -63,20 +63,21 @@ macro_rules! shared_fields {
     };
 }
 
-shared_fields!(recent_folders, defaults, vscode, idle_stop_minutes, idle_stop_v2, mcp, automations_dir, doctor_created, default_agent);
+shared_fields!(recent_folders, defaults, vscode, idle_stop_minutes, idle_stop_v2, mcp, automations_dir, doctor_created, default_agent, dust_after_days);
 
 /// Shared fields whose overwrite by another window is worth telling about.
-const NOTICED_FIELDS: [(&str, &str); 6] = [
+const NOTICED_FIELDS: [(&str, &str); 7] = [
     ("defaults", "the new-session defaults"),
     ("vscode", "the VS Code settings"),
     ("idle_stop_minutes", "the idle-stop setting"),
     ("mcp", "the MCP presets"),
     ("automations_dir", "the automations folder"),
     ("default_agent", "the default agent"),
+    ("dust_after_days", "the dust setting"),
 ];
 
 /// Box fields that are bookkeeping, not edits anyone made (no notice).
-const QUIET_FIELDS: [&str; 1] = ["reviewed_ms"];
+const QUIET_FIELDS: [&str; 3] = ["reviewed_ms", "last_used_ms", "accessed_ms"];
 
 /// One change of an edit or patch.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -764,7 +765,7 @@ mod tests {
         a.doc.node_mut("a").unwrap().x = 10;
         a.doc.node_mut("a").unwrap().name = "renamed in A".into();
         a.doc.nodes.push(node("from-a", 80));
-        a.doc.defaults.model = Some("m-a".into());
+        a.doc.defaults.set_model(crate::agent::AgentKind::OpenCode, Some("m-a"));
         b.doc.node_mut("a").unwrap().name = "renamed in B".into();
         b.doc.nodes.push(node("from-b", 120));
         let (ops_a, ops_b) = (a.take().unwrap(), b.take().unwrap());
@@ -778,7 +779,7 @@ mod tests {
         let n = server.doc.node("a").unwrap();
         assert_eq!((n.name.as_str(), n.x), ("renamed in B", 10), "the last edit wins per field; other fields keep both");
         assert_eq!(ids(&server.doc), ["a", "b", "from-a", "from-b"]);
-        assert_eq!(server.doc.defaults.model.as_deref(), Some("m-a"));
+        assert_eq!(server.doc.defaults.model(crate::agent::AgentKind::OpenCode), Some("m-a"), "the remembered model reaches every window");
         assert_eq!(a.notices, ["“renamed in A”"], "A's name was overwritten");
         assert!(b.notices.is_empty(), "B's edit won");
         // Per-client fields are never sent.

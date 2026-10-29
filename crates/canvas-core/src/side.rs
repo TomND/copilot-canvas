@@ -43,7 +43,8 @@ pub const VIEWS: [(SideView, &str, &str); 8] = [
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DefaultField {
-    Model,
+    /// The model of new sessions of one agent (ids differ per agent).
+    Model(AgentKind),
     Effort,
     Mode,
     Agent,
@@ -53,9 +54,11 @@ pub enum DefaultField {
 }
 
 impl DefaultField {
-    pub const ALL: [DefaultField; 7] = [
+    pub const ALL: [DefaultField; 9] = [
         DefaultField::Permissions,
-        DefaultField::Model,
+        DefaultField::Model(AgentKind::Copilot),
+        DefaultField::Model(AgentKind::OpenCode),
+        DefaultField::Model(AgentKind::Claude),
         DefaultField::Effort,
         DefaultField::Mode,
         DefaultField::Agent,
@@ -64,7 +67,9 @@ impl DefaultField {
     ];
     pub fn label(self) -> &'static str {
         match self {
-            DefaultField::Model => "Model",
+            DefaultField::Model(AgentKind::Copilot) => "Copilot model",
+            DefaultField::Model(AgentKind::OpenCode) => "OpenCode model",
+            DefaultField::Model(AgentKind::Claude) => "Claude Code model",
             DefaultField::Effort => "Reasoning effort",
             DefaultField::Mode => "Start mode",
             DefaultField::Agent => "Custom agent",
@@ -75,7 +80,7 @@ impl DefaultField {
     }
     pub fn get(self, d: &LaunchDefaults) -> String {
         match self {
-            DefaultField::Model => d.model.clone().unwrap_or_default(),
+            DefaultField::Model(kind) => d.model(kind).unwrap_or_default().to_owned(),
             DefaultField::Effort => d.reasoning_effort.clone().unwrap_or_default(),
             DefaultField::Mode => d.mode.clone().unwrap_or_default(),
             DefaultField::Agent => d.agent.clone().unwrap_or_default(),
@@ -88,7 +93,7 @@ impl DefaultField {
         let value = value.trim();
         let opt = (!value.is_empty() && value != "(not set)").then(|| value.to_owned());
         match self {
-            DefaultField::Model => d.model = opt,
+            DefaultField::Model(kind) => d.set_model(kind, opt.as_deref()),
             DefaultField::Effort => d.reasoning_effort = opt,
             DefaultField::Mode => d.mode = opt,
             DefaultField::Agent => d.agent = opt,
@@ -143,6 +148,10 @@ pub enum ItemRef {
     ConfigAgent,
     /// The canvas's agent for new sessions.
     DefaultAgent,
+    /// Dust and effects settings.
+    Visual(crate::visual::VisualSetting),
+    /// The value of the row above on a line of its own (shown by its end when long).
+    Detail,
 }
 
 #[derive(Clone, Debug)]
@@ -161,11 +170,14 @@ impl ListRow {
     fn info(label: impl Into<String>) -> Self {
         ListRow { item: ItemRef::Info, label: label.into(), right: String::new(), icon: "", color: MUTED }
     }
+    fn detail(label: impl Into<String>) -> Self {
+        ListRow { item: ItemRef::Detail, label: label.into(), right: String::new(), icon: "", color: TEXT }
+    }
     fn row(item: ItemRef, icon: &'static str, color: Color, label: impl Into<String>, right: impl Into<String>) -> Self {
         ListRow { item, label: label.into(), right: right.into(), icon, color }
     }
     pub fn selectable(&self) -> bool {
-        !matches!(self.item, ItemRef::Header | ItemRef::Info)
+        !matches!(self.item, ItemRef::Header | ItemRef::Info | ItemRef::Detail)
     }
 }
 
@@ -175,6 +187,9 @@ pub enum RightDetail {
     Item(ItemRef),
     /// A passive session's settings and state (node id).
     Passive(String),
+    /// A session or subagent box that is not running here: what it is and
+    /// what starting it would do (node id).
+    Session(String),
 }
 
 fn enabled_icon(enabled: bool) -> (&'static str, Color) {
@@ -406,7 +421,7 @@ impl App {
             SideView::VsCode => {
                 let prefs = &self.doc.vscode;
                 rows.push(ListRow::row(ItemRef::VsSync, "⟳", BLUE, if self.vs_syncing { "Syncing…" } else { "Sync sessions now" }, ""));
-                if self.undo.is_some() {
+                if matches!(self.undo, Some(crate::app::Undo::Doc(..))) {
                     rows.push(ListRow::row(ItemRef::VsUndo, "↶", BLUE, "Undo last sync", "Ctrl+Z"));
                 }
                 rows.push(ListRow::row(ItemRef::VsWindow, "◷", TEXT, "Active within", format!("{} h", prefs.window_hours)));
@@ -435,6 +450,13 @@ impl App {
                     rows.push(ListRow::row(ItemRef::DefaultAgent, "›", TEXT, "Agent for new sessions", agent));
                 }
                 for field in DefaultField::ALL {
+                    if let DefaultField::Model(kind) = field {
+                        // The id on a line of its own: ids are long.
+                        let (source, id) = crate::models::settings_value(defaults.model(kind), self.doc.defaults.model(kind), kind, global);
+                        rows.push(ListRow::row(ItemRef::Default(field), "›", TEXT, field.label(), source));
+                        rows.push(ListRow::detail(id));
+                        continue;
+                    }
                     let value = field.get(&defaults);
                     let shown = match (value.is_empty(), field, global) {
                         (true, DefaultField::Permissions, true) => "allow-all (default)".to_owned(),
@@ -446,6 +468,10 @@ impl App {
                 }
                 rows.push(ListRow::info("Effort: Copilot, Claude Code"));
                 rows.push(ListRow::info("Mode, context tier: Copilot"));
+                if global {
+                    rows.push(ListRow::info("A model picked in the new-session"));
+                    rows.push(ListRow::info("dialog becomes its agent's default"));
+                }
                 if self.settings_group.is_some() {
                     rows.push(ListRow::info("Esc: back to canvas defaults"));
                 }
@@ -454,6 +480,8 @@ impl App {
                     let minutes = self.doc.idle_stop_minutes;
                     let value = if minutes == 0 { "never".to_owned() } else { format!("after {minutes} min idle") };
                     rows.push(ListRow::row(ItemRef::IdleStop, "›", TEXT, "Stop idle sessions", value));
+                    rows.push(ListRow::header("Canvas"));
+                    rows.extend(self.visual_setting_rows());
                     rows.push(ListRow::header("Automations"));
                     rows.push(ListRow::row(ItemRef::AutomationsDir, "›", TEXT, "Manifest folder", self.automations_folder.clone()));
                 }
@@ -630,7 +658,8 @@ impl App {
                 }
                 self.mark_dirty();
             }
-            ItemRef::Header | ItemRef::Info => {}
+            ItemRef::Visual(setting) => self.visual_setting(setting),
+            ItemRef::Header | ItemRef::Info | ItemRef::Detail => {}
         }
         self.needs_draw = true;
     }
@@ -650,7 +679,7 @@ impl App {
             ItemRef::Plugin(name) => self.set_config_enabled(Kind::Plugin, name.clone(), !enabled_now(Kind::Plugin, &name)),
             ItemRef::Mcp(name) => self.set_config_enabled(Kind::Mcp, name.clone(), !enabled_now(Kind::Mcp, &name)),
             ItemRef::Skill(name) => self.set_config_enabled(Kind::Skill, name.clone(), !enabled_now(Kind::Skill, &name)),
-            ItemRef::VsArchived | ItemRef::VsCliSessions | ItemRef::VsAuto | ItemRef::IdleStop | ItemRef::ConfigAgent | ItemRef::DefaultAgent => self.list_activate(index),
+            ItemRef::VsArchived | ItemRef::VsCliSessions | ItemRef::VsAuto | ItemRef::IdleStop | ItemRef::ConfigAgent | ItemRef::DefaultAgent | ItemRef::Visual(_) => self.list_activate(index),
             _ => {}
         }
     }
@@ -742,6 +771,9 @@ impl App {
 
     fn edit_default(&mut self, field: DefaultField) {
         let group = self.settings_group.clone();
+        if let DefaultField::Model(kind) = field {
+            return self.open_model_picker(crate::dialogs::ModelTarget::Default(kind, group));
+        }
         let defaults = match group.as_deref().and_then(|g| self.doc.group(g)) {
             Some(g) => g.defaults.clone().unwrap_or_default(),
             None => self.doc.defaults.clone(),
@@ -763,7 +795,6 @@ impl App {
             }
             None => {
                 let hint = match field {
-                    DefaultField::Model => "model id (e.g. claude-opus-5.5, opus, opencode/big-pickle); empty = agent default",
                     DefaultField::Agent => "custom agent name; empty = none",
                     _ => "folders separated by ;   (the session may use them)",
                 };
@@ -822,6 +853,7 @@ impl App {
                 self.run_cli_op(format!("Setting {key}"), move |backend| backend.config_set(&key, &rest));
             }
             PromptPurpose::Default(field, group) => self.apply_default(field, group, &value),
+            PromptPurpose::Model(target) => self.apply_model_choice(target, &value)?,
             PromptPurpose::AutomationsDir => {
                 let value = value.trim().trim_matches('"').to_owned();
                 if !value.is_empty() && !self.backend.path_info(&value).map_err(|e| format!("{e:#}"))?.dir {
@@ -913,7 +945,7 @@ impl App {
             command: Some(command),
             fresh: true,
             automation: None,
-            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None,
+            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
         });
         self.select_node(&id, false);
         self.launch(&id);
@@ -983,15 +1015,18 @@ mod launch_tests {
     }
 
     fn defaults() -> LaunchDefaults {
-        LaunchDefaults {
-            model: Some("m1".into()),
+        let mut defaults = LaunchDefaults {
             reasoning_effort: Some("high".into()),
             mode: Some("plan".into()),
             agent: Some("reviewer".into()),
             context: Some("long_context".into()),
             add_dirs: vec![r"C:\shared".into()],
-            permissions: None,
+            ..Default::default()
+        };
+        for kind in crate::agents::ALL {
+            defaults.set_model(kind, Some("m1"));
         }
+        defaults
     }
 
     #[test]
@@ -1015,6 +1050,42 @@ mod launch_tests {
     }
 
     #[test]
+    fn new_sessions_start_with_opus_5_5_until_a_model_is_chosen() {
+        for kind in crate::agents::ALL {
+            let new = agent_launch(&node(Some(kind.id())), &LaunchDefaults::default(), None, None, None, false);
+            assert_eq!(new.model.as_deref(), Some(canvas_model::models::initial(kind)), "{kind:?}");
+        }
+        assert_eq!(agent_launch(&node(Some("opencode")), &LaunchDefaults::default(), None, None, None, false).model.as_deref(), Some("github-copilot/claude-opus-5.5"));
+        // The box's own choice (the new-session dialog) wins over every default; empty is the agent's own default.
+        let mut chosen = node(Some("claude"));
+        chosen.model = Some("sonnet".into());
+        assert_eq!(agent_launch(&chosen, &defaults(), None, None, None, false).model.as_deref(), Some("sonnet"));
+        chosen.model = Some(String::new());
+        assert_eq!(agent_launch(&chosen, &defaults(), None, None, None, false).model, None);
+    }
+
+    #[test]
+    fn resumes_never_get_the_current_default() {
+        let mut later = LaunchDefaults::default();
+        for kind in crate::agents::ALL {
+            later.set_model(kind, Some("new-default"));
+        }
+        for kind in crate::agents::ALL {
+            let mut box_ = node(Some(kind.id()));
+            box_.agent_session = (kind == AgentKind::OpenCode).then(|| "ses_abc".into());
+            assert_eq!(agent_launch(&box_, &later, None, None, None, true).model, None, "{kind:?}: not recorded, so nothing");
+            box_.model = Some("old-model".into());
+            assert_eq!(agent_launch(&box_, &later, None, None, None, true).model.as_deref(), Some("old-model"), "{kind:?}: its recorded model");
+        }
+        // A fork continues its parent's conversation: the parent's model (recorded on the fork's box at creation).
+        let mut fork = node(Some("claude"));
+        fork.model = Some("claude-opus-5-5".into());
+        assert_eq!(agent_launch(&fork, &later, None, None, Some("87654321-4321-4321-4321-cba987654321".into()), false).model.as_deref(), Some("claude-opus-5-5"));
+        fork.model = None;
+        assert_eq!(agent_launch(&fork, &later, None, None, Some("87654321-4321-4321-4321-cba987654321".into()), false).model, None);
+    }
+
+    #[test]
     fn resumes_keep_permissions_and_mcp_but_not_new_session_defaults() {
         let mut box_ = node(Some("opencode"));
         box_.agent_session = Some("ses_abc".into());
@@ -1025,23 +1096,24 @@ mod launch_tests {
         assert!(resumed.model.is_none() && resumed.effort.is_none() && resumed.custom_agent.is_none() && resumed.add_dirs.is_empty());
         assert!(!resumed.allow_all, "ask applies to every run");
         assert_eq!(resumed.mcp_off, ["github"], "the box's MCP choice applies to resumes too");
-        let empty = LaunchDefaults { model: Some("  ".into()), ..LaunchDefaults::default() };
+        let mut empty = LaunchDefaults::default();
+        empty.set_model(AgentKind::Copilot, Some("  "));
         assert!(agent_launch(&node(None), &empty, None, Some(" ".into()), None, false).model.is_none() && agent_launch(&node(None), &empty, None, Some(" ".into()), None, false).prompt.is_none());
     }
 
     #[test]
     fn groups_override_defaults_and_pass_their_folder() {
-        let group = Group {
-            id: "g".into(),
-            name: "Team".into(),
-            folder: Some(r"C:\team".into()),
-            defaults: Some(LaunchDefaults { model: Some("group-model".into()), permissions: Some("ask".into()), add_dirs: vec![r"D:\docs".into()], ..Default::default() }),
-            ..Default::default()
-        };
+        let mut overrides = LaunchDefaults { permissions: Some("ask".into()), add_dirs: vec![r"D:\docs".into()], ..Default::default() };
+        overrides.set_model(AgentKind::Claude, Some("group-model"));
+        let group = Group { id: "g".into(), name: "Team".into(), folder: Some(r"C:\team".into()), defaults: Some(overrides), ..Default::default() };
         let launch = agent_launch(&node(Some("claude")), &defaults(), Some(&group), None, None, false);
         assert_eq!((launch.model.as_deref(), launch.allow_all), (Some("group-model"), false));
         assert_eq!(launch.add_dirs, [r"C:\shared", r"D:\docs"]);
         assert_eq!((launch.group_folder.as_deref(), launch.group_name.as_deref()), (Some(r"C:\team"), Some("Team")));
+        assert_eq!(agent_launch(&node(Some("opencode")), &defaults(), Some(&group), None, None, false).model.as_deref(), Some("m1"), "no override for OpenCode");
+        let mut chosen = node(Some("claude"));
+        chosen.model = Some("haiku".into());
+        assert_eq!(agent_launch(&chosen, &defaults(), Some(&group), None, None, false).model.as_deref(), Some("haiku"), "a per-session choice wins over the group");
         let no_folder = Group { folder: None, ..group };
         let launch = agent_launch(&node(None), &defaults(), Some(&no_folder), None, None, false);
         assert_eq!((launch.group_folder, launch.group_name), (None, None), "a group without a folder has nothing to share");
@@ -1136,7 +1208,7 @@ impl App {
                 command: None,
                 fresh: false,
                 automation: Some(key),
-                synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None,
+                synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
             });
         }
     }
@@ -1345,7 +1417,7 @@ impl App {
         let changed = added + renamed + linked > 0;
         if changed {
             self.backup_doc(before.clone(), "before-vscode-sync", true);
-            self.undo = Some(("VS Code sync".into(), Box::new(before)));
+            self.undo = Some(crate::app::Undo::Doc("VS Code sync".into(), Box::new(before)));
         }
         if let Some(first) = first {
             self.select_node(&first, false);
@@ -1376,10 +1448,13 @@ impl App {
         self.notify(message, false);
     }
 
-    /// Restores the canvas from before the last bulk change (VS Code sync).
+    /// Restores the canvas from before the last bulk change (VS Code sync) or
+    /// the boxes of the last removal.
     pub fn undo_last(&mut self) {
-        let Some((label, doc)) = self.undo.take() else {
-            return self.notify("Nothing to undo.", false);
+        let (label, doc) = match self.undo.take() {
+            None => return self.notify("Nothing to undo.", false),
+            Some(crate::app::Undo::Removed { nodes, links }) => return self.restore_removed(nodes, links),
+            Some(crate::app::Undo::Doc(label, doc)) => (label, doc),
         };
         self.backup_doc(self.doc.clone(), "before-undo", false);
         // Keep view and preferences that changed meanwhile; restore the layout.
@@ -1429,7 +1504,7 @@ impl App {
             fresh: false,
             automation: None,
             synced_name,
-            reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None,
+            reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
         });
     }
 

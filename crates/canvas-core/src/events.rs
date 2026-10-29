@@ -15,6 +15,8 @@ impl App {
     pub fn on_input(&mut self, batch: Vec<InputEvent>) {
         for event in batch {
             self.needs_draw = true;
+            // Anything but the walk keys ends a walk through the recent sessions.
+            self.recent_input(&event);
             match event {
                 InputEvent::Paste(text) => self.on_paste(text),
                 InputEvent::Text(text) => self.on_text(&text),
@@ -45,7 +47,7 @@ impl App {
                     // image): let the agent read the clipboard itself.
                     self.send_ctrl_v(&id);
                 } else {
-                    self.send(ClientMsg::Input { id, input: Input::Paste(text) });
+                    self.paste_text(&id, &text);
                 }
             }
         } else if self.side_filter_active {
@@ -54,7 +56,17 @@ impl App {
     }
 
     /// Committed text (IME): typed into a terminal, inserted into text fields.
+    /// Text with line breaks reaches a terminal as a paste, so they do not
+    /// act as Enter.
     fn on_text(&mut self, text: &str) {
+        if self.modals.is_empty()
+            && self.focus == Focus::Terminal
+            && text.contains(['\r', '\n'])
+            && let Some(id) = self.focused_term.clone().filter(|id| self.owned_alive(id))
+        {
+            self.term_select = None;
+            return self.paste_text(&id, text);
+        }
         let text: String = text.chars().filter(|c| !c.is_control()).collect();
         if text.is_empty() {
             return;
@@ -95,6 +107,11 @@ impl App {
         if !self.modals.is_empty() {
             self.modal_key(key);
             return;
+        }
+        // Ctrl+F6 / Ctrl+Shift+F6 (a terminal too), `]` / `[`: view the next
+        // older or newer recent session (never starts it).
+        if let Some(older) = self.recent_key(&key) {
+            return self.recent_step(older);
         }
         if self.focus == Focus::Terminal {
             self.terminal_key(key);
@@ -207,6 +224,8 @@ impl App {
             KeyCode::Char('o') if !ctrl => return self.run(Action::OpenOtherClient),
             KeyCode::Char('f') if !ctrl => return self.run(Action::FitAll),
             KeyCode::Char('g') if !ctrl => return self.run(Action::GroupSelection),
+            KeyCode::Char('k') if !ctrl => return self.run(Action::Visual(crate::visual::VisualAction::ToggleStack)),
+            KeyCode::Char('h') if !ctrl => return self.run(Action::Visual(crate::visual::VisualAction::ToggleHideSubsessions)),
             KeyCode::Char('r') | KeyCode::F(2) if !ctrl => {
                 if let Some(group) = self.selected_group.clone() {
                     return self.run(Action::Rename(Target::Group(group)));
@@ -235,15 +254,19 @@ impl App {
                 if let Some(group) = self.selected_group.clone() {
                     return self.run(Action::DeleteGroup(group));
                 }
-                let ids = self.selection.clone();
-                for id in ids {
-                    self.run(Action::RemoveNode(id));
+                // Several boxes: their eligible part after a confirmation.
+                match self.selection.as_slice() {
+                    [] => {}
+                    [id] => {
+                        let id = id.clone();
+                        self.run(Action::RemoveNode(id));
+                    }
+                    _ => self.confirm_remove(self.selection.clone()),
                 }
                 return;
             }
             KeyCode::Esc => {
-                self.selection.clear();
-                self.selected_group = None;
+                self.clear_selection();
                 return;
             }
             _ => {}
@@ -258,7 +281,12 @@ impl App {
                 KeyCode::End => self.side_move(100_000),
                 KeyCode::Enter => self.activate_side_row(self.side_sel),
                 KeyCode::Left | KeyCode::Right => {
-                    if let Some(SideKind::Group(id)) = self.side_rows.get(self.side_sel).map(|r| r.kind.clone()) {
+                    let id = match self.side_rows.get(self.side_sel).map(|r| r.kind.clone()) {
+                        Some(SideKind::Group(id)) => Some(id),
+                        Some(SideKind::RecentHeader) => Some(crate::recent::COLLAPSED.to_owned()),
+                        _ => None,
+                    };
+                    if let Some(id) = id {
                         let collapsed = self.doc.ui.collapsed.contains(&id);
                         if (key.code == KeyCode::Left) != collapsed {
                             self.toggle_collapse(&id);
@@ -276,10 +304,11 @@ impl App {
         let world_step = step * d / n;
         match key.code {
             KeyCode::Enter => {
+                // The explicit keyboard start (a group shows its running terminals).
                 if let Some(group) = self.selected_group.clone() {
                     self.open_group(&group);
                 } else if let Some(id) = self.selection.last().cloned() {
-                    self.open_node(&id);
+                    self.start_node(&id);
                 }
             }
             KeyCode::Tab | KeyCode::BackTab => {
@@ -363,9 +392,10 @@ impl App {
         }
         self.term_select = None;
         if !self.owned_alive(&id) {
-            // Keys on an exited terminal: Enter restarts it, anything else returns to the canvas.
+            // Keys on an exited terminal: Enter restarts it (an explicit
+            // start), anything else returns to the canvas.
             if key.code == KeyCode::Enter {
-                self.open_node(&id);
+                self.start_node(&id);
             } else {
                 self.set_focus(Focus::Canvas);
             }
@@ -407,15 +437,41 @@ impl App {
         self.mark_dirty();
     }
 
+    /// Enter (or a double-click) on a sidebar row: a group shows its running
+    /// terminals; a session or subagent starts (or resumes) and gets the keyboard.
     pub fn activate_side_row(&mut self, index: usize) {
+        let Some(row) = self.side_rows.get(index).cloned() else { return };
+        self.side_sel = index;
+        match row.kind {
+            SideKind::Group(id) => self.open_group(&id),
+            SideKind::Session(id) | SideKind::Agent(id) | SideKind::Recent(id) => {
+                self.reveal_node(&id);
+                self.start_node(&id);
+            }
+            SideKind::Folder(id) => self.side_folder(&id),
+            SideKind::RecentHeader => self.toggle_collapse(crate::recent::COLLAPSED),
+            SideKind::Section => {}
+        }
+    }
+
+    /// A click on a sidebar row: flies the canvas to it and views it (never launches).
+    pub fn view_side_row(&mut self, index: usize) {
         let Some(row) = self.side_rows.get(index).cloned() else { return };
         self.side_sel = index;
         match row.kind {
             SideKind::Group(id) => self.open_group(&id),
             SideKind::Session(id) | SideKind::Agent(id) => {
                 self.reveal_node(&id);
-                self.open_node(&id);
+                self.view_node(&id);
             }
+            SideKind::Recent(id) => {
+                self.reveal_node(&id);
+                self.view_node(&id);
+                // The highlight stays on the RECENT row (not the tree's row of the session).
+                self.side_sel = index;
+            }
+            SideKind::Folder(id) => self.side_folder(&id),
+            SideKind::RecentHeader => self.toggle_collapse(crate::recent::COLLAPSED),
             SideKind::Section => {}
         }
     }
@@ -510,7 +566,16 @@ impl App {
         }
         self.set_focus(Focus::Canvas);
         let double = button == MouseButton::Left && self.is_double_click(x, y);
+        // Stacks and effects first (a click on an effect never starts a session).
+        if self.visual_mouse_down(button, x, y, double, additive) {
+            return;
+        }
         match (button, self.canvas_hit(x, y)) {
+            (MouseButton::Left, CanvasHit::Node(id)) if double && !additive => {
+                // The second click of a double-click: the explicit start.
+                self.drag = None;
+                self.start_node(&id);
+            }
             (MouseButton::Left, CanvasHit::Node(id)) => {
                 if additive {
                     self.select_node(&id, true);
@@ -539,7 +604,14 @@ impl App {
             (MouseButton::Left, _) if additive => {
                 self.drag = Some(Drag::Rubber { start: (x, y), now: (x, y), additive: true, right: false });
             }
-            (MouseButton::Left | MouseButton::Middle, _) => self.drag = Some(Drag::Pan { last: (x, y), moved: false }),
+            // Empty space pans; a click on a group's background or border selects it.
+            (MouseButton::Left | MouseButton::Middle, hit) => {
+                let group = match (button, hit) {
+                    (MouseButton::Left, CanvasHit::GroupBody(id)) => Some(id),
+                    _ => None,
+                };
+                self.drag = Some(Drag::Pan { last: (x, y), moved: false, group });
+            }
             (MouseButton::Right, CanvasHit::Node(id)) => {
                 if !self.selection.contains(&id) {
                     self.select_node(&id, false);
@@ -580,11 +652,12 @@ impl App {
         if button == MouseButton::Right {
             let menu = match &row.kind {
                 SideKind::Group(id) => self.group_menu(id),
-                SideKind::Session(id) | SideKind::Agent(id) => {
+                SideKind::Session(id) | SideKind::Agent(id) | SideKind::Recent(id) => {
                     self.select_node(id, false);
                     self.node_menu(id)
                 }
-                SideKind::Section => return,
+                SideKind::Folder(id) => return self.side_folder(id),
+                SideKind::Section | SideKind::RecentHeader => return,
             };
             return self.open_menu(x, y, menu);
         }
@@ -594,7 +667,20 @@ impl App {
         {
             return self.toggle_collapse(id);
         }
-        self.activate_side_row(index);
+        if row.kind == SideKind::RecentHeader {
+            return self.toggle_collapse(crate::recent::COLLAPSED);
+        }
+        // The RECENT rows hold still meanwhile, so a double-click starts the row it began on.
+        self.hold_recent();
+        // A second click on the same row soon after the first starts it.
+        let now = Instant::now();
+        let double = self.last_side_click.is_some_and(|(t, i)| i == index && now - t < Duration::from_millis(400));
+        self.last_side_click = if double { None } else { Some((now, index)) };
+        if double {
+            self.activate_side_row(index);
+        } else {
+            self.view_side_row(index);
+        }
     }
 
     fn mouse_drag(&mut self, x: u16, y: u16) {
@@ -632,7 +718,7 @@ impl App {
                 self.mark_dirty();
                 Drag::Resize { id, start, orig }
             }
-            Drag::Pan { last, moved } => {
+            Drag::Pan { last, moved, group } => {
                 let (wx, wy) = world(x as i32 - last.0 as i32, y as i32 - last.1 as i32);
                 self.doc.view.x -= wx;
                 self.doc.view.y -= wy;
@@ -641,7 +727,7 @@ impl App {
                 }
                 let consumed = (wx * n / d, wy * n / d);
                 let next = ((last.0 as i32 + consumed.0) as u16, (last.1 as i32 + consumed.1) as u16);
-                Drag::Pan { last: next, moved: moved || last != (x, y) }
+                Drag::Pan { last: next, moved: moved || last != (x, y), group }
             }
             Drag::Rubber { start, additive, right, .. } => Drag::Rubber { start, now: (x, y), additive, right },
             Drag::SidebarDivider => {
@@ -704,10 +790,10 @@ impl App {
                 self.mark_dirty();
                 Drag::Resize { id, start, orig }
             }
-            Some(Drag::Pan { last, moved }) => {
+            Some(Drag::Pan { last, moved, group }) => {
                 self.pan_cells(self.pointer.0 - self.drag_origin.0, self.pointer.1 - self.drag_origin.1);
                 self.drag_origin = self.pointer;
-                Drag::Pan { last: (x, y), moved: moved || last != (x, y) }
+                Drag::Pan { last: (x, y), moved: moved || last != (x, y), group }
             }
             other => {
                 self.drag = other;
@@ -728,12 +814,10 @@ impl App {
                 // clickable UI); drags stay a canvas text selection.
                 self.send(ClientMsg::Click { id, col: anchor.0, row: anchor.1, button: 0, mods: 0 });
             }
-            Drag::Nodes { moved: false, click: Some(id), .. } => self.open_node(&id),
+            Drag::Nodes { moved: false, click: Some(id), .. } => self.view_node(&id),
             Drag::Group { moved: false, id, .. } => self.open_group(&id),
-            Drag::Pan { moved: false, .. } => {
-                self.selection.clear();
-                self.selected_group = None;
-            }
+            Drag::Pan { moved: false, group: Some(group), .. } => self.select_group(&group),
+            Drag::Pan { moved: false, group: None, .. } => self.clear_selection(),
             Drag::Rubber { start, now, additive, right } => {
                 let moved = start.0.abs_diff(now.0) > 1 || start.1.abs_diff(now.1) > 0;
                 if !moved {
@@ -756,11 +840,12 @@ impl App {
                     let (bx, by) = self.to_world(start.0.max(now.0) as i32 + 1, start.1.max(now.1) as i32 + 1);
                     crate::doc::Rect { x: ax, y: ay, w: (bx - ax).max(1), h: (by - ay).max(1) }
                 };
+                let concealed = self.concealed_now();
                 let hits: Vec<String> = self
                     .doc
                     .nodes
                     .iter()
-                    .filter(|n| n.kind == NodeKind::Session && n.rect().intersects(&area))
+                    .filter(|n| n.kind == NodeKind::Session && n.rect().intersects(&area) && !concealed.contains_key(&n.id))
                     .map(|n| n.id.clone())
                     .collect();
                 if !additive {
@@ -828,5 +913,112 @@ impl App {
             self.doc.view.y += if forward { -amount } else { amount };
         }
         self.mark_dirty();
+    }
+}
+
+#[cfg(test)]
+mod paste_tests {
+    use std::sync::{Arc, Mutex};
+
+    use crossbeam_channel::{Receiver, bounded, unbounded};
+
+    use crate::app::{App, Focus, TermSelection, TermView};
+    use crate::conn::Conn;
+    use crate::doc::Doc;
+    use crate::input::InputEvent;
+    use crate::protocol::{ClientMsg, Frame8, Input, Key, MOD_CTRL, MODE_ALT_SCREEN, Run8, TermInfo};
+    use crate::sync::Opened;
+
+    /// A clipboard of the test's own.
+    struct Clip(Mutex<String>);
+
+    impl crate::platform::Platform for Clip {
+        fn set_clipboard_text(&self, text: &str) -> anyhow::Result<()> {
+            *self.0.lock().unwrap() = text.to_owned();
+            Ok(())
+        }
+        fn clipboard_text(&self) -> anyhow::Result<String> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+        fn clipboard_has_text(&self) -> bool {
+            !self.0.lock().unwrap().is_empty()
+        }
+        fn clipboard_has_image(&self) -> bool {
+            false
+        }
+    }
+
+    /// An app whose keyboard is in live terminal "t", with `clip` as its clipboard.
+    fn app(clip: &str) -> (App, Receiver<ClientMsg>, Arc<Clip>) {
+        let (tx, rx) = bounded(64);
+        let (_service, service_rx) = bounded(1);
+        let (app_tx, _app_rx) = unbounded();
+        let mut app = App::new(Conn::detached(tx, service_rx), Arc::new(crate::rpc::Offline), Opened::detached(Doc::default()), false, ".".into(), app_tx, None);
+        let clip = Arc::new(Clip(Mutex::new(clip.to_owned())));
+        app.platform = clip.clone();
+        app.terms.insert("t".into(), TermInfo { id: "t".into(), alive: true, ..Default::default() });
+        app.focused_term = Some("t".into());
+        app.focus = Focus::Terminal;
+        (app, rx, clip)
+    }
+
+    fn inputs(rx: &Receiver<ClientMsg>) -> Vec<Input> {
+        rx.try_iter()
+            .filter_map(|m| match m {
+                ClientMsg::Input { input, .. } | ClientMsg::Input8 { input, .. } => Some(input),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn pastes_reach_the_terminal_as_one_paste_without_a_trailing_line_break() {
+        let (mut app, rx, _) = app("line one\r\n\r\n  indented\r\n");
+        app.on_input(vec![InputEvent::Key(crate::input::KeyEvent::new(crate::input::KeyCode::Char('v'), crate::input::Modifiers::CONTROL))]);
+        assert_eq!(inputs(&rx), [Input::Paste("line one\r\n\r\n  indented".into())], "Ctrl+V: the clipboard, without its final line break");
+        app.on_input(vec![InputEvent::Paste("a\nb\n\n".into())]);
+        assert_eq!(inputs(&rx), [Input::Paste("a\nb".into())], "a console paste");
+        app.on_input(vec![InputEvent::Paste("\r\n".into())]);
+        assert!(inputs(&rx).is_empty(), "line breaks alone paste nothing (no Enter)");
+        app.on_input(vec![InputEvent::Paste(String::new())]);
+        assert_eq!(inputs(&rx), [Input::Key { key: Key::Char('v'), mods: MOD_CTRL }], "an empty paste lets the agent read an image");
+    }
+
+    #[test]
+    fn ime_text_with_line_breaks_is_a_paste_and_without_is_typed() {
+        let (mut app, rx, _) = app("");
+        app.on_input(vec![InputEvent::Text("ab".into())]);
+        assert_eq!(inputs(&rx), [Input::Key { key: Key::Char('a'), mods: 0 }, Input::Key { key: Key::Char('b'), mods: 0 }]);
+        app.on_input(vec![InputEvent::Text("first\nsecond\n".into())]);
+        assert_eq!(inputs(&rx), [Input::Paste("first\nsecond".into())]);
+    }
+
+    #[test]
+    fn copying_from_copilot_leaves_its_scrollbar_out() {
+        let (mut app, _rx, clip) = app("");
+        let run = |col: u16, text: &str| Run8 { col, text: text.into(), ..Default::default() };
+        let mut view = TermView::default();
+        view.apply8(Frame8 {
+            id: "t".into(),
+            cols: 12,
+            rows: 2,
+            full: true,
+            changed: vec![(0, vec![run(0, " ● answer"), run(11, "┃")]), (1, vec![run(0, "   more")])],
+            cursor: None,
+            cursor_shape: 0,
+            cursor_blink: false,
+            display_offset: 0,
+            history: 0,
+            modes: MODE_ALT_SCREEN,
+            links: Vec::new(),
+        });
+        app.views.insert("t".into(), view);
+        app.term_select = Some(TermSelection { id: "t".into(), anchor: (0, 0), head: (11, 1) });
+        app.copy_selection();
+        assert_eq!(clip.0.lock().unwrap().as_str(), " ● answer  ┃\r\n   more", "another program keeps it");
+        app.terms.get_mut("t").unwrap().copilot = true;
+        app.doc.nodes.push(serde_json::from_value(serde_json::json!({ "id": "t", "kind": "session", "name": "t", "x": 0, "y": 0, "agent": "copilot" })).unwrap());
+        app.copy_selection();
+        assert_eq!(clip.0.lock().unwrap().as_str(), " ● answer\r\n   more");
     }
 }

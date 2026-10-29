@@ -160,8 +160,18 @@ Engine updates are one reviewed change together with the golden corpus:
   modes: the wheel policy (Shift scrolls history, PageUp/PageDown on the
   alternate screen) is the host's, Ghostty's mouse encoder needs pixel
   geometry, and its X10 (DECSET 9) reports differ from the keys.rs format.
-- **Paste.** Bracket markers are stripped first (as keys.rs does), CRLF becomes
-  CR when not bracketed, then `ghostty_paste_encode` frames it.
+- **Paste.** Both engines follow `keys::paste_lines`: bracket markers are
+  stripped (also ones that removing another forms), CR LF, CR and LF are line
+  breaks and trailing ones are dropped. With bracketed paste on, the lines are
+  joined with CR and `ghostty_paste_encode` frames them (and blanks unsafe
+  control bytes); without it each line is encoded alone and the lines are
+  joined with Shift+Enter as the program reads it (`CSI 13;2u` with kitty
+  flags, else ESC CR from the legacy fallback), never with a bare CR.
+- **Soft wraps.** A row whose `GHOSTTY_ROW_DATA_WRAP` is set (read from the
+  render state's raw row, `ghostty_row_get`) ends with the `F8_SOFTWRAP`
+  marker run; a `SPACER_HEAD` in the last column (a wide character that moved
+  on) puts the marker one column earlier. alacritty reads `WRAPLINE` and
+  `LEADING_WIDE_CHAR_SPACER` on the row's last cell.
 - **Other settings.** Scrollback limit = `Config::scrollback` lines;
   `RESIZE_PULL_SCROLLBACK = false` (ConPTY keeps no scrollback, Ghostty's
   documented setting for it); terminfo name `xterm-256color`; grapheme
@@ -253,8 +263,10 @@ modes.
    BackTab (`CSI 9;2u`), modified Backspace and Esc are CSI u, and F1–F4 use
    `CSI P/Q/13~/S`. keys.rs only special-cased Shift/Ctrl+Enter and Esc
    (those two are unchanged). Report-all-keys mode is honoured.
-10. **Paste:** other C0 controls (ESC, Ctrl+C, ...) become spaces; keys.rs
-    passed them on. Bracket markers are stripped in both.
+10. **Paste:** none any more (`pastes_encode_like_keys_rs_in_every_mode`):
+    keys.rs blanks the same control bytes as Ghostty's encoder (NUL,
+    Ctrl+C/D/E/O/Q/R/S/U/V/W/Z, BS, ESC, FS, DEL) and both join lines the
+    same way in every mode.
 11. **X10 mouse (DECSET 9)** turns on `MODE_MOUSE`; alacritty ignores the mode.
 12. **`Config::kitty_keyboard = false`** has no effect: Ghostty always answers
     kitty keyboard queries (the service always sets it to true).
