@@ -11,7 +11,8 @@ use crate::paths::{format_age, now_ms};
 
 const HELP: &[(&str, &str)] = &[
     ("Canvas (mouse)", ""),
-    ("Click a box", "open / focus its real terminal"),
+    ("Click a box or sidebar row", "select and view it (never starts it)"),
+    ("Double-click a box or row · Enter", "start / resume it and focus its terminal"),
     ("Drag a box", "move it (its subagents follow)"),
     ("Drag empty space / middle-drag", "pan"),
     ("Shift-drag or right-drag", "select several sessions"),
@@ -26,7 +27,7 @@ const HELP: &[(&str, &str)] = &[
     ("I / V", "import agent sessions / sync VS Code agent sessions"),
     ("Alt+1…8 or activity bar", "Sessions · Automations · Plugins · MCP · Skills · Agents · VS Code · Settings"),
     ("Lists: Enter · Space · Del", "open/edit · enable/disable · remove"),
-    ("Enter / Tab", "open selection / cycle sessions"),
+    ("Enter / Tab", "start selection / cycle sessions"),
     ("Arrows / Shift / Ctrl", "move selection / faster / pan"),
     ("R · Del · X", "rename · remove box or group · stop session"),
     ("T · F · + − · C", "tile terminals · fit all · zoom · center"),

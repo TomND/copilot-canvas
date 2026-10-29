@@ -175,6 +175,9 @@ pub enum RightDetail {
     Item(ItemRef),
     /// A passive session's settings and state (node id).
     Passive(String),
+    /// A session or subagent box that is not running here: what it is and
+    /// what starting it would do (node id).
+    Session(String),
 }
 
 fn enabled_icon(enabled: bool) -> (&'static str, Color) {

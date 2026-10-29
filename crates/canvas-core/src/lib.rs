@@ -17,6 +17,7 @@ pub mod events;
 pub mod factory_client;
 pub mod files;
 pub mod input;
+pub mod interact;
 pub mod links;
 pub mod modals;
 pub mod paint;

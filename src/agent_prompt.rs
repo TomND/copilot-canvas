@@ -749,7 +749,12 @@ fn scenario<U: Ui>(instance: &Instance, paths: &Paths, model: &str, steps: &[Str
         anyhow::ensure!(stopped.contains("Some(0)") && !stopped.contains("killed"), "OpenCode did not exit gracefully: {stopped}");
         let launches = log_count(instance, &format!("launched {main} "));
         let (x, y) = ui.locate(MAIN, SIDEBAR)?;
+        // A click only shows the stopped box's details (Resume); the double-click resumes it.
         ui.click(x, y)?;
+        ui.wait("its details panel offers Resume", Duration::from_secs(10), |t| t.contains("▸ Resume"))?;
+        std::thread::sleep(Duration::from_millis(500));
+        anyhow::ensure!(log_count(instance, &format!("launched {main} ")) == launches, "a click relaunched the session");
+        ui.double_click(x, y)?;
         wait_log_after(instance, "the relaunch", &format!("launched {main} "), launches, Duration::from_secs(20))?;
         wait_log(instance, "a resume", &format!("terminal {main}: opencode resume"), Duration::from_secs(5))?;
         let header = format!("{MAIN} · ");

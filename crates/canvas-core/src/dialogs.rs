@@ -101,7 +101,11 @@ pub enum Target {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
+    /// Flies to a box and views it (never launches).
     Open(String),
+    /// Starts or resumes a box's session and focuses its terminal (the
+    /// explicit start: Enter, double-click, Start / Resume buttons).
+    Start(String),
     OpenGroup(String),
     NewSession { at: Option<(i32, i32)>, parent: Option<String> },
     Rename(Target),

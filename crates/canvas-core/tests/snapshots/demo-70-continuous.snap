@@ -29,12 +29,12 @@ box demo-main Session rect=2,2 30x4 prefix="" name="Build session canvas"
 ▌▤  / filter…                    │ ╎                                               ╎  ││ Build session canvas                                        │
                                  │ ╎ ■ Build session canv… ·■ Review implementat…  ╎  ││ ■ stopped                                                   │
  ◷  ▾ ▣ Canvas project         3 │ ╎ stopped                stopped                ╎  ││                                                             │
-      ■ Build session canvas     │ ╎                       ·                       ╎  ││ Folder   C:\work\canvas                                     │
- ⧉      ◇ ✓ Explore terminal AP… │ ╎   ✓ Explore termin…      ┊                    ╎  ││                                                             │
-      ■ Review implementation    │ ╎   just finished       ·  ┊·   ·   ·   ·   ·   ╎  ││ Enter or click the box to open its terminal.                │
- ⌁      ↳ ■ Write tests          │ ╎                        ■ Write tests          ╎  ││ S: subsession · R: rename · G: group · X: stop              │
-                                 │ ╎   ·   ·   ·   ·   ·   ·stopped                ╎  ││                                                             │
- ✦                               │ ╎                                               ╎  ││                                                             │
+      ■ Build session canvas     │ ╎                       ·                       ╎  ││ Agent      none (runs its command)                          │
+ ⧉      ◇ ✓ Explore terminal AP… │ ╎   ✓ Explore termin…      ┊                    ╎  ││ Folder     C:\work\canvas                                   │
+      ■ Review implementation    │ ╎   just finished       ·  ┊·   ·   ·   ·   ·   ╎  ││                                                             │
+ ⌁      ↳ ■ Write tests          │ ╎                        ■ Write tests          ╎  ││ Start runs its command in a new canvas terminal.            │
+                                 │ ╎   ·   ·   ·   ·   ·   ·stopped                ╎  ││ Double-click the box or press Enter to start it.            │
+ ✦                               │ ╎                                               ╎  ││ S subsession · R rename · G group · X stop                  │
                                  │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌◢  ││                                                             │
  ◈                               │                                                    ││                                                             │
                                  │ ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·  ││                                                             │
@@ -61,6 +61,6 @@ box demo-main Session rect=2,2 30x4 prefix="" name="Build session canvas"
                                  │                                                    ││                                                             │
                                  │ ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·  ││                                                             │
                                  │                                                    ││                                                             │
-                                 │ ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·  ││                                                             │
+                                 │ ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·  ││  ▸ Start    Remove    Close                                 │
                                  │                                                    │└─────────────────────────────────────────────────────────────┘
- drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom · right-click menu · ? help
+ click view · double-click/Enter start · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom · right-click menu · ? he…

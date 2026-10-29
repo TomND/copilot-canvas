@@ -223,6 +223,8 @@ pub struct App {
     pub side_filter_active: bool,
     pub layout: Layout,
     pub last_click: Option<(Instant, u16, u16)>,
+    /// The last sidebar row clicked (a second click on it soon after starts it).
+    pub last_side_click: Option<(Instant, usize)>,
     pub app_tx: Sender<AppEvent>,
     pub quit: bool,
     pub tick: usize,
@@ -379,6 +381,7 @@ impl App {
             side_filter_active: false,
             layout: Layout::default(),
             last_click: None,
+            last_side_click: None,
             app_tx,
             quit: false,
             tick: 0,
@@ -554,6 +557,11 @@ impl App {
     fn after_remote_change(&mut self) {
         self.selection.retain(|id| self.doc.node(id).is_some());
         self.selected_group = self.selected_group.take().filter(|g| self.doc.group(g).is_some());
+        if let Some(crate::side::RightDetail::Session(id)) = &self.right_detail
+            && self.doc.node(id).is_none()
+        {
+            self.right_detail = None;
+        }
         self.needs_draw = true;
     }
 
@@ -1380,8 +1388,15 @@ impl App {
                 return Vec::new();
             }
             let selected_session = self.selection.last().and_then(|id| self.session_of(id));
+            // A selected session shows its terminal while it runs (or starts);
+            // a finished one only while you are still in it, else its details.
+            let shown = |id: &String| {
+                self.owned_alive(id)
+                    || self.launching.contains_key(id)
+                    || (self.terms.contains_key(id) && self.focus == Focus::Terminal && self.focused_term.as_ref() == Some(id))
+            };
             let id = match selected_session {
-                Some(session) if self.terms.contains_key(&session) => Some(session),
+                Some(session) if shown(&session) => Some(session),
                 Some(_) => None,
                 None => self.focused_term.clone().filter(|id| self.terms.contains_key(id)),
             };
@@ -1400,35 +1415,7 @@ impl App {
 
     // ---------- launching ----------
 
-    pub fn open_node(&mut self, id: &str) {
-        let Some(session) = self.session_of(id) else {
-            // Automation boxes have no terminal; selecting shows their details.
-            self.select_node(id, false);
-            return;
-        };
-        self.select_node(id, false);
-        if self.owned_alive(&session) {
-            self.show_terminal(&session);
-            self.set_focus(Focus::Terminal);
-            return;
-        }
-        // A passive session opens its panel; its chat starts only on request.
-        if self.doc.node(&session).is_some_and(|n| n.passive.is_some()) {
-            self.right_detail = Some(crate::side::RightDetail::Passive(session));
-            self.needs_draw = true;
-            return;
-        }
-        if self.preparing.contains(&session) {
-            self.notify("This session's worktree is still being created.", false);
-            return;
-        }
-        if self.doc.node(&session).and_then(|n| self.summary(n)).is_some_and(|s| s.live) {
-            self.notify("This session is open in another terminal (CLI or VS Code). Copilot Canvas never starts a second copy.", true);
-            return;
-        }
-        self.launch(&session);
-    }
-
+    /// Starts a session box's terminal (see `interact.rs` for what may call it).
     pub fn launch(&mut self, id: &str) {
         let Some(node) = self.doc.node(id).cloned() else { return };
         let cwd = node
@@ -1474,7 +1461,7 @@ impl App {
         let members = self.doc.members(id);
         let running: Vec<String> = members.iter().filter(|m| self.owned_alive(m)).cloned().collect();
         if running.is_empty() {
-            self.notify("No sessions in this group are running here. Click a session to open it.", false);
+            self.notify("No sessions in this group are running here. Double-click a session (or press Enter) to start it.", false);
             return;
         }
         if running.len() > 1 {
@@ -1815,7 +1802,7 @@ impl App {
             self.stop_terminal(id, false);
         }
         if !idle.is_empty() {
-            self.notify(format!("Stopped {} session(s) idle for {minutes}+ min to free memory; click one to resume it.", idle.len()), false);
+            self.notify(format!("Stopped {} session(s) idle for {minutes}+ min to free memory; double-click one to resume it.", idle.len()), false);
         }
     }
 

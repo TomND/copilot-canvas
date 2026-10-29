@@ -3,8 +3,9 @@
 A fast, native, spatial session manager for agent CLIs on Windows:
 **GitHub Copilot CLI, OpenCode and Claude Code**. Sessions are boxes on an
 infinite canvas; subagents hang off their parent; groups are boxes around
-sessions; the sidebar lists everything; clicking a box opens the **real**
-agent terminal on the right (single or tiled). Two front ends share one
+sessions; the sidebar lists everything; clicking a box shows its **real**
+agent terminal on the right when it runs (single or tiled), or its details with
+an explicit Start / Resume button; double-click or Enter starts it. Two front ends share one
 persistent terminal service: a terminal UI (TUI) and a GPU client (GUI); both
 work locally or from another PC over a Dev Tunnel (remote mode).
 
@@ -73,7 +74,8 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 | **Looping sessions** | A session that repeats on a schedule gets a dotted loopback arc on its right side with one lit dot running around it (bluish green), `↻ every 15m` in its status line and `↻` in the sidebar. Detected from Copilot's schedule events (`/every`, the `manage_schedule` tool: created → looping, cancelled or session ended → not), Copilot's saved session schedules, and enabled repeating automations. Zoomed out, a pulsing `↻` |
 | **MCP servers per session** | The new-session dialog has an *MCP servers* row: a checklist of your servers with presets (*All*, *None*, and your own: `Ctrl+S` saves the current choice, `←/→` switches, `Del` deletes). The last choice is the default next time; each session remembers its own choice for every resume (`--disable-mcp-server`). Change it later from the session's menu → *MCP servers…*. Every server is several processes in every session, so trimming them is the biggest saving in memory and CPU |
 | **Groups** | Shift-drag or right-drag to select, then `G` (or menu) draws a group box around them; drag the title to move everything inside, drag `◢` to resize; nested groups work; membership is geometric, like Obsidian canvas |
-| **Sidebar** | Groups → sessions → subsessions → active subagents; `/` filters; click any row to fly the canvas to it, highlight it and open its terminal (group rows tile the group's running terminals) |
+| **Sidebar** | Groups → sessions → subsessions → active subagents; `/` filters; click any row to fly the canvas to it, highlight it and view it (its live terminal, or its details); double-click or Enter starts it; group rows tile the group's running terminals (never starting stopped ones) |
+| **View versus start** | A click (canvas or sidebar), Tab and the arrows only select and show: a running session's terminal comes into view with the keyboard, anything else shows a details panel (agent, status, folder and branch, last used, what starting it would do) with one primary button: **Start** (a new conversation or a box's command), **Resume** (its conversation) or **Open terminal**, plus Stop, MCP servers… and Remove. Only a double-click, Enter, that button or a menu item starts a session. Restoring tiles, reconnecting and clicks on exited terminals start nothing; sessions open elsewhere (↗) never get a Start / Resume |
 | **Terminals** | Real Copilot CLI in ConPTY; single view or up to four tiles (`T`); terminals keep running when you close the canvas and reappear when you reopen it |
 | **Scrolling** | The wheel goes to the app like in Windows Terminal: mouse-wheel events when Copilot's `mouse` setting is on (its default; 3 lines per notch), PageUp/PageDown on its full-screen view when it is off, scrollback otherwise; Shift+wheel or Shift+PgUp always scroll the scrollback |
 | **Your messages** | In Copilot terminals your own prompts get a navy background and a blue ▎ bar so they stand out from Copilot's output (recognised from how Copilot draws them: " ❯ text" and its indented continuation lines) |
@@ -94,7 +96,8 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 
 | Action | Mouse | Keys |
 |---|---|---|
-| Open / focus a session's terminal | click box or sidebar row | Enter |
+| View a session (its live terminal, or its details) | click box or sidebar row | Tab cycles, arrows move |
+| Start / resume a session and focus its terminal | double-click box or sidebar row; details panel **Start** / **Resume**; menu | Enter |
 | Move | drag box (or group title) | arrows (Shift = faster) |
 | Pan | drag empty space, middle-drag, wheel | Ctrl+arrows |
 | Zoom | Alt+wheel, toolbar − + | `+` `-`, `F` fit all, `C`/Home center |
@@ -391,7 +394,7 @@ and `docs/REMOTE.md`.
   or looping on a schedule),
   not shown in a pane, and has had no output, typing or history events for that
   long. Each one frees its ~30 helper processes; the conversation stays
-  resumable with a click.
+  resumable with a double-click.
 - **Passive sessions** treat event data and messages as untrusted data, never
   instructions (the run prompt quotes them as such); their templates are
   read-only by default (report, don't push or comment). Event chains stop after

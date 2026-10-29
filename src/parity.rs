@@ -135,6 +135,12 @@ impl Gui {
         self.mouse("up", "left", at, mods)
     }
 
+    /// Two clicks at one point (the explicit start of a box).
+    fn double_click(&self, at: (f64, f64)) -> Result<()> {
+        self.click(at, &[])?;
+        self.click(at, &[])
+    }
+
     fn drag(&self, button: &str, from: (f64, f64), to: (f64, f64), mods: &[&str]) -> Result<()> {
         self.mouse("down", button, from, mods)?;
         for i in 1..=4 {
@@ -220,11 +226,11 @@ impl Gui {
         }
     }
 
-    /// Opens a box's terminal (click), waits for `ready` in the screen.
+    /// Starts (or focuses) a box's terminal with a double-click, waits for `ready` in the screen.
     fn open(&mut self, name: &str, ready: &str) -> Result<()> {
         self.canvas_focus()?;
         let at = self.box_center(name)?;
-        self.click(at, &[])?;
+        self.double_click(at)?;
         self.wait(&format!("{name}'s terminal"), 25, |t| t.contains(ready))
     }
 
@@ -1132,6 +1138,54 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
             }
             std::thread::sleep(Duration::from_millis(500));
         }
+    });
+
+    check(rows, "34", "New: view versus start (a click views; double-click, Enter, Start / Resume start; group rows never launch)", "view_vs_start", || {
+        gui.canvas_focus()?;
+        gui.send("f")?;
+        let log = || std::fs::read_to_string(sb.instance.log_path()).unwrap_or_default();
+        let launched = |id: &str| log().contains(&format!("launched {id} "));
+        // A click shows the details panel; nothing starts.
+        let stopped = sb.sessions.stopped.clone();
+        let at = gui.box_center("Stopped one")?;
+        gui.click(at, &[])?;
+        gui.wait("its details with Resume", 5, |t| t.contains("▸ Resume") && t.contains("Double-click the box"))?;
+        std::thread::sleep(Duration::from_millis(800));
+        anyhow::ensure!(!launched(&stopped), "a click launched the session");
+        anyhow::ensure!(gui.tree()?["tiles"].as_array().is_some_and(|t| t.iter().all(|t| t["id"] != stopped.as_str())), "no terminal tile for a viewed session");
+        // A double-click resumes it (the stand-in Copilot).
+        gui.double_click(at)?;
+        gui.wait("the double-click resumed it", 25, |t| t.contains("Stopped one · ") && t.contains("Fake Copilot"))?;
+        anyhow::ensure!(launched(&stopped), "the double-click launched it");
+        // Enter on the selected box.
+        gui.canvas_focus()?;
+        let failed = sb.sessions.failed.clone();
+        let at = gui.box_center("Failed one")?;
+        gui.click(at, &[])?;
+        gui.wait("its details with Resume", 5, |t| t.contains("▸ Resume") && t.contains("Failed one"))?;
+        anyhow::ensure!(!launched(&failed), "a click launched the session");
+        gui.key("Enter", &[])?;
+        gui.wait("Enter resumed it", 25, |t| t.contains("Failed one · ") && t.contains("Fake Copilot"))?;
+        // The details panel's primary button.
+        gui.canvas_focus()?;
+        let imported = sb.sessions.import_a.clone();
+        let at = gui.box_center("Import me A")?;
+        gui.click(at, &[])?;
+        gui.wait("its details with Resume", 5, |t| t.contains("▸ Resume") && t.contains("Import me A"))?;
+        anyhow::ensure!(!launched(&imported), "a click launched the session");
+        let (x, y) = gui.find("▸ Resume").context("the Resume button")?;
+        gui.click((x + 1.0, y), &[])?;
+        gui.wait("Resume resumed it", 25, |t| t.contains("Import me A · ") && t.contains("Fake Copilot"))?;
+        // A group row shows its running terminals and starts nothing.
+        gui.canvas_focus()?;
+        let before = log().matches("launched ").count();
+        let (x, y) = gui.driver.find_in("Parity group", 3, 33).map(|(x, y)| (x as f64 + 0.5, y as f64 + 0.5)).context("group row")?;
+        gui.click((x + 2.0, y), &[])?;
+        gui.wait_tree("the group selected", 5, |t| t["canvas"]["groups"].as_array().is_some_and(|g| g.iter().any(|g| g["id"] == "g-parity" && g["selected"] == true)))?;
+        std::thread::sleep(Duration::from_millis(500));
+        anyhow::ensure!(log().matches("launched ").count() == before, "viewing a group launched something");
+        gui.canvas_focus()?;
+        Ok("click → details (no launch); double-click, Enter and Resume each resumed one; group row launched nothing".into())
     });
 
     check_kind(rows, "G4", "New: several windows on one canvas (Ctrl+Shift+N, toolbar)", "second_window_rename_sync", Kind::Only("GUI only: a console has one window"), || {

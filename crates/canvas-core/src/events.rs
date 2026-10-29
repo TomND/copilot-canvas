@@ -242,8 +242,7 @@ impl App {
                 return;
             }
             KeyCode::Esc => {
-                self.selection.clear();
-                self.selected_group = None;
+                self.clear_selection();
                 return;
             }
             _ => {}
@@ -276,10 +275,11 @@ impl App {
         let world_step = step * d / n;
         match key.code {
             KeyCode::Enter => {
+                // The explicit keyboard start (a group shows its running terminals).
                 if let Some(group) = self.selected_group.clone() {
                     self.open_group(&group);
                 } else if let Some(id) = self.selection.last().cloned() {
-                    self.open_node(&id);
+                    self.start_node(&id);
                 }
             }
             KeyCode::Tab | KeyCode::BackTab => {
@@ -363,9 +363,10 @@ impl App {
         }
         self.term_select = None;
         if !self.owned_alive(&id) {
-            // Keys on an exited terminal: Enter restarts it, anything else returns to the canvas.
+            // Keys on an exited terminal: Enter restarts it (an explicit
+            // start), anything else returns to the canvas.
             if key.code == KeyCode::Enter {
-                self.open_node(&id);
+                self.start_node(&id);
             } else {
                 self.set_focus(Focus::Canvas);
             }
@@ -407,6 +408,8 @@ impl App {
         self.mark_dirty();
     }
 
+    /// Enter (or a double-click) on a sidebar row: a group shows its running
+    /// terminals; a session or subagent starts (or resumes) and gets the keyboard.
     pub fn activate_side_row(&mut self, index: usize) {
         let Some(row) = self.side_rows.get(index).cloned() else { return };
         self.side_sel = index;
@@ -414,7 +417,21 @@ impl App {
             SideKind::Group(id) => self.open_group(&id),
             SideKind::Session(id) | SideKind::Agent(id) => {
                 self.reveal_node(&id);
-                self.open_node(&id);
+                self.start_node(&id);
+            }
+            SideKind::Section => {}
+        }
+    }
+
+    /// A click on a sidebar row: flies the canvas to it and views it (never launches).
+    pub fn view_side_row(&mut self, index: usize) {
+        let Some(row) = self.side_rows.get(index).cloned() else { return };
+        self.side_sel = index;
+        match row.kind {
+            SideKind::Group(id) => self.open_group(&id),
+            SideKind::Session(id) | SideKind::Agent(id) => {
+                self.reveal_node(&id);
+                self.view_node(&id);
             }
             SideKind::Section => {}
         }
@@ -511,6 +528,11 @@ impl App {
         self.set_focus(Focus::Canvas);
         let double = button == MouseButton::Left && self.is_double_click(x, y);
         match (button, self.canvas_hit(x, y)) {
+            (MouseButton::Left, CanvasHit::Node(id)) if double && !additive => {
+                // The second click of a double-click: the explicit start.
+                self.drag = None;
+                self.start_node(&id);
+            }
             (MouseButton::Left, CanvasHit::Node(id)) => {
                 if additive {
                     self.select_node(&id, true);
@@ -594,7 +616,15 @@ impl App {
         {
             return self.toggle_collapse(id);
         }
-        self.activate_side_row(index);
+        // A second click on the same row soon after the first starts it.
+        let now = Instant::now();
+        let double = self.last_side_click.is_some_and(|(t, i)| i == index && now - t < Duration::from_millis(400));
+        self.last_side_click = if double { None } else { Some((now, index)) };
+        if double {
+            self.activate_side_row(index);
+        } else {
+            self.view_side_row(index);
+        }
     }
 
     fn mouse_drag(&mut self, x: u16, y: u16) {
@@ -728,12 +758,9 @@ impl App {
                 // clickable UI); drags stay a canvas text selection.
                 self.send(ClientMsg::Click { id, col: anchor.0, row: anchor.1, button: 0, mods: 0 });
             }
-            Drag::Nodes { moved: false, click: Some(id), .. } => self.open_node(&id),
+            Drag::Nodes { moved: false, click: Some(id), .. } => self.view_node(&id),
             Drag::Group { moved: false, id, .. } => self.open_group(&id),
-            Drag::Pan { moved: false, .. } => {
-                self.selection.clear();
-                self.selected_group = None;
-            }
+            Drag::Pan { moved: false, .. } => self.clear_selection(),
             Drag::Rubber { start, now, additive, right } => {
                 let moved = start.0.abs_diff(now.0) > 1 || start.1.abs_diff(now.1) > 0;
                 if !moved {

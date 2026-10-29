@@ -48,7 +48,9 @@ impl App {
             return (node.name.clone(), items);
         }
         if node.kind == NodeKind::Agent {
-            items.push(item("Open parent terminal", "Enter", Action::Open(id.to_owned()), !external));
+            let parent = node.parent.clone().unwrap_or_default();
+            let parent_alive = self.owned_alive(&parent);
+            items.push(item(if parent_alive { "Open parent terminal" } else { "Start parent session" }, "", Action::Start(parent), !external));
             items.push(item("Rename box", "R", Action::Rename(Target::Node(id.to_owned())), true));
             items.push(item("Remove box", "Del", Action::RemoveNode(id.to_owned()), true));
             return (node.name.clone(), items);
@@ -68,8 +70,12 @@ impl App {
             items.push(item("Remove from canvas", "Del", Action::RemoveNode(id.to_owned()), true));
             return (node.name.clone(), items);
         }
-        let open_label = if alive { "Focus terminal" } else { "Open terminal" };
-        items.push(item(open_label, "Enter", Action::Open(id.to_owned()), !external));
+        // The explicit start: Start (new), Resume (its conversation) or Open terminal (running).
+        let (start, startable) = match self.start_plan(node).label() {
+            Some(label) => (label, true),
+            None => ("Open terminal", false),
+        };
+        items.push(item(start, "Enter", Action::Start(id.to_owned()), startable));
         items.push(item("New subsession", "S", Action::NewSession { at: None, parent: Some(id.to_owned()) }, true));
         items.push(item("Rename", "R", Action::Rename(Target::Node(id.to_owned())), true));
         if !self.demo {
@@ -77,7 +83,7 @@ impl App {
             items.push(item(if node.no_messages { "Accept passive messages" } else { "Mute passive messages" }, "", Action::ToggleMessages(id.to_owned()), true));
             let queued = self.bus.mailbox.get(id).copied().unwrap_or(0);
             if queued > 0 {
-                items.push(item(&format!("Deliver {queued} queued message(s)"), "", Action::Open(id.to_owned()), !external));
+                items.push(item(&format!("Deliver {queued} queued message(s)"), "", Action::Start(id.to_owned()), !external));
                 items.push(item("Discard queued messages", "", Action::DiscardMail(id.to_owned()), true));
             }
         }
@@ -418,7 +424,7 @@ impl App {
                 }
                 self.mark_dirty();
                 let summary = self.mcp_summary(agent, &off);
-                let when = if alive { " Applies the next time it starts (stop it and click it to restart now)." } else { "" };
+                let when = if alive { " Applies the next time it starts (stop it and double-click it to restart now)." } else { "" };
                 self.notify(format!("MCP servers for this session: {summary}.{when}"), false);
             }
         }
@@ -535,8 +541,9 @@ impl App {
         match action {
             Action::Open(id) => {
                 self.reveal_node(&id);
-                self.open_node(&id);
+                self.view_node(&id);
             }
+            Action::Start(id) => self.start_node(&id),
             Action::OpenGroup(id) => self.open_group(&id),
             Action::NewSession { at, parent } => self.open_new_session(at, parent),
             Action::Rename(target) => {
@@ -643,8 +650,14 @@ impl App {
                 self.run_cli_op(label, move |backend| backend.plugin_update(&name));
             }
             Action::CloseDetail => {
+                // A session's details close with its selection (they would show again).
+                let session = matches!(self.right_detail, None | Some(crate::side::RightDetail::Session(_)));
                 self.right_detail = None;
-                let keep: Vec<String> = self.selection.iter().filter(|id| self.doc.node(id).is_some_and(|n| n.kind != NodeKind::Automation)).cloned().collect();
+                let keep: Vec<String> = if session {
+                    Vec::new()
+                } else {
+                    self.selection.iter().filter(|id| self.doc.node(id).is_some_and(|n| n.kind != NodeKind::Automation)).cloned().collect()
+                };
                 self.selection = keep;
             }
             Action::OpenPath(path) => self.open_folder(&path),
@@ -924,7 +937,7 @@ impl App {
                             n.fresh = true;
                         }
                         self.node_errors.insert(node, "fork failed".into());
-                        self.notify(format!("Could not fork the parent's conversation: {error}. Click the box to start it fresh."), true);
+                        self.notify(format!("Could not fork the parent's conversation: {error}. Double-click the box to start it fresh."), true);
                     }
                 }
             }
