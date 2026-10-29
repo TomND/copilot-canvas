@@ -295,6 +295,15 @@ impl Emulator for AlacrittyEmulator {
                 run.text.extend(extra);
             }
             trim_trailing_blank(&mut runs);
+            // The engine marks a soft-wrapped row on its last cell; a wide
+            // character that did not fit left a spacer there.
+            if cols > 0 {
+                let last = &row[Column(cols - 1)];
+                if last.flags.contains(Flags::WRAPLINE) {
+                    let spacer = last.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER);
+                    runs.push(Run8::soft_wrap((cols - usize::from(spacer)) as u16));
+                }
+            }
             lines.push(runs);
         }
         let mode = *term.mode();
@@ -558,6 +567,35 @@ pub(super) mod tests {
         assert_eq!(snap.display_offset, 3);
         assert!(snap.history >= 3);
         assert_eq!(snap.lines[0][0].text, "line5");
+    }
+
+    #[test]
+    fn soft_wrapped_rows_end_with_a_wrap_marker() {
+        let wraps = |emu: &AlacrittyEmulator| emu.snapshot().lines.iter().map(|row| row_soft_wrap(row)).collect::<Vec<_>>();
+        let mut emu = emulator(10, 6);
+        // A long line wraps; a line of exactly the width followed by CR LF does
+        // not; a border put in the last column with cursor moves does not; a
+        // border followed by more text does.
+        feed_collect(&mut emu, "0123456789abcdef\r\n0123456789\r\nhello\x1b[4;10H│\x1b[5;1Hnext\x1b[5;10H│more".as_bytes());
+        assert_eq!(wraps(&emu), [Some(10), None, None, None, Some(10), None]);
+        let snap = emu.snapshot();
+        assert_eq!(snap.text().lines().collect::<Vec<_>>(), ["0123456789", "abcdef", "0123456789", "hello    │", "next     │", "more"]);
+        assert_eq!(snap.row_v7(0), [Run { col: 0, text: "0123456789".into(), fg: 0, bg: 0, flags: 0, link: None }], "protocol 7 never sees the marker");
+        // A wide character that does not fit leaves the last column to a spacer.
+        let mut emu = emulator(10, 3);
+        feed_collect(&mut emu, "123456789中x".as_bytes());
+        assert_eq!(wraps(&emu), [Some(9), None, None]);
+        // Resizing reflows: the wrap state follows.
+        let mut emu = emulator(10, 6);
+        feed_collect(&mut emu, b"0123456789abcdef\r\nend");
+        emu.resize(20, 6);
+        assert_eq!(wraps(&emu), [None; 6]);
+        assert_eq!(emu.snapshot().text().lines().next(), Some("0123456789abcdef"));
+        emu.resize(5, 6);
+        // The reflowed rows may have moved into the scrollback.
+        emu.scroll(Scroll::Top);
+        assert_eq!(emu.snapshot().text().lines().take(4).collect::<Vec<_>>(), ["01234", "56789", "abcde", "f"]);
+        assert_eq!(wraps(&emu)[..4], [Some(5), Some(5), Some(5), None]);
     }
 
     #[test]

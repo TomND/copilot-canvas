@@ -306,11 +306,12 @@ impl GhosttyEmulator {
     }
 
     /// One viewport row as protocol-8 runs (same merging and trimming as
-    /// alacritty). Hyperlinks are looked up only when `links` is given.
+    /// alacritty), ending with the soft-wrap marker when the row wraps.
+    /// Hyperlinks are looked up only when `links` is given.
     ///
     /// # Safety
     /// `rows` must be positioned on viewport row `y` of the current render state.
-    unsafe fn row_runs(&self, rows: sys::GhosttyRenderStateRowIterator, y: u16, mut links: Option<&mut Links>) -> Vec<Run8> {
+    unsafe fn row_runs(&self, rows: sys::GhosttyRenderStateRowIterator, y: u16, links: Option<&mut Links>) -> Vec<Run8> {
         let mut view = sys::GhosttyCellsView { ptr: std::ptr::null(), len: 0 };
         // SAFETY: CELLS_RAW yields a view valid until the next render-state update.
         if unsafe { sys::ghostty_render_state_row_get(rows, sys::GHOSTTY_RENDER_STATE_ROW_DATA_CELLS_RAW, (&raw mut view).cast()) }
@@ -321,6 +322,22 @@ impl GhosttyEmulator {
         }
         // SAFETY: `len` cells at `ptr`, see above.
         let raw = unsafe { std::slice::from_raw_parts(view.ptr, view.len) };
+        // SAFETY: as documented for this function.
+        let mut runs = unsafe { self.cell_runs(rows, raw, y, links) };
+        // SAFETY: as above.
+        if unsafe { row_wrapped(rows) } {
+            // A wide character that did not fit left a spacer in the last column.
+            let spacer = raw.last().is_some_and(|&cell| CellInfo::decode(cell).wide == sys::GHOSTTY_CELL_WIDE_SPACER_HEAD);
+            runs.push(Run8::soft_wrap((raw.len() - usize::from(spacer)) as u16));
+        }
+        runs
+    }
+
+    /// The runs of a row's cells `raw` (see [`Self::row_runs`]).
+    ///
+    /// # Safety
+    /// As for [`Self::row_runs`]; `raw` are the row's raw cells.
+    unsafe fn cell_runs(&self, rows: sys::GhosttyRenderStateRowIterator, raw: &[sys::GhosttyCell], y: u16, mut links: Option<&mut Links>) -> Vec<Run8> {
         // An all-zero cell is an empty default cell, which trimming removes anyway.
         let end = raw.iter().rposition(|&c| c != 0).map_or(0, |i| i + 1);
         if end == 0 {
@@ -443,32 +460,22 @@ impl GhosttyEmulator {
         found
     }
 
-    fn encode_paste(&self, text: &str) -> Vec<u8> {
-        let bracketed = self.mode(sys::GHOSTTY_MODE_BRACKETED_PASTE);
-        // A pasted bracket marker would let the text end the paste and inject keystrokes.
-        let mut clean = text.replace("\x1b[201~", "").replace("\x1b[200~", "");
-        if !bracketed {
-            clean = clean.replace("\r\n", "\r");
-        }
-        let mut data = clean.into_bytes();
-        let mut out = vec![0u8; data.len() + 16];
-        let mut written = 0usize;
-        // SAFETY: `data` is rewritten in place (same length); `out` has `out.len()` bytes.
-        let mut result = unsafe {
-            sys::ghostty_paste_encode(data.as_mut_ptr().cast(), data.len(), bracketed, out.as_mut_ptr().cast(), out.len(), &mut written)
-        };
-        if result == sys::GHOSTTY_OUT_OF_SPACE {
-            out.resize(written, 0);
-            // SAFETY: as above; re-encoding already cleaned data is idempotent.
-            result = unsafe {
-                sys::ghostty_paste_encode(data.as_mut_ptr().cast(), data.len(), bracketed, out.as_mut_ptr().cast(), out.len(), &mut written)
-            };
-        }
-        if result != sys::GHOSTTY_SUCCESS {
+    /// A paste by the rules of [`crate::keys::paste_lines`]: Ghostty's
+    /// encoder blanks unsafe control bytes and brackets the text (lines
+    /// ending with CR) when the program asked for bracketed paste; otherwise
+    /// each line is encoded alone and the lines are joined with Shift+Enter
+    /// as the program reads it, never with a bare CR (Enter submits).
+    fn encode_paste(&mut self, text: &str) -> Vec<u8> {
+        let lines = crate::keys::paste_lines(text);
+        if lines.is_empty() {
             return Vec::new();
         }
-        out.truncate(written);
-        out
+        if self.mode(sys::GHOSTTY_MODE_BRACKETED_PASTE) {
+            return ghostty_paste(&lines.join("\r"), true);
+        }
+        let newline = self.encode_key(Key::Enter, MOD_SHIFT);
+        let lines: Vec<String> = lines.iter().map(|line| String::from_utf8_lossy(&ghostty_paste(line, false)).into_owned()).collect();
+        crate::keys::join_paste(&lines, 0, &newline)
     }
 
     fn encode_focus(&self, focused: bool) -> Vec<u8> {
@@ -588,6 +595,28 @@ impl GhosttyEmulator {
         }
         out
     }
+}
+
+/// Ghostty's paste encoder: unsafe control bytes become spaces; `bracketed`
+/// wraps the text in paste markers (otherwise LF would become CR: callers
+/// pass single lines then).
+fn ghostty_paste(text: &str, bracketed: bool) -> Vec<u8> {
+    let mut data = text.as_bytes().to_vec();
+    let mut out = vec![0u8; data.len() + 16];
+    let mut written = 0usize;
+    // SAFETY: `data` is rewritten in place (same length); `out` has `out.len()` bytes.
+    let mut result =
+        unsafe { sys::ghostty_paste_encode(data.as_mut_ptr().cast(), data.len(), bracketed, out.as_mut_ptr().cast(), out.len(), &mut written) };
+    if result == sys::GHOSTTY_OUT_OF_SPACE {
+        out.resize(written, 0);
+        // SAFETY: as above; re-encoding already cleaned data is idempotent.
+        result = unsafe { sys::ghostty_paste_encode(data.as_mut_ptr().cast(), data.len(), bracketed, out.as_mut_ptr().cast(), out.len(), &mut written) };
+    }
+    if result != sys::GHOSTTY_SUCCESS {
+        return Vec::new();
+    }
+    out.truncate(written);
+    out
 }
 
 /// Installs the process-wide PNG decoder Kitty graphics use (once).
@@ -985,6 +1014,21 @@ struct CellStyle {
     bg: u32,
     flags: u32,
     underline: u32,
+}
+
+/// Whether the iterator's current row is soft-wrapped (its line continues on the next row).
+///
+/// # Safety
+/// `rows` must be positioned on a row of the current render state.
+unsafe fn row_wrapped(rows: sys::GhosttyRenderStateRowIterator) -> bool {
+    let mut row: sys::GhosttyRow = 0;
+    let mut wrap = false;
+    // SAFETY: upheld by the caller; RAW writes a GhosttyRow, WRAP a bool.
+    let ok = unsafe {
+        sys::ghostty_render_state_row_get(rows, sys::GHOSTTY_RENDER_STATE_ROW_DATA_RAW, (&raw mut row).cast()) == sys::GHOSTTY_SUCCESS
+            && sys::ghostty_row_get(row, sys::GHOSTTY_ROW_DATA_WRAP, (&raw mut wrap).cast()) == sys::GHOSTTY_SUCCESS
+    };
+    ok && wrap
 }
 
 /// # Safety
@@ -1630,15 +1674,61 @@ mod tests {
     #[test]
     fn paste_is_bracketed_and_cannot_terminate_early() {
         let mut emu = emulator(20, 3);
-        assert_eq!(emu.encode(&Input::Paste("a\nb".into())), b"a\rb");
-        assert_eq!(emu.encode(&Input::Paste("a\r\nb\rc".into())), b"a\rb\rc");
         feed_collect(&mut emu, b"\x1b[?2004h");
         let encoded = emu.encode(&Input::Paste("a\x1b[201~b\nc".into()));
-        assert_eq!(encoded, b"\x1b[200~ab\nc\x1b[201~");
+        assert_eq!(encoded, b"\x1b[200~ab\rc\x1b[201~");
         assert_eq!(emu.encode(&Input::Paste("x\x1b[200~\x1b[201~y".into())), b"\x1b[200~xy\x1b[201~");
-        // Reviewed difference: Ghostty also blanks other control bytes keys.rs passes on.
         assert_eq!(emu.encode(&Input::Paste("a\x1bb\x03\tc".into())), b"\x1b[200~a b \tc\x1b[201~");
         assert_eq!(emu.encode(&Input::Raw(b"\x1b[A".to_vec())), b"\x1b[A");
+    }
+
+    #[test]
+    fn pastes_encode_like_keys_rs_in_every_mode() {
+        let setups: [(&[u8], usize); 4] = [(b"\x1b[?2004h", 0), (b"", 1), (b"\x1b[>1u", 2), (b"\x1b[?2004h\x1b[>1u", 0)];
+        for (setup, column) in setups {
+            let mut ghostty = emulator(40, 5);
+            let mut alacritty = AlacrittyEmulator::new(&config(40, 5, true));
+            feed_collect(&mut ghostty, setup);
+            feed_collect(&mut alacritty, setup);
+            for &(text, bracketed, plain, kitty) in crate::keys::tests::PASTES {
+                let expected = [bracketed, plain, kitty][column];
+                let input = Input::Paste(text.into());
+                assert_eq!(ghostty.encode(&input), expected, "ghostty {text:?} after {setup:?}");
+                assert_eq!(alacritty.encode(&input), expected, "alacritty {text:?} after {setup:?}");
+            }
+        }
+        // Both engines blank the same control characters.
+        let mut ghostty = emulator(20, 3);
+        feed_collect(&mut ghostty, b"\x1b[?2004h");
+        for byte in (0u8..0x20).chain([0x7f]) {
+            let text = format!("a{}b", byte as char);
+            let expected = crate::keys::encode(&Input::Paste(text.clone()), MODE_BRACKETED_PASTE);
+            assert_eq!(ghostty.encode(&Input::Paste(text)), expected, "control byte {byte:#04x}");
+        }
+    }
+
+    #[test]
+    fn soft_wrapped_rows_end_with_a_wrap_marker() {
+        let wraps = |emu: &GhosttyEmulator| emu.snapshot().lines.iter().map(|row| row_soft_wrap(row)).collect::<Vec<_>>();
+        let mut emu = emulator(10, 6);
+        feed_collect(&mut emu, "0123456789abcdef\r\n0123456789\r\nhello\x1b[4;10H│\x1b[5;1Hnext\x1b[5;10H│more".as_bytes());
+        assert_eq!(wraps(&emu), [Some(10), None, None, None, Some(10), None]);
+        let mut emu = emulator(10, 3);
+        feed_collect(&mut emu, "123456789中x".as_bytes());
+        assert_eq!(wraps(&emu), [Some(9), None, None]);
+        let mut emu = emulator(10, 6);
+        feed_collect(&mut emu, b"0123456789abcdef\r\nend");
+        emu.resize(20, 6);
+        assert_eq!(wraps(&emu), [None; 6]);
+        assert_eq!(emu.snapshot().text().lines().next(), Some("0123456789abcdef"));
+        emu.resize(5, 6);
+        emu.scroll(Scroll::Top);
+        assert_eq!(emu.snapshot().text().lines().take(4).collect::<Vec<_>>(), ["01234", "56789", "abcde", "f"]);
+        assert_eq!(wraps(&emu)[..4], [Some(5), Some(5), Some(5), None]);
+        // A held frame (synchronized output) keeps the wrap state it was captured with.
+        let mut emu = emulator(10, 3);
+        feed_collect(&mut emu, b"0123456789ab\x1b[?2026h\x1b[2J\x1b[Hx");
+        assert_eq!(wraps(&emu), [Some(10), None, None]);
     }
 
     #[test]

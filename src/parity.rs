@@ -930,7 +930,21 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         gui.wait("Ctrl+V pasted", 5, |t| t.contains("PASTED_BY_PARITY"))?;
         gui.chord('u', &["ctrl"])?;
         gui.send("\x1b")?;
-        Ok(format!("selection copied on release; Ctrl+V pasted ({})", gui.clipboard_source()))
+        // Multi-line: copy exactly, paste without Enter (PowerShell and a program with bracketed paste).
+        let multi = crate::selftest::copy_paste_check(&mut gui.driver)?;
+        // IME text with a line break is a paste too.
+        let exe = std::env::current_exe()?;
+        gui.send(&format!("& '{}' paste-probe\r", exe.display()))?;
+        gui.wait("the paste probe", 20, |t| t.contains(crate::paste_probe::READY))?;
+        gui.req(json!({ "cmd": "ime", "commit": "ime one\nime two" }))?;
+        gui.wait("the IME text as one paste", 10, |t| t.contains("PASTE 2 lines: ime one\\rime two"))?;
+        anyhow::ensure!(!gui.screen().contains(crate::paste_probe::ENTER), "the IME text sent Enter");
+        gui.send("\x04")?;
+        gui.wait("the probe ended", 10, |t| t.contains("BYE"))?;
+        // Later rows print near the top again (the --perf overlay covers the tile's last rows).
+        gui.send("Clear-Host\r")?;
+        gui.wait("the screen cleared", 10, |t| !t.contains("PASTE 2 lines"))?;
+        Ok(format!("selection copied on release; Ctrl+V pasted ({}); {multi}; IME text with a line break pasted", gui.clipboard_source()))
     });
 
     check(rows, "18", "Links: URLs, OSC 8, Windows paths; Ctrl+click; nothing executed", "links_osc8_and_paths", || {

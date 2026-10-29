@@ -14,13 +14,9 @@ pub fn encode(input: &Input, mode: u32) -> Vec<u8> {
     match input {
         Input::Raw(bytes) => bytes.clone(),
         Input::Paste(text) => {
-            // A pasted end marker would let pasted text inject keystrokes.
-            let clean = text.replace("\x1b[201~", "").replace("\x1b[200~", "");
-            if mode & MODE_BRACKETED_PASTE != 0 {
-                format!("\x1b[200~{clean}\x1b[201~").into_bytes()
-            } else {
-                clean.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
-            }
+            let lines = paste_lines(text);
+            let lines: Vec<String> = lines.iter().map(|line| sanitize(line)).collect();
+            join_paste(&lines, mode, &encode_key(Key::Enter, MOD_SHIFT, mode))
         }
         Input::Focus(focused) => {
             if mode & MODE_FOCUS != 0 {
@@ -31,6 +27,58 @@ pub fn encode(input: &Input, mode: u32) -> Vec<u8> {
         }
         Input::Key { key, mods } => encode_key(*key, *mods, mode),
     }
+}
+
+/// The lines of pasted text, by the rules every engine follows:
+///
+/// - paste markers (`ESC [200~`, `ESC [201~`) are removed, also ones that
+///   removing another would form, so the text cannot end a bracketed paste
+///   and inject keys;
+/// - CR LF, CR and LF each end a line;
+/// - line breaks at the end are dropped: a paste never ends with Enter.
+///
+/// Empty text (or only line breaks) has no lines.
+pub fn paste_lines(text: &str) -> Vec<String> {
+    let mut clean = text.to_owned();
+    while clean.contains("\x1b[200~") || clean.contains("\x1b[201~") {
+        clean = clean.replace("\x1b[200~", "").replace("\x1b[201~", "");
+    }
+    let clean = clean.replace("\r\n", "\n").replace('\r', "\n");
+    let clean = clean.trim_end_matches('\n');
+    if clean.is_empty() {
+        return Vec::new();
+    }
+    clean.split('\n').map(str::to_owned).collect()
+}
+
+/// Control characters a paste may not carry become spaces, exactly as
+/// Ghostty's paste encoder does (xterm's disallowed paste controls: NUL,
+/// Ctrl+C/D/E/O/Q/R/S/U/V/W/Z, BS, ESC, FS and DEL), so neither engine lets
+/// pasted text act as those keys.
+pub fn sanitize(line: &str) -> String {
+    line.chars().map(|c| if matches!(c, '\0' | '\x03'..='\x05' | '\x08' | '\x0f' | '\x11'..='\x13' | '\x15'..='\x17' | '\x1a'..='\x1c' | '\x7f') { ' ' } else { c }).collect()
+}
+
+/// Encoded paste of `lines` (already sanitized): one bracketed paste whose
+/// lines end with CR, as Windows Terminal and xterm send them, when the
+/// program enabled bracketed paste; otherwise the lines separated by
+/// `newline_key`, the program's "insert a line break" key (Shift+Enter),
+/// never by a bare CR (Enter submits). No lines: nothing.
+pub fn join_paste(lines: &[String], mode: u32, newline_key: &[u8]) -> Vec<u8> {
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    if mode & MODE_BRACKETED_PASTE != 0 {
+        return format!("\x1b[200~{}\x1b[201~", lines.join("\r")).into_bytes();
+    }
+    let mut out = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
+            out.extend_from_slice(newline_key);
+        }
+        out.extend_from_slice(line.as_bytes());
+    }
+    out
 }
 
 /// Bytes for a mouse-wheel notch, or `None` when the wheel should scroll the
@@ -205,7 +253,7 @@ fn encode_key(key: Key, mods: u8, mode: u32) -> Vec<u8> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn key(k: Key, mods: u8) -> Vec<u8> {
@@ -258,8 +306,46 @@ mod tests {
     fn paste_is_bracketed_and_cannot_terminate_early() {
         let bracketed = MODE_BRACKETED_PASTE;
         let encoded = encode(&Input::Paste("a\x1b[201~b\nc".into()), bracketed);
-        assert_eq!(encoded, b"\x1b[200~ab\nc\x1b[201~");
-        assert_eq!(encode(&Input::Paste("a\nb".into()), 0), b"a\rb");
+        assert_eq!(encoded, b"\x1b[200~ab\rc\x1b[201~");
+        let nested = encode(&Input::Paste("a\x1b[20\x1b[201~1~b\x1b[2\x1b[200~00~c".into()), bracketed);
+        assert_eq!(nested, b"\x1b[200~abc\x1b[201~", "markers formed by removing others go too");
+        assert_eq!(encode(&Input::Paste("a\x1bb\x03\tc\x7f".into()), bracketed), b"\x1b[200~a b \tc \x1b[201~", "control characters become spaces");
+    }
+
+    /// A pasted text and its bytes: bracketed, plain, with the kitty keyboard protocol.
+    pub(crate) type PasteCase = (&'static str, &'static [u8], &'static [u8], &'static [u8]);
+
+    /// (pasted text, bracketed, plain, kitty keyboard) for both engines.
+    pub(crate) const PASTES: &[PasteCase] = &[
+        ("one line", b"\x1b[200~one line\x1b[201~", b"one line", b"one line"),
+        ("a\r\nb\rc\nd", b"\x1b[200~a\rb\rc\rd\x1b[201~", b"a\x1b\rb\x1b\rc\x1b\rd", b"a\x1b[13;2ub\x1b[13;2uc\x1b[13;2ud"),
+        ("ls\r\n", b"\x1b[200~ls\x1b[201~", b"ls", b"ls"),
+        ("x\n\n\r\n", b"\x1b[200~x\x1b[201~", b"x", b"x"),
+        ("def f():\r\n    return 1\r\n\r\n\r\nprint(f())\r\n", b"\x1b[200~def f():\r    return 1\r\r\rprint(f())\x1b[201~", b"def f():\x1b\r    return 1\x1b\r\x1b\r\x1b\rprint(f())", b"def f():\x1b[13;2u    return 1\x1b[13;2u\x1b[13;2u\x1b[13;2uprint(f())"),
+        ("\r\n", b"", b"", b""),
+        ("", b"", b"", b""),
+        ("  lead\ttab  \n", b"\x1b[200~  lead\ttab  \x1b[201~", b"  lead\ttab  ", b"  lead\ttab  "),
+        ("x\x1b[201~\ny", b"\x1b[200~x\ry\x1b[201~", b"x\x1b\ry", b"x\x1b[13;2uy"),
+        ("中文\r\ne\u{301}", "\x1b[200~中文\re\u{301}\x1b[201~".as_bytes(), "中文\x1b\re\u{301}".as_bytes(), "中文\x1b[13;2ue\u{301}".as_bytes()),
+    ];
+
+    #[test]
+    fn pasted_line_breaks_never_act_as_enter() {
+        let kitty = MODE_KITTY_DISAMBIGUATE;
+        for &(text, bracketed, plain, kitty_bytes) in PASTES {
+            let input = Input::Paste(text.into());
+            assert_eq!(encode(&input, MODE_BRACKETED_PASTE), bracketed, "{text:?} bracketed");
+            assert_eq!(encode(&input, MODE_BRACKETED_PASTE | kitty), bracketed, "{text:?} bracketed with kitty keys");
+            assert_eq!(encode(&input, 0), plain, "{text:?} plain");
+            assert_eq!(encode(&input, kitty), kitty_bytes, "{text:?} kitty");
+            // Outside a bracketed paste no CR or LF is sent except as part of Alt+Enter.
+            for bytes in [plain, kitty_bytes] {
+                let rest = String::from_utf8_lossy(bytes).replace("\x1b\r", "");
+                assert!(!rest.contains(['\r', '\n']), "{text:?}: {bytes:?}");
+            }
+        }
+        assert_eq!(paste_lines("a\r\n\r\nb\r\n"), ["a", "", "b"]);
+        assert!(paste_lines("\n\r\n").is_empty());
     }
 
     #[test]

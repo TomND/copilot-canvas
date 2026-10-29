@@ -411,6 +411,16 @@ fn compare_screen(expected: &Screen, actual: &Screen, out: &mut Vec<String>) {
         out.push(format!("{at} {cells} cell(s) differ in {rows} row(s)"));
         out.extend(row_texts);
     }
+    // Soft wraps (the marker run carries no cells).
+    let wraps = |s: &Screen| s.lines.iter().map(|row| row_soft_wrap(row)).collect::<Vec<_>>();
+    let (ew, aw) = (wraps(expected), wraps(actual));
+    let describe_wrap = |w: Option<u16>| w.map_or("ends its line".to_owned(), |end| format!("wraps after column {end}"));
+    for y in 0..ew.len().max(aw.len()) {
+        let (e, a) = (ew.get(y).copied().flatten(), aw.get(y).copied().flatten());
+        if e != a {
+            out.push(format!("{at} row {y}: expected it {} | actual {}", describe_wrap(e), describe_wrap(a)));
+        }
+    }
 }
 
 /// Human-readable differences; empty when `actual` matches `expected`.
@@ -474,6 +484,18 @@ mod tests {
         assert!(diff.contains("[end] row 0 col 2: expected \"c\" | actual \"d\""), "{diff}");
         assert!(diff.contains("[end] row 1 col 0: expected \"x\" | actual \"x\" bold"), "{diff}");
         assert!(diff.contains("4 cell(s) differ in 2 row(s)"), "{diff}");
+    }
+
+    #[test]
+    fn compare_reports_soft_wraps() {
+        let expected = replay(Engine::Alacritty, &recording(&[b"0123456789abcdefghijklmnop"])).unwrap();
+        let actual = replay(Engine::Alacritty, &recording(&[b"0123456789abcdefghij\r\nklmnop"])).unwrap();
+        assert_eq!(expected.screens[0].text, actual.screens[0].text, "the same cells");
+        let diff = compare(&expected, &actual);
+        assert_eq!(diff, ["[end] row 0: expected it wraps after column 20 | actual ends its line"]);
+        let text = expected.to_json();
+        assert!(text.contains("\"flags\":4096"), "the marker is stored: {text}");
+        assert_eq!(Expected::from_json(&text).unwrap(), expected);
     }
 
     #[test]

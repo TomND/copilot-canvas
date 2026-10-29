@@ -86,8 +86,7 @@ impl Console {
         format!("{:?}", lock(&self.screen).term.mode())
     }
 
-    /// Writes input without the settle delay (for load tests).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Writes input at once, without the settle delay.
     pub fn send_now(&mut self, bytes: &[u8]) -> Result<()> {
         let mut w = lock(&self.writer);
         w.write_all(bytes)?;
@@ -95,13 +94,34 @@ impl Console {
         Ok(())
     }
 
+    /// Writes input as typing: a trailing Enter goes in a write of its own,
+    /// as a person presses it after the text (one write of text and Enter
+    /// is a paste to the TUI: `input::coalesce`).
     pub fn send(&mut self, bytes: &[u8]) -> Result<()> {
-        {
-            let mut w = lock(&self.writer);
-            w.write_all(bytes)?;
-            w.flush()?;
+        let (text, enter) = match bytes.split_last() {
+            Some((b'\r', text)) if !text.is_empty() => (text, true),
+            _ => (bytes, false),
+        };
+        self.send_now(text)?;
+        if enter {
+            // Long enough for the client to have read the text: an Enter that
+            // follows it at once would still be part of the burst.
+            std::thread::sleep(Duration::from_millis(150 + text.len() as u64));
+            self.send_now(b"\r")?;
         }
         std::thread::sleep(Duration::from_millis(60));
+        Ok(())
+    }
+
+    /// Pastes `text` as Windows Terminal does: line breaks as CR, inside
+    /// paste markers when the client asked for bracketed paste (the console
+    /// hands the client key presses either way).
+    pub fn paste(&mut self, text: &str) -> Result<()> {
+        let text = text.replace("\r\n", "\r").replace('\n', "\r");
+        let bracketed = lock(&self.screen).modes() & crate::protocol::MODE_BRACKETED_PASTE != 0;
+        let bytes = if bracketed { format!("\x1b[200~{text}\x1b[201~") } else { text };
+        self.send_now(bytes.as_bytes())?;
+        std::thread::sleep(Duration::from_millis(100));
         Ok(())
     }
 
@@ -170,6 +190,13 @@ impl Console {
 /// what a terminal sends: keys, text and SGR mouse reports.
 pub trait Ui {
     fn send(&mut self, bytes: &[u8]) -> Result<()>;
+    /// Pastes text the way the front end receives a paste (the TUI: from its
+    /// console; the GUI: Ctrl+V with the text on its clipboard).
+    fn paste(&mut self, text: &str) -> Result<()>;
+    /// The text the client put on the clipboard.
+    fn clipboard(&self) -> Option<String> {
+        crate::client::clipboard::get_text().ok()
+    }
     /// The screen as text, one line per row.
     fn text(&self) -> String;
     fn wait_exit(&mut self, timeout: Duration) -> Result<u32>;
@@ -234,6 +261,10 @@ pub trait Ui {
 impl Ui for Console {
     fn send(&mut self, bytes: &[u8]) -> Result<()> {
         Console::send(self, bytes)
+    }
+
+    fn paste(&mut self, text: &str) -> Result<()> {
+        Console::paste(self, text)
     }
 
     fn text(&self) -> String {
@@ -373,6 +404,19 @@ impl Ui for GuiDriver {
         }
         std::thread::sleep(Duration::from_millis(60));
         Ok(())
+    }
+
+    fn paste(&mut self, text: &str) -> Result<()> {
+        self.request(serde_json::json!({ "cmd": "clipboard", "text": text }))?;
+        self.request(serde_json::json!({ "cmd": "key", "char": "v", "mods": ["ctrl"] }))?;
+        std::thread::sleep(Duration::from_millis(100));
+        Ok(())
+    }
+
+    fn clipboard(&self) -> Option<String> {
+        // The hooks keep the GUI's last copy (they stand in when Windows' clipboard is locked).
+        let platform = self.request(serde_json::json!({ "cmd": "platform" })).ok()?;
+        platform["clipboard"]["text"].as_str().map(str::to_owned).or_else(|| crate::client::clipboard::get_text().ok())
     }
 
     fn text(&self) -> String {
@@ -825,38 +869,7 @@ fn agent_scenario(instance: &Instance, work: &Path, kind: AgentKind, env: &[(&st
     }
     ui.send(b"\x1b1")?;
     step(&format!("new {label} session from the dialog renders the real {label} UI"));
-    ui.send(b"\x1d")?;
-    let focus = ui.text();
-    if focus.contains("Typing goes to the terminal") {
-        ui.send(b"\x1d")?;
-    }
-    ui.send(b"n")?;
-    let chosen = format!("◉ {label}");
-    ui.wait("new session dialog with the agent chosen", Duration::from_secs(5), |t| t.contains("New session") && t.contains(&chosen))?;
-    ui.send(CHECK_NAME.as_bytes())?;
-    // The session starts with the agent's MCP servers off (the dialog's MCP
-    // picker: N = none), so the check does not depend on them: OpenCode 1.19
-    // can hang when asked to quit while it keeps reconnecting to an MCP server
-    // that is not running (the canvas then kills it after 5 s and still
-    // reports a stop; that path is unit-tested in canvas-host).
-    for _ in 0..5 {
-        ui.send(b"\t")?;
-    }
-    ui.send(b"\r")?;
-    ui.wait("MCP picker", Duration::from_secs(30), |t| t.contains("MCP servers for the new session") && !t.contains("MCP servers.\u{2026}") && !t.contains("Loading"))?;
-    ui.send(b"n")?;
-    ui.send(b"\r")?;
-    ui.wait("back in the new session dialog", Duration::from_secs(5), |t| t.contains("New session") && !t.contains("MCP servers for the new session"))?;
-    ui.send(b"\t\t")?;
-    ui.send(b"\r")?;
-    let header = format!("{CHECK_NAME} · ");
-    ui.wait(&format!("{label} UI"), Duration::from_secs(90), |t| t.contains(&header) && agent_ui_up(kind, t))?;
-    // Let the TUI settle (OpenCode draws its home screen in steps).
-    std::thread::sleep(Duration::from_secs(2));
-    if std::env::var_os("CANVAS_SELFTEST_DEBUG").is_some() {
-        println!("--- screen ---\n{}", ui.text());
-    }
-    let id = load(&canvas)?.nodes.iter().find(|n| n.name == CHECK_NAME).map(|n| n.id.clone()).context("the test session's box")?;
+    let id = launch_check_session(&mut ui, kind, &canvas)?;
     if kind == AgentKind::OpenCode {
         step("the service follows the new OpenCode TUI through its server (its session id arrives with the first prompt)");
         let following = format!("terminal {id} works in ");
@@ -912,7 +925,55 @@ fn agent_scenario(instance: &Instance, work: &Path, kind: AgentKind, env: &[(&st
         step("mouse wheel over the terminal");
         println!("    (needs output that only a prompt would produce in {label}; skipped)");
     }
-    step(&format!("stop all and quit ({label} exits gracefully)"));    ui.send(b"\x1d")?;
+    step(&format!("stop all and quit ({label} exits gracefully)"));
+    quit_and_check_exit(&mut ui, instance, kind, &id, blocked.is_some())?;
+    println!("PASS");
+    Ok(())
+}
+
+/// A new session of the check from the new-session dialog (keyboard only),
+/// with the agent's MCP servers off; returns its box id once the agent's UI is up.
+fn launch_check_session(ui: &mut Console, kind: AgentKind, canvas: &Path) -> Result<String> {
+    let label = kind.label();
+    ui.send(b"\x1d")?;
+    let focus = ui.text();
+    if focus.contains("Typing goes to the terminal") {
+        ui.send(b"\x1d")?;
+    }
+    ui.send(b"n")?;
+    let chosen = format!("◉ {label}");
+    ui.wait("new session dialog with the agent chosen", Duration::from_secs(5), |t| t.contains("New session") && t.contains(&chosen))?;
+    ui.send(CHECK_NAME.as_bytes())?;
+    // The session starts with the agent's MCP servers off (the dialog's MCP
+    // picker: N = none), so the check does not depend on them: OpenCode 1.19
+    // can hang when asked to quit while it keeps reconnecting to an MCP server
+    // that is not running (the canvas then kills it after 5 s and still
+    // reports a stop; that path is unit-tested in canvas-host).
+    for _ in 0..5 {
+        ui.send(b"\t")?;
+    }
+    ui.send(b"\r")?;
+    ui.wait("MCP picker", Duration::from_secs(30), |t| t.contains("MCP servers for the new session") && !t.contains("MCP servers.\u{2026}") && !t.contains("Loading"))?;
+    ui.send(b"n")?;
+    ui.send(b"\r")?;
+    ui.wait("back in the new session dialog", Duration::from_secs(5), |t| t.contains("New session") && !t.contains("MCP servers for the new session"))?;
+    ui.send(b"\t\t")?;
+    ui.send(b"\r")?;
+    let header = format!("{CHECK_NAME} · ");
+    ui.wait(&format!("{label} UI"), Duration::from_secs(90), |t| t.contains(&header) && agent_ui_up(kind, t))?;
+    // Let the TUI settle (OpenCode draws its home screen in steps).
+    std::thread::sleep(Duration::from_secs(2));
+    if std::env::var_os("CANVAS_SELFTEST_DEBUG").is_some() {
+        println!("--- screen ---\n{}", ui.text());
+    }
+    load(canvas)?.nodes.iter().find(|n| n.name == CHECK_NAME).map(|n| n.id.clone()).context("the test session's box")
+}
+
+/// Stop all and quit; the agent of box `id` must exit gracefully (unless it
+/// was `blocked` by a dialog).
+fn quit_and_check_exit(ui: &mut Console, instance: &Instance, kind: AgentKind, id: &str, blocked: bool) -> Result<()> {
+    let label = kind.label();
+    ui.send(b"\x1d")?;
     ui.send(b"q")?;
     ui.wait("quit dialog", Duration::from_secs(5), |t| t.contains("Stop all and quit"))?;
     ui.send(b"\x1b[C\r")?;
@@ -931,9 +992,232 @@ fn agent_scenario(instance: &Instance, work: &Path, kind: AgentKind, env: &[(&st
     println!("    {label} exited with {code}");
     // The canvas reports a stop as a clean exit; the log says whether the
     // agent had to be killed when the grace period ran out.
-    anyhow::ensure!(blocked.is_some() || (code.starts_with("Some(0)") && !code.contains("killed")), "{label} did not exit gracefully ({code})");
+    anyhow::ensure!(blocked || (code.starts_with("Some(0)") && !code.contains("killed")), "{label} did not exit gracefully ({code})");
+    Ok(())
+}
+
+/// What `selftest agent --paste` pastes: a line, a blank line, an indented
+/// line, a last line and a trailing line break (which must not send it).
+const AGENT_PASTE: [&str; 4] = ["canvas paste line one", "", "    indented line three", "line four end"];
+
+/// `selftest agent --paste`: multi-line text pasted into the real agent's
+/// input box through the canvas (the TUI, as Windows Terminal delivers a
+/// paste) arrives as lines and sends nothing. OpenCode runs with a free
+/// model as every default (in case anything were sent) and must create no
+/// session (it does with the first prompt); Claude Code runs in a throw-away
+/// configuration and must write no transcript. The input is erased again and
+/// the agent stopped; no prompt is ever submitted.
+pub fn agent_paste(agent: Option<&str>) -> Result<()> {
+    let kind = match agent {
+        Some(name) => AgentKind::parse(name).with_context(|| format!("unknown agent {name:?} (copilot, opencode or claude)"))?,
+        None => agents::default_agent(),
+    };
+    let program = kind.provider().program().with_context(|| format!("{} is not installed on this machine", kind.label()))?;
+    let root = std::env::temp_dir().join(format!("copilot-canvas-paste-{}", uuid::Uuid::new_v4()));
+    let (work, home) = (root.join("work"), root.join("home"));
+    std::fs::create_dir_all(&work)?;
+    std::fs::create_dir_all(&home)?;
+    canvas_common::settings::Settings { agent: Some(kind.id().to_owned()), ..Default::default() }.save(&home)?;
+    let model = crate::agent_prompt::DEFAULT_MODEL;
+    let mut env: Vec<(&str, std::path::PathBuf)> = Vec::new();
+    let mut doc = Doc::default();
+    let claude_config = root.join("claude-config");
+    match kind {
+        AgentKind::Claude => {
+            std::fs::create_dir_all(&claude_config)?;
+            let trusted = work.display().to_string().replace('\\', "/");
+            let seed = serde_json::json!({ "hasCompletedOnboarding": true, "theme": "dark", "bypassPermissionsModeAccepted": true, "projects": { trusted: { "hasTrustDialogAccepted": true } } });
+            std::fs::write(claude_config.join(".claude.json"), seed.to_string())?;
+            env.push(("CLAUDE_CONFIG_DIR", claude_config.clone()));
+        }
+        AgentKind::OpenCode => {
+            // Were anything sent, it would go to a free model: `-m` on the command line and every default.
+            doc.defaults.model = Some(model.to_owned());
+            env.extend(crate::agent_prompt::opencode_env(model).into_iter().map(|(k, v)| (k, std::path::PathBuf::from(v))));
+        }
+        AgentKind::Copilot => {}
+    }
+    std::fs::write(home.join("canvas.json"), serde_json::to_string_pretty(&doc)?)?;
+    let instance = Instance::new(Some(format!("paste{}", std::process::id())), Some(home.clone()), None)?;
+    println!("Copilot Canvas real-agent paste check: {} ({program}); nothing is submitted", kind.label());
+    let started_ms = crate::paths::now_ms();
+    let env: Vec<(&str, &Path)> = env.iter().map(|(k, v)| (*k, v.as_path())).collect();
+    let result = agent_paste_scenario(&instance, &work, kind, &env, model, &claude_config);
+    if let Err(error) = &result {
+        eprintln!("FAILED: {error:#}");
+    }
+    if let Ok(conn) = crate::client::conn::try_connect(&instance) {
+        let _ = conn.tx.send(crate::protocol::ClientMsg::Shutdown);
+        std::thread::sleep(Duration::from_secs(7));
+    }
+    // A session would mean a prompt was sent: it is reported (models, cost) and deleted.
+    let cleanup = match kind {
+        AgentKind::OpenCode => {
+            let cli_env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.to_str().unwrap_or_default())).collect();
+            let created = agents::opencode::discover_new_sessions(&work.display().to_string(), started_ms.saturating_sub(2_000));
+            let deleted = crate::agent_prompt::cleanup(&program, &cli_env, model, &[&work], started_ms);
+            if created.is_empty() { deleted } else { Err(anyhow::anyhow!("OpenCode recorded session(s) {created:?}: the paste was sent")) }
+        }
+        _ => Ok(()),
+    };
+    if (result.is_ok() && cleanup.is_ok()) || std::env::var_os("CANVAS_SELFTEST_KEEP").is_none() {
+        let _ = std::fs::remove_dir_all(&root);
+    } else {
+        eprintln!("artifacts kept in {}", root.display());
+    }
+    result.and(cleanup)?;
     println!("PASS");
     Ok(())
+}
+
+fn agent_paste_scenario(instance: &Instance, work: &Path, kind: AgentKind, env: &[(&str, &Path)], model: &str, claude_config: &Path) -> Result<()> {
+    let exe = std::env::current_exe()?;
+    let args: Vec<String> = vec!["--instance".into(), instance.name.clone(), "--home".into(), instance.home.to_string_lossy().into_owned(), "--cwd".into(), work.to_string_lossy().into_owned()];
+    let label = kind.label();
+    let canvas = instance.home.join("canvas.json");
+    let mut ui = Console::start_with_env(&exe, &args, env, 170, 46)?;
+    ui.wait("the canvas", Duration::from_secs(30), |t| t.contains("Copilot Canvas"))?;
+    step(&format!("a new {label} session from the dialog (Enter), its input box focused"));
+    let id = launch_check_session(&mut ui, kind, &canvas)?;
+    if kind == AgentKind::OpenCode {
+        let (_, command_line) = crate::agent_prompt::launched_command_line(instance, &id)?;
+        crate::agent_prompt::may_prompt(&command_line, model).context("the paste goes only into an OpenCode that runs with a free model")?;
+        println!("    OpenCode runs with -m {model}");
+    }
+    if let Some(reason) = agent_blocked(kind, &ui.text()) {
+        bail!("{reason}: the input box cannot be reached\n--- screen ---\n{}", ui.text());
+    }
+    step(&format!("a multi-line paste (blank line, indentation, trailing line break) lands in {label}'s input as lines"));
+    let modes = service_modes(instance, &id);
+    println!("    the agent's terminal modes: {modes}");
+    paste_into_agent(&mut ui, kind, &AGENT_PASTE)?;
+    step("nothing was sent: the input box still holds the text and no conversation started");
+    nothing_sent(&ui, instance, kind, &id, work, claude_config)?;
+    erase_paste(&mut ui, &AGENT_PASTE)?;
+    step("a short two-line paste with indentation (agents collapse longer ones); nothing sent");
+    paste_into_agent(&mut ui, kind, &AGENT_SHORT_PASTE)?;
+    nothing_sent(&ui, instance, kind, &id, work, claude_config)?;
+    erase_paste(&mut ui, &AGENT_SHORT_PASTE)?;
+    step(&format!("stop all and quit ({label} exits gracefully)"));
+    quit_and_check_exit(&mut ui, instance, kind, &id, false)
+}
+
+/// A shorter paste: two lines, the second indented.
+const AGENT_SHORT_PASTE: [&str; 2] = ["short paste a", "  short paste b"];
+
+/// The line count of an agent's paste placeholder: OpenCode shows
+/// `[Pasted ~N lines]`, Claude Code `[Pasted text #1 +M lines]` (M = N - 1).
+fn placeholder_lines(text: &str) -> Option<usize> {
+    let rest = &text[text.find("[Pasted")?..];
+    let rest = &rest[..rest.find(']')?];
+    let number = |marker: char| rest.split(marker).nth(1)?.split(|c: char| !c.is_ascii_digit()).next()?.parse::<usize>().ok();
+    number('~').or_else(|| number('+').map(|extra| extra + 1))
+}
+
+/// Pastes `lines` (and a trailing line break) and checks they arrived: each
+/// line on its own row, in order, with the blank lines between them, or the
+/// agent's placeholder with the right line count.
+fn paste_into_agent(ui: &mut Console, kind: AgentKind, lines: &[&str]) -> Result<()> {
+    let label = kind.label();
+    let (first, last) = (lines[0], lines[lines.len() - 1].trim());
+    ui.paste(&(lines.join("\r\n") + "\r\n"))?;
+    let shown = |t: &str| (t.contains(first) && t.contains(last)) || t.contains("[Pasted");
+    ui.wait(&format!("the pasted text in {label}'s input"), Duration::from_secs(15), shown)?;
+    std::thread::sleep(Duration::from_secs(2));
+    let text = ui.text();
+    let pane = |l: &str| l.chars().skip(RIGHT_PANE).collect::<String>().trim_end().to_owned();
+    for (y, line) in text.lines().enumerate().filter(|(_, l)| lines.iter().any(|p| !p.is_empty() && l.contains(p.trim())) || l.contains("[Pasted")) {
+        println!("    row {y:>2}: {}", pane(line));
+    }
+    if let Some(count) = placeholder_lines(&text) {
+        anyhow::ensure!(count == lines.len(), "{label} shows a paste of {count} lines, not {}", lines.len());
+        println!("    {label} shows the paste as a placeholder of {count} lines");
+        return Ok(());
+    }
+    // Each line on its own row (blank lines are rows too), indentation kept.
+    let rows: Vec<String> = text.lines().map(pane).collect();
+    let col = |row: &str, needle: &str| row.find(needle).map(|b| row[..b].chars().count());
+    let first_row = rows.iter().position(|l| l.contains(first)).context("the first pasted line")?;
+    let base = col(&rows[first_row], first).unwrap_or(0);
+    for (i, line) in lines.iter().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
+        let row = rows.get(first_row + i).map(String::as_str).unwrap_or_default();
+        let indent = line.len() - line.trim_start().len();
+        let at = col(row, line.trim_start()).with_context(|| format!("pasted line {i} ({line:?}) is not on row {}\n{text}", first_row + i))?;
+        anyhow::ensure!(at == base + indent, "pasted line {i} ({line:?}) starts at column {at}, not {}: {row:?}", base + indent);
+    }
+    println!("    every pasted line is on its own row, in order, indentation and blank lines kept");
+    Ok(())
+}
+
+/// Nothing reached the agent as a message: the paste is still in the input
+/// box and the agent recorded no conversation.
+fn nothing_sent(ui: &Console, instance: &Instance, kind: AgentKind, id: &str, work: &Path, claude_config: &Path) -> Result<()> {
+    std::thread::sleep(Duration::from_secs(2));
+    let text = ui.text();
+    anyhow::ensure!(text.contains("[Pasted") || text.contains(AGENT_PASTE[0]) || text.contains(AGENT_SHORT_PASTE[0]), "the pasted text left the input box\n{text}");
+    match kind {
+        AgentKind::OpenCode => {
+            let created = agents::opencode::discover_new_sessions(&work.display().to_string(), crate::paths::now_ms().saturating_sub(600_000));
+            anyhow::ensure!(created.is_empty(), "OpenCode created session(s) {created:?}: the paste was sent");
+            println!("    no OpenCode session exists (one would with the first prompt)");
+        }
+        AgentKind::Claude => {
+            let mut transcripts = Vec::new();
+            collect_files(&claude_config.join("projects"), "jsonl", &mut transcripts);
+            anyhow::ensure!(transcripts.is_empty(), "Claude Code wrote transcript(s) {transcripts:?}: the paste was sent");
+            println!("    no Claude Code transcript exists (one would with the first prompt)");
+        }
+        AgentKind::Copilot => {
+            let events = instance.sessions_dir.join(id).join("events.jsonl");
+            anyhow::ensure!(!std::fs::read_to_string(&events).unwrap_or_default().contains("\"user.message\""), "Copilot recorded a message: the paste was sent");
+            println!("    Copilot recorded no message");
+        }
+    }
+    Ok(())
+}
+
+/// Erases a paste with Backspace (never Enter).
+fn erase_paste(ui: &mut Console, lines: &[&str]) -> Result<()> {
+    let count: usize = lines.iter().map(|l| l.chars().count() + 1).sum::<usize>() + 4;
+    ui.send(&vec![0x7f; count])?;
+    let (first, last) = (lines[0], lines[lines.len() - 1].trim());
+    ui.wait("the input box empty again", Duration::from_secs(15), |t| !t.contains(first) && !t.contains(last) && !t.contains("[Pasted"))
+}
+
+/// Columns of the TUI's terminal pane at 170 columns (for printing its rows).
+const RIGHT_PANE: usize = 95;
+
+/// The terminal modes the service's engine reports for terminal `id` (bracketed paste, kitty keyboard).
+fn service_modes(instance: &Instance, id: &str) -> String {
+    let Ok(conn) = crate::client::conn::try_connect(instance) else { return "unknown (no service connection)".into() };
+    let _ = conn.tx.send(crate::protocol::ClientMsg::Subscribe8 { ids: vec![id.to_owned()], focused: None });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if let Ok(crate::protocol::ServiceMsg::Frame8(frame)) = conn.rx.recv_timeout(Duration::from_millis(200))
+            && frame.id == id
+        {
+            let modes = frame.modes;
+            let kitty = (modes >> crate::protocol::MODE_KITTY_SHIFT) & 0x1f;
+            return format!(
+                "bracketed paste {}, kitty keyboard {}",
+                if modes & crate::protocol::MODE_BRACKETED_PASTE != 0 { "on" } else { "off" },
+                if kitty != 0 { format!("on (flags {kitty})") } else { "off".into() }
+            );
+        }
+    }
+    "unknown (no frame)".into()
+}
+
+/// Files with extension `ext` below `dir`.
+fn collect_files(dir: &Path, ext: &str, out: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(&path, ext, out);
+        } else if path.extension().is_some_and(|e| e == ext) {
+            out.push(path);
+        }
+    }
 }
 
 /// VS Code sync and its idempotence (Copilot sessions only).
@@ -990,6 +1274,62 @@ pub(crate) fn step(name: &str) {
     println!("  · {name}");
 }
 
+/// The copy-and-paste check, in a PowerShell terminal that has keyboard
+/// focus (the self-test's scenario and the GUI parity suite): a drag over a
+/// soft-wrapped line, a hard break, a blank line and indentation copies
+/// exactly that text; a two-line paste into PowerShell runs nothing; a
+/// four-line paste with a blank line, indentation and a trailing line break
+/// reaches a program (the paste probe) as one bracketed paste without Enter.
+pub(crate) fn copy_paste_check<U: Ui>(ui: &mut U) -> Result<String> {
+    // A short prompt keeps the pasted lines on one row ("PS " as checks expect).
+    ui.send(b"function prompt { 'PS > ' }\r")?;
+    std::thread::sleep(Duration::from_millis(800));
+    ui.send(b"Write-Output (('COPY' + 'TOP ') + ('wrap me ' * 20).Trim()), '  hard line', '', '    indented line', ('COPY' + 'END')\r")?;
+    ui.wait("the block to copy", Duration::from_secs(10), |t| t.contains("COPYTOP") && t.contains("COPYEND"))?;
+    // The prompt after the block may still scroll it: wait until it shows.
+    ui.wait("the prompt after the block", Duration::from_secs(10), |t| {
+        let lines: Vec<&str> = t.lines().collect();
+        lines.iter().position(|l| l.contains("COPYEND")).is_some_and(|y| lines.get(y + 1).is_some_and(|l| l.contains("PS >")))
+    })?;
+    std::thread::sleep(Duration::from_millis(300));
+    let (x0, y0) = ui.find("COPYTOP").context("COPYTOP")?;
+    let (x1, y1) = ui.find("COPYEND").context("COPYEND")?;
+    anyhow::ensure!(y1 >= y0 + 5, "the long line wraps over two rows or more (rows {y0}..{y1})\n{}", ui.text());
+    let expected = format!("COPYTOP {}\r\n  hard line\r\n\r\n    indented line\r\nCOPYEND", "wrap me ".repeat(20).trim());
+    ui.drag(0, (x0, y0), (x1 + 6, y1))?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let copied = ui.clipboard();
+        if copied.as_deref() == Some(expected.as_str()) {
+            break;
+        }
+        anyhow::ensure!(Instant::now() < deadline, "copied {copied:?}\n  expected {expected:?}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // PowerShell (PSReadLine) has no bracketed paste: each line break arrives
+    // as Alt+Enter, which it ignores; nothing runs.
+    ui.paste("echo PASTE_A\r\necho PASTE_B\r\n")?;
+    ui.wait("both pasted lines in PowerShell's input", Duration::from_secs(10), |t| t.contains("echo PASTE_Aecho PASTE_B"))?;
+    std::thread::sleep(Duration::from_millis(1500));
+    let text = ui.text();
+    anyhow::ensure!(text.matches("PASTE_A").count() == 1 && text.matches("PASTE_B").count() == 1, "PowerShell ran a pasted line\n{text}");
+    ui.send(b"\x1b")?;
+    ui.wait("PowerShell's input cleared (Esc)", Duration::from_secs(5), |t| !t.contains("PASTE_B"))?;
+    // A program with bracketed paste.
+    let exe = std::env::current_exe()?;
+    ui.send(format!("& '{}' paste-probe\r", exe.display()).as_bytes())?;
+    ui.wait("the paste probe", Duration::from_secs(20), |t| t.contains(crate::paste_probe::READY))?;
+    ui.paste("a1\r\n\r\n  b2\r\nc3\r\n")?;
+    let pasted = "PASTE 4 lines: a1\\r\\r  b2\\rc3";
+    ui.wait("one bracketed paste in the program", Duration::from_secs(10), |t| t.contains(pasted))?;
+    std::thread::sleep(Duration::from_millis(500));
+    let text = ui.text();
+    anyhow::ensure!(!text.contains(crate::paste_probe::ENTER), "the program received an Enter\n{text}");
+    ui.send(b"\x04")?;
+    ui.wait("the probe ended (Ctrl+D)", Duration::from_secs(10), |t| t.contains("BYE"))?;
+    Ok(format!("copied {} lines exactly; PowerShell ran no pasted line; the program got one bracketed paste of 4 lines and no Enter", expected.lines().count()))
+}
+
 /// The front end the self-test drives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Client {
@@ -1009,6 +1349,8 @@ pub fn run(remote: Option<&str>, client: Client) -> Result<()> {
     std::fs::create_dir_all(&sessions)?;
     std::fs::create_dir_all(&work)?;
     let instance = Instance::new(Some(format!("selftest{}", std::process::id())), Some(home), Some(sessions))?;
+    // The copy-and-paste step uses the clipboard: yours comes back afterwards.
+    let saved_clipboard = crate::client::clipboard::get_text().ok();
     let result = match client {
         Client::Tui => scenario(&instance, &work, remote, "tui", |args, env| Console::start_with_env(&std::env::current_exe()?, args, env, 170, 46)),
         Client::Gui => {
@@ -1020,6 +1362,9 @@ pub fn run(remote: Option<&str>, client: Client) -> Result<()> {
     if let Ok(conn) = crate::client::conn::try_connect(&instance) {
         let _ = conn.tx.send(crate::protocol::ClientMsg::Shutdown);
         std::thread::sleep(Duration::from_millis(2500));
+    }
+    if let Some(text) = saved_clipboard {
+        let _ = crate::client::clipboard::set_text(&text);
     }
     match &result {
         Ok(()) => {
@@ -1035,7 +1380,7 @@ pub fn run(remote: Option<&str>, client: Client) -> Result<()> {
     result
 }
 
-/// The 26 steps, against any front end (client: its name in the service log;
+/// The 28 steps, against any front end (client: its name in the service log;
 /// start: launches it with the given arguments and environment).
 fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, client: &str, start: impl Fn(&[String], &[(&str, &Path)]) -> Result<U>) -> Result<()> {
     let canvas = instance.home.join("demo-canvas.json");
@@ -1223,6 +1568,13 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     ui.send(format!("\x1b[<16;{lx};{ly}M\x1b[<16;{lx};{ly}m").as_bytes())?;
     ui.wait("Ctrl+click resolved the link", Duration::from_secs(5), |t| t.contains("missing.txt does not exist"))?;
 
+    step("multi-line copy keeps line breaks, blank lines and indentation and rejoins soft wraps; a multi-line paste is one paste (PowerShell runs nothing; a program sees no Enter)");
+    let summary = copy_paste_check(&mut ui)?;
+    println!("    {summary}");
+    // The reattach step looks for this terminal's earlier output.
+    ui.send(b"Clear-Host; Write-Output ('CANVAS_' + 'TERMINAL_OK')\r")?;
+    ui.wait("command output", Duration::from_secs(10), |t| t.contains("CANVAS_TERMINAL_OK"))?;
+
     step("activity bar: Automations view lists Copilot automations and adds them to an Automations group");
     ui.send(b"\x1d")?;
     ui.send(b"\x1b2")?;
@@ -1351,7 +1703,8 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
         ui.send(command.as_bytes())?;
         let doc = wait_doc(&canvas, "spawned subsession linked to its parent", |d| {
             d.nodes.iter().any(|n| n.id == child && n.parent.as_deref() == Some("demo-main") && n.name == "Spawned tracker")
-        })?;
+        })
+        .with_context(|| format!("--- screen ---\n{}", ui.text()))?;
         anyhow::ensure!(doc.nodes.iter().filter(|n| n.id == child).count() == 1, "added once");
         ui.wait("subsession box on the canvas", Duration::from_secs(5), |t| t.contains("Spawned tracker") || t.contains("Spawned"))?;
     }

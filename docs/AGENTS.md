@@ -101,7 +101,9 @@ run starts; later runs resume it with `-s`.
 
 `copilot-canvas selftest agent [--agent copilot|opencode|claude]` starts the
 real TUI from the canvas without a prompt: imports, configuration views, the
-allow-all flag, typing, a graceful stop.
+allow-all flag, typing, a graceful stop. With `--paste` it pastes multi-line
+text into the agent's input box instead and checks that it arrived as lines
+and nothing was sent ([Pasting](#pasting)).
 
 `copilot-canvas selftest agent --agent opencode --prompt [--model ID]
 [--client tui|gui] [--steps LIST]` sends tiny prompts, only to a model whose id
@@ -126,6 +128,60 @@ with the models it used and its cost, deleted with `opencode session delete`,
 and checked to be gone. `busystop` and `streamstop` (extra steps) stop the box
 while a tool runs or the answer streams. Unit tests cover the command lines,
 the listener check, history parsing, re-keying decisions and status mapping.
+
+## Pasting
+
+A paste (Ctrl+V or Ctrl+Shift+V, the pane menu's *Paste*, Windows Terminal's
+paste into the TUI, IME text with a line break in the GUI) never sends a
+message:
+
+- The client sends one `Input::Paste` without the text's trailing line breaks
+  (a copied line that ends with a newline is not submitted; line breaks alone
+  paste nothing).
+- The service encodes it for the program's current modes, the same way with
+  both engines (`canvas_host::keys::paste_lines`): paste markers inside the
+  text are removed (also ones that removing another would form); CR LF, CR
+  and LF are line breaks; control characters that would act as keys (NUL,
+  Ctrl+C/D/E/O/Q/R/S/U/V/W/Z, BS, ESC, FS, DEL) become spaces, as in Ghostty
+  and xterm.
+  - **Bracketed paste on** (the agents turn it on for their input box): one
+    `ESC [200~ … ESC [201~` whose lines end with CR, as Windows Terminal and
+    xterm send them.
+  - **Off:** the lines joined with the program's "insert a line break" key,
+    never a bare CR (Enter): Shift+Enter `CSI 13;2u` when the program uses
+    the kitty keyboard protocol, else Alt+Enter (ESC CR).
+- In the TUI, the console hands a paste to the canvas as key presses (it
+  strips Windows Terminal's paste markers). A burst of text keys that contains
+  a line break and comes as press/release pairs in one read, or continues such
+  a burst within 8 ms (a paste split across reads), is one paste
+  (`canvas_core::input::coalesce`), its final line break included. Typed keys
+  arrive one per read, or overlap, or end with a key still held: typing and
+  its Enter stay keys.
+
+What the programs did with it (2026-10-29; `copilot-canvas selftest agent
+--paste --agent opencode|claude`, nothing submitted; the modes are the
+service engine's while the input box was up):
+
+| Program | Modes | Four lines (text, blank, indented, text) and a trailing line break | Two lines, the second indented | Sent? |
+|---|---|---|---|---|
+| OpenCode 1.19.4 | bracketed paste, kitty keyboard (flags 5) | `[Pasted ~4 lines]` in the input box | both lines, indentation kept | no: no session in OpenCode's database |
+| Claude Code 2.1.309 (throw-away `CLAUDE_CONFIG_DIR`) | bracketed paste, kitty keyboard (flags 5) | `[Pasted text #1 +3 lines]` | both lines, indentation kept | no: no transcript |
+| Copilot CLI | not checked here (no Copilot CLI on the development machine); it uses bracketed paste and the kitty keyboard protocol like the others, so it gets the same bracketed paste | | | |
+| PowerShell 5.1 (PSReadLine; `selftest`, parity row 14) | neither | the lines arrive joined on one line (PSReadLine has no Alt+Enter binding) | | no: nothing runs |
+| cmd.exe | neither | its line input ends a line on any Enter, Alt+Enter included: every line but the last runs (Windows Terminal runs them all) | | yes: cmd has no multi-line input |
+| a program with bracketed paste (the paste probe; `selftest`, parity row 14) | bracketed paste | one paste, CR between the lines, blank lines and indentation kept | | no Enter outside the paste |
+
+Behind Windows' inbox ConPTY, a program that reads VT input (the agents, the
+probe) receives the paste markers, CR and LF unchanged; a program that reads
+console key events (PSReadLine, the TUI) gets the pasted characters as key
+presses without the markers, ESC CR as Alt+Enter, LF as Ctrl+Enter
+(PSReadLine: insert a line *above*) and `CSI 13;2u` not at all; a Win32
+input-mode Shift+Enter would give PSReadLine a proper new line but reaches VT
+readers as a bare CR, so it is not used. `copilot-canvas paste-probe
+[--plain] [--kitty] [--keys] [--raw]` (hidden) prints what a program
+receives; `paste-probe --drive TEXT [--program "CMD"] [--ready TEXT]` runs it
+(or CMD) in a hidden pseudoconsole, writes TEXT (`\e`, `\r`, `\n`, `\xNN`)
+and prints the screen.
 
 ## Known limitations
 

@@ -9,6 +9,7 @@ mod hardening;
 mod kitty_demo;
 mod pair_probe;
 mod parity;
+mod paste_probe;
 mod remote_cli;
 mod remote_probe;
 mod selftest;
@@ -89,6 +90,10 @@ USAGE
                                         a killed tunnel child, revocation, wrong secrets
   copilot-canvas selftest agent [--agent copilot|opencode|claude]
                                         the real agent TUI through the canvas; nothing is submitted
+  copilot-canvas selftest agent --paste [--agent copilot|opencode|claude]
+                                        a multi-line paste into the real agent's input box arrives as
+                                        lines and sends nothing (OpenCode with a free model as every
+                                        default; Claude Code in a throw-away configuration)
   copilot-canvas selftest agent --agent opencode --prompt [--model ID] [--client tui|gui] [--steps LIST]
                                         tiny prompts to a free OpenCode model (ids ending in -free;
                                         default opencode/deepseek-v4.1-flash-free) through the canvas:
@@ -206,7 +211,9 @@ fn parse() -> Result<Args> {
             "--canvas" => args.canvas = Some(PathBuf::from(value("--canvas")?)),
             "--cwd" => args.cwd = Some(PathBuf::from(value("--cwd")?)),
             "--remote" => args.remote = Some(value("--remote")?),
-            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" => args.flags.push(arg.trim_start_matches("--").to_owned()),
+            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" => {
+                args.flags.push(arg.trim_start_matches("--").to_owned())
+            }
             "--" => {
                 // `record … -- PROGRAM ARGS…`: the rest belongs to the program.
                 args.command.push(arg);
@@ -322,6 +329,16 @@ fn real_main() -> Result<()> {
         && first == "devtunnel-standin"
     {
         return standin::run(&rest.iter().map(String::as_str).collect::<Vec<_>>());
+    }
+    // So does the paste probe.
+    if args.command.first().map(String::as_str) == Some("paste-probe") {
+        let flag = |name: &str| args.flags.iter().any(|f| f == name);
+        let flags: Vec<&str> = ["plain", "kitty", "keys", "raw"].into_iter().filter(|f| flag(f)).collect();
+        let option = |name: &str| args.rest.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+        return match option("drive") {
+            Some(text) => paste_probe::drive(text, &flags, option("program"), option("ready")),
+            None => paste_probe::run(flag("plain"), flag("kitty"), flag("keys"), flag("raw")),
+        };
     }
     let instance = paths::Instance::new(args.instance.clone(), args.home.clone(), args.sessions_dir.clone())?;
     let option = |name: &str| args.rest.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
@@ -490,6 +507,7 @@ fn real_main() -> Result<()> {
                 steps: option("steps").map(|s| s.split(',').map(|p| p.trim().to_owned()).filter(|p| !p.is_empty()).collect()),
             })
         }
+        ["selftest", "agent"] if flag("paste") => selftest::agent_paste(option("agent").as_deref()),
         ["selftest", "agent"] => selftest::agent(option("agent").as_deref()),
         ["selftest", "copilot"] => selftest::agent(Some("copilot")),
         ["record", rest @ ..] => canvas_corpus::cli::record(&instance.home, rest, &args.rest, args.cwd.as_deref()),
