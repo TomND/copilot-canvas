@@ -86,8 +86,7 @@ impl Console {
         format!("{:?}", lock(&self.screen).term.mode())
     }
 
-    /// Writes input without the settle delay (for load tests).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Writes input at once, without the settle delay.
     pub fn send_now(&mut self, bytes: &[u8]) -> Result<()> {
         let mut w = lock(&self.writer);
         w.write_all(bytes)?;
@@ -1381,7 +1380,7 @@ pub fn run(remote: Option<&str>, client: Client) -> Result<()> {
     result
 }
 
-/// The 26 steps, against any front end (client: its name in the service log;
+/// The 28 steps, against any front end (client: its name in the service log;
 /// start: launches it with the given arguments and environment).
 fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, client: &str, start: impl Fn(&[String], &[(&str, &Path)]) -> Result<U>) -> Result<()> {
     let canvas = instance.home.join("demo-canvas.json");
