@@ -689,8 +689,10 @@ The memory slopes are below the leak threshold and within the noise of a
 20-minute run (the GUI's 6 MB over 16 minutes is consistent with its glyph
 atlas and shape cache filling); a slow leak would need the long run to show.
 
-**The 48 h soak (PLAN §5 Phase 6) was not performed in this session.** Run
-it with:
+**The 48 h soak (PLAN §5 Phase 6) is still to be done.** A 48 h GUI run
+(2026-10-28) was stopped after its typed keys started reaching the canvas
+itself; its first ~8.7 h were clean apart from one 6.32 s reconnect under
+heavy build load (PLAN §0). Run it on an otherwise idle machine with:
 
 ```powershell
 copilot-canvas selftest --remote soak --minutes 2880 --drop-every 300 --client gui --json soak-gui-48h.json

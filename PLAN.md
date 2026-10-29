@@ -47,13 +47,25 @@ Claude Code launched and stopped through the canvas, never prompted.
 
 Still running or time-gated:
 
-- **The 48 h remote soak** (Phase 6): 20-minute soaks passed for both clients;
-  the 48 h run with the GUI client started on 2026-10-28 11:46 (report:
-  `%TEMP%\cc-soak48\soak-gui-48h.json`; after 4 h, 500 faults: 0 keystrokes
-  lost or doubled, reconnects ≤ 1.55 s, flat memory and handles).
+- **The 48 h remote soak** (Phase 6): 20-minute soaks passed for both clients.
+  The 48 h run with the GUI client (started 2026-10-28 11:46) was stopped and
+  must be repeated: from about 20:29 the soak's typed keys reached the canvas
+  itself (x stopped its echo terminal, O opened a TUI window), so its data
+  after that is invalid. The first ~8.7 h were clean (0 keystrokes lost or
+  doubled, flat memory and handles) except one reconnect of 6.32 s at 16:19
+  under heavy build load (budget ≤ 2 s; not investigated yet). Rerun it on an
+  otherwise idle machine.
 - **Switching the built-in default** from `tui` to `gui` (or `auto`, which
   keeps the TUI over remote desktop and SSH as D4 asks) after the dogfood week
   with no open parity bugs.
+
+The owner's backlog (`Canvas App/TODOs.md`, WI-001 to WI-012) was
+implemented on 2026-10-29: group background/border selection, multi-selection
+removal, subsession stacks, inspecting and resuming agent-created child
+conversations, GPU event effects, visible group folders and passive sessions,
+view versus start, dusty unused sessions, multi-line copy and paste, the
+smooth loop animation, recent sessions with Ctrl+F6 / `]` `[`, and the
+remembered default model per agent (parity rows 34 to 39b, docs/PARITY.md).
 
 ## 1. Goals and non-goals
 
