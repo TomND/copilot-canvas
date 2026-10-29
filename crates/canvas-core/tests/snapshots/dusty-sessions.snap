@@ -1,0 +1,72 @@
+# dusty-sessions (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit                  ⠋ 1 working   ◆ 1 needs you   6 sessions
+    SESSIONS                     │▌·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+▌▤  / filter…                    │  ╭ Used yesterday ────────────╮      ╭ Unused for 5 days ─────────╮
+                                 │  │ ■ stopped                  │      │ ■ stopped · unused 5d      │
+ ◷  ■ Used yesterday             │ ·│ canvas                     │     ·│ canvas                     │     ·     ·     ·     ·     ·     ·     ·     ·
+    ■ Unused for 5 days       5d │  ╰────────────────────────────╯      ╰────────────────────────────╯
+ ⧉  ■ Unused for 20 days     20d │
+    ■ Unused for 90 days     90d │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+ ⌁  ⠋ ↗ Working, old             │
+    ◆ ↗ Needs you, old           │  ╭ Unused for 20 days ────────╮      ╭ Unused for 90 days ────────╮
+ ✦                               │ ·│ ■ stopped · unused 20d     │     ·│ ■ stopped · unused 90d     │     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │  │ canvas                     │      │ canvas                     │
+ ◈                               │  ╰────────────────────────────╯      ╰────────────────────────────╯
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+ ⇄                               │
+                                 │
+ ≡                               │ ·╭ Working, old ──────────────╮     ·┏ Needs you, old ━━━━━━━━━━━━┓     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │  │ ⠋ working · ↗ elsewhere    │      ┃ ◆ needs you · ↗ elsewhere  ┃
+                                 │  │ canvas · main              │      ┃ canvas · main              ┃
+                                 │ ·╰────────────────────────────╯     ·┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+ drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom · right-click menu · ? help
+## gpu view model
+view cursor=none modal=none banner=None
+canvas area=34,1 116x38 origin=-1,0 scale=1 grid=true tick=0 empty=false
+box d-fresh Session rect=1,1 30x4 prefix="" name="Used yesterday"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]
+  selected=false focused_term=false active=false
+box d-light Session rect=37,1 30x4 prefix="" name="Unused for 5 days"
+  status=Stopped icon="■" label="stopped" line="■ stopped · unused 5d" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #4a4d50] fill=#1a1c1e attention=none name_style=[fg #6e7681] line_style=[fg #6e7681]
+  selected=false focused_term=false active=false
+  dust=1
+box d-medium Session rect=1,8 30x4 prefix="" name="Unused for 20 days"
+  status=Stopped icon="■" label="stopped" line="■ stopped · unused 20d" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #46443f] fill=#1d1d1c attention=none name_style=[fg #6e7681] line_style=[fg #6e7681]
+  selected=false focused_term=false active=false
+  dust=2
+box d-heavy Session rect=37,8 30x4 prefix="" name="Unused for 90 days"
+  status=Stopped icon="■" label="stopped" line="■ stopped · unused 90d" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #423d34] fill=#211f1b attention=none name_style=[fg #6e7681] line_style=[fg #6e7681]
+  selected=false focused_term=false active=false
+  dust=3
+box d-working Session rect=1,15 30x4 prefix="" name="Working, old"
+  status=Working icon="⠋" label="working" line="⠋ working" subtitle="canvas · main" elsewhere=true every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #c9d1d9]
+  selected=false focused_term=false active=false
+box d-waiting Session rect=37,15 30x4 prefix="" name="Needs you, old"
+  status=Waiting icon="◆" label="needs you" line="◆ needs you" subtitle="canvas · main" elsewhere=true every=None mailbox=0
+  border=Heavy border_style=[fg #ffb000 +BOLD] fill=#423006 attention=#ffb000/#423006 name_style=[fg #c9d1d9] line_style=[fg #ffb000 +BOLD]
+  selected=false focused_term=false active=false

@@ -1352,12 +1352,17 @@ impl Win {
                 || !app.pulses.is_empty()
                 || app.dirty_at.is_some()
                 || app.drag.is_some()
+                || app.visual_busy()
                 || app.reconnecting
                 || app.restarting.is_some()
                 || self.preview.is_some();
             self.next_tick = now + if busy { TICK } else { IDLE_TICK };
             let proxy = self.app_proxy();
             self.after_events(&proxy);
+        }
+        // Stack and hide transitions draw at the display's rate until they end.
+        if self.app.visual.animating() {
+            self.app.needs_draw = true;
         }
         self.platform.apply(&self.window, &mut self.taskbar);
         if self.placement_dirty.is_some_and(|t| t.elapsed() >= PLACEMENT_SAVE) {

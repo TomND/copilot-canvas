@@ -207,6 +207,8 @@ impl App {
             KeyCode::Char('o') if !ctrl => return self.run(Action::OpenOtherClient),
             KeyCode::Char('f') if !ctrl => return self.run(Action::FitAll),
             KeyCode::Char('g') if !ctrl => return self.run(Action::GroupSelection),
+            KeyCode::Char('k') if !ctrl => return self.run(Action::Visual(crate::visual::VisualAction::ToggleStack)),
+            KeyCode::Char('h') if !ctrl => return self.run(Action::Visual(crate::visual::VisualAction::ToggleHideSubsessions)),
             KeyCode::Char('r') | KeyCode::F(2) if !ctrl => {
                 if let Some(group) = self.selected_group.clone() {
                     return self.run(Action::Rename(Target::Group(group)));
@@ -416,6 +418,7 @@ impl App {
                 self.reveal_node(&id);
                 self.open_node(&id);
             }
+            SideKind::Folder(id) => self.side_folder(&id),
             SideKind::Section => {}
         }
     }
@@ -510,6 +513,10 @@ impl App {
         }
         self.set_focus(Focus::Canvas);
         let double = button == MouseButton::Left && self.is_double_click(x, y);
+        // Stacks and effects first (a click on an effect never starts a session).
+        if self.visual_mouse_down(button, x, y, double, additive) {
+            return;
+        }
         match (button, self.canvas_hit(x, y)) {
             (MouseButton::Left, CanvasHit::Node(id)) => {
                 if additive {
@@ -584,6 +591,7 @@ impl App {
                     self.select_node(id, false);
                     self.node_menu(id)
                 }
+                SideKind::Folder(id) => return self.side_folder(id),
                 SideKind::Section => return,
             };
             return self.open_menu(x, y, menu);
@@ -756,11 +764,12 @@ impl App {
                     let (bx, by) = self.to_world(start.0.max(now.0) as i32 + 1, start.1.max(now.1) as i32 + 1);
                     crate::doc::Rect { x: ax, y: ay, w: (bx - ax).max(1), h: (by - ay).max(1) }
                 };
+                let concealed = self.concealed_now();
                 let hits: Vec<String> = self
                     .doc
                     .nodes
                     .iter()
-                    .filter(|n| n.kind == NodeKind::Session && n.rect().intersects(&area))
+                    .filter(|n| n.kind == NodeKind::Session && n.rect().intersects(&area) && !concealed.contains_key(&n.id))
                     .map(|n| n.id.clone())
                     .collect();
                 if !additive {

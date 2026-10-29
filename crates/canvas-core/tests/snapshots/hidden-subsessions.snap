@@ -1,0 +1,50 @@
+# hidden-subsessions (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit                                   ✗ 1 failed   5 sessions
+    SESSIONS                     │▌·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+▌▤  / filter…                    │  ╭ Orchestrator ──────────────╮
+                                 │  │ ■ stopped                  │
+ ◷  ■ Orchestrator               │ ·│ canvas                     │     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+      ↳ ■ First follow-up        │  ╰─────────────── ⋯ 4 hidden ─╯
+ ⧉    ↳ ■ Second follow-up       │
+      ↳ ■ Newest follow-up       │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+ ⌁      ↳ ✗ Nested follow-up     │
+                                 │
+ ✦                               │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+ ◈                               │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+ ⇄                               │
+                                 │
+ ≡                               │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+ drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom · right-click menu · ? help
+## gpu view model
+view cursor=none modal=none banner=None
+canvas area=34,1 116x38 origin=-1,0 scale=1 grid=true tick=0 empty=false
+box p Session rect=1,1 30x4 prefix="" name="Orchestrator"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]
+  selected=false focused_term=false active=false
+  hidden=4 color=#e66100

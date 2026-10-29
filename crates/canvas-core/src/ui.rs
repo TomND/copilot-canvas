@@ -447,14 +447,26 @@ pub fn build_side_rows(app: &App) -> Vec<SideRow> {
         if collapsed {
             return;
         }
+        // The group's folders (a click opens their menu).
+        if !group.is_automations() {
+            let label = match group.folder.as_deref() {
+                Some(folder) => folder.trim_end_matches(['\\', '/']).rsplit(['\\', '/']).next().unwrap_or(folder).to_owned(),
+                None => "Set folder…".to_owned(),
+            };
+            rows.push(SideRow { kind: SideKind::Folder(group.id.clone()), label, depth: depth + 1, status: None, count: None, collapsed: false });
+        }
         for child in tree.groups.iter().filter(|g| tree.parent_of_group.get(g.id.as_str()).copied().flatten() == Some(group.id.as_str())) {
             emit_group(app, child, depth + 1, rows, tree, row);
         }
-        for node in members {
+        for node in members.iter().filter(|n| n.passive.is_none()) {
             let parent_here = node.parent.as_deref().is_some_and(|p| tree.group_of.get(p) == tree.group_of.get(node.id.as_str()) && tree.ids.contains(p));
             if !parent_here {
                 emit_session(app, node, depth + 1, rows, tree, row);
             }
+        }
+        // Its passive sessions, wherever their boxes are (a click opens their panel).
+        for node in app.doc.nodes.iter().filter(|n| n.passive.as_ref().is_some_and(|p| p.group == group.id)) {
+            rows.push(row(node, depth + 1));
         }
     }
 
@@ -464,7 +476,7 @@ pub fn build_side_rows(app: &App) -> Vec<SideRow> {
     }
     let group_of = &tree.group_of;
     let ungrouped: Vec<&&Node> =
-        by_position.iter().filter(|n| n.kind == NodeKind::Session && group_of.get(n.id.as_str()).copied().flatten().is_none()).collect();
+        by_position.iter().filter(|n| n.kind == NodeKind::Session && group_of.get(n.id.as_str()).copied().flatten().is_none() && !n.passive.as_ref().is_some_and(|p| app.doc.group(&p.group).is_some())).collect();
     if !ungrouped.is_empty() {
         if !app.doc.groups.is_empty() {
             rows.push(SideRow { kind: SideKind::Section, label: "Ungrouped".into(), depth: 0, status: None, count: Some(ungrouped.len()), collapsed: false });
@@ -507,13 +519,14 @@ fn draw_sidebar(app: &mut App, buf: &mut Buffer, area: Rect) {
     app.side_scroll = app.side_scroll.min(total.saturating_sub(visible));
     app.layout.sidebar_rows.clear();
     let width = area.right() as i32;
+    let concealed = app.concealed_now();
     for (i, row) in app.side_rows.iter().enumerate().skip(app.side_scroll).take(visible) {
         let y = list_top as i32 + (i - app.side_scroll) as i32;
         app.layout.sidebar_rows.push((y as u16, i));
         let is_selected = match &row.kind {
             SideKind::Group(id) => app.selected_group.as_deref() == Some(id),
             SideKind::Session(id) | SideKind::Agent(id) => app.selection.contains(id),
-            SideKind::Section => false,
+            SideKind::Section | SideKind::Folder(_) => false,
         };
         let highlight = focused && i == app.side_sel;
         let bg = if is_selected { PANEL_HI } else { PANEL };
@@ -538,15 +551,27 @@ fn draw_sidebar(app: &mut App, buf: &mut Buffer, area: Rect) {
                 put(buf, end + 1, y, &truncate(&row.label, room), bold(TEXT).bg(bg), area);
                 put(buf, width - count.len() as i32 - 1, y, &count, fg(MUTED).bg(bg), area);
             }
+            SideKind::Folder(id) => {
+                let set = app.doc.group(id).is_some_and(|g| g.folder.is_some());
+                let color = app.doc.group(id).map(|g| crate::paint::GROUP_COLORS[g.color as usize % 6]).unwrap_or(ACCENT);
+                let end = put(buf, x, y, "◧", fg(if set { color } else { MUTED }).bg(bg), area) + 1;
+                put(buf, end, y, &truncate(&row.label, (width - end - 1).max(1) as usize), fg(if set { GRAY } else { MUTED }).bg(bg), area);
+            }
             SideKind::Session(id) | SideKind::Agent(id) => {
                 let status = row.status.unwrap_or(Status::Unknown);
                 let agent = matches!(row.kind, SideKind::Agent(_));
-                let sub = !agent && app.doc.node(id).is_some_and(|n| n.parent.is_some());
+                let node = app.doc.node(id);
+                let passive = node.is_some_and(|n| n.passive.is_some());
+                let sub = !agent && !passive && node.is_some_and(|n| n.parent.is_some());
+                // Stacked or hidden subsessions are listed dimmed.
+                let tucked = concealed.contains_key(id.as_str());
                 let mut end = x;
                 if agent {
                     end = put(buf, end, y, "◇", fg(MUTED).bg(bg), area) + 1;
+                } else if passive {
+                    end = put(buf, end, y, "⟲", fg(MUTED).bg(bg), area) + 1;
                 } else if sub {
-                    end = put(buf, end, y, "↳", fg(ACCENT).bg(bg), area) + 1;
+                    end = put(buf, end, y, "↳", fg(if tucked { MUTED } else { ACCENT }).bg(bg), area) + 1;
                 }
                 end = put(buf, end, y, status.icon(app.tick), fg(status.color()).bg(bg), area) + 1;
                 if let Some(node) = app.doc.node(id)
@@ -560,13 +585,19 @@ fn draw_sidebar(app: &mut App, buf: &mut Buffer, area: Rect) {
                 {
                     end = put(buf, end, y, "↗", fg(crate::paint::PURPLE).bg(bg), area) + 1;
                 }
+                // An unused session shows how long ago it was used.
+                let age = node.and_then(|n| app.dust_of(n, status)).map(|(_, last)| format!(" {}", crate::paths::format_age(last, app.visual_now())));
                 let style = match status.attention() {
                     _ if is_selected => bold(SELECT).bg(bg),
                     Some((color, _)) if !agent => bold(color).bg(bg),
-                    _ if agent => fg(GRAY).bg(bg),
+                    _ if agent || tucked || age.is_some() => fg(GRAY).bg(bg),
                     _ => fg(TEXT).bg(bg),
                 };
-                put(buf, end, y, &truncate(&row.label, (width - end - 1).max(1) as usize), style, area);
+                let age_w = age.as_deref().map(|a| crate::paint::text_width(a) as i32).unwrap_or(0);
+                put(buf, end, y, &truncate(&row.label, (width - end - 1 - age_w).max(1) as usize), style, area);
+                if let Some(age) = &age {
+                    put(buf, width - age_w - 1, y, age, fg(MUTED).bg(bg), area);
+                }
             }
         }
     }

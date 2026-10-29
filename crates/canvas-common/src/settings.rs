@@ -18,6 +18,10 @@ pub struct Settings {
     /// Agent CLI for new sessions: "copilot", "opencode" or "claude" (unset: auto-detect).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    /// Canvas effects on this machine: "on", "reduced" (static badges) or
+    /// "off" (unset: reduced when Windows' animations are off, else on).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effects: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -89,6 +93,14 @@ impl Settings {
     /// The front end: `COPILOT_CANVAS_CLIENT`, else the setting.
     pub fn client(&self) -> Option<String> {
         std::env::var("COPILOT_CANVAS_CLIENT").ok().filter(|v| !v.trim().is_empty()).or_else(|| self.client.clone())
+    }
+
+    /// Canvas effects: `COPILOT_CANVAS_EFFECTS`, else the setting ("on",
+    /// "reduced", "off"; `None`: follow Windows' animation setting).
+    pub fn effects(&self) -> Option<String> {
+        let value = std::env::var("COPILOT_CANVAS_EFFECTS").ok().filter(|v| !v.trim().is_empty()).or_else(|| self.effects.clone())?;
+        let value = value.trim().to_ascii_lowercase();
+        matches!(value.as_str(), "on" | "reduced" | "off").then_some(value)
     }
 
     /// Address the service listens on for remote clients:

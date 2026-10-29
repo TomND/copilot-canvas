@@ -36,6 +36,14 @@ pub struct Viewer {
     pub sel: usize,
     /// Text rows at the last draw (for paging).
     pub rows: usize,
+    /// A folder listed with its files: entries (name, folder) to open.
+    pub entries: Vec<(String, bool)>,
+    /// The highlighted entry (browsing).
+    pub pick: usize,
+    /// Listed with its files (the entries open).
+    pub listed: bool,
+    /// The keyboard is on the buttons (Tab) rather than the entries.
+    pub on_buttons: bool,
 }
 
 /// What a key did.
@@ -45,6 +53,10 @@ pub enum ViewerKey {
     Close,
     /// Run this button.
     Button(&'static str),
+    /// Open this entry of the folder (browsing).
+    Open(usize),
+    /// Up to the parent folder (browsing).
+    Up,
 }
 
 fn printable(line: &str) -> String {
@@ -86,14 +98,60 @@ impl Viewer {
         self.lines = Some(lines);
     }
 
-    /// A folder's subfolders (as the backend lists them).
+    /// A folder's subfolders (as an older service lists them).
     pub fn set_entries(&mut self, entries: Vec<String>) {
-        let mut lines: Vec<String> = entries.into_iter().filter(|e| e != "..").map(|e| format!("▸ {e}")).collect();
-        if lines.is_empty() {
-            lines.push("(no subfolders)".into());
+        self.set_listing(entries, false);
+    }
+
+    /// A folder's entries: subfolders only, or (`typed`) `name\` subfolders
+    /// and files (the browser: entries open with Enter or a click).
+    pub fn set_listing(&mut self, entries: Vec<String>, typed: bool) {
+        let mut lines = Vec::new();
+        self.entries.clear();
+        self.listed = typed;
+        for entry in entries.into_iter().filter(|e| e != "..") {
+            let (name, dir) = match entry.strip_suffix(['\\', '/']) {
+                Some(name) => (name.to_owned(), true),
+                None => (entry, !typed),
+            };
+            lines.push(if dir { format!("▸ {name}") } else { format!("  {name}") });
+            if typed {
+                self.entries.push((name, dir));
+            }
         }
-        self.note = Some("A folder on the service's machine (subfolders only). Copy its path, or open it in VS Code through a tunnel.".into());
+        if lines.is_empty() {
+            lines.push(if typed { "(empty folder)".into() } else { "(no subfolders)".into() });
+        }
+        self.note = Some(if typed {
+            "A folder on the service's machine: Enter or a click opens an entry (files read-only), Backspace goes up.".into()
+        } else {
+            "A folder on the service's machine (subfolders only). Copy its path, or open it in VS Code through a tunnel.".into()
+        });
+        self.pick = self.pick.min(self.entries.len().saturating_sub(1));
         self.lines = Some(lines);
+    }
+
+    /// Browsing a folder with its files (entries open).
+    pub fn browsing(&self) -> bool {
+        self.folder && self.listed
+    }
+
+    /// The path of entry `index` (or of the parent folder for `None`).
+    pub fn entry_path(&self, index: Option<usize>) -> Option<(String, bool)> {
+        let base = self.path.trim_end_matches(['\\', '/']);
+        match index {
+            Some(i) => self.entries.get(i).map(|(name, dir)| (format!("{base}\\{name}"), *dir)),
+            None => {
+                let (parent, _) = base.rsplit_once(['\\', '/'])?;
+                let parent = if parent.ends_with(':') { format!("{parent}\\") } else { parent.to_owned() };
+                Some((parent, true))
+            }
+        }
+    }
+
+    /// Shows another folder (its entries load next).
+    pub fn navigate(&mut self, path: String) {
+        *self = Viewer { path, folder: true, vscode: None, rows: self.rows, ..Default::default() };
     }
 
     fn len(&self) -> usize {
@@ -110,6 +168,47 @@ impl Viewer {
         let page = self.rows.max(2) as i64 - 1;
         let buttons = self.buttons();
         let ctrl = key.modifiers.contains(Modifiers::CONTROL);
+        if self.browsing() {
+            // Browsing: the arrows pick an entry, Enter opens it, Tab goes to the buttons.
+            let len = self.entries.len();
+            let pick = |delta: i64, viewer: &mut Self| {
+                viewer.on_buttons = false;
+                if len > 0 {
+                    viewer.pick = (viewer.pick as i64 + delta).clamp(0, len as i64 - 1) as usize;
+                    let rows = viewer.rows.max(1);
+                    if viewer.pick < viewer.top {
+                        viewer.top = viewer.pick;
+                    } else if viewer.pick >= viewer.top + rows {
+                        viewer.top = viewer.pick + 1 - rows;
+                    }
+                }
+            };
+            match key.code {
+                KeyCode::Up => {
+                    pick(-1, self);
+                    return ViewerKey::Keep;
+                }
+                KeyCode::Down => {
+                    pick(1, self);
+                    return ViewerKey::Keep;
+                }
+                KeyCode::PageUp => {
+                    pick(-page, self);
+                    return ViewerKey::Keep;
+                }
+                KeyCode::PageDown => {
+                    pick(page, self);
+                    return ViewerKey::Keep;
+                }
+                KeyCode::Backspace => return ViewerKey::Up,
+                KeyCode::Enter if !self.on_buttons && len > 0 => return ViewerKey::Open(self.pick),
+                KeyCode::Tab | KeyCode::BackTab if !self.on_buttons => {
+                    self.on_buttons = true;
+                    return ViewerKey::Keep;
+                }
+                _ => {}
+            }
+        }
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => return ViewerKey::Close,
             KeyCode::Char('c') if ctrl => return ViewerKey::Button(COPY_PATH),

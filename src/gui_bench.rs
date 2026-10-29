@@ -146,7 +146,7 @@ fn node(id: &str, name: &str, x: i32, y: i32, command: Option<Vec<String>>) -> N
         passive: None,
         no_messages: false,
         agent: None,
-        agent_session: None,
+        agent_session: None, last_used_ms: None, stacked: false,
     }
 }
 

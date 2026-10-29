@@ -11,6 +11,8 @@ enum Outcome {
     Keep,
     Close,
     CloseAndRun(Action),
+    /// Keeps the dialog and runs an action (a dialog opened on top of it).
+    KeepAndRun(Action),
 }
 
 fn list_move(sel: &mut usize, len: usize, delta: i64) {
@@ -142,6 +144,22 @@ impl App {
                 crate::viewer::ViewerKey::Close => Outcome::Close,
                 crate::viewer::ViewerKey::Button(button) if self.viewer_button(viewer, button) => Outcome::Close,
                 crate::viewer::ViewerKey::Button(_) => Outcome::Keep,
+                crate::viewer::ViewerKey::Open(i) => match viewer.entry_path(Some(i)) {
+                    Some((path, true)) => {
+                        viewer.navigate(path.clone());
+                        self.load_browser(path);
+                        Outcome::Keep
+                    }
+                    Some((path, false)) => Outcome::KeepAndRun(Action::Visual(crate::visual::VisualAction::Browse(path))),
+                    None => Outcome::Keep,
+                },
+                crate::viewer::ViewerKey::Up => {
+                    if let Some((path, _)) = viewer.entry_path(None) {
+                        viewer.navigate(path.clone());
+                        self.load_browser(path);
+                    }
+                    Outcome::Keep
+                }
             },
             Modal::ImportCopilot(dialog) => {
                 let candidates = self.copilot_import_candidates(&dialog.filter.text);
@@ -269,6 +287,10 @@ impl App {
         self.needs_draw = true;
         match outcome {
             Outcome::Keep => self.modals.push(modal),
+            Outcome::KeepAndRun(action) => {
+                self.modals.push(modal);
+                self.run(action);
+            }
             Outcome::Close => {}
             Outcome::CloseAndRun(action) => self.run(action),
         }
@@ -736,8 +758,14 @@ impl App {
             }
             (Some(Modal::Mcp(_)), Hit::Button(0)) => self.modal_key(enter),
             (Some(Modal::Mcp(_)), Hit::Button(1)) => self.modal_key(KeyEvent::new(KeyCode::Char('s'), Modifiers::CONTROL)),
+            (Some(Modal::Viewer(viewer)), Hit::ListRow(i)) => {
+                viewer.pick = i;
+                viewer.on_buttons = false;
+                self.modal_key(enter);
+            }
             (Some(Modal::Viewer(viewer)), Hit::Button(i)) => {
                 viewer.sel = i;
+                viewer.on_buttons = true;
                 self.modal_key(enter);
             }
             (Some(_), Hit::Button(_)) => {

@@ -15,6 +15,7 @@ use crossbeam_channel::Receiver;
 use super::{Shared, lock, log};
 use crate::agents::{AgentKind, Provide};
 use crate::bus::{self, BusState, Event, Mail, PassiveSpec, Routing, Target};
+use crate::effects;
 use crate::paths::now_ms;
 use crate::protocol::{Activity, AgentLaunch, Input, Key, LaunchKind, ServiceMsg};
 
@@ -234,6 +235,11 @@ pub(super) fn handle_event(shared: &Shared, routing: &Routing, state: &mut BusSt
                 None => log(&shared.instance, &format!("message for {:?} dropped: no such session", event.to)),
             }
         }
+        effects::EVENT => {
+            if let Some(target) = apply_effect(shared, routing, state, &event, now) {
+                targets.push(target);
+            }
+        }
         _ => {
             for key in routing.subscribers(&event) {
                 if let Some(spec) = routing.passive.iter().find(|p| p.key == key) {
@@ -243,6 +249,7 @@ pub(super) fn handle_event(shared: &Shared, routing: &Routing, state: &mut BusSt
                 forwarded.hop += 1;
                 state.passive.entry(key).or_default().enqueue(forwarded, now);
             }
+            catalog_effect(shared, routing, state, &event, now);
         }
     }
     append_log(&shared.instance.home, &event);
@@ -251,6 +258,67 @@ pub(super) fn handle_event(shared: &Shared, routing: &Routing, state: &mut BusSt
     shared.broadcast(ServiceMsg::BusEvent { json: pulse.to_string() });
 }
 
+/// `copilot-canvas effect …`: puts an effect on a box of the sender's group
+/// (or the group), or clears them. Answers the box it went on.
+fn apply_effect(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Event, now: u64) -> Option<String> {
+    let (target, message) = effect_event(routing, &mut state.effects, event, now);
+    log(&shared.instance, &message);
+    target
+}
+
+/// The pure part of [`apply_effect`]: a session can only reach its own group
+/// (the canvas's own events name theirs) and the note is untrusted text (one
+/// short line). Answers the box and what to log.
+fn effect_event(routing: &Routing, list: &mut Vec<effects::Effect>, event: &Event, now: u64) -> (Option<String>, String) {
+    let name = event.data["effect"].as_str().unwrap_or_default().to_ascii_lowercase();
+    let on = event.data["on"].as_str().unwrap_or_default();
+    if !event.source.is_empty() && routing.group_of(&event.source).as_deref() != Some(event.group.as_str()) {
+        return (None, format!("effect {name} on {on:?} dropped: {} is in no group (or another one)", event.source));
+    }
+    let Some(anchor) = effects::resolve(routing, &event.group, on) else {
+        return (None, format!("effect {name} on {on:?} dropped: no such box in the sender's group"));
+    };
+    let target = match &anchor {
+        effects::Anchor::Node(id) => id.clone(),
+        effects::Anchor::Group => String::new(),
+    };
+    if name == "clear" {
+        let only = event.data["kind"].as_str().and_then(effects::kind).map(|k| k.name);
+        let cleared = effects::clear(list, &event.group, &target, only);
+        return (None, format!("cleared {cleared} effect(s) on {on:?}"));
+    }
+    let Some(spec) = effects::kind(&name) else {
+        return (None, format!("effect {name:?} dropped: not in the effects collection"));
+    };
+    let from = if event.source_name.is_empty() { "Copilot Canvas" } else { &event.source_name };
+    effects::add(list, effects::new_effect(spec, &event.group, &anchor, event.data["note"].as_str().unwrap_or_default(), from, now));
+    ((!target.is_empty()).then_some(target), format!("effect {name} on {on:?} from {from}"))
+}
+
+/// The group's event catalog may map event types to effects (`effects:`
+/// `pr.approved: fireworks`): on the sending session's box, else the group.
+fn catalog_effect(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Event, now: u64) {
+    let Some(folder) = routing.group(&event.group).and_then(|g| g.folder.clone()) else { return };
+    let Ok(text) = std::fs::read_to_string(bus::catalog_path(Path::new(&folder))) else { return };
+    if let Some(effect) = mapped_effect(routing, event, &text, now) {
+        log(&shared.instance, &format!("{} shows {} (event catalog)", event.kind, effect.kind));
+        effects::add(&mut state.effects, effect);
+    }
+}
+
+/// The effect a catalog maps an event to, with a note from its data.
+fn mapped_effect(routing: &Routing, event: &Event, catalog: &str, now: u64) -> Option<effects::Effect> {
+    let mapping = effects::catalog_effects(catalog);
+    let (_, spec) = effects::effect_for_event(&mapping, &event.kind)?;
+    let member = routing.members.get(&event.source).is_some_and(|g| *g == event.group) || routing.passive_by_session(&event.source).is_some_and(|p| p.group == event.group);
+    let anchor = if member { effects::Anchor::Node(event.source.clone()) } else { effects::Anchor::Group };
+    let what = event.kind.strip_prefix("pr.").unwrap_or(&event.kind).replace(['.', '_'], " ");
+    let note = match event.data.get("pr").filter(|v| !v.is_null()) {
+        Some(pr) => format!("PR {} {what}", pr.as_str().map(str::to_owned).unwrap_or_else(|| pr.to_string())),
+        None => what,
+    };
+    Some(effects::new_effect(spec, &event.group, &anchor, &note, &event.source_name, now))
+}
 /// Starts (or types in) one passive run with its pending events.
 fn start_run(shared: &Shared, routing: &Routing, spec: &PassiveSpec, state: &mut BusState, now: u64) {
     let snapshot_state = state.clone();
@@ -420,8 +488,15 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
             write_atomic(&super::factory_watch::path(&home), serde_json::to_string(&watch).unwrap_or_default().as_bytes());
         }
         for event in events {
+            if event.kind == effects::ACK {
+                // A click on an effect: gone for every client.
+                let ids: Vec<&str> = event.data["ids"].as_array().map(|ids| ids.iter().filter_map(|i| i.as_str()).collect()).unwrap_or_default();
+                state.effects.retain(|e| !ids.contains(&e.id.as_str()));
+                continue;
+            }
             handle_event(&shared, &routing, &mut state, event, now);
         }
+        state.effects.retain(|e| e.alive(now));
         for spec in &routing.passive {
             let s = state.passive.entry(spec.key.clone()).or_default();
             if s.session_id.is_empty() {
@@ -507,6 +582,11 @@ pub(super) fn action(shared: &Shared, json: &str, incoming: &crossbeam_channel::
                 let _ = incoming.try_send(event);
             }
         }
+        "effect_ack" => {
+            // Handled in the bus loop (which owns the state while it runs).
+            let event = Event { kind: effects::ACK.into(), data: serde_json::json!({ "ids": value["ids"].clone() }), ms: now, ..Default::default() };
+            let _ = incoming.try_send(event);
+        }
         _ => {}
     }
 }
@@ -532,6 +612,50 @@ fn _assert_send(_: HashMap<String, String>) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn routing() -> Routing {
+        Routing {
+            groups: vec![bus::RouteGroup { id: "g1".into(), name: "Pay".into(), folder: None }, bus::RouteGroup { id: "g2".into(), name: "Other".into(), folder: None }],
+            members: [("s1".to_owned(), "g1".to_owned()), ("s2".to_owned(), "g2".to_owned())].into(),
+            names: [("s1".to_owned(), "Main".to_owned()), ("s2".to_owned(), "Elsewhere".to_owned()), ("p1".to_owned(), "Rollout".to_owned())].into(),
+            passive: vec![PassiveSpec { key: "k1".into(), session_id: "p1".into(), name: "Rollout".into(), group: "g1".into(), ..Default::default() }],
+            ..Default::default()
+        }
+    }
+
+    fn effect(source: &str, group: &str, data: serde_json::Value) -> Event {
+        Event { kind: effects::EVENT.into(), source: source.into(), source_name: "Rollout".into(), group: group.into(), data, ..Default::default() }
+    }
+
+    #[test]
+    fn effects_reach_only_the_senders_group_and_clear_again() {
+        let r = routing();
+        let mut list = Vec::new();
+        let (target, _) = effect_event(&r, &mut list, &effect("p1", "g1", serde_json::json!({ "effect": "fireworks", "on": "Main", "note": "PR !1 approved" })), 5);
+        assert_eq!((target.as_deref(), list.len(), list[0].from.as_str()), (Some("s1"), 1, "Rollout"));
+        let (_, why) = effect_event(&r, &mut list, &effect("p1", "g1", serde_json::json!({ "effect": "attention", "on": "Elsewhere" })), 5);
+        assert!(why.contains("no such box in the sender's group") && list.len() == 1, "{why}");
+        let (_, why) = effect_event(&r, &mut list, &effect("p1", "g2", serde_json::json!({ "effect": "attention", "on": "Elsewhere" })), 5);
+        assert!(why.contains("in no group (or another one)") && list.len() == 1, "a session cannot name another group: {why}");
+        let (_, why) = effect_event(&r, &mut list, &effect("p1", "g1", serde_json::json!({ "effect": "confetti", "on": "Main" })), 5);
+        assert!(why.contains("not in the effects collection"));
+        let (target, _) = effect_event(&r, &mut list, &effect("", "g1", serde_json::json!({ "effect": "alert", "on": "group" })), 5);
+        assert_eq!((target, list.len()), (None, 2), "the canvas itself (no source) marks the group");
+        effect_event(&r, &mut list, &effect("s1", "g1", serde_json::json!({ "effect": "clear", "on": "Main" })), 6);
+        assert_eq!(list.len(), 1, "cleared from inside the group");
+    }
+
+    #[test]
+    fn catalogs_turn_events_into_effects_on_the_senders_box() {
+        let r = routing();
+        let event = Event { kind: "pr.approved".into(), source: "s1".into(), group: "g1".into(), data: serde_json::json!({ "pr": 164587 }), ..Default::default() };
+        let effect = mapped_effect(&r, &event, bus::DEFAULT_CATALOG, 9).unwrap();
+        assert_eq!((effect.kind.as_str(), effect.target.as_str(), effect.badge()), ("fireworks", "s1", "✦ PR 164587 approved".to_owned()));
+        let outsider = Event { source: "s2".into(), kind: "pr.changes_requested".into(), ..event.clone() };
+        let effect = mapped_effect(&r, &outsider, bus::DEFAULT_CATALOG, 9).unwrap();
+        assert_eq!((effect.kind.as_str(), effect.target.as_str()), ("attention", ""), "not a member: the group gets it");
+        assert!(mapped_effect(&r, &Event { kind: "pr.merged".into(), ..event }, bus::DEFAULT_CATALOG, 9).is_none());
+    }
 
     #[test]
     fn passive_runs_carry_the_specs_model_into_the_agents_command_line() {

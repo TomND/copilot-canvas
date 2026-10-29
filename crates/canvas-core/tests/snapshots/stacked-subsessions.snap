@@ -1,0 +1,57 @@
+# stacked-subsessions (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit                                ◆ 1 needs you   5 sessions
+    SESSIONS                     │▌·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+▌▤  / filter…                    │  ╭ Orchestrator ──────────────╮
+                                 │  │ ■ stopped                  │
+ ◷  ■ Orchestrator               │ ·│ canvas                     │     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+      ↳ ◆ ↗ First follow-up      │  ╰────────────────────────────╯
+ ⧉    ↳ ■ Second follow-up       │    ┄┄┄
+      ↳ ■ Newest follow-up       │ ·  ┏ ↳ Nested follow-up ━━━ +3 ━┓   ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+ ⌁      ↳ ■ Nested follow-up     │    ┃ ◆ needs you                ┃╮
+                                 │    ┃ stack of 4 · double-click… ┃│╮
+ ✦                               │ ·  ┗━ ◉ 2 comments ━━━━━━━━━━━━━┛││ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │     ╰────────────────────────────╯│
+ ◈                               │      ╰────────────────────────────╯
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+ ⇄                               │
+                                 │
+ ≡                               │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+ drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom · right-click menu · ? help
+## gpu view model
+view cursor=none modal=none banner=None
+canvas area=34,1 116x38 origin=-1,0 scale=1 grid=true tick=0 empty=false
+edge Subsession color=#58a6ff from=1,1 30x4 to=3,6 30x4 path=(3.5,5) (3.5,5.5) (5.5,5.5) (5.5,6)
+box p Session rect=1,1 30x4 prefix="" name="Orchestrator"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]
+  selected=false focused_term=false active=false
+box c3a Session rect=3,6 30x4 prefix="↳ " name="Nested follow-up"
+  status=Waiting icon="◆" label="needs you" line="◆ needs you" subtitle="stack of 4 · double-click to unstack" elsewhere=false every=None mailbox=0
+  border=Heavy border_style=[fg #ffb000 +BOLD] fill=#423006 attention=#ffb000/#423006 name_style=[fg #c9d1d9] line_style=[fg #ffb000 +BOLD]
+  selected=false focused_term=false active=false
+  deck root=p count=4 back=2
+effect fx-1 attention rect=3,6 30x4 group=false badge="◉ 2 comments" age_ms=1100
+motion Reduced
