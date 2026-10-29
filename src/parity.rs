@@ -941,6 +941,9 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         anyhow::ensure!(!gui.screen().contains(crate::paste_probe::ENTER), "the IME text sent Enter");
         gui.send("\x04")?;
         gui.wait("the probe ended", 10, |t| t.contains("BYE"))?;
+        // Later rows print near the top again (the --perf overlay covers the tile's last rows).
+        gui.send("Clear-Host\r")?;
+        gui.wait("the screen cleared", 10, |t| !t.contains("PASTE 2 lines"))?;
         Ok(format!("selection copied on release; Ctrl+V pasted ({}); {multi}; IME text with a line break pasted", gui.clipboard_source()))
     });
 

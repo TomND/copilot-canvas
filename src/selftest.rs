@@ -105,7 +105,9 @@ impl Console {
         };
         self.send_now(text)?;
         if enter {
-            std::thread::sleep(Duration::from_millis(40));
+            // Long enough for the client to have read the text: an Enter that
+            // follows it at once would still be part of the burst.
+            std::thread::sleep(Duration::from_millis(150 + text.len() as u64));
             self.send_now(b"\r")?;
         }
         std::thread::sleep(Duration::from_millis(60));
@@ -1280,11 +1282,17 @@ pub(crate) fn step(name: &str) {
 /// four-line paste with a blank line, indentation and a trailing line break
 /// reaches a program (the paste probe) as one bracketed paste without Enter.
 pub(crate) fn copy_paste_check<U: Ui>(ui: &mut U) -> Result<String> {
-    // A short prompt keeps the pasted lines on one row.
-    ui.send(b"function prompt { 'PS> ' }; Clear-Host\r")?;
+    // A short prompt keeps the pasted lines on one row ("PS " as checks expect).
+    ui.send(b"function prompt { 'PS > ' }\r")?;
     std::thread::sleep(Duration::from_millis(800));
     ui.send(b"Write-Output (('COPY' + 'TOP ') + ('wrap me ' * 20).Trim()), '  hard line', '', '    indented line', ('COPY' + 'END')\r")?;
     ui.wait("the block to copy", Duration::from_secs(10), |t| t.contains("COPYTOP") && t.contains("COPYEND"))?;
+    // The prompt after the block may still scroll it: wait until it shows.
+    ui.wait("the prompt after the block", Duration::from_secs(10), |t| {
+        let lines: Vec<&str> = t.lines().collect();
+        lines.iter().position(|l| l.contains("COPYEND")).is_some_and(|y| lines.get(y + 1).is_some_and(|l| l.contains("PS >")))
+    })?;
+    std::thread::sleep(Duration::from_millis(300));
     let (x0, y0) = ui.find("COPYTOP").context("COPYTOP")?;
     let (x1, y1) = ui.find("COPYEND").context("COPYEND")?;
     anyhow::ensure!(y1 >= y0 + 5, "the long line wraps over two rows or more (rows {y0}..{y1})\n{}", ui.text());
@@ -1564,6 +1572,9 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     step("multi-line copy keeps line breaks, blank lines and indentation and rejoins soft wraps; a multi-line paste is one paste (PowerShell runs nothing; a program sees no Enter)");
     let summary = copy_paste_check(&mut ui)?;
     println!("    {summary}");
+    // The reattach step looks for this terminal's earlier output.
+    ui.send(b"Clear-Host; Write-Output ('CANVAS_' + 'TERMINAL_OK')\r")?;
+    ui.wait("command output", Duration::from_secs(10), |t| t.contains("CANVAS_TERMINAL_OK"))?;
 
     step("activity bar: Automations view lists Copilot automations and adds them to an Automations group");
     ui.send(b"\x1d")?;
@@ -1693,7 +1704,8 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
         ui.send(command.as_bytes())?;
         let doc = wait_doc(&canvas, "spawned subsession linked to its parent", |d| {
             d.nodes.iter().any(|n| n.id == child && n.parent.as_deref() == Some("demo-main") && n.name == "Spawned tracker")
-        })?;
+        })
+        .with_context(|| format!("--- screen ---\n{}", ui.text()))?;
         anyhow::ensure!(doc.nodes.iter().filter(|n| n.id == child).count() == 1, "added once");
         ui.wait("subsession box on the canvas", Duration::from_secs(5), |t| t.contains("Spawned tracker") || t.contains("Spawned"))?;
     }
