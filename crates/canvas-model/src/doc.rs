@@ -76,6 +76,14 @@ pub struct Node {
     /// its sessions itself, on the first prompt).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session: Option<String>,
+    /// When the session was last used: started, typed into, or agent activity
+    /// (looking at it does not count). Unused sessions are drawn dusty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used_ms: Option<u64>,
+    /// Its subsessions (recursively) are drawn as a deck beneath it. They keep
+    /// their own positions (which move with it), so unstacking restores them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stacked: bool,
 }
 
 /// Passive session settings (the service keeps its run state).
@@ -151,11 +159,14 @@ pub struct UiPrefs {
     pub tiled: bool,
     #[serde(default)]
     pub collapsed: Vec<String>,
+    /// Subsession boxes are hidden on this client's canvas (shown again in place).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hide_subsessions: bool,
 }
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        Self { sidebar_width: 30, sidebar_visible: true, terminal_percent: 55, tiled: false, collapsed: Vec::new() }
+        Self { sidebar_width: 30, sidebar_visible: true, terminal_percent: 55, tiled: false, collapsed: Vec::new(), hide_subsessions: false }
     }
 }
 
@@ -342,6 +353,13 @@ pub struct Doc {
     /// setting, else the first installed agent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_agent: Option<String>,
+    /// Sessions unused for this many days are drawn dusty (0: never).
+    #[serde(default = "default_dust_days")]
+    pub dust_after_days: u32,
+}
+
+fn default_dust_days() -> u32 {
+    crate::visual::DEFAULT_DUST_DAYS
 }
 
 /// MCP server choice for new sessions: the last one used and named presets.
@@ -436,6 +454,7 @@ impl Default for Doc {
             automations_dir: None,
             doctor_created: false,
             default_agent: None,
+            dust_after_days: default_dust_days(),
         }
     }
 }
@@ -569,7 +588,10 @@ impl Doc {
     }
 
     pub fn move_group(&mut self, group_id: &str, dx: i32, dy: i32) {
-        let (nodes, groups) = self.group_contents(group_id);
+        let (mut nodes, groups) = self.group_contents(group_id);
+        // A stack moves with its parent, wherever its boxes' own positions are.
+        let follow: Vec<String> = nodes.iter().filter(|id| self.node(id).is_some_and(|n| n.stacked)).flat_map(|id| crate::visual::stack_members(self, id)).collect();
+        nodes.extend(follow);
         for node in self.nodes.iter_mut().filter(|n| nodes.contains(&n.id)) {
             node.x += dx;
             node.y += dy;
@@ -580,9 +602,15 @@ impl Doc {
         }
     }
 
-    /// Moves nodes together with their subagent boxes (each at most once).
+    /// Moves nodes together with their subagent boxes and stacked
+    /// subsessions (each at most once).
     pub fn move_nodes(&mut self, ids: &[String], dx: i32, dy: i32) {
         let mut moving: HashSet<String> = ids.iter().cloned().collect();
+        for id in ids {
+            if self.node(id).is_some_and(|n| n.stacked) {
+                moving.extend(crate::visual::stack_members(self, id));
+            }
+        }
         for node in &self.nodes {
             if node.kind == NodeKind::Agent && node.parent.as_ref().is_some_and(|p| ids.contains(p)) {
                 moving.insert(node.id.clone());
@@ -881,7 +909,7 @@ pub fn demo_doc(cwd: &str) -> Doc {
         passive: None,
         no_messages: false,
         agent: None,
-        agent_session: None,
+        agent_session: None, last_used_ms: None, stacked: false,
     };
     let mut doc = Doc::default();
     doc.nodes.push(session("demo-main", "Build session canvas", 2, 2));
@@ -936,7 +964,7 @@ pub fn migrate_v1(path: &Path) -> Option<Doc> {
             command: None,
             fresh: false,
             automation: None,
-            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None,
+            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, stacked: false,
         });
     }
     // The prototype stacked boxes 7 rows apart; v2 boxes are 4 tall, so keep positions.
@@ -950,7 +978,7 @@ mod tests {
     use super::*;
 
     fn session(id: &str, x: i32, y: i32) -> Node {
-        Node { id: id.into(), kind: NodeKind::Session, name: id.into(), x, y, cwd: None, parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None }
+        Node { id: id.into(), kind: NodeKind::Session, name: id.into(), x, y, cwd: None, parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, stacked: false }
     }
 
     fn agent(id: &str, parent: &str, x: i32, y: i32) -> Node {

@@ -64,7 +64,7 @@ fn node(id: &str, name: &str, x: i32, y: i32) -> Node {
         passive: None,
         no_messages: false,
         agent: None,
-        agent_session: None,
+        agent_session: None, last_used_ms: None, stacked: false,
     }
 }
 
@@ -366,6 +366,118 @@ fn tiled_terminals() {
     app.focused_term = Some("demo-review".into());
     app.focus = Focus::Terminal;
     check("tiled-terminals", &mut app, BOTH);
+}
+
+/// A fixed "now" for dust ages (day 100 after the epoch).
+const NOW: u64 = 100 * 86_400_000;
+
+fn days_ago(days: u64) -> Option<u64> {
+    Some(NOW - days * 86_400_000)
+}
+
+/// Unused sessions gather dust by age (light, medium, heavy) with their age in
+/// the status line; working, needs-you and looping ones never do.
+#[test]
+fn dusty_sessions() {
+    let mut doc = Doc::default();
+    let rows = [
+        ("d-fresh", "Used yesterday", 1),
+        ("d-light", "Unused for 5 days", 5),
+        ("d-medium", "Unused for 20 days", 20),
+        ("d-heavy", "Unused for 90 days", 90),
+        ("d-working", "Working, old", 90),
+        ("d-waiting", "Needs you, old", 90),
+    ];
+    for (i, (id, name, age)) in rows.iter().enumerate() {
+        let mut n = node(id, name, 1 + (i as i32 % 2) * 36, 1 + (i as i32 / 2) * 7);
+        n.last_used_ms = days_ago(*age);
+        n.reviewed_ms = days_ago(*age);
+        doc.nodes.push(n);
+    }
+    doc.view.x = -1;
+    doc.view.y = 0;
+    doc.ui.terminal_percent = 30;
+    let mut app = app(doc, false);
+    app.visual.clock_ms = Some(NOW);
+    app.sessions.insert("d-working".into(), summary("d-working", Activity::Working, true));
+    let mut waiting = summary("d-waiting", Activity::Working, true);
+    waiting.pending = 1;
+    app.sessions.insert("d-waiting".into(), waiting);
+    check("dusty-sessions", &mut app, BOTH);
+}
+
+/// A family of subsessions: the parent and a nested subsession.
+fn family(stacked: bool) -> Doc {
+    let mut doc = Doc::default();
+    doc.nodes.push(node("p", "Orchestrator", 1, 1));
+    for (i, (id, name)) in [("c1", "First follow-up"), ("c2", "Second follow-up"), ("c3", "Newest follow-up")].iter().enumerate() {
+        let mut child = node(id, name, 40, 1 + i as i32 * 7);
+        child.parent = Some("p".into());
+        doc.nodes.push(child);
+    }
+    let mut nested = node("c3a", "Nested follow-up", 76, 15);
+    nested.parent = Some("c3".into());
+    doc.nodes.push(nested);
+    doc.nodes[0].stacked = stacked;
+    doc.view.x = -1;
+    doc.view.y = 0;
+    doc.ui.terminal_percent = 30;
+    doc
+}
+
+/// A stack beneath its parent: offset cards, the newest on top, a +N badge,
+/// the most important status of the stack (needs you) and an effect on a
+/// stacked child shown on the stack.
+#[test]
+fn stacked_subsessions() {
+    let mut app = app(family(true), false);
+    let mut waiting = summary("c1", Activity::Working, true);
+    waiting.pending = 1;
+    app.sessions.insert("c1".into(), waiting);
+    app.visual.motion = Some(canvas_core::view::Motion::Reduced);
+    app.frozen_tick = Some(0);
+    app.bus.effects.push(canvas_core::effects::Effect { id: "fx-1".into(), kind: "attention".into(), group: "g".into(), target: "c2".into(), note: "2 comments".into(), ms: 1, until_ms: u64::MAX, ..Default::default() });
+    check("stacked-subsessions", &mut app, BOTH);
+}
+
+/// Every subsession hidden: "⋯ N hidden" on the parent, the boxes' places kept.
+#[test]
+fn hidden_subsessions() {
+    let mut doc = family(false);
+    doc.ui.hide_subsessions = true;
+    let mut app = app(doc, false);
+    let mut failed = summary("c3a", Activity::Failed, false);
+    failed.live = false;
+    app.sessions.insert("c3a".into(), failed);
+    check("hidden-subsessions", &mut app, BOTH);
+}
+
+/// Effects in reduced-motion mode: fireworks on a box, attention on another,
+/// an alert on a group (badges in the TUI, still shapes in the GUI).
+#[test]
+fn effects_in_reduced_motion() {
+    let mut doc = Doc::default();
+    doc.nodes.push(node("e1", "Payments API", 2, 2));
+    doc.nodes.push(node("e2", "Billing UI", 2, 9));
+    doc.groups.push(Group { id: "g-pay".into(), name: "Payments".into(), x: 0, y: 0, w: 48, h: 16, color: 2, folder: Some(r"C:\work\pay".into()), source: None, defaults: None });
+    doc.view.x = -1;
+    doc.view.y = -1;
+    doc.ui.terminal_percent = 30;
+    let mut app = app(doc, false);
+    app.visual.motion = Some(canvas_core::view::Motion::Reduced);
+    app.frozen_tick = Some(0);
+    let effect = |id: &str, kind: &str, target: &str, note: &str| canvas_core::effects::Effect {
+        id: id.into(),
+        kind: kind.into(),
+        group: "g-pay".into(),
+        target: target.into(),
+        note: note.into(),
+        from: "Rollout tracker".into(),
+        ms: 1,
+        until_ms: u64::MAX,
+    };
+    app.bus.effects = vec![effect("fx-a", "fireworks", "e1", "PR !12 approved"), effect("fx-b", "attention", "e2", ""), effect("fx-c", "alert", "", "rollout stuck")];
+    check("effects-reduced-motion", &mut app, BOTH);
 }
 
 #[test]

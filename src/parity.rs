@@ -76,15 +76,15 @@ struct Sessions {
 pub(crate) struct Sandbox {
     pub(crate) root: PathBuf,
     pub(crate) instance: Instance,
-    work: PathBuf,
-    group_folder: PathBuf,
+    pub(crate) work: PathBuf,
+    pub(crate) group_folder: PathBuf,
     copilot_home: PathBuf,
     fake: PathBuf,
     /// The stand-in as `opencode.exe` (the OpenCode boxes of the inspector check).
     fake_opencode: PathBuf,
     canvas: PathBuf,
     sessions: Sessions,
-    exe: PathBuf,
+    pub(crate) exe: PathBuf,
 }
 
 /// The GUI and the helpers the checks use.
@@ -363,7 +363,7 @@ fn node(id: &str, name: &str, x: i32, y: i32, cwd: &Path) -> Node {
         passive: None,
         no_messages: false,
         agent: None,
-        agent_session: None,
+        agent_session: None, last_used_ms: None, stacked: false,
     }
 }
 
@@ -1606,7 +1606,12 @@ fn late_rows(sb: &Sandbox, rows: &mut Vec<Row>) {
         let _ = gui.driver.wait_exit(Duration::from_secs(10));
         Ok(format!("GUI over loopback TCP; drop uploaded to {}", found.strip_prefix(&sb.instance.home).unwrap_or(&found).display()))
     });
+
+    visual::rows(sb, rows);
 }
+
+#[path = "parity_visual.rs"]
+pub(crate) mod visual;
 
 fn walk(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();

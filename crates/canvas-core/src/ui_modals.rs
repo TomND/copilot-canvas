@@ -34,6 +34,9 @@ const HELP: &[(&str, &str)] = &[
     ("T · F · + − · C", "tile terminals · fit all · zoom · center"),
     ("/ · B", "filter sidebar · toggle sidebar"),
     ("O", "open this canvas in the other client (GUI / TUI)"),
+    ("K · H", "stack / unstack subsessions · hide / show all subsessions"),
+    ("Click a stack · double-click", "view its top card · unstack (back to their places)"),
+    ("Click an effect (✦ ◉ ✧ ▲)", "clear it (it never starts the session)"),
     ("F6 · Ctrl+]", "cycle focus · leave a terminal"),
     ("Shift+PgUp/PgDn", "terminal history"),
     ("Q / Ctrl+Q", "quit (sessions can keep running)"),
@@ -383,7 +386,8 @@ fn draw_viewer(app: &mut App, buf: &mut Buffer, screen: Rect, viewer: &crate::vi
         (Some(_), None) => {
             let last = (viewer.top + rows).min(lines.len());
             let range = if lines.is_empty() { "empty".into() } else { format!("lines {}–{last} of {}", viewer.top + 1, lines.len()) };
-            format!("{range}{}   ·   ↑↓ PgUp/PgDn scroll · ←→ sideways · Tab buttons · Esc close", viewer.note.as_deref().map(|n| format!(" · {n}")).unwrap_or_default())
+            let keys = if viewer.browsing() { "↑↓ pick · Enter open · Backspace up · Tab buttons · Esc close" } else { "↑↓ PgUp/PgDn scroll · ←→ sideways · Tab buttons · Esc close" };
+            format!("{range}{}   ·   {keys}", viewer.note.as_deref().map(|n| format!(" · {n}")).unwrap_or_default())
         }
     };
     let status_style = if viewer.error.is_some() { fg(NEGATIVE).bg(MODAL) } else { fg(MUTED).bg(MODAL) };
@@ -396,12 +400,23 @@ fn draw_viewer(app: &mut App, buf: &mut Buffer, screen: Rect, viewer: &crate::vi
         }
         let visible: String = line.chars().skip(viewer.left).collect();
         let text_x = x + gutter as i32 + 1;
-        put(buf, text_x, y, &truncate(&visible, (width - gutter as i32 - 1).max(1) as usize), fg(TEXT).bg(MODAL), rect);
+        // The folder browser: entries are picked and opened.
+        let picked = viewer.browsing() && row == viewer.pick && row < viewer.entries.len();
+        let style = if picked && !viewer.on_buttons { bold(SELECT).bg(PANEL_HI) } else { fg(TEXT).bg(MODAL) };
+        if picked && !viewer.on_buttons {
+            fill(buf, text_x - 1, y, width - gutter as i32, 1, Style::default().bg(PANEL_HI), rect);
+            put(buf, text_x - 1, y, "›", bold(ACCENT).bg(PANEL_HI), rect);
+        }
+        put(buf, text_x, y, &truncate(&visible, (width - gutter as i32 - 1).max(1) as usize), style, rect);
+        if viewer.browsing() && row < viewer.entries.len() {
+            ctx.hit(Rect::new(rect.x + 1, y as u16, rect.width - 2, 1), Hit::ListRow(row));
+        }
     }
     let mut bx = x;
     let y = rect.bottom() as i32 - 2;
     for (i, label) in viewer.buttons().iter().enumerate() {
-        bx = button(buf, ctx, bx, y, label, i == viewer.sel, i == 0, i, rect);
+        let focused = i == viewer.sel && (!viewer.browsing() || viewer.on_buttons);
+        bx = button(buf, ctx, bx, y, label, focused, i == 0, i, rect);
     }
     if ctx.top
         && let Some(Modal::Viewer(top)) = app.modals.last_mut()

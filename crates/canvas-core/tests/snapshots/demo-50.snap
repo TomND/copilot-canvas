@@ -1,15 +1,15 @@
 # demo-50 (150x40 cells)
 ## cells (the TUI screen)
  ◆ Copilot Canvas  DEMO · native shells   + New   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit                                                 3 sessions
-    SESSIONS                     │▌┌╌ ▣ Canvas project · 4 ╌╌╌╌╌╌╌╌╌╌┐ ·  ·  ·  ·  ·  │┌─────────────────────────────────────────────────────────────┐
+    SESSIONS                     │▌┌╌ ▣ Canvas project · 4 ╌╌╌╌ ◧+ ╌╌┐ ·  ·  ·  ·  ·  │┌─────────────────────────────────────────────────────────────┐
 ▌▤  / filter…                    │ ╎■ Build sessio…  ■ Review imple… ╎                ││ Build session canvas                                        │
                                  │ ╎stopped          stopped        ·╎ ·  ·  ·  ·  ·  ││ ■ stopped                                                   │
  ◷  ▾ ▣ Canvas project         3 │ ╎  ───              ┊             ╎                ││                                                             │
-      ■ Build session canvas     │ ╎  ✓ Explore t…·  · ┊·  ·  ·  ·  ·╎ ·  ·  ·  ·  ·  ││ Agent      none (runs its command)                          │
- ⧉      ◇ ✓ Explore terminal AP… │ ╎                 ■ Write tests   ╎                ││ Folder     C:\work\canvas                                   │
-      ■ Review implementation    │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌stopped        ╌◢ ·  ·  ·  ·  ·  ││                                                             │
- ⌁      ↳ ■ Write tests          │                                                    ││ Start runs its command in a new canvas terminal.            │
-                                 │ ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ││ Double-click the box or press Enter to start it.            │
+      ◧ Set folder…              │ ╎  ✓ Explore t…·  · ┊·  ·  ·  ·  ·╎ ·  ·  ·  ·  ·  ││ Agent      none (runs its command)                          │
+ ⧉    ■ Build session canvas     │ ╎                 ■ Write tests   ╎                ││ Folder     C:\work\canvas                                   │
+        ◇ ✓ Explore terminal AP… │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌stopped        ╌◢ ·  ·  ·  ·  ·  ││                                                             │
+ ⌁    ■ Review implementation    │                                                    ││ Start runs its command in a new canvas terminal.            │
+        ↳ ■ Write tests          │ ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ││ Double-click the box or press Enter to start it.            │
  ✦                               │                                                    ││ S subsession · R rename · G group · X stop                  │
                                  │ ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ││                                                             │
  ◈                               │                                                    ││                                                             │
@@ -44,8 +44,7 @@
 view cursor=none modal=none banner=None
 canvas area=34,1 52x38 origin=-2,-1 scale=0.5 grid=true tick=0 empty=false
 group g-demo "Canvas project" icon=▣ members=4 rect=0,0 70x15 color=#56b4e9 style=[fg #56b4e9 +DIM] selected=false drop_target=false automations=false folder=false
-  chip " ◧ AI docs " outputs=false rect=44,0 11x1
-  chip " ◨ Outputs " outputs=true rect=56,0 11x1
+  chip " ◧ Set folder… " action=SetGroupFolder("g-demo") rect=34,0 30x2 fixed=true lit=false
 edge Subagent color=#6e7681 from=2,2 30x4 to=6,7 24x3 path=(4.5,6) (4.5,6.5) (8.5,6.5) (8.5,7)
 edge Subsession color=#58a6ff from=36,2 30x4 to=36,9 30x4 path=(38.5,6) (38.5,7.5) (38.5,7.5) (38.5,9)
 box demo-main:explore Agent rect=6,7 24x3 prefix="◇ " name="Explore terminal APIs"

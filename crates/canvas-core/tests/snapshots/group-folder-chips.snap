@@ -2,23 +2,23 @@
 ## cells (the TUI screen)
  ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit                                                3 sessions
     SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
-▌▤  / filter…                    │ ┏━ ▣ Docs · 2 ━━━━━━━━ ◧ AI docs ━ ◨ Outputs ━━┓·  ││ ▣ Docs                                                      │
+▌▤  / filter…                    │ ┏━ ▣ Docs · 2 ━━━ ⟲+ ━ ◧ AI docs ━ ◨ Outputs ━━┓·  ││ ▣ Docs                                                      │
                                  │ ┃                                              ┃   ││ 2 sessions                                                  │
  ◷  ▾ ▣ Docs                   2 │ ┃ ╭ Write the spec ────────────╮               ┃   ││ Folder   C:\work\docs                                       │
-      ■ Write the spec           │ ┃ │ ■ stopped                  │    ·     ·    ┃·  ││ ◧ Open AI docs (ai-docs)                                    │
- ⧉    ■ Draft the docs           │ ┃ │ canvas                     │               ┃   ││ ◨ Open human outputs (human-outputs)                        │
-    ▾ ▣ Ideas                  1 │ ┃ ╰────────────────────────────╯               ┃   ││   Change folder…                                            │
- ⌁    ■ Unfiled idea             │ ┃     ·     ·     ·     ·     ·     ·     ·    ┃·  ││ ⚙ Launch defaults for this group…                           │
-                                 │ ┃ ╭ Draft the docs ────────────╮               ┃   ││                                                             │
- ✦                               │ ┃ │ ■ stopped                  │               ┃   ││ ■ Write the spec — stopped                                  │
-                                 │ ┃ │ canvas                     │    ·     ·    ┃·  ││ ■ Draft the docs — stopped                                  │
- ◈                               │ ┃ ╰────────────────────────────╯               ┃   ││                                                             │
-                                 │ ┃                                              ┃   ││ Enter: show running terminals · R: rename · Del: delete gr… │
- ⇄                               │ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━◢·  ││                                                             │
+      ◧ docs                     │ ┃ │ ■ stopped                  │    ·     ·    ┃·  ││ ◧ Open AI docs (ai-docs)                                    │
+ ⧉    ■ Write the spec           │ ┃ │ canvas                     │               ┃   ││ ◨ Open human outputs (human-outputs)                        │
+      ■ Draft the docs           │ ┃ ╰────────────────────────────╯               ┃   ││   Change folder…                                            │
+ ⌁  ▾ ▣ Ideas                  1 │ ┃     ·     ·     ·     ·     ·     ·     ·    ┃·  ││ ⚙ Launch defaults for this group…                           │
+      ◧ Set folder…              │ ┃ ╭ Draft the docs ────────────╮               ┃   ││ ⟲ Add a passive session…                                    │
+ ✦    ■ Unfiled idea             │ ┃ │ ■ stopped                  │               ┃   ││                                                             │
+                                 │ ┃ │ canvas                     │    ·     ·    ┃·  ││ ■ Write the spec — stopped                                  │
+ ◈                               │ ┃ ╰────────────────────────────╯               ┃   ││ ■ Draft the docs — stopped                                  │
+                                 │ ┃                                              ┃   ││                                                             │
+ ⇄                               │ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━◢·  ││ Enter: show running terminals · R: rename · Del: delete gr… │
                                  │                                                    ││                                                             │
  ≡                               │                                                    ││                                                             │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
-                                 │ ┌╌ ▣ Ideas · 1 ╌╌╌ ◧ AI docs ╌ ◨ Outputs ╌╌┐       ││                                                             │
+                                 │ ┌╌ ▣ Ideas · 1 ╌╌╌╌╌╌ ⟲+ ╌ ◧ Set folder… ╌╌┐       ││                                                             │
                                  │ ╎                                          ╎       ││                                                             │
                                  │ ╎ ╭ Unfiled idea ──────────────╮    ·     ·╎    ·  ││                                                             │
                                  │ ╎ │ ■ stopped                  │           ╎       ││                                                             │
@@ -44,11 +44,12 @@
 view cursor=none modal=none banner=None
 canvas area=34,1 52x38 origin=-1,-1 scale=1 grid=true tick=0 empty=false
 group g-docs "Docs" icon=▣ members=2 rect=0,0 48x13 color=#e69f00 style=[fg #e69f00 +BOLD] selected=true drop_target=false automations=false folder=true
-  chip " ◧ AI docs " outputs=false rect=22,0 11x1
-  chip " ◨ Outputs " outputs=true rect=34,0 11x1
+  chip " ⟲+ " action=NewPassive("g-docs") rect=17,0 4x1 fixed=false lit=false
+  chip " ◧ AI docs " action=OpenGroupFolder("g-docs", false) rect=22,0 11x1 fixed=false lit=true
+  chip " ◨ Outputs " action=OpenGroupFolder("g-docs", true) rect=34,0 11x1 fixed=false lit=true
 group g-ideas "Ideas" icon=▣ members=1 rect=0,16 44x8 color=#cc79a7 style=[fg #cc79a7 +DIM] selected=false drop_target=false automations=false folder=false
-  chip " ◧ AI docs " outputs=false rect=18,16 11x1
-  chip " ◨ Outputs " outputs=true rect=30,16 11x1
+  chip " ⟲+ " action=NewPassive("g-ideas") rect=21,16 4x1 fixed=false lit=false
+  chip " ◧ Set folder… " action=SetGroupFolder("g-ideas") rect=26,16 15x1 fixed=false lit=false
 box a Session rect=2,2 30x4 prefix="" name="Write the spec"
   status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
   border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]

@@ -182,6 +182,8 @@ pub enum Action {
     NewWindow,
     /// This canvas in the other front end (the TUI from the GUI and back).
     OpenOtherClient,
+    /// Stacks, hidden subsessions, dust, effects, group folders and passive sessions.
+    Visual(crate::visual::VisualAction),
 }
 
 #[derive(Clone, Debug)]

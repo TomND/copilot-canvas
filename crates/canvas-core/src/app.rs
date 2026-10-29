@@ -118,6 +118,8 @@ pub enum SideKind {
     Session(String),
     Agent(String),
     Section,
+    /// A group's folders (its menu opens them).
+    Folder(String),
 }
 
 #[derive(Clone, Debug)]
@@ -318,6 +320,8 @@ pub struct App {
     pub auto_synced: bool,
     /// Group whose session defaults the Settings view edits (None = canvas defaults).
     pub settings_group: Option<String>,
+    /// Dust, stacks, hidden subsessions and effects (`visual.rs`).
+    pub visual: crate::visual::VisualState,
 }
 
 impl App {
@@ -449,6 +453,7 @@ impl App {
             vs_syncing: false,
             auto_synced: false,
             settings_group: None,
+            visual: Default::default(),
             instance: None,
             new_service_rx: None,
             restarting: None,
@@ -816,7 +821,8 @@ impl App {
         }
         let (sx, sy) = (sx as i32, sy as i32);
         let inside = |x: i32, y: i32, w: i32, h: i32| sx >= x && sx < x + w && sy >= y && sy < y + h;
-        let mut order: Vec<&Node> = self.doc.nodes.iter().collect();
+        let concealed = self.concealed_now();
+        let mut order: Vec<&Node> = self.doc.nodes.iter().filter(|n| !concealed.contains_key(&n.id)).collect();
         order.sort_by_key(|n| self.selection.contains(&n.id));
         for node in order.into_iter().rev() {
             let (x, y, w, h) = self.node_screen(node);
@@ -855,7 +861,8 @@ impl App {
         let s = self.scale_f();
         let (wx, wy) = self.to_world_f(px, py);
         let inside = |r: crate::doc::Rect| wx >= r.x as f32 && wx < (r.x + r.w) as f32 && wy >= r.y as f32 && wy < (r.y + r.h) as f32;
-        let mut order: Vec<&Node> = self.doc.nodes.iter().collect();
+        let concealed = self.concealed_now();
+        let mut order: Vec<&Node> = self.doc.nodes.iter().filter(|n| !concealed.contains_key(&n.id)).collect();
         order.sort_by_key(|n| self.selection.contains(&n.id));
         if let Some(node) = order.into_iter().rev().find(|n| inside(n.rect())) {
             return CanvasHit::Node(node.id.clone());
@@ -927,7 +934,8 @@ impl App {
 
     pub fn reveal_node(&mut self, id: &str) {
         let Some(node) = self.doc.node(id) else { return };
-        let (cx, cy) = node.rect().center();
+        // A stacked or hidden box: where it shows (its stack or visible ancestor).
+        let (cx, cy) = self.shown_center(id).unwrap_or_else(|| node.rect().center());
         self.center_on(cx, cy);
         self.flash = Some((id.to_owned(), Instant::now()));
     }
@@ -1308,7 +1316,7 @@ impl App {
             automation: None,
             synced_name: None,
             reviewed_ms: None,
-            mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None,
+            mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, stacked: false,
         });
         self.mark_dirty();
         self.notify(format!("“{}” started subsession “{name}”.", p.name), false);
@@ -1678,7 +1686,7 @@ impl App {
                     command: None,
                     fresh: false,
                     automation: None,
-                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None,
+                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, stacked: false,
                 };
                 let rect = node.rect();
                 index.insert(rect);
@@ -1770,7 +1778,7 @@ impl App {
                     command: None,
                     fresh: false,
                     automation: None,
-                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None,
+                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None, last_used_ms: None, stacked: false,
                 };
                 first.get_or_insert_with(|| node.id.clone());
                 ids.push(node.id.clone());
@@ -1952,6 +1960,7 @@ impl App {
         self.poll_git_debounce();
         self.tick_side();
         self.tick_inspector();
+        self.visual_tick();
         // Failed automations pulse until their next good run.
         let animated = self.doc.nodes.iter().any(|n| {
             let status = self.node_status(n);

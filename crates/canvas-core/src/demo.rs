@@ -25,7 +25,7 @@ pub fn demo_doc(cwd: &str) -> Doc {
         passive: None,
         no_messages: false,
         agent: None,
-        agent_session: None,
+        agent_session: None, last_used_ms: None, stacked: false,
     };
     let mut doc = Doc::default();
     doc.nodes.push(session("demo-main", "Build session canvas", 2, 2));

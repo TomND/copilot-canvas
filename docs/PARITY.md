@@ -104,6 +104,22 @@ not a front-end feature.
 | G4 | **Several windows.** Ctrl+Shift+N or the toolbar's ⧉ opens another window on the same canvas: its own `App`, connection and view preferences; the service's document sync keeps them consistent; the process ends with its last window | `second_window_rename_sync`: a rename in window 1 appears in window 2; closing window 2 leaves window 1 | ✓ |
 | — | **Pasted screenshots** are shown as a thumbnail with their size for 5 s (the agent attaches the image itself) | row 15 | ✓ |
 
+## Canvas visuals (rows V1–V5)
+
+Both front ends have these features (the TUI draws them as characters and
+switches without animation; the ViewModel snapshot tests `dusty-sessions`,
+`stacked-subsessions`, `hidden-subsessions` and `effects-reduced-motion`
+pin both renderings); the GUI-only parts (texture, transitions, particles,
+fixed-size chips) have these checks, on a separate canvas of the sandbox:
+
+| | Feature | How it is tested | ✓ |
+|---|---|---|---|
+| V1 | **Dust on unused sessions** (static; age in the box and the sidebar; *Select unused sessions*) | `dust_levels_and_select_unused`: boxes last used 0/5/20/90 days ago have dust 0/1/2/3, "unused 20d" in the status line, the ages in the sidebar; the canvas menu selects exactly the three unused ones | ✓ |
+| V2 | **Stacks and hidden subsessions** (animated, end states) | `stack_unstack_and_hide`: the session menu stacks; a frame mid-transition shows fading cards; the end state has one deck (the newest on top, +1) beneath the parent and the document says stacked; a double-click unstacks and the boxes are back at exactly the same places; `H` hides both (⋯ 2 hidden on the parent) and shows them in place | ✓ |
+| V3 | **Effects** (`copilot-canvas effect`, acknowledged by a click that starts nothing, animated only while visible) | `effect_fireworks_ack`: fireworks from the CLI appear with their badge; 26 frames in 2 s while they run (≤ 15 fps); a click on the box clears them here, in the service's state and so everywhere, selects the box and starts no session; 7–11 frames in 2 s afterwards (the canvas's loop arcs on their idle ticks) | ✓ |
+| V4 | **Group chips at any zoom; sidebar folder and passive rows** | `chips_low_zoom_and_sidebar`: the sidebar lists the folder (◧) and the passive session (⟲); at 25 % the title row has three fixed-size chips; ⟲ 1 opens the passive sessions menu and its item the panel (no session starts) | ✓ |
+| V5 | **Group files in remote mode** (`--remote loopback`) | `remote_group_files_in_canvas`: the ◧ AI docs chip opens the canvas's folder browser with the folder's files; a click on `notes.md` shows it in the read-only viewer; the passive panel's *Rules* shows the rules in the viewer; the service log shows no Explorer or program opened for the client | ✓ |
+
 ## Last run
 
 ```
@@ -146,7 +162,12 @@ G1   | New: inline images (Kitty graphics; iTerm2 OSC 1337 through C… | kitty_
 G2   | New: taskbar progress (ITaskbarList3), FlashWindowEx, toasts   | taskbar_flash_toasts (GUI only: a console h… | ✓
 G3   | New: file drag and drop (paths pasted; uploaded in remote mod… | drop_files_local (GUI only: a console canno… | ✓
 G4   | New: several windows on one canvas (Ctrl+Shift+N, toolbar)     | second_window_rename_sync (GUI only: a cons… | ✓
-PASS: 38 rows in 21.8s
+V1   | Dust: unused sessions dusty by age (static), age in the box … | dust_levels_and_select_unused (the TUI dims… | ✓
+V2   | Stacks: K or the menu stacks subsessions (animated), double-c… | stack_unstack_and_hide (the TUI switches wi… | ✓
+V3   | Effects: copilot-canvas effect on a box, animated ≤ 15 fps wh… | effect_fireworks_ack (the TUI shows a badge… | ✓
+V4   | Group chips at any zoom (folders, ⟲ passive), sidebar folder … | chips_low_zoom_and_sidebar (the TUI draws t… | ✓
+V5   | Remote mode: group folders in the canvas's browser, passive f… | remote_group_files_in_canvas (the TUI uses … | ✓
+PASS: 43 rows in 31.1s
 ```
 
 ## Limits of the checks

@@ -153,6 +153,9 @@ pub enum Request {
     /// `id`; the `last` piece answers the file's path (a free name from `name`).
     /// Files are at most [`MAX_UPLOAD`] bytes.
     Upload { name: String, id: String, offset: u64, data: String, last: bool },
+    /// A folder's entries for the canvas's folder browser: `..`, then
+    /// subfolders (ending in `\`), then files.
+    ListEntries { dir: String },
 }
 
 /// Largest file an upload writes.
@@ -349,6 +352,7 @@ impl Request {
             Request::RemoteRevoke { .. } => "revoke",
             Request::SetClipboardImage { .. } => "clipboard image",
             Request::Upload { .. } => "upload",
+            Request::ListEntries { .. } => "folder entries",
         }
     }
 
@@ -545,6 +549,10 @@ impl dyn Backend + '_ {
 
     pub fn list_dir(&self, dir: Option<String>) -> Result<Vec<String>> {
         self.texts(Request::ListDir { dir })
+    }
+
+    pub fn list_entries(&self, dir: &str) -> Result<Vec<String>> {
+        self.texts(Request::ListEntries { dir: dir.to_owned() })
     }
 
     pub fn path_info(&self, path: &str) -> Result<PathInfo> {

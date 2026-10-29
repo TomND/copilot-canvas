@@ -598,6 +598,9 @@ pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &R
                 actions.push(("Rules".into(), Action::PassiveOpen(id.clone(), 0)));
                 actions.push(("Memory".into(), Action::PassiveOpen(id.clone(), 1)));
                 actions.push(("Log".into(), Action::PassiveOpen(id.clone(), 2)));
+                actions.push(("Context".into(), Action::Visual(crate::visual::VisualAction::PassiveFile(id.clone(), 4))));
+                actions.push(("Goals".into(), Action::Visual(crate::visual::VisualAction::PassiveFile(id.clone(), 5))));
+                actions.push(("Folder".into(), Action::PassiveOpen(id.clone(), 3)));
                 actions.push(("Message…".into(), Action::MessagePassive(id.clone())));
                 actions.push(("Open chat".into(), Action::PassiveChat(id.clone())));
             }

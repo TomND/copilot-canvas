@@ -3,8 +3,7 @@
 view cursor=none modal=none banner=None
 canvas area=34,1 52x38 origin=-1.75,-0.5 scale=0.7 grid=true tick=0 empty=false
 group g-demo "Canvas project" icon=▣ members=4 rect=0,0 70x15 color=#56b4e9 style=[fg #56b4e9 +DIM] selected=false drop_target=false automations=false folder=false
-  chip " ◧ AI docs " outputs=false rect=44,0 11x1
-  chip " ◨ Outputs " outputs=true rect=56,0 11x1
+  chip " ◧ Set folder… " action=SetGroupFolder("g-demo") rect=52,0 15x1 fixed=false lit=false
 edge Subagent color=#6e7681 from=2,2 30x4 to=6,7 24x3 path=(4.5,6) (4.5,6.5) (8.5,6.5) (8.5,7)
 edge Subsession color=#58a6ff from=36,2 30x4 to=36,9 30x4 path=(38.5,6) (38.5,7.5) (38.5,7.5) (38.5,9)
 box demo-main:explore Agent rect=6,7 24x3 prefix="◇ " name="Explore terminal APIs"
@@ -25,15 +24,15 @@ box demo-main Session rect=2,2 30x4 prefix="" name="Build session canvas"
   selected=true focused_term=false active=false
 ## gpu screen (chrome and the model painted as text)
  ◆ Copilot Canvas  DEMO · native shells   + New   ▢ Single   ⤢ Fit   −   +   ?   ⧉   ⏻ Quit                                             3 sessions
-    SESSIONS                     │▌┌╌ ▣ Canvas project · 4 ╌╌╌╌╌╌╌ ◧ AI do ◨ Outputs  │┌─────────────────────────────────────────────────────────────┐
+    SESSIONS                     │▌┌╌ ▣ Canvas project · 4 ╌╌╌╌╌╌╌╌╌╌╌╌╌ ◧ Set folder…│┌─────────────────────────────────────────────────────────────┐
 ▌▤  / filter…                    │ ╎                                               ╎  ││ Build session canvas                                        │
                                  │ ╎ ■ Build session canv… ·■ Review implementat…  ╎  ││ ■ stopped                                                   │
  ◷  ▾ ▣ Canvas project         3 │ ╎ stopped                stopped                ╎  ││                                                             │
-      ■ Build session canvas     │ ╎                       ·                       ╎  ││ Agent      none (runs its command)                          │
- ⧉      ◇ ✓ Explore terminal AP… │ ╎   ✓ Explore termin…      ┊                    ╎  ││ Folder     C:\work\canvas                                   │
-      ■ Review implementation    │ ╎   just finished       ·  ┊·   ·   ·   ·   ·   ╎  ││                                                             │
- ⌁      ↳ ■ Write tests          │ ╎                        ■ Write tests          ╎  ││ Start runs its command in a new canvas terminal.            │
-                                 │ ╎   ·   ·   ·   ·   ·   ·stopped                ╎  ││ Double-click the box or press Enter to start it.            │
+      ◧ Set folder…              │ ╎                       ·                       ╎  ││ Agent      none (runs its command)                          │
+ ⧉    ■ Build session canvas     │ ╎   ✓ Explore termin…      ┊                    ╎  ││ Folder     C:\work\canvas                                   │
+        ◇ ✓ Explore terminal AP… │ ╎   just finished       ·  ┊·   ·   ·   ·   ·   ╎  ││                                                             │
+ ⌁    ■ Review implementation    │ ╎                        ■ Write tests          ╎  ││ Start runs its command in a new canvas terminal.            │
+        ↳ ■ Write tests          │ ╎   ·   ·   ·   ·   ·   ·stopped                ╎  ││ Double-click the box or press Enter to start it.            │
  ✦                               │ ╎                                               ╎  ││ S subsession · R rename · G group · X stop                  │
                                  │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌◢  ││                                                             │
  ◈                               │                                                    ││                                                             │

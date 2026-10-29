@@ -8,6 +8,7 @@ mod canvas;
 mod chrome;
 mod clipimage;
 mod crashlog;
+mod effects;
 mod gpu;
 mod hooks;
 mod images;

@@ -96,6 +96,7 @@ impl App {
             items.push(item("Inspect transcript", "", Action::Inspect(id.to_owned()), true));
         }
         items.push(item("New subsession", "S", Action::NewSession { at: None, parent: Some(id.to_owned()) }, true));
+        items.extend(self.visual_node_items(id));
         items.push(item("Rename", "R", Action::Rename(Target::Node(id.to_owned())), true));
         if !self.demo {
             items.push(item("MCP servers…", "", Action::McpServers(id.to_owned()), true));
@@ -146,21 +147,20 @@ impl App {
     }
 
     pub fn canvas_menu(&self, wx: i32, wy: i32) -> (String, Vec<MenuItem>) {
-        (
-            "Canvas".into(),
-            vec![
-                item("New session here", "N", Action::NewSession { at: Some((wx, wy)), parent: None }, true),
-                item("New group here", "", Action::NewGroupAt(wx, wy), true),
-                item("Import sessions…", "I", Action::ImportCopilot, !self.demo),
-                item("Sync VS Code sessions", "V", Action::SyncVs, !self.demo),
-                item(self.undo_label(), "Ctrl+Z", Action::UndoSync, self.undo.is_some()),
-                item("Migrate VS Code skills & settings…", "", Action::Migrate, !self.demo),
-                item("Fit everything", "F", Action::FitAll, true),
-                item(if self.doc.ui.tiled { "Single terminal view" } else { "Tile terminals" }, "T", Action::ToggleTiled, true),
-                item("Open in the other client", "O", Action::OpenOtherClient, true),
-                item("Help", "?", Action::Help, true),
-            ],
-        )
+        let mut items = vec![
+            item("New session here", "N", Action::NewSession { at: Some((wx, wy)), parent: None }, true),
+            item("New group here", "", Action::NewGroupAt(wx, wy), true),
+            item("Import sessions…", "I", Action::ImportCopilot, !self.demo),
+            item("Sync VS Code sessions", "V", Action::SyncVs, !self.demo),
+            item(self.undo_label(), "Ctrl+Z", Action::UndoSync, self.undo.is_some()),
+            item("Migrate VS Code skills & settings…", "", Action::Migrate, !self.demo),
+            item("Fit everything", "F", Action::FitAll, true),
+            item(if self.doc.ui.tiled { "Single terminal view" } else { "Tile terminals" }, "T", Action::ToggleTiled, true),
+            item("Open in the other client", "O", Action::OpenOtherClient, true),
+            item("Help", "?", Action::Help, true),
+        ];
+        items.splice(items.len() - 3..items.len() - 3, self.visual_canvas_items());
+        ("Canvas".into(), items)
     }
 
     pub fn tile_menu(&self, id: &str) -> (String, Vec<MenuItem>) {
@@ -304,10 +304,11 @@ impl App {
         }
     }
 
-    /// Shows a folder. Locally: File Explorer where the backend runs. Remote:
-    /// VS Code through the tunnel, else the viewer (with "Copy path").
+    /// Shows a folder. Locally: File Explorer where the backend runs. Remote
+    /// (any `--remote`, loopback included): VS Code through the tunnel, else
+    /// the canvas's folder browser (with "Copy path").
     pub fn open_folder(&mut self, path: &str) {
-        if self.files_elsewhere() {
+        if self.service_is_remote() {
             return self.open_remote(path, false);
         }
         if let Err(error) = self.backend.open_folder(path) {
@@ -317,7 +318,7 @@ impl App {
 
     /// A path on the service's machine: in VS Code through its tunnel
     /// (unless `view`), else in the viewer.
-    fn open_remote(&mut self, target: &str, view: bool) {
+    pub(crate) fn open_remote(&mut self, target: &str, view: bool) {
         let (path, line) = match crate::links::remote_path(target) {
             Ok(found) => found,
             Err(error) => return self.notify(format!("{error:#}"), true),
@@ -353,7 +354,7 @@ impl App {
         let key = path.clone();
         self.in_background(
             move |backend| match folder {
-                true => backend.list_dir(Some(path)).map(Err).map_err(|e| format!("{e:#}")),
+                true => crate::folders::list_entries(backend, &path).map(Err),
                 false => backend.read_text(&path, crate::viewer::MAX_VIEW_BYTES).map(Ok).map_err(|e| format!("{e:#}")),
             },
             move |loaded| {
@@ -365,7 +366,7 @@ impl App {
                         {
                             match &loaded {
                                 Ok(Ok(text)) => viewer.set_text(text, text.len() as u64 >= crate::viewer::MAX_VIEW_BYTES),
-                                Ok(Err(entries)) => viewer.set_entries(entries.clone()),
+                                Ok(Err((entries, typed))) => viewer.set_listing(entries.clone(), *typed),
                                 Err(error) => viewer.error = Some(format!("Cannot read it: {error}")),
                             }
                         }
@@ -778,7 +779,7 @@ impl App {
                     };
                     match which {
                         3 => self.open_folder(&path.display().to_string()),
-                        _ => self.open_link(&path.display().to_string()),
+                        _ => self.open_service_file(&path.display().to_string()),
                     }
                 }
             }
@@ -790,7 +791,7 @@ impl App {
             })),
             Action::OpenEvents(group) => match self.doc.group(&group).and_then(|g| g.folder.clone()) {
                 Some(folder) => match self.backend.ensure_catalog(&folder) {
-                    Ok(path) => self.open_link(&path),
+                    Ok(path) => self.open_service_file(&path),
                     Err(error) => self.notify(format!("{error:#}"), true),
                 },
                 None => self.notify("Set the group's folder first (group menu → Change group folder…).", true),
@@ -820,6 +821,7 @@ impl App {
             Action::Help => self.modals.push(Modal::Help),
             Action::Nothing => {}
             Action::NewWindow => self.new_window_requested = true,
+            Action::Visual(action) => self.run_visual(action),
             Action::OpenOtherClient => {
                 let args = self.other_client_args();
                 match self.platform.open_other_client(&args) {
@@ -1122,7 +1124,7 @@ impl App {
             passive: None,
             no_messages: false,
             agent: (!self.demo).then(|| agent.id().to_owned()),
-            agent_session: None,
+            agent_session: None, last_used_ms: None, stacked: false,
         };
         self.doc.mcp.last_off = crate::doc::normalize_off(&dialog.mcp_off);
         self.doc.nodes.push(node);

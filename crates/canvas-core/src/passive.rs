@@ -32,19 +32,21 @@ On pr.pushed, pr.updated or pr.commented:\n\
 2. Look at what changed: the pull request's latest commits or iteration and new comments (git or the Azure DevOps tools, read-only).\n\
 3. Flag drift: changes or comments that add scope the goals do not ask for, contradict them, or leave goals unaddressed. Review comments (AI or human) that push unrelated refactors or extra features count as drift.\n\
 4. Keep your memory short: the last commit or iteration you checked, and open concerns.\n\n\
-Report: `ok` when aligned; `warn` for small drift (send the session that owns the pull request a one-line note); `alert` for significant scope creep.\n\
+Report: `ok` when aligned; `warn` for small drift (send the session that owns the pull request a one-line note); `alert` for significant scope creep, and mark its box: `copilot-canvas effect attention --on \"<session name>\" --note \"scope creep: <in a few words>\"`.\n\
 Never comment on, vote on or change the pull request yourself.\n",
     },
     Template {
         name: "Rollout tracker",
-        about: "after a PR merges: follows its rollout daily, checks logs, alerts on problems",
-        subscribe: &["pr.merged"],
+        about: "after a PR merges: follows its rollout daily, checks logs, alerts on problems; fireworks for approvals",
+        subscribe: &["pr.merged", "pr.approved", "pr.changes_requested", "pr.commented"],
         every_minutes: 0,
         daily_at: "",
         rules: "# Rollout tracker\n\n\
 Job: after a pull request merges, follow its rollout until it is fully deployed, and alert on problems.\n\n\
 On pr.merged: record the pull request, repository and merge commit in your memory; work out how it ships (builds, releases, flights or ECS, rings) and which logs or dashboards show its health; then schedule `copilot-canvas followup --in 24h \"check rollout\"`.\n\n\
 On timer.followup (daily): check the rollout's progress and the related logs and errors; summarize the current stage in your memory; schedule the next follow-up. When it is fully rolled out with no issues, report `done`.\n\n\
+On pr.approved: celebrate on the box of the session that owns the pull request: `copilot-canvas effect fireworks --on \"<session name>\" --note \"PR <number> approved\"`.\n\
+On pr.changes_requested, or pr.commented with a reviewer's comment (not the session's own): `copilot-canvas effect attention --on \"<session name>\" --note \"PR <number>: <what the reviewer asks, in a few words>\"`. Effects stay until Thomas clicks them; do not repeat one for the same pull request and comment.\n\n\
 Report: `ok` with the current stage; `warn` for slow or stuck stages; `alert` for errors, regressions or rollbacks, and message the session that made the pull request.\n\
 Read-only: never change flights, releases or settings.\n",
     },
@@ -182,7 +184,8 @@ impl App {
         let Ok(event) = serde_json::from_value::<bus::Event>(value["event"].clone()) else { return };
         let targets: Vec<String> = value["targets"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_owned)).collect()).unwrap_or_default();
         let now = Instant::now();
-        for target in targets.iter().filter(|t| self.doc.node(t).is_some()) {
+        // A pulse needs somewhere to go (a box never pulses to itself).
+        for target in targets.iter().filter(|t| self.doc.node(t).is_some() && **t != event.source) {
             if self.doc.node(&event.source).is_some() {
                 self.pulses.push((event.source.clone(), target.clone(), now));
             }
@@ -316,7 +319,7 @@ impl App {
             no_messages: false,
             // Passive sessions (the automation doctor too) run the canvas's default agent.
             agent: Some(self.default_agent().id().to_owned()),
-            agent_session: None,
+            agent_session: None, last_used_ms: None, stacked: false,
         });
         self.mark_dirty();
         self.select_node(&id, false);

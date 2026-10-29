@@ -685,6 +685,47 @@ fn status_shots(shots: &mut Shots) -> Result<()> {
     result
 }
 
+/// The canvas visuals: dusty boxes (light, medium, heavy), a stack of two
+/// subsessions with an attention effect on a stacked one, fireworks on a box
+/// (frozen mid-burst), group chips and the sidebar's folder and passive rows.
+fn visual_shots(shots: &mut Shots) -> Result<()> {
+    let sb = crate::parity::Sandbox::new()?;
+    // Animated effects (held still by `freeze`) whatever this machine's setting.
+    // SAFETY: set before the GUI starts; nothing else reads it concurrently.
+    unsafe { std::env::set_var("COPILOT_CANVAS_EFFECTS", "on") };
+    let result = (|| -> Result<()> {
+        let canvas = crate::parity::visual::canvas(&sb.instance.home, &sb.work, &sb.group_folder, true, true)?;
+        let gui = sb.start(&["--canvas", &canvas.display().to_string()], "gui-golden-visuals.log")?;
+        let mut ui = gui.driver;
+        ui.wait("the visuals canvas", Duration::from_secs(30), |t| t.contains("Visual group"))?;
+        ui.request(json!({ "cmd": "freeze", "tick": 0 }))?;
+        ui.send(b"\x1b")?;
+        ui.send(b"f")?;
+        let effect = |args: &[&str]| crate::parity::visual::effect(&sb.exe, &sb.instance.home, &sb.instance.name, args);
+        effect(&["fireworks", "--on", "Fresh one", "--note", "PR !7 approved"])?;
+        effect(&["attention", "--on", "Child A", "--note", "2 comments"])?;
+        let waited = wait_tree(&ui, "the effects, the stack and the dust", 20, |t| {
+            let boxes = t["canvas"]["boxes"].as_array().cloned().unwrap_or_default();
+            t["canvas"]["effects"].as_array().is_some_and(|e| e.len() == 2)
+                && boxes.iter().any(|b| !b["deck"].is_null())
+                && boxes.iter().any(|b| b["dust"] == 3)
+                && t["selection"].as_array().is_some_and(Vec::is_empty)
+        });
+        if let Err(error) = waited {
+            let t = tree(&ui)?;
+            let boxes: Vec<String> = t["canvas"]["boxes"].as_array().into_iter().flatten().map(|b| format!("{} dust={} deck={}", b["name"], b["dust"], b["deck"])).collect();
+            anyhow::bail!("{error:#}: effects {} selection {} boxes {boxes:?}", t["canvas"]["effects"], t["selection"]);
+        }
+        shots.shot(&ui, "visuals", &|ui: &GuiDriver| [vec![status_figures()], automation_subtitles(ui).unwrap_or_default()].concat());
+        let _ = ui.request(json!({ "cmd": "quit" }));
+        let _ = ui.wait_exit(Duration::from_secs(10));
+        Ok(())
+    })();
+    crate::parity::stop_service(&sb.instance);
+    remove(&sb.root);
+    result
+}
+
 pub fn run(update: bool) -> Result<()> {
     let goldens = golden_dir()?;
     let captures = std::env::temp_dir().join(format!("copilot-canvas-golden-captures-{}", uuid::Uuid::new_v4()));
@@ -706,6 +747,9 @@ pub fn run(update: bool) -> Result<()> {
     }
     if let Err(error) = status_shots(&mut shots) {
         shots.failed("all-statuses session", error);
+    }
+    if let Err(error) = visual_shots(&mut shots) {
+        shots.failed("visuals session", error);
     }
     remove(&captures);
     println!();

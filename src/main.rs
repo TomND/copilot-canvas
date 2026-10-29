@@ -63,6 +63,7 @@ USAGE
                                         N live sessions from busy synthetic histories (M subagents each)
   copilot-canvas bench --client gui --perf-canvas FILE|synthetic
                                         panning a copy of a canvas file at 100, 50 and 25 %
+  copilot-canvas bench --client gui --effects   CPU and frame rate with effects in view, out of view, cleared
   copilot-canvas bench --client gui --burn N
                                         keystroke to present while N sessions burn CPU, with and
                                         without the priority manager
@@ -133,6 +134,10 @@ EVENTS (run by sessions on the canvas; see the canvas-events skill)
   copilot-canvas send --to NAME TEXT    message a session (typed in when it is idle)
   copilot-canvas status ok|warn|alert|done HEADLINE      (passive sessions)
   copilot-canvas followup --in 24h|--at 09:00 NOTE        (passive sessions)
+  copilot-canvas effect fireworks|attention|sparkle|alert --on NAME [--note TEXT]
+                                        an effect on a box of this session's group (or --on group)
+                                        until someone clicks it; effect clear --on NAME takes it off;
+                                        effect alone lists the effects collection
 
 AUTOMATIONS (scheduled tasks defined by manifests; folder: --dir, COPILOT_CANVAS_AUTOMATIONS,
              the canvas setting, or <home>/automations)
@@ -211,7 +216,7 @@ fn parse() -> Result<Args> {
             "--canvas" => args.canvas = Some(PathBuf::from(value("--canvas")?)),
             "--cwd" => args.cwd = Some(PathBuf::from(value("--cwd")?)),
             "--remote" => args.remote = Some(value("--remote")?),
-            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" => {
+            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" => {
                 args.flags.push(arg.trim_start_matches("--").to_owned())
             }
             "--" => {
@@ -418,6 +423,8 @@ fn real_main() -> Result<()> {
         ["send", text @ ..] => cli::send(&instance.home, &option("to").unwrap_or_default(), &text.join(" ")),
         ["status", state, headline @ ..] => cli::status(&instance.home, state, &headline.join(" ")),
         ["followup", note @ ..] => cli::followup(&instance.home, option("in"), option("at"), &note.join(" ")),
+        ["effect"] | ["effect", "list"] => cli::effect_list(),
+        ["effect", kind] => cli::effect(&instance.home, kind, option("on"), option("note"), option("kind")),
         ["automations"] | ["automations", "list"] => factory_cli::list(&dir()),
         ["automations", "show", name] => factory_cli::show(&dir(), name),
         ["automations", "import", names @ ..] => factory_cli::import(&dir(), &owned(names), option("family"), flag("force")),
@@ -527,6 +534,8 @@ fn real_main() -> Result<()> {
                 }
             } else if let Some(file) = option("perf-canvas") {
                 gui_bench::Probe::PerfCanvas(file)
+            } else if flag("effects") {
+                gui_bench::Probe::Effects
             } else if let Some(burn) = option("burn") {
                 gui_bench::Probe::Burn(burn.parse()?)
             } else {

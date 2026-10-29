@@ -289,6 +289,9 @@ impl App {
             no_messages: false,
             agent: Some(agent_of(&parent).id().to_owned()),
             agent_session: Some(native.clone()),
+            // A resume is a use.
+            last_used_ms: Some(crate::paths::now_ms()),
+            stacked: false,
         });
         self.resumed_children.insert(new_id.clone());
         self.mark_dirty();

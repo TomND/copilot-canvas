@@ -18,23 +18,23 @@ const MIN_LABEL: f32 = 9.0;
 /// Smallest compact line (logical px).
 const MIN_COMPACT: f32 = 6.5;
 
-struct Ctx<'a> {
-    model: &'a CanvasModel,
-    grid: &'a Grid,
-    clip: [f32; 4],
+pub(crate) struct Ctx<'a> {
+    pub(crate) model: &'a CanvasModel,
+    pub(crate) grid: &'a Grid,
+    pub(crate) clip: [f32; 4],
     /// DPI scale.
-    dpi: f32,
+    pub(crate) dpi: f32,
 }
 
 impl Ctx<'_> {
     /// World → physical px.
-    fn px(&self, wx: f32, wy: f32) -> (f32, f32) {
+    pub(crate) fn px(&self, wx: f32, wy: f32) -> (f32, f32) {
         let (x, y) = self.model.to_screen(wx, wy);
         (x * self.grid.cell_w, y * self.grid.cell_h)
     }
 
     /// A world rectangle in physical px, edges on whole pixels.
-    fn rect(&self, r: WRect) -> [f32; 4] {
+    pub(crate) fn rect(&self, r: WRect) -> [f32; 4] {
         let (x0, y0) = self.px(r.x, r.y);
         let (x1, y1) = self.px(r.right(), r.bottom());
         let (x0, y0, x1, y1) = (x0.round(), y0.round(), x1.round(), y1.round());
@@ -42,11 +42,11 @@ impl Ctx<'_> {
     }
 
     /// One world unit in px (horizontal, vertical).
-    fn unit(&self) -> (f32, f32) {
+    pub(crate) fn unit(&self) -> (f32, f32) {
         (self.model.scale * self.grid.cell_w, self.model.scale * self.grid.cell_h)
     }
 
-    fn visible(&self, r: [f32; 4], margin: f32) -> bool {
+    pub(crate) fn visible(&self, r: [f32; 4], margin: f32) -> bool {
         r[0] + r[2] + margin >= self.clip[0] && r[0] - margin <= self.clip[2] && r[1] + r[3] + margin >= self.clip[1] && r[1] - margin <= self.clip[3]
     }
 }
@@ -57,7 +57,7 @@ fn style_color(style: Style, default: Color) -> [u8; 3] {
     if style.add_modifier.contains(Modifier::DIM) { theme::mix(c, BG, 0.5) } else { c }
 }
 
-fn rgb(c: Color) -> [u8; 3] {
+pub(crate) fn rgb(c: Color) -> [u8; 3] {
     theme::rgb(c, theme::FG)
 }
 
@@ -84,26 +84,26 @@ pub fn paint(p: &mut Painter, grid: &Grid, model: &CanvasModel) {
         // A selected group is unmistakable: a heavier outline and a stronger tint.
         let (fill, border, width) = if group.selected { (0.12, 1.0, 3.0) } else if group.drop_target { (0.09, 1.0, 2.0) } else { (0.045, 0.55, 1.0) };
         p.under(layer, Quad::rounded(r[0], r[1], r[2], r[3], radius, theme::rgba(color, fill), theme::rgba(color, border), width * cx.dpi, clip));
-        // Title in the top row (the row that drags the group).
+        // Title in the top row (the row that drags the group), up to its chips.
         let size = label_px.max(9.0 * cx.dpi).min(uy.max(9.0 * cx.dpi) * 0.9);
         let title = format!("{} {} · {}", group.icon, group.name, group.members);
         let left = r[0] + (0.9 * ux).max(6.0 * cx.dpi);
-        let room = r[2] - (left - r[0]) - 6.0 * cx.dpi;
+        let chips_left = group.chips.first().map(|c| cx.rect(c.rect)[0]).unwrap_or(r[0] + r[2]);
+        let room = chips_left.min(r[0] + r[2]) - left - 6.0 * cx.dpi;
         if room > 20.0 * cx.dpi {
             let top = r[1] + ((uy.max(size * 1.3) - size * 1.3) / 2.0).max(2.0 * cx.dpi);
             p.text(layer, Spec::ui(&title, size).bold(true).fit(room), left, top, color, clip);
         }
-        if model.scale >= canvas_core::ui_canvas::CHIP_SCALE {
-            for chip in &group.chips {
-                let c = cx.rect(chip.rect);
-                let chip_color = if group.has_folder { color } else { rgb(paint::MUTED) };
-                let pad = 0.15 * uy;
-                p.under(scene::CANVAS_TOP, Quad::rounded(c[0], c[1] + pad, c[2], c[3] - 2.0 * pad, 4.0 * cx.dpi, theme::color(paint::PANEL, 1.0), theme::rgba(chip_color, 0.7), cx.dpi, clip));
-                let (key, width) = p.shape(Spec::ui(chip.label.trim(), grid.font_px * 0.9));
-                let scale = model.scale;
-                let size = grid.font_px * 0.9 * scale;
-                p.place(scene::CANVAS_TOP, key, c[0] + (c[2] - width * scale) / 2.0, c[1] + (c[3] - size * 1.3) / 2.0, scale, chip_color, clip);
-            }
+        for chip in &group.chips {
+            let c = cx.rect(chip.rect);
+            let chip_color = if chip.lit { color } else { rgb(paint::MUTED) };
+            let pad = if chip.fixed { 0.1 * grid.cell_h } else { 0.15 * uy };
+            p.under(scene::CANVAS_TOP, Quad::rounded(c[0], c[1] + pad, c[2], c[3] - 2.0 * pad, 4.0 * cx.dpi, theme::color(paint::PANEL, 1.0), theme::rgba(chip_color, 0.7), cx.dpi, clip));
+            // World chips scale with the zoom; zoomed out they keep a readable size.
+            let scale = if chip.fixed { 0.85 } else { model.scale };
+            let (key, width) = p.shape(Spec::ui(chip.label.trim(), grid.font_px * 0.9));
+            let size = grid.font_px * 0.9 * scale;
+            p.place(scene::CANVAS_TOP, key, c[0] + (c[2] - width * scale) / 2.0, c[1] + (c[3] - size * 1.3) / 2.0, scale, chip_color, clip);
         }
         if readable && model.scale >= 0.6 {
             for (fx, fy, family) in &group.families {
@@ -143,19 +143,29 @@ pub fn paint(p: &mut Painter, grid: &Grid, model: &CanvasModel) {
     let top_boxes = scene::BOXES + levels.iter().copied().max().unwrap_or(0);
     for (b, level) in model.boxes.iter().zip(&levels) {
         let r = cx.rect(b.rect);
-        if !cx.visible(r, 4.0 * ux) {
+        if !cx.visible(r, 4.0 * ux) || b.alpha <= 0.01 {
             continue;
         }
-        let border = style_color(b.border_style, paint::TEXT);
+        // Boxes flying into a stack (or out of it) fade with their alpha.
+        let alpha = b.alpha.clamp(0.0, 1.0);
+        let fade = |c: [u8; 3]| if alpha >= 1.0 { c } else { theme::mix(BG, c, alpha) };
+        let border = fade(style_color(b.border_style, paint::TEXT));
         let agent = b.kind == BoxKind::Agent;
         // A box's fill and labels share a layer, above the boxes it overlaps;
         // selected boxes (the ones being dragged) go above them all.
         let layer = if b.selected { scene::CANVAS_TOP } else { scene::BOXES + level };
         let inside = [r[0].max(clip[0]), r[1].max(clip[1]), (r[0] + r[2]).min(clip[2]), (r[1] + r[3]).min(clip[3])];
         let radius = if agent { (0.25 * uy).clamp(2.0, 6.0 * cx.dpi) } else { (0.45 * uy).clamp(2.0, 10.0 * cx.dpi) };
-        let fill = theme::rgba(rgb(b.fill), 1.0);
+        let fill = theme::rgba(rgb(b.fill), alpha);
         let thin = cx.dpi.max(1.0);
-        let edge = theme::rgba(border, 1.0);
+        let edge = theme::rgba(border, alpha);
+        if let Some(deck) = &b.deck {
+            // The cards behind the top one peek out right and below.
+            for i in (1..=deck.back).rev() {
+                let o = i as f32 * (0.55 * ux).clamp(3.0 * cx.dpi, 9.0 * cx.dpi);
+                p.under(layer, Quad::rounded(r[0] + o, r[1] + o * 0.9, r[2], r[3], radius, theme::rgba(theme::mix(rgb(paint::PANEL), BG, 0.25 * i as f32), alpha), theme::rgba(rgb(paint::MUTED), 0.8 * alpha), thin, clip));
+            }
+        }
         match b.border {
             Border::Heavy => p.under(layer, Quad::rounded(r[0], r[1], r[2], r[3], radius, fill, edge, 2.5 * thin, clip)),
             Border::Double => {
@@ -168,19 +178,22 @@ pub fn paint(p: &mut Painter, grid: &Grid, model: &CanvasModel) {
             Border::Dashed => p.under(layer, Quad::rounded(r[0], r[1], r[2], r[3], radius, fill, edge, 1.2 * thin, clip).dashed(7.0 * thin)),
             Border::Round | Border::Light => p.under(layer, Quad::rounded(r[0], r[1], r[2], r[3], radius, fill, edge, thin, clip)),
         }
+        if b.dust > 0 {
+            dust(p, &cx, layer, r, b.dust, &b.id, inside);
+        }
         let pad_x = (0.9 * ux).max(3.0 * cx.dpi);
         let width = r[2] - 2.0 * pad_x;
         if readable {
             let lines = if b.rect.h >= 4.0 { 3 } else { 2 };
             let row = |i: usize| r[1] + (0.35 + i as f32) * uy;
             let at = |i: usize, dx: f32| (layer, r[0] + pad_x + dx, row(i), inside);
-            label(p, &cx, &format!("{}{}", b.prefix, b.name), true, 1.0, at(0, 0.0), width, style_color(b.name_style, paint::TEXT));
-            let used = label(p, &cx, &b.line, b.line_style.add_modifier.contains(Modifier::BOLD), 0.92, at(1, 0.0), width, style_color(b.line_style, paint::TEXT));
+            label(p, &cx, &format!("{}{}", b.prefix, b.name), true, 1.0, at(0, 0.0), width, fade(style_color(b.name_style, paint::TEXT)));
+            let used = label(p, &cx, &b.line, b.line_style.add_modifier.contains(Modifier::BOLD), 0.92, at(1, 0.0), width, fade(style_color(b.line_style, paint::TEXT)));
             if b.elsewhere && used < width - 20.0 * cx.dpi {
-                label(p, &cx, " · ↗ elsewhere", false, 0.92, at(1, used), width - used, rgb(paint::PURPLE));
+                label(p, &cx, " · ↗ elsewhere", false, 0.92, at(1, used), width - used, fade(rgb(paint::PURPLE)));
             }
             if lines == 3 {
-                label(p, &cx, &b.subtitle, false, 0.85, at(2, 0.0), width, rgb(paint::MUTED));
+                label(p, &cx, &b.subtitle, false, 0.85, at(2, 0.0), width, fade(rgb(paint::MUTED)));
             }
         } else if r[3] >= 9.0 * cx.dpi && r[2] >= 24.0 * cx.dpi {
             // One compact line, at a size the box can hold.
@@ -189,16 +202,33 @@ pub fn paint(p: &mut Painter, grid: &Grid, model: &CanvasModel) {
             let text = format!("{} {}", b.icon, b.name);
             let (key, _) = p.shape(Spec::ui(&text, grid.font_px).bold(b.attention.is_some() || b.selected).fit((r[2] - 6.0 * cx.dpi) / k));
             let color = b.attention.map(|(c, _)| rgb(c)).unwrap_or_else(|| style_color(b.name_style, paint::TEXT));
-            p.place(layer, key, r[0] + 3.0 * cx.dpi, r[1] + (r[3] - grid.font_px * k * 1.3) / 2.0, k, color, inside);
+            p.place(layer, key, r[0] + 3.0 * cx.dpi, r[1] + (r[3] - grid.font_px * k * 1.3) / 2.0, k, fade(color), inside);
         } else if r[2] >= 6.0 && r[3] >= 4.0 {
             // Shapes only: a status dot.
             let d = (r[3] * 0.32).min(4.0 * cx.dpi).max(1.0);
             let color = b.attention.map(|(c, _)| rgb(c)).unwrap_or_else(|| style_color(b.line_style, paint::TEXT));
-            p.under(layer, Quad::rounded(r[0] + d * 1.5, r[1] + r[3] / 2.0 - d, 2.0 * d, 2.0 * d, d, theme::rgba(color, 1.0), [0.0; 4], 0.0, clip));
+            p.under(layer, Quad::rounded(r[0] + d * 1.5, r[1] + r[3] / 2.0 - d, 2.0 * d, 2.0 * d, d, theme::rgba(color, alpha), [0.0; 4], 0.0, clip));
         }
-        if b.mailbox > 0 && model.scale >= 0.3 {
+        if b.mailbox > 0 && model.scale >= 0.3 && alpha >= 1.0 {
             badge(p, &cx, r, b.mailbox);
         }
+        if model.scale >= 0.2 && alpha >= 1.0 {
+            if let Some(deck) = b.deck.as_ref().filter(|d| d.count > 1) {
+                pill(p, &cx, (r[0] + r[2] - 1.5 * ux, r[1]), true, &format!("+{}", deck.count - 1), rgb(paint::ACCENT));
+            }
+            if let Some((count, color)) = b.hidden {
+                // Neutral unless a hidden one needs attention (then its colour).
+                let (bg, fg) = match color {
+                    Some(color) => (rgb(color), rgb(paint::PANEL)),
+                    None => (rgb(paint::PANEL_HI), rgb(paint::TEXT)),
+                };
+                pill_with(p, &cx, (r[0] + r[2] - 1.5 * ux, r[1] + r[3]), true, &format!("⋯ {count} hidden"), bg, fg);
+            }
+        }
+    }
+
+    for effect in &model.effects {
+        crate::effects::paint(p, &cx, effect, model.motion);
     }
 
     for lp in &model.loops {
@@ -290,6 +320,73 @@ fn dots(p: &mut Painter, cx: &Ctx) {
     }
 }
 
+/// A pill-shaped badge centred on a box edge point; `right`: it ends there.
+pub(crate) fn pill(p: &mut Painter, cx: &Ctx, (x, y): (f32, f32), right: bool, text: &str, bg: [u8; 3]) {
+    pill_with(p, cx, (x, y), right, text, bg, rgb(paint::PANEL));
+}
+
+/// A pill with its own text colour.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pill_with(p: &mut Painter, cx: &Ctx, (x, y): (f32, f32), right: bool, text: &str, bg: [u8; 3], fg: [u8; 3]) {
+    let size = (cx.grid.font_px * cx.model.scale * 0.8).clamp(8.0 * cx.dpi, cx.grid.font_px * 0.9);
+    let (key, width) = p.shape(Spec::ui(text, size).bold(true));
+    let (w, h) = (width + size * 0.9, size * 1.35);
+    let left = if right { x - w } else { x };
+    p.under(scene::CANVAS_TOP, Quad::rounded(left, y - h / 2.0, w, h, h / 2.0, theme::rgba(bg, 1.0), [0.0; 4], 0.0, cx.clip));
+    p.place(scene::CANVAS_TOP, key, left + (w - width) / 2.0, y - h / 2.0 + (h - size * 1.3) / 2.0, 1.0, fg, cx.clip);
+}
+
+/// A small, stable hash of a box id (dust and effects place their specks with it).
+pub(crate) fn seed(id: &str) -> u32 {
+    id.bytes().fold(2_166_136_261u32, |h, b| (h ^ b as u32).wrapping_mul(16_777_619))
+}
+
+/// A pseudo-random number in 0..1 from a seed and an index.
+pub(crate) fn noise(seed: u32, i: u32) -> f32 {
+    let mut x = seed ^ i.wrapping_mul(0x9e37_79b9);
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x7feb_352d);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x846c_a68b);
+    x ^= x >> 16;
+    (x & 0xff_ffff) as f32 / 0x100_0000 as f32
+}
+
+/// Dust on an unused session's box (static): specks over its body and a
+/// cobweb in the top-right corner, both growing with the level.
+fn dust(p: &mut Painter, cx: &Ctx, layer: usize, r: [f32; 4], level: u8, id: &str, clip: [f32; 4]) {
+    let (ux, uy) = cx.unit();
+    let level = level.clamp(1, 3) as usize;
+    let s = seed(id);
+    let speck = theme::rgba([150, 146, 136], [0.28, 0.36, 0.46][level - 1]);
+    let d = (0.08 * uy).clamp(0.7 * cx.dpi, 1.6 * cx.dpi);
+    for i in 0..[7u32, 16, 30][level - 1] {
+        let (x, y) = (r[0] + 2.0 * d + noise(s, i) * (r[2] - 4.0 * d), r[1] + 2.0 * d + noise(s, i + 997) * (r[3] - 4.0 * d));
+        let size = d * (0.6 + noise(s, i + 31) * 0.8);
+        p.under(layer, Quad::rounded(x - size, y - size, 2.0 * size, 2.0 * size, size, speck, [0.0; 4], 0.0, clip));
+    }
+    // The cobweb: threads from the corner and a few arcs across them.
+    let web = theme::rgba([182, 178, 168], [0.30, 0.38, 0.48][level - 1]);
+    let len = [1.1f32, 1.9, 2.8][level - 1] * ux.min(uy * 2.0).max(4.0 * cx.dpi);
+    let corner = (r[0] + r[2] - 1.5 * cx.dpi, r[1] + 1.5 * cx.dpi);
+    let width = (0.6 * cx.dpi).max(0.8);
+    let angles = [0.0f32, 0.42, 0.85, 1.25, std::f32::consts::FRAC_PI_2];
+    let point = |a: f32, l: f32| (corner.0 - l * a.cos(), corner.1 + l * a.sin() * 0.75);
+    for a in angles {
+        p.under(layer, Quad::line(corner, point(a, len), width, web, 0.0, clip));
+    }
+    for ring in 1..=level + 1 {
+        let l = len * ring as f32 / (level + 1) as f32;
+        for pair in angles.windows(2) {
+            // A thread that sags a little between two spokes.
+            let (a, b) = (point(pair[0], l), point(pair[1], l));
+            let mid = point((pair[0] + pair[1]) / 2.0, l * 0.9);
+            p.under(layer, Quad::line(a, mid, width, web, 0.0, clip));
+            p.under(layer, Quad::line(mid, b, width, web, 0.0, clip));
+        }
+    }
+}
+
 fn badge(p: &mut Painter, cx: &Ctx, r: [f32; 4], count: u32) {
     let size = (cx.grid.font_px * cx.model.scale * 0.85).max(8.0 * cx.dpi);
     let text = format!("✉ {count}");
@@ -318,7 +415,7 @@ fn along(points: &[(f32, f32)], t: f32) -> Option<(f32, f32)> {
     points.last().copied()
 }
 
-fn glow_dot(p: &mut Painter, layer: usize, (x, y): (f32, f32), r: f32, color: [u8; 3], clip: [f32; 4]) {
+pub(crate) fn glow_dot(p: &mut Painter, layer: usize, (x, y): (f32, f32), r: f32, color: [u8; 3], clip: [f32; 4]) {
     let g = r * 2.2;
     p.under(layer, Quad::rounded(x - g, y - g, 2.0 * g, 2.0 * g, g, theme::rgba(color, 0.22), [0.0; 4], 0.0, clip));
     p.under(layer, Quad::rounded(x - r, y - r, 2.0 * r, 2.0 * r, r, theme::rgba(color, 1.0), [0.0; 4], 0.0, clip));
@@ -437,6 +534,10 @@ mod tests {
             active: false,
             every: None,
             mailbox: 0,
+            dust: 0,
+            alpha: 1.0,
+            deck: None,
+            hidden: None,
         };
         let boxes = [model("a", 0.0, 0.0), model("b", 10.0, 2.0), model("c", 100.0, 0.0), model("d", 20.0, 3.0), model("e", 25.0, 3.5)];
         assert_eq!(box_levels(&boxes), [0, 1, 0, 2, 2], "capped at the top level");

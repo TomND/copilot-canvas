@@ -143,6 +143,8 @@ pub enum ItemRef {
     ConfigAgent,
     /// The canvas's agent for new sessions.
     DefaultAgent,
+    /// Dust and effects settings.
+    Visual(crate::visual::VisualSetting),
 }
 
 #[derive(Clone, Debug)]
@@ -457,6 +459,8 @@ impl App {
                     let minutes = self.doc.idle_stop_minutes;
                     let value = if minutes == 0 { "never".to_owned() } else { format!("after {minutes} min idle") };
                     rows.push(ListRow::row(ItemRef::IdleStop, "›", TEXT, "Stop idle sessions", value));
+                    rows.push(ListRow::header("Canvas"));
+                    rows.extend(self.visual_setting_rows());
                     rows.push(ListRow::header("Automations"));
                     rows.push(ListRow::row(ItemRef::AutomationsDir, "›", TEXT, "Manifest folder", self.automations_folder.clone()));
                 }
@@ -633,6 +637,7 @@ impl App {
                 }
                 self.mark_dirty();
             }
+            ItemRef::Visual(setting) => self.visual_setting(setting),
             ItemRef::Header | ItemRef::Info => {}
         }
         self.needs_draw = true;
@@ -653,7 +658,7 @@ impl App {
             ItemRef::Plugin(name) => self.set_config_enabled(Kind::Plugin, name.clone(), !enabled_now(Kind::Plugin, &name)),
             ItemRef::Mcp(name) => self.set_config_enabled(Kind::Mcp, name.clone(), !enabled_now(Kind::Mcp, &name)),
             ItemRef::Skill(name) => self.set_config_enabled(Kind::Skill, name.clone(), !enabled_now(Kind::Skill, &name)),
-            ItemRef::VsArchived | ItemRef::VsCliSessions | ItemRef::VsAuto | ItemRef::IdleStop | ItemRef::ConfigAgent | ItemRef::DefaultAgent => self.list_activate(index),
+            ItemRef::VsArchived | ItemRef::VsCliSessions | ItemRef::VsAuto | ItemRef::IdleStop | ItemRef::ConfigAgent | ItemRef::DefaultAgent | ItemRef::Visual(_) => self.list_activate(index),
             _ => {}
         }
     }
@@ -916,7 +921,7 @@ impl App {
             command: Some(command),
             fresh: true,
             automation: None,
-            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None,
+            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, stacked: false,
         });
         self.select_node(&id, false);
         self.launch(&id);
@@ -1179,7 +1184,7 @@ impl App {
                 command: None,
                 fresh: false,
                 automation: Some(key),
-                synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None,
+                synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, stacked: false,
             });
         }
     }
@@ -1475,7 +1480,7 @@ impl App {
             fresh: false,
             automation: None,
             synced_name,
-            reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None,
+            reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None, last_used_ms: None, stacked: false,
         });
     }
 
