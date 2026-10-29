@@ -234,4 +234,95 @@ mod tests {
         app.clear_selection();
         assert!(app.right_detail.is_none() && app.selection.is_empty());
     }
+
+    fn mouse(app: &mut App, kind: crate::input::MouseEventKind, x: f32, y: f32, mods: crate::input::Modifiers) {
+        app.on_mouse(crate::input::MouseEvent::at(kind, x, y, mods));
+    }
+
+    fn click(app: &mut App, x: f32, y: f32) {
+        use crate::input::{Modifiers, MouseButton, MouseEventKind};
+        mouse(app, MouseEventKind::Down(MouseButton::Left), x, y, Modifiers::NONE);
+        mouse(app, MouseEventKind::Up(MouseButton::Left), x, y, Modifiers::NONE);
+    }
+
+    /// The demo canvas (group g-demo at world 0,0 70 x 15; boxes inside) with
+    /// a nested group, on a 100 x 40 canvas at the origin.
+    fn groups_app(gpu: bool) -> (App, Receiver<ClientMsg>) {
+        let mut doc = crate::demo::demo_doc(".");
+        doc.groups.push(crate::doc::Group { id: "g-inner".into(), name: "Inner".into(), x: 2, y: 10, w: 30, h: 4, ..Default::default() });
+        doc.view.x = 0;
+        doc.view.y = 0;
+        let (tx, sent) = bounded(256);
+        let (_service, service_rx) = bounded(1);
+        let (app_tx, _app_rx) = unbounded();
+        let mut app = App::new(Conn::detached(tx, service_rx), Arc::new(crate::rpc::Offline), Opened::detached(doc), true, ".".into(), app_tx, None);
+        app.layout.canvas = ratatui::layout::Rect::new(0, 0, 100, 40);
+        if gpu {
+            app.render_mode = crate::view::RenderMode::Gpu;
+            app.view_scale = 1.0;
+        }
+        app.selection.clear();
+        (app, sent)
+    }
+
+    #[test]
+    fn a_click_on_a_groups_background_or_border_selects_the_innermost_group() {
+        use crate::app::CanvasHit;
+        for gpu in [false, true] {
+            let (mut app, sent) = groups_app(gpu);
+            // Empty interior of the outer group (no box or nested group at world 34, 13).
+            click(&mut app, 34.5, 13.5);
+            assert_eq!(app.selected_group.as_deref(), Some("g-demo"), "gpu {gpu}");
+            // The nested group's interior and its left border: the inner one.
+            app.clear_selection();
+            click(&mut app, 15.5, 12.5);
+            assert_eq!(app.selected_group.as_deref(), Some("g-inner"), "gpu {gpu}");
+            app.clear_selection();
+            click(&mut app, 2.5, 11.5);
+            assert_eq!(app.selected_group.as_deref(), Some("g-inner"), "the inner group's border, gpu {gpu}");
+            // The outer group's bottom border row and left border column.
+            app.clear_selection();
+            click(&mut app, 40.5, 14.5);
+            assert_eq!(app.selected_group.as_deref(), Some("g-demo"), "bottom border, gpu {gpu}");
+            app.clear_selection();
+            click(&mut app, 0.5, 9.5);
+            assert_eq!(app.selected_group.as_deref(), Some("g-demo"), "left border, gpu {gpu}");
+            // Outside every group: the selection clears.
+            click(&mut app, 90.5, 30.5);
+            assert!(app.selected_group.is_none() && app.selection.is_empty());
+            assert!(!sent.try_iter().any(|m| matches!(m, ClientMsg::Launch { .. })), "nothing launches");
+            // Boxes, titles and the resize corner keep their meaning.
+            assert!(matches!(app.canvas_hit(5, 4), CanvasHit::Node(id) if id == "demo-main"));
+            assert!(matches!(app.canvas_hit(10, 0), CanvasHit::GroupTitle(id) if id == "g-demo"));
+            assert!(matches!(app.canvas_hit(69, 14), CanvasHit::GroupResize(id) if id == "g-demo"));
+        }
+        // The GUI's border is hit a few pixels outside the outline too, not further.
+        let (app, _sent) = groups_app(true);
+        assert!(matches!(app.canvas_hit_f((70.3, 9.5)), CanvasHit::GroupBody(id) if id == "g-demo"));
+        assert!(matches!(app.canvas_hit_f((5.5, 15.2)), CanvasHit::GroupBody(id) if id == "g-demo"));
+        assert!(matches!(app.canvas_hit_f((71.0, 9.5)), CanvasHit::Empty));
+    }
+
+    #[test]
+    fn group_background_gestures_still_pan_and_double_click_creates_a_session() {
+        use crate::input::{Modifiers, MouseButton, MouseEventKind};
+        let (mut app, _sent) = groups_app(false);
+        // A drag pans (and selects nothing).
+        let view = (app.doc.view.x, app.doc.view.y);
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 20.5, 12.5, Modifiers::NONE);
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 25.5, 13.5, Modifiers::NONE);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), 25.5, 13.5, Modifiers::NONE);
+        assert_ne!((app.doc.view.x, app.doc.view.y), view, "panned");
+        assert!(app.selected_group.is_none());
+        // Shift-drag is a rubber band.
+        app.last_click = None;
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 20.5, 12.5, Modifiers::SHIFT);
+        assert!(matches!(app.drag, Some(crate::app::Drag::Rubber { .. })));
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), 20.5, 12.5, Modifiers::SHIFT);
+        // A double-click on the background asks for a new session there.
+        app.last_click = None;
+        click(&mut app, 20.5, 12.5);
+        click(&mut app, 20.5, 12.5);
+        assert!(matches!(app.modals.last(), Some(crate::dialogs::Modal::NewSession(_))));
+    }
 }

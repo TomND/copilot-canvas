@@ -1396,6 +1396,91 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         Ok("menu “Remove 2 from canvas” on a 3-box selection; confirmation names the running one; history kept; Ctrl+Z restored both".into())
     });
 
+    check(rows, "37", "New: a click on a group's background or border selects it; title drag, ◢ resize, chips and double-click keep working", "group_background_and_border_select", || {
+        gui.canvas_focus()?;
+        gui.send("f")?;
+        gui.key("Esc", &[])?;
+        // The single view, where a selected group shows its panel.
+        if gui.screen().contains("▦ Tiled") {
+            gui.send("t")?;
+        }
+        let rect = |t: &Value, path: &str, id: &str| -> Option<[f64; 4]> {
+            let items = t["canvas"][path].as_array()?;
+            let found = items.iter().find(|g| g["id"] == id)?;
+            let r: Vec<f64> = found["rect"].as_array()?.iter().filter_map(|v| v.as_f64()).collect();
+            (r.len() == 4).then(|| [r[0], r[1], r[2], r[3]])
+        };
+        let selected = |t: &Value| t["canvas"]["groups"].as_array().is_some_and(|g| g.iter().any(|g| g["id"] == "g-parity" && g["selected"] == true));
+        let tree = gui.tree()?;
+        let g = rect(&tree, "groups", "g-parity").context("the group in view")?;
+        let boxes: Vec<[f64; 4]> = tree["canvas"]["boxes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|b| b["rect"].as_array().map(|r| r.iter().filter_map(|v| v.as_f64()).collect::<Vec<_>>()))
+            .filter(|r| r.len() == 4)
+            .map(|r| [r[0], r[1], r[2], r[3]])
+            .collect();
+        let free = |x: f64, y: f64| !boxes.iter().any(|b| x >= b[0] - 0.5 && x < b[0] + b[2] + 0.5 && y >= b[1] - 0.5 && y < b[1] + b[3] + 0.5);
+        // An empty spot of its background (below the title, away from boxes and the ◢ corner).
+        let spot = (0..((g[3] - 2.0).max(0.0) as usize))
+            .flat_map(|dy| (0..((g[2] - 3.0).max(0.0) as usize)).map(move |dx| (g[0] + 1.5 + dx as f64, g[1] + 1.5 + dy as f64)))
+            .find(|(x, y)| free(*x, *y))
+            .context("no empty spot in the group")?;
+        let before = std::fs::read_to_string(sb.instance.log_path()).unwrap_or_default().matches("launched ").count();
+        gui.click(spot, &[])?;
+        gui.wait_tree("selected by its background", 5, |t| selected(t) && t["selection"].as_array().is_some_and(Vec::is_empty))?;
+        gui.wait("its panel", 5, |t| t.contains("Del: delete group"))?;
+        // Just outside its left outline (a few pixels) is its border too.
+        gui.key("Esc", &[])?;
+        gui.wait_tree("cleared", 5, |t| !selected(t))?;
+        let area: Vec<f64> = gui.tree()?["canvas"]["area"].as_array().map(|a| a.iter().filter_map(|v| v.as_f64()).collect()).unwrap_or_default();
+        // Its left outline, or its bottom one when the left is at the canvas's edge.
+        let border = if g[0] - 0.2 > area.first().copied().unwrap_or(0.0) + 0.3 { (g[0] - 0.2, g[1] + g[3] / 2.0) } else { (g[0] + g[2] / 2.0, g[1] + g[3] + 0.15) };
+        anyhow::ensure!(free(border.0, border.1), "the border at {border:?} is covered");
+        gui.click(border, &[])?;
+        gui.wait_tree("selected by its border", 5, selected)?;
+        anyhow::ensure!(std::fs::read_to_string(sb.instance.log_path()).unwrap_or_default().matches("launched ").count() == before, "a group click launched something");
+        // A drag on its background pans (and selects nothing).
+        gui.key("Esc", &[])?;
+        let origin = gui.tree()?["canvas"]["origin"].clone();
+        gui.drag("left", spot, (spot.0 + 3.0, spot.1 + 1.0), &[])?;
+        let tree = gui.tree()?;
+        anyhow::ensure!(tree["canvas"]["origin"] != origin && !selected(&tree), "a background drag pans");
+        // Title drag, ◢ resize and the folder chips are as before.
+        let g = rect(&gui.tree()?, "groups", "g-parity").context("group")?;
+        let doc = sb.doc()?;
+        let group = doc.groups.iter().find(|x| x.id == "g-parity").cloned().context("group")?;
+        gui.drag("left", (g[0] + 3.5, g[1] + 0.5), (g[0] + 5.5, g[1] + 0.5), &[])?;
+        wait_doc(&sb.canvas, "moved by its title", |d| d.groups.iter().any(|x| x.id == "g-parity" && x.x != group.x))?;
+        let g = rect(&gui.tree()?, "groups", "g-parity").context("group")?;
+        let corner = (g[0] + g[2] - 0.5, g[1] + g[3] - 0.5);
+        gui.drag("left", corner, (corner.0 + 2.0, corner.1 + 1.0), &[])?;
+        wait_doc(&sb.canvas, "resized by ◢", |d| d.groups.iter().any(|x| x.id == "g-parity" && (x.w, x.h) != (group.w, group.h)))?;
+        anyhow::ensure!(gui.tree()?["hits"].as_array().is_some_and(|h| h.iter().any(|h| h["hit"].as_str().is_some_and(|s| s.contains("OpenGroupFolder")))), "folder chips are clickable");
+        // A double-click on the background still creates a session there.
+        let tree = gui.tree()?;
+        let g = rect(&tree, "groups", "g-parity").context("group")?;
+        let boxes: Vec<[f64; 4]> = tree["canvas"]["boxes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|b| b["rect"].as_array().map(|r| r.iter().filter_map(|v| v.as_f64()).collect::<Vec<_>>()))
+            .filter(|r| r.len() == 4)
+            .map(|r| [r[0], r[1], r[2], r[3]])
+            .collect();
+        let free = |x: f64, y: f64| !boxes.iter().any(|b| x >= b[0] - 0.5 && x < b[0] + b[2] + 0.5 && y >= b[1] - 0.5 && y < b[1] + b[3] + 0.5);
+        let spot = (0..((g[3] - 2.0).max(0.0) as usize))
+            .flat_map(|dy| (0..((g[2] - 3.0).max(0.0) as usize)).map(move |dx| (g[0] + 1.5 + dx as f64, g[1] + 1.5 + dy as f64)))
+            .find(|(x, y)| free(*x, *y))
+            .context("no empty spot in the group")?;
+        gui.double_click(spot)?;
+        gui.wait("the new-session dialog", 5, |t| t.contains("New session") && t.contains("Folder"))?;
+        gui.key("Esc", &[])?;
+        gui.canvas_focus()?;
+        Ok(format!("background at {spot:?} and the border selected it (panel); background drag pans; title, ◢, chips, double-click unchanged"))
+    });
+
     check_kind(rows, "G4", "New: several windows on one canvas (Ctrl+Shift+N, toolbar)", "second_window_rename_sync", Kind::Only("GUI only: a console has one window"), || {
         let opened = gui.req(json!({ "cmd": "new_window" }))?;
         let window = opened["window"].as_u64().context("window index")? as usize;

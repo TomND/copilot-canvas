@@ -80,9 +80,9 @@ pub fn paint(p: &mut Painter, grid: &Grid, model: &CanvasModel) {
             continue;
         }
         let color = rgb(group.color);
-        let strong = group.selected || group.drop_target;
         let radius = (0.6 * uy).clamp(3.0 * cx.dpi, 14.0 * cx.dpi);
-        let (fill, border, width) = if strong { (0.09, 1.0, 2.0) } else { (0.045, 0.55, 1.0) };
+        // A selected group is unmistakable: a heavier outline and a stronger tint.
+        let (fill, border, width) = if group.selected { (0.12, 1.0, 3.0) } else if group.drop_target { (0.09, 1.0, 2.0) } else { (0.045, 0.55, 1.0) };
         p.under(layer, Quad::rounded(r[0], r[1], r[2], r[3], radius, theme::rgba(color, fill), theme::rgba(color, border), width * cx.dpi, clip));
         // Title in the top row (the row that drags the group).
         let size = label_px.max(9.0 * cx.dpi).min(uy.max(9.0 * cx.dpi) * 0.9);

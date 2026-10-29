@@ -566,7 +566,14 @@ impl App {
             (MouseButton::Left, _) if additive => {
                 self.drag = Some(Drag::Rubber { start: (x, y), now: (x, y), additive: true, right: false });
             }
-            (MouseButton::Left | MouseButton::Middle, _) => self.drag = Some(Drag::Pan { last: (x, y), moved: false }),
+            // Empty space pans; a click on a group's background or border selects it.
+            (MouseButton::Left | MouseButton::Middle, hit) => {
+                let group = match (button, hit) {
+                    (MouseButton::Left, CanvasHit::GroupBody(id)) => Some(id),
+                    _ => None,
+                };
+                self.drag = Some(Drag::Pan { last: (x, y), moved: false, group });
+            }
             (MouseButton::Right, CanvasHit::Node(id)) => {
                 if !self.selection.contains(&id) {
                     self.select_node(&id, false);
@@ -667,7 +674,7 @@ impl App {
                 self.mark_dirty();
                 Drag::Resize { id, start, orig }
             }
-            Drag::Pan { last, moved } => {
+            Drag::Pan { last, moved, group } => {
                 let (wx, wy) = world(x as i32 - last.0 as i32, y as i32 - last.1 as i32);
                 self.doc.view.x -= wx;
                 self.doc.view.y -= wy;
@@ -676,7 +683,7 @@ impl App {
                 }
                 let consumed = (wx * n / d, wy * n / d);
                 let next = ((last.0 as i32 + consumed.0) as u16, (last.1 as i32 + consumed.1) as u16);
-                Drag::Pan { last: next, moved: moved || last != (x, y) }
+                Drag::Pan { last: next, moved: moved || last != (x, y), group }
             }
             Drag::Rubber { start, additive, right, .. } => Drag::Rubber { start, now: (x, y), additive, right },
             Drag::SidebarDivider => {
@@ -739,10 +746,10 @@ impl App {
                 self.mark_dirty();
                 Drag::Resize { id, start, orig }
             }
-            Some(Drag::Pan { last, moved }) => {
+            Some(Drag::Pan { last, moved, group }) => {
                 self.pan_cells(self.pointer.0 - self.drag_origin.0, self.pointer.1 - self.drag_origin.1);
                 self.drag_origin = self.pointer;
-                Drag::Pan { last: (x, y), moved: moved || last != (x, y) }
+                Drag::Pan { last: (x, y), moved: moved || last != (x, y), group }
             }
             other => {
                 self.drag = other;
@@ -765,7 +772,8 @@ impl App {
             }
             Drag::Nodes { moved: false, click: Some(id), .. } => self.view_node(&id),
             Drag::Group { moved: false, id, .. } => self.open_group(&id),
-            Drag::Pan { moved: false, .. } => self.clear_selection(),
+            Drag::Pan { moved: false, group: Some(group), .. } => self.select_group(&group),
+            Drag::Pan { moved: false, group: None, .. } => self.clear_selection(),
             Drag::Rubber { start, now, additive, right } => {
                 let moved = start.0.abs_diff(now.0) > 1 || start.1.abs_diff(now.1) > 0;
                 if !moved {

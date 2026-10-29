@@ -83,7 +83,9 @@ pub enum Drag {
     Nodes { ids: Vec<String>, start: (u16, u16), applied: (i32, i32), moved: bool, click: Option<String> },
     Group { id: String, start: (u16, u16), applied: (i32, i32), moved: bool },
     Resize { id: String, start: (u16, u16), orig: (i32, i32) },
-    Pan { last: (u16, u16), moved: bool },
+    /// Panning; `group`: pressed on a group's background or border (a click
+    /// without moving selects that group).
+    Pan { last: (u16, u16), moved: bool, group: Option<String> },
     Rubber { start: (u16, u16), now: (u16, u16), additive: bool, right: bool },
     SidebarDivider,
     TermDivider,
@@ -132,7 +134,8 @@ pub enum CanvasHit {
     Node(String),
     GroupTitle(String),
     GroupResize(String),
-    GroupBody,
+    /// A group's empty interior or its border (the innermost group there).
+    GroupBody(String),
     Empty,
 }
 
@@ -141,6 +144,9 @@ pub const ZOOMS: [(i32, i32); 3] = [(1, 1), (1, 2), (1, 4)];
 /// Gpu mode: the continuous canvas scale's range (cells per world unit).
 pub const MIN_SCALE: f32 = 1.0 / 16.0;
 pub const MAX_SCALE: f32 = 2.0;
+/// Gpu mode: how far outside a group's outline a click still hits its
+/// border (cells across, rows down: about 4 px at 100 % DPI).
+const BORDER_SLACK: (f32, f32) = (0.45, 0.25);
 /// Gpu mode: denominator of the rational scale `scale()` reports.
 const SCALE_DEN: i32 = 1024;
 
@@ -828,8 +834,9 @@ impl App {
             if sy == y && sx >= x && sx < x + w {
                 return CanvasHit::GroupTitle(group.id.clone());
             }
+            // The interior and the border cells (the outline is drawn inside the rect).
             if inside(x, y, w, h) {
-                return CanvasHit::GroupBody;
+                return CanvasHit::GroupBody(group.id.clone());
             }
         }
         CanvasHit::Empty
@@ -857,6 +864,8 @@ impl App {
         groups.sort_by_key(|g| std::cmp::Reverse((g.w as i64) * (g.h as i64)));
         let row = 1f32.max(0.8 / s);
         let corner = 2f32.max(1.6 / s);
+        // The border is easy to hit: a few pixels outside the outline count too.
+        let (edge_x, edge_y) = (BORDER_SLACK.0 / s, BORDER_SLACK.1 / s);
         for group in groups.into_iter().rev() {
             let (x0, y0, x1, y1) = (group.x as f32, group.y as f32, (group.x + group.w) as f32, (group.y + group.h) as f32);
             if wx >= x1 - corner && wx < x1 && wy >= y1 - row && wy < y1 {
@@ -865,8 +874,8 @@ impl App {
             if wy >= y0 && wy < y0 + row && wx >= x0 && wx < x1 {
                 return CanvasHit::GroupTitle(group.id.clone());
             }
-            if inside(group.rect()) {
-                return CanvasHit::GroupBody;
+            if wx >= x0 - edge_x && wx < x1 + edge_x && wy >= y0 - edge_y && wy < y1 + edge_y {
+                return CanvasHit::GroupBody(group.id.clone());
             }
         }
         CanvasHit::Empty
@@ -1209,6 +1218,10 @@ impl App {
     pub fn select_group(&mut self, id: &str) {
         self.selection.clear();
         self.selected_group = Some(id.to_owned());
+        // The group's own panel replaces a box's details (a list view's item stays).
+        if !matches!(self.right_detail, Some(crate::side::RightDetail::Item(_))) {
+            self.right_detail = None;
+        }
         if let Some(index) = self.side_rows.iter().position(|r| r.kind == SideKind::Group(id.to_owned())) {
             self.side_sel = index;
         }

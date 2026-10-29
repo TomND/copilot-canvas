@@ -1412,6 +1412,7 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     anyhow::ensure!(String::from_utf8_lossy(&branches.stdout).trim() == "worktree-session", "worktree is on the new branch");
 
     view_and_start_steps(&mut ui, instance)?;
+    group_click_steps(&mut ui)?;
 
     step("stop all and quit");
     ui.send(b"\x1d")?;
@@ -1462,6 +1463,43 @@ fn view_and_start_steps<U: Ui>(ui: &mut U, instance: &Instance) -> Result<()> {
     ui.click(sx + 1, sy)?;
     ui.wait("its shell", Duration::from_secs(20), |t| t.contains("Write tests · ") && t.contains("PS "))?;
     anyhow::ensure!(launched("demo-sub"), "Start launched it");
+    Ok(())
+}
+
+/// A click on a group's border selects the group (its panel, a heavy outline).
+fn group_click_steps<U: Ui>(ui: &mut U) -> Result<()> {
+    step("a click on a group's border selects the group");
+    ui.send(b"\x1d")?;
+    ui.wait("canvas focus", Duration::from_secs(5), |t| t.contains("empty-drag pan"))?;
+    // The sidebar's group row flies to it (and tiles its running terminals);
+    // back to the single view, where a selected group shows its panel.
+    let (gx, gy) = ui.locate("Canvas project", SIDEBAR)?;
+    ui.click(gx + 1, gy)?;
+    ui.send(b"\x1b")?;
+    if ui.text().contains("▦ Tiled") {
+        ui.send(b"t")?;
+    }
+    ui.wait("no group selected", Duration::from_secs(5), |t| !t.contains("Del: delete group") && t.contains("▢ Single"))?;
+    // The title is drawn two cells right of the group's left edge (" ▣ name").
+    let (tx, ty) = ui.locate("▣ Canvas project", CANVAS)?;
+    let (bx, by) = (tx.saturating_sub(3), ty + 2);
+    ui.click(bx, by)?;
+    ui.wait("the group's panel", Duration::from_secs(5), |t| t.contains("Del: delete group") && t.contains("Canvas project"))?;
+    let at_column = |line: &str, column: usize| {
+        let mut x = 0;
+        line.chars().find(|c| {
+            let here = x == column;
+            x += crate::client::paint::text_width(&c.to_string());
+            here
+        })
+    };
+    let corner = ui.text().lines().nth(ty as usize).and_then(|l| at_column(l, bx as usize));
+    anyhow::ensure!(corner == Some('┏'), "a selected group has a heavy outline, found {corner:?} at ({bx}, {ty})\n{}", ui.text());
+    ui.send(b"\x1b")?;
+    // Back in a terminal, as the steps before left it.
+    let (rx, ry) = ui.locate("Renamed by selftest", SIDEBAR)?;
+    ui.click(rx, ry)?;
+    ui.wait("terminal focus", Duration::from_secs(5), |t| t.contains("Typing goes to the terminal"))?;
     Ok(())
 }
 
