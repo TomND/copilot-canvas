@@ -215,6 +215,19 @@ fn contract(backend: &dyn Backend, ctx: &Ctx, work: &Path, tag: &str) -> Vec<Str
     let error = backend.open_target(&work.join("missing.txt").display().to_string()).unwrap_err().to_string();
     assert!(error.ends_with("does not exist"), "{error}");
     answers.push(error);
+
+    // Reports: one published as a canvas session would, then read back (the inbox and its body).
+    let brief = mine.join("brief.md");
+    std::fs::write(&brief, "# Contract brief\n\n- one\n- two\n").unwrap();
+    let args = canvas_agents::reports::PublishArgs { markdown: Some(brief.display().to_string()), kind: Some("warn".into()), ..Default::default() };
+    let who = canvas_agents::reports::Identity { session: "contract-box".into(), ..Default::default() };
+    let canvas_agents::reports::Outcome::Stored { id, .. } = canvas_agents::reports::publish(&ctx.home, args, &who, Duration::from_secs(15)).unwrap() else { panic!("the running service stores it") };
+    let inbox = backend.reports().unwrap();
+    let stored = inbox.reports.iter().find(|r| r.id == id).expect("in the inbox");
+    answers.push(format!("{} {} {:?} {} {}", stored.title, stored.kind, stored.format, stored.preview, stored.unread()));
+    let content = backend.report_content(&id).unwrap();
+    answers.push(format!("{:?} {:?}", content.format, content.body));
+    answers.push(backend.report_content("0000000000001-00000000").unwrap_err().to_string().replace(&ctx.home.display().to_string(), "<home>"));
     answers
 }
 
@@ -259,6 +272,45 @@ fn local_and_remote_backends_answer_the_same() {
         assert!(Instant::now() < deadline, "calls fail once the service is gone");
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// The inbox reaches the clients that show it (on connect and on every
+/// change, over TCP) and never older ones; read state is the service's.
+#[test]
+fn the_inbox_reaches_clients_that_show_it_and_read_state_is_the_services() {
+    use canvas_agents::reports::{Identity, Outcome, PublishArgs, publish};
+    use canvas_common::protocol::CAP_REPORTS;
+    let service = Service::start("inbox");
+    let target = ConnTarget::Loopback(service.instance.clone());
+    let open = |caps: u32| conn::open(&target, &ConnOptions { name: "inbox".into(), caps, ..Default::default() }, &ClientSession::new()).unwrap();
+    let (with, without) = (open(CAP_REPORTS), open(0));
+    let next_inbox = |conn: &Conn, ok: &dyn Fn(&canvas_model::reports::Snapshot) -> bool| -> Option<canvas_model::reports::Snapshot> {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            if let Ok(ServiceMsg::Reports { json }) = conn.rx.recv_timeout(Duration::from_millis(100)) {
+                let inbox: canvas_model::reports::Snapshot = serde_json::from_str(&json).unwrap();
+                if ok(&inbox) {
+                    return Some(inbox);
+                }
+            }
+        }
+        None
+    };
+    assert!(next_inbox(&with, &|i| i.total == 0).is_some(), "the empty inbox on connect");
+    let who = Identity { session: "inbox-box".into(), ..Default::default() };
+    let args = PublishArgs { message: Some("PR 7 received 3 comments; dispatched the owning session".into()), kind: Some("queued".into()), pr: Some("https://github.com/o/r/pull/7".into()), thread: Some("pr-7".into()), ..Default::default() };
+    let Outcome::Stored { id, .. } = publish(&service.instance.home, args, &who, Duration::from_secs(15)).unwrap() else { panic!("stored") };
+    let inbox = next_inbox(&with, &|i| i.total == 1).expect("the new report pushed");
+    assert_eq!((inbox.unread, inbox.reports[0].kind.as_str(), inbox.reports[0].thread.as_str(), inbox.reports[0].source.as_str()), (1, "queued", "pr-7", "inbox-box"));
+    assert!(next_inbox(&without, &|_| true).is_none(), "a client without CAP_REPORTS never gets it");
+    // Read through the connection (as the canvas marks a report read); the service keeps it.
+    let request = serde_json::json!({ "action": "reports", "op": "read", "ids": [id] }).to_string();
+    with.tx.send(ClientMsg::Bus { json: request }).unwrap();
+    assert!(next_inbox(&with, &|i| i.unread == 0).is_some(), "read for every client");
+    assert_eq!(canvas_agents::reports::read_snapshot(&service.instance.home).unread, 0, "kept on disk");
+    let request = serde_json::json!({ "action": "reports", "op": "delete", "ids": [id] }).to_string();
+    with.tx.send(ClientMsg::Bus { json: request }).unwrap();
+    assert!(next_inbox(&with, &|i| i.total == 0).is_some(), "deleted for every client");
 }
 
 /// Needs an installed agent CLI (runs it): `cargo test -- --ignored config_snapshot`.

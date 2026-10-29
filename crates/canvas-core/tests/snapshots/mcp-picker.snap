@@ -18,7 +18,7 @@
                                  ║ │ Preset  All   None   Lean                                                    │ ║                                │
  ≡                               ║ │ 2 of 2 on · each server runs as its own processes in every session           │ ║                                │
                                  ║ │ [x] github                                                       user config │ ║                                │
-                                 ║ │ [x] playwright                                                   user config │ ║                                │
+ ✉                               ║ │ [x] playwright                                                   user config │ ║                                │
                                  ║ │ [-] filesystem                                off in GitHub Copilot's config │ ║                                │
                                  ║ │                                                                              │ ║                                │
                                  ║ │                                                                              │ ║                                │

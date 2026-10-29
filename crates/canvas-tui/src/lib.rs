@@ -122,6 +122,8 @@ pub fn run(options: Options) -> Result<()> {
         compress: canvas_core::settings::Settings::load(&home).compress(),
         name: "tui".into(),
         rpc: remote_backend,
+        // The reports inbox (the TUI draws no images and shows no toasts).
+        caps: canvas_core::protocol::CAP_REPORTS,
         ..Default::default()
     };
     let session = conn::ClientSession::new();

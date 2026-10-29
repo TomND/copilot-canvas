@@ -316,7 +316,51 @@ GUI registers `CopilotCanvas.Gui` under
 `HKCU\Software\Classes\AppUserModelId` (display name; no Start-menu shortcut)
 and gives the process that id. No toast is shown while the window is in
 front, the same text is shown once (however many windows are open), and a
-toast that fails still leaves the flashing button.
+toast that fails still leaves the flashing button. A new report in the
+inbox (README, Reports) gets the same treatment: a toast with its title and
+publisher and a flashing button while the window is in the background
+(`Platform::report_arrived`).
+
+**Reports and the HTML view (`webview.rs`; canvas-core `reports.rs`,
+`richtext.rs`, `report_html.rs`).** The inbox and the viewer are core cell
+layouts like every dialog: Markdown (pulldown-cmark; HTML inside it becomes
+formatted text too) and short messages are laid out as styled lines (headings, emphasis, lists,
+tables with rules, code, quotes, links that ask before they open). An HTML
+report is shown by Microsoft Edge **WebView2** (`webview2-com` 0.39, the
+static loader, so no `WebView2Loader.dll` ships) as a child window over the
+viewer's content area (`View::html`: the pane's cell rectangle and the safe
+document; the window moves, resizes and hides it after each frame). Layers:
+
+1. The core's sanitizer (`report_html::sanitize`) keeps an allow-list of
+   formatting elements (including inline SVG and `<style>`) and inline
+   styles; it drops `script`, frames, `object`/`embed`/`applet`, `template`,
+   `textarea`/`select`/`button` with their content, leaves out every other
+   element (`form`, `meta`, `base`, `link`, …) while keeping its text, and
+   removes every `on*` attribute, attributes that fetch, navigate or run
+   (`action`, `formaction`, `srcdoc`, `srcset`, `ping`, `http-equiv`, …),
+   `href`s that are not `http(s)`, `mailto` or `#`, and image sources that
+   are not `data:image/…`. `safe_document` puts a Content-Security-Policy first
+   (`default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src
+   'none'; connect-src 'none'; …`) and a dark default style the page can
+   override.
+2. The view: scripts, web messages, host objects, script dialogs, devtools,
+   the context menu, the status bar, zoom, the browser's accelerator keys,
+   autofill and password saving off; every request (`WebResourceRequested`
+   for `*`) answered with a 403 inside the view; downloads cancelled,
+   permission requests denied, external URI schemes never launched, new
+   windows refused; every navigation but the canvas's own `NavigateToString`
+   cancelled (a link the user clicks becomes a request to the canvas, which
+   asks before opening it in the browser); Esc in the view closes the
+   report. Its browser process gets its own user-data folder
+   (`<home>\webview2`, never the user's Edge profile) and
+   `--disable-background-networking --disable-component-update
+   --disable-sync --no-first-run --disable-default-apps`.
+
+A page larger than 2,000,000 bytes (WebView2's `NavigateToString` limit) or
+a machine without the WebView2 runtime gets the core's formatted text with a
+note saying why, as the TUI always does. The offscreen `png` hook does not
+contain the view (it is a separate window); `webview` with
+`window_capture` takes the composed window.
 
 **Connection and upgrades.** Local pipe by default, `--remote` as the TUI;
 the offline banner, reconnect with backoff and blocked input come from the
@@ -397,6 +441,7 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
 | Recent sessions | the sidebar's **RECENT** rows (newest first; a click views, a double-click starts; the header folds them); **Ctrl+F6** / **Ctrl+Shift+F6** anywhere (a terminal too) and `]` / `[` on the canvas or sidebar view the next older or newer one without starting it; the list reorders a second after the last step |
 | Select a group | click its empty background (a drag there still pans) or its outline, up to about half a cell outside it (`BORDER_SLACK`); the innermost group wins; the selected group is drawn heavier |
 | Inspect | the box menu's or details panel's **Inspect transcript**: a read-only modal (wheel scrolls, Copy, Close); a finished OpenCode child offers **Resume as subsession** there |
+| Reports | `Alt+9` or the activity bar's ✉ (gold with the unread count): a click on a row opens the viewer (Markdown formatted, HTML in the WebView2 view); its buttons view the session (never start it), open the PR, step ◂ Older / Newer ▸ through a thread, copy, mark unread, delete; a link in a report asks first; Esc closes (in the HTML view too) |
 | Remove | right-click on a selected box (or Del) with several selected: "Remove N from canvas" after a confirmation; running sessions stay; Ctrl+Z restores |
 | Pointer | hand over buttons and links, resize arrows over the dividers, text beam over terminals |
 | Paste | Ctrl+V / Shift+Insert: into a terminal (images as in the TUI, with a thumbnail of the image) or the focused text field |
@@ -443,7 +488,7 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   `UPDATE_SNAPSHOTS=1 cargo test -p canvas-core --test view_snapshots`
   accepts the new texts.
 - `copilot-canvas selftest --client gui [--remote loopback]` runs the TUI
-  self-test's 34 steps against the GUI in a 170 × 46 cell window. A `Ui`
+  self-test's 35 steps against the GUI in a 170 × 46 cell window. A `Ui`
   trait has two drivers: the TUI's hidden pseudoconsole and `GuiDriver`,
   which starts `copilot-canvas-gui.exe --test-hooks --size 170x46` and turns
   the terminal input the scenario sends (keys, Alt+digits, Ctrl+letters, SGR
@@ -555,6 +600,7 @@ one (`"window": n`, the creation index):
 | `{"cmd":"new_window"}`, `{"cmd":"windows"}`, `{"cmd":"close_window","window":1}` | opens a window (answers its index once it is up), lists them (with their `hwnd`), closes one |
 | `{"cmd":"post_keys","text":"xxx","interval_ms":120}` | real WM_KEYDOWN messages to the window (latency measurement) |
 | `{"cmd":"panic"}`, `{"cmd":"panic_thread"}` | crashes on purpose on the UI thread or a helper thread (the crash-log checks) |
+| `{"cmd":"webview"}`, `…,"eval":"JS"`, `…,"capture":"x.png"`, `…,"window_capture":"x.png"`, `…,"probe_raw":"<html>"` | the report HTML view: its state (phase, pane rectangle and size, what was blocked: navigations, requests, new windows, downloads, permissions); a host script's result (the page's own scripts never run); a PNG of the view (`CapturePreview`) or of the composed window (`PrintWindow`); load unsanitized HTML to test the view's own lock-down alone |
 | `{"cmd":"quit"}` | saves and exits every window (detach); with `"window"`, closes that one |
 
 ## 4. Measured (PLAN §9)
@@ -696,6 +742,13 @@ and passive rows. With `CANVAS_GUI_SCREENS` the parity suite also saves
 `visual-stack.png`, `visual-hidden.png`, `visual-fireworks.png`,
 `visual-chips-25.png` and `visual-remote-browser.png`.
 
+The golden screenshots `reports-inbox.png` (two unread reports, one a queued
+message about a pull request, in the Reports view) and `report-viewer.png`
+(a Markdown morning brief with a table, code and a quote) show the inbox.
+Parity row 41b saves `report-html-view.png` (the HTML view's own capture of
+a styled report) and `report-html-window.png` (the window as composed, the
+view over the viewer) with `CANVAS_GUI_SCREENS`.
+
 ## 6. Known gaps (after Phase 6)
 
 - **Kitty graphics through ConPTY:** Windows' inbox ConPTY drops APC, so only
@@ -706,6 +759,9 @@ and passive rows. With `CANVAS_GUI_SCREENS` the parity suite also saves
   engine's animation tick is not driven); JPEG and GIF files are not shown.
 - **Toasts:** clicking one does not bring the window forward (no COM
   activator is registered); Focus Assist decides whether they pop up.
+- **HTML reports:** pages over 2 MB, and machines without the WebView2
+  runtime, get formatted text instead of the page's own styling. The view is
+  a separate child window, so the offscreen `png` hook leaves it out.
 - **Clipboard on a locked workstation:** Windows refuses it; copy and paste
   fail with a notice (the test hooks use a clipboard of their own then).
 - **Widgets:** dialogs, menus and lists are the TUI's cell layouts drawn

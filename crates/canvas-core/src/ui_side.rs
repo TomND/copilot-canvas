@@ -16,18 +16,26 @@ pub const BAR_W: u16 = 3;
 
 pub fn draw_activity_bar(app: &mut App, buf: &mut Buffer, area: Rect) {
     fill(buf, area.x as i32, area.y as i32, area.width as i32, area.height as i32, Style::default().bg(ratatui::style::Color::Rgb(13, 17, 23)), area);
+    let unread = app.reports.unread_rows();
     for (i, (view, icon, title)) in VIEWS.iter().enumerate() {
         let y = area.y as i32 + 1 + i as i32 * 2;
         if y >= area.bottom() as i32 {
             break;
         }
         let active = app.side_view == *view && app.doc.ui.sidebar_visible;
-        let style = if active { bold(SELECT).bg(PANEL_HI) } else { fg(GRAY).bg(ratatui::style::Color::Rgb(13, 17, 23)) };
+        let bg = if active { PANEL_HI } else { ratatui::style::Color::Rgb(13, 17, 23) };
+        let style = if active { bold(SELECT).bg(PANEL_HI) } else { fg(GRAY).bg(bg) };
         if active {
             fill(buf, area.x as i32, y, area.width as i32, 1, Style::default().bg(PANEL_HI), area);
             put(buf, area.x as i32, y, "▌", fg(ACCENT).bg(PANEL_HI), area);
         }
-        put(buf, area.x as i32 + 1, y, icon, style, area);
+        // Unread reports: the icon in gold with their count beside it (9+ as "+").
+        let unread_here = *view == SideView::Reports && unread > 0;
+        put(buf, area.x as i32 + 1, y, icon, if unread_here { bold(ATTENTION).bg(bg) } else { style }, area);
+        if unread_here {
+            let count = if unread > 9 { "+".to_owned() } else { unread.to_string() };
+            put(buf, area.x as i32 + 2, y, &count, bold(ATTENTION).bg(bg), area);
+        }
         let _ = title;
         app.layout.hits.push((Rect::new(area.x, y as u16, area.width, 1), Hit::Toolbar(Action::View(*view))));
     }
@@ -50,6 +58,7 @@ fn hints(view: SideView) -> &'static str {
         SideView::Agents => "Enter details · A agent",
         SideView::VsCode => "Enter run / toggle",
         SideView::Settings => "Enter edit · A agent",
+        SideView::Reports => "Enter open · Space read/unread · Del delete",
         SideView::Sessions => "",
     }
 }
@@ -103,6 +112,9 @@ pub fn draw_list(app: &mut App, buf: &mut Buffer, area: Rect) {
             ItemRef::Detail => {
                 put(buf, area.x as i32 + 4, y, &crate::paint::truncate_left(&row.label, (area.width as usize).saturating_sub(5).max(4)), fg(row.color).bg(bg), area);
             }
+            ItemRef::ReportLine(_) => {
+                put(buf, area.x as i32 + 4, y, &truncate(&row.label, (area.width as usize).saturating_sub(5).max(4)), fg(row.color).bg(bg), area);
+            }
             _ => {
                 let mut x = put(buf, area.x as i32 + 2, y, row.icon, fg(row.color).bg(bg), area) + 1;
                 // Names win: the right column only gets what the label leaves free (min 6).
@@ -111,7 +123,9 @@ pub fn draw_list(app: &mut App, buf: &mut Buffer, area: Rect) {
                 let right = truncate(&row.right, free.min((area.width as usize / 2).saturating_sub(2)));
                 let right_w = crate::paint::text_width(&right) as i32;
                 let room = (right_edge - x - right_w - 2).max(1) as usize;
-                let style = if selected { bold(SELECT).bg(bg) } else { fg(TEXT).bg(bg) };
+                // An unread report's title is bold.
+                let unread = matches!(&row.item, ItemRef::Report(_)) && row.icon == "●";
+                let style = if selected || unread { bold(SELECT).bg(bg) } else { fg(TEXT).bg(bg) };
                 x = put(buf, x, y, &truncate(&row.label, room), style, area);
                 let _ = x;
                 if right_w > 0 {

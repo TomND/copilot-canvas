@@ -5,6 +5,7 @@
 
 mod docs;
 mod factory_watch;
+mod inbox;
 mod passive;
 pub use canvas_host::{keys, term};
 
@@ -107,6 +108,8 @@ pub struct Agents {
     rpc: (Sender<RpcJob>, Sender<RpcJob>),
     /// Pairing codes and paired remote clients.
     remote: crate::remote::Registry,
+    /// The reports inbox (`inbox.rs`).
+    reports: Mutex<crate::reports::Store>,
 }
 
 /// Passive sessions and the factory watch use the backend under this name.
@@ -148,6 +151,7 @@ impl Agents {
             docs: docs::Docs::default(),
             rpc: (rpc_tx, quick_tx),
             remote: crate::remote::Registry::new(&instance.home),
+            reports: Mutex::new(crate::reports::Store::open(&instance.home, now_ms())),
         });
         server::spawn_named("index", { let a = agents.clone(); move || index_loop(a, index_rx) });
         server::spawn_named("subsessions", { let a = agents.clone(); move || subsession_loop(a) });
@@ -167,6 +171,7 @@ impl Agents {
             log(&instance, &format!("cannot install the copilot-canvas command: {error:#}"));
         }
         server::spawn_named("bus", { let a = agents.clone(); move || passive::bus_loop(a, bus_rx) });
+        server::spawn_named("reports", { let a = agents.clone(); move || inbox::run(a) });
         agents
     }
 }
@@ -281,6 +286,11 @@ impl Agents {
 }
 
 impl HostApp for Agents {
+    fn command_env(&self, id: &str) -> Vec<(String, String)> {
+        // Plain shells (the demo's) get the `copilot-canvas` command and their identity too.
+        self.integration(id).env
+    }
+
     fn resolve_launch(&self, id: &str, kind: LaunchKind) -> Result<Resolved> {
         let (new_name, prompt, resume, extra, env) = match kind {
             LaunchKind::Copilot { new_name, prompt, resume } => (new_name, prompt, resume, Vec::new(), Vec::new()),
@@ -322,6 +332,8 @@ impl HostApp for Agents {
             client.send(ServiceMsg::AgentSession { id: id.clone(), native: native.clone() });
         }
         client.send(ServiceMsg::Bus { json: passive::snapshot(self) });
+        // Only clients that show the inbox get it (`CAP_REPORTS`).
+        client.send(inbox::message(self));
     }
 
     fn client_disconnected(&self, client: u64) {
@@ -347,7 +359,13 @@ impl HostApp for Agents {
                     *current = routing;
                 }
             }
-            ClientMsg::Bus { json } => passive::action(self, &json, &self.bus_tx),
+            ClientMsg::Bus { json } => {
+                // Inbox requests travel as bus requests (older services ignore them).
+                let handled = serde_json::from_str::<serde_json::Value>(&json).is_ok_and(|value| inbox::action(self, &value));
+                if !handled {
+                    passive::action(self, &json, &self.bus_tx);
+                }
+            }
             ClientMsg::DocOpen { path, demo, cwd } => self.docs.open(&self.instance.home, path.as_deref(), demo, &cwd, client.id, |key, version, reply| {
                 if let Some(error) = &reply.error {
                     log(&self.instance, &format!("cannot open the canvas {}: {error}", reply.path));

@@ -412,7 +412,7 @@ Status (Phase 5, 2026-10-28): every row ✓ in the GUI, each with a named check 
 | 18 | Links: URLs, OSC 8, Windows paths; Ctrl+click in terminals; browser, Explorer, VS Code at line; nothing executed | C V G | hover underline | §6 mapping | links probe |
 | 19 | New session dialog: name, folder (type, Browse…, Recent ▾), Git detection, worktree, first prompt, MCP row | B C G | folder browser on the backend | backend browse | selftest step |
 | 20 | Import (filter, multi-select, grouping); VS Code sync (+ Ctrl+Z, auto sync) | B C G | — | backend | vscode probe |
-| 21 | Activity bar views (Alt+1…8) | C G | — | — | selftest steps |
+| 21 | Activity bar views (Alt+1…9) | C G | — | — | selftest steps |
 | 22 | Copilot defaults, group overrides, `copilot config` list and edit | B C G | — | backend | selftest step |
 | 23 | Plugins, MCP, skills: list, toggle, remove (confirmed), add, install in a terminal; secrets hidden | B C G | — | backend | selftest step |
 | 24 | Migrate from VS Code (preview, tick, backup, redacted log) | B C G | — | backend | migrate test |

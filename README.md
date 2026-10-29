@@ -89,7 +89,8 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 | **New session** | Name, folder (type, **Browse…** folder picker, or **Recent ▾**), Git detection with current branch, **New Git worktree** (base branch picker, new branch, path), the **Model** it starts with (see below), optional first prompt |
 | **Default model** | The new-session dialog shows the model a session will start with and why: the group's (*from group X*), the one you chose before (*remembered default*), or the initial default, **Claude Opus 5.5** in each agent's own id (`claude-opus-5.5` for Copilot, `github-copilot/claude-opus-5.5` for OpenCode, `claude-opus-5-5` for Claude Code). Its picker lists the agent's models (`opencode models`, the choices in `copilot --help`, Claude Code's aliases) and takes any id you type. A model you pick there starts that session and becomes that agent's default for every later new session (kept in the canvas, so it survives restarts and reaches your other windows) until you pick another, there or in *Settings › Copilot / OpenCode / Claude Code model* (which also resets it). A group's own model (*Session defaults for group…*) wins in that group; picking another there applies to that session only and changes neither the group nor the canvas default. Every session records the model it started with (details panel) and keeps it: a new default never changes existing sessions or their resumes ([docs/AGENTS.md](docs/AGENTS.md#models)) |
 | **Import / sync** | `I` Copilot sessions (filter, multi-select, group by folder or client); `V` or toolbar **⟳ VS Code** syncs VS Code agent sessions (see below) |
-| **Activity bar** | VS Code-style icons on the far left (`Alt+1…8`): ▤ Sessions · ◷ Automations · ⧉ Plugins · ⌁ MCP servers · ✦ Skills · ◈ Agents & instructions · ⇄ VS Code · ≡ Settings |
+| **Activity bar** | VS Code-style icons on the far left (`Alt+1…9`): ▤ Sessions · ◷ Automations · ⧉ Plugins · ⌁ MCP servers · ✦ Skills · ◈ Agents & instructions · ⇄ VS Code · ≡ Settings · ✉ Reports (with its unread count) |
+| **Reports** | An inbox of reports and short messages agents publish (`copilot-canvas report publish`: Markdown, HTML or a one-line message; a morning brief, a triage report, "PR X received 12 new comments; dispatched the owning session"). The activity bar's ✉ shows how many are unread; new ones also get a notice (and in the GUI a toast and a flashing taskbar button while it is in the background). Click one to read it in the canvas: Markdown formatted, HTML in the GUI's locked-down WebView2 view; reading it never starts its session. See [Reports](#reports) |
 | **Dusty sessions** | Sessions you have not used for a while (started, typed into, or agent activity; looking at one does not count) gather dust: the TUI dims them, the GUI drains their colour and adds specks and a cobweb that grow with age (from *Settings › Dust unused sessions after*: off / 1 / 3 (default) / 7 / 14 days; medium from 14 days, heavy from 60), and the status line and the sidebar show **unused 12d**. Anything important (working, needs you, done · review, failed, open elsewhere, looping, passive sessions, an effect) is never dusty. The canvas menu's *Select unused sessions* selects them for a cleanup; nothing is ever removed automatically |
 | **Effects** | Passive sessions (and sessions) can put an effect on a box of their group until you click it: **fireworks** (an approved pull request), **attention** (a pulsing beacon: review requested, changes requested, comments), **sparkle** (a short success), **alert** (`copilot-canvas effect`, below). The service keeps them, so every window and the TUI show them, also after a restart. A click on the effect (or its box) clears it everywhere and only selects the box. GUI: fireworks bursts and rings at 12.5 frames/s, only while in view; *Settings › Effects*: on, reduced motion (still rings and badges) or off (badges only); the default follows Windows' *Show animations*. TUI: a badge (✦ ◉ ✧ ▲) on the box |
 | **Group folders** | Each group has a folder (asked when you create the group; suggested `~/.copilot-canvas/groups/<name>`) with `ai-docs/` and `human-outputs/`. Open them from the group's title chips **◧ AI docs** / **◨ Outputs** (compact **◧** / **◨** when zoomed out or narrow, **◧ Set folder…** before a folder is chosen; the chips stay clickable at every zoom while the title shows), the sidebar's **◧** row under the group (a menu: AI docs, outputs, the group folder, `GOALS.md`, change folder), its menu, or its details panel. In remote mode (any `--remote`, `loopback` included) folders open in VS Code through the server's tunnel or in the canvas's **folder browser** (subfolders and files; Enter or a click opens a file in the read-only viewer, Backspace goes up, *Copy path*), never in Explorer on the service's machine. Sessions launched in the group get `--add-dir` for both and group instructions (via `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`) telling Copilot to write notes to `ai-docs` and deliverables to `human-outputs` |
@@ -116,7 +117,8 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 | Rename · remove · stop | context menu | `R` · Del · `X` |
 | Remove several boxes (running sessions kept, history kept; asks first) | select them, right-click one → **Remove N from canvas** | Del; Ctrl+Z restores them |
 | Import · sync VS Code | toolbar **Import**, **⟳ VS Code** | `I`, `V` |
-| Switch side view | activity bar | `Alt+1` … `Alt+8` |
+| Switch side view | activity bar | `Alt+1` … `Alt+9` |
+| Read a report or message | Reports (✉) row | `Alt+9`, then Enter; Space read/unread, Del delete; in the viewer ↑↓ scroll, ←/→ older/newer in a thread, Ctrl+C copy, Esc close |
 | In a list view | click row | ↑↓, Enter open/edit, Space enable/disable, Del remove, Esc back |
 | Tile terminals | toolbar | `T` |
 | Leave a terminal | click canvas/sidebar | **Ctrl+]** or F6 |
@@ -190,9 +192,10 @@ folder).
   you have its chat open and idle, the run is typed in there instead.
   Budget: *max runs per day* (default 24); failures back off 1 / 5 / 30 min
   and alert after 3.
-- **Events**: sessions launched from the canvas get the `canvas-events` and
-  `canvas-passive` skills (`--plugin-dir ~/.copilot-canvas/plugin`) and the
-  `copilot-canvas` CLI on `PATH`. `git push`, PR creation/update/merge/comments
+- **Events**: sessions launched from the canvas get the `canvas-events`,
+  `canvas-passive` and `canvas-reports` skills (`--plugin-dir
+  ~/.copilot-canvas/plugin`) and the `copilot-canvas` CLI on `PATH` (the
+  demo's shells get the command too). `git push`, PR creation/update/merge/comments
   (git, `gh`, `az repos`, ADO MCP tools) are also **detected from session
   history** automatically. You can send one by hand from a group's menu
   (*Send event…*). Events pulse on the canvas.
@@ -227,6 +230,7 @@ copilot-canvas send --to NAME TEXT
 copilot-canvas status ok|warn|alert|done HEADLINE      (passive sessions; alert rings the bell)
 copilot-canvas followup --in 24h|--at 09:00 NOTE        (passive sessions)
 copilot-canvas effect fireworks|attention|sparkle|alert --on NAME [--note TEXT]   (until clicked; effect clear --on NAME)
+copilot-canvas report publish --markdown FILE | --html FILE | --message TEXT [options]   (the Reports inbox, below)
 ```
 
 The bus lives in `~/.copilot-canvas/bus/` (`inbox/`, `routing.json`,
@@ -330,6 +334,77 @@ group's events, and a canvas-wide agent never sees another canvas's.
   folder allowed, with the model new sessions of its agent get (the frame's
   *Session defaults for its agents…* can set one). **Stop run** ends a run in
   progress without counting it as a failure (its events are dropped).
+
+## Reports
+
+**Reports** (✉, the last activity-bar view, `Alt+9`) is an inbox of what
+agents leave you to read: a morning brief, a daily triage report, an
+investigation summary, or a one-line update such as "PR 123 received 12 new
+comments; dispatched the owning session". Ordinary sessions, passive sessions
+and scheduled tasks outside the canvas all publish the same way; nothing else
+(no PR monitoring, no passive agent) is needed.
+
+```text
+copilot-canvas report publish (--markdown FILE|- | --html FILE|- | --message TEXT) [--title TITLE]
+               [--kind info|ok|warn|alert|queued|delivered|failed] [--pr URL] [--link TITLE=URL]…
+               [--session NAME|ID] [--thread KEY] [--source NAME]
+copilot-canvas report list [--unread] [--limit N]
+```
+
+- **Who published it** comes from the session's environment
+  (`COPILOT_CANVAS_SESSION`, also in passive runs and the demo's shells); the
+  inbox shows that box's name and group. Outside a canvas session (a
+  scheduled task) `--source NAME` names the producer (or the automation's
+  `AUTOMATION_NAME`); without either the command refuses.
+- **The contract**: the body is Markdown, HTML or a short message (at most
+  4,000 characters); a report is at most 2 MiB (images count: inline them as
+  `data:` URIs); links (`--pr`, `--link`, up to 20) are `http(s)://` or
+  `mailto:` only; titles are cleaned (one line, 160 characters; the first
+  `#` heading, `<title>`/`<h1>` or the message's first line when there is no
+  `--title`). `--kind` tags it (`queued`: something was asked for,
+  `delivered`: it is confirmed, `failed`, `warn`, `alert`, `ok`, `info`);
+  `--session` names a related canvas session (e.g. the one that was
+  dispatched); `--thread KEY` groups updates about one thing into one inbox row.
+- **Never silently lost**: the command checks everything first and exits
+  non-zero with the reason on stderr (too large, empty, not UTF-8, a bad link,
+  an unknown kind). Then it writes the report into
+  `~/.copilot-canvas/reports/spool/` and, when the service runs, waits for it:
+  **"Report stored"** (it is in the inbox), or the service's refusal (also a
+  non-zero exit, e.g. "the inbox holds 1000 unread reports"). With no service
+  running it says **"Report queued"**: the service stores it when it next
+  starts. `report list` shows stored, queued and refused reports.
+- **Agents learn it** from the `canvas-reports` skill (shipped with
+  `canvas-events` and `canvas-passive` to Copilot, OpenCode and Claude Code;
+  examples for a morning brief and a short message), which both other skills
+  point to.
+- **In the canvas** the ✉ icon turns gold with the number of unread rows; a
+  new report while the canvas is open also gets a notice, and in the GUI a
+  toast and a flashing taskbar button while the window is in the background.
+  The inbox lists one row per report or thread, newest first: a gold dot while
+  unread, its kind, title, age, who published it and the start of its text;
+  reports the service refused after they were queued show in red until you
+  dismiss them. Enter or a click opens it, Space toggles read/unread, Del
+  deletes (asks first), *Mark all read* clears the count.
+- **The viewer** (a read-only dialog, like the transcript inspector) shows who,
+  when and which session it came from, the session's box (**View**: its
+  terminal or details panel, never a start), the pull request and links,
+  then the report: Markdown with headings, emphasis, lists, tables, code,
+  quotes and links; short messages as text; HTML in the GUI with its own
+  styles in a locked-down WebView2 view, and as formatted text in the TUI (or
+  when WebView2 is missing, or for a page over 2 MB), which it says. Opening a
+  report marks it (its whole thread) read; *Mark unread*, *Delete*, *Copy*
+  (as text), and ◂ Older / Newer ▸ through a thread are buttons. Links inside a
+  report open in your browser only after you confirm the address; the PR and
+  link buttons open it at once.
+- **Kept** per canvas home in `~/.copilot-canvas/reports/` (`items/<id>/` with
+  `meta.json` and the body; `state.json` with the read state), owned by the
+  service, so every window and client (the home GUI over `--remote` too) sees
+  the same inbox and read state, also after restarts. Read reports go after 30
+  days or beyond the newest 500; unread ones are never removed automatically.
+- **Remote mode**: reports published on the service's machine appear at
+  home; the inbox comes from the service (`ServiceMsg::Reports`), a report's
+  body through the backend (`Request::ReportContent`), and HTML is shown by
+  the home GUI's own WebView2 view.
 
 ## Automations (scheduled tasks from manifests)
 
@@ -538,6 +613,20 @@ and `docs/REMOTE.md`.
   Canvas-wide agents only get events of their own canvas; only they (and you)
   reach sessions of other groups, and clients never name their folders (the
   service derives them from the canvas id).
+- **Reports are data, never code.** Reading one never starts or resumes its
+  session (its **View** button only views the box) and runs nothing. HTML is
+  sanitized (scripts, frames, plugins, forms, `<base>`, `<meta>`, `<link>`,
+  event handlers, attributes that fetch or navigate, and every URL but
+  `http(s)`/`mailto` links and inline `data:` images are removed; a
+  Content-Security-Policy that allows nothing to load or run comes first) and
+  the GUI's WebView2 view is locked down on top:
+  scripts, web messages, host objects, devtools, context menus and browser
+  keys off; every network request answered with 403 inside the view;
+  downloads, permissions, new windows and external URI schemes refused; any
+  navigation but the page's own load cancelled; its own user-data folder
+  (`~/.copilot-canvas/webview2`). A link you click asks before it opens in
+  your browser. The TUI shows HTML as formatted text. Report links are
+  `http(s)`/`mailto` only.
 - **Automations**: the canvas only reads Task Scheduler, launcher logs and
   reports; it changes tasks when you run, enable or disable one, or `apply`
   (preview first, backups kept). The doctor follows each automation's owner
@@ -565,7 +654,7 @@ copilot-canvas service status|stop    stop ends the service's sessions (graceful
 copilot-canvas bench [--terminals N] [--seconds S] [--json FILE]
 copilot-canvas bench --client gui     the GPU client's latency, frame cost, idle CPU, memory, first paint
 copilot-canvas selftest               end-to-end UI test in a hidden console (demo shells only)
-copilot-canvas selftest --client gui  the same 34 steps against the GPU client (over its test hooks)
+copilot-canvas selftest --client gui  the same 35 steps against the GPU client (over its test hooks)
 copilot-canvas selftest --client gui --parity
                                       one GUI check per row of the parity matrix (docs/PARITY.md)
 copilot-canvas kitty-demo             print a small test image (iTerm2 inline image; the GPU client shows it)

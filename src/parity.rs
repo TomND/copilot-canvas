@@ -871,6 +871,12 @@ fn check(rows: &mut Vec<Row>, row: &'static str, feature: &'static str, test: &'
 }
 
 fn check_kind(rows: &mut Vec<Row>, row: &'static str, feature: &'static str, test: &'static str, kind: Kind, body: impl FnOnce() -> Result<String>) {
+    // CANVAS_PARITY_ROWS=41,41b: only these rows (while working on them).
+    if let Ok(only) = std::env::var("CANVAS_PARITY_ROWS")
+        && !only.split(',').any(|r| r.trim().eq_ignore_ascii_case(row))
+    {
+        return;
+    }
     let started = Instant::now();
     let result = body().map_err(|e| format!("{e:#}"));
     match &result {
@@ -971,16 +977,19 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         Ok("needs you + review tinted; halo heavy while typing".into())
     });
 
-    check(rows, "21", "Activity bar views (Alt+1…8)", "activity_views_alt_1_to_8", || {
+    check(rows, "21", "Activity bar views (Alt+1…9)", "activity_views_alt_1_to_9", || {
         gui.canvas_focus()?;
-        let views = ["SESSIONS", "AUTOMATIONS", "PLUGINS", "MCP SERVERS", "SKILLS", "AGENTS", "VS CODE", "SETTINGS"];
+        let views = ["SESSIONS", "AUTOMATIONS", "PLUGINS", "MCP SERVERS", "SKILLS", "AGENTS", "VS CODE", "SETTINGS", "REPORTS"];
         for (i, title) in views.iter().enumerate() {
             gui.chord(char::from(b'1' + i as u8), &["alt"])?;
             gui.wait(title, 10, |t| t.contains(title))?;
         }
         gui.chord('1', &["alt"])?;
-        Ok("8 views".into())
+        Ok("9 views".into())
     });
+
+    // The Reports inbox (rows 41, 41b): before row 34 resumes "Stopped one".
+    reports::rows(sb, gui, rows);
 
     check(rows, "22", "Copilot defaults, group overrides, copilot config list and edit", "settings_defaults_and_config", || {
         gui.chord('8', &["alt"])?;
@@ -1977,6 +1986,7 @@ fn late_rows(sb: &Sandbox, rows: &mut Vec<Row>) {
         Ok(format!("GUI over loopback TCP; drop uploaded to {}", found.strip_prefix(&sb.instance.home).unwrap_or(&found).display()))
     });
 
+    reports::late_rows(sb, rows);
     visual::rows(sb, rows);
 }
 
@@ -1985,6 +1995,8 @@ pub(crate) mod visual;
 
 #[path = "parity_agents.rs"]
 mod agents;
+#[path = "parity_reports.rs"]
+pub(crate) mod reports;
 
 fn walk(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();

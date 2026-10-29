@@ -641,6 +641,92 @@ fn effects_in_reduced_motion() {
     check("effects-reduced-motion", &mut app, BOTH);
 }
 
+/// The Reports inbox: a session's unread morning brief (Markdown), a thread
+/// of two updates about a pull request (queued, then delivered), a read HTML
+/// triage report from a scheduled task, and a report refused after it was
+/// queued; the activity bar counts the unread rows.
+fn inbox_app() -> App {
+    use canvas_core::reports_model::{Format, Link, Rejected, Report, Snapshot};
+    let mut doc = canvas_core::demo::demo_doc(CWD);
+    doc.nodes.push(node("s-fix", "Fix flaky test", 2, 30));
+    let mut app = app(doc, true);
+    // A connection whose requests (read state) are kept, as the service would take them.
+    let (tx, rx) = crossbeam_channel::bounded(256);
+    std::mem::forget(rx);
+    let (_service, service_rx) = crossbeam_channel::bounded(1);
+    app.conn = canvas_core::conn::Conn::detached(tx, service_rx);
+    app.visual.clock_ms = Some(NOW);
+    let minutes = |m: u64| NOW - m * 60_000;
+    let report = |id: &str, title: &str, format: Format, kind: &str, ago: u64, read: bool| Report {
+        id: id.into(),
+        title: title.into(),
+        format,
+        kind: kind.into(),
+        created_ms: minutes(ago),
+        stored_ms: minutes(ago),
+        source: "s-fix".into(),
+        source_name: "Fix flaky test".into(),
+        source_kind: "session".into(),
+        read_ms: if read { minutes(1) } else { 0 },
+        ..Default::default()
+    };
+    let mut brief = report("0000000000005-aaaaaaaa", "Morning brief · day 100", Format::Markdown, "warn", 4, false);
+    brief.preview = "Morning brief Needs you PR 1234 review requested".into();
+    brief.links = vec![Link { title: "Board".into(), url: "https://example.com/board".into() }];
+    brief.pr = "https://github.com/org/repo/pull/1234".into();
+    let mut delivered = report("0000000000004-bbbbbbbb", "PR 12: the owning session got the 12 new comments", Format::Message, "delivered", 30, false);
+    delivered.thread = "pr-12-comments".into();
+    delivered.session = "demo-review".into();
+    let mut queued = report("0000000000003-cccccccc", "PR 12 received 12 new comments; dispatched the owning session", Format::Message, "queued", 45, true);
+    queued.thread = "pr-12-comments".into();
+    let mut triage = report("0000000000002-dddddddd", "Daily triage", Format::Html, "info", 600, true);
+    triage.source = String::new();
+    triage.source_name = "Daily triage".into();
+    triage.source_kind = "external".into();
+    triage.preview = "Daily triage 4 new bugs, 2 assigned".into();
+    let reports = vec![brief, delivered, queued, triage];
+    let rejected = vec![Rejected { id: "0000000000001-eeeeeeee".into(), title: "Weekly digest".into(), reason: "the report is 2.4 MiB; at most 2 MiB".into(), ms: minutes(90) }];
+    let inbox = Snapshot { version: 3, total: 4, unread: 2, reports, rejected };
+    app.on_reports(&serde_json::to_string(&inbox).unwrap());
+    app
+}
+
+#[test]
+fn reports_inbox() {
+    let mut app = inbox_app();
+    app.set_view(canvas_core::side::SideView::Reports);
+    check("reports-inbox", &mut app, BOTH);
+}
+
+/// The viewer on the morning brief: who and when, the session it came from
+/// (viewed, never started), its pull request and links, the Markdown
+/// formatted (headings, emphasis, a list, a table, code, a quote, a link).
+#[test]
+fn report_viewer_markdown() {
+    let mut app = inbox_app();
+    app.set_view(canvas_core::side::SideView::Reports);
+    app.run(Action::Report(canvas_core::reports::ReportAction::Open("0000000000005-aaaaaaaa".into())));
+    let body = "# Morning brief · day 100\n\n## Needs you\n\n- **PR 1234** review requested by *Ana*: [open it](https://github.com/org/repo/pull/1234)\n- Build `main` failed twice overnight\n\n## Status\n\n| Area | State | Note |\n|---|---|---|\n| Rollout | ring 2 | no incidents |\n| Triage | 4 new | 2 assigned |\n\n```\ncargo test -p upload\n```\n\n> Nothing else changed since yesterday.\n";
+    if let Some(canvas_core::dialogs::Modal::Report(viewer)) = app.modals.last_mut() {
+        viewer.content = Some(Arc::new(canvas_core::reports_model::Content { id: viewer.id.clone(), format: canvas_core::reports_model::Format::Markdown, body: body.into() }));
+    }
+    check("report-viewer-markdown", &mut app, BOTH);
+}
+
+/// An HTML report: the TUI shows it as formatted text and says so; the GPU
+/// view model carries the sanitized page for the GUI's HTML view over the
+/// content area.
+#[test]
+fn report_viewer_html() {
+    let mut app = inbox_app();
+    app.run(Action::Report(canvas_core::reports::ReportAction::Open("0000000000002-dddddddd".into())));
+    let body = "<html><head><style>h1{color:#ff00ff}</style><script>document.title='x'</script></head><body><h1>Daily triage</h1><p><b>4</b> new bugs, <i>2</i> assigned.</p><ul><li>Upload fails on large files</li><li>Crash on resume</li></ul><img src=\"https://example.com/beacon.png\" alt=\"chart\"></body></html>";
+    if let Some(canvas_core::dialogs::Modal::Report(viewer)) = app.modals.last_mut() {
+        viewer.content = Some(Arc::new(canvas_core::reports_model::Content { id: viewer.id.clone(), format: canvas_core::reports_model::Format::Html, body: body.into() }));
+    }
+    check("report-viewer-html", &mut app, BOTH);
+}
+
 #[test]
 fn snapshot_diff_marks_changed_lines() {
     let expected = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n";

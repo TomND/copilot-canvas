@@ -219,6 +219,8 @@ fn run(ctx: &Ctx, request: Request) -> Result<Response> {
         Request::CreateCanvasAgent { files } => Response::Text(create_canvas_agent(&ctx.home, &files)?),
         Request::CanvasSkills { canvas } => Response::Skills(canvas_wide::list_skills(&canvas_folder(&ctx.home, &canvas)?)),
         Request::CreateCanvasSkill { canvas, name, description } => text(&create_canvas_skill(&ctx.home, &canvas, &name, &description)?),
+        Request::Reports => Response::Reports(Box::new(crate::reports::read_snapshot(&ctx.home))),
+        Request::ReportContent { id } => Response::Report(Box::new(crate::reports::content(&ctx.home, &id)?)),
     })
 }
 

@@ -838,6 +838,7 @@ impl App {
             Action::NewWindow => self.new_window_requested = true,
             Action::Visual(action) => self.run_visual(action),
             Action::Agents(action) => self.run_agents(action),
+            Action::Report(action) => self.report_action(action),
             Action::OpenOtherClient => {
                 let args = self.other_client_args();
                 match self.platform.open_other_client(&args) {

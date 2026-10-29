@@ -186,6 +186,8 @@ pub enum Action {
     Visual(crate::visual::VisualAction),
     /// Canvas-wide agents and the canvas's skills.
     Agents(crate::canvas_wide::AgentAction),
+    /// The Reports inbox and its viewer.
+    Report(crate::reports::ReportAction),
 }
 
 #[derive(Clone, Debug)]
@@ -491,6 +493,8 @@ pub enum Modal {
     Viewer(Box<crate::viewer::Viewer>),
     /// The read-only transcript of a session or subagent.
     Inspector(Box<crate::inspect::Inspector>),
+    /// A report or message from the Reports inbox (read-only).
+    Report(Box<crate::reports::ReportViewer>),
 }
 
 /// Clickable regions registered while drawing.

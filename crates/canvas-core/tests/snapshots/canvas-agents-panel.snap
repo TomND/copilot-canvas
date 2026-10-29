@@ -18,7 +18,7 @@
                                  │ ╎ ╎ ● monitoring · 2 PRs trac… ╎  ┆ ╎ ‖ paused     ││ ◎ Release watch  ⚠ needs attention                          │
  ≡                               │ ╎ ╎ on pr.*, build.failed      ╎  ┆ ╎ on session.do││ on rollout.started                                          │
                                  │ ╎ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┘◂┄╯ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ needs attention: ring 2 is failing                          │
-                                 │ ╎                                                  ││     ▸ Run now   ‖ Pause   ⏻ Disable   Open                  │
+ ✉                               │ ╎                                                  ││     ▸ Run now   ‖ Pause   ⏻ Disable   Open                  │
                                  │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││                                                             │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││ CANVAS SKILLS · 1                                           │
                                  │                                                    ││ ✦ pr-etiquette — How PR feedback reaches the owning sessio… │
@@ -88,7 +88,7 @@ loop a-pr rect=2,12 30x4 halo=false lap=0.153 grow=1 ending=false
                                  │ ╎ ╎ ● monitoring · 2 PRs trac… ╎  ┆ ╎ ‖ paused     ││ ◎ Release watch  ⚠ needs attention                          │
  ≡                               │ ╎ ╎ on pr.*, build.failed      ╎  ┆ ╎ on session.do││ on rollout.started                                          │
                                  │ ╎ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┘◂┄╯ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ needs attention: ring 2 is failing                          │
-                                 │ ╎                                                  ││     ▸ Run now   ‖ Pause   ⏻ Disable   Open                  │
+ ✉                               │ ╎                                                  ││     ▸ Run now   ‖ Pause   ⏻ Disable   Open                  │
                                  │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││                                                             │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││ CANVAS SKILLS · 1                                           │
                                  │                                                    ││ ✦ pr-etiquette — How PR feedback reaches the owning sessio… │

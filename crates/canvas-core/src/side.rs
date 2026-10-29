@@ -28,9 +28,12 @@ pub enum SideView {
     Agents,
     VsCode,
     Settings,
+    /// The Reports inbox (reports and messages agents publish).
+    Reports,
 }
 
-pub const VIEWS: [(SideView, &str, &str); 8] = [
+/// The activity bar, top to bottom (`Alt+1` … `Alt+9`).
+pub const VIEWS: [(SideView, &str, &str); 9] = [
     (SideView::Sessions, "▤", "SESSIONS"),
     (SideView::Automations, "◷", "AUTOMATIONS"),
     (SideView::Plugins, "⧉", "PLUGINS"),
@@ -39,6 +42,7 @@ pub const VIEWS: [(SideView, &str, &str); 8] = [
     (SideView::Agents, "◈", "AGENTS & INSTRUCTIONS"),
     (SideView::VsCode, "⇄", "VS CODE"),
     (SideView::Settings, "≡", "SETTINGS"),
+    (SideView::Reports, "✉", "REPORTS"),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,6 +156,13 @@ pub enum ItemRef {
     Visual(crate::visual::VisualSetting),
     /// The value of the row above on a line of its own (shown by its end when long).
     Detail,
+    /// A row of the Reports inbox (a thread: its newest report's id).
+    Report(String),
+    /// The line under a report row: who, kind, the start of its text (a click opens the report).
+    ReportLine(String),
+    /// A report the service refused after it was queued (Del dismisses it).
+    ReportRefused(String),
+    ReportsAllRead,
 }
 
 #[derive(Clone, Debug)]
@@ -177,7 +188,7 @@ impl ListRow {
         ListRow { item, label: label.into(), right: right.into(), icon, color }
     }
     pub fn selectable(&self) -> bool {
-        !matches!(self.item, ItemRef::Header | ItemRef::Info | ItemRef::Detail)
+        !matches!(self.item, ItemRef::Header | ItemRef::Info | ItemRef::Detail | ItemRef::ReportLine(_))
     }
 }
 
@@ -197,6 +208,16 @@ pub enum RightDetail {
 
 fn enabled_icon(enabled: bool) -> (&'static str, Color) {
     if enabled { ("●", POSITIVE) } else { ("○", DARK) }
+}
+
+/// A report kind's colour (colour-blind safe: it always has its glyph too).
+pub fn report_color(kind: &str) -> Color {
+    match kind {
+        "warn" | "alert" => ATTENTION,
+        "failed" => NEGATIVE,
+        "ok" | "delivered" => POSITIVE,
+        _ => MUTED,
+    }
 }
 
 pub fn automation_status(automation: &Automation) -> Status {
@@ -322,6 +343,7 @@ impl App {
         }
         match self.side_view {
             SideView::Sessions => {}
+            SideView::Reports => rows.extend(self.report_rows()),
             SideView::Automations => {
                 if self.automations.is_empty() {
                     rows.push(ListRow::info(if self.automations_loading { "Loading…" } else { "No automations yet." }));
@@ -514,6 +536,62 @@ impl App {
         rows
     }
 
+    /// The Reports inbox: a row per thread (newest first; a gold dot while
+    /// unread) with a line of who, kind and the start of its text.
+    fn report_rows(&self) -> Vec<ListRow> {
+        let mut rows = Vec::new();
+        let Some(inbox) = &self.reports.inbox else {
+            rows.push(ListRow::info("Waiting for the service's inbox…"));
+            rows.push(ListRow::info("(an older service has none: update it)"));
+            return rows;
+        };
+        let threads = self.reports.threads();
+        let unread = threads.iter().filter(|t| t.unread > 0).count();
+        rows.push(ListRow::header(match (unread, inbox.total) {
+            (_, 0) => "No reports yet".to_owned(),
+            (0, total) => format!("{total} report{} · all read", if total == 1 { "" } else { "s" }),
+            (unread, total) => format!("{unread} unread · {total} report{}", if total == 1 { "" } else { "s" }),
+        }));
+        if unread > 0 {
+            rows.push(ListRow::row(ItemRef::ReportsAllRead, "✓", BLUE, "Mark all read", ""));
+        }
+        for refused in &inbox.rejected {
+            let title = if refused.title.is_empty() { "(no title)".to_owned() } else { refused.title.clone() };
+            rows.push(ListRow::row(ItemRef::ReportRefused(refused.id.clone()), "✗", NEGATIVE, format!("Refused: {title}"), format_age(refused.ms, self.visual_now())));
+            rows.push(ListRow { item: ItemRef::ReportLine(String::new()), label: refused.reason.clone(), right: String::new(), icon: "", color: NEGATIVE });
+        }
+        for thread in &threads {
+            let report = &thread.latest;
+            let (icon, color) = if thread.unread > 0 { ("●", ATTENTION) } else { (canvas_model::reports::kind_glyph(&report.kind), report_color(&report.kind)) };
+            rows.push(ListRow::row(ItemRef::Report(report.id.clone()), icon, color, report.title.clone(), crate::reports::age(report.created_ms, self.visual_now())));
+            let mut line = Vec::new();
+            let source = self.report_source(report);
+            if !source.is_empty() {
+                line.push(source);
+            }
+            if report.kind != "info" {
+                line.push(report.kind.clone());
+            }
+            if thread.ids.len() > 1 {
+                line.push(format!("{} updates", thread.ids.len()));
+            }
+            // The start of its text, without the title it usually repeats.
+            let preview = report.preview.strip_prefix(report.title.as_str()).unwrap_or(&report.preview).trim();
+            if !preview.is_empty() {
+                line.push(preview.to_owned());
+            }
+            rows.push(ListRow { item: ItemRef::ReportLine(report.id.clone()), label: line.join(" · "), right: String::new(), icon: "", color: MUTED });
+        }
+        if threads.is_empty() && inbox.rejected.is_empty() {
+            rows.push(ListRow::info("Sessions publish reports and"));
+            rows.push(ListRow::info("messages here with `copilot-canvas"));
+            rows.push(ListRow::info("report publish` (canvas-reports"));
+            rows.push(ListRow::info("skill). Opening one never starts"));
+            rows.push(ListRow::info("its session."));
+        }
+        rows
+    }
+
     pub fn list_move(&mut self, delta: i64) {
         let rows = self.build_list();
         if rows.is_empty() {
@@ -548,11 +626,23 @@ impl App {
     pub fn list_activate(&mut self, index: usize) {
         let rows = self.build_list();
         let Some(row) = rows.get(index).cloned() else { return };
+        // The line under a report opens it too.
+        if let ItemRef::ReportLine(id) = &row.item {
+            if !id.is_empty() {
+                self.list_sel = index.saturating_sub(1);
+                self.open_report(id);
+            }
+            return;
+        }
         if !row.selectable() {
             return;
         }
         self.list_sel = index;
         match row.item {
+            ItemRef::Report(id) => self.open_report(&id),
+            ItemRef::ReportsAllRead => self.report_action(crate::reports::ReportAction::MarkAllRead),
+            ItemRef::ReportRefused(id) => self.report_action(crate::reports::ReportAction::ConfirmDelete(vec![id])),
+            ItemRef::ReportLine(_) => {}
             ItemRef::Automation(key) => {
                 self.right_detail = Some(RightDetail::Automation(key.clone()));
                 if let Some(node) = self.doc.nodes.iter().find(|n| n.automation.as_deref() == Some(&key)).map(|n| n.id.clone()) {
@@ -679,6 +769,13 @@ impl App {
         };
         match row.item {
             ItemRef::Automation(key) => self.toggle_automation(&key),
+            ItemRef::Report(id) => {
+                // Space: read ↔ unread (the whole thread).
+                if let Some(thread) = self.reports.threads().into_iter().find(|t| t.latest.id == id) {
+                    let action = if thread.unread > 0 { crate::reports::ReportAction::MarkRead(thread.ids) } else { crate::reports::ReportAction::MarkUnread(vec![id]) };
+                    self.report_action(action);
+                }
+            }
             ItemRef::Plugin(name) => self.set_config_enabled(Kind::Plugin, name.clone(), !enabled_now(Kind::Plugin, &name)),
             ItemRef::Mcp(name) => self.set_config_enabled(Kind::Mcp, name.clone(), !enabled_now(Kind::Mcp, &name)),
             ItemRef::Skill(name) => self.set_config_enabled(Kind::Skill, name.clone(), !enabled_now(Kind::Skill, &name)),
@@ -714,6 +811,14 @@ impl App {
     pub fn list_delete(&mut self, index: usize) {
         let rows = self.build_list();
         let Some(row) = rows.get(index).cloned() else { return };
+        match &row.item {
+            ItemRef::Report(id) => {
+                let ids = self.reports.threads().into_iter().find(|t| &t.latest.id == id).map(|t| t.ids).unwrap_or_else(|| vec![id.clone()]);
+                return self.report_action(crate::reports::ReportAction::ConfirmDelete(ids));
+            }
+            ItemRef::ReportRefused(id) => return self.report_action(crate::reports::ReportAction::ConfirmDelete(vec![id.clone()])),
+            _ => {}
+        }
         let what = match &row.item {
             ItemRef::Plugin(_) => Kind::Plugin,
             ItemRef::Mcp(_) => Kind::Mcp,

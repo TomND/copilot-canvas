@@ -35,6 +35,7 @@ pub fn render(app: &mut App, buf: &mut Buffer, screen: Rect, overlay: Option<&mu
     app.layout.hits.clear();
     app.layout.links.clear();
     app.layout.modal_rect = None;
+    app.layout.html_pane = None;
     app.layout.screen = screen;
     if screen.width < 60 || screen.height < 16 {
         put(buf, 1, 1, "Copilot Canvas needs at least 60×16 cells. Ctrl+Q quits.", fg(ATTENTION), screen);
@@ -45,7 +46,9 @@ pub fn render(app: &mut App, buf: &mut Buffer, screen: Rect, overlay: Option<&mu
     let body = Rect::new(0, 1, screen.width, screen.height - 2);
     // VS Code-style activity bar, always visible.
     let bar = Rect::new(0, body.y, crate::ui_side::BAR_W, body.height);
-    let sidebar_w = if app.doc.ui.sidebar_visible { app.doc.ui.sidebar_width.clamp(18, body.width / 2) } else { 0 };
+    // The Reports inbox needs room for titles and who sent them.
+    let wanted = if app.side_view == crate::side::SideView::Reports { app.doc.ui.sidebar_width.max(46) } else { app.doc.ui.sidebar_width };
+    let sidebar_w = if app.doc.ui.sidebar_visible { wanted.clamp(18, body.width / 2) } else { 0 };
     let sidebar = Rect::new(bar.right(), body.y, sidebar_w, body.height);
     let rest_x = bar.right() + if sidebar_w > 0 { sidebar_w + 1 } else { 0 };
     let rest_w = body.width - rest_x;
@@ -124,6 +127,7 @@ pub fn render(app: &mut App, buf: &mut Buffer, screen: Rect, overlay: Option<&mu
     phase(app, "status+modals");
     view.cursor = modal_cursor.or(cursor);
     view.modal = app.layout.modal_rect;
+    view.html = app.layout.html_pane.clone().map(|(rect, id, document)| crate::view::HtmlPane { rect, id, document });
     view
 }
 
@@ -1006,8 +1010,9 @@ fn draw_status(app: &mut App, buf: &mut Buffer, area: Rect) {
     } else {
         let hints = match app.focus {
             Focus::Terminal => "Typing goes to the terminal · Ctrl+] or F6 back to canvas · Ctrl+F6 / Ctrl+Shift+F6 recent sessions · drag to copy · Ctrl+V paste · Alt+V image · Ctrl+click links · Shift+PgUp history · click canvas to leave",
-            Focus::Sidebar if app.side_view != crate::side::SideView::Sessions => "↑↓ move · Enter open/edit · Space enable/disable · Del remove · Esc back · Alt+1…8 views · ? help",
-            Focus::Sidebar => "click view · double-click/Enter start · ] [ or Ctrl+F6 recent · ←→ collapse · / filter · Tab canvas · Alt+1…8 views · ? help",
+            Focus::Sidebar if app.side_view == crate::side::SideView::Reports => "↑↓ move · Enter read · Space read/unread · Del delete · Esc back · Alt+1…9 views · ? help",
+            Focus::Sidebar if app.side_view != crate::side::SideView::Sessions => "↑↓ move · Enter open/edit · Space enable/disable · Del remove · Esc back · Alt+1…9 views · ? help",
+            Focus::Sidebar => "click view · double-click/Enter start · ] [ or Ctrl+F6 recent · ←→ collapse · / filter · Tab canvas · Alt+1…9 views · ? help",
             Focus::Canvas => "click view · double-click/Enter start · ] [ or Ctrl+F6 recent · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom · right-click menu · ? help",
         };
         (hints.to_owned(), fg(MUTED).bg(PANEL))
