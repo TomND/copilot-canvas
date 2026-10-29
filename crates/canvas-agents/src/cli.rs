@@ -235,13 +235,14 @@ mod tests {
         emit(&home, "pr.merged", Some(r#"{"pr": 5}"#.into()), None, None).unwrap();
         send(&home, "Drift guard", "re-check").unwrap();
         assert!(emit(&home, "bad name!", None, None, None).is_err());
-        let mut files: Vec<_> = std::fs::read_dir(bus::inbox_dir(&home)).unwrap().flatten().map(|e| e.path()).collect();
-        files.sort();
+        let files: Vec<_> = std::fs::read_dir(bus::inbox_dir(&home)).unwrap().flatten().map(|e| e.path()).collect();
         assert_eq!(files.len(), 2);
-        let first: Event = serde_json::from_slice(&std::fs::read(&files[0]).unwrap()).unwrap();
-        assert_eq!((first.kind.as_str(), first.data["pr"].as_u64()), ("pr.merged", Some(5)));
-        let second: Event = serde_json::from_slice(&std::fs::read(&files[1]).unwrap()).unwrap();
-        assert_eq!((second.kind.as_str(), second.to.as_str(), second.data["text"].as_str()), ("message", "Drift guard", Some("re-check")));
+        // Files written in the same millisecond sort by their random suffix: find each by kind.
+        let events: Vec<Event> = files.iter().map(|f| serde_json::from_slice(&std::fs::read(f).unwrap()).unwrap()).collect();
+        let first = events.iter().find(|e| e.kind == "pr.merged").expect("the emitted event");
+        assert_eq!(first.data["pr"].as_u64(), Some(5));
+        let second = events.iter().find(|e| e.kind == "message").expect("the message");
+        assert_eq!((second.to.as_str(), second.data["text"].as_str()), ("Drift guard", Some("re-check")));
         let plugin = write_plugin(&home).unwrap();
         assert!(std::fs::read_to_string(plugin.join("skills/canvas-events/SKILL.md")).unwrap().starts_with("---\nname: canvas-events"));
         let claude: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(plugin.join(".claude-plugin/plugin.json")).unwrap()).unwrap();

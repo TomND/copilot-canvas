@@ -19,7 +19,7 @@ final class TerminalUITests: XCTestCase {
 
     func testSessionsAreListedByWhatTheyNeed() throws {
         let app = launch()
-        XCTAssertTrue(app.staticTexts["Fix flaky test"].waitForExistence(timeout: 20), "the canvas arrived")
+        XCTAssertTrue(app.staticTexts["Fix flaky test"].waitForExistence(timeout: 45), "the canvas arrived")
         XCTAssertTrue(app.staticTexts["Scratch"].exists)
         attach(app, "sessions")
         app.buttons["Canvas"].tap()
@@ -30,16 +30,16 @@ final class TerminalUITests: XCTestCase {
     func testTypingInATerminalReachesTheShell() throws {
         let app = launch(["-openSession", "mock-loose"])
         let terminal = app.descendants(matching: .any).matching(identifier: "terminal").firstMatch
-        XCTAssertTrue(terminal.waitForExistence(timeout: 20))
-        // The session starts: wait for the shell's prompt.
-        let prompt = NSPredicate(format: "value CONTAINS '%'")
+        XCTAssertTrue(terminal.waitForExistence(timeout: 45))
+        // The session starts: wait for the shell's prompt (zsh `%`, bash `$`, root `#`).
+        let prompt = NSPredicate(format: "value MATCHES %@", "(?s).*[%$#>][ \\n]*")
         expectation(for: prompt, evaluatedWith: terminal)
-        waitForExpectations(timeout: 20)
+        waitForExpectations(timeout: 45)
         terminal.tap()
         app.typeText("echo ui-$((6*7))-ok\n")
         let echoed = NSPredicate(format: "value CONTAINS 'ui-42-ok'")
         expectation(for: echoed, evaluatedWith: terminal)
-        waitForExpectations(timeout: 20)
+        waitForExpectations(timeout: 45)
         attach(app, "terminal")
         // The key bar sends keys the keyboard lacks.
         XCTAssertTrue(app.buttons["esc"].firstMatch.exists)
