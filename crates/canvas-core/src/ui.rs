@@ -845,7 +845,7 @@ fn draw_details(app: &mut App, buf: &mut Buffer, area: Rect) {
                 lines.push((format!("⟲ {passives} passive session(s)…"), fg(ACCENT)));
             } else if !app.demo {
                 clicks.push((lines.len(), Action::NewPassive(group.id.clone())));
-                lines.push(("⟲ New passive session…".into(), fg(ACCENT)));
+                lines.push(("⟲ Add a passive session…".into(), fg(ACCENT)));
             }
         }
         lines.push((String::new(), Style::default()));

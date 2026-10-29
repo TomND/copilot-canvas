@@ -23,6 +23,8 @@ use crate::view::{Motion, RenderMode, WRect};
 const ANIM_MS: f32 = 300.0;
 /// How often `last_used_ms` is brought up to date.
 const USED_EVERY: Duration = Duration::from_secs(5);
+/// Boxes without a recorded use start from their history this long after it arrived.
+const HISTORY_SETTLE: Duration = Duration::from_secs(10);
 
 /// Dusty box fill per level (light, medium, heavy): the panel colour drained
 /// of its blue, a little warmer as dust settles.
@@ -109,6 +111,9 @@ pub struct VisualState {
     /// When this client first showed each effect (its animation's start).
     seen: HashMap<String, Instant>,
     used_at: Option<Instant>,
+    /// When the session history first arrived (old boxes migrate a little later,
+    /// once the summaries of every tracked session are in).
+    history_at: Option<Instant>,
     effect_frame: u64,
     /// An effect is animating in view (the GUI keeps ticking).
     pub effects_live: bool,
@@ -294,7 +299,7 @@ impl App {
             let seen = typed.max(history).max(term).min(now);
             let next = match node.last_used_ms {
                 // Wait for the history before the first value.
-                None if !self.sessions_loaded && !self.demo => None,
+                None if !self.demo && !self.visual.history_at.is_some_and(|t| t.elapsed() >= HISTORY_SETTLE) => None,
                 None => vm::migrated_last_used(node, seen),
                 recorded => vm::next_last_used(recorded, seen),
             };
@@ -826,6 +831,9 @@ impl App {
             self.visual.effect_frame = self.tick as u64;
             self.needs_draw = true;
         }
+        if self.sessions_loaded && self.visual.history_at.is_none() {
+            self.visual.history_at = Some(Instant::now());
+        }
         if self.visual.used_at.is_none_or(|t| t.elapsed() >= USED_EVERY) {
             self.visual.used_at = Some(Instant::now());
             self.sync_last_used();
@@ -1000,6 +1008,10 @@ mod tests {
         app.sync_last_used();
         assert_eq!(app.doc.node("s").unwrap().last_used_ms, None, "waits for the history");
         app.sessions_loaded = true;
+        app.visual.history_at = Some(Instant::now());
+        app.sync_last_used();
+        assert_eq!(app.doc.node("s").unwrap().last_used_ms, None, "the summaries are still coming in");
+        app.visual.history_at = Some(Instant::now() - HISTORY_SETTLE);
         app.sync_last_used();
         assert_eq!(app.doc.node("s").unwrap().last_used_ms, Some(5_000), "migrated from when you last looked");
         app.select_node("s", false);

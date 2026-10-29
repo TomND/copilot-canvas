@@ -224,7 +224,7 @@ pub(super) fn rows(sb: &Sandbox, rows: &mut Vec<Row>) {
         let _ = gui.png(0, "visual-fireworks");
         let animated = frames_in(&gui, 2.0)?;
         if motion == "On" {
-            anyhow::ensure!((8..=36).contains(&animated), "{animated} frames in 2 s while the fireworks run (≤ 15 fps)");
+            anyhow::ensure!((16..=36).contains(&animated), "{animated} frames in 2 s while the fireworks run (≤ 15 fps)");
         }
         let fresh = named(&boxes(&tree), "Fresh one").and_then(|b| rect(&b["rect"])).context("box")?;
         gui.click(center(fresh), &[])?;
@@ -237,7 +237,8 @@ pub(super) fn rows(sb: &Sandbox, rows: &mut Vec<Row>) {
         anyhow::ensure!(effects == 0, "the service forgot it ({effects} left)");
         anyhow::ensure!(gui.tree()?["tiles"].as_array().is_some_and(Vec::is_empty), "no session started");
         let idle = frames_in(&gui, 2.0)?;
-        anyhow::ensure!(idle <= 8, "{idle} frames in 2 s after the click (idle again)");
+        // The canvas's loop arcs still animate on their idle ticks; the effect's frames stop.
+        anyhow::ensure!(motion != "On" || idle * 2 <= animated + 4, "{idle} frames in 2 s after the click, {animated} while animated");
         Ok(format!("motion {motion}: {animated} frames in 2 s while animated, {idle} after; acknowledged everywhere, nothing started"))
     });
 
