@@ -903,7 +903,8 @@ impl App {
 
     pub fn reveal_node(&mut self, id: &str) {
         let Some(node) = self.doc.node(id) else { return };
-        let (cx, cy) = node.rect().center();
+        // A stacked or hidden box: where it shows (its stack or visible ancestor).
+        let (cx, cy) = self.shown_center(id).unwrap_or_else(|| node.rect().center());
         self.center_on(cx, cy);
         self.flash = Some((id.to_owned(), Instant::now()));
     }

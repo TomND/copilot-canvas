@@ -373,6 +373,18 @@ impl App {
         out
     }
 
+    /// Where a stacked or hidden box shows: its stack's deck or its visible
+    /// ancestor (`None`: it shows itself).
+    pub fn shown_center(&self, id: &str) -> Option<(i32, i32)> {
+        match self.concealed_now().get(id)? {
+            Conceal::Stack(root) => {
+                let deck = self.deck_rect(self.doc.node(root)?);
+                Some(((deck.x + deck.w / 2.0) as i32, (deck.y + deck.h / 2.0) as i32))
+            }
+            Conceal::Hidden(top) => Some(self.doc.node(top)?.rect().center()),
+        }
+    }
+
     /// What the canvas draws differently this frame: concealed boxes, decks,
     /// hidden counts, and (GUI) boxes in a transition.
     pub fn visual_frame(&mut self) -> VisualFrame {

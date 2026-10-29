@@ -165,6 +165,7 @@ pub fn events(home: &Path) -> Result<()> {
     let sessions: Vec<&String> = routing.members.iter().filter(|(id, g)| **g == group_id && **id != me).filter_map(|(id, _)| routing.names.get(id)).collect();
     println!("Other sessions: {}", if sessions.is_empty() { "none".into() } else { sessions.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("; ") });
     println!("\nMessage one: copilot-canvas send --to \"<name>\" \"<message>\"");
+    println!("Mark a box until someone clicks it: copilot-canvas effect fireworks|attention|sparkle|alert --on \"<name>\" [--note \"<text>\"]");
     Ok(())
 }
 
