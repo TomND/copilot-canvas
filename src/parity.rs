@@ -84,6 +84,10 @@ pub(crate) struct Sandbox {
     fake_opencode: PathBuf,
     /// The stand-in as `claude.exe` (the model check's Claude Code sessions).
     fake_claude: PathBuf,
+    /// The stand-in `gh` and `az` (pull request rows) and their fixtures' folder.
+    fake_gh: PathBuf,
+    fake_az: PathBuf,
+    pub(crate) prs: PathBuf,
     canvas: PathBuf,
     sessions: Sessions,
     pub(crate) exe: PathBuf,
@@ -580,6 +584,10 @@ impl Sandbox {
         std::fs::copy(&exe, &fake_opencode)?;
         let fake_claude = root.join("fake").join("claude.exe");
         std::fs::copy(&exe, &fake_claude)?;
+        let (fake_gh, fake_az, prs) = (root.join("fake").join("gh.exe"), root.join("fake").join("az.exe"), root.join("prs"));
+        std::fs::copy(&exe, &fake_gh)?;
+        std::fs::copy(&exe, &fake_az)?;
+        std::fs::create_dir_all(&prs)?;
         let instance = Instance::new(Some(format!("parity{}", std::process::id())), Some(home.clone()), Some(sessions_dir.clone()))?;
         let id = || uuid::Uuid::new_v4().to_string();
         let sessions = Sessions {
@@ -668,7 +676,7 @@ impl Sandbox {
         std::fs::write(&canvas, serde_json::to_string_pretty(&doc)?)?;
         // The service also listens on loopback TCP (the remote rows connect there).
         std::fs::write(home.join("settings.json"), r#"{"remote":{"listen":"127.0.0.1:0"}}"#)?;
-        Ok(Self { root, instance, work, group_folder, copilot_home, fake, fake_opencode, fake_claude, canvas, sessions, exe })
+        Ok(Self { root, instance, work, group_folder, copilot_home, fake, fake_opencode, fake_claude, fake_gh, fake_az, prs, canvas, sessions, exe })
     }
 
     /// OpenCode's database with a session and two task-tool children (one
@@ -764,8 +772,10 @@ impl Sandbox {
         // The stand-in's passive runs last long enough to be stopped (row 40b).
         let run_ms = PathBuf::from("6000");
         let (claude, xdg) = (self.root.join("claude-home"), self.root.join("xdg-data"));
+        // Pull requests are polled every 2 s (rows 42, 43), with the stand-in gh / az.
+        let poll = PathBuf::from("2");
         // Only the sandbox's histories: OpenCode and Claude Code look in empty folders.
-        let env: [(&str, &Path); 8] = [
+        let env: [(&str, &Path); 12] = [
             ("COPILOT_HOME", &self.copilot_home),
             ("COPILOT_CANVAS_COPILOT", &self.fake),
             ("COPILOT_CANVAS_OPENCODE", &self.fake_opencode),
@@ -774,6 +784,10 @@ impl Sandbox {
             ("CLAUDE_CONFIG_DIR", &claude),
             ("XDG_DATA_HOME", &xdg),
             ("COPILOT_CANVAS_FAKE_RUN_MS", &run_ms),
+            ("COPILOT_CANVAS_GH", &self.fake_gh),
+            ("COPILOT_CANVAS_AZ", &self.fake_az),
+            (crate::fake_gh::ENV, &self.prs),
+            ("COPILOT_CANVAS_PR_POLL_SECS", &poll),
         ];
         let driver = GuiDriver::start(&self.args(extra), &env, (COLS, ROWS), &self.root.join(log))?;
         Ok(Gui { driver })
@@ -1782,6 +1796,7 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         Ok(format!("initial {initial} shown and launched; {picked} picked → B and remembered; A resumed with {initial}; group override shown, {listed} for C only, reset"))
     });
     agents::rows(sb, gui, rows);
+    prs::rows(sb, gui, rows);
 
     check_kind(rows, "G4", "New: several windows on one canvas (Ctrl+Shift+N, toolbar)", "second_window_rename_sync", Kind::Only("GUI only: a console has one window"), || {
         let opened = gui.req(json!({ "cmd": "new_window" }))?;
@@ -1995,6 +2010,8 @@ pub(crate) mod visual;
 
 #[path = "parity_agents.rs"]
 mod agents;
+#[path = "parity_prs.rs"]
+mod prs;
 #[path = "parity_reports.rs"]
 pub(crate) mod reports;
 

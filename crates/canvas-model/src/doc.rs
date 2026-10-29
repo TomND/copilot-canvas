@@ -134,6 +134,10 @@ pub struct Passive {
     /// Switched off: no events, schedules, messages or runs (it is not routed).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disabled: bool,
+    /// PR coordination of a canvas-wide agent (the canvas monitors handed-off
+    /// pull requests; `None`: off).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prs: Option<crate::prs::PrSettings>,
 }
 
 /// Whose events a passive session gets.

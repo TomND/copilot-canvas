@@ -1,0 +1,112 @@
+# prs-panel (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents 3 · ⚠ 1   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit             ◆ 1 needs you   6 sessions
+    SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
+▌▤  / filter…                    │ ┌╌ ▣ Payments · 2 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ 1 ╌ ◧ AI d││ ⇅ Pull requests · 4 tracked · 3 active · 2 need you         │
+                                 │ ╎                                                  ││ Monitored read-only (gh / az) for PR coordinator;           │
+ ◷  ▾ ▣ Payments               2 │ ╎ ╭ Fix flaky test ────────────╮    ┌ ⟲ Drift guard││ follow-ups reach owners when they are idle.                 │
+      ◧ pay                      │ ╎ │ ■ stopped                  │    ╎ ○ waiting    ││ Follow-ups: tracking grants no permission to push, reply,   │
+ ⧉    ■ Fix flaky test           │ ╎ │ canvas                     │    ╎ on pr.pushed ││ resolve, vote, merge: fix and test locally; ask the user    │
+      ⟲ ○ ↻ Drift guard          │ ╎ ╰────────────────────────────╯    └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ before any of these.                                        │
+ ⌁  ▾ ◎ Canvas agents          3 │ ╎     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+      ◎ ● ↻ PR coordinator       │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ ⚠ api!1234 “Retry on 429” · active                          │
+ ✦    ◎ ‖ Cross-group digest     │                                                    ││   owner Payments API · checked 2m ago · next in 3m          │
+      ◎ ⚠ ↻ Release watch        │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││   failing: CI · last: a check is failing: CI 5m ago         │
+ ◈  ── Ungrouped (1)             │ ┌╌ ◎ Canvas agents · 3 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││    Open PR   View owner   Check now   Untrack               │
+    ■ Payments API               │ ╎                                                  ││   ⚠ blocked 5m ago → Payments API: Investigate the failing  │
+ ⇄                               │ ╎ ┌ ◎ PR coordinator ╌╌╌╌╌╌╌╌╌╌┐┄•● ┌ ◎ Cross-group││   CI build and fix it                                       │
+                                 │ ╎ ╎ ● monitoring · 2 PRs trac… ╎  ┆ ╎ ‖ paused     ││     the session is not running: resume it (the follow-up is │
+ ≡                               │ ╎ ╎ on pr.*, build.failed      ╎  ┆ ╎ on session.do││     typed in once it is idle), reassign or dismiss          │
+                                 │ ╎ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┘◂┄╯ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││      ▸ Resume owner   Reassign…   Dismiss                   │
+ ✉                               │ ╎                                                  ││                                                             │
+                                 │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ ⚠ octo/svc#7 “Bump the SDK” · active                        │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││   owner Fix flaky test · unavailable: gh is not signed in   │
+                                 │                                                    ││   on the service's machine: run gh auth login               │
+                                 │                                                    ││    Open PR   View owner   Check now   Untrack               │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+                                 │                                                    ││ ● octo/app#42 “Fix flaky upload test” · active              │
+                                 │                                                    ││   owner Fix flaky test · checked 2m ago · next in 3m        │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││   5 comment(s), 0 new · changes requested · last: 3 new     │
+                                 │                                                    ││   comment(s) 2m ago                                         │
+                                 │                                                    ││    Open PR   View owner   Check now   Untrack               │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││   ✓ delivered 1m ago → Fix flaky test: Review and address   │
+                                 │                                                    ││   the 3 new review comments (ana: retry logic, ben:         │
+                                 │                                                    ││   naming):                                                  │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││   https://github.com/octo/app/pull/42#discussion_r1203      │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││ ✓ octo/app#40 “Upload retries” · merged 1h ago · monitorin… │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││  Check all now    Canvas agents    Close                    │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  │└─────────────────────────────────────────────────────────────┘
+ click view · double-click/Enter start · ] [ or Ctrl+F6 recent · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom ·…
+## gpu view model
+view cursor=none modal=none banner=None
+canvas area=34,1 52x38 origin=-1,-1 scale=1 grid=true tick=0 empty=false
+group g-agents "Canvas agents" icon=◎ members=3 rect=0,10 104x8 color=#cc79a7 style=[fg #cc79a7 +DIM] selected=false drop_target=false automations=false folder=false
+  chip " ◎ 3 · manage " action=Agents(Panel) rect=76,10 14x1 fixed=false lit=true
+  chip " ✦ Skills " action=Agents(Library) rect=91,10 10x1 fixed=false lit=true
+group g-pay "Payments" icon=▣ members=2 rect=0,0 70x8 color=#56b4e9 style=[fg #56b4e9 +DIM] selected=false drop_target=false automations=false folder=true
+  chip " ⟲ 1 " action=Visual(GroupPassives("g-pay")) rect=38,0 5x1 fixed=false lit=true
+  chip " ◧ AI docs " action=OpenGroupFolder("g-pay", false) rect=44,0 11x1 fixed=false lit=true
+  chip " ◨ Outputs " action=OpenGroupFolder("g-pay", true) rect=56,0 11x1 fixed=false lit=true
+box s-fix Session rect=2,2 30x4 prefix="" name="Fix flaky test"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]
+  selected=false focused_term=false active=false
+box p-guard Passive rect=36,2 30x4 prefix="⟲ " name="Drift guard"
+  status=Idle icon="○" label="idle" line="○ waiting" subtitle="on pr.pushed" elsewhere=false every=Some("on pr.pushed") mailbox=0
+  border=Dashed border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #8b949e]
+  selected=false focused_term=false active=false
+box a-pr Passive rect=2,12 30x4 prefix="◎ " name="PR coordinator"
+  status=Idle icon="●" label="idle" line="● monitoring · 2 PRs tracked" subtitle="on pr.*, build.failed" elsewhere=false every=Some("on pr.*, build.failed") mailbox=0
+  border=Dashed border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #56b4e9]
+  selected=false focused_term=false active=false
+box a-digest Passive rect=36,12 30x4 prefix="◎ " name="Cross-group digest"
+  status=Stopped icon="‖" label="stopped" line="‖ paused" subtitle="on session.done" elsewhere=false every=None mailbox=0
+  border=Dashed border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #8b949e]
+  selected=false focused_term=false active=false
+loops motion=On frozen=true
+loop p-guard rect=36,2 30x4 halo=false lap=0.623 grow=1 ending=false
+loop a-pr rect=2,12 30x4 halo=false lap=0.153 grow=1 ending=false
+## gpu screen (chrome and the model painted as text)
+ ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents 3 · ⚠ 1   ▢ Single   ⤢ Fit   −   +   ?   ⧉   ⏻ Quit         ◆ 1 needs you   6 sessions
+    SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
+▌▤  / filter…                    │ ┌╌ ▣ Payments · 2 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ 1 ╌ ◧ AI d││ ⇅ Pull requests · 4 tracked · 3 active · 2 need you         │
+                                 │ ╎                                                  ││ Monitored read-only (gh / az) for PR coordinator;           │
+ ◷  ▾ ▣ Payments               2 │ ╎ ╭ Fix flaky test ────────────╮    ┌ ⟲ Drift guard││ follow-ups reach owners when they are idle.                 │
+      ◧ pay                      │ ╎ │ ■ stopped                  │    ╎ ○ waiting    ││ Follow-ups: tracking grants no permission to push, reply,   │
+ ⧉    ■ Fix flaky test           │ ╎ │ canvas                     │    ╎ on pr.pushed ││ resolve, vote, merge: fix and test locally; ask the user    │
+      ⟲ ○ ↻ Drift guard          │ ╎ ╰────────────────────────────╯    └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ before any of these.                                        │
+ ⌁  ▾ ◎ Canvas agents          3 │ ╎     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+      ◎ ● ↻ PR coordinator       │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ ⚠ api!1234 “Retry on 429” · active                          │
+ ✦    ◎ ‖ Cross-group digest     │                                                    ││   owner Payments API · checked 2m ago · next in 3m          │
+      ◎ ⚠ ↻ Release watch        │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││   failing: CI · last: a check is failing: CI 5m ago         │
+ ◈  ── Ungrouped (1)             │ ┌╌ ◎ Canvas agents · 3 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││    Open PR   View owner   Check now   Untrack               │
+    ■ Payments API               │ ╎                                                  ││   ⚠ blocked 5m ago → Payments API: Investigate the failing  │
+ ⇄                               │ ╎ ┌ ◎ PR coordinator ╌╌╌╌╌╌╌╌╌╌┐┄•● ┌ ◎ Cross-group││   CI build and fix it                                       │
+                                 │ ╎ ╎ ● monitoring · 2 PRs trac… ╎  ┆ ╎ ‖ paused     ││     the session is not running: resume it (the follow-up is │
+ ≡                               │ ╎ ╎ on pr.*, build.failed      ╎  ┆ ╎ on session.do││     typed in once it is idle), reassign or dismiss          │
+                                 │ ╎ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┘◂┄╯ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││      ▸ Resume owner   Reassign…   Dismiss                   │
+ ✉                               │ ╎                                                  ││                                                             │
+                                 │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ ⚠ octo/svc#7 “Bump the SDK” · active                        │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││   owner Fix flaky test · unavailable: gh is not signed in   │
+                                 │                                                    ││   on the service's machine: run gh auth login               │
+                                 │                                                    ││    Open PR   View owner   Check now   Untrack               │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+                                 │                                                    ││ ● octo/app#42 “Fix flaky upload test” · active              │
+                                 │                                                    ││   owner Fix flaky test · checked 2m ago · next in 3m        │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││   5 comment(s), 0 new · changes requested · last: 3 new     │
+                                 │                                                    ││   comment(s) 2m ago                                         │
+                                 │                                                    ││    Open PR   View owner   Check now   Untrack               │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││   ✓ delivered 1m ago → Fix flaky test: Review and address   │
+                                 │                                                    ││   the 3 new review comments (ana: retry logic, ben:         │
+                                 │                                                    ││   naming):                                                  │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││   https://github.com/octo/app/pull/42#discussion_r1203      │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││ ✓ octo/app#40 “Upload retries” · merged 1h ago · monitorin… │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││  Check all now    Canvas agents    Close                    │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  │└─────────────────────────────────────────────────────────────┘
+ click view · double-click/Enter start · ] [ or Ctrl+F6 recent · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom ·…

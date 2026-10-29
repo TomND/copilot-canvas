@@ -180,6 +180,12 @@ impl Lines {
             self.lines.push((line, style));
         }
     }
+    /// Text wrapped under an indent (every line starts at it).
+    fn indented(&mut self, indent: usize, text: impl Into<String>, style: Style) {
+        for line in wrap(&text.into(), self.width.saturating_sub(indent)) {
+            self.lines.push((format!("{}{line}", " ".repeat(indent)), style));
+        }
+    }
     /// One line that acts on a click (cut to the width).
     fn link(&mut self, text: &str, style: Style, action: Action) {
         let text = truncate(text, self.width);
@@ -585,6 +591,11 @@ fn canvas_agents_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Ac
         buttons.push(("Open".into(), Action::Agents(AgentAction::Show(node.id.clone()))));
         out.buttons(3, buttons);
     }
+    if let Some(summary) = app.prs_summary() {
+        out.gap();
+        out.text(format!("{} PULL REQUESTS · {summary}", crate::prs::MARK), bold(MUTED));
+        out.link(&format!("{} Tracked pull requests and their follow-ups ▸", crate::prs::MARK), fg(TEXT), Action::Prs(crate::prs::PrAction::Panel));
+    }
     out.gap();
     match &app.canvas_skills {
         Some(Ok(skills)) => {
@@ -650,6 +661,15 @@ fn canvas_agent_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Act
         passive.skills.iter().map(|s| if library.is_some_and(|l| !l.iter().any(|k| &k.name == s)) { format!("{s} (missing)") } else { s.clone() }).collect::<Vec<_>>().join(", ")
     };
     out.field("Skills", &skills);
+    if let Some(settings) = &passive.prs {
+        let how = format!(
+            "on: every {} min{} · follow-ups {}",
+            settings.poll_minutes,
+            if settings.auto_track { ", created ones tracked automatically" } else { "" },
+            if settings.allow.is_empty() { "read-only".to_owned() } else { format!("may ask to {}", settings.allow.join(", ")) }
+        );
+        out.field("PRs", &format!("{how} · {}", app.prs_summary().unwrap_or_else(|| "none tracked yet".into())));
+    }
     out.field("Template", &passive.template);
     let kind = crate::agents::agent_of(node);
     let model = canvas_model::models::effective(kind, &app.doc.defaults, app.doc.group(&passive.group)).model;
@@ -705,6 +725,10 @@ fn canvas_agent_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Act
     actions.push(("Filter…".into(), Action::PassiveEdit(id.clone(), PassiveField::Filter)));
     actions.push(("Limits…".into(), Action::PassiveEdit(id.clone(), PassiveField::Limits)));
     actions.push(("Skills…".into(), Action::Agents(AgentAction::Skills(id.clone()))));
+    actions.push(("PRs…".into(), Action::PassiveEdit(id.clone(), PassiveField::Prs)));
+    if passive.prs.is_some() {
+        actions.push(("Pull requests".into(), Action::Prs(crate::prs::PrAction::Panel)));
+    }
     actions.push(("MCP…".into(), Action::McpServers(id.clone())));
     actions.push(("Rules".into(), Action::PassiveOpen(id.clone(), 0)));
     actions.push(("Memory".into(), Action::PassiveOpen(id.clone(), 1)));
@@ -716,6 +740,110 @@ fn canvas_agent_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Act
     actions.push(("Open chat".into(), Action::PassiveChat(id.clone())));
     actions.push(("All agents".into(), Action::Agents(AgentAction::Panel)));
     actions.push(("Remove".into(), Action::RemoveNode(id)));
+}
+
+/// "3m ago" / "in 4m" against the app's clock ("—" for none).
+fn age_at(app: &App, ms: u64) -> String {
+    let now = app.visual_now();
+    match ms {
+        0 => "—".to_owned(),
+        ms if ms <= now => format!("{} ago", crate::paths::format_age(ms, now)),
+        ms => format!("in {}", crate::paths::format_age(now, ms)),
+    }
+}
+
+/// The routed canvas's tracked pull requests: each one's state, owner and
+/// monitor, its follow-ups (queued, delivered, blocked with what to do,
+/// failed) and buttons. Nothing here starts a session but *Resume owner*.
+fn prs_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>) {
+    use crate::prs::{MARK, PrAction, dispatch_look, pr_look};
+    use canvas_model::prs::{DispatchState, MonitorStatus, permissions_text};
+    let Some(view) = app.prs_view() else {
+        out.text(format!("{MARK} Pull requests"), bold(TEXT));
+        out.text("No pull request is tracked on this canvas, and no canvas-wide agent has PR coordination. ◎ Agents › + New canvas agent › PR coordinator turns it on; sessions then hand off what they publish with copilot-canvas pr track <url>.", fg(MUTED));
+        actions.push(("Canvas agents".into(), Action::Agents(crate::canvas_wide::AgentAction::Panel)));
+        return;
+    };
+    let needing = view.needing_you();
+    out.text(format!("{MARK} Pull requests · {} tracked · {} active{}", view.prs.len(), view.active(), if needing > 0 { format!(" · {needing} need you") } else { String::new() }), bold(TEXT));
+    if view.paused.is_empty() {
+        out.text(format!("Monitored read-only (gh / az) for {}; follow-ups reach owners when they are idle.", view.coordinators.join(", ")), fg(MUTED));
+    } else {
+        out.text(format!("Not monitored now: {}.", view.paused), fg(ATTENTION));
+    }
+    out.text(format!("Follow-ups: {}.", permissions_text(&view.allow)), fg(MUTED));
+    if view.prs.is_empty() {
+        out.gap();
+        out.text("Nothing tracked yet: a session hands off a pull request it publishes with copilot-canvas pr track <url> (the canvas-prs skill teaches it).", fg(MUTED));
+    }
+    for pr in &view.prs {
+        out.gap();
+        let (glyph, color) = pr_look(pr);
+        let title = if pr.title.is_empty() { String::new() } else { format!(" “{}”", pr.title) };
+        if pr.state.ended() {
+            // Ended: one line (it stays listed for 30 days).
+            out.link(&format!("{glyph} {}{title} · {} {} · monitoring stopped", pr.pr.short(), pr.state.word(), age_at(app, pr.last_change_ms)), fg(color), Action::Prs(PrAction::Open(pr.url.clone())));
+            continue;
+        }
+        out.link(&format!("{glyph} {}{title} · {}{}", pr.pr.short(), pr.state.word(), if pr.draft { " (draft)" } else { "" }), bold(color), Action::Prs(PrAction::Open(pr.url.clone())));
+        let owner = if pr.owner_name.is_empty() { pr.owner.chars().take(8).collect() } else { pr.owner_name.clone() };
+        let monitor = match pr.monitor.status {
+            MonitorStatus::Pending => "not checked yet".to_owned(),
+            MonitorStatus::Unavailable => format!("unavailable: {}", pr.monitor.reason),
+            MonitorStatus::Failing => format!("failing ({}×): {} · next {}", pr.monitor.failures, pr.monitor.reason, age_at(app, pr.monitor.next_ms)),
+            _ => format!("checked {} · next {}", age_at(app, pr.monitor.last_ms), if view.paused.is_empty() { age_at(app, pr.monitor.next_ms) } else { "when monitored".to_owned() }),
+        };
+        let monitor_color = if matches!(pr.monitor.status, MonitorStatus::Unavailable | MonitorStatus::Failing) { ATTENTION } else { MUTED };
+        out.indented(2, format!("owner {owner} · {monitor}"), fg(monitor_color));
+        let mut facts = Vec::new();
+        if pr.comments > 0 {
+            facts.push(format!("{} comment(s), {} new", pr.comments, pr.new_comments));
+        }
+        if !pr.failing.is_empty() {
+            facts.push(format!("failing: {}", pr.failing.join(", ")));
+        }
+        if !pr.decision.is_empty() {
+            facts.push(pr.decision.replace('_', " "));
+        }
+        if !pr.last_change.is_empty() {
+            facts.push(format!("last: {} {}", pr.last_change, age_at(app, pr.last_change_ms)));
+        }
+        if !facts.is_empty() {
+            out.indented(2, facts.join(" · "), fg(TEXT));
+        }
+        let mut buttons = vec![("Open PR".to_owned(), Action::Prs(PrAction::Open(pr.url.clone()))), ("View owner".to_owned(), Action::Prs(PrAction::Owner(pr.owner.clone()))), ("Check now".to_owned(), Action::Prs(PrAction::Check(pr.url.clone())))];
+        buttons.push(("Untrack".into(), Action::Prs(PrAction::Untrack(pr.url.clone()))));
+        out.buttons(2, buttons);
+        // The newest follow-ups (copilot-canvas pr list has them all).
+        for d in pr.dispatches.iter().rev().take(3) {
+            let (glyph, color) = dispatch_look(d.state);
+            let when = age_at(app, d.updated_ms.max(d.created_ms));
+            out.indented(2, format!("{glyph} {} {when} → {}: {}", d.state.word(), d.to_name, d.text), fg(color));
+            if !d.reason.is_empty() {
+                out.indented(4, &d.reason, fg(color));
+            }
+            let mut buttons = Vec::new();
+            if d.state == DispatchState::Blocked && app.doc.node(&d.to).is_some() && !app.owned_alive(&d.to) {
+                buttons.push(("▸ Resume owner".to_owned(), Action::Start(d.to.clone())));
+            }
+            if matches!(d.state, DispatchState::Blocked | DispatchState::Failed) {
+                if d.state == DispatchState::Failed {
+                    buttons.push(("Retry".into(), Action::Prs(PrAction::Retry(d.id.clone()))));
+                }
+                buttons.push(("Reassign…".into(), Action::Prs(PrAction::Reassign(d.id.clone()))));
+            }
+            if d.state.open() || d.state == DispatchState::Failed {
+                buttons.push(("Dismiss".into(), Action::Prs(PrAction::Dismiss(d.id.clone()))));
+            }
+            if !buttons.is_empty() {
+                out.buttons(4, buttons);
+            }
+        }
+    }
+    if view.active() > 0 {
+        actions.push(("Check all now".into(), Action::Prs(PrAction::Check(String::new()))));
+    }
+    actions.push(("Canvas agents".into(), Action::Agents(crate::canvas_wide::AgentAction::Panel)));
 }
 
 pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &RightDetail) {
@@ -776,6 +904,7 @@ pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &R
             }
         },
         RightDetail::CanvasAgents => canvas_agents_panel(app, &mut out, &mut actions),
+        RightDetail::Prs => prs_panel(app, &mut out, &mut actions),
         RightDetail::Passive(id) if app.doc.node(id).is_some_and(|n| n.is_canvas_agent()) => {
             let node = app.doc.node(id).cloned().expect("checked");
             canvas_agent_panel(app, &mut out, &mut actions, &node);

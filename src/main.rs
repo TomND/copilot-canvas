@@ -3,6 +3,7 @@
 mod agent_prompt;
 mod bench;
 mod fake_copilot;
+mod fake_gh;
 mod golden;
 mod gui_bench;
 mod hardening;
@@ -16,7 +17,7 @@ mod selftest;
 mod soak;
 mod standin;
 
-use canvas_agents::{automations, cli, factory_cli, index, reports, service, vscode};
+use canvas_agents::{automations, cli, factory_cli, index, prs_cli, reports, service, vscode};
 #[cfg(test)]
 use canvas_agents::{bus, copilot_cfg, taskschd};
 use canvas_common::{paths, protocol, win};
@@ -157,6 +158,20 @@ REPORTS (the canvas inbox, Reports in the activity bar; see the canvas-reports s
   copilot-canvas report list [--unread] [--limit N]
                                         stored, queued and refused reports
 
+PULL REQUESTS (a canvas-wide PR coordinator follows them; see the canvas-prs skill)
+  copilot-canvas pr track URL [--session NAME|ID] [--title TEXT]
+                                        hand a GitHub or Azure DevOps pull request to the canvas: it is
+                                        tracked for this session (or --session), checked read-only with
+                                        gh / az for new review comments, failing checks and its end
+  copilot-canvas pr untrack URL         stop tracking it (its owner, canvas-wide agents, you)
+  copilot-canvas pr check [URL]         check now (one, or every active one)
+  copilot-canvas pr dispatch URL --key KEY [--event TYPE] TEXT
+                                        a follow-up for its owning session (PR coordinators and you):
+                                        one per key, typed in when the session is idle; queued,
+                                        delivered, blocked and failed show in Reports
+  copilot-canvas pr list [--format json]
+                                        tracked pull requests, their monitor and follow-ups
+
 AUTOMATIONS (scheduled tasks defined by manifests; folder: --dir, COPILOT_CANVAS_AUTOMATIONS,
              the canvas setting, or <home>/automations)
   copilot-canvas automations [list]     every automation: task state, last result, report, drift
@@ -253,6 +268,10 @@ fn parse() -> Result<Args> {
 }
 
 fn main() {
+    if let Some(cli) = fake_gh::active() {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        std::process::exit(fake_gh::run(cli, &args));
+    }
     if fake_copilot::active() {
         let args: Vec<String> = std::env::args().skip(1).collect();
         std::process::exit(match fake_copilot::run(&args) {
@@ -466,6 +485,16 @@ fn real_main() -> Result<()> {
             Ok(())
         }
         ["report", ..] => bail!("usage: copilot-canvas report publish (--markdown FILE | --html FILE | --message TEXT) [--title T] [options] · report list (see copilot-canvas --help)"),
+        ["pr", "track", url] => prs_cli::track(&instance.home, url, option("session"), option("title")),
+        ["pr", "untrack", url] => prs_cli::untrack(&instance.home, url),
+        ["pr", "check"] => prs_cli::check(&instance.home, None),
+        ["pr", "check", url] => prs_cli::check(&instance.home, Some(url)),
+        ["pr", "dispatch", url, text @ ..] => prs_cli::dispatch(&instance.home, url, option("key"), option("event"), &text.join(" ")),
+        ["pr", "list"] => {
+            println!("{}", prs_cli::list(&instance.home, option("format").is_some_and(|f| f.eq_ignore_ascii_case("json")))?);
+            Ok(())
+        }
+        ["pr", ..] => bail!("usage: copilot-canvas pr track URL [--session NAME|ID] [--title T] · pr untrack URL · pr check [URL] · pr dispatch URL --key KEY [--event TYPE] TEXT · pr list [--format json] (see copilot-canvas --help)"),
         ["automations"] | ["automations", "list"] => factory_cli::list(&dir()),
         ["automations", "show", name] => factory_cli::show(&dir(), name),
         ["automations", "import", names @ ..] => factory_cli::import(&dir(), &owned(names), option("family"), flag("force")),

@@ -369,6 +369,7 @@ fn canvas_agents_app() -> App {
             scope: PassiveScope::Canvas,
             max_runs_per_day: 24,
             rollover_runs: 20,
+            prs: (id == "a-pr").then(Default::default),
             ..Default::default()
         });
         doc.nodes.push(n);
@@ -409,6 +410,75 @@ fn canvas_wide_agent_detail() {
     let mut app = canvas_agents_app();
     app.select_node("a-pr", false);
     check("canvas-agent-detail", &mut app, BOTH);
+}
+
+/// The tracked pull requests (◎ Agents › Pull requests) at a fixed clock: a
+/// follow-up blocked because its owner is stopped (Resume owner, Reassign,
+/// Dismiss), a monitor that cannot sign in, one with three new comments and
+/// a delivered follow-up, and a merged one whose monitoring stopped.
+#[test]
+fn tracked_pull_requests_panel() {
+    use canvas_model::prs::{Dispatch, DispatchState, Monitor, MonitorStatus, PrRef, PrState, PrsView, Registry, Role, TrackedPr};
+    let mut app = canvas_agents_app();
+    app.doc.nodes.push(node("s-api", "Payments API", 2, 40));
+    app.visual.clock_ms = Some(NOW);
+    let min = |m: u64| NOW - m * 60_000;
+    let tracked = |url: &str, owner: &str, owner_name: &str, title: &str| {
+        let mut pr = TrackedPr::new(PrRef::parse(url).unwrap(), Role::Owned, owner, owner_name, "g-pay", "handed off by the session", min(60));
+        pr.title = title.into();
+        pr.monitor = Monitor { status: MonitorStatus::Ok, last_ms: min(2), next_ms: NOW + 3 * 60_000, polls: 4, ..Default::default() };
+        pr
+    };
+    let mut comments = tracked("https://github.com/octo/app/pull/42", "s-fix", "Fix flaky test", "Fix flaky upload test");
+    comments.comments = 5;
+    comments.new_comments = 0;
+    comments.decision = "changes_requested".into();
+    comments.last_change = "3 new comment(s)".into();
+    comments.last_change_ms = min(2);
+    comments.dispatches.push(Dispatch {
+        id: "d-1-0001".into(),
+        key: "comments:i:1203".into(),
+        event: "pr.comment.new".into(),
+        to: "s-fix".into(),
+        to_name: "Fix flaky test".into(),
+        text: "Review and address the 3 new review comments (ana: retry logic, ben: naming): https://github.com/octo/app/pull/42#discussion_r1203".into(),
+        from: "PR coordinator".into(),
+        state: DispatchState::Delivered,
+        created_ms: min(2),
+        updated_ms: min(1),
+        delivered_ms: min(1),
+        ..Default::default()
+    });
+    let mut blocked = tracked("https://dev.azure.com/contoso/Payments/_git/api/pullrequest/1234", "s-api", "Payments API", "Retry on 429");
+    blocked.failing = vec!["CI".into()];
+    blocked.last_change = "a check is failing: CI".into();
+    blocked.last_change_ms = min(5);
+    blocked.dispatches.push(Dispatch {
+        id: "d-2-0002".into(),
+        key: "checks:c0ffee:CI".into(),
+        event: "pr.checks.failed".into(),
+        to: "s-api".into(),
+        to_name: "Payments API".into(),
+        text: "Investigate the failing CI build and fix it".into(),
+        from: "PR coordinator".into(),
+        state: DispatchState::Blocked,
+        reason: "the session is not running: resume it (the follow-up is typed in once it is idle), reassign or dismiss".into(),
+        created_ms: min(5),
+        updated_ms: min(5),
+        ..Default::default()
+    });
+    let mut signed_out = tracked("https://github.com/octo/svc/pull/7", "s-fix", "Fix flaky test", "Bump the SDK");
+    signed_out.monitor = Monitor { status: MonitorStatus::Unavailable, reason: "gh is not signed in on the service's machine: run gh auth login".into(), last_ms: min(10), next_ms: NOW + 20 * 60_000, failures: 1, polls: 0 };
+    let mut merged = tracked("https://github.com/octo/app/pull/40", "s-fix", "Fix flaky test", "Upload retries");
+    merged.state = PrState::Merged;
+    merged.monitor.status = MonitorStatus::Stopped;
+    merged.monitor.reason = "merged: monitoring stopped".into();
+    merged.last_change = "merged".into();
+    merged.last_change_ms = min(90);
+    let registry = Registry { prs: vec![comments, blocked, signed_out, merged] };
+    app.bus.prs = Some(PrsView::of("canvas-1", &registry, vec!["PR coordinator".into()], String::new(), Vec::new()));
+    app.run(Action::Prs(canvas_core::prs::PrAction::Panel));
+    check("prs-panel", &mut app, Sections { cells: true, painted: true });
 }
 
 /// Two boxes selected while a right-drag rubber band is open.

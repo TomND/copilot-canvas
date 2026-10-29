@@ -562,14 +562,7 @@ pub fn publish(home: &Path, args: PublishArgs, who: &Identity, wait: Duration) -
         thread: args.thread.clone().map(|t| t.trim().to_owned()).unwrap_or_default(),
     };
     submission.validate()?;
-    let spool = spool_dir(home);
-    std::fs::create_dir_all(&spool).with_context(|| format!("cannot create {}", spool.display()))?;
-    let file = spool.join(format!("{}.json", submission.id));
-    let temp = spool.join(format!("{}.tmp", submission.id));
-    std::fs::write(&temp, serde_json::to_vec(&submission)?).with_context(|| format!("cannot write {}", temp.display()))?;
-    std::fs::rename(&temp, &file).inspect_err(|_| {
-        let _ = std::fs::remove_file(&temp);
-    }).with_context(|| format!("cannot write {}", file.display()))?;
+    let file = spool(home, &submission)?;
     let id = submission.id.clone();
     if !service_alive(home) {
         return Ok(Outcome::Queued { id, title, why: "The Copilot Canvas service is not running".into(), file });
@@ -592,6 +585,64 @@ pub fn publish(home: &Path, args: PublishArgs, who: &Identity, wait: Duration) -
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// Writes a checked submission into the spool (a temporary file renamed),
+/// where the service's inbox thread stores it; answers the spool file.
+pub fn spool(home: &Path, submission: &Submission) -> Result<PathBuf> {
+    let spool = spool_dir(home);
+    std::fs::create_dir_all(&spool).with_context(|| format!("cannot create {}", spool.display()))?;
+    let file = spool.join(format!("{}.json", submission.id));
+    let temp = spool.join(format!("{}.tmp", submission.id));
+    std::fs::write(&temp, serde_json::to_vec(submission)?).with_context(|| format!("cannot write {}", temp.display()))?;
+    std::fs::rename(&temp, &file)
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&temp);
+        })
+        .with_context(|| format!("cannot write {}", file.display()))?;
+    Ok(file)
+}
+
+/// A short message from the canvas itself (the PR monitor, review
+/// follow-ups) into the inbox: `source` is the canvas-wide agent it is on
+/// behalf of (its box and passive key), else it shows as `source_name`.
+#[derive(Clone, Debug, Default)]
+pub struct Notice {
+    pub title: String,
+    pub body: String,
+    pub kind: String,
+    pub source: String,
+    pub passive: String,
+    pub source_name: String,
+    pub session: String,
+    pub pr: String,
+    pub links: Vec<Link>,
+    pub thread: String,
+}
+
+/// Spools a [`Notice`] (cleaned to fit the inbox's rules).
+pub fn notice(home: &Path, notice: Notice, now: u64) -> Result<String> {
+    let links: Vec<Link> = notice.links.into_iter().filter(|l| reports::parse_link(&format!("{}={}", l.title, l.url)).is_ok()).take(reports::MAX_LINKS).collect();
+    let body: String = notice.body.chars().take(reports::MAX_MESSAGE).collect();
+    let submission = Submission {
+        version: SUBMISSION_VERSION,
+        id: reports::new_id(now),
+        title: reports::clean_title(&notice.title),
+        format: Format::Message,
+        kind: notice.kind,
+        body: if body.trim().is_empty() { notice.title.clone() } else { body },
+        created_ms: now,
+        source: notice.source,
+        source_name: notice.source_name,
+        passive: notice.passive,
+        session: notice.session,
+        pr: if reports::parse_link(&format!("PR={}", notice.pr)).is_ok() { notice.pr } else { String::new() },
+        links,
+        thread: notice.thread.chars().take(120).collect(),
+    };
+    submission.validate()?;
+    spool(home, &submission)?;
+    Ok(submission.id)
 }
 
 /// `copilot-canvas report list`: stored reports (newest first), reports

@@ -44,12 +44,18 @@ pub const TEMPLATES: [Template; 3] = [
         every_minutes: 0,
         daily_at: "",
         rules: "# PR coordinator\n\n\
-Job: keep track of the pull requests that sessions anywhere on this canvas publish, and make sure each owning session hears about what needs it.\n\n\
-On pr.created, pr.pushed or pr.published (from any group): record the pull request, its repository, its owning session (the trigger's `session` id and `from` name) and its group in your memory (a table: PR, repo, owner session id, owner name, group, state, last seen).\n\
-On pr.review_requested, pr.changes_requested, pr.commented (a reviewer's comment) or build.failed for a pull request in your table: send its owning session one short, actionable message with `copilot-canvas send --to \"<owner session id>\" \"<what needs doing>\"` (it is typed in when that session is idle), and mark its box: `copilot-canvas effect attention --on \"<owner session id>\" --note \"PR <number>: <in a few words>\"`. Do not repeat a message for the same comment or build.\n\
-On pr.approved: `copilot-canvas effect fireworks --on \"<owner session id>\" --note \"PR <number> approved\"`. On pr.merged: mark it merged in your table.\n\n\
-Report: `ok` with the number of open pull requests you track; `warn` when one waits on its owner for long; `alert` when something needs Thomas.\n\
-Read-only towards pull requests: never comment, vote, push or merge yourself.\n",
+Job: follow the pull requests that sessions anywhere on this canvas publish, and make sure each owning session hears about what needs it. \
+The canvas tracks them for you (sessions hand them off with `copilot-canvas pr track`; detected `pr.created` is tracked too), checks each one read-only with gh / az, \
+and sends you their events (the canvas-prs skill has the details).\n\n\
+On pr.tracked: note the pull request (link, owning session id and name, group) in your memory.\n\
+On pr.comment.new or pr.checks.failed: send the owning session one short, actionable follow-up with the event's `dispatch_key`: \
+`copilot-canvas pr dispatch <url> --key <dispatch_key> --event <type> \"<what to do, with the links that matter>\"`. \
+The canvas types it in when that session is idle and reports queued, delivered or blocked in Reports; a repeat of a key is never sent twice. \
+You may mark its box: `copilot-canvas effect attention --on \"<owner session id>\" --note \"PR <number>: <in a few words>\"`.\n\
+On pr.changes_requested: the same, saying in your own words what the reviewer asks.\n\
+On pr.approved: `copilot-canvas effect fireworks --on \"<owner session id>\" --note \"PR <number> approved\"`. On pr.merged or pr.closed: mark it ended in your memory; send nothing.\n\n\
+Report: `ok` with the number of active pull requests; `warn` when a follow-up is blocked or a pull request waits on its owner for long; `alert` when something needs Thomas.\n\
+Read-only towards pull requests: never comment, reply, resolve threads, vote, push or merge yourself; follow-ups ask the owner only for what the canvas's PR permissions allow (the `[Canvas: ...]` line of each says which).\n",
     },
     Template {
         name: "Cross-group digest",
@@ -366,6 +372,8 @@ impl App {
             rollover_runs: 20,
             max_runs_per_day: 24,
             scope: PassiveScope::Canvas,
+            // The PR coordinator monitors handed-off pull requests (read-only follow-ups).
+            prs: (template.name == "PR coordinator").then(canvas_model::prs::PrSettings::default),
             ..Default::default()
         });
         self.doc.nodes.push(node);

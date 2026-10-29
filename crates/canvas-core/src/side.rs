@@ -204,6 +204,8 @@ pub enum RightDetail {
     /// The canvas-wide agents: their states and controls, the canvas skills,
     /// and the group passive sessions for contrast.
     CanvasAgents,
+    /// The routed canvas's tracked pull requests and their follow-ups.
+    Prs,
 }
 
 fn enabled_icon(enabled: bool) -> (&'static str, Color) {

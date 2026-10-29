@@ -113,6 +113,10 @@ pub struct PassiveSpec {
     /// Only events of these groups (canvas-wide agents; empty: every group).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<String>,
+    /// PR coordination (canvas-wide agents): the canvas monitors the pull
+    /// requests its sessions hand off and this agent gets their events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prs: Option<crate::prs::PrSettings>,
 }
 
 /// `emit --to canvas`: an event for the canvas-wide agents only.
@@ -221,6 +225,10 @@ pub struct Snapshot {
     pub recent: Vec<Event>,
     #[serde(default)]
     pub effects: Vec<crate::effects::Effect>,
+    /// The routed canvas's tracked pull requests (none while it has no PR
+    /// coordinator and tracks nothing; older services send none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prs: Option<crate::prs::PrsView>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -579,7 +587,7 @@ impl BusState {
         for mail in &self.mailbox {
             *mailbox.entry(mail.to.clone()).or_insert(0) += 1;
         }
-        Snapshot { passive, mailbox, recent: self.recent.iter().cloned().collect(), effects: self.effects.iter().filter(|e| e.alive(now)).cloned().collect() }
+        Snapshot { passive, mailbox, recent: self.recent.iter().cloned().collect(), effects: self.effects.iter().filter(|e| e.alive(now)).cloned().collect(), prs: None }
     }
 }
 
@@ -701,6 +709,18 @@ events:
   - name: pr.merged
     when: A pull request completed or merged.
     data: pr, repo, target_branch
+  - name: pr.closed
+    when: A tracked pull request was closed or abandoned without merging (sent automatically by the canvas's PR monitor).
+    data: pr, url, short, owner, owner_name, state
+  - name: pr.tracked
+    when: A session handed a pull request to the canvas (copilot-canvas pr track; sent automatically).
+    data: pr, url, short, title, owner, owner_name, by
+  - name: pr.comment.new
+    when: New review comments on a tracked pull request (sent automatically by the canvas's PR monitor).
+    data: pr, url, short, title, owner, owner_name, count, comments, dispatch_key
+  - name: pr.checks.failed
+    when: A check or build of a tracked pull request failed (sent automatically by the canvas's PR monitor).
+    data: pr, url, short, owner, owner_name, head, failed, dispatch_key
   - name: pr.approved
     when: A reviewer approved a pull request.
     data: pr, repo, reviewer
@@ -955,7 +975,7 @@ mod tests {
         assert_eq!(parse_hhmm("25:00"), None);
         let catalog = parse_catalog(DEFAULT_CATALOG);
         assert!(catalog.iter().any(|e| e.name == "pr.pushed" && e.when.contains("git push")));
-        assert_eq!(catalog.len(), 14);
+        assert_eq!(catalog.len(), 18);
         let effects = crate::effects::catalog_effects(DEFAULT_CATALOG);
         assert_eq!(effects.iter().map(|(e, k)| format!("{e}={}", k.name)).collect::<Vec<_>>(), ["pr.approved=fireworks", "pr.changes_requested=attention", "pr.review_requested=attention"]);
         assert!(effects.iter().all(|(e, _)| catalog.iter().any(|c| &c.name == e)), "mapped events are in the catalog");

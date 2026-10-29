@@ -188,6 +188,8 @@ pub enum Action {
     Agents(crate::canvas_wide::AgentAction),
     /// The Reports inbox and its viewer.
     Report(crate::reports::ReportAction),
+    /// Tracked pull requests and their follow-ups.
+    Prs(crate::prs::PrAction),
 }
 
 #[derive(Clone, Debug)]
@@ -338,6 +340,8 @@ pub enum PickPurpose {
     AgentSkills(String),
     /// The canvas's skill library.
     CanvasSkills,
+    /// The session a pull request follow-up goes to (its id).
+    PrReassign(String),
 }
 
 /// Whose model a model picker sets.
@@ -388,6 +392,8 @@ pub enum PassiveField {
     Limits,
     /// The groups a canvas-wide agent watches.
     Groups,
+    /// A canvas-wide agent's PR coordination (on, interval, auto-track, permissions).
+    Prs,
 }
 
 /// Whose MCP servers the picker edits.

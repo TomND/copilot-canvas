@@ -1461,6 +1461,14 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     crate::automations::write_sample_db(&automations_db)?;
     // `O` (open the other client) writes its command line here instead of starting it.
     let other_client = instance.home.join("other-client.txt");
+    // Stand-in gh / az for the pull request steps (fixtures in fake-prs; polled every second).
+    let fake_cli = instance.home.join("fake-cli");
+    std::fs::create_dir_all(&fake_cli)?;
+    for name in ["gh.exe", "az.exe"] {
+        std::fs::copy(std::env::current_exe()?, fake_cli.join(name))?;
+    }
+    let (fake_gh, fake_az, fake_prs) = (fake_cli.join("gh.exe"), fake_cli.join("az.exe"), instance.home.join("fake-prs"));
+    std::fs::create_dir_all(&fake_prs)?;
     let env = [
         ("COPILOT_HOME", copilot_home.as_path()),
         ("COPILOT_CANVAS_OTHER_CLIENT_DRYRUN", other_client.as_path()),
@@ -1468,6 +1476,11 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
         ("COPILOT_CANVAS_SELFTEST", Path::new("1")),
         // Loop dots move whatever this machine's animation setting is.
         ("COPILOT_CANVAS_EFFECTS", Path::new("on")),
+        ("COPILOT_CANVAS_GH", fake_gh.as_path()),
+        ("COPILOT_CANVAS_AZ", fake_az.as_path()),
+        (crate::fake_gh::ENV, fake_prs.as_path()),
+        (crate::fake_copilot::ENV, Path::new("1")),
+        ("COPILOT_CANVAS_PR_POLL_SECS", Path::new("1")),
     ];
     let started = Instant::now();
     let mut ui = start(&args, &env)?;
@@ -1872,6 +1885,11 @@ fn canvas_agent_steps<U: Ui>(instance: &Instance, work: &Path, args: &[String], 
     shell.fresh = true;
     let mut doc = Doc::default();
     doc.nodes.push(shell);
+    // A session that owns a pull request (never started here: no agent runs in the self-test).
+    let mut owner: Node = serde_json::from_value(serde_json::json!({ "id": PR_OWNER_ID, "kind": "session", "name": "PR owner", "x": 2, "y": 30, "agent": "copilot" }))?;
+    owner.cwd = Some(work.display().to_string());
+    owner.fresh = true;
+    doc.nodes.push(owner);
     doc.groups.push(Group { id: "g-team".into(), name: "Team".into(), x: 0, y: 0, w: 36, h: 8, ..Default::default() });
     std::fs::write(&canvas, serde_json::to_string_pretty(&doc)?)?;
     let mut args: Vec<String> = args.iter().filter(|a| *a != "--demo").cloned().collect();
@@ -1907,6 +1925,7 @@ fn canvas_agent_steps<U: Ui>(instance: &Instance, work: &Path, args: &[String], 
     let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
     anyhow::ensure!(!log.contains(&format!("launched {} ", node.id)), "viewing the agent launched it");
     anyhow::ensure!(ui.text().contains("◎ Selftest agent"), "its panel stays\n{}", ui.text());
+    pr_steps(&mut ui, instance)?;
     ui.send(b"q")?;
     std::thread::sleep(Duration::from_millis(300));
     if ui.text().contains("Detach (keep running)") {
@@ -1914,6 +1933,103 @@ fn canvas_agent_steps<U: Ui>(instance: &Instance, work: &Path, args: &[String], 
     }
     let code = ui.wait_exit(Duration::from_secs(10))?;
     anyhow::ensure!(code == 0, "client exited with {code}");
+    Ok(())
+}
+
+/// The box that owns the self-test's pull request (never started).
+const PR_OWNER_ID: &str = "5e1f7e57-0000-4000-8000-0000000000a1";
+
+/// `copilot-canvas ARGS` in this instance's home, as you (no canvas session).
+fn canvas_cli(home: &Path, args: &[&str]) -> Result<String> {
+    let output = std::process::Command::new(std::env::current_exe()?).args(args).args(["--home", &home.display().to_string()]).env_remove("COPILOT_CANVAS_SESSION").output()?;
+    let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    anyhow::ensure!(output.status.success(), "copilot-canvas {} failed: {text}", args.join(" "));
+    Ok(text)
+}
+
+/// Pull request coordination without any agent run (WI-014): PR
+/// coordination turned on from an agent's panel; a hand-off (as you, for the
+/// "PR owner" box) is tracked and polled with the stand-in gh (the first poll
+/// is the baseline); three new comments become a `pr.comment.new` event; a
+/// follow-up for the owner, which is not running, is blocked with what to do
+/// (Resume owner, Reassign, Dismiss) and reported; Dismiss works; a merged
+/// pull request is never polled again; nothing starts.
+fn pr_steps<U: Ui>(ui: &mut U, instance: &Instance) -> Result<()> {
+    use canvas_agents::prs::{DispatchState, MonitorStatus, PrRef, PrState, Registry};
+    step("pull requests: a hand-off is tracked and polled (stand-in gh); new comments become an event; a follow-up for a stopped owner is blocked (Resume owner, Reassign, Dismiss) and reported; merged stops polling; nothing starts");
+    let home = &instance.home;
+    let fixtures = home.join("fake-prs");
+    const URL: &str = "https://github.com/selftest/app/pull/7";
+    let (x, y) = ui.find("PRs…").context("the agent's PRs… button")?;
+    ui.click(x + 1, y)?;
+    ui.wait("the PR coordination prompt", Duration::from_secs(5), |t| t.contains("PR coordination"))?;
+    ui.send(b"\x15on every 5m manual\r")?;
+    ui.wait("its PR settings", Duration::from_secs(10), |t| t.contains("on: every 5 min"))?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let canvas = loop {
+        let routing = canvas_agents::cli::routing(home);
+        if routing.passive.iter().any(|p| p.prs.is_some()) {
+            break routing.canvas;
+        }
+        anyhow::ensure!(Instant::now() < deadline, "PR coordination never reached the service");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let wait_registry = |what: &str, ok: &dyn Fn(&Registry) -> bool| -> Result<Registry> {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let registry = canvas_agents::prs_cli::load(home, &canvas);
+            if ok(&registry) {
+                return Ok(registry);
+            }
+            anyhow::ensure!(Instant::now() < deadline, "timed out waiting for {what}: {}", serde_json::to_string(&registry).unwrap_or_default());
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    };
+    let pr = PrRef::parse(URL).map_err(|e| anyhow::anyhow!(e))?;
+    let key = pr.key();
+    let mut fixture = crate::fake_gh::Fixture::open("Selftest: retry uploads", "selftest-dev");
+    fixture.comment(1, "ana", "an old comment");
+    crate::fake_gh::write_fixture(&fixtures, &pr, &fixture)?;
+    let out = canvas_cli(home, &["pr", "track", URL, "--session", "PR owner"])?;
+    anyhow::ensure!(out.contains("Tracking selftest/app#7 for “PR owner”"), "{out}");
+    wait_registry("the baseline poll", &|r| r.get(&key).is_some_and(|p| p.monitor.status == MonitorStatus::Ok && p.comments == 1))?;
+    fixture.comment(3, "ben", "please handle the 429 retry");
+    crate::fake_gh::write_fixture(&fixtures, &pr, &fixture)?;
+    wait_registry("three new comments", &|r| r.get(&key).is_some_and(|p| p.new_comments == 3))?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !std::fs::read_to_string(home.join("bus").join("log.jsonl")).unwrap_or_default().contains("\"pr.comment.new\"") {
+        anyhow::ensure!(Instant::now() < deadline, "no pr.comment.new event on the bus");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let out = canvas_cli(home, &["pr", "dispatch", URL, "--key", "comments:selftest", "--event", "pr.comment.new", "Review and address the 3 new review comments"])?;
+    anyhow::ensure!(out.contains("blocked") && out.contains("not running"), "a stopped owner blocks the follow-up: {out}");
+    let out = canvas_cli(home, &["pr", "dispatch", URL, "--key", "comments:selftest", "the same again"])?;
+    anyhow::ensure!(out.contains("Already dispatched"), "one follow-up per key: {out}");
+    // ◎ Agents › Pull requests: the blocked follow-up and what to do about it.
+    let (x, y) = ui.find("◎ Agents").context("the top bar's ◎ Agents")?;
+    ui.click(x + 1, y)?;
+    ui.wait("the PR section", Duration::from_secs(10), |t| t.contains("PULL REQUESTS ·") && t.contains("Tracked pull requests"))?;
+    let (x, y) = ui.find("Tracked pull requests").context("its link")?;
+    ui.click(x + 1, y)?;
+    ui.wait("the pull requests panel", Duration::from_secs(10), |t| t.contains("selftest/app#7") && t.contains("blocked") && t.contains("Resume owner") && t.contains("Dismiss"))?;
+    let (x, y) = ui.find("Dismiss").context("Dismiss")?;
+    ui.click(x + 1, y)?;
+    wait_registry("the follow-up dismissed", &|r| r.get(&key).is_some_and(|p| p.dispatches.iter().all(|d| d.state == DispatchState::Dismissed)))?;
+    let thread = canvas_agents::prs::thread_key(&key);
+    let reported = std::fs::read_dir(home.join("reports").join("items")).into_iter().flatten().flatten().filter_map(|e| std::fs::read_to_string(e.path().join("meta.json")).ok()).any(|m| m.contains(&format!("\"thread\": \"{thread}\"")) && m.contains("\"kind\": \"warn\""));
+    anyhow::ensure!(reported, "the blocked follow-up is reported in its thread");
+    // Merged: never polled again.
+    fixture.state = "MERGED".into();
+    crate::fake_gh::write_fixture(&fixtures, &pr, &fixture)?;
+    wait_registry("merged", &|r| r.get(&key).is_some_and(|p| p.state == PrState::Merged && p.monitor.status == MonitorStatus::Stopped))?;
+    let polls = crate::fake_gh::calls(&fixtures).len();
+    std::thread::sleep(Duration::from_secs(3));
+    let calls = crate::fake_gh::calls(&fixtures);
+    anyhow::ensure!(calls.len() == polls && !calls.iter().any(|c| c.starts_with("REFUSED")), "polled after it merged, or a write was tried: {calls:?}");
+    ui.wait("merged in the panel", Duration::from_secs(10), |t| t.contains("· merged"))?;
+    let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
+    anyhow::ensure!(!log.contains(&format!("launched {PR_OWNER_ID} ")), "the owner was started");
+    ui.send(b"\x1b")?;
     Ok(())
 }
 

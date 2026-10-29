@@ -15,6 +15,7 @@ pub mod effects;
 pub mod git;
 pub mod migrate;
 pub mod models;
+pub mod prs;
 pub mod recent;
 pub mod reports;
 pub mod rpc;

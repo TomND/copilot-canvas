@@ -95,6 +95,7 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 | **Effects** | Passive sessions (and sessions) can put an effect on a box of their group until you click it: **fireworks** (an approved pull request), **attention** (a pulsing beacon: review requested, changes requested, comments), **sparkle** (a short success), **alert** (`copilot-canvas effect`, below). The service keeps them, so every window and the TUI show them, also after a restart. A click on the effect (or its box) clears it everywhere and only selects the box. GUI: fireworks bursts and rings at 12.5 frames/s, only while in view; *Settings › Effects*: on, reduced motion (still rings and badges) or off (badges only); the default follows Windows' *Show animations*. TUI: a badge (✦ ◉ ✧ ▲) on the box |
 | **Group folders** | Each group has a folder (asked when you create the group; suggested `~/.copilot-canvas/groups/<name>`) with `ai-docs/` and `human-outputs/`. Open them from the group's title chips **◧ AI docs** / **◨ Outputs** (compact **◧** / **◨** when zoomed out or narrow, **◧ Set folder…** before a folder is chosen; the chips stay clickable at every zoom while the title shows), the sidebar's **◧** row under the group (a menu: AI docs, outputs, the group folder, `GOALS.md`, change folder), its menu, or its details panel. In remote mode (any `--remote`, `loopback` included) folders open in VS Code through the server's tunnel or in the canvas's **folder browser** (subfolders and files; Enter or a click opens a file in the read-only viewer, Backspace goes up, *Copy path*), never in Explorer on the service's machine. Sessions launched in the group get `--add-dir` for both and group instructions (via `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`) telling Copilot to write notes to `ai-docs` and deliverables to `human-outputs` |
 | **Canvas-wide agents** | Passive agents that watch the whole canvas, not one group: the top bar's **◎ Agents** lists them with their state (monitoring, working, paused, needs attention, failing, done, off, unavailable), triggers, skills, next run and last report, and controls (Run now, Pause / Resume, Stop, Disable / Enable, Open); each is also a dashed **◎** box in the **Canvas agents** frame (the same agent). They get events of every group, message any session, and use the canvas skills (SKILL.md) you give them. See [Canvas-wide passive agents and skills](#canvas-wide-passive-agents-and-skills) |
+| **Pull request coordination** | A session that publishes a pull request hands it to the canvas (`copilot-canvas pr track URL`, taught by the `canvas-prs` skill); the canvas checks it read-only with your own `gh` / `az` for new review comments, failing checks and its end, and the canvas-wide **PR coordinator** turns what is new into one follow-up for the owning session, typed in when that session is idle; queued, delivered, blocked and failed show in ◎ Agents › Pull requests and in Reports. See [Pull request coordination](#pull-request-coordination) |
 | **Copilot defaults** | Settings view: permissions (`allow-all` by default, or `ask`), each agent's model for new sessions, reasoning effort, start mode, custom agent, context tier, extra `--add-dir` folders for new sessions; any group can override them (group menu → *Launch defaults*). Also lists `copilot config` settings and edits them through `copilot config` |
 | **Plugins · MCP · skills** | Lists come from `copilot plugin/mcp/skill/instruction list --json`; Space enables/disables, Del removes (confirmed; servers and skills that come from a plugin, the project or Copilot itself can only be disabled), **+** rows add a skill, an MCP server (`copilot mcp add` syntax) or install a plugin (runs in a canvas terminal so you can answer prompts). Secrets (env, headers) are never shown |
 | **Automations** | Reads Copilot's automations (`~/.copilot/data.db`: scheduled workflows, their last 10 runs, and per-session schedules). They appear in the Automations view and as ◷ boxes in a special **Automations** group on the canvas. Click one for its prompt, schedule, model, mode, project, last/next run and run history; Space or the button enables/disables a scheduled workflow (per-session schedules are managed with `/every` in that session). Refreshes every 15 s |
@@ -231,6 +232,7 @@ copilot-canvas status ok|warn|alert|done HEADLINE      (passive sessions; alert 
 copilot-canvas followup --in 24h|--at 09:00 NOTE        (passive sessions)
 copilot-canvas effect fireworks|attention|sparkle|alert --on NAME [--note TEXT]   (until clicked; effect clear --on NAME)
 copilot-canvas report publish --markdown FILE | --html FILE | --message TEXT [options]   (the Reports inbox, below)
+copilot-canvas pr track URL                             after publishing a pull request (Pull request coordination, below)
 ```
 
 The bus lives in `~/.copilot-canvas/bus/` (`inbox/`, `routing.json`,
@@ -334,6 +336,81 @@ group's events, and a canvas-wide agent never sees another canvas's.
   folder allowed, with the model new sessions of its agent get (the frame's
   *Session defaults for its agents…* can set one). **Stop run** ends a run in
   progress without counting it as a failure (its events are dropped).
+
+## Pull request coordination
+
+Working sessions publish pull requests; the canvas keeps track of them and
+sends each owning session what needs it: new review comments, a failing
+build, a request for changes. Deterministic plumbing is the canvas's (who
+owns what, what is new, delivery, no duplicates); judgement is the PR
+coordinator's (what to ask the owner to do).
+
+1. **Hand-off.** Right after it publishes a pull request, a session runs
+   `copilot-canvas pr track <URL>` (GitHub `…/OWNER/REPO/pull/N`, Azure DevOps
+   `https://dev.azure.com/ORG/PROJECT/_git/REPO/pullrequest/N` or
+   `ORG.visualstudio.com`; the `canvas-prs` skill teaches it to Copilot,
+   OpenCode and Claude Code). It is tracked as that session's pull request
+   and `pr.tracked` reaches the canvas-wide agents. A `pr.created` seen in a
+   session's history is tracked the same way when the coordinator tracks
+   automatically (its default).
+2. **Monitoring.** While a canvas-wide agent with PR coordination runs (the
+   *PR coordinator* template turns it on; any agent's *PRs…* does), the
+   service checks each active pull request every 5 minutes (*PRs…*: `every
+   10m`) with your own CLIs, read-only: `gh pr view --json …` and `gh api
+   …/pulls/N/comments` (GitHub), `az repos pr show`, the threads through `az
+   devops invoke` and `az repos pr policy list` (Azure DevOps). The first
+   check only records what is there; after that, comments by others than
+   the author, failing checks (once per head commit), approvals and requests
+   for changes become events for the agents: `pr.comment.new` (count, the
+   newest comments with links, a `dispatch_key`), `pr.checks.failed`,
+   `pr.approved`, `pr.changes_requested`, `pr.merged`, `pr.closed`. A merged,
+   closed or abandoned pull request is never checked again. A missing or
+   signed-out CLI shows as *unavailable* with the reason (and in Reports);
+   failed checks back off up to an hour.
+3. **Follow-ups.** The coordinator decides what to ask and runs `copilot-canvas
+   pr dispatch <URL> --key <dispatch_key> "<what to do>"`. The canvas sends
+   one follow-up per key, to the session that owns the pull request, typed in
+   only when it is idle (never mid-turn, never a second writer):
+   **queued** while it works, **delivered** once typed in, **blocked** while
+   it cannot get it (stopped, open elsewhere, muted, removed: *Resume owner*
+   starts it explicitly, *Reassign…* gives the follow-up to another session,
+   *Dismiss* drops it), **failed** when its message was discarded or not
+   delivered within a day (*Retry*). Every change is a report in the pull
+   request's Reports thread (`pr:<key>`): "PR octo/app#42 received 3 new
+   review comment(s); follow-up for “Fix flaky test” queued", then
+   "delivered", so an intended or queued dispatch is never mistaken for a
+   confirmed one.
+4. **Authorization.** Tracking grants nothing: the canvas only reads pull
+   requests, and every follow-up ends with what it permits (`[Canvas:
+   tracking grants no permission to push, reply, resolve, vote, merge: fix
+   and test locally; ask the user before any of these. Follow-up d-…]`).
+   *PRs…* `allow push,reply` widens that per coordinator; replying,
+   resolving threads, voting and merging are never implied.
+
+**Where**: ◎ Agents shows **PULL REQUESTS · N tracked** and opens the
+**Pull requests** panel: each pull request with its owner, monitor (checked,
+next check, unavailable or failing with why), comments, failing checks and
+review decision, its newest follow-ups with their state, and *Open PR*,
+*View owner* (never a start), *Check now*, *Untrack* (asks first); blocked
+and failed follow-ups get *Resume owner*, *Reassign…*, *Retry* and
+*Dismiss*. The registry lives on the service's machine in
+`<home>/canvas-agents/<canvas id>/prs/registry.json` (the service is its
+only writer; it survives restarts and reopening the canvas), so every window
+and remote client shows the same list.
+
+```text
+copilot-canvas pr track URL [--session NAME|ID] [--title TEXT]   hand a pull request off (this session's,
+                                                               or --session: you and canvas-wide agents)
+copilot-canvas pr untrack URL                                  stop tracking (owner, agents, you)
+copilot-canvas pr check [URL]                                  check now
+copilot-canvas pr dispatch URL --key KEY [--event TYPE] TEXT   a follow-up for the owner (PR coordinators, you)
+copilot-canvas pr list [--format json]                          tracked pull requests and their follow-ups
+```
+
+Each command checks its input, hands the request to the service through
+the bus inbox and waits for its answer while the service runs (with no
+service it says the request waits: a dispatch is then *intended*, not
+queued).
 
 ## Reports
 
@@ -613,6 +690,10 @@ and `docs/REMOTE.md`.
   Canvas-wide agents only get events of their own canvas; only they (and you)
   reach sessions of other groups, and clients never name their folders (the
   service derives them from the canvas id).
+- **Pull requests are only read.** The PR monitor runs `gh` / `az` read-only
+  (no prompts, no extension installs); a follow-up is typed into its owner
+  only when it is idle and says what it permits (nothing beyond fixing
+  locally by default); a coordinator never comments, votes or merges.
 - **Reports are data, never code.** Reading one never starts or resumes its
   session (its **View** button only views the box) and runs nothing. HTML is
   sanitized (scripts, frames, plugins, forms, `<base>`, `<meta>`, `<link>`,
@@ -654,7 +735,7 @@ copilot-canvas service status|stop    stop ends the service's sessions (graceful
 copilot-canvas bench [--terminals N] [--seconds S] [--json FILE]
 copilot-canvas bench --client gui     the GPU client's latency, frame cost, idle CPU, memory, first paint
 copilot-canvas selftest               end-to-end UI test in a hidden console (demo shells only)
-copilot-canvas selftest --client gui  the same 35 steps against the GPU client (over its test hooks)
+copilot-canvas selftest --client gui  the same 36 steps against the GPU client (over its test hooks)
 copilot-canvas selftest --client gui --parity
                                       one GUI check per row of the parity matrix (docs/PARITY.md)
 copilot-canvas kitty-demo             print a small test image (iTerm2 inline image; the GPU client shows it)
@@ -756,3 +837,12 @@ cargo test                            unit tests
   client opens the canvas again.
 - `--perf` shows frames per second, draw time and output-to-screen latency in
   the status bar.
+- Pull request coordination: pull requests are checked only while the
+  service runs, for the canvas it routes (another canvas's registry waits
+  until it is open again), and only with CLIs on the service's machine
+  (`gh`; `az` with the azure-devops extension). The JSON shapes are those of
+  gh 2.95 (`gh pr view --json`, the REST comments) and the documented Azure
+  DevOps responses; the tests use stand-in `gh` / `az`, and no check against
+  a real Azure DevOps pull request has been made (no `az` on the development
+  machine). A follow-up for a stopped owner waits (blocked) until you resume
+  the owner yourself: the canvas never starts or resumes a session for it.

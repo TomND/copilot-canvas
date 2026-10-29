@@ -123,6 +123,7 @@ impl App {
                     canvas_wide: node.is_canvas_agent(),
                     skills: if node.is_canvas_agent() { p.skills.clone() } else { Vec::new() },
                     groups: if node.is_canvas_agent() { p.groups.clone() } else { Vec::new() },
+                    prs: if node.is_canvas_agent() { p.prs.clone() } else { None },
                 }),
                 None => {
                     if let Some(group) = self.doc.group_of(node) {
@@ -400,6 +401,11 @@ impl App {
                 format!("{} {}", passive.max_runs_per_day, passive.rollover_runs),
             ),
             PassiveField::Groups => ("Groups it watches", "group names, comma-separated; empty: every group of this canvas", self.agent_groups_text(&passive)),
+            PassiveField::Prs => (
+                "PR coordination: the canvas checks handed-off pull requests and sends this agent their events",
+                "on every 5m auto read-only · manual: only handed-off ones · allow push,reply,resolve,vote,merge (follow-ups may ask for these) · off",
+                passive.prs.as_ref().map(|s| s.text()).unwrap_or_else(|| "off".into()),
+            ),
         };
         self.modals.push(crate::dialogs::Modal::Prompt(crate::dialogs::Prompt {
             title: title.into(),
@@ -414,9 +420,11 @@ impl App {
         use crate::dialogs::PassiveField;
         let value = value.trim();
         let groups = if field == PassiveField::Groups { self.parse_agent_groups(value)? } else { Vec::new() };
+        let prs = if field == PassiveField::Prs { canvas_model::prs::PrSettings::parse(value)? } else { None };
         let Some(passive) = self.doc.node_mut(id).and_then(|n| n.passive.as_mut()) else { return Err("the passive session no longer exists".into()) };
         match field {
             PassiveField::Groups => passive.groups = groups,
+            PassiveField::Prs => passive.prs = prs,
             PassiveField::Events => {
                 passive.subscribe = value.split([',', ' ']).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect();
             }

@@ -249,6 +249,28 @@ canvas-wide agent and you (a window) reach every session and passive session
 of the canvas. Canvas-wide agents can put effects on any box of the canvas
 (`effects::resolve_canvas`).
 
+## Pull request coordination on the wire
+
+The service owns the routed canvas's pull request registry
+(`<home>/canvas-agents/<canvas id>/prs/registry.json`, written atomically by
+the bus thread and the PR monitor thread under one lock; `prs_cli::load`
+reads it for `pr list`). Everything is JSON with defaults:
+
+| Where | Addition | An older peer |
+|---|---|---|
+| `Doc` / `ClientMsg::Routing` | `Passive::prs` / `PassiveSpec::prs` (`PrSettings`: `poll_minutes`, `auto_track`, `allow`) on canvas-wide agents | ignores it: the agent is routed without PR coordination, nothing is monitored |
+| bus inbox | requests `{"type": "canvas.pr", "source": <session>, "data": {"op": "track" \| "untrack" \| "check" \| "dispatch" \| "dismiss" \| "retry" \| "reassign", "request": <uuid>, "url", "session", "title", "key", "event", "text", "dispatch", "to"}}` (`copilot-canvas pr …`); intercepted by the bus loop, never routed to agents | an older service would route it as an ordinary event nobody subscribes to; the command then says the service did not answer |
+| `<home>/bus/answers/<request>.json` | `{ok, message, state}`: the service's answer the command waits for (10 s; removed by the command, stale ones after an hour) | — |
+| `ClientMsg::Bus` | `{"action": "prs", "op": …}` from windows (the panel's buttons), handled as the same request from you | ignores unknown actions |
+| `ServiceMsg::Bus` (`bus::Snapshot`) | `prs`: a `PrsView` (canvas id, the running coordinators, why monitoring is paused, their permissions, the tracked pull requests without watermarks, the last 6 follow-ups each); absent while the canvas tracks nothing and has no coordinator | ignores it |
+| bus events | `pr.tracked`, `pr.comment.new`, `pr.checks.failed`, `pr.approved`, `pr.changes_requested`, `pr.merged`, `pr.closed` from the PR monitor, with the owner as `source` and the canvas id set (see AGENTS.md) | ordinary events |
+| mailbox | follow-ups are `Mail` with the dispatch's id (`d-…`), so delivery (one per bus pass, idle owners only) confirms them | — |
+| Reports spool | the service spools its own short messages (`reports::notice`): follow-up changes and monitor news in the thread `pr:<key>` | — |
+
+Remote clients get the panel through `ServiceMsg::Bus` and act through
+`ClientMsg::Bus`, like the passive sessions; the commands run on the
+service's machine (in its sessions), so nothing else crosses the wire.
+
 ## Per-client preferences
 
 The view (position, zoom), panels (sidebar width and visibility, terminal
@@ -363,6 +385,15 @@ most 8 files and 4 MiB in all.
   `canvas_core::reports`: threads, opening marks read and launches nothing,
   unread/delete/links through the service; `report_html` and `richtext`: the
   sanitizer and the layout.
+- `canvas_model::prs`: link parsing (GitHub, GitHub Enterprise, Azure DevOps
+  web and REST links), the registry's persistence, ownership and dedupe,
+  `gh` / `az` output parsing, diffing against watermarks (baseline, the
+  author's own comments, a failure once per head, reviews), end states that
+  stop polling, back-off, settings and permissions; `canvas_agents::prs_cli`
+  and `service::prs`: requests posted for the service, who a follow-up
+  reaches and why it is blocked, which agents monitor, CLI failures sorted
+  into unavailable and failing; `canvas_core::prs`: the panel's buttons are
+  service requests and start nothing; the `prs-panel` snapshot.
 - `two_clients_probe` (manual: `cargo test --release two_clients_probe --
   --ignored`): two TUI clients in hidden pseudoconsoles, one over `--remote
   loopback`, one over the pipe; a rename in either shows in the other, panning

@@ -69,23 +69,73 @@ pub fn plugin_skills(args: &[String], opencode_config: Option<&str>) -> Vec<Stri
     skills
 }
 
+/// The trigger events of a run's prompt: (type, data) each.
+pub fn triggers(prompt: &str) -> Vec<(String, serde_json::Value)> {
+    let Some(start) = prompt.find("Trigger (").and_then(|at| prompt[at..].find("):\n").map(|i| at + i + 3)) else { return Vec::new() };
+    let end = prompt[start..].find("\n\nWhen finished:").map(|i| start + i).unwrap_or(prompt.len());
+    let items: Vec<serde_json::Value> = serde_json::from_str(&prompt[start..end]).unwrap_or_default();
+    items
+        .into_iter()
+        .filter_map(|item| {
+            let kind = item["type"].as_str()?.to_owned();
+            let data = item["data"].as_str().and_then(|d| serde_json::from_str(d).ok()).unwrap_or(serde_json::Value::Null);
+            Some((kind, data))
+        })
+        .collect()
+}
+
+/// What the stand-in does for its triggers, as an agent following the
+/// canvas skills would (canvas-prs): a follow-up for each new-comments or
+/// failed-checks event of a tracked pull request, with its dispatch key.
+/// Answers what it did.
+fn follow_skills(home: &std::path::Path, prompt: &str) -> Vec<String> {
+    let mut done = Vec::new();
+    for (kind, data) in triggers(prompt) {
+        let url = data["url"].as_str().unwrap_or_default();
+        let key = data["dispatch_key"].as_str().map(str::to_owned);
+        let text = match kind.as_str() {
+            "pr.comment.new" => {
+                let links: Vec<&str> = data["comments"].as_array().into_iter().flatten().filter_map(|c| c["url"].as_str()).take(3).collect();
+                format!("Review and address the {} new review comment(s) on {}: {}", data["count"].as_u64().unwrap_or(0), data["short"].as_str().unwrap_or_default(), links.join(" "))
+            }
+            "pr.checks.failed" => {
+                let names: Vec<&str> = data["failed"].as_array().into_iter().flatten().filter_map(|c| c["name"].as_str()).collect();
+                format!("Investigate the failing check(s) {} and fix them", names.join(", "))
+            }
+            _ => continue,
+        };
+        match canvas_agents::prs_cli::dispatch(home, url, key, Some(kind.clone()), &text) {
+            Ok(()) => done.push(format!("dispatched {kind}")),
+            Err(error) => done.push(format!("dispatch refused: {error:#}")),
+        }
+    }
+    done
+}
+
 /// A passive run of the stand-in: after a moment (so the canvas sees it
-/// working) it reports `ok` with what it got, the trigger's event types and
-/// the skills its plugins carry, through the canvas's own `status` command
-/// (as an agent following the prompt would), and appends the run to
-/// `fake-runs.log` in the folder it runs in. Nothing is sent anywhere.
+/// working) it does what the canvas skills ask for its triggers
+/// ([`follow_skills`]) and reports `ok` with what it got, the trigger's event
+/// types, the skills its plugins carry and what it did, through the canvas's
+/// own `status` command (as an agent following the prompt would), and
+/// appends the run to `fake-runs.log` in the folder it runs in. Nothing is
+/// sent anywhere.
 fn headless(args: &[String], prompt: String) -> Result<()> {
     let wait = std::env::var("COPILOT_CANVAS_FAKE_RUN_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1_500);
     std::thread::sleep(std::time::Duration::from_millis(wait));
     let kinds: Vec<&str> = prompt.split("\"type\": \"").skip(1).filter_map(|rest| rest.split('"').next()).collect();
     let skills = plugin_skills(args, std::env::var("OPENCODE_CONFIG_CONTENT").ok().as_deref());
-    let headline = format!("fake run of {} · skills: {}", if kinds.is_empty() { "nothing".to_owned() } else { kinds.join(",") }, if skills.is_empty() { "none".to_owned() } else { skills.join(",") });
+    let home = std::env::var_os("COPILOT_CANVAS_HOME").map(std::path::PathBuf::from);
+    let did = home.as_deref().map(|h| follow_skills(h, &prompt)).unwrap_or_default();
+    let mut headline = format!("fake run of {} · skills: {}", if kinds.is_empty() { "nothing".to_owned() } else { kinds.join(",") }, if skills.is_empty() { "none".to_owned() } else { skills.join(",") });
+    if !did.is_empty() {
+        headline.push_str(&format!(" · {}", did.join("; ")));
+    }
     let first = prompt.lines().next().unwrap_or_default().to_owned();
     if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open("fake-runs.log") {
         let _ = writeln!(log, "{headline} | {first}");
     }
-    if let Some(home) = std::env::var_os("COPILOT_CANVAS_HOME") {
-        canvas_agents::cli::status(std::path::Path::new(&home), "ok", &headline)?;
+    if let Some(home) = home {
+        canvas_agents::cli::status(&home, "ok", &headline)?;
     }
     println!("{headline}");
     Ok(())

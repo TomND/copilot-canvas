@@ -597,14 +597,16 @@ fn reap(shared: &Shared, routing: &Routing, state: &mut BusState, now: u64) {
 
 /// Types queued messages into their sessions when they are open and idle.
 /// One message per pass, so the session reacts before the next one arrives.
-fn deliver_mail(shared: &Shared, state: &mut BusState) {
+/// Answers the message it delivered.
+fn deliver_mail(shared: &Shared, state: &mut BusState) -> Option<Mail> {
     for mail in state.mailbox.clone() {
         if idle(shared, &mail.to) && type_in(shared, &mail.to, &bus::mail_text(&mail)) {
             log(&shared.instance, &format!("delivered a message from {} to {}", mail.from, mail.to));
             state.mailbox.retain(|m| m.id != mail.id);
-            break;
+            return Some(mail);
         }
     }
+    None
 }
 
 /// Keeps the state of the routed passive sessions, and of canvas-wide agents
@@ -674,7 +676,18 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
                 stop_run(&shared, &mut state, event.data["key"].as_str().unwrap_or_default());
                 continue;
             }
+            // Pull request requests (copilot-canvas pr …, a window's buttons): never routed to agents.
+            if super::prs::is_request(&event) {
+                for follow in super::prs::request(&shared, &routing, &mut state, &event, now) {
+                    handle_event(&shared, &routing, &mut state, follow, now);
+                }
+                continue;
+            }
+            let tracked = super::prs::observe(&shared, &routing, &event, now);
             handle_event(&shared, &routing, &mut state, event, now);
+            if let Some(tracked) = tracked {
+                handle_event(&shared, &routing, &mut state, tracked, now);
+            }
         }
         state.effects.retain(|e| e.alive(now));
         for spec in &routing.passive {
@@ -708,12 +721,18 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
                 }
             }
         }
+        // Follow-ups for pull request owners move along (queued, blocked, failed).
+        super::prs::tick(&shared, &routing, &mut state, now);
         // Forget state of removed passive sessions; mail for gone sessions stays a day.
         retain_states(&mut state, &routing, now);
         state.mailbox.retain(|m| now.saturating_sub(m.ms) < 86_400_000);
-        deliver_mail(&shared, &mut state);
+        if let Some(mail) = deliver_mail(&shared, &mut state) {
+            super::prs::delivered(&shared, &routing, &mail, now);
+        }
         *lock(&shared.bus) = state.clone();
-        let snapshot = serde_json::to_string(&state.snapshot(&routing, now)).unwrap_or_default();
+        let mut view = state.snapshot(&routing, now);
+        view.prs = super::prs::view(&shared, &routing);
+        let snapshot = serde_json::to_string(&view).unwrap_or_default();
         if snapshot != last_snapshot {
             shared.broadcast(ServiceMsg::Bus { json: snapshot.clone() });
             last_snapshot = snapshot;
@@ -775,6 +794,11 @@ pub(super) fn action(shared: &Shared, json: &str, incoming: &crossbeam_channel::
             let event = Event { kind: STOP_RUN.into(), data: serde_json::json!({ "key": key }), ms: now, ..Default::default() };
             let _ = incoming.try_send(event);
         }
+        "prs" => {
+            // A window's pull request buttons (untrack, check, dismiss, retry, reassign): as you.
+            let event = Event { kind: crate::prs_cli::REQUEST.into(), source_name: "you".into(), data: value.clone(), ms: now, ..Default::default() };
+            let _ = incoming.try_send(event);
+        }
         _ => {}
     }
 }
@@ -795,7 +819,9 @@ fn stop_run(shared: &Shared, state: &mut BusState, key: &str) {
 /// Client snapshot on connect.
 pub(super) fn snapshot(shared: &Shared) -> String {
     let routing = lock(&shared.routing).clone();
-    serde_json::to_string(&lock(&shared.bus).snapshot(&routing, now_ms())).unwrap_or_default()
+    let mut view = lock(&shared.bus).snapshot(&routing, now_ms());
+    view.prs = super::prs::view(shared, &routing);
+    serde_json::to_string(&view).unwrap_or_default()
 }
 
 /// The service keeps running for passive schedules even with no window open.
