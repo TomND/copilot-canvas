@@ -176,6 +176,14 @@ impl Lines {
         self.lines.push((String::new(), Style::default()));
     }
 
+    /// A field on one line; a long value loses its start (paths keep their end).
+    fn field_left(&mut self, label: &str, value: &str) {
+        if !value.is_empty() {
+            let text = crate::paint::truncate_left(value, self.width.saturating_sub(11).max(8));
+            self.lines.push((format!("{label:<11}{text}"), fg(TEXT)));
+        }
+    }
+
     /// One line of differently coloured pieces (not wrapped).
     fn spans(&mut self, spans: Vec<(String, Style)>) {
         let text: String = spans.iter().map(|(t, _)| t.as_str()).collect();
@@ -329,12 +337,148 @@ fn button_rows(items: Vec<(String, Action)>, width: i32) -> Vec<(i32, i32, Strin
     out
 }
 
-fn buttons(app: &mut App, buf: &mut Buffer, x: i32, y: i32, rows: Vec<(i32, i32, String, Action)>, clip: Rect) {
-    for (row, dx, text, action) in rows {
+fn buttons(app: &mut App, buf: &mut Buffer, x: i32, y: i32, rows: Vec<(i32, i32, String, Action)>, clip: Rect, primary_first: bool) {
+    for (i, (row, dx, text, action)) in rows.into_iter().enumerate() {
         let (bx, by) = (x + dx, y + row);
-        let end = put(buf, bx, by, &text, Style::default().fg(ACCENT).bg(PANEL_HI), clip);
+        let style = if primary_first && i == 0 { bold(ratatui::style::Color::Black).bg(ACCENT) } else { Style::default().fg(ACCENT).bg(PANEL_HI) };
+        let end = put(buf, bx, by, &text, style, clip);
         app.layout.hits.push((Rect::new(bx as u16, by as u16, (end - bx).max(0) as u16, 1), Hit::Toolbar(action)));
     }
+}
+
+/// How a session continues its conversation, for the details panel.
+fn resume_how(kind: crate::agents::AgentKind) -> &'static str {
+    match kind {
+        crate::agents::AgentKind::Copilot => "copilot --session-id",
+        crate::agents::AgentKind::OpenCode => "opencode -s",
+        crate::agents::AgentKind::Claude => "claude -r",
+    }
+}
+
+/// A session or subagent box that does not run here: what it is and what
+/// starting it would do. Returns whether the first action (Start, Resume,
+/// Open terminal) is the primary one.
+fn session_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>, node: &crate::doc::Node) -> bool {
+    use crate::doc::NodeKind;
+    use crate::interact::StartPlan;
+    let now = crate::paths::now_ms();
+    let status = app.node_status(node);
+    let summary = app.summary(node).cloned();
+    out.text(format!("{}{}", crate::ui_canvas::box_prefix(node), node.name), bold(TEXT));
+    let mut line = format!("{} {}", status.icon(app.tick), crate::ui_canvas::box_label(node, status));
+    if app.live_elsewhere(node) && status != Status::External {
+        line.push_str(" · ↗ open elsewhere");
+    }
+    out.text(line, fg(status.color()));
+    out.gap();
+    if node.kind == NodeKind::Agent {
+        let parent = node.parent.as_deref().and_then(|p| app.doc.node(p)).cloned();
+        let agent = summary.as_ref().and_then(|s| s.agents.iter().find(|a| Some(&a.key) == node.agent_key.as_ref())).cloned();
+        out.field("Subagent of", &parent.as_ref().map(|p| format!("“{}”", p.name)).unwrap_or_else(|| "a removed session".into()));
+        out.field("Agent", parent.as_ref().filter(|p| p.command.is_none()).map(|p| crate::agents::agent_of(p).label()).unwrap_or_default());
+        if let Some(agent) = &agent {
+            out.field("Kind", &agent.name);
+            if let Some(ms) = agent.finished_ms.filter(|ms| *ms > 0) {
+                out.field("Finished", &format!("{} ago", crate::paths::format_age(ms, now)));
+            }
+            if !agent.description.is_empty() {
+                out.gap();
+                out.text(agent.description.clone(), fg(TEXT));
+            }
+        }
+        out.gap();
+        out.text("A subagent runs inside its parent session's terminal.", fg(MUTED));
+        // Its transcript, and whether its own conversation can resume on its own.
+        let inspectable = app.transcript_request(&node.id).is_some();
+        if inspectable {
+            actions.push(("Inspect transcript".into(), Action::Inspect(node.id.clone())));
+        }
+        match app.child_resume(node) {
+            crate::inspect::ChildResume::Allowed { native } => {
+                out.text(format!("Finished and not running anywhere: it can resume in a terminal of its own ({native}), as a subsession linked to its parent."), fg(ACCENT));
+                actions.push(("Resume as subsession".into(), Action::ResumeChild(node.id.clone())));
+            }
+            crate::inspect::ChildResume::Existing(id) => {
+                let name = app.doc.node(&id).map(|n| n.name.clone()).unwrap_or_default();
+                out.text(format!("Resumed before as its own subsession “{name}”."), fg(ACCENT));
+                actions.push(("Open its subsession".into(), Action::Start(id)));
+            }
+            crate::inspect::ChildResume::No(reason) if inspectable => out.text(reason, fg(MUTED)),
+            crate::inspect::ChildResume::No(_) => {}
+        }
+        if let Some(parent) = parent {
+            match app.start_plan(&parent) {
+                StartPlan::Focus => actions.push(("Open parent terminal".into(), Action::Start(parent.id.clone()))),
+                StartPlan::Blocked(reason) => out.text(reason, fg(crate::paint::PURPLE)),
+                plan => actions.push((format!("{} parent", plan.label().unwrap_or("Start")), Action::Start(parent.id.clone()))),
+            }
+        }
+        actions.push(("Remove box".into(), Action::RemoveNode(node.id.clone())));
+        return inspectable;
+    }
+    let kind = crate::agents::agent_of(node);
+    let shell = node.command.is_some();
+    out.field("Agent", if shell { "none (runs its command)" } else { kind.label() });
+    let cwd = node.cwd.clone().filter(|c| !c.is_empty()).or_else(|| summary.as_ref().map(|s| s.cwd.clone())).unwrap_or_default();
+    out.field_left("Folder", &cwd);
+    if let Some(s) = &summary {
+        out.field("Branch", &s.branch);
+        out.field("Repo", &s.repository);
+        if !shell {
+            let client = if s.client.is_empty() && crate::agents::agent_of_summary(s) == crate::agents::AgentKind::Copilot { "unknown" } else { crate::app::client_label(s) };
+            out.field("Client", client);
+        }
+        let last = s.updated_ms.max(s.last_event_ms);
+        if last > 0 {
+            out.field("Last used", &format!("{} ago", crate::paths::format_age(last, now)));
+        }
+        if !s.agents.is_empty() {
+            out.field("Subagents", &s.agents.len().to_string());
+        }
+        if s.truncated {
+            out.text("Activity from the most recent 1 MiB of history.", fg(MUTED));
+        }
+    }
+    if let Some(parent) = node.parent.as_deref().and_then(|p| app.doc.node(p)) {
+        out.field("Subsession", &format!("of “{}”", parent.name));
+    }
+    if !shell && !app.demo {
+        out.field("Session", crate::agents::native_id(node));
+    }
+    out.gap();
+    let plan = app.start_plan(node);
+    match &plan {
+        StartPlan::Focus => out.text("Running in this canvas: Open terminal to type in it.", fg(ACCENT)),
+        StartPlan::Start if shell => out.text("Start runs its command in a new canvas terminal.", fg(ACCENT)),
+        StartPlan::Start => out.text(format!("Start launches {} in this folder as a new session.", kind.label()), fg(ACCENT)),
+        StartPlan::Resume => out.text(format!("Resume continues this conversation in {} ({} …) in a canvas terminal.", kind.label(), resume_how(kind)), fg(ACCENT)),
+        StartPlan::Blocked(reason) => out.text(reason.clone(), fg(crate::paint::PURPLE)),
+    }
+    if let Some(error) = app.node_errors.get(&node.id) {
+        out.text(format!("Problem: {error}"), fg(NEGATIVE));
+    }
+    let mut primary = false;
+    if let Some(label) = plan.label() {
+        if plan != StartPlan::Focus {
+            out.text(format!("Double-click the box or press Enter to {} it.", label.to_lowercase()), fg(MUTED));
+            actions.push((format!("▸ {label}"), Action::Start(node.id.clone())));
+        } else {
+            actions.push((label.to_owned(), Action::Start(node.id.clone())));
+        }
+        primary = true;
+    }
+    out.text("S subsession · R rename · G group · X stop", fg(MUTED));
+    if app.transcript_request(&node.id).is_some() {
+        actions.push(("Inspect transcript".into(), Action::Inspect(node.id.clone())));
+    }
+    if app.owned_alive(&node.id) {
+        actions.push(("Stop".into(), Action::Stop { id: node.id.clone(), force: false }));
+    }
+    if !app.demo && !shell {
+        actions.push(("MCP servers…".into(), Action::McpServers(node.id.clone())));
+    }
+    actions.push(("Remove".into(), Action::RemoveNode(node.id.clone())));
+    primary
 }
 
 pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &RightDetail) {
@@ -342,8 +486,13 @@ pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &R
     let inner = Rect::new(area.x + 2, area.y + 1, area.width.saturating_sub(4), area.height.saturating_sub(3));
     let mut out = Lines { lines: Vec::new(), width: inner.width as usize, spans: Default::default() };
     let mut actions: Vec<(String, Action)> = Vec::new();
+    let mut primary = false;
     let config = app.config.clone().unwrap_or_default();
     match detail {
+        RightDetail::Session(id) => match app.doc.node(id).cloned() {
+            None => out.text("This box was removed.", fg(MUTED)),
+            Some(node) => primary = session_detail(app, &mut out, &mut actions, &node),
+        },
         RightDetail::Automation(key) => match app.automation(key).cloned() {
             None => out.text("This automation no longer exists.", fg(MUTED)),
             Some(a) if a.factory.is_some() => {
@@ -555,5 +704,5 @@ pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &R
         put(buf, inner.x as i32, inner.y as i32 + max_lines as i32, "…", fg(MUTED), inner);
     }
     let clip = Rect::new(area.x, area.y, area.width, area.height);
-    buttons(app, buf, inner.x as i32, area.bottom() as i32 - 1 - button_lines, rows, clip);
+    buttons(app, buf, inner.x as i32, area.bottom() as i32 - 1 - button_lines, rows, clip, primary);
 }

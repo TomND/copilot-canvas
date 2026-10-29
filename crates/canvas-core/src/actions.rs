@@ -25,6 +25,16 @@ impl App {
         self.modals.push(Modal::Menu(Menu { x, y, title, items, sel }));
     }
 
+    /// The menu's remove item: this box alone, or (on a box of a
+    /// multi-selection) the selection's eligible boxes after a confirmation.
+    fn remove_item(&self, id: &str, single: &str) -> MenuItem {
+        if self.selection.len() > 1 && self.selection.iter().any(|s| s == id) {
+            let count = self.remove_plan(&self.selection).remove.len();
+            return item(&format!("Remove {count} from canvas"), "Del", Action::ConfirmRemove(self.selection.clone()), count > 0);
+        }
+        item(single, "Del", Action::RemoveNode(id.to_owned()), true)
+    }
+
     pub fn node_menu(&self, id: &str) -> (String, Vec<MenuItem>) {
         let Some(node) = self.doc.node(id) else { return (String::new(), Vec::new()) };
         let session = self.session_of(id).unwrap_or_default();
@@ -48,9 +58,16 @@ impl App {
             return (node.name.clone(), items);
         }
         if node.kind == NodeKind::Agent {
-            items.push(item("Open parent terminal", "Enter", Action::Open(id.to_owned()), !external));
+            let parent = node.parent.clone().unwrap_or_default();
+            let parent_alive = self.owned_alive(&parent);
+            items.push(item("Inspect transcript", "", Action::Inspect(id.to_owned()), self.transcript_request(id).is_some()));
+            if self.doc.node(&parent).is_some_and(|p| p.command.is_none() && agent_of(p) == AgentKind::OpenCode) {
+                let resumable = !matches!(self.child_resume(node), crate::inspect::ChildResume::No(_));
+                items.push(item("Resume as subsession", "", Action::ResumeChild(id.to_owned()), resumable));
+            }
+            items.push(item(if parent_alive { "Open parent terminal" } else { "Start parent session" }, "", Action::Start(parent), !external));
             items.push(item("Rename box", "R", Action::Rename(Target::Node(id.to_owned())), true));
-            items.push(item("Remove box", "Del", Action::RemoveNode(id.to_owned()), true));
+            items.push(self.remove_item(id, "Remove box"));
             return (node.name.clone(), items);
         }
         if node.passive.is_some() {
@@ -62,14 +79,22 @@ impl App {
             items.push(item("Edit rules", "", Action::PassiveOpen(id.to_owned(), 0), true));
             items.push(item("Open run log", "", Action::PassiveOpen(id.to_owned(), 2), true));
             items.push(item(if alive { "Focus chat" } else { "Open chat" }, "", Action::PassiveChat(id.to_owned()), !external));
+            items.push(item("Inspect transcript", "", Action::Inspect(id.to_owned()), self.transcript_request(id).is_some()));
             items.push(item("MCP servers…", "", Action::McpServers(id.to_owned()), true));
             items.push(item("Rename", "R", Action::Rename(Target::Node(id.to_owned())), true));
             items.push(item("Stop run", "X", Action::Stop { id: id.to_owned(), force: false }, alive));
-            items.push(item("Remove from canvas", "Del", Action::RemoveNode(id.to_owned()), true));
+            items.push(self.remove_item(id, "Remove from canvas"));
             return (node.name.clone(), items);
         }
-        let open_label = if alive { "Focus terminal" } else { "Open terminal" };
-        items.push(item(open_label, "Enter", Action::Open(id.to_owned()), !external));
+        // The explicit start: Start (new), Resume (its conversation) or Open terminal (running).
+        let (start, startable) = match self.start_plan(node).label() {
+            Some(label) => (label, true),
+            None => ("Open terminal", false),
+        };
+        items.push(item(start, "Enter", Action::Start(id.to_owned()), startable));
+        if self.transcript_request(id).is_some() {
+            items.push(item("Inspect transcript", "", Action::Inspect(id.to_owned()), true));
+        }
         items.push(item("New subsession", "S", Action::NewSession { at: None, parent: Some(id.to_owned()) }, true));
         items.push(item("Rename", "R", Action::Rename(Target::Node(id.to_owned())), true));
         if !self.demo {
@@ -77,7 +102,7 @@ impl App {
             items.push(item(if node.no_messages { "Accept passive messages" } else { "Mute passive messages" }, "", Action::ToggleMessages(id.to_owned()), true));
             let queued = self.bus.mailbox.get(id).copied().unwrap_or(0);
             if queued > 0 {
-                items.push(item(&format!("Deliver {queued} queued message(s)"), "", Action::Open(id.to_owned()), !external));
+                items.push(item(&format!("Deliver {queued} queued message(s)"), "", Action::Start(id.to_owned()), !external));
                 items.push(item("Discard queued messages", "", Action::DiscardMail(id.to_owned()), true));
             }
         }
@@ -88,7 +113,7 @@ impl App {
         }
         items.push(item("Stop session", "X", Action::Stop { id: id.to_owned(), force: false }, alive));
         items.push(item("Force stop", "", Action::Stop { id: id.to_owned(), force: true }, alive));
-        items.push(item("Remove from canvas", "Del", Action::RemoveNode(id.to_owned()), true));
+        items.push(self.remove_item(id, "Remove from canvas"));
         (node.name.clone(), items)
     }
 
@@ -128,7 +153,7 @@ impl App {
                 item("New group here", "", Action::NewGroupAt(wx, wy), true),
                 item("Import sessions…", "I", Action::ImportCopilot, !self.demo),
                 item("Sync VS Code sessions", "V", Action::SyncVs, !self.demo),
-                item("Undo last sync", "Ctrl+Z", Action::UndoSync, self.undo.is_some()),
+                item(self.undo_label(), "Ctrl+Z", Action::UndoSync, self.undo.is_some()),
                 item("Migrate VS Code skills & settings…", "", Action::Migrate, !self.demo),
                 item("Fit everything", "F", Action::FitAll, true),
                 item(if self.doc.ui.tiled { "Single terminal view" } else { "Tile terminals" }, "T", Action::ToggleTiled, true),
@@ -437,7 +462,7 @@ impl App {
                 }
                 self.mark_dirty();
                 let summary = self.mcp_summary(agent, &off);
-                let when = if alive { " Applies the next time it starts (stop it and click it to restart now)." } else { "" };
+                let when = if alive { " Applies the next time it starts (stop it and double-click it to restart now)." } else { "" };
                 self.notify(format!("MCP servers for this session: {summary}.{when}"), false);
             }
         }
@@ -554,8 +579,11 @@ impl App {
         match action {
             Action::Open(id) => {
                 self.reveal_node(&id);
-                self.open_node(&id);
+                self.view_node(&id);
             }
+            Action::Start(id) => self.start_node(&id),
+            Action::Inspect(id) => self.inspect(&id),
+            Action::ResumeChild(id) => self.resume_child(&id),
             Action::OpenGroup(id) => self.open_group(&id),
             Action::NewSession { at, parent } => self.open_new_session(at, parent),
             Action::Rename(target) => {
@@ -606,19 +634,9 @@ impl App {
                 }
                 self.mark_dirty();
             }
-            Action::RemoveNode(id) => {
-                let session = self.doc.node(&id).filter(|n| n.kind == NodeKind::Session).map(|n| n.id.clone());
-                if session.as_ref().is_some_and(|s| self.owned_alive(s)) {
-                    return self.notify("Stop this session (X) before removing its box. History is never deleted.", true);
-                }
-                if let Some(session) = &session {
-                    self.send(ClientMsg::Forget { id: session.clone() });
-                    self.tile_slots.retain(|t| t != session);
-                }
-                self.doc.remove_node(&id);
-                self.selection.retain(|s| *s != id);
-                self.mark_dirty();
-            }
+            Action::RemoveNode(id) => self.remove_nodes(&[id]),
+            Action::RemoveNodes(ids) => self.remove_nodes(&ids),
+            Action::ConfirmRemove(ids) => self.confirm_remove(ids),
             Action::Stop { id, force } => {
                 if self.owned_alive(&id) {
                     self.stop_terminal(&id, force);
@@ -662,8 +680,14 @@ impl App {
                 self.run_cli_op(label, move |backend| backend.plugin_update(&name));
             }
             Action::CloseDetail => {
+                // A session's details close with its selection (they would show again).
+                let session = matches!(self.right_detail, None | Some(crate::side::RightDetail::Session(_)));
                 self.right_detail = None;
-                let keep: Vec<String> = self.selection.iter().filter(|id| self.doc.node(id).is_some_and(|n| n.kind != NodeKind::Automation)).cloned().collect();
+                let keep: Vec<String> = if session {
+                    Vec::new()
+                } else {
+                    self.selection.iter().filter(|id| self.doc.node(id).is_some_and(|n| n.kind != NodeKind::Automation)).cloned().collect()
+                };
                 self.selection = keep;
             }
             Action::OpenPath(path) => self.open_folder(&path),
@@ -943,7 +967,7 @@ impl App {
                             n.fresh = true;
                         }
                         self.node_errors.insert(node, "fork failed".into());
-                        self.notify(format!("Could not fork the parent's conversation: {error}. Click the box to start it fresh."), true);
+                        self.notify(format!("Could not fork the parent's conversation: {error}. Double-click the box to start it fresh."), true);
                     }
                 }
             }

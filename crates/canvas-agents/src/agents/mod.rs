@@ -20,6 +20,7 @@ pub mod opencode_history;
 pub mod opencode_server;
 #[cfg(test)]
 mod probes;
+pub mod transcript;
 
 pub use canvas_model::agent::{ALL, AgentKind, Caps, agent_of, agent_of_summary, native_id};
 

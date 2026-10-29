@@ -5,12 +5,12 @@
 ▌▤  / filter…                    │  ┌╌ ▣ Canvas project · 4 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ◧ AI ││ Review implementation                                       │
                                  │  ╎ ┌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┐               ││ ■ stopped                                                   │
  ◷  ▾ ▣ Canvas project         3 │  ╎ ╎ Build session canvas ━━━━━━┓  ╎ ┏ Review imple││                                                             │
-      ■ Build session canvas     │  ╎ ╎ ■ stopped                  ┃  ╎ ┃ ■ stopped   ││ Folder   C:\work\canvas                                     │
- ⧉      ◇ ✓ Explore terminal AP… │  ╎ ╎ canvas                     ┃  ╎ ┃ canvas      ││                                                             │
-      ■ Review implementation    │  ╎ ╎━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛  ╎ ┗━━━━━━━━━━━━━││ Enter or click the box to open its terminal.                │
- ⌁      ↳ ■ Write tests          │  ╎ ╎ ─────   ·     ·     ·     ·   ╎ · ┊   ·     · ││ S: subsession · R: rename · G: group · X: stop              │
-                                 │  ╎ ╎   ┌ ◇ Explore terminal A…┐    ╎   ┊           ││                                                             │
- ✦                               │  ╎ ╎   │ ✓ just finished      │    ╎   ┊           ││                                                             │
+      ■ Build session canvas     │  ╎ ╎ ■ stopped                  ┃  ╎ ┃ ■ stopped   ││ Agent      none (runs its command)                          │
+ ⧉      ◇ ✓ Explore terminal AP… │  ╎ ╎ canvas                     ┃  ╎ ┃ canvas      ││ Folder     C:\work\canvas                                   │
+      ■ Review implementation    │  ╎ ╎━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛  ╎ ┗━━━━━━━━━━━━━││                                                             │
+ ⌁      ↳ ■ Write tests          │  ╎ ╎ ─────   ·     ·     ·     ·   ╎ · ┊   ·     · ││ Start runs its command in a new canvas terminal.            │
+                                 │  ╎ ╎   ┌ ◇ Explore terminal A…┐    ╎   ┊           ││ Double-click the box or press Enter to start it.            │
+ ✦                               │  ╎ ╎   │ ✓ just finished      │    ╎   ┊           ││ S subsession · R rename · G group · X stop                  │
                                  │  ╎ ╎   └──────────────────────┘·   ╎ ╭ ↳ Write test││                                                             │
  ◈                               │  ╎ ╎                               ╎ │ ■ stopped   ││                                                             │
                                  │  ╎ ╎                               ╎ │ canvas      ││                                                             │
@@ -37,9 +37,9 @@
                                  │                                                    ││                                                             │
                                  │  ·     ·     ·     ·     ·     ·     ·     ·     · ││                                                             │
                                  │                                                    ││                                                             │
-                                 │                                                    ││                                                             │
+                                 │                                                    ││  ▸ Start    Remove    Close                                 │
                                  │  ·     ·     ·     ·     ·     ·     ·     ·     · │└─────────────────────────────────────────────────────────────┘
- drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom · right-click menu · ? help
+ click view · double-click/Enter start · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom · right-click menu · ? he…
 ## gpu view model
 view cursor=none modal=none banner=None
 canvas area=34,1 52x38 origin=-2,-1 scale=1 grid=true tick=0 empty=false

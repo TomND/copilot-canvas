@@ -624,6 +624,8 @@ fn demo_shots(shots: &mut Shots) -> Result<()> {
     wait_tile(&ui, "demo-main", "a PowerShell prompt", 30, |t| t.contains("PS "))?;
     ui.send(b"\x1d")?;
     let at = box_center(&ui, "Review implementation")?;
+    // A double-click starts it (a click only views it).
+    click(&ui, "left", at)?;
     click(&ui, "left", at)?;
     wait_tile(&ui, "demo-review", "a PowerShell prompt", 30, |t| t.contains("PS "))?;
     ui.send(b"\x1d")?;

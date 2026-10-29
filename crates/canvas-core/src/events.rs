@@ -245,15 +245,19 @@ impl App {
                 if let Some(group) = self.selected_group.clone() {
                     return self.run(Action::DeleteGroup(group));
                 }
-                let ids = self.selection.clone();
-                for id in ids {
-                    self.run(Action::RemoveNode(id));
+                // Several boxes: their eligible part after a confirmation.
+                match self.selection.as_slice() {
+                    [] => {}
+                    [id] => {
+                        let id = id.clone();
+                        self.run(Action::RemoveNode(id));
+                    }
+                    _ => self.confirm_remove(self.selection.clone()),
                 }
                 return;
             }
             KeyCode::Esc => {
-                self.selection.clear();
-                self.selected_group = None;
+                self.clear_selection();
                 return;
             }
             _ => {}
@@ -286,10 +290,11 @@ impl App {
         let world_step = step * d / n;
         match key.code {
             KeyCode::Enter => {
+                // The explicit keyboard start (a group shows its running terminals).
                 if let Some(group) = self.selected_group.clone() {
                     self.open_group(&group);
                 } else if let Some(id) = self.selection.last().cloned() {
-                    self.open_node(&id);
+                    self.start_node(&id);
                 }
             }
             KeyCode::Tab | KeyCode::BackTab => {
@@ -373,9 +378,10 @@ impl App {
         }
         self.term_select = None;
         if !self.owned_alive(&id) {
-            // Keys on an exited terminal: Enter restarts it, anything else returns to the canvas.
+            // Keys on an exited terminal: Enter restarts it (an explicit
+            // start), anything else returns to the canvas.
             if key.code == KeyCode::Enter {
-                self.open_node(&id);
+                self.start_node(&id);
             } else {
                 self.set_focus(Focus::Canvas);
             }
@@ -417,6 +423,8 @@ impl App {
         self.mark_dirty();
     }
 
+    /// Enter (or a double-click) on a sidebar row: a group shows its running
+    /// terminals; a session or subagent starts (or resumes) and gets the keyboard.
     pub fn activate_side_row(&mut self, index: usize) {
         let Some(row) = self.side_rows.get(index).cloned() else { return };
         self.side_sel = index;
@@ -424,7 +432,21 @@ impl App {
             SideKind::Group(id) => self.open_group(&id),
             SideKind::Session(id) | SideKind::Agent(id) => {
                 self.reveal_node(&id);
-                self.open_node(&id);
+                self.start_node(&id);
+            }
+            SideKind::Section => {}
+        }
+    }
+
+    /// A click on a sidebar row: flies the canvas to it and views it (never launches).
+    pub fn view_side_row(&mut self, index: usize) {
+        let Some(row) = self.side_rows.get(index).cloned() else { return };
+        self.side_sel = index;
+        match row.kind {
+            SideKind::Group(id) => self.open_group(&id),
+            SideKind::Session(id) | SideKind::Agent(id) => {
+                self.reveal_node(&id);
+                self.view_node(&id);
             }
             SideKind::Section => {}
         }
@@ -521,6 +543,11 @@ impl App {
         self.set_focus(Focus::Canvas);
         let double = button == MouseButton::Left && self.is_double_click(x, y);
         match (button, self.canvas_hit(x, y)) {
+            (MouseButton::Left, CanvasHit::Node(id)) if double && !additive => {
+                // The second click of a double-click: the explicit start.
+                self.drag = None;
+                self.start_node(&id);
+            }
             (MouseButton::Left, CanvasHit::Node(id)) => {
                 if additive {
                     self.select_node(&id, true);
@@ -549,7 +576,14 @@ impl App {
             (MouseButton::Left, _) if additive => {
                 self.drag = Some(Drag::Rubber { start: (x, y), now: (x, y), additive: true, right: false });
             }
-            (MouseButton::Left | MouseButton::Middle, _) => self.drag = Some(Drag::Pan { last: (x, y), moved: false }),
+            // Empty space pans; a click on a group's background or border selects it.
+            (MouseButton::Left | MouseButton::Middle, hit) => {
+                let group = match (button, hit) {
+                    (MouseButton::Left, CanvasHit::GroupBody(id)) => Some(id),
+                    _ => None,
+                };
+                self.drag = Some(Drag::Pan { last: (x, y), moved: false, group });
+            }
             (MouseButton::Right, CanvasHit::Node(id)) => {
                 if !self.selection.contains(&id) {
                     self.select_node(&id, false);
@@ -604,7 +638,15 @@ impl App {
         {
             return self.toggle_collapse(id);
         }
-        self.activate_side_row(index);
+        // A second click on the same row soon after the first starts it.
+        let now = Instant::now();
+        let double = self.last_side_click.is_some_and(|(t, i)| i == index && now - t < Duration::from_millis(400));
+        self.last_side_click = if double { None } else { Some((now, index)) };
+        if double {
+            self.activate_side_row(index);
+        } else {
+            self.view_side_row(index);
+        }
     }
 
     fn mouse_drag(&mut self, x: u16, y: u16) {
@@ -642,7 +684,7 @@ impl App {
                 self.mark_dirty();
                 Drag::Resize { id, start, orig }
             }
-            Drag::Pan { last, moved } => {
+            Drag::Pan { last, moved, group } => {
                 let (wx, wy) = world(x as i32 - last.0 as i32, y as i32 - last.1 as i32);
                 self.doc.view.x -= wx;
                 self.doc.view.y -= wy;
@@ -651,7 +693,7 @@ impl App {
                 }
                 let consumed = (wx * n / d, wy * n / d);
                 let next = ((last.0 as i32 + consumed.0) as u16, (last.1 as i32 + consumed.1) as u16);
-                Drag::Pan { last: next, moved: moved || last != (x, y) }
+                Drag::Pan { last: next, moved: moved || last != (x, y), group }
             }
             Drag::Rubber { start, additive, right, .. } => Drag::Rubber { start, now: (x, y), additive, right },
             Drag::SidebarDivider => {
@@ -714,10 +756,10 @@ impl App {
                 self.mark_dirty();
                 Drag::Resize { id, start, orig }
             }
-            Some(Drag::Pan { last, moved }) => {
+            Some(Drag::Pan { last, moved, group }) => {
                 self.pan_cells(self.pointer.0 - self.drag_origin.0, self.pointer.1 - self.drag_origin.1);
                 self.drag_origin = self.pointer;
-                Drag::Pan { last: (x, y), moved: moved || last != (x, y) }
+                Drag::Pan { last: (x, y), moved: moved || last != (x, y), group }
             }
             other => {
                 self.drag = other;
@@ -738,12 +780,10 @@ impl App {
                 // clickable UI); drags stay a canvas text selection.
                 self.send(ClientMsg::Click { id, col: anchor.0, row: anchor.1, button: 0, mods: 0 });
             }
-            Drag::Nodes { moved: false, click: Some(id), .. } => self.open_node(&id),
+            Drag::Nodes { moved: false, click: Some(id), .. } => self.view_node(&id),
             Drag::Group { moved: false, id, .. } => self.open_group(&id),
-            Drag::Pan { moved: false, .. } => {
-                self.selection.clear();
-                self.selected_group = None;
-            }
+            Drag::Pan { moved: false, group: Some(group), .. } => self.select_group(&group),
+            Drag::Pan { moved: false, group: None, .. } => self.clear_selection(),
             Drag::Rubber { start, now, additive, right } => {
                 let moved = start.0.abs_diff(now.0) > 1 || start.1.abs_diff(now.1) > 0;
                 if !moved {

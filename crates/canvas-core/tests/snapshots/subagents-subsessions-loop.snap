@@ -3,19 +3,19 @@
  ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit                                  ⠋ 1 working   3 sessions
     SESSIONS                     │▌·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · │┌────────────────────────────────────────────┐
 ▌▤  / filter…                    │  ┏ Orchestrator ━━━━━━━━━━━━━━┓                                     ││ Orchestrator                               │
-                                 │  ┃ ⠋ working · ↗ elsewhere    ┃                                     ││ ⠋ working                                  │
+                                 │  ┃ ⠋ working · ↗ elsewhere    ┃                                     ││ ⠋ working · ↗ open elsewhere               │
  ◷  ⠋ ↗ Orchestrator             │ ·┃ canvas · main              ┃┄┄╮  ·     ·     ·     ·     ·     · ││                                            │
-      ◇ ⠋ Explore the API        │  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛  ┊                                  ││ Folder   C:\work\canvas                    │
- ⧉    ↳ ○ ↗ Follow-up            │    │───╮                         ┊                                  ││ Branch   main                              │
-      ◇ ○ Review the diff        │ ·  │  ·│    ·     ·     ·     ·  ┊  ·     ·     ·     ·     ·     · ││ Client   unknown                           │
- ⌁    ◇ ✗ Lint the tree          │    │─┌ ◇ Explore the API ───┐    ┊  ╭ ↳ Follow-up ───────── ✉ 2 ─╮  ││ Subagents 3                                │
-    ○ ↻ ↗ Nightly check          │    │ │ ⠋ working            │    ┊  │ ○ idle · ↗ elsewhere       │  ││ Agent    GitHub Copilot                    │
- ✦                               │ ·  ╰─└──────────────────────┘ ·  ╰┄┄│ canvas · main              │· ││ Session  orch                              │
+      ◇ ⠋ Explore the API        │  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛  ┊                                  ││ Agent      GitHub Copilot                  │
+ ⧉    ↳ ○ ↗ Follow-up            │    │───╮                         ┊                                  ││ Folder     C:\work\canvas                  │
+      ◇ ○ Review the diff        │ ·  │  ·│    ·     ·     ·     ·  ┊  ·     ·     ·     ·     ·     · ││ Branch     main                            │
+ ⌁    ◇ ✗ Lint the tree          │    │─┌ ◇ Explore the API ───┐    ┊  ╭ ↳ Follow-up ───────── ✉ 2 ─╮  ││ Client     unknown                         │
+    ○ ↻ ↗ Nightly check          │    │ │ ⠋ working            │    ┊  │ ○ idle · ↗ elsewhere       │  ││ Subagents  3                               │
+ ✦                               │ ·  ╰─└──────────────────────┘ ·  ╰┄┄│ canvas · main              │· ││ Session    orch                            │
                                  │        │                            ╰────────────────────────────╯  ││                                            │
- ◈                               │      ┌ ◇ Review the diff ───┐                                       ││ Open in another terminal (CLI or VS Code). │
-                                 │ ·    │ ○ idle               │ ·     ·     ·     ·     ·     ·     · ││ Copilot Canvas will not start a second co… │
- ⇄                               │      └──────────────────────┘                                       ││ S: subsession · R: rename · G: group · X:… │
-                                 │        │                                                            ││                                            │
+ ◈                               │      ┌ ◇ Review the diff ───┐                                       ││ It is open in another terminal (CLI or VS  │
+                                 │ ·    │ ○ idle               │ ·     ·     ·     ·     ·     ·     · ││ Code); Copilot Canvas never starts a       │
+ ⇄                               │      └──────────────────────┘                                       ││ second copy.                               │
+                                 │        │                                                            ││ S subsession · R rename · G group · X stop │
  ≡                               │ ·    ┌ ◇ Lint the tree ─────┐ ·     ╭ Nightly check ─────────────╮●┄││                                            │
                                  │      │ ✗ failed             │       │ ○ idle · ↻ every 15m · ↗ … │  ││                                            │
                                  │      └──────────────────────┘       │ canvas · main              │  ││                                            │
@@ -36,10 +36,10 @@
                                  │                                                                     ││                                            │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││                                            │
                                  │                                                                     ││                                            │
-                                 │                                                                     ││                                            │
-                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││                                            │
+                                 │                                                                     ││  Inspect transcript    MCP servers…        │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││  Remove    Close                           │
                                  │                                                                     │└────────────────────────────────────────────┘
- drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom · right-click menu · ? help
+ click view · double-click/Enter start · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom · right-click menu · ? he…
 ## gpu view model
 view cursor=none modal=none banner=None
 canvas area=34,1 69x38 origin=-1,0 scale=1 grid=true tick=0 empty=false

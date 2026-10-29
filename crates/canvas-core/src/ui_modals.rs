@@ -11,13 +11,15 @@ use crate::paths::{format_age, now_ms};
 
 const HELP: &[(&str, &str)] = &[
     ("Canvas (mouse)", ""),
-    ("Click a box", "open / focus its real terminal"),
+    ("Click a box or sidebar row", "select and view it (never starts it)"),
+    ("Double-click a box or row · Enter", "start / resume it, focus its terminal"),
     ("Drag a box", "move it (its subagents follow)"),
     ("Drag empty space / middle-drag", "pan"),
     ("Shift-drag or right-drag", "select several sessions"),
     ("Wheel / Shift+wheel", "pan vertical / horizontal"),
     ("Alt+wheel or Ctrl+wheel · toolbar − +", "zoom (100% · 50% · 25%)"),
     ("Drag a group title / ◢ corner", "move / resize the group"),
+    ("Click a group's background / border", "select it (arrows move, Del deletes)"),
     ("Double-click empty space", "new session there"),
     ("Right-click", "context menu"),
     ("Keys", ""),
@@ -26,7 +28,7 @@ const HELP: &[(&str, &str)] = &[
     ("I / V", "import agent sessions / sync VS Code agent sessions"),
     ("Alt+1…8 or activity bar", "Sessions · Automations · Plugins · MCP · Skills · Agents · VS Code · Settings"),
     ("Lists: Enter · Space · Del", "open/edit · enable/disable · remove"),
-    ("Enter / Tab", "open selection / cycle sessions"),
+    ("Enter / Tab", "start selection / cycle sessions"),
     ("Arrows / Shift / Ctrl", "move selection / faster / pan"),
     ("R · Del · X", "rename · remove box or group · stop session"),
     ("T · F · + − · C", "tile terminals · fit all · zoom · center"),
@@ -189,6 +191,7 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
         Modal::NewSession(dialog) => draw_new_session(app, buf, screen, dialog, ctx),
         Modal::Mcp(picker) => draw_mcp_picker(app, buf, screen, picker, ctx),
         Modal::Viewer(viewer) => draw_viewer(app, buf, screen, viewer, ctx),
+        Modal::Inspector(inspector) => draw_inspector(app, buf, screen, inspector, ctx),
         Modal::Folder(browser) => {
             let rect = centered(screen, 76, screen.height.saturating_sub(6).min(28));
             panel(buf, rect, "Choose a folder");
@@ -404,6 +407,59 @@ fn draw_viewer(app: &mut App, buf: &mut Buffer, screen: Rect, viewer: &crate::vi
         && let Some(Modal::Viewer(top)) = app.modals.last_mut()
     {
         top.rows = rows.max(1);
+    }
+    (rect, None)
+}
+
+/// The transcript inspector: what may resume, the status, the transcript
+/// (newest at the bottom while it follows), buttons.
+fn draw_inspector(app: &mut App, buf: &mut Buffer, screen: Rect, inspector: &crate::inspect::Inspector, ctx: &mut Ctx) -> (Rect, Option<(u16, u16)>) {
+    use crate::inspect::Line;
+    let rect = centered(screen, screen.width.saturating_sub(6).min(150), screen.height.saturating_sub(2));
+    panel(buf, rect, &format!("Transcript · {} (read-only)", truncate(&inspector.title, 70)));
+    let (x, width) = (rect.x as i32 + 2, rect.width as i32 - 4);
+    let note = app.inspector_note(inspector);
+    put(buf, x, rect.y as i32 + 1, &truncate(&note, width.max(1) as usize), fg(PURPLE).bg(MODAL), rect);
+    let rows = rect.height.saturating_sub(6) as usize;
+    let lines = inspector.transcript.as_ref().map(|t| crate::inspect::lines(t, width.max(16) as usize)).unwrap_or_default();
+    let max_top = lines.len().saturating_sub(rows);
+    let top = if inspector.follow { max_top } else { inspector.top.min(max_top) };
+    let status = match (&inspector.transcript, &inspector.error) {
+        (_, Some(error)) => error.clone(),
+        (None, None) => "Loading…".into(),
+        (Some(t), None) => {
+            let range = if lines.is_empty() { "empty".to_owned() } else { format!("lines {}–{} of {}", top + 1, (top + rows).min(lines.len()), lines.len()) };
+            let older = if t.truncated { " (the newest part)" } else { "" };
+            let live = if t.running { " · running: refreshing" } else { "" };
+            format!("{} entries{older}{live} · {range}   ·   ↑↓ PgUp/PgDn scroll · End newest · Tab buttons · Esc close", t.entries.len())
+        }
+    };
+    let status_style = if inspector.error.is_some() { fg(NEGATIVE).bg(MODAL) } else { fg(MUTED).bg(MODAL) };
+    put(buf, x, rect.y as i32 + 2, &truncate(&status, width.max(1) as usize), status_style, rect);
+    for (row, (text, kind)) in lines.iter().enumerate().skip(top).take(rows) {
+        let style = match kind {
+            Line::User => bold(ACCENT).bg(MODAL),
+            Line::Assistant => fg(TEXT).bg(MODAL),
+            Line::Tool => fg(GRAY).bg(MODAL),
+            Line::Result | Line::Blank => fg(MUTED).bg(MODAL),
+            Line::Failed => fg(NEGATIVE).bg(MODAL),
+            Line::Note => fg(PURPLE).bg(MODAL),
+        };
+        put(buf, x, rect.y as i32 + 3 + (row - top) as i32, &truncate(text, width.max(1) as usize), style, rect);
+    }
+    let mut bx = x;
+    let y = rect.bottom() as i32 - 2;
+    let buttons = app.inspector_buttons(inspector);
+    // The first button is the primary one when it resumes (Copy and Close follow it).
+    for (i, (label, _)) in buttons.iter().enumerate() {
+        bx = button(buf, ctx, bx, y, label, i == inspector.sel, i == 0 && buttons.len() > 2, i, rect);
+    }
+    if ctx.top
+        && let Some(Modal::Inspector(open)) = app.modals.last_mut()
+    {
+        open.rows = rows.max(1);
+        open.total = lines.len();
+        open.top = top;
     }
     (rect, None)
 }

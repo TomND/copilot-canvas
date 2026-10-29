@@ -40,7 +40,8 @@ const PROMPT_STATUS: &str = "Use the bash tool to run: sleep 6 ; then reply with
 const PROMPT_LONG: &str = "Use the bash tool to run: sleep 40 ; then reply with just OK";
 const PROMPT_STREAM: &str = "Reply with 400 lines: the word canvasline immediately followed by the line number, from 1 to 400, one per line, nothing else.";
 const PROMPT_ROWS: &str = "Reply with 80 lines: the word canvasrow immediately followed by the line number, from 1 to 80, one per line, nothing else.";
-const PROMPT_PUSH: &str = "Use the bash tool to run exactly this command once: cd repo && git push origin main ; then reply with just DONE";
+/// `;` separates commands in every shell OpenCode may run (bash, PowerShell 5.1 has no `&&`).
+const PROMPT_PUSH: &str = "Use the bash tool once to run this exact command: `cd repo; git push origin main` and then reply with just DONE";
 const PROMPT_TASK: &str = "Use the task tool once to start a general subagent with the prompt: Reply with just OK. When it returns, reply with just DONE.";
 const PROMPT_QUESTION: &str = "Use the question tool once to ask me: Which canvas color? with the options Red and Blue. After my answer, reply with just DONE.";
 const PROMPT_ASK: &str = "Use the bash tool to run: echo canvasask ; then reply with just DONE";
@@ -671,8 +672,9 @@ fn scenario<U: Ui>(instance: &Instance, paths: &Paths, model: &str, steps: &[Str
         println!("    detected {:.1} s after Enter: branch {} remote {}", detected.as_secs_f64(), event["data"]["branch"], event["data"]["remote"]);
     }
 
+    let mut child: Option<(String, String)> = None;
     if steps.iter().any(|s| s == "subagent") {
-        step("a task-tool subagent of OpenCode becomes a subagent box under the session");
+        step("a task-tool subagent of OpenCode becomes a subagent box under the session; its transcript opens read-only");
         let (sent, ms) = submit(&mut ui, &command_line, model, PROMPT_TASK)?;
         let mut boxed: Option<Duration> = None;
         let deadline = sent + TURN;
@@ -692,6 +694,24 @@ fn scenario<U: Ui>(instance: &Instance, paths: &Paths, model: &str, steps: &[Str
             let names: Vec<String> = kids.iter().filter_map(|k| doc.node(&format!("{main}:{k}"))).map(|n| n.name.clone()).collect();
             let first = boxed.map(|d| format!("{:.1} s after Enter", d.as_secs_f64())).unwrap_or_else(|| "after the turn".into());
             println!("    {} child session(s) {kids:?} → subagent box(es) {names:?}, the first {first}", kids.len());
+            // Inspect the child from its box (selected from the sidebar): nothing starts.
+            let launches = log_count(instance, "launched ");
+            open_terminal(&mut ui, MAIN)?;
+            canvas_focus(&mut ui)?;
+            let (x, y) = ui.locate(&names[0], SIDEBAR)?;
+            ui.click(x, y)?;
+            ui.wait("the subagent's details", Duration::from_secs(10), |t| t.contains("Inspect transcript"))?;
+            let (ix, iy) = ui.locate("Inspect transcript", RIGHT)?;
+            ui.click(ix + 1, iy)?;
+            ui.wait("the child's transcript", Duration::from_secs(15), |t| t.contains("Transcript · ") && t.contains("❯ ") && !t.contains("Loading…"))?;
+            let shown = ui.text().lines().filter(|l| l.contains("❯ ") || l.contains("⚙ ")).count();
+            ui.send(b"\x1b")?;
+            ui.wait("the inspector closed", Duration::from_secs(5), |t| !t.contains("Transcript · "))?;
+            anyhow::ensure!(log_count(instance, "launched ") == launches, "inspecting launched something");
+            println!("    the child's transcript opened read-only ({shown} prompt/tool line(s) on screen), nothing launched");
+            child = Some((kids[0].clone(), names[0].clone()));
+            // Back in the session's terminal for the next prompt.
+            open_terminal(&mut ui, MAIN)?;
         }
     }
 
@@ -747,9 +767,17 @@ fn scenario<U: Ui>(instance: &Instance, paths: &Paths, model: &str, steps: &[Str
         let stopped = wait_log_after(instance, "the stop", &format!("terminal {main} exited with "), exits, Duration::from_secs(20))?;
         let took = asked.elapsed();
         anyhow::ensure!(stopped.contains("Some(0)") && !stopped.contains("killed"), "OpenCode did not exit gracefully: {stopped}");
+        if let Some((kid, name)) = child.as_ref().filter(|_| !busy) {
+            resume_child(&mut ui, instance, &canvas, &main, kid, name)?;
+        }
         let launches = log_count(instance, &format!("launched {main} "));
         let (x, y) = ui.locate(MAIN, SIDEBAR)?;
+        // A click only shows the stopped box's details (Resume); the double-click resumes it.
         ui.click(x, y)?;
+        ui.wait("its details panel offers Resume", Duration::from_secs(10), |t| t.contains("▸ Resume"))?;
+        std::thread::sleep(Duration::from_millis(500));
+        anyhow::ensure!(log_count(instance, &format!("launched {main} ")) == launches, "a click relaunched the session");
+        ui.double_click(x, y)?;
         wait_log_after(instance, "the relaunch", &format!("launched {main} "), launches, Duration::from_secs(20))?;
         wait_log(instance, "a resume", &format!("terminal {main}: opencode resume"), Duration::from_secs(5))?;
         let header = format!("{MAIN} · ");
@@ -895,6 +923,43 @@ fn scenario<U: Ui>(instance: &Instance, paths: &Paths, model: &str, steps: &[Str
         println!("    service log: {line}");
     }
     anyhow::ensure!(!log.contains("panicked"), "the service log reports a panic");
+    Ok(())
+}
+
+/// With its parent stopped, a finished child session resumes in a terminal
+/// of its own (`opencode -s <child>`, no prompt) as a new subsession box
+/// linked to the parent; it is stopped again right after.
+fn resume_child<U: Ui>(ui: &mut U, instance: &Instance, canvas: &Path, main: &str, kid: &str, name: &str) -> Result<()> {
+    step("with its parent stopped, the finished child resumes in a terminal of its own as a linked subsession (opencode -s <child>)");
+    canvas_focus(ui)?;
+    let (x, y) = ui.locate(MAIN, SIDEBAR)?;
+    ui.click(x, y)?;
+    ui.wait("the stopped parent's details", Duration::from_secs(10), |t| t.contains("▸ Resume"))?;
+    let (sx, sy) = ui.locate(name, SIDEBAR)?;
+    ui.click(sx, sy)?;
+    ui.wait("Resume as subsession", Duration::from_secs(10), |t| t.contains("Resume as subsession"))?;
+    let (rx, ry) = ui.locate("Resume as subsession", RIGHT)?;
+    ui.click(rx + 1, ry)?;
+    let doc = wait_doc(canvas, "the child's own subsession box", |d| d.nodes.iter().any(|n| n.agent_session.as_deref() == Some(kid) && n.parent.as_deref() == Some(main)))?;
+    let resumed = doc.nodes.iter().find(|n| n.agent_session.as_deref() == Some(kid)).map(|n| (n.id.clone(), n.name.clone())).context("the resumed box")?;
+    wait_log(instance, "the child's resume", &format!("terminal {}: opencode resume", resumed.0), Duration::from_secs(20))?;
+    let (_, line) = launched_command_line(instance, &resumed.0)?;
+    let words: Vec<&str> = line.split_whitespace().collect();
+    anyhow::ensure!(words.windows(2).any(|w| w[0] == "-s" && w[1] == kid), "resumed without -s {kid}: {line}");
+    // The box takes the child's title once OpenCode reports it; a child's
+    // view in OpenCode has "Parent up" in place of the prompt's key hints.
+    let name = |fallback: &str| load(canvas).ok().and_then(|d| d.node(&resumed.0).map(|n| n.name.clone())).unwrap_or_else(|| fallback.to_string());
+    ui.wait("its own OpenCode", Duration::from_secs(60), |t| t.contains(&format!("{} · ", name(&resumed.1))) && (t.contains("Parent up") || agent_ui_up(AgentKind::OpenCode, t)))?;
+    let resumed = (resumed.0.clone(), name(&resumed.1));
+    anyhow::ensure!(doc.node(&format!("{main}:{kid}")).is_some(), "the subagent box stays");
+    // Stopped again (no prompt was sent), so only the parent resumes next.
+    canvas_focus(ui)?;
+    let exits = log_count(instance, &format!("terminal {} exited with ", resumed.0));
+    ui.send(b"x")?;
+    ui.wait("stop dialog", Duration::from_secs(5), |t| t.contains(&format!("Stop “{}”?", resumed.1)))?;
+    ui.send(b"\r")?;
+    let stopped = wait_log_after(instance, "the child's stop", &format!("terminal {} exited with ", resumed.0), exits, Duration::from_secs(20))?;
+    println!("    child {kid} resumed as “{}” with -s, then stopped ({})", resumed.1, stopped.split("exited with ").nth(1).unwrap_or_default().trim());
     Ok(())
 }
 

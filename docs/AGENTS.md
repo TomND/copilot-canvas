@@ -63,6 +63,42 @@ Git pushes and pull-request actions found in tool calls (`git push`, `gh pr
 bus events (`pr.pushed`, `pr.created`, …) of the box's group. For OpenCode the
 service maps the `ses_` id back to the box, since routing knows boxes.
 
+## Inspecting and resuming child conversations
+
+Agents start conversations of their own; the canvas shows each kind:
+
+| | What it is | On the canvas | Inspect reads | Resumes on its own |
+|---|---|---|---|---|
+| Spawned session | a session an agent started inside a canvas terminal (`copilot -p …`, found in the terminal's process tree: `ServiceMsg::Subsession`) | a linked subsession box (dotted connector) | its own history | yes, like any session box (`--session-id`), unless it is still open (its in-use lock) |
+| OpenCode child | a task-tool child session (`parent_id` in OpenCode's database) | a subagent box (`<box>:<ses_ id>`) | the child session's messages and parts | yes, as a **new linked subsession box** (`opencode -s <child>`), when nothing could write to it |
+| Claude Code subagent | an `Agent` tool call; background ones write `subagents/agent-<id>.jsonl` beside the transcript | a subagent box (key: the tool call id) | that file (`agentId` from the tool result), else the task and its answer | no: part of the parent's conversation |
+| Copilot subagent | `subagent.*` events in the parent's `events.jsonl`; its own steps carry its `agentId` | a subagent box | the parent's events with its `agentId` (older Copilot: only its start and end) | no: part of the parent's conversation |
+
+**Inspect** (box menu, details panel, any session or subagent box) opens a
+read-only transcript: your prompts, the agent's answers, its tool calls (name,
+a few words of arguments, the start of the result or the exit code) and notes
+(a subagent started or finished, an error, an Esc), oldest first, newest at the
+bottom, scrollable, with Copy and Close. It comes from the backend
+(`Request::Transcript`, see BACKEND.md), so it works for remote clients too,
+and reads are bounded: the newest 2 MiB of a JSONL history and the newest 150
+OpenCode messages through the database's indexes (large text and tool output
+are cut in SQL; a database without the indexes is not read). While the
+conversation runs (an unfinished turn or an open tool call) it refreshes every
+1.5 s, otherwise every 5 s. Nothing is started and nothing is written.
+
+**Resume after completion.** A finished OpenCode child resumes only when
+nothing can be writing to it: its parent is not running in this canvas (its
+OpenCode could continue the child with the task tool), not open elsewhere, and
+the child itself is not open elsewhere. Then the inspector's and the details
+panel's **Resume as subsession** (or a double-click on the subagent box) adds
+a new subsession box linked to the parent whose `agent_session` is the
+child's id and resumes it in its own terminal; the subagent box stays as it
+is, and a second resume goes to the same box. The service checks again right
+before the launch (`is_live`); when it refuses, the new box goes again and a
+notice says why. The parent is never signalled. Copilot and Claude Code
+subagents are part of their parent's conversation: the inspector says so, and
+resuming means resuming the parent.
+
 ## OpenCode in detail
 
 **Its server.** Every interactive OpenCode launch gets `--port PORT` and a
@@ -116,10 +152,10 @@ well. Through the canvas it checks:
 |---|---|
 | status | Settings → Model sets the model; the dialog starts OpenCode with `-m` and `--auto`; the service reaches the TUI's verified server; after the first prompt the box follows the new `ses_` session (the canvas file and the service log), shows working, then *done · review* while you look elsewhere, then idle once you open it |
 | wheel | after an 80-line answer, three wheel notches over the terminal scroll OpenCode's own view (earlier lines appear) |
-| push | `cd repo && git push origin main` to a local bare repository in OpenCode's bash tool: `detected pr.pushed in ses_… (terminal BOX)` in the service log and a `pr.pushed` bus event whose source is the box |
-| subagent | the task tool: each child session becomes a subagent box under the session (skipped with a note when the model does not use the tool) |
+| push | `cd repo; git push origin main` (a separator every shell knows) to a local bare repository in OpenCode's bash tool: `detected pr.pushed in ses_… (terminal BOX)` in the service log and a `pr.pushed` bus event whose source is the box |
+| subagent | the task tool: each child session becomes a subagent box under the session (skipped with a note when the model does not use the tool); its box's **Inspect transcript** opens the child's transcript read-only and launches nothing |
 | question | the question tool: the box shows *needs you*; Esc (OpenCode's "Reject question") dismisses it and the box settles to idle |
-| resume | X stops the box gracefully; opening it again resumes with `-s ses_…` and shows the conversation |
+| resume | X stops the box gracefully; a click only shows its details (Resume), the double-click resumes with `-s ses_…` and shows the conversation. Before that, with the parent stopped, the first child resumes as a linked subsession with `-s <child>` (no prompt) and is stopped again |
 | permission | Settings → Permissions: ask; a new box without `--auto`; a bash call with `OPENCODE_PERMISSION` `{"bash":"ask"}` shows *needs you*; Esc ("Reject") rejects it and nothing ran |
 | passive | a passive OpenCode box (Run now) runs `opencode run … -m <free model>` headless, reports `copilot-canvas status ok "…"` through the canvas command on its PATH, and its box follows the run's `ses_` session |
 

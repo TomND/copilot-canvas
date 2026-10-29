@@ -175,6 +175,9 @@ pub enum RightDetail {
     Item(ItemRef),
     /// A passive session's settings and state (node id).
     Passive(String),
+    /// A session or subagent box that is not running here: what it is and
+    /// what starting it would do (node id).
+    Session(String),
 }
 
 fn enabled_icon(enabled: bool) -> (&'static str, Color) {
@@ -406,7 +409,7 @@ impl App {
             SideView::VsCode => {
                 let prefs = &self.doc.vscode;
                 rows.push(ListRow::row(ItemRef::VsSync, "⟳", BLUE, if self.vs_syncing { "Syncing…" } else { "Sync sessions now" }, ""));
-                if self.undo.is_some() {
+                if matches!(self.undo, Some(crate::app::Undo::Doc(..))) {
                     rows.push(ListRow::row(ItemRef::VsUndo, "↶", BLUE, "Undo last sync", "Ctrl+Z"));
                 }
                 rows.push(ListRow::row(ItemRef::VsWindow, "◷", TEXT, "Active within", format!("{} h", prefs.window_hours)));
@@ -1385,7 +1388,7 @@ impl App {
         let changed = added + renamed + linked > 0;
         if changed {
             self.backup_doc(before.clone(), "before-vscode-sync", true);
-            self.undo = Some(("VS Code sync".into(), Box::new(before)));
+            self.undo = Some(crate::app::Undo::Doc("VS Code sync".into(), Box::new(before)));
         }
         if let Some(first) = first {
             self.select_node(&first, false);
@@ -1416,10 +1419,13 @@ impl App {
         self.notify(message, false);
     }
 
-    /// Restores the canvas from before the last bulk change (VS Code sync).
+    /// Restores the canvas from before the last bulk change (VS Code sync) or
+    /// the boxes of the last removal.
     pub fn undo_last(&mut self) {
-        let Some((label, doc)) = self.undo.take() else {
-            return self.notify("Nothing to undo.", false);
+        let (label, doc) = match self.undo.take() {
+            None => return self.notify("Nothing to undo.", false),
+            Some(crate::app::Undo::Removed { nodes, links }) => return self.restore_removed(nodes, links),
+            Some(crate::app::Undo::Doc(label, doc)) => (label, doc),
         };
         self.backup_doc(self.doc.clone(), "before-undo", false);
         // Keep view and preferences that changed meanwhile; restore the layout.

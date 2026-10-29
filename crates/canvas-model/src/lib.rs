@@ -14,4 +14,5 @@ pub mod git;
 pub mod migrate;
 pub mod rpc;
 pub mod sync;
+pub mod transcript;
 pub mod vscode;

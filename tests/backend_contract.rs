@@ -197,6 +197,14 @@ fn contract(backend: &dyn Backend, ctx: &Ctx, work: &Path, tag: &str) -> Vec<Str
     assert!(yaml.contains(&format!("id: {child}")) && yaml.contains("name: \"Forked\""), "{yaml}");
     assert!(backend.fork(parent, child, "Again", None).is_err(), "never overwrites a session");
 
+    // The read-only transcript of that history (what the inspector shows).
+    let request = canvas_model::rpc::Request::Transcript { agent: AgentKind::Copilot, session: parent.into(), parent: None, agent_key: None, cwd: None, limit: 50 };
+    let transcript = backend.transcript(request).unwrap();
+    assert_eq!(transcript.entries.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(), ["hi"]);
+    answers.push(serde_json::to_string(&transcript).unwrap());
+    let bad = canvas_model::rpc::Request::Transcript { agent: AgentKind::Copilot, session: "not-a-session".into(), parent: None, agent_key: None, cwd: None, limit: 50 };
+    answers.push(backend.transcript(bad).unwrap_err().to_string());
+
     // Canvas backups.
     let canvas = mine.join("canvas.json");
     let backup = backend.doc_backup(&canvas.display().to_string(), "before-test", Doc::default()).unwrap();

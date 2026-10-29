@@ -15,7 +15,7 @@ use crate::paint::{
     put_sym, truncate, truncate_left,
 };
 use crate::status::Status;
-use crate::paths::{format_age, now_ms};
+use crate::paths::now_ms;
 use crate::view::{RenderMode, View};
 
 pub fn draw(app: &mut App, frame: &mut Frame) {
@@ -702,7 +702,7 @@ fn draw_terminals(app: &mut App, buf: &mut Buffer, area: Rect, view_model: &mut 
             });
         }
         if !info.alive && !app.launching.contains_key(id) {
-            let hint = " Exited — press Enter or click the box to restart ";
+            let hint = " Exited — press Enter or double-click the box to restart ";
             let x = inner.x as i32 + (inner.width as i32 - crate::paint::text_width(hint) as i32).max(0) / 2;
             put(buf, x, inner.bottom() as i32 - 1, hint, Style::default().fg(Color::Black).bg(ATTENTION), inner);
         }
@@ -770,7 +770,6 @@ fn draw_details(app: &mut App, buf: &mut Buffer, area: Rect) {
     let mut lines: Vec<(String, Style)> = Vec::new();
     // Lines that act as buttons.
     let mut clicks: Vec<(usize, crate::dialogs::Action)> = Vec::new();
-    let now = now_ms();
     if let Some(group) = app.selected_group.as_deref().and_then(|g| app.doc.group(g)).cloned() {
         use crate::dialogs::Action;
         let members = app.doc.members(&group.id);
@@ -809,56 +808,12 @@ fn draw_details(app: &mut App, buf: &mut Buffer, area: Rect) {
         lines.push((String::new(), Style::default()));
         lines.push(("Enter: show running terminals · R: rename · Del: delete group".into(), fg(MUTED)));
     } else if let Some(node) = app.primary().cloned() {
-        let summary = app.summary(&node).cloned();
-        let status = app.node_status(&node);
-        lines.push((node.name.clone(), bold(TEXT)));
-        lines.push((format!("{} {}", status.icon(app.tick), status.label()), fg(status.color())));
-        lines.push((String::new(), Style::default()));
-        if node.kind == NodeKind::Agent {
-            if let Some(agent) = summary.as_ref().and_then(|s| s.agents.iter().find(|a| Some(&a.key) == node.agent_key.as_ref()))
-                && !agent.description.is_empty()
-            {
-                lines.push((agent.description.clone(), fg(TEXT)));
-            }
-            lines.push(("Subagents run inside their parent session's terminal.".into(), fg(MUTED)));
-            lines.push(("Enter / click opens the parent terminal.".into(), fg(MUTED)));
-        } else {
-            let cwd = node.cwd.clone().or_else(|| summary.as_ref().map(|s| s.cwd.clone())).unwrap_or_default();
-            lines.push((format!("Folder   {}", truncate_left(&cwd, w.saturating_sub(9))), fg(TEXT)));
-            if let Some(s) = &summary {
-                if !s.branch.is_empty() {
-                    lines.push((format!("Branch   {}", s.branch), fg(TEXT)));
-                }
-                if !s.repository.is_empty() {
-                    lines.push((format!("Repo     {}", s.repository), fg(TEXT)));
-                }
-                let client = if s.client.is_empty() && crate::agents::agent_of_summary(s) == crate::agents::AgentKind::Copilot { "unknown" } else { crate::app::client_label(s) };
-                lines.push((format!("Client   {client}"), fg(TEXT)));
-                if s.updated_ms > 0 {
-                    lines.push((format!("Updated  {} ago", format_age(s.updated_ms, now)), fg(TEXT)));
-                }
-                if !s.agents.is_empty() {
-                    lines.push((format!("Subagents {}", s.agents.len()), fg(TEXT)));
-                }
-                if s.truncated {
-                    lines.push(("Activity from the most recent 1 MiB of history.".into(), fg(MUTED)));
-                }
-            }
-            if !app.demo && node.command.is_none() {
-                lines.push((format!("Agent    {}", crate::agents::agent_of(&node).label()), fg(TEXT)));
-                lines.push((format!("Session  {}", crate::agents::native_id(&node)), fg(MUTED)));
-            }
-            lines.push((String::new(), Style::default()));
-            if status == Status::External || app.live_elsewhere(&node) {
-                lines.push(("Open in another terminal (CLI or VS Code).".into(), fg(crate::paint::PURPLE)));
-                lines.push(("Copilot Canvas will not start a second copy.".into(), fg(MUTED)));
-            } else if let Some(error) = app.node_errors.get(&node.id) {
-                lines.push((format!("Problem: {error}"), fg(NEGATIVE)));
-            } else {
-                lines.push(("Enter or click the box to open its terminal.".into(), fg(ACCENT)));
-            }
-            lines.push(("S: subsession · R: rename · G: group · X: stop".into(), fg(MUTED)));
-        }
+        // The same panel a click on the box opens (automations keep their own).
+        let detail = match (&node.automation, node.kind) {
+            (Some(key), NodeKind::Automation) => crate::side::RightDetail::Automation(key.clone()),
+            _ => crate::side::RightDetail::Session(node.id.clone()),
+        };
+        return crate::ui_side::draw_right_detail(app, buf, area, &detail);
     } else {
         lines.push(("Select a session to see it here.".into(), fg(MUTED)));
     }
@@ -881,8 +836,8 @@ fn draw_status(app: &mut App, buf: &mut Buffer, area: Rect) {
         let hints = match app.focus {
             Focus::Terminal => "Typing goes to the terminal · Ctrl+] or F6 back to canvas · drag to copy · Ctrl+V paste · Alt+V image · Ctrl+click links · Shift+PgUp history · click canvas to leave",
             Focus::Sidebar if app.side_view != crate::side::SideView::Sessions => "↑↓ move · Enter open/edit · Space enable/disable · Del remove · Esc back · Alt+1…8 views · ? help",
-            Focus::Sidebar => "↑↓ move · Enter open · ←→ collapse · / filter · Tab canvas · Alt+1…8 views · ? help",
-            Focus::Canvas => "drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom · right-click menu · ? help",
+            Focus::Sidebar => "click view · double-click/Enter start · ←→ collapse · / filter · Tab canvas · Alt+1…8 views · ? help",
+            Focus::Canvas => "click view · double-click/Enter start · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom · right-click menu · ? help",
         };
         (hints.to_owned(), fg(MUTED).bg(PANEL))
     };

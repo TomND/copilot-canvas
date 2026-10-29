@@ -554,7 +554,7 @@ Checklist (over a day):
   tables; input dedupe and takeover; heartbeats keeping a connection and
   silence ending it with short timeouts (`canvas-core::conn`); offline input,
   reconnect resync and the lost-keystroke report (`canvas-core::app`).
-- `copilot-canvas selftest --remote loopback`: the 28-step UI self-test with
+- `copilot-canvas selftest --remote loopback`: the 32-step UI self-test with
   the client on TCP.
 - `copilot-canvas selftest --remote faults` (or, after `cargo build --release`,
   `cargo test --release fault_injection -- --ignored --nocapture`): a TCP proxy
@@ -620,7 +620,16 @@ through the proxy:
   test hooks) with four busy tiles (`ui-echo` and the three streams), typing a
   key into `ui-echo` every 500 ms and checking each one: applied once, or not
   applied near a fault (blocked or unconfirmed), never doubled, never lost
-  while online.
+  while online. Before every key it checks that the echo tile has the
+  keyboard (the GUI's `tree`: focus, focused terminal, no dialog; the TUI's
+  hint line and the heavy outline of the focused tile). When it does not,
+  nothing is typed (the batch is counted as skipped, with the reason) and a
+  click on the tile's header gives it the keyboard back, so keys never reach
+  the canvas, where letters are shortcuts (`x` stops a terminal, `o` opens the
+  other client). Half-way the harness takes the keyboard away once on purpose
+  (Ctrl+]) and the next batch must notice. An echo terminal that ended is
+  started again and reported. The GUI runs with the other-client dry run, so
+  an `o` that slipped through would show up as a failure instead of a window.
 
 Every S seconds the proxy injects the next fault of a cycle: drop every
 connection; take the network down for 5 s; cut the next frame in half; delay

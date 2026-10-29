@@ -79,6 +79,7 @@ the connection dropped while waiting).
 | `WorktreeAdd { root, path, new_branch, base }` | `Done` | new worktree session |
 | `HasHistory { agent, id }` | `Flag` | can a Copilot session be forked |
 | `Fork { parent, child, name, cwd }` | `Done` | forked Copilot subsession |
+| `Transcript { agent, session, parent, agent_key, cwd, limit }` | `Transcript(Transcript)`: `entries` oldest first (prompt, answer, tool call with a few words of arguments and the start of its result or exit code, note), `truncated` (only the newest part was read), `running` (an unfinished turn or open tool call), `note`. `session` is the agent's own id; `agent_key` a subagent inside its history (Copilot `agentId`, Claude Code `Agent` call id); OpenCode children are their own `session` with `parent`. Bounded: the newest 2 MiB of a JSONL history, the newest 150 OpenCode messages by index (refused without OpenCode's indexes) | the transcript inspector, every 1.5 s while the conversation runs, else every 5 s (docs/AGENTS.md) |
 | `PrepareGroup { group }` | `Done` | group folder chosen, "Open AI docs / human outputs" |
 | `EnsureCatalog { folder }` | `Text` (path) | "Edit events…" |
 | `DoctorFolder` | `Text` (`<data>\factory`, created) | the automation doctor's group |
@@ -263,7 +264,8 @@ most 8 files and 4 MiB in all.
   in-process backend and against the service over loopback TCP (folder
   browsing, paths, text and tails, Git probe and worktree in a temporary
   repository, group folders, catalog and passive files, automations from the
-  sample `data.db` and toggling, fork of a synthetic Copilot history, backups,
+  sample `data.db` and toggling, fork of a synthetic Copilot history and its
+  transcript, backups,
   errors); both must give the same answers. It also checks that an unknown
   request leaves the connection usable, that calls fail once the service is
   gone, and that two clients editing one canvas through the service converge

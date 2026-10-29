@@ -15,7 +15,7 @@ locked), prints each check as it runs and ends with the table below;
 ## How the suite works
 
 - **Over the test hooks.** It starts `copilot-canvas-gui.exe --test-hooks
-  --size 170x46 --perf` and drives it like the 28-step self-test
+  --size 170x46 --perf` and drives it like the 32-step self-test
   (`docs/GUI.md` §3): keys, text, mouse and wheel at cell centres, the `screen`
   text, the `tree` (boxes with status, border and loop; tiles with images,
   tint and links; selection; notices), offscreen `png` captures whose pixels
@@ -27,11 +27,14 @@ locked), prints each check as it runs and ends with the table below;
   `inuse.<pid>.lock`) for every status: working, needs you (a pending
   permission), done · review, idle, stopped, failed, open elsewhere, a
   background subagent, a recurring `session.schedule_created` loop. OpenCode
-  and Claude Code look in empty folders (`XDG_DATA_HOME`, `CLAUDE_CONFIG_DIR`).
+  gets a synthetic database (`XDG_DATA_HOME`: a session with a working and a
+  finished task-tool child, for the inspector row); Claude Code looks in an
+  empty folder (`CLAUDE_CONFIG_DIR`).
 - **No agent, no model.** Terminals are PowerShell shells. The agent is a
-  stand-in Copilot CLI: `copilot-canvas.exe` copied as `copilot.exe` and run
-  with `COPILOT_CANVAS_FAKE_COPILOT=1` (`COPILOT_CANVAS_COPILOT` points the
-  canvas at it). It lists two MCP servers, answers `config --list`, and as a
+  stand-in Copilot CLI: `copilot-canvas.exe` copied as `copilot.exe` (and as
+  `opencode.exe` for the OpenCode boxes) and run with
+  `COPILOT_CANVAS_FAKE_COPILOT=1` (`COPILOT_CANVAS_COPILOT` and
+  `COPILOT_CANVAS_OPENCODE` point the canvas at it). It lists two MCP servers, answers `config --list`, and as a
   session prints the MCP servers it was told to turn off, a message of yours
   (for the tint), a reply, enables SGR mouse reports and echoes keys and
   clicks until Ctrl+D or Ctrl+C.
@@ -44,7 +47,7 @@ locked), prints each check as it runs and ends with the table below;
 
 ## The matrix
 
-`GUI check` is the parity suite's check; `also` lists the 28-step GUI
+`GUI check` is the parity suite's check; `also` lists the 32-step GUI
 self-test steps (`selftest --client gui`, also run with `--remote loopback`)
 and unit tests that cover the row.
 
@@ -59,7 +62,7 @@ and unit tests that cover the row.
 | 7 | Looping sessions: loopback arc with a moving dot, `↻ every`, sidebar ↻, pulsing ↻ | `loop_from_session_schedule`: `↻ every 15m`, an arc, sidebar ↻ | step "repeating automations get the animated loopback" (the dot moves between frames) | ✓ |
 | 8 | MCP picker with presets (Ctrl+S, ←/→, Del), per session and resume | `mcp_picker_preset_and_launch`: servers from the CLI, none selected, Ctrl+S saves preset “Parity none”, the launch passes `--disable-mcp-server` twice (the stand-in prints them), preset and per-session list saved | | ✓ |
 | 9 | Groups: select, `G`, move by title, resize ◢, nested, geometric membership, folder chips, launch defaults | `group_move_resize_chips`: folder chips, ◢ resize, move by title with its members | steps "right-drag rubber-band selection, then G groups", "a new group asks for its folder" | ✓ |
-| 10 | Sidebar tree, `/` filter, click flies to the box, group rows tile terminals | `sidebar_filter_click_and_group`: `/Loop` filters, a sidebar click selects the box and moves the canvas to it | step "sidebar click reveals and opens a session" | ✓ |
+| 10 | Sidebar tree, `/` filter, click flies to the box, group rows tile terminals | `sidebar_filter_click_and_group`: `/Loop` filters, a sidebar click selects the box and moves the canvas to it | step "sidebar click reveals and views a session" | ✓ |
 | 11 | Terminals: ConPTY, single or 4 tiles (`T`), survive client exit | `tiles_single_and_tiled` (`T` toggles), `detach_and_reattach` (a new GUI shows the shell's earlier output, then detaches cleanly) | steps "Enter opens a real native terminal", "tiled view", "detach", "reattach" | ✓ |
 | 12 | Wheel rules (mouse mode, PgUp/PgDn when mouse off, scrollback, Shift forces scrollback) | `wheel_scrollback_and_shift`: 120 lines, the wheel scrolls back, typing returns to the live screen | canvas-gui `input.rs` wheel notch tests; canvas-host wheel/click encoding tables | ✓ |
 | 13 | User-message tint (navy background, ▎ bar) | `user_message_tint_png`: the stand-in Copilot's message row is navy (30, 44, 70) in the PNG, the reply row is not | canvas-termview `user_message_rows` test | ✓ |
@@ -79,10 +82,14 @@ and unit tests that cover the row.
 | 27 | Copilot automations (`data.db`) and session schedules | `automation_boxes_and_session_loops`: three automation boxes; the session schedule loops | | ✓ |
 | 28 | Idle auto-stop, priority manager, upgrade with resume, protocol-mismatch tolerance, crash log | `crash_log_and_build_match`: no update prompt for a current service; a crash is written to `crash.log` and the sessions keep running (idle stop, priorities and upgrades are the service's, shared with the TUI) | `upgrade_probe` (manual), canvas-host tests | ✓ |
 | 29 | Keyboard map, F6 / Ctrl+] to leave a terminal, Q / Ctrl+Q quit dialog, `?` help | `help_f6_and_quit_dialog` | steps "Ctrl+] returns keyboard focus", "detach", "stop all and quit" | ✓ |
-| 30 | `--demo` mode | `demo_mode_canvas` | the whole 28-step self-test runs in `--demo` | ✓ |
+| 30 | `--demo` mode | `demo_mode_canvas` | the whole 32-step self-test runs in `--demo` | ✓ |
 | 31 | `--perf` overlay (GPU timings, round-trip time) | `perf_overlay_rtt`: frame timings and service round trips measured | `bench --client gui` | ✓ |
 | 32 | CLI (service, doctor, bench, events, emit, send, status, followup, automations) | `cli_unchanged` — **no front end:** the same CLI binary for both clients | existing CLI tests | ✓ |
-| 33 | **New:** remote mode (pair, reconnect, resync, offline input blocking) | `remote_loopback_gui_and_upload`: the GUI over loopback TCP; a dropped file is uploaded to the service's machine and its path pasted | `selftest --client gui --remote loopback` (28 steps over TCP); `selftest --remote faults` (the reconnect core both clients share) | ✓ |
+| 33 | **New:** remote mode (pair, reconnect, resync, offline input blocking) | `remote_loopback_gui_and_upload`: the GUI over loopback TCP; a dropped file is uploaded to the service's machine and its path pasted | `selftest --client gui --remote loopback` (32 steps over TCP); `selftest --remote faults` (the reconnect core both clients share) | ✓ |
+| 34 | **New:** view versus start: a click (canvas, sidebar) only views a box (its live terminal or its details panel); double-click, Enter, the panel's Start / Resume and menu items start it; group rows never launch | `view_vs_start`: a click on a stopped session shows its details with Resume and launches nothing (service log, no tile); a double-click, Enter and the Resume button each resume one (the stand-in Copilot); a group row shows running terminals and launches nothing | steps "a click views a stopped session without launching it", "a double-click on the box starts it", "the details panel's Start button starts a session"; canvas-core `interact` tests | ✓ |
+| 35 | **New:** transcript inspector for session and subagent boxes (live while they run); a finished child resumes as its own linked subsession, never beside a writer | `inspector_and_child_resume`: a Copilot session's transcript and a subagent's note; an OpenCode child (synthetic database) that works, whose inspector shows a new line written while it is open; with its parent running (stand-in OpenCode) a finished child offers no resume; parent stopped: **Resume as subsession** adds a linked box and the service resumes it with `-s <child>` | canvas-agents `transcript` tests (Copilot with subagent events, OpenCode with a child, Claude Code with a subagent file), canvas-core `inspect` tests (resume rules, a refused resume), `backend_contract` (local and remote answers match); `selftest agent --agent opencode --prompt` (inspect and resume a real child) | ✓ |
+| 36 | **New:** removing a multi-selection: right-click on a selected box (or Del) removes its eligible boxes after a confirmation; sessions running in a canvas terminal stay; history is never deleted; Ctrl+Z restores them | `multi_remove_keeps_running`: a 3-box selection (one running) → menu “Remove 2 from canvas” → the confirmation names the running one → two boxes gone, their history files kept → Ctrl+Z brings them back | canvas-core `remove` tests (eligibility, subagents go with their session, subsessions unlinked, undo) | ✓ |
+| 37 | **New:** a click on a group's empty background or its border selects the group (innermost; a few pixels outside the outline in the GUI); title drag, ◢ resize, folder chips, background pan and double-click are unchanged | `group_background_and_border_select`: an empty background spot and a point 0.2 cells outside the outline each select the group (its panel, nothing launched); a background drag pans; title drag and ◢ still move and resize; chips stay clickable; a double-click opens the new-session dialog | step "a click on a group's border selects the group" (heavy outline, its panel); canvas-core `interact` tests (both render modes, nested groups, gestures) | ✓ |
 
 No row is TUI-only: every feature of the TUI exists in the GUI. Row 32 is
 not a front-end feature.

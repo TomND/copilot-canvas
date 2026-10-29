@@ -61,6 +61,16 @@ pub enum Focus {
     Terminal,
 }
 
+/// What Ctrl+Z restores.
+#[derive(Clone, Debug)]
+pub enum Undo {
+    /// The canvas before a bulk change (a VS Code sync): label, document.
+    Doc(String, Box<Doc>),
+    /// Boxes removed together, and the subsession links (child, parent)
+    /// their removal cut.
+    Removed { nodes: Vec<Node>, links: Vec<(String, String)> },
+}
+
 pub use canvas_termview::{TermSelection, TermView, user_message_rows};
 
 pub struct Notice {
@@ -73,7 +83,9 @@ pub enum Drag {
     Nodes { ids: Vec<String>, start: (u16, u16), applied: (i32, i32), moved: bool, click: Option<String> },
     Group { id: String, start: (u16, u16), applied: (i32, i32), moved: bool },
     Resize { id: String, start: (u16, u16), orig: (i32, i32) },
-    Pan { last: (u16, u16), moved: bool },
+    /// Panning; `group`: pressed on a group's background or border (a click
+    /// without moving selects that group).
+    Pan { last: (u16, u16), moved: bool, group: Option<String> },
     Rubber { start: (u16, u16), now: (u16, u16), additive: bool, right: bool },
     SidebarDivider,
     TermDivider,
@@ -122,7 +134,8 @@ pub enum CanvasHit {
     Node(String),
     GroupTitle(String),
     GroupResize(String),
-    GroupBody,
+    /// A group's empty interior or its border (the innermost group there).
+    GroupBody(String),
     Empty,
 }
 
@@ -131,6 +144,9 @@ pub const ZOOMS: [(i32, i32); 3] = [(1, 1), (1, 2), (1, 4)];
 /// Gpu mode: the continuous canvas scale's range (cells per world unit).
 pub const MIN_SCALE: f32 = 1.0 / 16.0;
 pub const MAX_SCALE: f32 = 2.0;
+/// Gpu mode: how far outside a group's outline a click still hits its
+/// border (cells across, rows down: about 4 px at 100 % DPI).
+const BORDER_SLACK: (f32, f32) = (0.45, 0.25);
 /// Gpu mode: denominator of the rational scale `scale()` reports.
 const SCALE_DEN: i32 = 1024;
 
@@ -153,8 +169,8 @@ pub struct App {
     pub demo: bool,
     pub perf: Option<Perf>,
     pub term_select: Option<TermSelection>,
-    /// Canvas before the last bulk change (VS Code sync), for Ctrl+Z.
-    pub undo: Option<(String, Box<Doc>)>,
+    /// What Ctrl+Z restores (the last VS Code sync or the last removal).
+    pub undo: Option<Undo>,
     /// While wheel/trackpad panning, the dot grid is hidden until this time.
     pub pan_quiet_until: Option<Instant>,
     /// Ctrl+L: repaint every cell on the next frame.
@@ -223,6 +239,8 @@ pub struct App {
     pub side_filter_active: bool,
     pub layout: Layout,
     pub last_click: Option<(Instant, u16, u16)>,
+    /// The last sidebar row clicked (a second click on it soon after starts it).
+    pub last_side_click: Option<(Instant, usize)>,
     pub app_tx: Sender<AppEvent>,
     pub quit: bool,
     pub tick: usize,
@@ -279,6 +297,9 @@ pub struct App {
     pub installed_agents: Vec<AgentKind>,
     /// New subsessions that fork their parent natively: node → parent's agent session.
     pub pending_forks: HashMap<String, String>,
+    /// New subsession boxes that resume a subagent's own conversation and
+    /// have not run yet (a refused launch removes them again).
+    pub resumed_children: HashSet<String>,
     pub automations: Vec<crate::automation::Automation>,
     pub automations_loading: bool,
     pub automations_at: Instant,
@@ -379,6 +400,7 @@ impl App {
             side_filter_active: false,
             layout: Layout::default(),
             last_click: None,
+            last_side_click: None,
             app_tx,
             quit: false,
             tick: 0,
@@ -412,6 +434,7 @@ impl App {
             detected_agent,
             installed_agents,
             pending_forks: HashMap::new(),
+            resumed_children: HashSet::new(),
             automations: Vec::new(),
             automations_loading: false,
             automations_at: Instant::now() - Duration::from_secs(60),
@@ -554,6 +577,11 @@ impl App {
     fn after_remote_change(&mut self) {
         self.selection.retain(|id| self.doc.node(id).is_some());
         self.selected_group = self.selected_group.take().filter(|g| self.doc.group(g).is_some());
+        if let Some(crate::side::RightDetail::Session(id)) = &self.right_detail
+            && self.doc.node(id).is_none()
+        {
+            self.right_detail = None;
+        }
         self.needs_draw = true;
     }
 
@@ -806,8 +834,9 @@ impl App {
             if sy == y && sx >= x && sx < x + w {
                 return CanvasHit::GroupTitle(group.id.clone());
             }
+            // The interior and the border cells (the outline is drawn inside the rect).
             if inside(x, y, w, h) {
-                return CanvasHit::GroupBody;
+                return CanvasHit::GroupBody(group.id.clone());
             }
         }
         CanvasHit::Empty
@@ -835,6 +864,8 @@ impl App {
         groups.sort_by_key(|g| std::cmp::Reverse((g.w as i64) * (g.h as i64)));
         let row = 1f32.max(0.8 / s);
         let corner = 2f32.max(1.6 / s);
+        // The border is easy to hit: a few pixels outside the outline count too.
+        let (edge_x, edge_y) = (BORDER_SLACK.0 / s, BORDER_SLACK.1 / s);
         for group in groups.into_iter().rev() {
             let (x0, y0, x1, y1) = (group.x as f32, group.y as f32, (group.x + group.w) as f32, (group.y + group.h) as f32);
             if wx >= x1 - corner && wx < x1 && wy >= y1 - row && wy < y1 {
@@ -843,8 +874,8 @@ impl App {
             if wy >= y0 && wy < y0 + row && wx >= x0 && wx < x1 {
                 return CanvasHit::GroupTitle(group.id.clone());
             }
-            if inside(group.rect()) {
-                return CanvasHit::GroupBody;
+            if wx >= x0 - edge_x && wx < x1 + edge_x && wy >= y0 - edge_y && wy < y1 + edge_y {
+                return CanvasHit::GroupBody(group.id.clone());
             }
         }
         CanvasHit::Empty
@@ -1187,6 +1218,10 @@ impl App {
     pub fn select_group(&mut self, id: &str) {
         self.selection.clear();
         self.selected_group = Some(id.to_owned());
+        // The group's own panel replaces a box's details (a list view's item stays).
+        if !matches!(self.right_detail, Some(crate::side::RightDetail::Item(_))) {
+            self.right_detail = None;
+        }
         if let Some(index) = self.side_rows.iter().position(|r| r.kind == SideKind::Group(id.to_owned())) {
             self.side_sel = index;
         }
@@ -1380,8 +1415,15 @@ impl App {
                 return Vec::new();
             }
             let selected_session = self.selection.last().and_then(|id| self.session_of(id));
+            // A selected session shows its terminal while it runs (or starts);
+            // a finished one only while you are still in it, else its details.
+            let shown = |id: &String| {
+                self.owned_alive(id)
+                    || self.launching.contains_key(id)
+                    || (self.terms.contains_key(id) && self.focus == Focus::Terminal && self.focused_term.as_ref() == Some(id))
+            };
             let id = match selected_session {
-                Some(session) if self.terms.contains_key(&session) => Some(session),
+                Some(session) if shown(&session) => Some(session),
                 Some(_) => None,
                 None => self.focused_term.clone().filter(|id| self.terms.contains_key(id)),
             };
@@ -1400,35 +1442,7 @@ impl App {
 
     // ---------- launching ----------
 
-    pub fn open_node(&mut self, id: &str) {
-        let Some(session) = self.session_of(id) else {
-            // Automation boxes have no terminal; selecting shows their details.
-            self.select_node(id, false);
-            return;
-        };
-        self.select_node(id, false);
-        if self.owned_alive(&session) {
-            self.show_terminal(&session);
-            self.set_focus(Focus::Terminal);
-            return;
-        }
-        // A passive session opens its panel; its chat starts only on request.
-        if self.doc.node(&session).is_some_and(|n| n.passive.is_some()) {
-            self.right_detail = Some(crate::side::RightDetail::Passive(session));
-            self.needs_draw = true;
-            return;
-        }
-        if self.preparing.contains(&session) {
-            self.notify("This session's worktree is still being created.", false);
-            return;
-        }
-        if self.doc.node(&session).and_then(|n| self.summary(n)).is_some_and(|s| s.live) {
-            self.notify("This session is open in another terminal (CLI or VS Code). Copilot Canvas never starts a second copy.", true);
-            return;
-        }
-        self.launch(&session);
-    }
-
+    /// Starts a session box's terminal (see `interact.rs` for what may call it).
     pub fn launch(&mut self, id: &str) {
         let Some(node) = self.doc.node(id).cloned() else { return };
         let cwd = node
@@ -1474,7 +1488,7 @@ impl App {
         let members = self.doc.members(id);
         let running: Vec<String> = members.iter().filter(|m| self.owned_alive(m)).cloned().collect();
         if running.is_empty() {
-            self.notify("No sessions in this group are running here. Click a session to open it.", false);
+            self.notify("No sessions in this group are running here. Double-click a session (or press Enter) to start it.", false);
             return;
         }
         if running.len() > 1 {
@@ -1575,11 +1589,14 @@ impl App {
             }
             ServiceMsg::Clipboard(text) => self.copy_to_clipboard(&text),
             ServiceMsg::Error { id, message } => {
-                if let Some(id) = id {
-                    self.launching.remove(&id);
-                    self.node_errors.insert(id, "launch failed".into());
+                if let Some(id) = &id {
+                    self.launching.remove(id);
+                    self.node_errors.insert(id.clone(), "launch failed".into());
                 }
-                self.notify(message, true);
+                // A resumed child that may not start goes again (with its own notice).
+                if !id.is_some_and(|id| self.launch_refused(&id, &message)) {
+                    self.notify(message, true);
+                }
             }
             ServiceMsg::Stats(stats) => self.stats = Some(stats),
             ServiceMsg::Subsession { parent, child, name, cwd } => self.link_subsession(&parent, &child, &name, &cwd),
@@ -1815,7 +1832,7 @@ impl App {
             self.stop_terminal(id, false);
         }
         if !idle.is_empty() {
-            self.notify(format!("Stopped {} session(s) idle for {minutes}+ min to free memory; click one to resume it.", idle.len()), false);
+            self.notify(format!("Stopped {} session(s) idle for {minutes}+ min to free memory; double-click one to resume it.", idle.len()), false);
         }
     }
 
@@ -1934,6 +1951,7 @@ impl App {
         }
         self.poll_git_debounce();
         self.tick_side();
+        self.tick_inspector();
         // Failed automations pulse until their next good run.
         let animated = self.doc.nodes.iter().any(|n| {
             let status = self.node_status(n);

@@ -227,6 +227,12 @@ pub trait Ui {
         self.send(format!("\x1b[<0;{};{}m", x + 1, y + 1).as_bytes())
     }
 
+    /// Two clicks at one cell, sent together (the explicit start of a box or row).
+    fn double_click(&mut self, x: u16, y: u16) -> Result<()> {
+        let (down, up) = (format!("\x1b[<0;{};{}M", x + 1, y + 1), format!("\x1b[<0;{};{}m", x + 1, y + 1));
+        self.send(format!("{down}{up}{down}{up}").as_bytes())
+    }
+
     fn drag(&mut self, button: u8, from: (u16, u16), to: (u16, u16)) -> Result<()> {
         self.send(format!("\x1b[<{button};{};{}M", from.0 + 1, from.1 + 1).as_bytes())?;
         let steps = 4;
@@ -836,7 +842,10 @@ fn agent_scenario(instance: &Instance, work: &Path, kind: AgentKind, env: &[(&st
         std::thread::sleep(Duration::from_millis(100));
     }
     if let Some((x, y)) = ui.find_in("↗", SIDEBAR.0, SIDEBAR.1) {
+        // A click only shows it; the explicit start (double-click) is refused.
         ui.click(x + 2, y)?;
+        ui.wait("its details panel", Duration::from_secs(5), |t| t.contains("open elsewhere") && !t.contains("▸ Resume"))?;
+        ui.double_click(x + 2, y)?;
         ui.wait("refusal notice", Duration::from_secs(5), |t| t.contains("never starts a second copy"))?;
     } else {
         println!("    (no session is currently open elsewhere; skipped)");
@@ -1552,7 +1561,7 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     ui.wait("tiled", Duration::from_secs(5), |t| t.contains("Tiled") && t.contains("CANVAS_TERMINAL_OK") && t.contains("Spawned session · "))?;
     ui.screenshot("tiled")?;
 
-    step("sidebar click reveals and opens a session");
+    step("sidebar click reveals and views a session (its live terminal gets the keyboard)");
     let (rx, ry) = ui.locate("Renamed by selftest", SIDEBAR)?;
     ui.click(rx, ry)?;
     ui.wait("focus on terminal", Duration::from_secs(5), |t| t.contains("Typing goes to the terminal"))?;
@@ -1755,6 +1764,9 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     let branches = std::process::Command::new("git").arg("-C").arg(&expected).args(["branch", "--show-current"]).output()?;
     anyhow::ensure!(String::from_utf8_lossy(&branches.stdout).trim() == "worktree-session", "worktree is on the new branch");
 
+    view_and_start_steps(&mut ui, instance)?;
+    group_click_steps(&mut ui)?;
+
     step("stop all and quit");
     ui.send(b"\x1d")?;
     ui.send(b"q")?;
@@ -1769,6 +1781,78 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
         started.elapsed().as_secs_f64(),
         startup.as_millis()
     );
+    Ok(())
+}
+
+/// Viewing never starts a session; double-click, Enter and the details
+/// panel's Start button do (the demo's two sessions nobody started yet).
+fn view_and_start_steps<U: Ui>(ui: &mut U, instance: &Instance) -> Result<()> {
+    let launched = |id: &str| std::fs::read_to_string(instance.log_path()).unwrap_or_default().contains(&format!("launched {id} "));
+    step("a click views a stopped session without launching it (details panel with Start)");
+    ui.send(b"\x1d")?;
+    ui.wait("canvas focus", Duration::from_secs(5), |t| t.contains("empty-drag pan"))?;
+    let (rx, ry) = ui.locate("Review implementation", SIDEBAR)?;
+    ui.click(rx, ry)?;
+    ui.wait("its details panel", Duration::from_secs(5), |t| t.contains("▸ Start") && t.contains("Double-click the box"))?;
+    let (bx, by) = ui.locate("Review implementation", CANVAS)?;
+    ui.click(bx + 1, by + 1)?;
+    std::thread::sleep(Duration::from_millis(800));
+    anyhow::ensure!(!launched("demo-review"), "a click launched the session");
+    anyhow::ensure!(ui.text().contains("▸ Start"), "the details panel stays after a click on the box\n{}", ui.text());
+
+    step("a double-click on the box starts it and its terminal gets the keyboard");
+    ui.double_click(bx + 1, by + 1)?;
+    ui.wait("its shell", Duration::from_secs(20), |t| t.contains("Review implementation · ") && t.contains("PS ") && t.contains("Typing goes to the terminal"))?;
+    anyhow::ensure!(launched("demo-review"), "the double-click launched it");
+
+    step("the details panel's Start button starts a session");
+    ui.send(b"\x1d")?;
+    let (wx, wy) = ui.locate("Write tests", SIDEBAR)?;
+    ui.click(wx, wy)?;
+    ui.wait("its details panel", Duration::from_secs(5), |t| t.contains("Write tests") && t.contains("▸ Start"))?;
+    std::thread::sleep(Duration::from_millis(500));
+    anyhow::ensure!(!launched("demo-sub"), "a sidebar click launched the session");
+    let (sx, sy) = ui.locate("▸ Start", (CANVAS.1, 170))?;
+    ui.click(sx + 1, sy)?;
+    ui.wait("its shell", Duration::from_secs(20), |t| t.contains("Write tests · ") && t.contains("PS "))?;
+    anyhow::ensure!(launched("demo-sub"), "Start launched it");
+    Ok(())
+}
+
+/// A click on a group's border selects the group (its panel, a heavy outline).
+fn group_click_steps<U: Ui>(ui: &mut U) -> Result<()> {
+    step("a click on a group's border selects the group");
+    ui.send(b"\x1d")?;
+    ui.wait("canvas focus", Duration::from_secs(5), |t| t.contains("empty-drag pan"))?;
+    // The sidebar's group row flies to it (and tiles its running terminals);
+    // back to the single view, where a selected group shows its panel.
+    let (gx, gy) = ui.locate("Canvas project", SIDEBAR)?;
+    ui.click(gx + 1, gy)?;
+    ui.send(b"\x1b")?;
+    if ui.text().contains("▦ Tiled") {
+        ui.send(b"t")?;
+    }
+    ui.wait("no group selected", Duration::from_secs(5), |t| !t.contains("Del: delete group") && t.contains("▢ Single"))?;
+    // The title is drawn two cells right of the group's left edge (" ▣ name").
+    let (tx, ty) = ui.locate("▣ Canvas project", CANVAS)?;
+    let (bx, by) = (tx.saturating_sub(3), ty + 2);
+    ui.click(bx, by)?;
+    ui.wait("the group's panel", Duration::from_secs(5), |t| t.contains("Del: delete group") && t.contains("Canvas project"))?;
+    let at_column = |line: &str, column: usize| {
+        let mut x = 0;
+        line.chars().find(|c| {
+            let here = x == column;
+            x += crate::client::paint::text_width(&c.to_string());
+            here
+        })
+    };
+    let corner = ui.text().lines().nth(ty as usize).and_then(|l| at_column(l, bx as usize));
+    anyhow::ensure!(corner == Some('┏'), "a selected group has a heavy outline, found {corner:?} at ({bx}, {ty})\n{}", ui.text());
+    ui.send(b"\x1b")?;
+    // Back in a terminal, as the steps before left it.
+    let (rx, ry) = ui.locate("Renamed by selftest", SIDEBAR)?;
+    ui.click(rx, ry)?;
+    ui.wait("terminal focus", Duration::from_secs(5), |t| t.contains("Typing goes to the terminal"))?;
     Ok(())
 }
 
@@ -2789,6 +2873,8 @@ mod passive_probe {
 
     use anyhow::Context;
 
+    use super::Ui;
+
     /// Manual (real Copilot, ~2 premium requests, sandboxed):
     /// `cargo test --release passive_probe -- --ignored --nocapture`.
     /// A passive session made in the UI runs on an emitted event, reports a
@@ -2855,7 +2941,7 @@ mod passive_probe {
 
             println!("2. open the active session (it receives messages when idle)");
             let (ax, ay) = ui.locate("Active probe", super::CANVAS)?;
-            ui.click(ax, ay)?;
+            ui.double_click(ax, ay)?;
             ui.wait("active session ready", Duration::from_secs(120), |t| t.contains("/ commands"))?;
             ui.send(b"\x1d")?;
             std::thread::sleep(Duration::from_secs(3));

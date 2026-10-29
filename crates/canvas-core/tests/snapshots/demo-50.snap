@@ -5,12 +5,12 @@
 ▌▤  / filter…                    │ ╎■ Build sessio…  ■ Review imple… ╎                ││ Build session canvas                                        │
                                  │ ╎stopped          stopped        ·╎ ·  ·  ·  ·  ·  ││ ■ stopped                                                   │
  ◷  ▾ ▣ Canvas project         3 │ ╎  ───              ┊             ╎                ││                                                             │
-      ■ Build session canvas     │ ╎  ✓ Explore t…·  · ┊·  ·  ·  ·  ·╎ ·  ·  ·  ·  ·  ││ Folder   C:\work\canvas                                     │
- ⧉      ◇ ✓ Explore terminal AP… │ ╎                 ■ Write tests   ╎                ││                                                             │
-      ■ Review implementation    │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌stopped        ╌◢ ·  ·  ·  ·  ·  ││ Enter or click the box to open its terminal.                │
- ⌁      ↳ ■ Write tests          │                                                    ││ S: subsession · R: rename · G: group · X: stop              │
-                                 │ ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ││                                                             │
- ✦                               │                                                    ││                                                             │
+      ■ Build session canvas     │ ╎  ✓ Explore t…·  · ┊·  ·  ·  ·  ·╎ ·  ·  ·  ·  ·  ││ Agent      none (runs its command)                          │
+ ⧉      ◇ ✓ Explore terminal AP… │ ╎                 ■ Write tests   ╎                ││ Folder     C:\work\canvas                                   │
+      ■ Review implementation    │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌stopped        ╌◢ ·  ·  ·  ·  ·  ││                                                             │
+ ⌁      ↳ ■ Write tests          │                                                    ││ Start runs its command in a new canvas terminal.            │
+                                 │ ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ││ Double-click the box or press Enter to start it.            │
+ ✦                               │                                                    ││ S subsession · R rename · G group · X stop                  │
                                  │ ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ││                                                             │
  ◈                               │                                                    ││                                                             │
                                  │ ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ││                                                             │
@@ -37,9 +37,9 @@
                                  │                                                    ││                                                             │
                                  │ ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ││                                                             │
                                  │                                                    ││                                                             │
-                                 │ ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ││                                                             │
+                                 │ ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ││  ▸ Start    Remove    Close                                 │
                                  │                                                    │└─────────────────────────────────────────────────────────────┘
- drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom · right-click menu · ? help
+ click view · double-click/Enter start · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom · right-click menu · ? he…
 ## gpu view model
 view cursor=none modal=none banner=None
 canvas area=34,1 52x38 origin=-2,-1 scale=0.5 grid=true tick=0 empty=false
