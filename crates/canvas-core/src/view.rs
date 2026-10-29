@@ -241,12 +241,16 @@ pub struct LoopModel {
     /// (it fades out), on the animation clock (ms); `None`: steady.
     pub changed_ms: Option<u64>,
     pub ending: bool,
+    /// Offsets this loop's lap from its neighbours' (`crate::loops::seed`;
+    /// 0 while the `freeze` hook holds animations, so screenshots do not
+    /// depend on box ids).
+    pub seed: u32,
 }
 
 impl LoopModel {
     /// The lap fraction (0..1) of the dot at `clock_ms`.
     pub fn lap_at(&self, clock_ms: u64) -> f32 {
-        crate::loops::lap(clock_ms, crate::loops::seed(&self.id))
+        crate::loops::lap(clock_ms, self.seed)
     }
 
     /// How much of the arc shows at `clock_ms` (0..1).

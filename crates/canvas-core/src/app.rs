@@ -120,6 +120,10 @@ pub enum SideKind {
     Section,
     /// A group's folders (its menu opens them).
     Folder(String),
+    /// The RECENT section's header (a click folds it).
+    RecentHeader,
+    /// A recently used session in the RECENT section.
+    Recent(String),
 }
 
 #[derive(Clone, Debug)]
@@ -322,6 +326,8 @@ pub struct App {
     pub settings_group: Option<String>,
     /// Dust, stacks, hidden subsessions and effects (`visual.rs`).
     pub visual: crate::visual::VisualState,
+    /// Recently used sessions: the walk and the RECENT rows (`recent.rs`).
+    pub recent: crate::recent::RecentState,
 }
 
 impl App {
@@ -454,6 +460,7 @@ impl App {
             auto_synced: false,
             settings_group: None,
             visual: Default::default(),
+            recent: Default::default(),
             instance: None,
             new_service_rx: None,
             restarting: None,
@@ -626,6 +633,14 @@ impl App {
         }
         if let ClientMsg::Input { id, .. } | ClientMsg::Wheel { id, .. } = &message {
             self.last_input_at.insert(id.clone(), Instant::now());
+        }
+        // Typing into a session counts as using it (the RECENT list).
+        let typed = match &message {
+            ClientMsg::Input { id, input } if !matches!(input, Input::Focus(_)) => Some(id.clone()),
+            _ => None,
+        };
+        if let Some(id) = typed {
+            self.note_access(&id);
         }
         match self.conn.tx.try_send(message) {
             Ok(()) => {}
@@ -1212,6 +1227,8 @@ impl App {
         if let Some(session) = self.session_of(id) {
             if !additive {
                 self.mark_reviewed(&session);
+                // Viewing it counts as using it (the RECENT list).
+                self.note_access(&session);
             }
             if self.terms.contains_key(&session) {
                 self.focused_term = Some(session);
@@ -1316,7 +1333,7 @@ impl App {
             automation: None,
             synced_name: None,
             reviewed_ms: None,
-            mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, stacked: false,
+            mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
         });
         self.mark_dirty();
         self.notify(format!("“{}” started subsession “{name}”.", p.name), false);
@@ -1387,6 +1404,7 @@ impl App {
     /// Shows a terminal, keeping tile positions stable.
     pub fn show_terminal(&mut self, id: &str) {
         self.mark_reviewed(id);
+        self.note_access(id);
         self.right_detail = None;
         self.focused_term = Some(id.to_owned());
         self.doc.touch_tile(id);
@@ -1693,7 +1711,7 @@ impl App {
                     command: None,
                     fresh: false,
                     automation: None,
-                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, stacked: false,
+                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
                 };
                 let rect = node.rect();
                 index.insert(rect);
@@ -1785,7 +1803,7 @@ impl App {
                     command: None,
                     fresh: false,
                     automation: None,
-                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None, last_used_ms: None, stacked: false,
+                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
                 };
                 first.get_or_insert_with(|| node.id.clone());
                 ids.push(node.id.clone());
@@ -1967,6 +1985,7 @@ impl App {
         self.poll_git_debounce();
         self.tick_side();
         self.tick_inspector();
+        self.tick_recent();
         self.visual_tick();
         // Failed automations pulse until their next good run. Loop dots: the
         // TUI redraws when a visible one moves to another cell; the GPU

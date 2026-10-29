@@ -399,7 +399,7 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
         }
         // Outside the active terminal's halo, which runs one cell around the box.
         let halo = zoom < 2 && active_term.as_deref() == Some(node.id.as_str());
-        let lap = moving.then(|| crate::loops::lap(clock, crate::loops::seed(&node.id)));
+        let lap = moving.then(|| crate::loops::lap(clock, app.loop_seed(&node.id)));
         draw_loop(buf, (x, y, w + halo as i32, h), lap, clip);
     }
 
@@ -799,9 +799,9 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
             match (b.every.is_some(), app.loop_change(&node.id)) {
                 (true, change) => {
                     let changed_ms = change.filter(|(_, ended)| !ended).map(|(at, _)| at);
-                    model.loops.push(LoopModel { id: node.id.clone(), rect, halo, changed_ms, ending: false });
+                    model.loops.push(LoopModel { id: node.id.clone(), rect, halo, changed_ms, ending: false, seed: app.loop_seed(&node.id) });
                 }
-                (false, Some((at, true))) => model.loops.push(LoopModel { id: node.id.clone(), rect, halo, changed_ms: Some(at), ending: true }),
+                (false, Some((at, true))) => model.loops.push(LoopModel { id: node.id.clone(), rect, halo, changed_ms: Some(at), ending: true, seed: app.loop_seed(&node.id) }),
                 (false, _) => {}
             }
         }

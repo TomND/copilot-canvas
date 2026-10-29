@@ -766,7 +766,7 @@ mod tests {
             groups: Vec::new(),
             edges: Vec::new(),
             boxes: Vec::new(),
-            loops: vec![LoopModel { id: "s".into(), rect: WRect::new(2.0, 2.0, 30.0, 4.0), halo: false, changed_ms: None, ending: false }],
+            loops: vec![LoopModel { id: "s".into(), rect: WRect::new(2.0, 2.0, 30.0, 4.0), halo: false, changed_ms: None, ending: false, seed: loops::seed("s") }],
             pulses: Vec::new(),
             halo: None,
             rubber: None,

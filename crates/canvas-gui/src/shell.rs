@@ -1434,6 +1434,7 @@ impl Win {
                 || app.dirty_at.is_some()
                 || app.drag.is_some()
                 || app.visual.animating()
+                || app.recent_pending()
                 || app.reconnecting
                 || app.restarting.is_some()
                 || self.preview.is_some();

@@ -921,7 +921,7 @@ impl App {
             command: Some(command),
             fresh: true,
             automation: None,
-            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, stacked: false,
+            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
         });
         self.select_node(&id, false);
         self.launch(&id);
@@ -1184,7 +1184,7 @@ impl App {
                 command: None,
                 fresh: false,
                 automation: Some(key),
-                synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, stacked: false,
+                synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
             });
         }
     }
@@ -1480,7 +1480,7 @@ impl App {
             fresh: false,
             automation: None,
             synced_name,
-            reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None, last_used_ms: None, stacked: false,
+            reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
         });
     }
 

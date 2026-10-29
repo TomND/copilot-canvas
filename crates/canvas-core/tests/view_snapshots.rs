@@ -66,7 +66,7 @@ fn node(id: &str, name: &str, x: i32, y: i32) -> Node {
         passive: None,
         no_messages: false,
         agent: None,
-        agent_session: None, last_used_ms: None, stacked: false,
+        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
     }
 }
 
@@ -375,6 +375,22 @@ fn sidebar_filter() {
     app.side_filter = TextInput::new("rev");
     app.side_filter_active = true;
     check("sidebar-filter", &mut app, BOTH);
+}
+
+/// The Sessions panel's RECENT section above the tree: the sessions used
+/// last (newest first) with status, agent and age; the walk keys in its
+/// header; the selected one highlighted.
+#[test]
+fn sidebar_recent_sessions() {
+    let mut doc = canvas_core::demo::demo_doc(CWD);
+    for (id, minutes) in [("demo-review", 2), ("demo-main", 30), ("demo-sub", 180)] {
+        doc.node_mut(id).unwrap().accessed_ms = Some(NOW - minutes * 60_000);
+    }
+    let mut app = app(doc, true);
+    app.visual.clock_ms = Some(NOW);
+    app.selection = vec!["demo-main".into()];
+    app.focus = Focus::Sidebar;
+    check("sidebar-recent", &mut app, BOTH);
 }
 
 /// Two live terminals tiled, with known rows (colours, a wide character),

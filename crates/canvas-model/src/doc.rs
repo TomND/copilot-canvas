@@ -80,6 +80,10 @@ pub struct Node {
     /// (looking at it does not count). Unused sessions are drawn dusty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_used_ms: Option<u64>,
+    /// When you last viewed, started or typed into this session (the
+    /// Sessions panel's RECENT list; every window and client shares it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accessed_ms: Option<u64>,
     /// Its subsessions (recursively) are drawn as a deck beneath it. They keep
     /// their own positions (which move with it), so unstacking restores them.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -909,7 +913,7 @@ pub fn demo_doc(cwd: &str) -> Doc {
         passive: None,
         no_messages: false,
         agent: None,
-        agent_session: None, last_used_ms: None, stacked: false,
+        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
     };
     let mut doc = Doc::default();
     doc.nodes.push(session("demo-main", "Build session canvas", 2, 2));
@@ -964,7 +968,7 @@ pub fn migrate_v1(path: &Path) -> Option<Doc> {
             command: None,
             fresh: false,
             automation: None,
-            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, stacked: false,
+            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
         });
     }
     // The prototype stacked boxes 7 rows apart; v2 boxes are 4 tall, so keep positions.
@@ -978,7 +982,7 @@ mod tests {
     use super::*;
 
     fn session(id: &str, x: i32, y: i32) -> Node {
-        Node { id: id.into(), kind: NodeKind::Session, name: id.into(), x, y, cwd: None, parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, stacked: false }
+        Node { id: id.into(), kind: NodeKind::Session, name: id.into(), x, y, cwd: None, parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false }
     }
 
     fn agent(id: &str, parent: &str, x: i32, y: i32) -> Node {

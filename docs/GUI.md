@@ -276,7 +276,8 @@ and size.
   instead of waiting for the 15 s automation refresh). *Reduced motion* and
   *off*: no dot; the arc, its lit arrowhead and a ↻ badge on its far side
   stand still, and loops switch at once. The `freeze` hook holds the clock
-  at tick × 80 ms (golden screenshots show the comet mid-lap).
+  at tick × 80 ms with no offsets per box (golden screenshots show every
+  comet at the same place mid-lap, whatever the boxes' ids).
 
 **Fonts (`text.rs`).** Only the needed font files are loaded (Cascadia Mono,
 Consolas, Segoe UI and Symbol, Segoe UI Emoji, Microsoft YaHei, Yu Gothic,
@@ -393,6 +394,7 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
 | Pan | drag empty canvas or middle-drag, pixel-smooth; wheel / Shift+wheel; Ctrl+arrows |
 | Move | drag a box (its subagents follow) or a group title, pixel-smooth; the document stores whole units |
 | View / start | a click (canvas or sidebar) only views a box: its live terminal, else its details panel; a double-click, Enter, the panel's **▸ Start** / **▸ Resume** or the box menu starts it. An exited terminal stays on screen while it has the focus |
+| Recent sessions | the sidebar's **RECENT** rows (newest first; a click views, a double-click starts; the header folds them); **Ctrl+F6** / **Ctrl+Shift+F6** anywhere (a terminal too) and `]` / `[` on the canvas or sidebar view the next older or newer one without starting it; the list reorders a second after the last step |
 | Select a group | click its empty background (a drag there still pans) or its outline, up to about half a cell outside it (`BORDER_SLACK`); the innermost group wins; the selected group is drawn heavier |
 | Inspect | the box menu's or details panel's **Inspect transcript**: a read-only modal (wheel scrolls, Copy, Close); a finished OpenCode child offers **Resume as subsession** there |
 | Remove | right-click on a selected box (or Del) with several selected: "Remove N from canvas" after a confirmation; running sessions stay; Ctrl+Z restores |
@@ -439,7 +441,7 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   `UPDATE_SNAPSHOTS=1 cargo test -p canvas-core --test view_snapshots`
   accepts the new texts.
 - `copilot-canvas selftest --client gui [--remote loopback]` runs the TUI
-  self-test's 32 steps against the GUI in a 170 × 46 cell window. A `Ui`
+  self-test's 33 steps against the GUI in a 170 × 46 cell window. A `Ui`
   trait has two drivers: the TUI's hidden pseudoconsole and `GuiDriver`,
   which starts `copilot-canvas-gui.exe --test-hooks --size 170x46` and turns
   the terminal input the scenario sends (keys, Alt+digits, Ctrl+letters, SGR

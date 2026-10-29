@@ -319,7 +319,7 @@ impl App {
             no_messages: false,
             // Passive sessions (the automation doctor too) run the canvas's default agent.
             agent: Some(self.default_agent().id().to_owned()),
-            agent_session: None, last_used_ms: None, stacked: false,
+            agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
         });
         self.mark_dirty();
         self.select_node(&id, false);

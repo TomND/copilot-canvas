@@ -462,6 +462,62 @@ fn loop_dot_steps(gui: &mut Gui, id: &str) -> Result<String> {
     Ok(format!("dot at the clock's place in {matched}/5 captures, steps {} px; {all} frames in 2 s in view ({in_view} of the loop layer alone, every {interval} ms), {away} away; reduced motion: still arc, {reduced} frames", steps.join(" ")))
 }
 
+/// Row 38: three sessions viewed in turn are listed newest first under
+/// RECENT and saved in the canvas document every window shares; Ctrl+F6
+/// views the one used before, again the one before that, Ctrl+Shift+F6 goes
+/// back, `]` and `[` do the same on the canvas, each showing the session
+/// (details panel) and starting nothing (no launch in the service log, no
+/// new terminal); a second after a walk the session it reached is first.
+fn recent_check(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
+    use crate::selftest::recent_names;
+    gui.canvas_focus()?;
+    gui.chord('f', &[])?;
+    let log = || std::fs::read_to_string(sb.instance.log_path()).unwrap_or_default();
+    let launches = log().matches("launched ").count();
+    let selected = |t: &Value, id: &str| t["selection"].as_array().is_some_and(|s| s.len() == 1 && s[0] == id);
+    let mut ids = Vec::new();
+    for name in ["Idle one", "Review me", "Needs you one"] {
+        let (found, _) = gui.find_box(name)?;
+        let id = found["id"].as_str().unwrap_or_default().to_owned();
+        gui.click(gui.box_center(name)?, &[])?;
+        gui.wait_tree(&format!("{name} viewed"), 5, |t| selected(t, &id))?;
+        ids.push(id);
+    }
+    let first = |t: &str, name: &str| recent_names(t).first().is_some_and(|n| name.starts_with(n.as_str()));
+    gui.wait("RECENT, newest first", 5, |t| {
+        let r = recent_names(t);
+        r.len() >= 3 && "Needs you one".starts_with(r[0].as_str()) && "Review me".starts_with(r[1].as_str()) && "Idle one".starts_with(r[2].as_str())
+    })?;
+    // Shared: the service saved the uses in the canvas document every window opens.
+    wait_doc(&sb.canvas, "the uses in the canvas document", |d| {
+        let mut used: Vec<&Node> = d.nodes.iter().filter(|n| n.accessed_ms.is_some()).collect();
+        used.sort_by_key(|n| std::cmp::Reverse(n.accessed_ms));
+        used.len() >= 3 && used[0].id == ids[2] && used[1].id == ids[1] && used[2].id == ids[0]
+    })?;
+    // Ctrl+F6, Ctrl+F6, Ctrl+Shift+F6: the one before, the one before that, back; the order holds meanwhile.
+    gui.key("F6", &["ctrl"])?;
+    gui.wait_tree("Ctrl+F6: the session used before", 5, |t| selected(t, &ids[1]))?;
+    gui.wait("its details and the walk's notice", 5, |t| t.contains("Recent 2 of") && t.contains("Review me"))?;
+    gui.key("F6", &["ctrl"])?;
+    gui.wait_tree("Ctrl+F6 again: the one before that", 5, |t| selected(t, &ids[0]))?;
+    gui.key("F6", &["ctrl", "shift"])?;
+    gui.wait_tree("Ctrl+Shift+F6: back", 5, |t| selected(t, &ids[1]))?;
+    anyhow::ensure!(first(&gui.screen(), "Needs you one"), "the list kept its order during the walk: {:?}", recent_names(&gui.screen()));
+    gui.wait("the walk settled", 5, |t| first(t, "Review me"))?;
+    // ] and [ on the canvas.
+    gui.chord(']', &[])?;
+    gui.wait_tree("]: the session used before", 5, |t| selected(t, &ids[2]))?;
+    gui.chord('[', &[])?;
+    gui.wait_tree("[: back", 5, |t| selected(t, &ids[1]))?;
+    gui.key("Esc", &[])?;
+    std::thread::sleep(Duration::from_millis(500));
+    anyhow::ensure!(log().matches("launched ").count() == launches, "walking the recent sessions launched one");
+    let tree = gui.tree()?;
+    let shown: Vec<&str> = tree["tiles"].as_array().into_iter().flatten().filter_map(|t| t["id"].as_str()).collect();
+    anyhow::ensure!(!shown.iter().any(|id| ids.iter().any(|i| i == id)), "a walked session got a terminal: {shown:?}");
+    Ok("three views listed newest first (and in the shared document); Ctrl+F6 ×2, Ctrl+Shift+F6, ] and [ viewed them in MRU order; settled after 1 s; nothing launched".into())
+}
+
 fn session_files(dir: &Path, id: &str, name: &str, cwd: &Path, events: &[String], live: bool) -> Result<()> {
     let folder = dir.join(id);
     std::fs::create_dir_all(&folder)?;
@@ -500,7 +556,7 @@ fn node(id: &str, name: &str, x: i32, y: i32, cwd: &Path) -> Node {
         passive: None,
         no_messages: false,
         agent: None,
-        agent_session: None, last_used_ms: None, stacked: false,
+        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
     }
 }
 
@@ -1633,6 +1689,8 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         gui.canvas_focus()?;
         Ok(format!("background at {spot:?} and the border selected it (panel); background drag pans; title, ◢, chips, double-click unchanged"))
     });
+
+    check(rows, "38", "New: RECENT sessions atop the Sessions panel (newest first, shared); Ctrl+F6 / Ctrl+Shift+F6 and ] / [ view the next or previous one without starting it", "recent_sessions_and_walk_keys", || recent_check(sb, gui));
 
     check_kind(rows, "G4", "New: several windows on one canvas (Ctrl+Shift+N, toolbar)", "second_window_rename_sync", Kind::Only("GUI only: a console has one window"), || {
         let opened = gui.req(json!({ "cmd": "new_window" }))?;

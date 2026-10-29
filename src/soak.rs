@@ -638,7 +638,7 @@ fn soak(exe: &Path, instance: &Instance, root: &Path, options: &Options) -> Resu
         passive: None,
         no_messages: false,
         agent: None,
-        agent_session: None, last_used_ms: None, stacked: false,
+        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
     };
     doc.nodes.push(node(UI_ECHO, "Soak echo", 2));
     for i in 0..NOISE {

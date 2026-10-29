@@ -1767,6 +1767,7 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     anyhow::ensure!(String::from_utf8_lossy(&branches.stdout).trim() == "worktree-session", "worktree is on the new branch");
 
     view_and_start_steps(&mut ui, instance)?;
+    recent_steps(&mut ui, instance)?;
     group_click_steps(&mut ui)?;
 
     step("stop all and quit");
@@ -1818,6 +1819,49 @@ fn view_and_start_steps<U: Ui>(ui: &mut U, instance: &Instance) -> Result<()> {
     ui.click(sx + 1, sy)?;
     ui.wait("its shell", Duration::from_secs(20), |t| t.contains("Write tests · ") && t.contains("PS "))?;
     anyhow::ensure!(launched("demo-sub"), "Start launched it");
+    Ok(())
+}
+
+/// The sessions in the sidebar's RECENT section, newest first (the start of
+/// each name: long ones are shortened there).
+pub(crate) fn recent_names(text: &str) -> Vec<String> {
+    let rows: Vec<String> = text.lines().map(|l| l.chars().skip(SIDEBAR.0 as usize).take((SIDEBAR.1 - SIDEBAR.0) as usize).collect()).collect();
+    let Some(start) = rows.iter().position(|r| r.contains("RECENT")) else { return Vec::new() };
+    rows[start + 1..]
+        .iter()
+        .take_while(|r| !r.contains("All sessions"))
+        .filter_map(|r| {
+            // "■ Review implement… shell 2m": past the status icon, the first word or two.
+            let row = r.trim().trim_start_matches('▎').trim();
+            let name: String = row.chars().skip(2).take(10).collect();
+            (!name.trim().is_empty()).then(|| name.trim().to_owned())
+        })
+        .collect()
+}
+
+/// The RECENT section and its keys: Ctrl+F6 from a terminal views the
+/// session used before (its terminal or its details panel), Ctrl+Shift+F6
+/// goes back, nothing starts, and once the walk settles the list puts the
+/// session it reached first.
+fn recent_steps<U: Ui>(ui: &mut U, instance: &Instance) -> Result<()> {
+    let launches = || std::fs::read_to_string(instance.log_path()).unwrap_or_default().matches("launched ").count();
+    step("recent sessions: Ctrl+F6 / Ctrl+Shift+F6 view recent sessions without starting them; the RECENT list reorders when the walk ends");
+    ui.wait("the RECENT section with its keys", Duration::from_secs(5), |t| t.contains("RECENT") && t.contains("Ctrl+F6 · [ ]") && recent_names(t).len() >= 3)?;
+    let names = recent_names(&ui.text());
+    ui.wait("a terminal with the keyboard", Duration::from_secs(5), |t| t.contains("Typing goes to the terminal"))?;
+    let before = launches();
+    // From the terminal: the session used before it, then the one before that.
+    ui.send(b"\x1b[17;5~")?;
+    ui.wait("the second recent session", Duration::from_secs(5), |t| t.contains("Recent 2 of") && t.contains(names[1].as_str()))?;
+    ui.send(b"\x1b[17;5~")?;
+    ui.wait("the third recent session", Duration::from_secs(5), |t| t.contains("Recent 3 of"))?;
+    ui.send(b"\x1b[17;6~")?;
+    ui.wait("back to the second", Duration::from_secs(5), |t| t.contains("Recent 2 of"))?;
+    anyhow::ensure!(recent_names(&ui.text()).first() == names.first(), "the list keeps its order during the walk: {:?}", recent_names(&ui.text()));
+    // A second later the session the walk reached is the most recent.
+    ui.wait("the walk settled", Duration::from_secs(5), |t| recent_names(t).first() == names.get(1))?;
+    std::thread::sleep(Duration::from_millis(300));
+    anyhow::ensure!(launches() == before, "walking the recent sessions started one");
     Ok(())
 }
 
@@ -1968,7 +2012,7 @@ mod stress_probe {
                 command: None,
                 fresh: false,
                 automation: None,
-                synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, stacked: false,
+                synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
             });
         }
         for g in 0..n_sessions.div_ceil(10) as i32 {
@@ -2074,7 +2118,7 @@ mod user_message_canvas_probe {
         let mut doc = crate::client::doc::Doc::default();
         doc.nodes.push(crate::client::doc::Node {
             id: id.clone(), kind: crate::client::doc::NodeKind::Session, name: "Probe".into(), x: 2, y: 2,
-            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, stacked: false,
+            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -2321,7 +2365,7 @@ mod canvas_image_paste_probe {
         let mut doc = crate::client::doc::Doc::default();
         doc.nodes.push(crate::client::doc::Node {
             id: id.clone(), kind: crate::client::doc::NodeKind::Session, name: "Paste probe".into(), x: 2, y: 2,
-            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: true, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, stacked: false,
+            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: true, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -2493,7 +2537,7 @@ mod fork_canvas_probe {
         let mut doc = crate::client::doc::Doc::default();
         doc.nodes.push(crate::client::doc::Node {
             id: id.clone(), kind: crate::client::doc::NodeKind::Session, name: "Fork parent".into(), x: 2, y: 2,
-            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, stacked: false,
+            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -2772,7 +2816,7 @@ mod loop_canvas_probe {
             cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None,
             mcp_off: Some(crate::copilot_cfg::snapshot().mcp.into_iter().map(|s| s.name).collect()),
             passive: None,
-            no_messages: false, agent: None, agent_session: None, last_used_ms: None, stacked: false,
+            no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -2902,7 +2946,7 @@ mod passive_probe {
         doc.nodes.push(crate::client::doc::Node {
             id: active.clone(), kind: crate::client::doc::NodeKind::Session, name: "Active probe".into(), x: 2, y: 2,
             cwd: Some(work.display().to_string()), parent: None, agent_key: None, source: None, command: None, fresh: true, automation: None, synced_name: None, reviewed_ms: None,
-            mcp_off: Some(off.clone()), passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, stacked: false,
+            mcp_off: Some(off.clone()), passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
         });
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
         let instance = crate::paths::Instance::new(Some(format!("psv{}", std::process::id())), Some(home.clone()), Some(sessions.clone())).unwrap();

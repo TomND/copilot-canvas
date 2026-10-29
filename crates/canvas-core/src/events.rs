@@ -15,6 +15,8 @@ impl App {
     pub fn on_input(&mut self, batch: Vec<InputEvent>) {
         for event in batch {
             self.needs_draw = true;
+            // Anything but the walk keys ends a walk through the recent sessions.
+            self.recent_input(&event);
             match event {
                 InputEvent::Paste(text) => self.on_paste(text),
                 InputEvent::Text(text) => self.on_text(&text),
@@ -105,6 +107,11 @@ impl App {
         if !self.modals.is_empty() {
             self.modal_key(key);
             return;
+        }
+        // Ctrl+F6 / Ctrl+Shift+F6 (a terminal too), `]` / `[`: view the next
+        // older or newer recent session (never starts it).
+        if let Some(older) = self.recent_key(&key) {
+            return self.recent_step(older);
         }
         if self.focus == Focus::Terminal {
             self.terminal_key(key);
@@ -274,7 +281,12 @@ impl App {
                 KeyCode::End => self.side_move(100_000),
                 KeyCode::Enter => self.activate_side_row(self.side_sel),
                 KeyCode::Left | KeyCode::Right => {
-                    if let Some(SideKind::Group(id)) = self.side_rows.get(self.side_sel).map(|r| r.kind.clone()) {
+                    let id = match self.side_rows.get(self.side_sel).map(|r| r.kind.clone()) {
+                        Some(SideKind::Group(id)) => Some(id),
+                        Some(SideKind::RecentHeader) => Some(crate::recent::COLLAPSED.to_owned()),
+                        _ => None,
+                    };
+                    if let Some(id) = id {
                         let collapsed = self.doc.ui.collapsed.contains(&id);
                         if (key.code == KeyCode::Left) != collapsed {
                             self.toggle_collapse(&id);
@@ -432,11 +444,12 @@ impl App {
         self.side_sel = index;
         match row.kind {
             SideKind::Group(id) => self.open_group(&id),
-            SideKind::Session(id) | SideKind::Agent(id) => {
+            SideKind::Session(id) | SideKind::Agent(id) | SideKind::Recent(id) => {
                 self.reveal_node(&id);
                 self.start_node(&id);
             }
             SideKind::Folder(id) => self.side_folder(&id),
+            SideKind::RecentHeader => self.toggle_collapse(crate::recent::COLLAPSED),
             SideKind::Section => {}
         }
     }
@@ -451,7 +464,14 @@ impl App {
                 self.reveal_node(&id);
                 self.view_node(&id);
             }
+            SideKind::Recent(id) => {
+                self.reveal_node(&id);
+                self.view_node(&id);
+                // The highlight stays on the RECENT row (not the tree's row of the session).
+                self.side_sel = index;
+            }
             SideKind::Folder(id) => self.side_folder(&id),
+            SideKind::RecentHeader => self.toggle_collapse(crate::recent::COLLAPSED),
             SideKind::Section => {}
         }
     }
@@ -632,12 +652,12 @@ impl App {
         if button == MouseButton::Right {
             let menu = match &row.kind {
                 SideKind::Group(id) => self.group_menu(id),
-                SideKind::Session(id) | SideKind::Agent(id) => {
+                SideKind::Session(id) | SideKind::Agent(id) | SideKind::Recent(id) => {
                     self.select_node(id, false);
                     self.node_menu(id)
                 }
                 SideKind::Folder(id) => return self.side_folder(id),
-                SideKind::Section => return,
+                SideKind::Section | SideKind::RecentHeader => return,
             };
             return self.open_menu(x, y, menu);
         }
@@ -647,6 +667,11 @@ impl App {
         {
             return self.toggle_collapse(id);
         }
+        if row.kind == SideKind::RecentHeader {
+            return self.toggle_collapse(crate::recent::COLLAPSED);
+        }
+        // The RECENT rows hold still meanwhile, so a double-click starts the row it began on.
+        self.hold_recent();
         // A second click on the same row soon after the first starts it.
         let now = Instant::now();
         let double = self.last_side_click.is_some_and(|(t, i)| i == index && now - t < Duration::from_millis(400));

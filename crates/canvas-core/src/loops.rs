@@ -118,6 +118,12 @@ impl App {
         }
     }
 
+    /// The lap offset of a box's loop: from its id, or none while the
+    /// `freeze` hook holds animations (screenshots must not depend on ids).
+    pub fn loop_seed(&self, id: &str) -> u32 {
+        if self.frozen_tick.is_some() { 0 } else { seed(id) }
+    }
+
     /// Notes which boxes loop now (all of them, in view or not) and starts a
     /// grow-in or fade-out for each change (GPU client, motion on, a running
     /// clock, the canvas settled after opening; otherwise arcs switch at once).
@@ -163,7 +169,7 @@ impl App {
                 continue;
             }
             let path = crate::ui_canvas::loop_path(x, y, w, h);
-            let t = lap(clock, seed(&node.id));
+            let t = lap(clock, self.loop_seed(&node.id));
             let step = if path.len() == 1 { (t * 4.0) as usize % 2 } else { cell_at(&path, along(t)) };
             key = (key ^ (seed(&node.id) as u64) ^ ((step as u64) << 32)).wrapping_mul(0x0100_0000_01b3);
         }

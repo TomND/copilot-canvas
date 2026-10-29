@@ -39,7 +39,7 @@
                                  │
                                  │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
- click view · double-click/Enter start · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom · right-click menu · ? he…
+ click view · double-click/Enter start · ] [ or Ctrl+F6 recent · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom ·…
 ## gpu view model
 view cursor=none modal=none banner=None
 canvas area=34,1 116x38 origin=-1,-1 scale=1 grid=true tick=0 empty=false

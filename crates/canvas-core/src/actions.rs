@@ -1124,7 +1124,7 @@ impl App {
             passive: None,
             no_messages: false,
             agent: (!self.demo).then(|| agent.id().to_owned()),
-            agent_session: None, last_used_ms: None, stacked: false,
+            agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
         };
         self.doc.mcp.last_off = crate::doc::normalize_off(&dialog.mcp_off);
         self.doc.nodes.push(node);

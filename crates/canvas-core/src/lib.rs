@@ -27,6 +27,7 @@ pub mod paint;
 pub mod passive;
 pub mod platform;
 pub mod prefs;
+pub mod recent;
 pub mod remote;
 pub mod remove;
 pub mod side;

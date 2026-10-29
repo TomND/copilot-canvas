@@ -77,7 +77,7 @@ const NOTICED_FIELDS: [(&str, &str); 7] = [
 ];
 
 /// Box fields that are bookkeeping, not edits anyone made (no notice).
-const QUIET_FIELDS: [&str; 2] = ["reviewed_ms", "last_used_ms"];
+const QUIET_FIELDS: [&str; 3] = ["reviewed_ms", "last_used_ms", "accessed_ms"];
 
 /// One change of an edit or patch.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

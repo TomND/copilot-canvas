@@ -39,7 +39,7 @@
                                  │                                                    │┃                                                             ┃
                                  │                                                    │┃                                                             ┃
                                  │  ·     ·     ·     ·     ·     ·     ·     ·     · │┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
- Typing goes to the terminal · Ctrl+] or F6 back to canvas · drag to copy · Ctrl+V paste · Alt+V image · Ctrl+click links · Shift+PgUp history · cli…
+ Typing goes to the terminal · Ctrl+] or F6 back to canvas · Ctrl+F6 / Ctrl+Shift+F6 recent sessions · drag to copy · Ctrl+V paste · Alt+V image · C…
 ## gpu view model
 view cursor=92,23 modal=none banner=None
 canvas area=34,1 52x38 origin=-2,-1 scale=1 grid=true tick=0 empty=false
