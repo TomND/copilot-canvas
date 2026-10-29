@@ -681,6 +681,25 @@ pub(crate) fn wait_doc(path: &Path, what: &str, predicate: impl Fn(&Doc) -> bool
     bail!("canvas never satisfied: {what}\n{}", std::fs::read_to_string(path).unwrap_or_default())
 }
 
+/// OpenCode's recent-models file (`$XDG_STATE_HOME/opencode/model.json`).
+fn opencode_recent_models() -> std::path::PathBuf {
+    let state = std::env::var_os("XDG_STATE_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".local").join("state"));
+    state.join("opencode").join("model.json")
+}
+
+/// The flag that names an agent's model.
+fn model_flag(kind: AgentKind) -> &'static str {
+    match kind {
+        AgentKind::OpenCode => "-m",
+        AgentKind::Copilot | AgentKind::Claude => "--model",
+    }
+}
+
+/// The agent the new-session dialog on screen has chosen (`◉ <agent>`).
+fn dialog_agent(screen: &str) -> Result<AgentKind> {
+    crate::client::agents::ALL.into_iter().find(|k| screen.contains(&format!("◉ {}", k.label()))).with_context(|| format!("no agent chosen in the dialog\n--- screen ---\n{screen}"))
+}
+
 /// Name of the session the real-agent check creates.
 const CHECK_NAME: &str = "Canvas agent check";
 
@@ -724,11 +743,22 @@ pub fn agent(agent: Option<&str>) -> Result<()> {
     let instance = Instance::new(Some(format!("check{}", std::process::id())), Some(home.clone()), None)?;
     println!("Copilot Canvas real-agent check: {} ({program}); no prompt is submitted", kind.label());
     let started_ms = crate::paths::now_ms();
+    // OpenCode may add a model given with -m to its recent models (its default
+    // outside the canvas): that list is put back afterwards if it changed.
+    let recent = (kind == AgentKind::OpenCode).then(opencode_recent_models).map(|path| (std::fs::read(&path).ok(), path));
     let env: Vec<(&str, &Path)> = env.iter().map(|(k, v)| (*k, v.as_path())).collect();
     let result = agent_scenario(&instance, &work, kind, &env);
     if let Ok(conn) = crate::client::conn::try_connect(&instance) {
         let _ = conn.tx.send(crate::protocol::ClientMsg::Shutdown);
         std::thread::sleep(Duration::from_secs(7));
+    }
+    if let Some((Some(before), path)) = recent
+        && std::fs::read(&path).ok().as_ref() != Some(&before)
+    {
+        match std::fs::write(&path, before) {
+            Ok(()) => println!("  · put OpenCode's recent models back ({})", path.display()),
+            Err(error) => eprintln!("  · could not put OpenCode's recent models back ({}): {error}", path.display()),
+        }
     }
     let cleanup = cleanup_generated(kind, &instance, &home.join("canvas.json"), &work, started_ms);
     if result.is_ok() || std::env::var_os("CANVAS_SELFTEST_KEEP").is_none() {
@@ -898,6 +928,13 @@ fn agent_scenario(instance: &Instance, work: &Path, kind: AgentKind, env: &[(&st
     let out = std::process::Command::new("powershell.exe").args(["-NoProfile", "-Command", &query]).output()?;
     let command_line = String::from_utf8_lossy(&out.stdout).to_string();
     anyhow::ensure!(command_line.split_whitespace().any(|a| a == flag), "{label} was launched without {flag}: {command_line}");
+    let (model_flag, initial) = (model_flag(kind), canvas_model::models::initial(kind));
+    step(&format!("new sessions start with the initial default model ({model_flag} {initial}: Claude Opus 5.5), recorded on the box"));
+    let words: Vec<&str> = command_line.split_whitespace().map(|w| w.trim_matches('"')).collect();
+    anyhow::ensure!(words.windows(2).any(|w| w[0] == model_flag && w[1] == initial), "{label} was launched without {model_flag} {initial}: {command_line}");
+    let node = load(&canvas)?.nodes.into_iter().find(|n| n.id == id).context("the check's box")?;
+    anyhow::ensure!(node.model.as_deref() == Some(initial), "the box records its model: {:?}", node.model);
+    println!("    {model_flag} {initial} on the command line and on the box");
     step(&format!("typing reaches {label}'s input (not submitted)"));
     let blocked = agent_blocked(kind, &ui.text());
     if let Some(reason) = blocked {
@@ -952,13 +989,21 @@ fn launch_check_session(ui: &mut Console, kind: AgentKind, canvas: &Path) -> Res
     ui.send(b"n")?;
     let chosen = format!("◉ {label}");
     ui.wait("new session dialog with the agent chosen", Duration::from_secs(5), |t| t.contains("New session") && t.contains(&chosen))?;
+    // The model it starts with: a remembered default (the paste check's free
+    // model) or else the initial one.
+    let expected = match load(canvas).ok().and_then(|d| d.defaults.model(kind).map(str::to_owned)) {
+        Some(model) => format!("{model}  ▾ · remembered default"),
+        None => format!("{}  ▾ · initial default", canvas_model::models::initial(kind)),
+    };
+    ui.wait("the model it starts with, before starting", Duration::from_secs(5), |t| t.contains(&expected))?;
     ui.send(CHECK_NAME.as_bytes())?;
     // The session starts with the agent's MCP servers off (the dialog's MCP
     // picker: N = none), so the check does not depend on them: OpenCode 1.19
     // can hang when asked to quit while it keeps reconnecting to an MCP server
     // that is not running (the canvas then kills it after 5 s and still
     // reports a stop; that path is unit-tested in canvas-host).
-    for _ in 0..5 {
+    // Name → Folder → Browse… → Recent → Agent → Model → MCP servers.
+    for _ in 0..6 {
         ui.send(b"\t")?;
     }
     ui.send(b"\r")?;
@@ -1041,7 +1086,7 @@ pub fn agent_paste(agent: Option<&str>) -> Result<()> {
         }
         AgentKind::OpenCode => {
             // Were anything sent, it would go to a free model: `-m` on the command line and every default.
-            doc.defaults.model = Some(model.to_owned());
+            doc.defaults.set_model(AgentKind::OpenCode, Some(model));
             env.extend(crate::agent_prompt::opencode_env(model).into_iter().map(|(k, v)| (k, std::path::PathBuf::from(v))));
         }
         AgentKind::Copilot => {}
@@ -1513,13 +1558,24 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     ui.click(zx + 1, zy)?;
     ui.wait("zoomed in", Duration::from_secs(5), |t| t.contains("zoom 100%"))?;
 
-    step("new session dialog: folder prefilled, Enter creates and launches");
+    step("new session dialog: folder prefilled, its model shown (a choice is remembered), Enter creates and launches");
     ui.send(b"n")?;
     ui.wait("new session dialog", Duration::from_secs(5), |t| t.contains("New session") && t.contains("Folder"))?;
     ui.wait("git probe", Duration::from_secs(10), |t| t.contains("Not a Git repository") || t.contains("Git:"))?;
+    let kind = dialog_agent(&ui.text())?;
+    let initial = canvas_model::models::initial(kind);
+    ui.wait("the model it would start with", Duration::from_secs(5), |t| t.contains(&format!("{initial}  ▾ · initial default")))?;
     ui.screenshot("new-session-dialog")?;
-    ui.send(b"Spawned session\r")?;
-    let doc = wait_doc(&canvas, "spawned node", |d| d.nodes.iter().any(|n| n.name == "Spawned session"))?;
+    ui.send(b"Spawned session")?;
+    // Another model, typed into the dialog's picker: it applies to this session and becomes the agent's default.
+    let (mx, my) = ui.locate("▾ · initial default", (0, u16::MAX))?;
+    ui.click(mx, my)?;
+    ui.wait("the model picker", Duration::from_secs(5), |t| t.contains("Model of the new") && t.contains("Type a model id"))?;
+    ui.send(b"selftest-model\r")?;
+    ui.wait("the choice in the dialog", Duration::from_secs(5), |t| t.contains("selftest-model  ▾ · your choice"))?;
+    // Model → MCP servers → First prompt, where Enter creates.
+    ui.send(b"\t\t\r")?;
+    let doc = wait_doc(&canvas, "spawned node, the model remembered", |d| d.nodes.iter().any(|n| n.name == "Spawned session") && d.defaults.model(kind) == Some("selftest-model"))?;
     let spawned = doc.nodes.iter().find(|n| n.name == "Spawned session").context("spawned")?.id.clone();
     ui.wait("spawned terminal", Duration::from_secs(20), |t| t.contains("Spawned session · ") && t.contains("PS "))?;
 
@@ -1653,14 +1709,17 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     }
     anyhow::ensure!(enabled("wf:w1")?, "Space re-enabled the automation\n{}", ui.text());
 
-    step("Settings view edits Copilot launch defaults");
+    step("Settings view edits the launch defaults (each agent's model)");
     ui.send(b"\x1b8")?;
     ui.wait("settings view", Duration::from_secs(5), |t| t.contains("New-session defaults") && t.contains("Reasoning effort"))?;
-    let (mx, my) = ui.locate("Model", SIDEBAR)?;
+    // The model chosen in the dialog is this agent's default now; Settings changes it again.
+    let row = crate::client::side::DefaultField::Model(kind).label();
+    ui.wait("the remembered model under its agent", Duration::from_secs(5), |t| t.contains(row) && t.contains("selftest-model"))?;
+    let (mx, my) = ui.locate(row, SIDEBAR)?;
     ui.click(mx, my)?;
-    ui.wait("model prompt", Duration::from_secs(5), |t| t.contains("model id"))?;
-    ui.send(b"\x15claude-selftest\r")?;
-    wait_doc(&canvas, "default model saved", |d| d.defaults.model.as_deref() == Some("claude-selftest"))?;
+    ui.wait("model picker", Duration::from_secs(5), |t| t.contains(&format!("{} model for new sessions", kind.label())) && t.contains("Type a model id"))?;
+    ui.send(b"claude-selftest\r")?;
+    wait_doc(&canvas, "default model saved", |d| d.defaults.model(kind) == Some("claude-selftest"))?;
 
     step("VS Code view offers sync and migration");
     ui.send(b"\x1b7")?;
@@ -1684,6 +1743,15 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     let mut ui = start(&args, &env)?;
     ui.wait("canvas again", Duration::from_secs(20), |t| t.contains("Renamed by selftest"))?;
     ui.wait("restored tiles with previous output", Duration::from_secs(10), |t| t.contains("CANVAS_TERMINAL_OK") && t.contains("Spawned session · "))?;
+    // The model chosen before is still the default in the new client (it lives in the canvas).
+    if ui.text().contains("Typing goes to the terminal") {
+        ui.send(b"\x1d")?;
+    }
+    ui.wait("canvas focus", Duration::from_secs(5), |t| t.contains("empty-drag pan"))?;
+    ui.send(b"n")?;
+    ui.wait("the remembered model in the dialog", Duration::from_secs(5), |t| t.contains(&format!("claude-selftest  ▾ · remembered default for {}", kind.label())))?;
+    ui.send(b"\x1b")?;
+    ui.wait("dialog closed", Duration::from_secs(5), |t| !t.contains("First prompt"))?;
     let (x, y) = ui.locate("Renam", CANVAS)?;
     ui.click(x, y)?;
     ui.wait("terminal focus after canvas click", Duration::from_secs(5), |t| t.contains("Typing goes to the terminal"))?;
@@ -2012,7 +2080,7 @@ mod stress_probe {
                 command: None,
                 fresh: false,
                 automation: None,
-                synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
+                synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
             });
         }
         for g in 0..n_sessions.div_ceil(10) as i32 {
@@ -2118,7 +2186,7 @@ mod user_message_canvas_probe {
         let mut doc = crate::client::doc::Doc::default();
         doc.nodes.push(crate::client::doc::Node {
             id: id.clone(), kind: crate::client::doc::NodeKind::Session, name: "Probe".into(), x: 2, y: 2,
-            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
+            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -2365,7 +2433,7 @@ mod canvas_image_paste_probe {
         let mut doc = crate::client::doc::Doc::default();
         doc.nodes.push(crate::client::doc::Node {
             id: id.clone(), kind: crate::client::doc::NodeKind::Session, name: "Paste probe".into(), x: 2, y: 2,
-            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: true, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
+            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: true, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -2537,7 +2605,7 @@ mod fork_canvas_probe {
         let mut doc = crate::client::doc::Doc::default();
         doc.nodes.push(crate::client::doc::Node {
             id: id.clone(), kind: crate::client::doc::NodeKind::Session, name: "Fork parent".into(), x: 2, y: 2,
-            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
+            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -2609,7 +2677,8 @@ mod mcp_picker_probe {
             ui.send(b"n")?;
             ui.wait("dialog with MCP row", Duration::from_secs(60), |t| t.contains("MCP servers") && t.contains(" on") && t.contains("▾ choose"))?;
             ui.send(b"MCP probe")?;
-            for _ in 0..4 {
+            // Name → Folder → Browse… → Recent → Agent → Model → MCP servers.
+            for _ in 0..6 {
                 ui.send(b"\t")?;
             }
             ui.send(b"\r")?;
@@ -2739,7 +2808,8 @@ mod status_canvas_probe {
             ui.send(b"n")?;
             ui.wait("dialog", Duration::from_secs(30), |t| t.contains("First prompt") && t.contains("▾ choose"))?;
             ui.send(b"Status probe")?;
-            for _ in 0..5 {
+            // Name → Folder → Browse… → Recent → Agent → Model → MCP servers → First prompt.
+            for _ in 0..7 {
                 ui.send(b"\t")?;
             }
             ui.send(b"Reply with just the word OK and nothing else.\r")?;
@@ -2816,7 +2886,7 @@ mod loop_canvas_probe {
             cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None,
             mcp_off: Some(crate::copilot_cfg::snapshot().mcp.into_iter().map(|s| s.name).collect()),
             passive: None,
-            no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
+            no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -2946,7 +3016,7 @@ mod passive_probe {
         doc.nodes.push(crate::client::doc::Node {
             id: active.clone(), kind: crate::client::doc::NodeKind::Session, name: "Active probe".into(), x: 2, y: 2,
             cwd: Some(work.display().to_string()), parent: None, agent_key: None, source: None, command: None, fresh: true, automation: None, synced_name: None, reviewed_ms: None,
-            mcp_off: Some(off.clone()), passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
+            mcp_off: Some(off.clone()), passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
         });
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
         let instance = crate::paths::Instance::new(Some(format!("psv{}", std::process::id())), Some(home.clone()), Some(sessions.clone())).unwrap();

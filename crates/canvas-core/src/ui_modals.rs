@@ -231,7 +231,12 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
         Modal::Pick(pick) => {
             let rect = centered(screen, 72, screen.height.saturating_sub(8).min(24));
             panel(buf, rect, &pick.title);
-            let filter = if pick.filter.is_empty() { "type to filter".to_owned() } else { format!("filter: {}", pick.filter) };
+            let model = matches!(pick.purpose, crate::dialogs::PickPurpose::Model(_));
+            let filter = match (pick.filter.is_empty(), model) {
+                (true, true) => "type to filter, or type any model id".to_owned(),
+                (true, false) => "type to filter".to_owned(),
+                (false, _) => format!("filter: {}", pick.filter),
+            };
             put(buf, rect.x as i32 + 2, rect.y as i32 + 1, &filter, fg(MUTED).bg(MODAL), rect);
             let visible = pick.visible();
             let rows = rect.height.saturating_sub(4) as usize;
@@ -251,7 +256,8 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
                 ctx.hit(Rect::new(rect.x + 1, y as u16, rect.width - 2, 1), Hit::ListRow(index));
             }
             if visible.is_empty() {
-                put(buf, rect.x as i32 + 2, rect.y as i32 + 2, "No matches.", fg(MUTED).bg(MODAL), rect);
+                let text = if model { format!("Enter uses “{}” as the model id.", pick.filter.trim()) } else { "No matches.".to_owned() };
+                put(buf, rect.x as i32 + 2, rect.y as i32 + 2, &truncate(&text, rect.width as usize - 4), fg(MUTED).bg(MODAL), rect);
             }
             (rect, None)
         }
@@ -630,6 +636,19 @@ fn draw_new_session(app: &App, buf: &mut Buffer, screen: Rect, dialog: &crate::d
             x = put(buf, x, y, &text, if missing && !on { fg(MUTED).bg(MODAL) } else { style }, rect) + 3;
         }
         ctx.hit(Rect::new(field_x as u16, y as u16, (x - field_x).max(1) as u16, 1), Hit::Field(NsField::Agent));
+        y += 2;
+    }
+
+    // The model it starts with (and why), before starting.
+    label(buf, y, "Model", focus == NsField::Model);
+    {
+        let style = if focus == NsField::Model { Style::default().fg(TEXT).bg(PANEL_HI).add_modifier(Modifier::UNDERLINED) } else { Style::default().fg(TEXT).bg(PANEL_HI) };
+        fill(buf, field_x, y, field_w, 1, style, rect);
+        let shown = app.dialog_model(dialog);
+        let model = shown.model.as_deref().map(crate::models::shown).unwrap_or_else(|| "the parent's model".to_owned());
+        let text = if dialog.forks() { format!("{model} · {}", shown.note) } else { format!("{model}  ▾ · {}", shown.note) };
+        put(buf, field_x, y, &truncate(&text, field_w as usize), style, rect);
+        ctx.hit(Rect::new(field_x as u16, y as u16, field_w as u16, 1), Hit::Field(NsField::Model));
         y += 2;
     }
 

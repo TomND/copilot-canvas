@@ -377,6 +377,11 @@ impl App {
                 self.cycle_dialog_agent(dialog, key.code != KeyCode::Left);
                 return Outcome::Keep;
             }
+            NsField::Model if activate => {
+                self.modals.push(Modal::NewSession(Box::new(dialog.clone())));
+                self.open_model_picker(crate::dialogs::ModelTarget::Dialog);
+                return Outcome::Close;
+            }
             NsField::Mcp if activate => {
                 self.modals.push(Modal::NewSession(Box::new(dialog.clone())));
                 self.open_mcp_picker(crate::dialogs::McpTarget::NewSession);
@@ -583,6 +588,12 @@ impl App {
         if let PickPurpose::Default(field, group) = purpose {
             return self.apply_default(field, group, &value);
         }
+        if let PickPurpose::Model(target) = purpose {
+            if let Err(error) = self.apply_model_choice(target, &value) {
+                self.notify(error, true);
+            }
+            return;
+        }
         if let PickPurpose::PassiveTemplate(group) = purpose {
             let template = crate::passive::TEMPLATES.iter().position(|t| t.name == value).unwrap_or(2);
             self.modals.push(Modal::Prompt(crate::dialogs::Prompt {
@@ -603,7 +614,7 @@ impl App {
                     dialog.base = value;
                     Self::refresh_worktree_defaults(dialog);
                 }
-                PickPurpose::Default(..) | PickPurpose::PassiveTemplate(_) => {}
+                PickPurpose::Default(..) | PickPurpose::PassiveTemplate(_) | PickPurpose::Model(_) => {}
             }
             dialog.error = None;
         }
@@ -613,6 +624,12 @@ impl App {
         let visible = pick.visible();
         match key.code {
             KeyCode::Esc => Outcome::Close,
+            // A model picker takes any id: one that matches nothing is used as typed.
+            KeyCode::Enter if visible.is_empty() && !pick.filter.trim().is_empty() && matches!(pick.purpose, PickPurpose::Model(_)) => {
+                let (purpose, value) = (pick.purpose.clone(), pick.filter.trim().to_owned());
+                self.apply_pick(purpose, value);
+                Outcome::Close
+            }
             KeyCode::Enter => {
                 if let Some(&index) = visible.get(pick.sel) {
                     let value = pick.items[index].0.clone();
@@ -700,7 +717,7 @@ impl App {
             }
             (Some(Modal::NewSession(dialog)), Hit::Field(field)) => {
                 dialog.focus = field;
-                if matches!(field, NsField::Browse | NsField::Recent | NsField::Mode | NsField::Base | NsField::Agent | NsField::Context | NsField::Mcp | NsField::Create | NsField::Cancel) {
+                if matches!(field, NsField::Browse | NsField::Recent | NsField::Mode | NsField::Base | NsField::Agent | NsField::Model | NsField::Context | NsField::Mcp | NsField::Create | NsField::Cancel) {
                     self.modal_key(enter);
                 }
             }

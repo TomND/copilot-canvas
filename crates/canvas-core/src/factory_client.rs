@@ -144,7 +144,7 @@ impl App {
                 passive: None,
                 no_messages: false,
                 agent: None,
-                agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
+                agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
             });
             rows.entry(family).or_default().push((x, y));
             bottom = Some(bottom.unwrap_or(i32::MIN).max(y + SESSION_H));

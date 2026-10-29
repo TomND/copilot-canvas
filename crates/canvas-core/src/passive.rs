@@ -111,8 +111,10 @@ impl App {
                     max_runs_per_day: p.max_runs_per_day,
                     mcp_off: node.mcp_off.clone().unwrap_or_default(),
                     agent: crate::agents::agent_of(node).id().to_owned(),
-                    // Runs use the model new sessions in its group would get.
-                    model: self.doc.defaults.merged(self.doc.group(&p.group).and_then(|g| g.defaults.as_ref())).model.map(|m| m.trim().to_owned()).unwrap_or_default(),
+                    // Runs use the model new sessions of its agent in its group get;
+                    // runs that resume a conversation with a recorded model keep that one.
+                    model: canvas_model::models::effective(crate::agents::agent_of(node), &self.doc.defaults, self.doc.group(&p.group)).model,
+                    session_model: node.model.clone(),
                 }),
                 None => {
                     if let Some(group) = self.doc.group_of(node) {
@@ -150,8 +152,9 @@ impl App {
         for (old, new) in moves {
             self.rename_node_id(&old, &new);
             if let Some(node) = self.doc.node_mut(&new) {
-                // A fresh conversation: the agent names it anew.
+                // A fresh conversation: the agent names it anew, and it starts with the current default model.
                 node.agent_session = None;
+                node.model = None;
                 if let Some(p) = node.passive.as_mut() {
                     p.episodes.push(old);
                 }
@@ -319,7 +322,7 @@ impl App {
             no_messages: false,
             // Passive sessions (the automation doctor too) run the canvas's default agent.
             agent: Some(self.default_agent().id().to_owned()),
-            agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
+            agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
         });
         self.mark_dirty();
         self.select_node(&id, false);
@@ -469,23 +472,30 @@ mod tests {
 
     #[test]
     fn passive_runs_use_the_model_new_sessions_in_their_group_get() {
+        use crate::agents::AgentKind;
         use crate::doc::{Doc, Group, LaunchDefaults};
         let (tx, _sent) = crossbeam_channel::bounded(64);
         let (_service, service_rx) = crossbeam_channel::bounded(1);
         let (app_tx, _app_rx) = crossbeam_channel::unbounded();
-        let mut doc = Doc { defaults: LaunchDefaults { model: Some("opencode/x-free".into()), ..Default::default() }, ..Doc::default() };
+        let mut doc = Doc::default();
+        doc.defaults.set_model(AgentKind::OpenCode, Some("opencode/x-free"));
+        let mut overrides = LaunchDefaults::default();
+        overrides.set_model(AgentKind::OpenCode, Some(" big "));
         doc.groups.push(Group { id: "g1".into(), name: "G".into(), folder: Some(r"C:\g".into()), ..Default::default() });
-        doc.groups.push(Group { id: "g2".into(), name: "H".into(), defaults: Some(LaunchDefaults { model: Some(" big ".into()), ..Default::default() }), ..Default::default() });
-        for (id, group) in [("p1", "g1"), ("p2", "g2")] {
-            let mut node: Node = serde_json::from_value(serde_json::json!({ "id": id, "kind": "session", "name": id, "x": 0, "y": 0, "agent": "opencode" })).unwrap();
+        doc.groups.push(Group { id: "g2".into(), name: "H".into(), defaults: Some(overrides), ..Default::default() });
+        for (id, group, agent) in [("p1", "g1", "opencode"), ("p2", "g2", "opencode"), ("p3", "g2", "claude"), ("p4", "g1", "opencode")] {
+            let mut node: Node = serde_json::from_value(serde_json::json!({ "id": id, "kind": "session", "name": id, "x": 0, "y": 0, "agent": agent })).unwrap();
             node.passive = Some(Passive { key: format!("k{id}"), group: group.into(), ..Default::default() });
             doc.nodes.push(node);
         }
+        doc.nodes[3].model = Some("github-copilot/claude-opus-5.5".into());
         let app = App::new(crate::conn::Conn::detached(tx, service_rx), std::sync::Arc::new(crate::rpc::Offline), crate::sync::Opened::detached(doc), false, ".".into(), app_tx, None);
         let routing = app.build_routing();
-        let model = |key: &str| routing.passive.iter().find(|p| p.key == key).map(|p| (p.agent.clone(), p.model.clone()));
-        assert_eq!(model("kp1"), Some(("opencode".into(), "opencode/x-free".into())), "the canvas default");
-        assert_eq!(model("kp2"), Some(("opencode".into(), "big".into())), "the group's default wins");
+        let model = |key: &str| routing.passive.iter().find(|p| p.key == key).map(|p| (p.agent.clone(), p.model.clone(), p.session_model.clone()));
+        assert_eq!(model("kp1"), Some(("opencode".into(), "opencode/x-free".into(), None)), "the canvas default");
+        assert_eq!(model("kp2"), Some(("opencode".into(), "big".into(), None)), "the group's default wins");
+        assert_eq!(model("kp3"), Some(("claude".into(), "claude-opus-5-5".into(), None)), "its agent's default: nothing chosen, so Opus 5.5");
+        assert_eq!(model("kp4"), Some(("opencode".into(), "opencode/x-free".into(), Some("github-copilot/claude-opus-5.5".into()))), "its own recorded model for resumes");
     }
 
     #[test]

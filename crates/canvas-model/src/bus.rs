@@ -90,10 +90,15 @@ pub struct PassiveSpec {
     /// Agent CLI that runs it ("copilot", "opencode", "claude"; empty: Copilot).
     #[serde(default)]
     pub agent: String,
-    /// Model of its runs (the canvas's new-session default, overridden by the
-    /// group's; empty: the agent's own default).
+    /// Model of its runs: the one new sessions of its agent in its group get
+    /// (the group's, else the canvas's remembered, else the initial default;
+    /// empty: the agent's own default).
     #[serde(default)]
     pub model: String,
+    /// The model recorded for its current conversation (its box's model, e.g.
+    /// after you opened its chat); runs that resume it prefer this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_model: Option<String>,
 }
 
 /// An event on the bus. CLI-written inbox files may omit the service-filled fields.

@@ -205,7 +205,8 @@ impl Agents {
         }
         let command = provider.command(id, &launch, &self.integration(id))?;
         let how = if launch.headless_prompt.is_some() { "headless run" } else if launch.fork_from.is_some() { "fork" } else if launch.resume { "resume" } else { "new session" };
-        let model = launch.model.as_deref().map(|m| format!(", model {m}")).unwrap_or_default();
+        // The model as the command line carries it (agents that keep a session's model get none on resume).
+        let model = launch.model.as_deref().filter(|m| command.args.iter().any(|a| a == m)).map(|m| format!(", model {m}")).unwrap_or_default();
         log(&self.instance, &format!("terminal {id}: {} {how}{model}", kind.id()));
         lock(&self.agent_terms).insert(id.to_owned(), kind);
         match session_plan(kind, &launch, id, &session) {

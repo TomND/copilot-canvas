@@ -21,7 +21,7 @@ Every launch also gets the canvas integration: `COPILOT_CANVAS_HOME`,
 | Resume | `--session-id ID` again | `opencode -s ses_…` | `claude -r ID` |
 | Fork (subsession) | history copied on disk like `/fork`, then resumed | `opencode -s PARENT --fork` (the fork's id is learned like a new session's) | `claude -r PARENT --fork-session --session-id NEW` |
 | Allow-all (default) / ask | `--allow-all` / nothing | `--auto` / nothing | `--dangerously-skip-permissions` / nothing |
-| Model, agent | `--model`, `--agent` (new sessions; passive runs every time) | `-m`, `--agent` (new sessions; passive runs every time) | `--model`, `--effort`, `--agent` (every launch) |
+| Model, agent | `--model` (new sessions; passive runs every time), `--agent` (new sessions) | `-m` (new sessions; passive runs every time), `--agent` (new sessions) | `--model` (new sessions; resumes and forks with the session's recorded model; passive runs every time), `--effort`, `--agent` (new sessions) |
 | MCP servers off | `--disable-mcp-server NAME` | `OPENCODE_CONFIG_CONTENT` `{"mcp": {NAME: {"enabled": false}}}` | a private `--strict-mcp-config --mcp-config` file without them |
 | Passive run | `copilot --session-id ID -p PROMPT --allow-all --no-ask-user` | `opencode run PROMPT [-s ses_…] --auto -m MODEL` | `claude -p PROMPT --session-id/-r ID --dangerously-skip-permissions` |
 | History | `~/.copilot/session-state/<id>/events.jsonl` (tailed) | `~/.local/share/opencode/opencode.db` (SQLite, read-only, indexed lookups only) | `~/.claude/projects/<dir>/<id>.jsonl` (tailed) |
@@ -31,6 +31,71 @@ Stopping a session sends Ctrl+D (twice), then Ctrl+C, and ends its process
 tree after 5 s. Before an OpenCode TUI is asked to quit, the canvas stops
 polling its server and waits for requests in flight (OpenCode aborts
 half-finished requests when it quits and then hangs).
+
+## Models
+
+Model ids differ per agent, so the canvas keeps a default per agent
+(`LaunchDefaults::models` in the canvas document: agent id → model id; an
+empty id means the agent's own default, no model flag). A new session gets,
+in this order: the model picked for it in the new-session dialog, its group's
+override (*Session defaults for group…*), the canvas's remembered default for
+its agent, else the initial default, **Claude Opus 5.5**
+(`canvas_model::models`):
+
+| | Copilot CLI | OpenCode | Claude Code |
+|---|---|---|---|
+| Initial default | `claude-opus-5.5` | `github-copilot/claude-opus-5.5` | `claude-opus-5-5` |
+| Where the id comes from | GitHub's model id, dotted (the same id OpenCode's `github-copilot` provider lists; Copilot CLI is not installed on the development machine, so `copilot --help` was not seen; any id can be typed) | `opencode models` (1.19.4) lists it; the owner's `~/.local/state/opencode/model.json` has it among the recent models | Claude Code 2.1.309's own model list has `claude-opus-5-5`; `--help` takes "a model's full name" or an alias (`fable`, `opus`, `sonnet`), but `opus` names a different model as releases change |
+| Model list in the picker | the `(choices: …)` of `--model` in `copilot --help`, when this version lists them | `opencode models` | the aliases in `--help` |
+
+**The dialog** shows the model before starting, with why: *from group X*,
+*remembered default for …*, *initial default (Claude Opus 5.5)*, or *your
+choice*. Its picker offers the current model, *Type a model id…*, the initial
+default, *(agent default)* and the agent's list; typing filters, and an id
+that matches nothing is used as typed (one word, never starting with `-`).
+A model picked there starts that session and, when you create it, becomes its
+agent's remembered default (`Doc::defaults`, so it is saved, synced to every
+window and kept across restarts) until you pick another there or in Settings
+(*Copilot / OpenCode / Claude Code model*; *(not set)* goes back to the initial
+default). Picking the default again is no new choice. In a group with its own
+model a pick applies to that session only: neither the group's override nor
+the canvas default changes (the choice was made against the group's model,
+and changing the canvas's from inside a group would surprise). A fork shows
+and keeps its parent's model.
+
+**Each session records** the model it started with on its box
+(`Node::model`, set when it is created or first launched; empty for the
+agent's own default; boxes from before are unrecorded) and the details panel
+shows it. A new default never changes an existing session:
+
+- **Copilot**: a resume (`--session-id` again) carries no `--model`; Copilot
+  keeps the session's model itself.
+- **OpenCode**: a resumed or forked TUI (`-s`, `-s … --fork`) gets no `-m`:
+  when it opens the session its prompt takes the model (and agent) of the
+  session's last message, which wins over `-m` anyway (OpenCode 1.19.4's TUI
+  sets its model from `-m` only as a fallback and asks to add it to its
+  recent models; in the agent check `model.json` stayed unchanged, and the
+  check puts it back if it ever changes). A box whose TUI never got a prompt
+  has no session yet; the service starts it as a new one, with its recorded
+  model.
+- **Claude Code**: nothing is saved with its sessions, so a resume (`-r`) and
+  a fork get `--model` with the box's recorded model, or none when it was not
+  recorded; never the current default.
+
+The canvas sends the conversation's model in every launch (`AgentLaunch::model`:
+the one to start with, or the recorded one for a resume); each provider passes
+it where its agent needs it. The service log names the model only when the
+command line carries it (`terminal …: claude resume, model claude-opus-5-5`).
+
+**Passive runs** use the model new sessions of their agent get in their group
+(`PassiveSpec::model`) on every run; a run that resumes a conversation whose
+model is recorded on its box (you started its chat) uses that one
+(`PassiveSpec::session_model`), and a rollover starts the next conversation with
+the current default.
+
+**Older canvases** had one `model` for every agent. It moves to the agents
+whose ids it fits when the canvas is read: a `provider/model` id to OpenCode,
+any other id to Copilot and Claude Code (which both got it before).
 
 ## How status is derived
 
@@ -129,15 +194,18 @@ neighbour.
 
 **Passive runs.** `opencode run` with the passive prompt, `--auto` (allowed
 tools never ask), the group folder allowed as an external directory, and
-`-m` with the model new sessions in the group would get (Settings → Model, or
-the group's defaults). Its session id is learned from the folder after the
+`-m` with the model new OpenCode sessions in the group get (see
+[Models](#models)). Its session id is learned from the folder after the
 run starts; later runs resume it with `-s`.
 
 ## Verified end to end
 
 `copilot-canvas selftest agent [--agent copilot|opencode|claude]` starts the
 real TUI from the canvas without a prompt: imports, configuration views, the
-allow-all flag, typing, a graceful stop. With `--paste` it pastes multi-line
+dialog's model (the initial default), the allow-all flag and the model flag
+on the command line (and the model on the box), typing, a graceful stop. For
+OpenCode it puts `model.json` (its recent models) back afterwards if the
+launch changed it. With `--paste` it pastes multi-line
 text into the agent's input box instead and checks that it arrived as lines
 and nothing was sent ([Pasting](#pasting)).
 
@@ -150,12 +218,12 @@ well. Through the canvas it checks:
 
 | Step | What is checked |
 |---|---|
-| status | Settings → Model sets the model; the dialog starts OpenCode with `-m` and `--auto`; the service reaches the TUI's verified server; after the first prompt the box follows the new `ses_` session (the canvas file and the service log), shows working, then *done · review* while you look elsewhere, then idle once you open it |
+| status | Settings → OpenCode model sets the model; the dialog starts OpenCode with `-m` and `--auto`; the service reaches the TUI's verified server; after the first prompt the box follows the new `ses_` session (the canvas file and the service log), shows working, then *done · review* while you look elsewhere, then idle once you open it |
 | wheel | after an 80-line answer, three wheel notches over the terminal scroll OpenCode's own view (earlier lines appear) |
 | push | `cd repo; git push origin main` (a separator every shell knows) to a local bare repository in OpenCode's bash tool: `detected pr.pushed in ses_… (terminal BOX)` in the service log and a `pr.pushed` bus event whose source is the box |
 | subagent | the task tool: each child session becomes a subagent box under the session (skipped with a note when the model does not use the tool); its box's **Inspect transcript** opens the child's transcript read-only and launches nothing |
 | question | the question tool: the box shows *needs you*; Esc (OpenCode's "Reject question") dismisses it and the box settles to idle |
-| resume | X stops the box gracefully; a click only shows its details (Resume), the double-click resumes with `-s ses_…` and shows the conversation. Before that, with the parent stopped, the first child resumes as a linked subsession with `-s <child>` (no prompt) and is stopped again |
+| resume | X stops the box gracefully; a click only shows its details (Resume), the double-click resumes with `-s ses_…` (no `-m`: OpenCode keeps the session's model) and shows the conversation. Before that, with the parent stopped, the first child resumes as a linked subsession with `-s <child>` (no prompt) and is stopped again |
 | permission | Settings → Permissions: ask; a new box without `--auto`; a bash call with `OPENCODE_PERMISSION` `{"bash":"ask"}` shows *needs you*; Esc ("Reject") rejects it and nothing ran |
 | passive | a passive OpenCode box (Run now) runs `opencode run … -m <free model>` headless, reports `copilot-canvas status ok "…"` through the canvas command on its PATH, and its box follows the run's `ses_` session |
 

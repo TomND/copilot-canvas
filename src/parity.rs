@@ -82,6 +82,8 @@ pub(crate) struct Sandbox {
     fake: PathBuf,
     /// The stand-in as `opencode.exe` (the OpenCode boxes of the inspector check).
     fake_opencode: PathBuf,
+    /// The stand-in as `claude.exe` (the model check's Claude Code sessions).
+    fake_claude: PathBuf,
     canvas: PathBuf,
     sessions: Sessions,
     pub(crate) exe: PathBuf,
@@ -556,7 +558,7 @@ fn node(id: &str, name: &str, x: i32, y: i32, cwd: &Path) -> Node {
         passive: None,
         no_messages: false,
         agent: None,
-        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
+        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
     }
 }
 
@@ -576,6 +578,8 @@ impl Sandbox {
         std::fs::copy(&exe, &fake)?;
         let fake_opencode = root.join("fake").join("opencode.exe");
         std::fs::copy(&exe, &fake_opencode)?;
+        let fake_claude = root.join("fake").join("claude.exe");
+        std::fs::copy(&exe, &fake_claude)?;
         let instance = Instance::new(Some(format!("parity{}", std::process::id())), Some(home.clone()), Some(sessions_dir.clone()))?;
         let id = || uuid::Uuid::new_v4().to_string();
         let sessions = Sessions {
@@ -664,7 +668,7 @@ impl Sandbox {
         std::fs::write(&canvas, serde_json::to_string_pretty(&doc)?)?;
         // The service also listens on loopback TCP (the remote rows connect there).
         std::fs::write(home.join("settings.json"), r#"{"remote":{"listen":"127.0.0.1:0"}}"#)?;
-        Ok(Self { root, instance, work, group_folder, copilot_home, fake, fake_opencode, canvas, sessions, exe })
+        Ok(Self { root, instance, work, group_folder, copilot_home, fake, fake_opencode, fake_claude, canvas, sessions, exe })
     }
 
     /// OpenCode's database with a session and two task-tool children (one
@@ -759,10 +763,11 @@ impl Sandbox {
         let one = PathBuf::from("1");
         let (claude, xdg) = (self.root.join("claude-home"), self.root.join("xdg-data"));
         // Only the sandbox's histories: OpenCode and Claude Code look in empty folders.
-        let env: [(&str, &Path); 6] = [
+        let env: [(&str, &Path); 7] = [
             ("COPILOT_HOME", &self.copilot_home),
             ("COPILOT_CANVAS_COPILOT", &self.fake),
             ("COPILOT_CANVAS_OPENCODE", &self.fake_opencode),
+            ("COPILOT_CANVAS_CLAUDE", &self.fake_claude),
             (crate::fake_copilot::ENV, &one),
             ("CLAUDE_CONFIG_DIR", &claude),
             ("XDG_DATA_HOME", &xdg),
@@ -978,13 +983,15 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         gui.chord('8', &["alt"])?;
         gui.wait("settings view", 10, |t| t.contains("New-session defaults") && t.contains("Reasoning effort"))?;
         gui.wait("copilot config list (stand-in CLI)", 20, |t| t.contains("fake-model"))?;
-        let (x, y) = gui.find("Model").context("Model row")?;
+        gui.wait("each agent's model, the initial default", 5, |t| t.contains("Copilot model") && t.contains("initial") && t.contains("claude-opus-5.5") && t.contains("claude-opus-5-5"))?;
+        let (x, y) = gui.find("Copilot model").context("Copilot model row")?;
         gui.click((x, y), &[])?;
-        gui.wait("model prompt", 5, |t| t.contains("model id"))?;
-        gui.send("\x15parity-model\r")?;
-        wait_doc(&sb.canvas, "default model saved", |d| d.defaults.model.as_deref() == Some("parity-model"))?;
+        gui.wait("model picker with the stand-in's choices", 10, |t| t.contains("Copilot model for new sessions") && t.contains(crate::fake_copilot::MODELS[1]))?;
+        // An id the list does not have: the picker takes it as typed.
+        gui.send("parity-model\r")?;
+        wait_doc(&sb.canvas, "default model saved", |d| d.defaults.model(crate::client::agents::AgentKind::Copilot) == Some("parity-model"))?;
         gui.chord('1', &["alt"])?;
-        Ok("defaults saved; config listed".into())
+        Ok("Copilot's model set (typed), config listed".into())
     });
 
     check(rows, "23", "Plugins, MCP, skills: list, toggle, remove, add, install; secrets hidden", "mcp_view_lists_and_toggles", || {
@@ -1691,6 +1698,77 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
     });
 
     check(rows, "38", "New: RECENT sessions atop the Sessions panel (newest first, shared); Ctrl+F6 / Ctrl+Shift+F6 and ] / [ view the next or previous one without starting it", "recent_sessions_and_walk_keys", || recent_check(sb, gui));
+    check(rows, "39", "New: the default model (shown before starting; a choice applies to its session and is remembered for its agent; group overrides; resumes keep their model)", "remembered_default_model", || {
+        use crate::client::agents::AgentKind;
+        let log = || std::fs::read_to_string(sb.instance.log_path()).unwrap_or_default();
+        let [initial, listed, picked] = ["claude-opus-5-5", crate::fake_copilot::MODELS[1], crate::fake_copilot::MODELS[2]];
+        // Nothing chosen for Claude Code yet: the dialog shows Opus 5.5 (its id) as the initial default, and the session starts with it.
+        model_dialog(gui, "Model check A", false)?;
+        gui.wait("the initial default before starting", 5, |t| t.contains(&format!("{initial}  ▾ · initial default (Claude Opus 5.5)")))?;
+        let a = create_from_dialog(gui, sb, "Model check A")?;
+        gui.wait("the stand-in Claude Code started with it", 25, |t| t.contains("Model check A · ") && t.contains(&format!("Model: {initial}")))?;
+        anyhow::ensure!(log().contains(&format!("terminal {a}: claude new session, model {initial}")), "the launch carries --model {initial}");
+        let doc = sb.doc()?;
+        anyhow::ensure!(doc.node(&a).and_then(|n| n.model.as_deref()) == Some(initial), "the box records its model");
+        anyhow::ensure!(doc.defaults.model(AgentKind::Claude).is_none(), "no choice made: nothing remembered");
+        // Another model picked in the dialog (from the CLI's list): that session gets it and it becomes Claude Code's default.
+        model_dialog(gui, "Model check B", false)?;
+        pick_model(gui, "Claude Code", picked)?;
+        gui.wait("the choice", 5, |t| t.contains(&format!("{picked}  ▾ · your choice; becomes the default")))?;
+        let b = create_from_dialog(gui, sb, "Model check B")?;
+        gui.wait("B started with the choice", 25, |t| t.contains("Model check B · ") && t.contains(&format!("Model: {picked}")))?;
+        wait_doc(&sb.canvas, "remembered for Claude Code, recorded on B", |d| d.defaults.model(AgentKind::Claude) == Some(picked) && d.node(&b).and_then(|n| n.model.as_deref()) == Some(picked))?;
+        model_dialog(gui, "", false)?;
+        gui.wait("the next dialog shows it", 5, |t| t.contains(&format!("{picked}  ▾ · remembered default for Claude Code")))?;
+        gui.canvas_focus()?;
+        // A stays on its model: resuming it (a transcript makes it a real `claude -r`) passes its own model, not the new default.
+        stop_box(gui, &log, "Model check A", &a)?;
+        let projects = sb.root.join("claude-home").join("projects").join("parity");
+        std::fs::create_dir_all(&projects)?;
+        std::fs::write(projects.join(format!("{a}.jsonl")), json!({ "type": "user", "sessionId": a, "message": { "role": "user", "content": "parity" } }).to_string() + "\n")?;
+        gui.open("Model check A", &format!("Model: {initial}"))?;
+        anyhow::ensure!(log().contains(&format!("terminal {a}: claude resume, model {initial}")), "the resume keeps --model {initial}:\n{}", log().lines().filter(|l| l.contains(&a)).collect::<Vec<_>>().join("\n"));
+        // Copilot keeps a session's model itself: its resume carries none ("MCP parity" started in row 8).
+        let mcp = sb.doc()?.nodes.iter().find(|n| n.name == "MCP parity").map(|n| n.id.clone());
+        if let Some(id) = mcp.filter(|id| log().matches(&format!("launched {id} ")).count() > log().matches(&format!("terminal {id} exited with ")).count()) {
+            stop_box(gui, &log, "MCP parity", &id)?;
+            gui.open("MCP parity", "Model: none")?;
+            anyhow::ensure!(log().lines().any(|l| l.ends_with(&format!("terminal {id}: copilot resume"))), "a Copilot resume carries no model");
+        }
+        // A group's override wins in the group ("from group …"); a choice there is for that session only.
+        group_menu(gui, "Session defaults for group…")?;
+        gui.wait("the group's overrides", 5, |t| t.contains("SETTINGS · Parity group") && t.contains("Claude Code model"))?;
+        let (x, y) = gui.find("Claude Code model").context("Claude Code model row")?;
+        gui.click((x, y), &[])?;
+        gui.wait("the group's picker", 5, |t| t.contains("Claude Code model for group “Parity group”"))?;
+        gui.send("claude-group-parity\r")?;
+        wait_doc(&sb.canvas, "the group's override", |d| d.group("g-parity").and_then(|g| g.defaults.as_ref()).and_then(|d| d.model(AgentKind::Claude)) == Some("claude-group-parity"))?;
+        gui.key("Esc", &[])?;
+        gui.chord('1', &["alt"])?;
+        gui.canvas_focus()?;
+        group_menu(gui, "New session in group")?;
+        model_dialog(gui, "Model check C", true)?;
+        gui.wait("the group's model", 5, |t| t.contains("claude-group-parity  ▾ · from group “Parity group”"))?;
+        pick_model(gui, "Claude Code", listed)?;
+        gui.wait("this session only", 5, |t| t.contains(&format!("{listed}  ▾ · this session only")))?;
+        let c = create_from_dialog(gui, sb, "Model check C")?;
+        let doc = wait_doc(&sb.canvas, "C recorded its model", |d| d.node(&c).and_then(|n| n.model.as_deref()) == Some(listed))?;
+        anyhow::ensure!(doc.defaults.model(AgentKind::Claude) == Some(picked), "the canvas default is untouched");
+        anyhow::ensure!(doc.group("g-parity").and_then(|g| g.defaults.as_ref()).and_then(|d| d.model(AgentKind::Claude)) == Some("claude-group-parity"), "the group's override is untouched");
+        // Reset the group's override: its sessions get the canvas's default again.
+        group_menu(gui, "Session defaults for group…")?;
+        gui.wait("the group's overrides", 5, |t| t.contains("SETTINGS · Parity group") && t.contains("claude-group-parity"))?;
+        let (x, y) = gui.find("Claude Code model").context("Claude Code model row")?;
+        gui.click((x, y), &[])?;
+        gui.wait("the group's picker", 5, |t| t.contains("Claude Code model for group “Parity group”"))?;
+        gui.send(crate::client::models::NOT_SET)?;
+        gui.send("\r")?;
+        wait_doc(&sb.canvas, "the override reset", |d| d.group("g-parity").is_some_and(|g| g.defaults.is_none()))?;
+        gui.key("Esc", &[])?;
+        gui.chord('1', &["alt"])?;
+        gui.canvas_focus()?;
+        Ok(format!("initial {initial} shown and launched; {picked} picked → B and remembered; A resumed with {initial}; group override shown, {listed} for C only, reset"))
+    });
 
     check_kind(rows, "G4", "New: several windows on one canvas (Ctrl+Shift+N, toolbar)", "second_window_rename_sync", Kind::Only("GUI only: a console has one window"), || {
         let opened = gui.req(json!({ "cmd": "new_window" }))?;
@@ -1721,6 +1799,80 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
 
 }
 
+/// The new-session dialog (opened with `n` unless `opened`) with `name`
+/// typed and Claude Code (the stand-in) chosen as its agent.
+fn model_dialog(gui: &mut Gui, name: &str, opened: bool) -> Result<()> {
+    if !opened {
+        gui.canvas_focus()?;
+        gui.send("n")?;
+    }
+    gui.wait("the new-session dialog", 5, |t| t.contains("New session") && t.contains("Model"))?;
+    gui.send(name)?;
+    // A click on the Agent row picks the next agent.
+    for _ in 0..3 {
+        if gui.screen().contains("◉ Claude Code") {
+            break;
+        }
+        let at = gui.find("○ Claude Code").context("the Agent row")?;
+        gui.click(at, &[])?;
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    gui.wait("Claude Code chosen", 5, |t| t.contains("◉ Claude Code"))
+}
+
+/// Picks `model` in the dialog's model picker (typed into its filter).
+fn pick_model(gui: &mut Gui, agent: &str, model: &str) -> Result<()> {
+    let at = gui.find("▾ · ").context("the Model row")?;
+    gui.click(at, &[])?;
+    gui.wait("the model picker", 5, |t| t.contains(&format!("Model of the new {agent} session")) && t.contains("Type a model id"))?;
+    gui.send(model)?;
+    gui.send("\r")
+}
+
+/// Creates the dialog's session; returns its box id.
+fn create_from_dialog(gui: &mut Gui, sb: &Sandbox, name: &str) -> Result<String> {
+    let (x, y) = gui.find("Create & start").context("the create button")?;
+    gui.click((x + 1.0, y), &[])?;
+    let doc = wait_doc(&sb.canvas, &format!("the box “{name}”"), |d| d.nodes.iter().any(|n| n.name == name))?;
+    Ok(doc.nodes.iter().find(|n| n.name == name).map(|n| n.id.clone()).unwrap_or_default())
+}
+
+/// Stops a running box (X, confirmed) and waits for its terminal to exit.
+fn stop_box(gui: &mut Gui, log: &dyn Fn() -> String, name: &str, id: &str) -> Result<()> {
+    let exited = format!("terminal {id} exited with ");
+    let before = log().matches(&exited).count();
+    gui.canvas_focus()?;
+    gui.send("f")?;
+    let at = gui.box_center(name)?;
+    gui.click(at, &[])?;
+    gui.canvas_focus()?;
+    gui.send("x")?;
+    gui.wait("the stop dialog", 5, |t| t.contains(&format!("Stop “{name}”?")))?;
+    gui.key("Enter", &[])?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while log().matches(&exited).count() == before {
+        anyhow::ensure!(Instant::now() < deadline, "{name} did not stop");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    Ok(())
+}
+
+/// Runs an item of the parity group's menu (a right-click on its title).
+fn group_menu(gui: &mut Gui, item: &str) -> Result<()> {
+    gui.canvas_focus()?;
+    gui.send("f")?;
+    let tree = gui.tree()?;
+    let g = tree["canvas"]["groups"].as_array().and_then(|g| g.iter().find(|g| g["id"] == "g-parity").cloned()).context("group")?;
+    let r: Vec<f64> = g["rect"].as_array().map(|a| a.iter().filter_map(|v| v.as_f64()).collect()).unwrap_or_default();
+    anyhow::ensure!(r.len() == 4, "group rect");
+    let title = (r[0] + 3.5, r[1] + 0.5);
+    gui.mouse("down", "right", title, &[])?;
+    gui.mouse("up", "right", title, &[])?;
+    gui.wait("group menu", 5, |t| t.contains(item))?;
+    let at = gui.find(item).context("menu item")?;
+    gui.click(at, &[])
+}
+
 /// Rows that restart the GUI or use other clients.
 fn late_rows(sb: &Sandbox, rows: &mut Vec<Row>) {
     check(rows, "11b", "Terminals survive client exit (detach, reattach)", "detach_and_reattach", || {
@@ -1735,6 +1887,23 @@ fn late_rows(sb: &Sandbox, rows: &mut Vec<Row>) {
         let code = gui.driver.wait_exit(Duration::from_secs(10))?;
         anyhow::ensure!(code == 0, "exit code {code}");
         Ok("reattached with output; detached cleanly".into())
+    });
+
+    check(rows, "39b", "The remembered default model after the client restarts", "remembered_model_after_restart", || {
+        let saved = sb.doc()?;
+        let remembered = saved.defaults.model(crate::client::agents::AgentKind::Claude).map(str::to_owned).context("row 38 remembered a model for Claude Code in the canvas file")?;
+        let mut gui = sb.start(&[], "gui-model.log")?;
+        gui.wait("canvas again", 25, |t| t.contains("Parity group"))?;
+        model_dialog(&mut gui, "", false)?;
+        gui.wait("the remembered model", 10, |t| t.contains(&format!("{remembered}  ▾ · remembered default for Claude Code")))?;
+        gui.key("Esc", &[])?;
+        gui.canvas_focus()?;
+        gui.send("q")?;
+        gui.wait("quit dialog", 5, |t| t.contains("Detach (keep running)"))?;
+        gui.send("\r")?;
+        let code = gui.driver.wait_exit(Duration::from_secs(10))?;
+        anyhow::ensure!(code == 0, "exit code {code}");
+        Ok(format!("{remembered} kept in the canvas file and shown again"))
     });
 
     check(rows, "28", "Idle auto-stop, priority manager, upgrade with resume, protocol tolerance, crash log", "crash_log_and_build_match", || {

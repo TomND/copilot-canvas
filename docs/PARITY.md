@@ -8,7 +8,7 @@ cargo build --release
 target\release\copilot-canvas.exe selftest --client gui --parity
 ```
 
-It takes about 55 s on the development machine (RTX 3070, workstation
+It takes about 60 s on the development machine (RTX 3070, workstation
 locked), prints each check as it runs and ends with the table below;
 `CANVAS_GUI_SCREENS=DIR` keeps the PNG captures the checks inspect.
 
@@ -92,6 +92,7 @@ and unit tests that cover the row.
 | 36 | **New:** removing a multi-selection: right-click on a selected box (or Del) removes its eligible boxes after a confirmation; sessions running in a canvas terminal stay; history is never deleted; Ctrl+Z restores them | `multi_remove_keeps_running`: a 3-box selection (one running) → menu “Remove 2 from canvas” → the confirmation names the running one → two boxes gone, their history files kept → Ctrl+Z brings them back | canvas-core `remove` tests (eligibility, subagents go with their session, subsessions unlinked, undo) | ✓ |
 | 37 | **New:** a click on a group's empty background or its border selects the group (innermost; a few pixels outside the outline in the GUI); title drag, ◢ resize, folder chips, background pan and double-click are unchanged | `group_background_and_border_select`: an empty background spot and a point 0.2 cells outside the outline each select the group (its panel, nothing launched); a background drag pans; title drag and ◢ still move and resize; chips stay clickable; a double-click opens the new-session dialog | step "a click on a group's border selects the group" (heavy outline, its panel); canvas-core `interact` tests (both render modes, nested groups, gestures) | ✓ |
 | 38 | **New:** recent sessions: a RECENT section atop the Sessions panel (newest first, shared by every window through the document); Ctrl+F6 / Ctrl+Shift+F6 (terminals too) and `]` / `[` view the next or previous one and never start it | `recent_sessions_and_walk_keys`: three sessions viewed in turn are listed newest first and saved in the canvas document; Ctrl+F6, Ctrl+F6, Ctrl+Shift+F6 select the one before, the one before that and back (details panels, a "Recent 2 of N" notice) while the list keeps its order; a second later the one reached is first; `]` and `[` on the canvas do the same; no launch in the service log, no terminal for any of them | step "recent sessions: Ctrl+F6 / Ctrl+Shift+F6 view recent sessions without starting them" (from a terminal, TUI and GUI); canvas-model `recent` tests (order, clock skew, walk, removal, document round trip and two windows merging), canvas-core `recent` tests (keys never launch, the walk settles after a second or on any other input, Ctrl+F6 in a terminal, `]` reaches the agent there, the RECENT rows hold still for a double-click); snapshot `sidebar-recent` | ✓ |
+| 39 | **New:** the default model for new sessions: the new-session dialog shows the model it starts with and why (group override, remembered default, initial Claude Opus 5.5); a pick applies to that session and becomes its agent's remembered default (in a group with its own model, that session only); Settings shows and resets each agent's default; resumes keep a session's own model; 39b: still remembered after a restart | `remembered_default_model`, `remembered_model_after_restart`: the stand-in Claude Code starts with `claude-opus-5-5` (nothing chosen, nothing remembered); a model picked from the list starts the next session and is remembered and recorded on its box; a resumed older session keeps `--model claude-opus-5-5`; a Copilot resume carries no model; a group override is shown "from group", a pick there is for that session only, then reset; a restarted GUI still shows the remembered model | `selftest agent` and `selftest agent --agent claude` (the launch command line carries the default model); canvas-model `models` tests (resolution, migration of the old single model, round trip), canvas-agents launch tests (new versus resume per agent); snapshots `new-session-dialog`, group model and model picker | ✓ |
 
 No row is TUI-only: every feature of the TUI exists in the GUI. Row 32 is
 not a front-end feature.
@@ -166,6 +167,8 @@ row  | feature                                                        | GUI test
 36   | New: removing a multi-selection (its eligible boxes after a c… | multi_remove_keeps_running                   | ✓
 37   | New: a click on a group's background or border selects it; ti… | group_background_and_border_select           | ✓
 38   | New: RECENT sessions atop the Sessions panel (newest first, s… | recent_sessions_and_walk_keys                | ✓
+39   | New: the default model (shown before starting; a choice appli… | remembered_default_model                     | ✓
+39b  | The remembered default model after the client restarts         | remembered_model_after_restart               | ✓
 G1   | New: inline images (Kitty graphics; iTerm2 OSC 1337 through C… | kitty_image_pixels_png (GUI only: the TUI c… | ✓
 G2   | New: taskbar progress (ITaskbarList3), FlashWindowEx, toasts   | taskbar_flash_toasts (GUI only: a console h… | ✓
 G3   | New: file drag and drop (paths pasted; uploaded in remote mod… | drop_files_local (GUI only: a console canno… | ✓
@@ -175,7 +178,7 @@ V2   | Stacks: K or the menu stacks subsessions (animated), double-c… | stack_
 V3   | Effects: copilot-canvas effect on a box, animated ≤ 15 fps wh… | effect_fireworks_ack (the TUI shows a badge… | ✓
 V4   | Group chips at any zoom (folders, ⟲ passive), sidebar folder … | chips_low_zoom_and_sidebar (the TUI draws t… | ✓
 V5   | Remote mode: group folders in the canvas's browser, passive f… | remote_group_files_in_canvas (the TUI uses … | ✓
-PASS: 49 rows in 53.9s
+PASS: 51 rows in 62.1s
 ```
 
 ## Limits of the checks

@@ -142,6 +142,10 @@ pub struct AgentLaunch {
     pub name: Option<String>,
     /// First prompt, typed into the new session.
     pub prompt: Option<String>,
+    /// The conversation's model: for a new one the model to start with, for a
+    /// resume the one it started with (when recorded). The provider passes it
+    /// where its agent needs it (Copilot and OpenCode keep a session's model
+    /// themselves, Claude Code does not).
     pub model: Option<String>,
     pub effort: Option<String>,
     pub mode: Option<String>,

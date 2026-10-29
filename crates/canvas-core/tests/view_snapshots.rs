@@ -66,7 +66,7 @@ fn node(id: &str, name: &str, x: i32, y: i32) -> Node {
         passive: None,
         no_messages: false,
         agent: None,
-        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false,
+        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
     }
 }
 
@@ -347,13 +347,44 @@ fn selection_and_rubber_band() {
 }
 
 /// The new-session dialog: name, folder, the Agent row (one agent not
-/// installed), MCP servers, first prompt.
+/// installed), the model it starts with (the initial default), MCP servers,
+/// first prompt.
 #[test]
 fn new_session_dialog() {
     let mut app = app(canvas_core::demo::demo_doc(CWD), false);
     configs(&mut app);
     app.run(Action::NewSession { at: None, parent: None });
     check("new-session-dialog", &mut app, BOTH);
+}
+
+/// A new session in a group that sets its own model: the dialog says so.
+#[test]
+fn new_session_dialog_in_a_group_with_its_own_model() {
+    let mut doc = canvas_core::demo::demo_doc(CWD);
+    let mut overrides = canvas_core::doc::LaunchDefaults::default();
+    overrides.set_model(AgentKind::Copilot, Some("claude-sonnet-5"));
+    doc.groups[0].defaults = Some(overrides);
+    doc.defaults.set_model(AgentKind::Copilot, Some("gpt-6-sol"));
+    let mut app = app(doc, false);
+    configs(&mut app);
+    // Below the first session, inside the demo group.
+    app.run(Action::NewSession { at: Some((2, 11)), parent: None });
+    check("new-session-dialog-group-model", &mut app, BOTH);
+}
+
+/// The model picker over the new-session dialog: OpenCode's own list (`opencode
+/// models`), the initial default, the agent's own default and a typed id.
+#[test]
+fn model_picker() {
+    let mut app = app(canvas_core::demo::demo_doc(CWD), false);
+    configs(&mut app);
+    app.agent_configs.get_mut(&AgentKind::OpenCode).unwrap().models =
+        ["opencode/big-pickle", "github-copilot/claude-opus-5.5", "github-copilot/gpt-6-sol", "openai/gpt-6.1-sol"].map(str::to_owned).to_vec();
+    app.doc.default_agent = Some("opencode".into());
+    app.doc.defaults.set_model(AgentKind::OpenCode, Some("github-copilot/gpt-6-sol"));
+    app.run(Action::NewSession { at: None, parent: None });
+    app.open_model_picker(canvas_core::dialogs::ModelTarget::Dialog);
+    check("model-picker", &mut app, BOTH);
 }
 
 /// The MCP picker over the new-session dialog, with a saved preset.

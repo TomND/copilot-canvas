@@ -171,7 +171,9 @@ impl Claude {
                 push(&["--dangerously-skip-permissions"]);
             }
         }
-        // Nothing below is saved with a Claude session, so it applies to resumes too.
+        // Nothing below is saved with a Claude session, so it applies to resumes
+        // too: a resume carries the model its session started with (the canvas
+        // records it on the box), never the current default.
         for (name, value) in [("--model", &launch.model), ("--effort", &launch.effort), ("--agent", &launch.custom_agent)] {
             if let Some(value) = value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
                 args.extend([name.to_owned(), super::option_value(name, value)?.to_owned()]);
@@ -317,6 +319,8 @@ mod tests {
 
         let resume = AgentLaunch { resume: true, allow_all: true, model: None, effort: None, prompt: None, ..new.clone() };
         assert_eq!(Claude.command_in(&home, ID, &resume, &integration).unwrap().args, ["-r", ID, "--dangerously-skip-permissions", "--plugin-dir", &plugin]);
+        let recorded = AgentLaunch { model: Some("claude-opus-5-5".into()), ..resume.clone() };
+        assert_eq!(Claude.command_in(&home, ID, &recorded, &integration).unwrap().args[..5], ["-r", ID, "--dangerously-skip-permissions", "--model", "claude-opus-5-5"], "a resume keeps its recorded model");
 
         let fork = AgentLaunch { fork_from: Some(PARENT.into()), model: None, effort: None, ..new.clone() };
         assert_eq!(Claude.command_in(&home, ID, &fork, &integration).unwrap().args[..8], ["-r", PARENT, "--fork-session", "--session-id", ID, "-n", "Fix it", "hello"]);

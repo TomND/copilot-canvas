@@ -23,6 +23,7 @@ pub mod interact;
 pub mod links;
 pub mod loops;
 pub mod modals;
+pub mod models;
 pub mod paint;
 pub mod passive;
 pub mod platform;

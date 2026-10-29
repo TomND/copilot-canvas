@@ -14,16 +14,18 @@ use anyhow::Result;
 pub const ENV: &str = "COPILOT_CANVAS_FAKE_COPILOT";
 /// The MCP servers it lists.
 pub const MCP_SERVERS: [&str; 2] = ["github", "playwright"];
+/// The models its `--help` offers (`opencode models` lists them with a provider).
+pub const MODELS: [&str; 3] = ["claude-opus-5.5", "gpt-parity-5", "claude-sonnet-parity"];
 /// Your message as the fake shows it.
 pub const USER_MESSAGE: &str = "Parity check: tint my message";
 
-/// This process is the fake (its name is `copilot`, or `opencode` for the
-/// parity suite's OpenCode boxes, and the variable is set).
+/// This process is the fake (its name is `copilot`, or `opencode` / `claude`
+/// for the parity suite's other agents, and the variable is set).
 pub fn active() -> bool {
     std::env::var_os(ENV).is_some()
         && std::env::current_exe()
             .ok()
-            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().eq_ignore_ascii_case("copilot") || s.to_string_lossy().eq_ignore_ascii_case("opencode")))
+            .and_then(|p| p.file_stem().map(|s| ["copilot", "opencode", "claude"].iter().any(|n| s.to_string_lossy().eq_ignore_ascii_case(n))))
             .unwrap_or(false)
 }
 
@@ -35,10 +37,21 @@ pub fn run(args: &[String]) -> Result<()> {
         ["config", "--list", ..] => "{\"model\":\"fake-model\",\"mouse\":true}".into(),
         ["config", ..] | ["plugin" | "skill" | "mcp", ..] => String::new(),
         ["--version"] => "0.0.0 (canvas parity fake)".into(),
+        ["--help"] => format!(
+            "Usage: copilot [options]\n\nOptions:\n  --model <model>  Set the AI model to use (choices: {})\n  --allow-all      Allow all tools\n",
+            MODELS.iter().map(|m| format!("\"{m}\"")).collect::<Vec<_>>().join(", ")
+        ),
+        ["models", ..] => MODELS.iter().map(|m| format!("github-copilot/{m}")).collect::<Vec<_>>().join("\n"),
         _ => return session(args),
     };
     println!("{out}");
     Ok(())
+}
+
+/// The model a session was started with (`--model` or `-m`), as the fake shows it.
+pub fn model_line(args: &[String]) -> String {
+    let model = args.windows(2).find(|w| w[0] == "--model" || w[0] == "-m").map(|w| w[1].as_str());
+    format!("Model: {}", model.unwrap_or("none"))
 }
 
 /// A Copilot-like screen in mouse mode that echoes what you type and
@@ -51,7 +64,7 @@ fn session(args: &[String]) -> Result<()> {
     // Mouse reports (SGR), as Copilot asks for them.
     write!(out, "\x1b[?1000h\x1b[?1006h")?;
     write!(out, "Fake Copilot (canvas parity)\r\n")?;
-    write!(out, "MCP off: {}\r\n\r\n", if disabled.is_empty() { "none".to_owned() } else { disabled.join(",") })?;
+    write!(out, "MCP off: {} · {}\r\n\r\n", if disabled.is_empty() { "none".to_owned() } else { disabled.join(",") }, model_line(args))?;
     write!(out, " ❯ {USER_MESSAGE}\r\n   and its second line\r\n\r\n")?;
     write!(out, " ● Fake reply: nothing was sent anywhere.\r\n\r\n")?;
     write!(out, "❯ ")?;
