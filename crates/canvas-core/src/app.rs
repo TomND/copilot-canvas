@@ -1607,7 +1607,9 @@ impl App {
             | ServiceMsg::Paired { .. }
             | ServiceMsg::PairChallenge { .. }
             | ServiceMsg::Refusal { .. }
-            | ServiceMsg::Welcome { .. } => {}
+            | ServiceMsg::Welcome { .. }
+            // Only for the iPhone client (CAP_TUNNEL_ACCESS).
+            | ServiceMsg::TunnelAccess { .. } => {}
         }
     }
 
@@ -1860,6 +1862,10 @@ impl App {
             self.last_subscribed = visible;
             self.last_focused_sub = focused;
         }
+        // The service forgets this client's size for terminals it stopped
+        // showing (sizes follow the client typing in a terminal: the iPhone
+        // may take one over); showing one again sends its size again.
+        self.last_sizes.retain(|id, _| self.last_subscribed.contains(id));
         if !matches!(self.drag, Some(Drag::SidebarDivider | Drag::TermDivider)) {
             let tiles = self.layout.tiles.clone();
             for (id, _, inner) in tiles {

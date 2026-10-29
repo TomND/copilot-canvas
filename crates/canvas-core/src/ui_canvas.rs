@@ -15,7 +15,7 @@ use crate::paint::{
     self, ACCENT, BoxSet, DASHED, FAINT, GROUP_COLORS, HEAVY, LIGHT, MUTED, PANEL, ROUND, SELECT, TEXT, fill, fg, outline, put, put_sym,
     truncate,
 };
-use crate::status::Status;
+use crate::status::{Status, StatusStyle};
 use crate::view::{Border, BoxKind, BoxModel, CanvasModel, ChipModel, EdgeKind, EdgeModel, GroupModel, LoopModel, PulseModel, WRect};
 
 /// Gpu mode: folder chips show (and click) from this scale up.

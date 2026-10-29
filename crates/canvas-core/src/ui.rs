@@ -14,7 +14,7 @@ use crate::paint::{
     ACCENT, DARK, FAINT, GRAY, HEAVY, LIGHT, MUTED, PANEL, PANEL_HI, NEGATIVE, ROUND, SELECT, TEXT, ATTENTION, bold, fg, fill, outline, put,
     put_sym, truncate, truncate_left,
 };
-use crate::status::Status;
+use crate::status::{Status, StatusStyle};
 use crate::paths::{format_age, now_ms};
 use crate::view::{RenderMode, View};
 

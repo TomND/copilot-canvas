@@ -65,7 +65,7 @@ pub const GROUP_COLORS: [Color; 6] = [
     Color::Rgb(230, 110, 40),
 ];
 
-pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+pub use canvas_model::status::SPINNER;
 
 pub fn fg(color: Color) -> Style {
     Style::default().fg(color)

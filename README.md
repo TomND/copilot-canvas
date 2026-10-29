@@ -54,6 +54,11 @@ alacritty terminal engine instead of Ghostty.
   over a private Dev Tunnel with pairing: `copilot-canvas remote tunnel-setup`
   and `remote pair` there, `remote add NAME --tunnel ID --code CODE` and
   `copilot-canvas --remote NAME` at home. See [docs/REMOTE.md](docs/REMOTE.md).
+- **iPhone.** The same canvas on your phone over the same Dev Tunnel:
+  sessions by what needs you, the canvas, and real terminals with a key bar
+  and a prompt composer. `copilot-canvas remote pair --qr` on the Cloud PC,
+  scan it in the app. See [ios/README.md](ios/README.md) and
+  [docs/IOS-PLAN.md](docs/IOS-PLAN.md).
 - **Terminal engine.** Terminals run on libghostty-vt (graphemes, Kitty
   keyboard, underline styles, images); `copilot-canvas config engine alacritty`
   switches back. See [docs/GHOSTTY.md](docs/GHOSTTY.md).
@@ -275,9 +280,11 @@ windowless `python`) and its `state` folder (`tasks/`, `logs/`, `status/`,
 
 Workspace crates: `canvas-common` (protocol, transports, settings),
 `canvas-host` (L1), `canvas-agents` (L3 backend), `canvas-model` (document,
-bus, RPC types), `canvas-core` (app state machine), `canvas-termview` (L2),
-`canvas-tui`, `canvas-gui`, `canvas-corpus` (golden terminal corpus),
-`ghostty-vt-sys` and `xtask`.
+bus, RPC types, status rules), `canvas-core` (app state machine),
+`canvas-termview` (L2), `canvas-tui`, `canvas-gui`, `canvas-corpus` (golden
+terminal corpus), `canvas-mobile` (the iPhone app's Rust core, UniFFI),
+`canvas-mock` (a stand-in service for developing the iPhone app on a Mac),
+`ghostty-vt-sys` and `xtask`. The iPhone app itself is in `ios/`.
 
 - **The service owns the canvas document.** It is the single writer of
   `canvas.json`; every open window sends its edits and applies the patches the
@@ -446,7 +453,8 @@ copilot-canvas selftest agent --agent opencode --prompt [--model ID] [--client t
 copilot-canvas selftest --remote loopback|faults|paired
                                       remote mode: the UI test over TCP; drops, cut frames and delay;
                                       pairing, a Dev Tunnel stand-in, revocation (docs/REMOTE.md)
-copilot-canvas remote tunnel-setup|pair|clients|revoke    on the Cloud PC (docs/REMOTE.md)
+copilot-canvas remote tunnel-setup|pair|clients|revoke    on the Cloud PC (docs/REMOTE.md);
+                                      `remote pair --qr` pairs the iPhone app (ios/README.md)
 copilot-canvas remote add|servers|forget                  at home; then copilot-canvas --remote NAME
 cargo test                            unit tests
 ```
@@ -469,7 +477,10 @@ cargo test                            unit tests
   pixel-smooth, and draws no inline images (as in Windows Terminal); the GPU
   client (`--gui`) draws Kitty graphics and iTerm2 inline PNG images. OSC 52
   copy is forwarded to your terminal.
-- Windows only (ConPTY, named pipes, job objects).
+- The service and the desktop clients are Windows only (ConPTY, named
+  pipes, job objects); the iPhone app is a remote client of a Windows
+  service (the protocol, model and terminal-view crates also build for
+  macOS and iOS).
 - Stopping a session sends the agent Ctrl+D (twice), then Ctrl+C, and ends its
   process tree after 5 s; a session the canvas stopped always shows as stopped.
   OpenCode 1.19 sometimes quits its screen but leaves its process running (on a

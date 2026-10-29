@@ -39,8 +39,10 @@ fn date(ms: u64) -> String {
     format!("{} {} UTC", &text[..10], &text[11..16])
 }
 
-/// `remote pair [--name NAME]`: a one-time code from the running service.
-pub fn pair(instance: &Instance, name: Option<String>) -> Result<()> {
+/// `remote pair [--name NAME] [--qr [--url wss://…]]`: a one-time code from
+/// the running service; with `--qr`, also a QR code for the iPhone app (the
+/// code, the tunnel's web address and a Dev Tunnels connect token).
+pub fn pair(instance: &Instance, name: Option<String>, qr: bool, url: Option<String>) -> Result<()> {
     if let Some(name) = &name {
         anyhow::ensure!(remote::valid_name(name), "--name takes 1-40 characters of letters, digits, '-', '_' and '.'");
     }
@@ -67,6 +69,48 @@ pub fn pair(instance: &Instance, name: Option<String>) -> Result<()> {
         println!();
         println!("No tunnel automation yet: set it up with `copilot-canvas remote tunnel-setup`.");
     }
+    if qr {
+        println!();
+        phone_qr(instance, &code.code, url)?;
+    }
+    Ok(())
+}
+
+/// The pairing QR code for the iPhone app (docs/IOS-PLAN.md §4).
+fn phone_qr(instance: &Instance, code: &str, url: Option<String>) -> Result<()> {
+    let settings = Settings::load(&instance.home);
+    let access = match canvas_agents::tunnel_access::issue(&instance.home) {
+        Ok(access) => Some(access),
+        Err(error) => {
+            println!("No Dev Tunnels access token for the phone: {error:#}");
+            None
+        }
+    };
+    let url = url
+        .or_else(|| access.as_ref().map(|a| a.url.clone()).filter(|u| !u.is_empty()))
+        .or_else(|| settings.remote.web_url.clone())
+        .context("the tunnel's web address is unknown: pass --url wss://TUNNEL-PORT.REGION.devtunnels.ms (the address `devtunnel host` prints as \"Connect via browser\", with wss:// instead of https://)")?;
+    anyhow::ensure!(url.starts_with("wss://") || url.starts_with("ws://"), "--url takes a wss:// address");
+    let server = remote::machine_name().to_ascii_lowercase().chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')).take(40).collect::<String>();
+    let link = remote::PairLink {
+        name: if remote::valid_name(&server) { server } else { "cloudpc".into() },
+        url,
+        code: code.to_owned(),
+        token: access.as_ref().map(|a| a.token.clone()).unwrap_or_default(),
+        token_expires_ms: access.as_ref().map_or(0, |a| a.expires_ms),
+    };
+    let uri = link.to_uri();
+    let qr = qrcode::QrCode::with_error_correction_level(uri.as_bytes(), qrcode::EcLevel::L).context("the pairing link does not fit a QR code")?;
+    // Light modules on a dark terminal: inverted so the camera reads it.
+    let text = qr.render::<qrcode::render::unicode::Dense1x2>().dark_color(qrcode::render::unicode::Dense1x2::Light).light_color(qrcode::render::unicode::Dense1x2::Dark).quiet_zone(true).build();
+    println!("Scan with the Copilot Canvas iPhone app (Pair → Scan):");
+    println!("{text}");
+    println!("Address: {}", link.url);
+    match &access {
+        Some(a) => println!("Tunnel access token valid until {}; the service renews it while the phone is connected.", date(a.expires_ms)),
+        None => println!("Without a token the phone can only pair through a tunnel that does not need one."),
+    }
+    println!("The code holds the pairing code and the token: show it only to your own phone.");
     Ok(())
 }
 

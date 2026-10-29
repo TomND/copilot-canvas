@@ -20,4 +20,5 @@ pub mod migrate;
 pub mod remote;
 pub mod service;
 pub mod taskschd;
+pub mod tunnel_access;
 pub mod vscode;

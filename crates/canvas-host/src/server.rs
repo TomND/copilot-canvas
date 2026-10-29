@@ -10,6 +10,14 @@
 //! heartbeats, number their input (applied at most once per client session)
 //! and, over TCP, get frames coalesced per tile and optionally compressed.
 //!
+//! A TCP connection that opens with an HTTP request (`GET `) is a WebSocket
+//! (`canvas_common::ws`): the iPhone client reaches the port through Dev
+//! Tunnels web forwarding. It carries the same byte stream; only paired
+//! clients (or pairing) are accepted on it.
+//!
+//! Terminal sizes follow the client that typed in a terminal last, or claimed
+//! it (tmux "latest", `canvas_common::sizing`).
+//!
 //! Unauthenticated TCP connections are limited: at most
 //! [`MAX_UNAUTHENTICATED`] at once (more are closed at once), frames of at
 //! most `PRE_AUTH_FRAME` bytes, and [`HANDSHAKE_TIMEOUT`] to finish (a read
@@ -38,8 +46,9 @@ use crate::pipe::{Pipe, PipeServer};
 use crate::protocol::{self, CAP_COMPRESS, CAP_IMAGES, ClientMsg, Frame8, ImageRef, Input, LaunchKind, MAX_FRAME, PRE_AUTH_FRAME, Placement, Run8, ServiceMsg, ServiceStats};
 use crate::term::{EncodedImage, Hooks, ImagePng, Notice, Spawn, Terminal, lock};
 use canvas_common::handshake::{Credential, Opening, Pairing};
+use canvas_common::sizing::SizePolicy;
 use canvas_common::wire::{Beat, Closer, FrameReader, FrameWriter, Liveness};
-use canvas_common::{handshake, tcp};
+use canvas_common::{handshake, tcp, ws};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(4);
 /// Remote clients: the focused tile at most every 16 ms, others every 100 ms.
@@ -171,6 +180,8 @@ pub struct Client {
     pub remote_id: Option<String>,
     /// The process at the other end of a pipe connection.
     pub peer_pid: Option<u32>,
+    /// Connected through a WebSocket (Dev Tunnels web forwarding: the iPhone).
+    pub websocket: bool,
     /// `CAP_*` bits from the handshake.
     caps: u32,
     out: Sender<Outgoing>,
@@ -192,6 +203,7 @@ impl Client {
             remote,
             remote_id: None,
             peer_pid: None,
+            websocket: false,
             caps,
             out,
             image_bytes: Arc::default(),
@@ -237,6 +249,11 @@ impl Client {
     /// Ends the connection.
     pub fn close(&self) {
         self.closer.close();
+    }
+
+    /// `CAP_*` bits from the handshake.
+    pub fn caps(&self) -> u32 {
+        self.caps
     }
 
     /// Highest `Input8::seq` applied for this client's session.
@@ -285,6 +302,8 @@ pub struct Host {
     surplus_logged: Mutex<Option<Instant>>,
     /// This service's user (SID): over TCP the token only authenticates it.
     user_sid: String,
+    /// Each terminal's size wishes and owner (tmux "latest").
+    sizes: Mutex<HashMap<String, SizePolicy>>,
     app: OnceLock<Arc<dyn HostApp>>,
 }
 
@@ -397,6 +416,7 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
         unauthenticated: Arc::default(),
         surplus_logged: Mutex::new(None),
         user_sid: crate::win::current_user_sid().unwrap_or_default(),
+        sizes: Mutex::new(HashMap::new()),
         app: OnceLock::new(),
     });
     let app = make_app(&host);
@@ -712,6 +732,57 @@ impl Host {
         }
     }
 
+    /// Resizes terminal `id` to `size` (when the size policy says so).
+    fn apply_size(&self, id: &str, size: Option<(u16, u16)>) -> Result<()> {
+        if let Some((cols, rows)) = size {
+            self.terminal(id)?.resize(cols, rows)?;
+            let _ = self.pump.try_send(());
+        }
+        Ok(())
+    }
+
+    /// `client` wants terminal `id` at `cols`×`rows` (`Resize`).
+    fn size_wish(&self, client: u64, id: &str, cols: u16, rows: u16) -> Result<()> {
+        let target = lock(&self.sizes).entry(id.to_owned()).or_default().wish(client, cols, rows);
+        self.apply_size(id, target)
+    }
+
+    /// `client` typed in terminal `id` or claimed it: the terminal follows its size.
+    fn size_claim(&self, client: u64, id: &str) -> Result<()> {
+        let target = {
+            let mut sizes = lock(&self.sizes);
+            let policy = sizes.entry(id.to_owned()).or_default();
+            if policy.owner() == Some(client) {
+                // Every keystroke claims: nothing to do when it already owns it.
+                return Ok(());
+            }
+            policy.claim(client)
+        };
+        self.apply_size(id, target)
+    }
+
+    /// `client` stopped showing terminal `id` (or disconnected): the newest
+    /// remaining wish applies.
+    fn size_leave(&self, client: u64, id: Option<&str>) {
+        let targets: Vec<(String, Option<(u16, u16)>)> = {
+            let mut sizes = lock(&self.sizes);
+            let mut targets = Vec::new();
+            for (term, policy) in sizes.iter_mut().filter(|(term, _)| id.is_none_or(|i| i == term.as_str())) {
+                let owned = policy.owner() == Some(client);
+                let before = policy.target();
+                let after = policy.leave(client);
+                if owned || after != before {
+                    targets.push((term.clone(), after));
+                }
+            }
+            sizes.retain(|_, policy| !policy.is_empty());
+            targets
+        };
+        for (term, target) in targets {
+            let _ = self.apply_size(&term, target);
+        }
+    }
+
     /// The input state of a client session (created on first use; the least
     /// recently connected session is forgotten beyond `MAX_INPUT_SESSIONS`).
     fn input_session(&self, key: &[u8]) -> Arc<Mutex<InputSession>> {
@@ -736,6 +807,8 @@ enum Link {
 }
 
 type Halves = (Box<dyn Read + Send>, Box<dyn Write + Send>, Closer);
+/// A reader and a writer, and whether they carry a WebSocket.
+type Sniffed = (Box<dyn Read + Send>, Box<dyn Write + Send>, bool);
 
 /// The ends of a TCP connection and its closer (read deadlines, the token check).
 struct TcpEnds {
@@ -766,6 +839,21 @@ fn printable(name: &str) -> String {
     name.escape_debug().to_string()
 }
 
+/// A TCP connection that opens with an HTTP request is upgraded to a
+/// WebSocket carrying the same byte stream; anything else is the plain
+/// protocol (its first bytes are given back to the reader). Runs under the
+/// handshake deadline. Returns the halves and whether it is a WebSocket.
+fn sniff_websocket(mut reader: Box<dyn Read + Send>, mut writer: Box<dyn Write + Send>) -> std::io::Result<Sniffed> {
+    let mut first = [0u8; 4];
+    reader.read_exact(&mut first)?;
+    if !ws::is_http_prefix(&first) {
+        return Ok((Box::new(std::io::Cursor::new(first.to_vec()).chain(reader)), writer, false));
+    }
+    ws::accept(&first, &mut reader, &mut writer)?;
+    let (reader, writer) = ws::split(ws::Role::Server, reader, writer);
+    Ok((Box::new(reader), Box::new(writer), true))
+}
+
 fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Result<()> {
     let remote = matches!(link, Link::Tcp(_));
     let peer_pid = match &link {
@@ -773,11 +861,22 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
         Link::Tcp(_) => None,
     };
     let ((reader, writer, closer), tcp_ends) = link.split()?;
-    let mut reader = FrameReader::new(reader).with_limit(PRE_AUTH_FRAME);
-    let mut writer = FrameWriter::new(writer);
     if let Some(ends) = &tcp_ends {
         ends.closer.set_deadline(Some(HANDSHAKE_TIMEOUT));
     }
+    let (reader, writer, websocket) = if remote {
+        match sniff_websocket(reader, writer) {
+            Ok(halves) => halves,
+            Err(error) => {
+                closer.close();
+                return Err(error.into());
+            }
+        }
+    } else {
+        (reader, writer, false)
+    };
+    let mut reader = FrameReader::new(reader).with_limit(PRE_AUTH_FRAME);
+    let mut writer = FrameWriter::new(writer);
     let opening = handshake::serve(
         &mut reader,
         &mut writer,
@@ -785,6 +884,8 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
         build_id(),
         |remote_id| match (remote_id, &tcp_ends) {
             (Some(id), _) => host.app().remote_credential(id),
+            // Through web forwarding only paired clients are served.
+            (None, _) if websocket => Credential::Refused,
             // Over TCP the token only authenticates this user's processes here.
             (None, Some(ends)) if !host.token_allowed(ends) => Credential::Refused,
             (None, _) => Credential::Secret(host.token.clone()),
@@ -798,7 +899,8 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
     let accepted = match opening {
         Ok(Opening::Client(accepted)) => accepted,
         Ok(Opening::Paired { client_id, name }) => {
-            log(&host.instance, &format!("paired remote client {client_id:?} (it calls itself {name:?})"));
+            let via = if websocket { " over a WebSocket" } else { "" };
+            log(&host.instance, &format!("paired remote client {client_id:?} (it calls itself {name:?}){via}"));
             closer.close();
             return Ok(());
         }
@@ -825,6 +927,7 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
     let mut client = Client::new(id, accepted.protocol, remote, info.caps, out_tx, closer.clone());
     client.remote_id = info.remote_id.clone();
     client.peer_pid = peer_pid;
+    client.websocket = websocket;
     // The newest connection of a client session owns its input; the previous
     // one (half-open after a network drop) stops applying input and is closed.
     let mut ready_ack = 0;
@@ -853,7 +956,8 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
     }
     if remote {
         let paired = info.remote_id.as_deref().map(|r| format!(" as paired client {r:?}")).unwrap_or_default();
-        log(&host.instance, &format!("remote client {id} connected ({}, protocol {}, compression {}){paired}", printable(&info.name), accepted.protocol, host.compress && info.caps & CAP_COMPRESS != 0));
+        let via = if websocket { ", WebSocket" } else { "" };
+        log(&host.instance, &format!("remote client {id} connected ({}, protocol {}, compression {}{via}){paired}", printable(&info.name), accepted.protocol, host.compress && info.caps & CAP_COMPRESS != 0));
     }
     client.send(ServiceMsg::Ready8 { pid: std::process::id(), input_ack: ready_ack });
     let infos: Vec<_> = lock(&host.terms).values().map(|t| t.info()).collect();
@@ -886,6 +990,7 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
     })();
     lock(&host.clients).remove(&id);
     closer.close();
+    host.size_leave(id, None);
     host.app().client_disconnected(id);
     if remote {
         log(&host.instance, &format!("remote client {id} disconnected"));
@@ -958,11 +1063,16 @@ fn liveness_loop(host: Arc<Host>) {
 
 fn subscribe(host: &Host, client: &Client, ids: Vec<String>, focused: Option<String>) {
     let mut subs = lock(&client.subs);
+    let hidden: Vec<String> = subs.keys().filter(|id| !ids.contains(id)).cloned().collect();
     subs.retain(|id, _| ids.contains(id));
     for id in ids.into_iter().take(16) {
         subs.entry(id).or_default();
     }
     drop(subs);
+    // A terminal this client no longer shows stops following its size.
+    for id in hidden {
+        host.size_leave(client.id, Some(&id));
+    }
     *lock(&client.focused) = focused;
     let _ = host.pump.try_send(());
 }
@@ -970,6 +1080,8 @@ fn subscribe(host: &Host, client: &Client, ids: Vec<String>, focused: Option<Str
 fn apply_input(host: &Host, client: &Client, id: &str, input: &Input) -> Result<()> {
     host.input_from(client.id, id);
     if !matches!(input, Input::Focus(_)) {
+        // The terminal takes the size of the client typing in it.
+        host.size_claim(client.id, id)?;
         host.note_active(id);
         host.app().input_noted(id);
     }
@@ -981,8 +1093,19 @@ fn apply_input(host: &Host, client: &Client, id: &str, input: &Input) -> Result<
 fn dispatch(host: &Arc<Host>, client: &Arc<Client>, message: ClientMsg) -> Result<()> {
     match message {
         ClientMsg::Launch { id, kind, cwd, cols, rows } => {
-            if let Err(error) = host.launch(&id, kind, &cwd, cols, rows) {
-                client.send(ServiceMsg::Error { id: Some(id), message: format!("{error:#}") });
+            let running = host.terminal(&id).is_ok_and(|t| t.alive.load(Ordering::Acquire));
+            match host.launch(&id, kind, &cwd, cols, rows) {
+                // A new terminal has the launching client's size and follows it.
+                Ok(()) if !running => {
+                    let mut sizes = lock(&host.sizes);
+                    let policy = sizes.entry(id).or_default();
+                    policy.wish(client.id, cols.clamp(20, 1000), rows.clamp(5, 500));
+                    policy.claim(client.id);
+                }
+                Ok(()) => {}
+                Err(error) => {
+                    client.send(ServiceMsg::Error { id: Some(id), message: format!("{error:#}") });
+                }
             }
         }
         ClientMsg::Subscribe { ids } => subscribe(host, client, ids, None),
@@ -1000,8 +1123,12 @@ fn dispatch(host: &Arc<Host>, client: &Arc<Client>, message: ClientMsg) -> Resul
         },
         ClientMsg::Heartbeat => {}
         ClientMsg::Resize { id, cols, rows } => {
-            host.terminal(&id)?.resize(cols, rows)?;
-            let _ = host.pump.try_send(());
+            host.terminal(&id)?;
+            host.size_wish(client.id, &id, cols, rows)?;
+        }
+        ClientMsg::Claim { id } => {
+            host.terminal(&id)?;
+            host.size_claim(client.id, &id)?;
         }
         ClientMsg::Scroll { id, delta } => {
             host.terminal(&id)?.scroll(delta);
@@ -1014,6 +1141,7 @@ fn dispatch(host: &Arc<Host>, client: &Arc<Client>, message: ClientMsg) -> Resul
         }
         ClientMsg::Click { id, col, row, button, mods } => {
             host.input_from(client.id, &id);
+            host.size_claim(client.id, &id)?;
             host.terminal(&id)?.click(button, col, row, mods)?;
             let _ = host.pump.try_send(());
         }
@@ -1024,9 +1152,13 @@ fn dispatch(host: &Arc<Host>, client: &Arc<Client>, message: ClientMsg) -> Resul
                 terms.remove(&id);
                 drop(terms);
                 lock(&host.input_clients).remove(&id);
+                lock(&host.sizes).remove(&id);
                 host.broadcast(ServiceMsg::TerminalGone(id));
             }
         }
+        // A paired remote client (a phone, a home PC) disconnects; it never
+        // ends the service and every session on it.
+        ClientMsg::Shutdown if client.remote_id.is_some() => bail!("remote clients cannot shut the service down"),
         ClientMsg::Shutdown => {
             let host = host.clone();
             spawn_named("shutdown", move || host.shutdown());
@@ -1652,5 +1784,97 @@ mod tests {
         closer.close();
         let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
         assert!(log.contains("frame too large") || log.contains("closing new ones"), "{log}");
+    }
+
+    /// A backend that knows one paired client, "phone".
+    struct PhoneApp(Vec<u8>);
+
+    impl HostApp for PhoneApp {
+        fn resolve_launch(&self, _: &str, _: LaunchKind) -> Result<Resolved> {
+            bail!("no agents here")
+        }
+        fn client_connected(&self, _: &Arc<Client>) {}
+        fn client_disconnected(&self, _: u64) {}
+        fn message(&self, _: &Arc<Client>, _: ClientMsg) -> Result<()> {
+            Ok(())
+        }
+        fn input_noted(&self, _: &str) {}
+        fn terminals_changed(&self) {}
+        fn has_work(&self) -> bool {
+            false
+        }
+        fn remote_credential(&self, id: &str) -> Credential {
+            if id == "phone" { Credential::Secret(self.0.clone()) } else { Credential::Refused }
+        }
+    }
+
+    /// A WebSocket to the service's remote port, upgraded.
+    fn websocket(addr: SocketAddr) -> (FrameReader, FrameWriter, TcpStream) {
+        let stream = TcpStream::connect(addr).unwrap();
+        let mut reader: Box<dyn Read + Send> = Box::new(stream.try_clone().unwrap());
+        let mut writer: Box<dyn Write + Send> = Box::new(stream.try_clone().unwrap());
+        ws::connect(&mut reader, &mut writer, "copilot-canvas-47600.usw2.devtunnels.ms", "/", &[("X-Tunnel-Authorization", "tunnel x")]).unwrap();
+        let (reader, writer) = ws::split(ws::Role::Client, reader, writer);
+        (FrameReader::new(Box::new(reader)), FrameWriter::new(Box::new(writer)), stream)
+    }
+
+    #[test]
+    fn websocket_clients_on_the_remote_port_must_be_paired() {
+        let home = std::env::temp_dir().join(format!("cc-ws-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("settings.json"), r#"{"remote":{"listen":"127.0.0.1:0"}}"#).unwrap();
+        let instance = Instance::new(Some("ws".into()), Some(home.clone()), Some(home.clone())).unwrap();
+        let secret = vec![9u8; 32];
+        let service = instance.clone();
+        let app_secret = secret.clone();
+        std::thread::spawn(move || run(service, move |_| Arc::new(PhoneApp(app_secret))));
+        let started = Instant::now();
+        let port = loop {
+            if let Some(port) = std::fs::read_to_string(instance.port_path()).ok().and_then(|p| p.trim().parse::<u16>().ok()) {
+                break port;
+            }
+            assert!(started.elapsed() < Duration::from_secs(10), "the service listens");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        // The service token is refused through a WebSocket, even from this user.
+        let token = canvas_common::auth::read_token(&instance.token_path()).unwrap();
+        let (mut reader, mut writer, _s) = websocket(addr);
+        let info = protocol::ClientInfo { name: "iphone".into(), caps: protocol::CAP_FRAME8 | CAP_COMPRESS, session: vec![4; 16], remote_id: None };
+        assert!(handshake::open(&mut reader, &mut writer, &token, "test", Some(info.clone())).is_err(), "no token over web forwarding");
+        // A paired client is served exactly like over TCP, compression included.
+        let (mut reader, mut writer, _s) = websocket(addr);
+        let phone = protocol::ClientInfo { remote_id: Some("phone".into()), ..info };
+        let greeting = handshake::open(&mut reader, &mut writer, &secret, "test", Some(phone)).expect("the paired phone connects");
+        assert_eq!(greeting.build, build_id());
+        assert!(matches!(reader.recv::<ServiceMsg>().unwrap(), Some(ServiceMsg::Ready8 { .. })));
+        reader.accept_compressed().unwrap();
+        writer.compress().unwrap();
+        // A paired remote client cannot end the service.
+        writer.send(&ClientMsg::Shutdown).unwrap();
+        let refused = loop {
+            match reader.recv::<ServiceMsg>().unwrap() {
+                Some(ServiceMsg::Error { message, .. }) => break message,
+                Some(_) => continue,
+                None => panic!("the service closed the connection"),
+            }
+        };
+        assert!(refused.contains("cannot shut the service down"), "{refused}");
+        writer.send(&ClientMsg::Heartbeat).unwrap();
+        assert!(!host_shutting_down(&instance), "still running");
+        // A plain TCP client is still served on the same port.
+        let (r, w, closer) = tcp::split(TcpStream::connect(addr).unwrap()).unwrap();
+        let (mut r, mut w) = (FrameReader::new(Box::new(r)), FrameWriter::new(Box::new(w)));
+        let plain = protocol::ClientInfo { name: "tui".into(), caps: protocol::CAP_FRAME8, session: vec![5; 16], remote_id: None };
+        handshake::open(&mut r, &mut w, &token, "test", Some(plain)).expect("the token over plain TCP, from this user");
+        closer.close();
+        let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
+        assert!(log.contains("WebSocket) as paired client \"phone\""), "{log}");
+    }
+
+    /// Whether the test service logged its shutdown.
+    fn host_shutting_down(instance: &Instance) -> bool {
+        std::fs::read_to_string(instance.log_path()).unwrap_or_default().contains("shutdown requested")
     }
 }

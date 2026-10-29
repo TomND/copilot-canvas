@@ -436,6 +436,61 @@ TUNNEL` (hidden) emulates `devtunnel connect`: it forwards a free local port
 with `COPILOT_CANVAS_STANDIN_CONTROL=DIR` writes its pid to `DIR\standin.pid`
 and drops every connection when `DIR\drop` appears.
 
+## The iPhone (WebSockets through web forwarding)
+
+The iPhone app (`ios/`, docs/IOS-PLAN.md) cannot run `devtunnel connect`.
+It reaches the same port through the tunnel's **web forwarding**
+(`wss://TUNNEL-PORT.REGION.devtunnels.ms`), which carries HTTP and
+WebSockets, with a Dev Tunnels *connect* access token in
+`X-Tunnel-Authorization: tunnel TOKEN` (private tunnels need the owner's
+identity; the token stands in for it).
+
+- **One port, two transports.** A connection to `remote.listen` that opens
+  with `GET ` is an HTTP request: the service answers the WebSocket upgrade
+  (`canvas_common::ws`, at most 8 KiB of request head, within the 5 s
+  handshake deadline and the 16 handshake slots) and then reads the same
+  byte stream from binary messages: length-prefixed postcard frames, zstd,
+  the handshake. No valid frame starts with `GET ` (as a length it is about
+  542 MB, far over the 16 KiB pre-authentication limit). Anything else is
+  the plain TCP protocol, as before.
+- **Paired clients only.** The service token is refused over a WebSocket,
+  even from this user (web forwarding is not loopback from a local process).
+  Pairing (`PairStart`) works as over TCP.
+- **Tunnel access tokens.** `copilot-canvas remote pair --qr` issues one
+  with this machine's signed-in CLI (`devtunnel token TUNNEL --scopes
+  connect`, 24 h) and shows a QR code with the web address, the pairing code
+  and the token (`ccanvas://pair?v=1&name=…&url=…&code=…&token=…&exp=…`).
+  Clients that set `CAP_TUNNEL_ACCESS` (the phone) get
+  `ServiceMsg::TunnelAccess { url, token, expires_ms }` when they connect
+  and whenever the service renews the token (half a day before it expires,
+  while such a client is connected; at most every 10 minutes after a
+  failure, logged). The web address is `remote.web_url` in `settings.json`,
+  else what `devtunnel show TUNNEL` lists for the port, else built from the
+  token's cluster (`wss://TUNNEL-PORT.CLUSTER.devtunnels.ms`).
+- **Shutdown.** `ClientMsg::Shutdown` from a paired remote client (phone or
+  home PC) is refused: quitting a remote canvas disconnects it, never ends
+  the service and its sessions.
+
+### Terminal sizes with several clients
+
+A hosted terminal has one size (its ConPTY). The service remembers each
+connection's wish (its last `Resize`) per terminal and gives the terminal
+the wish of its **owner**: the connection that most recently typed in it
+(`Input`, `Input8`, `Click`) or claimed it (`ClientMsg::Claim { id }`,
+appended at index 27). Without an owner, or when the owner asked for no
+size, the newest wish applies, which is the old "last `Resize` wins" for a
+single client. A connection that disconnects or stops showing the terminal
+(`Subscribe8` without it) is forgotten; the newest remaining wish applies.
+A terminal it launched starts with its size and owner.
+(`canvas_common::sizing`, tmux's "latest" policy.)
+
+So with the home PC and the phone on one session: typing on the phone (in
+*Fit to this phone* mode) reflows the agent to the phone's width; typing at
+the desk gives the desktop's size back. The phone's *Mirror the desktop*
+mode sends no size: it draws the desktop's grid scaled down. The desktop
+clients send their size again when they show a terminal again, and forget
+what they sent for terminals they stopped showing.
+
 ## Local vs remote behaviours
 
 What happens where (PLAN.md §6). "Remote" means a service on another machine

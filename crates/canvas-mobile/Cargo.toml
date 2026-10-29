@@ -1,0 +1,35 @@
+[package]
+name = "canvas-mobile"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "The iPhone client's core: protocol, pairing, canvas replica, terminal screens and session status behind a UniFFI API (docs/IOS-PLAN.md)"
+
+[lib]
+name = "canvas_mobile"
+# staticlib: linked into the iOS app; cdylib: read by uniffi-bindgen for the Swift bindings.
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[features]
+# The `uniffi-bindgen` binary that writes the Swift bindings.
+bindgen = ["uniffi/cli"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[dependencies]
+canvas-common.workspace = true
+canvas-model.workspace = true
+canvas-termview = { workspace = true, default-features = false }
+anyhow.workspace = true
+crossbeam-channel.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror = "2.0.21"
+uniffi = "0.32.2"
+uuid.workspace = true
+
+[dev-dependencies]
+canvas-mock = { path = "../canvas-mock" }

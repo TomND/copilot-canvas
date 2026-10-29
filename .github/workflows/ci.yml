@@ -98,3 +98,30 @@ jobs:
             tests/golden/gui/*.actual.png
             tests/golden/gui/*.diff.png
           if-no-files-found: ignore
+
+  # The iPhone app (docs/IOS-PLAN.md): the portable crates on macOS, the Rust
+  # core for iOS, the app on a simulator with its unit tests and its UI tests
+  # against the mock service.
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - name: portable crates (clippy, tests)
+        run: |
+          rustup component add clippy
+          cargo clippy -p canvas-common -p canvas-model -p canvas-termview -p canvas-mobile -p canvas-mock --all-targets -- -D warnings
+          cargo clippy -p canvas-host --no-default-features --all-targets -- -D warnings
+          cargo test -p canvas-common -p canvas-model -p canvas-termview -p canvas-mobile -p canvas-mock
+          cargo test -p canvas-host --no-default-features
+      - name: the Rust core for iOS
+        run: ios/build-core.sh
+      - name: XcodeGen
+        run: brew install xcodegen && cd ios && xcodegen
+      - name: app tests on a simulator (unit, and UI against the mock)
+        run: |
+          cargo build -p canvas-mock
+          target/debug/canvas-mock --quiet &
+          cd ios
+          COPILOT_CANVAS_SKIP_CORE=1 xcodebuild -project CopilotCanvas.xcodeproj -scheme CopilotCanvas \
+            -destination 'platform=iOS Simulator,name=iPhone 16' CODE_SIGNING_ALLOWED=NO test

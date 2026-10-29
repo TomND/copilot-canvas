@@ -5,7 +5,13 @@ edition.workspace = true
 publish.workspace = true
 description = "L2 terminal view: client-side terminal grids built from host frames, selection, links and drawing adapters"
 
+[features]
+# The ratatui drawing adapter (`tui`): the desktop clients use it; the iPhone
+# core builds without it.
+default = ["tui"]
+tui = ["dep:ratatui"]
+
 [dependencies]
 canvas-common.workspace = true
-ratatui.workspace = true
+ratatui = { workspace = true, optional = true }
 unicode-width.workspace = true
