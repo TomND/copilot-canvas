@@ -106,6 +106,10 @@ pub enum Action {
     /// Starts or resumes a box's session and focuses its terminal (the
     /// explicit start: Enter, double-click, Start / Resume buttons).
     Start(String),
+    /// The read-only transcript of a session or subagent box.
+    Inspect(String),
+    /// A subagent's own conversation in a terminal of its own (a new linked subsession).
+    ResumeChild(String),
     OpenGroup(String),
     NewSession { at: Option<(i32, i32)>, parent: Option<String> },
     Rename(Target),
@@ -439,6 +443,8 @@ pub enum Modal {
     Mcp(McpPicker),
     /// A read-only file or folder of a remote service's machine.
     Viewer(Box<crate::viewer::Viewer>),
+    /// The read-only transcript of a session or subagent.
+    Inspector(Box<crate::inspect::Inspector>),
 }
 
 /// Clickable regions registered while drawing.

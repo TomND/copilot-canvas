@@ -380,6 +380,24 @@ fn session_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)
         }
         out.gap();
         out.text("A subagent runs inside its parent session's terminal.", fg(MUTED));
+        // Its transcript, and whether its own conversation can resume on its own.
+        let inspectable = app.transcript_request(&node.id).is_some();
+        if inspectable {
+            actions.push(("Inspect transcript".into(), Action::Inspect(node.id.clone())));
+        }
+        match app.child_resume(node) {
+            crate::inspect::ChildResume::Allowed { native } => {
+                out.text(format!("Finished and not running anywhere: Resume as subsession opens this conversation in a terminal of its own ({native}), linked to its parent."), fg(ACCENT));
+                actions.push(("Resume as subsession".into(), Action::ResumeChild(node.id.clone())));
+            }
+            crate::inspect::ChildResume::Existing(id) => {
+                let name = app.doc.node(&id).map(|n| n.name.clone()).unwrap_or_default();
+                out.text(format!("Resumed before as its own subsession “{name}”."), fg(ACCENT));
+                actions.push(("Open its subsession".into(), Action::Start(id)));
+            }
+            crate::inspect::ChildResume::No(reason) if inspectable => out.text(reason, fg(MUTED)),
+            crate::inspect::ChildResume::No(_) => {}
+        }
         if let Some(parent) = parent {
             match app.start_plan(&parent) {
                 StartPlan::Focus => actions.push(("Open parent terminal".into(), Action::Start(parent.id.clone()))),
@@ -388,7 +406,7 @@ fn session_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)
             }
         }
         actions.push(("Remove box".into(), Action::RemoveNode(node.id.clone())));
-        return false;
+        return inspectable;
     }
     let kind = crate::agents::agent_of(node);
     let shell = node.command.is_some();
@@ -442,6 +460,9 @@ fn session_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)
         primary = true;
     }
     out.text("S subsession · R rename · G group · X stop", fg(MUTED));
+    if app.transcript_request(&node.id).is_some() {
+        actions.push(("Inspect transcript".into(), Action::Inspect(node.id.clone())));
+    }
     if app.owned_alive(&node.id) {
         actions.push(("Stop".into(), Action::Stop { id: node.id.clone(), force: false }));
     }

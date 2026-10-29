@@ -182,6 +182,15 @@ fn run(ctx: &Ctx, request: Request) -> Result<Response> {
             fork::fork_session(&ctx.sessions_dir, &parent, &child, &name, cwd.as_deref())?;
             Response::Done
         }
+        Request::Transcript { agent, session, parent, agent_key, cwd, limit } => Response::Transcript(Box::new(agents::transcript::read(
+            &ctx.sessions_dir,
+            agent,
+            &session,
+            parent.as_deref(),
+            agent_key.as_deref(),
+            cwd.as_deref(),
+            limit as usize,
+        )?)),
 
         Request::PrepareGroup { group } => {
             doc::prepare_group_folders(&group)?;

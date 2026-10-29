@@ -50,6 +50,11 @@ impl App {
         if node.kind == NodeKind::Agent {
             let parent = node.parent.clone().unwrap_or_default();
             let parent_alive = self.owned_alive(&parent);
+            items.push(item("Inspect transcript", "", Action::Inspect(id.to_owned()), self.transcript_request(id).is_some()));
+            if self.doc.node(&parent).is_some_and(|p| p.command.is_none() && agent_of(p) == AgentKind::OpenCode) {
+                let resumable = !matches!(self.child_resume(node), crate::inspect::ChildResume::No(_));
+                items.push(item("Resume as subsession", "", Action::ResumeChild(id.to_owned()), resumable));
+            }
             items.push(item(if parent_alive { "Open parent terminal" } else { "Start parent session" }, "", Action::Start(parent), !external));
             items.push(item("Rename box", "R", Action::Rename(Target::Node(id.to_owned())), true));
             items.push(item("Remove box", "Del", Action::RemoveNode(id.to_owned()), true));
@@ -64,6 +69,7 @@ impl App {
             items.push(item("Edit rules", "", Action::PassiveOpen(id.to_owned(), 0), true));
             items.push(item("Open run log", "", Action::PassiveOpen(id.to_owned(), 2), true));
             items.push(item(if alive { "Focus chat" } else { "Open chat" }, "", Action::PassiveChat(id.to_owned()), !external));
+            items.push(item("Inspect transcript", "", Action::Inspect(id.to_owned()), self.transcript_request(id).is_some()));
             items.push(item("MCP servers…", "", Action::McpServers(id.to_owned()), true));
             items.push(item("Rename", "R", Action::Rename(Target::Node(id.to_owned())), true));
             items.push(item("Stop run", "X", Action::Stop { id: id.to_owned(), force: false }, alive));
@@ -76,6 +82,9 @@ impl App {
             None => ("Open terminal", false),
         };
         items.push(item(start, "Enter", Action::Start(id.to_owned()), startable));
+        if self.transcript_request(id).is_some() {
+            items.push(item("Inspect transcript", "", Action::Inspect(id.to_owned()), true));
+        }
         items.push(item("New subsession", "S", Action::NewSession { at: None, parent: Some(id.to_owned()) }, true));
         items.push(item("Rename", "R", Action::Rename(Target::Node(id.to_owned())), true));
         if !self.demo {
@@ -544,6 +553,8 @@ impl App {
                 self.view_node(&id);
             }
             Action::Start(id) => self.start_node(&id),
+            Action::Inspect(id) => self.inspect(&id),
+            Action::ResumeChild(id) => self.resume_child(&id),
             Action::OpenGroup(id) => self.open_group(&id),
             Action::NewSession { at, parent } => self.open_new_session(at, parent),
             Action::Rename(target) => {

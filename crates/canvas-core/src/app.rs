@@ -281,6 +281,9 @@ pub struct App {
     pub installed_agents: Vec<AgentKind>,
     /// New subsessions that fork their parent natively: node → parent's agent session.
     pub pending_forks: HashMap<String, String>,
+    /// New subsession boxes that resume a subagent's own conversation and
+    /// have not run yet (a refused launch removes them again).
+    pub resumed_children: HashSet<String>,
     pub automations: Vec<crate::automation::Automation>,
     pub automations_loading: bool,
     pub automations_at: Instant,
@@ -415,6 +418,7 @@ impl App {
             detected_agent,
             installed_agents,
             pending_forks: HashMap::new(),
+            resumed_children: HashSet::new(),
             automations: Vec::new(),
             automations_loading: false,
             automations_at: Instant::now() - Duration::from_secs(60),
@@ -1562,11 +1566,14 @@ impl App {
             }
             ServiceMsg::Clipboard(text) => self.copy_to_clipboard(&text),
             ServiceMsg::Error { id, message } => {
-                if let Some(id) = id {
-                    self.launching.remove(&id);
-                    self.node_errors.insert(id, "launch failed".into());
+                if let Some(id) = &id {
+                    self.launching.remove(id);
+                    self.node_errors.insert(id.clone(), "launch failed".into());
                 }
-                self.notify(message, true);
+                // A resumed child that may not start goes again (with its own notice).
+                if !id.is_some_and(|id| self.launch_refused(&id, &message)) {
+                    self.notify(message, true);
+                }
             }
             ServiceMsg::Stats(stats) => self.stats = Some(stats),
             ServiceMsg::Subsession { parent, child, name, cwd } => self.link_subsession(&parent, &child, &name, &cwd),
@@ -1921,6 +1928,7 @@ impl App {
         }
         self.poll_git_debounce();
         self.tick_side();
+        self.tick_inspector();
         // Failed automations pulse until their next good run.
         let animated = self.doc.nodes.iter().any(|n| {
             let status = self.node_status(n);

@@ -143,6 +143,11 @@ impl App {
                 crate::viewer::ViewerKey::Button(button) if self.viewer_button(viewer, button) => Outcome::Close,
                 crate::viewer::ViewerKey::Button(_) => Outcome::Keep,
             },
+            Modal::Inspector(inspector) => match self.inspector_key(inspector, &key) {
+                crate::inspect::KeyOutcome::Keep => Outcome::Keep,
+                crate::inspect::KeyOutcome::Close => Outcome::Close,
+                crate::inspect::KeyOutcome::Run(action) => Outcome::CloseAndRun(action),
+            },
             Modal::ImportCopilot(dialog) => {
                 let candidates = self.copilot_import_candidates(&dialog.filter.text);
                 let ctrl = key.modifiers.contains(Modifiers::CONTROL);
@@ -738,6 +743,10 @@ impl App {
             (Some(Modal::Mcp(_)), Hit::Button(1)) => self.modal_key(KeyEvent::new(KeyCode::Char('s'), Modifiers::CONTROL)),
             (Some(Modal::Viewer(viewer)), Hit::Button(i)) => {
                 viewer.sel = i;
+                self.modal_key(enter);
+            }
+            (Some(Modal::Inspector(inspector)), Hit::Button(i)) => {
+                inspector.sel = i;
                 self.modal_key(enter);
             }
             (Some(_), Hit::Button(_)) => {

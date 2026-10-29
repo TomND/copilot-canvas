@@ -27,11 +27,14 @@ locked), prints each check as it runs and ends with the table below;
   `inuse.<pid>.lock`) for every status: working, needs you (a pending
   permission), done · review, idle, stopped, failed, open elsewhere, a
   background subagent, a recurring `session.schedule_created` loop. OpenCode
-  and Claude Code look in empty folders (`XDG_DATA_HOME`, `CLAUDE_CONFIG_DIR`).
+  gets a synthetic database (`XDG_DATA_HOME`: a session with a working and a
+  finished task-tool child, for the inspector row); Claude Code looks in an
+  empty folder (`CLAUDE_CONFIG_DIR`).
 - **No agent, no model.** Terminals are PowerShell shells. The agent is a
-  stand-in Copilot CLI: `copilot-canvas.exe` copied as `copilot.exe` and run
-  with `COPILOT_CANVAS_FAKE_COPILOT=1` (`COPILOT_CANVAS_COPILOT` points the
-  canvas at it). It lists two MCP servers, answers `config --list`, and as a
+  stand-in Copilot CLI: `copilot-canvas.exe` copied as `copilot.exe` (and as
+  `opencode.exe` for the OpenCode boxes) and run with
+  `COPILOT_CANVAS_FAKE_COPILOT=1` (`COPILOT_CANVAS_COPILOT` and
+  `COPILOT_CANVAS_OPENCODE` point the canvas at it). It lists two MCP servers, answers `config --list`, and as a
   session prints the MCP servers it was told to turn off, a message of yours
   (for the tint), a reply, enables SGR mouse reports and echoes keys and
   clicks until Ctrl+D or Ctrl+C.
@@ -84,6 +87,7 @@ and unit tests that cover the row.
 | 32 | CLI (service, doctor, bench, events, emit, send, status, followup, automations) | `cli_unchanged` — **no front end:** the same CLI binary for both clients | existing CLI tests | ✓ |
 | 33 | **New:** remote mode (pair, reconnect, resync, offline input blocking) | `remote_loopback_gui_and_upload`: the GUI over loopback TCP; a dropped file is uploaded to the service's machine and its path pasted | `selftest --client gui --remote loopback` (27 steps over TCP); `selftest --remote faults` (the reconnect core both clients share) | ✓ |
 | 34 | **New:** view versus start: a click (canvas, sidebar) only views a box (its live terminal or its details panel); double-click, Enter, the panel's Start / Resume and menu items start it; group rows never launch | `view_vs_start`: a click on a stopped session shows its details with Resume and launches nothing (service log, no tile); a double-click, Enter and the Resume button each resume one (the stand-in Copilot); a group row shows running terminals and launches nothing | steps "a click views a stopped session without launching it", "a double-click on the box starts it", "the details panel's Start button starts a session"; canvas-core `interact` tests | ✓ |
+| 35 | **New:** transcript inspector for session and subagent boxes (live while they run); a finished child resumes as its own linked subsession, never beside a writer | `inspector_and_child_resume`: a Copilot session's transcript and a subagent's note; an OpenCode child (synthetic database) that works, whose inspector shows a new line written while it is open; with its parent running (stand-in OpenCode) a finished child offers no resume; parent stopped: **Resume as subsession** adds a linked box and the service resumes it with `-s <child>` | canvas-agents `transcript` tests (Copilot with subagent events, OpenCode with a child, Claude Code with a subagent file), canvas-core `inspect` tests (resume rules, a refused resume), `backend_contract` (local and remote answers match); `selftest agent --agent opencode --prompt` (inspect and resume a real child) | ✓ |
 
 No row is TUI-only: every feature of the TUI exists in the GUI. Row 32 is
 not a front-end feature.

@@ -22,6 +22,23 @@ use crate::selftest::{GuiDriver, Ui, load, wait_doc};
 const COLS: u16 = 170;
 const ROWS: u16 = 46;
 
+/// OpenCode sessions of the inspector check: a session and its two children.
+const OC_PARENT: &str = "ses_parityparent";
+const OC_RUNNING: &str = "ses_parityrunning";
+const OC_DONE: &str = "ses_paritydone";
+
+/// OpenCode's tables with the indexes the canvas reads by.
+const OPENCODE_SCHEMA: &str = "
+    CREATE TABLE session (id text PRIMARY KEY, project_id text NOT NULL, parent_id text, slug text NOT NULL, directory text NOT NULL,
+        title text NOT NULL, version text NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, time_archived integer, agent text);
+    CREATE INDEX session_parent_idx ON session (parent_id);
+    CREATE TABLE message (id text PRIMARY KEY, session_id text NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL);
+    CREATE INDEX message_session_time_created_id_idx ON message (session_id, time_created, id);
+    CREATE TABLE part (id text PRIMARY KEY, message_id text NOT NULL, session_id text NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL);
+    CREATE INDEX part_message_id_id_idx ON part (message_id, id);
+    CREATE TABLE event_sequence (aggregate_id text PRIMARY KEY, seq integer NOT NULL);
+";
+
 /// How a row is tested.
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
@@ -63,6 +80,8 @@ pub(crate) struct Sandbox {
     group_folder: PathBuf,
     copilot_home: PathBuf,
     fake: PathBuf,
+    /// The stand-in as `opencode.exe` (the OpenCode boxes of the inspector check).
+    fake_opencode: PathBuf,
     canvas: PathBuf,
     sessions: Sessions,
     exe: PathBuf,
@@ -191,9 +210,17 @@ impl Gui {
         Ok((found, [r[0], r[1], r[2], r[3]]))
     }
 
+    /// A point inside a box's visible part (boxes half under the sidebar or
+    /// the right panel are clicked where they show).
     fn box_center(&self, name: &str) -> Result<(f64, f64)> {
         let (_, r) = self.find_box(name)?;
-        Ok((r[0] + (r[2] / 2.0).min(4.0), r[1] + r[3] / 2.0))
+        let tree = self.tree()?;
+        let area: Vec<f64> = tree["canvas"]["area"].as_array().map(|a| a.iter().filter_map(|v| v.as_f64()).collect()).unwrap_or_default();
+        anyhow::ensure!(area.len() == 4, "canvas area");
+        let (x0, x1) = (r[0].max(area[0]), (r[0] + r[2]).min(area[0] + area[2]));
+        let (y0, y1) = (r[1].max(area[1]), (r[1] + r[3]).min(area[1] + area[3]));
+        anyhow::ensure!(x1 - x0 >= 1.0 && y1 - y0 >= 0.5, "box {name:?} at {r:?} is not in view (canvas {area:?})");
+        Ok((x0 + ((x1 - x0) / 2.0).min(4.0), (y0 + y1) / 2.0))
     }
 
     /// The focused tile's inner rect.
@@ -226,11 +253,15 @@ impl Gui {
         }
     }
 
-    /// Starts (or focuses) a box's terminal with a double-click, waits for `ready` in the screen.
+    /// Starts (or focuses) a box's terminal with a double-click, waits for
+    /// its terminal to have the keyboard and for `ready` in the screen.
     fn open(&mut self, name: &str, ready: &str) -> Result<()> {
         self.canvas_focus()?;
+        let (found, rect) = self.find_box(name)?;
+        let id = found["id"].as_str().unwrap_or_default().to_owned();
         let at = self.box_center(name)?;
         self.double_click(at)?;
+        self.wait_tree(&format!("{name}'s terminal with the keyboard (box {rect:?}, double-click at {at:?})"), 25, |t| t["focus"] == "Terminal" && t["focused_term"] == id.as_str())?;
         self.wait(&format!("{name}'s terminal"), 25, |t| t.contains(ready))
     }
 
@@ -350,6 +381,8 @@ impl Sandbox {
         let fake = root.join("fake").join("copilot.exe");
         std::fs::create_dir_all(fake.parent().unwrap_or(&root))?;
         std::fs::copy(&exe, &fake)?;
+        let fake_opencode = root.join("fake").join("opencode.exe");
+        std::fs::copy(&exe, &fake_opencode)?;
         let instance = Instance::new(Some(format!("parity{}", std::process::id())), Some(home.clone()), Some(sessions_dir.clone()))?;
         let id = || uuid::Uuid::new_v4().to_string();
         let sessions = Sessions {
@@ -438,7 +471,80 @@ impl Sandbox {
         std::fs::write(&canvas, serde_json::to_string_pretty(&doc)?)?;
         // The service also listens on loopback TCP (the remote rows connect there).
         std::fs::write(home.join("settings.json"), r#"{"remote":{"listen":"127.0.0.1:0"}}"#)?;
-        Ok(Self { root, instance, work, group_folder, copilot_home, fake, canvas, sessions, exe })
+        Ok(Self { root, instance, work, group_folder, copilot_home, fake, fake_opencode, canvas, sessions, exe })
+    }
+
+    /// OpenCode's database with a session and two task-tool children (one
+    /// still working, one finished), and the session's box on the canvas
+    /// (the inspector check; the golden screenshots leave it out).
+    fn add_opencode(&self) -> Result<()> {
+        let dir = self.root.join("xdg-data").join("opencode");
+        std::fs::create_dir_all(&dir)?;
+        let db = rusqlite::Connection::open(dir.join("opencode.db"))?;
+        db.execute_batch(OPENCODE_SCHEMA)?;
+        let now = crate::paths::now_ms() as i64;
+        let work = self.work.display().to_string().replace('\\', "/");
+        let mut seq = 0;
+        let mut bump = |id: &str| -> Result<()> {
+            seq += 1;
+            db.execute("INSERT OR REPLACE INTO event_sequence (aggregate_id, seq) VALUES (?1, ?2)", rusqlite::params![id, seq])?;
+            Ok(())
+        };
+        for (id, parent, title, at) in [
+            (OC_PARENT, None, "OpenCode parent", now - 60_000),
+            (OC_RUNNING, Some(OC_PARENT), "Find callers (@explore subagent)", now - 50_000),
+            (OC_DONE, Some(OC_PARENT), "Summarize the diff (@general subagent)", now - 40_000),
+        ] {
+            db.execute(
+                "INSERT INTO session (id, project_id, parent_id, slug, directory, title, version, time_created, time_updated) VALUES (?1, 'p', ?2, 's', ?3, ?4, '1', ?5, ?5)",
+                rusqlite::params![id, parent, work, title, at],
+            )?;
+            bump(id)?;
+        }
+        let message = |id: &str, session: &str, at: i64, data: Value| -> Result<()> {
+            db.execute("INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?1, ?2, ?3, ?3, ?4)", rusqlite::params![id, session, at, data.to_string()])?;
+            Ok(())
+        };
+        let part = |id: &str, message: &str, session: &str, data: Value| -> Result<()> {
+            db.execute("INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?1, ?2, ?3, 0, 0, ?4)", rusqlite::params![id, message, session, data.to_string()])?;
+            Ok(())
+        };
+        let user = |at: i64| json!({ "role": "user", "time": { "created": at } });
+        let done = |at: i64| json!({ "role": "assistant", "time": { "created": at, "completed": at + 1000 }, "finish": "stop" });
+        message("msg_p1", OC_PARENT, now - 59_000, user(now - 59_000))?;
+        part("prt_p1", "msg_p1", OC_PARENT, json!({ "type": "text", "text": "Review the parity sandbox" }))?;
+        message("msg_p2", OC_PARENT, now - 58_000, done(now - 58_000))?;
+        part("prt_p2", "msg_p2", OC_PARENT, json!({ "type": "text", "text": "Two subagents are on it." }))?;
+        message("msg_r1", OC_RUNNING, now - 49_000, user(now - 49_000))?;
+        part("prt_r1", "msg_r1", OC_RUNNING, json!({ "type": "text", "text": "Find the callers of parity_probe" }))?;
+        message("msg_r2", OC_RUNNING, now - 48_000, json!({ "role": "assistant", "time": { "created": now - 48_000 } }))?;
+        part("prt_r2", "msg_r2", OC_RUNNING, json!({ "type": "tool", "tool": "grep", "state": { "status": "running", "input": { "pattern": "parity_probe" }, "time": { "start": now - 47_000 } } }))?;
+        message("msg_d1", OC_DONE, now - 39_000, user(now - 39_000))?;
+        part("prt_d1", "msg_d1", OC_DONE, json!({ "type": "text", "text": "Summarize the diff in one line" }))?;
+        message("msg_d2", OC_DONE, now - 38_000, done(now - 38_000))?;
+        part("prt_d2", "msg_d2", OC_DONE, json!({ "type": "text", "text": "PARITY_DONE_SUMMARY: nothing changed." }))?;
+        for id in [OC_PARENT, OC_RUNNING, OC_DONE] {
+            bump(id)?;
+        }
+        let mut doc = self.doc()?;
+        let mut parent = node("oc-parent", "OpenCode parent", 2, 2 + 4 * (GRID_Y + 2) + 6, &self.work);
+        parent.agent = Some("opencode".into());
+        parent.agent_session = Some(OC_PARENT.into());
+        parent.reviewed_ms = Some(crate::paths::now_ms());
+        doc.nodes.push(parent);
+        std::fs::write(&self.canvas, serde_json::to_string_pretty(&doc)?)?;
+        Ok(())
+    }
+
+    /// Adds a text part to the working child (its transcript grows while you look).
+    fn grow_running_child(&self, text: &str) -> Result<()> {
+        let db = rusqlite::Connection::open(self.root.join("xdg-data").join("opencode").join("opencode.db"))?;
+        db.execute(
+            "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?1, 'msg_r2', ?2, 0, 0, ?3)",
+            rusqlite::params![format!("prt_r9{}", crate::paths::now_ms()), OC_RUNNING, json!({ "type": "text", "text": text }).to_string()],
+        )?;
+        db.execute("UPDATE event_sequence SET seq = seq + 100 WHERE aggregate_id = ?1", [OC_RUNNING])?;
+        Ok(())
     }
 
     fn args(&self, extra: &[&str]) -> Vec<String> {
@@ -460,9 +566,10 @@ impl Sandbox {
         let one = PathBuf::from("1");
         let (claude, xdg) = (self.root.join("claude-home"), self.root.join("xdg-data"));
         // Only the sandbox's histories: OpenCode and Claude Code look in empty folders.
-        let env: [(&str, &Path); 5] = [
+        let env: [(&str, &Path); 6] = [
             ("COPILOT_HOME", &self.copilot_home),
             ("COPILOT_CANVAS_COPILOT", &self.fake),
+            ("COPILOT_CANVAS_OPENCODE", &self.fake_opencode),
             (crate::fake_copilot::ENV, &one),
             ("CLAUDE_CONFIG_DIR", &claude),
             ("XDG_DATA_HOME", &xdg),
@@ -494,6 +601,7 @@ pub(crate) fn stop_service(instance: &Instance) {
 pub fn run(remote: Option<&str>) -> Result<()> {
     anyhow::ensure!(remote.is_none(), "--parity runs locally (it starts its own loopback client for the remote rows)");
     let sandbox = Sandbox::new()?;
+    sandbox.add_opencode()?;
     println!("Copilot Canvas GUI parity suite (PLAN §8; demo shells and a stand-in Copilot only; sandbox {})", sandbox.root.display());
     let saved_clipboard = crate::client::clipboard::get_text().ok();
     let started = Instant::now();
@@ -1186,6 +1294,73 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         anyhow::ensure!(log().matches("launched ").count() == before, "viewing a group launched something");
         gui.canvas_focus()?;
         Ok("click → details (no launch); double-click, Enter and Resume each resumed one; group row launched nothing".into())
+    });
+
+    check(rows, "35", "New: transcript inspector (sessions and subagents, live while they run); a finished child resumes as its own subsession", "inspector_and_child_resume", || {
+        gui.canvas_focus()?;
+        gui.send("f")?;
+        gui.wait_tree("the OpenCode session's subagent boxes", 20, |t| {
+            let boxes = t["canvas"]["boxes"].as_array().cloned().unwrap_or_default();
+            boxes.iter().any(|b| b["name"] == "explore") && boxes.iter().any(|b| b["name"] == "general")
+        })?;
+        let log = || std::fs::read_to_string(sb.instance.log_path()).unwrap_or_default();
+        let launches = log().matches("launched ").count();
+        let inspect = |gui: &mut Gui, name: &str| -> Result<()> {
+            gui.canvas_focus()?;
+            let at = gui.box_center(name)?;
+            gui.click(at, &[])?;
+            gui.wait(&format!("{name}'s details"), 5, |t| t.contains("Inspect transcript"))?;
+            let (x, y) = gui.find("Inspect transcript").context("the Inspect button")?;
+            gui.click((x + 1.0, y), &[])?;
+            gui.wait("the inspector", 10, |t| t.contains("Transcript · ") && !t.contains("Loading…"))
+        };
+        // A Copilot session's own transcript, and a subagent known only by its start and end.
+        inspect(gui, "With agents")?;
+        gui.wait("its prompt", 5, |t| t.contains("❯ parity"))?;
+        gui.key("Esc", &[])?;
+        inspect(gui, "Parity explorer")?;
+        gui.wait("why it does not resume on its own", 5, |t| t.contains("part of its parent's conversation") && !t.contains("Resume as subsession"))?;
+        gui.key("Esc", &[])?;
+        // An OpenCode child that works: its transcript grows while it is open.
+        inspect(gui, "explore")?;
+        gui.wait("the child's task and its running tool", 5, |t| t.contains("Find the callers of parity_probe") && t.contains("… running") && t.contains("running: refreshing"))?;
+        sb.grow_running_child("PARITY_LIVE_LINE found 3 callers")?;
+        gui.wait("the live refresh", 10, |t| t.contains("PARITY_LIVE_LINE"))?;
+        gui.key("Esc", &[])?;
+        anyhow::ensure!(log().matches("launched ").count() == launches, "inspecting launched something");
+        // While its parent runs here, a finished child does not resume on its own.
+        gui.open("OpenCode parent", "Fake Copilot")?;
+        inspect(gui, "general")?;
+        gui.wait("no resume beside the running parent", 5, |t| t.contains("PARITY_DONE_SUMMARY") && t.contains("stop the parent") && !t.contains("Resume as subsession"))?;
+        gui.key("Esc", &[])?;
+        // The parent stops: the finished child resumes in a terminal of its own, as a new linked box.
+        gui.canvas_focus()?;
+        let at = gui.box_center("OpenCode parent")?;
+        gui.click(at, &[])?;
+        gui.canvas_focus()?;
+        gui.send("x")?;
+        gui.wait("the stop dialog", 5, |t| t.contains("Stop “OpenCode parent”?"))?;
+        gui.key("Enter", &[])?;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !log().contains("terminal oc-parent exited with ") {
+            anyhow::ensure!(Instant::now() < deadline, "the parent did not stop");
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        inspect(gui, "general")?;
+        gui.wait("Resume as subsession", 10, |t| t.contains("Resume as subsession") && t.contains("PARITY_DONE_SUMMARY"))?;
+        let (x, y) = gui.find("Resume as subsession").context("the Resume button")?;
+        gui.click((x + 1.0, y), &[])?;
+        let doc = wait_doc(&sb.canvas, "a new subsession box that follows the child", |d| d.nodes.iter().any(|n| n.agent_session.as_deref() == Some(OC_DONE) && n.parent.as_deref() == Some("oc-parent")))?;
+        let child = doc.nodes.iter().find(|n| n.agent_session.as_deref() == Some(OC_DONE)).map(|n| n.id.clone()).unwrap_or_default();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !log().contains(&format!("terminal {child}: opencode resume")) {
+            anyhow::ensure!(Instant::now() < deadline, "the child was not resumed (-s {OC_DONE})");
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        gui.wait("its own terminal", 25, |t| t.contains("Summarize the diff · ") && t.contains("Fake Copilot"))?;
+        anyhow::ensure!(doc.nodes.iter().any(|n| n.kind == NodeKind::Agent && n.agent_key.as_deref() == Some(OC_DONE)), "the subagent box stays");
+        gui.canvas_focus()?;
+        Ok("Copilot session + subagent, OpenCode child live-refreshed; refused beside its running parent; resumed with -s as a linked box".into())
     });
 
     check_kind(rows, "G4", "New: several windows on one canvas (Ctrl+Shift+N, toolbar)", "second_window_rename_sync", Kind::Only("GUI only: a console has one window"), || {

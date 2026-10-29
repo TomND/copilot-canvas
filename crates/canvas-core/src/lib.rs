@@ -5,7 +5,7 @@
 
 pub use canvas_common::{paths, pipe, protocol, settings, win};
 pub use canvas_model::agent as agents;
-pub use canvas_model::{automation, bus, config, doc, git, migrate, rpc, sync, vscode};
+pub use canvas_model::{automation, bus, config, doc, git, migrate, rpc, sync, transcript, vscode};
 
 pub mod actions;
 pub mod app;
@@ -17,6 +17,7 @@ pub mod events;
 pub mod factory_client;
 pub mod files;
 pub mod input;
+pub mod inspect;
 pub mod interact;
 pub mod links;
 pub mod modals;

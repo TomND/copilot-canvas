@@ -1,5 +1,6 @@
 //! A stand-in Copilot CLI for the GUI parity suite: `copilot-canvas.exe`
-//! copied as `copilot.exe` and run with `COPILOT_CANVAS_FAKE_COPILOT=1`
+//! copied as `copilot.exe` (or `opencode.exe` for the suite's OpenCode
+//! boxes) and run with `COPILOT_CANVAS_FAKE_COPILOT=1`
 //! (both are required). It answers the configuration listings the canvas
 //! reads (two MCP servers, no plugins or skills) and, started as a session,
 //! draws a Copilot-like screen (your message, a reply, an input line) that
@@ -16,10 +17,14 @@ pub const MCP_SERVERS: [&str; 2] = ["github", "playwright"];
 /// Your message as the fake shows it.
 pub const USER_MESSAGE: &str = "Parity check: tint my message";
 
-/// This process is the fake (its name is `copilot` and the variable is set).
+/// This process is the fake (its name is `copilot`, or `opencode` for the
+/// parity suite's OpenCode boxes, and the variable is set).
 pub fn active() -> bool {
     std::env::var_os(ENV).is_some()
-        && std::env::current_exe().ok().and_then(|p| p.file_stem().map(|s| s.to_string_lossy().eq_ignore_ascii_case("copilot"))).unwrap_or(false)
+        && std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().eq_ignore_ascii_case("copilot") || s.to_string_lossy().eq_ignore_ascii_case("opencode")))
+            .unwrap_or(false)
 }
 
 pub fn run(args: &[String]) -> Result<()> {

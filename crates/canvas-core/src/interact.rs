@@ -100,6 +100,11 @@ impl App {
         if node.kind == NodeKind::Automation {
             return self.view_node(id);
         }
+        // A subagent's own conversation (an OpenCode child) resumes in a
+        // terminal of its own when nothing else writes to it.
+        if node.kind == NodeKind::Agent && matches!(self.child_resume(&node), crate::inspect::ChildResume::Allowed { .. } | crate::inspect::ChildResume::Existing(_)) {
+            return self.resume_child(id);
+        }
         self.select_node(id, false);
         let Some(session) = self.start_target(&node) else { return self.notify("Its parent session is not on the canvas.", true) };
         let session = session.id;
