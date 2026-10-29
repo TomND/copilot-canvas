@@ -51,11 +51,13 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
+      # The Rust cache first: when it restores a partial match (Cargo.lock
+      # changed) it cleans target/, which would remove the library below.
+      - uses: Swatinem/rust-cache@v2
       - uses: actions/download-artifact@v8
         with:
           name: ghostty
           path: target/ghostty
-      - uses: Swatinem/rust-cache@v2
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       # Includes canvas-core's ViewModel snapshot tests (tests/view_snapshots.rs):
@@ -124,4 +126,4 @@ jobs:
           target/debug/canvas-mock --quiet &
           cd ios
           COPILOT_CANVAS_SKIP_CORE=1 xcodebuild -project CopilotCanvas.xcodeproj -scheme CopilotCanvas \
-            -destination 'platform=iOS Simulator,name=iPhone 16' CODE_SIGNING_ALLOWED=NO test
+            -destination 'platform=iOS Simulator,name=iPhone 16' test

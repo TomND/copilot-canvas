@@ -22,7 +22,9 @@ required-features = ["bindgen"]
 [dependencies]
 canvas-common.workspace = true
 canvas-model.workspace = true
-canvas-termview = { workspace = true, default-features = false }
+# Without the ratatui adapter (a path, not `workspace = true`: inherited
+# dependencies cannot turn default features off).
+canvas-termview = { path = "../canvas-termview", default-features = false }
 anyhow.workspace = true
 crossbeam-channel.workspace = true
 serde.workspace = true
