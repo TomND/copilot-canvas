@@ -840,3 +840,110 @@ impl App {
         self.mark_dirty();
     }
 }
+
+#[cfg(test)]
+mod paste_tests {
+    use std::sync::{Arc, Mutex};
+
+    use crossbeam_channel::{Receiver, bounded, unbounded};
+
+    use crate::app::{App, Focus, TermSelection, TermView};
+    use crate::conn::Conn;
+    use crate::doc::Doc;
+    use crate::input::InputEvent;
+    use crate::protocol::{ClientMsg, Frame8, Input, Key, MOD_CTRL, MODE_ALT_SCREEN, Run8, TermInfo};
+    use crate::sync::Opened;
+
+    /// A clipboard of the test's own.
+    struct Clip(Mutex<String>);
+
+    impl crate::platform::Platform for Clip {
+        fn set_clipboard_text(&self, text: &str) -> anyhow::Result<()> {
+            *self.0.lock().unwrap() = text.to_owned();
+            Ok(())
+        }
+        fn clipboard_text(&self) -> anyhow::Result<String> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+        fn clipboard_has_text(&self) -> bool {
+            !self.0.lock().unwrap().is_empty()
+        }
+        fn clipboard_has_image(&self) -> bool {
+            false
+        }
+    }
+
+    /// An app whose keyboard is in live terminal "t", with `clip` as its clipboard.
+    fn app(clip: &str) -> (App, Receiver<ClientMsg>, Arc<Clip>) {
+        let (tx, rx) = bounded(64);
+        let (_service, service_rx) = bounded(1);
+        let (app_tx, _app_rx) = unbounded();
+        let mut app = App::new(Conn::detached(tx, service_rx), Arc::new(crate::rpc::Offline), Opened::detached(Doc::default()), false, ".".into(), app_tx, None);
+        let clip = Arc::new(Clip(Mutex::new(clip.to_owned())));
+        app.platform = clip.clone();
+        app.terms.insert("t".into(), TermInfo { id: "t".into(), alive: true, ..Default::default() });
+        app.focused_term = Some("t".into());
+        app.focus = Focus::Terminal;
+        (app, rx, clip)
+    }
+
+    fn inputs(rx: &Receiver<ClientMsg>) -> Vec<Input> {
+        rx.try_iter()
+            .filter_map(|m| match m {
+                ClientMsg::Input { input, .. } | ClientMsg::Input8 { input, .. } => Some(input),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn pastes_reach_the_terminal_as_one_paste_without_a_trailing_line_break() {
+        let (mut app, rx, _) = app("line one\r\n\r\n  indented\r\n");
+        app.on_input(vec![InputEvent::Key(crate::input::KeyEvent::new(crate::input::KeyCode::Char('v'), crate::input::Modifiers::CONTROL))]);
+        assert_eq!(inputs(&rx), [Input::Paste("line one\r\n\r\n  indented".into())], "Ctrl+V: the clipboard, without its final line break");
+        app.on_input(vec![InputEvent::Paste("a\nb\n\n".into())]);
+        assert_eq!(inputs(&rx), [Input::Paste("a\nb".into())], "a console paste");
+        app.on_input(vec![InputEvent::Paste("\r\n".into())]);
+        assert!(inputs(&rx).is_empty(), "line breaks alone paste nothing (no Enter)");
+        app.on_input(vec![InputEvent::Paste(String::new())]);
+        assert_eq!(inputs(&rx), [Input::Key { key: Key::Char('v'), mods: MOD_CTRL }], "an empty paste lets the agent read an image");
+    }
+
+    #[test]
+    fn ime_text_with_line_breaks_is_a_paste_and_without_is_typed() {
+        let (mut app, rx, _) = app("");
+        app.on_input(vec![InputEvent::Text("ab".into())]);
+        assert_eq!(inputs(&rx), [Input::Key { key: Key::Char('a'), mods: 0 }, Input::Key { key: Key::Char('b'), mods: 0 }]);
+        app.on_input(vec![InputEvent::Text("first\nsecond\n".into())]);
+        assert_eq!(inputs(&rx), [Input::Paste("first\nsecond".into())]);
+    }
+
+    #[test]
+    fn copying_from_copilot_leaves_its_scrollbar_out() {
+        let (mut app, _rx, clip) = app("");
+        let run = |col: u16, text: &str| Run8 { col, text: text.into(), ..Default::default() };
+        let mut view = TermView::default();
+        view.apply8(Frame8 {
+            id: "t".into(),
+            cols: 12,
+            rows: 2,
+            full: true,
+            changed: vec![(0, vec![run(0, " ● answer"), run(11, "┃")]), (1, vec![run(0, "   more")])],
+            cursor: None,
+            cursor_shape: 0,
+            cursor_blink: false,
+            display_offset: 0,
+            history: 0,
+            modes: MODE_ALT_SCREEN,
+            links: Vec::new(),
+        });
+        app.views.insert("t".into(), view);
+        app.term_select = Some(TermSelection { id: "t".into(), anchor: (0, 0), head: (11, 1) });
+        app.copy_selection();
+        assert_eq!(clip.0.lock().unwrap().as_str(), " ● answer  ┃\r\n   more", "another program keeps it");
+        app.terms.get_mut("t").unwrap().copilot = true;
+        app.doc.nodes.push(serde_json::from_value(serde_json::json!({ "id": "t", "kind": "session", "name": "t", "x": 0, "y": 0, "agent": "copilot" })).unwrap());
+        app.copy_selection();
+        assert_eq!(clip.0.lock().unwrap().as_str(), " ● answer\r\n   more");
+    }
+}

@@ -77,7 +77,7 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 | **Terminals** | Real Copilot CLI in ConPTY; single view or up to four tiles (`T`); terminals keep running when you close the canvas and reappear when you reopen it |
 | **Scrolling** | The wheel goes to the app like in Windows Terminal: mouse-wheel events when Copilot's `mouse` setting is on (its default; 3 lines per notch), PageUp/PageDown on its full-screen view when it is off, scrollback otherwise; Shift+wheel or Shift+PgUp always scroll the scrollback |
 | **Your messages** | In Copilot terminals your own prompts get a navy background and a blue ▎ bar so they stand out from Copilot's output (recognised from how Copilot draws them: " ❯ text" and its indented continuation lines) |
-| **Copy & paste** | Drag inside a terminal to select (soft-wrapped lines rejoin); releasing copies it. Ctrl+C / Ctrl+Shift+C copy while text is selected (otherwise Ctrl+C reaches Copilot); Ctrl+V pastes; the pane's right-click menu has Copy / Paste |
+| **Copy & paste** | Drag inside a terminal to select; releasing copies it. Copies keep line breaks (CR LF), blank lines, indentation and spaces inside lines; lines a shell soft-wrapped rejoin (the terminal engine's own wrap state, so a line that just fills the width or a border in the last column never joins the next row). On full-screen views (Copilot, OpenCode, vim) every row is a line, and Copilot's scrollbar column is left out. Ctrl+C / Ctrl+Shift+C copy while text is selected (otherwise Ctrl+C reaches Copilot); Ctrl+V / Ctrl+Shift+V paste; the pane's right-click menu has Copy / Paste. **A paste never sends a message**: multi-line text (Ctrl+V, the pane menu, Windows Terminal's paste, IME text) reaches the agent as one bracketed paste whose line breaks stay text, a trailing line break is dropped, and a program without bracketed paste gets Shift+Enter or Alt+Enter between lines, never Enter ([docs/AGENTS.md](docs/AGENTS.md#pasting)) |
 | **Images** | Copy a screenshot and press **Alt+V** (or Ctrl+V, or the pane menu's *Paste*): Copilot attaches it (`[📷 …png]`). With no text on the clipboard the canvas sends the keystroke and Copilot reads the image itself. Windows Terminal keeps Ctrl+V for its own text paste, so with only an image on the clipboard Ctrl+V never reaches any app there; use Alt+V |
 | **Copilot's terminal features** | Clicks reach Copilot when its `mouse` setting is on (its tab bar, "click here" actions); drags still select text in the canvas. Copilot's title (its current intent) shows in the pane header. Its progress report (OSC 9;4) drives the spinner instantly and the canvas mirrors overall state to the Windows Terminal tab and taskbar (busy while any session works, yellow while one needs you). Bells and OSC 777 notifications (Copilot's `beep` / `terminalNotifications` settings) ring Windows Terminal |
 | **Links** | URLs, OSC 8 hyperlinks and absolute Windows paths are underlined. In terminals Ctrl+click opens them, elsewhere a click does. Web links open in your browser, folders in Explorer, files in VS Code at the line (or revealed in Explorer); nothing is ever executed |
@@ -107,7 +107,7 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 | In a list view | click row | ↑↓, Enter open/edit, Space enable/disable, Del remove, Esc back |
 | Tile terminals | toolbar | `T` |
 | Leave a terminal | click canvas/sidebar | **Ctrl+]** or F6 |
-| Copy / paste in a terminal | drag to select; pane menu | Ctrl+C (with selection) · Ctrl+V |
+| Copy / paste in a terminal | drag to select; pane menu | Ctrl+C (with selection) · Ctrl+V / Ctrl+Shift+V |
 | Open a link | click (Ctrl+click in terminals) | — |
 | Undo the last VS Code sync | canvas menu, VS Code view | Ctrl+Z |
 | Quit (sessions keep running) | toolbar **⏻ Quit** | `Q` / Ctrl+Q, even while filtering (asks: detach or stop all) |
@@ -423,7 +423,7 @@ copilot-canvas service status|stop    stop ends the service's sessions (graceful
 copilot-canvas bench [--terminals N] [--seconds S] [--json FILE]
 copilot-canvas bench --client gui     the GPU client's latency, frame cost, idle CPU, memory, first paint
 copilot-canvas selftest               end-to-end UI test in a hidden console (demo shells only)
-copilot-canvas selftest --client gui  the same 27 steps against the GPU client (over its test hooks)
+copilot-canvas selftest --client gui  the same 28 steps against the GPU client (over its test hooks)
 copilot-canvas selftest --client gui --parity
                                       one GUI check per row of the parity matrix (docs/PARITY.md)
 copilot-canvas kitty-demo             print a small test image (iTerm2 inline image; the GPU client shows it)
@@ -436,6 +436,12 @@ copilot-canvas selftest agent [--agent copilot|opencode|claude]
                                       syncs VS Code sessions and previews migration (applies nothing).
                                       Claude Code runs in a throw-away CLAUDE_CONFIG_DIR.
 copilot-canvas selftest copilot       same as selftest agent --agent copilot
+copilot-canvas selftest agent --paste [--agent copilot|opencode|claude]
+                                      pastes multi-line text (a blank line, indentation, a trailing line
+                                      break) into the real agent's input box through the canvas and
+                                      checks it arrived as lines and nothing was sent; erases it again
+                                      (OpenCode runs with a free model as every default, Claude Code in a
+                                      throw-away CLAUDE_CONFIG_DIR; docs/AGENTS.md#pasting)
 copilot-canvas selftest agent --agent opencode --prompt [--model ID] [--client tui|gui] [--steps LIST]
                                       OpenCode through the canvas with tiny prompts to a free model only
                                       (ids ending in -free; default opencode/deepseek-v4.1-flash-free):
@@ -470,6 +476,11 @@ cargo test                            unit tests
   client (`--gui`) draws Kitty graphics and iTerm2 inline PNG images. OSC 52
   copy is forwarded to your terminal.
 - Windows only (ConPTY, named pipes, job objects).
+- A terminal selection covers the rows in view (dragging does not scroll).
+  On full-screen views every row is copied as its own line: such programs
+  wrap their paragraphs themselves, so a paragraph copied from Copilot or
+  OpenCode keeps their line breaks. cmd.exe has no multi-line input: a
+  pasted line break ends its line (docs/AGENTS.md#pasting).
 - Stopping a session sends the agent Ctrl+D (twice), then Ctrl+C, and ends its
   process tree after 5 s; a session the canvas stopped always shows as stopped.
   OpenCode 1.19 sometimes quits its screen but leaves its process running (on a

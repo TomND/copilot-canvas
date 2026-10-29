@@ -194,11 +194,15 @@ character. They load on a thread while the service connects.
 **Input (`input.rs`).** winit keys become core `KeyEvent`s from the logical
 key (all modifiers but Ctrl applied; AltGr compositions arrive composed);
 text of several characters and IME commits become `InputEvent::Text` (a
-terminal gets the characters, a field inserts them). Mouse positions are
-fractional cells; wheel pixel deltas accumulate into notches (three rows
-each). Ctrl+V and Shift+Insert outside a terminal paste the clipboard into
-the focused field; in a terminal the core pastes (or sends Ctrl+V for an
-image) as in the TUI.
+terminal gets the characters, a field inserts them; committed text with a
+line break reaches a terminal as one paste, so the break is never Enter).
+Mouse positions are fractional cells; wheel pixel deltas accumulate into
+notches (three rows each). Ctrl+V and Shift+Insert outside a terminal paste
+the clipboard into the focused field; in a terminal the core pastes (or
+sends Ctrl+V for an image) as in the TUI: one paste without its trailing
+line break (`docs/AGENTS.md#pasting`). The GUI needs no burst detection:
+its clipboard paste is one event (the TUI's console delivers a paste as
+key presses, see `canvas_core::input::coalesce`).
 
 **Platform (`canvas-core platform.rs`, `canvas-gui platform.rs`).** The core
 reaches the machine through `trait Platform`: clipboard text, "clipboard has
@@ -336,7 +340,7 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   `UPDATE_SNAPSHOTS=1 cargo test -p canvas-core --test view_snapshots`
   accepts the new texts.
 - `copilot-canvas selftest --client gui [--remote loopback]` runs the TUI
-  self-test's 27 steps against the GUI in a 170 × 46 cell window. A `Ui`
+  self-test's 28 steps against the GUI in a 170 × 46 cell window. A `Ui`
   trait has two drivers: the TUI's hidden pseudoconsole and `GuiDriver`,
   which starts `copilot-canvas-gui.exe --test-hooks --size 170x46` and turns
   the terminal input the scenario sends (keys, Alt+digits, Ctrl+letters, SGR

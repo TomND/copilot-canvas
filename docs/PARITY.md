@@ -15,7 +15,7 @@ locked), prints each check as it runs and ends with the table below;
 ## How the suite works
 
 - **Over the test hooks.** It starts `copilot-canvas-gui.exe --test-hooks
-  --size 170x46 --perf` and drives it like the 27-step self-test
+  --size 170x46 --perf` and drives it like the 28-step self-test
   (`docs/GUI.md` §3): keys, text, mouse and wheel at cell centres, the `screen`
   text, the `tree` (boxes with status, border and loop; tiles with images,
   tint and links; selection; notices), offscreen `png` captures whose pixels
@@ -44,7 +44,7 @@ locked), prints each check as it runs and ends with the table below;
 
 ## The matrix
 
-`GUI check` is the parity suite's check; `also` lists the 27-step GUI
+`GUI check` is the parity suite's check; `also` lists the 28-step GUI
 self-test steps (`selftest --client gui`, also run with `--remote loopback`)
 and unit tests that cover the row.
 
@@ -63,7 +63,7 @@ and unit tests that cover the row.
 | 11 | Terminals: ConPTY, single or 4 tiles (`T`), survive client exit | `tiles_single_and_tiled` (`T` toggles), `detach_and_reattach` (a new GUI shows the shell's earlier output, then detaches cleanly) | steps "Enter opens a real native terminal", "tiled view", "detach", "reattach" | ✓ |
 | 12 | Wheel rules (mouse mode, PgUp/PgDn when mouse off, scrollback, Shift forces scrollback) | `wheel_scrollback_and_shift`: 120 lines, the wheel scrolls back, typing returns to the live screen | canvas-gui `input.rs` wheel notch tests; canvas-host wheel/click encoding tables | ✓ |
 | 13 | User-message tint (navy background, ▎ bar) | `user_message_tint_png`: the stand-in Copilot's message row is navy (30, 44, 70) in the PNG, the reply row is not | canvas-termview `user_message_rows` test | ✓ |
-| 14 | Copy and paste: drag-select (soft-wrap rejoin), copy on release, Ctrl+C with selection, Ctrl+Shift+C, Ctrl+V, pane menu | `copy_on_release_and_paste`: a drag copies `COPY_PROBE_TEXT` on release; Ctrl+V pastes | canvas-termview selection tests (rejoin) | ✓ |
+| 14 | Copy and paste: drag-select (soft-wrap rejoin), copy on release, Ctrl+C with selection, Ctrl+Shift+C, Ctrl+V, pane menu | `copy_on_release_and_paste`: a drag copies `COPY_PROBE_TEXT` on release; Ctrl+V pastes; a drag over a soft-wrapped line, a hard break, a blank line and indentation copies exactly that text; a two-line paste into PowerShell runs nothing; a four-line paste (blank line, indentation, trailing line break) and IME text with a line break reach the paste probe as one bracketed paste with no Enter | canvas-termview selection tests (engine wrap state, full-screen rows, Copilot's scrollbar), canvas-host paste encoding (both engines, every mode), canvas-core `coalesce` and paste tests; the 28-step self-test runs the same check in the TUI and GUI | ✓ |
 | 15 | Image paste (Alt+V / Ctrl+V): direct Ctrl+V; show the image | `paste_image_preview`: with an image on the clipboard Ctrl+V goes to the agent and a 64 × 40 thumbnail appears (pixel checked) | canvas-gui `clipimage.rs` (DIB decoding), `images.rs` (thumbnails) | ✓ |
 | 16 | Click forwarding in Copilot's mouse mode; drags still select | `click_forwarding_and_drag_select`: the stand-in receives `ESC[<0;7;…M`; a drag selects and copies | | ✓ |
 | 17 | Title in the pane header, taskbar state mirror, bell, OSC 777 | `title_progress_bell_toasts`: OSC 0 title in the header; taskbar paused (yellow) while one needs you, busy once answered, paused again; bell counted; OSC 777 and a needs-you transition become toasts (in the Action Center) | step "progress (OSC 9;4), title and bell"; canvas-gui `platform.rs` tests | ✓ |
@@ -79,10 +79,10 @@ and unit tests that cover the row.
 | 27 | Copilot automations (`data.db`) and session schedules | `automation_boxes_and_session_loops`: three automation boxes; the session schedule loops | | ✓ |
 | 28 | Idle auto-stop, priority manager, upgrade with resume, protocol-mismatch tolerance, crash log | `crash_log_and_build_match`: no update prompt for a current service; a crash is written to `crash.log` and the sessions keep running (idle stop, priorities and upgrades are the service's, shared with the TUI) | `upgrade_probe` (manual), canvas-host tests | ✓ |
 | 29 | Keyboard map, F6 / Ctrl+] to leave a terminal, Q / Ctrl+Q quit dialog, `?` help | `help_f6_and_quit_dialog` | steps "Ctrl+] returns keyboard focus", "detach", "stop all and quit" | ✓ |
-| 30 | `--demo` mode | `demo_mode_canvas` | the whole 27-step self-test runs in `--demo` | ✓ |
+| 30 | `--demo` mode | `demo_mode_canvas` | the whole 28-step self-test runs in `--demo` | ✓ |
 | 31 | `--perf` overlay (GPU timings, round-trip time) | `perf_overlay_rtt`: frame timings and service round trips measured | `bench --client gui` | ✓ |
 | 32 | CLI (service, doctor, bench, events, emit, send, status, followup, automations) | `cli_unchanged` — **no front end:** the same CLI binary for both clients | existing CLI tests | ✓ |
-| 33 | **New:** remote mode (pair, reconnect, resync, offline input blocking) | `remote_loopback_gui_and_upload`: the GUI over loopback TCP; a dropped file is uploaded to the service's machine and its path pasted | `selftest --client gui --remote loopback` (27 steps over TCP); `selftest --remote faults` (the reconnect core both clients share) | ✓ |
+| 33 | **New:** remote mode (pair, reconnect, resync, offline input blocking) | `remote_loopback_gui_and_upload`: the GUI over loopback TCP; a dropped file is uploaded to the service's machine and its path pasted | `selftest --client gui --remote loopback` (28 steps over TCP); `selftest --remote faults` (the reconnect core both clients share) | ✓ |
 
 No row is TUI-only: every feature of the TUI exists in the GUI. Row 32 is
 not a front-end feature.
