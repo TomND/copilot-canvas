@@ -51,6 +51,9 @@ pub struct GuiPlatform {
     /// clipboard, used when Windows' clipboard is unavailable (a locked
     /// workstation refuses it).
     pub test_clipboard: Option<Arc<Mutex<TestClipboard>>>,
+    /// Test runs on someone's desktop: toasts and taskbar flashes are only
+    /// recorded (status `quiet`), never shown.
+    pub quiet: bool,
 }
 
 /// The test hooks' clipboard (see [`GuiPlatform::test_clipboard`]).
@@ -108,6 +111,10 @@ impl GuiPlatform {
         if hwnd == 0 {
             return;
         }
+        if self.quiet {
+            self.flashes.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
         use windows_sys::Win32::UI::WindowsAndMessaging::{FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO, FlashWindowEx};
         let info = FLASHWINFO { cbSize: std::mem::size_of::<FLASHWINFO>() as u32, hwnd: hwnd as _, dwFlags: FLASHW_TRAY | FLASHW_TIMERNOFG, uCount: 3, dwTimeout: 0 };
         // SAFETY: a valid FLASHWINFO for this process's window.
@@ -119,6 +126,8 @@ impl GuiPlatform {
     fn toast(&self, title: String, body: String) {
         let status = if self.in_front() {
             "in front"
+        } else if self.quiet {
+            "quiet"
         } else if recently_shown(&title, &body) {
             "duplicate"
         } else {

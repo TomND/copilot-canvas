@@ -187,6 +187,7 @@ impl Launch {
         platform.index.store(index, std::sync::atomic::Ordering::Relaxed);
         if self.test_hooks {
             platform.test_clipboard = Some(Default::default());
+            platform.quiet = crate::shell::quiet_tests();
         }
         let platform = Arc::new(platform);
         app.platform = platform.clone();
