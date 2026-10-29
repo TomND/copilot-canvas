@@ -110,6 +110,9 @@ pub struct Layout {
     /// Clickable links on screen (rebuilt every frame).
     pub links: Vec<crate::links::Link>,
     pub modal_rect: Option<Rect>,
+    /// Gpu mode: the open HTML report's content area and its safe page
+    /// (the GUI shows it in its HTML view there): (cells, report id, page).
+    pub html_pane: Option<(Rect, String, Arc<String>)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -328,6 +331,8 @@ pub struct App {
     pub visual: crate::visual::VisualState,
     /// Recently used sessions: the walk and the RECENT rows (`recent.rs`).
     pub recent: crate::recent::RecentState,
+    /// The Reports inbox and its viewer (`reports.rs`).
+    pub reports: crate::reports::ReportsState,
 }
 
 impl App {
@@ -461,6 +466,7 @@ impl App {
             settings_group: None,
             visual: Default::default(),
             recent: Default::default(),
+            reports: Default::default(),
             instance: None,
             new_service_rx: None,
             restarting: None,
@@ -1658,6 +1664,7 @@ impl App {
             }
             ServiceMsg::Placements { term, placements } => self.views.entry(term).or_default().set_placements(placements),
             ServiceMsg::Notification { term, title, body } => self.on_notification(&term, &title, &body),
+            ServiceMsg::Reports { json } => self.on_reports(&json),
             ServiceMsg::Ready { .. }
             | ServiceMsg::Ready8 { .. }
             | ServiceMsg::Heartbeat { .. }

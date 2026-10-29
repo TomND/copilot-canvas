@@ -72,6 +72,11 @@ pub struct Resolved {
 pub trait HostApp: Send + Sync {
     /// Turns an agent launch (`LaunchKind::Copilot…`) into a program to run.
     fn resolve_launch(&self, id: &str, kind: LaunchKind) -> Result<Resolved>;
+    /// Environment a plain command's terminal gets (`LaunchKind::Command`,
+    /// e.g. the demo's shells): the canvas integration.
+    fn command_env(&self, _id: &str) -> Vec<(String, String)> {
+        Vec::new()
+    }
     /// A client authenticated: send it the backend's snapshots.
     fn client_connected(&self, client: &Arc<Client>);
     fn client_disconnected(&self, client: u64);
@@ -588,7 +593,7 @@ impl Host {
             return Ok(());
         }
         let resolved = match kind {
-            LaunchKind::Command { program, args } => Resolved { program, args, env: Vec::new(), agent: false },
+            LaunchKind::Command { program, args } => Resolved { program, args, env: self.app().command_env(id), agent: false },
             other => self.app().resolve_launch(id, other)?,
         };
         let terminal = Terminal::spawn(

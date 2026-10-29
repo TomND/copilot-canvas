@@ -65,6 +65,11 @@ pub trait Platform: Send + Sync {
     /// window is in the background).
     fn needs_you(&self, _session: &str) {}
 
+    /// A new report reached the Reports inbox while the canvas is open (GUI:
+    /// a toast and a flashing taskbar button when the window is in the
+    /// background; the TUI shows its notice and the activity bar's count).
+    fn report_arrived(&self, _title: &str, _source: &str) {}
+
     /// Opens the other front end (TUI from the GUI, GUI from the TUI) on the
     /// same service and canvas with `args` (PLAN Phase 7: the TUI stays one
     /// keystroke away). Returns a status line.

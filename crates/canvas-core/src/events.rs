@@ -120,7 +120,7 @@ impl App {
         let ctrl = key.modifiers.contains(Modifiers::CONTROL);
         let shift = key.modifiers.contains(Modifiers::SHIFT);
         if key.modifiers.contains(Modifiers::ALT)
-            && let KeyCode::Char(c @ '1'..='8') = key.code
+            && let KeyCode::Char(c @ '1'..='9') = key.code
         {
             let view = crate::side::VIEWS[(c as u8 - b'1') as usize].0;
             return self.set_view(view);

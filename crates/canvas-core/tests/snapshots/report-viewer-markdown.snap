@@ -1,0 +1,108 @@
+# report-viewer-markdown (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas  DEMO · native shells   + New   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit                                                 4 sessions
+    R╭─ Report · Morning brief · day 100 (read-only) ───────────────────────────────────────────────────────────────────────────────────────────╮────┐
+ ▤  E│ ⚠ warn · from Fix flaky test · 4m ago · Markdown                                                                                         │    │
+     │ from ▤ Fix flaky test  ·  ↗ PR github.com/org/repo/pull/1234  ·  ↗ Board                                                                 │    │
+ ◷  1│ lines 1–20 of 20 · ↑↓ PgUp/PgDn scroll · Tab buttons · Esc close                                                                         │    │
+   ▎ │ Morning brief · day 100                                                                                                                  │    │
+ ⧉   │ ━━━━━━━━━━━━━━━━━━━━━━━                                                                                                                  │    │
+     │                                                                                                                                          │    │
+ ⌁   │ Needs you                                                                                                                                │    │
+     │ ─────────                                                                                                                                │    │
+ ✦   │                                                                                                                                          │    │
+     │ • PR 1234 review requested by Ana: open it                                                                                               │    │
+ ◈   │ • Build main failed twice overnight                                                                                                      │    │
+     │                                                                                                                                          │    │
+ ⇄   │ Status                                                                                                                                   │    │
+     │ ──────                                                                                                                                   │    │
+ ≡   │                                                                                                                                          │    │
+     │ Area    │ State  │ Note                                                                                                                  │    │
+▌✉1  │ ────────┼────────┼─────────────                                                                                                          │    │
+     │ Rollout │ ring 2 │ no incidents                                                                                                          │    │
+     │ Triage  │ 4 new  │ 2 assigned                                                                                                            │    │
+     │                                                                                                                                          │    │
+     │  cargo test -p upload                                                                                                                    │    │
+     │                                                                                                                                          │    │
+     │ ▎ Nothing else changed since yesterday.                                                                                                  │    │
+     │                                                                                                                                          │    │
+     │                                                                                                                                          │    │
+     │                                                                                                                                          │    │
+     │                                                                                                                                          │    │
+     │                                                                                                                                          │    │
+     │                                                                                                                                          │    │
+     │                                                                                                                                          │    │
+     │                                                                                                                                          │    │
+     │                                                                                                                                          │    │
+     │                                                                                                                                          │    │
+     │                                                                                                                                          │    │
+     │                                                                                                                                          │    │
+     │  View “Fix flaky test”    ↗ Pull request    Copy    Mark unread    Delete    Close                                                       │    │
+     ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯────┘
+ ↑↓ move · Enter read · Space read/unread · Del delete · Esc back · Alt+1…9 views · ? help
+## gpu view model
+view cursor=none modal=5,1 140x38 banner=None
+canvas area=50,1 44x38 origin=-2,-1 scale=1 grid=true tick=0 empty=false
+group g-demo "Canvas project" icon=▣ members=4 rect=0,0 70x15 color=#56b4e9 style=[fg #56b4e9 +DIM] selected=false drop_target=false automations=false folder=false
+  chip " ◧ Set folder… " action=SetGroupFolder("g-demo") rect=52,0 15x1 fixed=false lit=false
+edge Subagent color=#6e7681 from=2,2 30x4 to=6,7 24x3 path=(4.5,6) (4.5,6.5) (8.5,6.5) (8.5,7)
+edge Subsession color=#58a6ff from=36,2 30x4 to=36,9 30x4 path=(38.5,6) (38.5,7.5) (38.5,7.5) (38.5,9)
+box demo-main:explore Agent rect=6,7 24x3 prefix="◇ " name="Explore terminal APIs"
+  status=JustFinished icon="✓" label="just finished" line="✓ just finished" subtitle="subagent" elsewhere=false every=None mailbox=0
+  border=Light border_style=[fg #6e7681] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #648fff]
+  selected=false focused_term=false active=false
+box demo-review Session rect=36,2 30x4 prefix="" name="Review implementation"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]
+  selected=false focused_term=false active=false
+box demo-sub Session rect=36,9 30x4 prefix="↳ " name="Write tests"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]
+  selected=false focused_term=false active=false
+box s-fix Session rect=2,30 30x4 prefix="" name="Fix flaky test"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]
+  selected=false focused_term=false active=false
+box demo-main Session rect=2,2 30x4 prefix="" name="Build session canvas"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Heavy border_style=[fg #f0f6fc +BOLD] fill=#161b22 attention=none name_style=[fg #f0f6fc +BOLD] line_style=[fg #585e66]
+  selected=true focused_term=false active=false
+## gpu overlay at 5,1
+╭─ Report · Morning brief · day 100 (read-only) ───────────────────────────────────────────────────────────────────────────────────────────╮
+│ ⚠ warn · from Fix flaky test · 4m ago · Markdown                                                                                         │
+│ from ▤ Fix flaky test  ·  ↗ PR github.com/org/repo/pull/1234  ·  ↗ Board                                                                 │
+│ lines 1–20 of 20 · ↑↓ PgUp/PgDn scroll · Tab buttons · Esc close                                                                         │
+│ Morning brief · day 100                                                                                                                  │
+│ ━━━━━━━━━━━━━━━━━━━━━━━                                                                                                                  │
+│                                                                                                                                          │
+│ Needs you                                                                                                                                │
+│ ─────────                                                                                                                                │
+│                                                                                                                                          │
+│ • PR 1234 review requested by Ana: open it                                                                                               │
+│ • Build main failed twice overnight                                                                                                      │
+│                                                                                                                                          │
+│ Status                                                                                                                                   │
+│ ──────                                                                                                                                   │
+│                                                                                                                                          │
+│ Area    │ State  │ Note                                                                                                                  │
+│ ────────┼────────┼─────────────                                                                                                          │
+│ Rollout │ ring 2 │ no incidents                                                                                                          │
+│ Triage  │ 4 new  │ 2 assigned                                                                                                            │
+│                                                                                                                                          │
+│  cargo test -p upload                                                                                                                    │
+│                                                                                                                                          │
+│ ▎ Nothing else changed since yesterday.                                                                                                  │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│  View “Fix flaky test”    ↗ Pull request    Copy    Mark unread    Delete    Close                                                       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

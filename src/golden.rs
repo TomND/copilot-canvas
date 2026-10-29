@@ -640,6 +640,33 @@ fn demo_shots(shots: &mut Shots) -> Result<()> {
     }
     shots.shot(&ui, "terminals-tiled", &|_: &GuiDriver| vec![status_figures()]);
 
+    // The Reports inbox: a Markdown brief and a short message from a demo
+    // session, spooled as the CLI would (published hours ago, so their ages
+    // hold still), then the brief in the viewer.
+    use crate::client::reports_model::{Format, SUBMISSION_VERSION, Submission, new_id};
+    let spool = sb.instance.home.join("reports").join("spool");
+    std::fs::create_dir_all(&spool)?;
+    let now = crate::paths::now_ms();
+    let brief = "# Morning brief\n\n## Needs you\n\n- **PR 1234** review requested by *Ana*: [open it](https://github.com/org/repo/pull/1234)\n- Build `main` failed twice overnight\n\n## Status\n\n| Area | State | Note |\n|---|---|---|\n| Rollout | ring 2 | no incidents |\n| Triage | 4 new | 2 assigned |\n\n```\ncargo test -p upload\n```\n\n> Nothing else changed since yesterday.\n";
+    let reports = [
+        (3, "Morning brief", Format::Markdown, "warn", brief, "https://github.com/org/repo/pull/1234", ""),
+        (2, "PR 1234 received 12 new comments; dispatched the owning session", Format::Message, "queued", "PR 1234 received 12 new comments; dispatched the owning session", "https://github.com/org/repo/pull/1234", "pr-1234"),
+    ];
+    for (hours, title, format, kind, body, pr, thread) in reports {
+        let at = now - hours * 3_600_000;
+        let s = Submission { version: SUBMISSION_VERSION, id: new_id(at), title: title.into(), format, kind: kind.into(), body: body.into(), created_ms: at, source: "demo-main".into(), pr: pr.into(), thread: thread.into(), ..Default::default() };
+        std::fs::write(spool.join(format!("{}.json", s.id)), serde_json::to_vec(&s)?)?;
+    }
+    ui.send(b"\x1d")?;
+    ui.send(b"\x1b9")?;
+    ui.wait("the inbox", Duration::from_secs(10), |t| t.contains("2 unread") && t.contains("Morning brief") && t.contains("✉2"))?;
+    shots.shot(&ui, "reports-inbox", &|_: &GuiDriver| vec![status_figures()]);
+    let (x, y) = ui.find("Morning brief").context("the brief's row")?;
+    click(&ui, "left", (x as f64 + 0.5, y as f64 + 0.5))?;
+    ui.wait("the brief", Duration::from_secs(10), |t| t.contains("Report · Morning brief") && t.contains("│ State"))?;
+    shots.shot(&ui, "report-viewer", &|_: &GuiDriver| vec![status_figures()]);
+    ui.send(b"\x1b")?;
+
     let _ = ui.request(json!({ "cmd": "quit" }));
     let _ = ui.wait_exit(Duration::from_secs(10));
     Ok(())

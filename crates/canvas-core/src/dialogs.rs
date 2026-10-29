@@ -184,6 +184,8 @@ pub enum Action {
     OpenOtherClient,
     /// Stacks, hidden subsessions, dust, effects, group folders and passive sessions.
     Visual(crate::visual::VisualAction),
+    /// The Reports inbox and its viewer.
+    Report(crate::reports::ReportAction),
 }
 
 #[derive(Clone, Debug)]
@@ -475,6 +477,8 @@ pub enum Modal {
     Viewer(Box<crate::viewer::Viewer>),
     /// The read-only transcript of a session or subagent.
     Inspector(Box<crate::inspect::Inspector>),
+    /// A report or message from the Reports inbox (read-only).
+    Report(Box<crate::reports::ReportViewer>),
 }
 
 /// Clickable regions registered while drawing.

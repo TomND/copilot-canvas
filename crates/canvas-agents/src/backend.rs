@@ -216,6 +216,8 @@ fn run(ctx: &Ctx, request: Request) -> Result<Response> {
             Response::Done
         }
         Request::Upload { name, id, offset, data, last } => upload(&ctx.home, &name, &id, offset, &data, last)?,
+        Request::Reports => Response::Reports(Box::new(crate::reports::read_snapshot(&ctx.home))),
+        Request::ReportContent { id } => Response::Report(Box::new(crate::reports::content(&ctx.home, &id)?)),
     })
 }
 

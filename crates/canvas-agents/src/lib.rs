@@ -18,6 +18,7 @@ pub mod git;
 pub mod index;
 pub mod migrate;
 pub mod remote;
+pub mod reports;
 pub mod service;
 pub mod taskschd;
 pub mod vscode;

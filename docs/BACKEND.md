@@ -92,6 +92,8 @@ the connection dropped while waiting).
 | `RemoteRevoke { client }` | `Text` (what was revoked; its connections are closed) | `remote revoke` (pipe only) |
 | `SetClipboardImage { png }` (base64 in JSON, at most 20 MB) | `Done` (the image is on the service machine's clipboard as `CF_DIB` + `PNG`) | remote image paste (Ctrl+V / Alt+V), see REMOTE.md |
 | `Upload { name, id, offset, data, last }` | `Done`, the last piece `Text` (the file's path) | files dropped on a terminal in remote mode: base64 pieces of at most 4 MiB, files of at most 50 MB, written under `<home>/uploads/<date>/` with a free name |
+| `Reports` | `Reports(Snapshot)`: the inbox (newest first, at most 600 rows, with read state and the refused submissions) | the Reports view before the service's first push (normally `ServiceMsg::Reports` brings it) |
+| `ReportContent { id }` | `Report(Content)`: the report and its body (Markdown, HTML or text; at most 2 MiB) | the report viewer, on open; also over `--remote`, so HTML is shown by the home GUI |
 
 The three remote-access requests are answered by the service itself (they
 need its pairing state) and only for clients on its local pipe; TCP clients
@@ -217,6 +219,35 @@ and on quit. The first time a client opens a document it starts from the
 document's own (legacy) fields. Patches never carry them, so two windows on
 one canvas each keep their own view.
 
+## Reports inbox
+
+The service owns the inbox (`canvas_agents::reports::Store`, under
+`<home>/reports/`); clients only show it:
+
+| File | Written by | Holds |
+|---|---|---|
+| `spool/<id>.json` | `copilot-canvas report publish` (a `.tmp` file renamed) | a checked `Submission` waiting for the service |
+| `spool/<id>.rejected` | the service | why it refused a submission (the waiting command prints it; removed after) |
+| `items/<id>/meta.json` + `body.md` / `body.html` / `body.txt` | the service (a `.<id>.tmp` folder renamed) | a stored report |
+| `state.json` | the service | the read state and the last 20 refusals |
+| `service.json` | the service (at start) | its pid and start time, so the command knows whether to wait |
+
+Ids are `<13-digit ms>-<8 hex>`, so they sort by time. The service's
+`reports` thread takes the spool every 250 ms: it validates each submission
+again (size, UTF-8, kind, links, thread key), resolves the publisher's box
+name and group from routing, stores it or writes its refusal (an inbox
+holding 1,000 unread reports refuses new ones; unread reports are never
+dropped), keeps read reports for 30 days and at most 500, and broadcasts the
+inbox (`ServiceMsg::Reports`, a `reports::Snapshot` as JSON) to every client
+with `CAP_REPORTS` when it changed, and to each such client when it connects.
+
+Read state changes are bus requests, like the passive actions:
+`{"action": "reports", "op": "read" | "unread" | "read_all" | "delete", "ids":
+[…]}` (`service/inbox.rs::action`, checked before the passive actions; an
+older service ignores them). They change `state.json` (or delete the item
+folder) and broadcast the new inbox, so every window and every remote client
+shows the same read state.
+
 ## Protocol
 
 All new messages are protocol 8 and appended at the end of the enums:
@@ -240,6 +271,7 @@ All new messages are protocol 8 and appended at the end of the enums:
 | `PairChallenge { nonce, proofs }` (REMOTE.md, Pairing) | 24 |
 | `Refusal { proof }` (REMOTE.md, handshake) | 25 |
 | `Welcome { build }` (REMOTE.md, handshake) | 26 |
+| `Reports { json }` (the reports inbox; only to clients with `CAP_REPORTS`, `1 << 4`, which the TUI and the GUI set) | 27 |
 
 `ServiceMsg::shaped` never sends them to protocol-7 clients. The connection's
 reader thread routes `RpcReply` to the waiting caller by id; a dropped
@@ -272,7 +304,19 @@ most 8 files and 4 MiB in all.
   gone, and that two clients editing one canvas through the service converge
   (and that the service saves it and refuses a breaking edit).
   `config_snapshot_is_the_same_locally_and_remotely` needs an installed agent
-  (`cargo test --test backend_contract -- --ignored`).
+  (`cargo test --test backend_contract -- --ignored`). The contract also
+  publishes a report through the command and reads the inbox and its body
+  (`Reports`, `ReportContent`) both ways;
+  `the_inbox_reaches_clients_that_show_it_and_read_state_is_the_services`
+  checks that only `CAP_REPORTS` clients get `ServiceMsg::Reports` and that a
+  read by one client reaches the other.
+- `canvas_agents::reports`: the command's checks (oversized, empty, bad
+  links), queued then stored, waiting for stored or refused, read state and
+  retention (never an unread report), a full inbox, titles from the body.
+  `canvas_model::reports`: validation, cleaning and limits.
+  `canvas_core::reports`: threads, opening marks read and launches nothing,
+  unread/delete/links through the service; `report_html` and `richtext`: the
+  sanitizer and the layout.
 - `two_clients_probe` (manual: `cargo test --release two_clients_probe --
   --ignored`): two TUI clients in hidden pseudoconsoles, one over `--remote
   loopback`, one over the pipe; a rename in either shows in the other, panning

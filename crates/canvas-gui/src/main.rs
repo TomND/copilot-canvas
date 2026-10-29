@@ -22,6 +22,7 @@ mod shell;
 mod text;
 mod theme;
 mod tiles;
+mod webview;
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -33,7 +34,7 @@ use canvas_core::app::{App, AppEvent};
 use canvas_core::conn::{self, Conn, ConnOptions, ConnTarget};
 use canvas_core::dialogs::{Action, Confirm, Modal};
 use canvas_core::paths::{self, Instance};
-use canvas_core::protocol::{CAP_IMAGES, CAP_NOTIFY, ClientMsg, ServiceMsg};
+use canvas_core::protocol::{CAP_IMAGES, CAP_NOTIFY, CAP_REPORTS, ClientMsg, ServiceMsg};
 use canvas_core::prefs::PrefsFile;
 use canvas_core::remote::RemoteBackend;
 use canvas_core::rpc::Backend;
@@ -159,7 +160,7 @@ struct Launch {
 
 impl Launch {
     fn conn_options(&self, rpc: Option<Arc<RemoteBackend>>) -> ConnOptions {
-        ConnOptions { start: true, compress: self.compress, name: "gui".into(), rpc, caps: CAP_IMAGES | CAP_NOTIFY, ..Default::default() }
+        ConnOptions { start: true, compress: self.compress, name: "gui".into(), rpc, caps: CAP_IMAGES | CAP_NOTIFY | CAP_REPORTS, ..Default::default() }
     }
 
     /// The backend for a connection (remote clients ask the service, local ones run it in-process).
