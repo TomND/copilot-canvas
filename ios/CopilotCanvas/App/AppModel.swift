@@ -34,6 +34,13 @@ final class AppModel: ObservableObject {
     @Published var pendingOpen: PendingOpen?
     /// A machine to name and colour (just paired, or "Edit" in Settings).
     @Published var naming: PairedServer?
+    /// This phone's APNs token: every machine gets it (and what the phone calls it).
+    var pushToken: String? = UserDefaults.standard.string(forKey: "pushToken") {
+        didSet {
+            UserDefaults.standard.set(pushToken, forKey: "pushToken")
+            registerPush()
+        }
+    }
 
     private let store = ServerStore.shared
     private var backgroundedAt: Date?
@@ -119,6 +126,8 @@ final class AppModel: ObservableObject {
         servers[index].color = color
         store.save(servers)
         connections[id]?.updateServer(servers[index])
+        // Notifications from it say the new name.
+        registerPush()
     }
 
     func move(from source: IndexSet, to destination: Int) {
@@ -153,6 +162,9 @@ final class AppModel: ObservableObject {
         connections[server.id]?.client.detach()
         let connection = ServiceConnection(server: server)
         connection.onServerChanged = { [weak self] updated in self?.update(updated) }
+        if let pushToken {
+            connection.client.setPush(token: pushToken, environment: PushRegistration.environment, bundle: PushRegistration.bundle, label: server.name)
+        }
         connection.onAttention = { [weak self] connection, id, name, status in self?.attention(from: connection, id: id, name: name, status: status) }
         connections[server.id] = connection
         // Badges and the attention strip follow every machine.
@@ -164,6 +176,28 @@ final class AppModel: ObservableObject {
         guard let index = servers.firstIndex(where: { $0.id == server.id }) else { return }
         servers[index] = server
         store.save(servers)
+    }
+
+    /// Gives every machine this phone's notification token.
+    private func registerPush() {
+        guard let pushToken else { return }
+        for server in servers {
+            connections[server.id]?.client.setPush(token: pushToken, environment: PushRegistration.environment, bundle: PushRegistration.bundle, label: server.name)
+        }
+    }
+
+    /// A renewed tunnel token from a silent notification, for the machine
+    /// that paired this phone as `c`, sealed with that pairing's secret.
+    func receiveAccess(_ info: [String: String]) {
+        guard let client = info["c"], let nonce = info["n"], let sealed = info["t"],
+              let index = servers.firstIndex(where: { $0.clientId == client }),
+              let access = try? openTunnelAccess(secret: servers[index].secret, nonce: nonce, sealed: sealed)
+        else { return }
+        servers[index].token = access.token
+        servers[index].tokenExpiresMs = access.expiresMs
+        if access.url.hasPrefix("wss://") { servers[index].url = access.url }
+        store.save(servers)
+        connections[servers[index].id]?.updateServer(servers[index])
     }
 
     private func nextColor() -> Int {
@@ -245,7 +279,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// `-pairLink URI` (repeatable) pairs machines not paired yet and
+    /// `-pairLink URI` (repeatable) pairs (or pairs again) machines and
     /// `-machine NAME` shows one: automated simulator runs.
     private func pairFromArguments() {
         let args = ProcessInfo.processInfo.arguments
@@ -253,7 +287,8 @@ final class AppModel: ObservableObject {
         let machine = args.firstIndex(of: "-machine").flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
         guard !links.isEmpty || machine != nil else { return }
         Task { @MainActor in
-            for link in links where !servers.contains(where: { Self.sameAddress($0.url, link.url) }) {
+            // Always paired again: a test service may have forgotten earlier pairings.
+            for link in links {
                 if let server = try? await Pairer.pair(link: link) {
                     add(server, ask: false)
                 }

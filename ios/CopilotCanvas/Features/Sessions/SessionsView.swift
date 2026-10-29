@@ -4,9 +4,12 @@ import SwiftUI
 struct SessionsView: View {
     @ObservedObject var connection: ServiceConnection
     var open: (String) -> Void
+    /// A new subsession of this session.
+    var subsession: (SessionItem) -> Void = { _ in }
     @State private var filter = ""
     @State private var renaming: SessionItem?
     @State private var newName = ""
+    @State private var passive: SessionItem?
 
     private struct Section: Identifiable {
         let id: String
@@ -39,6 +42,41 @@ struct SessionsView: View {
             }
             Button("Cancel", role: .cancel) { renaming = nil }
         }
+        .confirmationDialog(passive?.name ?? "", isPresented: Binding(get: { passive != nil }, set: { if !$0 { passive = nil } }), titleVisibility: .visible, presenting: passive) { item in
+            passiveActions(item)
+        } message: { item in
+            Text(passiveSummary(item))
+        }
+    }
+
+    /// Run now, pause or resume, queued messages.
+    @ViewBuilder
+    private func passiveActions(_ item: SessionItem) -> some View {
+        Button { act { try $0.runPassive(id: item.id) } } label: { Label("Run now", systemImage: "play.fill") }
+        if item.paused {
+            Button { act { try $0.setPassivePaused(id: item.id, paused: false) } } label: { Label("Resume", systemImage: "playpause") }
+        } else {
+            Button { act { try $0.setPassivePaused(id: item.id, paused: true) } } label: { Label("Pause", systemImage: "pause.fill") }
+        }
+        if item.mailbox > 0 {
+            Button(role: .destructive) { connection.client.discardMail(id: item.id) } label: { Label("Discard \(item.mailbox) queued message(s)", systemImage: "envelope.badge.shield.half.filled") }
+        }
+    }
+
+    private func passiveSummary(_ item: SessionItem) -> String {
+        var parts: [String] = []
+        if item.passiveRunning { parts.append("Running now.") }
+        if item.paused { parts.append("Paused.") }
+        if !item.passiveHeadline.isEmpty { parts.append(item.passiveHeadline) }
+        if item.nextRunMs > 0 && !item.paused {
+            let next = Date(timeIntervalSince1970: Double(item.nextRunMs) / 1000)
+            parts.append("Next run \(next.formatted(.relative(presentation: .named))).")
+        }
+        return parts.isEmpty ? "A passive session: it runs on events and schedules." : parts.joined(separator: " ")
+    }
+
+    private func act(_ work: (Client) throws -> Void) {
+        do { try work(connection.client) } catch { connection.show(error) }
     }
 
     private func list(_ overview: Overview) -> some View {
@@ -74,6 +112,8 @@ struct SessionsView: View {
                 open(parent)
             } else if item.kind == .session {
                 open(item.id)
+            } else if item.kind == .passive {
+                passive = item
             }
         } label: {
             SessionRow(item: item, nested: item.parent != nil && item.kind == .session)
@@ -102,8 +142,13 @@ struct SessionsView: View {
                     newName = item.name
                     renaming = item
                 } label: { Label("Rename", systemImage: "pencil") }
+                Button { subsession(item) } label: { Label(item.forkable ? "New subsession (fork)…" : "New subsession…", systemImage: "arrow.triangle.branch") }
                 if item.status == .done {
                     Button { connection.client.markReviewed(id: item.id) } label: { Label("Mark reviewed", systemImage: "checkmark") }
+                }
+                if item.mailbox > 0 {
+                    Button { open(item.id) } label: { Label("Deliver \(item.mailbox) queued message(s)", systemImage: "envelope.open") }
+                    Button(role: .destructive) { connection.client.discardMail(id: item.id) } label: { Label("Discard queued messages", systemImage: "envelope.badge.shield.half.filled") }
                 }
                 if !item.cwd.isEmpty {
                     Button { UIPasteboard.general.string = item.cwd } label: { Label("Copy folder path", systemImage: "doc.on.doc") }
@@ -111,6 +156,8 @@ struct SessionsView: View {
                 if item.alive {
                     Button(role: .destructive) { connection.client.stopSession(id: item.id) } label: { Label("Stop", systemImage: "stop.fill") }
                 }
+            } else if item.kind == .passive {
+                passiveActions(item)
             }
         }
     }
@@ -190,6 +237,12 @@ struct SessionRow: View {
                     if item.mailbox > 0 {
                         Label("\(item.mailbox)", systemImage: "envelope.fill").font(.caption2).foregroundStyle(Palette.attention)
                     }
+                    if item.kind == .passive && item.paused {
+                        Label("paused", systemImage: "pause.circle").font(.caption2).foregroundStyle(Palette.muted)
+                    }
+                }
+                if item.kind == .passive && !item.passiveHeadline.isEmpty {
+                    Text(item.passiveHeadline).font(.caption).foregroundStyle(Palette.gray).lineLimit(2)
                 }
                 if !item.subagents.isEmpty {
                     VStack(alignment: .leading, spacing: 2) {
@@ -261,3 +314,5 @@ struct AgentBadge: View {
         }
     }
 }
+
+extension SessionItem: Identifiable {}

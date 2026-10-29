@@ -13,6 +13,7 @@ struct HomeView: View {
     @State private var showNew = false
     @State private var showSettings = false
     @State private var showPair = false
+    @State private var subsessionOf: SessionItem?
 
     enum Mode: String, CaseIterable {
         case list = "Sessions"
@@ -26,11 +27,11 @@ struct HomeView: View {
             VStack(spacing: 0) {
                 // The machine's colour: always clear which one you are on.
                 Rectangle().fill(Palette.group(UInt8(connection.server.colorIndex))).frame(height: 3)
-                ConnectionBanner(connection: connection)
+                ConnectionBanner(connection: connection, repair: { showPair = true })
                 AttentionStrip()
                 switch mode {
                 case .list:
-                    SessionsView(connection: connection) { id in path.append(.terminal(id)) }
+                    SessionsView(connection: connection, open: { id in path.append(.terminal(id)) }, subsession: { subsessionOf = $0 })
                 case .canvas:
                     CanvasView(connection: connection) { id in path.append(.terminal(id)) }
                 }
@@ -71,6 +72,12 @@ struct HomeView: View {
             }
         }
         .sheet(isPresented: $showSettings) { SettingsView(connection: connection) }
+        .sheet(item: $subsessionOf) { parent in
+            NewSessionView(connection: connection, parent: parent) { id in
+                subsessionOf = nil
+                path.append(.terminal(id))
+            }
+        }
         .sheet(isPresented: $showPair) {
             NavigationStack {
                 PairView { server in
@@ -81,7 +88,7 @@ struct HomeView: View {
             }
         }
         // Naming a machine (Settings presents it itself while it is open).
-        .sheet(item: Binding(get: { showSettings || showNew || showPair || model.locked ? nil : model.naming }, set: { model.naming = $0 })) { server in
+        .sheet(item: Binding(get: { showSettings || showNew || showPair || subsessionOf != nil || model.locked ? nil : model.naming }, set: { model.naming = $0 })) { server in
             MachineSheet(server: server) { name, color in
                 model.rename(server.id, to: name, color: color)
                 model.naming = nil
@@ -110,6 +117,13 @@ struct HomeView: View {
 /// Offline, connecting, revoked: what is going on and what to do.
 struct ConnectionBanner: View {
     @ObservedObject var connection: ServiceConnection
+    /// Pair this machine again (a new QR code: the tunnel access ran out).
+    var repair: (() -> Void)?
+
+    /// Offline because the tunnel no longer lets this phone in.
+    private var accessExpired: Bool {
+        connection.state != .online && (connection.server.tokenExpired || connection.message.contains("HTTP 401") || connection.message.contains("sign-in"))
+    }
 
     var body: some View {
         if connection.state != .online {
@@ -124,12 +138,17 @@ struct ConnectionBanner: View {
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title).font(.footnote.weight(.semibold))
-                    if !connection.message.isEmpty {
+                    if accessExpired {
+                        Text("Its tunnel access token expired while the app was away. On \(connection.server.name), run `copilot-canvas remote pair --qr` and scan the code: the pairing is replaced, the name and colour stay.")
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(5)
+                    } else if !connection.message.isEmpty {
                         Text(connection.message).font(.caption).foregroundStyle(.secondary).lineLimit(4)
                     }
                 }
                 Spacer()
-                if connection.state == .offline {
+                if accessExpired, let repair {
+                    Button("Pair again", action: repair).font(.footnote.weight(.semibold))
+                } else if connection.state == .offline {
                     Button("Retry") { connection.reconnectNow() }.font(.footnote)
                 }
             }
@@ -141,6 +160,7 @@ struct ConnectionBanner: View {
     }
 
     private var title: String {
+        if accessExpired { return "Tunnel access expired" }
         switch connection.state {
         case .connecting: return "Connecting to \(connection.server.name)…"
         case .offline: return "Offline — reconnecting…"

@@ -140,7 +140,7 @@ fn the_phone_pairs_connects_and_works_a_real_shell_through_a_websocket() {
     let client = Client::new(config, Arc::new(Events(tx)));
     attach(&client, &addr);
     wait_for(&events, "online", |e| matches!(e, CoreEvent::Connection { state: ConnState::Online, .. }));
-    wait_until("the canvas", || client.overview().sessions.len() == 6);
+    wait_until("the canvas", || client.overview().sessions.len() == 7);
     let overview = client.overview();
     assert_eq!(overview.groups.len(), 2);
     let fix = overview.sessions.iter().find(|s| s.id == "mock-fix").unwrap();

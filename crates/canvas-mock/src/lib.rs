@@ -64,6 +64,8 @@ pub struct Config {
     pub web_url: Option<String>,
     /// New agent sessions run the agent CLIs installed here.
     pub real_agents: bool,
+    /// The APNs key: phones away from the app get notifications.
+    pub apns: Option<canvas_push::ApnsKey>,
 }
 
 impl Config {
@@ -78,6 +80,7 @@ impl Config {
             tunnel: None,
             web_url: None,
             real_agents: false,
+            apns: None,
         }
     }
 }
@@ -93,6 +96,8 @@ pub struct Access {
 /// One connected client.
 struct Client {
     id: u64,
+    /// The paired client this connection authenticated as.
+    remote_id: Option<String>,
     out: Sender<ServiceMsg>,
     subs: Mutex<HashMap<String, Sent>>,
     focused: Mutex<Option<String>>,
@@ -140,6 +145,11 @@ struct Mock {
     paired: Mutex<HashMap<String, Vec<u8>>>,
     /// The current tunnel access token (`--tunnel`).
     access: Mutex<Option<Access>>,
+    /// Phones registered for notifications, and the sender (`--apns-key`).
+    devices: canvas_push::Devices,
+    sender: Option<Arc<canvas_push::Sender>>,
+    /// Terminals that run a real agent CLI (statuses come from what it reports).
+    real: Mutex<std::collections::HashSet<String>>,
 }
 
 pub struct Handle {
@@ -170,6 +180,7 @@ pub fn serve(config: Config) -> Result<Handle> {
     // The canvas survives restarts (new sessions from the phone stay).
     let doc = std::fs::read(config.state_dir.join("canvas.json")).ok().and_then(|bytes| serde_json::from_slice::<Doc>(&bytes).ok()).unwrap_or_else(|| demo_doc(&config.cwd));
     let sessions = demo_sessions(&doc);
+    let (config_state, config_apns) = (config.state_dir.clone(), config.apns.clone());
     let mock = Arc::new(Mock {
         config,
         next_client: AtomicU64::new(1),
@@ -180,6 +191,9 @@ pub fn serve(config: Config) -> Result<Handle> {
         sizes: Mutex::new(HashMap::new()),
         paired: Mutex::new(paired),
         access: Mutex::new(None),
+        devices: canvas_push::Devices::open(&config_state),
+        sender: config_apns.and_then(|key| canvas_push::Sender::new(key).ok()).map(Arc::new),
+        real: Mutex::new(std::collections::HashSet::new()),
     });
     let accept = mock.clone();
     std::thread::spawn(move || {
@@ -192,8 +206,14 @@ pub fn serve(config: Config) -> Result<Handle> {
             });
         }
     });
-    let ticker = mock.clone();
-    std::thread::spawn(move || tick_loop(ticker));
+    // Simulated status changes for local development; behind a tunnel the
+    // statuses are the real ones (notifications should mean something).
+    if mock.config.tunnel.is_none() {
+        let ticker = mock.clone();
+        std::thread::spawn(move || tick_loop(ticker));
+    }
+    let watcher = mock.clone();
+    std::thread::spawn(move || push_loop(watcher));
     // A few sessions already run, in different states (as on a busy Cloud PC).
     for (id, agent) in [("mock-fix", "copilot"), ("mock-review", "opencode"), ("mock-docs", "copilot")] {
         let Some(name) = lock(&mock.doc).0.node(id).map(|n| n.name.clone()) else { continue };
@@ -230,7 +250,7 @@ fn devtunnel(args: &[&str]) -> Result<String> {
 }
 
 /// A fresh connect token for the tunnel, and the port's web address.
-fn renew_access(mock: &Mock) -> Result<Access> {
+fn renew_access(mock: &Arc<Mock>) -> Result<Access> {
     let tunnel = mock.config.tunnel.clone().context("no tunnel")?;
     let port = mock.config.listen.rsplit_once(':').and_then(|(_, p)| p.parse::<u16>().ok()).unwrap_or(0);
     let output = devtunnel(&["token", &tunnel, "--scopes", "connect"])?;
@@ -249,6 +269,7 @@ fn renew_access(mock: &Mock) -> Result<Access> {
     };
     let access = Access { url, token: token.token, expires_ms: token.expires_ms };
     *lock(&mock.access) = Some(access.clone());
+    push_access(mock, &access);
     broadcast(mock, ServiceMsg::TunnelAccess { url: access.url.clone(), token: access.token.clone(), expires_ms: access.expires_ms });
     log(mock, &format!("tunnel access token valid until {} for {}", canvas_common::paths::format_rfc3339_ms(access.expires_ms), access.url));
     Ok(access)
@@ -265,6 +286,82 @@ fn access_loop(mock: Arc<Mock>) {
         std::thread::sleep(wait);
         if let Err(error) = renew_access(&mock) {
             log(&mock, &format!("cannot renew the tunnel access token: {error:#}"));
+        }
+    }
+}
+
+/// A picture from the phone on this machine's clipboard (the agent reads it on Ctrl+V).
+fn set_clipboard_image(dir: &std::path::Path, png: &[u8]) -> Result<()> {
+    anyhow::ensure!(png.starts_with(b"\x89PNG"), "not a PNG picture");
+    let path = dir.join("pasted.png");
+    std::fs::write(&path, png)?;
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!("set the clipboard to (read (POSIX file \"{}\") as «class PNGf»)", path.display());
+        let status = std::process::Command::new("osascript").arg("-e").arg(script).status()?;
+        anyhow::ensure!(status.success(), "osascript could not set the clipboard");
+    }
+    Ok(())
+}
+
+// ---------- notifications ----------
+
+/// Paired phones connected now.
+fn connected_phones(mock: &Mock) -> std::collections::HashSet<String> {
+    lock(&mock.clients).values().filter_map(|c| c.remote_id.clone()).collect()
+}
+
+/// Sends to every registered phone that is away (on a thread).
+fn push_away(mock: &Arc<Mock>, make: impl Fn(&canvas_push::Device) -> Option<(serde_json::Value, bool, Option<String>, String)>) {
+    let Some(sender) = mock.sender.clone() else { return };
+    let online = connected_phones(mock);
+    let jobs: Vec<_> = mock.devices.list().into_iter().filter(|d| !online.contains(&d.client_id) && lock(&mock.paired).contains_key(&d.client_id)).filter_map(|d| make(&d).map(|job| (d, job))).collect();
+    if jobs.is_empty() {
+        return;
+    }
+    let mock = mock.clone();
+    std::thread::spawn(move || {
+        for (device, (payload, background, collapse, what)) in jobs {
+            match sender.send(&device, &payload, background, collapse.as_deref()) {
+                canvas_push::Outcome::Sent => log(&mock, &format!("push: sent {what} to {}", device.client_id)),
+                canvas_push::Outcome::Unregistered => {
+                    log(&mock, &format!("push: {} unregistered by APNs", device.client_id));
+                    mock.devices.remove(None, Some(&device.token));
+                }
+                canvas_push::Outcome::Failed(error) => log(&mock, &format!("push: {what} to {} failed: {error}", device.client_id)),
+            }
+        }
+    });
+}
+
+/// A renewed tunnel token, sealed for each phone that is away.
+fn push_access(mock: &Arc<Mock>, access: &Access) {
+    push_away(mock, |device| {
+        let secret = lock(&mock.paired).get(&device.client_id).cloned()?;
+        Some((canvas_push::access_payload(device, &secret, &access.url, &access.token, access.expires_ms), true, None, "a renewed tunnel token".into()))
+    });
+}
+
+/// Watches the statuses and tells phones that are away when a session needs
+/// them or finished a turn (the service's rules, `canvas_push::Attention`).
+fn push_loop(mock: Arc<Mock>) {
+    let mut attention = canvas_push::Attention::default();
+    loop {
+        std::thread::sleep(Duration::from_secs(2));
+        let doc = lock(&mock.doc).0.clone();
+        let sessions = lock(&mock.sessions).clone();
+        let terms: HashMap<String, TermInfo> = lock(&mock.terms).iter().map(|(id, t)| (id.clone(), t.info.clone())).collect();
+        let now = doc
+            .nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Session && n.passive.is_none())
+            .map(|n| (n.id.clone(), n.name.clone(), canvas_model::status::session_status(sessions.get(&n.id), terms.get(&n.id), n.reviewed_ms)))
+            .collect::<Vec<_>>();
+        let events = attention.update(now);
+        for event in events {
+            let what = if event.status == canvas_model::status::Status::Waiting { "needs you" } else { "finished" };
+            log(&mock, &format!("{} {what}", event.name));
+            push_away(&mock, |device| Some((canvas_push::alert_payload(device, &event), false, Some(event.id.clone()), format!("{what:?} for {:?}", event.name))));
         }
     }
 }
@@ -303,6 +400,14 @@ fn agent_command(launch: &canvas_common::protocol::AgentLaunch, id: &str) -> Opt
                 args.extend(["--prompt".into(), prompt]);
             }
             ("opencode", args)
+        }
+        "claude" if launch.fork_from.is_some() && uuid => {
+            // Claude Code forks the parent's conversation itself.
+            let mut args = vec!["--resume".into(), launch.fork_from.clone().unwrap_or_default(), "--fork-session".into(), "--session-id".into(), id.into()];
+            if let Some(prompt) = prompt {
+                args.push(prompt);
+            }
+            ("claude", args)
         }
         "claude" => {
             let mut args = Vec::new();
@@ -451,7 +556,7 @@ fn serve_client(mock: &Arc<Mock>, stream: TcpStream) -> Result<()> {
     let id = mock.next_client.fetch_add(1, Ordering::Relaxed);
     let (out_tx, out_rx) = bounded::<ServiceMsg>(4096);
     let tcp_closer = closer.clone();
-    let client = Arc::new(Client { id, out: out_tx, subs: Mutex::new(HashMap::new()), focused: Mutex::new(None), closer: canvas_common::wire::Closer::new(move || tcp_closer.close()) });
+    let client = Arc::new(Client { id, remote_id: info.remote_id.clone(), out: out_tx, subs: Mutex::new(HashMap::new()), focused: Mutex::new(None), closer: canvas_common::wire::Closer::new(move || tcp_closer.close()) });
     log(mock, &format!("client {id} connected ({}{})", info.name, if websocket { ", WebSocket" } else { "" }));
     let liveness = Arc::new(Liveness::standard());
     liveness.received();
@@ -645,6 +750,15 @@ fn dispatch(mock: &Arc<Mock>, client: &Arc<Client>, message: ClientMsg) -> Resul
             let _ = client.out.send(ServiceMsg::RpcReply { id, json: serde_json::to_string(&response)? });
         }
         ClientMsg::Shutdown => bail!("remote clients cannot shut the service down"),
+        ClientMsg::PushRegister { token, environment, bundle, label } => {
+            let client_id = client.remote_id.clone().context("only paired phones receive notifications")?;
+            if token.is_empty() {
+                mock.devices.remove(Some(&client_id), None);
+            } else if mock.devices.register(canvas_push::Device::new(&client_id, &token, &environment, &bundle, &label)?) {
+                let key = if mock.sender.is_some() { "" } else { " (no APNs key: pass --apns-key)" };
+                log(mock, &format!("push: {client_id} registered as {label:?} ({environment}){key}"));
+            }
+        }
         ClientMsg::Bus { .. } => {}
         other => bail!("the mock does not handle {other:?}"),
     }
@@ -684,6 +798,12 @@ fn rpc(mock: &Mock, request: Request) -> Response {
             Err(error) => Response::Error(format!("{path}: {error}")),
         },
         Request::GitProbe { .. } => Response::Git(None),
+        // Copilot's history is not here; forks are the agents' own (Claude Code).
+        Request::HasHistory { .. } => Response::Flag(false),
+        Request::SetClipboardImage { png } => match set_clipboard_image(&mock.config.state_dir, &png) {
+            Ok(()) => Response::Done,
+            Err(error) => Response::Error(format!("{error:#}")),
+        },
         Request::DirsExist { paths } => Response::Flags(paths.iter().map(|p| std::path::Path::new(p).is_dir()).collect()),
         other => Response::Error(format!("the mock service does not support {}", other.name())),
     }
@@ -706,6 +826,7 @@ fn launch_with(mock: &Arc<Mock>, id: &str, kind: LaunchKind, cwd: &str, cols: u1
         }
         LaunchKind::Agent(launch) if mock.config.real_agents && transcript.is_empty() && agent_command(&launch, id).is_some() => {
             let command = agent_command(&launch, id).expect("checked");
+            lock(&mock.real).insert(id.to_owned());
             log(mock, &format!("{id}: real {} ({})", launch.agent, if launch.resume { "continue" } else { "new" }));
             // A real agent: no stand-in transcript, no simulated turns.
             (command, String::new(), false)
@@ -747,10 +868,11 @@ fn launch_with(mock: &Arc<Mock>, id: &str, kind: LaunchKind, cwd: &str, cols: u1
     let info = TermInfo { id: id.to_owned(), alive: true, pid: child.process_id().unwrap_or(0), started_ms: now_ms(), copilot: agent, ..Default::default() };
     lock(&mock.terms).insert(id.to_owned(), Term { ctl: ctl_tx, info: info.clone() });
     broadcast(mock, ServiceMsg::Terminals(vec![info]));
-    if agent {
+    if agent || lock(&mock.real).contains(id) {
         set_activity(mock, id, |s| {
             s.live = true;
             s.activity = Activity::Idle;
+            s.pending = 0;
         });
     }
     let (mock2, id2) = (mock.clone(), id.to_owned());
@@ -811,6 +933,25 @@ fn terminal_loop(mock: &Arc<Mock>, id: &str, cols: u16, rows: u16, banner: Strin
                     if changed && let Some(info) = lock(&mock.terms).get(id).map(|t| t.info.clone()) {
                         broadcast(mock, ServiceMsg::Terminals(vec![info]));
                     }
+                    // A real agent's turns: its progress report (Claude Code and
+                    // Copilot send OSC 9;4), and a bell when it waits for you.
+                    if lock(&mock.real).contains(id) {
+                        if let Some(&progress) = events.progress.last() {
+                            let busy = matches!(progress, 1 | 3);
+                            set_activity(mock, id, |s| {
+                                if busy {
+                                    s.activity = Activity::Working;
+                                    s.finished_ms = None;
+                                } else if s.activity == Activity::Working {
+                                    s.activity = Activity::Idle;
+                                    s.finished_ms = Some(now_ms());
+                                }
+                            });
+                        }
+                        if events.bells > 0 || events.notifications > 0 {
+                            set_activity(mock, id, |s| s.pending = 1);
+                        }
+                    }
                     for text in events.clipboard {
                         broadcast(mock, ServiceMsg::Clipboard(text));
                     }
@@ -819,6 +960,10 @@ fn terminal_loop(mock: &Arc<Mock>, id: &str, cols: u16, rows: u16, banner: Strin
             },
             recv(ctl) -> command => match command {
                 Ok(Ctl::Input(input)) => {
+                    // Typing answers what the agent was waiting for.
+                    if lock(&mock.real).contains(id) && lock(&mock.sessions).get(id).is_some_and(|s| s.pending > 0) {
+                        set_activity(mock, id, |s| s.pending = 0);
+                    }
                     emu.scroll(Scroll::Bottom);
                     let bytes = emu.encode(&input);
                     let _ = writer.write_all(&bytes);
@@ -971,6 +1116,10 @@ pub fn demo_doc(cwd: &str) -> Doc {
     doc.nodes.push(sub);
     doc.nodes.push(session("mock-docs", "Update API docs", 78, 2, cwd, None));
     doc.nodes.push(session("mock-loose", "Scratch", 2, 28, cwd, None));
+    // A passive session (runs on events and schedules; its actions are the bus's).
+    let mut drift = session("mock-drift", "Drift guard", 2, 18, cwd, None);
+    drift.passive = Some(serde_json::from_value(serde_json::json!({ "key": "drift", "group": "g-payments", "slug": "drift-guard", "every_minutes": 60 })).expect("a passive spec"));
+    doc.nodes.push(drift);
     // Looked at a while ago: turns finished since then wait for review.
     let seen = now_ms() - 120_000;
     for node in doc.nodes.iter_mut().filter(|n| n.kind == NodeKind::Session) {

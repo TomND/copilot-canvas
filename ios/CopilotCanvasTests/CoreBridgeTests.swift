@@ -36,6 +36,37 @@ final class CoreBridgeTests: XCTestCase {
         XCTAssertGreaterThan(fonts.baseline, 0)
     }
 
+    func testPathsAndLinksAreFoundUnderATap() {
+        let line = "  Edited C:\\src\\app\\main.rs:42, see https://example.com/pr/7. Log: /var/log/app.log"
+        let at = { (needle: String) in line.distance(from: line.startIndex, to: line.range(of: needle)!.lowerBound) + 1 }
+        XCTAssertEqual(TerminalView.linkTarget(in: line, at: at("C:\\src")), "C:\\src\\app\\main.rs:42")
+        XCTAssertEqual(TerminalView.linkTarget(in: line, at: at("https://")), "https://example.com/pr/7")
+        XCTAssertEqual(TerminalView.linkTarget(in: line, at: at("/var/log")), "/var/log/app.log")
+        XCTAssertNil(TerminalView.linkTarget(in: line, at: at("Edited")), "plain words are not links")
+        XCTAssertNil(TerminalView.linkTarget(in: "a/b and c", at: 1), "relative paths are not opened")
+        let target = FileTarget(path: "C:\\src\\app\\main.rs:42:7")
+        XCTAssertEqual(target.path, "C:\\src\\app\\main.rs")
+        XCTAssertEqual(target.line, 42)
+        XCTAssertEqual(FileTarget(path: "/etc/hosts").line, nil)
+    }
+
+    func testPicturesAreSentAsBoundedPNGs() throws {
+        let big = UIGraphicsImageRenderer(size: CGSize(width: 4000, height: 1000)).image { context in
+            UIColor.orange.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 4000, height: 1000))
+        }
+        let png = try XCTUnwrap(TerminalScreen.png(big))
+        let image = try XCTUnwrap(UIImage(data: png))
+        XCTAssertEqual(max(image.size.width * image.scale, image.size.height * image.scale), 2048, accuracy: 1)
+        XCTAssertEqual(png.prefix(4), Data([0x89, 0x50, 0x4E, 0x47]))
+    }
+
+    func testPushTokensAreHexAndTheEnvironmentIsKnown() {
+        XCTAssertEqual(PushRegistration.hex(Data([0x00, 0xab, 0xff])), "00abff")
+        XCTAssertTrue(["sandbox", "production"].contains(PushRegistration.environment))
+        XCTAssertThrowsError(try openTunnelAccess(secret: Data(repeating: 1, count: 32), nonce: "AAAA", sealed: "AAAA"), "a message not sealed for this phone")
+    }
+
     func testBoxDrawingCoversBordersAgentsDraw() {
         for scalar in ["─", "│", "╭", "╮", "╯", "╰", "┌", "┐", "└", "┘", "━", "┃", "═", "║", "╌", "█", "▀", "▄"] {
             XCTAssertTrue(BoxDrawing.handles(scalar.unicodeScalars.first!), scalar)

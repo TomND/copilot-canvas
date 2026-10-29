@@ -6,6 +6,7 @@
 mod docs;
 mod factory_watch;
 mod passive;
+mod push;
 pub use canvas_host::{keys, term};
 
 use std::collections::{HashMap, HashSet};
@@ -108,6 +109,8 @@ pub struct Agents {
     tunnel_access: Mutex<Option<crate::tunnel_access::Access>>,
     /// Asks the tunnel access thread to issue a token now.
     tunnel_wake: Sender<()>,
+    /// Phones registered for notifications, the APNs key, what was notified.
+    push: push::Push,
 }
 
 /// Passive sessions and the factory watch use the backend under this name.
@@ -151,7 +154,9 @@ impl Agents {
             remote: crate::remote::Registry::new(&instance.home),
             tunnel_access: Mutex::new(None),
             tunnel_wake: tunnel_tx,
+            push: push::Push::new(&instance.home),
         });
+        server::spawn_named("push", { let a = agents.clone(); move || push::push_loop(a) });
         server::spawn_named("tunnel-access", { let a = agents.clone(); move || tunnel_access_loop(a, tunnel_rx) });
         server::spawn_named("index", { let a = agents.clone(); move || index_loop(a, index_rx) });
         server::spawn_named("subsessions", { let a = agents.clone(); move || subsession_loop(a) });
@@ -259,7 +264,8 @@ fn tunnel_access_loop(agents: Arc<Agents>, wake: Receiver<()>) {
     let mut failed_at: Option<Instant> = None;
     loop {
         let _ = wake.recv_timeout(RETRY);
-        let wanted = lock(&agents.clients).values().any(|c| c.caps() & CAP_TUNNEL_ACCESS != 0);
+        // Connected phones, and phones away that get tokens by notification.
+        let wanted = lock(&agents.clients).values().any(|c| c.caps() & CAP_TUNNEL_ACCESS != 0) || push::wants_access(&agents);
         if !wanted || lock(&agents.tunnel_access).as_ref().is_some_and(|a| a.fresh(now_ms())) || failed_at.is_some_and(|at| at.elapsed() < RETRY) {
             continue;
         }
@@ -269,6 +275,7 @@ fn tunnel_access_loop(agents: Arc<Agents>, wake: Receiver<()>) {
                 let until = canvas_common::paths::format_rfc3339_ms(access.expires_ms);
                 log(&agents.instance, &format!("issued a Dev Tunnels access token for phone clients (until {until}, {})", if access.url.is_empty() { "web address unknown" } else { &access.url }));
                 *lock(&agents.tunnel_access) = Some(access.clone());
+                push::send_access(&agents, &access);
                 agents.broadcast(ServiceMsg::TunnelAccess { url: access.url, token: access.token, expires_ms: access.expires_ms });
             }
             Err(error) => {
@@ -341,6 +348,7 @@ impl HostApp for Agents {
 
     fn message(&self, client: &Arc<Client>, message: ClientMsg) -> Result<()> {
         match message {
+            ClientMsg::PushRegister { token, environment, bundle, label } => push::register(self, client, &token, &environment, &bundle, &label)?,
             ClientMsg::Track { ids } => {
                 lock(&self.tracked).insert(client.id, ids.into_iter().filter(|id| crate::agents::ALL.iter().any(|k| k.provider().is_session_id(id))).collect());
                 let _ = self.index_wake.try_send(());
@@ -507,6 +515,7 @@ impl Agents {
                 }
                 Request::RemoteRevoke { client: key } => {
                     let revoked = self.remote.revoke(&key, now)?;
+                    self.push.devices.remove(Some(&revoked.id), None);
                     let connected: Vec<Arc<Client>> = lock(&self.clients).values().filter(|c| c.remote_id.as_deref() == Some(revoked.id.as_str())).cloned().collect();
                     for connection in &connected {
                         connection.close();

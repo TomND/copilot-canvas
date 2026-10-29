@@ -13,6 +13,9 @@
 #
 # Needs the Dev Tunnels CLI signed in as the tunnel's owner
 # (`brew install --cask devtunnel`, `devtunnel user login -g`).
+#
+# Notifications while the app is away: APNS_KEY=~/AuthKey_ID.p8 APNS_TEAM=TEAMID
+# (the key from developer.apple.com › Keys, "Apple Push Notifications service").
 set -eu
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
@@ -50,8 +53,18 @@ ensure_tunnel() {
 
 start_mock() {
   stop_one mock
+  # Notifications: the APNs key (argument, environment, or the one saved by a previous start).
+  APNS_KEY="${APNS_KEY:-$(cat "$STATE/apns-key" 2>/dev/null || true)}"
+  APNS_TEAM="${APNS_TEAM:-$(cat "$STATE/apns-team" 2>/dev/null || true)}"
+  set --
+  if [ -n "$APNS_KEY" ] && [ -n "$APNS_TEAM" ]; then
+    printf '%s' "$APNS_KEY" >"$STATE/apns-key"
+    printf '%s' "$APNS_TEAM" >"$STATE/apns-team"
+    set -- --apns-key "$APNS_KEY" --apns-team "$APNS_TEAM"
+    [ -n "${APNS_KEY_ID:-}" ] && set -- "$@" --apns-key-id "$APNS_KEY_ID"
+  fi
   # Real agent CLIs found on the PATH the mock starts with.
-  PATH="$HOME/.local/bin:$HOME/.opencode/bin:/opt/homebrew/bin:$PATH" nohup "$ROOT/target/release/canvas-mock" \
+  PATH="$HOME/.local/bin:$HOME/.opencode/bin:/opt/homebrew/bin:$PATH" nohup "$ROOT/target/release/canvas-mock" "$@" \
     --listen "127.0.0.1:$PORT" --tunnel "$TUNNEL" --real-agents --name "$NAME" \
     --state "$STATE" --cwd "$WORKDIR" --qr "$STATE/pair-qr.png" >"$STATE/mock.log" 2>&1 </dev/null &
   echo $! >"$STATE/mock.pid"

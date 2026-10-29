@@ -3,6 +3,8 @@ import SwiftUI
 /// A new session on the service's machine: name, agent, folder, group, first prompt.
 struct NewSessionView: View {
     @ObservedObject var connection: ServiceConnection
+    /// A subsession of this session (linked to it; may fork its conversation).
+    var parent: SessionItem? = nil
     var started: (String) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -15,6 +17,8 @@ struct NewSessionView: View {
     @State private var busy = false
     @State private var error: String?
     @State private var browsing = false
+    @State private var fork = false
+    @State private var canFork = false
     @FocusState private var focus: Field?
 
     private enum Field: Hashable {
@@ -27,12 +31,25 @@ struct NewSessionView: View {
         NavigationStack {
             ScrollViewReader { proxy in
                 Form {
+                    if let parent {
+                        Section {
+                            Label(parent.name, systemImage: "arrow.turn.down.right")
+                            if canFork {
+                                Toggle("Fork its conversation", isOn: $fork)
+                                    .accessibilityIdentifier("fork")
+                            }
+                        } header: {
+                            Text("Subsession of")
+                        } footer: {
+                            Text(canFork ? "A fork starts from a copy of the conversation (history and checkpoints); the parent is untouched. Off: a fresh conversation." : "This session's conversation cannot be forked here: the subsession starts fresh.")
+                        }
+                    }
                     Section("Session") {
                         TextField("Name (default: the folder's name)", text: $name)
                             .focused($focus, equals: .name)
                             .submitLabel(.next)
                             .onSubmit { focus = .folder }
-                        if let agents = overview?.agents, !agents.isEmpty {
+                        if let agents = overview?.agents, !agents.isEmpty, !(fork && canFork) {
                             Picker("Agent", selection: $agent) {
                                 ForEach(agents, id: \.self) { Text(label($0)).tag($0) }
                             }
@@ -115,7 +132,7 @@ struct NewSessionView: View {
                     folder = picked
                 }
             }
-            .navigationTitle("New session")
+            .navigationTitle(parent == nil ? "New session" : "New subsession")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -129,8 +146,20 @@ struct NewSessionView: View {
                 }
             }
             .onAppear {
+                if let parent {
+                    agent = parent.agent
+                    if folder.isEmpty { folder = parent.cwd }
+                }
                 if agent.isEmpty { agent = overview?.agents.first ?? "" }
                 if folder.isEmpty { folder = overview?.recentFolders.first ?? "" }
+            }
+            .task {
+                // Copilot forks need the parent's history on the service's machine.
+                guard let parent, parent.forkable else { return }
+                let id = parent.id
+                let possible = (try? await connection.perform { $0.canFork(id: id) }) ?? false
+                canFork = possible
+                fork = possible
             }
         }
     }
@@ -148,7 +177,7 @@ struct NewSessionView: View {
         Keyboard.dismiss()
         busy = true
         error = nil
-        let request = NewSession(name: name, agent: agent, cwd: folder, prompt: prompt, group: group)
+        let request = NewSession(name: name, agent: agent, cwd: folder, prompt: prompt, group: group, parent: parent?.id ?? "", fork: fork && canFork)
         // About the size of this phone's terminal; it follows the screen once open.
         let fonts = Fonts(size: CGFloat(fontSize))
         let bounds = UIScreen.main.bounds

@@ -17,9 +17,11 @@
 		3C71F3A621CCDBD2848746DB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CE1EA5E0CFCD3DB8211B5D1F /* Assets.xcassets */; };
 		44EC1E918541DDE546C4A7A2 /* SessionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0188D57AC0E74E4481E361E /* SessionsView.swift */; };
 		4D67292AECD72512406C0F46 /* ServerStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D387408BFE4F7650FAAB8E /* ServerStore.swift */; };
+		57CA8E53C67778D84F381942 /* PushRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02098422FE393BDE6A29DAAC /* PushRegistration.swift */; };
 		5F6300F2882B73B14270F595 /* PairView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37CA17908C7859DF5E5EC92E /* PairView.swift */; };
 		7138F9C66C98F01D5B91C149 /* Pairer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1A18FF4D04EBC4B7E3F66C /* Pairer.swift */; };
 		75578567D23442C13FACA607 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E44C0FB2065B9025E30AAA67 /* AppModel.swift */; };
+		7630F111291E90F528B6C144 /* FileViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18E6681C7760CA66FFB63C69 /* FileViewer.swift */; };
 		76911BB6DCF109C03EDB4B28 /* Machines.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B9E83239559BC6B0F5A6F7A /* Machines.swift */; };
 		77305682749AAD715786B71D /* Palette.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7D43DE9F7969F9C49086093 /* Palette.swift */; };
 		7CE4BC353D6D89E5E87DC9AF /* CanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3532502B507E9C3DD275CF0A /* CanvasView.swift */; };
@@ -53,10 +55,12 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		02098422FE393BDE6A29DAAC /* PushRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushRegistration.swift; sourceTree = "<group>"; };
 		04029A4BF1C2557757BFB954 /* TerminalScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalScreen.swift; sourceTree = "<group>"; };
 		083D1146BDA8AB4028B21B7C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		0CA872B980D2EB3F2BA1095E /* TerminalUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalUITests.swift; sourceTree = "<group>"; };
 		0E1196DE51C594F8AC6F4846 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		18E6681C7760CA66FFB63C69 /* FileViewer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileViewer.swift; sourceTree = "<group>"; };
 		2AFBCD8066EBAB23A03992C0 /* TerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalView.swift; sourceTree = "<group>"; };
 		3532502B507E9C3DD275CF0A /* CanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasView.swift; sourceTree = "<group>"; };
 		36429106D3674C507FADD6CD /* CoreBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreBridgeTests.swift; sourceTree = "<group>"; };
@@ -80,6 +84,7 @@
 		B7C6C290CDACE8D8AA1EF46F /* canvas_mobile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = canvas_mobile.swift; sourceTree = "<group>"; };
 		BE0EEF3C29668868F62A8686 /* CopilotCanvasTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = CopilotCanvasTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C0188D57AC0E74E4481E361E /* SessionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionsView.swift; sourceTree = "<group>"; };
+		C7490201013D1BBF885D6890 /* CopilotCanvas.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = CopilotCanvas.entitlements; sourceTree = "<group>"; };
 		C999D513E4C2DD264204D5FA /* KeyBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyBar.swift; sourceTree = "<group>"; };
 		CE1EA5E0CFCD3DB8211B5D1F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		E44C0FB2065B9025E30AAA67 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
@@ -103,6 +108,7 @@
 			isa = PBXGroup;
 			children = (
 				AA1A18FF4D04EBC4B7E3F66C /* Pairer.swift */,
+				02098422FE393BDE6A29DAAC /* PushRegistration.swift */,
 				B0D387408BFE4F7650FAAB8E /* ServerStore.swift */,
 				6407AA58A49B014FCB5D516C /* ServiceConnection.swift */,
 				4F4108B7E513FB12B790FDD7 /* WebSocketTransport.swift */,
@@ -181,6 +187,7 @@
 		7742B9CF01807C4573869927 /* CopilotCanvas */ = {
 			isa = PBXGroup;
 			children = (
+				C7490201013D1BBF885D6890 /* CopilotCanvas.entitlements */,
 				083D1146BDA8AB4028B21B7C /* Info.plist */,
 				8CF723DDF6DEB17C30665BAC /* App */,
 				074ADB7117BC01E621B0F3B1 /* Core */,
@@ -203,6 +210,7 @@
 			isa = PBXGroup;
 			children = (
 				941C0AFAA4E94625ADF4DDB3 /* BoxDrawing.swift */,
+				18E6681C7760CA66FFB63C69 /* FileViewer.swift */,
 				C999D513E4C2DD264204D5FA /* KeyBar.swift */,
 				04029A4BF1C2557757BFB954 /* TerminalScreen.swift */,
 				2AFBCD8066EBAB23A03992C0 /* TerminalView.swift */,
@@ -447,6 +455,7 @@
 				007B5D34BC0B24C5D8358834 /* BoxDrawing.swift in Sources */,
 				7CE4BC353D6D89E5E87DC9AF /* CanvasView.swift in Sources */,
 				2995C159A2A054E1C5E89557 /* CopilotCanvasApp.swift in Sources */,
+				7630F111291E90F528B6C144 /* FileViewer.swift in Sources */,
 				238AA111F2A58A1CA990D5BD /* HomeView.swift in Sources */,
 				AD948EEDAFFCDAEDF75F8951 /* KeyBar.swift in Sources */,
 				BF0CF98767320D25ABC31698 /* Keyboard.swift in Sources */,
@@ -455,6 +464,7 @@
 				5F6300F2882B73B14270F595 /* PairView.swift in Sources */,
 				7138F9C66C98F01D5B91C149 /* Pairer.swift in Sources */,
 				77305682749AAD715786B71D /* Palette.swift in Sources */,
+				57CA8E53C67778D84F381942 /* PushRegistration.swift in Sources */,
 				4D67292AECD72512406C0F46 /* ServerStore.swift in Sources */,
 				CB2C0540839842AF660C0EE3 /* ServiceConnection.swift in Sources */,
 				44EC1E918541DDE546C4A7A2 /* SessionsView.swift in Sources */,
@@ -564,6 +574,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = CopilotCanvas/CopilotCanvas.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -591,6 +602,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = CopilotCanvas/CopilotCanvas.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				FRAMEWORK_SEARCH_PATHS = (

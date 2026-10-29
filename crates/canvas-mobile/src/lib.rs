@@ -41,6 +41,14 @@ pub fn token_expiry_ms(token: String) -> u64 {
     canvas_common::remote::jwt_claims(&token).and_then(|c| c.get("exp").and_then(|e| e.as_u64())).map_or(0, |s| s * 1000)
 }
 
+/// Opens a renewed tunnel access token from a silent notification (`cc.n`,
+/// `cc.t`), sealed by the service with this phone's pairing secret.
+#[uniffi::export]
+pub fn open_tunnel_access(secret: Vec<u8>, nonce: String, sealed: String) -> Result<TunnelAccessInfo, CoreError> {
+    let (url, token, expires_ms) = canvas_common::remote::open_access(&secret, &nonce, &sealed)?;
+    Ok(TunnelAccessInfo { url, token, expires_ms })
+}
+
 /// The core's version (the service logs it as the client's build).
 #[uniffi::export]
 pub fn core_version() -> String {

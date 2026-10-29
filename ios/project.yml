@@ -59,10 +59,14 @@ targets:
           - CFBundleURLName: com.thomashorga.copilotcanvas.pair
             CFBundleURLSchemes: [ccanvas]
         ITSAppUsesNonExemptEncryption: false
+        # Silent notifications bring renewed tunnel tokens while the app is away.
+        UIBackgroundModes: [remote-notification]
+        NSPhotoLibraryUsageDescription: Send a picture from your library to an agent (it is pasted into the session).
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.thomashorga.copilotcanvas
         PRODUCT_NAME: CopilotCanvas
+        CODE_SIGN_ENTITLEMENTS: CopilotCanvas/CopilotCanvas.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGN_STYLE: Automatic
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

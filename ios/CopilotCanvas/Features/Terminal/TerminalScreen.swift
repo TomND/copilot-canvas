@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 import UIKit
 
@@ -8,7 +9,15 @@ struct TerminalScreen: View {
     let sessionId: String
 
     @AppStorage("terminalFontSize") private var fontSize: Double = 12.5
-    @AppStorage("terminalMirror") private var mirror = false
+    /// The default for terminals not set one way or the other.
+    @AppStorage("terminalMirror") private var mirrorDefault = false
+    /// Fit or mirror, remembered per session.
+    @State private var mirror = false
+    @State private var scrolledBack: UInt32 = 0
+    @State private var viewing: FileTarget?
+    @State private var pickingPhoto = false
+    @State private var photo: PhotosPickerItem?
+    @State private var sendingPhoto = false
     @State private var grid: (cols: Int, rows: Int) = (0, 0)
     @State private var started = false
     @State private var starting = false
@@ -38,11 +47,34 @@ struct TerminalScreen: View {
                     onFontSize: { fontSize = Double($0) },
                     onCompose: { composing = true },
                     onTitle: { title = $0 },
-                    onLink: { if let url = URL(string: $0) { openURL(url) } }
+                    onLink: { target in open(link: target) },
+                    onScrolled: { scrolledBack = $0 },
+                    onPhoto: { pickingPhoto = true },
+                    onPasteImage: { image in send(image: image) }
                 )
                 .background(Color(rgb: TerminalColors.background))
                 if !(item?.alive ?? false) {
                     notRunning
+                }
+                if sendingPhoto {
+                    ProgressView("Sending the picture…").padding(16).background(Palette.panel, in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                // Scrolled back: one tap to the live screen.
+                if scrolledBack > 0 {
+                    Button {
+                        connection.client.scroll(id: sessionId, delta: Int32.min)
+                    } label: {
+                        Label("\(scrolledBack) lines back · Live", systemImage: "arrow.down.to.line")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Palette.accent, in: Capsule())
+                            .foregroundStyle(.black)
+                    }
+                    .padding(12)
+                    .accessibilityIdentifier("jumpToLive")
                 }
             }
             if !keyboardShown { quickBar }
@@ -72,6 +104,21 @@ struct TerminalScreen: View {
             }
             .presentationDetents([.medium, .large])
         }
+        .sheet(item: $viewing) { target in
+            FileViewer(connection: connection, target: target)
+        }
+        .photosPicker(isPresented: $pickingPhoto, selection: $photo, matching: .images)
+        .onChange(of: photo) { _, item in
+            guard let item else { return }
+            photo = nil
+            Task {
+                guard let data = try? await item.loadTransferable(type: Data.self), let image = UIImage(data: data) else {
+                    connection.toast = Toast(text: "That picture could not be read.", error: true)
+                    return
+                }
+                send(image: image)
+            }
+        }
         .confirmationDialog("Stop \(item?.name ?? "this session")?", isPresented: $showStopConfirm, titleVisibility: .visible) {
             Button("Stop", role: .destructive) { connection.client.stopSession(id: sessionId) }
         } message: {
@@ -88,10 +135,70 @@ struct TerminalScreen: View {
             // Opened before the canvas arrived (a notification, a link): start now.
             if !started { start() }
         }
-        .onChange(of: mirror) { _, _ in
+        .onChange(of: mirror) { _, value in
+            Self.setMirror(value, for: sessionId)
             guard started, grid.cols > 0 else { return }
             connection.client.setFit(id: sessionId, fit: !mirror, cols: UInt16(grid.cols), rows: UInt16(grid.rows))
         }
+        .onAppear { mirror = Self.mirror(for: sessionId) ?? mirrorDefault }
+    }
+
+    // MARK: Fit or mirror per session
+
+    private static let mirrorKey = "terminalMirrorBySession"
+
+    static func mirror(for id: String) -> Bool? {
+        (UserDefaults.standard.dictionary(forKey: mirrorKey) as? [String: Bool])?[id]
+    }
+
+    static func setMirror(_ value: Bool, for id: String) {
+        var all = (UserDefaults.standard.dictionary(forKey: mirrorKey) as? [String: Bool]) ?? [:]
+        all[id] = value
+        // Kept small: the most recent sessions.
+        if all.count > 200 { all = Dictionary(uniqueKeysWithValues: all.prefix(150).map { ($0.key, $0.value) }) }
+        UserDefaults.standard.set(all, forKey: mirrorKey)
+    }
+
+    // MARK: Links, files and pictures
+
+    /// Web links open in Safari; paths on the service's machine in the viewer.
+    private func open(link target: String) {
+        if target.hasPrefix("http://") || target.hasPrefix("https://") {
+            if let url = URL(string: target) { openURL(url) }
+        } else {
+            viewing = FileTarget(path: target)
+        }
+    }
+
+    /// A picture goes to the clipboard of the service's machine, then Ctrl+V
+    /// makes the agent attach it.
+    private func send(image: UIImage) {
+        guard let png = Self.png(image) else {
+            connection.toast = Toast(text: "That picture could not be converted.", error: true)
+            return
+        }
+        sendingPhoto = true
+        Task {
+            do {
+                try await connection.perform { try $0.pasteImage(id: sessionId, png: png) }
+                connection.toast = Toast(text: "Picture pasted into \(item?.name ?? "the session")", error: false)
+            } catch {
+                connection.show(error)
+            }
+            sendingPhoto = false
+        }
+    }
+
+    /// PNG, at most 2048 points on the long side (agents need no more; uploads stay small).
+    static func png(_ image: UIImage) -> Data? {
+        let longest = max(image.size.width, image.size.height)
+        guard longest > 0 else { return nil }
+        let scale = min(1, 2048 / longest)
+        let size = CGSize(width: (image.size.width * scale).rounded(), height: (image.size.height * scale).rounded())
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let rendered = UIGraphicsImageRenderer(size: size, format: format).image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
+        return rendered.pngData()
     }
 
     private var subtitle: String {
@@ -112,6 +219,8 @@ struct TerminalScreen: View {
             }
             Section {
                 Button { composing = true } label: { Label("Write a prompt…", systemImage: "square.and.pencil") }
+                Button { pickingPhoto = true } label: { Label("Send a picture…", systemImage: "photo") }
+                    .disabled(!(item?.alive ?? false))
                 Button { connection.client.scroll(id: sessionId, delta: Int32.max) } label: { Label("Scroll to the top", systemImage: "arrow.up.to.line") }
                 Button { connection.client.scroll(id: sessionId, delta: Int32.min) } label: { Label("Scroll to the bottom", systemImage: "arrow.down.to.line") }
                 if item?.status == .done {
@@ -132,6 +241,7 @@ struct TerminalScreen: View {
             HStack(spacing: 8) {
                 quick("keyboard", label: "Keyboard") { keyboardRequest += 1 }
                 quick("square.and.pencil", label: "Prompt") { composing = true }
+                quick("photo", label: "Picture") { pickingPhoto = true }
                 quickKey("esc", .esc)
                 quickKey("↑", .up)
                 quickKey("↓", .down)
@@ -256,6 +366,10 @@ struct TerminalRepresentable: UIViewRepresentable {
     let onCompose: () -> Void
     let onTitle: (String) -> Void
     let onLink: (String) -> Void
+    /// Lines scrolled back from the live screen (0: live).
+    let onScrolled: (UInt32) -> Void
+    let onPhoto: () -> Void
+    let onPasteImage: (UIImage) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -274,11 +388,14 @@ struct TerminalRepresentable: UIViewRepresentable {
         view.onFontSize = onFontSize
         view.onCompose = onCompose
         view.onLink = onLink
+        view.onPhoto = onPhoto
+        view.onPasteImage = onPasteImage
         view.selectionText = { c0, r0, c1, r1 in client.selectionText(id: id, fromCol: c0, fromRow: r0, toCol: c1, toRow: r1) }
         view.onCopied = { [weak connection] in connection?.toast = Toast(text: "Copied", error: false) }
         let coordinator = context.coordinator
         coordinator.view = view
         coordinator.onTitle = onTitle
+        coordinator.onScrolled = onScrolled
         coordinator.token = connection.watchScreen(id) { [weak coordinator] in coordinator?.screenChanged(client: client, id: id) }
         coordinator.connection = connection
         coordinator.id = id
@@ -309,7 +426,9 @@ struct TerminalRepresentable: UIViewRepresentable {
         var token: UUID?
         var id: String?
         var onTitle: ((String) -> Void)?
+        var onScrolled: ((UInt32) -> Void)?
         var keyboardRequest = 0
+        private var lastOffset: UInt32 = 0
         private var pending = false
         private var lastTitle = ""
 
@@ -322,6 +441,10 @@ struct TerminalRepresentable: UIViewRepresentable {
                 self.pending = false
                 guard let screen = client.takeScreen(id: id, full: false) else { return }
                 self.view?.apply(screen)
+                if screen.displayOffset != self.lastOffset {
+                    self.lastOffset = screen.displayOffset
+                    self.onScrolled?(screen.displayOffset)
+                }
                 if screen.title != self.lastTitle {
                     self.lastTitle = screen.title
                     self.onTitle?(screen.title)

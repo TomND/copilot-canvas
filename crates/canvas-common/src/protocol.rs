@@ -122,6 +122,12 @@ pub enum ClientMsg {
     /// a terminal too; a client that never sent `Resize` for it (the iPhone's
     /// mirror mode) leaves the size alone.
     Claim { id: String },
+    /// Protocol 8, paired clients: this phone's APNs device token (empty:
+    /// unregister), `environment` "sandbox" or "production", the app's
+    /// bundle id and what the phone calls this machine. The service pushes
+    /// alerts (a session needs you or finished) and renewed tunnel access
+    /// tokens to it while it is not connected.
+    PushRegister { token: String, environment: String, bundle: String, label: String },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -824,6 +830,7 @@ pub(crate) mod tests {
             (25, ClientMsg::PairStart { name: "home-pc".into(), nonce: vec![4; 32] }),
             (26, ClientMsg::PairProof { proof: vec![5; 32] }),
             (27, ClientMsg::Claim { id: "t".into() }),
+            (28, ClientMsg::PushRegister { token: "ab".repeat(32), environment: "sandbox".into(), bundle: "com.x".into(), label: "work".into() }),
         ];
         for (index, message) in client {
             let bytes = postcard::to_stdvec(&message).unwrap();

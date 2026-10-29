@@ -20,7 +20,8 @@ final class TerminalUITests: XCTestCase {
     func testSessionsAreListedByWhatTheyNeed() throws {
         let app = launch()
         XCTAssertTrue(app.staticTexts["Fix flaky test"].waitForExistence(timeout: 45), "the canvas arrived")
-        XCTAssertTrue(app.staticTexts["Scratch"].exists)
+        // Lists build rows as they scroll in: other sessions may be further down.
+        XCTAssertTrue(app.buttons["machineMenu"].exists)
         attach(app, "sessions")
         app.buttons["Canvas"].tap()
         sleep(1)
@@ -123,6 +124,57 @@ final class TerminalUITests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(menu.waitForExistence(timeout: 10))
         expectation(for: NSPredicate(format: "label ENDSWITH ': mock'"), evaluatedWith: menu)
+        waitForExpectations(timeout: 20)
+    }
+
+    func testASubsessionStartsNextToItsParent() throws {
+        let app = launch()
+        let scratch = app.staticTexts["Scratch"].firstMatch
+        XCTAssertTrue(scratch.waitForExistence(timeout: 45))
+        scratch.press(forDuration: 1.0)
+        let item = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'New subsession'")).firstMatch
+        XCTAssertTrue(item.waitForExistence(timeout: 10))
+        item.tap()
+        XCTAssertTrue(app.navigationBars["New subsession"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Scratch"].exists, "the parent is named")
+        let name = app.textFields["Name (default: the folder's name)"]
+        let title = "Scratch follow-up \(Int.random(in: 100...999))"
+        name.tap()
+        name.typeText(title)
+        attach(app, "new-subsession")
+        app.buttons["Start"].tap()
+        let terminal = app.descendants(matching: .any).matching(identifier: "terminal").firstMatch
+        XCTAssertTrue(terminal.waitForExistence(timeout: 45), "the subsession's terminal opened")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        // Rows are built as they scroll in: scroll to it.
+        let row = app.staticTexts[title]
+        for _ in 0..<8 where !row.exists {
+            app.collectionViews.firstMatch.swipeUp()
+        }
+        XCTAssertTrue(row.waitForExistence(timeout: 10), "listed")
+        XCTAssertTrue(app.staticTexts["↳"].exists, "shown as a subsession")
+    }
+
+    func testPassiveSessionsPauseAndResume() throws {
+        let app = launch()
+        let drift = app.staticTexts["Drift guard"].firstMatch
+        XCTAssertTrue(drift.waitForExistence(timeout: 45))
+        drift.tap()
+        let pause = app.buttons.matching(identifier: "Pause").firstMatch
+        let resume = app.buttons.matching(identifier: "Resume").firstMatch
+        XCTAssertTrue(pause.waitForExistence(timeout: 10) || resume.exists)
+        attach(app, "passive-actions")
+        if pause.exists {
+            pause.tap()
+            XCTAssertTrue(app.staticTexts["paused"].waitForExistence(timeout: 20), "shown as paused")
+            drift.tap()
+            XCTAssertTrue(resume.waitForExistence(timeout: 10))
+            resume.tap()
+        } else {
+            resume.tap()
+        }
+        let gone = NSPredicate(format: "exists == false")
+        expectation(for: gone, evaluatedWith: app.staticTexts["paused"])
         waitForExpectations(timeout: 20)
     }
 

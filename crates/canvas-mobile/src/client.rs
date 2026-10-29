@@ -40,6 +40,12 @@ pub trait Listener: Send + Sync {
 /// How long the handshake may take (the tunnel's relay adds round trips).
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 
+fn describe(error: &CoreError) -> String {
+    match error {
+        CoreError::Failed { message } => message.clone(),
+    }
+}
+
 fn now_ms() -> u64 {
     canvas_common::paths::now_ms()
 }
@@ -72,6 +78,8 @@ struct Shared {
     rpc_pending: Mutex<HashMap<u64, Sender<String>>>,
     /// When "offline: input not sent" was last said.
     offline_said: Mutex<Option<Instant>>,
+    /// This phone's notification registration, sent on every connection.
+    push: Mutex<Option<ClientMsg>>,
 }
 
 /// A paired service: connections, state and commands.
@@ -98,6 +106,7 @@ impl Client {
                 rpc_next: AtomicU64::new(1),
                 rpc_pending: Mutex::new(HashMap::new()),
                 offline_said: Mutex::new(None),
+                push: Mutex::new(None),
             }),
         })
     }
@@ -297,10 +306,25 @@ impl Client {
             return Err(CoreError::msg(format!("Folder not found on the service's machine: {folder}")));
         }
         let prompt = Some(request.prompt.trim().to_owned()).filter(|p| !p.is_empty());
-        let mut state = lock(&self.shared.state);
-        let id = state.add_session(&request, &info.absolute).map_err(CoreError::msg)?;
-        let effects = state.launch(&id, cols, rows, prompt, now_ms()).map_err(CoreError::msg)?;
-        drop(state);
+        let fork = if request.fork { lock(&self.shared.state).fork_kind(&request.parent) } else { None };
+        let id = lock(&self.shared.state).add_session(&request, &info.absolute).map_err(CoreError::msg)?;
+        let fork_from = match fork {
+            // Copilot: the service copies the parent's history to the new id; the copy resumes.
+            Some(crate::state::Fork::Copy { parent, .. }) => {
+                let name = Some(request.name.trim().to_owned()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Fork".into());
+                if let Err(error) = self.shared.call(Request::Fork { parent, child: id.clone(), name, cwd: Some(info.absolute.clone()) }) {
+                    // The box stays (fresh): opening it starts a new conversation.
+                    return Err(CoreError::msg(format!("The fork failed: {}", describe(&error))));
+                }
+                if let Some(node) = lock(&self.shared.state).doc.node_mut(&id) {
+                    node.fresh = false;
+                }
+                None
+            }
+            Some(crate::state::Fork::Native { parent }) => Some(parent),
+            None => None,
+        };
+        let effects = lock(&self.shared.state).launch_fork(&id, cols, rows, prompt, fork_from, now_ms()).map_err(CoreError::msg)?;
         self.shared.run(effects);
         Ok(id)
     }
@@ -325,6 +349,63 @@ impl Client {
     pub fn mark_reviewed(&self, id: String) {
         let effects = lock(&self.shared.state).mark_reviewed(&id, now_ms());
         self.shared.run(effects);
+    }
+
+    // ---------- notifications ----------
+
+    /// This phone's APNs device token (hex; empty: no notifications), the
+    /// environment ("sandbox" for development builds), the app's bundle id
+    /// and what the phone calls this machine. Sent now and on every connection.
+    pub fn set_push(&self, token: String, environment: String, bundle: String, label: String) {
+        let message = ClientMsg::PushRegister { token, environment, bundle, label };
+        *lock(&self.shared.push) = Some(message.clone());
+        self.shared.send(message);
+    }
+
+    // ---------- passive sessions ----------
+
+    pub fn run_passive(&self, id: String) -> Result<(), CoreError> {
+        let effects = lock(&self.shared.state).run_passive(&id).map_err(CoreError::msg)?;
+        self.shared.run(effects);
+        Ok(())
+    }
+
+    pub fn set_passive_paused(&self, id: String, paused: bool) -> Result<(), CoreError> {
+        let effects = lock(&self.shared.state).set_paused(&id, paused).map_err(CoreError::msg)?;
+        self.shared.run(effects);
+        Ok(())
+    }
+
+    /// Drops the messages waiting to be typed into a session.
+    pub fn discard_mail(&self, id: String) {
+        let effects = lock(&self.shared.state).discard_mail(&id);
+        self.shared.run(effects);
+    }
+
+    // ---------- subsessions ----------
+
+    /// Whether a subsession can fork this session's conversation (asks the
+    /// service whether a Copilot session has history: blocking).
+    pub fn can_fork(&self, id: String) -> bool {
+        let fork = lock(&self.shared.state).fork_kind(&id);
+        match fork {
+            Some(crate::state::Fork::Copy { agent, parent }) => matches!(self.shared.call(Request::HasHistory { agent, id: parent }), Ok(Response::Flag(true))),
+            Some(crate::state::Fork::Native { .. }) => true,
+            None => false,
+        }
+    }
+
+    // ---------- images ----------
+
+    /// Puts a picture (PNG) on the clipboard of the service's machine, then
+    /// sends Ctrl+V so the agent attaches it (blocking: the upload).
+    pub fn paste_image(&self, id: String, png: Vec<u8>) -> Result<(), CoreError> {
+        if png.len() > 20 << 20 {
+            return Err(CoreError::msg("The picture is too large (at most 20 MB)."));
+        }
+        self.shared.call(Request::SetClipboardImage { png })?;
+        self.shared.input(&id, Input::Key { key: Key::Char('v'), mods: protocol::MOD_CTRL });
+        Ok(())
     }
 
     // ---------- the service's machine ----------
@@ -547,6 +628,9 @@ fn serve_link(shared: &Arc<Shared>, generation: u64, inbox: &Arc<Inbox>, transpo
 
     let effects = lock(&shared.state).on_connected();
     shared.run(effects);
+    if let Some(register) = lock(&shared.push).clone() {
+        shared.send(register);
+    }
     if lost > 0 {
         shared.emit(CoreEvent::Notice { text: format!("Reconnected. {lost} keystroke(s) were not delivered."), error: true });
     }

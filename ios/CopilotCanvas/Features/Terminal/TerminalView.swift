@@ -45,7 +45,12 @@ final class TerminalView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
     /// Selected cells (inclusive) → the text, from the core.
     var selectionText: ((UInt16, UInt16, UInt16, UInt16) -> String)?
     var onCopied: (() -> Void)?
+    /// A web link or a file path on the service's machine was tapped.
     var onLink: ((String) -> Void)?
+    /// The key bar's picture button.
+    var onPhoto: (() -> Void)?
+    /// A picture pasted from the phone's clipboard.
+    var onPasteImage: ((UIImage) -> Void)?
 
     /// Sticky modifiers from the key bar (apply to the next key).
     var stickyMods: UInt8 = 0 {
@@ -431,7 +436,7 @@ final class TerminalView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
         if modes & 1 != 0 { onClick?(UInt16(col), UInt16(row)) }
     }
 
-    /// An OSC 8 link, or a URL written in the row, under a cell.
+    /// An OSC 8 link, or a URL or file path written in the row, under a cell.
     private func link(at col: Int, row: Int) -> String? {
         guard row < lines.count else { return nil }
         var c = 0
@@ -450,14 +455,28 @@ final class TerminalView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
             }
         }
         guard let hit else { return nil }
+        return Self.linkTarget(in: text, at: hit)
+    }
+
+    /// The web link or absolute file path (`C:\x\y.rs`, `/x/y.rs`, `~/x`,
+    /// with an optional `:line`) around character `index` of a row.
+    static func linkTarget(in text: String, at index: Int) -> String? {
         let characters = Array(text)
-        let stops: Set<Character> = [" ", "\"", "'", "<", ">", "(", ")", "[", "]", "│", "┃"]
-        var start = hit
+        guard index >= 0, index < characters.count else { return nil }
+        let stops: Set<Character> = [" ", "\"", "'", "`", "<", ">", "(", ")", "[", "]", "{", "}", "│", "┃", "|"]
+        guard !stops.contains(characters[index]) else { return nil }
+        var start = index
         while start > 0 && !stops.contains(characters[start - 1]) { start -= 1 }
-        var end = hit
+        var end = index
         while end < characters.count && !stops.contains(characters[end]) { end += 1 }
-        let word = String(characters[start..<end]).trimmingCharacters(in: CharacterSet(charactersIn: ".,;:"))
-        return word.hasPrefix("http://") || word.hasPrefix("https://") ? word : nil
+        let word = String(characters[start..<end]).trimmingCharacters(in: CharacterSet(charactersIn: ".,;!?"))
+        if word.hasPrefix("http://") || word.hasPrefix("https://") { return word }
+        let windows = word.count > 3 && word.dropFirst().hasPrefix(":\\") && word.first?.isLetter == true
+        let unix = (word.hasPrefix("/") || word.hasPrefix("~/")) && word.dropFirst().contains("/") && !word.hasPrefix("//")
+        let unc = word.hasPrefix("\\\\")
+        guard windows || unix || unc else { return nil }
+        // A trailing colon (a message's punctuation) is not part of the path.
+        return word.hasSuffix(":") ? String(word.dropLast()) : word
     }
 
     @objc private func panned(_ g: UIPanGestureRecognizer) {
@@ -605,11 +624,16 @@ final class TerminalView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
     }
 
     override func paste(_ sender: Any?) {
-        if let text = UIPasteboard.general.string { onPaste?(text) }
+        let board = UIPasteboard.general
+        if let text = board.string {
+            onPaste?(text)
+        } else if let image = board.image {
+            onPasteImage?(image)
+        }
     }
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
-        action == #selector(paste(_:)) ? UIPasteboard.general.hasStrings : super.canPerformAction(action, withSender: sender)
+        action == #selector(paste(_:)) ? (UIPasteboard.general.hasStrings || UIPasteboard.general.hasImages) : super.canPerformAction(action, withSender: sender)
     }
 }
 

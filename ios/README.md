@@ -71,6 +71,25 @@ In the simulator, paste the printed `ccanvas://pair?…` link, or launch with
 `-noNotificationPrompt`, `-noLock`, `-openSession <id>`, `-startMode canvas`,
 `-machine <name>` (`-pairLink` may be repeated).
 
+## Notifications
+
+On each machine, once (the key is the team's, from developer.apple.com ›
+Certificates, IDs & Profiles › Keys › "+" › *Apple Push Notifications
+service*; download `AuthKey_KEYID.p8`):
+
+```powershell
+copilot-canvas remote push-key AuthKey_KEYID.p8 --team 8Z37ZVMJ4V
+copilot-canvas remote push-test        # after the phone connected once
+```
+
+The app asks for permission when it first connects and registers with every
+paired machine. While it is away, a machine notifies it when a session needs
+you or finished (title: the session, subtitle: the machine as you named it;
+tap: that machine and session open), and keeps its tunnel token fresh with
+silent notifications (sealed with the phone's pairing secret). The Mac
+stand-in takes the same key: `APNS_KEY=~/AuthKey_KEYID.p8 APNS_TEAM=8Z37ZVMJ4V
+ios/cloud-mac.sh pair` (remembered for later starts).
+
 ## This Mac as a stand-in Cloud PC (real tunnel)
 
 To try the phone through a real private Dev Tunnel without the Windows
@@ -119,14 +138,20 @@ two machines (a second mock: `cargo run -p canvas-mock -- --listen
 | **Canvas** | The desktop canvas: groups, boxes with the same status borders (gold heavy for needs you, blue double for done · review, dashed passive), subagent and subsession edges, spinners. Drag to pan, pinch to zoom, tap a box to open it |
 | **Terminal** | The service's terminal engine (libghostty-vt on the Cloud PC) draws the screen; the phone renders its cells with Core Text: colours, bold, italic, dim, inverse, every underline style, strike-through, wide and emoji cells, box drawing as geometry, cursor shapes, your-prompt tint in Copilot, OSC 8 links. Keys are encoded on the service for the program's keyboard mode |
 | **Machines** | Pair several (work, personal): every one stays connected while the app is open. The menu at the top left switches between them and shows each one's state and what needs you there; the machine's colour runs under the bar; a strip lists the sessions of the *other* machines that need you or finished (tap: switch and open). Alerts name the machine; a notification opens its machine. Each machine gets a name and a colour when paired (Settings › Machines: rename, recolour, reorder, forget); pairing a machine again at the same address replaces it |
+| **Notifications** | While the app is away: a session needs you or finished (per machine, tap opens it); renewed tunnel tokens arrive silently. An expired token says so, with *Pair again* |
+| **Pictures** | *Send a picture* (terminal menu, key bar, quick bar) or paste an image: it goes to the machine's clipboard and Ctrl+V makes the agent attach it |
+| **Files** | Tap a path in a terminal (`C:\src\app.rs:42`, `/x/y.rs`): a read-only viewer of the machine's file, at that line (copy, share) |
+| **Passive sessions** | Tap one: run now, pause or resume, discard queued messages; its last headline and next run |
+| **Subsessions** | Long-press a session › *New subsession*: linked to it, placed next to it, forking its conversation when the agent can (Copilot's history copied; OpenCode and Claude Code fork it themselves) |
 | **Keyboard** | Closes with a tap outside any field, the button above it, or a swipe down on forms and lists; in terminals the key bar's hide button stays at its right end and a swipe down on the bar closes it. Picking a folder never brings it back |
 | **Typing** | iOS keyboard plus a key bar (Esc, Ctrl, Alt, Tab, ⇧Tab, arrows, ^C, ^D, Home/End, PgUp/PgDn, paste); hardware keyboards (arrows, Esc, Ctrl/Option combinations, ⌘V); a **prompt composer** (autocorrect, dictation) that sends one paste and Enter; one-hand quick keys (Esc, ↑ ↓ ⏎, 1 2 3, y n) for permission prompts |
+| **Scrolling back** | A *N lines back · Live* button returns to the live screen; fit or mirror is remembered per session |
 | **Gestures** | Swipe up/down: wheel (the agent scrolls its own view, else the scrollback); long-press and drag: select, release copies; tap: links open in Safari, clicks reach agents that read the mouse; pinch: text size |
 | **Sizes** | *Fit to this phone*: the terminal follows the phone while you type in it (tmux "latest"; typing at the desk gives it back). *Mirror the desktop*: the desktop's grid scaled down, nothing resized |
 | **New session** | Agent, folder (browse the Cloud PC's folders, recent folders), group, first prompt |
 | **Connection** | Offline banner, reconnect with backoff (0.5 s, 1 s, 1.5 s), typing never queued offline, lost keystrokes reported; the connection lingers ~25 s in the background, then closes; reconnects when you come back |
 | **Notifications** | Local notifications when a session needs you or finishes while the app is open or just backgrounded; tapping one opens the session |
 
-Not yet (docs/IOS-PLAN.md phase 5): push notifications while the app is
-closed, GitHub sign-in for tunnel tokens, inline images, automations and
-configuration views.
+Not yet: GitHub sign-in for tunnel tokens (when a token expires before a
+silent notification arrived, pair again), inline images, automations and
+configuration views, canvas editing, iPad split view.

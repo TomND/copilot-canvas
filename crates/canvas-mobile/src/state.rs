@@ -28,6 +28,15 @@ pub enum Effect {
     Emit(CoreEvent),
 }
 
+/// How a subsession forks its parent's conversation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Fork {
+    /// Copilot: the service copies the parent's history (`Request::Fork`), then the copy resumes.
+    Copy { agent: AgentKind, parent: String },
+    /// OpenCode, Claude Code: the agent forks it on the first start (`AgentLaunch::fork_from`).
+    Native { parent: String },
+}
+
 #[derive(Default)]
 pub struct State {
     pub conn: ConnState,
@@ -478,6 +487,8 @@ impl State {
         };
         let rect = node.rect();
         let open_elsewhere = !alive && summary.is_some_and(|s| s.live);
+        let passive = node.passive.as_ref();
+        let view = passive.and_then(|p| self.bus.passive.get(&p.key));
         SessionItem {
             id: node.id.clone(),
             kind,
@@ -496,6 +507,12 @@ impl State {
             loop_label: summary.filter(|s| s.loop_ms > 0).map(|s| format!("every {}", every(s.loop_ms))).unwrap_or_default(),
             mailbox: self.bus.mailbox.get(&node.id).copied().unwrap_or(0),
             subagents,
+            passive_key: passive.map(|p| p.key.clone()).unwrap_or_default(),
+            paused: passive.is_some_and(|p| p.paused),
+            passive_headline: view.map(|v| v.headline.clone()).unwrap_or_default(),
+            passive_running: view.is_some_and(|v| v.running),
+            next_run_ms: view.map_or(0, |v| v.next_run_ms),
+            forkable: self.fork_kind(&node.id).is_some(),
             x: rect.x,
             y: rect.y,
             w: rect.w,
@@ -544,6 +561,11 @@ impl State {
     /// Starts (or resumes) a session's terminal at `cols`×`rows`. Errors are
     /// for the user. Nothing to do when it already runs.
     pub fn launch(&mut self, id: &str, cols: u16, rows: u16, prompt: Option<String>, now: u64) -> Result<Vec<Effect>, String> {
+        self.launch_fork(id, cols, rows, prompt, None, now)
+    }
+
+    /// [`State::launch`], forking `fork_from` (an agent's native fork) on the first start.
+    pub fn launch_fork(&mut self, id: &str, cols: u16, rows: u16, prompt: Option<String>, fork_from: Option<String>, now: u64) -> Result<Vec<Effect>, String> {
         if self.alive(id) {
             return Ok(Vec::new());
         }
@@ -565,7 +587,8 @@ impl State {
             Some(command) if !command.is_empty() => LaunchKind::Command { program: command[0].clone(), args: command[1..].to_vec() },
             _ => {
                 let group = self.doc.group_of(&node).cloned();
-                LaunchKind::Agent(Box::new(agent_launch(&node, &self.doc.defaults, group.as_ref(), prompt, None, !node.fresh)))
+                let fork_from = fork_from.filter(|_| node.fresh);
+                LaunchKind::Agent(Box::new(agent_launch(&node, &self.doc.defaults, group.as_ref(), prompt, fork_from, !node.fresh)))
             }
         };
         self.errors.remove(id);
@@ -600,9 +623,16 @@ impl State {
         if name.is_empty() {
             name = "Session".into();
         }
-        let (x, y) = match self.doc.group(&request.group) {
-            Some(group) => self.doc.free_slot(group.x + 2, group.y + 2, ((group.w - 4) / GRID_X).max(1), NodeKind::Session),
-            None => {
+        let parent = self.doc.node(&request.parent).filter(|n| n.kind == NodeKind::Session).cloned();
+        // A fork runs the parent's agent.
+        let agent = match (&parent, request.fork) {
+            (Some(p), true) => agent_of(p),
+            _ => agent,
+        };
+        let (x, y) = match (&parent, self.doc.group(&request.group)) {
+            (Some(p), _) => self.doc.free_slot(p.x + GRID_X + 4, p.y, 1, NodeKind::Session),
+            (None, Some(group)) => self.doc.free_slot(group.x + 2, group.y + 2, ((group.w - 4) / GRID_X).max(1), NodeKind::Session),
+            (None, None) => {
                 let left = self.doc.nodes.iter().map(|n| n.x).min().unwrap_or(0);
                 let bottom = self.doc.nodes.iter().map(|n| n.y + n.rect().h).max().map_or(0, |b| b + GRID_Y - 4);
                 self.doc.free_slot(left, bottom, 4, NodeKind::Session)
@@ -612,10 +642,60 @@ impl State {
         let node: Node = serde_json::from_value(serde_json::json!({
             "id": id, "kind": "session", "name": name, "x": x, "y": y, "cwd": cwd, "fresh": true,
             "agent": (agent != AgentKind::Copilot).then(|| agent.id()),
+            "parent": parent.as_ref().map(|p| p.id.clone()),
+            "source": "iphone",
         }))
         .map_err(|e| e.to_string())?;
         self.doc.nodes.push(node);
         Ok(id)
+    }
+
+    /// How a subsession of `id` can fork its conversation: Copilot copies the
+    /// history on the service (if it has one: `HasHistory`), OpenCode and
+    /// Claude Code fork it themselves (a session the service indexed).
+    pub fn fork_kind(&self, id: &str) -> Option<Fork> {
+        let node = self.doc.node(id).filter(|n| n.kind == NodeKind::Session && n.passive.is_none() && n.command.is_none())?;
+        let kind = agent_of(node);
+        let native = self.agent_sessions.get(id).cloned().unwrap_or_else(|| native_id(node).to_owned());
+        if kind.caps().copy_fork {
+            Some(Fork::Copy { agent: kind, parent: native })
+        } else if kind.caps().native_fork && self.sessions.contains_key(&native) {
+            Some(Fork::Native { parent: native })
+        } else {
+            None
+        }
+    }
+
+    /// A passive session's key.
+    fn passive_key(&self, id: &str) -> Result<String, String> {
+        self.doc.node(id).and_then(|n| n.passive.as_ref()).map(|p| p.key.clone()).ok_or_else(|| "Not a passive session.".to_owned())
+    }
+
+    /// Runs a passive session now.
+    pub fn run_passive(&self, id: &str) -> Result<Vec<Effect>, String> {
+        let key = self.passive_key(id)?;
+        Ok(vec![Effect::Send(ClientMsg::Bus { json: serde_json::json!({ "action": "run", "key": key }).to_string() })])
+    }
+
+    /// Pauses or resumes a passive session: the canvas field (the desktop's
+    /// routing follows it) and the service at once.
+    pub fn set_paused(&mut self, id: &str, paused: bool) -> Result<Vec<Effect>, String> {
+        let key = self.passive_key(id)?;
+        if let Some(passive) = self.doc.node_mut(id).and_then(|n| n.passive.as_mut()) {
+            passive.paused = paused;
+        }
+        let mut effects = vec![Effect::Send(ClientMsg::Bus { json: serde_json::json!({ "action": "pause", "key": key, "paused": paused }).to_string() })];
+        if !paused {
+            effects.push(Effect::Send(ClientMsg::Bus { json: serde_json::json!({ "action": "resume", "key": key }).to_string() }));
+        }
+        effects.extend(self.edit());
+        effects.push(Effect::Emit(CoreEvent::Overview));
+        Ok(effects)
+    }
+
+    /// Drops the messages waiting to be typed into a session.
+    pub fn discard_mail(&self, id: &str) -> Vec<Effect> {
+        vec![Effect::Send(ClientMsg::Bus { json: serde_json::json!({ "action": "discard_mail", "to": id }).to_string() })]
     }
 
     /// Stops a terminal gracefully (Claude Code also wants Ctrl+D).
@@ -789,7 +869,7 @@ mod tests {
     fn new_sessions_are_placed_and_started_fresh() {
         let mut state = online();
         state.info = Some(BackendInfo { default_agent: AgentKind::OpenCode, installed: vec![AgentKind::OpenCode, AgentKind::Copilot], user_home: r"C:\Users\me".into(), ..Default::default() });
-        let request = NewSession { name: String::new(), agent: String::new(), cwd: r"C:\src\repo".into(), prompt: "hi".into(), group: String::new() };
+        let request = NewSession { name: String::new(), agent: String::new(), cwd: r"C:\src\repo".into(), prompt: "hi".into(), group: String::new(), parent: String::new(), fork: false };
         let id = state.add_session(&request, r"C:\src\repo").unwrap();
         let node = state.doc.node(&id).unwrap().clone();
         assert_eq!((node.name.as_str(), node.agent.as_deref(), node.fresh), ("repo", Some("opencode"), true));
@@ -840,5 +920,43 @@ mod tests {
         assert_eq!(every(15 * 60_000), "15m");
         assert_eq!(every(2 * 3_600_000), "2h");
         assert_eq!(every(86_400_000), "1d");
+    }
+
+    #[test]
+    fn subsessions_sit_next_to_their_parent_and_fork_it() {
+        let mut state = online();
+        state.info = Some(BackendInfo { default_agent: AgentKind::Copilot, installed: canvas_model::agent::ALL.to_vec(), ..Default::default() });
+        // A Claude Code parent the service indexed: a native fork.
+        state.doc.node_mut("b").unwrap().agent = Some("claude".into());
+        state.on_service(ServiceMsg::Sessions { full: true, upsert: vec![SessionSummary { id: "b".into(), ..Default::default() }], remove: Vec::new() }, 0);
+        assert_eq!(state.fork_kind("b"), Some(Fork::Native { parent: "b".into() }));
+        assert_eq!(state.fork_kind("a"), Some(Fork::Copy { agent: AgentKind::Copilot, parent: "a".into() }), "Copilot copies the history");
+        let request = NewSession { name: "Try another fix".into(), agent: "copilot".into(), cwd: String::new(), prompt: String::new(), group: String::new(), parent: "b".into(), fork: true };
+        let id = state.add_session(&request, r"C:\work\app").unwrap();
+        let (child, parent) = (state.doc.node(&id).unwrap().clone(), state.doc.node("b").unwrap().clone());
+        assert_eq!((child.parent.as_deref(), child.agent.as_deref()), (Some("b"), Some("claude")), "linked, and a fork runs the parent's agent");
+        assert!(child.x > parent.x && child.y == parent.y, "placed to the right of its parent");
+        let effects = state.launch_fork(&id, 50, 30, None, Some("b".into()), 1).unwrap();
+        let ClientMsg::Launch { kind: LaunchKind::Agent(launch), .. } = sent(&effects)[0] else { panic!("launch") };
+        assert_eq!((launch.fork_from.as_deref(), launch.resume), (Some("b"), false));
+        assert_eq!(state.overview(1).sessions.iter().find(|s| s.id == "b").map(|s| s.forkable), Some(true));
+    }
+
+    #[test]
+    fn passive_sessions_pause_run_and_drop_their_mail() {
+        let mut state = online();
+        let mut passive = state.doc.node("a").unwrap().clone();
+        passive.passive = Some(serde_json::from_value(serde_json::json!({ "key": "drift", "group": "g", "slug": "drift-guard" })).unwrap());
+        *state.doc.node_mut("a").unwrap() = passive;
+        let bus = |effects: &[Effect]| sent(effects).iter().filter_map(|m| if let ClientMsg::Bus { json } = m { Some(json.clone()) } else { None }).collect::<Vec<_>>();
+        assert!(bus(&state.run_passive("a").unwrap())[0].contains("\"run\""));
+        let effects = state.set_paused("a", true).unwrap();
+        assert!(bus(&effects)[0].contains("\"pause\"") && bus(&effects)[0].contains("true"));
+        assert!(sent(&effects).iter().any(|m| matches!(m, ClientMsg::DocEdit { ops_json, .. } if ops_json.contains("paused"))), "the desktop's routing follows the canvas");
+        assert!(state.overview(0).sessions.iter().find(|s| s.id == "a").unwrap().paused);
+        let effects = state.set_paused("a", false).unwrap();
+        assert!(bus(&effects).iter().any(|j| j.contains("\"resume\"")));
+        assert!(bus(&state.discard_mail("a"))[0].contains("discard_mail"));
+        assert!(state.run_passive("b").is_err(), "not a passive session");
     }
 }

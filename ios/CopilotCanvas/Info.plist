@@ -44,11 +44,17 @@
 	<string>Canvas locks with Face ID because a paired phone can run anything on your Cloud PC.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Connect to a Copilot Canvas service (or the mock service) on your local network.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Send a picture from your library to an agent (it is pasted into the session).</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<false/>
 	</dict>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

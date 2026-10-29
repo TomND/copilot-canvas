@@ -471,6 +471,43 @@ identity; the token stands in for it).
   home PC) is refused: quitting a remote canvas disconnects it, never ends
   the service and its sessions.
 
+### Notifications to the iPhone (APNs)
+
+While the app is away (closed, or more than ~25 s in the background), the
+service tells the phone when a session starts waiting for you or finishes a
+turn, through Apple's push service (`crates/canvas-push`,
+`canvas-agents/src/service/push.rs`).
+
+- **The key.** Once per machine: `copilot-canvas remote push-key
+  AuthKey_KEYID.p8 --team TEAMID` (developer.apple.com › Certificates, IDs &
+  Profiles › Keys › "+" › Apple Push Notifications service; the team id is in
+  Membership details). It is kept owner-only in `<home>\remote\apns.json`;
+  the running service picks it up at once. `copilot-canvas remote push-test`
+  sends a test notification to every registered phone.
+- **Registration.** The app sends `ClientMsg::PushRegister { token,
+  environment, bundle, label }` (appended at index 28) on every connection:
+  its APNs device token, `sandbox` or `production` (from its provisioning
+  profile), its bundle id (the APNs topic) and what the phone calls this
+  machine (the notification's subtitle). Only paired clients can register;
+  one phone per paired client, in `<home>\remote\push.json`. Revoking the
+  client forgets it; a token APNs reports as unregistered is forgotten too.
+- **What is notified.** Every 2 s the service derives each canvas session's
+  status with the clients' own rules (`canvas_model::status`) from the
+  history index, its terminals and `canvas.json`, and notifies phones that
+  are not connected when a session becomes *needs you*, or *done · review*
+  after working (`canvas_push::Attention`; collapsed per session). Connected
+  phones show it themselves.
+- **Tunnel tokens while away.** With phones registered and a key, the
+  service keeps a Dev Tunnels connect token fresh (renewed 12 h before it
+  expires) and sends each away phone a silent notification with the token
+  sealed with that phone's own pairing secret
+  (`pairing::seal_for_client`: HMAC-SHA256 counter-mode stream and tag,
+  keys from the secret, a label and a fresh nonce): Apple only carries
+  ciphertext. The phone opens it (`open_tunnel_access`) and connects with it
+  next time. iOS may delay silent notifications; if a token still expires,
+  the app says so and offers to pair again (the pairing is replaced by
+  address, keeping the name and colour).
+
 ### Terminal sizes with several clients
 
 A hosted terminal has one size (its ConPTY). The service remembers each

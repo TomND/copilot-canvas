@@ -102,6 +102,16 @@ pub struct SessionItem {
     /// Messages waiting to be typed in (passive sessions' mail).
     pub mailbox: u32,
     pub subagents: Vec<SubagentItem>,
+    /// Passive sessions: the key, paused, the headline of the last run, a run
+    /// in progress, the next run (ms since the epoch; 0: none).
+    pub passive_key: String,
+    pub paused: bool,
+    pub passive_headline: String,
+    pub passive_running: bool,
+    pub next_run_ms: u64,
+    /// A subsession can fork this session's conversation (`can_fork` checks
+    /// Copilot's history on the service's machine).
+    pub forkable: bool,
     /// Canvas geometry (cells of the desktop canvas).
     pub x: i32,
     pub y: i32,
@@ -252,6 +262,18 @@ pub struct NewSession {
     pub prompt: String,
     /// Put the box in this group (empty: next to the others).
     pub group: String,
+    /// A subsession of this session (empty: none): linked and placed next to it.
+    pub parent: String,
+    /// Fork the parent's conversation (else start fresh).
+    pub fork: bool,
+}
+
+/// A tunnel access token that came in a notification.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct TunnelAccessInfo {
+    pub url: String,
+    pub token: String,
+    pub expires_ms: u64,
 }
 
 /// A paired service, as the pairing gave it.

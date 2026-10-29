@@ -81,6 +81,7 @@ final class KeyBar: UIInputView {
             .key("pgup", .pageUp, 0),
             .key("pgdn", .pageDown, 0),
             .action("doc.on.clipboard", "Paste", #selector(pasteClipboard)),
+            .action("photo", "Send a picture", #selector(photo)),
         ]
         for item in items {
             stack.addArrangedSubview(button(item))
@@ -141,7 +142,11 @@ final class KeyBar: UIInputView {
     @objc private func compose() { onCompose?() }
 
     @objc private func pasteClipboard() {
-        if let text = UIPasteboard.general.string { terminal?.onPaste?(text) }
+        terminal?.paste(nil)
+    }
+
+    @objc private func photo() {
+        terminal?.onPhoto?()
     }
 
     @objc private func hideKeyboard() { terminal?.resignFirstResponder() }

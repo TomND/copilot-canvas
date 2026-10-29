@@ -253,9 +253,8 @@ final class ServiceConnection: ObservableObject {
     // MARK: Notifications
 
     private func requestNotifications() {
-        // `-noNotificationPrompt`: automated simulator runs.
-        guard !ProcessInfo.processInfo.arguments.contains("-noNotificationPrompt") else { return }
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+        // Local alerts, and notifications from the machines while the app is away.
+        PushRegistration.request()
     }
 
     func notify(title: String, body: String, id: String? = nil) {

@@ -3,6 +3,7 @@
 //! ```text
 //! canvas-mock [--listen 127.0.0.1:47600] [--code CODE|random] [--cwd DIR] [--state DIR] [--quiet]
 //!             [--tunnel ID [--url wss://…]] [--real-agents] [--name NAME] [--qr FILE.png]
+//!             [--apns-key AuthKey_ID.p8 --apns-team TEAMID [--apns-key-id ID]]
 //! ```
 //!
 //! Locally (no `--tunnel`) it uses the fixed test code. Behind a tunnel
@@ -11,7 +12,7 @@
 
 use std::path::PathBuf;
 
-const USAGE: &str = "usage: canvas-mock [--listen 127.0.0.1:47600] [--code CODE|random] [--cwd DIR] [--state DIR] [--quiet] [--tunnel ID [--url wss://…]] [--real-agents] [--name NAME] [--qr FILE.png]";
+const USAGE: &str = "usage: canvas-mock [--listen 127.0.0.1:47600] [--code CODE|random] [--cwd DIR] [--state DIR] [--quiet] [--tunnel ID [--url wss://…]] [--real-agents] [--name NAME] [--qr FILE.png] [--apns-key AuthKey_ID.p8 --apns-team TEAMID [--apns-key-id ID]]";
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -25,6 +26,7 @@ fn main() {
     let mut real_agents = false;
     let mut name = "mock".to_owned();
     let mut qr: Option<PathBuf> = None;
+    let (mut apns_key, mut apns_team, mut apns_key_id) = (None::<PathBuf>, None::<String>, None::<String>);
     while let Some(arg) = args.next() {
         let mut value = |flag: &str| args.next().unwrap_or_else(|| fail(&format!("{flag} needs a value")));
         match arg.as_str() {
@@ -38,6 +40,9 @@ fn main() {
             "--real-agents" => real_agents = true,
             "--name" => name = value("--name"),
             "--qr" => qr = Some(PathBuf::from(value("--qr"))),
+            "--apns-key" => apns_key = Some(PathBuf::from(value("--apns-key"))),
+            "--apns-team" => apns_team = Some(value("--apns-team")),
+            "--apns-key-id" => apns_key_id = Some(value("--apns-key-id")),
             _ => fail(USAGE),
         }
     }
@@ -49,7 +54,16 @@ fn main() {
         None => "ABCDEFGHJKMN".to_owned(),
     };
     let code = canvas_common::pairing::normalize_code(&code).unwrap_or_else(|| fail("a pairing code has 12 characters (ABCD-EFGH-JKMN)"));
-    let config = canvas_mock::Config { listen, code: code.clone(), state_dir, cwd, verbose, tunnel: tunnel.clone(), web_url, real_agents };
+    let apns = apns_key.map(|path| {
+        let pem = std::fs::read_to_string(&path).unwrap_or_else(|e| fail(&format!("cannot read {}: {e}", path.display())));
+        let key_id = apns_key_id.or_else(|| path.file_stem()?.to_str()?.strip_prefix("AuthKey_").map(str::to_owned)).unwrap_or_else(|| fail("--apns-key-id ID (or a file named AuthKey_ID.p8)"));
+        let team = apns_team.unwrap_or_else(|| fail("--apns-team TEAMID"));
+        canvas_push::ApnsKey::new(&key_id, &team, &pem).unwrap_or_else(|e| fail(&format!("{e:#}")))
+    });
+    if let Some(key) = &apns {
+        println!("Notifications: APNs key {} of team {}", key.key_id, key.team_id);
+    }
+    let config = canvas_mock::Config { listen, code: code.clone(), state_dir, cwd, verbose, tunnel: tunnel.clone(), web_url, real_agents, apns };
     let handle = canvas_mock::serve(config).unwrap_or_else(|error| fail(&format!("{error:#}")));
     println!("Copilot Canvas mock service on {} (TCP and WebSocket)", handle.addr);
     println!("Pairing code: {}", canvas_common::pairing::format_code(&code));

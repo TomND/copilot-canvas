@@ -241,6 +241,29 @@ pub fn web_url_for(id_with_cluster: &str, port: u16) -> Option<String> {
     (valid_tunnel_id(name) && !cluster.is_empty() && cluster.chars().all(|c| c.is_ascii_alphanumeric())).then(|| format!("wss://{name}-{port}.{cluster}.devtunnels.ms"))
 }
 
+/// The label tunnel access tokens are sealed with for one phone.
+pub const ACCESS_LABEL: &str = "tunnel-access";
+
+/// A tunnel access token sealed for one paired phone with its own secret
+/// (it travels in a push notification): (nonce, sealed), base64.
+pub fn seal_access(secret: &[u8], url: &str, token: &str, expires_ms: u64) -> (String, String) {
+    use base64::Engine as _;
+    let message = serde_json::json!({ "url": url, "token": token, "exp": expires_ms }).to_string();
+    let (nonce, sealed) = crate::pairing::seal_for_client(secret, ACCESS_LABEL, message.as_bytes());
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+    (b64(&nonce), b64(&sealed))
+}
+
+/// Opens [`seal_access`] on the phone: (url, token, expires_ms).
+pub fn open_access(secret: &[u8], nonce_b64: &str, sealed_b64: &str) -> Result<(String, String, u64)> {
+    use base64::Engine as _;
+    let decode = |s: &str| base64::engine::general_purpose::STANDARD.decode(s.trim()).context("not base64");
+    let message = crate::pairing::open_for_client(secret, ACCESS_LABEL, &decode(nonce_b64)?, &decode(sealed_b64)?).context("this message is not for this phone, or it was changed")?;
+    let value: serde_json::Value = serde_json::from_slice(&message)?;
+    let (Some(url), Some(token)) = (value["url"].as_str(), value["token"].as_str()) else { anyhow::bail!("a malformed access message") };
+    Ok((url.to_owned(), token.to_owned(), value["exp"].as_u64().unwrap_or(0)))
+}
+
 /// What the iPhone needs to pair (`copilot-canvas remote pair --qr`), as a
 /// `ccanvas://pair?…` link shown in a QR code.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]

@@ -502,6 +502,23 @@ pub(super) fn action(shared: &Shared, json: &str, incoming: &crossbeam_channel::
             let to = value["to"].as_str().unwrap_or_default();
             state.mailbox.retain(|m| m.to != to);
         }
+        // From clients that do not send the routing (the iPhone): pause or
+        // resume one passive session now; the canvas field it also changed
+        // keeps the desktop's next routing in agreement.
+        "pause" => {
+            let paused = value["paused"].as_bool().unwrap_or(true);
+            let mut routing = lock(&shared.routing);
+            if let Some(spec) = routing.passive.iter_mut().find(|p| p.key == key)
+                && spec.paused != paused
+            {
+                spec.paused = paused;
+                save_routing(&shared.instance.home, &routing);
+                if !paused && let Some(s) = state.passive.get_mut(&key) {
+                    s.failures = 0;
+                    s.retry_at_ms = 0;
+                }
+            }
+        }
         "emit" => {
             if let Ok(event) = serde_json::from_value::<Event>(value["event"].clone()) {
                 let _ = incoming.try_send(event);

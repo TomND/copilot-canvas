@@ -149,6 +149,44 @@ pub fn revoke(instance: &Instance, client: &str) -> Result<()> {
     Ok(())
 }
 
+/// `remote push-key FILE.p8 --key-id ID --team ID`: the APNs auth key the
+/// service sends iPhone notifications with (developer.apple.com › Keys,
+/// "Apple Push Notifications service"). Stored owner-only in `<home>/remote/apns.json`.
+pub fn push_key(instance: &Instance, file: &Path, key_id: Option<String>, team: Option<String>) -> Result<()> {
+    let pem = std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
+    // AuthKey_XXXXXXXXXX.p8 names its key id.
+    let from_name = file.file_stem().and_then(|s| s.to_str()).and_then(|s| s.strip_prefix("AuthKey_")).map(str::to_owned);
+    let key_id = key_id.or(from_name).context("--key-id ID is required (the 10 characters of AuthKey_ID.p8)")?;
+    let team = team.context("--team TEAMID is required (developer.apple.com › Membership details)")?;
+    let key = canvas_push::ApnsKey::new(&key_id, &team, &pem)?;
+    let path = canvas_push::ApnsKey::path(&instance.home);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    canvas_common::win::write_private(&path, serde_json::to_string_pretty(&key)?.as_bytes()).with_context(|| format!("cannot write {}", path.display()))?;
+    println!("APNs key {} of team {} saved ({}); the running service uses it at once.", key.key_id, key.team_id, path.display());
+    println!("Phones register when they connect; try one with `copilot-canvas remote push-test`.");
+    Ok(())
+}
+
+/// `remote push-test`: a test notification to every registered phone.
+pub fn push_test(instance: &Instance) -> Result<()> {
+    let key = canvas_push::ApnsKey::load(&instance.home).context("no APNs key yet: `copilot-canvas remote push-key AuthKey_ID.p8 --team TEAMID`")?;
+    let devices = canvas_push::Devices::open(&instance.home).list();
+    if devices.is_empty() {
+        bail!("no phone registered for notifications yet: open the iPhone app connected to this machine once (and allow notifications)");
+    }
+    let sender = canvas_push::Sender::new(key)?;
+    for device in devices {
+        let event = canvas_push::Event { id: String::new(), name: "Copilot Canvas".into(), status: canvas_model::status::Status::JustFinished };
+        let mut payload = canvas_push::alert_payload(&device, &event);
+        payload["aps"]["alert"]["body"] = "Test notification: this machine can reach your phone.".into();
+        let outcome = sender.send(&device, &payload, false, None);
+        println!("{} ({:?}, as {:?}): {outcome:?}", device.client_id, device.environment, device.label);
+    }
+    Ok(())
+}
+
 /// `remote tunnel-setup [--tunnel NAME] [--port PORT]`: the tunnel
 /// automation's manifest, `remote.listen`, and the one-time Dev Tunnels steps
 /// (the syntax of Dev Tunnels CLI 1.0.2115).

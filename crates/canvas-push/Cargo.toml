@@ -1,0 +1,16 @@
+[package]
+name = "canvas-push"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Push notifications to the iPhone app (APNs): signing, sending, registered phones, what deserves a notification"
+
+[dependencies]
+canvas-common.workspace = true
+canvas-model.workspace = true
+anyhow.workspace = true
+base64.workspace = true
+p256 = "0.14.0"
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "http2", "native-tls"] }
+serde.workspace = true
+serde_json.workspace = true

@@ -112,9 +112,9 @@ jobs:
       - name: portable crates (clippy, tests)
         run: |
           rustup component add clippy
-          cargo clippy -p canvas-common -p canvas-model -p canvas-termview -p canvas-mobile -p canvas-mock --all-targets -- -D warnings
+          cargo clippy -p canvas-common -p canvas-model -p canvas-termview -p canvas-push -p canvas-mobile -p canvas-mock --all-targets -- -D warnings
           cargo clippy -p canvas-host --no-default-features --all-targets -- -D warnings
-          cargo test -p canvas-common -p canvas-model -p canvas-termview -p canvas-mobile -p canvas-mock
+          cargo test -p canvas-common -p canvas-model -p canvas-termview -p canvas-push -p canvas-mobile -p canvas-mock
           cargo test -p canvas-host --no-default-features
       - name: the Rust core for iOS
         run: ios/build-core.sh
