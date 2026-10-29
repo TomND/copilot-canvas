@@ -51,6 +51,8 @@ struct RootView: View {
     var body: some View {
         ZStack {
             Palette.background.ignoresSafeArea()
+            // A tap outside text inputs closes the keyboard, app-wide.
+            KeyboardDismissInstaller().frame(width: 0, height: 0)
             if let connection = model.connection {
                 HomeView(connection: connection)
                     .id(connection.server.id)

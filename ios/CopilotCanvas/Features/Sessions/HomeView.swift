@@ -45,6 +45,7 @@ struct HomeView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showNew = true } label: { Image(systemName: "plus") }
                         .disabled(connection.state != .online)
+                        .accessibilityLabel("New session")
                 }
             }
             .navigationDestination(for: Route.self) { route in

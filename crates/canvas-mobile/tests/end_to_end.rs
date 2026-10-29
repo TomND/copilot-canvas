@@ -112,7 +112,7 @@ fn attach(client: &Arc<Client>, addr: &str) {
 fn the_phone_pairs_connects_and_works_a_real_shell_through_a_websocket() {
     let state = std::env::temp_dir().join(format!("canvas-mock-test-{}", std::process::id()));
     let cwd = std::env::temp_dir().display().to_string();
-    let handle = canvas_mock::serve(canvas_mock::Config { listen: "127.0.0.1:0".into(), code: "ABCDEFGHJKMN".into(), state_dir: state, cwd: cwd.clone(), verbose: false }).unwrap();
+    let handle = canvas_mock::serve(canvas_mock::Config { state_dir: state, ..canvas_mock::Config::local("127.0.0.1:0", &cwd) }).unwrap();
     let addr = handle.addr.to_string();
 
     // Pairing: a wrong code is refused before the phone proves anything; the right one gives a secret.

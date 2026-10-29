@@ -345,6 +345,7 @@ struct ComposerSheet: View {
                 TextEditor(text: $text)
                     .focused($focused)
                     .scrollContentBackground(.hidden)
+                    .scrollDismissesKeyboard(.interactively)
                     .padding(8)
                     .background(Palette.panel, in: RoundedRectangle(cornerRadius: 10))
                     .font(.body)
@@ -355,6 +356,7 @@ struct ComposerSheet: View {
             .padding()
             .navigationTitle("Prompt for \(sessionName)")
             .navigationBarTitleDisplayMode(.inline)
+            .keyboardDoneButton()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Paste only") { send(text, false) }.disabled(text.isEmpty)

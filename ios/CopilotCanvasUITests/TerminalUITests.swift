@@ -41,8 +41,61 @@ final class TerminalUITests: XCTestCase {
         expectation(for: echoed, evaluatedWith: terminal)
         waitForExpectations(timeout: 45)
         attach(app, "terminal")
-        // The key bar sends keys the keyboard lacks.
+        // The key bar sends keys the keyboard lacks; its hide button is always there.
         XCTAssertTrue(app.buttons["esc"].firstMatch.exists)
+        let hide = app.buttons["Hide keyboard"].firstMatch
+        XCTAssertTrue(hide.isHittable, "the hide button is pinned, not scrolled away")
+        hide.tap()
+        XCTAssertTrue(waitForKeyboard(app, shown: false), "the hide button closes the keyboard")
+        terminal.tap()
+        XCTAssertTrue(waitForKeyboard(app, shown: true), "a tap on the terminal opens it again")
+    }
+
+    func testTheKeyboardStaysOutOfTheWayOfTheNewSessionForm() throws {
+        let app = launch()
+        let add = app.buttons["New session"]
+        XCTAssertTrue(add.waitForExistence(timeout: 45))
+        expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: add)
+        waitForExpectations(timeout: 45)
+        add.tap()
+        let name = app.textFields["Name (default: the folder's name)"]
+        XCTAssertTrue(name.waitForExistence(timeout: 10))
+        name.tap()
+        name.typeText("Keyboard check")
+        XCTAssertTrue(waitForKeyboard(app, shown: true))
+        // Picking a folder closes the keyboard, and it stays closed afterwards.
+        app.buttons["browse"].tap()
+        let use = app.buttons["useFolder"]
+        XCTAssertTrue(use.waitForExistence(timeout: 20))
+        use.tap()
+        XCTAssertTrue(app.buttons["browse"].waitForExistence(timeout: 10))
+        XCTAssertTrue(waitForKeyboard(app, shown: false), "no keyboard after picking a folder")
+        // The prompt can be typed in, then the Done button hides the keyboard.
+        let prompt = app.textViews["prompt"]
+        XCTAssertTrue(prompt.isHittable, "the prompt is reachable")
+        prompt.tap()
+        prompt.typeText("Explain this repository")
+        XCTAssertTrue(waitForKeyboard(app, shown: true))
+        attach(app, "new-session-typing")
+        app.buttons["Hide keyboard"].firstMatch.tap()
+        XCTAssertTrue(waitForKeyboard(app, shown: false), "Done closes the keyboard")
+        // A tap outside the fields closes it too.
+        name.tap()
+        XCTAssertTrue(waitForKeyboard(app, shown: true))
+        app.navigationBars["New session"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(waitForKeyboard(app, shown: false), "a tap outside closes the keyboard")
+        XCTAssertEqual(prompt.value as? String, "Explain this repository")
+        attach(app, "new-session")
+        app.buttons["Cancel"].tap()
+    }
+
+    private func waitForKeyboard(_ app: XCUIApplication, shown: Bool, timeout: TimeInterval = 5) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if app.keyboards.firstMatch.exists == shown { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        return false
     }
 
     private func attach(_ app: XCUIApplication, _ name: String) {

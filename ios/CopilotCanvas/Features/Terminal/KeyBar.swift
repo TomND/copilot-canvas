@@ -19,8 +19,11 @@ final class KeyBar: UIInputView {
         self.terminal = terminal
         super.init(frame: CGRect(x: 0, y: 0, width: 320, height: 46), inputViewStyle: .keyboard)
         allowsSelfSizing = true
+        // [ keys, scrolling sideways | hide keyboard, always visible ]
         let scroll = UIScrollView()
         scroll.showsHorizontalScrollIndicator = false
+        scroll.alwaysBounceVertical = false
+        scroll.isDirectionalLockEnabled = true
         scroll.translatesAutoresizingMaskIntoConstraints = false
         addSubview(scroll)
         let stack = UIStackView()
@@ -28,14 +31,30 @@ final class KeyBar: UIInputView {
         stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false
         scroll.addSubview(stack)
+        let hide = button(.action("keyboard.chevron.compact.down", "Hide keyboard", #selector(hideKeyboard)))
+        hide.configuration?.baseBackgroundColor = UIColor(white: 0.45, alpha: 1)
+        hide.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(hide)
+        // A thin edge so the keys visibly slide under the pinned button.
+        let edge = UIView()
+        edge.backgroundColor = UIColor(white: 1, alpha: 0.15)
+        edge.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(edge)
         NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 46),
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
             scroll.topAnchor.constraint(equalTo: topAnchor),
             scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
-            heightAnchor.constraint(equalToConstant: 46),
+            scroll.trailingAnchor.constraint(equalTo: edge.leadingAnchor, constant: -4),
+            edge.widthAnchor.constraint(equalToConstant: 1),
+            edge.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            edge.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
+            edge.trailingAnchor.constraint(equalTo: hide.leadingAnchor, constant: -6),
+            hide.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -6),
+            hide.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            hide.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
             stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 6),
-            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -6),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -2),
             stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 6),
             stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -6),
             stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor, constant: -12),
@@ -62,11 +81,15 @@ final class KeyBar: UIInputView {
             .key("pgup", .pageUp, 0),
             .key("pgdn", .pageDown, 0),
             .action("doc.on.clipboard", "Paste", #selector(pasteClipboard)),
-            .action("keyboard.chevron.compact.down", "Hide keyboard", #selector(hideKeyboard)),
         ]
         for item in items {
             stack.addArrangedSubview(button(item))
         }
+        // A swipe down on the bar closes the keyboard (sideways still scrolls the keys).
+        let swipe = UISwipeGestureRecognizer(target: self, action: #selector(hideKeyboard))
+        swipe.direction = .down
+        swipe.delegate = self
+        addGestureRecognizer(swipe)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -126,4 +149,10 @@ final class KeyBar: UIInputView {
 
 extension KeyBar: UIInputViewAudioFeedback {
     var enableInputClicksWhenVisible: Bool { true }
+}
+
+extension KeyBar: UIGestureRecognizerDelegate {
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        true
+    }
 }

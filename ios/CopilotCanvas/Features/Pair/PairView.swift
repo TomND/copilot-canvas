@@ -72,6 +72,8 @@ struct PairView: View {
             }
             .padding(20)
         }
+        .scrollDismissesKeyboard(.interactively)
+        .keyboardDoneButton()
         .background(Palette.background)
         .sheet(isPresented: $showScanner) {
             QRScannerSheet { text in
@@ -127,6 +129,7 @@ struct PairView: View {
     }
 
     private func pairLink(_ text: String) {
+        Keyboard.dismiss()
         do {
             pair(try parsePairLink(uri: text.trimmingCharacters(in: .whitespacesAndNewlines)))
         } catch {
@@ -136,6 +139,7 @@ struct PairView: View {
 
     private func pair(_ link: PairLinkInfo) {
         guard !busy else { return }
+        Keyboard.dismiss()
         busy = true
         error = nil
         Task {

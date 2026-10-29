@@ -15,6 +15,8 @@ canvas-host = { workspace = true }
 canvas-model.workspace = true
 anyhow.workspace = true
 crossbeam-channel.workspace = true
+png.workspace = true
 portable-pty.workspace = true
+qrcode.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

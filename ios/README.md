@@ -70,6 +70,28 @@ In the simulator, paste the printed `ccanvas://pair?…` link, or launch with
 `-pairLink <link>`. Other launch arguments for automated runs:
 `-noNotificationPrompt`, `-noLock`, `-openSession <id>`, `-startMode canvas`.
 
+## This Mac as a stand-in Cloud PC (real tunnel)
+
+To try the phone through a real private Dev Tunnel without the Windows
+machine, `ios/cloud-mac.sh` runs the mock service behind its own tunnel and
+shows a pairing QR code:
+
+```sh
+brew install --cask devtunnel && devtunnel user login -g   # once
+ios/cloud-mac.sh start      # tunnel copilot-canvas-mac, port 47700; opens the QR code
+ios/cloud-mac.sh pair       # a new one-time code (pairings stay)
+ios/cloud-mac.sh status | logs | stop
+```
+
+It is the same path the Windows service uses: `wss://copilot-canvas-mac-47700.REGION.devtunnels.ms`,
+a 24 h connect token issued with this Mac's `devtunnel` (renewed while the
+phone is connected), pairing with a random one-time code. Sessions started
+from the phone run the agent CLIs installed on the Mac (OpenCode, Claude
+Code, Copilot; they ask before running tools); the demo sessions are shells.
+The canvas and pairings are kept in `~/.copilot-canvas-mock`. `TUNNEL`,
+`PORT`, `STATE` and `WORKDIR` choose another tunnel, port, state folder and
+start folder. The Mac stays awake while it hosts (on power).
+
 ## Tests
 
 ```sh
@@ -89,6 +111,7 @@ session, type into its shell with the keyboard and check the echo.
 | **Sessions** | Grouped like the canvas, what wants you first: *Needs you* (gold), *Ready for review* (blue), then groups by state and activity. Subagents under their session, subsessions after their parent, loops (`↻ every 15m`), queued mail, branch and agent. Swipe to stop, remove or mark reviewed; long-press to rename. Pull to reconnect |
 | **Canvas** | The desktop canvas: groups, boxes with the same status borders (gold heavy for needs you, blue double for done · review, dashed passive), subagent and subsession edges, spinners. Drag to pan, pinch to zoom, tap a box to open it |
 | **Terminal** | The service's terminal engine (libghostty-vt on the Cloud PC) draws the screen; the phone renders its cells with Core Text: colours, bold, italic, dim, inverse, every underline style, strike-through, wide and emoji cells, box drawing as geometry, cursor shapes, your-prompt tint in Copilot, OSC 8 links. Keys are encoded on the service for the program's keyboard mode |
+| **Keyboard** | Closes with a tap outside any field, the button above it, or a swipe down on forms and lists; in terminals the key bar's hide button stays at its right end and a swipe down on the bar closes it. Picking a folder never brings it back |
 | **Typing** | iOS keyboard plus a key bar (Esc, Ctrl, Alt, Tab, ⇧Tab, arrows, ^C, ^D, Home/End, PgUp/PgDn, paste); hardware keyboards (arrows, Esc, Ctrl/Option combinations, ⌘V); a **prompt composer** (autocorrect, dictation) that sends one paste and Enter; one-hand quick keys (Esc, ↑ ↓ ⏎, 1 2 3, y n) for permission prompts |
 | **Gestures** | Swipe up/down: wheel (the agent scrolls its own view, else the scrollback); long-press and drag: select, release copies; tap: links open in Safari, clicks reach agents that read the mouse; pinch: text size |
 | **Sizes** | *Fit to this phone*: the terminal follows the phone while you type in it (tmux "latest"; typing at the desk gives it back). *Mirror the desktop*: the desktop's grid scaled down, nothing resized |

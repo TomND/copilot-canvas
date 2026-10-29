@@ -27,6 +27,7 @@
 		95E6A0F1523699B47786493E /* canvas_mobile.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7C6C290CDACE8D8AA1EF46F /* canvas_mobile.swift */; };
 		A1E95B5F2572263C9CCC4B5F /* WebSocketTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F4108B7E513FB12B790FDD7 /* WebSocketTransport.swift */; };
 		AD948EEDAFFCDAEDF75F8951 /* KeyBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C999D513E4C2DD264204D5FA /* KeyBar.swift */; };
+		BF0CF98767320D25ABC31698 /* Keyboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0E9E8D0EEA2B412B2E472B4 /* Keyboard.swift */; };
 		C25D81E0404A7792CECE36C9 /* TerminalScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04029A4BF1C2557757BFB954 /* TerminalScreen.swift */; };
 		CB2C0540839842AF660C0EE3 /* ServiceConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6407AA58A49B014FCB5D516C /* ServiceConnection.swift */; };
 		E8D70DD14D6ED4C3EE01350A /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0E1196DE51C594F8AC6F4846 /* Security.framework */; };
@@ -73,6 +74,7 @@
 		A7D43DE9F7969F9C49086093 /* Palette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Palette.swift; sourceTree = "<group>"; };
 		AA1A18FF4D04EBC4B7E3F66C /* Pairer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Pairer.swift; sourceTree = "<group>"; };
 		B0D387408BFE4F7650FAAB8E /* ServerStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerStore.swift; sourceTree = "<group>"; };
+		B0E9E8D0EEA2B412B2E472B4 /* Keyboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Keyboard.swift; sourceTree = "<group>"; };
 		B7C6C290CDACE8D8AA1EF46F /* canvas_mobile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = canvas_mobile.swift; sourceTree = "<group>"; };
 		BE0EEF3C29668868F62A8686 /* CopilotCanvasTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = CopilotCanvasTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C0188D57AC0E74E4481E361E /* SessionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionsView.swift; sourceTree = "<group>"; };
@@ -218,6 +220,7 @@
 		885993B14A573EC085DE47AA /* Support */ = {
 			isa = PBXGroup;
 			children = (
+				B0E9E8D0EEA2B412B2E472B4 /* Keyboard.swift */,
 				A7D43DE9F7969F9C49086093 /* Palette.swift */,
 			);
 			path = Support;
@@ -435,6 +438,7 @@
 				2995C159A2A054E1C5E89557 /* CopilotCanvasApp.swift in Sources */,
 				238AA111F2A58A1CA990D5BD /* HomeView.swift in Sources */,
 				AD948EEDAFFCDAEDF75F8951 /* KeyBar.swift in Sources */,
+				BF0CF98767320D25ABC31698 /* Keyboard.swift in Sources */,
 				34B84F6AB7EEAAEA0595C03E /* NewSessionView.swift in Sources */,
 				5F6300F2882B73B14270F595 /* PairView.swift in Sources */,
 				7138F9C66C98F01D5B91C149 /* Pairer.swift in Sources */,

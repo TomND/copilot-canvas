@@ -14,57 +14,116 @@ struct NewSessionView: View {
     @State private var prompt = ""
     @State private var busy = false
     @State private var error: String?
+    @State private var browsing = false
+    @FocusState private var focus: Field?
+
+    private enum Field: Hashable {
+        case name, folder, prompt
+    }
 
     private var overview: Overview? { connection.overview }
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Session") {
-                    TextField("Name (default: the folder's name)", text: $name)
-                    if let agents = overview?.agents, !agents.isEmpty {
-                        Picker("Agent", selection: $agent) {
-                            ForEach(agents, id: \.self) { Text(label($0)).tag($0) }
+            ScrollViewReader { proxy in
+                Form {
+                    Section("Session") {
+                        TextField("Name (default: the folder's name)", text: $name)
+                            .focused($focus, equals: .name)
+                            .submitLabel(.next)
+                            .onSubmit { focus = .folder }
+                        if let agents = overview?.agents, !agents.isEmpty {
+                            Picker("Agent", selection: $agent) {
+                                ForEach(agents, id: \.self) { Text(label($0)).tag($0) }
+                            }
+                        }
+                        if let groups = overview?.groups, !groups.isEmpty {
+                            Picker("Group", selection: $group) {
+                                Text("None").tag("")
+                                ForEach(groups, id: \.id) { Text($0.name).tag($0.id) }
+                            }
                         }
                     }
-                    if let groups = overview?.groups, !groups.isEmpty {
-                        Picker("Group", selection: $group) {
-                            Text("None").tag("")
-                            ForEach(groups, id: \.id) { Text($0.name).tag($0.id) }
+                    Section {
+                        TextField("Folder on the Cloud PC", text: $folder, axis: .vertical)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.system(.body, design: .monospaced))
+                            .focused($focus, equals: .folder)
+                            .submitLabel(.next)
+                            .onChange(of: folder) { _, text in
+                                // Return in this (wrapping) field moves on to the prompt.
+                                if text.contains("\n") {
+                                    folder = text.replacingOccurrences(of: "\n", with: "")
+                                    focus = .prompt
+                                }
+                            }
+                        // A button, not a link: the keyboard closes and stays closed after picking.
+                        Button {
+                            focus = nil
+                            Keyboard.dismiss()
+                            browsing = true
+                        } label: {
+                            HStack {
+                                Text("Browse…")
+                                Spacer()
+                                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                            }
                         }
-                    }
-                }
-                Section {
-                    TextField("Folder on the Cloud PC", text: $folder, axis: .vertical)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.system(.body, design: .monospaced))
-                    NavigationLink("Browse…") {
-                        FolderBrowser(connection: connection, start: folder.isEmpty ? (overview?.homeFolder ?? "") : folder) { picked in folder = picked }
-                    }
-                    if let recent = overview?.recentFolders, !recent.isEmpty {
-                        Menu("Recent folders") {
-                            ForEach(recent.prefix(12), id: \.self) { path in Button(path) { folder = path } }
+                        .accessibilityIdentifier("browse")
+                        if let recent = overview?.recentFolders, !recent.isEmpty {
+                            Menu("Recent folders") {
+                                ForEach(recent.prefix(12), id: \.self) { path in
+                                    Button(path) {
+                                        focus = nil
+                                        folder = path
+                                    }
+                                }
+                            }
                         }
+                    } header: {
+                        Text("Folder")
                     }
-                } header: {
-                    Text("Folder")
+                    Section {
+                        TextEditor(text: $prompt)
+                            .frame(minHeight: 90)
+                            .focused($focus, equals: .prompt)
+                            .accessibilityIdentifier("prompt")
+                            .id("prompt")
+                    } header: {
+                        Text("First prompt (optional)")
+                    }
+                    if let error {
+                        Section { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(Palette.failed) }
+                    }
                 }
-                Section {
-                    TextEditor(text: $prompt).frame(minHeight: 90)
-                } header: {
-                    Text("First prompt (optional)")
-                }
-                if let error {
-                    Section { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(Palette.failed) }
+                .scrollContentBackground(.hidden)
+                .scrollDismissesKeyboard(.interactively)
+                .background(Palette.background)
+                .onChange(of: focus) { _, field in
+                    // The prompt sits above the keyboard.
+                    guard field == .prompt else { return }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        withAnimation { proxy.scrollTo("prompt", anchor: .bottom) }
+                    }
                 }
             }
-            .scrollContentBackground(.hidden)
-            .background(Palette.background)
+            .keyboardDoneButton()
+            .navigationDestination(isPresented: $browsing) {
+                FolderBrowser(connection: connection, start: folder.isEmpty ? (overview?.homeFolder ?? "") : folder) { picked in
+                    focus = nil
+                    folder = picked
+                }
+            }
             .navigationTitle("New session")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        Keyboard.dismiss()
+                        dismiss()
+                    }
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     if busy { ProgressView() } else { Button("Start") { start() }.disabled(folder.trimmingCharacters(in: .whitespaces).isEmpty) }
                 }
@@ -85,6 +144,8 @@ struct NewSessionView: View {
     }
 
     private func start() {
+        focus = nil
+        Keyboard.dismiss()
         busy = true
         error = nil
         let request = NewSession(name: name, agent: agent, cwd: folder, prompt: prompt, group: group)
@@ -139,6 +200,7 @@ struct FolderBrowser: View {
             } label: {
                 Text("Use \(current.isEmpty ? "this folder" : current)").lineLimit(1).frame(maxWidth: .infinity)
             }
+            .accessibilityIdentifier("useFolder")
             .buttonStyle(.borderedProminent)
             .disabled(current.isEmpty)
             .padding()

@@ -7,7 +7,15 @@
 //! announces the agent; typing Enter in one makes its session "work" for a
 //! few seconds, so statuses (working, done · review, needs you) can be seen.
 //!
-//! Not a security boundary: it is a development tool.
+//! With `--tunnel ID` it stands in for the Cloud PC behind a real private Dev
+//! Tunnel (`ios/cloud-mac.sh`): it issues Dev Tunnels connect tokens with this
+//! machine's signed-in `devtunnel` CLI, sends them to phones
+//! (`ServiceMsg::TunnelAccess`) and renews them, like the real service. With
+//! `--real-agents`, sessions started from the phone run the agent CLIs found
+//! on this machine (OpenCode, Claude Code, Copilot) instead of a shell.
+//!
+//! Not a security boundary: it is a development tool. A paired phone gets a
+//! shell on this machine.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -50,6 +58,36 @@ pub struct Config {
     pub cwd: String,
     /// Log what happens.
     pub verbose: bool,
+    /// The private Dev Tunnel in front of the port: tokens for phones.
+    pub tunnel: Option<String>,
+    /// The tunnel port's web address (found with `devtunnel show` when unset).
+    pub web_url: Option<String>,
+    /// New agent sessions run the agent CLIs installed here.
+    pub real_agents: bool,
+}
+
+impl Config {
+    /// A local mock: loopback, the fixed test code, a temporary state folder.
+    pub fn local(listen: &str, cwd: &str) -> Self {
+        Config {
+            listen: listen.into(),
+            code: "ABCDEFGHJKMN".into(),
+            state_dir: std::env::temp_dir().join("canvas-mock"),
+            cwd: cwd.into(),
+            verbose: false,
+            tunnel: None,
+            web_url: None,
+            real_agents: false,
+        }
+    }
+}
+
+/// A tunnel access token and the address it opens.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Access {
+    pub url: String,
+    pub token: String,
+    pub expires_ms: u64,
 }
 
 /// One connected client.
@@ -100,10 +138,21 @@ struct Mock {
     sizes: Mutex<HashMap<String, SizePolicy>>,
     /// Paired clients: id -> secret.
     paired: Mutex<HashMap<String, Vec<u8>>>,
+    /// The current tunnel access token (`--tunnel`).
+    access: Mutex<Option<Access>>,
 }
 
 pub struct Handle {
     pub addr: SocketAddr,
+    mock: Arc<Mock>,
+}
+
+impl Handle {
+    /// Issues a tunnel access token now (`--tunnel`); the service keeps it and
+    /// sends it to phones.
+    pub fn tunnel_access(&self) -> Result<Access> {
+        renew_access(&self.mock)
+    }
 }
 
 fn log(mock: &Mock, message: &str) {
@@ -118,7 +167,8 @@ pub fn serve(config: Config) -> Result<Handle> {
     let listener = TcpListener::bind(&config.listen).with_context(|| format!("cannot listen on {}", config.listen))?;
     let addr = listener.local_addr()?;
     let paired: HashMap<String, Vec<u8>> = std::fs::read(config.state_dir.join("clients.json")).ok().and_then(|b| serde_json::from_slice::<HashMap<String, String>>(&b).ok()).map(|m| m.into_iter().filter_map(|(k, v)| Some((k, canvas_common::paths::unhex(&v)?))).collect()).unwrap_or_default();
-    let doc = demo_doc(&config.cwd);
+    // The canvas survives restarts (new sessions from the phone stay).
+    let doc = std::fs::read(config.state_dir.join("canvas.json")).ok().and_then(|bytes| serde_json::from_slice::<Doc>(&bytes).ok()).unwrap_or_else(|| demo_doc(&config.cwd));
     let sessions = demo_sessions(&doc);
     let mock = Arc::new(Mock {
         config,
@@ -129,6 +179,7 @@ pub fn serve(config: Config) -> Result<Handle> {
         sessions: Mutex::new(sessions),
         sizes: Mutex::new(HashMap::new()),
         paired: Mutex::new(paired),
+        access: Mutex::new(None),
     });
     let accept = mock.clone();
     std::thread::spawn(move || {
@@ -145,7 +196,7 @@ pub fn serve(config: Config) -> Result<Handle> {
     std::thread::spawn(move || tick_loop(ticker));
     // A few sessions already run, in different states (as on a busy Cloud PC).
     for (id, agent) in [("mock-fix", "copilot"), ("mock-review", "opencode"), ("mock-docs", "copilot")] {
-        let name = lock(&mock.doc).0.node(id).map(|n| n.name.clone()).unwrap_or_default();
+        let Some(name) = lock(&mock.doc).0.node(id).map(|n| n.name.clone()) else { continue };
         let launch = canvas_common::protocol::AgentLaunch { agent: agent.into(), resume: true, name: Some(name), ..Default::default() };
         if let Err(error) = launch_with(&mock, id, LaunchKind::Agent(Box::new(launch)), &mock.config.cwd.clone(), 100, 30, transcript(id)) {
             log(&mock, &format!("cannot start {id}: {error:#}"));
@@ -160,7 +211,127 @@ pub fn serve(config: Config) -> Result<Handle> {
         s.activity = Activity::Idle;
         s.finished_ms = Some(now_ms());
     });
-    Ok(Handle { addr })
+    if mock.config.tunnel.is_some() {
+        let renewer = mock.clone();
+        std::thread::spawn(move || access_loop(renewer));
+    }
+    Ok(Handle { addr, mock })
+}
+
+// ---------- Dev Tunnels access ----------
+
+/// Runs `devtunnel ARGS` (stdout and stderr together).
+fn devtunnel(args: &[&str]) -> Result<String> {
+    let output = std::process::Command::new("devtunnel").args(args).stdin(std::process::Stdio::null()).output().context("cannot run devtunnel (install the Dev Tunnels CLI)")?;
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    anyhow::ensure!(output.status.success(), "devtunnel {}: {}", args.first().unwrap_or(&""), text.trim().lines().last().unwrap_or("failed"));
+    Ok(text)
+}
+
+/// A fresh connect token for the tunnel, and the port's web address.
+fn renew_access(mock: &Mock) -> Result<Access> {
+    let tunnel = mock.config.tunnel.clone().context("no tunnel")?;
+    let port = mock.config.listen.rsplit_once(':').and_then(|(_, p)| p.parse::<u16>().ok()).unwrap_or(0);
+    let output = devtunnel(&["token", &tunnel, "--scopes", "connect"])?;
+    let token = canvas_common::remote::parse_token_output(&output).with_context(|| format!("`devtunnel token` printed no token:\n{output}"))?;
+    let url = match &mock.config.web_url {
+        Some(url) => url.clone(),
+        None => devtunnel(&["show", &tunnel])
+            .ok()
+            .and_then(|text| canvas_common::remote::web_url_from_show(&text, port))
+            .or_else(|| {
+                let claims = canvas_common::remote::jwt_claims(&token.token)?;
+                let cluster = claims.get("clusterId")?.as_str()?.to_owned();
+                canvas_common::remote::web_url_for(&format!("{tunnel}.{cluster}"), port)
+            })
+            .unwrap_or_default(),
+    };
+    let access = Access { url, token: token.token, expires_ms: token.expires_ms };
+    *lock(&mock.access) = Some(access.clone());
+    broadcast(mock, ServiceMsg::TunnelAccess { url: access.url.clone(), token: access.token.clone(), expires_ms: access.expires_ms });
+    log(mock, &format!("tunnel access token valid until {} for {}", canvas_common::paths::format_rfc3339_ms(access.expires_ms), access.url));
+    Ok(access)
+}
+
+/// Renews the token half a day before it expires (every 10 minutes after a failure).
+fn access_loop(mock: Arc<Mock>) {
+    loop {
+        let wait = match lock(&mock.access).as_ref() {
+            Some(access) if access.expires_ms > 0 => Duration::from_millis(access.expires_ms.saturating_sub(now_ms() + 12 * 3600 * 1000).max(60_000)),
+            Some(_) => Duration::from_secs(12 * 3600),
+            None => Duration::from_secs(600),
+        };
+        std::thread::sleep(wait);
+        if let Err(error) = renew_access(&mock) {
+            log(&mock, &format!("cannot renew the tunnel access token: {error:#}"));
+        }
+    }
+}
+
+// ---------- agents on this machine ----------
+
+/// The agent CLIs installed here (`--real-agents`), Copilot first like the service.
+fn installed_agents() -> Vec<canvas_model::agent::AgentKind> {
+    use canvas_model::agent::AgentKind;
+    [(AgentKind::Copilot, "copilot"), (AgentKind::OpenCode, "opencode"), (AgentKind::Claude, "claude")]
+        .into_iter()
+        .filter(|(_, program)| find_program(program).is_some())
+        .map(|(kind, _)| kind)
+        .collect()
+}
+
+/// A program on PATH or in the usual per-user install folders.
+fn find_program(name: &str) -> Option<PathBuf> {
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+    dirs.extend([home.join(".local/bin"), home.join(".opencode/bin"), home.join(".npm-global/bin"), PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/usr/local/bin")]);
+    dirs.into_iter().map(|d| d.join(name)).find(|p| p.is_file())
+}
+
+/// The command line of a real agent session. Permissions are left to the
+/// agent (it asks; answer from the phone): this is your own Mac.
+fn agent_command(launch: &canvas_common::protocol::AgentLaunch, id: &str) -> Option<CommandBuilder> {
+    let uuid = uuid::Uuid::parse_str(id).is_ok();
+    let prompt = launch.prompt.clone().filter(|p| !p.trim().is_empty());
+    let (program, args): (&str, Vec<String>) = match launch.agent.as_str() {
+        "opencode" => {
+            let mut args = Vec::new();
+            if launch.resume {
+                args.push("--continue".into());
+            } else if let Some(prompt) = prompt {
+                args.extend(["--prompt".into(), prompt]);
+            }
+            ("opencode", args)
+        }
+        "claude" => {
+            let mut args = Vec::new();
+            match (launch.resume, uuid) {
+                (true, true) => args.extend(["--resume".into(), id.into()]),
+                (true, false) => args.push("--continue".into()),
+                (false, true) => args.extend(["--session-id".into(), id.into()]),
+                (false, false) => {}
+            }
+            if !launch.resume && let Some(prompt) = prompt {
+                args.push(prompt);
+            }
+            ("claude", args)
+        }
+        _ => {
+            let mut args = Vec::new();
+            if uuid {
+                args.extend(["--session-id".into(), id.into()]);
+            }
+            if !launch.resume && let Some(prompt) = prompt {
+                args.extend(["-i".into(), prompt]);
+            }
+            ("copilot", args)
+        }
+    };
+    let path = find_program(program)?;
+    let mut command = CommandBuilder::new(path);
+    command.args(args);
+    Some(command)
 }
 
 /// What an agent's screen shows in the mock before its shell prompt: an
@@ -315,6 +486,11 @@ fn serve_client(mock: &Arc<Mock>, stream: TcpStream) -> Result<()> {
     let sessions: Vec<SessionSummary> = lock(&mock.sessions).values().cloned().collect();
     let _ = client.out.send(ServiceMsg::Sessions { full: true, upsert: sessions, remove: Vec::new() });
     let _ = client.out.send(ServiceMsg::Bus { json: serde_json::to_string(&canvas_model::bus::Snapshot::default())? });
+    if info.caps & canvas_common::protocol::CAP_TUNNEL_ACCESS != 0
+        && let Some(access) = lock(&mock.access).clone()
+    {
+        let _ = client.out.send(ServiceMsg::TunnelAccess { url: access.url, token: access.token, expires_ms: access.expires_ms });
+    }
     lock(&mock.clients).insert(id, client.clone());
     let result = (|| -> Result<()> {
         while let Some(message) = reader.recv::<ClientMsg>()? {
@@ -380,7 +556,9 @@ fn dispatch(mock: &Arc<Mock>, client: &Arc<Client>, message: ClientMsg) -> Resul
             guard.0 = next;
             guard.1 += 1;
             let version = guard.1;
+            let saved = serde_json::to_vec_pretty(&guard.0).unwrap_or_default();
             drop(guard);
+            let _ = canvas_common::paths::write_atomic(&mock.config.state_dir.join("canvas.json"), &saved);
             broadcast(mock, ServiceMsg::DocPatch { key, version, origin: client.id, ops_json });
         }
         ClientMsg::Subscribe8 { ids, focused } => {
@@ -480,8 +658,8 @@ fn rpc(mock: &Mock, request: Request) -> Response {
             user_home: std::env::var("HOME").unwrap_or_else(|_| mock.config.cwd.clone()),
             sessions_dir: String::new(),
             automation_db: String::new(),
-            default_agent: canvas_model::agent::AgentKind::Copilot,
-            installed: canvas_model::agent::ALL.to_vec(),
+            default_agent: if mock.config.real_agents { installed_agents().first().copied().unwrap_or_default() } else { canvas_model::agent::AgentKind::Copilot },
+            installed: if mock.config.real_agents { installed_agents() } else { canvas_model::agent::ALL.to_vec() },
         }),
         Request::ListDir { dir } => {
             let dir = dir.unwrap_or_else(|| "/".into());
@@ -525,6 +703,12 @@ fn launch_with(mock: &Arc<Mock>, id: &str, kind: LaunchKind, cwd: &str, cols: u1
             let mut c = CommandBuilder::new(program);
             c.args(args);
             (c, String::new(), false)
+        }
+        LaunchKind::Agent(launch) if mock.config.real_agents && transcript.is_empty() && agent_command(&launch, id).is_some() => {
+            let command = agent_command(&launch, id).expect("checked");
+            log(mock, &format!("{id}: real {} ({})", launch.agent, if launch.resume { "continue" } else { "new" }));
+            // A real agent: no stand-in transcript, no simulated turns.
+            (command, String::new(), false)
         }
         LaunchKind::Agent(launch) => {
             let mut c = CommandBuilder::new(&shell);
@@ -614,6 +798,13 @@ fn terminal_loop(mock: &Arc<Mock>, id: &str, cols: u16, rows: u16, banner: Strin
                         }
                         if events.bells > 0 {
                             info.info.bells += events.bells;
+                            changed = true;
+                        }
+                        // OSC 9;4 progress (agents report turns with it): drives "working".
+                        if let Some(&progress) = events.progress.last() {
+                            info.info.progress = progress;
+                            info.info.progress_seen = true;
+                            info.info.progress_ms = now_ms();
                             changed = true;
                         }
                     }
