@@ -193,3 +193,83 @@ fn the_phone_pairs_connects_and_works_a_real_shell_through_a_websocket() {
     client.stop_session("mock-loose".into());
     wait_until("stopped", || client.overview().sessions.iter().any(|s| s.id == "mock-loose" && !s.alive));
 }
+
+/// Pairs a phone with the mock at `addr` (the test code).
+fn pair_phone(addr: &str) -> canvas_mobile::PairResult {
+    let pairing: Arc<Mutex<Option<Arc<Pairing>>>> = Arc::default();
+    let slot = pairing.clone();
+    let transport = websocket(addr, move |data| {
+        if let Some(p) = slot.lock().unwrap().as_ref() {
+            match data {
+                Some(bytes) => p.receive(bytes),
+                None => p.transport_closed(),
+            }
+        }
+    });
+    let p = Pairing::new(transport);
+    *pairing.lock().unwrap() = Some(p.clone());
+    p.run("ABCD-EFGH-JKMN".into(), "test-phone".into()).unwrap()
+}
+
+/// A paired phone, connected.
+fn phone(addr: &str) -> (Arc<Client>, Receiver<CoreEvent>) {
+    let paired = pair_phone(addr);
+    let (tx, events) = unbounded();
+    let config = ClientConfig { client_name: "iphone-test".into(), remote_id: paired.client_id, secret: paired.secret, build: "test".into() };
+    let client = Client::new(config, Arc::new(Events(tx)));
+    attach(&client, addr);
+    wait_for(&events, "online", |e| matches!(e, CoreEvent::Connection { state: ConnState::Online, .. }));
+    (client, events)
+}
+
+#[test]
+fn the_reports_inbox_reaches_phones_and_reports_open_as_safe_pages() {
+    let state = std::env::temp_dir().join(format!("canvas-mock-reports-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&state);
+    let cwd = std::env::temp_dir().display().to_string();
+    let handle = canvas_mock::serve(canvas_mock::Config { state_dir: state.clone(), ..canvas_mock::Config::local("127.0.0.1:0", &cwd) }).unwrap();
+    let addr = handle.addr.to_string();
+    let (client, events) = phone(&addr);
+
+    // The inbox comes with the connection: one row per thread, the newest first.
+    wait_until("the inbox", || client.reports().loaded && client.reports().threads.len() == 3);
+    let inbox = client.reports();
+    assert_eq!(inbox.threads[0].id, "mock-brief");
+    let pr = inbox.threads.iter().find(|t| t.latest.thread == "pr:42").unwrap();
+    assert_eq!((pr.items.len(), pr.unread), (2, 1), "two messages, one unread");
+    let brief = &inbox.threads[0].latest;
+    assert_eq!((brief.source_name.as_str(), brief.source_box.as_str(), brief.format), ("Drift guard", "mock-drift", canvas_mobile::ReportFormat::Html));
+    assert_eq!(inbox.unread, 3);
+
+    // An HTML report: the service's raw page, sanitized for the web view.
+    let page = client.read_report("mock-brief".into()).unwrap();
+    assert!(page.html.contains("Content-Security-Policy") && page.html.contains("Payments health") && page.html.contains("<svg"), "{}", page.html);
+    assert!(!page.html.contains("<script") && !page.html.contains("SCRIPT RAN") && !page.html.contains("127.0.0.1:9"), "{}", page.html);
+    let markdown = client.read_report("mock-root-cause".into()).unwrap();
+    assert!(markdown.html.contains("<h1>Flaky payment test: root cause</h1>") && markdown.html.contains("<table>"));
+    assert!(client.read_report("nope".into()).is_err());
+
+    // Read here: at once, and on every other phone once the service has it.
+    client.mark_reports(vec!["mock-brief".into()], true).unwrap();
+    assert_eq!(client.reports().unread, 2);
+    let (other, _other_events) = phone(&addr);
+    wait_until("the read state on another phone", || other.reports().threads.iter().any(|t| t.id == "mock-brief" && t.unread == 0));
+
+    // A report published now: announced while the app is open.
+    std::fs::write(state.join("publish").join("deploy-finished.md"), "# Deploy finished\n\nAll green.").unwrap();
+    let mut arrived = String::new();
+    wait_for(&events, "a new report", |e| match e {
+        CoreEvent::ReportArrived { id, title, source, .. } if title == "deploy finished" && source == "Mac stand-in" => {
+            arrived = id.clone();
+            true
+        }
+        _ => false,
+    });
+    assert_eq!(client.reports().threads[0].id, arrived);
+    // Deleted from one phone: gone on the other.
+    client.delete_reports(vec![arrived.clone()]).unwrap();
+    wait_until("the delete on another phone", || !other.reports().threads.iter().any(|t| t.id == arrived));
+    client.mark_all_reports_read().unwrap();
+    wait_until("everything read", || other.reports().unread == 0);
+    let _ = std::fs::remove_dir_all(state);
+}

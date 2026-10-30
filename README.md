@@ -161,8 +161,9 @@ on your PATH; the GPU client still needs its executable beside it.
   and `remote pair` there, `remote add NAME --tunnel ID --code CODE` and
   `copilot-canvas --remote NAME` at home. See [docs/REMOTE.md](docs/REMOTE.md).
 - **iPhone.** The same canvas on your phone over the same Dev Tunnel:
-  sessions by what needs you, the canvas, and real terminals with a key bar
-  and a prompt composer. `copilot-canvas remote pair --qr` on the Cloud PC,
+  sessions by what needs you, the canvas, real terminals with a key bar
+  and a prompt composer, and the reports inbox (HTML reports in a locked-down
+  web view). `copilot-canvas remote pair --qr` on the Cloud PC,
   scan it in the app. See [ios/README.md](ios/README.md) and
   [docs/IOS-PLAN.md](docs/IOS-PLAN.md).
 - **Terminal engine.** Terminals run on libghostty-vt (graphemes, Kitty
@@ -727,6 +728,11 @@ copilot-canvas report list [--unread] [--limit N]
   home; the inbox comes from the service (`ServiceMsg::Reports`), a report's
   body through the backend (`Request::ReportContent`), and HTML is shown by
   the home GUI's own WebView2 view.
+- **On the iPhone** (ios/README.md) the same inbox and read state behind the
+  tray button (its badge counts unread rows): every format is shown as one
+  sanitized page in a locked-down web view, a new report gets a toast while
+  the app is open and a notification while it is away (with the APNs key),
+  and links ask before Safari opens them.
 
 ## Automations (scheduled tasks from manifests)
 
@@ -958,7 +964,11 @@ and `docs/REMOTE.md`.
   downloads, permissions, new windows and external URI schemes refused; any
   navigation but the page's own load cancelled; its own user-data folder
   (`~/.copilot-canvas/webview2`). A link you click asks before it opens in
-  your browser. The TUI shows HTML as formatted text. Report links are
+  your browser. The TUI shows HTML as formatted text. The iPhone app shows the
+  same sanitized page in a web view with the page's JavaScript off, every
+  load with an address blocked (a content rule list), any navigation but
+  the page's own load cancelled, no link previews and a non-persistent data
+  store; a tapped link asks before Safari opens it. Report links are
   `http(s)`/`mailto` only.
 - **Automations**: the canvas only reads Task Scheduler, launcher logs and
   reports; it changes tasks when you run, enable or disable one, or `apply`

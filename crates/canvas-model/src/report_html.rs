@@ -1,12 +1,13 @@
-//! Agent-authored HTML, handled as data: a tolerant tokenizer (the report
-//! viewer's formatted-text rendering reads its tokens) and the sanitizer the
-//! GUI's WebView2 view gets its document from. The sanitizer is defence in
-//! depth on top of the view's own lock-down (scripts off, no network, no host
-//! objects, navigation blocked): it keeps formatting elements and their
-//! styling, drops scripts, frames, plugins, forms' targets, `<base>` and
-//! `<meta>`, every event-handler attribute and every URL that is not an
-//! `http(s)`/`mailto` link or an inline `data:image` picture, and puts a
-//! strict Content-Security-Policy first in the document.
+//! Agent-authored HTML, handled as data: a tolerant tokenizer (the desktop
+//! report viewer's formatted-text rendering reads its tokens) and the
+//! sanitizer the web views get their document from (the GUI's WebView2, the
+//! iPhone app's WKWebView). The sanitizer is defence in depth on top of each
+//! view's own lock-down (scripts off, no network, navigation blocked): it
+//! keeps formatting elements and their styling, drops scripts, frames,
+//! plugins, forms' targets, `<base>` and `<meta>`, every event-handler
+//! attribute and every URL that is not an `http(s)`/`mailto` link or an
+//! inline `data:image` picture, and puts a strict Content-Security-Policy
+//! first in the document.
 
 /// One piece of an HTML document.
 #[derive(Clone, Debug, PartialEq)]
@@ -129,7 +130,7 @@ fn tag(html: &str, at: usize, closing: bool) -> (Token<'_>, usize) {
             match bytes.get(i) {
                 Some(&quote @ (b'"' | b'\'')) => {
                     let end = html[i + 1..].find(quote as char).map(|e| i + 1 + e).unwrap_or(bytes.len());
-                    value = canvas_model::reports::decode_entities(&html[i + 1..end]);
+                    value = crate::reports::decode_entities(&html[i + 1..end]);
                     i = (end + 1).min(bytes.len());
                 }
                 _ => {
@@ -137,7 +138,7 @@ fn tag(html: &str, at: usize, closing: bool) -> (Token<'_>, usize) {
                     while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'>' {
                         i += 1;
                     }
-                    value = canvas_model::reports::decode_entities(&html[start..i]);
+                    value = crate::reports::decode_entities(&html[start..i]);
                 }
             }
         }
@@ -279,16 +280,35 @@ pub fn sanitize(html: &str) -> String {
 /// load or run; inline styles and `data:` images and fonts are allowed.
 pub const CSP: &str = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; media-src data:; script-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'";
 
-/// The page the GUI shows: the policy and the canvas's default look first,
-/// then the sanitized report (its own styles win over the defaults).
-pub fn safe_document(html: &str) -> String {
+/// The look a report page starts from: extra `<head>` markup (a viewport)
+/// and default CSS. The report's own styles come after it and win.
+pub struct Look {
+    pub head: &'static str,
+    pub css: &'static str,
+}
+
+/// The desktop GUI's look (the canvas's colours, Windows fonts).
+pub const DESKTOP: Look = Look {
+    head: "",
+    css: ":root{color-scheme:dark}body{margin:14px 18px;font:14px/1.5 'Segoe UI',sans-serif;color:#e6edf3;background:#0d1117}\
+          a{color:#58a6ff}pre,code{font-family:'Cascadia Mono',Consolas,monospace;background:#161b22}pre{padding:8px;overflow:auto}\
+          table{border-collapse:collapse}td,th{border:1px solid #30363d;padding:4px 8px}img{max-width:100%}",
+};
+
+/// A page for a web view: the policy and `look` first, then the sanitized
+/// report (its own styles win over the defaults).
+pub fn document(html: &str, look: &Look) -> String {
     format!(
-        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"{CSP}\">\
-         <style>:root{{color-scheme:dark}}body{{margin:14px 18px;font:14px/1.5 'Segoe UI',sans-serif;color:#e6edf3;background:#0d1117}}\
-         a{{color:#58a6ff}}pre,code{{font-family:'Cascadia Mono',Consolas,monospace;background:#161b22}}pre{{padding:8px;overflow:auto}}\
-         table{{border-collapse:collapse}}td,th{{border:1px solid #30363d;padding:4px 8px}}img{{max-width:100%}}</style></head><body>{}</body></html>",
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"{CSP}\">{}<style>{}</style></head><body>{}</body></html>",
+        look.head,
+        look.css,
         sanitize(html)
     )
+}
+
+/// The page the GUI shows ([`DESKTOP`]).
+pub fn safe_document(html: &str) -> String {
+    document(html, &DESKTOP)
 }
 
 #[cfg(test)]
@@ -332,6 +352,10 @@ mod tests {
         let doc = safe_document("<p>x</p>");
         assert!(doc.starts_with("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none';"));
         assert!(doc.contains("script-src 'none'") && doc.contains("connect-src 'none'") && doc.ends_with("<body><p>x</p></body></html>"));
+        assert!(doc.contains("<style>:root{color-scheme:dark}body{margin:14px 18px;font:14px/1.5 'Segoe UI'"), "the desktop look:\n{doc}");
+        let phone = document("<script>x()</script><p>y</p>", &Look { head: "<meta name=\"viewport\" content=\"width=device-width\">", css: "body{margin:0}" });
+        assert!(phone.contains("content=\"default-src 'none';") && phone.contains("<meta name=\"viewport\" content=\"width=device-width\"><style>body{margin:0}</style>"));
+        assert!(phone.ends_with("<body><p>y</p></body></html>"), "sanitized for every look:\n{phone}");
     }
 
     #[test]

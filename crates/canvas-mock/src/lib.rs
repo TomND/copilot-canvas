@@ -7,6 +7,12 @@
 //! announces the agent; typing Enter in one makes its session "work" for a
 //! few seconds, so statuses (working, done · review, needs you) can be seen.
 //!
+//! It has a reports inbox too: a few reports of every format (an HTML page
+//! that tries to run a script and load a picture from the network, a
+//! Markdown write-up, a thread of messages), read state and deletes shared
+//! by every client, and files dropped into `<state>/publish/` (`.html`,
+//! `.md`, `.txt`) become new reports (`ios/cloud-mac.sh report FILE`).
+//!
 //! With `--tunnel ID` it stands in for the Cloud PC behind a real private Dev
 //! Tunnel (`ios/cloud-mac.sh`): it issues Dev Tunnels connect tokens with this
 //! machine's signed-in `devtunnel` CLI, sends them to phones
@@ -29,13 +35,14 @@ use anyhow::{Context, Result, bail};
 use canvas_common::handshake::{self, Credential, Opening, PairGrant, Pairing};
 use canvas_common::paths::now_ms;
 use canvas_common::protocol::{
-    Activity, AgentStatus, AgentSummary, CAP_COMPRESS, ClientMsg, Frame8, Input, LaunchKind, MAX_FRAME, PRE_AUTH_FRAME, Run8, ServiceMsg, SessionSummary, TermInfo,
+    Activity, AgentStatus, AgentSummary, CAP_COMPRESS, CAP_REPORTS, ClientMsg, Frame8, Input, LaunchKind, MAX_FRAME, PRE_AUTH_FRAME, Run8, ServiceMsg, SessionSummary, TermInfo,
 };
 use canvas_common::sizing::SizePolicy;
 use canvas_common::wire::{Beat, FrameReader, FrameWriter, Liveness};
 use canvas_common::{pairing, tcp, ws};
 use canvas_host::emulator::{self, Collected, Engine, Scroll, Snapshot};
 use canvas_model::doc::{Doc, Group, Node, NodeKind};
+use canvas_model::reports::{Content, Format, Report};
 use canvas_model::rpc::{BackendInfo, PathInfo, Request, Response};
 use canvas_model::sync::{self, DocReply, Op};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded, unbounded};
@@ -98,6 +105,8 @@ struct Client {
     id: u64,
     /// The paired client this connection authenticated as.
     remote_id: Option<String>,
+    /// What it handles (`CAP_*`).
+    caps: u32,
     out: Sender<ServiceMsg>,
     subs: Mutex<HashMap<String, Sent>>,
     focused: Mutex<Option<String>>,
@@ -150,6 +159,8 @@ struct Mock {
     sender: Option<Arc<canvas_push::Sender>>,
     /// Terminals that run a real agent CLI (statuses come from what it reports).
     real: Mutex<std::collections::HashSet<String>>,
+    /// The reports inbox.
+    inbox: Mutex<Inbox>,
 }
 
 pub struct Handle {
@@ -194,6 +205,7 @@ pub fn serve(config: Config) -> Result<Handle> {
         devices: canvas_push::Devices::open(&config_state),
         sender: config_apns.and_then(|key| canvas_push::Sender::new(key).ok()).map(Arc::new),
         real: Mutex::new(std::collections::HashSet::new()),
+        inbox: Mutex::new(Inbox::demo(now_ms())),
     });
     let accept = mock.clone();
     std::thread::spawn(move || {
@@ -214,6 +226,8 @@ pub fn serve(config: Config) -> Result<Handle> {
     }
     let watcher = mock.clone();
     std::thread::spawn(move || push_loop(watcher));
+    let publisher = mock.clone();
+    std::thread::spawn(move || publish_loop(publisher));
     // A few sessions already run, in different states (as on a busy Cloud PC).
     for (id, agent) in [("mock-fix", "copilot"), ("mock-review", "opencode"), ("mock-docs", "copilot")] {
         let Some(name) = lock(&mock.doc).0.node(id).map(|n| n.name.clone()) else { continue };
@@ -363,6 +377,158 @@ fn push_loop(mock: Arc<Mock>) {
             log(&mock, &format!("{} {what}", event.name));
             push_away(&mock, |device| Some((canvas_push::alert_payload(device, &event), false, Some(event.id.clone()), format!("{what:?} for {:?}", event.name))));
         }
+    }
+}
+
+// ---------- reports ----------
+
+/// The reports inbox (in memory: every start begins with the demo reports).
+#[derive(Default)]
+struct Inbox {
+    version: u64,
+    /// Newest first.
+    reports: Vec<Report>,
+    bodies: HashMap<String, Content>,
+}
+
+impl Inbox {
+    fn snapshot(&self) -> canvas_model::reports::Snapshot {
+        canvas_model::reports::Snapshot { version: self.version, reports: self.reports.clone(), total: self.reports.len() as u32, unread: self.reports.iter().filter(|r| r.unread()).count() as u32, rejected: Vec::new() }
+    }
+
+    fn message(&self) -> ServiceMsg {
+        ServiceMsg::Reports { json: serde_json::to_string(&self.snapshot()).unwrap_or_default() }
+    }
+
+    /// Stores a report (as the service does: preview and size from the body).
+    fn add(&mut self, mut report: Report, body: String) {
+        report.preview = canvas_model::reports::preview(report.format, &body);
+        report.size = body.len() as u64;
+        self.bodies.insert(report.id.clone(), Content { id: report.id.clone(), format: report.format, body });
+        self.reports.insert(0, report);
+        self.version += 1;
+    }
+
+    /// A client's request (read, unread, read_all, delete); whether it changed anything.
+    fn apply(&mut self, op: &str, ids: &[String], now: u64) -> bool {
+        let before = self.reports.clone();
+        match op {
+            "read" | "unread" => {
+                for report in self.reports.iter_mut().filter(|r| ids.contains(&r.id)) {
+                    report.read_ms = if op == "read" { report.read_ms.max(now) } else { 0 };
+                }
+            }
+            "read_all" => self.reports.iter_mut().filter(|r| r.unread()).for_each(|r| r.read_ms = now),
+            "delete" => {
+                self.reports.retain(|r| !ids.contains(&r.id));
+                self.bodies.retain(|id, _| !ids.contains(id));
+            }
+            _ => {}
+        }
+        let changed = self.reports != before;
+        if changed {
+            self.version += 1;
+        }
+        changed
+    }
+
+    /// The demo reports: an HTML morning brief (with a script and a picture
+    /// from the network that must never run or load), a Markdown write-up, and
+    /// a thread of two messages about a pull request.
+    fn demo(now: u64) -> Self {
+        let mut inbox = Inbox::default();
+        let report = |id: &str, title: &str, format: Format, kind: &str, minutes_ago: u64| Report {
+            id: id.into(),
+            title: title.into(),
+            format,
+            kind: kind.into(),
+            created_ms: now - minutes_ago * 60_000,
+            stored_ms: now - minutes_ago * 60_000,
+            ..Default::default()
+        };
+        let mut pr_opened = report("mock-pr42-opened", "PR #42 opened for review", Format::Message, "info", 300);
+        (pr_opened.source_name, pr_opened.source_kind, pr_opened.thread, pr_opened.pr, pr_opened.read_ms) =
+            ("PR monitor".into(), "external".into(), "pr:42".into(), "https://github.com/TomND/copilot-canvas/pull/42".into(), now - 280 * 60_000);
+        inbox.add(pr_opened, "Refund flow: amount checks and a new audit log. Review requested from you and Review PR #42.".into());
+        let mut cause = report("mock-root-cause", "Flaky payment test: root cause", Format::Markdown, "ok", 95);
+        (cause.source, cause.source_name, cause.source_kind, cause.group, cause.group_name) = ("mock-fix".into(), "Fix flaky test".into(), "session".into(), "g-payments".into(), "Payments".into());
+        inbox.add(cause, ROOT_CAUSE_MD.into());
+        let mut comments = report("mock-pr42-comments", "PR #42: 2 new review comments", Format::Message, "warn", 40);
+        (comments.source_name, comments.source_kind, comments.thread, comments.pr, comments.session) =
+            ("PR monitor".into(), "external".into(), "pr:42".into(), "https://github.com/TomND/copilot-canvas/pull/42".into(), "mock-review".into());
+        inbox.add(comments, "refund.ts:88 — the amount is not checked against the charge.\nrefund.ts:120 — log the refund id.\n\nDetails: https://github.com/TomND/copilot-canvas/pull/42".into());
+        let mut brief = report("mock-brief", "Payments health — morning brief", Format::Html, "info", 12);
+        (brief.source, brief.source_name, brief.source_kind, brief.group, brief.group_name) = ("mock-drift".into(), "Drift guard".into(), "passive".into(), "g-payments".into(), "Payments".into());
+        brief.links = vec![canvas_model::reports::Link { title: "Dashboard".into(), url: "https://github.com/TomND/copilot-canvas".into() }];
+        inbox.add(brief, BRIEF_HTML.into());
+        inbox
+    }
+}
+
+const ROOT_CAUSE_MD: &str = "# Flaky payment test: root cause\n\nThe retry test waited on a real `setTimeout`; under load the retry fired late.\n\n## Fix\n\n```ts\n- await sleep(1500);\n+ await vi.advanceTimersByTimeAsync(1500);\n```\n\n| Runs | Before | After |\n|---:|---:|---:|\n| 200 | 19 failures | 0 failures |\n\n- [x] Fake timers in `ci/payments.test.ts`\n- [ ] Same fix for `refund.test.ts`\n\n> Ready to merge once CI is green.\n";
+
+/// The demo HTML report. Its script and its network picture are what the
+/// phone must never run or fetch; the UI tests look for both.
+const BRIEF_HTML: &str = r##"<!DOCTYPE html><html><head><title>Morning brief</title>
+<style>
+  h1 { color: #ffb000; margin-bottom: 4px }
+  .ok { color: #56b4e9; font-weight: 600 }
+  table { margin-top: 8px } th { background: #21262d }
+</style></head>
+<body>
+<h1 id="status">Payments health</h1>
+<p class="ok">All checks passed overnight.</p>
+<table><tr><th>Check</th><th>Result</th></tr><tr><td>Drift</td><td>none</td></tr><tr><td>Error rate</td><td>0.02 %</td></tr></table>
+<svg width="160" height="40" viewBox="0 0 160 40"><polyline points="0,30 30,24 60,28 90,12 120,16 160,6" fill="none" stroke="#56b4e9" stroke-width="3"/></svg>
+<p>Open pull request: <a href="https://github.com/TomND/copilot-canvas/pull/42">PR #42</a></p>
+<img src="http://127.0.0.1:9/beacon.png" alt="beacon">
+<script>document.getElementById('status').textContent = 'SCRIPT RAN';</script>
+</body></html>"##;
+
+/// Files dropped into `<state>/publish/` become reports (and notifications
+/// for phones that are away): `.html`, `.md`, anything else a message.
+fn publish_loop(mock: Arc<Mock>) {
+    let dir = mock.config.state_dir.join("publish");
+    let _ = std::fs::create_dir_all(&dir);
+    loop {
+        std::thread::sleep(Duration::from_secs(1));
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let mut files: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.is_file() && !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.'))).collect();
+        files.sort();
+        let mut stored = Vec::new();
+        for path in files {
+            let body = std::fs::read(&path).map(|b| String::from_utf8_lossy(&b).into_owned());
+            let _ = std::fs::remove_file(&path);
+            let Ok(body) = body else { continue };
+            let format = match path.extension().and_then(|e| e.to_str()).unwrap_or_default() {
+                "html" | "htm" => Format::Html,
+                "md" | "markdown" => Format::Markdown,
+                _ => Format::Message,
+            };
+            let stem = path.file_stem().map(|s| s.to_string_lossy().replace(['-', '_'], " ")).unwrap_or_default();
+            let now = now_ms();
+            let report = Report {
+                id: canvas_model::reports::new_id(now),
+                title: canvas_model::reports::clean_title(&stem),
+                format,
+                kind: "info".into(),
+                created_ms: now,
+                stored_ms: now,
+                source_name: "Mac stand-in".into(),
+                source_kind: "external".into(),
+                ..Default::default()
+            };
+            log(&mock, &format!("report {:?} published ({})", report.title, format.label()));
+            lock(&mock.inbox).add(report, body);
+            stored.push(lock(&mock.inbox).reports[0].clone());
+        }
+        if stored.is_empty() {
+            continue;
+        }
+        broadcast_inbox(&mock);
+        let more = stored.len() - 1;
+        let newest = stored.last().cloned().expect("one");
+        push_away(&mock, |device| Some((canvas_push::report_payload(device, &newest, more), false, Some(newest.id.clone()), format!("the report {:?}", newest.title))));
     }
 }
 
@@ -556,7 +722,7 @@ fn serve_client(mock: &Arc<Mock>, stream: TcpStream) -> Result<()> {
     let id = mock.next_client.fetch_add(1, Ordering::Relaxed);
     let (out_tx, out_rx) = bounded::<ServiceMsg>(4096);
     let tcp_closer = closer.clone();
-    let client = Arc::new(Client { id, remote_id: info.remote_id.clone(), out: out_tx, subs: Mutex::new(HashMap::new()), focused: Mutex::new(None), closer: canvas_common::wire::Closer::new(move || tcp_closer.close()) });
+    let client = Arc::new(Client { id, remote_id: info.remote_id.clone(), caps: info.caps, out: out_tx, subs: Mutex::new(HashMap::new()), focused: Mutex::new(None), closer: canvas_common::wire::Closer::new(move || tcp_closer.close()) });
     log(mock, &format!("client {id} connected ({}{})", info.name, if websocket { ", WebSocket" } else { "" }));
     let liveness = Arc::new(Liveness::standard());
     liveness.received();
@@ -591,6 +757,9 @@ fn serve_client(mock: &Arc<Mock>, stream: TcpStream) -> Result<()> {
     let sessions: Vec<SessionSummary> = lock(&mock.sessions).values().cloned().collect();
     let _ = client.out.send(ServiceMsg::Sessions { full: true, upsert: sessions, remove: Vec::new() });
     let _ = client.out.send(ServiceMsg::Bus { json: serde_json::to_string(&canvas_model::bus::Snapshot::default())? });
+    if info.caps & CAP_REPORTS != 0 {
+        let _ = client.out.send(lock(&mock.inbox).message());
+    }
     if info.caps & canvas_common::protocol::CAP_TUNNEL_ACCESS != 0
         && let Some(access) = lock(&mock.access).clone()
     {
@@ -618,6 +787,14 @@ fn serve_client(mock: &Arc<Mock>, stream: TcpStream) -> Result<()> {
 
 fn broadcast(mock: &Mock, message: ServiceMsg) {
     for client in lock(&mock.clients).values() {
+        let _ = client.out.try_send(message.clone());
+    }
+}
+
+/// The inbox, to every client that shows it.
+fn broadcast_inbox(mock: &Mock) {
+    let message = lock(&mock.inbox).message();
+    for client in lock(&mock.clients).values().filter(|c| c.caps & CAP_REPORTS != 0) {
         let _ = client.out.try_send(message.clone());
     }
 }
@@ -759,7 +936,16 @@ fn dispatch(mock: &Arc<Mock>, client: &Arc<Client>, message: ClientMsg) -> Resul
                 log(mock, &format!("push: {client_id} registered as {label:?} ({environment}){key}"));
             }
         }
-        ClientMsg::Bus { .. } => {}
+        ClientMsg::Bus { json } => {
+            // The reports inbox's requests; the bus's others are the desktop's.
+            let value: serde_json::Value = serde_json::from_str(&json).unwrap_or_default();
+            if value["action"] == "reports" {
+                let ids: Vec<String> = value["ids"].as_array().map(|ids| ids.iter().filter_map(|i| i.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+                if lock(&mock.inbox).apply(value["op"].as_str().unwrap_or_default(), &ids, now_ms()) {
+                    broadcast_inbox(mock);
+                }
+            }
+        }
         other => bail!("the mock does not handle {other:?}"),
     }
     Ok(())
@@ -805,6 +991,11 @@ fn rpc(mock: &Mock, request: Request) -> Response {
             Err(error) => Response::Error(format!("{error:#}")),
         },
         Request::DirsExist { paths } => Response::Flags(paths.iter().map(|p| std::path::Path::new(p).is_dir()).collect()),
+        Request::Reports => Response::Reports(Box::new(lock(&mock.inbox).snapshot())),
+        Request::ReportContent { id } => match lock(&mock.inbox).bodies.get(&id) {
+            Some(content) => Response::Report(Box::new(content.clone())),
+            None => Response::Error(format!("report {id} is not in the inbox (deleted?)")),
+        },
         other => Response::Error(format!("the mock service does not support {}", other.name())),
     }
 }

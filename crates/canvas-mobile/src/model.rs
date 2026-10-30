@@ -248,6 +248,99 @@ pub enum CoreEvent {
     Attention { id: String, name: String, status: StatusKind },
     /// A fresh Dev Tunnels access token: store it for the next connection.
     TunnelAccess { url: String, token: String, expires_ms: u64 },
+    /// The reports inbox changed: read `reports()` again.
+    Reports,
+    /// New reports came in while the app is open (`more`: others with it).
+    ReportArrived { id: String, title: String, source: String, more: u32 },
+}
+
+/// How a report is written.
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReportFormat {
+    /// A short plain-text message.
+    Message,
+    Markdown,
+    Html,
+}
+
+/// A link a report carries (`http(s)` or `mailto` only).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct ReportLink {
+    pub title: String,
+    pub url: String,
+}
+
+/// A report or message an agent published to the inbox.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct ReportItem {
+    pub id: String,
+    pub title: String,
+    pub format: ReportFormat,
+    /// "info", "ok", "warn", "alert", "queued", "delivered", "failed".
+    pub kind: String,
+    /// The kind's glyph (◇ ✓ ⚠ ▲ ◌ ✗).
+    pub glyph: String,
+    /// When it was published (ms since the epoch).
+    pub created_ms: u64,
+    /// Who published it: its box's name on this canvas, else the name it had.
+    pub source_name: String,
+    /// Its box on this canvas (empty: not on it).
+    pub source_box: String,
+    /// A related session it names (and its box on this canvas, if any).
+    pub session_name: String,
+    pub session_box: String,
+    pub group_name: String,
+    /// A related pull request (an address).
+    pub pr: String,
+    pub links: Vec<ReportLink>,
+    /// Reports with the same thread key are one row.
+    pub thread: String,
+    /// The start of its text, one line, without the title.
+    pub preview: String,
+    /// Body bytes.
+    pub size: u64,
+    pub unread: bool,
+}
+
+/// One row of the inbox: a report, or the reports of one thread (newest first).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct ReportThread {
+    /// The newest report's id.
+    pub id: String,
+    pub latest: ReportItem,
+    pub items: Vec<ReportItem>,
+    pub unread: u32,
+}
+
+/// A report the service refused after it was queued.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct RefusedReport {
+    pub id: String,
+    pub title: String,
+    pub reason: String,
+    pub ms: u64,
+}
+
+/// The reports inbox of a machine.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct ReportsOverview {
+    /// The service sent its inbox (an older service never does).
+    pub loaded: bool,
+    pub threads: Vec<ReportThread>,
+    /// Rows with something unread (the badge).
+    pub unread: u32,
+    /// Reports stored on the service.
+    pub total: u32,
+    pub refused: Vec<RefusedReport>,
+}
+
+/// A report's page for the app's locked-down web view: sanitized HTML with
+/// a strict Content-Security-Policy (Markdown and messages rendered to it).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct ReportPage {
+    pub id: String,
+    pub format: ReportFormat,
+    pub html: String,
 }
 
 /// A new session to create and start.

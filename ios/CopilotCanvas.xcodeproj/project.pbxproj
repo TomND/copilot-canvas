@@ -11,6 +11,7 @@
 		238AA111F2A58A1CA990D5BD /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 371B4CAFAC6D35D925863CC9 /* HomeView.swift */; };
 		27E6E2BBE6C6B63C64A09CCC /* TerminalUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CA872B980D2EB3F2BA1095E /* TerminalUITests.swift */; };
 		2995C159A2A054E1C5E89557 /* CopilotCanvasApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63433A27CD72195FE5BAF7D5 /* CopilotCanvasApp.swift */; };
+		301A5BC3763D98E0FB308CB9 /* ReportsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86948EDCE35AA9D6F15964E9 /* ReportsView.swift */; };
 		34B84F6AB7EEAAEA0595C03E /* NewSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DD0AA7C0919B32D6CB1CBC1 /* NewSessionView.swift */; };
 		36187071DF3D5182D1F33AB2 /* CanvasMobileCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 95DED45AB5969DE56CDBF2A5 /* CanvasMobileCore.xcframework */; };
 		3B818A884E8E6A1AACDAA171 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 587FF3C800703B9B53D3F44E /* SettingsView.swift */; };
@@ -25,15 +26,19 @@
 		76911BB6DCF109C03EDB4B28 /* Machines.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B9E83239559BC6B0F5A6F7A /* Machines.swift */; };
 		77305682749AAD715786B71D /* Palette.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7D43DE9F7969F9C49086093 /* Palette.swift */; };
 		7CE4BC353D6D89E5E87DC9AF /* CanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3532502B507E9C3DD275CF0A /* CanvasView.swift */; };
+		86F80EA607789F21D1BC902A /* ReportViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF501242B20E88A63EAABC47 /* ReportViewTests.swift */; };
 		9131F82E8C5434377EAA3A41 /* CoreBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36429106D3674C507FADD6CD /* CoreBridgeTests.swift */; };
 		92DB70043A8BE76A093971EF /* SystemConfiguration.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5D89495A983BAB0BEC1B2140 /* SystemConfiguration.framework */; };
 		95E6A0F1523699B47786493E /* canvas_mobile.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7C6C290CDACE8D8AA1EF46F /* canvas_mobile.swift */; };
 		A1E95B5F2572263C9CCC4B5F /* WebSocketTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F4108B7E513FB12B790FDD7 /* WebSocketTransport.swift */; };
+		A385795DC84109669C544895 /* ReportWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF05EDD46B30A5BF1D7F04A6 /* ReportWebView.swift */; };
 		AD948EEDAFFCDAEDF75F8951 /* KeyBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C999D513E4C2DD264204D5FA /* KeyBar.swift */; };
 		BF0CF98767320D25ABC31698 /* Keyboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0E9E8D0EEA2B412B2E472B4 /* Keyboard.swift */; };
 		C25D81E0404A7792CECE36C9 /* TerminalScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04029A4BF1C2557757BFB954 /* TerminalScreen.swift */; };
 		CB2C0540839842AF660C0EE3 /* ServiceConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6407AA58A49B014FCB5D516C /* ServiceConnection.swift */; };
+		E5994D560955DCC5CB9B9066 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 180A8A00DDBAEFE6D987ADC3 /* WebKit.framework */; };
 		E8D70DD14D6ED4C3EE01350A /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0E1196DE51C594F8AC6F4846 /* Security.framework */; };
+		F2F35D14E36D7A76084FDE8B /* ReportViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAE6888F27607F6BAA88F818 /* ReportViewer.swift */; };
 		FF37A10AEB4A408583EFDB9B /* TerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2AFBCD8066EBAB23A03992C0 /* TerminalView.swift */; };
 /* End PBXBuildFile section */
 
@@ -60,6 +65,7 @@
 		083D1146BDA8AB4028B21B7C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		0CA872B980D2EB3F2BA1095E /* TerminalUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalUITests.swift; sourceTree = "<group>"; };
 		0E1196DE51C594F8AC6F4846 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		180A8A00DDBAEFE6D987ADC3 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
 		18E6681C7760CA66FFB63C69 /* FileViewer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileViewer.swift; sourceTree = "<group>"; };
 		2AFBCD8066EBAB23A03992C0 /* TerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalView.swift; sourceTree = "<group>"; };
 		3532502B507E9C3DD275CF0A /* CanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasView.swift; sourceTree = "<group>"; };
@@ -73,20 +79,24 @@
 		62EF5A0229710D7BCFF88E00 /* CopilotCanvas.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = CopilotCanvas.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		63433A27CD72195FE5BAF7D5 /* CopilotCanvasApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CopilotCanvasApp.swift; sourceTree = "<group>"; };
 		6407AA58A49B014FCB5D516C /* ServiceConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceConnection.swift; sourceTree = "<group>"; };
+		86948EDCE35AA9D6F15964E9 /* ReportsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportsView.swift; sourceTree = "<group>"; };
 		8FFFE22CC77D082848653D7A /* CopilotCanvasUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = CopilotCanvasUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		941C0AFAA4E94625ADF4DDB3 /* BoxDrawing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoxDrawing.swift; sourceTree = "<group>"; };
 		95DED45AB5969DE56CDBF2A5 /* CanvasMobileCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = CanvasMobileCore.xcframework; path = Core/CanvasMobileCore.xcframework; sourceTree = "<group>"; };
 		9DD0AA7C0919B32D6CB1CBC1 /* NewSessionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewSessionView.swift; sourceTree = "<group>"; };
 		A7D43DE9F7969F9C49086093 /* Palette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Palette.swift; sourceTree = "<group>"; };
 		AA1A18FF4D04EBC4B7E3F66C /* Pairer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Pairer.swift; sourceTree = "<group>"; };
+		AF501242B20E88A63EAABC47 /* ReportViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportViewTests.swift; sourceTree = "<group>"; };
 		B0D387408BFE4F7650FAAB8E /* ServerStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerStore.swift; sourceTree = "<group>"; };
 		B0E9E8D0EEA2B412B2E472B4 /* Keyboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Keyboard.swift; sourceTree = "<group>"; };
 		B7C6C290CDACE8D8AA1EF46F /* canvas_mobile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = canvas_mobile.swift; sourceTree = "<group>"; };
 		BE0EEF3C29668868F62A8686 /* CopilotCanvasTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = CopilotCanvasTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		BF05EDD46B30A5BF1D7F04A6 /* ReportWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportWebView.swift; sourceTree = "<group>"; };
 		C0188D57AC0E74E4481E361E /* SessionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionsView.swift; sourceTree = "<group>"; };
 		C7490201013D1BBF885D6890 /* CopilotCanvas.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = CopilotCanvas.entitlements; sourceTree = "<group>"; };
 		C999D513E4C2DD264204D5FA /* KeyBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyBar.swift; sourceTree = "<group>"; };
 		CE1EA5E0CFCD3DB8211B5D1F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		DAE6888F27607F6BAA88F818 /* ReportViewer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportViewer.swift; sourceTree = "<group>"; };
 		E44C0FB2065B9025E30AAA67 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -98,6 +108,7 @@
 				36187071DF3D5182D1F33AB2 /* CanvasMobileCore.xcframework in Frameworks */,
 				E8D70DD14D6ED4C3EE01350A /* Security.framework in Frameworks */,
 				92DB70043A8BE76A093971EF /* SystemConfiguration.framework in Frameworks */,
+				E5994D560955DCC5CB9B9066 /* WebKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -150,6 +161,7 @@
 				95DED45AB5969DE56CDBF2A5 /* CanvasMobileCore.xcframework */,
 				0E1196DE51C594F8AC6F4846 /* Security.framework */,
 				5D89495A983BAB0BEC1B2140 /* SystemConfiguration.framework */,
+				180A8A00DDBAEFE6D987ADC3 /* WebKit.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -169,6 +181,7 @@
 				89E5021259F9C97440BDAF40 /* Machines */,
 				B3339E13444874F8075049EA /* NewSession */,
 				12560FF933EC508AC4FBBB06 /* Pair */,
+				76DE2A691D6C9A7C2718E754 /* Reports */,
 				C7A286A3455C18DCA1732A5D /* Sessions */,
 				4805D59A068920EBDF54D093 /* Settings */,
 				84AB636702D3814C405A5C91 /* Terminal */,
@@ -182,6 +195,16 @@
 				587FF3C800703B9B53D3F44E /* SettingsView.swift */,
 			);
 			path = Settings;
+			sourceTree = "<group>";
+		};
+		76DE2A691D6C9A7C2718E754 /* Reports */ = {
+			isa = PBXGroup;
+			children = (
+				86948EDCE35AA9D6F15964E9 /* ReportsView.swift */,
+				DAE6888F27607F6BAA88F818 /* ReportViewer.swift */,
+				BF05EDD46B30A5BF1D7F04A6 /* ReportWebView.swift */,
+			);
+			path = Reports;
 			sourceTree = "<group>";
 		};
 		7742B9CF01807C4573869927 /* CopilotCanvas */ = {
@@ -202,6 +225,7 @@
 			isa = PBXGroup;
 			children = (
 				36429106D3674C507FADD6CD /* CoreBridgeTests.swift */,
+				AF501242B20E88A63EAABC47 /* ReportViewTests.swift */,
 			);
 			path = CopilotCanvasTests;
 			sourceTree = "<group>";
@@ -444,6 +468,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				9131F82E8C5434377EAA3A41 /* CoreBridgeTests.swift in Sources */,
+				86F80EA607789F21D1BC902A /* ReportViewTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -465,6 +490,9 @@
 				7138F9C66C98F01D5B91C149 /* Pairer.swift in Sources */,
 				77305682749AAD715786B71D /* Palette.swift in Sources */,
 				57CA8E53C67778D84F381942 /* PushRegistration.swift in Sources */,
+				F2F35D14E36D7A76084FDE8B /* ReportViewer.swift in Sources */,
+				A385795DC84109669C544895 /* ReportWebView.swift in Sources */,
+				301A5BC3763D98E0FB308CB9 /* ReportsView.swift in Sources */,
 				4D67292AECD72512406C0F46 /* ServerStore.swift in Sources */,
 				CB2C0540839842AF660C0EE3 /* ServiceConnection.swift in Sources */,
 				44EC1E918541DDE546C4A7A2 /* SessionsView.swift in Sources */,

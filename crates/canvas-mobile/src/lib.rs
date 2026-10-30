@@ -14,6 +14,7 @@ uniffi::setup_scaffolding!();
 mod client;
 mod link;
 mod model;
+mod reports;
 mod screen;
 mod state;
 
@@ -47,6 +48,24 @@ pub fn token_expiry_ms(token: String) -> u64 {
 pub fn open_tunnel_access(secret: Vec<u8>, nonce: String, sealed: String) -> Result<TunnelAccessInfo, CoreError> {
     let (url, token, expires_ms) = canvas_common::remote::open_access(&secret, &nonce, &sealed)?;
     Ok(TunnelAccessInfo { url, token, expires_ms })
+}
+
+/// Whether a link from a report may open (`http(s)://host…` or `mailto:`).
+#[uniffi::export]
+pub fn report_link_allowed(url: String) -> bool {
+    canvas_model::reports::check_url(&url).is_ok()
+}
+
+/// The page a report body is shown as (what `Client::read_report` gives
+/// for a report of the service): sanitized HTML with the phone's look.
+#[uniffi::export]
+pub fn report_page_html(format: ReportFormat, body: String) -> String {
+    let format = match format {
+        ReportFormat::Message => canvas_model::reports::Format::Message,
+        ReportFormat::Markdown => canvas_model::reports::Format::Markdown,
+        ReportFormat::Html => canvas_model::reports::Format::Html,
+    };
+    reports::page(&canvas_model::reports::Content { id: String::new(), format, body }).html
 }
 
 /// The core's version (the service logs it as the client's build).

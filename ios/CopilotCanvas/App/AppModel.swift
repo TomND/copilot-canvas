@@ -10,6 +10,12 @@ struct PendingOpen: Equatable {
     let session: String
 }
 
+/// A report to open on a given machine (a tapped notification).
+struct PendingReport: Equatable {
+    let server: UUID
+    let report: String
+}
+
 /// A session of another machine that wants you (the attention strip).
 struct AttentionItem: Identifiable, Equatable {
     var id: String { "\(server.id.uuidString)/\(session.id)" }
@@ -32,6 +38,8 @@ final class AppModel: ObservableObject {
     @Published var incomingLink: PairLinkInfo?
     /// A session to open, maybe on another machine.
     @Published var pendingOpen: PendingOpen?
+    /// A report to open, maybe on another machine.
+    @Published var pendingReport: PendingReport?
     /// A machine to name and colour (just paired, or "Edit" in Settings).
     @Published var naming: PairedServer?
     /// This phone's APNs token: every machine gets it (and what the phone calls it).
@@ -151,6 +159,18 @@ final class AppModel: ObservableObject {
         connections[id]?.overview?.sessions.filter { $0.kind == .session && $0.status == .needsYou }.count ?? 0
     }
 
+    /// Unread rows of a machine's reports inbox.
+    func unreadReports(_ id: UUID) -> Int {
+        Int(connections[id]?.reports?.unread ?? 0)
+    }
+
+    /// Switches to `server` and opens its report `report`.
+    func open(report: String, on server: UUID) {
+        guard connections[server] != nil else { return }
+        select(server)
+        pendingReport = PendingReport(server: server, report: report)
+    }
+
     /// Switches to `server` and opens `session` there.
     func open(session: String, on server: UUID) {
         guard connections[server] != nil else { return }
@@ -166,6 +186,7 @@ final class AppModel: ObservableObject {
             connection.client.setPush(token: pushToken, environment: PushRegistration.environment, bundle: PushRegistration.bundle, label: server.name)
         }
         connection.onAttention = { [weak self] connection, id, name, status in self?.attention(from: connection, id: id, name: name, status: status) }
+        connection.onReport = { [weak self] connection, id, title, source, more in self?.report(from: connection, id: id, title: title, source: source, more: more) }
         connections[server.id] = connection
         // Badges and the attention strip follow every machine.
         forwarding[server.id] = connection.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
@@ -224,6 +245,20 @@ final class AppModel: ObservableObject {
             connection.notify(title: title, body: "The session \(what).", id: id)
         }
         if other { objectWillChange.send() }
+    }
+
+    /// New reports on a machine: a toast on the screen shown (with the
+    /// machine's name when there are several), else a notification.
+    private func report(from connection: ServiceConnection, id: String, title: String, source: String, more: UInt32) {
+        let machine = servers.count > 1 ? "\(connection.server.name) · " : ""
+        let from = source.isEmpty ? "" : " from \(source)"
+        let others = more > 0 ? " (+\(more) more)" : ""
+        if UIApplication.shared.applicationState == .active && !locked {
+            (self.connection ?? connection).toast = Toast(text: "\(machine)New report\(from): \(title)\(others)", error: false)
+        } else {
+            connection.notify(title: "\(machine)\(title)", body: "New report\(from)\(others).", report: id)
+        }
+        if connection.server.id != currentID { objectWillChange.send() }
     }
 
     // MARK: Lifecycle

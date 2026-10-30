@@ -190,6 +190,47 @@ final class TerminalUITests: XCTestCase {
         if cancel.exists { cancel.tap() }
     }
 
+    func testReportsOpenInALockedDownViewAndLinksAskFirst() throws {
+        let app = launch()
+        let inbox = app.buttons["reportsButton"]
+        XCTAssertTrue(inbox.waitForExistence(timeout: 45))
+        XCTAssertTrue(app.staticTexts["Fix flaky test"].waitForExistence(timeout: 45), "connected")
+        inbox.tap()
+        let brief = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Payments health")).firstMatch
+        XCTAssertTrue(brief.waitForExistence(timeout: 20), "the inbox")
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "PR #42: 2 new review comments")).firstMatch.exists, "a thread")
+        attach(app, "reports-inbox")
+        brief.tap()
+        // The HTML report in the web view: its own text and styles, its script never ran.
+        let page = app.webViews["reportPage"]
+        XCTAssertTrue(page.waitForExistence(timeout: 20))
+        XCTAssertTrue(page.staticTexts["All checks passed overnight."].waitForExistence(timeout: 20), "the report's text")
+        XCTAssertTrue(page.staticTexts["Payments health"].exists, "its heading as written")
+        XCTAssertFalse(page.staticTexts["SCRIPT RAN"].exists, "its script did not run")
+        attach(app, "report-viewer")
+        // A link in it asks before Safari opens it.
+        page.links["PR #42"].tap()
+        XCTAssertTrue(app.staticTexts["Open this link from a report?"].waitForExistence(timeout: 10))
+        attach(app, "report-link")
+        // Not opened: Cancel (an action sheet) or a tap outside (iOS 26 shows a popover).
+        if app.buttons["Cancel"].exists {
+            app.buttons["Cancel"].tap()
+        } else if app.otherElements["PopoverDismissRegion"].exists {
+            app.otherElements["PopoverDismissRegion"].tap()
+        } else {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)).tap()
+        }
+        waitGone(app.staticTexts["Open this link from a report?"])
+        // Back in the inbox: it was read; left unread again for the next run.
+        app.navigationBars.buttons["Reports"].tap()
+        XCTAssertTrue(brief.waitForExistence(timeout: 10))
+        XCTAssertFalse(brief.label.contains("unread"), brief.label)
+        brief.swipeRight()
+        app.buttons["Unread"].tap()
+        expectation(for: NSPredicate(format: "label CONTAINS %@", "unread"), evaluatedWith: brief)
+        waitForExpectations(timeout: 10)
+    }
+
     private func waitGone(_ element: XCUIElement, timeout: TimeInterval = 5) {
         let deadline = Date().addingTimeInterval(timeout)
         while element.exists && Date() < deadline {

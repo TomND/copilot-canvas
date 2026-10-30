@@ -6,6 +6,7 @@
 pub use canvas_common::{paths, pipe, protocol, settings, win};
 pub use canvas_model::agent as agents;
 pub use canvas_model::{automation, bus, config, doc, effects, git, migrate, rpc, sync, transcript, vscode};
+pub use canvas_model::report_html;
 pub use canvas_model::reports as reports_model;
 
 pub mod actions;
@@ -34,7 +35,6 @@ pub mod prs;
 pub mod recent;
 pub mod remote;
 pub mod remove;
-pub mod report_html;
 pub mod reports;
 pub mod review_followups;
 pub mod richtext;

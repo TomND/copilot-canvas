@@ -1,7 +1,8 @@
 //! The reports inbox in the service: stores what `copilot-canvas report
 //! publish` spooled (looked at every 250 ms), keeps the read state, and
 //! sends the inbox to every client that shows it (`ServiceMsg::Reports`, on
-//! connect and on every change). Clients change the read state with bus
+//! connect and on every change); phones that are away get a notification
+//! for each new report (`push.rs`). Clients change the read state with bus
 //! requests (`{"action": "reports", "op": "read" | "unread" | "read_all" |
 //! "delete", "ids": […]}`), which older services ignore.
 
@@ -48,6 +49,7 @@ pub(super) fn run(shared: Arc<Shared>) {
         if done.changed() {
             shared.broadcast(message(&shared));
         }
+        super::push::reports(&shared, &done.stored);
     }
 }
 

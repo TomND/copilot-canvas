@@ -18,7 +18,7 @@ use canvas_model::rpc::BackendInfo;
 use canvas_model::status::{Status, agent_status, session_status};
 use canvas_model::sync::{Opened, Replica};
 
-use crate::model::{BoxKind, ConnState, CoreEvent, GroupItem, NewSession, Overview, Screen, SessionItem, StatusKind, SubagentItem};
+use crate::model::{BoxKind, ConnState, CoreEvent, GroupItem, NewSession, Overview, ReportsOverview, Screen, SessionItem, StatusKind, SubagentItem};
 use crate::screen::ViewState;
 
 /// Something for the client to do after a state change.
@@ -68,6 +68,8 @@ pub struct State {
     seen: HashMap<String, StatusKind>,
     /// Statuses are compared once the first snapshot is in.
     have_sessions: bool,
+    /// The reports inbox (`CAP_REPORTS`).
+    reports: crate::reports::Inbox,
 }
 
 impl State {
@@ -206,6 +208,16 @@ impl State {
             ServiceMsg::DocSaved { error: Some(error), .. } => effects.push(Effect::Emit(CoreEvent::Notice { text: format!("The canvas could not be saved on the service: {error}"), error: true })),
             ServiceMsg::Notification { term, title, body } => effects.push(Effect::Emit(CoreEvent::Notification { term, title, body })),
             ServiceMsg::TunnelAccess { url, token, expires_ms } => effects.push(Effect::Emit(CoreEvent::TunnelAccess { url, token, expires_ms })),
+            ServiceMsg::Reports { json } => {
+                if let Ok(snapshot) = serde_json::from_str(&json) {
+                    let arrived = self.reports.update(snapshot);
+                    effects.push(Effect::Emit(CoreEvent::Reports));
+                    if let Some(arrived) = arrived {
+                        let item = crate::reports::item(&arrived.newest, &self.doc);
+                        effects.push(Effect::Emit(CoreEvent::ReportArrived { id: item.id, title: item.title, source: item.source_name, more: arrived.more }));
+                    }
+                }
+            }
             ServiceMsg::Image { term, image_id, width, height, rgba_or_png, format } => {
                 self.views.entry(term).or_default().view.set_image(image_id, width, height, format, rgba_or_png);
             }
@@ -544,6 +556,23 @@ impl State {
             home_folder: self.info.as_ref().map(|i| i.user_home.clone()).unwrap_or_default(),
             recent_folders: self.doc.recent_folders.iter().map(|f| f.path.clone()).collect(),
         }
+    }
+
+    // ---------- reports ----------
+
+    pub fn reports_overview(&self) -> ReportsOverview {
+        self.reports.overview(&self.doc)
+    }
+
+    /// Marks reports read or unread, deletes them, or marks everything read
+    /// (`op`: "read", "unread", "delete", "read_all"): here at once, and at
+    /// the service (every window and phone follows).
+    pub fn report_request(&mut self, op: &str, ids: &[String]) -> Result<Vec<Effect>, String> {
+        if self.conn != ConnState::Online {
+            return Err("Offline: the inbox cannot be changed now.".into());
+        }
+        let json = self.reports.request(op, ids);
+        Ok(vec![Effect::Send(ClientMsg::Bus { json }), Effect::Emit(CoreEvent::Reports)])
     }
 
     // ---------- launching ----------
@@ -940,6 +969,24 @@ mod tests {
         let ClientMsg::Launch { kind: LaunchKind::Agent(launch), .. } = sent(&effects)[0] else { panic!("launch") };
         assert_eq!((launch.fork_from.as_deref(), launch.resume), (Some("b"), false));
         assert_eq!(state.overview(1).sessions.iter().find(|s| s.id == "b").map(|s| s.forkable), Some(true));
+    }
+
+    #[test]
+    fn the_inbox_follows_the_service_and_changes_go_out_as_bus_requests() {
+        use canvas_model::reports::{Report, Snapshot};
+        let mut state = online();
+        let report = |id: &str, title: &str| Report { id: id.into(), title: title.into(), kind: "info".into(), source: "a".into(), source_name: "old name".into(), ..Default::default() };
+        let inbox = |reports: Vec<Report>| ServiceMsg::Reports { json: serde_json::to_string(&Snapshot { version: 1, total: reports.len() as u32, unread: 0, reports, rejected: Vec::new() }).unwrap() };
+        let effects = state.on_service(inbox(vec![report("1", "Brief")]), 0);
+        assert_eq!(effects, [Effect::Emit(CoreEvent::Reports)], "the first inbox is not news");
+        assert_eq!(state.reports_overview().threads[0].latest.source_name, "Fix flaky test", "named by its box on this canvas");
+        let effects = state.on_service(inbox(vec![report("2", "Deploy failed"), report("1", "Brief")]), 0);
+        assert!(effects.contains(&Effect::Emit(CoreEvent::ReportArrived { id: "2".into(), title: "Deploy failed".into(), source: "Fix flaky test".into(), more: 0 })));
+        let effects = state.report_request("read", &["2".into()]).unwrap();
+        assert!(matches!(sent(&effects)[0], ClientMsg::Bus { json } if json.contains("\"op\":\"read\"") && json.contains("\"2\"")));
+        assert_eq!(state.reports_overview().unread, 1);
+        state.on_disconnected(ConnState::Offline, String::new());
+        assert!(state.report_request("delete", &["1".into()]).unwrap_err().contains("Offline"));
     }
 
     #[test]

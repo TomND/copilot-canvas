@@ -18,6 +18,7 @@ pub mod migrate;
 pub mod models;
 pub mod prs;
 pub mod recent;
+pub mod report_html;
 pub mod reports;
 pub mod reviews;
 pub mod rpc;

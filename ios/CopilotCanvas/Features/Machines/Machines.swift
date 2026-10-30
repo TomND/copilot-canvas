@@ -58,6 +58,8 @@ struct MachineMenu: View {
         }
         let waiting = model.needsYou(server.id)
         if waiting > 0 { parts.append("\(waiting) need\(waiting == 1 ? "s" : "") you") }
+        let reports = model.unreadReports(server.id)
+        if reports > 0 { parts.append("\(reports) new report\(reports == 1 ? "" : "s")") }
         return parts.joined(separator: " · ")
     }
 

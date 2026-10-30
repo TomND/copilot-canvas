@@ -14,6 +14,9 @@ struct HomeView: View {
     @State private var showSettings = false
     @State private var showPair = false
     @State private var subsessionOf: SessionItem?
+    @State private var showReports = false
+    /// The report the inbox opens on (a notification).
+    @State private var reportToOpen: String?
 
     enum Mode: String, CaseIterable {
         case list = "Sessions"
@@ -51,7 +54,11 @@ struct HomeView: View {
                     .pickerStyle(.segmented)
                     .frame(width: 104)
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    ReportsButton(unread: Int(connection.reports?.unread ?? 0)) {
+                        reportToOpen = nil
+                        showReports = true
+                    }
                     Button { showNew = true } label: { Image(systemName: "plus") }
                         .disabled(connection.state != .online)
                         .accessibilityLabel("New session")
@@ -72,6 +79,12 @@ struct HomeView: View {
             }
         }
         .sheet(isPresented: $showSettings) { SettingsView(connection: connection) }
+        .sheet(isPresented: $showReports) {
+            ReportsView(connection: connection, open: reportToOpen) { session in
+                showReports = false
+                path = [.terminal(session)]
+            }
+        }
         .sheet(item: $subsessionOf) { parent in
             NewSessionView(connection: connection, parent: parent) { id in
                 subsessionOf = nil
@@ -88,21 +101,35 @@ struct HomeView: View {
             }
         }
         // Naming a machine (Settings presents it itself while it is open).
-        .sheet(item: Binding(get: { showSettings || showNew || showPair || subsessionOf != nil || model.locked ? nil : model.naming }, set: { model.naming = $0 })) { server in
+        .sheet(item: Binding(get: { showSettings || showNew || showPair || showReports || subsessionOf != nil || model.locked ? nil : model.naming }, set: { model.naming = $0 })) { server in
             MachineSheet(server: server) { name, color in
                 model.rename(server.id, to: name, color: color)
                 model.naming = nil
             }
         }
         .onChange(of: model.pendingOpen) { _, _ in openPending() }
+        .onChange(of: model.pendingReport) { _, _ in openPendingReport() }
         .onAppear {
             // Nothing connects before the lock is passed.
             if !model.locked { connection.activate() }
             openPending()
+            openPendingReport()
             // `-startMode canvas` / `-openSession ID`: automated simulator runs.
             let args = ProcessInfo.processInfo.arguments
             if let i = args.firstIndex(of: "-startMode"), i + 1 < args.count, let start = Mode(rawValue: args[i + 1].capitalized) { mode = start }
             if let i = args.firstIndex(of: "-openSession"), i + 1 < args.count, path.isEmpty { path = [.terminal(args[i + 1])] }
+            if let i = args.firstIndex(of: "-openReport"), i + 1 < args.count { model.pendingReport = PendingReport(server: connection.server.id, report: args[i + 1]) }
+        }
+    }
+
+    /// A report to open on this machine (a notification).
+    private func openPendingReport() {
+        guard let pending = model.pendingReport, pending.server == connection.server.id else { return }
+        model.pendingReport = nil
+        showReports = false
+        DispatchQueue.main.async {
+            reportToOpen = pending.report
+            showReports = true
         }
     }
 
@@ -111,6 +138,31 @@ struct HomeView: View {
         guard let pending = model.pendingOpen, pending.server == connection.server.id else { return }
         model.pendingOpen = nil
         path = [.terminal(pending.session)]
+    }
+}
+
+/// The reports inbox, with how many rows are unread.
+struct ReportsButton: View {
+    let unread: Int
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: unread > 0 ? "tray.full.fill" : "tray")
+                .overlay(alignment: .topTrailing) {
+                    if unread > 0 {
+                        Text(unread > 99 ? "99+" : "\(unread)")
+                            .font(.system(size: 10, weight: .bold))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Palette.attention, in: Capsule())
+                            .foregroundStyle(.black)
+                            .offset(x: 9, y: -7)
+                    }
+                }
+        }
+        .accessibilityIdentifier("reportsButton")
+        .accessibilityLabel(unread > 0 ? "Reports, \(unread) unread" : "Reports")
     }
 }
 

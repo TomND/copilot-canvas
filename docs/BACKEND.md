@@ -397,8 +397,11 @@ most 8 files and 4 MiB in all.
   retention (never an unread report), a full inbox, titles from the body.
   `canvas_model::reports`: validation, cleaning and limits.
   `canvas_core::reports`: threads, opening marks read and launches nothing,
-  unread/delete/links through the service; `report_html` and `richtext`: the
-  sanitizer and the layout.
+  unread/delete/links through the service; `richtext`: the layout.
+  `canvas_model::report_html`: the sanitizer and the page (the desktop's and
+  the phone's look). `canvas_mobile::reports`: the phone's inbox (threads,
+  its own changes until the service confirms them, what is new) and its pages
+  (Markdown and messages rendered, then sanitized).
 - `canvas_model::prs`: link parsing (GitHub, GitHub Enterprise, Azure DevOps
   web and REST links), the registry's persistence, ownership and dedupe,
   `gh` / `az` output parsing, diffing against watermarks (baseline, the

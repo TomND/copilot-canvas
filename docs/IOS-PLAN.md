@@ -106,6 +106,7 @@ Metal is a later option.
 | 3 | iOS MVP: pairing (QR or manual), Keychain, Face ID lock, connection lifecycle (foreground reconnect, offline banner, lost keystrokes), session list by attention, terminal (renderer, keyboard and accessory bar, prompt composer, scroll, copy, Fit/Mirror), open/resume, stop, mark reviewed | simulator run against the mock; device run over the real tunnel |
 | 4 | Canvas (pan, zoom, groups, boxes, edges, status styles; tap opens, long-press menu), new session (agent, folder browser over RPC, first prompt), rename, remove, links to Safari | |
 | 5 | Push notifications (needs you, done · review, automation failures) from the service, GitHub sign-in for tunnel tokens, background token refresh, inline images, iPad split view, Metal renderer | |
+| 5b | Reports inbox: the service's inbox (`CAP_REPORTS`), threads, read state and deletes shared with every window, every format as one sanitized page in a locked-down `WKWebView`, links asked about, a toast and a notification for new reports | XCTest of the lock-down against a local listener; XCUITest against the mock |
 
 ## 4. Pairing payload
 
@@ -132,6 +133,13 @@ use); the token is a 24 h tunnel connect token. A plain `ws://HOST:PORT` URL
   clients cannot shut the service down.
 - The QR code holds a one-time code and a 24 h connect token: show it only on
   your own screen.
+- Reports are agent-written HTML, Markdown or text: the core sanitizes every
+  page (`canvas_model::report_html`, the desktop's allow-list and
+  Content-Security-Policy) and the app's `WKWebView` is locked down on top
+  (page JavaScript off, a content rule list blocking every load with an
+  address, navigation limited to the page's own load and in-page jumps, no
+  new windows or link previews, a non-persistent data store). A tapped link
+  asks before Safari opens it; reading a report starts nothing.
 
 ## 6. Risks
 
@@ -153,6 +161,7 @@ use); the token is a 24 h tunnel connect token. A plain `ws://HOST:PORT` URL
 | 4 Canvas, new session | Done: canvas (groups, boxes, status borders, edges, pan/zoom/fit, tap to open), new session (agent, folder browser over RPC, recent folders, group, first prompt) | simulator screenshots; UI test |
 | 4b Several machines | Done: one live connection per paired machine, a switcher (state, what needs you), colours, an attention strip for the other machines, notifications open their machine, re-pairing replaces by address; keyboard closes by tap outside, a button and swipe-down | XCUITest with two mock services |
 | 5 | Done: notifications while the app is away (APNs from the service: `canvas-push`, `remote push-key`, `push-test`, `ClientMsg::PushRegister`), tunnel tokens renewed by sealed silent notifications and an expired-token prompt, pictures to agents, a file viewer for terminal paths, passive session actions (`pause` bus action), subsessions and forks, jump to live, fit or mirror per session. Not done: GitHub sign-in for tokens, inline images, iPad split view, Metal renderer, QR code in the GUI's remote sheet | Rust unit tests (JWT verified, sealing, attention, registrations, forks, passive); XCTest; XCUITest (subsession, passive, keyboard, two machines); APNs delivery needs the team's key (manual) |
+| 5b Reports | Done: `CAP_REPORTS`; the inbox behind a tray button with an unread badge (and per machine in the switcher), one row per thread, swipe to read/unread or delete, refused reports; the viewer (who, group, age, format, the running session it names, PR and links, older/newer in a thread, copy and share the text, mark unread, delete); HTML, Markdown and messages as one sanitized page (`canvas_mobile::reports`, `canvas_model::report_html` moved from canvas-core) in `ReportWebView` (page JavaScript off, a content rule list blocking `http(s)`/`ws(s)`/`ftp`/`file`/`blob` loads, navigation cancelled but the page's own load, links asked about); a toast for new reports, a local notification when just backgrounded, an APNs notification when away (`canvas_push::report_payload`, at most 3 per batch, collapsed per thread); the mock's demo inbox and `ios/cloud-mac.sh report FILE` | Rust unit tests (threads, optimistic changes, pages, payloads); `end_to_end.rs` (inbox, pages, read and delete across two phones, a published report announced); XCTest (a raw page's script, 9 kinds of loads and a navigation against a local listener: none reached it; links routed to the app); XCUITest (inbox → HTML report → link asks → read) |
 
 Still to check on the real setup (needs the Cloud PC and the phone):
 

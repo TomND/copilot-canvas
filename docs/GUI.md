@@ -322,7 +322,7 @@ publisher and a flashing button while the window is in the background
 (`Platform::report_arrived`).
 
 **Reports and the HTML view (`webview.rs`; canvas-core `reports.rs`,
-`richtext.rs`, `report_html.rs`).** The inbox and the viewer are core cell
+`richtext.rs`; canvas-model `report_html.rs`, shared with the iPhone app).** The inbox and the viewer are core cell
 layouts like every dialog: Markdown (pulldown-cmark; HTML inside it becomes
 formatted text too) and short messages are laid out as styled lines (headings, emphasis, lists,
 tables with rules, code, quotes, links that ask before they open). An HTML

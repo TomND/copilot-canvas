@@ -22,6 +22,13 @@ struct CopilotCanvasApp: App {
                         ?? model.currentID
                     if let server { model.open(session: session, on: server) }
                 }
+                .onReceive(NotificationCenter.default.publisher(for: .openReport)) { note in
+                    guard let info = note.object as? [String: String], let report = info["report"], !report.isEmpty else { return }
+                    let server = info["server"].flatMap(UUID.init(uuidString:))
+                        ?? info["client"].flatMap { client in model.servers.first { $0.clientId == client }?.id }
+                        ?? model.currentID
+                    if let server { model.open(report: report, on: server) }
+                }
                 .onReceive(NotificationCenter.default.publisher(for: .pushToken)) { note in
                     if let token = note.object as? String { model.pushToken = token }
                 }
@@ -35,6 +42,7 @@ struct CopilotCanvasApp: App {
 
 extension Notification.Name {
     static let openSession = Notification.Name("copilot-canvas.open-session")
+    static let openReport = Notification.Name("copilot-canvas.open-report")
 }
 
 /// Notifications show while the app is open too; tapping one opens its session.
@@ -50,16 +58,24 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         let info = response.notification.request.content.userInfo
-        // The machine it came from opens, then the session.
+        // The machine it came from opens, then the session or the report.
         var target: [String: String] = [:]
+        var name = Notification.Name.openSession
         if let session = info["session"] as? String {
             target = ["session": session, "server": info["server"] as? String ?? ""]
+        } else if let report = info["report"] as? String {
+            target = ["report": report, "server": info["server"] as? String ?? ""]
+            name = .openReport
         } else if let cc = info["cc"] as? [String: Any], let session = cc["s"] as? String {
             target = ["session": session, "client": cc["c"] as? String ?? ""]
+        } else if let cc = info["cc"] as? [String: Any], let report = cc["r"] as? String {
+            target = ["report": report, "client": cc["c"] as? String ?? ""]
+            name = .openReport
         }
         if !target.isEmpty {
             let object = target
-            await MainActor.run { NotificationCenter.default.post(name: .openSession, object: object) }
+            let posted = name
+            await MainActor.run { NotificationCenter.default.post(name: posted, object: object) }
         }
     }
 

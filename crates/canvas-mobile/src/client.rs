@@ -9,13 +9,13 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use canvas_common::handshake::{self, Refused};
-use canvas_common::protocol::{self, CAP_COMPRESS, CAP_FRAME8, CAP_NOTIFY, CAP_TUNNEL_ACCESS, ClientInfo, ClientMsg, Input, Key, MAX_FRAME, PRE_AUTH_FRAME, ServiceMsg};
+use canvas_common::protocol::{self, CAP_COMPRESS, CAP_FRAME8, CAP_NOTIFY, CAP_REPORTS, CAP_TUNNEL_ACCESS, ClientInfo, ClientMsg, Input, Key, MAX_FRAME, PRE_AUTH_FRAME, ServiceMsg};
 use canvas_common::wire::{Beat, FrameReader, FrameWriter, Liveness};
 use canvas_model::rpc::{Request, Response};
 use crossbeam_channel::{RecvTimeoutError, Sender, bounded, unbounded};
 
 use crate::link::{Inbox, InboxReader, Transport, TransportWriter};
-use crate::model::{ConnState, CoreError, CoreEvent, FolderListing, KeyCode, NewSession, Overview, Screen};
+use crate::model::{ConnState, CoreError, CoreEvent, FolderListing, KeyCode, NewSession, Overview, ReportPage, ReportsOverview, Screen};
 use crate::state::{Effect, State};
 
 /// What the app tells the core about itself and its pairing.
@@ -382,6 +382,35 @@ impl Client {
         self.shared.run(effects);
     }
 
+    // ---------- reports ----------
+
+    /// The reports inbox (threads, newest first).
+    pub fn reports(&self) -> ReportsOverview {
+        lock(&self.shared.state).reports_overview()
+    }
+
+    /// A report's page for the web view (blocking: the body comes from the
+    /// service). Reading it does not mark it read: `mark_reports` does.
+    pub fn read_report(&self, id: String) -> Result<ReportPage, CoreError> {
+        match self.shared.call(Request::ReportContent { id })? {
+            Response::Report(content) => Ok(crate::reports::page(&content)),
+            other => Err(CoreError::msg(format!("unexpected answer: {other:?}"))),
+        }
+    }
+
+    pub fn mark_reports(&self, ids: Vec<String>, read: bool) -> Result<(), CoreError> {
+        self.report_request(if read { "read" } else { "unread" }, ids)
+    }
+
+    pub fn mark_all_reports_read(&self) -> Result<(), CoreError> {
+        self.report_request("read_all", Vec::new())
+    }
+
+    /// Deletes reports (or dismisses refused ones) on the service.
+    pub fn delete_reports(&self, ids: Vec<String>) -> Result<(), CoreError> {
+        self.report_request("delete", ids)
+    }
+
     // ---------- subsessions ----------
 
     /// Whether a subsession can fork this session's conversation (asks the
@@ -424,6 +453,14 @@ impl Client {
             Response::Text(text) => Ok(text),
             other => Err(CoreError::msg(format!("unexpected answer: {other:?}"))),
         }
+    }
+}
+
+impl Client {
+    fn report_request(&self, op: &str, ids: Vec<String>) -> Result<(), CoreError> {
+        let effects = lock(&self.shared.state).report_request(op, &ids).map_err(CoreError::msg)?;
+        self.shared.run(effects);
+        Ok(())
     }
 }
 
@@ -568,7 +605,7 @@ fn serve_link(shared: &Arc<Shared>, generation: u64, inbox: &Arc<Inbox>, transpo
     inbox.set_deadline(Some(HANDSHAKE_TIMEOUT));
     let info = ClientInfo {
         name: shared.config.client_name.clone(),
-        caps: CAP_FRAME8 | CAP_COMPRESS | CAP_NOTIFY | CAP_TUNNEL_ACCESS,
+        caps: CAP_FRAME8 | CAP_COMPRESS | CAP_NOTIFY | CAP_TUNNEL_ACCESS | CAP_REPORTS,
         session: shared.session.to_vec(),
         remote_id: Some(shared.config.remote_id.clone()),
     };

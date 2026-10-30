@@ -114,6 +114,9 @@ Code, Copilot; they ask before running tools); the demo sessions are shells.
 The canvas and pairings are kept in `~/.copilot-canvas-mock`. `TUNNEL`,
 `PORT`, `STATE` and `WORKDIR` choose another tunnel, port, state folder and
 start folder. The Mac stays awake while it hosts (on power).
+`ios/cloud-mac.sh report FILE` publishes a file to its reports inbox (`.html`,
+`.md`, anything else a message; the file name is the title), which also
+notifies the phone while the app is away.
 
 ## Tests
 
@@ -128,7 +131,10 @@ The UI tests pair with the mock, list its sessions, open the canvas, start a
 session, type into its shell with the keyboard and check the echo, check that
 the keyboard gets out of the way of the new-session form, and switch between
 two machines (a second mock: `cargo run -p canvas-mock -- --listen
-127.0.0.1:47601 --state /tmp/canvas-mock-personal`).
+127.0.0.1:47601 --state /tmp/canvas-mock-personal`), and open the mock's HTML
+report (its script must not run; its link asks first). The unit tests load a
+hostile page into the report view and check that nothing reaches a local
+listener.
 
 ## What it does
 
@@ -141,6 +147,7 @@ two machines (a second mock: `cargo run -p canvas-mock -- --listen
 | **Notifications** | While the app is away: a session needs you or finished (per machine, tap opens it); renewed tunnel tokens arrive silently. An expired token says so, with *Pair again* |
 | **Pictures** | *Send a picture* (terminal menu, key bar, quick bar) or paste an image: it goes to the machine's clipboard and Ctrl+V makes the agent attach it |
 | **Files** | Tap a path in a terminal (`C:\src\app.rs:42`, `/x/y.rs`): a read-only viewer of the machine's file, at that line (copy, share) |
+| **Reports** | The tray button (top right; its badge counts unread rows) opens the machine's reports inbox: what agents published with `copilot-canvas report publish`, one row per thread with a gold dot while unread, its kind, who, age and first line; swipe to mark read/unread or delete (every window and phone follows). A report opens as one page: HTML with its own styles, Markdown (tables, code, task lists) and messages, sanitized by the core and shown in a web view that runs no script from the page and loads nothing from the network; links ask before Safari opens them; the header names who published it and offers its running session, pull request and links; ◂ Older / Newer ▸ through a thread; copy or share the text. Opening one marks its thread read. New reports: a toast while the app is open, a notification while it is away (tap opens the report) |
 | **Passive sessions** | Tap one: run now, pause or resume, discard queued messages; its last headline and next run |
 | **Subsessions** | Long-press a session › *New subsession*: linked to it, placed next to it, forking its conversation when the agent can (Copilot's history copied; OpenCode and Claude Code fork it themselves) |
 | **Keyboard** | Closes with a tap outside any field, the button above it, or a swipe down on forms and lists; in terminals the key bar's hide button stays at its right end and a swipe down on the bar closes it. Picking a folder never brings it back |

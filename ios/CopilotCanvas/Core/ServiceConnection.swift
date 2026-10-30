@@ -34,6 +34,8 @@ final class ServiceConnection: ObservableObject {
     @Published private(set) var state: ConnState = .connecting
     @Published private(set) var message: String = ""
     @Published private(set) var overview: Overview?
+    /// The reports inbox (nil until the first read; `loaded` once the service sent it).
+    @Published private(set) var reports: ReportsOverview?
     @Published var toast: Toast?
 
     let client: Client
@@ -42,6 +44,7 @@ final class ServiceConnection: ObservableObject {
     private var attempts = 0
     private var retry: Task<Void, Never>?
     private var overviewPending = false
+    private var reportsPending = false
     private var active = false
     private var background: UIBackgroundTaskIdentifier = .invalid
     /// Terminal views waiting for screen updates.
@@ -51,6 +54,8 @@ final class ServiceConnection: ObservableObject {
     /// A session started waiting for you or finished a turn (the app decides
     /// how to tell you: toast, notification, the attention strip).
     var onAttention: ((ServiceConnection, String, String, StatusKind) -> Void)?
+    /// New reports came in (id, title, who published it, how many more).
+    var onReport: ((ServiceConnection, String, String, String, UInt32) -> Void)?
 
     init(server: PairedServer) {
         self.server = server
@@ -174,8 +179,19 @@ final class ServiceConnection: ObservableObject {
                 message = text
             }
             refreshOverview()
+            refreshReports()
         case .overview:
             refreshOverview()
+            // Report rows name boxes of the canvas.
+            refreshReports()
+        case .reports:
+            refreshReports()
+        case .reportArrived(let id, let title, let source, let more):
+            if let onReport {
+                onReport(self, id, title, source, more)
+            } else {
+                toast = Toast(text: "New report\(source.isEmpty ? "" : " from \(source)"): \(title)", error: false)
+            }
         case .screen(let id):
             screenWatchers[id]?.values.forEach { $0() }
         case .notice(let text, let error):
@@ -220,6 +236,17 @@ final class ServiceConnection: ObservableObject {
         }
     }
 
+    /// Inbox updates come in bursts too.
+    private func refreshReports() {
+        guard !reportsPending else { return }
+        reportsPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self else { return }
+            self.reportsPending = false
+            self.reports = self.client.reports()
+        }
+    }
+
     /// The machine was renamed or recoloured (same address and credentials).
     func updateServer(_ updated: PairedServer) {
         server = updated
@@ -257,12 +284,14 @@ final class ServiceConnection: ObservableObject {
         PushRegistration.request()
     }
 
-    func notify(title: String, body: String, id: String? = nil) {
+    /// A local notification; tapping it opens session `id` (or report `report`) here.
+    func notify(title: String, body: String, id: String? = nil, report: String? = nil) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = .default
         if let id { content.userInfo = ["session": id, "server": server.id.uuidString] }
+        if let report { content.userInfo = ["report": report, "server": server.id.uuidString] }
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
     }

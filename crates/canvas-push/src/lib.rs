@@ -9,9 +9,10 @@
 //!   per paired client id, in `<home>/remote/push.json`.
 //! - [`Attention`]: which sessions just started waiting for you or finished
 //!   a turn, from the same status rules the clients use.
-//! - [`alert_payload`], [`access_payload`]: the notifications. A renewed
-//!   tunnel access token travels sealed with the phone's own pairing secret
-//!   (Apple only sees ciphertext).
+//! - [`alert_payload`], [`report_payload`], [`access_payload`]: the
+//!   notifications (a session that needs you or finished, a new report in
+//!   the inbox). A renewed tunnel access token travels sealed with the
+//!   phone's own pairing secret (Apple only sees ciphertext).
 //!
 //! The service only pushes to phones that are not connected at that moment:
 //! a connected phone already shows it in the app.
@@ -325,6 +326,30 @@ pub fn alert_payload(device: &Device, event: &Event) -> serde_json::Value {
     })
 }
 
+/// A new report in the inbox: its title (with its kind's glyph when it is
+/// not plain information), the machine, who published it and its first
+/// line; a tap opens it. `more`: other new reports that came with it.
+pub fn report_payload(device: &Device, report: &canvas_model::reports::Report, more: usize) -> serde_json::Value {
+    let title = match report.kind.as_str() {
+        "" | "info" => report.title.clone(),
+        kind => format!("{} {}", canvas_model::reports::kind_glyph(kind), report.title),
+    };
+    let from = if report.source_name.is_empty() { "New report".to_owned() } else { format!("Report from {}", report.source_name) };
+    let preview = report.preview.strip_prefix(report.title.as_str()).unwrap_or(&report.preview).trim_start_matches([' ', ':', '-', '.']);
+    let mut body = if preview.is_empty() { from } else { format!("{from}: {preview}") };
+    if more > 0 {
+        body.push_str(&format!(" (+{more} more)"));
+    }
+    serde_json::json!({
+        "aps": {
+            "alert": { "title": title, "subtitle": device.label, "body": body },
+            "sound": "default",
+            "thread-id": format!("{}:reports", device.client_id),
+        },
+        "cc": { "c": device.client_id, "r": report.id },
+    })
+}
+
 /// A renewed tunnel access token for one phone, sealed with its pairing
 /// secret ([`canvas_common::remote::seal_access`]; the phone opens it with
 /// `open_access`).
@@ -412,5 +437,30 @@ xIg5b32AvVgn4P6dw7B8py49iH9UZ7AQI5LDEdt1UIjEoEc2Sq4dZF82
         assert_eq!(opened, ("wss://t-1.usw3.devtunnels.ms".to_owned(), "eyJ.a.b".to_owned(), 9));
         assert!(open(&canvas_common::pairing::new_secret(), access["cc"]["n"].as_str().unwrap(), access["cc"]["t"].as_str().unwrap()).is_err());
         assert!(access.to_string().len() < 4096, "fits a notification");
+    }
+
+    #[test]
+    fn report_notifications_say_what_and_who_and_open_the_report() {
+        let device = Device::new("pc-1", &"c".repeat(64), "sandbox", "com.thomashorga.copilotcanvas", "work").unwrap();
+        let mut report = canvas_model::reports::Report {
+            id: "0001792000000000-abcd1234".into(),
+            title: "Payments health".into(),
+            kind: "warn".into(),
+            source_name: "Drift guard".into(),
+            preview: "Payments health: 2 alerts since 06:00".into(),
+            ..Default::default()
+        };
+        let alert = report_payload(&device, &report, 2);
+        assert_eq!(alert["aps"]["alert"]["title"], "⚠ Payments health");
+        assert_eq!(alert["aps"]["alert"]["subtitle"], "work");
+        assert_eq!(alert["aps"]["alert"]["body"], "Report from Drift guard: 2 alerts since 06:00 (+2 more)");
+        assert_eq!((alert["cc"]["c"].as_str(), alert["cc"]["r"].as_str()), (Some("pc-1"), Some("0001792000000000-abcd1234")));
+        assert_eq!(alert["aps"]["thread-id"], "pc-1:reports");
+        (report.kind, report.source_name, report.preview) = ("info".into(), String::new(), String::new());
+        let plain = report_payload(&device, &report, 0);
+        assert_eq!((plain["aps"]["alert"]["title"].as_str(), plain["aps"]["alert"]["body"].as_str()), (Some("Payments health"), Some("New report")));
+        report.title = "t".repeat(canvas_model::reports::MAX_TITLE);
+        report.preview = "é".repeat(canvas_model::reports::PREVIEW);
+        assert!(report_payload(&device, &report, 9).to_string().len() < 4096, "fits a notification");
     }
 }

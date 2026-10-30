@@ -10,6 +10,7 @@
 #   ios/cloud-mac.sh status    what runs, the tunnel, the address
 #   ios/cloud-mac.sh stop      stop both
 #   ios/cloud-mac.sh logs      follow the mock's and the tunnel's logs
+#   ios/cloud-mac.sh report FILE   publish FILE (.html, .md, else a message) to the reports inbox
 #
 # Needs the Dev Tunnels CLI signed in as the tunnel's owner
 # (`brew install --cask devtunnel`, `devtunnel user login -g`).
@@ -124,8 +125,18 @@ case "${1:-start}" in
   logs)
     tail -f "$STATE/mock.log" "$STATE/host.log"
     ;;
+  report)
+    # The mock turns files in its publish folder into reports (the file name is the title);
+    # phones that are away get a notification (with an APNs key).
+    [ -f "${2:-}" ] || { echo "usage: ios/cloud-mac.sh report FILE.html|FILE.md|FILE.txt"; exit 2; }
+    running mock || { echo "The mock is not running: ios/cloud-mac.sh start"; exit 1; }
+    mkdir -p "$STATE/publish"
+    cp "$2" "$STATE/publish/.$(basename "$2")"
+    mv "$STATE/publish/.$(basename "$2")" "$STATE/publish/$(basename "$2")"
+    echo "Published $(basename "$2") to the inbox of $NAME."
+    ;;
   *)
-    sed -n '2,15p' "$0"
+    sed -n '2,16p' "$0"
     exit 2
     ;;
 esac

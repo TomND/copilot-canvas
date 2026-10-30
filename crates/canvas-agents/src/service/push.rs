@@ -1,9 +1,10 @@
 //! Push notifications to paired phones (docs/IOS-PLAN.md, phase 5; the
 //! sending is `canvas_push`). Phones register with `ClientMsg::PushRegister`;
 //! while a phone is not connected, the service tells it when a session starts
-//! waiting for you or finishes a turn, and sends it renewed tunnel access
-//! tokens (sealed with its pairing secret) so it can still connect after a
-//! day away. Needs the team's APNs key (`copilot-canvas remote push-key`).
+//! waiting for you or finishes a turn and when a report arrives in the inbox,
+//! and sends it renewed tunnel access tokens (sealed with its pairing secret)
+//! so it can still connect after a day away. Needs the team's APNs key
+//! (`copilot-canvas remote push-key`).
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -149,6 +150,30 @@ pub(super) fn push_loop(agents: Arc<Agents>) {
             .collect();
         send_all(&agents, sender, jobs);
     }
+}
+
+/// Reports at most notified at once (the newest; the last one says how many more).
+const REPORTS_AT_ONCE: usize = 3;
+
+/// Reports the inbox just stored, for the registered phones that are away.
+pub(super) fn reports(agents: &Arc<Agents>, stored: &[canvas_model::reports::Report]) {
+    if stored.is_empty() || agents.push.devices.is_empty() {
+        return;
+    }
+    let Some(sender) = agents.push.sender(&agents.instance.home) else { return };
+    let online = connected(agents);
+    // Stored oldest first: the newest few, the newest last (it lands on top).
+    let shown: Vec<&canvas_model::reports::Report> = stored.iter().rev().take(REPORTS_AT_ONCE).rev().collect();
+    let more = stored.len() - shown.len();
+    let mut jobs = Vec::new();
+    for device in agents.push.devices.list().into_iter().filter(|d| !online.contains(&d.client_id) && agents.remote.secret(&d.client_id).is_some()) {
+        for (i, report) in shown.iter().enumerate() {
+            let extra = if i + 1 == shown.len() { more } else { 0 };
+            let collapse = if report.thread.is_empty() { report.id.clone() } else { format!("r:{}", report.thread) };
+            jobs.push((device.clone(), canvas_push::report_payload(&device, report, extra), false, Some(collapse), format!("the report {:?}", report.title)));
+        }
+    }
+    send_all(agents, sender, jobs);
 }
 
 /// Whether away phones want tunnel tokens (registered, and a key to reach them).

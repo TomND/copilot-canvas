@@ -27,6 +27,8 @@ canvas-model.workspace = true
 canvas-termview = { path = "../canvas-termview", default-features = false }
 anyhow.workspace = true
 crossbeam-channel.workspace = true
+# Markdown reports become HTML for the report view.
+pulldown-cmark = { workspace = true, features = ["html"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror = "2.0.21"
