@@ -1,6 +1,6 @@
 # stacked-subsessions (150x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit                     ◆ 1 needs you   5 sessions
+ ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit            ◆ 1 needs you   5 sessions
     SESSIONS                     │▌·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
 ▌▤  / filter…                    │  ╭ Orchestrator ──────────────╮
                                  │  │ ■ stopped                  │

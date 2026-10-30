@@ -1,6 +1,6 @@
 # prs-panel (150x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents 3 · ⚠ 1   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit             ◆ 1 needs you   6 sessions
+ ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents 3 · ⚠ 1   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit    ◆ 1 needs you   6 sessions
     SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
 ▌▤  / filter…                    │ ┌╌ ▣ Payments · 2 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ 1 ╌ ◧ AI d││ ⇅ Pull requests · 4 tracked · 3 active · 2 need you         │
                                  │ ╎                                                  ││ Monitored read-only (gh / az) for PR coordinator;           │
@@ -70,7 +70,7 @@ loops motion=On frozen=true
 loop p-guard rect=36,2 30x4 halo=false lap=0.623 grow=1 ending=false
 loop a-pr rect=2,12 30x4 halo=false lap=0.153 grow=1 ending=false
 ## gpu screen (chrome and the model painted as text)
- ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents 3 · ⚠ 1   ▢ Single   ⤢ Fit   −   +   ?   ⧉   ⏻ Quit         ◆ 1 needs you   6 sessions
+ ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents 3 · ⚠ 1   ▢ Single   Show all nodes   −   +   ?   ⧉   ⏻ Quit             ◆ 1 needs you
     SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
 ▌▤  / filter…                    │ ┌╌ ▣ Payments · 2 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ 1 ╌ ◧ AI d││ ⇅ Pull requests · 4 tracked · 3 active · 2 need you         │
                                  │ ╎                                                  ││ Monitored read-only (gh / az) for PR coordinator;           │

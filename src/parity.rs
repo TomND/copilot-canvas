@@ -226,7 +226,9 @@ impl Gui {
         let (x0, x1) = (r[0].max(area[0]), (r[0] + r[2]).min(area[0] + area[2]));
         let (y0, y1) = (r[1].max(area[1]), (r[1] + r[3]).min(area[1] + area[3]));
         anyhow::ensure!(x1 - x0 >= 1.0 && y1 - y0 >= 0.5, "box {name:?} at {r:?} is not in view (canvas {area:?})");
-        Ok((x0 + ((x1 - x0) / 2.0).min(4.0), (y0 + y1) / 2.0))
+        // At overview scales a group's fixed-size title chips can overlap the
+        // top of its first row of boxes. Aim below them, inside the box.
+        Ok((x0 + ((x1 - x0) / 2.0).min(4.0), y1 - 0.1))
     }
 
     /// The focused tile's inner rect.
@@ -263,6 +265,11 @@ impl Gui {
     /// its terminal to have the keyboard and for `ready` in the screen.
     fn open(&mut self, name: &str, ready: &str) -> Result<()> {
         self.canvas_focus()?;
+        // Earlier rows can leave this box outside the viewport (fitting uses
+        // padding and opening a terminal changes the canvas width).
+        if self.box_center(name).is_err() {
+            self.send("f")?;
+        }
         let (found, rect) = self.find_box(name)?;
         let id = found["id"].as_str().unwrap_or_default().to_owned();
         let at = self.box_center(name)?;
@@ -1085,7 +1092,12 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         gui.wheel("up", empty, &["ctrl"])?;
         let zoomed = gui.tree()?["canvas"]["scale"].as_f64().unwrap_or(0.0);
         anyhow::ensure!(zoomed > scale, "Ctrl+wheel did not zoom in ({scale} → {zoomed})");
-        gui.send("f")?;
+        let show_all = gui.find("Show all nodes").context("discoverable Show all nodes button")?;
+        let away = gui.tree()?["canvas"]["origin"].clone();
+        gui.click(show_all, &[])?;
+        let fitted = gui.tree()?;
+        anyhow::ensure!(fitted["canvas"]["scale"].as_f64().unwrap_or(2.0) <= 1.0, "fit exceeded 100 percent");
+        anyhow::ensure!(fitted["canvas"]["origin"] != away, "fit did not recenter");
         // Drag a box: the document moves it.
         let before = sb.doc()?.node("shell-b").map(|n| (n.x, n.y)).context("shell-b")?;
         let at = gui.box_center("Shell B")?;
@@ -1120,7 +1132,7 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         gui.drag("left", corner, (corner.0 + 4.0, corner.1 + 1.0), &[])?;
         wait_doc(&sb.canvas, "group resized", |d| d.groups.iter().any(|x| x.id == "g-parity" && (x.w, x.h) != (group.w, group.h)))?;
         // Move by its title (members follow).
-        let title = (r[0] + 3.5, r[1] + 0.5);
+        let title = (r[0] + 3.5, r[1] + 0.1);
         let member = sb.doc()?.node("shell-a").map(|n| n.x).context("member")?;
         gui.drag("left", title, (title.0 + 3.0, title.1), &[])?;
         let doc = wait_doc(&sb.canvas, "group moved", |d| d.groups.iter().any(|x| x.id == "g-parity" && x.x != group.x))?;
@@ -1702,7 +1714,7 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         let g = rect(&gui.tree()?, "groups", "g-parity").context("group")?;
         let doc = sb.doc()?;
         let group = doc.groups.iter().find(|x| x.id == "g-parity").cloned().context("group")?;
-        gui.drag("left", (g[0] + 3.5, g[1] + 0.5), (g[0] + 5.5, g[1] + 0.5), &[])?;
+        gui.drag("left", (g[0] + 3.5, g[1] + 0.1), (g[0] + 5.5, g[1] + 0.1), &[])?;
         wait_doc(&sb.canvas, "moved by its title", |d| d.groups.iter().any(|x| x.id == "g-parity" && x.x != group.x))?;
         let g = rect(&gui.tree()?, "groups", "g-parity").context("group")?;
         let corner = (g[0] + g[2] - 0.5, g[1] + g[3] - 0.5);

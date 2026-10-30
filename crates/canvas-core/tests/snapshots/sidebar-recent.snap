@@ -1,6 +1,6 @@
 # sidebar-recent (150x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas  DEMO · native shells   + New   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit                                                 3 sessions
+ ◆ Copilot Canvas  DEMO · native shells   + New   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit                                        3 sessions
     SESSIONS                     │                                                    │┌─────────────────────────────────────────────────────────────┐
 ▌▤  / filter…                    │  ┌╌ ▣ Canvas project · 4 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ Build session canvas                                        │
                                  │  ╎                                                 ││ ■ stopped                                                   │

@@ -1,6 +1,6 @@
 # report-viewer-markdown (150x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas  DEMO · native shells   + New   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit                                                 4 sessions
+ ◆ Copilot Canvas  DEMO · native shells   + New   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit                                        4 sessions
     R╭─ Report · Morning brief · day 100 (read-only) ───────────────────────────────────────────────────────────────────────────────────────────╮────┐
  ▤  E│ ⚠ warn · from Fix flaky test · 4m ago · Markdown                                                                                         │    │
      │ from ▤ Fix flaky test  ·  ↗ PR github.com/org/repo/pull/1234  ·  ↗ Board                                                                 │    │

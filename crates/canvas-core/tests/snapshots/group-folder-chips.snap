@@ -1,6 +1,6 @@
 # group-folder-chips (150x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit                                     3 sessions
+ ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit                            3 sessions
     SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
 ▌▤  / filter…                    │ ┏━ ▣ Docs · 2 ━━━ ⟲+ ━ ◧ AI docs ━ ◨ Outputs ━━┓·  ││ ▣ Docs                                                      │
                                  │ ┃                                              ┃   ││ 2 sessions                                                  │

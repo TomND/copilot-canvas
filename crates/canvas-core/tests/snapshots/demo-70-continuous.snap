@@ -23,7 +23,7 @@ box demo-main Session rect=2,2 30x4 prefix="" name="Build session canvas"
   border=Heavy border_style=[fg #f0f6fc +BOLD] fill=#161b22 attention=none name_style=[fg #f0f6fc +BOLD] line_style=[fg #585e66]
   selected=true focused_term=false active=false
 ## gpu screen (chrome and the model painted as text)
- ◆ Copilot Canvas  DEMO · native shells   + New   ▢ Single   ⤢ Fit   −   +   ?   ⧉   ⏻ Quit                                             3 sessions
+ ◆ Copilot Canvas  DEMO · native shells   + New   ▢ Single   Show all nodes   −   +   ?   ⧉   ⏻ Quit                                    3 sessions
     SESSIONS                     │▌┌╌ ▣ Canvas project · 4 ╌╌╌╌╌╌╌╌╌╌╌╌╌ ◧ Set folder…│┌─────────────────────────────────────────────────────────────┐
 ▌▤  / filter…                    │ ╎                                               ╎  ││ Build session canvas                                        │
                                  │ ╎ ■ Build session canv… ·■ Review implementat…  ╎  ││ ■ stopped                                                   │

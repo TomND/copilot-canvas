@@ -180,7 +180,7 @@ fn draw_toolbar(app: &mut App, buf: &mut Buffer, area: Rect) {
         x = agents_button(app, buf, x, area);
     }
     x = toolbar_button(app, buf, x, if app.doc.ui.tiled { " ▦ Tiled " } else { " ▢ Single " }, Action::ToggleTiled, area);
-    x = toolbar_button(app, buf, x, " ⤢ Fit ", Action::FitAll, area);
+    x = toolbar_button(app, buf, x, " Show all nodes ", Action::FitAll, area);
     x = toolbar_button(app, buf, x, " − ", Action::Zoom(1), area);
     x = toolbar_button(app, buf, x, " + ", Action::Zoom(-1), area);
     let mut x = toolbar_button(app, buf, x, " ? ", Action::Help, area);

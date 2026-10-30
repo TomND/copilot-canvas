@@ -650,6 +650,64 @@ mod tests {
     }
 
     #[test]
+    fn show_all_fits_visible_content_and_cancels_panning_without_editing_sessions() {
+        for mode in [RenderMode::Cells, RenderMode::Gpu] {
+            let (mut app, _) = app(crate::demo::demo_doc("."));
+            app.render_mode = mode;
+            app.doc.view.x = 10000;
+            app.doc.view.y = -10000;
+            app.drag = Some(Drag::Pan { last: (5, 5), moved: true, group: None });
+            app.pan_quiet_until = Some(std::time::Instant::now());
+            let before = serde_json::to_value(&app.doc).unwrap();
+            app.fit_all();
+            assert!(app.drag.is_none() && app.pan_quiet_until.is_none());
+            let after = serde_json::to_value(&app.doc).unwrap();
+            for field in ["nodes", "groups", "selected", "tiles"] {
+                assert_eq!(before[field], after[field], "{field}");
+            }
+            for node in &app.doc.nodes {
+                let (x, y, w, h) = app.node_screen(node);
+                let c = app.layout.canvas;
+                assert!(x >= c.x as i32 && y >= c.y as i32);
+                assert!(x + w <= c.right() as i32 && y + h <= c.bottom() as i32);
+            }
+            app.doc.groups.clear();
+            app.doc.nodes.clear();
+            app.fit_all();
+            assert_eq!(app.doc.view.zoom, 0);
+            assert_eq!(app.view_scale, 1.0);
+        }
+    }
+
+    #[test]
+    fn show_all_uses_stack_decks_and_ignores_hidden_positions() {
+        let (mut app, _) = app(crate::demo::demo_doc("."));
+        app.render_mode = RenderMode::Gpu;
+        app.doc.groups.clear();
+        let child = app.doc.nodes.iter_mut().find(|n| n.kind == crate::doc::NodeKind::Session && n.parent.is_some()).unwrap();
+        child.x = 10000;
+        child.y = -10000;
+        let parent = child.parent.clone().unwrap();
+        app.doc.ui.hide_subsessions = true;
+        app.fit_all();
+        assert!(app.view_scale > 0.5, "hidden coordinates must not affect fitting");
+        app.doc.ui.hide_subsessions = false;
+        app.doc.node_mut(&parent).unwrap().stacked = true;
+        app.fit_all();
+        assert!(app.view_scale > 0.5, "stacked coordinates must not affect fitting");
+        let deck = app.deck_rect(app.doc.node(&parent).unwrap());
+        let (x, y) = app.to_screen_f(deck.x + deck.w + 2.0, deck.y + deck.h + 1.0);
+        assert!(x < app.layout.canvas.right() as f32 && y < app.layout.canvas.bottom() as f32);
+        app.doc.nodes.clear();
+        app.doc.groups = crate::demo::demo_doc(".").groups;
+        app.fit_all();
+        let group = &app.doc.groups[0];
+        let center = group.rect().center();
+        let actual = app.canvas_center_f();
+        assert!((actual.0 - center.0 as f32).abs() < 0.01 && (actual.1 - center.1 as f32).abs() < 0.01);
+    }
+
+    #[test]
     fn pixel_hit_testing_uses_the_precise_pointer() {
         let (mut app, dir) = app(crate::demo::demo_doc("."));
         app.render_mode = RenderMode::Gpu;

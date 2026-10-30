@@ -162,7 +162,7 @@ impl App {
             item(self.undo_label(), "Ctrl+Z", Action::Undo, self.undo.can_undo()),
             item("Redo", "Ctrl+Y", Action::Redo, self.undo.can_redo()),
             item("Migrate VS Code skills & settings…", "", Action::Migrate, !self.demo),
-            item("Fit everything", "F", Action::FitAll, true),
+            item("Show all nodes", "F", Action::FitAll, true),
             item(if self.doc.ui.tiled { "Single terminal view" } else { "Tile terminals" }, "T", Action::ToggleTiled, true),
             item("Open in the other client", "O", Action::OpenOtherClient, true),
             item("Help", "?", Action::Help, true),

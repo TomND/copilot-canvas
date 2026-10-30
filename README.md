@@ -279,7 +279,7 @@ behaviour, shortcuts, and agent-specific details.
 | Start / resume a session and focus its terminal | double-click box or sidebar row; details panel **Start** / **Resume**; menu | Enter |
 | Move | drag box (or group title) | arrows (Shift = faster); Ctrl+Z undoes |
 | Pan | drag empty space, middle-drag, wheel | Ctrl+arrows |
-| Zoom | Alt+wheel, toolbar − + | `+` `-`, `F` fit all, `C`/Home center |
+| Zoom / recover the canvas | Alt+wheel, toolbar − +; **Show all nodes** fits visible boxes, stacks and groups with padding | `+` `-`, `F` show all nodes, `C`/Home center selection |
 | Select several (sessions, subsessions, subagent boxes; not stacked or hidden ones) | Shift-drag or right-drag, starting anywhere (on a box too); Shift/Ctrl+click toggles a box | Tab cycles sessions |
 | Group selection | context menu | `G` |
 | Select a group | click its empty background or its border (or its title, its sidebar row) | arrows move it, Del deletes the group box, `R` renames |

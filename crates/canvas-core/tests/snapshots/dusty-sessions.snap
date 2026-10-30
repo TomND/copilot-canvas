@@ -1,6 +1,6 @@
 # dusty-sessions (150x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit       ⠋ 1 working   ◆ 1 needs you   6 sessions
+ ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit           ⠋ 1 working   ◆ 1 needs you
     SESSIONS                     │▌·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
 ▌▤  / filter…                    │  ╭ Used yesterday ────────────╮      ╭ Unused for 5 days ─────────╮
                                  │  │ ■ stopped                  │      │ ■ stopped · unused 5d      │

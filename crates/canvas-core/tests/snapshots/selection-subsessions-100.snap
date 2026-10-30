@@ -1,6 +1,6 @@
 # selection-subsessions-100 (150x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas  DEMO · native shells   + New   ▢ Single   ⤢ Fit   −   +   ?   ⏻ Quit                                                 3 sessions
+ ◆ Copilot Canvas  DEMO · native shells   + New   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit                                        3 sessions
     SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
 ▌▤  / filter…                    │  ┌╌ ▣ Canvas project · 4 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ ↳ Write tests                                               │
                                  │  ╎                                                 ││ ■ stopped                                                   │
@@ -64,7 +64,7 @@ box demo-sub Session rect=36,9 30x4 prefix="↳ " name="Write tests"
   border=Heavy border_style=[fg #f0f6fc +BOLD] fill=#161b22 attention=none name_style=[fg #f0f6fc +BOLD] line_style=[fg #585e66]
   selected=true focused_term=false active=false
 ## gpu screen (chrome and the model painted as text)
- ◆ Copilot Canvas  DEMO · native shells   + New   ▢ Single   ⤢ Fit   −   +   ?   ⧉   ⏻ Quit                                             3 sessions
+ ◆ Copilot Canvas  DEMO · native shells   + New   ▢ Single   Show all nodes   −   +   ?   ⧉   ⏻ Quit                                    3 sessions
     SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
 ▌▤  / filter…                    │  ┌╌ ▣ Canvas project · 4 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ ↳ Write tests                                               │
                                  │  ╎                                                 ││ ■ stopped                                                   │

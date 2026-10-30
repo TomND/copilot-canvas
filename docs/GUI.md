@@ -438,6 +438,16 @@ returns them alone.
 
 ## 2. Controls
 
+**Show all nodes** in the toolbar (also the canvas menu or `F`) brings content
+back after panning away. It centres visible boxes, stack decks and groups with
+padding, fitting at up to 100 % zoom. Hidden subsessions and the stored positions
+of stacked boxes do not enlarge the bounds. It cancels an active pan; an empty
+canvas returns to the origin at 100 %. Layout, selection and sessions are kept.
+This is shared with the TUI and works over remote connections using the client's
+document replica; only this window's view preferences change. The existing zoom
+limits still apply (GUI 6.25 %, TUI 25 %), so extremely spread-out content can
+exceed the viewport at minimum zoom.
+
 The keyboard map is the TUI's (`?` shows it). GUI specifics:
 
 | Action | GUI |

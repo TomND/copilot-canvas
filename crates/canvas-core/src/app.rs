@@ -998,16 +998,39 @@ impl App {
     }
 
     pub fn fit_all(&mut self) {
-        let Some(bounds) = self.doc.bounds() else { return };
+        // End an in-flight pan before changing its coordinate system. There is
+        // no inertial pan timer; the quiet period only suppresses the grid.
+        if matches!(self.drag, Some(Drag::Pan { .. })) {
+            self.drag = None;
+        }
+        self.pan_quiet_until = None;
+        let concealed = self.concealed_now();
+        let nodes = self.doc.nodes.iter().filter(|n| !concealed.contains_key(&n.id)).map(|n| n.rect());
+        let decks = concealed.values().filter_map(|c| match c {
+            crate::visual::Conceal::Stack(root) => self.doc.node(root).map(|n| {
+                let r = self.deck_rect(n);
+                crate::doc::Rect { x: r.x as i32, y: r.y as i32, w: r.w as i32 + 2, h: r.h as i32 + 1 }
+            }),
+            _ => None,
+        });
+        let bounds = nodes.chain(self.doc.groups.iter().map(|g| g.rect())).chain(decks).reduce(|a, b| a.union(&b));
+        let Some(bounds) = bounds else {
+            self.set_scale(1.0);
+            self.view_frac = (0.0, 0.0);
+            self.center_on(0, 0);
+            return;
+        };
         let c = self.layout.canvas;
+        // Two columns and one row on each side (cells are about twice as tall).
+        let (width, height) = ((c.width as f32 - 4.0).max(1.0), (c.height as f32 - 2.0).max(1.0));
         if self.render_mode == RenderMode::Gpu {
             // Everything in view, never above 100 %.
-            let fit = ((c.width as f32 - 2.0) / bounds.w.max(1) as f32).min((c.height as f32 - 1.0) / bounds.h.max(1) as f32);
+            let fit = (width / bounds.w.max(1) as f32).min(height / bounds.h.max(1) as f32);
             self.set_scale(fit.min(1.0));
         } else {
             self.doc.view.zoom = (ZOOMS.len() - 1) as u8;
             for (zoom, (n, d)) in ZOOMS.iter().enumerate() {
-                if bounds.w * n / d <= c.width as i32 - 2 && bounds.h * n / d < c.height as i32 {
+                if bounds.w as f32 * *n as f32 / *d as f32 <= width && bounds.h as f32 * *n as f32 / *d as f32 <= height {
                     self.doc.view.zoom = zoom as u8;
                     break;
                 }

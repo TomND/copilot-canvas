@@ -56,7 +56,7 @@ and unit tests that cover the row.
 
 | # | Feature (§8) | GUI check | Also | ✓ |
 |---|---|---|---|---|
-| 1 | Canvas: drag boxes (subagents follow), pan, zoom, fit, center, double-click creates, right-click menus | `canvas_pan_zoom_menus`: middle-drag pans, Ctrl+wheel zooms in, `F` fits, a box drag moves it in the document, right-click menu, double-click opens the new-session dialog | steps "mouse drag moves a session together with its subagent", "right-click opens a context menu; toolbar zoom buttons"; canvas-core model tests (pixel hit testing, continuous zoom) | ✓ |
+| 1 | Canvas: drag boxes (subagents follow), pan, zoom, Show all nodes, center, double-click creates, right-click menus | `canvas_pan_zoom_menus`: middle-drag pans, Ctrl+wheel zooms in, **Show all nodes** recentres with zoom capped at 100 %, a box drag moves it in the document, right-click menu, double-click opens the new-session dialog | steps "mouse drag moves a session together with its subagent", "right-click opens a context menu; toolbar zoom buttons"; canvas-core model tests (pixel hit testing, continuous zoom, fitting visible boxes/groups/decks, pan cancellation and empty canvas) | ✓ |
 | 2 | Status (working, needs you, done · review, idle, stopped, failed, open elsewhere), OSC 9;4, background subagents, Esc not counted as done | `status_from_history`: all seven states plus a background subagent from synthetic histories; an `abort` turns working into idle, not done · review | step "progress (OSC 9;4), title and bell reach the canvas"; `status.rs` tests | ✓ |
 | 3 | Attention borders and tints; active-terminal halo (heavy while typing) | `attention_and_halo`: needs you and review boxes carry attention colours; the halo is heavy while typing | step "the active terminal's box gets a halo" | ✓ |
 | 4 | Colour-blind-safe palette; distinct icon and border per state | `state_icons_and_borders`: needs you, review and idle have three different borders; ◆ ✓ ○ ■ ✗ ↗ all drawn | canvas-gui `theme.rs` palette test | ✓ |
@@ -138,6 +138,17 @@ fixed-size chips) have these checks, on a separate canvas of the sandbox:
 
 ## Last run
 
+WI-020 extends row 1 to click the discoverable **Show all nodes** toolbar
+button after panning and zooming, checking the recovered origin and zoom cap.
+Core tests cover padding, pan cancellation, unchanged layout/session fields,
+empty and group-only canvases, hidden subsessions and stack decks. The shared
+self-test remains 39 steps; the parity suite remains 60 rows.
+
+Verified 2026-10-30: `PASS: 60 rows in 227.0s`; nine updated golden screenshots
+reviewed and then matched pixel-for-pixel; nine hardening checks passed. The
+parity driver's clicks now avoid fixed-size group chips at overview zoom and
+fit an offscreen box before opening its terminal.
+
 ```
 row  | feature                                                        | GUI test                                     | ✓/✗
 1    | Canvas: drag boxes, pan, zoom, fit, center, double-click crea… | canvas_pan_zoom_menus                        | ✓
@@ -200,7 +211,7 @@ V2   | Stacks: K or the menu stacks subsessions (animated), double-c… | stack_
 V3   | Effects: copilot-canvas effect on a box, animated ≤ 15 fps wh… | effect_fireworks_ack (the TUI shows a badge… | ✓
 V4   | Group chips at any zoom (folders, ⟲ passive), sidebar folder … | chips_low_zoom_and_sidebar (the TUI draws t… | ✓
 V5   | Remote mode: group folders in the canvas's browser, passive f… | remote_group_files_in_canvas (the TUI uses … | ✓
-PASS: 60 rows in 222.0s
+PASS: 60 rows in 227.0s
 ```
 
 Rows 42 and 43 in that run: `tracked by its owner; baseline poll; 3 comments
