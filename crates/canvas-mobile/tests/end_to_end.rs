@@ -231,7 +231,9 @@ fn the_reports_inbox_reaches_phones_and_reports_open_as_safe_pages() {
     let addr = handle.addr.to_string();
     let (client, events) = phone(&addr);
 
-    // The inbox comes with the connection: one row per thread, the newest first.
+    // The inbox comes with the connection: one row per thread, the newest first
+    // (named by the canvas's boxes once the canvas is in too).
+    wait_until("the canvas", || client.overview().sessions.len() == 7);
     wait_until("the inbox", || client.reports().loaded && client.reports().threads.len() == 3);
     let inbox = client.reports();
     assert_eq!(inbox.threads[0].id, "mock-brief");
