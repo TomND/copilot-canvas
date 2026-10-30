@@ -67,6 +67,7 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 | | |
 |---|---|
 | **Canvas** | Drag boxes (subagents follow their session), drag empty space to pan, wheel/Shift+wheel pan, Alt+wheel / Ctrl+wheel / toolbar − + to zoom (100 %, 50 %, 25 %), double-click empty space to create a session there, right-click for context menus |
+| **Undo and redo** | **Ctrl+Z** takes back this window's latest change to the canvas, one gesture at a time: a drag of boxes (their subagent boxes and stacks with them), of a stack or of a group (everything in it, nested groups too), a group's ◢ resize, *Fit to members*, a burst of arrow-key moves (presses less than a second apart are one step), and, as before, a removal or a VS Code sync. Successive presses go further back (100 steps per window, newest first); every item returns exactly where it was (and a group to its size). **Ctrl+Y** or **Ctrl+Shift+Z** redoes undone moves and resizes. An undo is an ordinary canvas edit, so other windows and a remote canvas see it; it never starts, stops or changes a session, never brings back a box that was removed since, and leaves boxes another window moved since where they are (a notice says what it skipped). Stacking, hiding subsessions, zoom and pan are not undo steps (`K` and `H` toggle back). The status bar names each step (*Moved group “Payments” (4 boxes) · Ctrl+Z undo move*), the canvas menu has *Undo move* and *Redo*. While a terminal has the keyboard Ctrl+Z goes to its program, and in text fields it is theirs |
 | **Status** | Accurate within a fraction of a second for canvas sessions: Copilot's own progress report (set when a turn starts, cleared when it ends) drives working and done; history events add needs-you, failures and sessions running elsewhere; a session whose subagents are still running stays working. States: working (spinner), needs you (permission / question), **done · review** (finished a turn you haven't looked at yet; stays until you open, click or type in that session), idle, stopped, failed, and **↗ open elsewhere** for sessions running in another terminal or VS Code. Sessions that **need you** get a gold heavy ━ border and sessions that are **done · review** a blue double ═ border with a blue-tinted box (boxes, terminal panes and sidebar names). Pressing Esc in Copilot (abort) doesn't count as done. The session whose terminal is active on the right has a blue halo around its box (heavy while you type in it) |
 | **Colour-blind safe** | The palette avoids red/green: OK is sky blue, failure is vermillion, attention is gold, finished is blue, selection is white, groups use the Okabe-Ito colours; every state also has its own icon and border shape |
 | **Subagents** | Discovered from session history and drawn as linked child boxes |
@@ -75,7 +76,8 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 | **Stacks and hidden subsessions** | Right-click a session › *Stack subsessions* (or `K`) gathers all its subsessions (recursively, with their subagents) into a deck beneath it: offset cards, the newest on top, a **+N** badge, and the stack's most important status (needs you, failed, done · review, working) on the top card, so stacking never hides activity; effects on a stacked session show on the deck. A click on the deck shows its top card (it never starts anything); dragging it moves the parent with its stack; a double-click, `K` or the deck's menu unstacks: the boxes go back exactly where they were (their positions stay in the canvas, so this survives restarts and every window sees it). `H`, the canvas menu or the toolbar's **↳ N hidden** hides every subsession box (each parent shows **⋯ N hidden**) and shows them again in place. The GUI animates both (about 300 ms, eased, reversible mid-way, then idle); the TUI switches at once |
 | **Looping sessions** | A session that repeats on a schedule gets a loopback arc on its right side with a lit dot running around it (bluish green), `↻ every 15m` in its status line and `↻` in the sidebar. The dot's place comes from the clock, not from frames, so it never jumps or restarts and keeps gliding while you pan, zoom or drag the box. GUI: a comet with a fading tail that leaves the box quickly, eases round the far bend and sends a soft ring through the arrowhead after each lap; a loop that starts grows its arc in, one that stops fades it out; only loops in view move, redrawing their own layer at about 30 frames/s (fewer when zoomed out). TUI: the dot steps cell by cell at one speed with a two-cell trail, redrawn only when it changes cell. With reduced motion (*Settings › Effects*, or Windows' *Show animations* off) the arc, its lit arrowhead and a `↻` badge stand still and loops switch at once. Detected from Copilot's schedule events (`/every`, the `manage_schedule` tool: created → looping, cancelled or session ended → not; the next status update shows it, and the saved schedules are read again then), Copilot's saved session schedules, and enabled repeating automations. Zoomed out, a breathing `↻` |
 | **MCP servers per session** | The new-session dialog has an *MCP servers* row: a checklist of your servers with presets (*All*, *None*, and your own: `Ctrl+S` saves the current choice, `←/→` switches, `Del` deletes). The last choice is the default next time; each session remembers its own choice for every resume (`--disable-mcp-server`). Change it later from the session's menu → *MCP servers…*. Every server is several processes in every session, so trimming them is the biggest saving in memory and CPU |
-| **Groups** | Shift-drag or right-drag to select, then `G` (or menu) draws a group box around them; a click on a group's empty background or its border (a few pixels around the outline in the GUI) selects it (the innermost of nested groups; a drag there still pans); drag the title to move everything inside, drag `◢` to resize; nested groups work; membership is geometric, like Obsidian canvas |
+| **Groups** | Shift-drag or right-drag to select (from anywhere, on a box too: a Shift-drag never moves a box), then `G` (or menu) draws a group box around them; a click on a group's empty background or its border (a few pixels around the outline in the GUI) selects it (the innermost of nested groups; a drag there still pans); drag the title to move everything inside, drag `◢` to resize; nested groups work; membership is geometric, like Obsidian canvas |
+| **Area selection** | The band takes every box it touches as drawn, at every zoom: sessions, subsessions and subagent boxes alike, so a parent and its children can be selected together (and moved, grouped or removed together: each box moves once, also a child whose selected parent drags it along). Boxes in a stack or hidden with *Hide all subsessions* are left out; automation boxes stay with their group. Shift- or Ctrl-click toggles one box; a right-click without dragging opens the menu of what is under it. Nothing is ever started or dragged by a selection |
 | **Sidebar** | Groups → their folder row (◧) → sessions → subsessions → active subagents → the group's passive sessions (⟲, a click opens their panel); stacked and hidden subsessions are listed dimmed, unused sessions with their age; `/` filters; click any row to fly the canvas to it, highlight it and view it (its live terminal, or its details); double-click or Enter starts it; group rows tile the group's running terminals (never starting stopped ones) |
 | **Recent sessions** | A **RECENT** section tops the Sessions panel: the sessions you used last (viewed, started or typed into), newest first, up to 8 (fewer in a short window), each with its status, agent and how long ago; a click on its header folds it. It is kept in the canvas document, so every window and client of the canvas (the home GUI and the Cloud PC alike) shows the same list, and removed boxes leave it. A click views a row, a double-click or Enter starts it (as elsewhere). **Ctrl+F6** / **Ctrl+Shift+F6** (anywhere, also while a terminal has the keyboard) and **`]`** / **`[`** (on the canvas and in the sidebar) step to the next older or newer recent session and only view it (its live terminal, or its details panel with Start / Resume); repeated presses walk the list without reordering it, and a second after the last one (or at any other key or click) the session you stopped on becomes the most recent, as with Alt+Tab |
 | **View versus start** | A click (canvas or sidebar), Tab, the arrows and the recent-session keys (Ctrl+F6, Ctrl+Shift+F6, `]`, `[`) only select and show: a running session's terminal comes into view with the keyboard, anything else shows a details panel (agent, status, folder and branch, last used, what starting it would do) with one primary button: **Start** (a new conversation or a box's command), **Resume** (its conversation) or **Open terminal**, plus Stop, MCP servers… and Remove. Only a double-click, Enter, that button or a menu item starts a session. Restoring tiles, reconnecting and clicks on exited terminals start nothing; sessions open elsewhere (↗) never get a Start / Resume |
@@ -109,10 +111,10 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 | View a session (its live terminal, or its details) | click box or sidebar row | Tab cycles, arrows move |
 | View the next / previous recent session (never starts it) | sidebar **RECENT** row | **Ctrl+F6** / **Ctrl+Shift+F6** (also in a terminal), `]` / `[` on the canvas or sidebar |
 | Start / resume a session and focus its terminal | double-click box or sidebar row; details panel **Start** / **Resume**; menu | Enter |
-| Move | drag box (or group title) | arrows (Shift = faster) |
+| Move | drag box (or group title) | arrows (Shift = faster); Ctrl+Z undoes |
 | Pan | drag empty space, middle-drag, wheel | Ctrl+arrows |
 | Zoom | Alt+wheel, toolbar − + | `+` `-`, `F` fit all, `C`/Home center |
-| Select several | Shift-drag or right-drag | Tab cycles sessions |
+| Select several (sessions, subsessions, subagent boxes; not stacked or hidden ones) | Shift-drag or right-drag, starting anywhere (on a box too); Shift/Ctrl+click toggles a box | Tab cycles sessions |
 | Group selection | context menu | `G` |
 | Select a group | click its empty background or its border (or its title, its sidebar row) | arrows move it, Del deletes the group box, `R` renames |
 | New session / subsession | toolbar **+ New**, double-click, menu | `N` / `S` |
@@ -126,7 +128,7 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 | Leave a terminal | click canvas/sidebar | **Ctrl+]** or F6 |
 | Copy / paste in a terminal | drag to select; pane menu | Ctrl+C (with selection) · Ctrl+V / Ctrl+Shift+V |
 | Open a link | click (Ctrl+click in terminals) | — |
-| Undo the last VS Code sync or removal | canvas menu, VS Code view | Ctrl+Z |
+| Undo / redo this window's last move, resize, removal or VS Code sync (one gesture per step, newest first) | canvas menu (*Undo move*, *Redo*), VS Code view | **Ctrl+Z** · **Ctrl+Y** or Ctrl+Shift+Z |
 | Quit (sessions keep running) | toolbar **⏻ Quit** | `Q` / Ctrl+Q, even while filtering (asks: detach or stop all) |
 | Stack / unstack subsessions | session menu; double-click the stack | `K` |
 | Hide / show all subsessions | canvas menu; toolbar **↳ N hidden** | `H` |
@@ -135,8 +137,8 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 | Select unused (dusty) sessions | canvas menu › *Select unused sessions* | then Del removes them from the canvas |
 | Help | toolbar `?` | `?` |
 
-While a terminal has focus, every key goes to Copilot (including Ctrl+G and
-Ctrl+Q). Only **Ctrl+]** and **F6** are reserved, plus **Ctrl+F6** /
+While a terminal has focus, every key goes to Copilot (including Ctrl+G,
+Ctrl+Q and Ctrl+Z). Only **Ctrl+]** and **F6** are reserved, plus **Ctrl+F6** /
 **Ctrl+Shift+F6** (recent sessions; the agents do not use them, and Windows
 Terminal and the console host pass them on), Ctrl+C while text is selected
 and Ctrl+V (paste), as in Windows Terminal.
@@ -160,7 +162,7 @@ not renamed). It never moves existing boxes or removes groups, so your
 arrangement is yours. New boxes are placed so a group never grows over its
 neighbours (overflow goes to a "Name (2)" group). Before each sync the canvas is
 saved to `~/.copilot-canvas/backups/` (newest 30 kept) and **Ctrl+Z** undoes the
-last sync. *Sync when canvas opens* runs it on start. All VS Code storage is
+last sync (while it is the window's latest change). *Sync when canvas opens* runs it on start. All VS Code storage is
 read-only.
 
 ## Passive sessions and events
@@ -817,7 +819,7 @@ copilot-canvas service status|stop    stop ends the service's sessions (graceful
 copilot-canvas bench [--terminals N] [--seconds S] [--json FILE]
 copilot-canvas bench --client gui     the GPU client's latency, frame cost, idle CPU, memory, first paint
 copilot-canvas selftest               end-to-end UI test in a hidden console (demo shells only)
-copilot-canvas selftest --client gui  the same 37 steps against the GPU client (over its test hooks)
+copilot-canvas selftest --client gui  the same 39 steps against the GPU client (over its test hooks)
 copilot-canvas selftest --client gui --parity
                                       one GUI check per row of the parity matrix (docs/PARITY.md)
 copilot-canvas kitty-demo             print a small test image (iTerm2 inline image; the GPU client shows it)
@@ -936,3 +938,7 @@ cargo test                            unit tests
   each author message once, the pull request link, no private notes, no
   claimed approval) but cannot see the channel itself. Checks are asked for
   only while the service runs; a missed hour is asked for at the next pass.
+- Undo history is each window's own and lives in memory (it ends with the
+  window). Creating, renaming and deleting groups, and starting, stacking or
+  hiding sessions are not undo steps; removals and VS Code syncs are undone
+  but not redone.

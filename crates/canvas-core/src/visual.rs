@@ -556,7 +556,7 @@ impl App {
     }
 
     /// Effects on a box or on the boxes of a stack.
-    fn effects_on(&self, ids: &[String]) -> Vec<String> {
+    pub(crate) fn effects_on(&self, ids: &[String]) -> Vec<String> {
         self.active_effects().into_iter().filter(|e| ids.contains(&e.target)).map(|e| e.id.clone()).collect()
     }
 
@@ -633,6 +633,17 @@ impl App {
         }).cloned()
     }
 
+    /// The parent of the stack whose deck is under a cell.
+    pub(crate) fn deck_root_at(&mut self, x: u16, y: u16) -> Option<String> {
+        let frame = self.visual_frame();
+        self.deck_at(&frame, x, y).map(|deck| deck.root)
+    }
+
+    /// The deck of a stacked parent, as drawn now.
+    pub(crate) fn deck_of(&mut self, root: &str) -> Option<Deck> {
+        self.visual_frame().deck_of(root).cloned()
+    }
+
     /// Mouse down on the canvas, before the usual handling: stacks (click
     /// views the top card, double-click unstacks, drag moves the parent with
     /// its stack, right-click its menu) and effects (a click acknowledges
@@ -652,9 +663,8 @@ impl App {
                     self.drag = Some(Drag::Nodes { ids: vec![deck.root.clone()], start: (x, y), applied: (0, 0), moved: false, click: None });
                 }
                 MouseButton::Right => {
-                    self.select_node(&deck.top, false);
-                    let menu = self.stack_menu(&deck);
-                    self.open_menu(x, y, menu);
+                    // Its menu when the button comes up here; a drag selects by area.
+                    self.drag = Some(Drag::Rubber { start: (x, y), now: (x, y), additive, right: true, click: Some(crate::app::CanvasPress::Deck(deck.root.clone())) });
                 }
                 MouseButton::Middle => return false,
             }
@@ -703,7 +713,7 @@ impl App {
         self.ack_effects(ids);
     }
 
-    fn stack_menu(&self, deck: &Deck) -> (String, Vec<MenuItem>) {
+    pub(crate) fn stack_menu(&self, deck: &Deck) -> (String, Vec<MenuItem>) {
         let top = self.doc.node(&deck.top).map(|n| n.name.clone()).unwrap_or_default();
         let root = self.doc.node(&deck.root).map(|n| n.name.clone()).unwrap_or_default();
         let mut items = vec![item("Unstack subsessions", "K · double-click", VisualAction::Stack(deck.root.clone(), false), true)];

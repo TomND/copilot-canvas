@@ -21,7 +21,7 @@
 //! pseudoconsole, writes TEXT (escapes `\e`, `\r`, `\n`, `\t`, `\xNN`, `\\`)
 //! to it and prints its screen: what a program behind ConPTY receives.
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -219,18 +219,17 @@ pub fn run(plain: bool, kitty: bool, keys: bool, raw: bool) -> Result<()> {
     }
     write!(out, "{READY} (bracketed paste {}, kitty keyboard {})\r\n", if plain { "off" } else { "on" }, if kitty { "on" } else { "off" })?;
     out.flush()?;
-    let mut stdin = std::io::stdin().lock();
+    let mut stdin = RawStdin::new();
     let mut decoder = Decoder::default();
-    let mut buf = [0u8; 8192];
     'read: loop {
-        let n = stdin.read(&mut buf)?;
-        if n == 0 {
+        let input = stdin.read_some()?;
+        if input.is_empty() {
             break;
         }
         if raw {
-            write!(out, "RAW {}\r\n", escape(&String::from_utf8_lossy(&buf[..n])))?;
+            write!(out, "RAW {}\r\n", escape(&String::from_utf8_lossy(&input)))?;
         }
-        for item in decoder.feed(&buf[..n]) {
+        for item in decoder.feed(&input) {
             write!(out, "{}\r\n", item.line())?;
             if item == Item::Quit {
                 break 'read;
@@ -286,6 +285,39 @@ fn run_keys(plain: bool) -> Result<()> {
     }
     ratatui::crossterm::terminal::disable_raw_mode()?;
     Ok(())
+}
+
+/// Standard input as the console delivers it: unlike `std::io::stdin`,
+/// which ends a console's input at Ctrl+Z (0x1A), Ctrl+Z arrives as a key
+/// (`KEY \x1a`), as it does in the agent CLIs. Text comes as UTF-8.
+struct RawStdin(windows_sys::Win32::Foundation::HANDLE);
+
+impl RawStdin {
+    fn new() -> Self {
+        // SAFETY: the process's own standard input handle.
+        Self(unsafe { windows_sys::Win32::System::Console::GetStdHandle(windows_sys::Win32::System::Console::STD_INPUT_HANDLE) })
+    }
+
+    /// The next input (empty at its end).
+    fn read_some(&mut self) -> std::io::Result<Vec<u8>> {
+        let mut wide = [0u16; 4096];
+        let mut chars = 0u32;
+        // SAFETY: `wide` is valid for its length for the whole (synchronous) call; no read control.
+        let console = unsafe { windows_sys::Win32::System::Console::ReadConsoleW(self.0, wide.as_mut_ptr().cast(), wide.len() as u32, &mut chars, std::ptr::null()) };
+        if console != 0 {
+            return Ok(String::from_utf16_lossy(&wide[..chars as usize]).into_bytes());
+        }
+        // Not a console (a pipe): its bytes.
+        let mut buf = vec![0u8; 8192];
+        let mut read = 0u32;
+        // SAFETY: as above.
+        let ok = unsafe { windows_sys::Win32::Storage::FileSystem::ReadFile(self.0, buf.as_mut_ptr(), buf.len() as u32, &mut read, std::ptr::null_mut()) };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        buf.truncate(read as usize);
+        Ok(buf)
+    }
 }
 
 /// Raw VT input (no line editing, echo or Ctrl+C handling), VT output.

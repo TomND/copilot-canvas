@@ -2005,10 +2005,14 @@ fn late_rows(sb: &Sandbox, rows: &mut Vec<Row>) {
 
     reports::late_rows(sb, rows);
     visual::rows(sb, rows);
+    layout::rows(sb, rows);
 }
 
 #[path = "parity_visual.rs"]
 pub(crate) mod visual;
+
+#[path = "parity_layout.rs"]
+mod layout;
 
 #[path = "parity_agents.rs"]
 mod agents;

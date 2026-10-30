@@ -7,10 +7,11 @@
 
 use std::collections::HashSet;
 
-use crate::app::{App, Undo};
+use crate::app::App;
 use crate::dialogs::{Action, Confirm, Modal};
 use crate::doc::{Node, NodeKind};
 use crate::protocol::ClientMsg;
+use crate::undo::Undo;
 
 /// What removing a set of boxes does.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -91,7 +92,7 @@ impl App {
             self.right_detail = None;
         }
         let removed = nodes.len();
-        self.undo = Some(Undo::Removed { nodes, links });
+        self.record_undo(Undo::Removed { nodes, links });
         self.mark_dirty();
         if ids.len() > 1 || !plan.running.is_empty() {
             let kept = if plan.running.is_empty() { String::new() } else { format!("; {} running session(s) kept", plan.running.len()) };
@@ -120,14 +121,6 @@ impl App {
         self.sync_agents();
         self.mark_dirty();
         self.notify(format!("Restored {restored} removed box(es)."), false);
-    }
-
-    /// The label of the canvas menu's undo item.
-    pub fn undo_label(&self) -> &'static str {
-        match &self.undo {
-            Some(Undo::Removed { .. }) => "Undo remove",
-            _ => "Undo last sync",
-        }
     }
 }
 
@@ -185,7 +178,7 @@ mod tests {
         back.sort();
         assert_eq!(back, ["a", "a:x", "b", "c", "sub"]);
         assert_eq!(app.doc.node("sub").unwrap().parent.as_deref(), Some("a"));
-        assert!(app.undo.is_none());
+        assert!(app.undo.is_empty());
     }
 
     #[test]

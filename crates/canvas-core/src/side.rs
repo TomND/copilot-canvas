@@ -450,7 +450,8 @@ impl App {
             SideView::VsCode => {
                 let prefs = &self.doc.vscode;
                 rows.push(ListRow::row(ItemRef::VsSync, "⟳", BLUE, if self.vs_syncing { "Syncing…" } else { "Sync sessions now" }, ""));
-                if matches!(self.undo, Some(crate::app::Undo::Doc(..))) {
+                // Only while the sync is the change Ctrl+Z takes back next.
+                if matches!(self.undo.last(), Some(crate::undo::Undo::Doc(..))) {
                     rows.push(ListRow::row(ItemRef::VsUndo, "↶", BLUE, "Undo last sync", "Ctrl+Z"));
                 }
                 rows.push(ListRow::row(ItemRef::VsWindow, "◷", TEXT, "Active within", format!("{} h", prefs.window_hours)));
@@ -1583,7 +1584,7 @@ impl App {
         let changed = added + renamed + linked > 0;
         if changed {
             self.backup_doc(before.clone(), "before-vscode-sync", true);
-            self.undo = Some(crate::app::Undo::Doc("VS Code sync".into(), Box::new(before)));
+            self.record_undo(crate::undo::Undo::Doc("VS Code sync".into(), Box::new(before)));
         }
         if let Some(first) = first {
             self.select_node(&first, false);
@@ -1614,18 +1615,12 @@ impl App {
         self.notify(message, false);
     }
 
-    /// Restores the canvas from before the last bulk change (VS Code sync) or
-    /// the boxes of the last removal.
-    pub fn undo_last(&mut self) {
-        let (label, doc) = match self.undo.take() {
-            None => return self.notify("Nothing to undo.", false),
-            Some(crate::app::Undo::Removed { nodes, links }) => return self.restore_removed(nodes, links),
-            Some(crate::app::Undo::Doc(label, doc)) => (label, doc),
-        };
+    /// Ctrl+Z on a VS Code sync: the canvas from before it (`undo.rs`).
+    pub(crate) fn restore_doc(&mut self, label: String, doc: crate::doc::Doc) {
         self.backup_doc(self.doc.clone(), "before-undo", false);
         // Keep view and preferences that changed meanwhile; restore the layout.
         let (view, ui, vscode) = (self.doc.view.clone(), self.doc.ui.clone(), self.doc.vscode.clone());
-        self.doc = *doc;
+        self.doc = doc;
         self.doc.view = view;
         self.doc.ui = ui;
         self.doc.vscode = vscode;
