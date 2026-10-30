@@ -39,8 +39,10 @@ fn date(ms: u64) -> String {
     format!("{} {} UTC", &text[..10], &text[11..16])
 }
 
-/// `remote pair [--name NAME]`: a one-time code from the running service.
-pub fn pair(instance: &Instance, name: Option<String>) -> Result<()> {
+/// `remote pair [--name NAME] [--qr [--url wss://…]]`: a one-time code from
+/// the running service; with `--qr`, also a QR code for the iPhone app (the
+/// code, the tunnel's web address and a Dev Tunnels connect token).
+pub fn pair(instance: &Instance, name: Option<String>, qr: bool, url: Option<String>) -> Result<()> {
     if let Some(name) = &name {
         anyhow::ensure!(remote::valid_name(name), "--name takes 1-40 characters of letters, digits, '-', '_' and '.'");
     }
@@ -67,6 +69,48 @@ pub fn pair(instance: &Instance, name: Option<String>) -> Result<()> {
         println!();
         println!("No tunnel automation yet: set it up with `copilot-canvas remote tunnel-setup`.");
     }
+    if qr {
+        println!();
+        phone_qr(instance, &code.code, url)?;
+    }
+    Ok(())
+}
+
+/// The pairing QR code for the iPhone app (docs/IOS-PLAN.md §4).
+fn phone_qr(instance: &Instance, code: &str, url: Option<String>) -> Result<()> {
+    let settings = Settings::load(&instance.home);
+    let access = match canvas_agents::tunnel_access::issue(&instance.home) {
+        Ok(access) => Some(access),
+        Err(error) => {
+            println!("No Dev Tunnels access token for the phone: {error:#}");
+            None
+        }
+    };
+    let url = url
+        .or_else(|| access.as_ref().map(|a| a.url.clone()).filter(|u| !u.is_empty()))
+        .or_else(|| settings.remote.web_url.clone())
+        .context("the tunnel's web address is unknown: pass --url wss://TUNNEL-PORT.REGION.devtunnels.ms (the address `devtunnel host` prints as \"Connect via browser\", with wss:// instead of https://)")?;
+    anyhow::ensure!(url.starts_with("wss://") || url.starts_with("ws://"), "--url takes a wss:// address");
+    let server = remote::machine_name().to_ascii_lowercase().chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')).take(40).collect::<String>();
+    let link = remote::PairLink {
+        name: if remote::valid_name(&server) { server } else { "cloudpc".into() },
+        url,
+        code: code.to_owned(),
+        token: access.as_ref().map(|a| a.token.clone()).unwrap_or_default(),
+        token_expires_ms: access.as_ref().map_or(0, |a| a.expires_ms),
+    };
+    let uri = link.to_uri();
+    let qr = qrcode::QrCode::with_error_correction_level(uri.as_bytes(), qrcode::EcLevel::L).context("the pairing link does not fit a QR code")?;
+    // Light modules on a dark terminal: inverted so the camera reads it.
+    let text = qr.render::<qrcode::render::unicode::Dense1x2>().dark_color(qrcode::render::unicode::Dense1x2::Light).light_color(qrcode::render::unicode::Dense1x2::Dark).quiet_zone(true).build();
+    println!("Scan with the Copilot Canvas iPhone app (Pair → Scan):");
+    println!("{text}");
+    println!("Address: {}", link.url);
+    match &access {
+        Some(a) => println!("Tunnel access token valid until {}; the service renews it while the phone is connected.", date(a.expires_ms)),
+        None => println!("Without a token the phone can only pair through a tunnel that does not need one."),
+    }
+    println!("The code holds the pairing code and the token: show it only to your own phone.");
     Ok(())
 }
 
@@ -102,6 +146,44 @@ pub fn revoke(instance: &Instance, client: &str) -> Result<()> {
     let (_conn, backend) = service(instance)?;
     let backend: &dyn Backend = &*backend;
     println!("{}", backend.remote_revoke(client)?);
+    Ok(())
+}
+
+/// `remote push-key FILE.p8 --key-id ID --team ID`: the APNs auth key the
+/// service sends iPhone notifications with (developer.apple.com › Keys,
+/// "Apple Push Notifications service"). Stored owner-only in `<home>/remote/apns.json`.
+pub fn push_key(instance: &Instance, file: &Path, key_id: Option<String>, team: Option<String>) -> Result<()> {
+    let pem = std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
+    // AuthKey_XXXXXXXXXX.p8 names its key id.
+    let from_name = file.file_stem().and_then(|s| s.to_str()).and_then(|s| s.strip_prefix("AuthKey_")).map(str::to_owned);
+    let key_id = key_id.or(from_name).context("--key-id ID is required (the 10 characters of AuthKey_ID.p8)")?;
+    let team = team.context("--team TEAMID is required (developer.apple.com › Membership details)")?;
+    let key = canvas_push::ApnsKey::new(&key_id, &team, &pem)?;
+    let path = canvas_push::ApnsKey::path(&instance.home);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    canvas_common::win::write_private(&path, serde_json::to_string_pretty(&key)?.as_bytes()).with_context(|| format!("cannot write {}", path.display()))?;
+    println!("APNs key {} of team {} saved ({}); the running service uses it at once.", key.key_id, key.team_id, path.display());
+    println!("Phones register when they connect; try one with `copilot-canvas remote push-test`.");
+    Ok(())
+}
+
+/// `remote push-test`: a test notification to every registered phone.
+pub fn push_test(instance: &Instance) -> Result<()> {
+    let key = canvas_push::ApnsKey::load(&instance.home).context("no APNs key yet: `copilot-canvas remote push-key AuthKey_ID.p8 --team TEAMID`")?;
+    let devices = canvas_push::Devices::open(&instance.home).list();
+    if devices.is_empty() {
+        bail!("no phone registered for notifications yet: open the iPhone app connected to this machine once (and allow notifications)");
+    }
+    let sender = canvas_push::Sender::new(key)?;
+    for device in devices {
+        let event = canvas_push::Event { id: String::new(), name: "Copilot Canvas".into(), status: canvas_model::status::Status::JustFinished };
+        let mut payload = canvas_push::alert_payload(&device, &event);
+        payload["aps"]["alert"]["body"] = "Test notification: this machine can reach your phone.".into();
+        let outcome = sender.send(&device, &payload, false, None);
+        println!("{} ({:?}, as {:?}): {outcome:?}", device.client_id, device.environment, device.label);
+    }
     Ok(())
 }
 

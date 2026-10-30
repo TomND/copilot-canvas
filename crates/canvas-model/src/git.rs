@@ -64,6 +64,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)] // Windows paths and file locks (service side)
     fn default_worktree_path_is_beside_the_repository() {
         let path = default_worktree_path(Path::new(r"C:\src\repo"), "feature/x");
         assert_eq!(path, PathBuf::from(r"C:\src\repo.worktrees\feature-x"));

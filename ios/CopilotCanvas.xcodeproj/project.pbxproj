@@ -1,0 +1,790 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		007B5D34BC0B24C5D8358834 /* BoxDrawing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 941C0AFAA4E94625ADF4DDB3 /* BoxDrawing.swift */; };
+		238AA111F2A58A1CA990D5BD /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 371B4CAFAC6D35D925863CC9 /* HomeView.swift */; };
+		27E6E2BBE6C6B63C64A09CCC /* TerminalUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CA872B980D2EB3F2BA1095E /* TerminalUITests.swift */; };
+		2995C159A2A054E1C5E89557 /* CopilotCanvasApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63433A27CD72195FE5BAF7D5 /* CopilotCanvasApp.swift */; };
+		34B84F6AB7EEAAEA0595C03E /* NewSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DD0AA7C0919B32D6CB1CBC1 /* NewSessionView.swift */; };
+		36187071DF3D5182D1F33AB2 /* CanvasMobileCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 95DED45AB5969DE56CDBF2A5 /* CanvasMobileCore.xcframework */; };
+		3B818A884E8E6A1AACDAA171 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 587FF3C800703B9B53D3F44E /* SettingsView.swift */; };
+		3C71F3A621CCDBD2848746DB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CE1EA5E0CFCD3DB8211B5D1F /* Assets.xcassets */; };
+		44EC1E918541DDE546C4A7A2 /* SessionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0188D57AC0E74E4481E361E /* SessionsView.swift */; };
+		4D67292AECD72512406C0F46 /* ServerStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D387408BFE4F7650FAAB8E /* ServerStore.swift */; };
+		57CA8E53C67778D84F381942 /* PushRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02098422FE393BDE6A29DAAC /* PushRegistration.swift */; };
+		5F6300F2882B73B14270F595 /* PairView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37CA17908C7859DF5E5EC92E /* PairView.swift */; };
+		7138F9C66C98F01D5B91C149 /* Pairer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1A18FF4D04EBC4B7E3F66C /* Pairer.swift */; };
+		75578567D23442C13FACA607 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E44C0FB2065B9025E30AAA67 /* AppModel.swift */; };
+		7630F111291E90F528B6C144 /* FileViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18E6681C7760CA66FFB63C69 /* FileViewer.swift */; };
+		76911BB6DCF109C03EDB4B28 /* Machines.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B9E83239559BC6B0F5A6F7A /* Machines.swift */; };
+		77305682749AAD715786B71D /* Palette.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7D43DE9F7969F9C49086093 /* Palette.swift */; };
+		7CE4BC353D6D89E5E87DC9AF /* CanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3532502B507E9C3DD275CF0A /* CanvasView.swift */; };
+		9131F82E8C5434377EAA3A41 /* CoreBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36429106D3674C507FADD6CD /* CoreBridgeTests.swift */; };
+		92DB70043A8BE76A093971EF /* SystemConfiguration.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5D89495A983BAB0BEC1B2140 /* SystemConfiguration.framework */; };
+		95E6A0F1523699B47786493E /* canvas_mobile.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7C6C290CDACE8D8AA1EF46F /* canvas_mobile.swift */; };
+		A1E95B5F2572263C9CCC4B5F /* WebSocketTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F4108B7E513FB12B790FDD7 /* WebSocketTransport.swift */; };
+		AD948EEDAFFCDAEDF75F8951 /* KeyBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C999D513E4C2DD264204D5FA /* KeyBar.swift */; };
+		BF0CF98767320D25ABC31698 /* Keyboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0E9E8D0EEA2B412B2E472B4 /* Keyboard.swift */; };
+		C25D81E0404A7792CECE36C9 /* TerminalScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04029A4BF1C2557757BFB954 /* TerminalScreen.swift */; };
+		CB2C0540839842AF660C0EE3 /* ServiceConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6407AA58A49B014FCB5D516C /* ServiceConnection.swift */; };
+		E8D70DD14D6ED4C3EE01350A /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0E1196DE51C594F8AC6F4846 /* Security.framework */; };
+		FF37A10AEB4A408583EFDB9B /* TerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2AFBCD8066EBAB23A03992C0 /* TerminalView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		4F82B97590989B28F1016A12 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = EAD1A6D8D07E452517C2C63E /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A408D2567042BBFA4C1B19C3;
+			remoteInfo = CopilotCanvas;
+		};
+		BF67EAFE37E651E76239150E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = EAD1A6D8D07E452517C2C63E /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A408D2567042BBFA4C1B19C3;
+			remoteInfo = CopilotCanvas;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		02098422FE393BDE6A29DAAC /* PushRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushRegistration.swift; sourceTree = "<group>"; };
+		04029A4BF1C2557757BFB954 /* TerminalScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalScreen.swift; sourceTree = "<group>"; };
+		083D1146BDA8AB4028B21B7C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		0CA872B980D2EB3F2BA1095E /* TerminalUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalUITests.swift; sourceTree = "<group>"; };
+		0E1196DE51C594F8AC6F4846 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		18E6681C7760CA66FFB63C69 /* FileViewer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileViewer.swift; sourceTree = "<group>"; };
+		2AFBCD8066EBAB23A03992C0 /* TerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalView.swift; sourceTree = "<group>"; };
+		3532502B507E9C3DD275CF0A /* CanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasView.swift; sourceTree = "<group>"; };
+		36429106D3674C507FADD6CD /* CoreBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreBridgeTests.swift; sourceTree = "<group>"; };
+		371B4CAFAC6D35D925863CC9 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		37CA17908C7859DF5E5EC92E /* PairView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairView.swift; sourceTree = "<group>"; };
+		3B9E83239559BC6B0F5A6F7A /* Machines.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Machines.swift; sourceTree = "<group>"; };
+		4F4108B7E513FB12B790FDD7 /* WebSocketTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketTransport.swift; sourceTree = "<group>"; };
+		587FF3C800703B9B53D3F44E /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		5D89495A983BAB0BEC1B2140 /* SystemConfiguration.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemConfiguration.framework; path = System/Library/Frameworks/SystemConfiguration.framework; sourceTree = SDKROOT; };
+		62EF5A0229710D7BCFF88E00 /* CopilotCanvas.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = CopilotCanvas.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		63433A27CD72195FE5BAF7D5 /* CopilotCanvasApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CopilotCanvasApp.swift; sourceTree = "<group>"; };
+		6407AA58A49B014FCB5D516C /* ServiceConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceConnection.swift; sourceTree = "<group>"; };
+		8FFFE22CC77D082848653D7A /* CopilotCanvasUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = CopilotCanvasUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		941C0AFAA4E94625ADF4DDB3 /* BoxDrawing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoxDrawing.swift; sourceTree = "<group>"; };
+		95DED45AB5969DE56CDBF2A5 /* CanvasMobileCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = CanvasMobileCore.xcframework; path = Core/CanvasMobileCore.xcframework; sourceTree = "<group>"; };
+		9DD0AA7C0919B32D6CB1CBC1 /* NewSessionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewSessionView.swift; sourceTree = "<group>"; };
+		A7D43DE9F7969F9C49086093 /* Palette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Palette.swift; sourceTree = "<group>"; };
+		AA1A18FF4D04EBC4B7E3F66C /* Pairer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Pairer.swift; sourceTree = "<group>"; };
+		B0D387408BFE4F7650FAAB8E /* ServerStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerStore.swift; sourceTree = "<group>"; };
+		B0E9E8D0EEA2B412B2E472B4 /* Keyboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Keyboard.swift; sourceTree = "<group>"; };
+		B7C6C290CDACE8D8AA1EF46F /* canvas_mobile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = canvas_mobile.swift; sourceTree = "<group>"; };
+		BE0EEF3C29668868F62A8686 /* CopilotCanvasTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = CopilotCanvasTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C0188D57AC0E74E4481E361E /* SessionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionsView.swift; sourceTree = "<group>"; };
+		C7490201013D1BBF885D6890 /* CopilotCanvas.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = CopilotCanvas.entitlements; sourceTree = "<group>"; };
+		C999D513E4C2DD264204D5FA /* KeyBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyBar.swift; sourceTree = "<group>"; };
+		CE1EA5E0CFCD3DB8211B5D1F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		E44C0FB2065B9025E30AAA67 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		E1E4E4182AEF48C07B2E5B44 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				36187071DF3D5182D1F33AB2 /* CanvasMobileCore.xcframework in Frameworks */,
+				E8D70DD14D6ED4C3EE01350A /* Security.framework in Frameworks */,
+				92DB70043A8BE76A093971EF /* SystemConfiguration.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		074ADB7117BC01E621B0F3B1 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				AA1A18FF4D04EBC4B7E3F66C /* Pairer.swift */,
+				02098422FE393BDE6A29DAAC /* PushRegistration.swift */,
+				B0D387408BFE4F7650FAAB8E /* ServerStore.swift */,
+				6407AA58A49B014FCB5D516C /* ServiceConnection.swift */,
+				4F4108B7E513FB12B790FDD7 /* WebSocketTransport.swift */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+		091DF89CBBADF7F27B5C127E /* Swift */ = {
+			isa = PBXGroup;
+			children = (
+				B7C6C290CDACE8D8AA1EF46F /* canvas_mobile.swift */,
+			);
+			path = Swift;
+			sourceTree = "<group>";
+		};
+		0BDBF9210F5ED3510160389A = {
+			isa = PBXGroup;
+			children = (
+				7742B9CF01807C4573869927 /* CopilotCanvas */,
+				82BB3AB7E003BDED9AB06C1F /* CopilotCanvasTests */,
+				C8DDE900B04BD25B8DB9C344 /* CopilotCanvasUITests */,
+				E1E858B427BA0CDB070CC908 /* Core */,
+				12E20C352424B9EA40C3768B /* Frameworks */,
+				84DBF55CE7887072442AB21B /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		12560FF933EC508AC4FBBB06 /* Pair */ = {
+			isa = PBXGroup;
+			children = (
+				37CA17908C7859DF5E5EC92E /* PairView.swift */,
+			);
+			path = Pair;
+			sourceTree = "<group>";
+		};
+		12E20C352424B9EA40C3768B /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				95DED45AB5969DE56CDBF2A5 /* CanvasMobileCore.xcframework */,
+				0E1196DE51C594F8AC6F4846 /* Security.framework */,
+				5D89495A983BAB0BEC1B2140 /* SystemConfiguration.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		2173CE0D3303BFCF0C7A3778 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				CE1EA5E0CFCD3DB8211B5D1F /* Assets.xcassets */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		47F1EE2CF3BEAA6F6E6EC6E5 /* Features */ = {
+			isa = PBXGroup;
+			children = (
+				9DAD523F8E7F9607E7ABF932 /* Canvas */,
+				89E5021259F9C97440BDAF40 /* Machines */,
+				B3339E13444874F8075049EA /* NewSession */,
+				12560FF933EC508AC4FBBB06 /* Pair */,
+				C7A286A3455C18DCA1732A5D /* Sessions */,
+				4805D59A068920EBDF54D093 /* Settings */,
+				84AB636702D3814C405A5C91 /* Terminal */,
+			);
+			path = Features;
+			sourceTree = "<group>";
+		};
+		4805D59A068920EBDF54D093 /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				587FF3C800703B9B53D3F44E /* SettingsView.swift */,
+			);
+			path = Settings;
+			sourceTree = "<group>";
+		};
+		7742B9CF01807C4573869927 /* CopilotCanvas */ = {
+			isa = PBXGroup;
+			children = (
+				C7490201013D1BBF885D6890 /* CopilotCanvas.entitlements */,
+				083D1146BDA8AB4028B21B7C /* Info.plist */,
+				8CF723DDF6DEB17C30665BAC /* App */,
+				074ADB7117BC01E621B0F3B1 /* Core */,
+				47F1EE2CF3BEAA6F6E6EC6E5 /* Features */,
+				2173CE0D3303BFCF0C7A3778 /* Resources */,
+				885993B14A573EC085DE47AA /* Support */,
+			);
+			path = CopilotCanvas;
+			sourceTree = "<group>";
+		};
+		82BB3AB7E003BDED9AB06C1F /* CopilotCanvasTests */ = {
+			isa = PBXGroup;
+			children = (
+				36429106D3674C507FADD6CD /* CoreBridgeTests.swift */,
+			);
+			path = CopilotCanvasTests;
+			sourceTree = "<group>";
+		};
+		84AB636702D3814C405A5C91 /* Terminal */ = {
+			isa = PBXGroup;
+			children = (
+				941C0AFAA4E94625ADF4DDB3 /* BoxDrawing.swift */,
+				18E6681C7760CA66FFB63C69 /* FileViewer.swift */,
+				C999D513E4C2DD264204D5FA /* KeyBar.swift */,
+				04029A4BF1C2557757BFB954 /* TerminalScreen.swift */,
+				2AFBCD8066EBAB23A03992C0 /* TerminalView.swift */,
+			);
+			path = Terminal;
+			sourceTree = "<group>";
+		};
+		84DBF55CE7887072442AB21B /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				62EF5A0229710D7BCFF88E00 /* CopilotCanvas.app */,
+				BE0EEF3C29668868F62A8686 /* CopilotCanvasTests.xctest */,
+				8FFFE22CC77D082848653D7A /* CopilotCanvasUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		885993B14A573EC085DE47AA /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				B0E9E8D0EEA2B412B2E472B4 /* Keyboard.swift */,
+				A7D43DE9F7969F9C49086093 /* Palette.swift */,
+			);
+			path = Support;
+			sourceTree = "<group>";
+		};
+		89E5021259F9C97440BDAF40 /* Machines */ = {
+			isa = PBXGroup;
+			children = (
+				3B9E83239559BC6B0F5A6F7A /* Machines.swift */,
+			);
+			path = Machines;
+			sourceTree = "<group>";
+		};
+		8CF723DDF6DEB17C30665BAC /* App */ = {
+			isa = PBXGroup;
+			children = (
+				E44C0FB2065B9025E30AAA67 /* AppModel.swift */,
+				63433A27CD72195FE5BAF7D5 /* CopilotCanvasApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		9DAD523F8E7F9607E7ABF932 /* Canvas */ = {
+			isa = PBXGroup;
+			children = (
+				3532502B507E9C3DD275CF0A /* CanvasView.swift */,
+			);
+			path = Canvas;
+			sourceTree = "<group>";
+		};
+		B3339E13444874F8075049EA /* NewSession */ = {
+			isa = PBXGroup;
+			children = (
+				9DD0AA7C0919B32D6CB1CBC1 /* NewSessionView.swift */,
+			);
+			path = NewSession;
+			sourceTree = "<group>";
+		};
+		C7A286A3455C18DCA1732A5D /* Sessions */ = {
+			isa = PBXGroup;
+			children = (
+				371B4CAFAC6D35D925863CC9 /* HomeView.swift */,
+				C0188D57AC0E74E4481E361E /* SessionsView.swift */,
+			);
+			path = Sessions;
+			sourceTree = "<group>";
+		};
+		C8DDE900B04BD25B8DB9C344 /* CopilotCanvasUITests */ = {
+			isa = PBXGroup;
+			children = (
+				0CA872B980D2EB3F2BA1095E /* TerminalUITests.swift */,
+			);
+			path = CopilotCanvasUITests;
+			sourceTree = "<group>";
+		};
+		E1E858B427BA0CDB070CC908 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				091DF89CBBADF7F27B5C127E /* Swift */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		2729FAB6EC441CCD3430337E /* CopilotCanvasTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B744D59FD5B3D442B8FEE363 /* Build configuration list for PBXNativeTarget "CopilotCanvasTests" */;
+			buildPhases = (
+				226A9199A50A37F9F7016089 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				5BF0E5D44B9E18A69717260D /* PBXTargetDependency */,
+			);
+			name = CopilotCanvasTests;
+			packageProductDependencies = (
+			);
+			productName = CopilotCanvasTests;
+			productReference = BE0EEF3C29668868F62A8686 /* CopilotCanvasTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		A408D2567042BBFA4C1B19C3 /* CopilotCanvas */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CC4EB46E68504E52F9F53CFB /* Build configuration list for PBXNativeTarget "CopilotCanvas" */;
+			buildPhases = (
+				D4948D328F9777B14E443A17 /* Build the Rust core */,
+				4ABE591092ACBC6CD5B0E760 /* Sources */,
+				3C96D584EC3C6239F836822D /* Resources */,
+				E1E4E4182AEF48C07B2E5B44 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = CopilotCanvas;
+			packageProductDependencies = (
+			);
+			productName = CopilotCanvas;
+			productReference = 62EF5A0229710D7BCFF88E00 /* CopilotCanvas.app */;
+			productType = "com.apple.product-type.application";
+		};
+		F7314B147B7512A3E2813444 /* CopilotCanvasUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BC7332AE16B44B15F32B6505 /* Build configuration list for PBXNativeTarget "CopilotCanvasUITests" */;
+			buildPhases = (
+				09A89D2DF19B6F0803B5ACEE /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				3B106F93697F7C4524FB2110 /* PBXTargetDependency */,
+			);
+			name = CopilotCanvasUITests;
+			packageProductDependencies = (
+			);
+			productName = CopilotCanvasUITests;
+			productReference = 8FFFE22CC77D082848653D7A /* CopilotCanvasUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		EAD1A6D8D07E452517C2C63E /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					2729FAB6EC441CCD3430337E = {
+						DevelopmentTeam = 8Z37ZVMJ4V;
+					};
+					A408D2567042BBFA4C1B19C3 = {
+						DevelopmentTeam = 8Z37ZVMJ4V;
+						ProvisioningStyle = Automatic;
+					};
+					F7314B147B7512A3E2813444 = {
+						DevelopmentTeam = 8Z37ZVMJ4V;
+						TestTargetID = A408D2567042BBFA4C1B19C3;
+					};
+				};
+			};
+			buildConfigurationList = CD7707C971B481D0973D08DD /* Build configuration list for PBXProject "CopilotCanvas" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 0BDBF9210F5ED3510160389A;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 84DBF55CE7887072442AB21B /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A408D2567042BBFA4C1B19C3 /* CopilotCanvas */,
+				2729FAB6EC441CCD3430337E /* CopilotCanvasTests */,
+				F7314B147B7512A3E2813444 /* CopilotCanvasUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		3C96D584EC3C6239F836822D /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3C71F3A621CCDBD2848746DB /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		D4948D328F9777B14E443A17 /* Build the Rust core */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build the Rust core";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ \"${COPILOT_CANVAS_SKIP_CORE:-}\" = \"1\" ]; then exit 0; fi\n\"${SRCROOT}/build-core.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		09A89D2DF19B6F0803B5ACEE /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				27E6E2BBE6C6B63C64A09CCC /* TerminalUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		226A9199A50A37F9F7016089 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9131F82E8C5434377EAA3A41 /* CoreBridgeTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		4ABE591092ACBC6CD5B0E760 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				75578567D23442C13FACA607 /* AppModel.swift in Sources */,
+				007B5D34BC0B24C5D8358834 /* BoxDrawing.swift in Sources */,
+				7CE4BC353D6D89E5E87DC9AF /* CanvasView.swift in Sources */,
+				2995C159A2A054E1C5E89557 /* CopilotCanvasApp.swift in Sources */,
+				7630F111291E90F528B6C144 /* FileViewer.swift in Sources */,
+				238AA111F2A58A1CA990D5BD /* HomeView.swift in Sources */,
+				AD948EEDAFFCDAEDF75F8951 /* KeyBar.swift in Sources */,
+				BF0CF98767320D25ABC31698 /* Keyboard.swift in Sources */,
+				76911BB6DCF109C03EDB4B28 /* Machines.swift in Sources */,
+				34B84F6AB7EEAAEA0595C03E /* NewSessionView.swift in Sources */,
+				5F6300F2882B73B14270F595 /* PairView.swift in Sources */,
+				7138F9C66C98F01D5B91C149 /* Pairer.swift in Sources */,
+				77305682749AAD715786B71D /* Palette.swift in Sources */,
+				57CA8E53C67778D84F381942 /* PushRegistration.swift in Sources */,
+				4D67292AECD72512406C0F46 /* ServerStore.swift in Sources */,
+				CB2C0540839842AF660C0EE3 /* ServiceConnection.swift in Sources */,
+				44EC1E918541DDE546C4A7A2 /* SessionsView.swift in Sources */,
+				3B818A884E8E6A1AACDAA171 /* SettingsView.swift in Sources */,
+				C25D81E0404A7792CECE36C9 /* TerminalScreen.swift in Sources */,
+				FF37A10AEB4A408583EFDB9B /* TerminalView.swift in Sources */,
+				A1E95B5F2572263C9CCC4B5F /* WebSocketTransport.swift in Sources */,
+				95E6A0F1523699B47786493E /* canvas_mobile.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		3B106F93697F7C4524FB2110 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A408D2567042BBFA4C1B19C3 /* CopilotCanvas */;
+			targetProxy = BF67EAFE37E651E76239150E /* PBXContainerItemProxy */;
+		};
+		5BF0E5D44B9E18A69717260D /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A408D2567042BBFA4C1B19C3 /* CopilotCanvas */;
+			targetProxy = 4F82B97590989B28F1016A12 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		0F7BF83804B1DDB5B08972C1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.thomashorga.copilotcanvas.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = CopilotCanvas;
+			};
+			name = Debug;
+		};
+		400BC32E90A30544C53B5180 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 8Z37ZVMJ4V;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.3.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		6F8AE52AF4D34151CE95318D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = CopilotCanvas/CopilotCanvas.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"Core\"",
+				);
+				INFOPLIST_FILE = CopilotCanvas/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				OTHER_LDFLAGS = (
+					"-lresolv",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.thomashorga.copilotcanvas;
+				PRODUCT_NAME = CopilotCanvas;
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		808B72B150A725EB70EF01B7 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = CopilotCanvas/CopilotCanvas.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"Core\"",
+				);
+				INFOPLIST_FILE = CopilotCanvas/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				OTHER_LDFLAGS = (
+					"-lresolv",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.thomashorga.copilotcanvas;
+				PRODUCT_NAME = CopilotCanvas;
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		8F42841073BACC7AB14908D8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.thomashorga.copilotcanvas.tests;
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/CopilotCanvas.app/CopilotCanvas";
+			};
+			name = Release;
+		};
+		92E955565C743EB0F4BA804D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.thomashorga.copilotcanvas.tests;
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/CopilotCanvas.app/CopilotCanvas";
+			};
+			name = Debug;
+		};
+		A50E222514FDB1B6477F7E6A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.thomashorga.copilotcanvas.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = CopilotCanvas;
+			};
+			name = Release;
+		};
+		ED01BB9FF57F3FDD262E4852 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 8Z37ZVMJ4V;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.3.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		B744D59FD5B3D442B8FEE363 /* Build configuration list for PBXNativeTarget "CopilotCanvasTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				92E955565C743EB0F4BA804D /* Debug */,
+				8F42841073BACC7AB14908D8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		BC7332AE16B44B15F32B6505 /* Build configuration list for PBXNativeTarget "CopilotCanvasUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0F7BF83804B1DDB5B08972C1 /* Debug */,
+				A50E222514FDB1B6477F7E6A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		CC4EB46E68504E52F9F53CFB /* Build configuration list for PBXNativeTarget "CopilotCanvas" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6F8AE52AF4D34151CE95318D /* Debug */,
+				808B72B150A725EB70EF01B7 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		CD7707C971B481D0973D08DD /* Build configuration list for PBXProject "CopilotCanvas" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				ED01BB9FF57F3FDD262E4852 /* Debug */,
+				400BC32E90A30544C53B5180 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = EAD1A6D8D07E452517C2C63E /* Project object */;
+}

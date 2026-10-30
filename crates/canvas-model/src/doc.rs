@@ -942,17 +942,17 @@ pub struct Store {
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
-        use std::os::windows::fs::OpenOptionsExt;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let lock_path = path.with_extension("lock");
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).truncate(false).write(true);
         // Share mode 0: released automatically if this process dies.
-        let lock = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .share_mode(0)
+        // (Elsewhere, only the macOS mock service opens canvases: no lock.)
+        #[cfg(windows)]
+        std::os::windows::fs::OpenOptionsExt::share_mode(&mut options, 0);
+        let lock = options
             .open(&lock_path)
             .map_err(|e| {
                 if e.raw_os_error() == Some(32) {
@@ -1397,6 +1397,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)] // Windows paths and file locks (service side)
     fn store_round_trips_locks_and_rejects_corruption() {
         let dir = std::env::temp_dir().join(format!("cc-doc-{}", uuid::Uuid::new_v4()));
         let path = dir.join("canvas.json");

@@ -17,7 +17,7 @@ use crate::paint::{
     self, ACCENT, BoxSet, DASHED, FAINT, GROUP_COLORS, HEAVY, LIGHT, MUTED, PANEL, ROUND, SELECT, TEXT, fill, fg, outline, put, put_sym,
     truncate,
 };
-use crate::status::Status;
+use crate::status::{Status, StatusStyle};
 use crate::view::{Border, BoxKind, BoxModel, CanvasModel, ChipModel, DeckInfo, EdgeKind, EdgeModel, EffectModel, GroupModel, LoopModel, PulseModel, WRect};
 use crate::visual::{Deck, VisualFrame};
 

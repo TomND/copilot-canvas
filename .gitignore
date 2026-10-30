@@ -4,3 +4,7 @@
 *.snap.new
 /tests/golden/gui/*.actual.png
 /tests/golden/gui/*.diff.png
+# iPhone app: the Rust core's build output (ios/build-core.sh makes it).
+/ios/Core/
+/ios/CopilotCanvas.xcodeproj/xcuserdata/
+/ios/CopilotCanvas.xcodeproj/project.xcworkspace/xcuserdata/

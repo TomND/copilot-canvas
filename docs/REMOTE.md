@@ -437,6 +437,98 @@ TUNNEL` (hidden) emulates `devtunnel connect`: it forwards a free local port
 with `COPILOT_CANVAS_STANDIN_CONTROL=DIR` writes its pid to `DIR\standin.pid`
 and drops every connection when `DIR\drop` appears.
 
+## The iPhone (WebSockets through web forwarding)
+
+The iPhone app (`ios/`, docs/IOS-PLAN.md) cannot run `devtunnel connect`.
+It reaches the same port through the tunnel's **web forwarding**
+(`wss://TUNNEL-PORT.REGION.devtunnels.ms`), which carries HTTP and
+WebSockets, with a Dev Tunnels *connect* access token in
+`X-Tunnel-Authorization: tunnel TOKEN` (private tunnels need the owner's
+identity; the token stands in for it).
+
+- **One port, two transports.** A connection to `remote.listen` that opens
+  with `GET ` is an HTTP request: the service answers the WebSocket upgrade
+  (`canvas_common::ws`, at most 8 KiB of request head, within the 5 s
+  handshake deadline and the 16 handshake slots) and then reads the same
+  byte stream from binary messages: length-prefixed postcard frames, zstd,
+  the handshake. No valid frame starts with `GET ` (as a length it is about
+  542 MB, far over the 16 KiB pre-authentication limit). Anything else is
+  the plain TCP protocol, as before.
+- **Paired clients only.** The service token is refused over a WebSocket,
+  even from this user (web forwarding is not loopback from a local process).
+  Pairing (`PairStart`) works as over TCP.
+- **Tunnel access tokens.** `copilot-canvas remote pair --qr` issues one
+  with this machine's signed-in CLI (`devtunnel token TUNNEL --scopes
+  connect`, 24 h) and shows a QR code with the web address, the pairing code
+  and the token (`ccanvas://pair?v=1&name=…&url=…&code=…&token=…&exp=…`).
+  Clients that set `CAP_TUNNEL_ACCESS` (the phone) get
+  `ServiceMsg::TunnelAccess { url, token, expires_ms }` when they connect
+  and whenever the service renews the token (half a day before it expires,
+  while such a client is connected; at most every 10 minutes after a
+  failure, logged). The web address is `remote.web_url` in `settings.json`,
+  else what `devtunnel show TUNNEL` lists for the port, else built from the
+  token's cluster (`wss://TUNNEL-PORT.CLUSTER.devtunnels.ms`).
+- **Shutdown.** `ClientMsg::Shutdown` from a paired remote client (phone or
+  home PC) is refused: quitting a remote canvas disconnects it, never ends
+  the service and its sessions.
+
+### Notifications to the iPhone (APNs)
+
+While the app is away (closed, or more than ~25 s in the background), the
+service tells the phone when a session starts waiting for you or finishes a
+turn, through Apple's push service (`crates/canvas-push`,
+`canvas-agents/src/service/push.rs`).
+
+- **The key.** Once per machine: `copilot-canvas remote push-key
+  AuthKey_KEYID.p8 --team TEAMID` (developer.apple.com › Certificates, IDs &
+  Profiles › Keys › "+" › Apple Push Notifications service; the team id is in
+  Membership details). It is kept owner-only in `<home>\remote\apns.json`;
+  the running service picks it up at once. `copilot-canvas remote push-test`
+  sends a test notification to every registered phone.
+- **Registration.** The app sends `ClientMsg::PushRegister { token,
+  environment, bundle, label }` (appended at index 28) on every connection:
+  its APNs device token, `sandbox` or `production` (from its provisioning
+  profile), its bundle id (the APNs topic) and what the phone calls this
+  machine (the notification's subtitle). Only paired clients can register;
+  one phone per paired client, in `<home>\remote\push.json`. Revoking the
+  client forgets it; a token APNs reports as unregistered is forgotten too.
+- **What is notified.** Every 2 s the service derives each canvas session's
+  status with the clients' own rules (`canvas_model::status`) from the
+  history index, its terminals and `canvas.json`, and notifies phones that
+  are not connected when a session becomes *needs you*, or *done · review*
+  after working (`canvas_push::Attention`; collapsed per session). Connected
+  phones show it themselves.
+- **Tunnel tokens while away.** With phones registered and a key, the
+  service keeps a Dev Tunnels connect token fresh (renewed 12 h before it
+  expires) and sends each away phone a silent notification with the token
+  sealed with that phone's own pairing secret
+  (`pairing::seal_for_client`: HMAC-SHA256 counter-mode stream and tag,
+  keys from the secret, a label and a fresh nonce): Apple only carries
+  ciphertext. The phone opens it (`open_tunnel_access`) and connects with it
+  next time. iOS may delay silent notifications; if a token still expires,
+  the app says so and offers to pair again (the pairing is replaced by
+  address, keeping the name and colour).
+
+### Terminal sizes with several clients
+
+A hosted terminal has one size (its ConPTY). The service remembers each
+connection's wish (its last `Resize`) per terminal and gives the terminal
+the wish of its **owner**: the connection that most recently typed in it
+(`Input`, `Input8`, `Click`) or claimed it (`ClientMsg::Claim { id }`,
+appended at index 27). Without an owner, or when the owner asked for no
+size, the newest wish applies, which is the old "last `Resize` wins" for a
+single client. A connection that disconnects or stops showing the terminal
+(`Subscribe8` without it) is forgotten; the newest remaining wish applies.
+A terminal it launched starts with its size and owner.
+(`canvas_common::sizing`, tmux's "latest" policy.)
+
+So with the home PC and the phone on one session: typing on the phone (in
+*Fit to this phone* mode) reflows the agent to the phone's width; typing at
+the desk gives the desktop's size back. The phone's *Mirror the desktop*
+mode sends no size: it draws the desktop's grid scaled down. The desktop
+clients send their size again when they show a terminal again, and forget
+what they sent for terminals they stopped showing.
+
 ## Local vs remote behaviours
 
 What happens where (PLAN.md §6). "Remote" means a service on another machine

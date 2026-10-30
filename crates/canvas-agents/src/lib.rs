@@ -21,4 +21,5 @@ pub mod remote;
 pub mod reports;
 pub mod service;
 pub mod taskschd;
+pub mod tunnel_access;
 pub mod vscode;

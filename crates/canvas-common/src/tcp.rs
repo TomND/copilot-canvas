@@ -8,15 +8,20 @@
 //! service's handshake timeout) without a thread per connection.
 
 use std::io::{self, Read, Write};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+#[cfg(windows)]
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+#[cfg(windows)]
 use std::os::windows::io::AsRawSocket;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_OWNER_PID, TCP_TABLE_CLASS, TCP_TABLE_OWNER_PID_CONNECTIONS, TCP_TABLE_OWNER_PID_LISTENER,
 };
+#[cfg(windows)]
 use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6, POLLRDNORM, SO_EXCLUSIVEADDRUSE, SOCKET, SOL_SOCKET, WSAPOLLFD, WSAPoll, setsockopt};
 
 /// How often a waiting reader checks whether its connection was closed.
@@ -45,6 +50,7 @@ impl Shared {
 }
 
 /// Waits up to `ms` for the socket to be readable (data, end of stream or error).
+#[cfg(windows)]
 fn readable(stream: &TcpStream, ms: i32) -> io::Result<bool> {
     let mut fd = WSAPOLLFD { fd: stream.as_raw_socket() as SOCKET, events: POLLRDNORM, revents: 0 };
     let ready = unsafe { WSAPoll(&mut fd, 1, ms) };
@@ -52,6 +58,21 @@ fn readable(stream: &TcpStream, ms: i32) -> io::Result<bool> {
         return Err(io::Error::last_os_error());
     }
     Ok(ready > 0)
+}
+
+/// Elsewhere (macOS and iOS: the mock service, tests) a peek with a read
+/// timeout does the same; `shutdown` also wakes a blocked read there.
+#[cfg(not(windows))]
+fn readable(stream: &TcpStream, ms: i32) -> io::Result<bool> {
+    stream.set_read_timeout(Some(Duration::from_millis(ms.max(1) as u64)))?;
+    let result = match stream.peek(&mut [0u8; 1]) {
+        Ok(_) => Ok(true),
+        Err(error) if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted) => Ok(false),
+        // Errors (a reset) are for the read itself to report.
+        Err(_) => Ok(true),
+    };
+    let _ = stream.set_read_timeout(None);
+    result
 }
 
 pub struct TcpReader {
@@ -160,10 +181,13 @@ pub fn listen_loopback(addr: &str) -> io::Result<TcpListener> {
         ));
     }
     let socket = socket2::Socket::new(socket2::Domain::for_address(parsed), socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
-    let on: i32 = 1;
-    // SAFETY: a valid socket and a 4-byte option value that outlives the call.
-    if unsafe { setsockopt(socket.as_raw_socket() as SOCKET, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (&raw const on).cast(), 4) } != 0 {
-        return Err(io::Error::last_os_error());
+    #[cfg(windows)]
+    {
+        let on: i32 = 1;
+        // SAFETY: a valid socket and a 4-byte option value that outlives the call.
+        if unsafe { setsockopt(socket.as_raw_socket() as SOCKET, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (&raw const on).cast(), 4) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
     }
     socket.bind(&parsed.into())?;
     socket.listen(128)?;
@@ -178,6 +202,7 @@ pub fn token_peer_allowed(peer: SocketAddr, peer_user: Option<&str>, own_user: &
 
 /// The process that owns the other end of a loopback connection whose ends
 /// are `local` (ours) and `peer`.
+#[cfg(windows)]
 pub fn peer_process(local: SocketAddr, peer: SocketAddr) -> io::Result<u32> {
     let family = if peer.is_ipv4() { AF_INET } else { AF_INET6 };
     let table = tcp_table(family as u32, TCP_TABLE_OWNER_PID_CONNECTIONS)?;
@@ -197,6 +222,7 @@ pub fn peer_process(local: SocketAddr, peer: SocketAddr) -> io::Result<u32> {
 }
 
 /// Every listening TCP socket (IPv4 and IPv6) with the process that owns it.
+#[cfg(windows)]
 pub fn listeners() -> io::Result<Vec<(SocketAddr, u32)>> {
     let v4 = tcp_table(AF_INET as u32, TCP_TABLE_OWNER_PID_LISTENER)?;
     let v6 = tcp_table(AF_INET6 as u32, TCP_TABLE_OWNER_PID_LISTENER)?;
@@ -215,12 +241,25 @@ pub fn listener_owners(port: u16) -> io::Result<Vec<u32>> {
     Ok(owners)
 }
 
+/// Elsewhere the owners of connections and listeners are not looked up.
+#[cfg(not(windows))]
+pub fn peer_process(_local: SocketAddr, peer: SocketAddr) -> io::Result<u32> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, format!("cannot look up the process of {peer} on this platform")))
+}
+
+#[cfg(not(windows))]
+pub fn listeners() -> io::Result<Vec<(SocketAddr, u32)>> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "cannot list TCP listeners on this platform"))
+}
+
 /// A port field of a TCP table row (network byte order in the low 16 bits).
+#[cfg(windows)]
 fn port(raw: u32) -> u16 {
     u16::from_be((raw & 0xffff) as u16)
 }
 
 /// `GetExtendedTcpTable` with owning pids as 8-byte aligned memory.
+#[cfg(windows)]
 fn tcp_table(family: u32, class: TCP_TABLE_CLASS) -> io::Result<Vec<u64>> {
     const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
     let mut size = 0u32;
@@ -239,6 +278,7 @@ fn tcp_table(family: u32, class: TCP_TABLE_CLASS) -> io::Result<Vec<u64>> {
 }
 
 /// The rows of a `MIB_TCP*TABLE_OWNER_PID` (a u32 count, then the rows).
+#[cfg(windows)]
 fn rows<T: Copy>(table: &[u64]) -> impl Iterator<Item = T> + '_ {
     let count = table.first().map_or(0, |first| (*first & 0xffff_ffff) as usize);
     // Rows start after the count, at the row type's alignment (4 bytes for both kinds).
@@ -271,6 +311,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn the_owner_of_a_listening_port_is_found() {
         let listener = listen_loopback("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -284,6 +325,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn a_bound_port_cannot_be_bound_again() {
         let first = listen_loopback("127.0.0.1:0").unwrap();
         let port = first.local_addr().unwrap().port();
@@ -352,6 +394,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn the_peer_of_a_loopback_connection_is_this_process_and_user() {
         let (server, _client) = pair();
         let pid = peer_process(server.local_addr().unwrap(), server.peer_addr().unwrap()).unwrap();

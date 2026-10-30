@@ -1031,10 +1031,13 @@ mod tests {
         let ops = diff(&Doc::default(), &Doc { nodes: vec![agent], groups: vec![Group { id: "g".into(), w: 2, h: 2, ..Default::default() }], ..Doc::default() });
         let json = serde_json::to_string(&ops).unwrap();
         assert_eq!(serde_json::from_str::<Vec<Op>>(&json).unwrap(), ops);
-        let key = doc_key(r"C:\Users\Me\.copilot-canvas\canvas.json");
-        assert!(key.starts_with("canvas-") && key.len() == "canvas-".len() + 16);
-        assert_eq!(key, doc_key("c:/users/me/.copilot-canvas/CANVAS.json"));
-        assert_ne!(key, doc_key(r"C:\other\canvas.json"));
+        // Keys are made where canvases live: on the Windows service.
+        if cfg!(windows) {
+            let key = doc_key(r"C:\Users\Me\.copilot-canvas\canvas.json");
+            assert!(key.starts_with("canvas-") && key.len() == "canvas-".len() + 16);
+            assert_eq!(key, doc_key("c:/users/me/.copilot-canvas/CANVAS.json"));
+            assert_ne!(key, doc_key(r"C:\other\canvas.json"));
+        }
         assert_eq!(stable_id("auto", "wf:1"), stable_id("auto", "wf:1"));
         let prefs = ClientPrefs { tiles: vec!["t".into()], ..ClientPrefs::default() };
         let mut target = Doc::default();

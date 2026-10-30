@@ -9,6 +9,7 @@ description = "L3 canvas backend: session history, agent CLIs, event bus, passiv
 canvas-common.workspace = true
 canvas-host.workspace = true
 canvas-model.workspace = true
+canvas-push.workspace = true
 anyhow.workspace = true
 base64.workspace = true
 crossbeam-channel.workspace = true

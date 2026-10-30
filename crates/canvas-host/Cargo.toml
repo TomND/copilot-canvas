@@ -18,6 +18,8 @@ ghostty-vt-sys = { path = "../ghostty-vt-sys", optional = true }
 png.workspace = true
 portable-pty.workspace = true
 unicode-width.workspace = true
+
+[target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
 
 [dev-dependencies]

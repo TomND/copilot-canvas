@@ -34,6 +34,10 @@ pub const CAP_IMAGES: u32 = 1 << 2;
 pub const CAP_NOTIFY: u32 = 1 << 3;
 /// The client shows the reports inbox: it gets `ServiceMsg::Reports`.
 pub const CAP_REPORTS: u32 = 1 << 4;
+/// The client reaches the service through Dev Tunnels web forwarding (the
+/// iPhone client) and wants fresh tunnel access tokens: it gets
+/// `ServiceMsg::TunnelAccess`.
+pub const CAP_TUNNEL_ACCESS: u32 = 1 << 5;
 
 /// `ServiceMsg::Image::format`: raw RGBA rows.
 pub const IMAGE_RGBA: u8 = 0;
@@ -114,6 +118,18 @@ pub enum ClientMsg {
     /// service proved it knows the code. Answered with `ServiceMsg::Paired`
     /// (or `Error`), then the service closes the connection.
     PairProof { proof: Vec<u8> },
+    /// Protocol 8: this client takes over the size of terminal `id` (tmux
+    /// "latest"): the terminal takes the size this client asked for with
+    /// `Resize` until another client types in it or claims it. Typing claims
+    /// a terminal too; a client that never sent `Resize` for it (the iPhone's
+    /// mirror mode) leaves the size alone.
+    Claim { id: String },
+    /// Protocol 8, paired clients: this phone's APNs device token (empty:
+    /// unregister), `environment` "sandbox" or "production", the app's
+    /// bundle id and what the phone calls this machine. The service pushes
+    /// alerts (a session needs you or finished) and renewed tunnel access
+    /// tokens to it while it is not connected.
+    PushRegister { token: String, environment: String, bundle: String, label: String },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -267,6 +283,11 @@ pub enum ServiceMsg {
     /// Protocol 8, `CAP_REPORTS`: the reports inbox (`canvas_model::reports::Snapshot`
     /// as JSON), sent on connect and whenever it changes.
     Reports { json: String },
+    /// Protocol 8, `CAP_TUNNEL_ACCESS`: a Dev Tunnels `connect` access token
+    /// for the tunnel in front of this service (sent on connect and whenever
+    /// it is renewed), its expiry, and the tunnel port's web-forwarding
+    /// address (`wss://…devtunnels.ms`; empty when unknown).
+    TunnelAccess { url: String, token: String, expires_ms: u64 },
 }
 
 /// Where an image is drawn in a terminal's viewport (`ServiceMsg::Placements`).
@@ -319,6 +340,7 @@ impl ServiceMsg {
             | ServiceMsg::Refusal { .. }
             | ServiceMsg::Welcome { .. }
             | ServiceMsg::Reports { .. }
+            | ServiceMsg::TunnelAccess { .. }
                 if protocol < 8 =>
             {
                 None
@@ -336,6 +358,7 @@ impl ServiceMsg {
             ServiceMsg::Image { .. } | ServiceMsg::Placements { .. } if caps & CAP_IMAGES == 0 => None,
             ServiceMsg::Notification { .. } if caps & CAP_NOTIFY == 0 => None,
             ServiceMsg::Reports { .. } if caps & CAP_REPORTS == 0 => None,
+            ServiceMsg::TunnelAccess { .. } if caps & CAP_TUNNEL_ACCESS == 0 => None,
             _ => self.shaped(protocol, caps & CAP_FRAME8 != 0),
         }
     }
@@ -841,6 +864,8 @@ pub(crate) mod tests {
             (24, ClientMsg::Pair { code_proof: vec![3; 32], name: "home-pc".into(), nonce: vec![4; 32] }),
             (25, ClientMsg::PairStart { name: "home-pc".into(), nonce: vec![4; 32] }),
             (26, ClientMsg::PairProof { proof: vec![5; 32] }),
+            (27, ClientMsg::Claim { id: "t".into() }),
+            (28, ClientMsg::PushRegister { token: "ab".repeat(32), environment: "sandbox".into(), bundle: "com.x".into(), label: "work".into() }),
         ];
         for (index, message) in client {
             let bytes = postcard::to_stdvec(&message).unwrap();
@@ -864,6 +889,7 @@ pub(crate) mod tests {
             (25, ServiceMsg::Refusal { proof: vec![3; 32] }),
             (26, ServiceMsg::Welcome { build: "0.3.0-abc".into() }),
             (27, ServiceMsg::Reports { json: "{\"version\":1}".into() }),
+            (28, ServiceMsg::TunnelAccess { url: "wss://copilot-canvas-47600.usw2.devtunnels.ms".into(), token: "eyJ.x.y".into(), expires_ms: 9 }),
         ];
         for (index, message) in service {
             let bytes = postcard::to_stdvec(&message).unwrap();
@@ -896,6 +922,7 @@ pub(crate) mod tests {
             ServiceMsg::Refusal { proof: vec![1; 32] },
             ServiceMsg::Welcome { build: "b".into() },
             ServiceMsg::Reports { json: "{}".into() },
+            ServiceMsg::TunnelAccess { url: String::new(), token: "t".into(), expires_ms: 1 },
         ];
         for message in all.clone() {
             let Some(shaped) = message.shaped(7, true) else { continue };
@@ -972,6 +999,10 @@ pub(crate) mod tests {
         assert_eq!(inbox.clone().shaped_for(8, v8 | CAP_IMAGES | CAP_NOTIFY), None);
         assert_eq!(inbox.clone().shaped_for(7, v8 | CAP_REPORTS), None, "protocol 7");
         assert_eq!(inbox.clone().shaped_for(8, v8 | CAP_REPORTS).as_ref(), Some(&inbox));
+        let access = ServiceMsg::TunnelAccess { url: String::new(), token: "t".into(), expires_ms: 1 };
+        assert_eq!(access.clone().shaped_for(8, v8 | CAP_NOTIFY | CAP_IMAGES), None, "only for clients that asked");
+        assert_eq!(access.clone().shaped_for(7, CAP_TUNNEL_ACCESS), None);
+        assert_eq!(access.clone().shaped_for(8, v8 | CAP_TUNNEL_ACCESS).as_ref(), Some(&access));
         // Everything else is shaped as before.
         assert!(matches!(ServiceMsg::Frame8(sample_frame8()).shaped_for(8, 0), Some(ServiceMsg::Frame(_))));
         assert!(matches!(ServiceMsg::Frame8(sample_frame8()).shaped_for(8, CAP_FRAME8), Some(ServiceMsg::Frame8(_))));

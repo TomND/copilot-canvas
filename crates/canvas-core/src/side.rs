@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use ratatui::style::Color;
 
-use crate::agents::{AgentKind, agent_of};
+use crate::agents::AgentKind;
 use crate::app::{App, AppEvent, Seed};
 use crate::automation::Automation;
 use crate::config::{self, Kind};
@@ -16,7 +16,7 @@ use crate::doc::{CONTEXTS, EFFORTS, GRID_X, GRID_Y, Group, LaunchDefaults, MODES
 use crate::paint::{BLUE, DARK, GRAY, POSITIVE, MUTED, PURPLE, NEGATIVE, TEXT, ATTENTION};
 use crate::paths::{format_age, now_ms, parse_rfc3339_ms};
 use crate::rpc::Backend;
-use crate::status::Status;
+use crate::status::{Status, StatusStyle};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SideView {
@@ -1115,56 +1115,7 @@ impl App {
     }
 }
 
-/// What to launch for an agent session box. The service adds the canvas
-/// integration (skills plugin, identity, `copilot-canvas` on PATH) and turns
-/// it into the agent's command line.
-///
-/// Launch defaults (canvas, overridden by the box's group) apply to new
-/// conversations only, and only those the agent supports; permissions and the
-/// box's MCP choice apply to every run. The model: a new conversation gets the
-/// box's own (chosen in the new-session dialog), else the effective default
-/// ([`canvas_model::models::effective`]); a resume or fork carries the model
-/// recorded on the box (never the current default), which the provider passes
-/// only where its agent does not keep it itself.
-pub fn agent_launch(
-    node: &Node,
-    canvas: &LaunchDefaults,
-    group: Option<&Group>,
-    prompt: Option<String>,
-    fork_from: Option<String>,
-    resume: bool,
-) -> crate::protocol::AgentLaunch {
-    let kind = agent_of(node);
-    let caps = kind.caps();
-    let defaults = canvas.merged(group.and_then(|g| g.defaults.as_ref()));
-    let fresh = |value: &Option<String>, supported: bool| value.clone().filter(|v| !resume && supported && !v.trim().is_empty());
-    let model = if resume || fork_from.is_some() {
-        node.model.clone()
-    } else {
-        node.model.clone().or_else(|| Some(canvas_model::models::effective(kind, canvas, group).model))
-    };
-    let group = group.filter(|g| g.folder.is_some());
-    crate::protocol::AgentLaunch {
-        agent: kind.id().to_owned(),
-        native_id: node.agent_session.clone().filter(|s| !s.is_empty()),
-        resume,
-        fork_from,
-        name: Some(node.name.clone()).filter(|n| !n.trim().is_empty()),
-        prompt: prompt.filter(|p| !p.trim().is_empty()),
-        model: model.map(|m| m.trim().to_owned()).filter(|m| !m.is_empty()),
-        effort: fresh(&defaults.reasoning_effort, caps.effort),
-        mode: fresh(&defaults.mode, caps.modes),
-        custom_agent: fresh(&defaults.agent, true),
-        context: fresh(&defaults.context, kind == AgentKind::Copilot),
-        allow_all: defaults.permissions.as_deref() != Some("ask"),
-        add_dirs: if resume { Vec::new() } else { defaults.add_dirs.iter().filter(|d| !d.trim().is_empty()).cloned().collect() },
-        mcp_off: node.mcp_off.clone().unwrap_or_default(),
-        group_folder: group.and_then(|g| g.folder.clone()),
-        group_name: group.map(|g| g.name.clone()),
-        headless_prompt: None,
-        env: Vec::new(),
-    }
-}
+pub use canvas_model::launch::agent_launch;
 
 #[cfg(test)]
 mod launch_tests {
