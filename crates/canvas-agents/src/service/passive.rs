@@ -647,6 +647,8 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
             if let Ok(bytes) = std::fs::read(&file) {
                 match serde_json::from_slice::<Event>(&bytes) {
                     Ok(event) if event.kind == STOP_RUN => log(&shared.instance, &format!("ignored {} from the inbox (only windows stop runs)", file.display())),
+                    // Approving a message to an author is yours, in a window: never a file anyone can drop.
+                    Ok(event) if super::reviews::window_only(&event) => log(&shared.instance, &format!("ignored {} from the inbox (only you approve review messages, in a window)", file.display())),
                     Ok(event) => events.push(event),
                     Err(error) => log(&shared.instance, &format!("unreadable event {}: {error}", file.display())),
                 }

@@ -805,6 +805,7 @@ fn prs_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>) {
         }
         out.link(&format!("{glyph} {}{title} · {}{}", pr.pr.short(), pr.state.word(), if pr.draft { " (draft)" } else { "" }), bold(color), Action::Prs(PrAction::Open(pr.url.clone())));
         let owner = if pr.owner_name.is_empty() { pr.owner.chars().take(8).collect() } else { pr.owner_name.clone() };
+        let owner = if pr.role == canvas_model::prs::Role::Reviewed { format!("reviewed by {owner} (only its end is watched)") } else { format!("owner {owner}") };
         let monitor = match pr.monitor.status {
             MonitorStatus::Pending => "not checked yet".to_owned(),
             MonitorStatus::Unavailable => format!("unavailable: {}", pr.monitor.reason),
@@ -812,7 +813,7 @@ fn prs_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>) {
             _ => format!("checked {} · next {}", age_at(app, pr.monitor.last_ms), if view.paused.is_empty() { age_at(app, pr.monitor.next_ms) } else { "when monitored".to_owned() }),
         };
         let monitor_color = if matches!(pr.monitor.status, MonitorStatus::Unavailable | MonitorStatus::Failing) { ATTENTION } else { MUTED };
-        out.indented(2, format!("owner {owner} · {monitor}"), fg(monitor_color));
+        out.indented(2, format!("{owner} · {monitor}"), fg(monitor_color));
         let mut facts = Vec::new();
         if pr.comments > 0 {
             facts.push(format!("{} comment(s), {} new", pr.comments, pr.new_comments));

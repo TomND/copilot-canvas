@@ -76,6 +76,12 @@ pub(super) fn is_request(event: &Event) -> bool {
     event.kind == REQUEST
 }
 
+/// Requests only a window may make (`ClientMsg::Bus`): an approval. The bus
+/// loop ignores them in the inbox, where any process (an agent too) can drop a file.
+pub(super) fn window_only(event: &Event) -> bool {
+    is_request(event) && event.data["op"] == "approve"
+}
+
 /// A report about a review follow-up (on behalf of its agent).
 struct Note {
     kind: &'static str,
@@ -542,5 +548,9 @@ mod tests {
         routing.passive[0].paused = true;
         assert!(agent(&routing).is_none(), "a paused agent asks for no checks");
         assert_eq!(thread("github.com/o/r#7"), "review:github.com/o/r#7");
+        // Approvals are a window's: the inbox (where any process can drop a file) never carries one.
+        let approve = Event { kind: REQUEST.into(), data: serde_json::json!({ "op": "approve", "review": "rv-1" }), ..Default::default() };
+        assert!(window_only(&approve));
+        assert!(!window_only(&Event { data: serde_json::json!({ "op": "sent" }), ..approve }));
     }
 }

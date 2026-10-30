@@ -280,7 +280,7 @@ The same pattern (`service/reviews.rs`; records in
 |---|---|---|
 | `Doc` / `ClientMsg::Routing` | `Passive::reviews` / `PassiveSpec::reviews` (`ReviewSettings`: `channel`, `tool`, `recipients`, `approval`, `check_minutes`, `paused`); *Pause checks* sets `paused` in the document | ignores it |
 | bus inbox | requests `{"type": "canvas.review", "data": {"op": "handoff" \| "draft" \| "sent" \| "needs-you" \| "failed" \| "checked" \| "request" \| "done", "request": <uuid>, …}}` (`copilot-canvas review …`), answered in `<home>/bus/answers/` | as for `canvas.pr` |
-| `ClientMsg::Bus` | `{"action": "reviews", "op": "approve" \| "dismiss-message" \| "assign" \| "dismiss" \| "unwatch" \| "check-now", …}` (the panel's buttons, as you; only you approve) | ignores unknown actions |
+| `ClientMsg::Bus` | `{"action": "reviews", "op": "approve" \| "dismiss-message" \| "assign" \| "dismiss" \| "unwatch" \| "check-now", …}` (the panel's buttons, as you; only you approve, and only from a window: an `approve` found in the bus inbox, where any process can drop a file, is ignored like `canvas.stop_run`) | ignores unknown actions |
 | `ServiceMsg::Bus` (`bus::Snapshot`) | `reviews`: a `ReviewsView` (the agents, their settings, why checks are off, the check state, the newest 20 reviews **without private notes** and with shortened results, the conversations, the newest 30 requests) | ignores it |
 | bus events | `review.completed` (subscribers), `review.message.approved` and `review.check_due` (addressed to the agent, `to` = its key) | ordinary events |
 | mailbox | requests are `Mail` with their id (`q-…`); delivery confirms them | — |

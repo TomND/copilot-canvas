@@ -173,7 +173,9 @@ pub fn list(home: &Path, json: bool) -> Result<String> {
     let age = |ms: u64| if ms == 0 { "never".to_owned() } else if ms <= now { format!("{} ago", crate::paths::format_age(ms, now)) } else { format!("in {}", crate::paths::format_age(now, ms)) };
     for pr in &registry.prs {
         let mark = if pr.state.ended() { "✓" } else if pr.needs_you() { "⚠" } else { "●" };
-        out.push(format!("  {mark} {}  {}  “{}”  owner {}", pr.pr.short(), pr.state.word(), pr.title, if pr.owner_name.is_empty() { &pr.owner } else { &pr.owner_name }));
+        let who = if pr.owner_name.is_empty() { &pr.owner } else { &pr.owner_name };
+        let role = if pr.role == canvas_model::prs::Role::Reviewed { "reviewed by" } else { "owner" };
+        out.push(format!("  {mark} {}  {}  “{}”  {role} {who}", pr.pr.short(), pr.state.word(), pr.title));
         out.push(format!("      {}", pr.url));
         let monitor = if pr.state.ended() { "monitoring stopped".to_owned() } else { format!("{:?} · checked {} · next {}", pr.monitor.status, age(pr.monitor.last_ms), age(pr.monitor.next_ms)).to_lowercase() };
         out.push(format!("      {monitor}{}{}", if pr.monitor.reason.is_empty() { String::new() } else { format!(" · {}", pr.monitor.reason) }, if pr.new_comments > 0 { format!(" · {} new comment(s)", pr.new_comments) } else { String::new() }));
