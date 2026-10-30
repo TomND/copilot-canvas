@@ -1256,9 +1256,11 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
     });
 
     check(rows, "14", "Copy and paste: drag-select (rejoin), copy on release, Ctrl+C, Ctrl+Shift+C, Ctrl+V, pane menu", "copy_on_release_and_paste", || {
-        gui.send("Write-Output ('COPY_' + 'PROBE_TEXT')\r")?;
-        // Wait for the prompt after the output too: it can scroll a full pane
-        // by a line, and a drag aimed before that lands on the prompt.
+        // Cleared first: on the full screen row 12 leaves, the text lands on the last row and the
+        // prompt after it scrolls it up one row, away from a drag aimed at it (and the later
+        // steps of this row would run at the bottom of a full pane too).
+        gui.send("Clear-Host; Write-Output ('COPY_' + 'PROBE_TEXT')\r")?;
+        // Wait for the prompt after the output too, so the screen has settled.
         gui.wait("text printed and the next prompt", 10, |t| {
             let lines: Vec<&str> = t.lines().collect();
             lines.iter().position(|l| l.contains("COPY_PROBE_TEXT") && !l.contains("PROBE_TEXT'")).is_some_and(|i| lines[i + 1..].iter().any(|l| l.contains("PS ")))
