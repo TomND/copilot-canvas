@@ -161,24 +161,40 @@ final class TerminalUITests: XCTestCase {
         XCTAssertTrue(drift.waitForExistence(timeout: 45))
         let pause = app.buttons.matching(identifier: "Pause").firstMatch
         let resume = app.buttons.matching(identifier: "Resume").firstMatch
-        drift.tap()
-        XCTAssertTrue(pause.waitForExistence(timeout: 10) || resume.exists, "its actions")
+        /// Opens the session's actions (again once the previous dialog has gone).
+        func actions() {
+            for _ in 0..<3 {
+                waitGone(pause)
+                waitGone(resume)
+                drift.tap()
+                if pause.waitForExistence(timeout: 5) || resume.exists { return }
+            }
+        }
+        actions()
+        XCTAssertTrue(pause.exists || resume.exists, "its actions")
         attach(app, "passive-actions")
         if resume.exists {
             // Left paused by an earlier run.
             resume.tap()
-            drift.tap()
+            actions()
         }
         XCTAssertTrue(pause.waitForExistence(timeout: 10))
         pause.tap()
         // The actions follow its state: paused now, so it offers to resume.
-        drift.tap()
+        actions()
         XCTAssertTrue(resume.waitForExistence(timeout: 20), "paused")
         resume.tap()
-        drift.tap()
+        actions()
         XCTAssertTrue(pause.waitForExistence(timeout: 20), "resumed")
         let cancel = app.buttons.matching(identifier: "Cancel").firstMatch
         if cancel.exists { cancel.tap() }
+    }
+
+    private func waitGone(_ element: XCUIElement, timeout: TimeInterval = 5) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while element.exists && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
     }
 
     private func waitForKeyboard(_ app: XCUIApplication, shown: Bool, timeout: TimeInterval = 5) -> Bool {
