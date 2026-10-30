@@ -443,6 +443,7 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
 | Inspect | the box menu's or details panel's **Inspect transcript**: a read-only modal (wheel scrolls, Copy, Close); a finished OpenCode child offers **Resume as subsession** there |
 | Reports | `Alt+9` or the activity bar's ✉ (gold with the unread count): a click on a row opens the viewer (Markdown formatted, HTML in the WebView2 view); its buttons view the session (never start it), open the PR, step ◂ Older / Newer ▸ through a thread, copy, mark unread, delete; a link in a report asks first; Esc closes (in the HTML view too) |
 | Remove | right-click on a selected box (or Del) with several selected: "Remove N from canvas" after a confirmation; running sessions stay; Ctrl+Z restores |
+| Undo | **Ctrl+Z** takes back this window's latest canvas change, one gesture per step (a box, stack or group drag with everything that moved with it, a ◢ resize, *Fit to members*, a burst of arrow-key moves, a removal, a VS Code sync); **Ctrl+Y** / **Ctrl+Shift+Z** redo moves and resizes. It is a document edit (every window and the remote service see it); boxes removed or moved elsewhere since are left alone. A terminal with the keyboard gets Ctrl+Z itself; text fields keep it (`canvas-core/src/undo.rs`) |
 | Pointer | hand over buttons and links, resize arrows over the dividers, text beam over terminals |
 | Paste | Ctrl+V / Shift+Insert: into a terminal (images as in the TUI, with a thumbnail of the image) or the focused text field |
 | Drop files | on a terminal: quoted paths pasted (remote mode: uploaded first); a folder on the canvas: new session there |
@@ -488,7 +489,7 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   `UPDATE_SNAPSHOTS=1 cargo test -p canvas-core --test view_snapshots`
   accepts the new texts.
 - `copilot-canvas selftest --client gui [--remote loopback]` runs the TUI
-  self-test's 35 steps against the GUI in a 170 × 46 cell window. A `Ui`
+  self-test's 36 steps against the GUI in a 170 × 46 cell window. A `Ui`
   trait has two drivers: the TUI's hidden pseudoconsole and `GuiDriver`,
   which starts `copilot-canvas-gui.exe --test-hooks --size 170x46` and turns
   the terminal input the scenario sends (keys, Alt+digits, Ctrl+letters, SGR

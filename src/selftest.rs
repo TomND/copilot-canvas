@@ -1838,6 +1838,7 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     recent_steps(&mut ui, instance)?;
     group_click_steps(&mut ui)?;
     report_steps(&mut ui, instance, work)?;
+    layout_undo_steps(&mut ui, &canvas)?;
 
     step("stop all and quit");
     ui.send(b"\x1d")?;
@@ -2075,6 +2076,98 @@ fn group_click_steps<U: Ui>(ui: &mut U) -> Result<()> {
     ui.click(rx, ry)?;
     ui.wait("terminal focus", Duration::from_secs(5), |t| t.contains("Typing goes to the terminal"))?;
     Ok(())
+}
+
+/// Every box's place and every group's frame, by id.
+type Geometry = (Vec<(String, i32, i32)>, Vec<(String, i32, i32, i32, i32)>);
+
+fn geometry(doc: &Doc) -> Geometry {
+    let mut nodes: Vec<(String, i32, i32)> = doc.nodes.iter().map(|n| (n.id.clone(), n.x, n.y)).collect();
+    let mut groups: Vec<(String, i32, i32, i32, i32)> = doc.groups.iter().map(|g| (g.id.clone(), g.x, g.y, g.w, g.h)).collect();
+    nodes.sort();
+    groups.sort();
+    (nodes, groups)
+}
+
+/// Steps the canvas zoom with `+` / `-` until the status bar shows `pct` %.
+fn zoom_to<U: Ui>(ui: &mut U, pct: u32) -> Result<()> {
+    for _ in 0..8 {
+        let text = ui.text();
+        let now = text.rsplit("zoom ").next().and_then(|t| t.split('%').next()).and_then(|n| n.trim().parse::<u32>().ok());
+        match now {
+            Some(n) if n == pct => return Ok(()),
+            Some(n) => ui.send(if n < pct { b"+" } else { b"-" })?,
+            None => bail!("no zoom in the status bar\n{text}"),
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    bail!("the canvas never reached {pct} %\n{}", ui.text())
+}
+
+/// From a session's terminal to the canvas, centred on that session (its
+/// box selected) at `pct` %. (Keys arrive in order: Ctrl+] reaches the
+/// terminal before `c` reaches the canvas; a notice may hide the hints.)
+fn canvas_at<U: Ui>(ui: &mut U, pct: u32) -> Result<()> {
+    ui.send(b"\x1d")?;
+    std::thread::sleep(Duration::from_millis(200));
+    ui.send(b"c")?;
+    zoom_to(ui, pct)
+}
+
+/// A sidebar click on the demo's renamed session: its terminal gets the
+/// keyboard again (the status hint shows once a notice has gone).
+fn back_to_terminal<U: Ui>(ui: &mut U) -> Result<()> {
+    let (rx, ry) = ui.locate("Renamed by selftest", SIDEBAR)?;
+    ui.click(rx, ry)?;
+    ui.wait("terminal focus", Duration::from_secs(12), |t| t.contains("Typing goes to the terminal"))
+}
+
+/// Ctrl+Z on the canvas takes back a group drag exactly: the group and
+/// everything that moved with it (its sessions, the subagent box) go back to
+/// the very same places in the canvas file. In a terminal Ctrl+Z belongs to
+/// the program: the paste probe receives it and the canvas keeps its move.
+fn layout_undo_steps<U: Ui>(ui: &mut U, canvas: &Path) -> Result<()> {
+    step("Ctrl+Z undoes a group drag exactly (its boxes and subagent box too); in a terminal Ctrl+Z reaches the program");
+    canvas_at(ui, 100)?;
+    let before = load(canvas)?;
+    let group = before.groups.iter().find(|g| g.name == "Canvas project").context("the demo group")?.clone();
+    let inside: Vec<String> = before
+        .nodes
+        .iter()
+        .filter(|n| {
+            let (cx, cy) = n.rect().center();
+            group.rect().contains(cx, cy)
+        })
+        .map(|n| n.id.clone())
+        .collect();
+    anyhow::ensure!(inside.iter().any(|id| id == "demo-main:explore"), "the group holds a subagent box: {inside:?}");
+    let (tx, ty) = ui.locate("▣ Canvas project", CANVAS)?;
+    ui.drag(0, (tx + 2, ty), (tx + 6, ty + 2))?;
+    let moved = wait_doc(canvas, "the group and everything in it moved by (4, 2)", |d| {
+        d.group(&group.id).is_some_and(|g| (g.x - group.x, g.y - group.y) == (4, 2))
+            && inside.iter().all(|id| matches!((d.node(id), before.node(id)), (Some(a), Some(b)) if (a.x - b.x, a.y - b.y) == (4, 2)))
+    })?;
+    ui.wait("the undo hint", Duration::from_secs(5), |t| t.contains("Ctrl+Z undo move"))?;
+    // A terminal with the keyboard: Ctrl+Z is the program's (the probe prints it).
+    back_to_terminal(ui)?;
+    ui.send(b"Clear-Host\r")?;
+    ui.wait("a cleared terminal", Duration::from_secs(10), |t| !t.contains(crate::paste_probe::READY))?;
+    let exe = std::env::current_exe()?;
+    ui.send(format!("& '{}' paste-probe\r", exe.display()).as_bytes())?;
+    ui.wait("the paste probe", Duration::from_secs(20), |t| t.contains(crate::paste_probe::READY))?;
+    ui.send(b"\x1a")?;
+    ui.wait("Ctrl+Z reached the program", Duration::from_secs(10), |t| t.contains("KEY \\x1a"))?;
+    std::thread::sleep(Duration::from_millis(400));
+    anyhow::ensure!(geometry(&load(canvas)?) == geometry(&moved), "Ctrl+Z in a terminal changed the canvas");
+    ui.send(b"\x04")?;
+    ui.wait("the probe ended (Ctrl+D)", Duration::from_secs(10), |t| t.contains("BYE"))?;
+    // On the canvas, Ctrl+Z puts everything back.
+    ui.send(b"\x1d")?;
+    std::thread::sleep(Duration::from_millis(200));
+    ui.send(b"\x1a")?;
+    wait_doc(canvas, "every box and group exactly where it was", |d| geometry(d) == geometry(&before))?;
+    ui.wait("the undo notice", Duration::from_secs(5), |t| t.contains("Undid: moved group"))?;
+    back_to_terminal(ui)
 }
 
 #[cfg(test)]

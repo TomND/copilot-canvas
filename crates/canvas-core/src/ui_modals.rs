@@ -21,6 +21,7 @@ const HELP: &[(&str, &str)] = &[
     ("Alt+wheel or Ctrl+wheel · toolbar − +", "zoom (100% · 50% · 25%)"),
     ("Drag a group title / ◢ corner", "move / resize the group"),
     ("Click a group's background / border", "select it (arrows move, Del deletes)"),
+    ("Ctrl+Z · Ctrl+Y or Ctrl+Shift+Z", "undo · redo moves, resizes, removals"),
     ("Double-click empty space", "new session there"),
     ("Right-click", "context menu"),
     ("Keys", ""),

@@ -159,7 +159,8 @@ impl App {
             item("New group here", "", Action::NewGroupAt(wx, wy), true),
             item("Import sessions…", "I", Action::ImportCopilot, !self.demo),
             item("Sync VS Code sessions", "V", Action::SyncVs, !self.demo),
-            item(self.undo_label(), "Ctrl+Z", Action::UndoSync, self.undo.is_some()),
+            item(self.undo_label(), "Ctrl+Z", Action::Undo, self.undo.can_undo()),
+            item("Redo", "Ctrl+Y", Action::Redo, self.undo.can_redo()),
             item("Migrate VS Code skills & settings…", "", Action::Migrate, !self.demo),
             item("Fit everything", "F", Action::FitAll, true),
             item(if self.doc.ui.tiled { "Single terminal view" } else { "Tile terminals" }, "T", Action::ToggleTiled, true),
@@ -633,7 +634,7 @@ impl App {
                 self.mark_dirty();
             }
             Action::FitGroup(id) => {
-                self.doc.fit_group(&id);
+                self.fit_group_recorded(&id);
                 self.mark_dirty();
             }
             Action::CycleGroupColor(id) => {
@@ -667,7 +668,8 @@ impl App {
             }
             Action::SyncVs => self.start_vs_sync(),
             Action::Migrate => self.start_migration(),
-            Action::UndoSync => self.undo_last(),
+            Action::Undo => self.undo_last(),
+            Action::Redo => self.redo_last(),
             Action::Quit => self.request_quit(),
             Action::CopySelection => self.copy_selection(),
             Action::Paste(id) => self.paste_clipboard(&id),

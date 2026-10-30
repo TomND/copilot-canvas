@@ -67,6 +67,7 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 | | |
 |---|---|
 | **Canvas** | Drag boxes (subagents follow their session), drag empty space to pan, wheel/Shift+wheel pan, Alt+wheel / Ctrl+wheel / toolbar − + to zoom (100 %, 50 %, 25 %), double-click empty space to create a session there, right-click for context menus |
+| **Undo and redo** | **Ctrl+Z** takes back this window's latest change to the canvas, one gesture at a time: a drag of boxes (their subagent boxes and stacks with them), of a stack or of a group (everything in it, nested groups too), a group's ◢ resize, *Fit to members*, a burst of arrow-key moves (presses less than a second apart are one step), and, as before, a removal or a VS Code sync. Successive presses go further back (100 steps per window, newest first); every item returns exactly where it was (and a group to its size). **Ctrl+Y** or **Ctrl+Shift+Z** redoes undone moves and resizes. An undo is an ordinary canvas edit, so other windows and a remote canvas see it; it never starts, stops or changes a session, never brings back a box that was removed since, and leaves boxes another window moved since where they are (a notice says what it skipped). Stacking, hiding subsessions, zoom and pan are not undo steps (`K` and `H` toggle back). The status bar names each step (*Moved group “Payments” (4 boxes) · Ctrl+Z undo move*), the canvas menu has *Undo move* and *Redo*. While a terminal has the keyboard Ctrl+Z goes to its program, and in text fields it is theirs |
 | **Status** | Accurate within a fraction of a second for canvas sessions: Copilot's own progress report (set when a turn starts, cleared when it ends) drives working and done; history events add needs-you, failures and sessions running elsewhere; a session whose subagents are still running stays working. States: working (spinner), needs you (permission / question), **done · review** (finished a turn you haven't looked at yet; stays until you open, click or type in that session), idle, stopped, failed, and **↗ open elsewhere** for sessions running in another terminal or VS Code. Sessions that **need you** get a gold heavy ━ border and sessions that are **done · review** a blue double ═ border with a blue-tinted box (boxes, terminal panes and sidebar names). Pressing Esc in Copilot (abort) doesn't count as done. The session whose terminal is active on the right has a blue halo around its box (heavy while you type in it) |
 | **Colour-blind safe** | The palette avoids red/green: OK is sky blue, failure is vermillion, attention is gold, finished is blue, selection is white, groups use the Okabe-Ito colours; every state also has its own icon and border shape |
 | **Subagents** | Discovered from session history and drawn as linked child boxes |
@@ -107,7 +108,7 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 | View a session (its live terminal, or its details) | click box or sidebar row | Tab cycles, arrows move |
 | View the next / previous recent session (never starts it) | sidebar **RECENT** row | **Ctrl+F6** / **Ctrl+Shift+F6** (also in a terminal), `]` / `[` on the canvas or sidebar |
 | Start / resume a session and focus its terminal | double-click box or sidebar row; details panel **Start** / **Resume**; menu | Enter |
-| Move | drag box (or group title) | arrows (Shift = faster) |
+| Move | drag box (or group title) | arrows (Shift = faster); Ctrl+Z undoes |
 | Pan | drag empty space, middle-drag, wheel | Ctrl+arrows |
 | Zoom | Alt+wheel, toolbar − + | `+` `-`, `F` fit all, `C`/Home center |
 | Select several | Shift-drag or right-drag | Tab cycles sessions |
@@ -124,7 +125,7 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 | Leave a terminal | click canvas/sidebar | **Ctrl+]** or F6 |
 | Copy / paste in a terminal | drag to select; pane menu | Ctrl+C (with selection) · Ctrl+V / Ctrl+Shift+V |
 | Open a link | click (Ctrl+click in terminals) | — |
-| Undo the last VS Code sync or removal | canvas menu, VS Code view | Ctrl+Z |
+| Undo / redo this window's last move, resize, removal or VS Code sync (one gesture per step, newest first) | canvas menu (*Undo move*, *Redo*), VS Code view | **Ctrl+Z** · **Ctrl+Y** or Ctrl+Shift+Z |
 | Quit (sessions keep running) | toolbar **⏻ Quit** | `Q` / Ctrl+Q, even while filtering (asks: detach or stop all) |
 | Stack / unstack subsessions | session menu; double-click the stack | `K` |
 | Hide / show all subsessions | canvas menu; toolbar **↳ N hidden** | `H` |
@@ -133,8 +134,8 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 | Select unused (dusty) sessions | canvas menu › *Select unused sessions* | then Del removes them from the canvas |
 | Help | toolbar `?` | `?` |
 
-While a terminal has focus, every key goes to Copilot (including Ctrl+G and
-Ctrl+Q). Only **Ctrl+]** and **F6** are reserved, plus **Ctrl+F6** /
+While a terminal has focus, every key goes to Copilot (including Ctrl+G,
+Ctrl+Q and Ctrl+Z). Only **Ctrl+]** and **F6** are reserved, plus **Ctrl+F6** /
 **Ctrl+Shift+F6** (recent sessions; the agents do not use them, and Windows
 Terminal and the console host pass them on), Ctrl+C while text is selected
 and Ctrl+V (paste), as in Windows Terminal.
@@ -158,7 +159,7 @@ not renamed). It never moves existing boxes or removes groups, so your
 arrangement is yours. New boxes are placed so a group never grows over its
 neighbours (overflow goes to a "Name (2)" group). Before each sync the canvas is
 saved to `~/.copilot-canvas/backups/` (newest 30 kept) and **Ctrl+Z** undoes the
-last sync. *Sync when canvas opens* runs it on start. All VS Code storage is
+last sync (while it is the window's latest change). *Sync when canvas opens* runs it on start. All VS Code storage is
 read-only.
 
 ## Passive sessions and events
@@ -654,7 +655,7 @@ copilot-canvas service status|stop    stop ends the service's sessions (graceful
 copilot-canvas bench [--terminals N] [--seconds S] [--json FILE]
 copilot-canvas bench --client gui     the GPU client's latency, frame cost, idle CPU, memory, first paint
 copilot-canvas selftest               end-to-end UI test in a hidden console (demo shells only)
-copilot-canvas selftest --client gui  the same 35 steps against the GPU client (over its test hooks)
+copilot-canvas selftest --client gui  the same 36 steps against the GPU client (over its test hooks)
 copilot-canvas selftest --client gui --parity
                                       one GUI check per row of the parity matrix (docs/PARITY.md)
 copilot-canvas kitty-demo             print a small test image (iTerm2 inline image; the GPU client shows it)
@@ -756,3 +757,7 @@ cargo test                            unit tests
   client opens the canvas again.
 - `--perf` shows frames per second, draw time and output-to-screen latency in
   the status bar.
+- Undo history is each window's own and lives in memory (it ends with the
+  window). Creating, renaming and deleting groups, and starting, stacking or
+  hiding sessions are not undo steps; removals and VS Code syncs are undone
+  but not redone.

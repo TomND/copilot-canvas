@@ -734,35 +734,63 @@ impl Doc {
         (nodes, groups)
     }
 
-    pub fn move_group(&mut self, group_id: &str, dx: i32, dy: i32) {
-        let (mut nodes, groups) = self.group_contents(group_id);
+    /// What a group drag moves: the boxes whose centre is inside (with the
+    /// stacks of stacked ones) and the group with the groups nested in it.
+    /// Each id once.
+    pub fn group_moving_with(&self, group_id: &str) -> (Vec<String>, Vec<String>) {
+        if self.group(group_id).is_none() {
+            return (Vec::new(), Vec::new());
+        }
+        let (nodes, nested) = self.group_contents(group_id);
+        let mut seen: HashSet<String> = nodes.iter().cloned().collect();
+        let mut all = nodes.clone();
         // A stack moves with its parent, wherever its boxes' own positions are.
-        let follow: Vec<String> = nodes.iter().filter(|id| self.node(id).is_some_and(|n| n.stacked)).flat_map(|id| crate::visual::stack_members(self, id)).collect();
-        nodes.extend(follow);
+        for id in &nodes {
+            if self.node(id).is_some_and(|n| n.stacked) {
+                all.extend(crate::visual::stack_members(self, id).into_iter().filter(|m| seen.insert(m.clone())));
+            }
+        }
+        let groups = std::iter::once(group_id.to_owned()).chain(nested).collect();
+        (all, groups)
+    }
+
+    pub fn move_group(&mut self, group_id: &str, dx: i32, dy: i32) {
+        let (nodes, groups) = self.group_moving_with(group_id);
+        let nodes: HashSet<String> = nodes.into_iter().collect();
         for node in self.nodes.iter_mut().filter(|n| nodes.contains(&n.id)) {
             node.x += dx;
             node.y += dy;
         }
-        for group in self.groups.iter_mut().filter(|g| g.id == group_id || groups.contains(&g.id)) {
+        for group in self.groups.iter_mut().filter(|g| groups.contains(&g.id)) {
             group.x += dx;
             group.y += dy;
         }
     }
 
-    /// Moves nodes together with their subagent boxes and stacked
-    /// subsessions (each at most once).
-    pub fn move_nodes(&mut self, ids: &[String], dx: i32, dy: i32) {
-        let mut moving: HashSet<String> = ids.iter().cloned().collect();
+    /// What moving `ids` moves: those boxes, their subagent boxes and the
+    /// stacks of stacked ones, each id once (a selected child whose parent
+    /// is selected too is not moved twice).
+    pub fn nodes_moving_with(&self, ids: &[String]) -> Vec<String> {
+        let wanted: HashSet<&str> = ids.iter().map(String::as_str).collect();
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut out: Vec<String> = ids.iter().filter(|id| self.node(id).is_some() && seen.insert((*id).clone())).cloned().collect();
         for id in ids {
             if self.node(id).is_some_and(|n| n.stacked) {
-                moving.extend(crate::visual::stack_members(self, id));
+                out.extend(crate::visual::stack_members(self, id).into_iter().filter(|m| seen.insert(m.clone())));
             }
         }
         for node in &self.nodes {
-            if node.kind == NodeKind::Agent && node.parent.as_ref().is_some_and(|p| ids.contains(p)) {
-                moving.insert(node.id.clone());
+            if node.kind == NodeKind::Agent && node.parent.as_deref().is_some_and(|p| wanted.contains(p)) && seen.insert(node.id.clone()) {
+                out.push(node.id.clone());
             }
         }
+        out
+    }
+
+    /// Moves nodes together with their subagent boxes and stacked
+    /// subsessions (each at most once).
+    pub fn move_nodes(&mut self, ids: &[String], dx: i32, dy: i32) {
+        let moving: HashSet<String> = self.nodes_moving_with(ids).into_iter().collect();
         for node in self.nodes.iter_mut().filter(|n| moving.contains(&n.id)) {
             node.x += dx;
             node.y += dy;
@@ -1359,6 +1387,25 @@ mod tests {
         doc.move_nodes(&["a".into()], 3, 1);
         assert_eq!((doc.node("a1").unwrap().x, doc.node("a1").unwrap().y), (7, 6));
         assert_eq!(doc.node("s").unwrap().x, 0);
+    }
+
+    #[test]
+    fn a_selection_with_its_children_moves_each_box_once() {
+        let mut doc = Doc::default();
+        let mut sub = session("s", 40, 0);
+        sub.parent = Some("a".into());
+        doc.nodes = vec![session("a", 0, 0), agent("a1", "a", 4, 5), sub, agent("s1", "s", 44, 5)];
+        // The parent, its subagent box and its subsession are all selected.
+        let ids: Vec<String> = ["a1", "a", "s", "a"].map(String::from).to_vec();
+        assert_eq!(doc.nodes_moving_with(&ids), ["a1", "a", "s", "s1"], "each once, the subsession's subagent too");
+        doc.move_nodes(&ids, 2, 1);
+        let at = |doc: &Doc, id: &str| (doc.node(id).unwrap().x, doc.node(id).unwrap().y);
+        assert_eq!((at(&doc, "a"), at(&doc, "a1"), at(&doc, "s"), at(&doc, "s1")), ((2, 1), (6, 6), (42, 1), (46, 6)));
+        // A group: its boxes and nested groups once, the group itself first.
+        let outer = doc.group_around(&["a".into(), "s".into()], "Outer").unwrap();
+        let (nodes, groups) = doc.group_moving_with(&outer);
+        assert_eq!((nodes.len(), groups), (4, vec![outer.clone()]));
+        assert_eq!(doc.group_moving_with("missing"), (Vec::new(), Vec::new()));
     }
 
     #[test]

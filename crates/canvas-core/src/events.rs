@@ -8,7 +8,14 @@ use crate::doc::NodeKind;
 use crate::input::{self, InputEvent, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind};
 use crate::paint::rect_contains;
 use crate::protocol::{ClientMsg, Input};
+use crate::undo::Source;
 use crate::view::RenderMode;
+
+/// An arrow key that moves the selection (not Ctrl's pan): presses in a row
+/// are one undo step.
+fn is_nudge(key: &KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right) && !key.modifiers.intersects(Modifiers::CONTROL | Modifiers::ALT)
+}
 
 impl App {
     /// The single input dispatch for every front end.
@@ -20,7 +27,13 @@ impl App {
             match event {
                 InputEvent::Paste(text) => self.on_paste(text),
                 InputEvent::Text(text) => self.on_text(&text),
-                InputEvent::Key(key) if key.kind != KeyEventKind::Release => self.on_key(key),
+                InputEvent::Key(key) if key.kind != KeyEventKind::Release => {
+                    // Any other key ends a burst of arrow-key moves (one undo step).
+                    if !is_nudge(&key) {
+                        self.end_key_burst();
+                    }
+                    self.on_key(key)
+                }
                 InputEvent::Key(_) => {}
                 InputEvent::Mouse(mouse) => self.on_mouse(mouse),
                 // The front end resizes its surface; the next draw lays out anew.
@@ -216,7 +229,14 @@ impl App {
             KeyCode::Char('v') if !ctrl => return self.run(Action::SyncVs),
             // The canvas-wide agents' panel (the top bar's ◎ Agents).
             KeyCode::Char('a') if !ctrl && !self.demo => return self.run(Action::Agents(crate::canvas_wide::AgentAction::Panel)),
-            KeyCode::Char('z') if ctrl => return self.run(Action::UndoSync),
+            // Undo and redo on the canvas and the sidebar (terminals and text
+            // fields took their keys above; the console may report Ctrl+Z and
+            // Ctrl+Y as their control characters).
+            KeyCode::Char('z' | 'Z') if ctrl && shift => return self.run(Action::Redo),
+            KeyCode::Char('z' | 'Z') if ctrl => return self.run(Action::Undo),
+            KeyCode::Char('\x1a') => return self.run(Action::Undo),
+            KeyCode::Char('y' | 'Y') if ctrl => return self.run(Action::Redo),
+            KeyCode::Char('\x19') => return self.run(Action::Redo),
             KeyCode::Char('l') if ctrl => {
                 self.repaint_requested = true;
                 self.needs_draw = true;
@@ -357,10 +377,11 @@ impl App {
                     self.doc.view.x += dx * 2;
                     self.doc.view.y += dy * 2;
                 } else if let Some(group) = self.selected_group.clone() {
-                    self.doc.move_group(&group, dx, dy);
+                    // Presses in a row are one undo step (`undo::BURST`).
+                    self.move_group_recorded(&group, dx, dy, Source::Keys(format!("group {group}")));
                 } else if !self.selection.is_empty() {
                     let ids = self.selection.clone();
-                    self.doc.move_nodes(&ids, dx, dy);
+                    self.move_nodes_recorded(&ids, dx, dy, Source::Keys(ids.join("\n")));
                 } else {
                     self.doc.view.x += dx;
                     self.doc.view.y += dy;
@@ -517,6 +538,9 @@ impl App {
     }
 
     fn mouse_down(&mut self, button: MouseButton, x: u16, y: u16, modifiers: Modifiers) {
+        // A burst of arrow-key moves (or a drag whose button came up
+        // elsewhere) is one undo step from here on.
+        self.commit_layout();
         let additive = modifiers.intersects(Modifiers::CONTROL | Modifiers::SHIFT);
         if button == MouseButton::Left
             && let Some(link) = self.layout.links.iter().find(|l| l.contains(x, y)).cloned()
@@ -700,7 +724,7 @@ impl App {
                 let (wx, wy) = world(x as i32 - start.0 as i32, y as i32 - start.1 as i32);
                 let (ddx, ddy) = (wx - applied.0, wy - applied.1);
                 if ddx != 0 || ddy != 0 {
-                    self.doc.move_nodes(&ids, ddx, ddy);
+                    self.move_nodes_recorded(&ids, ddx, ddy, Source::Mouse);
                     self.mark_dirty();
                 }
                 Drag::Nodes { moved: moved || wx != 0 || wy != 0, ids, start, applied: (wx, wy), click }
@@ -709,17 +733,14 @@ impl App {
                 let (wx, wy) = world(x as i32 - start.0 as i32, y as i32 - start.1 as i32);
                 let (ddx, ddy) = (wx - applied.0, wy - applied.1);
                 if ddx != 0 || ddy != 0 {
-                    self.doc.move_group(&id, ddx, ddy);
+                    self.move_group_recorded(&id, ddx, ddy, Source::Mouse);
                     self.mark_dirty();
                 }
                 Drag::Group { moved: moved || wx != 0 || wy != 0, id, start, applied: (wx, wy) }
             }
             Drag::Resize { id, start, orig } => {
                 let (wx, wy) = world(x as i32 - start.0 as i32, y as i32 - start.1 as i32);
-                if let Some(group) = self.doc.group_mut(&id) {
-                    group.w = (orig.0 + wx).max(crate::doc::GROUP_MIN_W);
-                    group.h = (orig.1 + wy).max(crate::doc::GROUP_MIN_H);
-                }
+                self.resize_group_recorded(&id, orig.0 + wx, orig.1 + wy);
                 self.mark_dirty();
                 Drag::Resize { id, start, orig }
             }
@@ -775,23 +796,20 @@ impl App {
         let next = match self.drag.take() {
             Some(Drag::Nodes { ids, start, applied, moved, click }) => {
                 if (rx, ry) != applied {
-                    self.doc.move_nodes(&ids, rx - applied.0, ry - applied.1);
+                    self.move_nodes_recorded(&ids, rx - applied.0, ry - applied.1, Source::Mouse);
                 }
                 self.mark_dirty();
                 Drag::Nodes { moved: moved || (rx, ry) != (0, 0), ids, start, applied: (rx, ry), click }
             }
             Some(Drag::Group { id, start, applied, moved }) => {
                 if (rx, ry) != applied {
-                    self.doc.move_group(&id, rx - applied.0, ry - applied.1);
+                    self.move_group_recorded(&id, rx - applied.0, ry - applied.1, Source::Mouse);
                 }
                 self.mark_dirty();
                 Drag::Group { moved: moved || (rx, ry) != (0, 0), id, start, applied: (rx, ry) }
             }
             Some(Drag::Resize { id, start, orig }) => {
-                if let Some(group) = self.doc.group_mut(&id) {
-                    group.w = (orig.0 + rx).max(crate::doc::GROUP_MIN_W);
-                    group.h = (orig.1 + ry).max(crate::doc::GROUP_MIN_H);
-                }
+                self.resize_group_recorded(&id, orig.0 + rx, orig.1 + ry);
                 self.mark_dirty();
                 Drag::Resize { id, start, orig }
             }
@@ -811,6 +829,8 @@ impl App {
 
     fn mouse_up(&mut self, x: u16, y: u16) {
         let Some(drag) = self.drag.take() else { return };
+        // A completed drag of boxes, a group or its ◢ corner: one undo step.
+        let layout = matches!(drag, Drag::Nodes { .. } | Drag::Group { .. } | Drag::Resize { .. });
         match drag {
             Drag::Select { moved: true, .. } => self.copy_selection(),
             Drag::Select { moved: false, id, anchor } => {
@@ -868,6 +888,9 @@ impl App {
             }
             Drag::SidebarDivider | Drag::TermDivider => self.last_sizes.clear(),
             _ => {}
+        }
+        if layout {
+            self.commit_layout();
         }
         self.mark_dirty();
     }

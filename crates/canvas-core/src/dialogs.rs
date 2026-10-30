@@ -127,7 +127,10 @@ pub enum Action {
     Copy(String),
     ImportCopilot,
     SyncVs,
-    UndoSync,
+    /// Ctrl+Z: takes back this window's last change (`undo.rs`).
+    Undo,
+    /// Ctrl+Y / Ctrl+Shift+Z: does an undone move or resize again.
+    Redo,
     Quit,
     CopySelection,
     Paste(String),

@@ -61,16 +61,7 @@ pub enum Focus {
     Terminal,
 }
 
-/// What Ctrl+Z restores.
-#[derive(Clone, Debug)]
-pub enum Undo {
-    /// The canvas before a bulk change (a VS Code sync): label, document.
-    Doc(String, Box<Doc>),
-    /// Boxes removed together, and the subsession links (child, parent)
-    /// their removal cut.
-    Removed { nodes: Vec<Node>, links: Vec<(String, String)> },
-}
-
+pub use crate::undo::Undo;
 pub use canvas_termview::{TermSelection, TermView, user_message_rows};
 
 pub struct Notice {
@@ -178,8 +169,9 @@ pub struct App {
     pub demo: bool,
     pub perf: Option<Perf>,
     pub term_select: Option<TermSelection>,
-    /// What Ctrl+Z restores (the last VS Code sync or the last removal).
-    pub undo: Option<Undo>,
+    /// What Ctrl+Z restores: this window's moves, resizes, removals and
+    /// VS Code syncs, newest last (`undo.rs`).
+    pub undo: crate::undo::History,
     /// While wheel/trackpad panning, the dot grid is hidden until this time.
     pub pan_quiet_until: Option<Instant>,
     /// Ctrl+L: repaint every cell on the next frame.
@@ -435,7 +427,7 @@ impl App {
             side_rows_key: 0,
             sessions_rev: 0,
             terms_rev: 0,
-            undo: None,
+            undo: Default::default(),
             term_select: None,
             perf: None,
             build_mismatch,
@@ -2006,6 +1998,8 @@ impl App {
         self.tick_inspector();
         self.tick_recent();
         self.visual_tick();
+        // A burst of arrow-key moves ends a second after the last one (one undo step).
+        self.tick_undo();
         // Failed automations pulse until their next good run. Loop dots: the
         // TUI redraws when a visible one moves to another cell; the GPU
         // client moves them on its own (only its loop layer, only in view).

@@ -43,6 +43,7 @@ pub mod ui;
 pub mod ui_canvas;
 pub mod ui_modals;
 pub mod ui_side;
+pub mod undo;
 pub mod view;
 pub mod viewer;
 pub mod visual;
