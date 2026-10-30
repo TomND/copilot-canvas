@@ -276,6 +276,13 @@ impl Shell {
         if let Some(p) = &saved {
             attrs = attrs.with_position(PhysicalPosition::new(p.x, p.y));
         }
+        // The app icon embedded by build.rs: small in the title bar, large on
+        // the taskbar button and in Alt+Tab.
+        {
+            use winit::platform::windows::{IconExtWindows, WindowAttributesExtWindows};
+            let icon = |px: u32| winit::window::Icon::from_resource(1, Some(PhysicalSize::new(px, px))).ok();
+            attrs = attrs.with_window_icon(icon(32)).with_taskbar_icon(icon(256));
+        }
         if self.options.test_hooks && quiet_tests() {
             // A test run on someone's desktop: never take the focus, stay out
             // of the taskbar and behind other windows (input comes from the hooks).

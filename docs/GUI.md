@@ -370,6 +370,14 @@ later / quit when its protocol is older). The toolbar's "⟳ Update service"
 works as in the TUI. The service runs from a per-build copy of the
 `copilot-canvas.exe` next to the GUI (`paths::set_build_exe`).
 
+**App icon.** `assets/icon/copilot-canvas.ico` (drawn by `assets/icon/make_icon.py`:
+a canvas tile with three session cards in the status colours and the toolbar's
+diamond; sizes up to 32 px are simplified) is icon resource 1 of both
+executables (`build.rs`, `crates/canvas-gui/build.rs`). The GUI sets it as
+each window's small and taskbar icon. Its windows carry the app id
+`CopilotCanvas.Gui`: a shortcut that should share their taskbar button (a
+pinned one) needs the same `System.AppUserModel.ID`.
+
 **Crash log (`crashlog.rs`).** Panics on any thread (the UI thread and
 helpers alike) are appended to `<home>\crash.log` with the build id, the
 thread's name, the number of windows, the GPU adapter and the last test-hook
