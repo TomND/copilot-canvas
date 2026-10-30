@@ -596,39 +596,17 @@ fn draw_empty_hint(buf: &mut Buffer, area: Rect) {
 }
 
 /// Everything that moves with the current drag (for the Gpu visual offset):
-/// dragged boxes with their subagents, or a group with its contents.
-fn dragged(app: &App) -> (HashSet<&str>, HashSet<&str>) {
-    let mut nodes = HashSet::new();
-    let mut groups = HashSet::new();
+/// what the document moves (`Doc::nodes_moving_with`, `Doc::group_moving_with`),
+/// each box once.
+fn dragged(app: &App) -> (HashSet<String>, HashSet<String>) {
     match &app.drag {
-        Some(Drag::Nodes { ids, .. }) => {
-            nodes.extend(ids.iter().map(String::as_str));
-            for node in &app.doc.nodes {
-                if node.kind == NodeKind::Agent && node.parent.as_ref().is_some_and(|p| ids.contains(p)) {
-                    nodes.insert(node.id.as_str());
-                }
-            }
-        }
+        Some(Drag::Nodes { ids, .. }) => (app.doc.nodes_moving_with(ids).into_iter().collect(), HashSet::new()),
         Some(Drag::Group { id, .. }) => {
-            if let Some(group) = app.doc.group(id) {
-                let rect = group.rect();
-                groups.insert(group.id.as_str());
-                for node in &app.doc.nodes {
-                    let (cx, cy) = node.rect().center();
-                    if rect.contains(cx, cy) {
-                        nodes.insert(node.id.as_str());
-                    }
-                }
-                for other in &app.doc.groups {
-                    if other.id != group.id && rect.contains_rect(&other.rect()) {
-                        groups.insert(other.id.as_str());
-                    }
-                }
-            }
+            let (nodes, groups) = app.doc.group_moving_with(id);
+            (nodes.into_iter().collect(), groups.into_iter().collect())
         }
-        _ => {}
+        _ => (HashSet::new(), HashSet::new()),
     }
-    (nodes, groups)
 }
 
 /// Chips of a group in Gpu mode: in world units from [`CHIP_SCALE`] up,

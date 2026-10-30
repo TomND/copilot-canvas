@@ -416,10 +416,22 @@ fn canvas_wide_agent_detail() {
 fn selection_and_rubber_band() {
     let mut app = demo_at(0, 1.0);
     app.selection = vec!["demo-main".into(), "demo-review".into()];
-    app.drag = Some(Drag::Rubber { start: (38, 3), now: (70, 14), additive: false, right: true });
+    app.drag = Some(Drag::Rubber { start: (38, 3), now: (70, 14), additive: false, right: true, click: None });
     app.drag_origin = (38.5, 3.5);
     app.pointer = (70.5, 14.5);
     check("selection-rubber-band", &mut app, BOTH);
+}
+
+/// A mixed area selection (a session with its subagent box, a session with
+/// its subsession): every selected box is highlighted the same way, at
+/// 100 % and at 50 % (the TUI's compact boxes underline it).
+#[test]
+fn selection_with_subagents_and_subsessions() {
+    for (name, zoom, scale) in [("selection-subsessions-100", 0, 1.0), ("selection-subsessions-50", 1, 0.5)] {
+        let mut app = demo_at(zoom, scale);
+        app.selection = ["demo-main", "demo-main:explore", "demo-review", "demo-sub"].map(String::from).to_vec();
+        check(name, &mut app, Sections { cells: true, painted: true });
+    }
 }
 
 /// The new-session dialog: name, folder, the Agent row (one agent not

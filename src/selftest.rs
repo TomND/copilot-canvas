@@ -1596,7 +1596,7 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     let from =  (sx.min(cx).saturating_sub(3).max(CANVAS.0), sy.min(cy).saturating_sub(1));
     let to = (sx.max(cx) + 8, sy.max(cy) + 2);
     ui.drag(2, from, to)?;
-    ui.wait("multi-selection notice", Duration::from_secs(5), |t| t.contains("sessions selected"))?;
+    ui.wait("multi-selection notice", Duration::from_secs(5), |t| t.contains("sessions selected") || t.contains("boxes selected"))?;
     ui.send(b"g")?;
     ui.wait("group rename", Duration::from_secs(5), |t| t.contains("Rename group"))?;
     ui.send(b"\x15Selftest group\r")?;
@@ -1839,6 +1839,7 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     group_click_steps(&mut ui)?;
     report_steps(&mut ui, instance, work)?;
     layout_undo_steps(&mut ui, &canvas)?;
+    area_selection_steps(&mut ui, &canvas)?;
 
     step("stop all and quit");
     ui.send(b"\x1d")?;
@@ -2168,6 +2169,37 @@ fn layout_undo_steps<U: Ui>(ui: &mut U, canvas: &Path) -> Result<()> {
     wait_doc(canvas, "every box and group exactly where it was", |d| geometry(d) == geometry(&before))?;
     ui.wait("the undo notice", Duration::from_secs(5), |t| t.contains("Undid: moved group"))?;
     back_to_terminal(ui)
+}
+
+/// A right-drag (the TUI's area selection; the GUI's Shift-drag is the
+/// same gesture) that starts on a session and reaches its subagent box
+/// selects both, at 100 % and at 50 %; dragging the session then moves the
+/// subagent box once (not twice), and Ctrl+Z puts both back.
+fn area_selection_steps<U: Ui>(ui: &mut U, canvas: &Path) -> Result<()> {
+    step("an area selection over a session and its subagent box selects both at 100 % and 50 %; moving them moves the subagent once");
+    for pct in [100, 50] {
+        canvas_at(ui, pct)?;
+        let before = load(canvas)?;
+        let at = |d: &Doc, id: &str| d.node(id).map(|n| (n.x, n.y)).unwrap_or_default();
+        let (main, agent) = (at(&before, "demo-main"), at(&before, "demo-main:explore"));
+        // The name sits two cells into the box; the band starts on the box's
+        // corner and ends inside the subagent box (found from the document:
+        // at 50 % the active terminal's halo may cover its label).
+        let (mx, my) = ui.locate("Renamed by", CANVAS)?;
+        let cells = |world: i32| if pct == 100 { world } else { (world + 1) / 2 };
+        let end = ((mx - 2) as i32 + cells(agent.0 - main.0) + 3, my as i32 + cells(agent.1 - main.1));
+        ui.drag(2, (mx - 2, my), (end.0 as u16, end.1 as u16))?;
+        ui.wait(&format!("both selected at {pct} %"), Duration::from_secs(5), |t| t.contains("2 boxes selected (1 session, 1 subagent)"))?;
+        anyhow::ensure!(geometry(&load(canvas)?) == geometry(&before), "the area selection moved a box at {pct} %");
+        ui.drag(0, (mx, my), (mx + 3, my + 1))?;
+        let d = if pct == 100 { (3, 1) } else { (6, 2) };
+        let moved = |doc: &Doc, id: &str, from: (i32, i32)| at(doc, id) == (from.0 + d.0, from.1 + d.1);
+        wait_doc(canvas, &format!("the session and its subagent box moved once by {d:?} at {pct} %"), |doc| moved(doc, "demo-main", main) && moved(doc, "demo-main:explore", agent))?;
+        ui.send(b"\x1a")?;
+        wait_doc(canvas, "Ctrl+Z put both back", |doc| at(doc, "demo-main") == main && at(doc, "demo-main:explore") == agent)?;
+        back_to_terminal(ui)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

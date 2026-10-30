@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::app::{App, CanvasHit, Drag, Focus, SideKind};
+use crate::app::{App, CanvasHit, CanvasPress, Drag, Focus, SideKind};
 use crate::dialogs::{Action, Hit, Target};
 use crate::doc::NodeKind;
 use crate::input::{self, InputEvent, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -594,25 +594,32 @@ impl App {
             return;
         }
         self.set_focus(Focus::Canvas);
+        // Shift or Ctrl: an area selection wherever it starts (on a box, a
+        // stack or a group too); it never drags, starts or double-clicks
+        // anything. Released without moving, it toggles the box it was on.
+        if button == MouseButton::Left && additive {
+            self.last_click = None;
+            let click = self.press_target(x, y);
+            self.drag = Some(Drag::Rubber { start: (x, y), now: (x, y), additive: true, right: false, click });
+            return;
+        }
         let double = button == MouseButton::Left && self.is_double_click(x, y);
         // Stacks and effects first (a click on an effect never starts a session).
         if self.visual_mouse_down(button, x, y, double, additive) {
             return;
         }
         match (button, self.canvas_hit(x, y)) {
-            (MouseButton::Left, CanvasHit::Node(id)) if double && !additive => {
+            (MouseButton::Left, CanvasHit::Node(id)) if double => {
                 // The second click of a double-click: the explicit start.
                 self.drag = None;
                 self.start_node(&id);
             }
             (MouseButton::Left, CanvasHit::Node(id)) => {
-                if additive {
-                    self.select_node(&id, true);
-                } else if !self.selection.contains(&id) {
+                if !self.selection.contains(&id) {
                     self.select_node(&id, false);
                 }
                 let ids: Vec<String> = self.selection.clone();
-                self.drag = Some(Drag::Nodes { ids, start: (x, y), applied: (0, 0), moved: false, click: (!additive).then_some(id) });
+                self.drag = Some(Drag::Nodes { ids, start: (x, y), applied: (0, 0), moved: false, click: Some(id) });
             }
             (MouseButton::Left, CanvasHit::GroupResize(id)) => {
                 let orig = self.doc.group(&id).map(|g| (g.w, g.h)).unwrap_or((20, 6));
@@ -630,9 +637,6 @@ impl App {
                 let (wx, wy) = self.to_world(x as i32, y as i32);
                 self.run(Action::NewSession { at: Some((wx, wy)), parent: None });
             }
-            (MouseButton::Left, _) if additive => {
-                self.drag = Some(Drag::Rubber { start: (x, y), now: (x, y), additive: true, right: false });
-            }
             // Empty space pans; a click on a group's background or border selects it.
             (MouseButton::Left | MouseButton::Middle, hit) => {
                 let group = match (button, hit) {
@@ -641,20 +645,15 @@ impl App {
                 };
                 self.drag = Some(Drag::Pan { last: (x, y), moved: false, group });
             }
-            (MouseButton::Right, CanvasHit::Node(id)) => {
-                if !self.selection.contains(&id) {
-                    self.select_node(&id, false);
-                }
-                let menu = self.node_menu(&id);
-                self.open_menu(x, y, menu);
-            }
-            (MouseButton::Right, CanvasHit::GroupTitle(id) | CanvasHit::GroupResize(id)) => {
-                self.select_group(&id);
-                let menu = self.group_menu(&id);
-                self.open_menu(x, y, menu);
-            }
-            (MouseButton::Right, _) => {
-                self.drag = Some(Drag::Rubber { start: (x, y), now: (x, y), additive, right: true });
+            // Right: a drag selects by area wherever it starts; released
+            // where it was pressed, the menu of what is there.
+            (MouseButton::Right, hit) => {
+                let click = match hit {
+                    CanvasHit::Node(id) => Some(CanvasPress::Node(id)),
+                    CanvasHit::GroupTitle(id) | CanvasHit::GroupResize(id) => Some(CanvasPress::Group(id)),
+                    CanvasHit::GroupBody(_) | CanvasHit::Empty => None,
+                };
+                self.drag = Some(Drag::Rubber { start: (x, y), now: (x, y), additive, right: true, click });
             }
         }
     }
@@ -755,7 +754,7 @@ impl App {
                 let next = ((last.0 as i32 + consumed.0) as u16, (last.1 as i32 + consumed.1) as u16);
                 Drag::Pan { last: next, moved: moved || last != (x, y), group }
             }
-            Drag::Rubber { start, additive, right, .. } => Drag::Rubber { start, now: (x, y), additive, right },
+            Drag::Rubber { start, additive, right, click, .. } => Drag::Rubber { start, now: (x, y), additive, right, click },
             Drag::SidebarDivider => {
                 self.doc.ui.sidebar_width = x.saturating_sub(self.layout.sidebar.x).clamp(18, 70);
                 self.mark_dirty();
@@ -843,36 +842,17 @@ impl App {
             Drag::Group { moved: false, id, .. } => self.open_group(&id),
             Drag::Pan { moved: false, group: Some(group), .. } => self.select_group(&group),
             Drag::Pan { moved: false, group: None, .. } => self.clear_selection(),
-            Drag::Rubber { start, now, additive, right } => {
-                let moved = start.0.abs_diff(now.0) > 1 || start.1.abs_diff(now.1) > 0;
-                if !moved {
-                    if right {
-                        let (wx, wy) = self.to_world(x as i32, y as i32);
-                        let menu = self.canvas_menu(wx, wy);
-                        self.open_menu(x, y, menu);
-                    }
-                    return;
-                }
-                let area = if self.render_mode == RenderMode::Gpu {
-                    // The band as drawn, from the precise pointer positions.
-                    let (o, p) = (self.drag_origin, self.pointer);
-                    let (ax, ay) = self.to_world_f(o.0.min(p.0), o.1.min(p.1));
-                    let (bx, by) = self.to_world_f(o.0.max(p.0), o.1.max(p.1));
-                    let (x0, y0) = (ax.floor() as i32, ay.floor() as i32);
-                    crate::doc::Rect { x: x0, y: y0, w: (bx.ceil() as i32 - x0).max(1), h: (by.ceil() as i32 - y0).max(1) }
-                } else {
-                    let (ax, ay) = self.to_world(start.0.min(now.0) as i32, start.1.min(now.1) as i32);
-                    let (bx, by) = self.to_world(start.0.max(now.0) as i32 + 1, start.1.max(now.1) as i32 + 1);
-                    crate::doc::Rect { x: ax, y: ay, w: (bx - ax).max(1), h: (by - ay).max(1) }
+            Drag::Rubber { start, now, additive, right, click } => {
+                // The GUI measures the precise pointer (a jitter across a row
+                // boundary is still a click); the TUI whole cells.
+                let moved = match self.render_mode {
+                    RenderMode::Gpu => (self.pointer.0 - self.drag_origin.0).abs() >= 1.0 || (self.pointer.1 - self.drag_origin.1).abs() >= 0.6,
+                    RenderMode::Cells => start.0.abs_diff(now.0) > 1 || start.1.abs_diff(now.1) > 0,
                 };
-                let concealed = self.concealed_now();
-                let hits: Vec<String> = self
-                    .doc
-                    .nodes
-                    .iter()
-                    .filter(|n| n.kind == NodeKind::Session && n.rect().intersects(&area) && !concealed.contains_key(&n.id))
-                    .map(|n| n.id.clone())
-                    .collect();
+                if !moved {
+                    return self.canvas_press_up(click, right, x, y);
+                }
+                let hits = self.area_hits(start, now);
                 if !additive {
                     self.selection.clear();
                 }
@@ -883,7 +863,15 @@ impl App {
                 }
                 self.selected_group = None;
                 if self.selection.len() > 1 {
-                    self.notify(format!("{} sessions selected — press G to group them.", self.selection.len()), false);
+                    let agents = self.selection.iter().filter(|id| self.doc.node(id).is_some_and(|n| n.kind == NodeKind::Agent)).count();
+                    let sessions = self.selection.len() - agents;
+                    let text = if agents == 0 {
+                        format!("{sessions} sessions selected — press G to group them.")
+                    } else {
+                        let (s, a) = (if sessions == 1 { "" } else { "s" }, if agents == 1 { "" } else { "s" });
+                        format!("{} boxes selected ({sessions} session{s}, {agents} subagent{a}) — G groups them, Del removes them.", self.selection.len())
+                    };
+                    self.notify(text, false);
                 }
             }
             Drag::SidebarDivider | Drag::TermDivider => self.last_sizes.clear(),
@@ -893,6 +881,105 @@ impl App {
             self.commit_layout();
         }
         self.mark_dirty();
+    }
+
+    /// What a press is on, for an area selection that may end as a click:
+    /// a stack's deck, else a box.
+    fn press_target(&mut self, x: u16, y: u16) -> Option<CanvasPress> {
+        if let Some(root) = self.deck_root_at(x, y) {
+            return Some(CanvasPress::Deck(root));
+        }
+        match self.canvas_hit(x, y) {
+            CanvasHit::Node(id) => Some(CanvasPress::Node(id)),
+            _ => None,
+        }
+    }
+
+    /// An area selection released where it was pressed: a right-click opens
+    /// the menu of what is there (a box, a stack, a group, the canvas); a
+    /// Shift- or Ctrl-click toggles the box (a stack: its top card) in the
+    /// selection and clears its effects. Nothing starts.
+    fn canvas_press_up(&mut self, click: Option<CanvasPress>, right: bool, x: u16, y: u16) {
+        match (right, click) {
+            (true, Some(CanvasPress::Node(id))) => {
+                if !self.selection.contains(&id) {
+                    self.select_node(&id, false);
+                }
+                let menu = self.node_menu(&id);
+                self.open_menu(x, y, menu);
+            }
+            (true, Some(CanvasPress::Group(id))) => {
+                self.select_group(&id);
+                let menu = self.group_menu(&id);
+                self.open_menu(x, y, menu);
+            }
+            (true, Some(CanvasPress::Deck(root))) => {
+                if let Some(deck) = self.deck_of(&root) {
+                    self.select_node(&deck.top, false);
+                    let menu = self.stack_menu(&deck);
+                    self.open_menu(x, y, menu);
+                }
+            }
+            (true, None) => {
+                let (wx, wy) = self.to_world(x as i32, y as i32);
+                let menu = self.canvas_menu(wx, wy);
+                self.open_menu(x, y, menu);
+            }
+            (false, Some(CanvasPress::Node(id))) => {
+                let acks = self.effects_on(std::slice::from_ref(&id));
+                self.ack_effects(acks);
+                self.select_node(&id, true);
+            }
+            (false, Some(CanvasPress::Deck(root))) => {
+                if let Some(deck) = self.deck_of(&root) {
+                    let acks = self.effects_on(&deck.sessions);
+                    self.ack_effects(acks);
+                    self.select_node(&deck.top, true);
+                }
+            }
+            (false, Some(CanvasPress::Group(_)) | None) => {}
+        }
+    }
+
+    /// The boxes an area selection takes: every box drawn on its own
+    /// (sessions, subsessions, subagent boxes, passive sessions; automation
+    /// boxes are laid out by their group) whose drawn rectangle meets the
+    /// band, never boxes in a stack or hidden with every subsession. Band and
+    /// boxes are compared as drawn and hit-tested at every zoom: in cells
+    /// (`node_screen`) in the TUI, the boxes' world rectangles at the precise
+    /// pointer positions in the GUI (`canvas_hit_f`, the canvas model). The
+    /// band ends at the canvas's edges.
+    pub fn area_hits(&self, start: (u16, u16), now: (u16, u16)) -> Vec<String> {
+        let concealed = self.concealed_now();
+        let c = self.layout.canvas;
+        let selectable = self.doc.nodes.iter().filter(|n| n.kind != NodeKind::Automation && !concealed.contains_key(&n.id));
+        match self.render_mode {
+            RenderMode::Gpu => {
+                let (o, p) = (self.drag_origin, self.pointer);
+                let (sx0, sx1) = (o.0.min(p.0).max(c.x as f32), o.0.max(p.0).min(c.right() as f32));
+                let (sy0, sy1) = (o.1.min(p.1).max(c.y as f32), o.1.max(p.1).min(c.bottom() as f32));
+                let (ax, ay) = self.to_world_f(sx0, sy0);
+                let (bx, by) = self.to_world_f(sx1, sy1);
+                selectable
+                    .filter(|n| {
+                        let r = n.rect();
+                        (r.x as f32) <= bx && ((r.x + r.w) as f32) > ax && (r.y as f32) <= by && ((r.y + r.h) as f32) > ay
+                    })
+                    .map(|n| n.id.clone())
+                    .collect()
+            }
+            RenderMode::Cells => {
+                let (x0, x1) = (start.0.min(now.0).max(c.x) as i32, start.0.max(now.0).min(c.right().saturating_sub(1)) as i32);
+                let (y0, y1) = (start.1.min(now.1).max(c.y) as i32, start.1.max(now.1).min(c.bottom().saturating_sub(1)) as i32);
+                selectable
+                    .filter(|n| {
+                        let (x, y, w, h) = self.node_screen(n);
+                        x <= x1 && x + w > x0 && y <= y1 && y + h > y0
+                    })
+                    .map(|n| n.id.clone())
+                    .collect()
+            }
+        }
     }
 
     fn mouse_scroll(&mut self, kind: MouseEventKind, x: u16, y: u16, modifiers: Modifiers) {
@@ -941,6 +1028,189 @@ impl App {
             self.doc.view.y += if forward { -amount } else { amount };
         }
         self.mark_dirty();
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use std::collections::BTreeSet;
+
+    use crate::app::App;
+    use crate::dialogs::Modal;
+    use crate::input::{KeyCode, Modifiers, MouseButton};
+    use crate::undo::fixture::*;
+    use crate::view::RenderMode;
+
+    /// A box's rectangle as drawn (fractional cells): the TUI's cells, the GUI's model.
+    fn drawn(app: &App, id: &str) -> (f32, f32, f32, f32) {
+        let node = app.doc.node(id).unwrap();
+        match app.render_mode {
+            RenderMode::Cells => {
+                let (x, y, w, h) = app.node_screen(node);
+                (x as f32, y as f32, w as f32, h as f32)
+            }
+            RenderMode::Gpu => {
+                let r = node.rect();
+                let (x, y) = app.to_screen_f(r.x as f32, r.y as f32);
+                (x, y, r.w as f32 * app.scale_f(), r.h as f32 * app.scale_f())
+            }
+        }
+    }
+
+    /// A band from inside the first box's corner to inside the far corner of
+    /// the union of `ids` as drawn (in the TUI: the cells' centres).
+    fn band(app: &App, ids: &[&str]) -> ((f32, f32), (f32, f32)) {
+        let rects: Vec<_> = ids.iter().map(|id| drawn(app, id)).collect();
+        let x0 = rects.iter().map(|r| r.0).fold(f32::MAX, f32::min);
+        let y0 = rects.iter().map(|r| r.1).fold(f32::MAX, f32::min);
+        let x1 = rects.iter().map(|r| r.0 + r.2).fold(f32::MIN, f32::max);
+        let y1 = rects.iter().map(|r| r.1 + r.3).fold(f32::MIN, f32::max);
+        match app.render_mode {
+            RenderMode::Cells => ((x0 + 0.5, y0 + 0.5), (x1 - 0.5, y1 - 0.5)),
+            RenderMode::Gpu => ((x0 + 0.1, y0 + 0.1), (x1 - 0.1, y1 - 0.1)),
+        }
+    }
+
+    fn selected(app: &App) -> BTreeSet<&str> {
+        app.selection.iter().map(String::as_str).collect()
+    }
+
+    fn set<'a>(ids: &[&'a str]) -> BTreeSet<&'a str> {
+        ids.iter().copied().collect()
+    }
+
+    /// The TUI at 100, 50 and 25 %; the GUI at 100, 50, 25 % and a continuous
+    /// 70 % with a fractional origin.
+    fn every_zoom() -> Vec<(App, crossbeam_channel::Receiver<crate::protocol::ClientMsg>, String)> {
+        let mut out = Vec::new();
+        for zoom in 0..3u8 {
+            let (mut app, sent) = app(false);
+            app.doc.view.zoom = zoom;
+            out.push((app, sent, format!("cells zoom {zoom}")));
+        }
+        for scale in [1.0, 0.5, 0.25, 0.7] {
+            let (mut app, sent) = app(true);
+            app.view_scale = scale;
+            if scale == 0.7 {
+                app.view_frac = (0.25, 0.5);
+            }
+            out.push((app, sent, format!("gpu {scale}")));
+        }
+        out
+    }
+
+    #[test]
+    fn area_selection_takes_subagents_and_subsessions_like_sessions_at_every_zoom() {
+        for (mut app, sent, mode) in every_zoom() {
+            let before = layout(&app);
+            // Shift-drag from on top of the parent over its subagent box.
+            let (from, to) = band(&app, &["p", "p:helper"]);
+            drag(&mut app, MouseButton::Left, from, to, Modifiers::SHIFT);
+            assert_eq!(selected(&app), set(&["p", "p:helper"]), "{mode}");
+            assert!(notice(&app).starts_with("2 boxes selected (1 session, 1 subagent)"), "{mode}: {}", notice(&app));
+            // Parents and children together: the subsession and its subagent too.
+            let (from, to) = band(&app, &["p", "c", "c:x"]);
+            drag(&mut app, MouseButton::Left, from, to, Modifiers::SHIFT);
+            assert_eq!(selected(&app), set(&["p", "p:helper", "c", "c:x"]), "{mode}");
+            // A right-drag selects the same way (replacing the selection).
+            let (from, to) = band(&app, &["c:x"]);
+            drag(&mut app, MouseButton::Right, (from.0, from.1), (to.0 + 0.6, to.1 + 0.6), Modifiers::NONE);
+            assert_eq!(selected(&app), set(&["c:x"]), "{mode}");
+            assert!(app.modals.is_empty(), "a right-drag opens no menu ({mode})");
+            assert_eq!(layout(&app), before, "area selection never drags a box ({mode})");
+            assert_eq!(starts_or_stops(&sent), 0, "nor starts one ({mode})");
+        }
+    }
+
+    #[test]
+    fn the_band_meets_boxes_where_they_are_drawn() {
+        // The TUI at 25 %: "p" (world 2..32) is drawn in cells 0..6; the cells
+        // right of it are another box's world, not this one's.
+        let (mut app, _sent) = app(false);
+        app.doc.view.zoom = 2;
+        assert_eq!(drawn(&app, "p"), (0.0, 0.0, 7.0, 1.0));
+        drag(&mut app, MouseButton::Left, (7.5, 0.5), (9.5, 0.5), Modifiers::SHIFT);
+        assert!(app.selection.is_empty(), "{:?}", app.selection);
+        drag(&mut app, MouseButton::Left, (6.5, 0.5), (9.5, 0.5), Modifiers::SHIFT);
+        assert_eq!(selected(&app), set(&["p"]), "its last drawn cell");
+    }
+
+    #[test]
+    fn hidden_and_stacked_subsessions_stay_out_of_area_selection() {
+        for gpu in [false, true] {
+            let (mut app, _sent) = app(gpu);
+            let everything = ((1.5, 1.5), (105.5, 25.5));
+            key(&mut app, KeyCode::Char('h'), Modifiers::NONE);
+            drag(&mut app, MouseButton::Left, everything.0, everything.1, Modifiers::SHIFT);
+            assert_eq!(selected(&app), set(&["p", "p:helper", "o"]), "hidden subsessions (gpu {gpu})");
+            key(&mut app, KeyCode::Char('h'), Modifiers::NONE);
+            app.set_stacked("p", true);
+            drag(&mut app, MouseButton::Left, everything.0, everything.1, Modifiers::SHIFT);
+            assert_eq!(selected(&app), set(&["p", "p:helper", "o"]), "a stack's boxes (gpu {gpu})");
+            app.set_stacked("p", false);
+            drag(&mut app, MouseButton::Left, everything.0, everything.1, Modifiers::SHIFT);
+            assert_eq!(selected(&app), set(&["p", "p:helper", "c", "c:x", "o"]), "shown again (gpu {gpu})");
+        }
+    }
+
+    #[test]
+    fn shift_and_ctrl_clicks_toggle_boxes_and_never_drag_or_start() {
+        for gpu in [false, true] {
+            let (mut app, sent) = app(gpu);
+            let before = layout(&app);
+            click(&mut app, MouseButton::Left, (5.5, 3.5), Modifiers::SHIFT);
+            click(&mut app, MouseButton::Left, (45.5, 3.5), Modifiers::SHIFT);
+            assert_eq!(app.selection, ["p", "c"], "gpu {gpu}");
+            click(&mut app, MouseButton::Left, (5.5, 3.5), Modifiers::SHIFT);
+            click(&mut app, MouseButton::Left, (10.5, 9.5), Modifiers::CONTROL);
+            assert_eq!(app.selection, ["c", "p:helper"], "gpu {gpu}");
+            // A Shift-double-click is two toggles; a click right after a Shift-click is no double-click.
+            click(&mut app, MouseButton::Left, (45.5, 3.5), Modifiers::SHIFT);
+            click(&mut app, MouseButton::Left, (45.5, 3.5), Modifiers::SHIFT);
+            click(&mut app, MouseButton::Left, (45.5, 3.5), Modifiers::SHIFT);
+            click(&mut app, MouseButton::Left, (45.5, 3.5), Modifiers::NONE);
+            assert_eq!(app.selection, ["c"], "the plain click views it");
+            // Shift-dragging from a box (or a group's title) never moves anything.
+            drag(&mut app, MouseButton::Left, (5.5, 3.5), (20.5, 12.5), Modifiers::SHIFT);
+            drag(&mut app, MouseButton::Left, (10.5, 0.5), (30.5, 5.5), Modifiers::SHIFT);
+            assert_eq!(layout(&app), before, "gpu {gpu}");
+            assert!(app.undo.is_empty());
+            assert_eq!(starts_or_stops(&sent), 0, "gpu {gpu}");
+        }
+    }
+
+    #[test]
+    fn a_right_click_opens_the_menu_of_what_is_under_it() {
+        let (mut app, _sent) = app(false);
+        let title = |app: &App| match app.modals.last() {
+            Some(Modal::Menu(menu)) => menu.title.clone(),
+            _ => String::new(),
+        };
+        click(&mut app, MouseButton::Right, (5.5, 3.5), Modifiers::NONE);
+        assert_eq!((title(&app), app.selection.clone()), ("p".to_owned(), vec!["p".to_owned()]));
+        app.modals.clear();
+        click(&mut app, MouseButton::Right, (10.5, 0.5), Modifiers::NONE);
+        assert_eq!((title(&app), app.selected_group.as_deref()), ("Team".to_owned(), Some("g")));
+        app.modals.clear();
+        click(&mut app, MouseButton::Right, (150.5, 40.5), Modifiers::NONE);
+        assert_eq!(title(&app), "Canvas");
+    }
+
+    #[test]
+    fn removing_a_mixed_selection_follows_the_single_box_rules_and_undoes_at_once() {
+        let (mut app, _sent) = app(false);
+        let (from, to) = band(&app, &["p", "c", "c:x"]);
+        drag(&mut app, MouseButton::Left, from, to, Modifiers::SHIFT);
+        key(&mut app, KeyCode::Delete, Modifiers::NONE);
+        let Some(Modal::Confirm(confirm)) = app.modals.last().cloned() else { panic!("a confirmation") };
+        assert_eq!(confirm.title, "Remove 4 from the canvas?");
+        app.modals.clear();
+        app.run(confirm.buttons[0].1.clone());
+        let left: Vec<&str> = app.doc.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(left, ["o", "z"], "the parent, its subagent, the subsession and its subagent");
+        ctrl(&mut app, 'z');
+        assert_eq!(app.doc.nodes.len(), 6);
+        assert_eq!(app.doc.node("c").and_then(|n| n.parent.as_deref()), Some("p"), "the link comes back too");
     }
 }
 

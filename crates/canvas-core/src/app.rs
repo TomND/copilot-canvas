@@ -77,11 +77,24 @@ pub enum Drag {
     /// Panning; `group`: pressed on a group's background or border (a click
     /// without moving selects that group).
     Pan { last: (u16, u16), moved: bool, group: Option<String> },
-    Rubber { start: (u16, u16), now: (u16, u16), additive: bool, right: bool },
+    /// An area selection (Shift- or Ctrl-drag, right-drag), wherever it
+    /// started; `click`: what the press was on, for a release that did not
+    /// move (a Shift-click toggles a box, a right-click opens its menu).
+    Rubber { start: (u16, u16), now: (u16, u16), additive: bool, right: bool, click: Option<CanvasPress> },
     SidebarDivider,
     TermDivider,
     /// Selecting text in a terminal pane.
     Select { id: String, anchor: (u16, u16), moved: bool },
+}
+
+/// What a press that begins an area selection was on.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CanvasPress {
+    Node(String),
+    /// A stack's deck (its parent's id).
+    Deck(String),
+    /// A group's title or ◢ corner.
+    Group(String),
 }
 
 #[derive(Default, Clone)]

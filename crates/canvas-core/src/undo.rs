@@ -496,6 +496,11 @@ pub(crate) mod fixture {
         mouse(app, MouseEventKind::Up(button), to, mods);
     }
 
+    pub fn click(app: &mut App, button: MouseButton, at: (f32, f32), mods: Modifiers) {
+        mouse(app, MouseEventKind::Down(button), at, mods);
+        mouse(app, MouseEventKind::Up(button), at, mods);
+    }
+
     pub fn key(app: &mut App, code: KeyCode, mods: Modifiers) {
         app.on_input(vec![InputEvent::Key(KeyEvent::new(code, mods))]);
     }

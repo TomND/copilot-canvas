@@ -16,7 +16,7 @@ const HELP: &[(&str, &str)] = &[
     ("RECENT (top of the sidebar)", "your last-used sessions, newest first"),
     ("Drag a box", "move it (its subagents follow)"),
     ("Drag empty space / middle-drag", "pan"),
-    ("Shift-drag or right-drag", "select several sessions"),
+    ("Shift-drag or right-drag", "select boxes (subagents, subsessions)"),
     ("Wheel / Shift+wheel", "pan vertical / horizontal"),
     ("Alt+wheel or Ctrl+wheel · toolbar − +", "zoom (100% · 50% · 25%)"),
     ("Drag a group title / ◢ corner", "move / resize the group"),

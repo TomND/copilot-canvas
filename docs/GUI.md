@@ -440,6 +440,7 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
 | View / start | a click (canvas or sidebar) only views a box: its live terminal, else its details panel; a double-click, Enter, the panel's **▸ Start** / **▸ Resume** or the box menu starts it. An exited terminal stays on screen while it has the focus |
 | Recent sessions | the sidebar's **RECENT** rows (newest first; a click views, a double-click starts; the header folds them); **Ctrl+F6** / **Ctrl+Shift+F6** anywhere (a terminal too) and `]` / `[` on the canvas or sidebar view the next older or newer one without starting it; the list reorders a second after the last step |
 | Select a group | click its empty background (a drag there still pans) or its outline, up to about half a cell outside it (`BORDER_SLACK`); the innermost group wins; the selected group is drawn heavier |
+| Select several | Shift-drag (or Ctrl-drag, right-drag) from anywhere, on a box too: the band (precise pointer positions, clipped to the canvas) takes every box whose drawn rectangle it meets, the same world rectangles the model draws and `canvas_hit_f` hits at any scale: sessions, subsessions and subagent boxes, never stacked or hidden ones (`App::area_hits`); it never drags or starts anything. A Shift/Ctrl-click toggles a box, a right-click without moving opens the menu there |
 | Inspect | the box menu's or details panel's **Inspect transcript**: a read-only modal (wheel scrolls, Copy, Close); a finished OpenCode child offers **Resume as subsession** there |
 | Reports | `Alt+9` or the activity bar's ✉ (gold with the unread count): a click on a row opens the viewer (Markdown formatted, HTML in the WebView2 view); its buttons view the session (never start it), open the PR, step ◂ Older / Newer ▸ through a thread, copy, mark unread, delete; a link in a report asks first; Esc closes (in the HTML view too) |
 | Remove | right-click on a selected box (or Del) with several selected: "Remove N from canvas" after a confirmation; running sessions stay; Ctrl+Z restores |
@@ -476,7 +477,8 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   needs you, done · review, idle, stopped, failed three ways, open elsewhere,
   running, preparing); subagents (working, finished, failed), a subsession's
   dashed edge, a loop and a queued message; groups with lit and dim folder
-  chips; a selection with a rubber band; the new-session dialog (Agent row
+  chips; a selection with a rubber band; a mixed selection (sessions, a
+  subagent box and a subsession) at 100 and 50 %; the new-session dialog (Agent row
   with an agent that is not installed, the Model row with the initial
   default), the dialog in a group with its own model, the model picker (an
   agent's model list); the MCP picker with a preset; the
@@ -489,7 +491,7 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   `UPDATE_SNAPSHOTS=1 cargo test -p canvas-core --test view_snapshots`
   accepts the new texts.
 - `copilot-canvas selftest --client gui [--remote loopback]` runs the TUI
-  self-test's 36 steps against the GUI in a 170 × 46 cell window. A `Ui`
+  self-test's 37 steps against the GUI in a 170 × 46 cell window. A `Ui`
   trait has two drivers: the TUI's hidden pseudoconsole and `GuiDriver`,
   which starts `copilot-canvas-gui.exe --test-hooks --size 170x46` and turns
   the terminal input the scenario sends (keys, Alt+digits, Ctrl+letters, SGR

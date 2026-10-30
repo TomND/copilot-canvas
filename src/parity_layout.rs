@@ -1,7 +1,9 @@
-//! The parity suite's check of canvas layout undo (row 44), on a canvas of
-//! its own: a group with a parent session, its subagent box, a subsession
-//! with its subagent box in a nested group, a shell and another session.
+//! The parity suite's checks of canvas layout undo (row 44) and area
+//! selection of subsessions (row 45), on a canvas of their own: a group with
+//! a parent session, its subagent box, a subsession with its subagent box in
+//! a nested group, a shell and another session.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -74,6 +76,14 @@ fn group_rect(gui: &Gui, id: &str) -> Result<[f64; 4]> {
     tree["canvas"]["groups"].as_array().and_then(|g| g.iter().find(|g| g["id"] == id)).and_then(|g| rect(&g["rect"])).with_context(|| format!("group {id} in view"))
 }
 
+fn selection(gui: &Gui) -> Result<BTreeSet<String>> {
+    Ok(gui.tree()?["selection"].as_array().map(|s| s.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default())
+}
+
+fn ids(list: &[&str]) -> BTreeSet<String> {
+    list.iter().map(|s| s.to_string()).collect()
+}
+
 /// `+` / `-` until the canvas is at `scale`.
 fn zoom_to(gui: &mut Gui, scale: f64) -> Result<()> {
     for _ in 0..8 {
@@ -104,6 +114,55 @@ pub(super) fn rows(sb: &Sandbox, rows: &mut Vec<Row>) {
     if let Err(error) = gui.wait("the layout canvas", 25, |t| t.contains("Layout group")) {
         return check(rows, "44", "Layout undo", "layout_canvas", || Err(error));
     }
+
+    check(rows, "45", "New: Shift-drag selects subagent boxes and subsessions like sessions (100 % and 50 %), never hidden ones; the selection moves each box once", "subsession_area_selection", || {
+        let before_launches = launches(sb);
+        gui.canvas_focus()?;
+        gui.key("Esc", &[])?;
+        let mut detail = Vec::new();
+        for scale in [1.0, 0.5] {
+            zoom_to(&mut gui, scale)?;
+            let start = sb_doc(&path)?;
+            // From on top of the parent over its subagent box: an area, never a drag.
+            let (_, p) = gui.find_box("Parent")?;
+            let (_, h) = gui.find_box("Helper")?;
+            gui.drag("left", (p[0] + 0.6, p[1] + 0.4), (h[0] + h[2] - 0.6, h[1] + h[3] - 0.3), &["shift"])?;
+            gui.wait_tree(&format!("parent and subagent selected at {scale}"), 5, |t| t["selection"].as_array().is_some_and(|s| s.len() == 2))?;
+            anyhow::ensure!(selection(&gui)? == ids(&["l-parent", "l-parent:helper"]), "at {scale}: {:?}", selection(&gui)?);
+            // Adding the subsession (Shift adds).
+            let (_, c) = gui.find_box("Child")?;
+            gui.drag("left", (c[0] + 0.6, c[1] + 0.4), (c[0] + c[2] - 0.6, c[1] + c[3] - 0.3), &["shift"])?;
+            gui.wait_tree("the subsession added", 5, |t| t["selection"].as_array().is_some_and(|s| s.len() == 3))?;
+            anyhow::ensure!(selection(&gui)? == ids(&["l-parent", "l-parent:helper", "l-child"]), "at {scale}: {:?}", selection(&gui)?);
+            anyhow::ensure!(geometry(&sb_doc(&path)?) == geometry(&start), "a Shift-drag moved a box at {scale}");
+            // Dragging the parent moves every selected box (and the subsession's subagent box) once.
+            let at = gui.box_center("Parent")?;
+            gui.drag("left", at, (at.0 + 3.0, at.1 + 1.0), &[])?;
+            let d = ((3.0 / scale) as i32, (1.0 / scale) as i32);
+            let pos = |doc: &Doc, id: &str| doc.node(id).map(|n| (n.x, n.y)).unwrap_or_default();
+            let moved = wait_doc(&path, &format!("the parent moved by {d:?}"), |doc| pos(doc, "l-parent") == (pos(&start, "l-parent").0 + d.0, pos(&start, "l-parent").1 + d.1))?;
+            let delta = |id: &str| (pos(&moved, id).0 - pos(&start, id).0, pos(&moved, id).1 - pos(&start, id).1);
+            for id in ["l-parent:helper", "l-child", "l-child:x"] {
+                anyhow::ensure!(delta(id) == d, "{id} moved by {:?}, the parent by {d:?} (at {scale})", delta(id));
+            }
+            anyhow::ensure!(delta("l-other") == (0, 0) && delta("l-shell") == (0, 0), "boxes outside the selection stay");
+            gui.chord('z', &["ctrl"])?;
+            wait_doc(&path, "Ctrl+Z put the selection back", |doc| geometry(doc) == geometry(&start))?;
+            gui.key("Esc", &[])?;
+            detail.push(format!("{:.0} %: parent + subagent, + subsession, each moved once by {d:?}", scale * 100.0));
+        }
+        // Hidden subsessions are out of reach.
+        gui.send("h")?;
+        let g = group_rect(&gui, "g-layout")?;
+        gui.drag("left", (g[0] + 1.5, g[1] + 1.5), (g[0] + g[2] - 1.5, g[1] + g[3] - 1.5), &["shift"])?;
+        let hidden = gui.wait_tree("the visible boxes selected", 5, |t| t["selection"].as_array().is_some_and(|s| s.len() >= 3))?;
+        let chosen: BTreeSet<String> = hidden["selection"].as_array().map(|s| s.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+        anyhow::ensure!(!chosen.contains("l-child") && !chosen.contains("l-child:x") && chosen.contains("l-parent:helper"), "with subsessions hidden: {chosen:?}");
+        gui.send("h")?;
+        gui.key("Esc", &[])?;
+        anyhow::ensure!(launches(sb) == before_launches, "an area selection started a session");
+        Ok(format!("{}; hidden ones left out ({} selected); nothing started", detail.join("; "), chosen.len()))
+    });
 
     check(rows, "44", "New: Ctrl+Z undoes a group drag (boxes, subagents, nested group) and a ◢ resize, one gesture per step, to the exact places; Ctrl+Y redoes; in a terminal Ctrl+Z is the program's", "layout_undo_redo", || {
         gui.canvas_focus()?;
