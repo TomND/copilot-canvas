@@ -1256,7 +1256,9 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
     });
 
     check(rows, "14", "Copy and paste: drag-select (rejoin), copy on release, Ctrl+C, Ctrl+Shift+C, Ctrl+V, pane menu", "copy_on_release_and_paste", || {
-        gui.send("Write-Output ('COPY_' + 'PROBE_TEXT')\r")?;
+        // Cleared first: on the full screen row 12 leaves, the text lands on the last row and the
+        // prompt after it scrolls it up one row, away from a drag aimed at it.
+        gui.send("Clear-Host; Write-Output ('COPY_' + 'PROBE_TEXT')\r")?;
         gui.wait("text printed", 10, |t| t.lines().any(|l| l.contains("COPY_PROBE_TEXT") && !l.contains("PROBE_TEXT'")))?;
         let (x, y) = gui
             .driver
