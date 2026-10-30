@@ -683,6 +683,13 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
                 }
                 continue;
             }
+            // Review follow-up requests (copilot-canvas review …, a window's buttons): the same.
+            if super::reviews::is_request(&event) {
+                for follow in super::reviews::request(&shared, &routing, &mut state, &event, now) {
+                    handle_event(&shared, &routing, &mut state, follow, now);
+                }
+                continue;
+            }
             let tracked = super::prs::observe(&shared, &routing, &event, now);
             handle_event(&shared, &routing, &mut state, event, now);
             if let Some(tracked) = tracked {
@@ -723,15 +730,23 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
         }
         // Follow-ups for pull request owners move along (queued, blocked, failed).
         super::prs::tick(&shared, &routing, &mut state, now);
+        // Review requests move along; the hourly check of the authors' conversations.
+        for event in super::reviews::tick(&shared, &routing, &mut state, now) {
+            handle_event(&shared, &routing, &mut state, event, now);
+        }
         // Forget state of removed passive sessions; mail for gone sessions stays a day.
         retain_states(&mut state, &routing, now);
         state.mailbox.retain(|m| now.saturating_sub(m.ms) < 86_400_000);
         if let Some(mail) = deliver_mail(&shared, &mut state) {
-            super::prs::delivered(&shared, &routing, &mail, now);
+            // Delivered after it was queued, even within one pass (the inbox orders a thread by time).
+            let delivered_at = now_ms().max(now + 1);
+            super::prs::delivered(&shared, &routing, &mail, delivered_at);
+            super::reviews::delivered(&shared, &routing, &mail, delivered_at);
         }
         *lock(&shared.bus) = state.clone();
         let mut view = state.snapshot(&routing, now);
         view.prs = super::prs::view(&shared, &routing);
+        view.reviews = super::reviews::view(&shared, &routing);
         let snapshot = serde_json::to_string(&view).unwrap_or_default();
         if snapshot != last_snapshot {
             shared.broadcast(ServiceMsg::Bus { json: snapshot.clone() });
@@ -799,6 +814,11 @@ pub(super) fn action(shared: &Shared, json: &str, incoming: &crossbeam_channel::
             let event = Event { kind: crate::prs_cli::REQUEST.into(), source_name: "you".into(), data: value.clone(), ms: now, ..Default::default() };
             let _ = incoming.try_send(event);
         }
+        "reviews" => {
+            // A window's review follow-up buttons (approve, dismiss, assign, unwatch, check now): as you.
+            let event = Event { kind: crate::reviews_cli::REQUEST.into(), source_name: "you".into(), data: value.clone(), ms: now, ..Default::default() };
+            let _ = incoming.try_send(event);
+        }
         _ => {}
     }
 }
@@ -821,6 +841,7 @@ pub(super) fn snapshot(shared: &Shared) -> String {
     let routing = lock(&shared.routing).clone();
     let mut view = lock(&shared.bus).snapshot(&routing, now_ms());
     view.prs = super::prs::view(shared, &routing);
+    view.reviews = super::reviews::view(shared, &routing);
     serde_json::to_string(&view).unwrap_or_default()
 }
 

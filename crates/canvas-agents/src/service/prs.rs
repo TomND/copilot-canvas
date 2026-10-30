@@ -92,17 +92,17 @@ pub(super) fn reach(routing: &Routing, id: &str, running: bool, elsewhere: bool)
     Err("the session is not running: resume it (the follow-up is typed in once it is idle), reassign or dismiss".into())
 }
 
-fn running(shared: &Shared, id: &str) -> bool {
+pub(super) fn running(shared: &Shared, id: &str) -> bool {
     lock(&shared.terms).get(id).is_some_and(|t| t.alive.load(Ordering::Acquire))
 }
 
-fn elsewhere(shared: &Shared, id: &str) -> bool {
+pub(super) fn elsewhere(shared: &Shared, id: &str) -> bool {
     let native = shared.native_of(id);
     lock(&shared.sessions).get(&native).is_some_and(|s| s.live)
 }
 
 /// The name a request comes from: a session's or agent's, else `you`.
-fn who(routing: &Routing, source: &str) -> String {
+pub(super) fn who(routing: &Routing, source: &str) -> String {
     if source.is_empty() {
         return "you".into();
     }
@@ -110,8 +110,35 @@ fn who(routing: &Routing, source: &str) -> String {
 }
 
 /// A canvas-wide agent (or you, no source).
-fn wide(routing: &Routing, source: &str) -> bool {
+pub(super) fn wide(routing: &Routing, source: &str) -> bool {
     source.is_empty() || routing.passive_by_session(source).is_some_and(|p| p.canvas_wide)
+}
+
+/// Tracks a pull request a review session reviewed (review follow-ups):
+/// only its end is watched, and only when no session owns it already.
+pub(super) fn track_reviewed(shared: &Shared, routing: &Routing, pr: &PrRef, reviewer: &str, now: u64) {
+    if !crate::doc::valid_canvas_id(&routing.canvas) {
+        return;
+    }
+    let mut hub = lock(&shared.prs);
+    hub.open(&shared.instance.home, &routing.canvas);
+    if hub.registry.get(&pr.key()).is_some_and(|p| !p.state.ended()) {
+        return;
+    }
+    let name = routing.names.get(reviewer).cloned().unwrap_or_default();
+    let tracked = TrackedPr::new(pr.clone(), Role::Reviewed, reviewer, &name, &routing.members.get(reviewer).cloned().unwrap_or_default(), "reviewed (review follow-ups)", now);
+    if hub.registry.track(tracked, false).is_ok() {
+        hub.save(&shared.instance.home);
+    }
+}
+
+/// Keys of the routed canvas's pull requests that ended (merged, closed, abandoned).
+pub(super) fn ended(shared: &Shared, routing: &Routing) -> Vec<String> {
+    let hub = lock(&shared.prs);
+    if hub.canvas != routing.canvas {
+        return Vec::new();
+    }
+    hub.registry.prs.iter().filter(|p| p.state.ended()).map(|p| p.key.clone()).collect()
 }
 
 /// Handles a request (`copilot-canvas pr …`, or a window's button); answers

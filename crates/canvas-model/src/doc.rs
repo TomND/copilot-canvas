@@ -138,6 +138,10 @@ pub struct Passive {
     /// pull requests; `None`: off).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prs: Option<crate::prs::PrSettings>,
+    /// Review follow-ups of a canvas-wide agent (messaging channel, approval,
+    /// hourly checks; `None`: off).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviews: Option<crate::reviews::ReviewSettings>,
 }
 
 /// Whose events a passive session gets.

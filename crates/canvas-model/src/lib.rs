@@ -18,6 +18,7 @@ pub mod models;
 pub mod prs;
 pub mod recent;
 pub mod reports;
+pub mod reviews;
 pub mod rpc;
 pub mod sync;
 pub mod transcript;

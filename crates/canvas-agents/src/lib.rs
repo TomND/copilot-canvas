@@ -3,7 +3,7 @@
 //! automations, VS Code storage). Runs inside the service process.
 
 pub use canvas_common::{paths, pipe, protocol, win};
-pub use canvas_model::{bus, canvas_wide, doc, effects, prs};
+pub use canvas_model::{bus, canvas_wide, doc, effects, prs, reviews};
 
 pub mod agents;
 pub mod automations;
@@ -20,6 +20,7 @@ pub mod migrate;
 pub mod prs_cli;
 pub mod remote;
 pub mod reports;
+pub mod reviews_cli;
 pub mod service;
 pub mod taskschd;
 pub mod vscode;

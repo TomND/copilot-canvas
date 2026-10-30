@@ -17,7 +17,7 @@ mod selftest;
 mod soak;
 mod standin;
 
-use canvas_agents::{automations, cli, factory_cli, index, prs_cli, reports, service, vscode};
+use canvas_agents::{automations, cli, factory_cli, index, prs_cli, reports, reviews_cli, service, vscode};
 #[cfg(test)]
 use canvas_agents::{bus, copilot_cfg, taskschd};
 use canvas_common::{paths, protocol, win};
@@ -172,6 +172,21 @@ PULL REQUESTS (a canvas-wide PR coordinator follows them; see the canvas-prs ski
   copilot-canvas pr list [--format json]
                                         tracked pull requests, their monitor and follow-ups
 
+REVIEW FOLLOW-UPS (a canvas-wide agent messages the authors of PRs you reviewed; canvas-review-followup skill)
+  copilot-canvas review handoff --pr URL --author NAME [--author-id ID] --results FILE|- [--notes FILE]
+                 [--outcome approved|changes-requested|commented] [--title T] [--link TITLE=URL]… [--session NAME|ID]
+                                        a finished review: the agent drafts the message to its author
+                                        (you approve it first by default); --notes stay private
+  copilot-canvas review message REVIEW --draft FILE|- | --sent --conversation ID [--recipient NAME]
+                 | --needs-you WHY | --failed WHY   the agent's message to the author (one per review)
+  copilot-canvas review checked [--conversation ID] [--mark TOKEN] [--failed WHY]
+                                        the agent's hourly check of the watched conversations
+  copilot-canvas review request --conversation ID --message-id ID --kind re-review|another-review|follow-up
+                 --text TEXT [--pr URL]   an author's request: recorded once, routed to the review session
+  copilot-canvas review done REQUEST    the review session finished a request without a new hand-off
+  copilot-canvas review list [--format json]
+                                        reviews, their messages, watched conversations and requests
+
 AUTOMATIONS (scheduled tasks defined by manifests; folder: --dir, COPILOT_CANVAS_AUTOMATIONS,
              the canvas setting, or <home>/automations)
   copilot-canvas automations [list]     every automation: task state, last result, report, drift
@@ -249,7 +264,7 @@ fn parse() -> Result<Args> {
             "--canvas" => args.canvas = Some(PathBuf::from(value("--canvas")?)),
             "--cwd" => args.cwd = Some(PathBuf::from(value("--cwd")?)),
             "--remote" => args.remote = Some(value("--remote")?),
-            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--unread" => {
+            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--unread" | "--sent" => {
                 args.flags.push(arg.trim_start_matches("--").to_owned())
             }
             "--" => {
@@ -495,6 +510,33 @@ fn real_main() -> Result<()> {
             Ok(())
         }
         ["pr", ..] => bail!("usage: copilot-canvas pr track URL [--session NAME|ID] [--title T] · pr untrack URL · pr check [URL] · pr dispatch URL --key KEY [--event TYPE] TEXT · pr list [--format json] (see copilot-canvas --help)"),
+        ["review", "handoff"] => reviews_cli::handoff(
+            &instance.home,
+            reviews_cli::HandoffArgs {
+                pr: option("pr"),
+                author: option("author"),
+                author_id: option("author-id"),
+                results: option("results"),
+                notes: option("notes"),
+                outcome: option("outcome"),
+                title: option("title"),
+                links: options("link"),
+                session: option("session"),
+            },
+        ),
+        ["review", "message", review] => reviews_cli::message(
+            &instance.home,
+            review,
+            reviews_cli::MessageArgs { draft: option("draft"), sent: flag("sent"), conversation: option("conversation"), recipient: option("recipient"), needs_you: option("needs-you"), failed: option("failed") },
+        ),
+        ["review", "checked"] => reviews_cli::checked(&instance.home, option("conversation"), option("mark"), option("failed")),
+        ["review", "request"] => reviews_cli::request(&instance.home, option("conversation"), option("message-id"), option("kind"), option("text"), option("pr")),
+        ["review", "done", request] => reviews_cli::done(&instance.home, request),
+        ["review", "list"] => {
+            println!("{}", reviews_cli::list(&instance.home, option("format").is_some_and(|f| f.eq_ignore_ascii_case("json")))?);
+            Ok(())
+        }
+        ["review", ..] => bail!("usage: copilot-canvas review handoff --pr URL --author NAME --results FILE … · review message REVIEW (--draft FILE | --sent --conversation ID | --needs-you WHY | --failed WHY) · review checked · review request … · review done REQUEST · review list (see copilot-canvas --help)"),
         ["automations"] | ["automations", "list"] => factory_cli::list(&dir()),
         ["automations", "show", name] => factory_cli::show(&dir(), name),
         ["automations", "import", names @ ..] => factory_cli::import(&dir(), &owned(names), option("family"), flag("force")),

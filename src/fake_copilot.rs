@@ -84,29 +84,73 @@ pub fn triggers(prompt: &str) -> Vec<(String, serde_json::Value)> {
         .collect()
 }
 
+/// A conversation id as a file name (the stand-in `outbox` channel).
+pub fn outbox_name(conversation: &str) -> String {
+    conversation.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+}
+
 /// What the stand-in does for its triggers, as an agent following the
-/// canvas skills would (canvas-prs): a follow-up for each new-comments or
-/// failed-checks event of a tracked pull request, with its dispatch key.
-/// Answers what it did.
+/// canvas skills would: a follow-up for each new-comments or failed-checks
+/// event of a tracked pull request, with its dispatch key (canvas-prs); a
+/// draft for a completed review, sending an approved one through the
+/// `outbox` channel (a folder: `<conversation>.out.jsonl`), and reading the
+/// authors' replies (`<conversation>.in.jsonl`) for review requests on a
+/// check (canvas-review-followup). Answers what it did.
 fn follow_skills(home: &std::path::Path, prompt: &str) -> Vec<String> {
+    use canvas_agents::reviews_cli::{self, MessageArgs};
     let mut done = Vec::new();
+    let mut note = |what: &str, result: anyhow::Result<()>| match result {
+        Ok(()) => done.push(what.to_owned()),
+        Err(error) => done.push(format!("{what} refused: {error:#}")),
+    };
     for (kind, data) in triggers(prompt) {
-        let url = data["url"].as_str().unwrap_or_default();
-        let key = data["dispatch_key"].as_str().map(str::to_owned);
-        let text = match kind.as_str() {
-            "pr.comment.new" => {
-                let links: Vec<&str> = data["comments"].as_array().into_iter().flatten().filter_map(|c| c["url"].as_str()).take(3).collect();
-                format!("Review and address the {} new review comment(s) on {}: {}", data["count"].as_u64().unwrap_or(0), data["short"].as_str().unwrap_or_default(), links.join(" "))
+        let text = |key: &str| data[key].as_str().unwrap_or_default().to_owned();
+        match kind.as_str() {
+            "pr.comment.new" | "pr.checks.failed" => {
+                let message = if kind == "pr.comment.new" {
+                    let links: Vec<&str> = data["comments"].as_array().into_iter().flatten().filter_map(|c| c["url"].as_str()).take(3).collect();
+                    format!("Review and address the {} new review comment(s) on {}: {}", data["count"].as_u64().unwrap_or(0), text("short"), links.join(" "))
+                } else {
+                    let names: Vec<&str> = data["failed"].as_array().into_iter().flatten().filter_map(|c| c["name"].as_str()).collect();
+                    format!("Investigate the failing check(s) {} and fix them", names.join(", "))
+                };
+                note(&format!("dispatched {kind}"), canvas_agents::prs_cli::dispatch(home, &text("url"), data["dispatch_key"].as_str().map(str::to_owned), Some(kind.clone()), &message));
             }
-            "pr.checks.failed" => {
-                let names: Vec<&str> = data["failed"].as_array().into_iter().flatten().filter_map(|c| c["name"].as_str()).collect();
-                format!("Investigate the failing check(s) {} and fix them", names.join(", "))
+            "review.completed" => {
+                let results: String = text("results").chars().take(200).collect();
+                let draft = format!("Hi {}, I finished reviewing {}: {}. {results}", text("author"), text("url"), text("outcome"));
+                let file = std::path::PathBuf::from(format!("draft-{}.md", text("review")));
+                let written = std::fs::write(&file, draft).map_err(anyhow::Error::from);
+                note("drafted", written.and_then(|()| reviews_cli::message(home, &text("review"), MessageArgs { draft: Some(file.display().to_string()), ..Default::default() })));
             }
-            _ => continue,
-        };
-        match canvas_agents::prs_cli::dispatch(home, url, key, Some(kind.clone()), &text) {
-            Ok(()) => done.push(format!("dispatched {kind}")),
-            Err(error) => done.push(format!("dispatch refused: {error:#}")),
+            "review.message.approved" if text("channel") == "outbox" => {
+                let conversation = format!("outbox:{}", if text("author_id").is_empty() { text("author") } else { text("author_id") });
+                let line = serde_json::json!({ "to": text("author"), "text": text("draft") }).to_string();
+                let path = std::path::Path::new(&text("tool")).join(format!("{}.out.jsonl", outbox_name(&conversation)));
+                let sent = std::fs::OpenOptions::new().create(true).append(true).open(&path).and_then(|mut f| writeln!(f, "{line}")).map_err(anyhow::Error::from);
+                note("sent", sent.and_then(|()| reviews_cli::message(home, &text("review"), MessageArgs { sent: true, conversation: Some(conversation), recipient: Some(text("author")), ..Default::default() })));
+            }
+            "review.message.approved" => note("needs you", reviews_cli::message(home, &text("review"), MessageArgs { needs_you: Some(format!("the stand-in agent has no {} channel", text("channel"))), ..Default::default() })),
+            "review.check_due" => {
+                for c in data["conversations"].as_array().cloned().unwrap_or_default() {
+                    let id = c["conversation"].as_str().unwrap_or_default().to_owned();
+                    let since = c["since"].as_str().unwrap_or_default().to_owned();
+                    let path = std::path::Path::new(&text("tool")).join(format!("{}.in.jsonl", outbox_name(&id)));
+                    let replies: Vec<serde_json::Value> = std::fs::read_to_string(&path).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+                    // Only the author's messages after the last check's mark.
+                    let start = replies.iter().position(|m| m["id"] == since.as_str()).map(|i| i + 1).unwrap_or(0);
+                    let mut mark = since.clone();
+                    for message in &replies[start.min(replies.len())..] {
+                        let (message_id, words) = (message["id"].as_str().unwrap_or_default(), message["text"].as_str().unwrap_or_default());
+                        if words.to_lowercase().contains("review") {
+                            note("requested", reviews_cli::request(home, Some(id.clone()), Some(message_id.to_owned()), Some("re-review".into()), Some(words.to_owned()), None));
+                        }
+                        mark = message_id.to_owned();
+                    }
+                    note("checked", reviews_cli::checked(home, Some(id), (!mark.is_empty()).then_some(mark), None));
+                }
+            }
+            _ => {}
         }
     }
     done

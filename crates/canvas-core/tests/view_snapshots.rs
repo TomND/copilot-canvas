@@ -481,6 +481,69 @@ fn tracked_pull_requests_panel() {
     check("prs-panel", &mut app, Sections { cells: true, painted: true });
 }
 
+/// Review follow-ups (◎ Agents › Review follow-ups) at a fixed clock: a draft
+/// awaiting your approval, a request that needs clarification (two reviewed
+/// pull requests, one button each), a sent message, the watched conversation
+/// with its last and next check, and a delivered request.
+#[test]
+fn review_follow_ups_panel() {
+    use canvas_model::reviews::{CheckState, Conversation, FollowRequest, Message, MessageState, RequestState, Review, ReviewSettings, ReviewsView};
+    let mut app = canvas_agents_app();
+    app.doc.nodes.push(node("s-rev", "Review the SDK bump", 2, 40));
+    app.visual.clock_ms = Some(NOW);
+    let min = |m: u64| NOW - m * 60_000;
+    let review = |id: &str, n: u32, outcome: &str, message: Message, ago: u64| Review {
+        id: id.into(),
+        pr: format!("github.com/octo/sdk#{n}"),
+        url: format!("https://github.com/octo/sdk/pull/{n}"),
+        short: format!("octo/sdk#{n}"),
+        title: "Bump the SDK".into(),
+        author: "Ana Silva".into(),
+        author_id: "ana".into(),
+        outcome: outcome.into(),
+        results: "Two blocking issues: retries never stop; the 429 path is untested.".into(),
+        reviewer: "s-rev".into(),
+        reviewer_name: "Review the SDK bump".into(),
+        created_ms: min(ago),
+        message,
+        ..Default::default()
+    };
+    let sent = Message { state: MessageState::Sent, draft: "Hi Ana, …".into(), channel: "mcp".into(), conversation: "teams:chat-ana".into(), recipient: "Ana Silva".into(), sent_ms: min(50), updated_ms: min(50), ..Default::default() };
+    let awaiting = Message {
+        state: MessageState::AwaitingApproval,
+        draft: "Hi Ana, I reviewed https://github.com/octo/sdk/pull/12: changes requested. Retries never stop and the 429 path needs a test; details in my two comments.".into(),
+        agent: "k-a-review".into(),
+        updated_ms: min(3),
+        ..Default::default()
+    };
+    let reviews = vec![review("rv-2", 12, "changes-requested", awaiting, 5), review("rv-1", 11, "approved", sent, 55)];
+    let conversation = Conversation { id: "teams:chat-ana".into(), channel: "mcp".into(), contact: "ana".into(), contact_name: "Ana Silva".into(), reviews: vec!["rv-1".into()], watching: true, last_checked_ms: min(12), mark: "m-41".into(), created_ms: min(50), active_ms: min(20), seen: vec![] };
+    let unclear = FollowRequest { id: "q-2".into(), conversation: "teams:chat-ana".into(), message_id: "m-41".into(), kind: "another-review".into(), text: "Could you look again?".into(), state: RequestState::Ambiguous, reason: "which pull request? octo/sdk#11 and octo/sdk#12 were reviewed for Ana Silva".into(), created_ms: min(12), updated_ms: min(12), ..Default::default() };
+    let delivered = FollowRequest {
+        id: "q-1".into(),
+        conversation: "teams:chat-ana".into(),
+        message_id: "m-30".into(),
+        kind: "re-review".into(),
+        text: "Pushed the fixes, please re-review".into(),
+        pr: "github.com/octo/sdk#11".into(),
+        short: "octo/sdk#11".into(),
+        review: "rv-1".into(),
+        state: RequestState::Delivered,
+        to: "s-rev".into(),
+        to_name: "Review the SDK bump".into(),
+        created_ms: min(40),
+        updated_ms: min(38),
+        delivered_ms: min(38),
+        ..Default::default()
+    };
+    let settings = ReviewSettings::parse("mcp teams approval every 60m recipients: the author's Teams account (their GitHub email)").unwrap().unwrap();
+    let mut view = ReviewsView { canvas: "canvas-1".into(), agents: vec!["Review follow-up".into()], settings: Some(settings), paused: String::new(), checks: CheckState { last_ms: min(12), next_ms: NOW + 48 * 60_000, asked_ms: min(12), failures: 0, last_error: String::new() }, reviews, conversations: vec![conversation], requests: vec![unclear, delivered] };
+    view.conversations[0].reviews.push("rv-2".into());
+    app.bus.reviews = Some(view);
+    app.run(Action::Reviews(canvas_core::review_followups::ReviewAction::Panel));
+    check("review-followups", &mut app, Sections { cells: true, painted: true });
+}
+
 /// Two boxes selected while a right-drag rubber band is open.
 #[test]
 fn selection_and_rubber_band() {

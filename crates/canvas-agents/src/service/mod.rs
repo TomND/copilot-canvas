@@ -8,6 +8,7 @@ mod factory_watch;
 mod inbox;
 mod passive;
 mod prs;
+mod reviews;
 pub use canvas_host::{keys, term};
 
 use std::collections::{HashMap, HashSet};
@@ -113,6 +114,8 @@ pub struct Agents {
     reports: Mutex<crate::reports::Store>,
     /// The routed canvas's tracked pull requests (`prs.rs`).
     prs: Mutex<prs::Hub>,
+    /// The routed canvas's review follow-ups (`reviews.rs`).
+    reviews: Mutex<reviews::Hub>,
 }
 
 /// Passive sessions and the factory watch use the backend under this name.
@@ -156,6 +159,7 @@ impl Agents {
             remote: crate::remote::Registry::new(&instance.home),
             reports: Mutex::new(crate::reports::Store::open(&instance.home, now_ms())),
             prs: Mutex::new(prs::Hub::default()),
+            reviews: Mutex::new(reviews::Hub::default()),
         });
         server::spawn_named("index", { let a = agents.clone(); move || index_loop(a, index_rx) });
         server::spawn_named("subsessions", { let a = agents.clone(); move || subsession_loop(a) });

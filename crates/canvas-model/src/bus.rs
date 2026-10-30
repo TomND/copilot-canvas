@@ -117,6 +117,10 @@ pub struct PassiveSpec {
     /// requests its sessions hand off and this agent gets their events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prs: Option<crate::prs::PrSettings>,
+    /// Review follow-ups (canvas-wide agents): messages to the authors of
+    /// pull requests you reviewed and hourly checks of their replies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviews: Option<crate::reviews::ReviewSettings>,
 }
 
 /// `emit --to canvas`: an event for the canvas-wide agents only.
@@ -229,6 +233,9 @@ pub struct Snapshot {
     /// coordinator and tracks nothing; older services send none).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prs: Option<crate::prs::PrsView>,
+    /// The routed canvas's review follow-ups (none while it has none and no agent for them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviews: Option<crate::reviews::ReviewsView>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -587,7 +594,7 @@ impl BusState {
         for mail in &self.mailbox {
             *mailbox.entry(mail.to.clone()).or_insert(0) += 1;
         }
-        Snapshot { passive, mailbox, recent: self.recent.iter().cloned().collect(), effects: self.effects.iter().filter(|e| e.alive(now)).cloned().collect(), prs: None }
+        Snapshot { passive, mailbox, recent: self.recent.iter().cloned().collect(), effects: self.effects.iter().filter(|e| e.alive(now)).cloned().collect(), prs: None, reviews: None }
     }
 }
 
@@ -721,6 +728,15 @@ events:
   - name: pr.checks.failed
     when: A check or build of a tracked pull request failed (sent automatically by the canvas's PR monitor).
     data: pr, url, short, owner, owner_name, head, failed, dispatch_key
+  - name: review.completed
+    when: A review session handed off a finished review (copilot-canvas review handoff; sent automatically).
+    data: review, pr, url, short, title, author, author_id, outcome, results, links, reviewer_name, channel, tool, recipients, approval
+  - name: review.message.approved
+    when: You approved a review follow-up's message to a pull request's author (sent to the agent that drafted it).
+    data: review, url, author, author_id, draft, channel, tool, recipients
+  - name: review.check_due
+    when: Time to read the watched conversations with authors for review requests (hourly; sent to the review follow-up agent).
+    data: conversations, every_minutes
   - name: pr.approved
     when: A reviewer approved a pull request.
     data: pr, repo, reviewer
@@ -975,7 +991,7 @@ mod tests {
         assert_eq!(parse_hhmm("25:00"), None);
         let catalog = parse_catalog(DEFAULT_CATALOG);
         assert!(catalog.iter().any(|e| e.name == "pr.pushed" && e.when.contains("git push")));
-        assert_eq!(catalog.len(), 18);
+        assert_eq!(catalog.len(), 21);
         let effects = crate::effects::catalog_effects(DEFAULT_CATALOG);
         assert_eq!(effects.iter().map(|(e, k)| format!("{e}={}", k.name)).collect::<Vec<_>>(), ["pr.approved=fireworks", "pr.changes_requested=attention", "pr.review_requested=attention"]);
         assert!(effects.iter().all(|(e, _)| catalog.iter().any(|c| &c.name == e)), "mapped events are in the catalog");

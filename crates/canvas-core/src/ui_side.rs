@@ -596,6 +596,11 @@ fn canvas_agents_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Ac
         out.text(format!("{} PULL REQUESTS · {summary}", crate::prs::MARK), bold(MUTED));
         out.link(&format!("{} Tracked pull requests and their follow-ups ▸", crate::prs::MARK), fg(TEXT), Action::Prs(crate::prs::PrAction::Panel));
     }
+    if let Some(summary) = app.reviews_summary() {
+        out.gap();
+        out.text(format!("{} REVIEW FOLLOW-UPS · {summary}", crate::review_followups::MARK), bold(MUTED));
+        out.link(&format!("{} Review follow-ups: messages, checks, requests ▸", crate::review_followups::MARK), fg(TEXT), Action::Reviews(crate::review_followups::ReviewAction::Panel));
+    }
     out.gap();
     match &app.canvas_skills {
         Some(Ok(skills)) => {
@@ -670,6 +675,15 @@ fn canvas_agent_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Act
         );
         out.field("PRs", &format!("{how} · {}", app.prs_summary().unwrap_or_else(|| "none tracked yet".into())));
     }
+    if let Some(settings) = &passive.reviews {
+        let channel = match settings.missing() {
+            Some(why) => why,
+            None => format!("{}{}", settings.channel, if settings.tool.is_empty() { String::new() } else { format!(" ({})", settings.tool) }),
+        };
+        let checks = if settings.paused { "checks paused".to_owned() } else { format!("checks every {} min", settings.check_minutes) };
+        let next = app.reviews_view().filter(|v| v.conversations.iter().any(|c| c.watching) && !settings.paused).map(|v| format!(" · next {}", age_at(app, v.checks.next_ms))).unwrap_or_default();
+        out.field("Follow-ups", &format!("{channel} · {} · {checks}{next}", if settings.approval { "you approve messages" } else { "no approval" }));
+    }
     out.field("Template", &passive.template);
     let kind = crate::agents::agent_of(node);
     let model = canvas_model::models::effective(kind, &app.doc.defaults, app.doc.group(&passive.group)).model;
@@ -728,6 +742,10 @@ fn canvas_agent_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Act
     actions.push(("PRs…".into(), Action::PassiveEdit(id.clone(), PassiveField::Prs)));
     if passive.prs.is_some() {
         actions.push(("Pull requests".into(), Action::Prs(crate::prs::PrAction::Panel)));
+    }
+    actions.push(("Follow-ups…".into(), Action::PassiveEdit(id.clone(), PassiveField::Reviews)));
+    if passive.reviews.is_some() {
+        actions.push(("Review follow-ups".into(), Action::Reviews(crate::review_followups::ReviewAction::Panel)));
     }
     actions.push(("MCP…".into(), Action::McpServers(id.clone())));
     actions.push(("Rules".into(), Action::PassiveOpen(id.clone(), 0)));
@@ -846,6 +864,122 @@ fn prs_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>) {
     actions.push(("Canvas agents".into(), Action::Agents(crate::canvas_wide::AgentAction::Panel)));
 }
 
+/// The routed canvas's review follow-ups: the channel and the hourly
+/// check (last, next, failures, pause), what needs you (drafts to approve,
+/// messages that could not be sent, unclear or blocked requests), the
+/// reviews and their messages, the watched conversations and the requests.
+fn reviews_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>) {
+    use crate::review_followups::{MARK, ReviewAction, message_look, request_look};
+    use canvas_model::reviews::{MessageState, RequestState};
+    let Some(view) = app.reviews_view() else {
+        out.text(format!("{MARK} Review follow-ups"), bold(TEXT));
+        out.text("No review was handed off on this canvas, and no canvas-wide agent has review follow-ups. ◎ Agents › + New canvas agent › Review follow-up, then Follow-ups… to set its messaging channel; review sessions hand off finished reviews with copilot-canvas review handoff.", fg(MUTED));
+        actions.push(("Canvas agents".into(), Action::Agents(crate::canvas_wide::AgentAction::Panel)));
+        return;
+    };
+    let watched: Vec<&canvas_model::reviews::Conversation> = view.conversations.iter().filter(|c| c.watching).collect();
+    let needing = view.needing_you();
+    out.text(format!("{MARK} Review follow-ups · {} review(s) · {} watched{}", view.reviews.len(), watched.len(), if needing > 0 { format!(" · {needing} need you") } else { String::new() }), bold(TEXT));
+    match &view.settings {
+        Some(s) => out.text(
+            format!(
+                "{} via {}{} · {} · recipients: {}",
+                if view.agents.is_empty() { "Its agent".to_owned() } else { view.agents.join(", ") },
+                if s.channel.is_empty() { "no channel yet".to_owned() } else { s.channel.clone() },
+                if s.tool.is_empty() { String::new() } else { format!(" ({})", s.tool) },
+                if s.approval { "you approve every message first" } else { "messages are sent without your approval" },
+                s.recipients
+            ),
+            fg(MUTED),
+        ),
+        None => out.text("No agent has review follow-ups.", fg(MUTED)),
+    }
+    let every = view.settings.as_ref().map(|s| s.check_minutes).unwrap_or(60);
+    let next = if !view.paused.is_empty() {
+        format!("not checked now: {}", view.paused)
+    } else if watched.is_empty() {
+        "the first check comes an hour after a message is sent".to_owned()
+    } else {
+        format!("next {}", age_at(app, view.checks.next_ms))
+    };
+    out.text(format!("Checks every {every} min · last {} · {next}", age_at(app, view.checks.last_ms)), fg(if view.paused.is_empty() { MUTED } else { ATTENTION }));
+    if view.checks.failures > 0 {
+        out.text(format!("Last check failed ({}×): {}", view.checks.failures, view.checks.last_error), fg(NEGATIVE));
+    }
+    // What needs you first.
+    let reviews_needing: Vec<&canvas_model::reviews::Review> = view.reviews.iter().filter(|r| matches!(r.message.state, MessageState::AwaitingApproval | MessageState::NeedsYou | MessageState::Failed)).collect();
+    let requests_needing: Vec<&canvas_model::reviews::FollowRequest> = view.requests.iter().filter(|q| matches!(q.state, RequestState::Ambiguous | RequestState::Blocked | RequestState::Failed)).collect();
+    if !reviews_needing.is_empty() || !requests_needing.is_empty() {
+        out.gap();
+        out.text("NEEDS YOU", bold(ATTENTION));
+    }
+    for r in &reviews_needing {
+        let (glyph, color) = message_look(r.message.state);
+        out.indented(0, format!("{glyph} {} → {}: message {}", r.short, r.author, r.message.state.word()), fg(color));
+        if r.message.state == MessageState::AwaitingApproval {
+            out.indented(2, format!("“{}”", r.message.draft), fg(TEXT));
+            out.buttons(2, vec![("✓ Approve & send".to_owned(), Action::Reviews(ReviewAction::Approve(r.id.clone()))), ("Dismiss".to_owned(), Action::Reviews(ReviewAction::DismissMessage(r.id.clone())))]);
+        } else {
+            out.indented(2, &r.message.reason, fg(color));
+            out.buttons(2, vec![("Dismiss".to_owned(), Action::Reviews(ReviewAction::DismissMessage(r.id.clone())))]);
+        }
+    }
+    for q in &requests_needing {
+        let (glyph, color) = request_look(q.state);
+        let who = view.conversations.iter().find(|c| c.id == q.conversation).map(|c| c.contact_name.clone()).unwrap_or_else(|| q.conversation.clone());
+        out.indented(0, format!("{glyph} {who}: {} “{}” · {}", q.kind, q.text, q.state.word()), fg(color));
+        out.indented(2, &q.reason, fg(color));
+        let mut buttons = Vec::new();
+        if q.state == RequestState::Ambiguous {
+            // One button per pull request reviewed in that conversation.
+            let reviews: Vec<&canvas_model::reviews::Review> = view.conversations.iter().find(|c| c.id == q.conversation).map(|c| view.reviews.iter().filter(|r| c.reviews.contains(&r.id)).collect()).unwrap_or_default();
+            for r in reviews.iter().take(3) {
+                buttons.push((format!("For {}", r.short), Action::Reviews(ReviewAction::Assign(q.id.clone(), r.id.clone()))));
+            }
+        }
+        if q.state == RequestState::Blocked && app.doc.node(&q.to).is_some() && !app.owned_alive(&q.to) {
+            buttons.push(("▸ Resume reviewer".to_owned(), Action::Start(q.to.clone())));
+        }
+        buttons.push(("Dismiss".to_owned(), Action::Reviews(ReviewAction::Dismiss(q.id.clone()))));
+        out.buttons(2, buttons);
+    }
+    let others: Vec<&canvas_model::reviews::Review> = view.reviews.iter().filter(|r| !reviews_needing.iter().any(|n| n.id == r.id)).collect();
+    if !others.is_empty() {
+        out.gap();
+        out.text("REVIEWS", bold(MUTED));
+        for r in others.iter().take(6) {
+            let (glyph, color) = message_look(r.message.state);
+            let to = if r.message.state == MessageState::Sent { format!(" to {} {}", r.message.recipient, age_at(app, r.message.sent_ms)) } else { String::new() };
+            out.indented(0, format!("{glyph} {} · {} · by {} · message {}{to}", r.short, r.outcome, r.reviewer_name, r.message.state.word()), fg(color));
+        }
+    }
+    if !watched.is_empty() {
+        out.gap();
+        out.text("WATCHED CONVERSATIONS", bold(MUTED));
+        for c in watched.iter().take(5) {
+            out.indented(0, format!("● {} · {} · checked {}", c.contact_name, c.id, age_at(app, c.last_checked_ms)), fg(TEXT));
+            out.buttons(2, vec![("Stop watching".to_owned(), Action::Reviews(ReviewAction::Unwatch(c.id.clone())))]);
+        }
+    }
+    let other_requests: Vec<&canvas_model::reviews::FollowRequest> = view.requests.iter().filter(|q| !requests_needing.iter().any(|n| n.id == q.id)).collect();
+    if !other_requests.is_empty() {
+        out.gap();
+        out.text("REQUESTS", bold(MUTED));
+        for q in other_requests.iter().take(6) {
+            let (glyph, color) = request_look(q.state);
+            out.indented(0, format!("{glyph} {} {} → {} · {} {}: “{}”", q.kind, q.short, q.to_name, q.state.word(), age_at(app, q.updated_ms.max(q.created_ms)), q.text), fg(color));
+        }
+    }
+    if view.settings.is_some() {
+        let paused = view.settings.as_ref().is_some_and(|s| s.paused);
+        actions.push((if paused { "Resume checks".into() } else { "Pause checks".into() }, Action::Reviews(ReviewAction::ToggleChecks)));
+        if !paused && !watched.is_empty() {
+            actions.push(("Check now".into(), Action::Reviews(ReviewAction::CheckNow)));
+        }
+    }
+    actions.push(("Canvas agents".into(), Action::Agents(crate::canvas_wide::AgentAction::Panel)));
+}
+
 pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &RightDetail) {
     outline(buf, area.x as i32, area.y as i32, area.width as i32, area.height as i32, &LIGHT, fg(FAINT), area);
     let inner = Rect::new(area.x + 2, area.y + 1, area.width.saturating_sub(4), area.height.saturating_sub(3));
@@ -905,6 +1039,7 @@ pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &R
         },
         RightDetail::CanvasAgents => canvas_agents_panel(app, &mut out, &mut actions),
         RightDetail::Prs => prs_panel(app, &mut out, &mut actions),
+        RightDetail::Reviews => reviews_panel(app, &mut out, &mut actions),
         RightDetail::Passive(id) if app.doc.node(id).is_some_and(|n| n.is_canvas_agent()) => {
             let node = app.doc.node(id).cloned().expect("checked");
             canvas_agent_panel(app, &mut out, &mut actions, &node);

@@ -1461,13 +1461,15 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     crate::automations::write_sample_db(&automations_db)?;
     // `O` (open the other client) writes its command line here instead of starting it.
     let other_client = instance.home.join("other-client.txt");
-    // Stand-in gh / az for the pull request steps (fixtures in fake-prs; polled every second).
+    // Stand-in gh / az for the pull request steps (fixtures in fake-prs; polled every second),
+    // and stand-in agent CLIs: a canvas-wide agent's run in the self-test never reaches a real agent.
     let fake_cli = instance.home.join("fake-cli");
     std::fs::create_dir_all(&fake_cli)?;
-    for name in ["gh.exe", "az.exe"] {
+    for name in ["gh.exe", "az.exe", "copilot.exe", "opencode.exe", "claude.exe"] {
         std::fs::copy(std::env::current_exe()?, fake_cli.join(name))?;
     }
     let (fake_gh, fake_az, fake_prs) = (fake_cli.join("gh.exe"), fake_cli.join("az.exe"), instance.home.join("fake-prs"));
+    let (fake_copilot, fake_opencode, fake_claude) = (fake_cli.join("copilot.exe"), fake_cli.join("opencode.exe"), fake_cli.join("claude.exe"));
     std::fs::create_dir_all(&fake_prs)?;
     let env = [
         ("COPILOT_HOME", copilot_home.as_path()),
@@ -1481,6 +1483,10 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
         (crate::fake_gh::ENV, fake_prs.as_path()),
         (crate::fake_copilot::ENV, Path::new("1")),
         ("COPILOT_CANVAS_PR_POLL_SECS", Path::new("1")),
+        ("COPILOT_CANVAS_COPILOT", fake_copilot.as_path()),
+        ("COPILOT_CANVAS_OPENCODE", fake_opencode.as_path()),
+        ("COPILOT_CANVAS_CLAUDE", fake_claude.as_path()),
+        ("COPILOT_CANVAS_FAKE_RUN_MS", Path::new("300")),
     ];
     let started = Instant::now();
     let mut ui = start(&args, &env)?;
@@ -1926,6 +1932,7 @@ fn canvas_agent_steps<U: Ui>(instance: &Instance, work: &Path, args: &[String], 
     anyhow::ensure!(!log.contains(&format!("launched {} ", node.id)), "viewing the agent launched it");
     anyhow::ensure!(ui.text().contains("◎ Selftest agent"), "its panel stays\n{}", ui.text());
     pr_steps(&mut ui, instance)?;
+    review_steps(&mut ui, instance)?;
     ui.send(b"q")?;
     std::thread::sleep(Duration::from_millis(300));
     if ui.text().contains("Detach (keep running)") {
@@ -2029,6 +2036,112 @@ fn pr_steps<U: Ui>(ui: &mut U, instance: &Instance) -> Result<()> {
     ui.wait("merged in the panel", Duration::from_secs(10), |t| t.contains("· merged"))?;
     let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
     anyhow::ensure!(!log.contains(&format!("launched {PR_OWNER_ID} ")), "the owner was started");
+    ui.send(b"\x1b")?;
+    Ok(())
+}
+
+/// Review follow-ups (WI-016), with the stand-in agent: its Follow-ups…
+/// prompt sets the `outbox` channel (a folder); a review of "PR owner" is
+/// handed off (as you, with private notes); a draft quoting the notes is
+/// refused, a proper one waits for your approval (Reports says so);
+/// *Approve & send* in the panel makes the agent send it into the outbox and
+/// record it (the author's conversation is watched); the author's reply
+/// asks for a re-review: *Check now* has the agent read it, the request is
+/// recorded once, tied to the pull request and routed to the review session
+/// (stopped: blocked); a second check adds nothing; *Pause checks*.
+fn review_steps<U: Ui>(ui: &mut U, instance: &Instance) -> Result<()> {
+    use canvas_agents::reviews::{Book, MessageState, RequestState};
+    step("review follow-ups: a hand-off; a draft quoting private notes is refused, one waits for approval; Approve & send → the agent sends it through the outbox; a re-review request is read on Check now, recorded once and routed to the review session (stopped: blocked); Pause checks");
+    let home = &instance.home;
+    const URL: &str = "https://github.com/selftest/lib/pull/9";
+    let outbox = home.join("selftest-outbox");
+    std::fs::create_dir_all(&outbox)?;
+    ui.send(b"\x1b")?;
+    let (bx, by) = ui.locate("Selftest agent", CANVAS)?;
+    ui.click(bx, by)?;
+    ui.wait("the agent's panel", Duration::from_secs(5), |t| t.contains("◎ Selftest agent") && t.contains("Follow-ups…"))?;
+    let (x, y) = ui.find("Follow-ups…").context("Follow-ups…")?;
+    ui.click(x + 1, y)?;
+    ui.wait("the follow-ups prompt", Duration::from_secs(5), |t| t.contains("Review follow-ups:"))?;
+    ui.send(format!("\x15outbox {} approval every 60m\r", outbox.display()).as_bytes())?;
+    ui.wait("its follow-ups", Duration::from_secs(10), |t| t.contains("Follow-ups") && t.contains("you approve messages"))?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let canvas = loop {
+        let routing = canvas_agents::cli::routing(home);
+        if routing.passive.iter().any(|p| p.reviews.as_ref().is_some_and(|r| r.channel == "outbox")) {
+            break routing.canvas;
+        }
+        anyhow::ensure!(Instant::now() < deadline, "review follow-ups never reached the service");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let wait_book = |what: &str, secs: u64, ok: &dyn Fn(&Book) -> bool| -> Result<Book> {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        loop {
+            let book = canvas_agents::reviews_cli::load(home, &canvas);
+            if ok(&book) {
+                return Ok(book);
+            }
+            anyhow::ensure!(Instant::now() < deadline, "timed out waiting for {what}: {}", serde_json::to_string(&book).unwrap_or_default());
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    };
+    let (results, notes) = (home.join("review-results.md"), home.join("review-notes.md"));
+    std::fs::write(&results, "Changes requested: the retry loop never stops; please add a test for the 429 path.")?;
+    std::fs::write(&notes, "Ben thinks this repeats the March outage")?;
+    let out = canvas_cli(home, &["review", "handoff", "--pr", URL, "--author", "Ana Selftest", "--author-id", "ana", "--outcome", "changes-requested", "--results", &results.display().to_string(), "--notes", &notes.display().to_string(), "--session", "PR owner"])?;
+    anyhow::ensure!(out.contains("recorded for Ana Selftest") && out.contains("you approve it"), "{out}");
+    let book = wait_book("the review", 5, &|b| b.reviews.len() == 1)?;
+    let review = book.reviews[0].id.clone();
+    // A draft that quotes the private notes is refused; a proper one waits for you.
+    let leaking = home.join("draft-leak.md");
+    std::fs::write(&leaking, format!("Hi Ana, {URL}: Ben thinks this repeats the March outage."))?;
+    let refused = std::process::Command::new(std::env::current_exe()?).args(["review", "message", &review, "--draft", &leaking.display().to_string(), "--home", &home.display().to_string()]).env_remove("COPILOT_CANVAS_SESSION").output()?;
+    anyhow::ensure!(!refused.status.success() && String::from_utf8_lossy(&refused.stderr).contains("private review notes"), "a draft with private notes was taken: {}", String::from_utf8_lossy(&refused.stdout));
+    let draft = home.join("draft.md");
+    std::fs::write(&draft, format!("Hi Ana, I reviewed {URL}: changes requested. The retry loop never stops; a test for the 429 path is missing."))?;
+    let out = canvas_cli(home, &["review", "message", &review, "--draft", &draft.display().to_string()])?;
+    anyhow::ensure!(out.contains("awaiting the user's approval"), "{out}");
+    // ◎ Agents › Review follow-ups: Approve & send.
+    let (x, y) = ui.find("◎ Agents").context("the top bar's ◎ Agents")?;
+    ui.click(x + 1, y)?;
+    ui.wait("the review follow-ups section", Duration::from_secs(10), |t| t.contains("REVIEW FOLLOW-UPS ·") && t.contains("Review follow-ups:"))?;
+    let (x, y) = ui.find("Review follow-ups:").context("its link")?;
+    ui.click(x + 1, y)?;
+    ui.wait("the draft awaiting approval", Duration::from_secs(10), |t| t.contains("awaiting your approval") && t.contains("Approve & send"))?;
+    let (x, y) = ui.find("Approve & send").context("Approve & send")?;
+    ui.click(x + 1, y)?;
+    // The agent (the stand-in) sends it through the outbox and records it.
+    let book = wait_book("the message sent", 60, &|b| b.reviews[0].message.state == MessageState::Sent)?;
+    let conversation = book.reviews[0].message.conversation.clone();
+    anyhow::ensure!(conversation == "outbox:ana" && book.conversation(&conversation).is_some_and(|c| c.watching), "{conversation:?}");
+    let sent = std::fs::read_to_string(outbox.join("outbox-ana.out.jsonl")).unwrap_or_default();
+    anyhow::ensure!(sent.contains(URL) && sent.contains("changes requested") && !sent.contains("March outage"), "the outbox: {sent}");
+    // The author asks for a re-review; Check now has the agent read it.
+    std::fs::write(outbox.join("outbox-ana.in.jsonl"), "{\"id\":\"m1\",\"text\":\"Thanks! I pushed fixes, could you re-review?\"}\n")?;
+    ui.wait("watched, with a next check", Duration::from_secs(10), |t| t.contains("WATCHED CONVERSATIONS") && t.contains("Check now"))?;
+    let (x, y) = ui.find("Check now").context("Check now")?;
+    ui.click(x + 1, y)?;
+    let book = wait_book("the request routed", 60, &|b| b.requests.len() == 1 && b.requests[0].state == RequestState::Blocked && b.checks.last_ms > 0)?;
+    let request = &book.requests[0];
+    anyhow::ensure!(request.review == review && request.to == PR_OWNER_ID && request.kind == "re-review" && request.reason.contains("not running"), "{request:?}");
+    ui.wait("the blocked request with Resume reviewer", Duration::from_secs(10), |t| t.contains("blocked") && t.contains("Resume reviewer"))?;
+    // A second check: the same message is never a second request.
+    let checked = book.checks.last_ms;
+    let (x, y) = ui.find("Check now").context("Check now")?;
+    ui.click(x + 1, y)?;
+    let book = wait_book("a second check", 60, &|b| b.checks.last_ms > checked)?;
+    anyhow::ensure!(book.requests.len() == 1, "one request: {:?}", book.requests);
+    // Pause checks: the agent's setting.
+    let (x, y) = ui.find("Pause checks").context("Pause checks")?;
+    ui.click(x + 1, y)?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !canvas_agents::cli::routing(home).passive.iter().any(|p| p.reviews.as_ref().is_some_and(|r| r.paused)) {
+        anyhow::ensure!(Instant::now() < deadline, "the checks were not paused");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    ui.wait("paused in the panel", Duration::from_secs(10), |t| t.contains("checks are paused") && t.contains("Resume checks"))?;
+    let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
+    anyhow::ensure!(!log.contains(&format!("launched {PR_OWNER_ID} ")), "the review session was started");
     ui.send(b"\x1b")?;
     Ok(())
 }

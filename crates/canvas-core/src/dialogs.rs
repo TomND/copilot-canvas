@@ -190,6 +190,8 @@ pub enum Action {
     Report(crate::reports::ReportAction),
     /// Tracked pull requests and their follow-ups.
     Prs(crate::prs::PrAction),
+    /// Review follow-ups: messages to authors, watched conversations, requests.
+    Reviews(crate::review_followups::ReviewAction),
 }
 
 #[derive(Clone, Debug)]
@@ -394,6 +396,8 @@ pub enum PassiveField {
     Groups,
     /// A canvas-wide agent's PR coordination (on, interval, auto-track, permissions).
     Prs,
+    /// A canvas-wide agent's review follow-ups (channel, tool, approval, checks, recipients).
+    Reviews,
 }
 
 /// Whose MCP servers the picker edits.

@@ -36,7 +36,7 @@ pub const COLOR: Color = crate::paint::GROUP_COLORS[FRAME_COLOR as usize];
 
 /// Templates of a new canvas-wide agent. PR management is one example, not
 /// a built-in workflow: its rules are plain text you edit.
-pub const TEMPLATES: [Template; 3] = [
+pub const TEMPLATES: [Template; 4] = [
     Template {
         name: "PR coordinator",
         about: "pull requests from every group: tracks each one and its owning session, routes review comments and build failures to it",
@@ -56,6 +56,22 @@ On pr.changes_requested: the same, saying in your own words what the reviewer as
 On pr.approved: `copilot-canvas effect fireworks --on \"<owner session id>\" --note \"PR <number> approved\"`. On pr.merged or pr.closed: mark it ended in your memory; send nothing.\n\n\
 Report: `ok` with the number of active pull requests; `warn` when a follow-up is blocked or a pull request waits on its owner for long; `alert` when something needs Thomas.\n\
 Read-only towards pull requests: never comment, reply, resolve threads, vote, push or merge yourself; follow-ups ask the owner only for what the canvas's PR permissions allow (the `[Canvas: ...]` line of each says which).\n",
+    },
+    Template {
+        name: "Review follow-up",
+        about: "after your reviews: messages each pull request's author the results (you approve first), then checks their replies hourly for re-review requests",
+        subscribe: &["review.*"],
+        every_minutes: 0,
+        daily_at: "",
+        rules: "# Review follow-up\n\n\
+Job: after Thomas's review sessions finish reviewing someone's pull request, tell its author what the review found, then watch that conversation for requests for another review. \
+The canvas keeps the records and the schedule; you write and send the messages and read the replies through the messaging channel configured for you (Follow-ups…: channel, tool, recipient rule, approval). \
+The canvas-review-followup skill has the commands.\n\n\
+On review.completed: draft a concise message to the author (the pull request link, the outcome exactly as the review states it, the actionable findings with their links; nothing the results do not say) and record it with `copilot-canvas review message <review> --draft <file>`. With approval on (the default), stop there.\n\
+On review.message.approved: resolve the recipient and conversation with your channel and the recipient rule (none, several or no access: `copilot-canvas review message <review> --needs-you \"<why>\"`, never guess), send the approved text unchanged, then `copilot-canvas review message <review> --sent --conversation <id> --recipient \"<name>\"`.\n\
+On review.check_due: read only the listed conversations, only the author's messages after `since`. Record each request for another review, a re-review after fixes or review follow-up with `copilot-canvas review request …`; ignore everything else; then `copilot-canvas review checked --conversation <id> --mark <last message id>` (or `--failed \"<why>\"`).\n\n\
+Report: `ok` with what you sent or recorded; `alert` when you need Thomas (no access, an ambiguous recipient).\n\
+Never send what Thomas has not approved, never message anyone but the review's author, never claim an approval or a fix the review did not establish, and never start, resume or do a review yourself.\n",
     },
     Template {
         name: "Cross-group digest",
@@ -370,10 +386,13 @@ impl App {
             every_minutes: template.every_minutes,
             daily_at: template.daily_at.to_owned(),
             rollover_runs: 20,
-            max_runs_per_day: 24,
+            // An hourly check plus the messages: more runs than the usual 24 a day.
+            max_runs_per_day: if template.name == "Review follow-up" { 60 } else { 24 },
             scope: PassiveScope::Canvas,
             // The PR coordinator monitors handed-off pull requests (read-only follow-ups).
             prs: (template.name == "PR coordinator").then(canvas_model::prs::PrSettings::default),
+            // The review follow-up's channel is yours to set (Follow-ups…); approval is on.
+            reviews: (template.name == "Review follow-up").then(canvas_model::reviews::ReviewSettings::default),
             ..Default::default()
         });
         self.doc.nodes.push(node);

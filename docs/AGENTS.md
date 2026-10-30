@@ -9,8 +9,8 @@ the provider; the canvas, the service and the event bus are shared.
 
 Every launch also gets the canvas integration: `COPILOT_CANVAS_HOME`,
 `COPILOT_CANVAS_SESSION` (the box id) and the `copilot-canvas` command on
-`PATH` (events, messages, passive status, reports, pull requests), plus the canvas skills
-(`canvas-events`, `canvas-passive`, `canvas-reports`, `canvas-prs`).
+`PATH` (events, messages, passive status, reports, pull requests, review follow-ups), plus the canvas skills
+(`canvas-events`, `canvas-passive`, `canvas-reports`, `canvas-prs`, `canvas-review-followup`).
 
 ## At a glance
 
@@ -345,6 +345,58 @@ minutes, failing ones back off (the interval doubled per failure, at most an
 hour; a report after three in a row). Merged, closed and abandoned pull
 requests are kept listed for 30 days and never checked again.
 
+## Review follow-ups
+
+The `canvas-review-followup` skill (plugin 1.2.0) teaches two roles.
+
+**A review session that finished reviewing someone's pull request**:
+
+```text
+copilot-canvas review handoff --pr URL --author NAME [--author-id ID] --results FILE|- [--notes FILE]
+               [--outcome approved|changes-requested|commented] [--title T] [--link TITLE=URL]… [--session NAME|ID]
+```
+
+`--results` is what the author may read (at most 8,000 characters);
+`--notes` are private (kept for the review session, never in an event, a
+draft, a message or a client's view; `review list` leaves them out). One
+review per (pull request, review session, results); a new hand-off of a pull
+request completes its open requests. A request for another review arrives as
+`[From Review follow-ups via Copilot Canvas] Ana asks for a re-review of PR
+octo/app#7 (link): "<their words>". Your earlier review (changes-requested):
+<results>. Your private notes: <notes>. When you have reviewed it again,
+hand it off: … [Canvas: request q-…; the review follow-up agent answers the
+author, not you.]`; `copilot-canvas review done REQUEST` finishes one
+without a new hand-off.
+
+**The canvas-wide review follow-up agent** (`Passive::reviews`:
+`ReviewSettings { channel, tool, recipients, approval (default on),
+check_minutes (60), paused }`; the *Review follow-up* template, 60 runs a
+day; *Follow-ups…* `mcp teams approval every 60m recipients: <rule>`,
+`pr-comment`, `outbox <folder>`, `off`):
+
+| Trigger | Data | What it does |
+|---|---|---|
+| `review.completed` (from the review session, to subscribers of `review.*`) | `review`, `pr`, `url`, `short`, `title`, `author`, `author_id`, `outcome`, `results` (4,000 characters), `links`, `reviewer_name`, `channel`, `tool`, `recipients`, `approval` | drafts: `review message <review> --draft FILE` |
+| `review.message.approved` (addressed to the agent that drafted, once you approve) | `review`, `url`, `author`, `author_id`, `draft`, `channel`, `tool`, `recipients` | resolves recipient and conversation (else `--needs-you WHY`), sends the draft unchanged, `--sent --conversation ID --recipient NAME` (or `--failed WHY`) |
+| `review.check_due` (addressed to it, every `check_minutes` while conversations are watched and checks are not paused) | `conversations` (`conversation`, `channel`, `contact`, `contact_name`, `since`, `last_checked_ms`, `prs`), `every_minutes`, `channel`, `tool` | reads only those conversations, only the contact's messages after `since`; `review request --conversation ID --message-id ID --kind re-review\|another-review\|follow-up --text TEXT [--pr URL]` per review request; `review checked --conversation ID --mark TOKEN` (or `--failed WHY`) |
+
+What the canvas enforces (`canvas_model::reviews::Book`, one writer: the
+service; `<home>/canvas-agents/<canvas id>/reviews/book.json`):
+
+| | |
+|---|---|
+| Who | hand-offs: sessions of the canvas (their own; `--session` within the usual reach), you; `message`, `checked`, `request`: canvas-wide agents with review follow-ups, you; approving: you only (◎ Agents › Review follow-ups, never an agent or the CLI); `done`: the review session it went to, agents, you |
+| Drafts | must contain the pull request's link; must not quote the private notes (any fragment of 16 characters or more); must not claim an approval (LGTM, "ready to merge", "I approved") unless the outcome is `approved`; at most 4,000 characters |
+| Messages | awaiting approval → approved → sent, once per review (`sent` refused before approval and a second time); needs you and failed with the reason |
+| Conversations | created by `sent`; watched until their pull requests all ended (the PR monitor's records) or 14 days without activity, or *Stop watching* |
+| Requests | only from watched conversations; one per (conversation, message id); tied to the conversation's reviews (or `--pr`); unclear (none or several pull requests) → *needs clarification* for you with one button per candidate; another request for the same pull request in progress → waiting; routed to the review session like a PR follow-up (queued, delivered when idle, blocked with Resume reviewer / Dismiss, failed) |
+| Checks | the first one interval after the first message; then every interval; `review checked` records the time and marks; failures are counted and shown (a report at the first and third in a row) |
+
+Every change is a report on behalf of the agent in the thread
+`review:<pull request key>`. The service also tracks a reviewed pull request
+in the PR registry (role *reviewed*: never dispatched, only its end), so a
+PR coordinator's monitor tells it when the pull request ended.
+
 ## Verified end to end
 
 `copilot-canvas selftest agent [--agent copilot|opencode|claude]` starts the
@@ -460,3 +512,7 @@ and prints the screen.
   `az` (`selftest`, parity row 42); no real agent and no real pull request
   were involved. The Azure DevOps commands and shapes follow Microsoft's
   documentation and were not run against a real organization.
+- Review follow-ups have been driven only by the stand-in agent (which
+  drafts from the results, "sends" through an `outbox` folder and reads
+  replies from it) in `selftest` and parity row 43; no real messaging MCP
+  server was used and no message was sent to anyone.

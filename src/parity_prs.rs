@@ -68,11 +68,16 @@ fn click_text(gui: &Gui, text: &str) -> Result<()> {
     gui.click(at, &[])
 }
 
+/// The top bar's ◎ Agents (a spinner instead of ◎ while an agent works).
+fn agents_button(gui: &Gui) -> Result<()> {
+    click_text(gui, " Agents ")
+}
+
 /// Makes a canvas-wide agent from a template through ◎ Agents; answers its box id.
 pub(super) fn new_agent(sb: &Sandbox, gui: &mut Gui, template: &str, name: &str) -> Result<String> {
     gui.canvas_focus()?;
     gui.key("Esc", &[])?;
-    click_text(gui, "◎ Agents")?;
+    agents_button(gui)?;
     gui.wait("the canvas agents panel", 5, |t| t.contains("+ New canvas agent"))?;
     click_text(gui, "+ New canvas agent")?;
     gui.wait("the templates", 5, |t| t.contains("New canvas-wide agent: template") && t.contains(template))?;
@@ -93,6 +98,109 @@ pub(super) fn rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         "pr_handoff_follow_up_and_end",
         || coordination(sb, gui),
     );
+    check(
+        rows,
+        "43",
+        "New: review follow-ups: a review is handed off; the agent's draft waits for your approval; sent through the channel; the author's re-review request is read on the check, recorded once and routed to the review session",
+        "review_handoff_message_and_request",
+        || follow_ups(sb, gui),
+    );
+}
+
+const FOLLOW_UP: &str = "Parity follow-up";
+const REVIEWER: &str = "Parity reviewer";
+const REVIEWED: &str = "https://github.com/parity/lib/pull/7";
+
+fn wait_book(sb: &Sandbox, canvas: &str, what: &str, secs: u64, ok: impl Fn(&canvas_agents::reviews::Book) -> bool) -> Result<canvas_agents::reviews::Book> {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        let book = canvas_agents::reviews_cli::load(&sb.instance.home, canvas);
+        if ok(&book) {
+            return Ok(book);
+        }
+        anyhow::ensure!(Instant::now() < deadline, "timed out waiting for {what}: {}", serde_json::to_string(&book).unwrap_or_default());
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Row 43 (WI-016): a review session (the stand-in agent) hands a review
+/// off; the Review follow-up agent (the stand-in following the
+/// canvas-review-followup contract, its channel an outbox folder) drafts the
+/// message, which waits for your approval; Approve & send; the agent sends it
+/// (the outbox has the summary and the links, not the private notes) and the
+/// author's conversation is watched; the author asks for a re-review; on the
+/// (test-short) hourly check the agent records the request, which reaches
+/// the review session once (delivered when idle); a second check adds nothing.
+fn follow_ups(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
+    use canvas_agents::reviews::{MessageState, RequestState};
+    let outbox = sb.root.join("outbox");
+    std::fs::create_dir_all(&outbox)?;
+    // The review session: a new session (the stand-in agent).
+    gui.canvas_focus()?;
+    gui.send("n")?;
+    gui.wait("the new-session dialog", 5, |t| t.contains("New session"))?;
+    gui.send(REVIEWER)?;
+    let reviewer = create_from_dialog(gui, sb, REVIEWER)?;
+    gui.wait("its stand-in terminal", 25, |t| t.contains("Fake Copilot"))?;
+    // The agent, and its channel from its panel's Follow-ups….
+    let agent = new_agent(sb, gui, "Review follow-up", FOLLOW_UP)?;
+    gui.wait("its follow-ups, no channel yet", 5, |t| t.contains("its messaging channel is not set"))?;
+    click_text(gui, "Follow-ups…")?;
+    gui.wait("the follow-ups prompt", 5, |t| t.contains("Review follow-ups: how this agent"))?;
+    gui.send(&format!("\x15outbox {} approval every 60m recipients: the author's account on the pull request\r", outbox.display()))?;
+    let doc = wait_doc(&sb.canvas, "its channel", |d| d.node(&agent).and_then(|n| n.passive.as_ref()).and_then(|p| p.reviews.as_ref()).is_some_and(|r| r.channel == "outbox"))?;
+    let canvas = doc.canvas_id.clone().context("the canvas id")?;
+    gui.wait("its settings in its panel", 5, |t| t.contains("Follow-ups outbox"))?;
+    // The reviewer hands its review off (as the canvas-review-followup skill teaches), with private notes.
+    let (results, notes) = (sb.root.join("parity-results.md"), sb.root.join("parity-notes.md"));
+    std::fs::write(&results, "Changes requested: the retry loop never stops (see my comment); the 429 path has no test.")?;
+    std::fs::write(&notes, "I suspect the author copied this from the old client")?;
+    let out = cli(sb, &reviewer, &["review", "handoff", "--pr", REVIEWED, "--author", "Ana Parity", "--author-id", "ana", "--outcome", "changes-requested", "--results", &results.display().to_string(), "--notes", &notes.display().to_string(), "--link", "retry comment=https://github.com/parity/lib/pull/7#discussion_r1"])?;
+    anyhow::ensure!(out.contains("recorded for Ana Parity") && out.contains(FOLLOW_UP), "{out}");
+    // The agent drafts (review.completed); the draft waits for you.
+    let book = wait_book(sb, &canvas, "the draft awaiting approval", 60, |b| b.reviews.first().is_some_and(|r| r.message.state == MessageState::AwaitingApproval))?;
+    let review = book.reviews[0].clone();
+    anyhow::ensure!(review.message.draft.contains(REVIEWED) && review.message.draft.contains("changes-requested") && !review.message.draft.contains("old client"), "{:?}", review.message.draft);
+    anyhow::ensure!(!outbox.join("outbox-ana.out.jsonl").exists(), "nothing is sent before you approve it");
+    let thread = format!("review:{}", canvas_agents::prs::PrRef::parse(REVIEWED).map_err(|e| anyhow::anyhow!(e))?.key());
+    anyhow::ensure!(thread_reports(sb, &thread).iter().any(|(kind, title)| kind == "warn" && title.starts_with("Approve the message to Ana Parity")), "{:?}", thread_reports(sb, &thread));
+    // ◎ Agents › Review follow-ups: Approve & send.
+    gui.canvas_focus()?;
+    gui.key("Esc", &[])?;
+    agents_button(gui)?;
+    gui.wait("the review follow-ups section", 10, |t| t.contains("REVIEW FOLLOW-UPS ·"))?;
+    click_text(gui, "Review follow-ups:")?;
+    gui.wait("the draft in the panel", 10, |t| t.contains("awaiting your approval") && t.contains("Approve & send"))?;
+    click_text(gui, "Approve & send")?;
+    // The agent sends it through its channel and records it; the conversation is watched.
+    let book = wait_book(sb, &canvas, "the message sent", 60, |b| b.reviews[0].message.state == MessageState::Sent)?;
+    let conversation = book.reviews[0].message.conversation.clone();
+    let sent = std::fs::read_to_string(outbox.join("outbox-ana.out.jsonl")).unwrap_or_default();
+    anyhow::ensure!(sent.lines().count() == 1 && sent.contains(REVIEWED) && sent.contains("retry loop") && !sent.contains("old client"), "the outbox: {sent}");
+    anyhow::ensure!(book.conversation(&conversation).is_some_and(|c| c.watching && c.contact == "ana"), "{:?}", book.conversations);
+    // The author asks for a re-review; the hourly check (10 s here) finds it.
+    std::fs::write(outbox.join("outbox-ana.in.jsonl"), "{\"id\":\"m1\",\"text\":\"Thanks! Fixed both, could you re-review?\"}\n{\"id\":\"m2\",\"text\":\"Lunch on Friday?\"}\n")?;
+    let book = wait_book(sb, &canvas, "the request delivered to the review session", 120, |b| b.requests.iter().any(|q| q.state == RequestState::Delivered))?;
+    anyhow::ensure!(book.requests.len() == 1, "only the review request counts: {:?}", book.requests);
+    let request = &book.requests[0];
+    anyhow::ensure!(request.to == reviewer && request.review == review.id && request.kind == "re-review", "{request:?}");
+    gui.open(REVIEWER, "Fake Copilot")?;
+    gui.wait_tile("the request in the review session", 10, |t| t.contains("[From Review follow-ups via Copilot Canvas] Ana Parity asks for a re-review of PR parity/lib#7"))?;
+    // A later check adds nothing: each message is processed once.
+    let checked = book.checks.last_ms;
+    wait_book(sb, &canvas, "another check", 60, |b| b.checks.last_ms > checked)?;
+    let book = canvas_agents::reviews_cli::load(&sb.instance.home, &canvas);
+    anyhow::ensure!(book.requests.len() == 1, "no second request: {:?}", book.requests);
+    let reports = thread_reports(sb, &thread);
+    anyhow::ensure!(["warn", "ok", "queued", "delivered"].iter().all(|k| reports.iter().any(|(kind, _)| kind == k)), "{reports:?}");
+    // The agent is turned off for the rows after this one.
+    gui.canvas_focus()?;
+    gui.click(gui.box_center(FOLLOW_UP)?, &[])?;
+    gui.wait("its panel", 5, |t| t.contains(&format!("◎ {FOLLOW_UP}")) && t.contains("Disable"))?;
+    click_text(gui, "Disable")?;
+    wait_doc(&sb.canvas, "the follow-up agent disabled", |d| d.node(&agent).and_then(|n| n.passive.as_ref()).is_some_and(|p| p.disabled))?;
+    gui.canvas_focus()?;
+    Ok(format!("handed off with notes; draft awaited approval; approved → sent once to {conversation} (no notes); re-review read on the check, recorded once, delivered to the reviewer; Reports {:?}", reports.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>()))
 }
 
 fn coordination(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
@@ -171,7 +279,7 @@ fn coordination(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     // The panel: ◎ Agents › Pull requests.
     gui.canvas_focus()?;
     gui.key("Esc", &[])?;
-    click_text(gui, "◎ Agents")?;
+    agents_button(gui)?;
     gui.wait("the PR section", 10, |t| t.contains("PULL REQUESTS ·") && t.contains("Tracked pull requests"))?;
     click_text(gui, "Tracked pull requests")?;
     gui.wait("the pull requests panel", 10, |t| t.contains("Pull requests ·") && t.contains("parity/app#42") && t.contains("· merged"))?;

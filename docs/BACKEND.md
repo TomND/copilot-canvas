@@ -271,6 +271,20 @@ Remote clients get the panel through `ServiceMsg::Bus` and act through
 `ClientMsg::Bus`, like the passive sessions; the commands run on the
 service's machine (in its sessions), so nothing else crosses the wire.
 
+## Review follow-ups on the wire
+
+The same pattern (`service/reviews.rs`; records in
+`<home>/canvas-agents/<canvas id>/reviews/book.json`):
+
+| Where | Addition | An older peer |
+|---|---|---|
+| `Doc` / `ClientMsg::Routing` | `Passive::reviews` / `PassiveSpec::reviews` (`ReviewSettings`: `channel`, `tool`, `recipients`, `approval`, `check_minutes`, `paused`); *Pause checks* sets `paused` in the document | ignores it |
+| bus inbox | requests `{"type": "canvas.review", "data": {"op": "handoff" \| "draft" \| "sent" \| "needs-you" \| "failed" \| "checked" \| "request" \| "done", "request": <uuid>, …}}` (`copilot-canvas review …`), answered in `<home>/bus/answers/` | as for `canvas.pr` |
+| `ClientMsg::Bus` | `{"action": "reviews", "op": "approve" \| "dismiss-message" \| "assign" \| "dismiss" \| "unwatch" \| "check-now", …}` (the panel's buttons, as you; only you approve) | ignores unknown actions |
+| `ServiceMsg::Bus` (`bus::Snapshot`) | `reviews`: a `ReviewsView` (the agents, their settings, why checks are off, the check state, the newest 20 reviews **without private notes** and with shortened results, the conversations, the newest 30 requests) | ignores it |
+| bus events | `review.completed` (subscribers), `review.message.approved` and `review.check_due` (addressed to the agent, `to` = its key) | ordinary events |
+| mailbox | requests are `Mail` with their id (`q-…`); delivery confirms them | — |
+
 ## Per-client preferences
 
 The view (position, zoom), panels (sidebar width and visibility, terminal
@@ -394,6 +408,14 @@ most 8 files and 4 MiB in all.
   reaches and why it is blocked, which agents monitor, CLI failures sorted
   into unavailable and failing; `canvas_core::prs`: the panel's buttons are
   service requests and start nothing; the `prs-panel` snapshot.
+- `canvas_model::reviews`: hand-offs once per review, drafts (the link, no
+  private notes, no claimed approval), approval before sending, one message
+  per review, requests once per message, association and ambiguity, one
+  request at a time per pull request, the hourly schedule and its end,
+  settings, views without private notes; `canvas_agents::reviews_cli` and
+  `service::reviews`: requests posted for the service, which agent checks;
+  `canvas_core::review_followups`: the panel's buttons, pausing is the
+  agent's setting; the `review-followups` snapshot.
 - `two_clients_probe` (manual: `cargo test --release two_clients_probe --
   --ignored`): two TUI clients in hidden pseudoconsoles, one over `--remote
   loopback`, one over the pipe; a rename in either shows in the other, panning

@@ -35,9 +35,9 @@
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
                                  │                                                    ││  Run now    Pause    Disable    Events…    Groups…          │
                                  │                                                    ││  Schedule…    Filter…    Limits…    Skills…    PRs…         │
-                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││  Pull requests    MCP…    Rules    Memory    Log            │
-                                 │                                                    ││  Context    Goals    Folder    Message…    Open chat        │
-                                 │                                                    ││  All agents    Remove    Close                              │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││  Pull requests    Follow-ups…    MCP…    Rules    Memory    │
+                                 │                                                    ││  Log    Context    Goals    Folder    Message…              │
+                                 │                                                    ││  Open chat    All agents    Remove    Close                 │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·  │└─────────────────────────────────────────────────────────────┘
  click view · double-click/Enter start · ] [ or Ctrl+F6 recent · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom ·…
 ## gpu view model

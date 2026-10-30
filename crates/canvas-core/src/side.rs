@@ -206,6 +206,8 @@ pub enum RightDetail {
     CanvasAgents,
     /// The routed canvas's tracked pull requests and their follow-ups.
     Prs,
+    /// The routed canvas's review follow-ups.
+    Reviews,
 }
 
 fn enabled_icon(enabled: bool) -> (&'static str, Color) {

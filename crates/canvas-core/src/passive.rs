@@ -124,6 +124,7 @@ impl App {
                     skills: if node.is_canvas_agent() { p.skills.clone() } else { Vec::new() },
                     groups: if node.is_canvas_agent() { p.groups.clone() } else { Vec::new() },
                     prs: if node.is_canvas_agent() { p.prs.clone() } else { None },
+                    reviews: if node.is_canvas_agent() { p.reviews.clone() } else { None },
                 }),
                 None => {
                     if let Some(group) = self.doc.group_of(node) {
@@ -406,6 +407,11 @@ impl App {
                 "on every 5m auto read-only · manual: only handed-off ones · allow push,reply,resolve,vote,merge (follow-ups may ask for these) · off",
                 passive.prs.as_ref().map(|s| s.text()).unwrap_or_else(|| "off".into()),
             ),
+            PassiveField::Reviews => (
+                "Review follow-ups: how this agent messages pull request authors and checks their replies",
+                "CHANNEL [TOOL] approval|no-approval every 60m recipients: RULE · channels: mcp <server> · pr-comment · outbox <folder> · off",
+                passive.reviews.as_ref().map(|s| s.text()).unwrap_or_else(|| "off".into()),
+            ),
         };
         self.modals.push(crate::dialogs::Modal::Prompt(crate::dialogs::Prompt {
             title: title.into(),
@@ -421,10 +427,12 @@ impl App {
         let value = value.trim();
         let groups = if field == PassiveField::Groups { self.parse_agent_groups(value)? } else { Vec::new() };
         let prs = if field == PassiveField::Prs { canvas_model::prs::PrSettings::parse(value)? } else { None };
+        let reviews = if field == PassiveField::Reviews { canvas_model::reviews::ReviewSettings::parse(value)? } else { None };
         let Some(passive) = self.doc.node_mut(id).and_then(|n| n.passive.as_mut()) else { return Err("the passive session no longer exists".into()) };
         match field {
             PassiveField::Groups => passive.groups = groups,
             PassiveField::Prs => passive.prs = prs,
+            PassiveField::Reviews => passive.reviews = reviews,
             PassiveField::Events => {
                 passive.subscribe = value.split([',', ' ']).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect();
             }

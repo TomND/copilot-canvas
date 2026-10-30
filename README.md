@@ -96,6 +96,7 @@ prototype's `~/.copilot-canvas/layout.json` exists, its layout is migrated.
 | **Group folders** | Each group has a folder (asked when you create the group; suggested `~/.copilot-canvas/groups/<name>`) with `ai-docs/` and `human-outputs/`. Open them from the group's title chips **◧ AI docs** / **◨ Outputs** (compact **◧** / **◨** when zoomed out or narrow, **◧ Set folder…** before a folder is chosen; the chips stay clickable at every zoom while the title shows), the sidebar's **◧** row under the group (a menu: AI docs, outputs, the group folder, `GOALS.md`, change folder), its menu, or its details panel. In remote mode (any `--remote`, `loopback` included) folders open in VS Code through the server's tunnel or in the canvas's **folder browser** (subfolders and files; Enter or a click opens a file in the read-only viewer, Backspace goes up, *Copy path*), never in Explorer on the service's machine. Sessions launched in the group get `--add-dir` for both and group instructions (via `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`) telling Copilot to write notes to `ai-docs` and deliverables to `human-outputs` |
 | **Canvas-wide agents** | Passive agents that watch the whole canvas, not one group: the top bar's **◎ Agents** lists them with their state (monitoring, working, paused, needs attention, failing, done, off, unavailable), triggers, skills, next run and last report, and controls (Run now, Pause / Resume, Stop, Disable / Enable, Open); each is also a dashed **◎** box in the **Canvas agents** frame (the same agent). They get events of every group, message any session, and use the canvas skills (SKILL.md) you give them. See [Canvas-wide passive agents and skills](#canvas-wide-passive-agents-and-skills) |
 | **Pull request coordination** | A session that publishes a pull request hands it to the canvas (`copilot-canvas pr track URL`, taught by the `canvas-prs` skill); the canvas checks it read-only with your own `gh` / `az` for new review comments, failing checks and its end, and the canvas-wide **PR coordinator** turns what is new into one follow-up for the owning session, typed in when that session is idle; queued, delivered, blocked and failed show in ◎ Agents › Pull requests and in Reports. See [Pull request coordination](#pull-request-coordination) |
+| **Review follow-ups** | When a review session finishes reviewing someone's pull request it hands the results off (`copilot-canvas review handoff`, the `canvas-review-followup` skill); the canvas-wide **Review follow-up** agent drafts a message to the author, you approve it, it sends it through the channel you configured (an MCP server such as Teams, a PR comment, or a folder), and every hour it reads only those conversations for requests for another review, which reach the review session that did the review, once. See [Review follow-ups](#review-follow-ups) |
 | **Copilot defaults** | Settings view: permissions (`allow-all` by default, or `ask`), each agent's model for new sessions, reasoning effort, start mode, custom agent, context tier, extra `--add-dir` folders for new sessions; any group can override them (group menu → *Launch defaults*). Also lists `copilot config` settings and edits them through `copilot config` |
 | **Plugins · MCP · skills** | Lists come from `copilot plugin/mcp/skill/instruction list --json`; Space enables/disables, Del removes (confirmed; servers and skills that come from a plugin, the project or Copilot itself can only be disabled), **+** rows add a skill, an MCP server (`copilot mcp add` syntax) or install a plugin (runs in a canvas terminal so you can answer prompts). Secrets (env, headers) are never shown |
 | **Automations** | Reads Copilot's automations (`~/.copilot/data.db`: scheduled workflows, their last 10 runs, and per-session schedules). They appear in the Automations view and as ◷ boxes in a special **Automations** group on the canvas. Click one for its prompt, schedule, model, mode, project, last/next run and run history; Space or the button enables/disables a scheduled workflow (per-session schedules are managed with `/every` in that session). Refreshes every 15 s |
@@ -233,6 +234,7 @@ copilot-canvas followup --in 24h|--at 09:00 NOTE        (passive sessions)
 copilot-canvas effect fireworks|attention|sparkle|alert --on NAME [--note TEXT]   (until clicked; effect clear --on NAME)
 copilot-canvas report publish --markdown FILE | --html FILE | --message TEXT [options]   (the Reports inbox, below)
 copilot-canvas pr track URL                             after publishing a pull request (Pull request coordination, below)
+copilot-canvas review handoff --pr URL --author NAME --results FILE   after reviewing one (Review follow-ups, below)
 ```
 
 The bus lives in `~/.copilot-canvas/bus/` (`inbox/`, `routing.json`,
@@ -267,11 +269,15 @@ group's events, and a canvas-wide agent never sees another canvas's.
   double-click neither: **Open chat** is the explicit start of its
   conversation and **Run now** of a run.
 - **New**: *+ New canvas agent* (panel, frame chip or menu) and a template:
-  *PR coordinator* (`pr.*`, `build.failed`: example rules that keep a table
-  of pull requests and their owning sessions and pass review comments and
-  build failures on to them, read-only toward the pull requests), *Cross-group
-  digest* (daily at 17:00 and `session.done`) or *Custom*. Templates are only
-  starting rules; nothing about pull requests is built in.
+  *PR coordinator* (`pr.*`, `build.failed`; PR coordination on: the canvas
+  tracks handed-off pull requests and the agent sends their owners
+  follow-ups, read-only toward the pull requests; see [Pull request
+  coordination](#pull-request-coordination)), *Review follow-up*
+  (`review.*`; messages the authors of pull requests you reviewed and checks
+  their replies hourly; see [Review follow-ups](#review-follow-ups)),
+  *Cross-group digest* (daily at 17:00 and `session.done`) or *Custom*.
+  Templates are only starting rules you edit; *PRs…* and *Follow-ups…* turn
+  either feature on for any canvas-wide agent.
 - **States**: *monitoring* (enabled, waiting for its events or schedule),
   *waiting for messages* (no triggers), *queued* (events wait for the debounce,
   or for tomorrow when today's run budget is used), *working* (a run or its
@@ -411,6 +417,77 @@ Each command checks its input, hands the request to the service through
 the bus inbox and waits for its answer while the service runs (with no
 service it says the request waits: a dispatch is then *intended*, not
 queued).
+
+## Review follow-ups
+
+The other direction: pull requests *you* reviewed. When a review session
+finishes a review, its author should hear the results, and a later "fixed
+it, could you look again?" should reach the session that did the review.
+This is separate from pull request coordination (which follows your own
+sessions' pull requests); it reuses its tracking only to notice when a
+reviewed pull request ended.
+
+1. **Hand-off.** The review session writes what the author may read (the
+   outcome as the review established it, the actionable findings, links to
+   its comments) and, apart, anything private, then runs `copilot-canvas
+   review handoff --pr URL --author "<name>" --author-id <account> --outcome
+   changes-requested --results results.md [--notes notes.md] [--link
+   T=URL]` (the `canvas-review-followup` skill teaches it). The canvas records
+   the review once; private notes never leave the canvas (no event, draft or
+   message carries them; they go back only to the review session with a
+   request).
+2. **The message.** The canvas-wide **Review follow-up** agent (template;
+   *Follow-ups…* on any agent: `CHANNEL [TOOL] approval|no-approval every
+   60m recipients: RULE`) gets `review.completed` and records a draft
+   (`review message <id> --draft FILE`). The canvas refuses a draft without
+   the pull request's link, one that quotes the private notes, and one that
+   claims an approval (LGTM, "ready to merge") the review did not give. With
+   approval on (the default) the draft waits: ◎ Agents › **Review
+   follow-ups** shows it under NEEDS YOU with **Approve & send** (and a warn
+   report says so). Approved, the agent gets `review.message.approved`,
+   resolves the recipient and conversation with your channel and recipient
+   rule (none, several or no access: `--needs-you "<why>"`, shown to you,
+   never a guess), sends the text unchanged and records `--sent
+   --conversation ID` (one message per review; a second is refused).
+3. **The messaging channel** is yours: `mcp <server>` (a Teams, Slack or mail
+   MCP server the agent has), `pr-comment` (a comment on the pull request:
+   naming the channel is the permission), or `outbox <folder>` (one file per
+   conversation, for your own bridge and the tests). The canvas never sends a
+   message itself; it records what was sent and where.
+4. **Hourly checks.** While conversations are watched (from the first
+   message on) and the agent runs, the service asks it every hour
+   (`review.check_due`, only the watched conversations with their `since`
+   marks) to read the authors' new messages. It records each request for
+   another review, a re-review or review follow-up (`review request
+   --conversation … --message-id … --kind …`) and ignores the rest; the
+   canvas records each message once, ties it to the pull request and review
+   (or asks you under NEEDS YOU with one button per candidate when it is
+   unclear) and routes it to the review session that did the review, one
+   request at a time per pull request: queued, delivered when it is idle,
+   blocked while it is stopped or elsewhere (*Resume reviewer*, *Dismiss*).
+   A new hand-off of that pull request completes its requests. The panel
+   shows the channel, the last and next check, failed checks, *Check now*,
+   *Pause checks* / *Resume checks*, *Stop watching* per conversation; the
+   agent's own Pause and Disable stop everything. A conversation stops being
+   watched when its pull requests all ended (when a PR coordinator tracks
+   them) or after 14 quiet days.
+
+Every step is in Reports (thread `review:<pull request>`): approve the
+message, sent, needs you, a request queued and delivered or blocked, a
+request needing clarification, a failed check. The records live on the
+service's machine in `<home>/canvas-agents/<canvas id>/reviews/book.json`
+(the service is their only writer), so they survive restarts and every
+window and remote client shows the same panel.
+
+```text
+copilot-canvas review handoff --pr URL --author NAME [--author-id ID] --results FILE|- [--notes FILE]
+               [--outcome approved|changes-requested|commented] [--link TITLE=URL]… [--session NAME|ID]
+copilot-canvas review message REVIEW --draft FILE|- | --sent --conversation ID [--recipient NAME]
+               | --needs-you WHY | --failed WHY                              (the follow-up agent, you)
+copilot-canvas review checked [--conversation ID] [--mark TOKEN] [--failed WHY]
+copilot-canvas review request --conversation ID --message-id ID --kind re-review|another-review|follow-up --text TEXT [--pr URL]
+copilot-canvas review done REQUEST · review list [--format json]
+```
 
 ## Reports
 
@@ -694,6 +771,11 @@ and `docs/REMOTE.md`.
   (no prompts, no extension installs); a follow-up is typed into its owner
   only when it is idle and says what it permits (nothing beyond fixing
   locally by default); a coordinator never comments, votes or merges.
+- **Review follow-ups send nothing you did not approve** (approval is on by
+  default), only to the review's author, through the channel you named;
+  private review notes never reach an event, a draft or a message; an
+  unclear recipient or request comes to you instead of a guess; the canvas
+  never starts or resumes a review session for a request.
 - **Reports are data, never code.** Reading one never starts or resumes its
   session (its **View** button only views the box) and runs nothing. HTML is
   sanitized (scripts, frames, plugins, forms, `<base>`, `<meta>`, `<link>`,
@@ -735,7 +817,7 @@ copilot-canvas service status|stop    stop ends the service's sessions (graceful
 copilot-canvas bench [--terminals N] [--seconds S] [--json FILE]
 copilot-canvas bench --client gui     the GPU client's latency, frame cost, idle CPU, memory, first paint
 copilot-canvas selftest               end-to-end UI test in a hidden console (demo shells only)
-copilot-canvas selftest --client gui  the same 36 steps against the GPU client (over its test hooks)
+copilot-canvas selftest --client gui  the same 37 steps against the GPU client (over its test hooks)
 copilot-canvas selftest --client gui --parity
                                       one GUI check per row of the parity matrix (docs/PARITY.md)
 copilot-canvas kitty-demo             print a small test image (iTerm2 inline image; the GPU client shows it)
@@ -846,3 +928,11 @@ cargo test                            unit tests
   a real Azure DevOps pull request has been made (no `az` on the development
   machine). A follow-up for a stopped owner waits (blocked) until you resume
   the owner yourself: the canvas never starts or resumes a session for it.
+- Review follow-ups: the canvas has no messaging integration of its own:
+  sending and reading messages is the agent's, through the MCP server or
+  tool you name (or a PR comment, or an outbox folder), so how well a
+  recipient is resolved and replies are read depends on that tool and the
+  agent; the canvas checks the records it is given (one message per review,
+  each author message once, the pull request link, no private notes, no
+  claimed approval) but cannot see the channel itself. Checks are asked for
+  only while the service runs; a missed hour is asked for at the next pass.

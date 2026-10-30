@@ -772,10 +772,11 @@ impl Sandbox {
         // The stand-in's passive runs last long enough to be stopped (row 40b).
         let run_ms = PathBuf::from("6000");
         let (claude, xdg) = (self.root.join("claude-home"), self.root.join("xdg-data"));
-        // Pull requests are polled every 2 s (rows 42, 43), with the stand-in gh / az.
-        let poll = PathBuf::from("2");
+        // Pull requests are polled every 2 s (rows 42, 43), with the stand-in gh / az;
+        // review follow-ups are checked every 10 s instead of hourly (row 43).
+        let (poll, check) = (PathBuf::from("2"), PathBuf::from("10"));
         // Only the sandbox's histories: OpenCode and Claude Code look in empty folders.
-        let env: [(&str, &Path); 12] = [
+        let env: [(&str, &Path); 13] = [
             ("COPILOT_HOME", &self.copilot_home),
             ("COPILOT_CANVAS_COPILOT", &self.fake),
             ("COPILOT_CANVAS_OPENCODE", &self.fake_opencode),
@@ -788,6 +789,7 @@ impl Sandbox {
             ("COPILOT_CANVAS_AZ", &self.fake_az),
             (crate::fake_gh::ENV, &self.prs),
             ("COPILOT_CANVAS_PR_POLL_SECS", &poll),
+            ("COPILOT_CANVAS_REVIEW_CHECK_SECS", &check),
         ];
         let driver = GuiDriver::start(&self.args(extra), &env, (COLS, ROWS), &self.root.join(log))?;
         Ok(Gui { driver })

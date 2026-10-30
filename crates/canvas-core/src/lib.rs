@@ -36,6 +36,7 @@ pub mod remote;
 pub mod remove;
 pub mod report_html;
 pub mod reports;
+pub mod review_followups;
 pub mod richtext;
 pub mod side;
 pub mod status;
