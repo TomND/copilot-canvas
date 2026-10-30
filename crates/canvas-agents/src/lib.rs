@@ -23,4 +23,5 @@ pub mod reports;
 pub mod reviews_cli;
 pub mod service;
 pub mod taskschd;
+pub mod tunnel_access;
 pub mod vscode;

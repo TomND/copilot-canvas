@@ -277,6 +277,7 @@ pub struct Local {
 }
 
 impl Local {
+    #[cfg(windows)]
     pub fn now() -> Self {
         // SAFETY: plain out-parameter call.
         let t = unsafe {
@@ -285,6 +286,25 @@ impl Local {
             t
         };
         Self { year: t.wYear, month: t.wMonth, day: t.wDay, hour: t.wHour, minute: t.wMinute }
+    }
+
+    /// Elsewhere (the macOS mock service; schedules never run on a phone) UTC
+    /// stands in for local time.
+    #[cfg(not(windows))]
+    pub fn now() -> Self {
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) as i64;
+        let (days, rest) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+        // Howard Hinnant's civil_from_days.
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = (doy - (153 * mp + 2) / 5 + 1) as u16;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 } as u16;
+        let year = (yoe + era * 400 + i64::from(month <= 2)) as u16;
+        Self { year, month, day, hour: (rest / 3600) as u16, minute: (rest % 3600 / 60) as u16 }
     }
 
     pub fn date(&self) -> String {
@@ -998,6 +1018,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)] // Windows paths and file locks (service side)
     fn run_prompt_quotes_trigger_data_and_names_the_files() {
         let s = spec("a", &["pr.pushed"]);
         let group = RouteGroup { id: "g1".into(), name: "Excel".into(), folder: Some(r"C:\work".into()) };

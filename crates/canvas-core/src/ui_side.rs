@@ -8,7 +8,7 @@ use ratatui::style::Style;
 use crate::app::{App, Focus};
 use crate::dialogs::{Action, Hit};
 use crate::paint::{ACCENT, FAINT, GRAY, POSITIVE, LIGHT, MUTED, NEGATIVE, PANEL, PANEL_HI, SELECT, SPINNER, TEXT, ATTENTION, bold, fg, fill, outline, put, truncate};
-use crate::status::Status;
+use crate::status::{Status, StatusStyle};
 use crate::side::{ItemRef, RightDetail, SideView, VIEWS, automation_status, status_color, when};
 use crate::config::Kind;
 

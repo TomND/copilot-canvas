@@ -208,6 +208,39 @@ fn xor_stream(key: &[u8], data: &mut [u8]) {
     }
 }
 
+/// Seals a message for one paired client with its own secret, for channels
+/// the service does not trust (a push notification goes through Apple):
+/// a fresh 16-byte nonce, keys derived from the secret, `label` and the
+/// nonce, HMAC-SHA256 in counter mode, a tag over the ciphertext.
+/// Returns (nonce, ciphertext ‖ tag).
+pub fn seal_for_client(secret: &[u8], label: &str, message: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let nonce = crate::protocol::nonce()[..16].to_vec();
+    let (enc, seal) = client_keys(secret, label, &nonce);
+    let mut sealed = message.to_vec();
+    xor_stream(&enc, &mut sealed);
+    let tag = mac(&seal, &[&nonce, &sealed]);
+    sealed.extend_from_slice(&tag);
+    (nonce, sealed)
+}
+
+/// Opens [`seal_for_client`]; `None` when the secret, label or nonce differ, or it was changed.
+pub fn open_for_client(secret: &[u8], label: &str, nonce: &[u8], sealed: &[u8]) -> Option<Vec<u8>> {
+    let body_len = sealed.len().checked_sub(TAG_LEN)?;
+    let (body, tag) = sealed.split_at(body_len);
+    let (enc, seal) = client_keys(secret, label, nonce);
+    if !verify(&seal, &[nonce, body], tag) {
+        return None;
+    }
+    let mut message = body.to_vec();
+    xor_stream(&enc, &mut message);
+    Some(message)
+}
+
+fn client_keys(secret: &[u8], label: &str, nonce: &[u8]) -> ([u8; 32], [u8; 32]) {
+    let base = mac(secret, &[b"copilot-canvas client seal v1", label.as_bytes(), &[0], nonce]);
+    (mac(&base, &[b"enc"]), mac(&base, &[b"seal"]))
+}
+
 /// The key a revoked client's refusal is proven with. The service keeps it
 /// (instead of the secret) once it revokes a client; the client derives it
 /// from its secret, so only it can check the refusal.
@@ -315,5 +348,18 @@ mod tests {
         assert_eq!(delays, [0, 250, 500, 1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000, 30000]);
         assert_ne!(revocation_key(&[1; 32]), revocation_key(&[2; 32]));
         assert_ne!(revocation_key(&[1; 32]), vec![1; 32]);
+    }
+
+    #[test]
+    fn messages_sealed_for_a_client_open_only_with_its_secret_and_label() {
+        let secret = new_secret();
+        let (nonce, sealed) = seal_for_client(&secret, "tunnel-access", b"{\"token\":\"t\"}");
+        assert_eq!(open_for_client(&secret, "tunnel-access", &nonce, &sealed).as_deref(), Some(&b"{\"token\":\"t\"}"[..]));
+        assert_eq!(open_for_client(&new_secret(), "tunnel-access", &nonce, &sealed), None, "another client's secret");
+        assert_eq!(open_for_client(&secret, "other", &nonce, &sealed), None, "another purpose");
+        let mut changed = sealed.clone();
+        changed[0] ^= 1;
+        assert_eq!(open_for_client(&secret, "tunnel-access", &nonce, &changed), None, "changed in transit");
+        assert!(!sealed.windows(5).any(|w| w == b"token"), "not in the clear");
     }
 }

@@ -443,21 +443,22 @@ mod tests {
 
     #[test]
     fn liveness_and_heartbeat_timing() {
-        let live = Liveness::new(Duration::from_millis(20), Duration::from_millis(60));
+        // Wide margins: sleeps overshoot on busy CI runners (macOS especially).
+        let live = Liveness::new(Duration::from_millis(20), Duration::from_millis(1000));
         live.received();
         assert!(!live.dead());
-        std::thread::sleep(Duration::from_millis(30));
+        std::thread::sleep(Duration::from_millis(300));
         assert!(!live.dead());
         live.received();
-        std::thread::sleep(Duration::from_millis(40));
+        std::thread::sleep(Duration::from_millis(500));
         assert!(!live.dead(), "a message reset the silence");
-        std::thread::sleep(Duration::from_millis(40));
+        std::thread::sleep(Duration::from_millis(600));
         assert!(live.dead());
-        let mut beat = Beat::new(Duration::from_millis(20));
         let start = Instant::now();
+        let mut beat = Beat::new(Duration::from_millis(200));
         assert!(!beat.due(start));
-        assert!(beat.due(start + Duration::from_millis(25)));
-        assert!(!beat.due(start + Duration::from_millis(30)));
-        assert!(beat.next() > start + Duration::from_millis(40));
+        assert!(beat.due(start + Duration::from_millis(260)));
+        assert!(!beat.due(start + Duration::from_millis(300)));
+        assert!(beat.next() > start + Duration::from_millis(400));
     }
 }

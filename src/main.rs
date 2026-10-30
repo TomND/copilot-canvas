@@ -28,7 +28,7 @@ mod client {
     pub use canvas_tui::{Options, run};
 }
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
@@ -109,9 +109,13 @@ REMOTE (docs/REMOTE.md; agents on the Cloud PC, the canvas at home over a privat
   copilot-canvas remote tunnel-setup [--tunnel ID] [--port PORT]
                                         write the CopilotCanvas-Tunnel automation, set remote.listen,
                                         print the one-time devtunnel commands
-  copilot-canvas remote pair [--name NAME]
-                                        print a one-time pairing code (10 minutes, single use)
+  copilot-canvas remote pair [--name NAME] [--qr [--url wss://TUNNEL-PORT.REGION.devtunnels.ms]]
+                                        print a one-time pairing code (10 minutes, single use);
+                                        --qr: also a QR code for the iPhone app (docs/IOS-PLAN.md)
   copilot-canvas remote clients         paired clients (last seen, connected, revoked)
+  copilot-canvas remote push-key AuthKey_ID.p8 --team TEAMID [--key-id ID]
+                                        the APNs key for iPhone notifications (developer.apple.com › Keys)
+  copilot-canvas remote push-test       a test notification to every registered iPhone
   copilot-canvas remote revoke ID|NAME  revoke a client and drop its connections
   at home:
   copilot-canvas remote add NAME (--tunnel ID [--port PORT] | --addr HOST:PORT) --code CODE
@@ -264,7 +268,7 @@ fn parse() -> Result<Args> {
             "--canvas" => args.canvas = Some(PathBuf::from(value("--canvas")?)),
             "--cwd" => args.cwd = Some(PathBuf::from(value("--cwd")?)),
             "--remote" => args.remote = Some(value("--remote")?),
-            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--unread" | "--sent" => {
+            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--unread" | "--sent" | "--qr" => {
                 args.flags.push(arg.trim_start_matches("--").to_owned())
             }
             "--" => {
@@ -560,8 +564,10 @@ fn real_main() -> Result<()> {
         ["config", key] => config(&instance.home, Some(key), None),
         ["config", key, value] => config(&instance.home, Some(key), Some(value)),
         ["doctor"] => selftest::doctor(&instance),
-        ["remote", "pair"] => remote_cli::pair(&instance, option("name")),
+        ["remote", "pair"] => remote_cli::pair(&instance, option("name"), flag("qr"), option("url")),
         ["remote", "clients"] => remote_cli::clients(&instance),
+        ["remote", "push-key", file] => remote_cli::push_key(&instance, Path::new(file), option("key-id"), option("team")),
+        ["remote", "push-test"] => remote_cli::push_test(&instance),
         ["remote", "revoke", client] => remote_cli::revoke(&instance, client),
         ["remote", "tunnel-setup"] => remote_cli::tunnel_setup(&instance, &dir(), option("tunnel"), port("port")?),
         ["remote", "add", name] => remote_cli::add(

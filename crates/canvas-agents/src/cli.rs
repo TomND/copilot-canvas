@@ -650,12 +650,14 @@ mod tests {
         assert!(effect(&home, "clear", Some("Main".into()), None, Some("nope".into())).is_err());
         effect(&home, "Fireworks", Some("Main work".into()), Some("PR !12 approved".into()), None).unwrap();
         effect(&home, "clear", Some("Main work".into()), None, Some("attention".into())).unwrap();
-        let mut files: Vec<_> = std::fs::read_dir(bus::inbox_dir(&home)).unwrap().flatten().map(|e| e.path()).collect();
-        files.sort();
+        let files: Vec<_> = std::fs::read_dir(bus::inbox_dir(&home)).unwrap().flatten().map(|e| e.path()).collect();
         let events: Vec<Event> = files.iter().map(|f| serde_json::from_slice(&std::fs::read(f).unwrap()).unwrap()).collect();
         assert_eq!(events.len(), 2);
-        assert_eq!((events[0].kind.as_str(), events[0].data["effect"].as_str(), events[0].data["on"].as_str(), events[0].data["note"].as_str()), (crate::effects::EVENT, Some("fireworks"), Some("Main work"), Some("PR !12 approved")));
-        assert_eq!((events[1].data["effect"].as_str(), events[1].data["kind"].as_str()), (Some("clear"), Some("attention")));
+        // Both may be written within one millisecond (files then sort by a random suffix): find each.
+        let fireworks = events.iter().find(|e| e.data["effect"] == "fireworks").expect("the fireworks");
+        assert_eq!((fireworks.kind.as_str(), fireworks.data["on"].as_str(), fireworks.data["note"].as_str()), (crate::effects::EVENT, Some("Main work"), Some("PR !12 approved")));
+        let clear = events.iter().find(|e| e.data["effect"] == "clear").expect("the clear");
+        assert_eq!(clear.data["kind"].as_str(), Some("attention"));
         let plugin = write_plugin(&home).unwrap();
         for skill in ["canvas-events", "canvas-passive"] {
             assert!(std::fs::read_to_string(plugin.join(format!("skills/{skill}/SKILL.md"))).unwrap().contains("copilot-canvas effect"), "{skill} documents effects");

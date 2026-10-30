@@ -258,6 +258,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)] // Windows paths (the service's machine)
     fn folders_belong_to_one_canvas_of_one_home() {
         let a = canvas_dir(Path::new(r"C:\h"), "c1");
         assert_eq!(a, PathBuf::from(r"C:\h\canvas-agents\c1"));
@@ -336,6 +337,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)] // Windows paths (the service's machine)
     fn run_prompts_name_the_canvas_files_skills_and_senders() {
         let routing = Routing {
             canvas: "c1".into(),

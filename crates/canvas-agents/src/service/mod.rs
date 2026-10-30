@@ -9,6 +9,7 @@ mod inbox;
 mod passive;
 mod prs;
 mod reviews;
+mod push;
 pub use canvas_host::{keys, term};
 
 use std::collections::{HashMap, HashSet};
@@ -16,7 +17,7 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use canvas_host::server::{self, Client, Host, HostApp, Resolved};
@@ -26,7 +27,7 @@ use crate::agents::{AgentKind, Integration, Provide};
 use crate::backend::Ctx;
 use crate::index::is_session_id;
 use crate::paths::{Instance, now_ms};
-use crate::protocol::{AgentLaunch, ClientMsg, LaunchKind, ServiceMsg, SessionSummary};
+use crate::protocol::{AgentLaunch, CAP_TUNNEL_ACCESS, ClientMsg, LaunchKind, ServiceMsg, SessionSummary};
 pub use canvas_common::auth::{read_token, write_token};
 pub use server::log;
 use term::lock;
@@ -116,6 +117,12 @@ pub struct Agents {
     prs: Mutex<prs::Hub>,
     /// The routed canvas's review follow-ups (`reviews.rs`).
     reviews: Mutex<reviews::Hub>,
+    /// The Dev Tunnels access token phone clients get (`CAP_TUNNEL_ACCESS`).
+    tunnel_access: Mutex<Option<crate::tunnel_access::Access>>,
+    /// Asks the tunnel access thread to issue a token now.
+    tunnel_wake: Sender<()>,
+    /// Phones registered for notifications, the APNs key, what was notified.
+    push: push::Push,
 }
 
 /// Passive sessions and the factory watch use the backend under this name.
@@ -140,6 +147,7 @@ impl Agents {
         let (bus_tx, bus_rx) = unbounded::<crate::bus::Event>();
         let (rpc_tx, rpc_rx) = unbounded::<RpcJob>();
         let (quick_tx, quick_rx) = unbounded::<RpcJob>();
+        let (tunnel_tx, tunnel_rx) = bounded::<()>(1);
         let agents = Arc::new(Agents {
             host,
             sessions: Mutex::new(HashMap::new()),
@@ -160,7 +168,12 @@ impl Agents {
             reports: Mutex::new(crate::reports::Store::open(&instance.home, now_ms())),
             prs: Mutex::new(prs::Hub::default()),
             reviews: Mutex::new(reviews::Hub::default()),
+            tunnel_access: Mutex::new(None),
+            tunnel_wake: tunnel_tx,
+            push: push::Push::new(&instance.home),
         });
+        server::spawn_named("push", { let a = agents.clone(); move || push::push_loop(a) });
+        server::spawn_named("tunnel-access", { let a = agents.clone(); move || tunnel_access_loop(a, tunnel_rx) });
         server::spawn_named("index", { let a = agents.clone(); move || index_loop(a, index_rx) });
         server::spawn_named("subsessions", { let a = agents.clone(); move || subsession_loop(a) });
         server::spawn_named("agent-sessions", { let a = agents.clone(); move || agent_session_loop(a) });
@@ -294,6 +307,36 @@ impl Agents {
     }
 }
 
+/// Keeps a Dev Tunnels access token for phone clients: issued when one
+/// connects without a fresh token, renewed half a day before it expires while
+/// one stays connected, at most every 10 minutes after a failure.
+fn tunnel_access_loop(agents: Arc<Agents>, wake: Receiver<()>) {
+    const RETRY: Duration = Duration::from_secs(600);
+    let mut failed_at: Option<Instant> = None;
+    loop {
+        let _ = wake.recv_timeout(RETRY);
+        // Connected phones, and phones away that get tokens by notification.
+        let wanted = lock(&agents.clients).values().any(|c| c.caps() & CAP_TUNNEL_ACCESS != 0) || push::wants_access(&agents);
+        if !wanted || lock(&agents.tunnel_access).as_ref().is_some_and(|a| a.fresh(now_ms())) || failed_at.is_some_and(|at| at.elapsed() < RETRY) {
+            continue;
+        }
+        match crate::tunnel_access::issue(&agents.instance.home) {
+            Ok(access) => {
+                failed_at = None;
+                let until = canvas_common::paths::format_rfc3339_ms(access.expires_ms);
+                log(&agents.instance, &format!("issued a Dev Tunnels access token for phone clients (until {until}, {})", if access.url.is_empty() { "web address unknown" } else { &access.url }));
+                *lock(&agents.tunnel_access) = Some(access.clone());
+                push::send_access(&agents, &access);
+                agents.broadcast(ServiceMsg::TunnelAccess { url: access.url, token: access.token, expires_ms: access.expires_ms });
+            }
+            Err(error) => {
+                failed_at = Some(Instant::now());
+                log(&agents.instance, &format!("cannot issue a Dev Tunnels access token for phone clients: {error:#}"));
+            }
+        }
+    }
+}
+
 impl HostApp for Agents {
     fn command_env(&self, id: &str) -> Vec<(String, String)> {
         // Plain shells (the demo's) get the `copilot-canvas` command and their identity too.
@@ -343,6 +386,16 @@ impl HostApp for Agents {
         client.send(ServiceMsg::Bus { json: passive::snapshot(self) });
         // Only clients that show the inbox get it (`CAP_REPORTS`).
         client.send(inbox::message(self));
+        if client.caps() & CAP_TUNNEL_ACCESS != 0 {
+            let now = now_ms();
+            let access = lock(&self.tunnel_access).clone();
+            if let Some(access) = access.as_ref().filter(|a| a.expires_ms == 0 || a.expires_ms > now) {
+                client.send(ServiceMsg::TunnelAccess { url: access.url.clone(), token: access.token.clone(), expires_ms: access.expires_ms });
+            }
+            if !access.is_some_and(|a| a.fresh(now)) {
+                let _ = self.tunnel_wake.try_send(());
+            }
+        }
     }
 
     fn client_disconnected(&self, client: u64) {
@@ -353,6 +406,7 @@ impl HostApp for Agents {
 
     fn message(&self, client: &Arc<Client>, message: ClientMsg) -> Result<()> {
         match message {
+            ClientMsg::PushRegister { token, environment, bundle, label } => push::register(self, client, &token, &environment, &bundle, &label)?,
             ClientMsg::Track { ids } => {
                 lock(&self.tracked).insert(client.id, ids.into_iter().filter(|id| crate::agents::ALL.iter().any(|k| k.provider().is_session_id(id))).collect());
                 let _ = self.index_wake.try_send(());
@@ -525,6 +579,7 @@ impl Agents {
                 }
                 Request::RemoteRevoke { client: key } => {
                     let revoked = self.remote.revoke(&key, now)?;
+                    self.push.devices.remove(Some(&revoked.id), None);
                     let connected: Vec<Arc<Client>> = lock(&self.clients).values().filter(|c| c.remote_id.as_deref() == Some(revoked.id.as_str())).cloned().collect();
                     for connection in &connected {
                         connection.close();

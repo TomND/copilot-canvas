@@ -44,6 +44,11 @@ pub struct RemoteSettings {
     /// shown in pairing instructions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnel: Option<String>,
+    /// The remote port's Dev Tunnels web-forwarding address for the iPhone
+    /// (`wss://copilot-canvas-47600.usw2.devtunnels.ms`); found with
+    /// `devtunnel show` when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_url: Option<String>,
 }
 
 fn yes() -> bool {
@@ -52,7 +57,7 @@ fn yes() -> bool {
 
 impl Default for RemoteSettings {
     fn default() -> Self {
-        Self { listen: None, compress: true, tunnel: None }
+        Self { listen: None, compress: true, tunnel: None, web_url: None }
     }
 }
 
