@@ -1256,7 +1256,10 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
     });
 
     check(rows, "14", "Copy and paste: drag-select (rejoin), copy on release, Ctrl+C, Ctrl+Shift+C, Ctrl+V, pane menu", "copy_on_release_and_paste", || {
-        gui.send("Write-Output ('COPY_' + 'PROBE_TEXT')\r")?;
+        // From the top of a cleared screen: row 12 leaves it full, so this row's output would
+        // land on the tile's last rows, which the --perf overlay covers (the IME paste line
+        // went unseen there).
+        gui.send("Clear-Host; Write-Output ('COPY_' + 'PROBE_TEXT')\r")?;
         // Wait for the prompt after the output too: it can scroll a full pane
         // by a line, and a drag aimed before that lands on the prompt.
         gui.wait("text printed and the next prompt", 10, |t| {
