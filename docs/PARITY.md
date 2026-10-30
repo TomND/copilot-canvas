@@ -8,8 +8,8 @@ cargo build --release
 target\release\copilot-canvas.exe selftest --client gui --parity
 ```
 
-It takes about 110 s on the development machine (row 40b waits out event debounces; RTX 3070, workstation
-locked), prints each check as it runs and ends with the table below;
+It takes about 220 s on the development machine (rows 40b, 42 and 43 wait out event debounces, an owner's
+20 idle seconds and stand-in agent runs; RTX 3070), prints each check as it runs and ends with the table below;
 `CANVAS_GUI_SCREENS=DIR` keeps the PNG captures the checks inspect.
 `CANVAS_PARITY_ROWS=41,41b` (a comma-separated list of row numbers) runs only
 those rows, for work on one feature; rows outside the list are not run and
@@ -185,6 +185,8 @@ row  | feature                                                        | GUI test
 41   | New: Reports inbox: sessions publish reports and messages (co… | reports_inbox_and_viewer                     | ✓
 41b  | New: HTML reports in the GUI's WebView2 view: their own style… | html_report_locked_down (GUI only: the TUI … | ✓
 41c  | New: remote mode lists and opens reports through the service … | remote_reports_inbox                         | ✓
+42   | New: PR coordination: a session hands a PR off; the canvas po… | pr_handoff_follow_up_and_end                 | ✓
+43   | New: review follow-ups: a review is handed off; the agent's d… | review_handoff_message_and_request           | ✓
 G1   | New: inline images (Kitty graphics; iTerm2 OSC 1337 through C… | kitty_image_pixels_png (GUI only: the TUI c… | ✓
 G2   | New: taskbar progress (ITaskbarList3), FlashWindowEx, toasts   | taskbar_flash_toasts (GUI only: a console h… | ✓
 G3   | New: file drag and drop (paths pasted; uploaded in remote mod… | drop_files_local (GUI only: a console canno… | ✓
@@ -194,10 +196,19 @@ V2   | Stacks: K or the menu stacks subsessions (animated), double-c… | stack_
 V3   | Effects: copilot-canvas effect on a box, animated ≤ 15 fps wh… | effect_fireworks_ack (the TUI shows a badge… | ✓
 V4   | Group chips at any zoom (folders, ⟲ passive), sidebar folder … | chips_low_zoom_and_sidebar (the TUI draws t… | ✓
 V5   | Remote mode: group folders in the canvas's browser, passive f… | remote_group_files_in_canvas (the TUI uses … | ✓
-PASS: 56 rows in 108.8s
+PASS: 58 rows in 218.7s
 ```
 
-Rows 41–41c in that run: `2 published as Stopped one, ✉2 → ✉1 → none,
+Rows 42 and 43 in that run: `tracked by its owner; baseline poll; 3 comments
+→ 1 follow-up, queued while typed into, delivered when idle; Reports
+["queued", "delivered", "ok"]; merged → no more polls (44 gh calls, none a
+write)` (53.1 s); `handed off with notes; draft awaited approval; approved →
+sent once to outbox:ana (no notes); re-review read on the check, recorded
+once, delivered to the reviewer; Reports ["warn", "ok", "queued",
+"delivered"]` (56.8 s). Both leave the parity group in view and every report
+read, as the rows after them expect.
+
+Rows 41–41c in the run before: `2 published as Stopped one, ✉2 → ✉1 → none,
 toasts ["quiet", "quiet"], read at the service, nothing launched`;
 `WebView2 ready: styles applied (5104 magenta px), composed over the content
 area (5104 px), 0 scripts kept, raw script not run, 2 request(s) answered 403
@@ -214,6 +225,13 @@ loopback TCP; read at the service`.
   clipboard test on an unlocked desktop.
 - Copilot's own UI is replaced by the stand-in; the real-agent behaviours
   stay with `selftest agent` and the manual probes in `src/selftest.rs`.
+- Rows 42 and 43 never touch a real pull request or person: `gh` and `az`
+  are stand-ins (`COPILOT_CANVAS_GH` / `COPILOT_CANVAS_AZ`: `copilot-canvas.exe`
+  copies answering from fixtures in the sandbox and refusing any write, which
+  the rows check), the messaging channel is a folder in the sandbox, and the
+  agents are the stand-in following the skills' contracts. Checks run every
+  2 s (`COPILOT_CANVAS_PR_POLL_SECS`) and review checks every 10 s
+  (`COPILOT_CANVAS_REVIEW_CHECK_SECS`) instead of 5 and 60 minutes.
 - The checks assert behaviour and a few pixels, not whole images. Visual
   regressions are the job of `selftest --client gui --golden`
   (`docs/GUI.md` §3), whose `all-statuses` golden screenshot is this suite's

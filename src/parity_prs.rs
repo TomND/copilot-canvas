@@ -15,11 +15,12 @@ use serde_json::Value;
 
 use super::{Gui, Row, Sandbox, check, create_from_dialog};
 use crate::fake_gh::{FakeCheck, Fixture, calls, write_fixture};
-use crate::selftest::wait_doc;
+use crate::selftest::{Ui, wait_doc};
 use canvas_agents::prs::{DispatchState, MonitorStatus, PrRef, PrState, Registry};
 
 const COORDINATOR: &str = "Parity PRs";
-const OWNER: &str = "Parity PR owner";
+/// Short names: the sidebar's RECENT rows show them whole (the tree may be scrolled away).
+const OWNER: &str = "PR owner";
 const URL: &str = "https://github.com/parity/app/pull/42";
 
 /// Runs `copilot-canvas ARGS` as the canvas session `session` would (its
@@ -73,6 +74,42 @@ fn agents_button(gui: &Gui) -> Result<()> {
     click_text(gui, " Agents ")
 }
 
+/// A click on a box's row in the sidebar (it views the box wherever the
+/// canvas is: a running session's terminal with the keyboard, an agent's panel).
+fn sidebar_click(gui: &Gui, name: &str) -> Result<()> {
+    let (x, y) = gui.driver.find_in(name, 0, 33).with_context(|| format!("{name:?} in the sidebar\n{}", gui.screen()))?;
+    gui.click((x as f64 + 0.5, y as f64 + 0.5), &[])
+}
+
+/// An agent's panel, from its row in ◎ Agents (wherever its box is).
+fn agent_panel(gui: &mut Gui, name: &str) -> Result<()> {
+    gui.canvas_focus()?;
+    gui.key("Esc", &[])?;
+    agents_button(gui)?;
+    let row = format!("◎ {name}  ");
+    gui.wait("its row in the agents panel", 5, |t| t.contains(&row))?;
+    click_text(gui, &row)
+}
+
+/// The canvas back on the parity group (its first shell, from the sidebar):
+/// new boxes land beside it, not in the Canvas agents frame, and the rows
+/// after these find its shells in view.
+fn to_parity_group(gui: &mut Gui) -> Result<()> {
+    gui.canvas_focus()?;
+    sidebar_click(gui, "Shell A")?;
+    gui.wait_tree("the parity group in view", 5, |t| t["canvas"]["boxes"].as_array().is_some_and(|b| b.iter().any(|b| b["name"] == "Shell B")))?;
+    gui.canvas_focus()
+}
+
+/// Leaves the canvas as the rows after these expect it: the parity group in
+/// view, every report read (row 41c counts one new report).
+fn tidy(sb: &Sandbox, gui: &mut Gui) -> Result<()> {
+    to_parity_group(gui)?;
+    let conn = crate::client::conn::try_connect(&sb.instance)?;
+    conn.tx.send(crate::protocol::ClientMsg::Bus { json: serde_json::json!({ "action": "reports", "op": "read_all" }).to_string() })?;
+    gui.wait("every report read", 10, |t| !t.contains("✉1") && !t.lines().any(|l| l.contains('✉') && l.chars().skip_while(|c| *c != '✉').nth(1).is_some_and(|c| c.is_ascii_digit())))
+}
+
 /// Makes a canvas-wide agent from a template through ◎ Agents; answers its box id.
 pub(super) fn new_agent(sb: &Sandbox, gui: &mut Gui, template: &str, name: &str) -> Result<String> {
     gui.canvas_focus()?;
@@ -96,19 +133,26 @@ pub(super) fn rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         "42",
         "New: PR coordination: a session hands a PR off; the canvas polls it read-only; new comments → one follow-up, queued while its owner works, delivered when idle; Reports; merged stops polling",
         "pr_handoff_follow_up_and_end",
-        || coordination(sb, gui),
+        || after(coordination(sb, gui), tidy(sb, gui)),
     );
     check(
         rows,
         "43",
         "New: review follow-ups: a review is handed off; the agent's draft waits for your approval; sent through the channel; the author's re-review request is read on the check, recorded once and routed to the review session",
         "review_handoff_message_and_request",
-        || follow_ups(sb, gui),
+        || after(follow_ups(sb, gui), tidy(sb, gui)),
     );
 }
 
-const FOLLOW_UP: &str = "Parity follow-up";
-const REVIEWER: &str = "Parity reviewer";
+/// A row's result, once the canvas is left as the rows after it expect (also when it failed).
+fn after(result: Result<String>, tidied: Result<()>) -> Result<String> {
+    let detail = result?;
+    tidied.context("leaving the canvas tidy")?;
+    Ok(detail)
+}
+
+const FOLLOW_UP: &str = "Author mail";
+const REVIEWER: &str = "Reviewer";
 const REVIEWED: &str = "https://github.com/parity/lib/pull/7";
 
 fn wait_book(sb: &Sandbox, canvas: &str, what: &str, secs: u64, ok: impl Fn(&canvas_agents::reviews::Book) -> bool) -> Result<canvas_agents::reviews::Book> {
@@ -135,8 +179,8 @@ fn follow_ups(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     use canvas_agents::reviews::{MessageState, RequestState};
     let outbox = sb.root.join("outbox");
     std::fs::create_dir_all(&outbox)?;
-    // The review session: a new session (the stand-in agent).
-    gui.canvas_focus()?;
+    // The review session: a new session (the stand-in agent), beside the parity group.
+    to_parity_group(gui)?;
     gui.send("n")?;
     gui.wait("the new-session dialog", 5, |t| t.contains("New session"))?;
     gui.send(REVIEWER)?;
@@ -163,7 +207,11 @@ fn follow_ups(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     anyhow::ensure!(review.message.draft.contains(REVIEWED) && review.message.draft.contains("changes-requested") && !review.message.draft.contains("old client"), "{:?}", review.message.draft);
     anyhow::ensure!(!outbox.join("outbox-ana.out.jsonl").exists(), "nothing is sent before you approve it");
     let thread = format!("review:{}", canvas_agents::prs::PrRef::parse(REVIEWED).map_err(|e| anyhow::anyhow!(e))?.key());
-    anyhow::ensure!(thread_reports(sb, &thread).iter().any(|(kind, title)| kind == "warn" && title.starts_with("Approve the message to Ana Parity")), "{:?}", thread_reports(sb, &thread));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !thread_reports(sb, &thread).iter().any(|(kind, title)| kind == "warn" && title.starts_with("Approve the message to Ana Parity")) {
+        anyhow::ensure!(Instant::now() < deadline, "no report asks for the approval: {:?}", thread_reports(sb, &thread));
+        std::thread::sleep(Duration::from_millis(250));
+    }
     // ◎ Agents › Review follow-ups: Approve & send.
     gui.canvas_focus()?;
     gui.key("Esc", &[])?;
@@ -184,7 +232,9 @@ fn follow_ups(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     anyhow::ensure!(book.requests.len() == 1, "only the review request counts: {:?}", book.requests);
     let request = &book.requests[0];
     anyhow::ensure!(request.to == reviewer && request.review == review.id && request.kind == "re-review", "{request:?}");
-    gui.open(REVIEWER, "Fake Copilot")?;
+    // Its terminal, from its sidebar row (a view, not a start: it runs).
+    gui.canvas_focus()?;
+    sidebar_click(gui, REVIEWER)?;
     gui.wait_tile("the request in the review session", 10, |t| t.contains("[From Review follow-ups via Copilot Canvas] Ana Parity asks for a re-review of PR parity/lib#7"))?;
     // A later check adds nothing: each message is processed once.
     let checked = book.checks.last_ms;
@@ -195,18 +245,17 @@ fn follow_ups(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     anyhow::ensure!(["warn", "ok", "queued", "delivered"].iter().all(|k| reports.iter().any(|(kind, _)| kind == k)), "{reports:?}");
     // The agent is turned off for the rows after this one.
     gui.canvas_focus()?;
-    gui.click(gui.box_center(FOLLOW_UP)?, &[])?;
+    agent_panel(gui, FOLLOW_UP)?;
     gui.wait("its panel", 5, |t| t.contains(&format!("◎ {FOLLOW_UP}")) && t.contains("Disable"))?;
     click_text(gui, "Disable")?;
     wait_doc(&sb.canvas, "the follow-up agent disabled", |d| d.node(&agent).and_then(|n| n.passive.as_ref()).is_some_and(|p| p.disabled))?;
-    gui.canvas_focus()?;
     Ok(format!("handed off with notes; draft awaited approval; approved → sent once to {conversation} (no notes); re-review read on the check, recorded once, delivered to the reviewer; Reports {:?}", reports.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>()))
 }
 
 fn coordination(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     let launches_before = std::fs::read_to_string(sb.instance.log_path()).unwrap_or_default().matches("launched ").count();
-    // The owner: a new session (the stand-in agent) from the dialog.
-    gui.canvas_focus()?;
+    // The owner: a new session (the stand-in agent) from the dialog, beside the parity group.
+    to_parity_group(gui)?;
     gui.send("n")?;
     gui.wait("the new-session dialog", 5, |t| t.contains("New session"))?;
     gui.send(OWNER)?;
@@ -229,7 +278,9 @@ fn coordination(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     anyhow::ensure!(out.contains(&format!("Tracking parity/app#42 for “{OWNER}”")) && out.contains("every 2 s"), "{out}");
     wait_registry(sb, &canvas, "the first poll (the baseline)", 30, |r| r.get(&key).is_some_and(|p| p.monitor.polls >= 1 && p.monitor.status == MonitorStatus::Ok && p.comments == 1 && p.new_comments == 0))?;
     // Three new comments while the owner is busy (typed into): the follow-up waits.
-    gui.open(OWNER, "Fake Copilot")?;
+    gui.canvas_focus()?;
+    sidebar_click(gui, OWNER)?;
+    gui.wait_tree("the owner's terminal with the keyboard", 10, |t| t["focus"] == "Terminal" && t["focused_term"] == owner.as_str())?;
     fixture.comment(3, "ben", "please handle the 429 retry");
     write_fixture(&sb.prs, &pr, &fixture)?;
     let deadline = Instant::now() + Duration::from_secs(90);
@@ -285,11 +336,10 @@ fn coordination(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     gui.wait("the pull requests panel", 10, |t| t.contains("Pull requests ·") && t.contains("parity/app#42") && t.contains("· merged"))?;
     // The agent is turned off for the rows after this one.
     gui.canvas_focus()?;
-    gui.click(gui.box_center(COORDINATOR)?, &[])?;
+    agent_panel(gui, COORDINATOR)?;
     gui.wait("its panel", 5, |t| t.contains(&format!("◎ {COORDINATOR}")) && t.contains("Disable"))?;
     click_text(gui, "Disable")?;
     wait_doc(&sb.canvas, "the coordinator disabled", |d| d.node(&agent).and_then(|n| n.passive.as_ref()).is_some_and(|p| p.disabled))?;
-    gui.canvas_focus()?;
     let launches = std::fs::read_to_string(sb.instance.log_path()).unwrap_or_default().matches("launched ").count();
     Ok(format!(
         "tracked by its owner; baseline poll; 3 comments → 1 follow-up, queued while typed into, delivered when idle; Reports {:?}; merged → no more polls ({} gh calls, none a write); {} launch(es) (the owner and the coordinator's runs)",
