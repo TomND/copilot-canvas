@@ -59,13 +59,17 @@ Still running or time-gated:
   keeps the TUI over remote desktop and SSH as D4 asks) after the dogfood week
   with no open parity bugs.
 
-The owner's backlog (`Canvas App/TODOs.md`, WI-001 to WI-012) was
+The owner's backlog (`Canvas App/TODOs.md`, WI-001 to WI-018) was
 implemented on 2026-10-29: group background/border selection, multi-selection
 removal, subsession stacks, inspecting and resuming agent-created child
 conversations, GPU event effects, visible group folders and passive sessions,
 view versus start, dusty unused sessions, multi-line copy and paste, the
-smooth loop animation, recent sessions with Ctrl+F6 / `]` `[`, and the
-remembered default model per agent (parity rows 34 to 39b, docs/PARITY.md).
+smooth loop animation, recent sessions with Ctrl+F6 / `]` `[`, the
+remembered default model per agent, canvas-wide passive agents and skills,
+pull request coordination, the Reports inbox, review follow-ups, Ctrl+Z / Ctrl+Y
+for layout changes and area selection of subsessions (parity rows 34 to 45,
+docs/PARITY.md). New items are picked up by the owner's TODO bot (outside this
+repository), which implements, verifies and pushes them.
 
 ## 1. Goals and non-goals
 
