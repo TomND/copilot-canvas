@@ -35,14 +35,14 @@ work resumes after any interruption: read it first, then `git log`.
   of the touched crates green on the OS; Windows CI and `cargo xwin clippy`
   green.
 
-### Phase 1 Service and TUI (M0, M1) — not started
+### Phase 1 Service and TUI (M0, M1) — macOS: in progress · Linux: in progress (self-tests on CI)
 
 - M0: REMOTE.md checklist 1–12 from a Mac TUI against the Windows service.
 - M1: `cargo test --workspace`, `corpus check`, `selftest`, `selftest --remote
   loopback|faults|paired`, backend contract, `selftest agent --paste`,
   `bench --terminals 100` within PLAN §9.
 
-### Phase 2 Lifecycle and automations — not started
+### Phase 2 Lifecycle and automations — Linux: Secret Service backend done (3f5b1e6); systemd/cron not started
 
 - `service install`; `Scheduler` trait; Launchd / SystemdUser / Cron; built-in
   launcher; import, apply, backups, drift, run, enable; tunnel manifest.
@@ -245,3 +245,21 @@ plan §6.1 equivalent, documented).
   in a dlopen'ed helper process, deny proxy + content rule list, sandbox
   when bwrap works. WPE rejected (not packaged on Ubuntu 24.04; 2.36 on
   22.04), Blitz rejected (fidelity).
+- 2026-10-31: Linux CI green on all three runners without Ghostty (run
+  41223516059: clippy, workspace tests, release build). Shared fixes found
+  by it: `newest_match` globbing, OpenCode folders kept in the local style,
+  a heartbeat test race (0c73fea). The Unix demo shells / TUI self-test port
+  was done twice in parallel (here and 6fa2a0a on `macos`); the `linux` copy
+  was dropped before pushing and `macos`' kept.
+- 2026-10-31: `ghostty-linux` CI job (x86_64 on ubuntu-24.04, aarch64 on
+  ubuntu-24.04-arm; Zig 0.17.0 checksums from ziglang.org's index) and the
+  Linux jobs now run with Ghostty, the alacritty-only build, the corpus with
+  both engines, `doctor` and the TUI self-tests (`selftest`, `--remote
+  loopback|faults|paired`) under Xvfb with xclip.
+- 2026-10-31: Secret Service backend (3f5b1e6, shared): master key in the
+  session keyring when one answers, key file otherwise; CI tests it against
+  GNOME Keyring on a private `dbus-run-session` bus.
+
+Linux next: the TUI self-tests green on CI; Phase 2 systemd/cron (needs the
+`Scheduler` trait: owner of the trait to be agreed with `macos`); the HTML
+view helper (WebKitGTK offscreen); the GUI on Wayland/X11.
