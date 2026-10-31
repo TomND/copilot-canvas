@@ -588,6 +588,42 @@ fn session_count(kind: AgentKind, instance: &Instance) -> Option<u64> {
     }
 }
 
+/// macOS and Linux: where secrets are kept, the PATH a service started at
+/// login gets (the login shell's, MAC-LINUX-PLAN §5.2) and which agents are
+/// on it, and the limits that bound how many terminals can run.
+#[cfg(unix)]
+fn unix_doctor(instance: &Instance, line: &mut impl FnMut(bool, &str, String)) {
+    line(true, "Secrets", canvas_sys::secret::backend(&instance.home));
+    match canvas_sys::env::login_environment(Duration::from_secs(5)) {
+        Ok(login) => {
+            let current: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+            let merged = canvas_sys::env::merge(&current, &login);
+            let path = merged.get("PATH").or(current.get("PATH")).cloned().unwrap_or_default();
+            let on_path = |name: &str| std::env::split_paths(&std::ffi::OsString::from(&path)).any(|d| d.join(name).is_file());
+            let found: Vec<&str> = [("copilot", "Copilot"), ("opencode", "OpenCode"), ("claude", "Claude Code"), ("gh", "gh"), ("az", "az"), ("node", "node")]
+                .into_iter()
+                .filter(|(name, _)| on_path(name))
+                .map(|(_, label)| label)
+                .collect();
+            line(true, "Login environment", format!("PATH of {} folders; on it: {}", path.split(':').count(), if found.is_empty() { "none of the agent CLIs".into() } else { found.join(", ") }));
+        }
+        Err(error) => line(false, "Login environment", format!("{error} (the service keeps the PATH it was started with)")),
+    }
+    let sysctl = |name: &str| std::process::Command::new("/usr/sbin/sysctl").args(["-n", name]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).filter(|v| !v.is_empty());
+    let mut limits = vec![format!("open files {}", canvas_sys::process::raise_fd_limit())];
+    if cfg!(target_os = "macos") {
+        if let Some(ptys) = sysctl("kern.tty.ptmx_max") {
+            limits.push(format!("{ptys} PTYs"));
+        }
+        if let Some(procs) = sysctl("kern.maxprocperuid") {
+            limits.push(format!("{procs} processes per user"));
+        }
+    } else if let Ok(max) = std::fs::read_to_string("/proc/sys/kernel/pty/max") {
+        limits.push(format!("{} PTYs", max.trim()));
+    }
+    line(true, "Limits", limits.join(", "));
+}
+
 pub fn doctor(instance: &Instance) -> Result<()> {
     let mut ok = true;
     let mut line = |good: bool, label: &str, detail: String| {
@@ -627,17 +663,24 @@ pub fn doctor(instance: &Instance) -> Result<()> {
         Err(error) => line(false, "Git", error.to_string()),
     }
     let started = Instant::now();
+    let (program, args, label): (&str, Vec<String>, &str) = if cfg!(windows) {
+        ("cmd.exe", vec!["/d".into(), "/c".into(), "echo CANVAS_CONPTY_OK".into()], "ConPTY + emulator")
+    } else {
+        ("/bin/sh", vec!["-c".into(), "echo CANVAS_CONPTY''_OK".into()], "PTY + emulator")
+    };
     let probe = (|| -> Result<String> {
-        let mut console = Console::start(Path::new("cmd.exe"), &["/d".into(), "/c".into(), "echo CANVAS_CONPTY_OK".into()], 60, 10)?;
-        console.wait("ConPTY output", Duration::from_secs(10), |t| t.contains("CANVAS_CONPTY_OK"))?;
+        let mut console = Console::start(Path::new(program), &args, 60, 10)?;
+        console.wait("PTY output", Duration::from_secs(10), |t| t.contains("CANVAS_CONPTY_OK"))?;
         let elapsed = started.elapsed().as_millis();
         let _ = console.wait_exit(Duration::from_secs(5));
         Ok(format!("output rendered in {elapsed} ms"))
     })();
     match probe {
-        Ok(detail) => line(true, "ConPTY + emulator", detail),
-        Err(error) => line(false, "ConPTY + emulator", format!("{error:#}")),
+        Ok(detail) => line(true, label, detail),
+        Err(error) => line(false, label, format!("{error:#}")),
     }
+    #[cfg(unix)]
+    unix_doctor(instance, &mut line);
     match crate::client::conn::try_connect(instance) {
         Ok(conn) => {
             let same = conn.service_build == crate::paths::build_id();
