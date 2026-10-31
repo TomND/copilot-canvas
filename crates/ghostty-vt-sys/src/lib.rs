@@ -156,7 +156,16 @@ mod tests {
     fn bindings_match_the_library_abi_manifest() {
         let manifest = manifest();
         let abi = &manifest["abi"];
-        assert_eq!((abi["target"].as_str(), abi["os"].as_str(), abi["environment"].as_str()), (Some("x86_64"), Some("windows"), Some("msvc")));
+        // The library is built for this target (Zig's names: macOS has no ABI environment).
+        let environment = match std::env::consts::OS {
+            "windows" => "msvc",
+            "macos" => "none",
+            _ => "gnu",
+        };
+        assert_eq!(
+            (abi["target"].as_str(), abi["os"].as_str(), abi["environment"].as_str()),
+            (Some(std::env::consts::ARCH), Some(std::env::consts::OS), Some(environment))
+        );
         assert_eq!(number(&manifest["schema"]), 1, "manifest schema version");
         let types = &manifest["types"];
 
@@ -329,6 +338,7 @@ mod tests {
             let values = &types["GhosttyKey"]["values"];
             assert_eq!(number(&values[last]) - number(&values[first]) + 1, count, "{first}..{last}");
         }
+        check_enum!(types, "GhosttyOptionAsAlt": [GHOSTTY_OPTION_AS_ALT_FALSE, GHOSTTY_OPTION_AS_ALT_TRUE, GHOSTTY_OPTION_AS_ALT_LEFT, GHOSTTY_OPTION_AS_ALT_RIGHT]);
         check_enum!(types, "GhosttyKeyEncoderOption": [
             GHOSTTY_KEY_ENCODER_OPT_CURSOR_KEY_APPLICATION, GHOSTTY_KEY_ENCODER_OPT_KEYPAD_KEY_APPLICATION,
             GHOSTTY_KEY_ENCODER_OPT_IGNORE_KEYPAD_WITH_NUMLOCK, GHOSTTY_KEY_ENCODER_OPT_ALT_ESC_PREFIX,

@@ -482,7 +482,7 @@ pub(super) mod tests {
     use crate::emulator::feed_collect;
 
     fn emulator(cols: u16, rows: u16) -> AlacrittyEmulator {
-        AlacrittyEmulator::new(&Config { cols, rows, scrollback: 1000, kitty_keyboard: false })
+        AlacrittyEmulator::new(&Config { cols, rows, scrollback: 1000, kitty_keyboard: false, pull_scrollback: false })
     }
 
     #[test]

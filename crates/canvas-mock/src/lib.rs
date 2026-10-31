@@ -1089,7 +1089,7 @@ fn launch_with(mock: &Arc<Mock>, id: &str, kind: LaunchKind, cwd: &str, cols: u1
 
 #[allow(clippy::too_many_arguments)]
 fn terminal_loop(mock: &Arc<Mock>, id: &str, cols: u16, rows: u16, banner: String, master: Box<dyn MasterPty + Send>, mut writer: Box<dyn Write + Send>, output: Receiver<Vec<u8>>, ctl: Receiver<Ctl>) {
-    let mut emu = emulator::create(Engine::Alacritty, &emulator::Config { cols, rows, scrollback: 5000, kitty_keyboard: true });
+    let mut emu = emulator::create(Engine::Alacritty, &emulator::Config { cols, rows, scrollback: 5000, kitty_keyboard: true, pull_scrollback: emulator::PTY_PULLS_SCROLLBACK });
     let mut events = Collected::default();
     if !banner.is_empty() {
         emu.feed(banner.as_bytes(), &mut events);

@@ -1,6 +1,7 @@
 # Continuous integration (PLAN.md §5 "Every phase ends green", §11 "Pin Zig;
-# cache the lib by checksum; a separate CI job"). Windows only: ConPTY, named
-# pipes and job objects are part of what is tested.
+# cache the lib by checksum; a separate CI job"). Windows: ConPTY, named
+# pipes and job objects are part of what is tested; macOS (MAC-LINUX-PLAN
+# §7.2): Unix PTYs, Unix sockets and the libproc process table.
 name: ci
 
 on:
@@ -16,6 +17,8 @@ env:
   CARGO_TERM_COLOR: always
   ZIG_VERSION: "0.17.0"
   ZIG_SHA256: "b5663f69581dcf391293fbf16c06cb80d81d806545ce618b4d0bab7f0eb8c428"
+  # zig-aarch64-macos-0.17.0.tar.xz (ziglang.org/download/index.json).
+  ZIG_SHA256_MACOS: "b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a"
 
 jobs:
   # Builds the pinned libghostty-vt once per pin; the library is cached by the
@@ -100,6 +103,57 @@ jobs:
             tests/golden/gui/*.actual.png
             tests/golden/gui/*.diff.png
           if-no-files-found: ignore
+
+  # libghostty-vt for macOS (Apple silicon), cached by the pin like Windows'.
+  ghostty-macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - id: cache
+        uses: actions/cache@v6
+        with:
+          path: target/ghostty
+          key: ghostty-aarch64-apple-darwin-${{ hashFiles('crates/ghostty-vt-sys/vendor/CHECKSUMS.sha256') }}
+      - name: Install Zig ${{ env.ZIG_VERSION }}
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          curl -sSfL "https://ziglang.org/download/$ZIG_VERSION/zig-aarch64-macos-$ZIG_VERSION.tar.xz" -o "$RUNNER_TEMP/zig.tar.xz"
+          echo "$ZIG_SHA256_MACOS  $RUNNER_TEMP/zig.tar.xz" | shasum -a 256 -c -
+          tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP"
+          echo "ZIG=$RUNNER_TEMP/zig-aarch64-macos-$ZIG_VERSION/zig" >> "$GITHUB_ENV"
+      - name: cargo xtask build-ghostty --target aarch64-apple-darwin
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          cargo xtask build-ghostty --target aarch64-apple-darwin
+          rm -rf target/ghostty/src-* target/ghostty/zig-cache
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ghostty-macos
+          path: target/ghostty
+
+  # The desktop app on macOS (MAC-LINUX-PLAN §7.2): clippy, the workspace
+  # tests with Ghostty, the alacritty-only build. Secrets use the key file
+  # (no Keychain prompts on a runner).
+  macos:
+    needs: ghostty-macos
+    runs-on: macos-15
+    env:
+      COPILOT_CANVAS_SECRETS: file
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v8
+        with:
+          name: ghostty-macos
+          path: target/ghostty
+      - name: clippy
+        run: |
+          rustup component add clippy
+          cargo clippy --workspace --all-targets -- -D warnings
+      - name: unit and integration tests
+        run: cargo test --workspace
+      - name: alacritty-only build (no Zig)
+        run: cargo build --no-default-features
 
   # The iPhone app (docs/IOS-PLAN.md): the portable crates on macOS, the Rust
   # core for iOS, the app on a simulator with its unit tests and its UI tests
