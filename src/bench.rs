@@ -352,7 +352,8 @@ fn render_bench() -> Result<serde_json::Value> {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     let dir = std::env::temp_dir().join(format!("copilot-canvas-render-{}", uuid::Uuid::new_v4()));
-    let mut doc = Doc::default();
+    // Every subagent box drawn on its own (the workload this measures).
+    let mut doc = Doc { subagents_shown: true, ..Doc::default() };
     let mut sessions = HashMap::new();
     for i in 0..100 {
         let id = uuid::Uuid::new_v4().to_string();
@@ -370,7 +371,7 @@ fn render_bench() -> Result<serde_json::Value> {
             command: None,
             fresh: false,
             automation: None,
-            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
+            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
         };
         let mut agents = Vec::new();
         for a in 0..12 {

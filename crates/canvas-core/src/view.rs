@@ -117,24 +117,63 @@ pub struct BoxModel {
     pub mailbox: u32,
     /// Dust of an unused session: 0 none … 3 heavy (static, never animated).
     pub dust: u8,
-    /// Opacity while a stack or hidden subsession animates (1: opaque).
+    /// Opacity while a deck or hidden box animates (1: opaque).
     pub alpha: f32,
-    /// This box is the top card of a stack of subsessions.
+    /// This box is the top card of a deck beneath a session.
     pub deck: Option<DeckInfo>,
-    /// Subsessions hidden into this box: (count, attention colour of the
-    /// most important one).
-    pub hidden: Option<(u32, Option<Color>)>,
+    /// Subsessions and subagent boxes hidden into this box ("hide all").
+    pub hidden: Option<Hidden>,
 }
 
-/// A stack of subsessions drawn beneath their parent.
+/// A deck drawn beneath its session: stacked subsessions and/or the
+/// session's folded subagent boxes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeckInfo {
-    /// The stacked parent.
+    /// The session it lies beneath.
     pub root: String,
-    /// Stacked sessions (the top card included).
+    /// Cards it holds: stacked sessions and folded subagent boxes.
     pub count: u32,
     /// Cards drawn behind the top one (0 … 2).
     pub back: u8,
+    /// Folded subagent boxes among them.
+    pub agents: u32,
+}
+
+impl DeckInfo {
+    /// Only subagent boxes: a slim card that names their count itself.
+    pub fn agents_only(&self) -> bool {
+        self.agents == self.count
+    }
+
+    /// The +N pill of a stack: the cards under its top one (a subagent
+    /// deck's title counts them instead).
+    pub fn badge(&self) -> Option<String> {
+        (!self.agents_only() && self.count > 1).then(|| format!("+{}", self.count - 1))
+    }
+}
+
+/// Boxes hidden into a visible box by "hide subagents and subsessions".
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hidden {
+    pub sessions: u32,
+    pub agents: u32,
+    /// The attention colour of the most important one.
+    pub color: Option<Color>,
+}
+
+impl Hidden {
+    pub fn total(&self) -> u32 {
+        self.sessions + self.agents
+    }
+
+    /// "⋯ 2 hidden", "◇ 12 hidden" or "⋯ 2 · ◇ 12 hidden".
+    pub fn text(&self) -> String {
+        match (self.sessions, self.agents) {
+            (s, 0) => format!("⋯ {s} hidden"),
+            (0, a) => format!("◇ {a} hidden"),
+            (s, a) => format!("⋯ {s} · ◇ {a} hidden"),
+        }
+    }
 }
 
 /// An effect from the effects collection, drawn on its anchor.
@@ -501,10 +540,12 @@ impl CanvasModel {
                 out.push(format!("  alpha={}", num(b.alpha)));
             }
             if let Some(deck) = &b.deck {
-                out.push(format!("  deck root={} count={} back={}", deck.root, deck.count, deck.back));
+                let agents = if deck.agents > 0 { format!(" agents={}", deck.agents) } else { String::new() };
+                out.push(format!("  deck root={} count={} back={}{agents}", deck.root, deck.count, deck.back));
             }
-            if let Some((count, color)) = b.hidden {
-                out.push(format!("  hidden={count} color={}", color.map(color_name).unwrap_or_else(|| "none".into())));
+            if let Some(hidden) = b.hidden {
+                let agents = if hidden.agents > 0 { format!(" agents={}", hidden.agents) } else { String::new() };
+                out.push(format!("  hidden={}{agents} color={}", hidden.total(), hidden.color.map(color_name).unwrap_or_else(|| "none".into())));
             }
         }
         for e in &self.effects {

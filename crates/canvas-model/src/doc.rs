@@ -95,6 +95,16 @@ pub struct Node {
     /// default never changes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Its subagent boxes are shown on their own (`Some(true)`) or folded
+    /// into a deck beneath it (`Some(false)`); `None` follows the canvas
+    /// (`Doc::subagents_shown`). Their positions stay either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagents_shown: Option<bool>,
+    /// A subagent box added while its session's subagents were folded: it has
+    /// no place of its own yet (it sits on its session) and gets one
+    /// (`Doc::agent_slot_in`) when it is first shown.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unplaced: bool,
 }
 
 /// Passive session settings (the service keeps its run state).
@@ -500,6 +510,11 @@ pub struct Doc {
     /// assigns it when it opens a canvas without one; clients never change it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canvas_id: Option<String>,
+    /// Settings › Subagents: sessions show their subagent boxes on their own
+    /// (`false`, the default: folded into a deck beneath each session). A
+    /// session's own choice (`Node::subagents_shown`) wins.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub subagents_shown: bool,
 }
 
 fn default_dust_days() -> u32 {
@@ -600,6 +615,7 @@ impl Default for Doc {
             default_agent: None,
             dust_after_days: default_dust_days(),
             canvas_id: None,
+            subagents_shown: false,
         }
     }
 }
@@ -621,10 +637,17 @@ impl SpatialIndex {
     const CELL_W: i32 = 16;
     const CELL_H: i32 = 8;
 
+    /// The layout's rectangles: boxes drawn on their own and the decks
+    /// (`crate::visual::layout_rects`; folded and stacked boxes take no room).
     pub fn new(doc: &Doc) -> Self {
+        Self::of(crate::visual::layout_rects(doc))
+    }
+
+    /// An index of these rectangles.
+    pub fn of(rects: impl IntoIterator<Item = Rect>) -> Self {
         let mut index = Self { cells: HashMap::new() };
-        for node in &doc.nodes {
-            index.insert(node.rect());
+        for rect in rects {
+            index.insert(rect);
         }
         index
     }
@@ -701,10 +724,35 @@ impl Doc {
         self.groups.iter_mut().find(|g| g.id == id)
     }
 
-    /// Smallest group containing the node's center.
+    /// Smallest group containing the node's center. A subagent box folded
+    /// into its session's deck belongs where its session is.
     pub fn group_of(&self, node: &Node) -> Option<&Group> {
-        let (cx, cy) = node.rect().center();
+        let (cx, cy) = self.anchor(node, |id| self.node(id)).center();
         self.group_at(cx, cy)
+    }
+
+    /// The box a node's group membership is measured from: itself, or the
+    /// session of a folded subagent box (`find` looks parents up).
+    fn anchor<'a>(&self, node: &Node, find: impl Fn(&str) -> Option<&'a Node>) -> Rect {
+        if node.kind == NodeKind::Agent
+            && let Some(parent) = node.parent.as_deref().and_then(find)
+            && crate::visual::subagents_folded(self, parent)
+        {
+            return parent.rect();
+        }
+        node.rect()
+    }
+
+    /// The group of every box (`group_of` for each, in one pass).
+    pub fn groups_by_node(&self) -> HashMap<&str, &Group> {
+        let by_id: HashMap<&str, &Node> = self.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+        self.nodes
+            .iter()
+            .filter_map(|n| {
+                let (cx, cy) = self.anchor(n, |id| by_id.get(id).copied()).center();
+                self.group_at(cx, cy).map(|g| (n.id.as_str(), g))
+            })
+            .collect()
     }
 
     /// Smallest group containing the point (where a box centred there belongs).
@@ -722,18 +770,21 @@ impl Doc {
     }
 
     pub fn members(&self, group_id: &str) -> Vec<String> {
-        self.nodes.iter().filter(|n| self.group_of(n).is_some_and(|g| g.id == group_id)).map(|n| n.id.clone()).collect()
+        let groups = self.groups_by_node();
+        self.nodes.iter().filter(|n| groups.get(n.id.as_str()).is_some_and(|g| g.id == group_id)).map(|n| n.id.clone()).collect()
     }
 
-    /// Everything that moves with a group: nodes whose center is inside, and nested groups.
+    /// Everything that moves with a group: nodes whose center is inside (a
+    /// folded subagent box with its session), and nested groups.
     fn group_contents(&self, group_id: &str) -> (Vec<String>, Vec<String>) {
         let Some(group) = self.group(group_id) else { return (Vec::new(), Vec::new()) };
         let rect = group.rect();
+        let by_id: HashMap<&str, &Node> = self.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
         let nodes = self
             .nodes
             .iter()
             .filter(|n| {
-                let (cx, cy) = n.rect().center();
+                let (cx, cy) = self.anchor(n, |id| by_id.get(id).copied()).center();
                 rect.contains(cx, cy)
             })
             .map(|n| n.id.clone())
@@ -805,14 +856,17 @@ impl Doc {
         }
     }
 
+    /// The canvas's content: boxes drawn on their own, decks and groups
+    /// (folded and stacked boxes do not count).
     pub fn bounds(&self) -> Option<Rect> {
-        let mut rects = self.nodes.iter().map(Node::rect).chain(self.groups.iter().map(Group::rect));
+        let mut rects = crate::visual::layout_rects(self).into_iter().chain(self.groups.iter().map(Group::rect));
         let first = rects.next()?;
         Some(rects.fold(first, |acc, r| acc.union(&r)))
     }
 
+    /// No box drawn on its own and no deck (other than `ignore`'s) meets `rect`.
     pub fn is_free(&self, rect: &Rect, ignore: &str) -> bool {
-        !self.nodes.iter().any(|n| n.id != ignore && n.rect().intersects(rect))
+        !crate::visual::layout(self).iter().any(|(id, r)| *id != ignore && r.intersects(rect))
     }
 
     /// First free grid slot scanning right then down from `(x, y)` within `columns`.
@@ -821,11 +875,12 @@ impl Doc {
             NodeKind::Session | NodeKind::Automation => (SESSION_W, SESSION_H),
             NodeKind::Agent => (AGENT_W, AGENT_H),
         };
+        let taken = SpatialIndex::new(self);
         for index in 0..10_000 {
             let cx = x + (index % columns) * GRID_X;
             let cy = y + (index / columns) * GRID_Y;
             let rect = Rect { x: cx - 1, y: cy - 1, w: w + 2, h: h + 2 };
-            if self.is_free(&rect, "") {
+            if taken.is_free(&rect) {
                 return (cx, cy);
             }
         }
@@ -860,20 +915,32 @@ impl Doc {
         }
     }
 
-    /// Creates a group snugly around the given nodes (and their subagents).
-    pub fn group_around(&mut self, ids: &[String], name: &str) -> Option<String> {
+    /// What a group around these boxes or fitted to them must hold: each box
+    /// drawn on its own (with its shown subagent boxes) and its deck; boxes
+    /// in a deck count as the deck.
+    fn visible_extent(&self, ids: &[String], with_agents: bool) -> Option<Rect> {
+        let wanted: HashSet<&str> = ids.iter().map(String::as_str).collect();
+        let under = crate::visual::stacked_under(self);
         let mut rect: Option<Rect> = None;
-        for node in &self.nodes {
-            let include = ids.contains(&node.id)
-                || (node.kind == NodeKind::Agent && node.parent.as_ref().is_some_and(|p| ids.contains(p)));
-            if include {
-                rect = Some(match rect {
-                    Some(r) => r.union(&node.rect()),
-                    None => node.rect(),
-                });
+        let mut add = |r: Rect| rect = Some(rect.map_or(r, |acc: Rect| acc.union(&r)));
+        for node in self.nodes.iter().filter(|n| !under.contains_key(&n.id) && !n.unplaced) {
+            let child = with_agents && node.kind == NodeKind::Agent && node.parent.as_deref().is_some_and(|p| wanted.contains(p));
+            if wanted.contains(node.id.as_str()) || child {
+                add(node.rect());
             }
         }
-        let rect = rect?;
+        for deck in crate::visual::decks_of(self, &under).iter().filter(|d| wanted.contains(d.root.as_str())) {
+            if let Some(r) = crate::visual::deck_bounds(self, deck) {
+                add(r);
+            }
+        }
+        rect
+    }
+
+    /// Creates a group snugly around the given nodes (with their subagent
+    /// boxes, or the decks they are folded into).
+    pub fn group_around(&mut self, ids: &[String], name: &str) -> Option<String> {
+        let rect = self.visible_extent(ids, true)?;
         let id = format!("g-{}", uuid::Uuid::new_v4());
         let color = (self.groups.len() % 6) as u8;
         self.groups.push(Group {
@@ -891,15 +958,12 @@ impl Doc {
         Some(id)
     }
 
+    /// *Fit to members*: the group snugly around what its members show (the
+    /// boxes drawn on their own and the decks; folded and stacked boxes keep
+    /// their saved places outside it).
     pub fn fit_group(&mut self, group_id: &str) {
         let members = self.members(group_id);
-        let mut rect: Option<Rect> = None;
-        for node in self.nodes.iter().filter(|n| members.contains(&n.id)) {
-            rect = Some(match rect {
-                Some(r) => r.union(&node.rect()),
-                None => node.rect(),
-            });
-        }
+        let rect = self.visible_extent(&members, false);
         if let (Some(rect), Some(group)) = (rect, self.group_mut(group_id)) {
             group.x = rect.x - 2;
             group.y = rect.y - 2;
@@ -1106,7 +1170,7 @@ pub fn demo_doc(cwd: &str) -> Doc {
         passive: None,
         no_messages: false,
         agent: None,
-        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
+        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
     };
     let mut doc = Doc::default();
     doc.nodes.push(session("demo-main", "Build session canvas", 2, 2));
@@ -1161,7 +1225,7 @@ pub fn migrate_v1(path: &Path) -> Option<Doc> {
             command: None,
             fresh: false,
             automation: None,
-            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
+            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
         });
     }
     // The prototype stacked boxes 7 rows apart; v2 boxes are 4 tall, so keep positions.
@@ -1175,7 +1239,7 @@ mod tests {
     use super::*;
 
     fn session(id: &str, x: i32, y: i32) -> Node {
-        Node { id: id.into(), kind: NodeKind::Session, name: id.into(), x, y, cwd: None, parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None }
+        Node { id: id.into(), kind: NodeKind::Session, name: id.into(), x, y, cwd: None, parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false }
     }
 
     fn agent(id: &str, parent: &str, x: i32, y: i32) -> Node {
@@ -1418,7 +1482,8 @@ mod tests {
 
     #[test]
     fn free_slots_and_agent_slots_avoid_overlap() {
-        let mut doc = Doc { nodes: vec![session("a", 0, 0)], ..Doc::default() };
+        // Subagent boxes shown on their own (folded ones take no room: canvas-model `visual` tests).
+        let mut doc = Doc { nodes: vec![session("a", 0, 0)], subagents_shown: true, ..Doc::default() };
         let (x, y) = doc.free_slot(0, 0, 3, NodeKind::Session);
         assert_eq!((x, y), (GRID_X, 0));
         let parent = doc.node("a").unwrap().clone();

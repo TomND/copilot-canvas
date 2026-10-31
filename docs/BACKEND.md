@@ -144,7 +144,7 @@ A client changes its working copy and marks it dirty; within 100 ms
 | `PutNode(node)` / `PutGroup(group)` | insert (appended), or replace the whole object |
 | `NodeFields(node, fields)` / `GroupFields(group, fields)` | set those fields of the object; dropped when it no longer exists |
 | `DelNode(id)` / `DelGroup(id)` | delete |
-| `SetField(name, json)` | set a shared top-level field: `recent_folders`, `defaults`, `vscode`, `idle_stop_minutes`, `idle_stop_v2`, `mcp`, `automations_dir`, `doctor_created`, `default_agent`, `dust_after_days` |
+| `SetField(name, json)` | set a shared top-level field: `recent_folders`, `defaults`, `vscode`, `idle_stop_minutes`, `idle_stop_v2`, `mcp`, `automations_dir`, `doctor_created`, `default_agent`, `dust_after_days`, `subagents_shown` (Settings › Subagents; a session's own choice is its node's `subagents_shown`) |
 
 `ClientMsg::DocEdit { key, base, ops_json }` carries the list (`base`: the
 version the client had). The service applies the edits of all clients in

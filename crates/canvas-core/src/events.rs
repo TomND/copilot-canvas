@@ -380,7 +380,7 @@ impl App {
                     // Presses in a row are one undo step (`undo::BURST`).
                     self.move_group_recorded(&group, dx, dy, Source::Keys(format!("group {group}")));
                 } else if !self.selection.is_empty() {
-                    let ids = self.selection.clone();
+                    let ids = self.movable(&self.selection);
                     self.move_nodes_recorded(&ids, dx, dy, Source::Keys(ids.join("\n")));
                 } else {
                     self.doc.view.x += dx;
@@ -618,7 +618,7 @@ impl App {
                 if !self.selection.contains(&id) {
                     self.select_node(&id, false);
                 }
-                let ids: Vec<String> = self.selection.clone();
+                let ids: Vec<String> = self.movable(&self.selection);
                 self.drag = Some(Drag::Nodes { ids, start: (x, y), applied: (0, 0), moved: false, click: Some(id) });
             }
             (MouseButton::Left, CanvasHit::GroupResize(id)) => {
@@ -915,7 +915,8 @@ impl App {
             }
             (true, Some(CanvasPress::Deck(root))) => {
                 if let Some(deck) = self.deck_of(&root) {
-                    self.select_node(&deck.top, false);
+                    let shown = if deck.agents_only() { deck.root.clone() } else { deck.top.clone() };
+                    self.select_node(&shown, false);
                     let menu = self.stack_menu(&deck);
                     self.open_menu(x, y, menu);
                 }
@@ -932,9 +933,11 @@ impl App {
             }
             (false, Some(CanvasPress::Deck(root))) => {
                 if let Some(deck) = self.deck_of(&root) {
-                    let acks = self.effects_on(&deck.sessions);
+                    let acks = self.effects_on(&deck.members);
                     self.ack_effects(acks);
-                    self.select_node(&deck.top, true);
+                    // A stack toggles its top card; a subagent deck its session.
+                    let shown = if deck.agents_only() { deck.root.clone() } else { deck.top.clone() };
+                    self.select_node(&shown, true);
                 }
             }
             (false, Some(CanvasPress::Group(_)) | None) => {}
@@ -1136,13 +1139,14 @@ mod selection_tests {
     }
 
     #[test]
-    fn hidden_and_stacked_subsessions_stay_out_of_area_selection() {
+    fn hidden_stacked_and_folded_boxes_stay_out_of_area_selection() {
         for gpu in [false, true] {
             let (mut app, _sent) = app(gpu);
             let everything = ((1.5, 1.5), (105.5, 25.5));
+            // H hides every subsession and subagent box.
             key(&mut app, KeyCode::Char('h'), Modifiers::NONE);
             drag(&mut app, MouseButton::Left, everything.0, everything.1, Modifiers::SHIFT);
-            assert_eq!(selected(&app), set(&["p", "p:helper", "o"]), "hidden subsessions (gpu {gpu})");
+            assert_eq!(selected(&app), set(&["p", "o"]), "hidden subsessions and subagent boxes (gpu {gpu})");
             key(&mut app, KeyCode::Char('h'), Modifiers::NONE);
             app.set_stacked("p", true);
             drag(&mut app, MouseButton::Left, everything.0, everything.1, Modifiers::SHIFT);
@@ -1150,6 +1154,11 @@ mod selection_tests {
             app.set_stacked("p", false);
             drag(&mut app, MouseButton::Left, everything.0, everything.1, Modifiers::SHIFT);
             assert_eq!(selected(&app), set(&["p", "p:helper", "c", "c:x", "o"]), "shown again (gpu {gpu})");
+            // Folded subagent boxes (the default) are in their decks.
+            app.doc.subagents_shown = false;
+            app.selection.clear();
+            drag(&mut app, MouseButton::Left, everything.0, everything.1, Modifiers::SHIFT);
+            assert_eq!(selected(&app), set(&["p", "c", "o"]), "folded subagent boxes (gpu {gpu})");
         }
     }
 

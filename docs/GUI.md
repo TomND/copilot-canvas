@@ -215,21 +215,40 @@ and size.
   output), your typing and the history's newest event, in steps of at least
   10 minutes (a quiet doc field: no notices); old boxes start from their
   history, else from when you last looked at them.
-- *Stacks* (`Node::stacked`; `BoxModel::deck`): the stacked sessions keep
-  their positions in the document (moving the parent moves them too), so
-  unstacking restores them exactly. The top card is drawn beneath the parent
-  (and its subagents) with up to two cards behind it, a **+N** pill, the
-  stack's most important status and the effects of its sessions. *Hidden
-  subsessions* (`UiPrefs::hide_subsessions`, this window's) are left out and
-  counted on the visible ancestor (`BoxModel::hidden`, a "⋯ N hidden" pill in
-  the colour of the most important hidden status). `App::visual_frame`
-  compares the stacked parents and the hide toggle with the last frame, so a
-  change from any window (a document patch) starts a *transition*: 300 ms,
-  eased in and out, reversible from wherever it is; the boxes fly between
-  their places and the deck (or shrink into their ancestor) and fade
-  (`BoxModel::alpha`). While one runs the window draws at the display's rate;
-  then it is idle again. Clicks and rubber bands use the end state at once.
-  With reduced motion (or in the TUI) they switch instantly.
+- *Decks* (`BoxModel::deck`, `DeckInfo`): one per session, beneath it.
+  *Stacks* (`Node::stacked`): the stacked sessions keep their positions in
+  the document (moving the parent moves them too), so unstacking restores
+  them exactly. The top card is drawn beneath the parent (and its shown
+  subagents) with up to two cards behind it, a **+N** pill, the stack's most
+  important status and the effects of its sessions. *Folded subagent boxes*
+  (`Node::subagents_shown`: `None` follows the canvas's `Doc::subagents_shown`,
+  *Settings › Subagents*, stacked by default; canvas-model `visual.rs`
+  `subagents_folded`, `stacked_under`, `decks`, `deck_rect`) go into the same
+  deck; alone they are a slim subagent-sized card where the first box would
+  go: "◇ 12 subagents", no pill, back cards, and the most important state of
+  what it holds (failed; "working · 2 of 12" while any runs; just finished:
+  a running subagent outranks one that just finished), drawn with a thin
+  subagent edge. They keep their saved places; a box found while folded is
+  `Node::unplaced` (on its session) until it is first shown, when
+  `App::place_shown_subagents` gives it a slot (`agent_slot_in`) and grows
+  its group. Folded and stacked boxes take no room (`visual::layout`:
+  placement, bounds, *Fit to members*, new groups use the deck), move with
+  their session (and its group drag) and belong to its group
+  (`Doc::group_of`, `Doc::groups_by_node`). A click on a subagent deck
+  shows its session's details panel with a SUBAGENTS list (state, a click
+  views one, Inspect). *Hidden subsessions and subagent boxes*
+  (`UiPrefs::hide_subsessions`, this window's; decks hide too) are left out
+  and counted on the visible ancestor (`BoxModel::hidden`, `Hidden`: a
+  "⋯ N hidden", "◇ N hidden" or "⋯ N · ◇ M hidden" pill in the colour of
+  the most important hidden status). `App::visual_frame` compares the
+  stacked parents, the folded sessions and the hide toggle with the last
+  frame, so a change from any window (a document patch) starts a
+  *transition*: 300 ms, eased in and out, reversible from wherever it is;
+  the boxes fly between their places and the deck (or shrink into their
+  ancestor) and fade (`BoxModel::alpha`). While one runs the window draws at
+  the display's rate; then it is idle again. Clicks and rubber bands use the
+  end state at once. With reduced motion (or in the TUI) they switch
+  instantly.
 - *Effects* (`CanvasModel::effects`, `EffectModel`): the service's effects
   (bus snapshot) on their anchors: a box, the deck holding it, the visible
   ancestor of a hidden one, or the group. *On*: fireworks (three staggered
@@ -439,9 +458,9 @@ returns them alone.
 ## 2. Controls
 
 **Show all nodes** in the toolbar (also the canvas menu or `F`) brings content
-back after panning away. It centres visible boxes, stack decks and groups with
-padding, fitting at up to 100 % zoom. Hidden subsessions and the stored positions
-of stacked boxes do not enlarge the bounds. It cancels an active pan; an empty
+back after panning away. It centres visible boxes, decks and groups with
+padding, fitting at up to 100 % zoom. Hidden boxes and the stored positions
+of stacked and folded boxes do not enlarge the bounds. It cancels an active pan; an empty
 canvas returns to the origin at 100 %. Layout, selection and sessions are kept.
 This is shared with the TUI and works over remote connections using the client's
 document replica; only this window's view preferences change. The existing zoom
@@ -458,7 +477,7 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
 | View / start | a click (canvas or sidebar) only views a box: its live terminal, else its details panel; a double-click, Enter, the panel's **▸ Start** / **▸ Resume** or the box menu starts it. An exited terminal stays on screen while it has the focus |
 | Recent sessions | the sidebar's **RECENT** rows (newest first; a click views, a double-click starts; the header folds them); **Ctrl+F6** / **Ctrl+Shift+F6** anywhere (a terminal too) and `]` / `[` on the canvas or sidebar view the next older or newer one without starting it; the list reorders a second after the last step |
 | Select a group | click its empty background (a drag there still pans) or its outline, up to about half a cell outside it (`BORDER_SLACK`); the innermost group wins; the selected group is drawn heavier |
-| Select several | Shift-drag (or Ctrl-drag, right-drag) from anywhere, on a box too: the band (precise pointer positions, clipped to the canvas) takes every box whose drawn rectangle it meets, the same world rectangles the model draws and `canvas_hit_f` hits at any scale: sessions, subsessions and subagent boxes, never stacked or hidden ones (`App::area_hits`); it never drags or starts anything. A Shift/Ctrl-click toggles a box, a right-click without moving opens the menu there |
+| Select several | Shift-drag (or Ctrl-drag, right-drag) from anywhere, on a box too: the band (precise pointer positions, clipped to the canvas) takes every box whose drawn rectangle it meets, the same world rectangles the model draws and `canvas_hit_f` hits at any scale: sessions, subsessions and subagent boxes, never boxes in a deck or hidden ones (`App::area_hits`); it never drags or starts anything. A Shift/Ctrl-click toggles a box, a right-click without moving opens the menu there |
 | Inspect | the box menu's or details panel's **Inspect transcript**: a read-only modal (wheel scrolls, Copy, Close); a finished OpenCode child offers **Resume as subsession** there |
 | Reports | `Alt+9` or the activity bar's ✉ (gold with the unread count): a click on a row opens the viewer (Markdown formatted, HTML in the WebView2 view); its buttons view the session (never start it), open the PR, step ◂ Older / Newer ▸ through a thread, copy, mark unread, delete; a link in a report asks first; Esc closes (in the HTML view too) |
 | Remove | right-click on a selected box (or Del) with several selected: "Remove N from canvas" after a confirmation; running sessions stay; Ctrl+Z restores |
@@ -470,7 +489,7 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
 | IME | composition drawn at the terminal cursor or field; committed text typed |
 | Close button | as Ctrl+Q: detach or stop all (the last window) |
 | `--perf` | frame time (view, scene, encode), present and acquire, input → present, keystroke → echo → present, service round trip |
-| Stacks | `K` or the session menu stacks or unstacks; a click on the deck shows its top card (never starts it), a drag moves the parent with its stack, a double-click unstacks; `H` hides or shows every subsession |
+| Decks | Subagent boxes are folded into a slim deck beneath their session by default (*Settings › Subagents*: stacked or shown; a session's own choice wins). `K` (on a session, a box of its, or a box in its deck) unfolds everything the session has folded, else folds its subagent boxes and subsessions into one deck; the session menu offers *Show/Stack subagents*, *Unstack/Stack subsessions* and, with both, *Unfold/Stack all*. A click on a subagent deck lists its subagents in the session's details panel, a click on a stack shows its top card (neither starts anything); a drag moves the session with its deck; a double-click unfolds it; `H` hides or shows every subsession and subagent box |
 | Effects | a click on an effect or its box clears it (in every window) and only selects the box; *Settings › Effects*: on · reduced motion · off |
 | Group chips | ⟲ N lists the passive sessions (each opens its panel), ⟲ + passive creates one, ◧ / ◨ open the folders (remote: the folder browser) |
 
@@ -494,7 +513,10 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   fractional origin; every status (working from history and from OSC 9;4,
   needs you, done · review, idle, stopped, failed three ways, open elsewhere,
   running, preparing); subagents (working, finished, failed), a subsession's
-  dashed edge, a loop and a queued message; groups with lit and dim folder
+  dashed edge, a loop and a queued message; subagent boxes folded into decks
+  (the default: "failed · 1 running", "working · 1 of 2"), one session's
+  unfolded with `K`, and a deck's details panel listing its subagents;
+  groups with lit and dim folder
   chips; a selection with a rubber band; a mixed selection (sessions, a
   subagent box and a subsession) at 100 and 50 %; the new-session dialog (Agent row
   with an agent that is not installed, the Model row with the initial
@@ -552,7 +574,7 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   inverse, strikethrough, overline, single/double/curly/dotted/dashed and
   coloured underlines, emoji, CJK, box and block characters) and set the
   prompt to `PS> ` (`terminals-tiled`), and the parity sandbox's canvas
-  with every status, a subagent, loops and the automations group
+  with every status, a subagent (folded into its session's deck), loops and the automations group
   (`all-statuses`). Animations hold one frame (the `freeze` hook), notices
   are waited out, and a capture counts once the screen text has been still
   for a second and two renders in a row are identical. Masked (hatched in
@@ -589,7 +611,11 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   checks PNG captures against the clock.
 - The parity suite's rows V1–V5 and the `visuals` golden screenshot cover
   dust, stacks (with their transitions' end states), hidden subsessions,
-  effects and the group chips (`docs/PARITY.md`).
+  effects and the group chips; row 46 covers subagent boxes folded by
+  default (the deck working while one runs, `K` to their saved places, kept
+  across a restart, `H`), with PNG captures `subagent-deck`,
+  `subagent-deck-50`, `subagent-deck-details` and `subagent-deck-unfolded`
+  (`docs/PARITY.md`).
 - `CANVAS_GUI_TRACE=1` prints start-up milestones (and GPU events) on stderr.
 
 **Test hooks.** With `--test-hooks` the GUI prints a pipe name

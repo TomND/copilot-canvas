@@ -115,9 +115,18 @@ pub(super) fn rows(sb: &Sandbox, rows: &mut Vec<Row>) {
         return check(rows, "44", "Layout undo", "layout_canvas", || Err(error));
     }
 
-    check(rows, "45", "New: Shift-drag selects subagent boxes and subsessions like sessions (100 % and 50 %), never hidden ones; the selection moves each box once", "subsession_area_selection", || {
+    check(rows, "45", "New: Shift-drag selects subagent boxes and subsessions like sessions (100 % and 50 %), never folded or hidden ones; the selection moves each box once", "subsession_area_selection", || {
         let before_launches = launches(sb);
         gui.canvas_focus()?;
+        gui.key("Esc", &[])?;
+        // Subagent boxes are folded into decks by default: K shows Parent's (a
+        // click on Parent views it), the subsession's stays folded.
+        let at = gui.box_center("Parent")?;
+        gui.click(at, &[])?;
+        gui.canvas_focus()?;
+        gui.send("k")?;
+        wait_doc(&path, "K showed Parent's subagent box at its place", |d| d.node("l-parent").is_some_and(|n| n.subagents_shown == Some(true)) && d.node("l-parent:helper").is_some_and(|n| (n.x, n.y) == (6, 7)))?;
+        gui.wait_tree("the subagent box drawn", 5, |t| t["canvas"]["boxes"].as_array().is_some_and(|b| b.iter().any(|b| b["name"] == "Helper" && b["alpha"] == 1.0)))?;
         gui.key("Esc", &[])?;
         let mut detail = Vec::new();
         for scale in [1.0, 0.5] {
@@ -151,13 +160,13 @@ pub(super) fn rows(sb: &Sandbox, rows: &mut Vec<Row>) {
             gui.key("Esc", &[])?;
             detail.push(format!("{:.0} %: parent + subagent, + subsession, each moved once by {d:?}", scale * 100.0));
         }
-        // Hidden subsessions are out of reach.
+        // Hidden subsessions and subagent boxes (H hides both) are out of reach.
         gui.send("h")?;
         let g = group_rect(&gui, "g-layout")?;
         gui.drag("left", (g[0] + 1.5, g[1] + 1.5), (g[0] + g[2] - 1.5, g[1] + g[3] - 1.5), &["shift"])?;
         let hidden = gui.wait_tree("the visible boxes selected", 5, |t| t["selection"].as_array().is_some_and(|s| s.len() >= 3))?;
         let chosen: BTreeSet<String> = hidden["selection"].as_array().map(|s| s.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
-        anyhow::ensure!(!chosen.contains("l-child") && !chosen.contains("l-child:x") && chosen.contains("l-parent:helper"), "with subsessions hidden: {chosen:?}");
+        anyhow::ensure!(!chosen.contains("l-child") && !chosen.contains("l-child:x") && !chosen.contains("l-parent:helper") && chosen.contains("l-parent"), "with subsessions and subagent boxes hidden: {chosen:?}");
         gui.send("h")?;
         gui.key("Esc", &[])?;
         anyhow::ensure!(launches(sb) == before_launches, "an area selection started a session");

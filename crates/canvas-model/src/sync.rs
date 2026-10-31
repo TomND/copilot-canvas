@@ -63,10 +63,10 @@ macro_rules! shared_fields {
     };
 }
 
-shared_fields!(recent_folders, defaults, vscode, idle_stop_minutes, idle_stop_v2, mcp, automations_dir, doctor_created, default_agent, dust_after_days);
+shared_fields!(recent_folders, defaults, vscode, idle_stop_minutes, idle_stop_v2, mcp, automations_dir, doctor_created, default_agent, dust_after_days, subagents_shown);
 
 /// Shared fields whose overwrite by another window is worth telling about.
-const NOTICED_FIELDS: [(&str, &str); 7] = [
+const NOTICED_FIELDS: [(&str, &str); 8] = [
     ("defaults", "the new-session defaults"),
     ("vscode", "the VS Code settings"),
     ("idle_stop_minutes", "the idle-stop setting"),
@@ -74,6 +74,7 @@ const NOTICED_FIELDS: [(&str, &str); 7] = [
     ("automations_dir", "the automations folder"),
     ("default_agent", "the default agent"),
     ("dust_after_days", "the dust setting"),
+    ("subagents_shown", "the subagents setting"),
 ];
 
 /// Box fields that are bookkeeping, not edits anyone made (no notice).

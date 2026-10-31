@@ -1371,7 +1371,7 @@ impl App {
             automation: None,
             synced_name: None,
             reviewed_ms: None,
-            mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
+            mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
         });
         self.mark_dirty();
         self.notify(format!("“{}” started subsession “{name}”.", p.name), false);
@@ -1719,7 +1719,10 @@ impl App {
         }
     }
 
-    /// Adds boxes for subagents discovered in history, under their parent.
+    /// Adds boxes for subagents discovered in history, under their parent: a
+    /// slot of their own when the session shows its subagent boxes (its
+    /// group grows to hold it), else folded into its deck without a place of
+    /// their own (`Node::unplaced`; no room taken, no group grown).
     pub fn sync_agents(&mut self) {
         let mut added = false;
         // Hash lookups: this runs on every session update, for every box.
@@ -1740,13 +1743,16 @@ impl App {
                 (!agents.is_empty()).then(|| (parent.clone(), agents))
             })
             .collect();
-        let mut index = (!missing.is_empty()).then(|| crate::doc::SpatialIndex::new(&self.doc));
+        let mut index = None;
         for (parent, agents) in missing {
+            let folded = canvas_model::visual::subagents_folded(&self.doc, &parent);
             for (key, name) in agents {
                 let id = format!("{}:{key}", parent.id);
-                let current_parent = parent.clone();
-                let index = index.as_mut().expect("built when anything is missing");
-                let (x, y) = self.doc.agent_slot_in(&current_parent, index);
+                let (x, y) = match folded {
+                    // On its session until it is first shown.
+                    true => (parent.x + 3, parent.y),
+                    false => self.doc.agent_slot_in(&parent, index.get_or_insert_with(|| crate::doc::SpatialIndex::new(&self.doc))),
+                };
                 let node = Node {
                     id: id.clone(),
                     kind: NodeKind::Agent,
@@ -1760,35 +1766,66 @@ impl App {
                     command: None,
                     fresh: false,
                     automation: None,
-                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
+                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: folded,
                 };
                 let rect = node.rect();
-                index.insert(rect);
-                // Keep new subagents inside their parent's group, unless growing it
-                // would cover another group (membership is geometric).
-                let group_index = self
-                    .doc
-                    .group_of(&current_parent)
-                    .and_then(|g| self.doc.groups.iter().position(|candidate| candidate.id == g.id));
                 self.doc.nodes.push(node);
-                if let Some(gi) = group_index {
-                    let current = self.doc.groups[gi].rect();
-                    let grown = current.union(&crate::doc::Rect { x: rect.x - 2, y: rect.y - 1, w: rect.w + 4, h: rect.h + 2 });
-                    let covers = self.doc.groups.iter().enumerate().any(|(i, g)| i != gi && !current.contains_rect(&g.rect()) && g.rect().intersects(&grown));
-                    if !covers {
-                        let group = &mut self.doc.groups[gi];
-                        group.x = grown.x;
-                        group.y = grown.y;
-                        group.w = grown.w;
-                        group.h = grown.h;
+                if !folded {
+                    if let Some(index) = index.as_mut() {
+                        index.insert(rect);
                     }
+                    self.grow_group_for(&parent, rect);
                 }
                 added = true;
             }
         }
-        if added {
+        if self.place_shown_subagents() || added {
             self.mark_dirty();
         }
+    }
+
+    /// Keeps a shown subagent box inside its session's group, unless growing
+    /// the group would cover another group (membership is geometric).
+    fn grow_group_for(&mut self, parent: &Node, rect: crate::doc::Rect) {
+        let Some(gi) = self.doc.group_of(parent).and_then(|g| self.doc.groups.iter().position(|candidate| candidate.id == g.id)) else { return };
+        let current = self.doc.groups[gi].rect();
+        let grown = current.union(&crate::doc::Rect { x: rect.x - 2, y: rect.y - 1, w: rect.w + 4, h: rect.h + 2 });
+        let covers = self.doc.groups.iter().enumerate().any(|(i, g)| i != gi && !current.contains_rect(&g.rect()) && g.rect().intersects(&grown));
+        if !covers {
+            let group = &mut self.doc.groups[gi];
+            (group.x, group.y, group.w, group.h) = (grown.x, grown.y, grown.w, grown.h);
+        }
+    }
+
+    /// Gives shown subagent boxes that never had a place of their own (they
+    /// arrived while folded) a slot under their session (`agent_slot_in`)
+    /// and grows its group for them, as for new boxes. True when any moved.
+    pub fn place_shown_subagents(&mut self) -> bool {
+        if !self.doc.nodes.iter().any(|n| n.unplaced) {
+            return false;
+        }
+        let sessions: HashMap<&str, &Node> = self.doc.nodes.iter().filter(|n| n.kind == NodeKind::Session).map(|n| (n.id.as_str(), n)).collect();
+        let todo: Vec<(String, String)> = self
+            .doc
+            .nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Agent && n.unplaced)
+            .filter_map(|n| n.parent.as_deref().and_then(|p| sessions.get(p)).filter(|p| !canvas_model::visual::subagents_folded(&self.doc, p)).map(|p| (n.id.clone(), p.id.clone())))
+            .collect();
+        if todo.is_empty() {
+            return false;
+        }
+        let mut index = crate::doc::SpatialIndex::new(&self.doc);
+        for (id, parent) in todo {
+            let Some(parent) = self.doc.node(&parent).cloned() else { continue };
+            let (x, y) = self.doc.agent_slot_in(&parent, &index);
+            let Some(node) = self.doc.node_mut(&id) else { continue };
+            (node.x, node.y, node.unplaced) = (x, y, false);
+            let rect = node.rect();
+            index.insert(rect);
+            self.grow_group_for(&parent, rect);
+        }
+        true
     }
 
     pub fn import_ids(&mut self, ids: Vec<String>, grouping: crate::dialogs::Grouping) {
@@ -1852,7 +1889,7 @@ impl App {
                     command: None,
                     fresh: false,
                     automation: None,
-                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
+                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
                 };
                 first.get_or_insert_with(|| node.id.clone());
                 ids.push(node.id.clone());

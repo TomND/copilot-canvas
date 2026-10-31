@@ -217,16 +217,16 @@ pub fn paint(p: &mut Painter, grid: &Grid, model: &CanvasModel, clock_ms: u64) {
             badge(p, &cx, r, b.mailbox);
         }
         if model.scale >= 0.2 && alpha >= 1.0 {
-            if let Some(deck) = b.deck.as_ref().filter(|d| d.count > 1) {
-                pill(p, &cx, (r[0] + r[2] - 1.5 * ux, r[1]), true, &format!("+{}", deck.count - 1), rgb(paint::ACCENT));
+            if let Some(badge) = b.deck.as_ref().and_then(|d| d.badge()) {
+                pill(p, &cx, (r[0] + r[2] - 1.5 * ux, r[1]), true, &badge, rgb(paint::ACCENT));
             }
-            if let Some((count, color)) = b.hidden {
+            if let Some(hidden) = b.hidden {
                 // Neutral unless a hidden one needs attention (then its colour).
-                let (bg, fg) = match color {
+                let (bg, fg) = match hidden.color {
                     Some(color) => (rgb(color), rgb(paint::PANEL)),
                     None => (rgb(paint::PANEL_HI), rgb(paint::TEXT)),
                 };
-                pill_with(p, &cx, (r[0] + r[2] - 1.5 * ux, r[1] + r[3]), true, &format!("⋯ {count} hidden"), bg, fg);
+                pill_with(p, &cx, (r[0] + r[2] - 1.5 * ux, r[1] + r[3]), true, &hidden.text(), bg, fg);
             }
         }
     }

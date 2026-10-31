@@ -1,8 +1,9 @@
-//! Canvas visuals: dust on unused sessions, stacks of subsessions under
-//! their parent and hiding every subsession (with reversible animations in
-//! the GPU client), and the effects collection that passive sessions put on
-//! boxes. This module holds the client state, the actions, the canvas click
-//! hook and what the canvas renderers need ([`VisualFrame`]).
+//! Canvas visuals: dust on unused sessions, decks beneath sessions (stacks
+//! of subsessions and folded subagent boxes) and hiding every subsession and
+//! subagent box (with reversible animations in the GPU client), and the
+//! effects collection that passive sessions put on boxes. This module holds
+//! the client state, the actions, the canvas click hook and what the canvas
+//! renderers need ([`VisualFrame`]).
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -12,14 +13,14 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::app::{App, CanvasHit, Drag};
 use crate::dialogs::{Action, MenuItem};
-use crate::doc::{AGENT_H, Node, NodeKind, SESSION_H, SESSION_W};
+use crate::doc::{Node, NodeKind};
 use crate::effects::Effect;
 use crate::input::MouseButton;
 use crate::paths::now_ms;
 use crate::status::Status;
 use crate::view::{Motion, RenderMode, WRect};
 
-/// Length of a stack or hide transition (GUI).
+/// Length of a deck or hide transition (GUI).
 const ANIM_MS: f32 = 300.0;
 /// How often `last_used_ms` is brought up to date.
 const USED_EVERY: Duration = Duration::from_secs(5);
@@ -37,9 +38,17 @@ pub const DUST_EDGE: [Color; 3] = [Color::Rgb(74, 77, 80), Color::Rgb(70, 68, 63
 pub enum VisualAction {
     /// Stack (`true`) or unstack a session's subsessions.
     Stack(String, bool),
-    /// K: stack or unstack the selected session's subsessions.
+    /// Fold (`true`) a session's subagent boxes into its deck, or show them.
+    FoldSubagents(String, bool),
+    /// Fold (`true`) or unfold everything of a session: its subagent boxes
+    /// and its subsessions.
+    FoldAll(String, bool),
+    /// A click on a subagent deck: its session's details with the subagents.
+    ViewSubagents(String),
+    /// K: unfold the selected session's deck when anything is folded, else
+    /// fold its subagent boxes and subsessions.
     ToggleStack,
-    /// H: hide or show every subsession box.
+    /// H: hide or show every subsession and subagent box.
     ToggleHideSubsessions,
     /// Select the dusty session boxes (cleanup: Del removes them from the canvas).
     SelectUnused,
@@ -60,12 +69,14 @@ pub enum VisualAction {
 pub enum VisualSetting {
     /// Settings › Dust unused sessions after (canvas).
     Dust,
+    /// Settings › Subagents: stacked or shown (canvas).
+    Subagents,
     /// Settings › Effects (this machine).
     Effects,
 }
 
-/// A stack or hide transition: its value runs from `from` towards 1
-/// (`closing`: stacking, hiding) or 0 over [`ANIM_MS`].
+/// A deck or hide transition: its value runs from `from` towards 1
+/// (`closing`: stacking, folding, hiding) or 0 over [`ANIM_MS`].
 #[derive(Clone, Copy, Debug)]
 pub struct Transition {
     pub closing: bool,
@@ -104,6 +115,10 @@ pub struct VisualState {
     pub motion: Option<Motion>,
     stacks: HashMap<String, Transition>,
     known_stacks: Option<HashSet<String>>,
+    /// Sessions whose subagent boxes fold or unfold, and the sessions whose
+    /// subagent boxes were folded at the last frame.
+    folds: HashMap<String, Transition>,
+    known_folds: Option<HashSet<String>>,
     hide: Option<Transition>,
     known_hide: Option<bool>,
     /// Effects acknowledged here until the service's snapshot drops them.
@@ -122,9 +137,9 @@ pub struct VisualState {
 }
 
 impl VisualState {
-    /// A stack or hide transition is running (the GUI draws every frame).
+    /// A deck or hide transition is running (the GUI draws every frame).
     pub fn animating(&self) -> bool {
-        !self.stacks.is_empty() || self.hide.is_some()
+        !self.stacks.is_empty() || !self.folds.is_empty() || self.hide.is_some()
     }
 
     /// How long ago the session history first arrived.
@@ -136,9 +151,9 @@ impl VisualState {
 /// Why a box is not drawn where it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Conceal {
-    /// In the stack of this parent.
+    /// In the deck beneath this session (stacked or folded).
     Stack(String),
-    /// Hidden subsession of this visible ancestor.
+    /// Hidden into this visible ancestor ("hide all").
     Hidden(String),
 }
 
@@ -150,24 +165,33 @@ impl Conceal {
     }
 }
 
-/// A stack's deck beneath its parent.
+/// A deck beneath its session: its stacked subsessions and/or its folded
+/// subagent boxes.
 #[derive(Clone, Debug)]
 pub struct Deck {
     pub root: String,
-    /// The newest stacked session (the top card).
+    /// The top card: the newest stacked session, else the newest subagent box.
     pub top: String,
     /// Stacked sessions, oldest first.
     pub sessions: Vec<String>,
+    /// The session's own folded subagent boxes, oldest first.
+    pub agents: Vec<String>,
+    /// Everything it holds (its status and effects come from these).
+    pub members: Vec<String>,
+    /// The most important state of what it holds (`App::aggregate_status`).
+    pub status: Option<Status>,
+    /// Running subagent boxes among them.
+    pub running: usize,
     /// The top card (world units).
     pub rect: WRect,
-    /// Opacity (fades in while stacking).
+    /// Opacity (fades in while folding).
     pub alpha: f32,
 }
 
 impl Deck {
     /// Cards drawn behind the top one.
     pub fn back(&self) -> u8 {
-        self.sessions.len().saturating_sub(1).min(2) as u8
+        vm::deck_back(self.sessions.len() + self.agents.len()) as u8
     }
 
     /// The deck with its back cards (they peek out right and below).
@@ -175,18 +199,25 @@ impl Deck {
         let back = self.back() as f32;
         WRect::new(self.rect.x, self.rect.y, self.rect.w + back, self.rect.h + back)
     }
+
+    /// Only folded subagent boxes (a slim card; a click lists them).
+    pub fn agents_only(&self) -> bool {
+        self.sessions.is_empty()
+    }
 }
 
 /// What the canvas shows differently this frame.
 #[derive(Default)]
 pub struct VisualFrame {
-    /// Boxes in a stack or hidden (target state: no clicks reach them).
+    /// Boxes in a deck or hidden (target state: no clicks reach them).
     pub concealed: HashMap<String, Conceal>,
     /// GPU: boxes in a transition, with their rect and opacity this frame.
     pub moving: HashMap<String, (WRect, f32)>,
     pub decks: Vec<Deck>,
-    /// Visible ancestors of hidden subsessions → those sessions.
+    /// Visible ancestors of hidden subsessions and subagent boxes → those boxes.
     pub hidden: HashMap<String, Vec<String>>,
+    /// Their badges: how many of each kind and the most important state.
+    pub hidden_badges: HashMap<String, crate::view::Hidden>,
 }
 
 impl VisualFrame {
@@ -232,6 +263,32 @@ pub fn motion_from(setting: Option<&str>, animations: bool) -> Motion {
 
 fn item(label: &str, hint: &str, action: VisualAction, enabled: bool) -> MenuItem {
     MenuItem { label: label.to_owned(), hint: hint.to_owned(), action: Action::Visual(action), enabled }
+}
+
+/// The H item's label.
+pub fn hide_label(hidden: bool) -> &'static str {
+    if hidden { "Show subagents and subsessions" } else { "Hide subagents and subsessions" }
+}
+
+/// How much a box's state matters on a deck or a hidden-box badge (0: not
+/// at all): needs you, failed, done · review, working, a subagent that just
+/// finished (a running one outranks it).
+fn status_rank(node: &Node, status: Status) -> u8 {
+    match status {
+        Status::Waiting => 5,
+        Status::Failed => 4,
+        Status::JustFinished if node.kind != NodeKind::Agent => 3,
+        Status::Working => 2,
+        Status::JustFinished => 1,
+        _ => 0,
+    }
+}
+
+/// A hidden-box badge's colour: the attention colour of its most important
+/// state, vermillion for a failure, else none (neutral).
+fn badge_color(status: Status) -> Option<Color> {
+    use crate::status::StatusStyle;
+    status.attention().map(|(c, _)| c).or((status == Status::Failed).then_some(crate::paint::NEGATIVE))
 }
 
 impl App {
@@ -325,22 +382,19 @@ impl App {
         self.mark_dirty();
     }
 
-    // ---------- stacks and hidden subsessions ----------
+    // ---------- decks and hidden boxes ----------
 
-    /// Where a stack's deck goes: beneath its parent and the parent's subagents.
+    /// Where a session's deck is drawn as the document stands: a stack of
+    /// subsessions beneath it and its shown subagent boxes, else a slim card
+    /// for its folded subagent boxes (`canvas_model::visual::deck_rect`).
     pub fn deck_rect(&self, root: &Node) -> WRect {
-        let mut bottom = root.y + SESSION_H;
-        for agent in self.doc.nodes.iter().filter(|n| n.kind == NodeKind::Agent && n.parent.as_deref() == Some(root.id.as_str())) {
-            let below = agent.y >= root.y && agent.x < root.x + SESSION_W && agent.x + crate::doc::AGENT_W > root.x;
-            if below {
-                bottom = bottom.max(agent.y + AGENT_H);
-            }
-        }
-        WRect::new(root.x as f32 + 2.0, bottom as f32 + 1.0, SESSION_W as f32, SESSION_H as f32)
+        let sessions = root.stacked && !vm::descendants(&self.doc, &root.id).is_empty();
+        WRect::from(vm::deck_rect(&self.doc, root, sessions))
     }
 
-    /// Starts transitions for stacks and the hide toggle that changed since
-    /// the last frame (also when another window changed them).
+    /// Starts transitions for stacks, folded subagent boxes and the hide
+    /// toggle that changed since the last frame (also when another window
+    /// changed them).
     fn sync_transitions(&mut self) {
         let animate = self.render_mode == RenderMode::Gpu && self.motion() == Motion::On;
         let now = Instant::now();
@@ -354,6 +408,20 @@ impl App {
         }
         self.visual.known_stacks = Some(stacked);
         self.visual.stacks.retain(|id, t| !t.done_at(now) && self.doc.node(id).is_some());
+        // Every session's fold state (a session's first subagent box arrives folded without a transition).
+        let folded: HashSet<String> = self.doc.nodes.iter().filter(|n| vm::subagents_folded(&self.doc, n)).map(|n| n.id.clone()).collect();
+        if animate && let Some(known) = &self.visual.known_folds {
+            let changes: Vec<(String, bool)> = folded.difference(known).map(|id| (id.clone(), true)).chain(known.difference(&folded).filter(|id| self.doc.node(id).is_some()).map(|id| (id.clone(), false))).collect();
+            for (id, closing) in changes {
+                if vm::subagents_of(&self.doc, &id).is_empty() {
+                    continue;
+                }
+                let from = self.visual.folds.get(&id).map(|t| t.value_at(now)).unwrap_or(if closing { 0.0 } else { 1.0 });
+                self.visual.folds.insert(id, Transition { closing, start: now, from });
+            }
+        }
+        self.visual.known_folds = Some(folded);
+        self.visual.folds.retain(|id, t| !t.done_at(now) && self.doc.node(id).is_some());
         let hide = self.doc.ui.hide_subsessions;
         if animate && self.visual.known_hide.is_some_and(|known| known != hide) {
             let from = self.visual.hide.map(|t| t.value_at(now)).unwrap_or(if hide { 0.0 } else { 1.0 });
@@ -365,13 +433,10 @@ impl App {
         }
     }
 
-    /// Boxes in a stack or hidden right now (no transitions): clicks and
+    /// Boxes in a deck or hidden right now (no transitions): clicks and
     /// rubber bands pass them by.
     pub fn concealed_now(&self) -> HashMap<String, Conceal> {
-        let mut out = HashMap::new();
-        if self.doc.nodes.iter().any(|n| n.stacked) {
-            out.extend(vm::stacked_under(&self.doc).into_iter().map(|(id, root)| (id, Conceal::Stack(root))));
-        }
+        let mut out: HashMap<String, Conceal> = vm::stacked_under(&self.doc).into_iter().map(|(id, root)| (id, Conceal::Stack(root))).collect();
         if self.doc.ui.hide_subsessions {
             for (id, top) in vm::hidden_subsessions(&self.doc) {
                 out.insert(id, Conceal::Hidden(top));
@@ -380,7 +445,7 @@ impl App {
         out
     }
 
-    /// Where a stacked or hidden box shows: its stack's deck or its visible
+    /// Where a box in a deck or hidden shows: its deck or its visible
     /// ancestor (`None`: it shows itself).
     pub fn shown_center(&self, id: &str) -> Option<(i32, i32)> {
         match self.concealed_now().get(id)? {
@@ -397,58 +462,99 @@ impl App {
     pub fn visual_frame(&mut self) -> VisualFrame {
         self.sync_transitions();
         let mut frame = VisualFrame::default();
-        let stacks = self.doc.nodes.iter().any(|n| n.stacked) || !self.visual.stacks.is_empty();
+        let under = vm::stacked_under(&self.doc);
+        let moving = !self.visual.stacks.is_empty() || !self.visual.folds.is_empty();
         let hiding = self.doc.ui.hide_subsessions || self.visual.hide.is_some();
-        if !stacks && !hiding {
+        if under.is_empty() && !moving && !hiding {
             return frame;
         }
         let now = Instant::now();
-        let under = if stacks { vm::stacked_under(&self.doc) } else { HashMap::new() };
         for (id, root) in &under {
             frame.concealed.insert(id.clone(), Conceal::Stack(root.clone()));
         }
         let hidden = if hiding { vm::hidden_subsessions(&self.doc) } else { HashMap::new() };
         if self.doc.ui.hide_subsessions {
-            for (id, top) in &hidden {
-                frame.concealed.insert(id.clone(), Conceal::Hidden(top.clone()));
-                if self.doc.node(id).is_some_and(|n| n.kind == NodeKind::Session) {
-                    frame.hidden.entry(top.clone()).or_default().push(id.clone());
-                }
+            for node in self.doc.nodes.iter().filter(|n| hidden.contains_key(&n.id)) {
+                let top = &hidden[&node.id];
+                frame.concealed.insert(node.id.clone(), Conceal::Hidden(top.clone()));
+                frame.hidden.entry(top.clone()).or_default().push(node.id.clone());
             }
         }
-        // Decks: stacked parents (and parents unstacking), unless an outer
-        // stack or the hide toggle covers them.
-        let mut roots: Vec<String> = self.doc.nodes.iter().filter(|n| n.stacked).map(|n| n.id.clone()).collect();
-        let unstacking: Vec<String> = self.visual.stacks.keys().filter(|id| !roots.contains(id)).cloned().collect();
-        roots.extend(unstacking);
+        // Hiding every subsession and subagent box hides the decks too (their
+        // sessions count what they hold); they fade while it switches.
+        let shown = match self.visual.hide {
+            Some(t) => 1.0 - ease(t.value_at(now)),
+            None if self.doc.ui.hide_subsessions => 0.0,
+            None => 1.0,
+        };
+        // Decks: sessions with something folded (and those still folding or
+        // unfolding), unless an outer deck holds them.
+        let mut roots: Vec<String> = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
+        for node in &self.doc.nodes {
+            if let Some(root) = under.get(&node.id).filter(|r| seen.insert(r.as_str())) {
+                roots.push(root.clone());
+            }
+        }
+        for id in self.visual.stacks.keys().chain(self.visual.folds.keys()) {
+            if !roots.contains(id) {
+                roots.push(id.clone());
+            }
+        }
+        let by_id: HashMap<&str, &Node> = self.doc.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+        let mut held: HashMap<String, vm::DeckContents> = vm::decks_of(&self.doc, &under).into_iter().map(|d| (d.root.clone(), d)).collect();
         for root_id in roots {
             if under.contains_key(&root_id) {
                 continue;
             }
-            let Some(root) = self.doc.node(&root_id) else { continue };
-            let sessions = vm::descendants(&self.doc, &root_id);
-            let Some(top) = sessions.last().cloned() else { continue };
-            let value = self.visual.stacks.get(&root_id).map(|t| t.value_at(now)).unwrap_or(if root.stacked { 1.0 } else { 0.0 });
-            let rect = self.deck_rect(root);
-            if value < 1.0 {
-                // Cards fly between their own places and the deck.
-                for id in vm::stack_members(&self.doc, &root_id) {
-                    if let Some(node) = self.doc.node(&id) {
+            let Some(root) = by_id.get(root_id.as_str()).copied() else { continue };
+            let moving = self.visual.stacks.contains_key(&root_id) || self.visual.folds.contains_key(&root_id);
+            if !moving {
+                // At rest: what the document says it holds.
+                let Some(c) = held.remove(&root_id) else { continue };
+                let Some(top) = c.sessions.last().or(c.agents.last()).cloned() else { continue };
+                let rect = WRect::from(vm::deck_rect(&self.doc, root, !c.sessions.is_empty()));
+                if shown > 0.0 {
+                    frame.decks.push(Deck { root: root_id, top, sessions: c.sessions, agents: c.agents, members: c.members, status: None, running: 0, rect, alpha: shown });
+                }
+                continue;
+            }
+            let stacked = self.visual.stacks.get(&root_id).map(|t| t.value_at(now)).unwrap_or(if root.stacked { 1.0 } else { 0.0 });
+            let folded = self.visual.folds.get(&root_id).map(|t| t.value_at(now)).unwrap_or(if vm::subagents_folded(&self.doc, root) { 1.0 } else { 0.0 });
+            let sessions = if stacked > 0.0 { vm::descendants(&self.doc, &root_id) } else { Vec::new() };
+            let agents = if folded > 0.0 { vm::subagents_of(&self.doc, &root_id) } else { Vec::new() };
+            let Some(top) = sessions.last().or(agents.last()).cloned() else { continue };
+            let rect = WRect::from(vm::deck_rect(&self.doc, root, !sessions.is_empty()));
+            // Cards fly between their own places and the deck.
+            let mut fly = |ids: &[String], value: f32| {
+                for id in ids {
+                    if let Some(node) = by_id.get(id.as_str()) {
                         let home = WRect::from(node.rect());
                         let target = WRect::new(rect.x, rect.y, home.w, home.h);
-                        frame.moving.insert(id, (lerp(home, target, ease(value)), 1.0 - ease(value)));
+                        frame.moving.insert(id.clone(), (lerp(home, target, ease(value)), 1.0 - ease(value)));
                     }
                 }
+            };
+            let mut members = if sessions.is_empty() { Vec::new() } else { vm::stack_members(&self.doc, &root_id) };
+            if stacked < 1.0 {
+                fly(&members, stacked);
             }
-            if value > 0.0 && !(self.doc.ui.hide_subsessions && hidden.contains_key(&root_id)) {
-                frame.decks.push(Deck { root: root_id, top, sessions, rect, alpha: ease(value) });
+            if folded < 1.0 {
+                fly(&agents, folded);
+            }
+            members.extend(agents.iter().cloned());
+            let value = if sessions.is_empty() { folded } else if agents.is_empty() { stacked } else { stacked.max(folded) };
+            let alpha = ease(value) * shown;
+            if alpha > 0.0 {
+                frame.decks.push(Deck { root: root_id, top, sessions, agents, members, status: None, running: 0, rect, alpha });
             }
         }
-        // Hidden subsessions shrink into (or grow out of) their visible ancestor.
+        self.deck_and_hidden_states(&mut frame, &hidden);
+        // Hidden boxes shrink into (or grow out of) their visible ancestor.
         if let Some(t) = self.visual.hide {
             let value = ease(t.value_at(now));
             for (id, top) in &hidden {
-                let (Some(node), Some(top)) = (self.doc.node(id), self.doc.node(top)) else { continue };
+                let (Some(node), Some(top)) = (by_id.get(id.as_str()), by_id.get(top.as_str())) else { continue };
                 if under.contains_key(id) {
                     continue;
                 }
@@ -462,17 +568,68 @@ impl App {
         frame
     }
 
-    /// The most important status among sessions (for a stack or hidden
-    /// subsessions): needs you, failed, done · review, working, else `None`.
+    /// The most important status among boxes (a deck, hidden boxes): needs
+    /// you, failed, done · review, working, a subagent that just finished,
+    /// else `None`. A running subagent outranks one that just finished.
     pub fn aggregate_status(&self, ids: &[String]) -> Option<Status> {
-        let rank = |s: Status| match s {
-            Status::Waiting => 5,
-            Status::Failed => 4,
-            Status::JustFinished => 3,
-            Status::Working => 2,
-            _ => 0,
-        };
-        ids.iter().filter_map(|id| self.doc.node(id)).map(|n| self.node_status(n)).filter(|s| rank(*s) > 0).max_by_key(|s| rank(*s))
+        ids.iter()
+            .filter_map(|id| self.doc.node(id))
+            .map(|n| {
+                let status = self.node_status(n);
+                (status_rank(n, status), status)
+            })
+            .filter(|(r, _)| *r > 0)
+            .max_by_key(|(r, _)| *r)
+            .map(|(_, s)| s)
+    }
+
+    /// Fills in the state of what each deck holds (`aggregate_status`, and
+    /// how many of its subagent boxes run) and the badge of each visible
+    /// ancestor's hidden boxes, in one pass over the boxes.
+    fn deck_and_hidden_states(&self, frame: &mut VisualFrame, hidden: &HashMap<String, String>) {
+        let hiding = !frame.hidden.is_empty();
+        if frame.decks.is_empty() && !hiding {
+            return;
+        }
+        let in_deck: HashMap<&str, usize> = frame.decks.iter().enumerate().flat_map(|(i, d)| d.members.iter().map(move |m| (m.as_str(), i))).collect();
+        let mut decks: Vec<(u8, Option<Status>, usize)> = vec![(0, None, 0); frame.decks.len()];
+        // Visible ancestor → (sessions, subagent boxes, rank, status).
+        let mut badges: HashMap<String, (u32, u32, u8, Option<Status>)> = HashMap::new();
+        for node in &self.doc.nodes {
+            let deck = in_deck.get(node.id.as_str()).copied();
+            let top = if hiding { hidden.get(&node.id) } else { None };
+            if deck.is_none() && top.is_none() {
+                continue;
+            }
+            let status = self.node_status(node);
+            let rank = status_rank(node, status);
+            if let Some(i) = deck {
+                let d = &mut decks[i];
+                if rank > d.0 {
+                    (d.0, d.1) = (rank, Some(status));
+                }
+                d.2 += usize::from(node.kind == NodeKind::Agent && status == Status::Working);
+            }
+            if let Some(top) = top {
+                let b = badges.entry(top.clone()).or_insert((0, 0, 0, None));
+                if node.kind == NodeKind::Agent {
+                    b.1 += 1;
+                } else {
+                    b.0 += 1;
+                }
+                if rank > b.2 {
+                    (b.2, b.3) = (rank, Some(status));
+                }
+            }
+        }
+        for (deck, (_, status, running)) in frame.decks.iter_mut().zip(decks) {
+            deck.status = status;
+            deck.running = running;
+        }
+        frame.hidden_badges = badges
+            .into_iter()
+            .map(|(top, (sessions, agents, _, status))| (top, crate::view::Hidden { sessions, agents, color: status.and_then(badge_color) }))
+            .collect();
     }
 
     /// Stacks or unstacks a session's subsessions (their positions stay).
@@ -488,7 +645,7 @@ impl App {
         }
         node.stacked = stacked;
         let name = node.name.clone();
-        self.mark_dirty();
+        self.after_fold(stacked);
         if stacked {
             self.notify(format!("Stacked {count} subsession(s) under “{name}”. Double-click the stack or press K to unstack."), false);
         } else {
@@ -496,33 +653,140 @@ impl App {
         }
     }
 
-    /// The stack (or stacked parent) a selected box belongs to.
-    fn stack_target(&mut self) -> Option<(String, bool)> {
+    /// Folds a session's subagent boxes into its deck or shows them (its own
+    /// choice, kept in the canvas). Their positions stay; a box that never
+    /// had a place of its own gets one when it is first shown.
+    pub fn set_subagents_folded(&mut self, root: &str, folded: bool) {
+        let count = vm::subagents_of(&self.doc, root).len();
+        let Some(node) = self.doc.node(root).filter(|n| n.kind == NodeKind::Session) else { return };
+        if count == 0 {
+            return self.notify("This session has no subagent boxes.", false);
+        }
+        let (was, name) = (vm::subagents_folded(&self.doc, node), node.name.clone());
+        if let Some(node) = self.doc.node_mut(root) {
+            node.subagents_shown = Some(!folded);
+        }
+        self.after_fold(folded);
+        if was == folded {
+            return;
+        }
+        if folded {
+            self.notify(format!("Stacked {count} subagent box(es) under “{name}”. Double-click the deck or press K to show them."), false);
+        } else {
+            self.notify(format!("Showing {count} subagent box(es) of “{name}”; K stacks them again."), false);
+        }
+    }
+
+    /// Folds (`true`) or unfolds a session's subagent boxes and its
+    /// subsessions together (K, a double-click on its deck).
+    pub fn set_all_folded(&mut self, root: &str, folded: bool) {
+        let agents = vm::subagents_of(&self.doc, root).len();
+        let sessions = vm::descendants(&self.doc, root).len();
+        let Some(node) = self.doc.node_mut(root).filter(|n| n.kind == NodeKind::Session) else { return };
+        if agents == 0 && sessions == 0 {
+            return self.notify("This session has no subagent boxes or subsessions to stack (K).", false);
+        }
+        if agents > 0 {
+            node.subagents_shown = Some(!folded);
+        }
+        if sessions > 0 {
+            node.stacked = folded;
+        }
+        let name = node.name.clone();
+        self.after_fold(folded);
+        let mut parts = Vec::new();
+        if agents > 0 {
+            parts.push(format!("{agents} subagent box(es)"));
+        }
+        if sessions > 0 {
+            parts.push(format!("{sessions} subsession(s)"));
+        }
+        let what = parts.join(" and ");
+        if folded {
+            self.notify(format!("Stacked {what} under “{name}”. Double-click the deck or press K to unfold."), false);
+        } else {
+            self.notify(format!("Unfolded {what} of “{name}”; K stacks them again."), false);
+        }
+    }
+
+    /// After folding or unfolding: boxes now in a deck leave the selection
+    /// (their place follows their session), shown ones that never had a
+    /// place get one.
+    fn after_fold(&mut self, folded: bool) {
+        if folded {
+            let under = vm::stacked_under(&self.doc);
+            self.selection.retain(|id| !under.contains_key(id));
+        } else {
+            self.place_shown_subagents();
+        }
+        self.mark_dirty();
+    }
+
+    /// Something of this session is folded (its subagent boxes, its subsessions).
+    pub fn anything_folded(&self, root: &str) -> bool {
+        let Some(node) = self.doc.node(root) else { return false };
+        let agents = !vm::subagents_of(&self.doc, root).is_empty() && vm::subagents_folded(&self.doc, node);
+        agents || (node.stacked && !vm::descendants(&self.doc, root).is_empty())
+    }
+
+    /// The session K acts on: the deck that holds the selected box, the
+    /// selected session (a subagent box's session) when it has subagent boxes
+    /// or subsessions, else its parent.
+    fn fold_target(&self) -> Option<String> {
         let id = self.selection.last().cloned()?;
-        let frame = self.visual_frame();
-        if let Some(Conceal::Stack(root)) = frame.concealed.get(&id) {
-            return Some((root.clone(), false));
+        if let Some(root) = vm::stacked_under(&self.doc).remove(&id) {
+            return Some(root);
         }
+        let has = |id: &str| !vm::subagents_of(&self.doc, id).is_empty() || !vm::descendants(&self.doc, id).is_empty();
         let session = self.session_of(&id)?;
-        if !vm::descendants(&self.doc, &session).is_empty() {
-            let stacked = self.doc.node(&session).is_some_and(|n| n.stacked);
-            return Some((session, !stacked));
+        if has(&session) {
+            return Some(session);
         }
-        let parent = self.doc.node(&session)?.parent.clone().filter(|p| self.doc.node(p).is_some())?;
-        let stacked = self.doc.node(&parent).is_some_and(|n| n.stacked);
-        Some((parent, !stacked))
+        self.doc.node(&session)?.parent.clone().filter(|p| self.doc.node(p).is_some() && has(p))
+    }
+
+    /// K: unfolds everything of the selected session when anything is
+    /// folded, else folds its subagent boxes and subsessions.
+    pub fn toggle_fold(&mut self) {
+        match self.fold_target() {
+            Some(root) => {
+                let folded = self.anything_folded(&root);
+                self.set_all_folded(&root, !folded);
+            }
+            None => self.notify("Select a session with subagents or subsessions to stack or unstack them (K).", false),
+        }
+    }
+
+    /// A click on a subagent deck: its session's details panel, which lists
+    /// the subagents (viewing never starts anything).
+    pub fn view_subagents(&mut self, root: &str) {
+        if self.doc.node(root).is_none() {
+            return;
+        }
+        self.select_node(root, false);
+        self.right_detail = Some(crate::side::RightDetail::Session(root.to_owned()));
+        self.needs_draw = true;
+    }
+
+    /// The boxes of `ids` a drag or an arrow key moves: those not held in a
+    /// deck (their place follows their session).
+    pub(crate) fn movable(&self, ids: &[String]) -> Vec<String> {
+        let under = vm::stacked_under(&self.doc);
+        ids.iter().filter(|id| !under.contains_key(*id)).cloned().collect()
     }
 
     pub fn toggle_hide_subsessions(&mut self) {
         self.doc.ui.hide_subsessions = !self.doc.ui.hide_subsessions;
-        let count = vm::hidden_subsessions(&self.doc).keys().filter(|id| self.doc.node(id).is_some_and(|n| n.kind == NodeKind::Session)).count();
+        let hidden = vm::hidden_subsessions(&self.doc);
+        let agents = hidden.keys().filter(|id| self.doc.node(id).is_some_and(|n| n.kind == NodeKind::Agent)).count();
+        let sessions = hidden.len() - agents;
+        let what = format!("{sessions} subsession(s) and {agents} subagent box(es)");
         if self.doc.ui.hide_subsessions {
             // A hidden box leaves the selection (its terminal stays open).
-            let hidden = vm::hidden_subsessions(&self.doc);
             self.selection.retain(|id| !hidden.contains_key(id));
-            self.notify(format!("Hid {count} subsession(s); H shows them again. They still count in the sidebar and the toolbar."), false);
+            self.notify(format!("Hid {what}; H shows them again. They still count in the sidebar and the toolbar."), false);
         } else {
-            self.notify(format!("Showing {count} subsession(s) again."), false);
+            self.notify(format!("Showing {what} again."), false);
         }
         self.mark_dirty();
     }
@@ -602,23 +866,31 @@ impl App {
         out
     }
 
-    /// An effect is in view (the GUI animates it).
+    /// An effect is in view (the GUI animates it): on its box, or on the deck
+    /// or visible ancestor that holds the box.
     fn effects_in_view(&self) -> bool {
         let c = self.layout.canvas;
-        if c.width == 0 {
+        let effects = self.active_effects();
+        if c.width == 0 || effects.is_empty() {
             return false;
         }
         let (x0, y0) = self.to_world_f(c.x as f32, c.y as f32);
         let (x1, y1) = self.to_world_f(c.right() as f32, c.bottom() as f32);
-        self.active_effects().iter().any(|e| {
-            let rect = if e.target.is_empty() { self.doc.group(&e.group).map(|g| g.rect()) } else { self.doc.node(&e.target).map(|n| n.rect()) };
+        let concealed = self.concealed_now();
+        effects.iter().any(|e| {
+            let rect = match concealed.get(&e.target) {
+                _ if e.target.is_empty() => self.doc.group(&e.group).map(|g| g.rect()),
+                Some(Conceal::Stack(root)) => self.doc.node(root).map(|r| vm::deck_rect(&self.doc, r, r.stacked)),
+                Some(Conceal::Hidden(top)) => self.doc.node(top).map(|n| n.rect()),
+                None => self.doc.node(&e.target).map(|n| n.rect()),
+            };
             rect.is_some_and(|r| (r.x as f32) < x1 + 8.0 && (r.x + r.w) as f32 > x0 - 8.0 && (r.y as f32) < y1 + 6.0 && (r.y + r.h) as f32 > y0 - 6.0)
         })
     }
 
     // ---------- the canvas click hook ----------
 
-    /// The stack whose deck is under a cell.
+    /// The deck under a cell.
     fn deck_at(&self, frame: &VisualFrame, x: u16, y: u16) -> Option<Deck> {
         frame.decks.iter().rev().find(|deck| {
             let b = deck.bounds();
@@ -633,33 +905,38 @@ impl App {
         }).cloned()
     }
 
-    /// The parent of the stack whose deck is under a cell.
+    /// The session of the deck under a cell.
     pub(crate) fn deck_root_at(&mut self, x: u16, y: u16) -> Option<String> {
         let frame = self.visual_frame();
         self.deck_at(&frame, x, y).map(|deck| deck.root)
     }
 
-    /// The deck of a stacked parent, as drawn now.
+    /// The deck beneath a session, as drawn now.
     pub(crate) fn deck_of(&mut self, root: &str) -> Option<Deck> {
         self.visual_frame().deck_of(root).cloned()
     }
 
-    /// Mouse down on the canvas, before the usual handling: stacks (click
-    /// views the top card, double-click unstacks, drag moves the parent with
-    /// its stack, right-click its menu) and effects (a click acknowledges
-    /// them and only selects the box: it never starts a session). True when
-    /// the click was handled here.
+    /// Mouse down on the canvas, before the usual handling: decks (a click
+    /// views them: a stack's top card, a subagent deck's list in its
+    /// session's details; a double-click unfolds them; a drag moves the
+    /// session with its deck; a right-click opens their menu) and effects (a
+    /// click acknowledges them and only selects the box: it never starts a
+    /// session). True when the click was handled here.
     pub fn visual_mouse_down(&mut self, button: MouseButton, x: u16, y: u16, double: bool, additive: bool) -> bool {
         let frame = self.visual_frame();
         if let Some(deck) = self.deck_at(&frame, x, y) {
             match button {
                 MouseButton::Left if double => {
-                    self.set_stacked(&deck.root, false);
+                    self.set_all_folded(&deck.root, false);
                 }
                 MouseButton::Left => {
-                    let acks = self.effects_on(&deck.sessions);
+                    let acks = self.effects_on(&deck.members);
                     self.ack_effects(acks);
-                    self.select_node(&deck.top, additive);
+                    if deck.agents_only() {
+                        self.view_subagents(&deck.root);
+                    } else {
+                        self.select_node(&deck.top, additive);
+                    }
                     self.drag = Some(Drag::Nodes { ids: vec![deck.root.clone()], start: (x, y), applied: (0, 0), moved: false, click: None });
                 }
                 MouseButton::Right => {
@@ -683,7 +960,7 @@ impl App {
                 if additive || !self.selection.contains(&id) {
                     self.select_node(&id, additive);
                 }
-                let ids = self.selection.clone();
+                let ids = self.movable(&self.selection);
                 self.drag = Some(Drag::Nodes { ids, start: (x, y), applied: (0, 0), moved: false, click: None });
                 true
             }
@@ -713,24 +990,55 @@ impl App {
         self.ack_effects(ids);
     }
 
+    /// The deck's menu: unfold it (all, or each part), view or open what it
+    /// holds, hide everything.
     pub(crate) fn stack_menu(&self, deck: &Deck) -> (String, Vec<MenuItem>) {
-        let top = self.doc.node(&deck.top).map(|n| n.name.clone()).unwrap_or_default();
         let root = self.doc.node(&deck.root).map(|n| n.name.clone()).unwrap_or_default();
-        let mut items = vec![item("Unstack subsessions", "K · double-click", VisualAction::Stack(deck.root.clone(), false), true)];
-        items.push(MenuItem { label: format!("Open “{top}”"), hint: "Enter".into(), action: Action::Open(deck.top.clone()), enabled: true });
-        items.push(item(if self.doc.ui.hide_subsessions { "Show all subsessions" } else { "Hide all subsessions" }, "H", VisualAction::ToggleHideSubsessions, true));
-        (format!("Stack of {} under “{root}”", deck.sessions.len()), items)
+        let (agents, sessions) = (!deck.agents.is_empty(), !deck.sessions.is_empty());
+        let mut items = Vec::new();
+        if agents && sessions {
+            items.push(item("Unfold all", "K · double-click", VisualAction::FoldAll(deck.root.clone(), false), true));
+        }
+        if agents {
+            items.push(item("Show subagents", if sessions { "" } else { "K · double-click" }, VisualAction::FoldSubagents(deck.root.clone(), false), true));
+        }
+        if sessions {
+            items.push(item("Unstack subsessions", if agents { "" } else { "K · double-click" }, VisualAction::Stack(deck.root.clone(), false), true));
+            let top = self.doc.node(&deck.top).map(|n| n.name.clone()).unwrap_or_default();
+            items.push(MenuItem { label: format!("Open “{top}”"), hint: "Enter".into(), action: Action::Open(deck.top.clone()), enabled: true });
+        } else {
+            items.push(item("List subagents", "click", VisualAction::ViewSubagents(deck.root.clone()), true));
+        }
+        items.push(item(hide_label(self.doc.ui.hide_subsessions), "H", VisualAction::ToggleHideSubsessions, true));
+        let title = match (deck.sessions.len(), deck.agents.len()) {
+            (0, a) => format!("{a} subagent box(es) of “{root}”"),
+            (s, 0) => format!("Stack of {s} under “{root}”"),
+            (s, a) => format!("Stack of {s} and {a} subagent box(es) under “{root}”"),
+        };
+        (title, items)
     }
 
     // ---------- menus ----------
 
-    /// The session menu's stack and effect items.
+    /// The session menu's deck and effect items: its subagent boxes and its
+    /// subsessions, each stacked or shown on their own, or both at once (K).
     pub fn visual_node_items(&self, id: &str) -> Vec<MenuItem> {
         let mut items = Vec::new();
         let Some(node) = self.doc.node(id).filter(|n| n.kind == NodeKind::Session) else { return items };
-        if !vm::descendants(&self.doc, id).is_empty() {
+        let agents = !vm::subagents_of(&self.doc, id).is_empty();
+        let sessions = !vm::descendants(&self.doc, id).is_empty();
+        let k = if agents && sessions { "" } else { "K" };
+        if agents {
+            let folded = vm::subagents_folded(&self.doc, node);
+            items.push(item(if folded { "Show subagents" } else { "Stack subagents" }, k, VisualAction::FoldSubagents(id.to_owned(), !folded), true));
+        }
+        if sessions {
             let label = if node.stacked { "Unstack subsessions" } else { "Stack subsessions" };
-            items.push(item(label, "K", VisualAction::Stack(id.to_owned(), !node.stacked), true));
+            items.push(item(label, k, VisualAction::Stack(id.to_owned(), !node.stacked), true));
+        }
+        if agents && sessions {
+            let folded = self.anything_folded(id);
+            items.push(item(if folded { "Unfold all" } else { "Stack all" }, "K", VisualAction::FoldAll(id.to_owned(), !folded), true));
         }
         if self.has_effect(id) {
             items.push(item("Clear effect", "click", VisualAction::AckEffects(id.to_owned()), true));
@@ -738,13 +1046,14 @@ impl App {
         items
     }
 
-    /// The canvas menu's items: hide or show subsessions, select unused sessions.
+    /// The canvas menu's items: hide or show subsessions and subagent boxes,
+    /// select unused sessions.
     pub fn visual_canvas_items(&self) -> Vec<MenuItem> {
         let ids: HashSet<&str> = self.doc.nodes.iter().map(|n| n.id.as_str()).collect();
-        let any = self.doc.nodes.iter().any(|n| vm::is_subsession(&ids, n));
+        let any = self.doc.nodes.iter().any(|n| vm::is_subsession(&ids, n) || n.kind == NodeKind::Agent);
         let days = self.doc.dust_after_days;
         vec![
-            item(if self.doc.ui.hide_subsessions { "Show all subsessions" } else { "Hide all subsessions" }, "H", VisualAction::ToggleHideSubsessions, any || self.doc.ui.hide_subsessions),
+            item(hide_label(self.doc.ui.hide_subsessions), "H", VisualAction::ToggleHideSubsessions, any || self.doc.ui.hide_subsessions),
             item(&format!("Select unused sessions (older than {days} d)"), "", VisualAction::SelectUnused, days > 0),
         ]
     }
@@ -753,10 +1062,10 @@ impl App {
         self.needs_draw = true;
         match action {
             VisualAction::Stack(id, stacked) => self.set_stacked(&id, stacked),
-            VisualAction::ToggleStack => match self.stack_target() {
-                Some((root, stacked)) => self.set_stacked(&root, stacked),
-                None => self.notify("Select a session with subsessions to stack them (K).", false),
-            },
+            VisualAction::FoldSubagents(id, folded) => self.set_subagents_folded(&id, folded),
+            VisualAction::FoldAll(id, folded) => self.set_all_folded(&id, folded),
+            VisualAction::ViewSubagents(id) => self.view_subagents(&id),
+            VisualAction::ToggleStack => self.toggle_fold(),
             VisualAction::ToggleHideSubsessions => self.toggle_hide_subsessions(),
             VisualAction::SelectUnused => {
                 let ids = self.dusty_sessions();
@@ -785,7 +1094,7 @@ impl App {
 
     // ---------- settings ----------
 
-    /// The Settings view's dust and effects rows.
+    /// The Settings view's dust, subagents and effects rows.
     pub fn visual_setting_rows(&self) -> Vec<crate::side::ListRow> {
         let days = self.doc.dust_after_days;
         let dust = if days == 0 { "off".to_owned() } else { format!("{days} day{}", if days == 1 { "" } else { "s" }) };
@@ -800,7 +1109,12 @@ impl App {
             icon: "›",
             color: crate::paint::TEXT,
         };
-        vec![row(VisualSetting::Dust, "Dust unused sessions after", dust), row(VisualSetting::Effects, "Effects", effects)]
+        let subagents = if self.doc.subagents_shown { "shown" } else { "stacked" };
+        vec![
+            row(VisualSetting::Dust, "Dust unused sessions after", dust),
+            row(VisualSetting::Subagents, "Subagents", subagents.to_owned()),
+            row(VisualSetting::Effects, "Effects", effects),
+        ]
     }
 
     /// Enter or Space on a settings row: the next choice.
@@ -811,6 +1125,15 @@ impl App {
                 let next = choices.iter().position(|d| *d == self.doc.dust_after_days).map(|i| (i + 1) % choices.len()).unwrap_or(2);
                 self.doc.dust_after_days = choices[next];
                 self.mark_dirty();
+            }
+            VisualSetting::Subagents => {
+                // The canvas default; a session's own choice (K, its menu) wins.
+                self.doc.subagents_shown = !self.doc.subagents_shown;
+                let shown = self.doc.subagents_shown;
+                self.after_fold(!shown);
+                let own = self.doc.nodes.iter().filter(|n| n.subagents_shown.is_some_and(|s| s != shown) && !vm::subagents_of(&self.doc, &n.id).is_empty()).count();
+                let keep = if own > 0 { format!(" ({own} session(s) keep their own choice)") } else { String::new() };
+                self.notify(format!("Subagent boxes are {} by default{keep}.", if shown { "shown on their own" } else { "stacked beneath their session" }), false);
             }
             VisualSetting::Effects => {
                 let next = match self.motion() {
@@ -905,6 +1228,231 @@ mod tests {
         let mut node: Node = serde_json::from_value(serde_json::json!({ "id": id, "kind": "session", "name": id, "x": x, "y": y })).unwrap();
         node.parent = parent.map(str::to_owned);
         node
+    }
+
+    fn agent(id: &str, parent: &str, x: i32, y: i32) -> Node {
+        let mut node = session(id, Some(parent), x, y);
+        node.kind = NodeKind::Agent;
+        node.agent_key = id.split(':').nth(1).map(str::to_owned);
+        node
+    }
+
+    fn agent_summary(key: &str, status: crate::protocol::AgentStatus) -> crate::protocol::AgentSummary {
+        crate::protocol::AgentSummary { key: key.into(), name: key.into(), description: String::new(), status, finished_ms: Some(now_ms() - 1_000) }
+    }
+
+    /// A live session `p` (0,0) whose history lists these subagents.
+    fn with_agents(app: &mut App, agents: Vec<crate::protocol::AgentSummary>) {
+        let summary = crate::protocol::SessionSummary { id: "p".into(), activity: crate::protocol::Activity::Idle, live: true, tracked: true, agents, ..Default::default() };
+        app.sessions.insert("p".into(), summary);
+    }
+
+    #[test]
+    fn subagents_fold_into_a_slim_deck_by_default_that_shows_their_state() {
+        use crate::protocol::AgentStatus;
+        // A canvas from before: three subagent boxes in a column under p, no choice saved.
+        let mut doc = Doc::default();
+        doc.nodes.push(session("p", None, 0, 0));
+        for (i, key) in ["a", "b", "c"].iter().enumerate() {
+            doc.nodes.push(agent(&format!("p:{key}"), "p", 4, 5 + i as i32 * 4));
+        }
+        let mut app = app(doc);
+        with_agents(&mut app, vec![agent_summary("a", AgentStatus::Finished), agent_summary("b", AgentStatus::Working), agent_summary("c", AgentStatus::Finished)]);
+        let frame = app.visual_frame();
+        assert_eq!(frame.concealed.get("p:b"), Some(&Conceal::Stack("p".into())), "folded by default");
+        let deck = frame.deck_of("p").expect("a deck").clone();
+        assert!(deck.agents_only() && deck.agents.len() == 3 && deck.back() == 2);
+        assert_eq!(deck.rect, WRect::new(4.0, 5.0, 24.0, 3.0), "a slim card where the first subagent box goes");
+        assert_eq!(app.aggregate_status(&deck.members), Some(Status::Working), "a running subagent outranks those that just finished");
+        let model = crate::ui_canvas::deck_model(&app, &deck, deck.rect, &crate::ui_canvas::Boxes::new(&app)).unwrap();
+        assert_eq!((model.prefix, model.name.as_str(), model.label), ("◇ ", "3 subagents", "working"));
+        assert!(model.line.ends_with("working · 1 of 3"), "{}", model.line);
+        assert_eq!(model.deck.as_ref().and_then(|d| d.badge()), None, "the title counts them");
+        assert_eq!(app.node_status(app.doc.node("p").unwrap()), Status::Working, "the session stays working while one runs");
+        // A failure is the most important state.
+        with_agents(&mut app, vec![agent_summary("a", AgentStatus::Failed), agent_summary("b", AgentStatus::Working), agent_summary("c", AgentStatus::Finished)]);
+        assert_eq!(app.aggregate_status(&deck.members), Some(Status::Failed));
+        // A click views (the session's details list them); nothing starts.
+        let (dx, dy) = app.to_screen(5, 6);
+        assert!(app.visual_mouse_down(MouseButton::Left, dx as u16, dy as u16, false, false));
+        assert_eq!(app.selection, ["p"]);
+        assert_eq!(app.right_detail, Some(crate::side::RightDetail::Session("p".into())));
+        assert!(app.launching.is_empty() && matches!(&app.drag, Some(Drag::Nodes { ids, click: None, .. }) if ids == &["p".to_owned()]), "dragging moves the session");
+        app.drag = None;
+        // A double-click shows them, at exactly their places.
+        assert!(app.visual_mouse_down(MouseButton::Left, dx as u16, dy as u16, true, false));
+        assert_eq!(app.doc.node("p").unwrap().subagents_shown, Some(true));
+        assert!(app.visual_frame().decks.is_empty());
+        assert_eq!(app.doc.nodes.iter().map(|n| (n.x, n.y)).collect::<Vec<_>>(), [(0, 0), (4, 5), (4, 9), (4, 13)]);
+        assert!(app.launching.is_empty());
+    }
+
+    #[test]
+    fn k_unfolds_everything_folded_else_folds_everything() {
+        let mut doc = Doc::default();
+        // p: subagent boxes and a subsession; q: a subsession only; r: subagent boxes only.
+        doc.nodes.push(session("p", None, 0, 0));
+        doc.nodes.push(agent("p:a", "p", 4, 5));
+        doc.nodes.push(session("c", Some("p"), 40, 0));
+        doc.nodes.push(session("q", None, 0, 20));
+        doc.nodes.push(session("d", Some("q"), 40, 20));
+        doc.nodes.push(session("r", None, 0, 40));
+        doc.nodes.push(agent("r:a", "r", 4, 45));
+        let mut app = app(doc);
+        let state = |app: &App, id: &str| {
+            let n = app.doc.node(id).unwrap();
+            (vm::subagents_folded(&app.doc, n), n.stacked)
+        };
+        let k = |app: &mut App, id: &str| {
+            app.selection = vec![id.to_owned()];
+            app.run_visual(VisualAction::ToggleStack);
+        };
+        // Both: the subagent boxes are folded (the default), so K unfolds everything …
+        k(&mut app, "p");
+        assert_eq!(state(&app, "p"), (false, false));
+        // … and then folds everything into one deck.
+        k(&mut app, "p");
+        assert_eq!(state(&app, "p"), (true, true));
+        let deck = app.visual_frame().deck_of("p").cloned().unwrap();
+        assert_eq!((deck.sessions.clone(), deck.agents.clone(), deck.top.as_str()), (vec!["c".to_owned()], vec!["p:a".to_owned()], "c"));
+        assert_eq!(deck.rect, WRect::new(2.0, 5.0, 30.0, 4.0), "a stack's card beneath the session");
+        k(&mut app, "p");
+        assert_eq!(state(&app, "p"), (false, false));
+        // A stack of subsessions only (no subagent boxes): K stacks and unstacks it.
+        k(&mut app, "q");
+        assert!(state(&app, "q").1);
+        k(&mut app, "d");
+        assert!(!state(&app, "q").1, "K on a subsession acts on its parent");
+        // Subagent boxes only: K shows them and stacks them again.
+        k(&mut app, "r");
+        assert!(!state(&app, "r").0);
+        k(&mut app, "r:a");
+        assert!(state(&app, "r").0, "K on a subagent box stacks its session's boxes");
+        // A folded box selected from the sidebar: K unfolds its deck.
+        k(&mut app, "r:a");
+        assert!(!state(&app, "r").0);
+        // Nothing to fold.
+        app.doc.nodes.push(session("lone", None, 80, 0));
+        k(&mut app, "lone");
+        assert!(app.notice.as_ref().is_some_and(|n| n.text.contains("Select a session with subagents or subsessions")));
+        // The menus offer each part separately where both exist, and both at once (K).
+        let labels = |app: &App, id: &str| app.visual_node_items(id).iter().map(|i| (i.label.clone(), i.hint.clone())).collect::<Vec<_>>();
+        let pair = |label: &str, hint: &str| (label.to_owned(), hint.to_owned());
+        assert_eq!(labels(&app, "p"), [pair("Stack subagents", ""), pair("Stack subsessions", ""), pair("Stack all", "K")]);
+        assert_eq!(labels(&app, "q"), [pair("Stack subsessions", "K")]);
+        assert_eq!(labels(&app, "r"), [pair("Stack subagents", "K")]);
+        app.run_visual(VisualAction::FoldAll("p".into(), true));
+        let deck = app.visual_frame().deck_of("p").cloned().unwrap();
+        let (title, items) = app.stack_menu(&deck);
+        assert_eq!(title, "Stack of 1 and 1 subagent box(es) under “p”");
+        assert_eq!(items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(), ["Unfold all", "Show subagents", "Unstack subsessions", "Open “c”", "Hide subagents and subsessions"]);
+        assert!(app.launching.is_empty(), "folding never starts anything");
+    }
+
+    #[test]
+    fn new_subagents_arrive_folded_and_get_a_slot_when_first_shown() {
+        use crate::protocol::AgentStatus;
+        let mut doc = Doc::default();
+        doc.nodes.push(session("p", None, 2, 2));
+        doc.nodes.push(session("other", None, 2, 11));
+        doc.groups.push(crate::doc::Group { id: "g".into(), name: "G".into(), x: 0, y: 0, w: 40, h: 18, ..Default::default() });
+        let mut app = app(doc);
+        with_agents(&mut app, vec![agent_summary("a1", AgentStatus::Working), agent_summary("a2", AgentStatus::Finished)]);
+        app.sync_agents();
+        let a1 = app.doc.node("p:a1").unwrap().clone();
+        assert!(a1.unplaced && (a1.x, a1.y) == (5, 2), "on its session, without a place of its own");
+        let g = |app: &App| app.doc.group("g").map(|g| (g.x, g.y, g.w, g.h)).unwrap();
+        assert_eq!(g(&app), (0, 0, 40, 18), "no group grows for a folded box");
+        assert_eq!(app.doc.group_of(&a1).map(|g| g.id.as_str()), Some("g"));
+        // Shown: a slot of its own under its session (around the deck and the other box), and the group grows.
+        app.run_visual(VisualAction::FoldSubagents("p".into(), false));
+        let at = |app: &App, id: &str| app.doc.node(id).map(|n| (n.x, n.y, n.unplaced)).unwrap();
+        assert_eq!((at(&app, "p:a1"), at(&app, "p:a2")), ((6, 7, false), (6, 15, false)), "below p, past the other session");
+        assert!(g(&app).3 > 18, "the group grew for them: {:?}", g(&app));
+        // Stacked again: the places stay, the group too (Fit to members shrinks it).
+        let grown = g(&app);
+        app.run_visual(VisualAction::FoldSubagents("p".into(), true));
+        assert_eq!((at(&app, "p:a1"), g(&app)), ((6, 7, false), grown));
+        app.run(crate::dialogs::Action::FitGroup("g".into()));
+        assert_eq!(g(&app), (0, 0, 34, 16), "around p, its deck and the other session");
+        // A new subagent of a session that shows its boxes gets a slot at once.
+        app.run_visual(VisualAction::FoldSubagents("p".into(), false));
+        with_agents(&mut app, vec![agent_summary("a1", AgentStatus::Working), agent_summary("a2", AgentStatus::Finished), agent_summary("a3", AgentStatus::Working)]);
+        app.sync_agents();
+        assert!(!at(&app, "p:a3").2 && at(&app, "p:a3").1 > 15);
+    }
+
+    #[test]
+    fn the_canvas_default_follows_settings_and_a_sessions_own_choice_wins() {
+        let mut doc = Doc::default();
+        doc.nodes.push(session("p", None, 0, 0));
+        doc.nodes.push(agent("p:a", "p", 4, 5));
+        doc.nodes.push(session("q", None, 40, 0));
+        doc.nodes.push(agent("q:a", "q", 44, 5));
+        let mut app = app(doc);
+        let folded = |app: &App, id: &str| vm::subagents_folded(&app.doc, app.doc.node(id).unwrap());
+        let row = |app: &App| app.visual_setting_rows().into_iter().find(|r| r.label == "Subagents").map(|r| r.right).unwrap();
+        assert_eq!((row(&app), folded(&app, "p"), folded(&app, "q")), ("stacked".to_owned(), true, true));
+        app.visual_setting(VisualSetting::Subagents);
+        assert_eq!((row(&app), folded(&app, "p"), folded(&app, "q")), ("shown".to_owned(), false, false));
+        app.run_visual(VisualAction::FoldSubagents("p".into(), true));
+        assert!(folded(&app, "p") && !folded(&app, "q"), "p's own choice wins over the default");
+        app.visual_setting(VisualSetting::Subagents);
+        assert!(folded(&app, "p") && folded(&app, "q"));
+        app.run_visual(VisualAction::FoldSubagents("q".into(), false));
+        assert!(!folded(&app, "q"), "q's own choice wins over the default");
+        assert!(app.notice.is_some() && app.dirty_at.is_some(), "a canvas edit (saved, sent to every window)");
+    }
+
+    #[test]
+    fn hide_all_hides_subagent_boxes_too_and_counts_them_on_their_session() {
+        let mut doc = Doc::default();
+        doc.nodes.push(session("p", None, 0, 0));
+        doc.nodes.push(agent("p:a", "p", 4, 5));
+        doc.nodes.push(agent("p:b", "p", 4, 9));
+        doc.nodes.push(session("c", Some("p"), 40, 0));
+        doc.nodes.push(agent("c:x", "c", 44, 5));
+        let mut app = app(doc);
+        app.run_visual(VisualAction::FoldSubagents("c".into(), false));
+        assert_eq!(app.visual_frame().decks.len(), 1, "p's deck");
+        app.run_visual(VisualAction::ToggleHideSubsessions);
+        let frame = app.visual_frame();
+        assert!(frame.decks.is_empty(), "decks hide too");
+        assert_eq!(frame.hidden.get("p").map(Vec::len), Some(4), "both subagent boxes, the subsession and its subagent box");
+        assert!(frame.skip("c:x") && frame.skip("p:a") && !frame.skip("p"));
+        let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 160, 45));
+        crate::ui::render(&mut app, &mut buf, ratatui::layout::Rect::new(0, 0, 160, 45), None);
+        let screen: String = (0..45).map(|y| (0..160).map(|x| buf[(x, y)].symbol()).collect::<String>() + "\n").collect();
+        assert!(screen.contains("⋯ 1 · ◇ 3 hidden"), "on the session: {screen}");
+        assert!(screen.contains("↳ 4 hidden"), "the toolbar counts every hidden box");
+        assert_eq!(app.visual_canvas_items()[0].label, "Show subagents and subsessions");
+        app.run_visual(VisualAction::ToggleHideSubsessions);
+        assert!(!app.visual_frame().concealed.contains_key("c:x") && app.visual_frame().deck_of("p").is_some());
+    }
+
+    #[test]
+    fn effects_on_a_folded_box_show_on_its_deck_and_folding_animates_in_the_gpu() {
+        let mut doc = Doc::default();
+        doc.nodes.push(session("p", None, 0, 0));
+        doc.nodes.push(agent("p:a", "p", 4, 9));
+        let mut app = app(doc);
+        app.bus.effects.push(Effect { id: "e1".into(), kind: "sparkle".into(), group: "g".into(), target: "p:a".into(), ms: 1, until_ms: u64::MAX, ..Default::default() });
+        let frame = app.visual_frame();
+        let anchor = app.effect_anchor(&app.bus.effects[0], &frame, &|n: &Node| WRect::from(n.rect()));
+        assert_eq!(anchor, Some((WRect::new(4.0, 5.0, 24.0, 3.0), false)), "the deck, not the box's saved place");
+        // The GPU animates folding and unfolding (and ends idle); reduced motion switches at once.
+        app.render_mode = RenderMode::Gpu;
+        app.visual_frame();
+        app.run_visual(VisualAction::FoldSubagents("p".into(), false));
+        let frame = app.visual_frame();
+        assert!(app.visual.animating() && frame.moving.contains_key("p:a"), "the box flies out of the deck");
+        std::thread::sleep(Duration::from_millis(320));
+        let frame = app.visual_frame();
+        assert!(!app.visual.animating() && frame.moving.is_empty() && frame.decks.is_empty());
+        app.visual.motion = Some(Motion::Reduced);
+        app.run_visual(VisualAction::FoldSubagents("p".into(), true));
+        let frame = app.visual_frame();
+        assert!(!app.visual.animating() && frame.moving.is_empty() && frame.deck_of("p").is_some_and(|d| d.alpha == 1.0));
     }
 
     #[test]

@@ -673,7 +673,8 @@ fn demo_shots(shots: &mut Shots) -> Result<()> {
 }
 
 /// The parity sandbox's canvas: every status from synthetic histories, a
-/// subagent, loops, a group with folder chips and the automations group.
+/// subagent (folded into its session's deck), loops, a group with folder
+/// chips and the automations group.
 fn status_shots(shots: &mut Shots) -> Result<()> {
     let sb = crate::parity::Sandbox::new()?;
     let result = (|| -> Result<()> {
@@ -693,12 +694,12 @@ fn status_shots(shots: &mut Shots) -> Result<()> {
             ("Failed one", "failed"),
             ("Elsewhere", "open elsewhere"),
         ];
-        wait_tree(&ui, "every status, the subagent, the loop and the automations", 30, |t| {
+        wait_tree(&ui, "every status, the subagent's deck, the loop and the automations", 30, |t| {
             let boxes = t["canvas"]["boxes"].as_array().cloned().unwrap_or_default();
             let status = |name: &str| boxes.iter().find(|b| b["name"] == name).map(|b| b["status"].as_str().unwrap_or_default().to_owned());
             t["selection"].as_array().is_some_and(Vec::is_empty)
                 && expect.iter().all(|(name, label)| status(name).as_deref() == Some(*label))
-                && boxes.iter().any(|b| b["name"] == "Parity explorer")
+                && boxes.iter().any(|b| b["name"] == "1 subagent" && b["deck"]["agents"] == 1)
                 && boxes.iter().any(|b| b["name"] == "Looping" && !b["loop"].is_null())
                 && boxes.iter().filter(|b| b["prefix"] == "◷ ").count() == 3
         })?;

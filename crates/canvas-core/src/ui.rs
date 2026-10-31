@@ -188,9 +188,9 @@ fn draw_toolbar(app: &mut App, buf: &mut Buffer, area: Rect) {
         x = toolbar_button(app, buf, x, " ⧉ ", Action::NewWindow, area);
     }
     let mut x = toolbar_button(app, buf, x, " ⏻ Quit ", Action::Quit, area);
-    // Subsessions are hidden: say so, and show them with a click.
+    // Subsessions and subagent boxes are hidden: say how many, and show them with a click.
     if app.doc.ui.hide_subsessions {
-        let hidden = canvas_model::visual::hidden_subsessions(&app.doc).keys().filter(|id| app.doc.node(id).is_some_and(|n| n.kind == NodeKind::Session)).count();
+        let hidden = canvas_model::visual::hidden_subsessions(&app.doc).len();
         let end = put(buf, x, area.y as i32, &format!(" ↳ {hidden} hidden "), bold(PANEL).bg(GRAY), area);
         app.layout.hits.push((Rect::new(x as u16, area.y, (end - x).max(0) as u16, 1), Hit::Toolbar(Action::Visual(crate::visual::VisualAction::ToggleHideSubsessions))));
         x = end + 1;

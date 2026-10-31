@@ -66,7 +66,7 @@ fn node(id: &str, name: &str, x: i32, y: i32) -> Node {
         passive: None,
         no_messages: false,
         agent: None,
-        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
+        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
     }
 }
 
@@ -248,11 +248,15 @@ fn every_status() {
 }
 
 /// A session with three subagents (working, finished, failed), a subsession
-/// (dashed connector), a looping session and a queued passive message.
+/// (dashed connector), a looping session and a queued passive message. The
+/// session shows its subagent boxes (its own choice; folded is the default:
+/// `subagent-decks`).
 #[test]
 fn subagents_subsessions_and_a_loop() {
     let mut doc = Doc::default();
-    doc.nodes.push(node("orch", "Orchestrator", 1, 1));
+    let mut orch = node("orch", "Orchestrator", 1, 1);
+    orch.subagents_shown = Some(true);
+    doc.nodes.push(orch);
     for (i, (key, name)) in [("explore", "Explore the API"), ("review", "Review the diff"), ("lint", "Lint the tree")].iter().enumerate() {
         let mut a = node(&format!("orch:{key}"), name, 5, 7 + i as i32 * 4);
         a.kind = NodeKind::Agent;
@@ -281,6 +285,63 @@ fn subagents_subsessions_and_a_loop() {
     // The loop dot where a fixed clock puts it.
     app.visual.clock_ms = Some(NOW);
     check("subagents-subsessions-loop", &mut app, BOTH);
+}
+
+/// Two sessions whose subagent boxes are folded into decks (the default,
+/// on a canvas saved before there was a choice): a slim "◇ N subagents" card
+/// beneath each, with the most important state of what it holds (a failure
+/// first; working while one runs, "1 of 2").
+fn subagent_decks() -> App {
+    let mut doc = Doc::default();
+    let mut add = |id: &str, name: &str, x: i32, agents: &[(&str, &str)]| {
+        doc.nodes.push(node(id, name, x, 1));
+        for (i, (key, agent)) in agents.iter().enumerate() {
+            let mut a = node(&format!("{id}:{key}"), agent, x + 4, 6 + i as i32 * 4);
+            a.kind = NodeKind::Agent;
+            a.parent = Some(id.into());
+            a.agent_key = Some((*key).into());
+            doc.nodes.push(a);
+        }
+    };
+    add("orch", "Orchestrator", 1, &[("explore", "Explore the API"), ("review", "Review the diff"), ("lint", "Lint the tree")]);
+    add("fix", "Fix the build", 36, &[("search", "Search the logs"), ("patch", "Patch the config")]);
+    doc.view.x = -1;
+    doc.view.y = 0;
+    doc.ui.terminal_percent = 40;
+    let mut app = app(doc, false);
+    let mut orch = summary("orch", Activity::Idle, true);
+    orch.agents = vec![agent("explore", "Explore the API", AgentStatus::Working), agent("review", "Review the diff", AgentStatus::Finished), agent("lint", "Lint the tree", AgentStatus::Failed)];
+    app.sessions.insert("orch".into(), orch);
+    let mut fix = summary("fix", Activity::Idle, true);
+    fix.agents = vec![agent("search", "Search the logs", AgentStatus::Working), agent("patch", "Patch the config", AgentStatus::Finished)];
+    app.sessions.insert("fix".into(), fix);
+    app.selection.clear();
+    app
+}
+
+#[test]
+fn subagent_decks_folded_by_default() {
+    check("subagent-decks", &mut subagent_decks(), BOTH);
+}
+
+/// K on "Fix the build": its subagent boxes at their saved places, the
+/// other session's deck folded as before.
+#[test]
+fn subagent_decks_one_unfolded() {
+    let mut app = subagent_decks();
+    app.selection = vec!["fix".into()];
+    app.run(Action::Visual(canvas_core::visual::VisualAction::ToggleStack));
+    assert_eq!(app.doc.node("fix").and_then(|n| n.subagents_shown), Some(true));
+    check("subagent-decks-unfolded", &mut app, BOTH);
+}
+
+/// A click on a deck lists its subagent boxes in its session's details
+/// panel: each with its state and Inspect (viewing starts nothing).
+#[test]
+fn subagent_deck_details() {
+    let mut app = subagent_decks();
+    app.run(Action::Visual(canvas_core::visual::VisualAction::ViewSubagents("orch".into())));
+    check("subagent-deck-details", &mut app, Sections { cells: true, painted: true });
 }
 
 /// Two looping sessions (`/every`) and one that does not loop: each arc with
@@ -557,11 +618,13 @@ fn selection_and_rubber_band() {
 
 /// A mixed area selection (a session with its subagent box, a session with
 /// its subsession): every selected box is highlighted the same way, at
-/// 100 % and at 50 % (the TUI's compact boxes underline it).
+/// 100 % and at 50 % (the TUI's compact boxes underline it). The session
+/// shows its subagent box (K), so the box can be selected.
 #[test]
 fn selection_with_subagents_and_subsessions() {
     for (name, zoom, scale) in [("selection-subsessions-100", 0, 1.0), ("selection-subsessions-50", 1, 0.5)] {
         let mut app = demo_at(zoom, scale);
+        app.doc.node_mut("demo-main").unwrap().subagents_shown = Some(true);
         app.selection = ["demo-main", "demo-main:explore", "demo-review", "demo-sub"].map(String::from).to_vec();
         check(name, &mut app, Sections { cells: true, painted: true });
     }

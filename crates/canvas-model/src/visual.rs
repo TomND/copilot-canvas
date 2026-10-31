@@ -1,10 +1,12 @@
 //! Canvas visuals that are part of the document: dust on unused sessions
-//! (`Node::last_used_ms`, `Doc::dust_after_days`) and subsession stacks
-//! (`Node::stacked`). Pure functions shared by the clients and the service.
+//! (`Node::last_used_ms`, `Doc::dust_after_days`) and decks beneath sessions:
+//! stacks of subsessions (`Node::stacked`) and folded subagent boxes
+//! (`Node::subagents_shown`, `Doc::subagents_shown`; folded by default).
+//! Pure functions shared by the clients and the service.
 
 use std::collections::{HashMap, HashSet};
 
-use crate::doc::{Doc, Node, NodeKind};
+use crate::doc::{AGENT_H, AGENT_W, Doc, Node, NodeKind, Rect, SESSION_H, SESSION_W};
 
 /// Days without use before a session gathers dust (the canvas default).
 pub const DEFAULT_DUST_DAYS: u32 = 3;
@@ -121,8 +123,11 @@ pub fn stack_members(doc: &Doc, root: &str) -> Vec<String> {
     sessions.into_iter().chain(agents).collect()
 }
 
-/// Which stack hides each box: node id → the stacked ancestor highest up the
-/// parent chain (subagents follow their session).
+/// Which deck hides each box: node id → the session the deck lies beneath.
+/// Stacks hold a stacked session's subsessions with their subagent boxes
+/// (the stacked ancestor highest up the parent chain wins); a session's
+/// folded subagent boxes go into its own deck, or into the stack that holds
+/// the session.
 pub fn stacked_under(doc: &Doc) -> HashMap<String, String> {
     let mut out = HashMap::new();
     let mut roots: Vec<&Node> = doc.nodes.iter().filter(|n| n.stacked && n.kind == NodeKind::Session).collect();
@@ -148,11 +153,131 @@ pub fn stacked_under(doc: &Doc) -> HashMap<String, String> {
             out.entry(id).or_insert_with(|| root.id.clone());
         }
     }
+    let sessions: HashMap<&str, &Node> = doc.nodes.iter().filter(|n| n.kind == NodeKind::Session).map(|n| (n.id.as_str(), n)).collect();
+    for agent in doc.nodes.iter().filter(|n| n.kind == NodeKind::Agent) {
+        if out.contains_key(&agent.id) {
+            continue;
+        }
+        let Some(parent) = agent.parent.as_deref().and_then(|p| sessions.get(p)) else { continue };
+        if subagents_folded(doc, parent) {
+            let root = out.get(&parent.id).cloned().unwrap_or_else(|| parent.id.clone());
+            out.insert(agent.id.clone(), root);
+        }
+    }
     out
 }
 
-/// Nodes hidden by "hide all subsessions": subsessions and their subagents,
-/// each mapped to its visible ancestor at the top of the parent chain.
+/// A session's subagent boxes are folded into its deck: its own choice
+/// (`Node::subagents_shown`), else the canvas's (`Doc::subagents_shown`,
+/// folded by default).
+pub fn subagents_folded(doc: &Doc, session: &Node) -> bool {
+    session.kind == NodeKind::Session && !session.subagents_shown.unwrap_or(doc.subagents_shown)
+}
+
+/// A session's subagent boxes, in document order.
+pub fn subagents_of(doc: &Doc, session: &str) -> Vec<String> {
+    doc.nodes.iter().filter(|n| n.kind == NodeKind::Agent && n.parent.as_deref() == Some(session)).map(|n| n.id.clone()).collect()
+}
+
+/// What a session's deck holds (the document's state, no transitions).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeckContents {
+    /// The session it lies beneath.
+    pub root: String,
+    /// Its stacked subsessions (recursively), in document order.
+    pub sessions: Vec<String>,
+    /// Its own folded subagent boxes, in document order.
+    pub agents: Vec<String>,
+    /// Every box it holds (the subsessions' subagent boxes too).
+    pub members: Vec<String>,
+}
+
+impl DeckContents {
+    /// Boxes it shows as cards: stacked sessions and folded subagent boxes.
+    pub fn cards(&self) -> usize {
+        self.sessions.len() + self.agents.len()
+    }
+}
+
+/// The decks `under` (from [`stacked_under`]) describes, in the document
+/// order of their sessions.
+pub fn decks_of(doc: &Doc, under: &HashMap<String, String>) -> Vec<DeckContents> {
+    let mut by_root: HashMap<&str, DeckContents> = HashMap::new();
+    for node in &doc.nodes {
+        let Some(root) = under.get(&node.id) else { continue };
+        let deck = by_root.entry(root.as_str()).or_insert_with(|| DeckContents { root: root.clone(), ..Default::default() });
+        deck.members.push(node.id.clone());
+        match node.kind {
+            NodeKind::Session => deck.sessions.push(node.id.clone()),
+            NodeKind::Agent if node.parent.as_deref() == Some(root.as_str()) => deck.agents.push(node.id.clone()),
+            _ => {}
+        }
+    }
+    doc.nodes.iter().filter_map(|n| by_root.remove(n.id.as_str())).collect()
+}
+
+/// Every deck of the canvas.
+pub fn decks(doc: &Doc) -> Vec<DeckContents> {
+    decks_of(doc, &stacked_under(doc))
+}
+
+/// Where a session's deck is drawn (its top card, world units). Holding
+/// subsessions: a session-sized card beneath the session and its shown
+/// subagent boxes. Holding subagent boxes alone: a slim subagent-sized card
+/// where the first subagent box would go (`Doc::agent_slot_in`).
+pub fn deck_rect(doc: &Doc, root: &Node, sessions: bool) -> Rect {
+    if !sessions {
+        return Rect { x: root.x + 4, y: root.y + SESSION_H + 1, w: AGENT_W, h: AGENT_H };
+    }
+    let mut bottom = root.y + SESSION_H;
+    if !subagents_folded(doc, root) {
+        for agent in doc.nodes.iter().filter(|n| n.kind == NodeKind::Agent && !n.unplaced && n.parent.as_deref() == Some(root.id.as_str())) {
+            let below = agent.y >= root.y && agent.x < root.x + SESSION_W && agent.x + AGENT_W > root.x;
+            if below {
+                bottom = bottom.max(agent.y + AGENT_H);
+            }
+        }
+    }
+    Rect { x: root.x + 2, y: bottom + 1, w: SESSION_W, h: SESSION_H }
+}
+
+/// Cards drawn behind a deck's top card (0 to 2) for `cards` boxes held.
+pub fn deck_back(cards: usize) -> i32 {
+    cards.saturating_sub(1).min(2) as i32
+}
+
+/// A deck's top card with the cards behind it (they peek out right and below).
+pub fn deck_bounds(doc: &Doc, deck: &DeckContents) -> Option<Rect> {
+    let root = doc.node(&deck.root)?;
+    let r = deck_rect(doc, root, !deck.sessions.is_empty());
+    let back = deck_back(deck.cards());
+    Some(Rect { w: r.w + back, h: r.h + back, ..r })
+}
+
+/// The rectangles the canvas's layout takes, each with the box (or the
+/// session of the deck) it belongs to: boxes drawn on their own and decks
+/// with their back cards. Folded, stacked and unplaced boxes take none.
+pub fn layout(doc: &Doc) -> Vec<(&str, Rect)> {
+    let under = stacked_under(doc);
+    let by_id: HashMap<&str, &Node> = doc.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let mut out: Vec<(&str, Rect)> = doc.nodes.iter().filter(|n| !under.contains_key(&n.id) && !n.unplaced).map(|n| (n.id.as_str(), n.rect())).collect();
+    for deck in decks_of(doc, &under) {
+        let Some(root) = by_id.get(deck.root.as_str()) else { continue };
+        let r = deck_rect(doc, root, !deck.sessions.is_empty());
+        let back = deck_back(deck.cards());
+        out.push((root.id.as_str(), Rect { w: r.w + back, h: r.h + back, ..r }));
+    }
+    out
+}
+
+/// [`layout`]'s rectangles alone.
+pub fn layout_rects(doc: &Doc) -> Vec<Rect> {
+    layout(doc).into_iter().map(|(_, r)| r).collect()
+}
+
+/// Nodes hidden by "hide subagents and subsessions" (`H`): subsessions and
+/// every subagent box, each mapped to its visible ancestor at the top of
+/// the parent chain (a subagent box of a top-level session: that session).
 pub fn hidden_subsessions(doc: &Doc) -> HashMap<String, String> {
     let ids: HashSet<&str> = doc.nodes.iter().map(|n| n.id.as_str()).collect();
     let mut out = HashMap::new();
@@ -172,7 +297,7 @@ pub fn hidden_subsessions(doc: &Doc) -> HashMap<String, String> {
         .nodes
         .iter()
         .filter(|n| n.kind == NodeKind::Agent)
-        .filter_map(|n| n.parent.as_deref().and_then(|p| out.get(p)).map(|top| (n.id.clone(), top.clone())))
+        .filter_map(|n| n.parent.as_deref().filter(|p| ids.contains(p)).map(|p| (n.id.clone(), out.get(p).cloned().unwrap_or_else(|| p.to_owned()))))
         .collect();
     out.extend(agents);
     out
@@ -231,7 +356,8 @@ mod tests {
 
     fn family() -> Doc {
         // root → a → a1 (with a subagent), root → b; c is unrelated; p is passive.
-        let mut doc = Doc::default();
+        // Subagent boxes are shown here (the stacks are what these tests are about).
+        let mut doc = Doc { subagents_shown: true, ..Doc::default() };
         doc.nodes.push(session("root", None, 0, 0));
         doc.nodes.push(session("a", Some("root"), 40, 0));
         doc.nodes.push(session("a1", Some("a"), 80, 0));
@@ -277,7 +403,108 @@ mod tests {
         assert_eq!(hidden.get("a1").map(String::as_str), Some("root"));
         assert_eq!(hidden.get("a1:x").map(String::as_str), Some("root"), "subagents follow their session");
         assert_eq!(hidden.get("b").map(String::as_str), Some("root"));
-        assert!(!hidden.contains_key("root") && !hidden.contains_key("root:y") && !hidden.contains_key("c"));
+        assert_eq!(hidden.get("root:y").map(String::as_str), Some("root"), "a top-level session's subagent boxes hide into it");
+        assert!(!hidden.contains_key("root") && !hidden.contains_key("c"));
         assert!(!hidden.contains_key("orphan"), "a parent that is not on the canvas: a plain session");
+    }
+
+    #[test]
+    fn old_canvases_fold_subagents_and_the_choices_round_trip() {
+        let text = r#"{"version":2,"nodes":[{"id":"s","kind":"session","name":"S","x":0,"y":0},{"id":"s:a","kind":"agent","name":"A","x":4,"y":5,"parent":"s","agent_key":"a"}],"groups":[],"view":{"x":0,"y":0}}"#;
+        let mut doc: Doc = serde_json::from_str(text).unwrap();
+        assert!(subagents_folded(&doc, &doc.nodes[0]), "a canvas from before: folded");
+        assert_eq!(stacked_under(&doc).get("s:a").map(String::as_str), Some("s"));
+        assert_eq!((doc.nodes[1].x, doc.nodes[1].y, doc.nodes[1].unplaced), (4, 5, false), "its saved place stays");
+        let saved = serde_json::to_string(&doc).unwrap();
+        assert!(!saved.contains("subagents_shown") && !saved.contains("unplaced"), "unset fields are not written: {saved}");
+        // The canvas default, a session's own choice and an unplaced box are saved and read back.
+        doc.subagents_shown = true;
+        assert!(!subagents_folded(&doc, &doc.nodes[0]), "Settings › Subagents: shown");
+        doc.nodes[0].subagents_shown = Some(false);
+        assert!(subagents_folded(&doc, &doc.nodes[0]), "the session's own choice wins");
+        doc.nodes[1].unplaced = true;
+        let back: Doc = serde_json::from_str(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(back, doc);
+        // A shared field: other windows and clients get it as a patch.
+        let mut other = Doc::default();
+        crate::sync::set_field(&mut other, "subagents_shown", crate::sync::field(&doc, "subagents_shown").unwrap()).unwrap();
+        assert!(other.subagents_shown);
+        // Not a session: never folded; an orphaned subagent box shows itself.
+        assert!(!subagents_folded(&doc, &doc.nodes[1]));
+        doc.nodes.remove(0);
+        assert!(stacked_under(&doc).is_empty());
+    }
+
+    fn folded() -> Doc {
+        // s (2,2) with subagent boxes in a tall column far below, in group g
+        // that grew for them; t is another session; u a subsession of t.
+        let mut doc = Doc::default();
+        doc.nodes.push(session("s", None, 2, 2));
+        for i in 0..5 {
+            let mut a = agent(&format!("s:{i}"), "s");
+            (a.x, a.y) = (6, 7 + i * 4);
+            doc.nodes.push(a);
+        }
+        doc.nodes.push(session("t", None, 40, 2));
+        doc.nodes.push(session("u", Some("t"), 40, 9));
+        doc.groups.push(crate::doc::Group { id: "g".into(), name: "G".into(), x: 0, y: 0, w: 76, h: 30, ..Default::default() });
+        doc
+    }
+
+    #[test]
+    fn decks_hold_folded_subagents_and_take_the_room_of_their_card() {
+        let mut doc = folded();
+        let held = decks(&doc);
+        assert_eq!(held.len(), 1);
+        assert_eq!((held[0].root.as_str(), held[0].agents.len(), held[0].sessions.len(), held[0].cards()), ("s", 5, 0, 5));
+        let card = deck_rect(&doc, doc.node("s").unwrap(), false);
+        assert_eq!(card, Rect { x: 6, y: 7, w: AGENT_W, h: AGENT_H }, "a slim card where the first subagent box goes");
+        assert_eq!(deck_bounds(&doc, &held[0]), Some(Rect { x: 6, y: 7, w: AGENT_W + 2, h: AGENT_H + 2 }), "two cards peek out behind it");
+        // Folded boxes take no room: only the deck does.
+        let rects = layout_rects(&doc);
+        assert_eq!(rects.len(), 4, "s, t, u and the deck: {rects:?}");
+        assert!(doc.is_free(&Rect { x: 6, y: 20, w: 4, h: 2 }, ""), "a folded box's saved place is free");
+        assert!(!doc.is_free(&Rect { x: 8, y: 8, w: 2, h: 1 }, ""), "its deck is not");
+        assert_eq!(doc.bounds(), Some(Rect { x: 0, y: 0, w: 76, h: 30 }), "the group's frame bounds it");
+        // Fit to members: around what shows (the group grew for the column).
+        doc.fit_group("g");
+        let g = doc.group("g").unwrap().clone();
+        assert_eq!((g.x, g.y, g.w, g.h), (0, 0, 72, 14), "shrunk to s, its deck, t and u");
+        // Membership: folded boxes belong with their session, even outside the group now.
+        let below = doc.node("s:4").unwrap();
+        assert!(below.y + 1 > g.y + g.h, "the last box's saved place is outside the fitted group");
+        assert_eq!(doc.group_of(below).map(|g| g.id.as_str()), Some("g"));
+        let all = doc.groups_by_node();
+        assert!(doc.nodes.iter().all(|n| all.get(n.id.as_str()).map(|g| &g.id) == doc.group_of(n).map(|g| &g.id)), "one pass agrees with group_of");
+        assert_eq!(doc.members("g").len(), 8);
+        // A group drag carries them with their session.
+        doc.move_group("g", 1, 1);
+        assert_eq!((doc.node("s").unwrap().x, doc.node("s:4").unwrap().y), (3, 24));
+        // Shown: they are on their own again, at their saved places.
+        doc.node_mut("s").unwrap().subagents_shown = Some(true);
+        assert!(decks(&doc).is_empty() && stacked_under(&doc).is_empty());
+        assert!(!doc.is_free(&Rect { x: 7, y: 24, w: 2, h: 1 }, ""));
+        assert_eq!(doc.group_of(doc.node("s:4").unwrap()), None, "shown outside the group: geometric again");
+    }
+
+    #[test]
+    fn one_deck_holds_a_stack_and_the_folded_subagents_of_its_session() {
+        let mut doc = family();
+        doc.subagents_shown = false;
+        doc.node_mut("root").unwrap().stacked = true;
+        let under = stacked_under(&doc);
+        assert_eq!(under.get("root:y").map(String::as_str), Some("root"), "the root's own subagent box");
+        assert_eq!(under.get("a1:x").map(String::as_str), Some("root"), "a stacked subsession's subagent box");
+        let held = decks(&doc);
+        assert_eq!(held.len(), 1, "one deck per session");
+        assert_eq!((held[0].sessions.clone(), held[0].agents.clone()), (vec!["a".to_owned(), "a1".to_owned(), "b".to_owned()], vec!["root:y".to_owned()]));
+        assert_eq!(held[0].members.len(), 5);
+        let root = doc.node("root").unwrap().clone();
+        assert_eq!(deck_rect(&doc, &root, true), Rect { x: 2, y: 5, w: SESSION_W, h: SESSION_H }, "a stack's card, right beneath its session");
+        // Unstacked, the subsessions fold their own subagent boxes.
+        doc.node_mut("root").unwrap().stacked = false;
+        let under = stacked_under(&doc);
+        assert_eq!((under.get("a1:x").map(String::as_str), under.get("root:y").map(String::as_str)), (Some("a1"), Some("root")));
+        assert_eq!(decks(&doc).len(), 2);
     }
 }

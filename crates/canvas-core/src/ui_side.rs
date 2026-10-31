@@ -238,6 +238,53 @@ impl Lines {
         self.spans.insert(self.lines.len(), spans);
         self.lines.push((text, Style::default()));
     }
+
+    /// One line whose text acts on a click (`open`), with small buttons at
+    /// its end (the text is cut to leave them room).
+    fn entry(&mut self, text: &str, style: Style, open: Action, buttons: Vec<(String, Action)>) {
+        let labels: Vec<String> = buttons.iter().map(|(label, _)| format!(" {label} ")).collect();
+        let room: usize = labels.iter().map(|l| crate::paint::text_width(l) + 1).sum();
+        let text = truncate(text, self.width.saturating_sub(room).max(4));
+        let width = crate::paint::text_width(&text) as i32;
+        self.clicks.push((self.lines.len(), 0, width, open));
+        let mut x = width + 1;
+        let mut spans = vec![(text, style), (" ".into(), Style::default())];
+        for ((_, action), label) in buttons.into_iter().zip(labels) {
+            let w = crate::paint::text_width(&label) as i32;
+            self.clicks.push((self.lines.len(), x, w, action));
+            spans.push((label, Style::default().fg(ACCENT).bg(PANEL_HI)));
+            spans.push((" ".into(), Style::default()));
+            x += w + 1;
+        }
+        self.spans(spans);
+    }
+}
+
+/// Subagent rows listed in a session's details panel at most.
+const SUBAGENT_ROWS: usize = 12;
+
+/// A session's subagent boxes in its details panel: each with its state (a
+/// click on its name views it, Inspect opens its transcript), and whether
+/// they are stacked or shown. Nothing here starts anything.
+fn subagent_rows(app: &App, out: &mut Lines, node: &crate::doc::Node) {
+    let agents: Vec<&crate::doc::Node> = app.doc.nodes.iter().filter(|n| n.kind == crate::doc::NodeKind::Agent && n.parent.as_deref() == Some(node.id.as_str())).collect();
+    if agents.is_empty() {
+        return;
+    }
+    let folded = canvas_model::visual::subagents_folded(&app.doc, node);
+    out.gap();
+    let how = if folded { "stacked · K shows them" } else { "shown · K stacks them" };
+    out.text(format!("SUBAGENTS {} ({how})", agents.len()), bold(MUTED));
+    // The newest first: they are the likeliest to be running.
+    for agent in agents.iter().rev().take(SUBAGENT_ROWS) {
+        let status = app.node_status(agent);
+        let text = format!("{} {} · {}", status.icon(app.tick), agent.name, crate::ui_canvas::box_label(agent, status));
+        let inspect = app.transcript_request(&agent.id).map(|_| ("Inspect".to_owned(), Action::Inspect(agent.id.clone())));
+        out.entry(&text, fg(status.color()), Action::Open(agent.id.clone()), inspect.into_iter().collect());
+    }
+    if agents.len() > SUBAGENT_ROWS {
+        out.text(format!("… and {} older (the sidebar lists every one)", agents.len() - SUBAGENT_ROWS), fg(MUTED));
+    }
 }
 
 /// Info and health page of a manifest-managed automation.
@@ -517,6 +564,7 @@ fn session_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)
         primary = true;
     }
     out.text("S subsession · R rename · G group · X stop", fg(MUTED));
+    subagent_rows(app, out, node);
     if app.transcript_request(&node.id).is_some() {
         actions.push(("Inspect transcript".into(), Action::Inspect(node.id.clone())));
     }
