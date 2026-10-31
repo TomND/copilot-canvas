@@ -7,12 +7,47 @@
 pub mod clipimage;
 pub mod webview;
 
+/// Fonts: named files from `%WINDIR%\\Fonts` and the user's own font folder.
+pub mod fonts {
+    pub use crate::os::font_sources::FontSources;
+
+    /// Fonts loaded from these files only (scanning every system font costs
+    /// hundreds of milliseconds at start).
+    const FONT_FILES: [&str; 16] = [
+        "CascadiaMono.ttf",
+        "CascadiaMonoItalic.ttf",
+        "consola.ttf",
+        "consolab.ttf",
+        "consolai.ttf",
+        "segoeui.ttf",
+        "segoeuib.ttf",
+        "segoeuii.ttf",
+        "seguisb.ttf",
+        "seguisym.ttf",
+        "seguiemj.ttf",
+        "msyh.ttc",
+        "msyhbd.ttc",
+        "YuGothR.ttc",
+        "malgun.ttf",
+        "seguihis.ttf",
+    ];
+
+    pub fn sources() -> FontSources {
+        let windows = std::env::var_os("WINDIR").map(std::path::PathBuf::from).unwrap_or_else(|| r"C:\Windows".into()).join("Fonts");
+        let dirs = std::env::var_os("LOCALAPPDATA").map(|local| std::path::PathBuf::from(local).join(r"Microsoft\Windows\Fonts")).into_iter().collect();
+        FontSources { files: FONT_FILES.iter().map(|f| windows.join(f)).collect(), dirs, mono: &["Cascadia Mono", "Consolas"], ui: &["Segoe UI"] }
+    }
+}
+
 use std::time::Duration;
 
 use winit::window::{Window, WindowAttributes};
 
 /// The app id toasts and the taskbar button use.
 pub const AUMID: &str = "CopilotCanvas.Gui";
+
+/// wgpu's backend: DX12 (WARP as the software fallback).
+pub const GPU_BACKENDS: wgpu::Backends = wgpu::Backends::DX12;
 
 /// The window is the foreground window (no toast, no flashing).
 pub fn in_front(hwnd: isize) -> bool {

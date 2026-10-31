@@ -108,6 +108,18 @@ struct Paths {
     remote: PathBuf,
 }
 
+/// OpenCode's major and minor version (`opencode --version`).
+fn opencode_version(program: &str) -> Option<(u32, u32)> {
+    let out = std::process::Command::new(program).arg("--version").stdin(std::process::Stdio::null()).output().ok()?;
+    parse_version(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn parse_version(text: &str) -> Option<(u32, u32)> {
+    let word = text.split_whitespace().find(|w| w.chars().next().is_some_and(|c| c.is_ascii_digit()))?;
+    let mut parts = word.split('.').map(|p| p.parse::<u32>().ok());
+    Some((parts.next()??, parts.next()??))
+}
+
 pub fn run(options: Options) -> Result<()> {
     let model = options.model.clone().unwrap_or_else(|| DEFAULT_MODEL.to_owned());
     ensure_free(&model)?;
@@ -116,6 +128,18 @@ pub fn run(options: Options) -> Result<()> {
         anyhow::ensure!(STEPS.contains(&name.as_str()) || EXTRA_STEPS.contains(&name.as_str()), "unknown step {name:?} (steps: {}, {})", STEPS.join(", "), EXTRA_STEPS.join(", "));
     }
     let program = AgentKind::OpenCode.provider().program().context("OpenCode is not installed on this machine")?;
+    // Rejecting a question or a permission with Esc ends the turn from
+    // OpenCode 1.19 on (verified with 1.19.4); 1.18 keeps the turn open, so
+    // those steps are skipped there with a note.
+    let version = opencode_version(&program);
+    let mut steps = steps;
+    if version.is_some_and(|v| v < (1, 19)) {
+        let skipped: Vec<String> = steps.iter().filter(|s| *s == "question" || *s == "permission").cloned().collect();
+        if !skipped.is_empty() {
+            println!("note: OpenCode {} is older than 1.19: skipping {} (an Esc rejection does not end its turn there)", version.map(|(a, b)| format!("{a}.{b}")).unwrap_or_default(), skipped.join(" and "));
+            steps.retain(|s| s != "question" && s != "permission");
+        }
+    }
     // SAFETY: no other thread runs yet. An enclosing OpenCode (this check
     // started from an OpenCode session) must not leak into the ones it starts.
     unsafe {
@@ -1020,6 +1044,14 @@ pub(crate) fn cleanup(program: &str, env: &[(&str, &str)], model: &str, folders:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opencode_versions_are_read_from_its_version_line() {
+        assert_eq!(parse_version("1.18.35\n"), Some((1, 18)));
+        assert_eq!(parse_version("opencode 1.19.4"), Some((1, 19)));
+        assert_eq!(parse_version("dev"), None);
+        assert!(parse_version("1.18.35").is_some_and(|v| v < (1, 19)));
+    }
 
     #[test]
     fn prompts_go_only_to_free_models_the_tui_runs_with() {

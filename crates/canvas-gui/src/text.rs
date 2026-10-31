@@ -1,10 +1,11 @@
 //! Fonts, the cell grid's metrics and a cache of shaped text.
 //!
-//! The grid font is Cascadia Mono (Consolas when missing), sized so one
-//! advance is a whole number of physical pixels: text runs then stay on the
-//! cell grid. Canvas labels use Segoe UI. Emoji, CJK and symbols come from
-//! fallback fonts (Segoe UI Symbol and Emoji, Microsoft YaHei, Yu Gothic,
-//! Malgun Gothic) that cosmic-text picks per character.
+//! The grid font is Cascadia Mono (Consolas when missing on Windows, SF Mono
+//! or Menlo on macOS), sized so one advance is a whole number of physical
+//! pixels: text runs then stay on the cell grid. Canvas labels use the
+//! system's UI font (Segoe UI, SF). Emoji, CJK and symbols come from fallback
+//! fonts that cosmic-text picks per character. Which files are loaded is the
+//! OS module's choice (`crate::os::fonts`).
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -16,34 +17,12 @@ use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics as TextMetrics, Shaping
 pub const BASE_FONT_PX: f32 = 14.0;
 /// Cell height per px of font size.
 const LINE: f32 = 1.3;
-/// Font for canvas labels.
-pub const UI_FONT: &str = "Segoe UI";
-
-/// Fonts loaded from these files only (scanning every system font costs
-/// hundreds of milliseconds at start).
-const FONT_FILES: [&str; 16] = [
-    "CascadiaMono.ttf",
-    "CascadiaMonoItalic.ttf",
-    "consola.ttf",
-    "consolab.ttf",
-    "consolai.ttf",
-    "segoeui.ttf",
-    "segoeuib.ttf",
-    "segoeuii.ttf",
-    "seguisb.ttf",
-    "seguisym.ttf",
-    "seguiemj.ttf",
-    "msyh.ttc",
-    "msyhbd.ttc",
-    "YuGothR.ttc",
-    "malgun.ttf",
-    "seguihis.ttf",
-];
-
 pub struct Fonts {
     pub system: FontSystem,
     /// The grid font's family name.
     pub mono: String,
+    /// The canvas labels' family name.
+    pub ui: String,
     /// Its advance per px of font size.
     pub advance: f32,
 }
@@ -51,22 +30,22 @@ pub struct Fonts {
 /// Loads the fonts (run on a thread at start, while the window and GPU come up).
 pub fn load() -> Fonts {
     let mut db = glyphon::fontdb::Database::new();
-    let windows = std::env::var_os("WINDIR").map(std::path::PathBuf::from).unwrap_or_else(|| r"C:\Windows".into()).join("Fonts");
-    for file in FONT_FILES {
-        let path = windows.join(file);
+    let sources = crate::os::fonts::sources();
+    for path in &sources.files {
         if path.is_file() {
-            let _ = db.load_font_file(&path);
+            let _ = db.load_font_file(path);
         }
     }
-    // Fonts installed for this user only (Cascadia Mono often is).
-    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        db.load_fonts_dir(std::path::PathBuf::from(local).join(r"Microsoft\Windows\Fonts"));
+    // Folders of fonts installed for this user only (Cascadia Mono often is).
+    for dir in &sources.dirs {
+        db.load_fonts_dir(dir);
     }
     let has = |db: &glyphon::fontdb::Database, name: &str| db.faces().any(|f| f.families.iter().any(|(n, _)| n == name));
-    if !has(&db, "Cascadia Mono") && !has(&db, "Consolas") {
+    if !sources.mono.iter().any(|name| has(&db, name)) {
         db.load_system_fonts();
     }
-    let mono = ["Cascadia Mono", "Consolas"].into_iter().find(|name| has(&db, name)).unwrap_or("monospace").to_owned();
+    let mono = sources.mono.iter().copied().find(|name| has(&db, name)).unwrap_or("monospace").to_owned();
+    let ui = sources.ui.iter().copied().find(|name| has(&db, name)).or(sources.ui.first().copied()).unwrap_or("sans-serif").to_owned();
     let mut system = FontSystem::new_with_locale_and_db("en-US".into(), db);
     let advance = {
         let mut b = Buffer::new(&mut system, TextMetrics::new(100.0, 120.0));
@@ -74,7 +53,7 @@ pub fn load() -> Fonts {
         b.shape_until_scroll(&mut system, false);
         b.layout_runs().next().map(|r| r.line_w / 1000.0).filter(|a| *a > 0.2).unwrap_or(0.6)
     };
-    Fonts { system, mono, advance }
+    Fonts { system, mono, ui, advance }
 }
 
 /// The cell grid in physical pixels.
@@ -176,7 +155,7 @@ impl ShapeCache {
         }
         let family = match spec.face {
             Face::Mono => Family::Name(&fonts.mono),
-            Face::Ui => Family::Name(UI_FONT),
+            Face::Ui => Family::Name(&fonts.ui),
         };
         let mut attrs = Attrs::new().family(family);
         if spec.bold {
@@ -234,6 +213,19 @@ pub fn in_mono_run(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The grid and label fonts this OS names are found (not the generic
+    /// fallbacks), and their advance is a monospace one.
+    #[test]
+    #[cfg(any(windows, target_os = "macos"))]
+    fn the_named_fonts_are_found() {
+        let fonts = load();
+        let families: Vec<String> = fonts.system.db().faces().flat_map(|f| f.families.iter().map(|(n, _)| n.clone())).collect();
+        eprintln!("grid font {:?}, label font {:?}", fonts.mono, fonts.ui);
+        assert_ne!(fonts.mono, "monospace", "families: {families:?}");
+        assert!(families.contains(&fonts.ui), "label font {:?} among {families:?}", fonts.ui);
+        assert!((0.4..0.8).contains(&fonts.advance), "advance {}", fonts.advance);
+    }
 
     #[test]
     fn grid_cells_are_whole_pixels_and_fit_the_surface() {

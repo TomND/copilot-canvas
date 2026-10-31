@@ -148,6 +148,8 @@ impl Platform for GuiPlatform {
     }
 
     fn set_clipboard_text(&self, text: &str) -> anyhow::Result<()> {
+        // Mac and Linux text uses LF (copies of terminal rows come with CR LF).
+        let text = &if cfg!(windows) { text.to_owned() } else { text.replace("\r\n", "\n") };
         let result = canvas_core::clipboard::set_text(text);
         match self.test_clip() {
             Some(mut clip) => {

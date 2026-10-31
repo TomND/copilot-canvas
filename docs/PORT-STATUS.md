@@ -52,8 +52,13 @@ work resumes after any interruption: read it first, then `git log`.
       check` (26 entries, both engines), `selftest` (39 steps), `selftest
       --remote loopback|faults|paired`, backend contract
 - [ ] the same green on the CI `macos` job
-- [ ] `selftest agent --paste` (OpenCode, Claude Code), `selftest agent
-      --agent opencode --prompt`, `bench --terminals 100`, `doctor`
+- [x] `selftest agent --paste` (OpenCode 1.18.35, Claude Code), `doctor`
+- [x] `selftest agent --agent opencode --prompt`: status, wheel, push,
+      subagent, resume, passive steps; the question and permission steps are
+      skipped on OpenCode < 1.19 (known gap below)
+- [ ] `bench --terminals 100` on a release build (debug build, loaded
+      machine: keystroke p50 5.5 ms, p99 7.2 ms; service 7 % of one core,
+      0.5 MB per terminal)
 
 ### Phase 2 Lifecycle and automations — Linux: in progress (trait, launcher, systemd, cron, service install landed; CI probe pending)
 
@@ -181,8 +186,16 @@ plan §6.1 equivalent, documented).
   instance and peer-uid checks; `secret` = `v1u:` envelope sealing with a
   per-home master key (key file backend first, Keychain next);
   `net` = libproc socket tables (macOS) and `/proc/net/tcp*` (Linux).
-- GUI OS edges live in `canvas-gui/src/os/{windows,unix}`; the Unix side is
-  a stub (no toasts, no Dock state, text report view) until Phase 4.
+- GUI OS edges live in `canvas-gui/src/os/`: `windows` (unchanged Win32
+  code), `macos` (macOS lead), `linux` (**the Linux lead's from now on**),
+  `unix` (helpers both share: counters, clipboard images, the native handle,
+  the text report view). Every module exports the same functions. The split
+  has landed (2026-10-31); `macos` and `linux` start as identical stand-ins.
+- Ownership (manager's decision, 2026-10-31): the Linux lead owns the
+  `Scheduler` trait, the built-in automations launcher, the systemd-user and
+  cron backends and Linux `service install` ("shared:" commits on `linux`);
+  the macOS lead adds the launchd backend and macOS `service install` on top
+  after merging them, and goes to Phase 3 (GUI on Metal) first.
 - Automations (D7): one `Scheduler` trait (`list`, `task`, `definition`,
   `run`, `set_enabled`, `register`, `delete`, `render`, `import`, `drift`,
   `uses_task_json`, `task_json`, `importable`, `launched_by`); a definition
@@ -268,6 +281,14 @@ plan §6.1 equivalent, documented).
   or any interpreter running a script named `copilot`); only those holding a
   session's in-use lock become subsessions.
 - Copied text goes to the Mac (and Linux) clipboard with LF line breaks.
+
+## Known gaps
+
+- OpenCode < 1.19 (1.18.35 on the development Mac): rejecting a question or
+  a permission with Esc does not end the turn, so `selftest agent --agent
+  opencode --prompt` skips its question and permission steps there (with a
+  note). Verified behaviour is OpenCode 1.19.4's (docs/AGENTS.md); the
+  owner's OpenCode is not updated by the port.
 
 ## Owner-only items (do not block "done")
 

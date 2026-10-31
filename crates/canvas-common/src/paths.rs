@@ -63,9 +63,7 @@ impl Instance {
         if local.as_os_str().len() < 100 {
             return local.to_string_lossy().into_owned();
         }
-        let base = std::env::var_os("XDG_RUNTIME_DIR").or_else(|| std::env::var_os("TMPDIR")).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
-        let user: String = std::env::var("USER").unwrap_or_else(|_| "user".into()).chars().filter(|c| c.is_ascii_alphanumeric()).take(32).collect();
-        base.join(format!("copilot-canvas-{user}")).join(file).to_string_lossy().into_owned()
+        short_socket_path(&file)
     }
 
     pub fn token_path(&self) -> PathBuf {
@@ -89,6 +87,18 @@ impl Instance {
     pub fn bin_dir(&self) -> PathBuf {
         self.home.join("bin")
     }
+}
+
+/// A socket path for `file` that fits a socket address (under 100 bytes):
+/// in a per-user folder of `$XDG_RUNTIME_DIR`, `$TMPDIR` (macOS's is long)
+/// or `/tmp`, whichever is first short enough.
+#[cfg(not(windows))]
+pub fn short_socket_path(file: &str) -> String {
+    let user: String = std::env::var("USER").unwrap_or_else(|_| "user".into()).chars().filter(|c| c.is_ascii_alphanumeric()).take(32).collect();
+    let bases = [std::env::var_os("XDG_RUNTIME_DIR"), std::env::var_os("TMPDIR"), Some("/tmp".into())];
+    let candidates: Vec<PathBuf> = bases.into_iter().flatten().filter(|b| !b.is_empty()).map(|b| PathBuf::from(b).join(format!("copilot-canvas-{user}")).join(file)).collect();
+    let chosen = candidates.iter().find(|p| p.as_os_str().len() < 100).or(candidates.last()).cloned().unwrap_or_else(|| PathBuf::from(file));
+    chosen.to_string_lossy().into_owned()
 }
 
 pub fn absolute(path: &Path) -> PathBuf {

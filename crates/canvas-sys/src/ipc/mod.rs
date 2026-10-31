@@ -8,15 +8,14 @@
 //! a writer and a closer that wakes a blocked reader.
 
 /// The endpoint for a per-process local name (the GUI's test hooks):
-/// `\\.\pipe\NAME` on Windows, `<temp>/copilot-canvas-<user>/NAME.sock` elsewhere
-/// (a 0700 folder of this user).
+/// `\\.\pipe\NAME` on Windows, `<runtime or temp>/copilot-canvas-<user>/NAME.sock`
+/// elsewhere (a 0700 folder of this user; `/tmp` when the temporary folder's
+/// path is too long for a socket address).
 pub fn local_name(name: &str) -> String {
-    if cfg!(windows) {
-        format!(r"\\.\pipe\{name}")
-    } else {
-        let base = std::env::var_os("XDG_RUNTIME_DIR").or_else(|| std::env::var_os("TMPDIR")).map(std::path::PathBuf::from).unwrap_or_else(|| "/tmp".into());
-        base.join(format!("copilot-canvas-{}", crate::host::user_name())).join(format!("{name}.sock")).display().to_string()
-    }
+    #[cfg(windows)]
+    return format!(r"\\.\pipe\{name}");
+    #[cfg(not(windows))]
+    canvas_common::paths::short_socket_path(&format!("{name}.sock"))
 }
 
 /// Whether `name` is a local endpoint [`local_name`] made.

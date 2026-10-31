@@ -45,7 +45,8 @@ final class ReportViewTests: XCTestCase {
         let finished = expectation(description: "the page loaded")
         controller.onFinish = { finished.fulfill() }
         controller.load(html)
-        await fulfillment(of: [finished], timeout: 15)
+        // A cold simulator on a shared CI runner can take long for WebKit's first page.
+        await fulfillment(of: [finished], timeout: 60)
         controller.onFinish = nil
     }
 
@@ -53,8 +54,10 @@ final class ReportViewTests: XCTestCase {
         try? await controller.webView.evaluateJavaScript(script)
     }
 
+    /// Waits `seconds` (doubled: slow CI runners need the margin; nothing
+    /// asserted depends on the length, only on things having had time).
     private func pause(_ seconds: Double) async {
-        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+        try? await Task.sleep(nanoseconds: UInt64(seconds * 2 * 1_000_000_000))
     }
 
     func testARawPageRunsNoScriptLoadsNothingAndItsLinksAreAskedAbout() async throws {
