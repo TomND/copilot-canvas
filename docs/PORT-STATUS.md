@@ -55,7 +55,22 @@ work resumes after any interruption: read it first, then `git log`.
 - [ ] `selftest agent --paste` (OpenCode, Claude Code), `selftest agent
       --agent opencode --prompt`, `bench --terminals 100`, `doctor`
 
-### Phase 2 Lifecycle and automations — Linux: Secret Service backend done (3f5b1e6); systemd/cron not started
+### Phase 2 Lifecycle and automations — Linux: in progress (trait, launcher, systemd, cron, service install landed; CI probe pending)
+
+- **The `Scheduler` trait has landed** (0675e2e, `crates/canvas-agents/src/scheduler/`,
+  owner: the Linux lead). The macOS lead adds `scheduler/launchd.rs`
+  implementing `Scheduler` and one arm in `scheduler::choose()` (unix); the
+  launcher-based helpers are in `scheduler/common.rs` (`action`,
+  `task_json`, `slots`, `next_run`, `definition_drift`, `task_json_drift`),
+  the built-in launcher in `launcher.rs`; `selftest automations` is the
+  backend-neutral end-to-end check; `service_install.rs` has the macOS arm to
+  fill.
+- [x] `Scheduler` trait, Task Scheduler behind it unchanged (0675e2e)
+- [x] built-in launcher `automations launch` (0675e2e); `automations remove`
+- [x] Linux: systemd user units, cron fallback (129e7e6); `service install`
+      as a systemd user unit (4465089); Secret Service secrets (3f5b1e6)
+- [ ] Linux: `selftest automations` green on CI on systemd and cron
+- [ ] macOS: launchd backend, `service install` LaunchAgent
 
 - `service install`; `Scheduler` trait; Launchd / SystemdUser / Cron; built-in
   launcher; import, apply, backups, drift, run, enable; tunnel manifest.
@@ -168,8 +183,20 @@ plan §6.1 equivalent, documented).
   `net` = libproc socket tables (macOS) and `/proc/net/tcp*` (Linux).
 - GUI OS edges live in `canvas-gui/src/os/{windows,unix}`; the Unix side is
   a stub (no toasts, no Dock state, text report view) until Phase 4.
-- Task Scheduler stays Windows-only (`taskschd_none.rs` lists nothing and
-  refuses changes elsewhere) until the `Scheduler` backends of Phase 2.
+- Automations (D7): one `Scheduler` trait (`list`, `task`, `definition`,
+  `run`, `set_enabled`, `register`, `delete`, `render`, `import`, `drift`,
+  `uses_task_json`, `task_json`, `importable`, `launched_by`); a definition
+  is the backend's own text (`TaskInfo::xml` keeps its name for the
+  protocol). Drift off Windows compares the rendered and the installed
+  definition key by key plus the launcher's task file. Off Windows every run
+  goes through the built-in launcher unless `automations.yaml` names its own
+  `launcher`/`python`; the launcher enforces time limits, overlap (a lock
+  and pid files per run), restarts and success codes; systemd gets
+  `--detach` + `KillMode=process` for overlaps other than `ignore` (a timer
+  never starts an active service). Cron: `start_when_available` has no
+  equivalent, `logon` is `@reboot`, intervals not dividing a day restart
+  daily. Default launcher state: `$XDG_STATE_HOME/background-automations`
+  (Linux), `~/Library/Application Support/BackgroundAutomations` (macOS).
 - `canvas-push` uses rustls (ring) on Linux, native-tls elsewhere (§5.9).
 - **Linux HTML view (D9, §5.7): WebKitGTK 4.1 rendered offscreen**, not WPE,
   not Blitz, not an X11 child (spike 2026-10-31, `spikes/linux-html/`, CI
@@ -300,3 +327,20 @@ plan §6.1 equivalent, documented).
 Linux next: the TUI self-tests green on CI; Phase 2 systemd/cron (needs the
 `Scheduler` trait: owner of the trait to be agreed with `macos`); the HTML
 view helper (WebKitGTK offscreen); the GUI on Wayland/X11.
+- 2026-10-31: `--remote paired` green on all three Linux runners with the
+  `spawn_tied` fix (998f959, run 41228017431); Windows `test`, `macos`,
+  `ios` green on that run. A flaky listener test on arm64 fixed (1711e7c).
+- 2026-10-31: Phase 2 on Linux: the `Scheduler` trait + built-in launcher
+  (0675e2e, shared), systemd user units and cron (129e7e6), `service
+  install|uninstall` + `selftest automations` + doctor's scheduler line
+  (4465089, shared); CI runs the probe on the runner's user systemd
+  (lingering) and on cron. A `linux-gui` CI job (Xvfb and headless weston,
+  lavapipe/llvmpipe, dbus, fonts) reports the GUI self-test without
+  blocking until Phase 3.
+- Linux TODO (D5): clients should start the service with `systemd-run
+  --user` when a user manager runs (own cgroup, out of the terminal's
+  scope), passing the client's environment through a 0600
+  `EnvironmentFile`; today it is the `setsid` spawn on every Unix.
+- Noted for `macos`: `canvas_model::bus::Local::now()` uses UTC off
+  Windows, so passive-session schedules (`daily 08:30`) fire in UTC on macOS
+  and Linux until it uses the local offset.
