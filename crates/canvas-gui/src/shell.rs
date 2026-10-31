@@ -201,6 +201,8 @@ struct Win {
     focused: bool,
     /// The HTML view of an open HTML report (WebView2, created when first needed).
     web: crate::os::webview::ReportWeb,
+    /// The HTML view frame the last full frame drew (views the GUI draws itself).
+    web_frame: Option<u64>,
 }
 
 pub struct Shell {
@@ -311,6 +313,7 @@ impl Shell {
         };
         trace("gpu");
         let mut win = Win::new(opened, window.clone(), surface, grid, &self.proxy);
+        crate::os::track_window(&win.window, false);
         win.access = Some(access);
         win.web = crate::os::webview::ReportWeb::new(&self.options.home);
         win.placement_path = placement_path;
@@ -418,7 +421,7 @@ impl Shell {
                 let list: Vec<Value> = self
                     .wins
                     .iter()
-                    .map(|w| json!({ "window": w.index, "title": w.window.title(), "focused": w.focused, "cols": w.cols, "rows": w.rows, "connected": w.app.connected, "hwnd": hwnd_of(&w.window) }))
+                    .map(|w| json!({ "window": w.index, "title": Some(w.window.title()).filter(|t| !t.is_empty()).unwrap_or_else(|| w.platform.current_title()), "focused": w.focused, "cols": w.cols, "rows": w.rows, "connected": w.app.connected, "hwnd": hwnd_of(&w.window) }))
                     .collect();
                 let _ = reply.send(json!({ "ok": true, "windows": list }));
                 return;
@@ -455,9 +458,14 @@ impl Shell {
                 if let Some(html) = command["probe_raw"].as_str() {
                     win.web.probe_raw(html)
                 } else if let Some(path) = command["window_capture"].as_str() {
-                    // The window as composed, the HTML view over the canvas included.
+                    // The window as composed, the HTML view over the canvas included
+                    // (a view the GUI draws itself is part of its own frame).
                     let path = std::path::PathBuf::from(path);
-                    match crate::os::webview::capture_window(hwnd_of(&win.window), &path) {
+                    let composed = match (win.web.frame().is_some(), &mut self.gpu, &mut self.fonts) {
+                        (true, Some(gpu), Some(fonts)) => win.png(gpu, fonts, &self.options, &path),
+                        _ => crate::os::webview::capture_window(hwnd_of(&win.window), &path),
+                    };
+                    match composed {
                         Ok((w, h)) => json!({ "ok": true, "path": path, "width": w, "height": h, "cell_w": win.grid.cell_w, "cell_h": win.grid.cell_h }),
                         Err(error) => json!({ "ok": false, "error": format!("{error:#}") }),
                     }
@@ -630,6 +638,7 @@ impl Win {
             preview: None,
             focused: false,
             web: crate::os::webview::ReportWeb::new(std::path::Path::new(".")),
+            web_frame: None,
         };
         let rx = win.app.conn.rx.clone();
         win.forward_service(rx, proxy);
@@ -1084,6 +1093,12 @@ impl Win {
             let full = [0.0, 0.0, width as f32, height as f32];
             p.over(layer, Quad::rect((x as f32 * grid.cell_w).round(), (y as f32 * grid.cell_h).round(), thin, grid.cell_h, theme::color(canvas_core::paint::TEXT, 1.0), full));
         }
+        // An HTML view the GUI draws itself (Linux) covers the report pane.
+        let web = self.web.frame();
+        self.web_frame = web.as_ref().map(|f| f.key);
+        if let Some(frame) = web {
+            p.image(scene::OVERLAY, true, frame);
+        }
         let ime = self.paint_dynamic(&mut scene, fonts, options, width, height);
         (scene, ime)
     }
@@ -1356,9 +1371,11 @@ impl Win {
                     let c = c.lock().unwrap_or_else(|p| p.into_inner());
                     json!({ "text": c.text, "image": c.image.is_some(), "system_unavailable": c.system_unavailable })
                 });
+                // winit cannot read an X11 window's title back: the one set is reported.
+                let title = Some(self.window.title()).filter(|t| !t.is_empty()).unwrap_or_else(|| self.platform.current_title());
                 json!({
                     "ok": true,
-                    "title": self.window.title(),
+                    "title": title,
                     "bells": self.platform.bells.load(Ordering::Relaxed),
                     "flashes": self.platform.flashes.load(Ordering::Relaxed),
                     "progress": self.platform.progress_state(),
@@ -1446,6 +1463,10 @@ impl Win {
             }
             self.app.needs_draw = true;
             self.input_waiting = true;
+        }
+        // A new frame of an HTML view the GUI draws itself.
+        if self.web.frame().map(|f| f.key) != self.web_frame {
+            self.redraw = true;
         }
     }
 
@@ -1900,6 +1921,7 @@ impl ApplicationHandler<UserEvent> for Shell {
             WindowEvent::RedrawRequested => win.redraw = true,
             WindowEvent::Focused(focused) => {
                 win.focused = focused;
+                crate::os::track_window(&win.window, focused);
                 win.input(vec![InputEvent::Focus(focused)], proxy);
             }
             WindowEvent::ModifiersChanged(m) => {
@@ -1914,6 +1936,11 @@ impl ApplicationHandler<UserEvent> for Shell {
                     return;
                 }
                 if matches!(event.logical_key, Key::Named(NamedKey::Control | NamedKey::Shift | NamedKey::Alt | NamedKey::Super)) {
+                    return;
+                }
+                // An HTML view drawn by the GUI that has the keyboard (after a click into it).
+                if win.web.input(&crate::os::WebInput::Key { key: event.logical_key.clone(), pressed: event.state == ElementState::Pressed, mods: win.mods }) {
+                    self.after_input(event_loop);
                     return;
                 }
                 let Some(input) = crate::input::key(&event.logical_key, event.state, win.mods) else { return };
@@ -1937,6 +1964,11 @@ impl ApplicationHandler<UserEvent> for Shell {
                 Ime::Enabled | Ime::Disabled => {}
             },
             WindowEvent::CursorMoved { position, .. } => {
+                if win.held.is_empty() && win.web.input(&crate::os::WebInput::Motion { x: position.x as f32, y: position.y as f32 }) {
+                    win.pointer = (position.x as f32 / win.grid.cell_w, position.y as f32 / win.grid.cell_h);
+                    self.after_input(event_loop);
+                    return;
+                }
                 let point = (position.x as f32 / win.grid.cell_w, position.y as f32 / win.grid.cell_h);
                 let cell = (point.0.max(0.0) as u16, point.1.max(0.0) as u16);
                 let moved_cell = (win.pointer.0 as u16, win.pointer.1 as u16) != cell;
@@ -1955,6 +1987,11 @@ impl ApplicationHandler<UserEvent> for Shell {
             }
             WindowEvent::CursorLeft { .. } => win.hover = None,
             WindowEvent::MouseInput { state, button, .. } => {
+                let (x, y) = (win.pointer.0 * win.grid.cell_w, win.pointer.1 * win.grid.cell_h);
+                if win.held.is_empty() && win.web.input(&crate::os::WebInput::Button { x, y, button, pressed: state == ElementState::Pressed }) {
+                    self.after_input(event_loop);
+                    return;
+                }
                 let Some(button) = crate::input::button(button) else { return };
                 match state {
                     ElementState::Pressed => {
@@ -1968,18 +2005,25 @@ impl ApplicationHandler<UserEvent> for Shell {
                     }
                 }
             }
-            WindowEvent::MouseWheel { delta, phase, .. } => match crate::input::precise_scroll(delta, (win.grid.cell_w, win.grid.cell_h)) {
-                // A trackpad (MAC-LINUX-PLAN D15): the content follows the fingers.
-                Some((dx, dy)) => {
-                    let kind = canvas_core::input::GestureKind::Scroll { dx, dy, phase: crate::input::phase(phase) };
-                    win.raw_input(vec![crate::input::gesture(kind, win.pointer, win.mods)]);
+            WindowEvent::MouseWheel { delta, phase, .. } => {
+                let (x, y) = (win.pointer.0 * win.grid.cell_w, win.pointer.1 * win.grid.cell_h);
+                if win.web.input(&crate::os::WebInput::Wheel { x, y, delta, phase }) {
+                    self.after_input(event_loop);
+                    return;
                 }
-                None => {
-                    for kind in win.wheel.notches(delta, win.grid.cell_h) {
-                        win.mouse(kind);
+                match crate::input::precise_scroll(delta, (win.grid.cell_w, win.grid.cell_h)) {
+                    // A trackpad (MAC-LINUX-PLAN D15): the content follows the fingers.
+                    Some((dx, dy)) => {
+                        let kind = canvas_core::input::GestureKind::Scroll { dx, dy, phase: crate::input::phase(phase) };
+                        win.raw_input(vec![crate::input::gesture(kind, win.pointer, win.mods)]);
+                    }
+                    None => {
+                        for kind in win.wheel.notches(delta, win.grid.cell_h) {
+                            win.mouse(kind);
+                        }
                     }
                 }
-            },
+            }
             WindowEvent::PinchGesture { delta, phase, .. } if crate::os::POINTER_POLICY == canvas_core::input::PointerPolicy::Precise => {
                 let kind = canvas_core::input::GestureKind::Pinch { delta: delta as f32, phase: crate::input::phase(phase) };
                 win.raw_input(vec![crate::input::gesture(kind, win.pointer, win.mods)]);

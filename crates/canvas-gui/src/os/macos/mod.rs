@@ -69,6 +69,10 @@ pub fn in_front(_window: isize) -> bool {
     false
 }
 
+/// The windows and their focus, for `in_front` and `flash` where the OS
+/// cannot be asked by handle (macOS asks AppKit: nothing to track).
+pub fn track_window(_window: &std::sync::Arc<winit::window::Window>, _focused: bool) {}
+
 pub fn flash(_window: isize) {}
 
 pub fn toast_thread_init() -> Result<(), String> {
@@ -85,6 +89,11 @@ pub fn toast_history_count() -> Option<u32> {
 
 /// Nothing to register outside Windows (the bundle identifier or the
 /// `.desktop` file names the app).
+/// No helper process mode on macOS (the HTML view is a WKWebView in-process).
+pub fn helper() -> Option<i32> {
+    None
+}
+
 pub fn set_app_id() {}
 
 /// The Dock tile or launcher entry (not shown yet).

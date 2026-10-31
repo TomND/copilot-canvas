@@ -2,9 +2,18 @@
 //! notifications, the WebKitGTK report view, work areas) belongs here and to
 //! the Linux lead (MAC-LINUX-PLAN §5.6, §5.7); until it lands, stand-ins.
 
-pub use super::unix::{clip_image, native_window, process, since_start, webview};
+pub use super::unix::{clip_image, native_window, process, since_start};
 
 mod bus;
+mod gtk;
+mod html_helper;
+pub mod webview;
+
+/// The GUI binary runs as the HTML view's helper when started for it
+/// (`COPILOT_CANVAS_HTML_VIEW=1`): answers its exit code.
+pub fn helper() -> Option<i32> {
+    std::env::var_os(html_helper::ENV).filter(|v| v == "1").map(|_| html_helper::main())
+}
 
 /// wgpu's backends: Vulkan, GL as the fallback (llvmpipe and lavapipe are
 /// the software adapters).
@@ -100,11 +109,29 @@ pub const KEY_POLICY: canvas_core::input::KeyPolicy = canvas_core::input::KeyPol
 /// Nothing to set up before the event loop yet.
 pub fn configure_event_loop(_builder: &mut winit::event_loop::EventLoopBuilder<crate::shell::UserEvent>, _quiet_tests: bool) {}
 
-pub fn in_front(_window: isize) -> bool {
-    false
+/// The windows by native handle with their focus (X11 and Wayland tell a
+/// client its focus only through events) for `in_front` and `flash`.
+static WINDOWS: std::sync::Mutex<Vec<(isize, std::sync::Weak<Window>, bool)>> = std::sync::Mutex::new(Vec::new());
+
+pub fn track_window(window: &std::sync::Arc<Window>, focused: bool) {
+    let handle = native_window(window);
+    let mut windows = WINDOWS.lock().unwrap_or_else(|p| p.into_inner());
+    windows.retain(|(h, w, _)| *h != handle && w.strong_count() > 0);
+    windows.push((handle, std::sync::Arc::downgrade(window), focused));
 }
 
-pub fn flash(_window: isize) {}
+/// The window has the keyboard focus (no toast, no flashing then).
+pub fn in_front(window: isize) -> bool {
+    WINDOWS.lock().unwrap_or_else(|p| p.into_inner()).iter().any(|(h, _, focused)| *h == window && *focused)
+}
+
+/// Asks for attention: the X11 urgency hint, Wayland's xdg-activation request.
+pub fn flash(window: isize) {
+    let found = WINDOWS.lock().unwrap_or_else(|p| p.into_inner()).iter().find(|(h, _, _)| *h == window).and_then(|(_, w, _)| w.upgrade());
+    if let Some(window) = found {
+        window.request_user_attention(Some(winit::window::UserAttentionType::Informational));
+    }
+}
 
 /// Notifications go to `org.freedesktop.Notifications` on the session bus.
 pub fn toast_thread_init() -> Result<(), String> {

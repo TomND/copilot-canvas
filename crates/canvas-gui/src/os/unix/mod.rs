@@ -3,6 +3,9 @@
 //! formatted-text report view used until (or when) the native HTML view is
 //! unavailable.
 
+// The formatted-text stand-in for the HTML view (macOS until its WKWebView;
+// Linux has its own offscreen WebKit view).
+#[cfg(target_os = "macos")]
 pub mod webview;
 
 use std::time::Duration;

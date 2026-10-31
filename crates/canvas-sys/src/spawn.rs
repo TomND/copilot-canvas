@@ -116,3 +116,111 @@ impl CommandExt for Command {
         self
     }
 }
+
+/// Starts `program args` as a transient systemd user service named `unit`
+/// when a user manager runs (Linux; MAC-LINUX-PLAN D5): the service then has
+/// its own cgroup, out of the scope of the terminal or desktop session that
+/// started it, and systemd ends what it leaves behind when it stops. Its
+/// environment is this process's plus `env`, handed over in a 0600 file in
+/// `private_dir` (removed again once the unit started). Answers `Ok(false)`
+/// where this does not apply (no user manager, no `systemd-run`, another OS,
+/// `COPILOT_CANVAS_SYSTEMD_RUN=0`); the caller then starts it itself.
+pub fn start_user_unit(unit: &str, program: &std::path::Path, args: &[std::ffi::OsString], cwd: &std::path::Path, env: &[(&str, &str)], private_dir: &std::path::Path) -> std::io::Result<bool> {
+    #[cfg(target_os = "linux")]
+    {
+        linux_unit::start(unit, program, args, cwd, env, private_dir)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (unit, program, args, cwd, env, private_dir);
+        Ok(false)
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod linux_unit {
+    use std::io::Write;
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+
+    /// A user manager answers on its private socket and `systemd-run` exists.
+    fn available() -> bool {
+        if std::env::var("COPILOT_CANVAS_SYSTEMD_RUN").is_ok_and(|v| v.trim() == "0") {
+            return false;
+        }
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from);
+        let manager = runtime.is_some_and(|dir| dir.join("systemd").join("private").exists());
+        let tool = std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("systemd-run").is_file()));
+        manager && tool
+    }
+
+    /// `KEY="value"` for an `EnvironmentFile=` (values with line breaks or
+    /// NULs cannot be written and are left out).
+    fn line(key: &str, value: &str) -> Option<String> {
+        let key_ok = !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !key.starts_with(|c: char| c.is_ascii_digit());
+        if !key_ok || value.contains(['\n', '\r', '\0']) {
+            return None;
+        }
+        Some(format!("{key}=\"{}\"\n", value.replace('\\', "\\\\").replace('"', "\\\"").replace('$', "\\$").replace('`', "\\`")))
+    }
+
+    pub fn start(unit: &str, program: &Path, args: &[std::ffi::OsString], cwd: &Path, env: &[(&str, &str)], private_dir: &Path) -> std::io::Result<bool> {
+        if !available() {
+            return Ok(false);
+        }
+        crate::fs::private_dir(private_dir)?;
+        let file = private_dir.join(format!("{unit}.env"));
+        let _ = std::fs::remove_file(&file);
+        {
+            let mut out = crate::fs::create_private(&file)?;
+            let mut vars: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+            for (key, value) in env {
+                vars.insert((*key).to_owned(), (*value).to_owned());
+            }
+            for (key, value) in &vars {
+                if let Some(line) = line(key, value) {
+                    out.write_all(line.as_bytes())?;
+                }
+            }
+        }
+        let status = Command::new("systemd-run")
+            .args(["--user", "--collect", "--quiet", "--no-block"])
+            .arg(format!("--unit={unit}"))
+            .arg(format!("--working-directory={}", cwd.display()))
+            .arg(format!("--property=EnvironmentFile={}", file.display()))
+            .arg("--property=KillMode=control-group")
+            .arg("--")
+            .arg(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output();
+        // The manager reads the file when the unit starts: removed a little later.
+        let cleanup = file.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(20));
+            let _ = std::fs::remove_file(cleanup);
+        });
+        match status {
+            Ok(out) if out.status.success() => Ok(true),
+            // A unit of this name still exists (an old service stopping): the caller's own start.
+            _ => {
+                let _ = std::fs::remove_file(&file);
+                Ok(false)
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn environment_lines_are_quoted_for_systemd() {
+            assert_eq!(super::line("PATH", "/a b:/c").as_deref(), Some("PATH=\"/a b:/c\"\n"));
+            assert_eq!(super::line("X", r#"say "hi" $HOME \n `x`"#).as_deref(), Some("X=\"say \\\"hi\\\" \\$HOME \\\\n \\`x\\`\"\n"));
+            assert_eq!(super::line("MULTI", "a\nb"), None);
+            assert_eq!(super::line("BASH_FUNC_x%%", "() {}"), None);
+            assert_eq!(super::line("1BAD", "x"), None);
+        }
+    }
+}

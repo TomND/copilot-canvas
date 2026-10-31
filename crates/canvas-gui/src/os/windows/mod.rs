@@ -66,6 +66,10 @@ pub fn in_front(hwnd: isize) -> bool {
 }
 
 /// Flashes the taskbar button three times (until the window comes to the front).
+/// The windows and their focus, for `in_front` and `flash` where the OS
+/// cannot be asked by handle (Windows asks the OS (`GetForegroundWindow`, `FlashWindowEx`): nothing to track).
+pub fn track_window(_window: &std::sync::Arc<winit::window::Window>, _focused: bool) {}
+
 pub fn flash(hwnd: isize) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO, FlashWindowEx};
     let info = FLASHWINFO { cbSize: std::mem::size_of::<FLASHWINFO>() as u32, hwnd: hwnd as _, dwFlags: FLASHW_TRAY | FLASHW_TIMERNOFG, uCount: 3, dwTimeout: 0 };
@@ -177,6 +181,11 @@ fn register_aumid() -> Result<(), String> {
 
 /// Gives the process the app id toasts are registered under (call before
 /// the first window, so the taskbar button carries it too).
+/// No helper process mode on Windows (the HTML view is WebView2 in-process).
+pub fn helper() -> Option<i32> {
+    None
+}
+
 pub fn set_app_id() {
     // SAFETY: a static NUL-terminated string.
     let _ = unsafe { windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(windows::core::w!("CopilotCanvas.Gui")) };

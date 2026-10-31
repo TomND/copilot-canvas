@@ -679,6 +679,12 @@ pub fn spawn_service_exe(exe: &Path, instance: &Instance, env: &[(&str, &str)]) 
     for (key, value) in env {
         command.env(key, value);
     }
+    // Linux with a user manager: a transient systemd unit of its own.
+    let args: Vec<std::ffi::OsString> = command.get_args().map(|a| a.to_owned()).collect();
+    let unit = format!("copilot-canvas-{}", instance.name);
+    if canvas_sys::spawn::start_user_unit(&unit, exe, &args, &instance.home, env, &instance.home.join("run")).unwrap_or(false) {
+        return Ok(());
+    }
     // Outlive the launching terminal (and its job) where the job permits it;
     // on Unix a new session, out of the terminal's process group.
     let spawned = command.spawn_flags(DETACHED | NEW_PROCESS_GROUP | BREAKAWAY).spawn();
