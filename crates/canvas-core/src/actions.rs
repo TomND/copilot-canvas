@@ -332,7 +332,7 @@ impl App {
     /// A path on the service's machine: in VS Code through its tunnel
     /// (unless `view`), else in the viewer.
     pub(crate) fn open_remote(&mut self, target: &str, view: bool) {
-        let (path, line) = match crate::links::remote_path(target) {
+        let (path, line) = match crate::links::remote_path(target, self.info.path_style(), &self.info.user_home) {
             Ok(found) => found,
             Err(error) => return self.notify(format!("{error:#}"), true),
         };
@@ -1153,7 +1153,7 @@ impl App {
             parent: dialog.parent.clone(),
             agent_key: None,
             source: Some("canvas".into()),
-            command: self.demo.then(|| vec!["powershell.exe".into(), "-NoLogo".into(), "-NoProfile".into()]),
+            command: self.demo.then(|| crate::doc::demo_shell(&self.info.platform)),
             // A copied fork resumes its own copy of the parent's history.
             fresh: copy_fork.is_none(),
             automation: None,

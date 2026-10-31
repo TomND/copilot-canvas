@@ -18,6 +18,9 @@ fn offers(kind: &NSPasteboardType) -> bool {
 }
 
 pub fn set_text(text: &str) -> Result<()> {
+    // Mac text uses LF; the canvas copies terminal rows with CR LF.
+    let text = text.replace("\r\n", "\n");
+    let text = text.as_str();
     let ok = autoreleasepool(|_| {
         let board = board();
         // SAFETY: clearing and writing the general pasteboard.

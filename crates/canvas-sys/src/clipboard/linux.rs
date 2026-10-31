@@ -86,7 +86,8 @@ fn offered() -> Vec<String> {
 }
 
 pub fn set_text(text: &str) -> Result<()> {
-    write("text/plain;charset=utf-8", text.as_bytes())
+    // Unix text uses LF; the canvas copies terminal rows with CR LF.
+    write("text/plain;charset=utf-8", text.replace("\r\n", "\n").as_bytes())
 }
 
 pub fn has_text() -> bool {

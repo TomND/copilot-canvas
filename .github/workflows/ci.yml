@@ -154,6 +154,11 @@ jobs:
         run: cargo test --workspace
       - name: alacritty-only build (no Zig)
         run: cargo build --no-default-features
+      # Debug builds (dependencies at opt-level 2): the TUI and GUI binaries.
+      - name: build
+        run: cargo build
+      - name: TUI self-test
+        run: target/debug/copilot-canvas selftest
 
   # The iPhone app (docs/IOS-PLAN.md): the portable crates on macOS, the Rust
   # core for iOS, the app on a simulator with its unit tests and its UI tests

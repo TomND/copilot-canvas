@@ -110,13 +110,14 @@ pub fn render(app: &mut App, buf: &mut Buffer, screen: Rect, overlay: Option<&mu
     // Plain-text URLs and paths: terminals first (Ctrl+click), then everything
     // else. (Gpu mode scanned each terminal before blanking its grid.)
     let inners: Vec<Rect> = app.layout.tiles.iter().map(|(_, _, inner)| *inner).collect();
+    let style = app.info.path_style();
     let mut links = std::mem::take(&mut app.layout.links);
     if !gpu {
         for inner in &inners {
-            crate::links::scan(buf, *inner, true, &[], &mut links);
+            crate::links::scan(buf, *inner, true, &[], &mut links, style);
         }
     }
-    crate::links::scan(buf, body, false, &inners, &mut links);
+    crate::links::scan(buf, body, false, &inners, &mut links, style);
     app.layout.links = links;
     phase(app, "links");
     draw_status(app, buf, status);
@@ -843,7 +844,7 @@ fn draw_terminals(app: &mut App, buf: &mut Buffer, area: Rect, view_model: &mut 
                 if gpu {
                     // The front end draws the grid itself; links are found here first.
                     let mut links = std::mem::take(&mut app.layout.links);
-                    crate::links::scan(buf, inner, true, &[], &mut links);
+                    crate::links::scan(buf, inner, true, &[], &mut links, app.info.path_style());
                     app.layout.links = links;
                     fill(buf, inner.x as i32, inner.y as i32, inner.width as i32, inner.height as i32, Style::default(), inner);
                 }
@@ -895,7 +896,7 @@ pub fn rescan_tile_links(app: &mut App, ids: &[String], scratch: &mut Buffer) {
         for (rect, target) in drawn.links {
             links.push(crate::links::Link { rects: vec![rect], target, terminal: true });
         }
-        crate::links::scan(scratch, inner, true, &[], &mut links);
+        crate::links::scan(scratch, inner, true, &[], &mut links, app.info.path_style());
     }
     app.layout.links = links;
 }

@@ -124,7 +124,7 @@ fn main() {
 /// content hash is the build both sides compare. False when it is missing.
 fn use_sibling_service() -> bool {
     let Ok(exe) = std::env::current_exe() else { return false };
-    let sibling = exe.with_file_name("copilot-canvas.exe");
+    let sibling = exe.with_file_name(canvas_sys::host::exe_name("copilot-canvas"));
     let found = sibling.is_file();
     if found {
         paths::set_build_exe(sibling);

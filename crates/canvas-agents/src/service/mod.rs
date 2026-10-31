@@ -198,6 +198,12 @@ impl Agents {
     }
 }
 
+/// `PATH` with `dir` first (`;` on Windows, `:` elsewhere).
+fn path_with(dir: &Path) -> String {
+    let rest = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).unwrap_or_default();
+    std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(rest)).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| dir.display().to_string())
+}
+
 impl Agents {
     /// The canvas integration every session gets: the skills plugin, its
     /// identity and the `copilot-canvas` command on PATH.
@@ -209,7 +215,7 @@ impl Agents {
             env: vec![
                 ("COPILOT_CANVAS_HOME".to_owned(), home.display().to_string()),
                 ("COPILOT_CANVAS_SESSION".to_owned(), id.to_owned()),
-                ("PATH".to_owned(), format!("{};{}", home.join("cli").display(), std::env::var("PATH").unwrap_or_default())),
+                ("PATH".to_owned(), path_with(&home.join("cli"))),
             ],
             skill_plugins: Vec::new(),
         }
@@ -783,17 +789,23 @@ pub fn nested_copilots(tree: &[u32], procs: &HashMap<u32, (u32, String)>) -> Vec
 
 /// Names `copilot` the processes of `tree` that run the Copilot CLI as a
 /// script (`node …/bin/copilot`, `node …/@github/copilot/index.js`): on
-/// macOS and Linux the CLI is a Node program, so its process name is `node`
-/// (MAC-LINUX-PLAN §5.10). Command lines are not read on Windows.
+/// macOS and Linux the CLI is a Node program, so its process name is the
+/// interpreter's (MAC-LINUX-PLAN §5.10). A process counts when the script it
+/// runs (its first argument that is not an option) is the CLI; only those
+/// holding a session's in-use lock become subsessions. Command lines are not
+/// read on Windows.
 pub fn name_node_copilots(tree: &[u32], procs: &mut HashMap<u32, (u32, String)>) {
     let copilot = canvas_sys::host::exe_name("copilot");
+    if cfg!(windows) {
+        return;
+    }
     for &pid in tree {
         let Some((_, name)) = procs.get(&pid) else { continue };
-        if *name == copilot || !name.starts_with("node") {
+        if *name == copilot {
             continue;
         }
         let Some(argv) = canvas_sys::process::process_argv(pid) else { continue };
-        let runs_copilot = argv.iter().skip(1).take(2).any(|arg| {
+        let runs_copilot = argv.iter().skip(1).find(|arg| !arg.starts_with('-')).is_some_and(|arg| {
             let base = arg.rsplit('/').next().unwrap_or(arg);
             base == "copilot" || arg.contains("/@github/copilot/")
         });
