@@ -1,12 +1,5 @@
 //! What macOS and Linux share: process counters and the start time from
-//! canvas-sys, clipboard images as PNG, the native window handle, and the
-//! formatted-text report view used until (or when) the native HTML view is
-//! unavailable.
-
-// The formatted-text stand-in for the HTML view (macOS until its WKWebView;
-// Linux has its own offscreen WebKit view).
-#[cfg(target_os = "macos")]
-pub mod webview;
+//! canvas-sys, clipboard images as PNG and the native window handle.
 
 use std::time::Duration;
 

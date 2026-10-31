@@ -461,6 +461,15 @@ impl Shell {
                     // The window as composed, the HTML view over the canvas included
                     // (a view the GUI draws itself is part of its own frame).
                     let path = std::path::PathBuf::from(path);
+                    // macOS: the window server composes the WKWebView and shows
+                    // nobody the result without asking, so the GUI's frame with
+                    // the view's snapshot where the view is.
+                    #[cfg(target_os = "macos")]
+                    let composed = match (&mut self.gpu, &mut self.fonts) {
+                        (Some(gpu), Some(fonts)) => win.png(gpu, fonts, &self.options, &path).and_then(|size| win.web.overlay(&path).map(|()| size)),
+                        _ => Err(anyhow::anyhow!("no GPU device")),
+                    };
+                    #[cfg(not(target_os = "macos"))]
                     let composed = match (win.web.frame().is_some(), &mut self.gpu, &mut self.fonts) {
                         (true, Some(gpu), Some(fonts)) => win.png(gpu, fonts, &self.options, &path),
                         _ => crate::os::webview::capture_window(hwnd_of(&win.window), &path),

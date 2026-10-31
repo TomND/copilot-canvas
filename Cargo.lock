@@ -840,6 +840,7 @@ dependencies = [
  "accesskit",
  "accesskit_winit",
  "anyhow",
+ "block2 0.5.1",
  "bytemuck",
  "canvas-agents",
  "canvas-common",
@@ -853,6 +854,7 @@ dependencies = [
  "objc2 0.5.3",
  "objc2-app-kit",
  "objc2-foundation 0.2.2",
+ "objc2-web-kit",
  "png",
  "pollster",
  "ratatui",
@@ -3500,6 +3502,19 @@ dependencies = [
  "block2 0.5.1",
  "objc2 0.5.3",
  "objc2-core-location",
+ "objc2-foundation 0.2.2",
+]
+
+[[package]]
+name = "objc2-web-kit"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68bc69301064cebefc6c4c90ce9cba69225239e4b8ff99d445a2b5563797da65"
+dependencies = [
+ "bitflags 2.13.2",
+ "block2 0.5.1",
+ "objc2 0.5.3",
+ "objc2-app-kit",
  "objc2-foundation 0.2.2",
 ]
 

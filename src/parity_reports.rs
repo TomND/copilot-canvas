@@ -195,9 +195,10 @@ fn html_check(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     web_state(gui, "the raw page", 15, |s| s["loads"].as_u64().unwrap_or(0) > loads)?;
     let raw_seen = eval(gui, "JSON.stringify({title: document.title, h1: document.getElementById('r').textContent, scripts: document.scripts.length})")?;
     let raw_seen: Value = serde_json::from_str(raw_seen.as_str().unwrap_or("{}"))?;
-    // WebView2 keeps the inert script element; Linux's WebKit removes script
-    // elements and handler attributes while parsing (JavaScript markup off).
-    let kept = if canvas_sys::host::platform() == canvas_sys::host::Platform::Linux { 0 } else { 1 };
+    // WebView2 keeps the inert script element; WebKit (WKWebView with the
+    // page's JavaScript off, Linux's with JavaScript markup off) removes
+    // script elements while parsing.
+    let kept = if canvas_sys::host::platform() == canvas_sys::host::Platform::Windows { 1 } else { 0 };
     anyhow::ensure!(raw_seen["scripts"] == kept && raw_seen["h1"] == "RAW", "the raw page: {raw_seen}");
     anyhow::ensure!(raw_seen["title"] != "RAW-SCRIPT-RAN" && raw_seen["title"] != "RAW-ONERROR", "a script ran with scripts off: {raw_seen}");
     let state = web_state(gui, "the blocked requests", 10, |s| s["blocked_requests"].as_u64().unwrap_or(0) >= 1)?;
@@ -216,10 +217,11 @@ fn html_check(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     gui.canvas_focus()?;
     web_state(gui, "the view hidden", 10, |s| s["visible"] == false)?;
     Ok(format!(
-        "{} {}: styles applied ({magenta} magenta px), {composed}, 0 scripts kept, raw script not run, {} request(s) answered 403 and 0 reached the listener, navigation blocked",
+        "{} {}: styles applied ({magenta} magenta px), {composed}, 0 scripts kept, raw script not run, {} request(s) {} and 0 reached the listener, navigation blocked",
         state["engine"].as_str().unwrap_or("WebView2"),
         state["phase"].as_str().unwrap_or_default(),
-        state["blocked_requests"]
+        state["blocked_requests"],
+        if state["engine"] == "WKWebView" { "refused by the rule list" } else { "answered 403" }
     ))
 }
 
