@@ -408,3 +408,30 @@ view helper (WebKitGTK offscreen); the GUI on Wayland/X11.
   WM_CLASS) and the X11 window icon, notifications through
   `org.freedesktop.Notifications`, the launcher entry (`LauncherEntry`:
   progress while sessions work, urgent when one needs you).
+- 2026-10-31: first Linux parity run (X11, CI, before the HTML view): 49
+  of 62 rows pass. Failing: 41b (the HTML view; landed since) and 22, 23,
+  26 after it (its report stayed open); 12, 14, 18, G1, 44 (terminal rows
+  still typing Windows text: shared with macOS, being ported there); 17
+  (winit cannot read an X11 title back: the hooks now report the title set,
+  shared); G3, V5 (to look at after the shared fixes).
+- 2026-10-31: **HTML report view on Linux** (542a82a): WebKitGTK 4.1 in a
+  helper process (the GUI binary with `COPILOT_CANVAS_HTML_VIEW=1`, GTK and
+  WebKit `dlopen`ed), offscreen, frames drawn over the report pane through
+  the shared hooks `ReportWeb::frame()`/`input()` (5504962, 2424845; no-ops
+  on Windows and macOS), wheel (line or pixel deltas with the touchpad
+  phase), pointer, clicks and keys forwarded (keys after a click into it,
+  Esc closes); deny proxy + content rule list + decide-policy as decided;
+  page zoom follows the window scale. `in_front` and flashing through the
+  shared `os::track_window` hook (xdg-activation / X11 urgency).
+- 2026-10-31: D5 on Linux: clients start the service with `systemd-run
+  --user` when a user manager runs (shared, canvas-sys `start_user_unit`);
+  `service install`'s CI check failed only because it did not wait for the
+  service (which reads the login environment first, up to 5 s).
+- Touchpads on Linux (for the macOS lead's `PointerPolicy`): winit 0.30.13
+  gives Wayland touchpads `PixelDelta` with phases Started/Moved/Ended
+  (`axis_stop`) and mouse wheels `LineDelta`; X11 (XInput2 smooth
+  scrolling) gives fractional `LineDelta` with phase Moved only (no pixel
+  units, no start or end); **pinch is not available on Linux in winit
+  0.30** (`PinchGesture` is macOS/iOS only): a known gap until winit adds
+  Wayland pointer gestures. Linux waits for the macOS lead's note before
+  touching canvas-core's input model.
