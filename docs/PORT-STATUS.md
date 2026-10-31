@@ -341,6 +341,6 @@ view helper (WebKitGTK offscreen); the GUI on Wayland/X11.
   --user` when a user manager runs (own cgroup, out of the terminal's
   scope), passing the client's environment through a 0600
   `EnvironmentFile`; today it is the `setsid` spawn on every Unix.
-- Noted for `macos`: `canvas_model::bus::Local::now()` uses UTC off
-  Windows, so passive-session schedules (`daily 08:30`) fire in UTC on macOS
-  and Linux until it uses the local offset.
+- `canvas_model::bus::Local::now()` used UTC off Windows (passive-session
+  schedules fired in UTC on macOS and Linux): local time through
+  `localtime_r` now (fca7f01, shared).
