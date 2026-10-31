@@ -111,6 +111,10 @@ pub struct Terminal {
     encoding: Mutex<HashSet<u32>>,
     /// Wakes the frame pump (an encoded image is ready).
     pump: Sender<()>,
+    /// The terminal's descendants seen so far, with their start times (Unix:
+    /// processes that left the session for another one are still ended with
+    /// it; MAC-LINUX-PLAN §5.2).
+    pub remembered: Mutex<Vec<(u32, u64)>>,
 }
 
 /// An image's pixels as a PNG file, shared by every client that needs it.
@@ -295,6 +299,7 @@ impl Terminal {
             encoded: Mutex::new(HashMap::new()),
             encoding: Mutex::new(HashSet::new()),
             pump: hooks.pump.clone(),
+            remembered: Mutex::new(Vec::new()),
         });
         // Weak: the emulator thread must not keep the terminal alive.
         let weak = Arc::downgrade(&terminal);
@@ -483,22 +488,34 @@ impl Terminal {
         let me = self.clone();
         let full_screen = self.state.alt_screen.load(Ordering::Acquire);
         std::thread::spawn(move || {
-            let mut ui_quit_at: Option<u32> = None;
-            for tick in 0..50 {
+            // Measured on the clock, checked every 100 ms: a busy or throttled
+            // machine may wake this thread late, never move the steps later.
+            let asked = Instant::now();
+            let mut ui_quit_at: Option<Instant> = None;
+            let (mut second_ctrl_d, mut ctrl_c_sent) = (false, false);
+            loop {
                 if !me.alive.load(Ordering::Acquire) {
                     return;
                 }
+                let elapsed = asked.elapsed();
                 if full_screen && ui_quit_at.is_none() && !me.state.alt_screen.load(Ordering::Acquire) {
-                    ui_quit_at = Some(tick);
+                    ui_quit_at = Some(Instant::now());
                 }
-                if ui_quit_at.is_some_and(|at| tick >= at + 30) {
+                if ui_quit_at.is_some_and(|at| at.elapsed() >= Duration::from_secs(3)) {
                     me.ui_quit.store(true, Ordering::Release);
                     break;
                 }
-                if tick == 20 && me.command(Ctl::Input(ctrl_d())).is_err() {
-                    let _ = me.input.try_send(vec![0x04]);
+                if elapsed >= Duration::from_secs(5) {
+                    break;
                 }
-                if tick == 35 {
+                if !second_ctrl_d && elapsed >= Duration::from_secs(2) {
+                    second_ctrl_d = true;
+                    if me.command(Ctl::Input(ctrl_d())).is_err() {
+                        let _ = me.input.try_send(vec![0x04]);
+                    }
+                }
+                if !ctrl_c_sent && elapsed >= Duration::from_millis(3_500) {
+                    ctrl_c_sent = true;
                     let ctrl_c = Input::Key { key: crate::protocol::Key::Char('c'), mods: crate::protocol::MOD_CTRL };
                     if me.command(Ctl::Input(ctrl_c)).is_err() {
                         let _ = me.input.try_send(vec![0x03]);
@@ -525,6 +542,12 @@ impl Terminal {
         self.forced.store(true, Ordering::Release);
         if self.pid != 0 {
             let _ = canvas_sys::process::kill_tree(self.pid);
+        }
+        // Descendants that moved to sessions of their own (Unix), when still the same processes.
+        for (pid, started) in std::mem::take(&mut *lock(&self.remembered)) {
+            if canvas_sys::process::process_start_ms(pid) == Some(started) {
+                let _ = canvas_sys::process::kill_tree(pid);
+            }
         }
         let _ = lock(&self.killer).kill();
     }
@@ -1313,11 +1336,13 @@ mod tests {
     fn at_most_one_snapshot_request_is_outstanding() {
         let _serial = serial();
         let log = ProbeLog::default();
-        let harness = Harness::new(Probe { snapshot_delay: Duration::from_millis(300), ..Probe::new(&log) });
+        // A slow engine (2 s per snapshot): a throttled machine may take far
+        // longer than 10 ms per short wait, never 2 s for five of them.
+        let harness = Harness::new(Probe { snapshot_delay: Duration::from_millis(2_000), ..Probe::new(&log) });
         for _ in 0..5 {
             assert!(harness.snapshot(Duration::from_millis(10)).is_none());
         }
-        std::thread::sleep(Duration::from_millis(500));
+        std::thread::sleep(Duration::from_millis(2_500));
         assert_eq!(log.snapshots.load(Ordering::SeqCst), 1, "timed-out requests do not pile up");
         // The stale answer is replaced by a fresh request.
         assert!(harness.snapshot(Duration::from_secs(5)).is_some());

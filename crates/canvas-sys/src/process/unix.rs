@@ -127,6 +127,28 @@ impl Drop for KillOnClose {
     }
 }
 
+/// Raises this process's open-file limit to its hard limit (launchd's
+/// default soft limit is 256; a hundred terminals need more). Returns the new
+/// soft limit.
+pub fn raise_fd_limit() -> u64 {
+    // SAFETY: getrlimit/setrlimit with a valid structure.
+    unsafe {
+        let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 {
+            return 0;
+        }
+        // macOS refuses more than OPEN_MAX for an unlimited hard limit.
+        let wanted = if cfg!(target_os = "macos") { limit.rlim_max.min(10_240) } else { limit.rlim_max };
+        if wanted > limit.rlim_cur {
+            let raised = libc::rlimit { rlim_cur: wanted, rlim_max: limit.rlim_max };
+            if libc::setrlimit(libc::RLIMIT_NOFILE, &raised) == 0 {
+                return wanted;
+            }
+        }
+        limit.rlim_cur
+    }
+}
+
 /// Gives this process's calling thread the scheduler's interactive class
 /// where the OS has one (macOS QoS user-interactive); Unix does not let an
 /// unprivileged process raise its priority, so the priority manager lowers
