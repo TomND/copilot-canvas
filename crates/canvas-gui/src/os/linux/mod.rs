@@ -126,9 +126,28 @@ pub fn work_area(_monitor: &winit::monitor::MonitorHandle) -> Option<[i32; 4]> {
     None
 }
 
-/// The bundle's icon (macOS) or the `.desktop` file's (Linux) is used.
+/// The app's identity for docks, launchers and `LauncherEntry`: the Wayland
+/// `app_id` and the X11 `WM_CLASS` are `copilot-canvas` (the `.desktop`
+/// file's name and `StartupWMClass`); X11 also gets the window icon
+/// (Wayland compositors take the `.desktop` file's).
 pub fn with_app_icon(attrs: WindowAttributes) -> WindowAttributes {
-    attrs
+    use winit::platform::wayland::WindowAttributesExtWayland;
+    use winit::platform::x11::WindowAttributesExtX11;
+    let attrs = WindowAttributesExtWayland::with_name(attrs, APP_ID, APP_ID);
+    let attrs = WindowAttributesExtX11::with_name(attrs, APP_ID, APP_ID);
+    match icon() {
+        Some(icon) => attrs.with_window_icon(Some(icon)),
+        None => attrs,
+    }
+}
+
+/// The `.desktop` file's name, the Wayland app id and the X11 class.
+pub const APP_ID: &str = "copilot-canvas";
+
+fn icon() -> Option<winit::window::Icon> {
+    const PNG: &[u8] = include_bytes!("../../../../../assets/icon/copilot-canvas.png");
+    let (width, height, rgba) = canvas_common::clipimage::decode_png(PNG).ok()?;
+    winit::window::Icon::from_rgba(rgba, width, height).ok()
 }
 
 /// A test run on someone's desktop: never take the focus.
