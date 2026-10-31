@@ -164,6 +164,11 @@ struct Win {
     pointer: (f32, f32),
     held: Vec<MouseButton>,
     wheel: crate::input::Wheel,
+    /// The force-click stage last reported (a deep press is stage 2).
+    pressure_stage: i64,
+    /// The text size (pinching over terminals, Command+plus and minus): a
+    /// factor on the cell grid.
+    text_zoom: f32,
     preedit: Option<String>,
     ime_rect: Option<[i32; 4]>,
     hover: Option<(u16, u16)>,
@@ -597,6 +602,8 @@ impl Win {
             pointer: (0.0, 0.0),
             held: Vec::new(),
             wheel: Default::default(),
+            pressure_stage: 0,
+            text_zoom: 1.0,
             preedit: None,
             ime_rect: None,
             hover: None,
@@ -734,7 +741,17 @@ impl Win {
             self.perf.echoed = false;
             self.typed_at = Some(now);
         }
+        let view = (self.app.origin_f(), self.app.scale_f());
         self.app.on_input(events);
+        // Panning or zooming right after a DPI change: the centre kept from
+        // then on is the user's (a click that only narrows the canvas keeps it).
+        if let Some((_, until)) = self.recenter {
+            if self.app.view_anim.is_some() {
+                self.recenter = None;
+            } else if (self.app.origin_f(), self.app.scale_f()) != view {
+                self.recenter = Some((self.app.canvas_center_f(), until));
+            }
+        }
         self.input_waiting = true;
         self.after_events(proxy);
     }
@@ -955,7 +972,7 @@ impl Win {
     /// the grid's size and the canvas centre.
     fn rescale(&mut self, scale: f32, advance: f32, gpu: Option<&Gpu>, options: &Options) {
         let center = self.app.canvas_center_f();
-        self.grid = Grid::new(advance, scale);
+        self.grid = Grid::new(advance, scale * self.text_zoom);
         if let (true, Some((cols, rows))) = (options.test_hooks, options.size) {
             // A fixed grid: the window follows its new size.
             let size = PhysicalSize::new((cols as f32 * self.grid.cell_w) as u32, (rows as f32 * self.grid.cell_h) as u32);
@@ -1235,6 +1252,28 @@ impl Win {
                 self.raw_input(vec![InputEvent::Mouse(canvas_core::input::MouseEvent::at(kind, point.0, point.1, mods))]);
                 json!({ "ok": true })
             }
+            // A trackpad gesture as the platform delivers it (pixels, phases),
+            // through the same translation as winit's events.
+            "scroll_px" | "pinch" | "smart_zoom" | "force_click" => {
+                use canvas_core::input::{GestureKind, GesturePhase};
+                let phase = match command["phase"].as_str().unwrap_or("changed") {
+                    "began" => GesturePhase::Began,
+                    "ended" => GesturePhase::Ended,
+                    _ => GesturePhase::Changed,
+                };
+                let kind = match name {
+                    "scroll_px" => {
+                        let px = |key: &str| command[key].as_f64().unwrap_or(0.0) as f32;
+                        GestureKind::Scroll { dx: px("dx") / self.grid.cell_w, dy: px("dy") / self.grid.cell_h, phase }
+                    }
+                    "pinch" => GestureKind::Pinch { delta: command["delta"].as_f64().unwrap_or(0.0) as f32, phase },
+                    "smart_zoom" => GestureKind::SmartZoom,
+                    _ => GestureKind::ForceClick,
+                };
+                let gesture = canvas_core::input::Gesture { kind, x: point.0, y: point.1, modifiers: mods };
+                self.raw_input(vec![InputEvent::Gesture(crate::os::KEY_POLICY.gesture(gesture))]);
+                json!({ "ok": true })
+            }
             "wheel" => {
                 let kind = match command["dir"].as_str().unwrap_or("down") {
                     "up" => MouseEventKind::ScrollUp,
@@ -1260,6 +1299,8 @@ impl Win {
                 self.fresh_view(gpu, fonts, options);
                 let mut tree = crate::hooks::tree(&self.app, &self.view, &self.chrome);
                 tree["window"] = json!(self.index);
+                tree["text_zoom"] = json!(self.text_zoom);
+                tree["cell"] = json!([self.grid.cell_w, self.grid.cell_h]);
                 tree["paste_preview"] = json!(self.preview.as_ref().map(|p| json!({ "width": p.size.0, "height": p.size.1, "rect": p.item.rect })));
                 if !tree["canvas"].is_null() {
                     tree["canvas"]["loop_arcs"] = self.loops_json(self.view.canvas.as_ref().map(|m| m.anim_clock()).unwrap_or_default());
@@ -1480,6 +1521,13 @@ impl Win {
     /// Housekeeping, then a frame when one is due; returns when to wake next.
     fn tick(&mut self, gpu: Option<&mut Gpu>, fonts: Option<&mut Fonts>, options: &Options) -> Instant {
         self.flush_dropped();
+        // Text size steps (pinching over terminals, Command+plus and minus): the whole grid.
+        if self.app.text_zoom_steps != 0 {
+            let steps = std::mem::take(&mut self.app.text_zoom_steps);
+            self.text_zoom = (self.text_zoom * 1.1f32.powi(steps)).clamp(0.5, 3.0);
+            let advance = fonts.as_ref().map(|f| f.advance).unwrap_or(0.6);
+            self.rescale(self.window.scale_factor() as f32, advance, gpu.as_deref(), options);
+        }
         let now = Instant::now();
         if now >= self.next_tick {
             let stats_at = self.app.stats_at;
@@ -1502,6 +1550,8 @@ impl Win {
                 || app.drag.is_some()
                 || app.visual.animating()
                 || app.glide.is_some()
+                || app.view_anim.is_some()
+                || app.text_zoom_steps != 0
                 || app.recent_pending()
                 || app.reconnecting
                 || app.restarting.is_some()
@@ -1514,9 +1564,12 @@ impl Win {
         if self.app.visual.animating() {
             self.app.needs_draw = true;
         }
-        // A glide after a pan moves the view every frame.
+        // A glide after a pan moves the view every frame, as does a smart zoom.
         if self.app.glide.is_some() {
             self.app.step_glide();
+        }
+        if self.app.view_anim.is_some() {
+            self.app.step_view_anim();
         }
         self.platform.apply(&self.window, &mut self.taskbar);
         if self.placement_dirty.is_some_and(|t| t.elapsed() >= PLACEMENT_SAVE) {
@@ -1901,9 +1954,30 @@ impl ApplicationHandler<UserEvent> for Shell {
                     }
                 }
             }
-            WindowEvent::MouseWheel { delta, .. } => {
-                for kind in win.wheel.notches(delta, win.grid.cell_h) {
-                    win.mouse(kind);
+            WindowEvent::MouseWheel { delta, phase, .. } => match crate::input::precise_scroll(delta, (win.grid.cell_w, win.grid.cell_h)) {
+                // A trackpad (MAC-LINUX-PLAN D15): the content follows the fingers.
+                Some((dx, dy)) => {
+                    let kind = canvas_core::input::GestureKind::Scroll { dx, dy, phase: crate::input::phase(phase) };
+                    win.raw_input(vec![crate::input::gesture(kind, win.pointer, win.mods)]);
+                }
+                None => {
+                    for kind in win.wheel.notches(delta, win.grid.cell_h) {
+                        win.mouse(kind);
+                    }
+                }
+            },
+            WindowEvent::PinchGesture { delta, phase, .. } if crate::os::POINTER_POLICY == canvas_core::input::PointerPolicy::Precise => {
+                let kind = canvas_core::input::GestureKind::Pinch { delta: delta as f32, phase: crate::input::phase(phase) };
+                win.raw_input(vec![crate::input::gesture(kind, win.pointer, win.mods)]);
+            }
+            WindowEvent::DoubleTapGesture { .. } if crate::os::POINTER_POLICY == canvas_core::input::PointerPolicy::Precise => {
+                win.raw_input(vec![crate::input::gesture(canvas_core::input::GestureKind::SmartZoom, win.pointer, win.mods)]);
+            }
+            WindowEvent::TouchpadPressure { stage, .. } if crate::os::POINTER_POLICY == canvas_core::input::PointerPolicy::Precise => {
+                let deep = stage >= 2 && win.pressure_stage < 2;
+                win.pressure_stage = stage;
+                if deep {
+                    win.raw_input(vec![crate::input::gesture(canvas_core::input::GestureKind::ForceClick, win.pointer, win.mods)]);
                 }
             }
             WindowEvent::DroppedFile(path) => win.dropped.push(path.display().to_string()),

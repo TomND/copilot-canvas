@@ -194,6 +194,17 @@ pub struct App {
     pub glide: Option<crate::glide::Glide>,
     /// The pointer's recent places during a background pan.
     pub pan_track: crate::glide::PanTrack,
+    /// The trackpad gesture in progress and what it is latched to (`gesture.rs`).
+    pub gesture: Option<crate::gesture::GestureLatch>,
+    /// A running smart-zoom animation of the canvas view.
+    pub view_anim: Option<crate::gesture::ViewAnim>,
+    /// The view a smart zoom left (a second one returns to it).
+    pub smart_back: Option<crate::gesture::ViewState>,
+    /// Text size steps asked for by pinching over terminals (the GUI applies
+    /// and clears them).
+    pub text_zoom_steps: i32,
+    /// How the front end's pointer scrolls (help text; MAC-LINUX-PLAN D15).
+    pub pointer_policy: crate::input::PointerPolicy,
     /// Ctrl+L: repaint every cell on the next frame.
     pub repaint_requested: bool,
     /// When you last typed into each terminal (for idle auto-stop).
@@ -446,6 +457,11 @@ impl App {
             pan_quiet_until: None,
             glide: None,
             pan_track: Default::default(),
+            gesture: None,
+            view_anim: None,
+            smart_back: None,
+            text_zoom_steps: 0,
+            pointer_policy: Default::default(),
             side_rows_key: 0,
             sessions_rev: 0,
             terms_rev: 0,
@@ -927,7 +943,7 @@ impl App {
     }
 
     /// Gpu mode: puts the canvas's top-left corner at world point `(x, y)`.
-    fn set_origin(&mut self, x: f32, y: f32) {
+    pub(crate) fn set_origin(&mut self, x: f32, y: f32) {
         let (fx, fy) = (x.floor(), y.floor());
         self.doc.view.x = fx as i32;
         self.doc.view.y = fy as i32;
@@ -1053,7 +1069,7 @@ impl App {
 
     /// Gpu mode: sets the scale (clamped) and the nearest discrete zoom the
     /// document keeps for the TUI.
-    fn set_scale(&mut self, scale: f32) {
+    pub(crate) fn set_scale(&mut self, scale: f32) {
         self.view_scale = scale.clamp(MIN_SCALE, MAX_SCALE);
         self.doc.view.zoom = if self.view_scale >= 0.75 {
             0
@@ -1090,7 +1106,7 @@ impl App {
     }
 
     /// Gpu mode: sets the scale keeping the world point under `(sx, sy)` in place.
-    fn zoom_to(&mut self, sx: f32, sy: f32, scale: f32) {
+    pub(crate) fn zoom_to(&mut self, sx: f32, sy: f32, scale: f32) {
         if (scale.clamp(MIN_SCALE, MAX_SCALE) - self.view_scale).abs() < 1e-6 {
             return;
         }

@@ -49,6 +49,10 @@ pub const AUMID: &str = "CopilotCanvas.Gui";
 /// wgpu's backend: DX12 (WARP as the software fallback).
 pub const GPU_BACKENDS: wgpu::Backends = wgpu::Backends::DX12;
 
+/// How scrolling arrives (MAC-LINUX-PLAN D15): every wheel and touchpad as
+/// wheel notches, as before.
+pub const POINTER_POLICY: canvas_core::input::PointerPolicy = canvas_core::input::PointerPolicy::Notches;
+
 /// Which modifier is the app's (MAC-LINUX-PLAN D8).
 pub const KEY_POLICY: canvas_core::input::KeyPolicy = canvas_core::input::KeyPolicy::CtrlApp;
 

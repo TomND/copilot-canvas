@@ -90,6 +90,10 @@ pub mod fonts {
 
 use winit::window::{Window, WindowAttributes};
 
+/// How scrolling arrives (MAC-LINUX-PLAN D15): wheel notches until the
+/// Linux lead turns on touchpad gestures (Precise) for Wayland and X11.
+pub const POINTER_POLICY: canvas_core::input::PointerPolicy = canvas_core::input::PointerPolicy::Notches;
+
 /// Which modifier is the app's (MAC-LINUX-PLAN D8).
 pub const KEY_POLICY: canvas_core::input::KeyPolicy = canvas_core::input::KeyPolicy::CtrlApp;
 

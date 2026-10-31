@@ -158,6 +158,7 @@ impl App {
         let acts = match event {
             InputEvent::Key(key) => key.kind != KeyEventKind::Release && !(self.modals.is_empty() && self.recent_key(key).is_some()),
             InputEvent::Mouse(mouse) => mouse.kind != MouseEventKind::Moved,
+            InputEvent::Gesture(_) => true,
             InputEvent::Resize(..) | InputEvent::Focus(_) => false,
             InputEvent::Paste(_) | InputEvent::Text(_) => true,
         };

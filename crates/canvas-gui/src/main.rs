@@ -182,6 +182,7 @@ impl Launch {
         let mut app = App::new(conn, backend, opened, self.demo, self.cwd.clone(), app_tx, Some(prefs));
         app.doc_request = (self.canvas.clone(), self.demo);
         app.render_mode = RenderMode::Gpu;
+        app.pointer_policy = os::POINTER_POLICY;
         let zoom = canvas_core::app::ZOOMS[(app.doc.view.zoom as usize).min(2)];
         app.view_scale = zoom.0 as f32 / zoom.1 as f32;
         let mut platform = platform::GuiPlatform::default();

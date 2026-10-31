@@ -46,6 +46,26 @@ const HELP: &[(&str, &str)] = &[
     ("Q / Ctrl+Q", "quit (sessions can keep running)"),
 ];
 
+/// The help's second column where scrolling is pixel-precise (macOS
+/// trackpads; MAC-LINUX-PLAN D15) and, on macOS, the Command key's shortcuts.
+const TRACKPAD_HELP: &[(&str, &str)] = &[
+    ("Trackpad", ""),
+    ("Two-finger scroll", "pan · terminal history"),
+    ("Pinch", "zoom · text size over terminals"),
+    ("Two-finger double tap", "fit a box · all ↔ back"),
+    ("⌘ + scroll", "zoom"),
+    ("Shift + scroll", "history even in programs"),
+    ("Click · two-finger click", "select · context menu"),
+    ("Force click", "open a link · box details"),
+    ("⌘ + · ⌘ − (terminal)", "text size"),
+    ("Keys on a Mac", ""),
+    ("⌘ (Command)", "the Ctrl of the list on the left"),
+    ("Ctrl + any key", "goes to the terminal's program"),
+    ("⌘1…9 · ⌘N · ⌘Q", "views · new window · quit"),
+    ("⌘-click", "open a link · add to selection"),
+    ("Left ⌥ (Option)", "Alt; right ⌥ types characters"),
+];
+
 fn centered(screen: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(screen.width.saturating_sub(2));
     let h = h.min(screen.height.saturating_sub(2));
@@ -136,8 +156,20 @@ pub fn draw_modals(app: &mut App, buf: &mut Buffer, screen: Rect) -> Option<(u16
 fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx: &mut Ctx) -> (Rect, Option<(u16, u16)>) {
     match modal {
         Modal::Help => {
-            let rect = centered(screen, 78, HELP.len() as u16 + 4);
+            let trackpad = app.pointer_policy == crate::input::PointerPolicy::Precise;
+            let rect = centered(screen, if trackpad { 136 } else { 78 }, HELP.len() as u16 + 4);
             panel(buf, rect, "Copilot Canvas — help");
+            if trackpad {
+                for (i, (key, text)) in TRACKPAD_HELP.iter().enumerate() {
+                    let y = rect.y as i32 + 2 + i as i32;
+                    if text.is_empty() {
+                        put(buf, rect.x as i32 + 78, y, key, bold(ACCENT).bg(MODAL), rect);
+                    } else {
+                        put(buf, rect.x as i32 + 79, y, key, fg(TEXT).bg(MODAL), rect);
+                        put(buf, rect.x as i32 + 104, y, text, fg(GRAY).bg(MODAL), rect);
+                    }
+                }
+            }
             for (i, (key, text)) in HELP.iter().enumerate() {
                 let y = rect.y as i32 + 2 + i as i32;
                 if text.is_empty() {
