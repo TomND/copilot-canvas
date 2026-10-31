@@ -92,7 +92,14 @@ work resumes after any interruption: read it first, then `git log`.
 - Exit: parity rows 17, 41, 41b, G2 pass; manual IME / dead-key / AltGr /
   VoiceOver / Orca checks recorded (owner).
 
-### Phase 5 Parity, goldens, hardening — not started
+### Phase 5 Parity, goldens, hardening — macOS: started
+
+- 2026-10-31, locally on a locked Mac (no presents): 44 of 62 rows pass.
+  Failing: 2 (status from history), 7b and V3 (frame counts: need an
+  uncovered screen), 41b (HTML view: Phase 4), 22, 23 (settings and MCP
+  views from the stand-in CLI), 26 (automations: launchd backend, Phase 2),
+  12, 14, 18, G1, 44 (terminal rows still typing Windows-only text or
+  wrapping differently), 33, V5, V6 (remote rows), V1, V2, 46.
 
 - Exit: `selftest --client gui --parity` PASS 60 rows; `--hardening` PASS;
   goldens recorded per OS.
@@ -300,6 +307,10 @@ plan §6.1 equivalent, documented).
   (6fa2a0a, 7cdfd21); service start-up on Unix (e9a9a01); doctor (02f8bc6);
   `selftest agent --paste` passes for OpenCode and Claude Code; merged
   origin/linux for its shared fixes (0c73fea, 3f5b1e6, 998f959).
+- 2026-10-31: GUI OS split (1d66e91); GUI self-test and `--remote loopback`
+  on Metal (8c3c87e); D8 keys (06c3a8f); parity suite ported to the Unix
+  shells (1c7975f, 44/62 locally). Windows parity rows 14/G1 and the `ios`
+  job also fail on main (41228257005): main's, not the port's.
 
 ### Linux log
 
