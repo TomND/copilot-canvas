@@ -1,12 +1,11 @@
 //! Git discovery and worktree creation. All commands run off the UI thread.
 
-use std::os::windows::process::CommandExt;
+use canvas_sys::spawn::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
 
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub use canvas_model::git::{GitInfo, default_worktree_path, slug, valid_branch_name};
 
@@ -20,7 +19,7 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW)
+        .no_window()
         .output()
         .context("git is not installed or not on PATH")?;
     if !output.status.success() {

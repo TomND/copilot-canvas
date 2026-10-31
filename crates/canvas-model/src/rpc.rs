@@ -294,6 +294,18 @@ pub struct BackendInfo {
     pub default_agent: AgentKind,
     /// Agents whose CLI was found.
     pub installed: Vec<AgentKind>,
+    /// The service's operating system: `windows`, `macos` or `linux` (empty
+    /// from services older than the field: Windows). Paths of the service's
+    /// machine follow its style (`path_style`).
+    #[serde(default)]
+    pub platform: String,
+}
+
+impl BackendInfo {
+    /// The path style of the service's machine (MAC-LINUX-PLAN D10).
+    pub fn path_style(&self) -> crate::path_style::PathStyle {
+        crate::path_style::PathStyle::of_platform(&self.platform)
+    }
 }
 
 /// What a path is.

@@ -77,7 +77,7 @@ struct Alive {
 /// The service announces itself (the CLI then waits for it to store reports).
 pub fn announce_service(home: &Path) -> Result<()> {
     let pid = std::process::id();
-    let alive = Alive { pid, started_ms: crate::win::process_start_ms(pid).unwrap_or(0) };
+    let alive = Alive { pid, started_ms: canvas_sys::process::process_start_ms(pid).unwrap_or(0) };
     crate::paths::write_atomic(&alive_path(home), &serde_json::to_vec(&alive)?)?;
     Ok(())
 }
@@ -86,8 +86,8 @@ pub fn announce_service(home: &Path) -> Result<()> {
 pub fn service_alive(home: &Path) -> bool {
     let Some(alive) = std::fs::read(alive_path(home)).ok().and_then(|b| serde_json::from_slice::<Alive>(&b).ok()) else { return false };
     alive.pid != 0
-        && crate::win::alive(alive.pid)
-        && crate::win::process_start_ms(alive.pid).is_some_and(|started| alive.started_ms == 0 || started.abs_diff(alive.started_ms) < 2_000)
+        && canvas_sys::process::alive(alive.pid)
+        && canvas_sys::process::process_start_ms(alive.pid).is_some_and(|started| alive.started_ms == 0 || started.abs_diff(alive.started_ms) < 2_000)
 }
 
 /// The stored reports (newest first) and the state, read only.

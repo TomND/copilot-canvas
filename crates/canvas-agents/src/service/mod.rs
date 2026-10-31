@@ -28,7 +28,7 @@ use crate::backend::Ctx;
 use crate::index::is_session_id;
 use crate::paths::{Instance, now_ms};
 use crate::protocol::{AgentLaunch, CAP_TUNNEL_ACCESS, ClientMsg, LaunchKind, ServiceMsg, SessionSummary};
-pub use canvas_common::auth::{read_token, write_token};
+pub use canvas_sys::token::{read_token, write_token};
 pub use server::log;
 use term::lock;
 
@@ -661,14 +661,14 @@ impl Agents {
     /// terminal, possibly by a remote client), else the local process.
     fn requester(&self, client: &Client) -> String {
         let Some(pid) = client.peer_pid else { return format!("client {} (process unknown)", client.id) };
-        let entries = crate::win::process_entries();
+        let entries = canvas_sys::process::process_entries();
         let exe = entries.iter().find(|(p, _, _)| *p == pid).map(|(_, _, name)| name.clone()).unwrap_or_default();
         let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
         for (child, parent, _) in &entries {
             children.entry(*parent).or_default().push(*child);
         }
         let terms: Vec<(String, u32)> = lock(&self.terms).values().filter(|t| t.pid != 0).map(|t| (t.id.clone(), t.pid)).collect();
-        match terms.into_iter().find(|(_, root)| crate::win::process_tree(*root, &children).contains(&pid)) {
+        match terms.into_iter().find(|(_, root)| canvas_sys::process::process_tree(*root, &children).contains(&pid)) {
             Some((terminal, _)) => format!("a command in canvas terminal {terminal:?} ({exe} pid {pid})"),
             None => format!("a local process ({exe} pid {pid})"),
         }
@@ -749,7 +749,7 @@ pub fn session_live(root: &Path, id: &str) -> bool {
             .strip_prefix("inuse.")
             .and_then(|rest| rest.strip_suffix(".lock"))
             .and_then(|pid| pid.parse::<u32>().ok())
-            .is_some_and(|pid| crate::win::lock_owner_alive(pid, &e.path()))
+            .is_some_and(|pid| canvas_sys::process::lock_owner_alive(pid, &e.path()))
     })
 }
 
@@ -807,7 +807,7 @@ fn subsession_loop(shared: Arc<Agents>) {
             checked.clear();
             continue;
         }
-        let entries = crate::win::process_entries();
+        let entries = canvas_sys::process::process_entries();
         let procs: HashMap<u32, (u32, String)> = entries.iter().map(|(pid, parent, name)| (*pid, (*parent, name.clone()))).collect();
         let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
         for (pid, parent, _) in &entries {
@@ -815,7 +815,7 @@ fn subsession_loop(shared: Arc<Agents>) {
         }
         let mut alive = HashSet::new();
         for (parent_id, root) in terms {
-            let tree = crate::win::process_tree(root, &children);
+            let tree = canvas_sys::process::process_tree(root, &children);
             for pid in nested_copilots(&tree, &procs) {
                 alive.insert(pid);
                 let state = checked.entry(pid).or_insert((0, None));

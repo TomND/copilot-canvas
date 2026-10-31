@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use canvas_common::handshake::{Credential, PairGrant, Pairing};
-use canvas_common::{dpapi, pairing, remote};
+use canvas_common::{pairing, remote};
+use canvas_sys::secret;
 use serde::{Deserialize, Serialize};
 
 /// A paired client.
@@ -177,7 +178,7 @@ impl Registry {
         }
         let id = pairing::new_client_id();
         let secret = pairing::new_secret();
-        let sealed = dpapi::protect_hex(&secret, "Copilot Canvas remote client").context("cannot protect the client secret")?;
+        let sealed = secret::seal(&self.home, &secret, "Copilot Canvas remote client").context("cannot protect the client secret")?;
         file.clients.push(ClientRecord {
             id: id.clone(),
             name: unique,
@@ -198,7 +199,7 @@ impl Registry {
         let Ok(file) = ClientsFile::load(&self.home) else { return Credential::Refused };
         let Some(client) = file.clients.iter().find(|c| c.id == id) else { return Credential::Refused };
         let (sealed, revoked) = if client.revoked_ms == 0 { (&client.secret, false) } else { (&client.revoked_key, true) };
-        match dpapi::unprotect_hex(sealed) {
+        match secret::open(&self.home, sealed) {
             Ok(key) if revoked => Credential::Revoked(key),
             Ok(secret) => Credential::Secret(secret),
             Err(_) => Credential::Refused,
@@ -255,9 +256,9 @@ impl Registry {
             _ => bail!("several clients are called {key:?}; revoke one by its id"),
         };
         let client = &mut file.clients[index];
-        client.revoked_key = dpapi::unprotect_hex(&client.secret)
+        client.revoked_key = secret::open(&self.home, &client.secret)
             .ok()
-            .and_then(|secret| dpapi::protect_hex(&pairing::revocation_key(&secret), "Copilot Canvas revoked client").ok())
+            .and_then(|key| secret::seal(&self.home, &pairing::revocation_key(&key), "Copilot Canvas revoked client").ok())
             .unwrap_or_default();
         client.revoked_ms = now;
         client.secret.clear();

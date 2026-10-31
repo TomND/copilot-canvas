@@ -22,7 +22,6 @@
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read};
 use std::net::SocketAddr;
-use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -30,9 +29,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use canvas_common::remote::{ServerRecord, Servers};
-use canvas_common::win::KillOnClose;
+use canvas_sys::process::KillOnClose;
+use canvas_sys::spawn::CommandExt;
 
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// How long `devtunnel connect` may take to forward the port.
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
 /// Without a "Forwarding from" line, the child's own listeners are looked for after this long.
@@ -66,7 +65,7 @@ impl Server {
     pub fn load(home: &Path, name: &str) -> Result<Option<Arc<Server>>> {
         let servers = Servers::load(home)?;
         let Some(record) = servers.find(name).cloned() else { return Ok(None) };
-        let secret = record.secret()?;
+        let secret = canvas_sys::secret::open(home, &record.secret).with_context(|| format!("cannot decrypt the secret of {:?} (paired by another user?)", record.name))?;
         Ok(Some(Self::new(record, secret)))
     }
 
@@ -222,9 +221,9 @@ fn owned_forward(listeners: &[(SocketAddr, u32)], owners: &[u32], port: u16) -> 
 
 /// The tunnel child and the processes it started (those that started after it).
 fn child_tree(pid: u32) -> Vec<u32> {
-    let born = canvas_common::win::process_start_ms(pid);
+    let born = canvas_sys::process::process_start_ms(pid);
     let mut tree = vec![pid];
-    tree.extend(canvas_common::win::descendants(pid).into_iter().filter(|d| born.is_some_and(|b| canvas_common::win::process_start_ms(*d).is_some_and(|s| s >= b))));
+    tree.extend(canvas_sys::process::descendants(pid).into_iter().filter(|d| born.is_some_and(|b| canvas_sys::process::process_start_ms(*d).is_some_and(|s| s >= b))));
     tree
 }
 
@@ -275,7 +274,8 @@ impl Tunnel {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .creation_flags(CREATE_NO_WINDOW)
+            .no_window()
+            .die_with_parent()
             .spawn()
             .with_context(|| format!("cannot start {}", cli.program.display()))?;
         let job = KillOnClose::new(&child).ok();
@@ -322,7 +322,7 @@ impl Tunnel {
             if running.started.elapsed() >= self.probe_after && running.probed.is_none_or(|at| at.elapsed() >= PROBE_EVERY) {
                 running.probed = Some(Instant::now());
                 let owners = child_tree(running.child.id());
-                if let Some(address) = canvas_common::tcp::listeners().ok().and_then(|listeners| owned_forward(&listeners, &owners, self.port)) {
+                if let Some(address) = canvas_sys::net::listeners().ok().and_then(|listeners| owned_forward(&listeners, &owners, self.port)) {
                     return Ok(address);
                 }
             }
@@ -400,18 +400,24 @@ mod tests {
         assert!(injected.address().unwrap_err().to_string().contains("not a Dev Tunnel id"), "never passed to devtunnel");
     }
 
-    /// The only test that sets `COPILOT_CANVAS_DEVTUNNEL` (`cmd.exe` plays the CLI).
+    /// The only test that sets `COPILOT_CANVAS_DEVTUNNEL` (`cmd.exe` plays the
+    /// CLI on Windows, `/bin/sh` elsewhere: `os(windows, unix)` picks the script).
     #[test]
     fn the_tunnel_child_forwards_restarts_and_reports_its_failures() {
+        let os = |windows: &str, unix: &str| if cfg!(windows) { windows.to_owned() } else { unix.to_owned() };
         let set = |script: &str| {
+            let cli = if cfg!(windows) { format!("cmd.exe|/d|/c|{script} & rem") } else { format!("/bin/sh|-c|{script}") };
             // SAFETY: no other test in this binary reads the variable.
-            unsafe { std::env::set_var(canvas_common::remote::DEVTUNNEL_ENV, format!("cmd.exe|/d|/c|{script} & rem")) };
+            unsafe { std::env::set_var(canvas_common::remote::DEVTUNNEL_ENV, cli) };
         };
         let tunnel = |script: &str| {
             set(script);
             Server::new(ServerRecord { name: "t".into(), tunnel: Some("fake".into()), port: 47600, client_id: "pc-1".into(), ..Default::default() }, vec![])
         };
-        let server = tunnel("echo Connected to tunnel: fake.usw2& echo Forwarding from 127.0.0.1:5555 to host port 47600.& ping -n 30 127.0.0.1");
+        let server = tunnel(&os(
+            "echo Connected to tunnel: fake.usw2& echo Forwarding from 127.0.0.1:5555 to host port 47600.& ping -n 30 127.0.0.1",
+            "echo Connected to tunnel: fake.usw2; echo Forwarding from 127.0.0.1:5555 to host port 47600.; sleep 30",
+        ));
         assert_eq!(server.address().unwrap(), "127.0.0.1:5555");
         let first = server.tunnel_pid().expect("running");
         assert_eq!(server.address().unwrap(), "127.0.0.1:5555", "a running child is reused");
@@ -421,10 +427,10 @@ mod tests {
         server.address().unwrap();
         let second = server.tunnel_pid().expect("restarted");
         assert_ne!(second, first, "a child whose connections keep failing is restarted");
-        assert!(!canvas_common::win::alive(first));
+        assert!(!canvas_sys::process::alive(first));
         server.stop_tunnel();
-        assert!(!canvas_common::win::alive(second), "stopping kills the child");
-        let failing = tunnel("echo Login required.& exit 3");
+        assert!(!canvas_sys::process::alive(second), "stopping kills the child");
+        let failing = tunnel(&os("echo Login required.& exit 3", "echo Login required.; exit 3"));
         let error = failing.address().unwrap_err().to_string();
         assert!(error.contains("Login required") && error.contains("devtunnel user login -g"), "{error}");
 
@@ -432,7 +438,7 @@ mod tests {
         let quick = |port: u16| Tunnel { ready_timeout: Duration::from_secs(20), probe_after: Duration::from_millis(200), ..Tunnel::new("fake", port) };
         let squatted = canvas_common::tcp::listen_loopback("127.0.0.1:0").unwrap();
         let squatted_port = squatted.local_addr().unwrap().port();
-        set("ping -n 30 127.0.0.1 >nul");
+        set(&os("ping -n 30 127.0.0.1 >nul", "sleep 30"));
         let silent = Tunnel { ready_timeout: Duration::from_secs(2), ..quick(squatted_port) };
         let error = silent.address().unwrap_err().to_string();
         assert!(error.contains("did not forward"), "a port this test (not the child) listens on is never used: {error}");
@@ -441,7 +447,10 @@ mod tests {
         let owned_port = free.local_addr().unwrap().port();
         drop(free);
         // No quotes: cmd.exe and PowerShell would each read them their own way.
-        set(&format!("powershell -NoProfile -Command $l=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,{owned_port});$l.Start();Start-Sleep 30"));
+        set(&os(
+            &format!("powershell -NoProfile -Command $l=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,{owned_port});$l.Start();Start-Sleep 30"),
+            &format!("exec perl -MIO::Socket::INET -e 'my $s = IO::Socket::INET->new(LocalAddr => \"127.0.0.1\", LocalPort => {owned_port}, Listen => 1) or die; sleep 30'"),
+        ));
         let owned = quick(owned_port);
         let found = owned.address();
         unsafe { std::env::remove_var(canvas_common::remote::DEVTUNNEL_ENV) };

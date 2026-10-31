@@ -1,4 +1,4 @@
-//! Windows clipboard (Unicode text).
+//! Windows clipboard (Unicode text, images read as PNG).
 
 use anyhow::{Result, bail};
 use windows_sys::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard, SetClipboardData};

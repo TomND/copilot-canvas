@@ -11,6 +11,15 @@ canvas-model.workspace = true
 anyhow.workspace = true
 base64.workspace = true
 p256 = "0.14.0"
-reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "http2", "native-tls"] }
 serde.workspace = true
 serde_json.workspace = true
+
+# The system TLS (Secure Transport, SChannel) on macOS, iOS and Windows;
+# rustls with ring on Linux, so the Linux packages need no OpenSSL
+# (MAC-LINUX-PLAN §5.9).
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "http2", "native-tls"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "http2", "rustls-no-provider"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }

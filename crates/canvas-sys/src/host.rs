@@ -85,3 +85,71 @@ pub fn has_display() -> bool {
         _ => true,
     }
 }
+
+/// Windows' "Show animations in Windows" (SPI_GETCLIENTAREAANIMATION).
+#[cfg(windows)]
+pub fn system_animations() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW};
+    let mut on: i32 = 1;
+    // SAFETY: SPI_GETCLIENTAREAANIMATION writes one BOOL to the pointer.
+    let ok = unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&mut on as *mut i32).cast(), 0) };
+    ok == 0 || on != 0
+}
+
+/// Whether the system wants animations: macOS "Reduce motion" off
+/// (Accessibility › Display), GNOME's `enable-animations`. Asked at most every
+/// 5 s (it runs a small program).
+#[cfg(unix)]
+pub fn system_animations() -> bool {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static CACHE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, value)) = *cache
+        && at.elapsed() < Duration::from_secs(5)
+    {
+        return value;
+    }
+    let read = |program: &str, args: &[&str]| {
+        std::process::Command::new(program).args(args).stderr(std::process::Stdio::null()).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+    };
+    let value = match platform() {
+        Platform::MacOs => read("/usr/bin/defaults", &["read", "com.apple.universalaccess", "reduceMotion"]).is_none_or(|v| v != "1"),
+        _ => read("gsettings", &["get", "org.gnome.desktop.interface", "enable-animations"]).is_none_or(|v| v != "false"),
+    };
+    *cache = Some((Instant::now(), value));
+    value
+}
+
+/// The current local UTC offset in minutes.
+#[cfg(windows)]
+pub fn local_offset_minutes() -> i32 {
+    // SAFETY: plain out-parameter calls.
+    let (local, utc) = unsafe {
+        let mut l = std::mem::zeroed();
+        let mut u = std::mem::zeroed();
+        windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut l);
+        windows_sys::Win32::System::SystemInformation::GetSystemTime(&mut u);
+        (l, u)
+    };
+    let minutes = |t: &windows_sys::Win32::Foundation::SYSTEMTIME| t.wHour as i32 * 60 + t.wMinute as i32;
+    let mut diff = minutes(&local) - minutes(&utc);
+    if local.wDay != utc.wDay {
+        diff += if (local.wYear, local.wMonth, local.wDay) > (utc.wYear, utc.wMonth, utc.wDay) { 1440 } else { -1440 };
+    }
+    diff
+}
+
+/// The current local UTC offset in minutes (`tm_gmtoff`).
+#[cfg(unix)]
+pub fn local_offset_minutes() -> i32 {
+    // SAFETY: time and localtime_r with valid out-pointers.
+    unsafe {
+        let now = libc::time(std::ptr::null_mut());
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&now, &mut tm).is_null() {
+            return 0;
+        }
+        (tm.tm_gmtoff / 60) as i32
+    }
+}

@@ -960,6 +960,7 @@ fn rpc(mock: &Mock, request: Request) -> Response {
             automation_db: String::new(),
             default_agent: if mock.config.real_agents { installed_agents().first().copied().unwrap_or_default() } else { canvas_model::agent::AgentKind::Copilot },
             installed: if mock.config.real_agents { installed_agents() } else { canvas_model::agent::ALL.to_vec() },
+            platform: std::env::consts::OS.into(),
         }),
         Request::ListDir { dir } => {
             let dir = dir.unwrap_or_else(|| "/".into());

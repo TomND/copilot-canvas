@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use canvas_model::path_style::PathStyle;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -163,11 +164,10 @@ fn split_line(target: &str) -> (&str, Option<u32>) {
     (path, line)
 }
 
-fn file_url_to_path(url: &str) -> Option<PathBuf> {
+fn file_url_to_path(url: &str, style: PathStyle) -> Option<PathBuf> {
     let rest = url.get(7..)?;
     let decoded = percent_encoding::percent_decode_str(rest).decode_utf8_lossy().into_owned();
-    let local = decoded.strip_prefix('/').filter(|p| p.as_bytes().get(1) == Some(&b':')).map(str::to_owned).unwrap_or_else(|| format!("//{decoded}"));
-    Some(PathBuf::from(local.replace('/', "\\")))
+    Some(PathBuf::from(style.from_file_url(&decoded)))
 }
 
 /// What a click opens: a URL for its handler, a folder, or a file (+ line).
@@ -185,7 +185,7 @@ pub fn resolve(target: &str) -> Result<Target> {
         return Ok(Target::Url(target.to_owned()));
     }
     let (raw, line) = split_line(target);
-    let path = if lower.starts_with("file://") { file_url_to_path(raw).context("bad file link")? } else { PathBuf::from(raw) };
+    let path = if lower.starts_with("file://") { file_url_to_path(raw, PathStyle::local()).context("bad file link")? } else { PathBuf::from(raw) };
     anyhow::ensure!(path.is_absolute(), "only absolute paths can be opened");
     let meta = std::fs::metadata(&path).with_context(|| format!("{} does not exist", path.display()))?;
     Ok(if meta.is_dir() { Target::Folder(path) } else { Target::File(path, line) })
@@ -203,11 +203,9 @@ pub fn remote_path(target: &str) -> Result<(String, Option<u32>)> {
     let target = target.trim();
     anyhow::ensure!(target.len() < 4096 && !target.chars().any(|c| c.is_control() || c == '"'), "unsupported link");
     let (raw, line) = split_line(target);
-    let path = if target.to_ascii_lowercase().starts_with("file://") { file_url_to_path(raw).context("bad file link")? } else { PathBuf::from(raw) };
+    let path = if target.to_ascii_lowercase().starts_with("file://") { file_url_to_path(raw, PathStyle::Windows).context("bad file link")? } else { PathBuf::from(raw) };
     let text = path.display().to_string();
-    let bytes = text.as_bytes();
-    let drive = bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/');
-    anyhow::ensure!(drive || text.starts_with(r"\\"), "only absolute paths can be opened");
+    anyhow::ensure!(PathStyle::Windows.is_absolute(&text), "only absolute paths can be opened");
     Ok((text, line))
 }
 
@@ -238,35 +236,8 @@ pub fn open_vscode_uri(uri: &str) -> Result<()> {
     Ok(())
 }
 
-/// VS Code's `vscode://` handler is registered on this machine.
-pub fn vscode_installed() -> bool {
-    use std::sync::OnceLock;
-    static INSTALLED: OnceLock<bool> = OnceLock::new();
-    *INSTALLED.get_or_init(|| {
-        std::process::Command::new("reg.exe")
-            .args(["query", r"HKCR\vscode\shell\open\command"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-    })
-}
-
-/// Hands a URL or path to its registered handler (never runs it as a program).
-fn shell_open(target: &str) -> Result<()> {
-    use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx};
-    use windows_sys::Win32::UI::Shell::ShellExecuteW;
-    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
-    let (verb, file) = (wide("open"), wide(target));
-    // SAFETY: null-terminated UTF-16 strings that outlive the call.
-    let result = unsafe {
-        CoInitializeEx(std::ptr::null(), (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32);
-        ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL)
-    };
-    anyhow::ensure!(result as usize > 32, "Windows could not open {target}");
-    Ok(())
-}
+/// VS Code is installed on this machine (its URL handler or its command).
+pub use canvas_sys::open::vscode_installed;
 
 /// Opens a link; returns a short description for the status bar.
 pub fn open(target: &str) -> Result<String> {
@@ -276,19 +247,19 @@ pub fn open(target: &str) -> Result<String> {
             Ok(format!("Opened {url}"))
         }
         Target::Folder(path) => {
-            std::process::Command::new("explorer.exe").arg(&path).spawn().context("cannot open File Explorer")?;
+            canvas_sys::open::folder(&path)?;
             Ok(format!("Opened {}", path.display()))
         }
         Target::File(path, line) if vscode_installed() => {
-            let mut url = format!("vscode://file/{}", path.display().to_string().replace('\\', "/"));
-            if let Some(line) = line {
-                url.push_str(&format!(":{line}"));
-            }
-            spawn_open(url);
-            Ok(format!("Opened {} in VS Code", path.display()))
+            let shown = path.display().to_string();
+            // The handler may block on a slow start; keep the UI responsive.
+            std::thread::spawn(move || {
+                let _ = canvas_sys::open::vscode_file(&path, line);
+            });
+            Ok(format!("Opened {shown} in VS Code"))
         }
         Target::File(path, _) => {
-            std::process::Command::new("explorer.exe").arg(format!("/select,{}", path.display())).spawn().context("cannot open File Explorer")?;
+            canvas_sys::open::reveal(&path)?;
             Ok(format!("Revealed {}", path.display()))
         }
     }
@@ -297,7 +268,7 @@ pub fn open(target: &str) -> Result<String> {
 fn spawn_open(target: String) {
     // ShellExecute may block on slow handlers; keep the UI responsive.
     std::thread::spawn(move || {
-        let _ = shell_open(&target);
+        let _ = canvas_sys::open::url(&target);
     });
 }
 
@@ -376,11 +347,12 @@ mod tests {
         std::fs::write(&file, "x").unwrap();
         assert_eq!(resolve(&dir.display().to_string()).unwrap(), Target::Folder(dir.clone()));
         assert_eq!(resolve(&format!("{}:12:3", file.display())).unwrap(), Target::File(file.clone(), Some(12)));
-        let url = format!("file:///{}", file.display().to_string().replace('\\', "/").replace(' ', "%20"));
+        let url = format!("file:///{}", file.display().to_string().replace('\\', "/").trim_start_matches('/').replace(' ', "%20"));
         assert_eq!(resolve(&url).unwrap(), Target::File(file.clone(), None));
         assert_eq!(resolve("https://github.com").unwrap(), Target::Url("https://github.com".into()));
         assert!(resolve(r"relative\path.rs").is_err());
-        assert!(resolve(r"C:\definitely\missing\x.rs").is_err());
+        assert!(resolve("relative/path.rs").is_err());
+        assert!(resolve(&std::env::temp_dir().join("definitely").join("missing").join("x.rs").display().to_string()).is_err());
         assert!(resolve("javascript:alert(1)").is_err());
         assert!(resolve("https://x.io/\"a").is_err());
         std::fs::remove_dir_all(&dir).unwrap();

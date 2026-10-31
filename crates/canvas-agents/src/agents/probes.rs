@@ -123,7 +123,7 @@ impl Console {
         }
         if !self.wait_exit(Duration::from_secs(5)) {
             if let Some(pid) = self.child.process_id() {
-                let _ = crate::win::kill_tree(pid);
+                let _ = canvas_sys::process::kill_tree(pid);
             }
             let _ = self.child.kill();
         }

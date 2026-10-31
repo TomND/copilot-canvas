@@ -74,7 +74,7 @@ pub trait Platform: Send + Sync {
     /// same service and canvas with `args` (PLAN Phase 7: the TUI stays one
     /// keystroke away). Returns a status line.
     fn open_other_client(&self, args: &[String]) -> Result<String> {
-        let gui = build_sibling("copilot-canvas-gui.exe")?;
+        let gui = build_sibling(&canvas_sys::host::exe_name("copilot-canvas-gui"))?;
         spawn_client(&gui, args, false)?;
         Ok("Opened the GPU client on this canvas.".into())
     }
@@ -104,20 +104,19 @@ pub fn other_client_dryrun() -> Option<std::ffi::OsString> {
 /// window, for the TUI). Under a self-test ([`other_client_dryrun`]) the
 /// command line is written to a file instead.
 pub fn spawn_client(exe: &std::path::Path, args: &[String], console: bool) -> Result<()> {
-    use std::os::windows::process::CommandExt;
+    use canvas_sys::spawn::{CommandExt, DETACHED, NEW_PROCESS_GROUP};
     if let Some(file) = other_client_dryrun() {
         let line = std::iter::once(exe.display().to_string()).chain(args.iter().cloned()).collect::<Vec<_>>().join("\u{1f}");
         std::fs::write(file, line)?;
         return Ok(());
     }
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
-    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    let flags = CREATE_NEW_PROCESS_GROUP | if console { CREATE_NEW_CONSOLE } else { DETACHED_PROCESS };
+    if console {
+        return canvas_sys::open::in_terminal(exe, args);
+    }
     std::process::Command::new(exe)
         .args(args)
         .stdin(std::process::Stdio::null())
-        .creation_flags(flags)
+        .spawn_flags(NEW_PROCESS_GROUP | DETACHED)
         .spawn()
         .map(|_| ())
         .map_err(|e| anyhow::anyhow!("cannot start {}: {e}", exe.display()))

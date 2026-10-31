@@ -7,10 +7,12 @@
 //! `cfg` appears only on the `mod` declarations that pick an implementation;
 //! code that must behave differently at run time asks [`host::platform`].
 
+pub mod clipboard;
 pub mod fs;
 pub mod host;
 pub mod ipc;
 pub mod net;
+pub mod open;
 pub mod process;
 pub mod secret;
 pub mod spawn;

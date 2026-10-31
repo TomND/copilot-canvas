@@ -781,7 +781,7 @@ mod tests {
         assert!(matches!(app.canvas_agent_state(&app.doc.nodes[0].clone()), AgentState::Unavailable(_)));
         app.doc.canvas_id = Some("c1".into());
         assert_eq!(app.canvas_agents_unavailable(), None);
-        assert_eq!(app.canvas_agents_dir(), Some(std::path::PathBuf::from(r"C:\h\canvas-agents\c1")));
+        assert_eq!(app.canvas_agents_dir(), Some(std::path::PathBuf::from(r"C:\h").join("canvas-agents").join("c1")));
         app.installed_agents = vec![crate::agents::AgentKind::OpenCode];
         assert!(app.agent_unavailable(&app.doc.nodes[0].clone()).unwrap().contains("not installed"));
         app.installed_agents = vec![crate::agents::AgentKind::Copilot];

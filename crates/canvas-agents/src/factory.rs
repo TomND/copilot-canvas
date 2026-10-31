@@ -636,22 +636,7 @@ fn local_minutes(boundary: &str, offset_minutes: i32) -> Option<(u32, bool)> {
 }
 
 /// The current local UTC offset in minutes.
-pub fn local_offset_minutes() -> i32 {
-    // SAFETY: plain out-parameter calls.
-    let (local, utc) = unsafe {
-        let mut l = std::mem::zeroed();
-        let mut u = std::mem::zeroed();
-        windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut l);
-        windows_sys::Win32::System::SystemInformation::GetSystemTime(&mut u);
-        (l, u)
-    };
-    let minutes = |t: &windows_sys::Win32::Foundation::SYSTEMTIME| t.wHour as i32 * 60 + t.wMinute as i32;
-    let mut diff = minutes(&local) - minutes(&utc);
-    if local.wDay != utc.wDay {
-        diff += if (local.wYear, local.wMonth, local.wDay) > (utc.wYear, utc.wMonth, utc.wDay) { 1440 } else { -1440 };
-    }
-    diff
-}
+pub use canvas_sys::host::local_offset_minutes;
 
 /// A registered task read back as a manifest (import and drift checks).
 #[derive(Clone, Debug, Default)]

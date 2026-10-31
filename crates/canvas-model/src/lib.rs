@@ -16,6 +16,7 @@ pub mod git;
 pub mod launch;
 pub mod migrate;
 pub mod models;
+pub mod path_style;
 pub mod prs;
 pub mod recent;
 pub mod report_html;

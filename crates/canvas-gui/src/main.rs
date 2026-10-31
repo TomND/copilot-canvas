@@ -268,7 +268,7 @@ fn real_main() -> Result<i32> {
         && backend.info().is_ok_and(|info| info.installed.contains(&canvas_core::agents::AgentKind::Copilot))
         && backend.restore_mouse().unwrap_or(false);
     crashlog::install(home.join("crash.log"));
-    canvas_core::win::raise_priority();
+    canvas_sys::process::raise_priority();
 
     let mut first = launch.app(0, conn, backend, conn_options)?;
     let app = &mut first.app;

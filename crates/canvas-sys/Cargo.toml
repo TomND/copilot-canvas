@@ -18,6 +18,11 @@ windows-sys.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5.2"
+objc2-foundation = { version = "0.2.2", features = ["NSArray", "NSData", "NSDictionary", "NSEnumerator", "NSString"] }
+objc2-app-kit = { version = "0.2.2", features = ["NSPasteboard", "NSBitmapImageRep", "NSImageRep"] }
+
 [build-dependencies]
 cfg_aliases.workspace = true
 

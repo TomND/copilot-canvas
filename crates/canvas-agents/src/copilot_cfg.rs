@@ -1,7 +1,7 @@
 //! Copilot CLI configuration: listing via `copilot ... --json` and changes via
 //! the CLI itself, so Copilot validates everything it persists.
 
-use std::os::windows::process::CommandExt;
+use canvas_sys::spawn::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub fn copilot_home() -> PathBuf {
     std::env::var_os("COPILOT_HOME").map(PathBuf::from).unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".copilot"))
@@ -47,7 +46,7 @@ pub fn run_cli(args: &[&str], timeout: Duration) -> Result<String> {
         .stdin(Stdio::null())
         .stdout(std::fs::File::create(&out_path)?)
         .stderr(std::fs::File::create(&err_path)?)
-        .creation_flags(CREATE_NO_WINDOW)
+        .no_window()
         .spawn()
         .context("cannot run copilot")?;
     let deadline = Instant::now() + timeout;
@@ -56,7 +55,7 @@ pub fn run_cli(args: &[&str], timeout: Duration) -> Result<String> {
             break status;
         }
         if Instant::now() > deadline {
-            let _ = crate::win::kill_tree(child.id());
+            let _ = canvas_sys::process::kill_tree(child.id());
             let _ = child.kill();
             let _ = std::fs::remove_dir_all(&temp);
             bail!("copilot {} timed out", args.join(" "));

@@ -69,6 +69,7 @@ fn run(ctx: &Ctx, request: Request) -> Result<Response> {
             automation_db: automations::db_path().display().to_string(),
             default_agent: agents::machine_default(&ctx.home),
             installed: agents::installed(),
+            platform: canvas_sys::host::platform().as_str().into(),
         }),
 
         Request::ConfigSnapshot { agent } => {
@@ -212,7 +213,7 @@ fn run(ctx: &Ctx, request: Request) -> Result<Response> {
             anyhow::bail!("remote clients are managed by the running service (copilot-canvas remote …)")
         }
         Request::SetClipboardImage { png } => {
-            crate::clipboard::set_image_png(&png)?;
+            canvas_sys::clipboard::set_image_png(&png)?;
             Response::Done
         }
         Request::Upload { name, id, offset, data, last } => upload(&ctx.home, &name, &id, offset, &data, last)?,
@@ -386,9 +387,7 @@ fn plugin_folders(snapshot: &mut copilot_cfg::Snapshot) {
 /// Folder names in `dir` (".." first, hidden system folders left out), or the drives.
 fn list_dir(dir: Option<&str>) -> Result<Vec<String>> {
     let Some(dir) = dir else {
-        // SAFETY: no arguments; returns a bit mask.
-        let mask = unsafe { windows_sys::Win32::Storage::FileSystem::GetLogicalDrives() };
-        return Ok((0..26u8).filter(|i| mask & (1 << i) != 0).map(|i| format!("{}:\\", (b'A' + i) as char)).collect());
+        return Ok(canvas_sys::fs::roots());
     };
     let mut names: Vec<String> = std::fs::read_dir(dir)
         .map_err(|e| anyhow!(e.to_string()))?

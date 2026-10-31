@@ -3,7 +3,8 @@
 //! agents run on goes through the backend ([`rpc::Backend`]); the canvas
 //! document is the service's and is kept in sync with patches ([`sync`]).
 
-pub use canvas_common::{paths, pipe, protocol, settings, win};
+pub use canvas_common::{paths, protocol, settings};
+pub use canvas_sys::ipc as pipe;
 pub use canvas_model::agent as agents;
 pub use canvas_model::{automation, bus, config, doc, effects, git, migrate, rpc, sync, transcript, vscode};
 pub use canvas_model::report_html;
@@ -12,7 +13,7 @@ pub use canvas_model::reports as reports_model;
 pub mod actions;
 pub mod app;
 pub mod canvas_wide;
-pub mod clipboard;
+pub use canvas_sys::clipboard;
 pub mod conn;
 pub mod demo;
 pub mod dialogs;

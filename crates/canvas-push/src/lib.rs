@@ -214,6 +214,7 @@ pub struct Sender {
 
 impl Sender {
     pub fn new(key: ApnsKey) -> Result<Self> {
+        install_tls_provider();
         let http = reqwest::blocking::Client::builder().timeout(Duration::from_secs(15)).build().context("cannot start the HTTP client")?;
         Ok(Self { key, http, jwt: Mutex::new(None) })
     }
@@ -361,6 +362,16 @@ pub fn access_payload(device: &Device, secret: &[u8], url: &str, token: &str, ex
     })
 }
 
+/// rustls needs its crypto provider chosen once per process (Linux builds;
+/// elsewhere the system TLS needs nothing).
+#[cfg(target_os = "linux")]
+fn install_tls_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_tls_provider() {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,3 +475,4 @@ xIg5b32AvVgn4P6dw7B8py49iH9UZ7AQI5LDEdt1UIjEoEc2Sq4dZF82
         assert!(report_payload(&device, &report, 9).to_string().len() < 4096, "fits a notification");
     }
 }
+

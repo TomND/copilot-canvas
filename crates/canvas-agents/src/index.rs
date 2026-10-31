@@ -490,7 +490,7 @@ impl Index {
                     name.strip_prefix("inuse.")
                         .and_then(|rest| rest.strip_suffix(".lock"))
                         .and_then(|pid| pid.parse::<u32>().ok())
-                        .is_some_and(|pid| crate::win::lock_owner_alive(pid, &e.path()))
+                        .is_some_and(|pid| canvas_sys::process::lock_owner_alive(pid, &e.path()))
                 })
             })
             .unwrap_or(false);

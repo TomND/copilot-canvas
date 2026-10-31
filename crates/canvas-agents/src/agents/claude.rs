@@ -121,9 +121,9 @@ pub fn cleanup_session_files(home: &Path, id: &str) {
 }
 
 /// Writes `path` atomically with a protected DACL that grants access to the
-/// current user only ([`crate::win::write_private`]).
+/// current user only ([`canvas_sys::fs::write_private`]).
 fn write_private(path: &Path, contents: &[u8]) -> Result<()> {
-    crate::win::write_private(path, contents).with_context(|| format!("cannot write {}", path.display()))
+    canvas_sys::fs::write_private(path, contents).with_context(|| format!("cannot write {}", path.display()))
 }
 
 impl Claude {

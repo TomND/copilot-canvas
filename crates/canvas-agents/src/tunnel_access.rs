@@ -8,7 +8,7 @@
 //! and sends it to clients that asked (`CAP_TUNNEL_ACCESS`); `remote pair
 //! --qr` puts one into the pairing QR code.
 
-use std::os::windows::process::CommandExt;
+use canvas_sys::spawn::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -17,7 +17,6 @@ use anyhow::{Context, Result, bail};
 use canvas_common::remote::{self, TunnelToken};
 use canvas_common::settings::Settings;
 
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// A token is renewed once it has less than this left.
 pub const RENEW_BEFORE_MS: u64 = 12 * 3600 * 1000;
 
@@ -57,7 +56,7 @@ fn devtunnel(args: &[&str], timeout: Duration) -> Result<String> {
         .stdin(Stdio::null())
         .stdout(std::fs::File::create(&out_path)?)
         .stderr(std::fs::File::create(temp.join("err.txt"))?)
-        .creation_flags(CREATE_NO_WINDOW)
+        .no_window()
         .spawn()
         .context("cannot run devtunnel")?;
     let deadline = Instant::now() + timeout;

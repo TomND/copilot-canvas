@@ -2,7 +2,6 @@
 //! (the local service on loopback, or a remote service behind a tunnel).
 //! Handles the handshake, heartbeats, input sequence numbers and reconnecting.
 
-use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -20,10 +19,8 @@ use crate::tunnel::Server;
 pub use canvas_common::handshake::{AuthError, NoChallenge, Refused};
 use canvas_common::wire::{self, Beat, Closer, FrameReader, FrameWriter, Liveness, WireStats};
 use canvas_common::{handshake, tcp};
+use canvas_sys::spawn::{BREAKAWAY, CommandExt, DETACHED, NEW_PROCESS_GROUP};
 
-const DETACHED_PROCESS: u32 = 0x0000_0008;
-const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
 /// A service that has not completed the handshake by then is given up on.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a started service may take to accept connections.
@@ -366,7 +363,7 @@ fn pipe_halves(pipe: pipe::Pipe) -> Result<Halves> {
 
 fn open_pipe(instance: &Instance, options: &ConnOptions, session: &Arc<ClientSession>) -> Result<Conn> {
     let pipe = pipe::connect(&instance.pipe_name(), Duration::from_secs(2)).context("service is not running")?;
-    let token = canvas_common::auth::read_token(&instance.token_path())?;
+    let token = canvas_sys::token::read_token(&instance.token_path())?;
     match establish(pipe_halves(pipe)?, &token, None, options, session, false, true) {
         // A service older than protocol 8 cannot read `Hello8`: say `Hello`.
         Err(error) if error.is::<NoChallenge>() => {
@@ -410,7 +407,7 @@ pub fn listening_port(instance: &Instance) -> Option<u16> {
 fn open_loopback(instance: &Instance, options: &ConnOptions, session: &Arc<ClientSession>) -> Result<Conn> {
     let attempt = || -> Result<Conn> {
         let port = listening_port(instance).context("the local service is not listening for remote clients")?;
-        let token = canvas_common::auth::read_token(&instance.token_path())?;
+        let token = canvas_sys::token::read_token(&instance.token_path())?;
         let stream = tcp::connect(&format!("127.0.0.1:{port}"), Duration::from_secs(2))?;
         open_stream(stream, &token, None, options, session)
     };
@@ -635,10 +632,13 @@ fn service_executable(instance: &Instance) -> Result<std::path::PathBuf> {
     anyhow::ensure!(exe.is_file(), "the service executable {} is missing", exe.display());
     let dir = instance.bin_dir();
     std::fs::create_dir_all(&dir)?;
-    let target = dir.join(format!("copilot-canvas-service-{}.exe", build_id()));
+    let name = format!("copilot-canvas-service-{}{}", build_id(), std::env::consts::EXE_SUFFIX);
+    let target = dir.join(&name);
     if !target.is_file() {
-        let temp = target.with_extension("exe.tmp");
+        let temp = dir.join(format!("{name}.tmp"));
         std::fs::copy(&exe, &temp).context("cannot stage the service executable")?;
+        // macOS: a downloaded build's quarantine must not follow the copy (Gatekeeper would ask again).
+        canvas_sys::fs::strip_quarantine(&temp);
         std::fs::rename(&temp, &target).or_else(|e| if target.is_file() { Ok(()) } else { Err(e) })?;
     }
     // Old builds that are no longer running can be removed; in-use files are skipped.
@@ -679,12 +679,13 @@ pub fn spawn_service_exe(exe: &Path, instance: &Instance, env: &[(&str, &str)]) 
     for (key, value) in env {
         command.env(key, value);
     }
-    // Outlive the launching terminal (and its job) where the job permits it.
-    let spawned = command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB).spawn();
+    // Outlive the launching terminal (and its job) where the job permits it;
+    // on Unix a new session, out of the terminal's process group.
+    let spawned = command.spawn_flags(DETACHED | NEW_PROCESS_GROUP | BREAKAWAY).spawn();
     match spawned {
         Ok(_) => Ok(()),
         Err(_) => command
-            .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+            .spawn_flags(DETACHED | NEW_PROCESS_GROUP)
             .spawn()
             .map(|_| ())
             .context("cannot start the terminal service"),
@@ -818,7 +819,7 @@ mod tests {
                 }
             });
         }
-        let secret = canvas_common::dpapi::protect_hex(&[7; 32], "test").unwrap();
+        let secret = canvas_sys::secret::seal(&home, &[7; 32], "test").unwrap();
         let mut servers = Servers::default();
         servers.upsert(ServerRecord { name: "cloud".into(), addr: Some(addr), client_id: "pc-1".into(), secret, vscode_tunnel: Some("cpc".into()), ..Default::default() });
         servers.save(&home).unwrap();

@@ -183,7 +183,7 @@ pub fn run(options: Options) -> Result<()> {
         // terminal already restored; exit instead (sessions live in the service).
         std::process::exit(101);
     }));
-    canvas_core::win::raise_priority();
+    canvas_sys::process::raise_priority();
     ratatui::crossterm::terminal::enable_raw_mode().context("cannot initialize the terminal")?;
     execute!(std::io::stdout(), ratatui::crossterm::terminal::EnterAlternateScreen)?;
     // Auto-wrap off (DECAWM): writing the bottom-right cell must not scroll the

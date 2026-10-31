@@ -94,7 +94,7 @@ impl PidFile {
 
     /// The process is running and is the one that wrote the file (not a recycled pid).
     pub fn alive(&self) -> bool {
-        let Some(started) = crate::win::process_start_ms(self.pid) else { return false };
+        let Some(started) = canvas_sys::process::process_start_ms(self.pid) else { return false };
         match self.proc_start {
             Some(filetime) => started.abs_diff((filetime / 10_000).saturating_sub(11_644_473_600_000)) <= 1,
             None => started <= self.started_ms.saturating_add(2_000),
@@ -1174,7 +1174,7 @@ mod tests {
         let (dir, transcript) = fixture();
         append(&transcript, &prompt("2026-10-27T10:00:00Z", "go"));
         let me = std::process::id();
-        let started = crate::win::process_start_ms(me).unwrap();
+        let started = canvas_sys::process::process_start_ms(me).unwrap();
         let filetime = (started + 11_644_473_600_000) * 10_000;
         let write = |status: &str, waiting: &str, at: u64| {
             let text = format!(
@@ -1222,7 +1222,7 @@ mod tests {
         let (changed, _) = history.poll(&tracked(), std::time::Duration::ZERO);
         assert!(changed.is_empty(), "not a Claude session (yet)");
         let me = std::process::id();
-        let started = crate::win::process_start_ms(me).unwrap();
+        let started = canvas_sys::process::process_start_ms(me).unwrap();
         let pid = format!(
             r#"{{"pid":{me},"sessionId":"{ID}","cwd":"C:\\repos\\demo","startedAt":{started},"procStart":"{}","status":"busy","name":"probe"}}"#,
             (started + 11_644_473_600_000) * 10_000
@@ -1250,7 +1250,7 @@ mod tests {
     fn malformed_pid_files_are_ignored_without_panicking() {
         let (dir, _) = fixture();
         let me = std::process::id();
-        let started = crate::win::process_start_ms(me).unwrap();
+        let started = canvas_sys::process::process_start_ms(me).unwrap();
         let file = |id: &str| {
             format!(r#"{{"pid":{me},"sessionId":{},"cwd":"C:\\x","startedAt":{started},"procStart":"{}","status":"busy"}}"#, serde_json::to_string(id).unwrap(), (started + 11_644_473_600_000) * 10_000)
         };

@@ -6,7 +6,7 @@
 //! [`redact_setting`]).
 
 use std::io::Read;
-use std::os::windows::process::CommandExt;
+use canvas_sys::spawn::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
@@ -19,7 +19,6 @@ use super::AgentKind;
 use crate::copilot_cfg::{self, Agent, Kind, McpServer, Plugin, Skill, Snapshot, json_payload};
 pub use canvas_model::config::{caps_for_changes, caps_for_views};
 
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Output kept per stream of a CLI run; the rest is dropped.
@@ -86,7 +85,7 @@ impl Capture {
 }
 
 fn kill(child: &mut std::process::Child) {
-    let _ = crate::win::kill_tree(child.id());
+    let _ = canvas_sys::process::kill_tree(child.id());
     let _ = child.kill();
     let _ = child.wait();
 }
@@ -97,7 +96,7 @@ fn kill(child: &mut std::process::Child) {
 pub fn run(program: &str, args: &[&str], env: &[(&str, &str)], timeout: Duration) -> Result<String> {
     let cwd = TempDir::new()?;
     let mut command = Command::new(program);
-    command.args(args).current_dir(&cwd.0).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).creation_flags(CREATE_NO_WINDOW);
+    command.args(args).current_dir(&cwd.0).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).no_window();
     for (key, value) in env {
         command.env(key, value);
     }
@@ -751,8 +750,12 @@ mod tests {
 
     #[test]
     fn cli_errors_are_short_and_redacted() {
+        #[cfg(windows)]
         use std::os::windows::process::ExitStatusExt;
-        let status = std::process::ExitStatus::from_raw(3);
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt;
+        // Exit code 3 (Unix wait statuses keep the code in the second byte).
+        let status = std::process::ExitStatus::from_raw(if cfg!(windows) { 3 } else { 3 << 8 });
         let message = failure_message("warming up\nError: login failed for https://u:SECRET@x.example/y?token=SECRET --token SECRET\n", "", status);
         assert_eq!(message, "Error: login failed for https://x.example/y --token (hidden)");
         assert_eq!(failure_message("", "out\nAuthorization: Bearer SECRET rest", status), "Authorization: (hidden)");

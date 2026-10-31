@@ -164,12 +164,12 @@ pub fn listener_of(port: u16, root: u32) -> Result<Listener> {
     if owners.is_empty() {
         return Ok(Listener::None);
     }
-    let entries = crate::win::process_entries();
+    let entries = canvas_sys::process::process_entries();
     let mut children: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
     for (pid, parent, _) in &entries {
         children.entry(*parent).or_default().push(*pid);
     }
-    Ok(classify_listener(&owners, &crate::win::process_tree(root, &children)))
+    Ok(classify_listener(&owners, &canvas_sys::process::process_tree(root, &children)))
 }
 
 /// Messages for the service log (each said once per server).
@@ -763,7 +763,7 @@ mod tests {
         assert_eq!(listener_of(port, other.id()).unwrap(), Listener::Foreign(vec![std::process::id()]));
         drop(listener);
         assert_eq!(listener_of(port, std::process::id()).unwrap(), Listener::None);
-        let _ = crate::win::kill_tree(other.id());
+        let _ = canvas_sys::process::kill_tree(other.id());
         let _ = other.wait();
     }
 
@@ -783,7 +783,7 @@ mod tests {
         let notes = take_notes();
         assert!(notes.iter().any(|n| n.contains(&terminal) && n.contains("not sent")), "{notes:?}");
         unregister_terminal(&terminal);
-        let _ = crate::win::kill_tree(other.id());
+        let _ = canvas_sys::process::kill_tree(other.id());
         let _ = other.wait();
     }
 

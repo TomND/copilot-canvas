@@ -210,14 +210,9 @@ pub struct DustLook {
     pub suffix: String,
 }
 
-/// Windows' "Show animations in Windows" (SPI_GETCLIENTAREAANIMATION).
-pub fn system_animations() -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW};
-    let mut on: i32 = 1;
-    // SAFETY: SPI_GETCLIENTAREAANIMATION writes one BOOL to the pointer.
-    let ok = unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&mut on as *mut i32).cast(), 0) };
-    ok == 0 || on != 0
-}
+/// The system's animation setting (Windows "Show animations", macOS and
+/// Linux "reduce motion" turned off).
+pub use canvas_sys::host::system_animations;
 
 /// Settings › Effects as stored ("on", "reduced", "off"; `None`: follow Windows).
 pub fn motion_from(setting: Option<&str>, animations: bool) -> Motion {

@@ -53,6 +53,51 @@ mod unix {
     }
 }
 
+/// Where the folder browser starts: the drives (Windows).
+#[cfg(windows)]
+pub fn roots() -> Vec<String> {
+    // SAFETY: no arguments; returns a bit mask.
+    let mask = unsafe { windows_sys::Win32::Storage::FileSystem::GetLogicalDrives() };
+    (0..26u8).filter(|i| mask & (1 << i) != 0).map(|i| format!("{}:\\", (b'A' + i) as char)).collect()
+}
+
+/// Where the folder browser starts: `/`, the home folder, then mounted
+/// volumes (macOS `/Volumes/*`; Linux `/media/$USER/*`, `/run/media/$USER/*`, `/mnt/*`).
+#[cfg(unix)]
+pub fn roots() -> Vec<String> {
+    let mut roots = vec!["/".to_owned()];
+    if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+        roots.push(std::path::PathBuf::from(home).display().to_string());
+    }
+    let user = crate::host::user_name();
+    let mounts: Vec<std::path::PathBuf> = match crate::host::platform() {
+        crate::host::Platform::MacOs => vec!["/Volumes".into()],
+        _ => vec![format!("/media/{user}").into(), format!("/run/media/{user}").into(), "/mnt".into()],
+    };
+    for parent in mounts {
+        let Ok(entries) = std::fs::read_dir(&parent) else { continue };
+        let mut found: Vec<String> = entries.flatten().filter(|e| e.path().is_dir() && !e.file_name().to_string_lossy().starts_with('.')).map(|e| e.path().display().to_string()).collect();
+        found.sort();
+        roots.extend(found);
+    }
+    roots
+}
+
+/// Removes macOS's `com.apple.quarantine` attribute from a file this program
+/// copied (the per-build service copy), so Gatekeeper does not ask again for
+/// a build the user already opened. Nothing to do elsewhere.
+pub fn strip_quarantine(path: &std::path::Path) {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else { return };
+        // SAFETY: NUL-terminated path and attribute name.
+        unsafe { libc::removexattr(path.as_ptr(), c"com.apple.quarantine".as_ptr(), 0) };
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = path;
+}
+
 /// Creates `dir` (and its parents); on Windows folders inherit the profile's ACL.
 #[cfg(windows)]
 pub fn private_dir(dir: &std::path::Path) -> std::io::Result<()> {
