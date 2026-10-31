@@ -28,7 +28,7 @@ pub struct ToastRecord {
     pub title: String,
     pub body: String,
     /// "queued", "shown", "in front" (the window was active: no toast),
-    /// "duplicate" or "failed: …".
+    /// "duplicate", "not shown: …" (the OS would not show it: why) or "failed: …".
     pub status: String,
 }
 
@@ -261,6 +261,9 @@ fn toaster() -> &'static Sender<Job> {
                     Job::Show { title, body, records, index } => {
                         let status = match registered.clone().and_then(|_| crate::os::show_toast(&title, &body)) {
                             Ok(()) => "shown".to_owned(),
+                            // Nothing the OS would show (macOS outside its app bundle,
+                            // notifications turned off): recorded with the OS's reason.
+                            Err(error) if error.starts_with("not shown") => error,
                             Err(error) => format!("failed: {error}"),
                         };
                         if let Some(record) = records.lock().unwrap_or_else(|p| p.into_inner()).get_mut(index) {

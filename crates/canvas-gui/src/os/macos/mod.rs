@@ -1,8 +1,13 @@
-//! macOS: the WKWebView report view, posted keys and work areas; the Dock
-//! tile, notifications and menus come here too (MAC-LINUX-PLAN §5.6, §5.7).
+//! macOS: the WKWebView report view, the Dock tile and attention,
+//! notifications, posted keys and work areas (MAC-LINUX-PLAN §5.6, §5.7).
 
 mod appkit;
+mod dock;
+mod notify;
 pub mod webview;
+
+pub use dock::{Taskbar, flash, in_front, track_window};
+pub use notify::{show_toast, toast_history_count, toast_thread_init};
 
 pub use super::unix::{clip_image, native_window, process, since_start};
 pub use appkit::{post_key, work_area};
@@ -70,28 +75,6 @@ pub fn configure_event_loop(builder: &mut winit::event_loop::EventLoopBuilder<cr
     }
 }
 
-pub fn in_front(_window: isize) -> bool {
-    false
-}
-
-/// The windows and their focus, for `in_front` and `flash` where the OS
-/// cannot be asked by handle (macOS asks AppKit: nothing to track).
-pub fn track_window(_window: &std::sync::Arc<winit::window::Window>, _focused: bool) {}
-
-pub fn flash(_window: isize) {}
-
-pub fn toast_thread_init() -> Result<(), String> {
-    Err("notifications are not available on this platform yet".into())
-}
-
-pub fn show_toast(_title: &str, _body: &str) -> Result<(), String> {
-    Err("notifications are not available on this platform yet".into())
-}
-
-pub fn toast_history_count() -> Option<u32> {
-    None
-}
-
 /// Nothing to register outside Windows (the bundle identifier or the
 /// `.desktop` file names the app).
 /// No helper process mode on macOS (the HTML view is a WKWebView in-process).
@@ -100,20 +83,6 @@ pub fn helper() -> Option<i32> {
 }
 
 pub fn set_app_id() {}
-
-/// The Dock tile or launcher entry (not shown yet).
-#[derive(Default)]
-pub struct Taskbar {
-    pub shown: Option<u8>,
-}
-
-impl Taskbar {
-    pub fn set(&mut self, window: isize, state: u8) {
-        if window != 0 {
-            self.shown = Some(state);
-        }
-    }
-}
 
 
 /// Every window: the left Option key is Alt (Meta) for terminals, the right
