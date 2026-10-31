@@ -15,7 +15,7 @@ work resumes after any interruption: read it first, then `git log`.
 
 ## Phases (plan §9)
 
-### Phase 0 Groundwork — macOS: in progress · Linux: not started
+### Phase 0 Groundwork — macOS: done (CI confirming) · Linux: see the `linux` branch
 
 - [x] Windows dependencies target-gated (`windows`, `windows-sys`,
       `webview2-com` under `[target.'cfg(windows)'.dependencies]`)
@@ -27,20 +27,33 @@ work resumes after any interruption: read it first, then `git log`.
 - [x] the whole workspace (without Ghostty) builds, clippy-clean, on
       macOS; type-checks for x86_64 Linux; `cargo test --workspace
       --no-default-features` green on macOS
-- [ ] Ghostty for Unix targets (xtask `--target`, build script, per-target ABI
-      manifests)
-- [ ] CI jobs for the portable and `canvas-sys` tests on macOS (and Linux on
-      `linux`)
+- [x] Ghostty for Unix targets: `cargo xtask build-ghostty --target
+      aarch64-apple-darwin|x86_64-apple-darwin|x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu`
+      → `target/ghostty/<commit>/<triple>/` (Windows layout unchanged);
+      `libghostty-vt.a` links with no extra system libraries on macOS; the
+      ABI manifest test checks the target it runs on (LP64 bindings pass)
+- [x] CI: `ghostty-macos` (Zig 0.17.0 checked by SHA-256) and `macos`
+      (clippy, workspace tests with Ghostty, alacritty-only build, corpus,
+      TUI self-test, `--remote loopback|faults|paired`) jobs
 - Exit: `cargo check --workspace` (with and without Ghostty) and `cargo test`
   of the touched crates green on the OS; Windows CI and `cargo xwin clippy`
   green.
 
-### Phase 1 Service and TUI (M0, M1) — not started
+### Phase 1 Service and TUI (M0, M1) — macOS: in progress
 
 - M0: REMOTE.md checklist 1–12 from a Mac TUI against the Windows service.
 - M1: `cargo test --workspace`, `corpus check`, `selftest`, `selftest --remote
   loopback|faults|paired`, backend contract, `selftest agent --paste`,
   `bench --terminals 100` within PLAN §9.
+- [x] service on a Unix socket, PTY kill path, remembered descendants and the
+      start-up orphan sweep, priority classes (PRIO_DARWIN_BG), RLIMIT_NOFILE,
+      login-environment resolution, Keychain / key-file secrets
+- [x] locally on macOS: `cargo test --workspace` (with Ghostty), `corpus
+      check` (26 entries, both engines), `selftest` (39 steps), `selftest
+      --remote loopback|faults|paired`, backend contract
+- [ ] the same green on the CI `macos` job
+- [ ] `selftest agent --paste` (OpenCode, Claude Code), `selftest agent
+      --agent opencode --prompt`, `bench --terminals 100`, `doctor`
 
 ### Phase 2 Lifecycle and automations — not started
 
@@ -160,7 +173,25 @@ plan §6.1 equivalent, documented).
 - `canvas-push` uses rustls (ring) on Linux, native-tls elsewhere (§5.9).
 - Timing-sensitive `canvas-host` terminal tests run serially (a test-only
   mutex): on 3-core macOS runners they starved each other's 100 ms ticks.
-- Canvas locks (`Store::open`) use an exclusive `flock` off Windows.
+- Canvas locks (`Store::open`) use an exclusive `flock` off Windows (retried
+  for 300 ms: a lock just released can linger in a forked child until exec).
+- Demo and test shells: `/usr/bin/env PS1='PS > ' /bin/zsh -f` on macOS
+  (its /bin/bash 3.2 has no bracketed paste), `bash --noprofile --norc` on
+  Linux, PowerShell on Windows; chosen by the service's platform
+  (`doc::demo_shell`). The prompt is `PS > ` (not the plan's `PS> `) so the
+  self-tests' PowerShell checks hold unchanged.
+- Secrets backend on macOS: the Keychain only for Developer-ID-signed builds
+  (unsigned development builds would prompt on every rebuild); a home keeps
+  the backend it started with (`remote/master.key` or `remote/master.keychain`).
+- The service merges the login shell's environment at start except in
+  self-tests (`COPILOT_CANVAS_SELFTEST=1`) and with `COPILOT_CANVAS_LOGIN_ENV=0`.
+- The graceful-stop timeline is measured on the clock (shared code): the
+  documented 2 / 3.5 / 5 s and "3 s after the UI quit" now hold on a
+  throttled machine too; Windows behaviour is otherwise unchanged.
+- Copilot CLI processes on Unix are found by their command line (`node …/copilot`
+  or any interpreter running a script named `copilot`); only those holding a
+  session's in-use lock become subsessions.
+- Copied text goes to the Mac (and Linux) clipboard with LF line breaks.
 
 ## Owner-only items (do not block "done")
 
@@ -178,3 +209,7 @@ plan §6.1 equivalent, documented).
   GUI build on macOS (443cc87…ed67588); Unix twins of the Windows-only
   tests; CI fixes for the macOS `ios` job (serial timing tests, EINVAL on
   reset sockets). Next: Ghostty for Unix targets, CI `macos` job, M0.
+- 2026-10-31: merged origin/main (WI-021, WI-022); Ghostty built for
+  aarch64-apple-darwin (85d383a); Keychain secrets (5530fe3); TUI self-test,
+  remote loopback/faults/paired and corpus green locally on macOS
+  (6fa2a0a, 7cdfd21); service start-up on Unix (e9a9a01).
