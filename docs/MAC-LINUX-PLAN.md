@@ -378,9 +378,15 @@ reuses Phases 0–1 and adds its own desktop integration. §9 has the phases.
 Phase 4.) `canvas-core/src/gesture.rs` handles `InputEvent::Gesture`
 (scroll with pixel deltas and phases, pinch, smart zoom, force click) under
 a per-OS `PointerPolicy` (`os::POINTER_POLICY`): **Precise** on macOS;
-**Notches** on Windows (unchanged: pixel deltas add up into wheel notches)
-and on Linux until its lead checks trackpads on Wayland and X11. A mouse
-wheel (line deltas) keeps row 12's notches everywhere. Under Precise:
+**Notches** on Windows (unchanged: pixel deltas add up into wheel notches).
+On Linux (checked 2026-10-31) scrolling follows `os::scroll_policy()`:
+**Precise on Wayland**, where winit 0.30 gives touchpads pixel deltas with
+Started/Moved/Ended phases, and **Notches on X11**, where XInput2 smooth
+scrolling gives every device phase-less fractional lines (a touchpad cannot
+be told from a wheel); Linux's `POINTER_POLICY` (help text, pinch guards)
+stays Notches because winit 0.30 has no pinch, double tap or pressure there
+(§6.1). A mouse wheel (line deltas) keeps row 12's notches everywhere.
+Under Precise:
 
 - **Two-finger scroll** pans the canvas pixel for pixel. The system's
   momentum moves it on; the canvas adds no glide of its own.
@@ -403,8 +409,9 @@ wheel (line deltas) keeps row 12's notches everywhere. Under Precise:
 - **Command+scroll** zooms as Ctrl+scroll does (`KeyPolicy::gesture`).
 - Help (`?`) lists the gestures in a second column.
 
-Checked by parity rows T1 and T2 (where the policy is Precise) and the
-canvas-core `gesture` tests. How it feels (momentum, natural scrolling on and
+Checked by parity rows T1 and T2 (where the policy is Precise: macOS, and
+Linux under Wayland for T1's pan part and T2, blocking on CI under headless
+weston) and the canvas-core `gesture` tests. How it feels (momentum, natural scrolling on and
 off, force-click pressure) is the owner's check on hardware.
 
 ## 5. Subsystem designs
@@ -833,7 +840,7 @@ work beyond §5.8.
 | V3 | Effects | renderer | renderer | — | S / S | L |
 | V4 | Group chips at any zoom; sidebar rows | renderer | renderer | — | S / S | L |
 | V5 | Remote group files in the canvas | core; the service's path style | same | `PathStyle` | S / S | L |
-| T1 | Trackpad on the canvas (D15): pan, momentum latching, pinch, smart zoom, force click | `MouseWheel` `PixelDelta` with phases, `PinchGesture`, `DoubleTapGesture`, `TouchpadPressure` | notches until checked; then `PixelDelta` (Wayland, X11 XInput2) and `PinchGesture` where winit has it | winit | M / M | M |
+| T1 | Trackpad on the canvas (D15): pan, momentum latching, pinch, smart zoom, force click | `MouseWheel` `PixelDelta` with phases, `PinchGesture`, `DoubleTapGesture`, `TouchpadPressure` | Wayland: `PixelDelta` with phases (pixel pan, the system's momentum, latching); X11: notches (no phases, no pixels); pinch, smart zoom, force click: the §6.1 equivalent | winit | M / M | M |
 | T2 | Trackpad over terminals (D15): fractional scrollback, notches for mouse mode, latching | core | core | winit | S / S | L |
 
 The hardening checks (GUI.md §3) map too: device loss (Metal and Vulkan
