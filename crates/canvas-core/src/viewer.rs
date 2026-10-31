@@ -5,6 +5,7 @@
 //! tunnel, "Copy path" always. Nothing is executed. Drawn by `ui_modals`.
 
 use crate::input::{KeyCode, KeyEvent, Modifiers};
+use canvas_model::path_style::PathStyle;
 
 /// Largest file shown (from its start).
 pub const MAX_VIEW_BYTES: u64 = 2 << 20;
@@ -136,15 +137,21 @@ impl Viewer {
         self.folder && self.listed
     }
 
-    /// The path of entry `index` (or of the parent folder for `None`).
-    pub fn entry_path(&self, index: Option<usize>) -> Option<(String, bool)> {
+    /// The path of entry `index` (or of the parent folder for `None`), in the
+    /// service's path style (MAC-LINUX-PLAN D10).
+    pub fn entry_path(&self, index: Option<usize>, style: PathStyle) -> Option<(String, bool)> {
         let base = self.path.trim_end_matches(['\\', '/']);
-        match index {
-            Some(i) => self.entries.get(i).map(|(name, dir)| (format!("{base}\\{name}"), *dir)),
-            None => {
+        match (index, style) {
+            (Some(i), PathStyle::Windows) => self.entries.get(i).map(|(name, dir)| (format!("{base}\\{name}"), *dir)),
+            (Some(i), PathStyle::Posix) => self.entries.get(i).map(|(name, dir)| (format!("{base}/{name}"), *dir)),
+            (None, PathStyle::Windows) => {
                 let (parent, _) = base.rsplit_once(['\\', '/'])?;
                 let parent = if parent.ends_with(':') { format!("{parent}\\") } else { parent.to_owned() };
                 Some((parent, true))
+            }
+            (None, PathStyle::Posix) => {
+                let (parent, _) = base.rsplit_once('/')?;
+                Some((if parent.is_empty() { "/".to_owned() } else { parent.to_owned() }, true))
             }
         }
     }
@@ -274,5 +281,19 @@ mod tests {
         assert_eq!(viewer.lines.as_deref(), Some(&["▸ src".to_owned()][..]));
         let tunnel = Viewer::new(r"C:\x".into(), false, None, Some("vscode://vscode-remote/tunnel+t/C:/x".into()));
         assert_eq!(tunnel.buttons(), [OPEN_IN_VSCODE, COPY_PATH, CLOSE]);
+    }
+
+    #[test]
+    fn entries_and_parents_follow_the_services_path_style() {
+        let mut windows = Viewer::new(r"C:\x".into(), true, None, None);
+        windows.set_listing(vec!["notes.md".into()], true);
+        assert_eq!(windows.entry_path(Some(0), PathStyle::Windows), Some((r"C:\x\notes.md".into(), false)));
+        assert_eq!(windows.entry_path(None, PathStyle::Windows), Some((r"C:\".into(), true)));
+        let mut posix = Viewer::new("/srv/group/ai-docs/".into(), true, None, None);
+        posix.set_listing(vec!["notes.md".into(), "src/".into()], true);
+        assert_eq!(posix.entry_path(Some(0), PathStyle::Posix), Some(("/srv/group/ai-docs/notes.md".into(), false)));
+        assert_eq!(posix.entry_path(None, PathStyle::Posix), Some(("/srv/group".into(), true)));
+        assert_eq!(Viewer::new("/srv".into(), true, None, None).entry_path(None, PathStyle::Posix), Some(("/".into(), true)));
+        assert_eq!(Viewer::new("/".into(), true, None, None).entry_path(None, PathStyle::Posix), None);
     }
 }

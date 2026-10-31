@@ -144,7 +144,7 @@ impl App {
                 crate::viewer::ViewerKey::Close => Outcome::Close,
                 crate::viewer::ViewerKey::Button(button) if self.viewer_button(viewer, button) => Outcome::Close,
                 crate::viewer::ViewerKey::Button(_) => Outcome::Keep,
-                crate::viewer::ViewerKey::Open(i) => match viewer.entry_path(Some(i)) {
+                crate::viewer::ViewerKey::Open(i) => match viewer.entry_path(Some(i), self.info.path_style()) {
                     Some((path, true)) => {
                         viewer.navigate(path.clone());
                         self.load_browser(path);
@@ -154,7 +154,7 @@ impl App {
                     None => Outcome::Keep,
                 },
                 crate::viewer::ViewerKey::Up => {
-                    if let Some((path, _)) = viewer.entry_path(None) {
+                    if let Some((path, _)) = viewer.entry_path(None, self.info.path_style()) {
                         viewer.navigate(path.clone());
                         self.load_browser(path);
                     }
