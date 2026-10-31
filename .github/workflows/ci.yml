@@ -454,6 +454,19 @@ jobs:
           for i in $(seq 1 40); do [ -S "$XDG_RUNTIME_DIR/wl-41b" ] && break; sleep 0.25; done
           unset DISPLAY
           CANVAS_PARITY_ROWS=41b,T1,T2 WAYLAND_DISPLAY=wl-41b timeout 600 dbus-run-session -- target/release/copilot-canvas selftest --client gui --parity
+      - name: GUI hardening checks on X11 (reporting)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          mkdir -p "$CANVAS_GUI_SCREENS/hardening"
+          unset WAYLAND_DISPLAY
+          CANVAS_GUI_SCREENS="$CANVAS_GUI_SCREENS/hardening" timeout 1200 xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- target/release/copilot-canvas selftest --client gui --hardening
+      - name: "GUI bench on X11 (advisory: software rendering on a shared runner)"
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          unset WAYLAND_DISPLAY
+          timeout 900 xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- target/release/copilot-canvas bench --client gui --json "$CANVAS_GUI_SCREENS/bench-gui-x11.json"
       - name: GUI parity suite on X11 (reporting)
         if: ${{ !cancelled() }}
         continue-on-error: true
