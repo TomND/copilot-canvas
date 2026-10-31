@@ -118,13 +118,13 @@ work resumes after any interruption: read it first, then `git log`.
 
 ### Phase 5 Parity, goldens, hardening — macOS: started
 
-- 2026-10-31, locally on a locked Mac (no presents): 52 of 64 rows pass
+- 2026-10-31, locally on a locked Mac (no presents): 54 of 64 rows pass
   (62 + T1, T2). Failing: 7b and V3 (frame counts: need an uncovered
   screen), 41b (HTML view: Phase 4), 22, 23 (settings and MCP views from the
   stand-in CLI), 26 (automations: launchd backend, Phase 2), 14 (a long line
-  wraps differently), 18 (Ctrl+click on a path), G1 (the image is placed but
-  drawn at ~9 % in the capture), 44 (paste probe), V5, 46. Rows 14 and G1
-  also fail on main's own Windows run (41228257005).
+  wraps differently; also fails on main's Windows run 41228257005), 18
+  (Ctrl+click on a path), 44 (paste probe), V5. Run alone, row 1 fails after
+  its box drag (it needs the state the rows before it leave).
 
 - Exit: `selftest --client gui --parity` PASS 60 rows; `--hardening` PASS;
   goldens recorded per OS.
@@ -196,8 +196,8 @@ locked screen never presents.
 | 43 | Review follow-ups | PASS | — |
 | 44 | Undo/redo of layout changes | wip | — |
 | 45 | Area selection of subsessions and subagents | PASS | — |
-| 46 | Subagents folded into decks by default | wip | — |
-| G1 | Inline images | wip | — |
+| 46 | Subagents folded into decks by default | PASS | — |
+| G1 | Inline images | PASS | — |
 | G2 | Taskbar progress, flash, toasts | PASS | — |
 | G3 | File drag and drop | PASS | — |
 | G4 | Several windows | PASS | — |
@@ -368,7 +368,12 @@ locked screen never presents.
   trackpad pan within 800 ms of a DPI change was undone by the GUI's
   recentring (now the user's view is kept); the stand-in agent printed only
   the first mouse report of a read; G1 typed PowerShell syntax and G3
-  expected Windows quoting on macOS. Parity 52/64 locally.
+  expected Windows quoting on macOS. Merged origin/main and origin/linux
+  again (a8744b2, 92f2dfe; main's heartbeat test fix answers the `macos`
+  CI failure of run 41233445777). macOS sends a scale-factor event with
+  the window's own scale as it first shows; the GUI refitted and recentred
+  for 800 ms, so early clicks that opened a panel moved the view and rows
+  1, 45, 46, V2 passed or failed by timing (e635e2a). Parity 54/64 locally.
 
 ### Linux log
 
