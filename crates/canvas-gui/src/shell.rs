@@ -416,7 +416,7 @@ impl Shell {
                 let list: Vec<Value> = self
                     .wins
                     .iter()
-                    .map(|w| json!({ "window": w.index, "title": w.window.title(), "focused": w.focused, "cols": w.cols, "rows": w.rows, "connected": w.app.connected, "hwnd": hwnd_of(&w.window) }))
+                    .map(|w| json!({ "window": w.index, "title": Some(w.window.title()).filter(|t| !t.is_empty()).unwrap_or_else(|| w.platform.current_title()), "focused": w.focused, "cols": w.cols, "rows": w.rows, "connected": w.app.connected, "hwnd": hwnd_of(&w.window) }))
                     .collect();
                 let _ = reply.send(json!({ "ok": true, "windows": list }));
                 return;
@@ -1334,9 +1334,11 @@ impl Win {
                     let c = c.lock().unwrap_or_else(|p| p.into_inner());
                     json!({ "text": c.text, "image": c.image.is_some(), "system_unavailable": c.system_unavailable })
                 });
+                // winit cannot read an X11 window's title back: the one set is reported.
+                let title = Some(self.window.title()).filter(|t| !t.is_empty()).unwrap_or_else(|| self.platform.current_title());
                 json!({
                     "ok": true,
-                    "title": self.window.title(),
+                    "title": title,
                     "bells": self.platform.bells.load(Ordering::Relaxed),
                     "flashes": self.platform.flashes.load(Ordering::Relaxed),
                     "progress": self.platform.progress_state(),
