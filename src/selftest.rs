@@ -662,6 +662,12 @@ pub fn doctor(instance: &Instance) -> Result<()> {
     let default = agents::machine_default(&instance.home);
     line(default.provider().program().is_ok(), "Default agent", format!("{} ({source}; a canvas can choose another in Settings)", default.label()));
     line(true, "Terminal engine", canvas_host::server::configured_engine(instance).name().to_owned());
+    let scheduler = crate::scheduler::get();
+    match scheduler.list() {
+        Ok(tasks) if scheduler.name() != "the scheduler" => line(true, "Automations", format!("{} ({} task(s) installed)", scheduler.name(), tasks.len())),
+        Ok(_) => println!("- {:<20} no scheduler on this machine (automations cannot be applied)", "Automations"),
+        Err(error) => line(false, "Automations", format!("{}: {error:#}", scheduler.name())),
+    }
     match std::process::Command::new("git").arg("--version").output() {
         Ok(out) => line(out.status.success(), "Git", String::from_utf8_lossy(&out.stdout).trim().to_owned()),
         Err(error) => line(false, "Git", error.to_string()),

@@ -468,3 +468,68 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d.state);
     }
 }
+
+/// The service at login (`copilot-canvas service install`, MAC-LINUX-PLAN D5,
+/// §5.3): `~/.config/systemd/user/copilot-canvas[-<instance>].service`,
+/// wanted by `default.target`. The service still exits after its idle
+/// minutes (`Restart=no`) and clients start it again on demand; when it
+/// stops, systemd ends whatever its terminals left (`KillMode=control-group`).
+pub mod service_unit {
+    use std::path::{Path, PathBuf};
+
+    use anyhow::Result;
+
+    use super::{Systemd, quote};
+
+    /// The unit's file name for an instance.
+    pub fn file_name(instance: &str) -> String {
+        if instance == "default" { "copilot-canvas.service".into() } else { format!("copilot-canvas-{instance}.service") }
+    }
+
+    /// The unit text: `exe service` with the instance's folders.
+    pub fn text(exe: &Path, instance: &str, home: &Path, sessions: &Path) -> String {
+        let argv = [exe.display().to_string(), "service".into(), "--instance".into(), instance.into(), "--home".into(), home.display().to_string(), "--sessions-dir".into(), sessions.display().to_string()];
+        format!(
+            "[Unit]\nDescription=Copilot Canvas service ({instance}): terminals and agents\n\n[Service]\nType=simple\nExecStart={}\nWorkingDirectory={}\nKillMode=control-group\nRestart=no\n\n[Install]\nWantedBy=default.target\n",
+            argv.iter().map(|w| quote(w)).collect::<Vec<_>>().join(" "),
+            home.display()
+        )
+    }
+
+    /// Writes and enables the unit; answers its path.
+    pub fn install(exe: &Path, instance: &str, home: &Path, sessions: &Path) -> Result<PathBuf> {
+        anyhow::ensure!(Systemd::available(), "no user systemd answers (systemctl --user); start the service from a login script instead: copilot-canvas service start");
+        let systemd = Systemd::user();
+        std::fs::create_dir_all(&systemd.dir)?;
+        let path = systemd.dir.join(file_name(instance));
+        std::fs::write(&path, text(exe, instance, home, sessions))?;
+        systemd.systemctl(&["daemon-reload"])?;
+        systemd.systemctl(&["enable", &file_name(instance)])?;
+        Ok(path)
+    }
+
+    /// Disables and removes the unit (a running service keeps running).
+    pub fn uninstall(instance: &str) -> Result<Option<PathBuf>> {
+        let systemd = Systemd::user();
+        let path = systemd.dir.join(file_name(instance));
+        if !path.exists() {
+            return Ok(None);
+        }
+        let _ = systemd.systemctl(&["disable", &file_name(instance)]);
+        std::fs::remove_file(&path)?;
+        let _ = systemd.systemctl(&["daemon-reload"]);
+        Ok(Some(path))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn the_unit_starts_the_instances_service_at_login() {
+            let text = super::text(std::path::Path::new("/opt/Copilot Canvas/copilot-canvas"), "default", std::path::Path::new("/home/ana/.copilot-canvas"), std::path::Path::new("/home/ana/.copilot/session-state"));
+            assert!(text.contains("ExecStart=\"/opt/Copilot Canvas/copilot-canvas\" \"service\" \"--instance\" \"default\" \"--home\" \"/home/ana/.copilot-canvas\""), "{text}");
+            assert!(text.contains("WantedBy=default.target") && text.contains("Restart=no"));
+            assert_eq!(super::file_name("default"), "copilot-canvas.service");
+            assert_eq!(super::file_name("work"), "copilot-canvas-work.service");
+        }
+    }
+}

@@ -1,6 +1,7 @@
 //! Copilot Canvas: a spatial session manager for agent CLIs.
 
 mod agent_prompt;
+mod automations_probe;
 mod bench;
 mod fake_copilot;
 mod fake_gh;
@@ -14,6 +15,7 @@ mod paste_probe;
 mod remote_cli;
 mod remote_probe;
 mod selftest;
+mod service_install;
 mod soak;
 mod standin;
 mod test_shell;
@@ -23,9 +25,9 @@ mod uia;
 #[path = "uia_none.rs"]
 mod uia;
 
-use canvas_agents::{automations, cli, factory_cli, index, prs_cli, reports, reviews_cli, service, vscode};
+use canvas_agents::{automations, cli, factory_cli, index, prs_cli, reports, reviews_cli, scheduler, service, vscode};
 #[cfg(test)]
-use canvas_agents::{bus, copilot_cfg, scheduler};
+use canvas_agents::{bus, copilot_cfg};
 use canvas_common::{paths, protocol};
 use canvas_sys::process as win;
 
@@ -60,6 +62,8 @@ USAGE
   copilot-canvas service status|stop    inspect or stop the terminal service (stop ends its sessions)
   copilot-canvas service start          start it in the background (for a logon task: passive sessions
                                         and the automation doctor then run without the canvas open)
+  copilot-canvas service install|uninstall
+                                        start the service at login (Linux: a systemd user unit)
   copilot-canvas doctor                 check Copilot, ConPTY, session history and the service
   copilot-canvas bench [--terminals N] [--seconds S] [--json FILE] [--remote loopback]
                                         measure service/terminal/rendering performance (no Copilot);
@@ -95,6 +99,8 @@ USAGE
                                         a client connected through a fault-injecting proxy for N minutes:
                                         drops, outages, cuts and delays; exactly-once typing, reconnect and
                                         resync times, memory and handle growth, bandwidth; JSON report
+  copilot-canvas selftest automations  apply, run, a scheduled run, report, enable, drift, import and
+                                        remove of a probe task on this machine's scheduler (not Windows)
   copilot-canvas selftest --remote paired
                                         pairing, a Dev Tunnel stand-in, the canvas through it, drops,
                                         a killed tunnel child, revocation, wrong secrets
@@ -205,8 +211,13 @@ AUTOMATIONS (scheduled tasks defined by manifests; folder: --dir, COPILOT_CANVAS
   copilot-canvas automations import [NAME…] [--family F] [--force]
                                         write manifests for existing tasks (default: launcher tasks)
   copilot-canvas automations apply [NAME…] [--yes]
-                                        show (or with --yes make) the Task Scheduler changes
+                                        show (or with --yes make) the scheduler's changes (Task
+                                        Scheduler; Linux: systemd user units, else cron)
   copilot-canvas automations run|enable|disable NAME
+  copilot-canvas automations remove NAME…
+                                        take tasks out of the scheduler (their manifests stay)
+  copilot-canvas automations launch TASK.json [--detach]
+                                        the launcher a schedule runs off Windows (logs, report, limits)
   copilot-canvas automations report ok|warn|alert|failed HEADLINE [--summary TEXT | --summary-file F]
                  [--link TITLE=URL]… [--metric NAME=VALUE[=STATE]]… [--name NAME]
                                         status report of the running automation (AUTOMATION_STATUS_FILE)
@@ -452,6 +463,8 @@ fn real_main() -> Result<()> {
             }
             bail!("the service did not start within 20 s")
         }
+        ["service", "install"] => service_install::install(&instance),
+        ["service", "uninstall"] => service_install::uninstall(&instance),
         ["service", "stop"] => {
             let conn = client::conn::connect(&instance, false).context("no service is running")?;
             conn.tx.send(protocol::ClientMsg::Shutdown)?;
@@ -646,6 +659,7 @@ fn real_main() -> Result<()> {
                 steps: option("steps").map(|s| s.split(',').map(|p| p.trim().to_owned()).filter(|p| !p.is_empty()).collect()),
             })
         }
+        ["selftest", "automations"] => automations_probe::run(),
         ["selftest", "agent"] if flag("paste") => selftest::agent_paste(option("agent").as_deref()),
         ["selftest", "agent"] => selftest::agent(option("agent").as_deref()),
         ["selftest", "copilot"] => selftest::agent(Some("copilot")),
