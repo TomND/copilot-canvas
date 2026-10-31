@@ -270,7 +270,10 @@ impl Gui {
                 return Ok(());
             }
             if Instant::now() > deadline {
-                bail!("timed out waiting for {what} in the terminal\n--- screen ---\n{}", self.screen());
+                // The status line first: the report keeps a failure's first 30 lines.
+                let screen = self.screen();
+                let status = screen.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default().trim().to_owned();
+                bail!("timed out waiting for {what} in the terminal\n--- status line ---\n{status}\n--- screen ---\n{screen}");
             }
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -1506,11 +1509,11 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
     check_kind(rows, "G3", "New: file drag and drop (paths pasted; uploaded in remote mode)", "drop_files_local", Kind::Only("GUI only: a console cannot receive dropped files"), || {
         let file = sb.work.join("dropped file.txt");
         std::fs::write(&file, "dropped")?;
-        let (_, inner) = gui.tile()?;
+        let (term, inner) = gui.tile()?;
         gui.req(json!({ "cmd": "drop", "paths": [file.display().to_string()], "x": inner[0] + 5.5, "y": inner[1] + 2.5 }))?;
         // As the local shell takes it: Windows Terminal's double quotes, POSIX single quotes.
         let quoted = canvas_core::files::quote_path_for(&file.display().to_string(), canvas_model::path_style::PathStyle::local());
-        gui.wait_tile("the quoted path at the prompt", 5, |t| t.contains(&quoted))?;
+        gui.wait_tile("the quoted path at the prompt", 5, |t| t.contains(&quoted)).map_err(|e| e.context(tty_processes(&sb.instance, &term)))?;
         gui.chord('u', &["ctrl"])?;
         crate::test_shell::discard(|b| gui.send(std::str::from_utf8(b).unwrap_or_default()))?;
         // A folder dropped on the canvas starts a new session there.
@@ -2149,11 +2152,11 @@ fn late_rows(sb: &Sandbox, rows: &mut Vec<Row>) {
         gui.open("Shell A", "PS ")?;
         let file = sb.root.join("upload me.txt");
         std::fs::write(&file, "uploaded by the parity suite")?;
-        let (_, inner) = gui.tile()?;
+        let (term, inner) = gui.tile()?;
         gui.req(json!({ "cmd": "drop", "paths": [file.display().to_string()], "x": inner[0] + 5.5, "y": inner[1] + 2.5 }))?;
         // The long path wraps in the tile (how depends on the user name): rejoin its rows.
         let joined = |t: &str| t.lines().map(str::trim_end).collect::<String>();
-        gui.wait_tile("the uploaded path pasted", 20, |t| joined(t).contains("uploads") && joined(t).contains("upload me.txt"))?;
+        gui.wait_tile("the uploaded path pasted", 20, |t| joined(t).contains("uploads") && joined(t).contains("upload me.txt")).map_err(|e| e.context(tty_processes(&sb.instance, &term)))?;
         let uploads = sb.instance.home.join("uploads");
         let found = walk(&uploads).into_iter().find(|p| p.file_name().is_some_and(|n| n == "upload me.txt")).context("uploaded file on the service's machine")?;
         anyhow::ensure!(std::fs::read_to_string(&found)? == "uploaded by the parity suite", "content");
@@ -2212,6 +2215,25 @@ fn alive_terminals(conn: &crate::client::conn::Conn) -> Result<u32> {
 
 /// What a client without `CAP_IMAGES` (as the TUI connects) receives for a
 /// terminal: (image messages, frames).
+/// Unix: the processes on a terminal's PTY (groups, the foreground group,
+/// state, what each waits in), for a terminal that stopped answering.
+/// Windows: nothing.
+fn tty_processes(instance: &Instance, term: &str) -> String {
+    if cfg!(windows) {
+        return String::new();
+    }
+    let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
+    let needle = format!("launched {term} engine ");
+    let Some(pid) = log.lines().rev().find_map(|l| l.split_once(needle.as_str()).and_then(|(_, rest)| rest.rsplit_once(" pid ")).map(|(_, p)| p.trim().to_owned())) else {
+        return format!("{term}: no launch in the service log");
+    };
+    let ps = |args: &[&str]| std::process::Command::new("ps").args(args).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    let tty = ps(&["-o", "tty=", "-p", &pid]).trim().to_owned();
+    let columns = if cfg!(target_os = "linux") { "pid,ppid,pgid,tpgid,stat,wchan:20,args" } else { "pid,ppid,pgid,tpgid,stat,wchan,command" };
+    let list: String = ps(&["-t", &tty, "-o", columns]).lines().map(|l| l.chars().take(150).collect::<String>() + "\n").collect();
+    format!("{term}: pid {pid} on {tty}\n{list}--- the terminal ---")
+}
+
 fn plain_client_sees(instance: &Instance, id: &str) -> Result<(usize, usize)> {
     use crate::protocol::{ClientMsg, ServiceMsg};
     let conn = crate::client::conn::try_connect(instance)?;

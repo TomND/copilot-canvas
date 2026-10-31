@@ -57,6 +57,8 @@ libloading = "0.8"
 # Wayland drag and drop on winit's own connection (winit 0.30 has none).
 wayland-client = "0.31"
 wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
+# Typed keys for the latency benches on X11 (winit's Xlib, loaded at run time).
+x11-dl = "2.21"
 
 [build-dependencies]
 embed-resource.workspace = true

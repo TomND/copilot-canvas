@@ -428,7 +428,7 @@ jobs:
           sudo apt-get install -y -q --no-install-recommends pkg-config libssl-dev \
             libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
             libvulkan1 libvulkan-dev mesa-vulkan-drivers libegl1 libegl-mesa0 libgl1-mesa-dri libgles2 \
-            xvfb xauth xclip wl-clipboard weston dbus dbus-x11 at-spi2-core \
+            xvfb xauth xclip wl-clipboard weston dbus dbus-x11 at-spi2-core openbox \
             libwebkit2gtk-4.1-0 bubblewrap xdg-dbus-proxy \
             fonts-dejavu-core fonts-noto-core fonts-noto-color-emoji fonts-noto-cjk libfontconfig1-dev
       - name: release build
@@ -497,13 +497,16 @@ jobs:
           name: linux-goldens
           path: tests/golden/gui/linux-1x
           if-no-files-found: ignore
+      # Under a window manager (openbox): on a bare X server nothing maximizes
+      # a window. The accessibility check reads the tree over AT-SPI.
       - name: GUI hardening checks on X11 (reporting)
         if: ${{ !cancelled() }}
         continue-on-error: true
         run: |
           mkdir -p "$CANVAS_GUI_SCREENS/hardening"
           unset WAYLAND_DISPLAY
-          CANVAS_GUI_SCREENS="$CANVAS_GUI_SCREENS/hardening" timeout 1200 xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- target/release/copilot-canvas selftest --client gui --hardening
+          CANVAS_GUI_SCREENS="$CANVAS_GUI_SCREENS/hardening" timeout 1200 xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- \
+            sh -c 'openbox --sm-disable >/dev/null 2>&1 & sleep 1; exec target/release/copilot-canvas selftest --client gui --hardening'
       - name: "GUI bench on X11 (advisory: software rendering on a shared runner)"
         if: ${{ !cancelled() }}
         continue-on-error: true
@@ -527,6 +530,9 @@ jobs:
             ${{ github.workspace }}/gui-screens
             /tmp/copilot-canvas-selftest-*/gui-stderr.log
             /tmp/copilot-canvas-selftest-*/home/*.log
+            /tmp/copilot-canvas-parity-*/*.log
+            /tmp/copilot-canvas-parity-*/home/*.log
+            /tmp/copilot-canvas-hardening-*/*.log
             ${{ runner.temp }}/weston.log
           if-no-files-found: ignore
 
@@ -603,7 +609,7 @@ jobs:
         if: matrix.gui
         run: |
           sudo apt-get install -y -q dbus-x11 mesa-vulkan-drivers fonts-dejavu-core
-          xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- copilot-canvas selftest --client gui
+          xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- copilot-canvas selftest --client gui || { cat /tmp/copilot-canvas-selftest-*/gui-stderr.log; exit 1; }
           sudo apt-get remove -y -q copilot-canvas
           test ! -e /usr/bin/copilot-canvas
       - name: tarball installs into a prefix

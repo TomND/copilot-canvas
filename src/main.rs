@@ -21,7 +21,10 @@ mod standin;
 mod test_shell;
 #[cfg(windows)]
 mod uia;
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+#[path = "uia_atspi.rs"]
+mod uia;
+#[cfg(not(any(windows, target_os = "linux")))]
 #[path = "uia_none.rs"]
 mod uia;
 

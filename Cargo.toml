@@ -130,6 +130,10 @@ canvas-sys.workspace = true
 windows = { workspace = true, features = ["Win32_UI_Accessibility"] }
 windows-sys = { workspace = true, features = ["Win32_System_Console"] }
 
+# The hardening check's AT-SPI client (the GUI's zbus; no new crates).
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
+
 [build-dependencies]
 embed-resource.workspace = true
 

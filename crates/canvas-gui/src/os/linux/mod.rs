@@ -9,6 +9,7 @@ mod dnd;
 mod gtk;
 mod html_helper;
 pub mod webview;
+mod xkeys;
 
 /// The GUI binary runs as the HTML view's helper when started for it
 /// (`COPILOT_CANVAS_HTML_VIEW=1`): answers its exit code.
@@ -235,5 +236,11 @@ pub fn take_dropped(window: &Window) -> Vec<String> {
     dnd::take(window)
 }
 
-/// Posted keys (latency benches) are not available yet.
-pub fn post_key(_window: isize, _c: char) {}
+/// A key typed into the window (latency benches): sent through the X server
+/// on X11. Wayland gives no client a way to type into another's surface, so
+/// the benches type under X11.
+pub fn post_key(window: isize, c: char) {
+    if window != 0 && !WAYLAND.load(std::sync::atomic::Ordering::Relaxed) {
+        xkeys::post_key(window as u64, c);
+    }
+}

@@ -530,6 +530,43 @@ Write-Host 'GOLDEN-B-END'
 function global:prompt { 'PS> ' }
 "#;
 
+/// Terminal A for the Unix demo shells (bash, zsh): the same text.
+const SCRIPT_A_SH: &str = r#"clear
+printf '\033]0;Golden A\007'
+printf '%s\n' 'GOLDEN-A colours, styles, emoji, CJK'
+printf '\033[31mred \033[32mgreen \033[33myellow \033[34mblue \033[35mmagenta \033[36mcyan \033[90mgray\033[0m\n'
+printf '\033[30;41m red \033[0m \033[30;42m green \033[0m \033[97;44m blue \033[0m \033[48;5;208m 208 \033[0m \033[38;2;255;128;0mrgb 255,128,0\033[0m\n'
+printf '\033[1mbold\033[0m \033[2mdim\033[0m \033[3mitalic\033[0m \033[7minverse\033[0m \033[9mstrike\033[0m \033[53moverline\033[0m\n'
+printf '\033[4msingle\033[0m \033[4:2mdouble\033[0m \033[4:3mcurly\033[0m \033[4:4mdotted\033[0m \033[4:5mdashed\033[0m \033[4;58;2;255;64;64mred line\033[0m\n'
+printf '%s\n' 'emoji: 😀 🚀 ✅ 👍 |'
+printf '%s\n' 'CJK:   中文測試 日本語 한국어 |'
+printf '%s\n' 'boxes: ┌─┬─┐ █▓▒░ ╭─╮'
+printf '%s\n' 'GOLDEN-A-END'
+PS1='PS> '
+"#;
+
+/// Terminal B for the Unix demo shells.
+const SCRIPT_B_SH: &str = r#"clear
+printf '\033]0;Golden B\007'
+printf '%s\n' 'GOLDEN-B palette'
+bar=''; for i in $(seq 0 15); do bar="$bar\033[48;5;${i}m   "; done; printf "$bar\033[0m\n"
+bar=''; for i in $(seq 16 51); do bar="$bar\033[48;5;${i}m "; done; printf "$bar\033[0m\n"
+bar=''; for i in $(seq 232 255); do bar="$bar\033[48;5;${i}m  "; done; printf "$bar\033[0m\n"
+printf '\033[1;32mPASS\033[0m parser  \033[1;31mFAIL\033[0m renderer  \033[1;33mWARN\033[0m fonts\n'
+printf '%s\n' 'The quick brown fox jumps over the lazy dog. 0123456789'
+printf '%s\n' 'GOLDEN-B-END'
+PS1='PS> '
+"#;
+
+/// The scripts for this machine's demo shells and the command that runs one.
+fn scripts() -> [(&'static str, &'static str); 2] {
+    if cfg!(windows) { [("golden-a.ps1", SCRIPT_A), ("golden-b.ps1", SCRIPT_B)] } else { [("golden-a.sh", SCRIPT_A_SH), ("golden-b.sh", SCRIPT_B_SH)] }
+}
+
+fn run_script(name: &str) -> String {
+    if cfg!(windows) { format!("iex (Get-Content -Raw {name})\r") } else { format!(". ./{name}\r") }
+}
+
 /// The demo canvas in an isolated home; agents' data folders are empty, so
 /// nothing of the machine shows.
 struct DemoSandbox {
@@ -545,8 +582,9 @@ impl DemoSandbox {
         for dir in [&work, &root.join("sessions"), &root.join("copilot-home"), &root.join("xdg-data"), &root.join("claude-home")] {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::write(work.join("golden-a.ps1"), SCRIPT_A)?;
-        std::fs::write(work.join("golden-b.ps1"), SCRIPT_B)?;
+        for (name, text) in scripts() {
+            std::fs::write(work.join(name), text)?;
+        }
         let instance = Instance::new(Some(format!("golden{}", std::process::id())), Some(root.join("home")), Some(root.join("sessions")))?;
         Ok(Self { root, instance, work })
     }
@@ -631,11 +669,12 @@ fn demo_shots(shots: &mut Shots) -> Result<()> {
     ui.send(b"\x1d")?;
     ui.send(b"t")?;
     wait_tree(&ui, "two tiles", 5, |t| t["tiles"].as_array().is_some_and(|tiles| tiles.len() == 2))?;
-    for (id, script, end) in [("demo-main", "golden-a.ps1", "GOLDEN-A-END"), ("demo-review", "golden-b.ps1", "GOLDEN-B-END")] {
+    let [(a, _), (b, _)] = scripts();
+    for (id, script, end) in [("demo-main", a, "GOLDEN-A-END"), ("demo-review", b, "GOLDEN-B-END")] {
         let r = tile_inner(&tree(&ui)?, id).with_context(|| format!("no tile {id}"))?;
         click(&ui, "left", (r[0] + r[2] / 2.0, r[1] + r[3] - 1.5))?;
         wait_tree(&ui, &format!("{id} focused"), 5, |t| t["focus"] == "Terminal" && t["focused_term"] == id)?;
-        ui.send(format!("iex (Get-Content -Raw {script})\r").as_bytes())?;
+        ui.send(run_script(script).as_bytes())?;
         wait_tile(&ui, id, "the fixed output and prompt", 20, |t| t.contains(end) && t.trim_end().ends_with("PS>"))?;
     }
     shots.shot(&ui, "terminals-tiled", &|_: &GuiDriver| vec![status_figures()]);

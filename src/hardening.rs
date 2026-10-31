@@ -2,9 +2,11 @@
 //! checks over its test hooks, each with ✓ or ✗ and its reason:
 //! the toolbar's status counts at 170 columns, overlapping boxes, GPU device
 //! loss, a DPI change, window placement across restarts (and a monitor that
-//! is gone), the UI Automation tree as a UIA client sees it, the crash log
-//! (UI and helper threads), the software-renderer fallback, damage frames.
-//! `CANVAS_GUI_SCREENS=DIR` keeps the PNGs.
+//! is gone), the UI Automation tree as a UIA client sees it (Linux: an
+//! AT-SPI client), the crash log (UI and helper threads), the
+//! software-renderer fallback, damage frames. `CANVAS_GUI_SCREENS=DIR` keeps
+//! the PNGs; `CANVAS_HARDENING_CHECKS=a,b` runs the checks whose names
+//! contain one of those words.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -160,6 +162,11 @@ struct Check {
 }
 
 fn check(checks: &mut Vec<Check>, name: &'static str, body: impl FnOnce() -> Result<String>) {
+    if let Ok(only) = std::env::var("CANVAS_HARDENING_CHECKS")
+        && !only.split(',').map(str::trim).any(|w| !w.is_empty() && name.contains(w))
+    {
+        return;
+    }
     let started = Instant::now();
     println!("  · {name} …");
     let result = body().map_err(|e| format!("{e:#}"));
@@ -193,6 +200,9 @@ pub fn run() -> Result<()> {
         }
     }
     let failed = checks.iter().filter(|c| c.result.is_err()).count();
+    if checks.is_empty() {
+        bail!("CANVAS_HARDENING_CHECKS matched no check");
+    }
     if failed > 0 {
         bail!("{failed} of {} hardening checks failed", checks.len());
     }
@@ -416,7 +426,18 @@ fn placement() -> Result<String> {
 }
 
 
+/// The outside accessibility client: UI Automation on Windows, AT-SPI on
+/// Linux (what Orca reads).
+const CLIENT: &str = if cfg!(target_os = "linux") { "AT-SPI" } else { "UIA" };
+
 fn uia_tree() -> Result<String> {
+    let result = uia_tree_inner();
+    #[cfg(target_os = "linux")]
+    crate::uia::restore();
+    result
+}
+
+fn uia_tree_inner() -> Result<String> {
     let sb = Sandbox::new("uia")?;
     let mut ui = sb.start(&["--demo"], &[], Some((170, 46)), "uia.log")?;
     ui.wait("the demo canvas", Duration::from_secs(30), |t| t.contains("Build session canvas"))?;
@@ -431,6 +452,8 @@ fn uia_tree() -> Result<String> {
     wait_tree(&ui, "a terminal tile", 30, |t| t["tiles"].as_array().is_some_and(|t| !t.is_empty()))?;
     ui.wait("the shell", Duration::from_secs(30), |t| t.contains("PS "))?;
     let hwnd = ui.request(json!({ "cmd": "windows" }))?["windows"][0]["hwnd"].as_i64().context("the window handle")? as isize;
+    // UIA finds the window by its handle, AT-SPI the application by its process.
+    let hwnd = if cfg!(target_os = "linux") { ui.pid() as isize } else { hwnd };
     let has = |snap: &Value, f: &dyn Fn(&Value) -> bool| snap["nodes"].as_array().is_some_and(|n| n.iter().any(f));
     let ty = |n: &Value, t: &str| n["type"].as_str() == Some(t);
     let name = |n: &Value, s: &str| n["name"].as_str().is_some_and(|x| x.contains(s));
@@ -447,7 +470,7 @@ fn uia_tree() -> Result<String> {
         }
         if Instant::now() > deadline {
             let names: Vec<String> = snap["nodes"].as_array().into_iter().flatten().take(60).map(|n| format!("{}:{}:{}", n["type"].as_str().unwrap_or("?"), n["name"].as_str().unwrap_or(""), n["description"].as_str().unwrap_or(""))).collect();
-            bail!("the UIA tree lacks an expected element ({} nodes): {}", snap["count"], names.join(" | "));
+            bail!("the {CLIENT} tree lacks an expected element ({} nodes): {}", snap["count"], names.join(" | "));
         }
         std::thread::sleep(Duration::from_millis(500));
     };
@@ -458,21 +481,21 @@ fn uia_tree() -> Result<String> {
     let hook = tree(&ui)?;
     let hook_names: Vec<&str> = hook["access"]["nodes"].as_array().into_iter().flatten().filter_map(|n| n["name"].as_str()).collect();
     anyhow::ensure!(hook_names.contains(&"+ New") && hook_names.iter().any(|n| n.contains("Build session canvas")), "the tree hook lists the same elements");
-    // A UIA client presses a button: "+ New" opens the new-session dialog.
+    // The client presses a button: "+ New" opens the new-session dialog.
     crate::uia::uia_invoke(hwnd, "+ New")?;
-    wait_tree(&ui, "the dialog opened through UIA", 10, |t| t["modals"].as_u64().unwrap_or(0) > 0)?;
+    wait_tree(&ui, &format!("the dialog opened through {CLIENT}"), 10, |t| t["modals"].as_u64().unwrap_or(0) > 0)?;
     let dialog = crate::uia::uia_snapshot(hwnd)?;
     let dialog_seen = dialog["nodes"].as_array().is_some_and(|n| n.iter().any(|n| n["type"] == "dialog" || n["type"].as_str().is_some_and(|t| t.contains("dialog"))));
     let _ = ui.request(json!({ "cmd": "quit" }));
     let _ = ui.wait_exit(Duration::from_secs(10));
     let status = boxed["description"].as_str().unwrap_or("").to_owned();
     Ok(format!(
-        "{} UIA elements in window {:?}: Button \"+ New\", TreeItem and Button \"Build session canvas\" ({status}), Document {:?} with {} chars of text; \"+ New\" invoked through UIA opened the dialog{}",
+        "{} {CLIENT} elements in window {:?}: Button \"+ New\", TreeItem and Button \"Build session canvas\" ({status}), Document {:?} with {} chars of text; \"+ New\" invoked through {CLIENT} opened the dialog{}",
         snap["count"],
         snap["window"].as_str().unwrap_or(""),
         tile["name"].as_str().unwrap_or(""),
         tile["value"].as_str().map(str::len).unwrap_or(0),
-        if dialog_seen { " (a UIA dialog element)" } else { "" }
+        if dialog_seen { format!(" (a {CLIENT} dialog element)") } else { String::new() }
     ))
 }
 
