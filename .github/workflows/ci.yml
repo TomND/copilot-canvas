@@ -581,7 +581,7 @@ jobs:
         if: matrix.gui
         run: |
           sudo apt-get install -y -q dbus-x11 mesa-vulkan-drivers fonts-dejavu-core
-          xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- copilot-canvas selftest --client gui
+          xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- copilot-canvas selftest --client gui || { cat /tmp/copilot-canvas-selftest-*/gui-stderr.log; exit 1; }
           sudo apt-get remove -y -q copilot-canvas
           test ! -e /usr/bin/copilot-canvas
       - name: tarball installs into a prefix

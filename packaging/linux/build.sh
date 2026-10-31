@@ -66,7 +66,7 @@ Architecture: $deb_arch
 Maintainer: Copilot Canvas <noreply@github.com>
 Installed-Size: $size_kb
 Depends: libc6 (>= 2.35), libgcc-s1
-Recommends: libwebkit2gtk-4.1-0, libxkbcommon0, libvulkan1, mesa-vulkan-drivers, libegl1, xdg-utils, fonts-noto-color-emoji, fonts-noto-core, gnome-keyring | kwalletmanager | keepassxc, bubblewrap, wl-clipboard | xclip
+Recommends: libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-cursor0, libwayland-egl1, libx11-6, libx11-xcb1, libxcursor1, libxi6, libxrandr2, libvulkan1, mesa-vulkan-drivers, libegl1, libgl1, libwebkit2gtk-4.1-0, xdg-utils, fontconfig, fonts-noto-color-emoji, fonts-noto-core, gnome-keyring | kwalletmanager | keepassxc, bubblewrap, xdg-dbus-proxy, wl-clipboard | xclip
 Suggests: git, gh
 Section: devel
 Priority: optional
@@ -91,7 +91,7 @@ Summary: Infinite canvas of AI coding-agent sessions in real terminals
 License: LicenseRef-proprietary
 URL: https://github.com/TomND/copilot-canvas
 Requires: glibc >= 2.35
-Recommends: webkit2gtk4.1, libxkbcommon, vulkan-loader, mesa-vulkan-drivers, mesa-libEGL, xdg-utils, google-noto-color-emoji-fonts, bubblewrap
+Recommends: libxkbcommon, libxkbcommon-x11, libwayland-client, libwayland-cursor, libwayland-egl, libX11, libX11-xcb, libXcursor, libXi, libXrandr, vulkan-loader, mesa-vulkan-drivers, mesa-libEGL, mesa-libGL, webkit2gtk4.1, xdg-utils, fontconfig, google-noto-color-emoji-fonts, bubblewrap, xdg-dbus-proxy
 AutoReqProv: no
 %global debug_package %{nil}
 %global __strip /bin/true
