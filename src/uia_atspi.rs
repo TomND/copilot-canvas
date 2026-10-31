@@ -107,7 +107,7 @@ fn describe(bus: &Connection, object: &Object) -> Result<Found> {
     let props: HashMap<String, OwnedValue> = call(bus, dest, path, "org.freedesktop.DBus.Properties", "GetAll", &(ACCESSIBLE,))?;
     let text = |key: &str| props.get(key).and_then(|v| String::try_from(v.try_clone().ok()?).ok()).unwrap_or_default();
     Ok(Found {
-        role: call(bus, dest, path, ACCESSIBLE, "GetRoleName", &())?,
+        role: role_name(call(bus, dest, path, ACCESSIBLE, "GetRole", &())?),
         name: text("Name"),
         description: text("Description"),
         interfaces: call(bus, dest, path, ACCESSIBLE, "GetInterfaces", &())?,
@@ -130,6 +130,41 @@ fn walk(bus: &Connection, app: &Object) -> Result<Vec<Found>> {
         }
     }
     Ok(out)
+}
+
+/// AT-SPI's name for a role number (`GetRole`; AccessKit has no
+/// `GetRoleName`).
+fn role_name(role: u32) -> String {
+    match role {
+        2 => "alert",
+        6 => "canvas",
+        7 => "check box",
+        16 => "dialog",
+        20 => "filler",
+        23 => "frame",
+        29 => "label",
+        31 => "list",
+        32 => "list item",
+        33 => "menu",
+        39 => "panel",
+        43 => "push button",
+        54 => "status bar",
+        60 => "terminal",
+        61 => "text",
+        62 => "toggle button",
+        63 => "tool bar",
+        65 => "tree",
+        69 => "window",
+        75 => "application",
+        79 => "entry",
+        82 => "document frame",
+        85 => "section",
+        91 => "tree item",
+        94 => "document text",
+        99 => "grouping",
+        other => return format!("role {other}"),
+    }
+    .to_owned()
 }
 
 /// UIA's control type names for the roles the check looks for.
@@ -173,4 +208,19 @@ pub fn uia_invoke(pid: isize, name: &str) -> Result<()> {
     let done: bool = call(&bus, &button.object.0, button.object.1.as_str(), "org.a11y.atspi.Action", "DoAction", &(0i32,))?;
     anyhow::ensure!(done, "the button {name:?} refused its action");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{kind, role_name};
+
+    #[test]
+    fn roles_get_uia_names_where_the_check_looks() {
+        assert_eq!(role_name(43), "push button");
+        assert_eq!(kind(&role_name(43)), "Button");
+        assert_eq!(kind(&role_name(91)), "TreeItem");
+        assert_eq!(kind(&role_name(60)), "Document");
+        assert_eq!(kind(&role_name(16)), "dialog");
+        assert_eq!(role_name(1000), "role 1000");
+    }
 }
