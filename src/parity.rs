@@ -2234,6 +2234,9 @@ fn gesture(gui: &Gui, cmd: &str, at: (f64, f64), extra: Value) -> Result<()> {
 /// T1: the canvas under a trackpad.
 fn trackpad_canvas(gui: &mut Gui) -> Result<String> {
     gui.canvas_focus()?;
+    // Every box in view, whatever earlier rows left (Show all nodes).
+    gui.send("f")?;
+    gui.wait_tree("the boxes it uses in view", 5, |t| ["Idle one", "Stopped one"].iter().all(|name| t["canvas"]["boxes"].as_array().is_some_and(|b| b.iter().any(|b| b["name"] == *name))))?;
     let (origin, scale, area, (cw, ch)) = trackpad_view(gui)?;
     let at = (area[0] + area[2] * 0.5, area[1] + area[3] * 0.5);
     // Two-finger scroll: ten moves of (1.5, 0.75) cells, then the system's momentum.
@@ -2267,8 +2270,11 @@ fn trackpad_canvas(gui: &mut Gui) -> Result<String> {
     let (w0, w1) = (world(o0, s0), world(o1, s1));
     anyhow::ensure!((s1 / s0 - 1.44).abs() < 0.01, "pinched ×1.44: {s0} → {s1}");
     anyhow::ensure!((w0.0 - w1.0).abs() < 0.05 && (w0.1 - w1.1).abs() < 0.05, "anchored at the pointer: {w0:?} → {w1:?}");
-    // Back to where it was: a pinch that ends near a level settles on it.
-    gesture(gui, "pinch", p, json!({ "phase": "changed", "delta": 1.0 / 1.44 - 1.0 + 0.01 }))?;
+    // A pinch that ends near a level (a power of two) settles on it: aim just
+    // above the level at or below where the row began (never closer in than
+    // that, so the boxes it uses next stay in view), whatever earlier rows left.
+    let near = 2f64.powf(s0.log2().floor() + 0.03);
+    gesture(gui, "pinch", p, json!({ "phase": "changed", "delta": near / s1 - 1.0 }))?;
     gesture(gui, "pinch", p, json!({ "phase": "ended", "delta": 0.0 }))?;
     let (_, s2, _, _) = trackpad_view(gui)?;
     anyhow::ensure!((s2.log2() - s2.log2().round()).abs() < 1e-4, "settled on a zoom level: {s2}");
@@ -2286,10 +2292,10 @@ fn trackpad_canvas(gui: &mut Gui) -> Result<String> {
     gui.wait_tree("the smart zoom back", 5, |t| t["smart_zooming"] == false)?;
     let (after, s_after, _, _) = trackpad_view(gui)?;
     anyhow::ensure!((s_after - s_before).abs() < 1e-3 && (after.0 - before.0).abs() < 0.5 && (after.1 - before.1).abs() < 0.5, "back where it was");
-    // Force click on a box: its details.
-    let (stopped, _) = gui.find_box("Stopped one")?;
-    gesture(gui, "force_click", gui.box_center("Stopped one")?, json!({}))?;
-    let id = stopped["id"].as_str().unwrap_or_default().to_owned();
+    // Force click on a box (the one smart zoom used, in view): its details.
+    let (found, _) = gui.find_box("Idle one")?;
+    gesture(gui, "force_click", gui.box_center("Idle one")?, json!({}))?;
+    let id = found["id"].as_str().unwrap_or_default().to_owned();
     gui.wait_tree("the box selected", 5, |t| t["selection"].as_array().is_some_and(|s| s.iter().any(|v| v == id.as_str())))?;
     Ok(format!("pan 17 × 7.5 cells exact, momentum latched, no glide; pinch ×1.44 anchored, settled at {s2}; smart zoom {s_before} → {s_fit:.2} → back; force click selects"))
 }
