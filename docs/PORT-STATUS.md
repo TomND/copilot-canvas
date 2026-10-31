@@ -15,7 +15,7 @@ work resumes after any interruption: read it first, then `git log`.
 
 ## Phases (plan §9)
 
-### Phase 0 Groundwork — macOS: done (CI confirming) · Linux: see the `linux` branch
+### Phase 0 Groundwork — macOS: done (CI confirming) · Linux: in progress (CI job `linux`)
 
 - [x] Windows dependencies target-gated (`windows`, `windows-sys`,
       `webview2-com` under `[target.'cfg(windows)'.dependencies]`)
@@ -39,7 +39,7 @@ work resumes after any interruption: read it first, then `git log`.
   of the touched crates green on the OS; Windows CI and `cargo xwin clippy`
   green.
 
-### Phase 1 Service and TUI (M0, M1) — macOS: in progress
+### Phase 1 Service and TUI (M0, M1) — macOS: in progress · Linux: in progress (self-tests on CI)
 
 - M0: REMOTE.md checklist 1–12 from a Mac TUI against the Windows service.
 - M1: `cargo test --workspace`, `corpus check`, `selftest`, `selftest --remote
@@ -55,7 +55,7 @@ work resumes after any interruption: read it first, then `git log`.
 - [ ] `selftest agent --paste` (OpenCode, Claude Code), `selftest agent
       --agent opencode --prompt`, `bench --terminals 100`, `doctor`
 
-### Phase 2 Lifecycle and automations — not started
+### Phase 2 Lifecycle and automations — Linux: Secret Service backend done (3f5b1e6); systemd/cron not started
 
 - `service install`; `Scheduler` trait; Launchd / SystemdUser / Cron; built-in
   launcher; import, apply, backups, drift, run, enable; tunnel manifest.
@@ -171,6 +171,55 @@ plan §6.1 equivalent, documented).
 - Task Scheduler stays Windows-only (`taskschd_none.rs` lists nothing and
   refuses changes elsewhere) until the `Scheduler` backends of Phase 2.
 - `canvas-push` uses rustls (ring) on Linux, native-tls elsewhere (§5.9).
+- **Linux HTML view (D9, §5.7): WebKitGTK 4.1 rendered offscreen**, not WPE,
+  not Blitz, not an X11 child (spike 2026-10-31, `spikes/linux-html/`, CI
+  workflow `linux-html-spike`, run 41222103421). Why:
+  - **WPE is not packaged where we need it**: Ubuntu publishes `wpewebkit`
+    only for 20.04 and 22.04 (2.36.0 from 2022, never updated), nothing for
+    24.04 or later; Debian 12 has 2.38.6. Shipping it would mean bundling
+    WebKit and owning its security updates. WebKitGTK 4.1 is maintained in
+    every target distribution (22.04: 2.50.4, 24.04: 2.52.6, Debian, Fedora).
+  - **Offscreen works on X11 and Wayland alike**: a `GtkOffscreenWindow`
+    (no surface on screen, its own display connection) rendered the report
+    under Xvfb and headless weston with `hardware-acceleration-policy=NEVER`
+    (CPU, no GPU needed). The texture route keeps one code path and makes
+    the parity capture the normal offscreen `png`.
+  - **Fidelity**: WebKitGTK matches Chrome (the WebView2 engine) on the
+    realistic report (`pages/brief.html`: gradient-clipped heading, flex
+    cards, grid, table pills, `::marker`, `<kbd>`, dashed `<details>`, data:
+    PNG, colour emoji, CJK) except for font faces. Blitz 0.2 lost the
+    `background-clip:text` heading, colour emoji, `<kbd>` borders, marker
+    colours and dashed borders, and laid the table out differently.
+  - **Measured** (GitHub runners, 1000×800): first frame 155–890 ms cold
+    (WebKit's processes start), 12–16 ms for the next report; snapshot of
+    the view 6–10 ms (`webkit_web_view_get_snapshot`), offscreen pixbuf
+    42–52 ms; memory (PSS) ≈ 80–114 MB for the GTK side, ≈ 82–96 MB
+    WebProcess, ≈ 18–29 MB NetworkProcess. Blitz: 20–25 MB, 24–408 ms.
+  - **Lock-down verified**: page JavaScript off at parse
+    (`enable-javascript-markup=false`: script elements and handler
+    attributes are removed, so the raw probe sees 0 scripts where WebView2
+    keeps 1 inert one; the title never changed); `evaluate_javascript`
+    needs `enable-javascript=true` ("Cannot execute JavaScript in this
+    document" otherwise), so production keeps it off and the test hooks
+    turn it on only around an `eval`; navigation refused in `decide-policy`
+    (the script's `location.href` change was blocked, the page stayed; a
+    clicked link arrives as a user-gesture `LINK_CLICKED` for the canvas to
+    ask about); nothing reached the local listener. **WebKit preconnects to
+    a clicked link's host** (`CONNECT example.com:443`) even though the
+    navigation is refused and the content rule list is on: the view
+    therefore gets a **deny proxy** (an in-process listener on 127.0.0.1
+    answering 403 and counting, like WebView2's 403 answers) for http(s)
+    and ws(s), and the iPhone's content rule list for file/blob/ftp.
+  - **bubblewrap sandbox**: works on 22.04; on 24.04 (AppArmor restricts
+    unprivileged user namespaces) bwrap fails and WebKit aborts the whole
+    process (`g_error`). So the view runs in a **helper process**
+    (`copilot-canvas-gui --html-view`, GTK and WebKit loaded with `dlopen`,
+    nothing linked at build time) that talks to the GUI over a socket pair
+    (commands one way, BGRA frames the other), and the sandbox is enabled
+    only when a `bwrap` probe succeeds. Missing library or a failed helper:
+    the formatted-text view with a note, as on Windows without WebView2.
+  - Input: wheel and click forwarded as synthesized GDK events worked
+    (scrollY 0 → 258; the click became a link request).
 - Timing-sensitive `canvas-host` terminal tests run serially (a test-only
   mutex): on 3-core macOS runners they starved each other's 100 ms ticks.
 - Canvas locks (`Store::open`) use an exclusive `flock` off Windows (retried
@@ -212,4 +261,42 @@ plan §6.1 equivalent, documented).
 - 2026-10-31: merged origin/main (WI-021, WI-022); Ghostty built for
   aarch64-apple-darwin (85d383a); Keychain secrets (5530fe3); TUI self-test,
   remote loopback/faults/paired and corpus green locally on macOS
-  (6fa2a0a, 7cdfd21); service start-up on Unix (e9a9a01).
+  (6fa2a0a, 7cdfd21); service start-up on Unix (e9a9a01); doctor (02f8bc6);
+  `selftest agent --paste` passes for OpenCode and Claude Code; merged
+  origin/linux for its shared fixes (0c73fea, 3f5b1e6, 998f959).
+
+### Linux log
+
+(The Linux lead's entries, on `linux`. Commits whose message starts with
+`shared:` touch shared code and are for `macos` to merge.)
+
+- 2026-10-31: `linux` merged `origin/macos` (ed67588, Phase 0 groundwork).
+  `cargo check` and `cargo clippy -D warnings` of the whole workspace
+  (`--no-default-features`, Ghostty excluded) are clean for
+  `x86_64-unknown-linux-gnu` from the Mac (C build scripts through
+  `zig cc -target x86_64-linux-gnu.2.35`, Zig 0.17.0 in `~/.local/zig-0.17.0`).
+  CI job `linux` added (ubuntu-24.04, ubuntu-22.04 = glibc 2.35 floor,
+  ubuntu-24.04-arm): clippy, `cargo test --workspace`, release build;
+  alacritty engine only until libghostty-vt builds for Linux targets.
+- 2026-10-31: HTML view spike done (see Decisions): WebKitGTK 4.1 offscreen
+  in a dlopen'ed helper process, deny proxy + content rule list, sandbox
+  when bwrap works. WPE rejected (not packaged on Ubuntu 24.04; 2.36 on
+  22.04), Blitz rejected (fidelity).
+- 2026-10-31: Linux CI green on all three runners without Ghostty (run
+  41223516059: clippy, workspace tests, release build). Shared fixes found
+  by it: `newest_match` globbing, OpenCode folders kept in the local style,
+  a heartbeat test race (0c73fea). The Unix demo shells / TUI self-test port
+  was done twice in parallel (here and 6fa2a0a on `macos`); the `linux` copy
+  was dropped before pushing and `macos`' kept.
+- 2026-10-31: `ghostty-linux` CI job (x86_64 on ubuntu-24.04, aarch64 on
+  ubuntu-24.04-arm; Zig 0.17.0 checksums from ziglang.org's index) and the
+  Linux jobs now run with Ghostty, the alacritty-only build, the corpus with
+  both engines, `doctor` and the TUI self-tests (`selftest`, `--remote
+  loopback|faults|paired`) under Xvfb with xclip.
+- 2026-10-31: Secret Service backend (3f5b1e6, shared): master key in the
+  session keyring when one answers, key file otherwise; CI tests it against
+  GNOME Keyring on a private `dbus-run-session` bus.
+
+Linux next: the TUI self-tests green on CI; Phase 2 systemd/cron (needs the
+`Scheduler` trait: owner of the trait to be agreed with `macos`); the HTML
+view helper (WebKitGTK offscreen); the GUI on Wayland/X11.

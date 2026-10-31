@@ -737,6 +737,9 @@ mod tests {
         let listener = tcp::listen_loopback("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         let beating = Duration::from_millis(400);
+        // Heartbeats start once the test has seen Ready8's ack (the first one
+        // carries a newer ack and could otherwise overtake the check).
+        let (go, wait_go) = std::sync::mpsc::channel::<()>();
         // A minimal service: handshake, Ready8, heartbeats for a while, then silence.
         let service = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
@@ -745,6 +748,7 @@ mod tests {
             let accepted = handshake::accept(&mut reader, &mut writer, true, "svc", |_| Some(b"secret".to_vec())).unwrap();
             writer.send(&ServiceMsg::Ready8 { pid: 1, input_ack: 7 }).unwrap();
             let beats = std::thread::spawn(move || {
+                let _ = wait_go.recv();
                 let started = Instant::now();
                 while started.elapsed() < beating {
                     writer.send(&ServiceMsg::Heartbeat { input_ack: 9 }).unwrap();
@@ -768,6 +772,7 @@ mod tests {
         let conn = open(&target, &options, &session).unwrap();
         assert_eq!((conn.protocol, conn.remote), (PROTOCOL, true));
         assert_eq!(session.acked(), 7, "Ready8 reports the applied input");
+        go.send(()).unwrap();
         let started = Instant::now();
         assert_eq!(conn.rx.recv_timeout(Duration::from_secs(5)).err(), Some(RecvTimeoutError::Disconnected));
         let alive = started.elapsed();

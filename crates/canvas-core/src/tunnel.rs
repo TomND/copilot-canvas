@@ -268,16 +268,10 @@ impl Tunnel {
         let cli = canvas_common::remote::devtunnel().with_context(|| {
             format!("devtunnel was not found: install the Dev Tunnels CLI (`{}`) or set COPILOT_CANVAS_DEVTUNNEL", canvas_common::remote::devtunnel_install_hint())
         })?;
-        let mut child = Command::new(&cli.program)
-            .args(&cli.prefix)
-            .args(["connect", &self.id])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .no_window()
-            .die_with_parent()
-            .spawn()
-            .with_context(|| format!("cannot start {}", cli.program.display()))?;
+        let mut command = Command::new(&cli.program);
+        command.args(&cli.prefix).args(["connect", &self.id]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).no_window().die_with_parent();
+        // Tied to this process, not to the (short-lived) connecting thread.
+        let mut child = canvas_sys::spawn::spawn_tied(command).with_context(|| format!("cannot start {}", cli.program.display()))?;
         let job = KillOnClose::new(&child).ok();
         let output = Arc::new(Mutex::new(Output::default()));
         if let Some(stdout) = child.stdout.take() {

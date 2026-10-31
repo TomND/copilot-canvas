@@ -365,7 +365,8 @@ pub fn read_report(path: &Path) -> Option<Report> {
     serde_json::from_slice(bytes).ok()
 }
 
-/// Newest file matching a glob (`*` within path segments).
+/// Newest file matching a glob (`*` within path segments). Patterns use this
+/// machine's separator (`/` is accepted for `\` on Windows).
 pub fn newest_match(pattern: &str) -> Option<PathBuf> {
     // This machine's separators (`\` on Windows, `/` elsewhere).
     let sep = canvas_model::path_style::PathStyle::local().separator();
