@@ -18,6 +18,11 @@ windows-sys.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
+# The Secret Service (GNOME Keyring, KWallet, KeePassXC) over D-Bus for the
+# master key (MAC-LINUX-PLAN §5.4); D-H session encryption in pure Rust.
+[target.'cfg(target_os = "linux")'.dependencies]
+secret-service = { version = "5.2.0", features = ["rt-async-io-crypto-rust"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7.0"
 objc2 = "0.5.2"

@@ -4,8 +4,9 @@
 //! Linux seal each secret with one random 32-byte master key per data home
 //! (MAC-LINUX-PLAN D6, §5.4) using the repository's HMAC-SHA256
 //! stream-and-tag sealing, stored as `v1u:<nonce hex><sealed hex>`. The
-//! master key lives in the platform store; until that backend is wired, and
-//! always with `COPILOT_CANVAS_SECRETS=file` (CI, development builds), it is
+//! master key lives in the platform store (the macOS login Keychain, the
+//! Linux Secret Service) or, without one and always with
+//! `COPILOT_CANVAS_SECRETS=file` (CI, development builds, headless Linux), in
 //! a 0600 key file `<home>/remote/master.key` in a 0700 folder.
 
 #[cfg(windows)]
@@ -53,7 +54,8 @@ mod unix {
     pub enum Store {
         /// `<home>/remote/master.key`, 0600 in a 0700 folder.
         File,
-        /// A generic password in the login Keychain (macOS).
+        /// The platform store: a generic password in the login Keychain
+        /// (macOS), an item of the Secret Service (Linux).
         Keychain,
     }
 
@@ -61,8 +63,8 @@ mod unix {
     /// the home already uses (its key file, or the Keychain marker); else, for
     /// a new home, the Keychain when this program is signed with a Developer
     /// ID (its Keychain access needs no prompt and every signed build shares
-    /// it), the key file otherwise (development builds, Linux until the
-    /// Secret Service backend lands).
+    /// it), on Linux the Secret Service when one answers on the session bus;
+    /// the key file otherwise (development builds, headless machines).
     pub fn store(home: &Path) -> Store {
         match std::env::var("COPILOT_CANVAS_SECRETS").ok().as_deref().map(str::trim) {
             Some("file") => return Store::File,
@@ -141,7 +143,7 @@ mod unix {
     pub fn backend(home: &Path) -> String {
         match store(home) {
             Store::File => format!("master key file {} (0600)", key_path(home).display()),
-            Store::Keychain => format!("login Keychain item \"{}\" / {}", super::keychain::SERVICE, super::keychain::account(home)),
+            Store::Keychain => super::keychain::describe(home),
         }
     }
 }
@@ -175,6 +177,11 @@ mod keychain {
 
     pub fn available() -> bool {
         true
+    }
+
+    /// Where the home's master key is (`doctor`).
+    pub fn describe(home: &Path) -> String {
+        format!("login Keychain item \"{SERVICE}\" / {}", account(home))
     }
 
     /// This executable carries a Developer ID signature (a team identifier).
@@ -223,18 +230,124 @@ mod keychain {
     }
 }
 
-/// No Keychain elsewhere (Linux: the Secret Service backend comes with the
-/// Linux port; the key file meanwhile).
-#[cfg(all(unix, not(target_os = "macos")))]
+/// The Linux Secret Service store of a home's master key (MAC-LINUX-PLAN
+/// §5.4): one item (attributes `application` = "copilot-canvas", `home` = the
+/// home's hash) in the default collection of whatever answers
+/// `org.freedesktop.secrets` on the session bus (GNOME Keyring, KWallet,
+/// KeePassXC). A locked collection is unlocked through the desktop's prompt,
+/// once. Without a session bus or a provider (servers, SSH) it is not
+/// available and new homes use the key file.
+#[cfg(target_os = "linux")]
+mod keychain {
+    use std::collections::HashMap;
+    use std::io;
+    use std::path::{Path, PathBuf};
+    use std::sync::OnceLock;
+
+    use secret_service::EncryptionType;
+    use secret_service::blocking::{Collection, SecretService};
+
+    pub const SERVICE: &str = "copilot-canvas";
+
+    /// The home's account: a hash of its path (the same as the macOS one).
+    pub fn account(home: &Path) -> String {
+        let digest = canvas_common::pairing::revocation_key(home.to_string_lossy().as_bytes());
+        format!("home-{}", canvas_common::paths::hex(&digest[..12]))
+    }
+
+    /// Marks a home whose master key is in the platform store.
+    pub fn marker(home: &Path) -> PathBuf {
+        home.join("remote").join("master.keychain")
+    }
+
+    fn connect() -> io::Result<SecretService<'static>> {
+        SecretService::connect(EncryptionType::Dh).map_err(|e| io::Error::new(io::ErrorKind::NotConnected, format!("no Secret Service on the session bus: {e}")))
+    }
+
+    /// A Secret Service answers on the session bus (checked once per process).
+    pub fn available() -> bool {
+        static AVAILABLE: OnceLock<bool> = OnceLock::new();
+        *AVAILABLE.get_or_init(|| {
+            let bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some()
+                || std::env::var_os("XDG_RUNTIME_DIR").is_some_and(|dir| Path::new(&dir).join("bus").exists());
+            bus && connect().is_ok()
+        })
+    }
+
+    /// Where the home's master key is (`doctor`).
+    pub fn describe(home: &Path) -> String {
+        format!("Secret Service item application={SERVICE} home={}", account(home))
+    }
+
+    /// No signature gate on Linux: the Secret Service asks no per-program
+    /// question, so a new home uses it whenever it is available.
+    pub fn signed_for_release() -> bool {
+        true
+    }
+
+    fn other(what: &str, error: secret_service::Error) -> io::Error {
+        io::Error::other(format!("{what} the master key in the Secret Service: {error}"))
+    }
+
+    /// The default collection ("login"), else any, else a new one; unlocked
+    /// (the desktop may ask for the keyring's password once).
+    fn collection<'a>(ss: &'a SecretService<'a>) -> io::Result<Collection<'a>> {
+        let collection = match ss.get_default_collection() {
+            Ok(found) => found,
+            Err(_) => match ss.get_any_collection() {
+                Ok(found) => found,
+                Err(_) => ss.create_collection("Login", "default").map_err(|e| other("cannot create a collection for", e))?,
+            },
+        };
+        collection.ensure_unlocked().map_err(|e| other("the keyring is locked: cannot reach", e))?;
+        Ok(collection)
+    }
+
+    /// The home's master key, created (and the home marked) on first use.
+    /// `service` is [`SERVICE`] (tests use their own).
+    pub fn master_key(home: &Path, service: &str) -> io::Result<Vec<u8>> {
+        let ss = connect()?;
+        let account = account(home);
+        let attributes = HashMap::from([("application", service), ("home", account.as_str())]);
+        let found = ss.search_items(attributes.clone()).map_err(|e| other("cannot look up", e))?;
+        if let Some(item) = found.unlocked.first().or(found.locked.first()) {
+            item.ensure_unlocked().map_err(|e| other("the keyring is locked: cannot read", e))?;
+            let key = item.get_secret().map_err(|e| other("cannot read", e))?;
+            return if key.len() == 32 { Ok(key) } else { Err(io::Error::new(io::ErrorKind::InvalidData, "the Secret Service item is not a master key")) };
+        }
+        let key = canvas_common::protocol::nonce()[..32].to_vec();
+        let label = format!("Copilot Canvas master key ({})", home.display());
+        collection(&ss)?.create_item(&label, attributes.clone(), &key, false, "application/octet-stream").map_err(|e| other("cannot store", e))?;
+        crate::fs::private_dir(&home.join("remote"))?;
+        let _ = std::fs::write(marker(home), b"the master key of this home is in the Secret Service\n");
+        // Another process may have stored its key first: use the oldest one.
+        let found = ss.search_items(attributes).map_err(|e| other("cannot look up", e))?;
+        let mut items: Vec<_> = found.unlocked.into_iter().chain(found.locked).collect();
+        items.sort_by_key(|item| item.get_created().unwrap_or(u64::MAX));
+        let item = items.first().ok_or_else(|| io::Error::other("the stored master key is gone"))?;
+        item.get_secret().map_err(|e| other("cannot read", e))
+    }
+
+    /// Removes the home's items (tests).
+    #[allow(dead_code)]
+    pub fn forget(home: &Path, service: &str) {
+        let Ok(ss) = connect() else { return };
+        let account = account(home);
+        if let Ok(found) = ss.search_items(HashMap::from([("application", service), ("home", account.as_str())])) {
+            for item in found.unlocked.iter().chain(&found.locked) {
+                let _ = item.delete();
+            }
+        }
+    }
+}
+
+/// No platform store on other Unixes.
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
 mod keychain {
     use std::io;
     use std::path::{Path, PathBuf};
 
     pub const SERVICE: &str = "";
-
-    pub fn account(_home: &Path) -> String {
-        String::new()
-    }
 
     pub fn marker(home: &Path) -> PathBuf {
         home.join("remote").join("master.keychain")
@@ -244,12 +357,16 @@ mod keychain {
         false
     }
 
+    pub fn describe(_home: &Path) -> String {
+        String::new()
+    }
+
     pub fn signed_for_release() -> bool {
         false
     }
 
     pub fn master_key(_home: &Path, _service: &str) -> io::Result<Vec<u8>> {
-        Err(io::Error::new(io::ErrorKind::Unsupported, "no Keychain on this platform"))
+        Err(io::Error::new(io::ErrorKind::Unsupported, "no platform store on this system"))
     }
 }
 
@@ -295,5 +412,34 @@ mod tests {
         assert!(open_in(&home, Store::Keychain, &service, &sealed).is_err(), "a new key cannot open the old secret");
         super::keychain::forget(&home, &service);
         let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// The Secret Service store, with a test-only `application` attribute and
+    /// its items deleted afterwards; only with
+    /// `COPILOT_CANVAS_SECRET_SERVICE_TESTS=1` (CI runs it in a private
+    /// session bus with an unlocked GNOME Keyring).
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn the_secret_service_holds_one_master_key_per_home() {
+        if std::env::var_os("COPILOT_CANVAS_SECRET_SERVICE_TESTS").is_none() {
+            eprintln!("skipped: set COPILOT_CANVAS_SECRET_SERVICE_TESTS=1 to use the session's Secret Service");
+            return;
+        }
+        use super::unix::{Store, open_in, seal_in};
+        assert!(super::keychain::available(), "a Secret Service answers");
+        let service = format!("copilot-canvas-test-{}", uuid::Uuid::new_v4().simple());
+        let home = std::env::temp_dir().join(format!("cs-secretservice-{}", uuid::Uuid::new_v4().simple()));
+        let other = std::env::temp_dir().join(format!("cs-secretservice-{}", uuid::Uuid::new_v4().simple()));
+        let sealed = seal_in(&home, Store::Keychain, &service, b"top secret").unwrap();
+        assert!(super::keychain::marker(&home).is_file() && !home.join("remote").join("master.key").exists());
+        assert_eq!(open_in(&home, Store::Keychain, &service, &sealed).unwrap(), b"top secret");
+        assert_eq!(open_in(&home, Store::Keychain, &service, &seal_in(&home, Store::Keychain, &service, b"again").unwrap()).unwrap(), b"again", "the same key is used again");
+        assert!(open_in(&other, Store::Keychain, &service, &sealed).is_err(), "another home's key cannot open it");
+        super::keychain::forget(&home, &service);
+        super::keychain::forget(&other, &service);
+        assert!(open_in(&home, Store::Keychain, &service, &sealed).is_err(), "a new key cannot open the old secret");
+        super::keychain::forget(&home, &service);
+        let _ = std::fs::remove_dir_all(home);
+        let _ = std::fs::remove_dir_all(other);
     }
 }
