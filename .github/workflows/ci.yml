@@ -167,6 +167,11 @@ jobs:
         run: target/debug/copilot-canvas selftest --remote faults
       - name: pairing and the Dev Tunnel stand-in
         run: target/debug/copilot-canvas selftest --remote paired
+      # The GPU client on Metal (Apple-silicon runners have a paravirtual GPU).
+      - name: GUI self-test
+        run: target/debug/copilot-canvas selftest --client gui
+      - name: GUI self-test over loopback TCP
+        run: target/debug/copilot-canvas selftest --client gui --remote loopback
 
   # The iPhone app (docs/IOS-PLAN.md): the portable crates on macOS, the Rust
   # core for iOS, the app on a simulator with its unit tests and its UI tests

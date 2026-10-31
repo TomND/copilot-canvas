@@ -20,6 +20,12 @@ pub mod fonts {
 
 use winit::window::{Window, WindowAttributes};
 
+/// Which modifier is the app's (MAC-LINUX-PLAN D8).
+pub const KEY_POLICY: canvas_core::input::KeyPolicy = canvas_core::input::KeyPolicy::CtrlApp;
+
+/// Nothing to set up before the event loop yet.
+pub fn configure_event_loop(_builder: &mut winit::event_loop::EventLoopBuilder<crate::shell::UserEvent>, _quiet_tests: bool) {}
+
 pub fn in_front(_window: isize) -> bool {
     false
 }
@@ -62,7 +68,7 @@ pub fn work_area(_monitor: &winit::monitor::MonitorHandle) -> Option<[i32; 4]> {
 }
 
 /// The bundle's icon (macOS) or the `.desktop` file's (Linux) is used.
-pub fn with_app_icon(attrs: WindowAttributes) -> WindowAttributes {
+pub fn window_attributes(attrs: WindowAttributes) -> WindowAttributes {
     attrs
 }
 

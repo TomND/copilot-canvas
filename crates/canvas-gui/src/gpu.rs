@@ -368,10 +368,18 @@ impl Gpu {
                 crate::crashlog::event("gpu", &format!("surface validation error on {}", self.describe()));
                 return Err(Skip::Retry);
             }
-            _ => return Err(Skip::Retry),
+            other => {
+                if std::env::var_os("CANVAS_GUI_TRACE").is_some() {
+                    eprintln!("skip: {other:?}");
+                }
+                return Err(Skip::Retry);
+            }
         };
         let acquire = started.elapsed();
         if (frame.texture.width(), frame.texture.height()) != (scene.width, scene.height) {
+            if std::env::var_os("CANVAS_GUI_TRACE").is_some() {
+                eprintln!("skip: texture {}x{} scene {}x{}", frame.texture.width(), frame.texture.height(), scene.width, scene.height);
+            }
             // The window changed size since the scene was built.
             drop(frame);
             return Err(Skip::Retry);

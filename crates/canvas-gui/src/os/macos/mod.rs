@@ -2,7 +2,10 @@
 //! and posted keys come here (MAC-LINUX-PLAN §5.6, §5.7); until they land,
 //! the same stand-ins as Linux.
 
+mod appkit;
+
 pub use super::unix::{clip_image, native_window, process, since_start, webview};
+pub use appkit::{post_key, work_area};
 
 /// wgpu's backend: Metal (macOS has no software adapter).
 pub const GPU_BACKENDS: wgpu::Backends = wgpu::Backends::METAL;
@@ -44,6 +47,19 @@ pub mod fonts {
 
 use winit::window::{Window, WindowAttributes};
 
+/// Which modifier is the app's (MAC-LINUX-PLAN D8).
+pub const KEY_POLICY: canvas_core::input::KeyPolicy = canvas_core::input::KeyPolicy::CommandApp;
+
+/// A quiet test run is an accessory app (no Dock icon, no menu bar, never
+/// activated); otherwise a regular app.
+pub fn configure_event_loop(builder: &mut winit::event_loop::EventLoopBuilder<crate::shell::UserEvent>, quiet_tests: bool) {
+    use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+    builder.with_activation_policy(if quiet_tests { ActivationPolicy::Accessory } else { ActivationPolicy::Regular });
+    if quiet_tests {
+        builder.with_activate_ignoring_other_apps(false);
+    }
+}
+
 pub fn in_front(_window: isize) -> bool {
     false
 }
@@ -80,19 +96,19 @@ impl Taskbar {
     }
 }
 
-/// Work areas are the monitors' full areas for now.
-pub fn work_area(_monitor: &winit::monitor::MonitorHandle) -> Option<[i32; 4]> {
-    None
+
+/// Every window: the left Option key is Alt (Meta) for terminals, the right
+/// one composes characters (MAC-LINUX-PLAN D8); the bundle's icon is used.
+pub fn window_attributes(attrs: WindowAttributes) -> WindowAttributes {
+    use winit::platform::macos::{OptionAsAlt, WindowAttributesExtMacOS};
+    attrs.with_option_as_alt(OptionAsAlt::OnlyLeft)
 }
 
-/// The bundle's icon (macOS) or the `.desktop` file's (Linux) is used.
-pub fn with_app_icon(attrs: WindowAttributes) -> WindowAttributes {
-    attrs
-}
-
-/// A test run on someone's desktop: never take the focus.
+/// A test run on someone's desktop: never take the focus, but float above
+/// other windows: macOS stops presenting to a window others cover (wgpu
+/// reports it occluded), and the benches and parity checks count frames.
 pub fn quiet_window(attrs: WindowAttributes) -> WindowAttributes {
-    attrs.with_active(false)
+    attrs.with_active(false).with_window_level(winit::window::WindowLevel::AlwaysOnTop)
 }
 
 /// The pointer's position comes from winit's cursor events instead.
@@ -100,5 +116,3 @@ pub fn cursor_position(_window: &Window) -> Option<(f32, f32)> {
     None
 }
 
-/// Posted keys (latency benches) are not available yet.
-pub fn post_key(_window: isize, _c: char) {}

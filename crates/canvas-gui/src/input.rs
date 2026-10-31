@@ -88,7 +88,7 @@ pub fn key(logical: &Key, state: ElementState, mods: ModifiersState) -> Option<I
         }
         _ => return None,
     };
-    Some(InputEvent::Key(KeyEvent::new(code, m)))
+    Some(InputEvent::Key(crate::os::KEY_POLICY.key(KeyEvent::new(code, m))))
 }
 
 pub fn button(button: winit::event::MouseButton) -> Option<MouseButton> {
@@ -102,7 +102,7 @@ pub fn button(button: winit::event::MouseButton) -> Option<MouseButton> {
 
 /// A mouse event at a position in fractional cells.
 pub fn mouse(kind: MouseEventKind, (x, y): (f32, f32), mods: ModifiersState) -> InputEvent {
-    InputEvent::Mouse(MouseEvent::at(kind, x, y, modifiers(mods)))
+    InputEvent::Mouse(crate::os::KEY_POLICY.mouse(MouseEvent::at(kind, x, y, modifiers(mods))))
 }
 
 /// Accumulates wheel movement into notches (a pixel delta of three rows is one).

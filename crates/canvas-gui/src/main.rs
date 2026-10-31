@@ -292,7 +292,9 @@ fn real_main() -> Result<i32> {
         None => {}
     }
 
-    let event_loop = EventLoop::<shell::UserEvent>::with_user_event().build()?;
+    let mut builder = EventLoop::<shell::UserEvent>::with_user_event();
+    os::configure_event_loop(&mut builder, args.test_hooks && shell::quiet_tests());
+    let event_loop = builder.build()?;
     let proxy = event_loop.create_proxy();
     if args.test_hooks {
         let name = hooks::pipe_name();
