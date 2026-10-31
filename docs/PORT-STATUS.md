@@ -74,7 +74,11 @@ work resumes after any interruption: read it first, then `git log`.
 - [x] built-in launcher `automations launch` (0675e2e); `automations remove`
 - [x] Linux: systemd user units, cron fallback (129e7e6); `service install`
       as a systemd user unit (4465089); Secret Service secrets (3f5b1e6)
-- [ ] Linux: `selftest automations` green on CI on systemd and cron
+- [x] Linux: `selftest automations` green on CI on the runners' user
+      systemd and cron (run 41230428742: PASS in 61 s / 61 s; a scheduled
+      run fires within the minute on both)
+- [ ] Linux: `service install` checked on CI (the unit starts; the CLI did
+      not reach the service yet: being diagnosed)
 - [ ] macOS: launchd backend, `service install` LaunchAgent
 
 - `service install`; `Scheduler` trait; Launchd / SystemdUser / Cron; built-in
@@ -365,3 +369,16 @@ view helper (WebKitGTK offscreen); the GUI on Wayland/X11.
 - `canvas_model::bus::Local::now()` used UTC off Windows (passive-session
   schedules fired in UTC on macOS and Linux): local time through
   `localtime_r` now (fca7f01, shared).
+- 2026-10-31: **the GUI self-test passes on Linux** on its first CI run
+  (run 41230428742, job `linux-gui`): under Xvfb (X11) in 135 s, first
+  paint 583 ms, and under headless weston (Wayland) in 133 s, first paint
+  301 ms, on Mesa's lavapipe (Vulkan). Screenshots showed missing glyphs
+  for ⧉ and ⏻ (DejaVu has neither): fallback fonts are now found by
+  character with fontconfig and CI installs Noto's core fonts. The
+  `linux-gui` job is blocking now (X11, X11 over loopback TCP, Wayland) and
+  runs the parity suite as a report.
+- 2026-10-31: GUI `os/linux` (after the split): fonts from fontconfig
+  (named files, no full scan), app id `copilot-canvas` (Wayland app_id, X11
+  WM_CLASS) and the X11 window icon, notifications through
+  `org.freedesktop.Notifications`, the launcher entry (`LauncherEntry`:
+  progress while sessions work, urgent when one needs you).
