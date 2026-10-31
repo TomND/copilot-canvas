@@ -1,0 +1,23 @@
+[package]
+name = "linux-html-blitz"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Linux HTML view spike (MAC-LINUX-PLAN §5.7, option c): Blitz renders a sanitized report to PNG on the CPU, no script engine, no network"
+
+# Standalone: not a member of the root workspace.
+[workspace]
+
+[dependencies]
+canvas-model = { path = "../../../crates/canvas-model" }
+blitz-dom = { version = "=0.2.4", default-features = false, features = ["svg", "system_fonts"] }
+blitz-html = { version = "=0.2.0", default-features = false }
+blitz-paint = { version = "=0.2.1", default-features = false, features = ["svg"] }
+blitz-traits = { version = "=0.2.0", default-features = false }
+anyrender = "0.6"
+anyrender_vello_cpu = "0.7"
+base64 = "0.22"
+png = "0.18"
+
+[profile.release]
+codegen-units = 16

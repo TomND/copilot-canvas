@@ -1,0 +1,35 @@
+# The Linux HTML view spike (docs/MAC-LINUX-PLAN.md §5.7, D9): WebKitGTK
+# offscreen, Blitz and Chrome (reference) on the same report pages; the PNGs
+# and JSON results are the artifact. Runs only when the spike changes.
+name: linux-html-spike
+
+on:
+  push:
+    branches: [linux]
+    paths: ["spikes/linux-html/**", ".github/workflows/linux-html-spike.yml"]
+  workflow_dispatch:
+
+jobs:
+  spike:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spikes/linux-html/blitz
+      - name: packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends libwebkit2gtk-4.1-dev xvfb xauth weston dbus dbus-x11 \
+            fonts-noto-color-emoji fonts-noto-cjk fonts-dejavu-core
+      - name: spike
+        run: spikes/linux-html/run.sh "$RUNNER_TEMP/spike"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: linux-html-spike-${{ matrix.os }}
+          path: ${{ runner.temp }}/spike
