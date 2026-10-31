@@ -11,6 +11,7 @@ ghostty = ["dep:ghostty-vt-sys"]
 
 [dependencies]
 canvas-common.workspace = true
+canvas-sys.workspace = true
 alacritty_terminal.workspace = true
 anyhow.workspace = true
 crossbeam-channel.workspace = true

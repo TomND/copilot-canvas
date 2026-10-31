@@ -27,10 +27,21 @@ serde.workspace = true
 serde_json.workspace = true
 unicode-width.workspace = true
 wgpu.workspace = true
-webview2-com.workspace = true
 winit.workspace = true
+canvas-sys.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+webview2-com.workspace = true
 windows = { workspace = true, features = ["Win32_UI_Shell", "Win32_System_Com", "UI_Notifications", "Data_Xml_Dom", "Foundation_Collections"] }
 windows-sys = { workspace = true, features = ["Win32_Graphics_Gdi", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_System_Registry", "Win32_System_Ole", "Win32_Storage_Xps"] }
+
+# wgpu's native backends: Metal on macOS, Vulkan with a GL fallback on Linux
+# (MAC-LINUX-PLAN D2); DX12 on Windows (the workspace default).
+[target.'cfg(target_os = "macos")'.dependencies]
+wgpu = { workspace = true, features = ["metal"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wgpu = { workspace = true, features = ["vulkan", "gles"] }
 
 [build-dependencies]
 embed-resource.workspace = true

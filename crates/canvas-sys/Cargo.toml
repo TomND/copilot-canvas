@@ -1,0 +1,25 @@
+[package]
+name = "canvas-sys"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "The platform layer: processes, local IPC, private files, secrets, spawning and host facts on Windows, macOS and Linux"
+
+# Desktop only: the iPhone core (canvas-mobile) never depends on this crate,
+# so nothing here reaches iOS (docs/MAC-LINUX-PLAN.md D1).
+
+[dependencies]
+canvas-common.workspace = true
+anyhow.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[build-dependencies]
+cfg_aliases.workspace = true
+
+[dev-dependencies]
+uuid.workspace = true
