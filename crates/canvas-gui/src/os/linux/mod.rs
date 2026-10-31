@@ -4,6 +4,8 @@
 
 pub use super::unix::{clip_image, native_window, process, since_start, webview};
 
+mod bus;
+
 /// wgpu's backends: Vulkan, GL as the fallback (llvmpipe and lavapipe are
 /// the software adapters).
 pub const GPU_BACKENDS: wgpu::Backends = wgpu::Backends::VULKAN.union(wgpu::Backends::GL);
@@ -91,14 +93,17 @@ pub fn in_front(_window: isize) -> bool {
 
 pub fn flash(_window: isize) {}
 
+/// Notifications go to `org.freedesktop.Notifications` on the session bus.
 pub fn toast_thread_init() -> Result<(), String> {
-    Err("notifications are not available on this platform yet".into())
+    bus::init()
 }
 
-pub fn show_toast(_title: &str, _body: &str) -> Result<(), String> {
-    Err("notifications are not available on this platform yet".into())
+pub fn show_toast(title: &str, body: &str) -> Result<(), String> {
+    bus::notify(title, body)
 }
 
+/// Linux keeps no notification history an app can read (the tests watch the
+/// bus instead, MAC-LINUX-PLAN §6.1).
 pub fn toast_history_count() -> Option<u32> {
     None
 }
@@ -107,7 +112,7 @@ pub fn toast_history_count() -> Option<u32> {
 /// `.desktop` file names the app).
 pub fn set_app_id() {}
 
-/// The Dock tile or launcher entry (not shown yet).
+/// The dock's launcher entry (`LauncherEntry` on the session bus).
 #[derive(Default)]
 pub struct Taskbar {
     pub shown: Option<u8>,
@@ -115,9 +120,11 @@ pub struct Taskbar {
 
 impl Taskbar {
     pub fn set(&mut self, window: isize, state: u8) {
-        if window != 0 {
-            self.shown = Some(state);
+        if window == 0 || self.shown == Some(state) {
+            return;
         }
+        bus::launcher(state);
+        self.shown = Some(state);
     }
 }
 
