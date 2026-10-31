@@ -1225,18 +1225,14 @@ impl Win {
                 json!({ "ok": true })
             }
             "mouse" => {
-                let button = match command["button"].as_str().unwrap_or("left") {
-                    "right" => MouseButton::Right,
-                    "middle" => MouseButton::Middle,
-                    _ => MouseButton::Left,
-                };
-                let kind = match command["kind"].as_str().unwrap_or_default() {
-                    "down" => MouseEventKind::Down(button),
-                    "up" => MouseEventKind::Up(button),
-                    "drag" => MouseEventKind::Drag(button),
-                    _ => MouseEventKind::Moved,
-                };
-                self.raw_input(vec![InputEvent::Mouse(canvas_core::input::MouseEvent::at(kind, point.0, point.1, mods))]);
+                self.raw_input(vec![hook_mouse(command)]);
+                json!({ "ok": true })
+            }
+            "mice" => {
+                // Several mouse events as one batch, with no time between them
+                // (a flick, whatever the pipe's round trip costs).
+                let batch: Vec<InputEvent> = command["events"].as_array().into_iter().flatten().map(hook_mouse).collect();
+                self.raw_input(batch);
                 json!({ "ok": true })
             }
             "wheel" => {
@@ -1637,6 +1633,24 @@ fn parse_mods(value: &Value) -> Modifiers {
 }
 
 /// `{"cmd":"key","key":"Enter"}` or `{"cmd":"key","char":"a","mods":["ctrl"]}`.
+/// A test hook's mouse event: `kind` down/up/drag (else a move), `button`
+/// left/right/middle, cell position `x`/`y`, `mods`.
+fn hook_mouse(command: &Value) -> InputEvent {
+    let button = match command["button"].as_str().unwrap_or("left") {
+        "right" => MouseButton::Right,
+        "middle" => MouseButton::Middle,
+        _ => MouseButton::Left,
+    };
+    let kind = match command["kind"].as_str().unwrap_or_default() {
+        "down" => MouseEventKind::Down(button),
+        "up" => MouseEventKind::Up(button),
+        "drag" => MouseEventKind::Drag(button),
+        _ => MouseEventKind::Moved,
+    };
+    let (x, y) = (command["x"].as_f64().unwrap_or(0.0) as f32, command["y"].as_f64().unwrap_or(0.0) as f32);
+    InputEvent::Mouse(canvas_core::input::MouseEvent::at(kind, x, y, parse_mods(&command["mods"])))
+}
+
 fn hook_key(command: &Value, mods: Modifiers) -> Option<KeyEvent> {
     if let Some(c) = command["char"].as_str().and_then(|s| s.chars().next()) {
         return Some(KeyEvent::new(KeyCode::Char(c), mods));
