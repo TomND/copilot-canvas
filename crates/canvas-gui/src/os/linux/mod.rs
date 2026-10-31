@@ -5,6 +5,7 @@
 pub use super::unix::{clip_image, native_window, process, since_start};
 
 mod bus;
+mod dnd;
 mod gtk;
 mod html_helper;
 pub mod webview;
@@ -99,9 +100,23 @@ pub mod fonts {
 
 use winit::window::{Window, WindowAttributes};
 
-/// How scrolling arrives (MAC-LINUX-PLAN D15): wheel notches until the
-/// Linux lead turns on touchpad gestures (Precise) for Wayland and X11.
+/// The canvas's own pointer policy (help, pinch and pressure events): the
+/// Windows one, since winit 0.30 has no pinch, double tap or pressure on
+/// Linux; touchpad scrolling is [`scroll_policy`]'s.
 pub const POINTER_POLICY: canvas_core::input::PointerPolicy = canvas_core::input::PointerPolicy::Notches;
+
+/// Whether the windows are Wayland surfaces (set as they are tracked).
+static WAYLAND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// How touchpad scrolling arrives (MAC-LINUX-PLAN D15). Wayland gives
+/// touchpads pixel deltas with started, moved and ended phases: pixel-precise
+/// gestures (pan, terminal scrollback, one target per gesture). X11 (XInput2
+/// smooth scrolling) gives fractional line deltas without phases, the same
+/// for wheels and touchpads: they add up into wheel notches, as on Windows.
+/// Mouse wheels are line deltas, notches, everywhere.
+pub fn scroll_policy() -> canvas_core::input::PointerPolicy {
+    if WAYLAND.load(std::sync::atomic::Ordering::Relaxed) { canvas_core::input::PointerPolicy::Precise } else { canvas_core::input::PointerPolicy::Notches }
+}
 
 /// Which modifier is the app's (MAC-LINUX-PLAN D8).
 pub const KEY_POLICY: canvas_core::input::KeyPolicy = canvas_core::input::KeyPolicy::CtrlApp;
@@ -114,6 +129,12 @@ pub fn configure_event_loop(_builder: &mut winit::event_loop::EventLoopBuilder<c
 static WINDOWS: std::sync::Mutex<Vec<(isize, std::sync::Weak<Window>, bool)>> = std::sync::Mutex::new(Vec::new());
 
 pub fn track_window(window: &std::sync::Arc<Window>, focused: bool) {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    if matches!(window.window_handle().map(|h| h.as_raw()), Ok(RawWindowHandle::Wayland(_))) {
+        WAYLAND.store(true, std::sync::atomic::Ordering::Relaxed);
+        // File drops: winit 0.30 has none on Wayland.
+        dnd::start(window);
+    }
     let handle = native_window(window);
     let mut windows = WINDOWS.lock().unwrap_or_else(|p| p.into_inner());
     windows.retain(|(h, w, _)| *h != handle && w.strong_count() > 0);
@@ -202,9 +223,16 @@ pub fn quiet_window(attrs: WindowAttributes) -> WindowAttributes {
     attrs.with_active(false)
 }
 
-/// The pointer's position comes from winit's cursor events instead.
-pub fn cursor_position(_window: &Window) -> Option<(f32, f32)> {
-    None
+/// The pointer's position comes from winit's cursor events, except where a
+/// Wayland drop landed (the pointer is the drag's then, not the window's).
+pub fn cursor_position(window: &Window) -> Option<(f32, f32)> {
+    dnd::place(window)
+}
+
+/// Files dropped on `window` by Wayland drag and drop since the last call
+/// (X11's arrive as winit's `DroppedFile`).
+pub fn take_dropped(window: &Window) -> Vec<String> {
+    dnd::take(window)
 }
 
 /// Posted keys (latency benches) are not available yet.

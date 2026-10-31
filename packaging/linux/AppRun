@@ -1,0 +1,13 @@
+#!/bin/sh
+# Copilot Canvas AppImage entry: the GUI by default; `cli ARGS…` (or a link
+# named copilot-canvas) runs the command line, the TUI and the service.
+here="$(dirname "$(readlink -f "$0")")"
+export PATH="$here/usr/bin:$PATH"
+case "$(basename "${ARGV0:-$0}")" in
+  copilot-canvas) exec "$here/usr/bin/copilot-canvas" "$@" ;;
+esac
+if [ "$1" = "cli" ]; then
+  shift
+  exec "$here/usr/bin/copilot-canvas" "$@"
+fi
+exec "$here/usr/bin/copilot-canvas-gui" "$@"

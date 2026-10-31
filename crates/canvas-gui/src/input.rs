@@ -125,7 +125,7 @@ pub fn phase(phase: winit::event::TouchPhase) -> canvas_core::input::GesturePhas
 /// A pixel scroll as the content's movement in cells, when the platform's
 /// pointer policy takes it as a trackpad gesture (`None`: wheel notches).
 pub fn precise_scroll(delta: MouseScrollDelta, cell: (f32, f32)) -> Option<(f32, f32)> {
-    match (crate::os::POINTER_POLICY, delta) {
+    match (crate::os::scroll_policy(), delta) {
         (canvas_core::input::PointerPolicy::Precise, MouseScrollDelta::PixelDelta(p)) => Some((p.x as f32 / cell.0.max(1.0), p.y as f32 / cell.1.max(1.0))),
         _ => None,
     }

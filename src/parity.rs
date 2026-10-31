@@ -1322,8 +1322,9 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         Ok("wheel scrolls back; typing returns".into())
     });
 
-    // Trackpad rows (MAC-LINUX-PLAN D15): where scrolling is pixel-precise.
-    if cfg!(target_os = "macos") {
+    // Trackpad rows (MAC-LINUX-PLAN D15): where scrolling is pixel-precise
+    // (macOS; Linux on Wayland, where touchpads give pixel deltas with phases).
+    if cfg!(target_os = "macos") || linux_wayland() {
         // Both hand the keyboard back to Shell A, as row 12 leaves it for row 14, pass or fail.
         check(rows, "T1", "Trackpad: two-finger pan (system momentum, latched, no glide), pinch around the pointer, smart zoom, force click", "trackpad_canvas", || {
             let result = trackpad_canvas(gui);
@@ -2276,6 +2277,11 @@ fn trackpad_canvas(gui: &mut Gui) -> Result<String> {
     // And back, so later rows find the canvas where they left it.
     gesture(gui, "scroll_px", at, json!({ "phase": "began", "dx": -17.0 * cw, "dy": -7.5 * ch }))?;
     gesture(gui, "scroll_px", at, json!({ "phase": "ended" }))?;
+    if !cfg!(target_os = "macos") {
+        // Linux: winit 0.30 delivers no pinch, two-finger double tap or pressure
+        // (MAC-LINUX-PLAN §6.1): the pan is the row there.
+        return Ok("pan 17 × 7.5 cells exact, momentum latched, no glide (pinch, smart zoom, force click: no Linux input in winit 0.30)".into());
+    }
     // Pinch: the world point under the fingers stays put.
     let p = (at.0 - 10.0, at.1 - 5.0);
     let world = |o: (f64, f64), s: f64| (o.0 + (p.0 - area[0]) / s, o.1 + (p.1 - area[1]) / s);
@@ -2382,4 +2388,10 @@ fn trackpad_terminal(gui: &mut Gui) -> Result<String> {
     let notches = gui.screen().matches("MOUSE 64;").count() - before;
     anyhow::ensure!(notches == 2, "{notches} notches for 6.5 lines");
     Ok("21 half-line moves → 10 lines; momentum stayed latched (13); stopped at the live screen; 6.5 lines → 2 notches for a mouse-mode program".into())
+}
+
+/// The GUI under test runs on Wayland (Linux, `WAYLAND_DISPLAY` set: winit
+/// prefers Wayland then).
+fn linux_wayland() -> bool {
+    canvas_sys::host::platform() == canvas_sys::host::Platform::Linux && std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
 }

@@ -59,6 +59,8 @@ struct Shared {
     blocked_windows: u32,
     blocked_downloads: u32,
     denied_permissions: u32,
+    /// The last text copied from the view.
+    copied: String,
     replies: HashMap<u64, Sender<Value>>,
 }
 
@@ -184,6 +186,14 @@ impl ReportWeb {
                     }
                     return true;
                 }
+                // Copy: the page's selection to the clipboard (the helper reads it).
+                let copy = mods.control_key() && matches!(key, winit::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("c"));
+                if copy {
+                    if *pressed {
+                        self.send(json!({ "cmd": "copy" }));
+                    }
+                    return true;
+                }
                 let Some(keyval) = keyval(key) else { return true };
                 self.send(json!({ "cmd": "key", "keyval": keyval, "pressed": pressed, "ctrl": mods.control_key(), "shift": mods.shift_key() }));
                 true
@@ -266,6 +276,7 @@ impl ReportWeb {
             "blocked_windows": s.blocked_windows,
             "blocked_downloads": s.blocked_downloads,
             "denied_permissions": s.denied_permissions,
+            "copied": s.copied,
         })
     }
 
@@ -389,6 +400,13 @@ fn apply(shared: &Mutex<Shared>, value: &Value) {
             let mut s = lock(shared);
             s.blocked_requests += 1;
             push_capped(&mut s.blocked_request_lines, text("request"));
+        }
+        "copied" => {
+            let text = text("text");
+            if !text.is_empty() {
+                let _ = canvas_sys::clipboard::set_text(&text);
+            }
+            lock(shared).copied = text;
         }
         "blocked_window" => lock(shared).blocked_windows += 1,
         "blocked_download" => lock(shared).blocked_downloads += 1,

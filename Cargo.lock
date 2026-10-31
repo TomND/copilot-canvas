@@ -861,6 +861,8 @@ dependencies = [
  "serde",
  "serde_json",
  "unicode-width",
+ "wayland-backend",
+ "wayland-client",
  "webview2-com",
  "wgpu",
  "windows",

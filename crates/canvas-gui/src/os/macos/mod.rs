@@ -52,6 +52,11 @@ use winit::window::{Window, WindowAttributes};
 /// wheel's line deltas stay wheel notches.
 pub const POINTER_POLICY: canvas_core::input::PointerPolicy = canvas_core::input::PointerPolicy::Precise;
 
+/// How touchpad pixel scrolling is taken (MAC-LINUX-PLAN D15). macOS: the pointer policy (Precise).
+pub fn scroll_policy() -> canvas_core::input::PointerPolicy {
+    POINTER_POLICY
+}
+
 /// Which modifier is the app's (MAC-LINUX-PLAN D8).
 pub const KEY_POLICY: canvas_core::input::KeyPolicy = canvas_core::input::KeyPolicy::CommandApp;
 
@@ -126,6 +131,11 @@ pub fn quiet_window(attrs: WindowAttributes) -> WindowAttributes {
 }
 
 /// The pointer's position comes from winit's cursor events instead.
+/// Dropped files arrive as winit's `DroppedFile` here.
+pub fn take_dropped(_window: &Window) -> Vec<String> {
+    Vec::new()
+}
+
 pub fn cursor_position(_window: &Window) -> Option<(f32, f32)> {
     None
 }

@@ -1538,6 +1538,8 @@ impl Win {
 
     /// Files dropped since the last pass, at the pointer's cell.
     fn flush_dropped(&mut self) {
+        // Drops the OS module received itself (Wayland's: winit 0.30 has none).
+        self.dropped.extend(crate::os::take_dropped(&self.window));
         if self.dropped.is_empty() {
             return;
         }
