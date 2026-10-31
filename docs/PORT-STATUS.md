@@ -171,8 +171,16 @@ plan §6.1 equivalent, documented).
   instance and peer-uid checks; `secret` = `v1u:` envelope sealing with a
   per-home master key (key file backend first, Keychain next);
   `net` = libproc socket tables (macOS) and `/proc/net/tcp*` (Linux).
-- GUI OS edges live in `canvas-gui/src/os/{windows,unix}`; the Unix side is
-  a stub (no toasts, no Dock state, text report view) until Phase 4.
+- GUI OS edges live in `canvas-gui/src/os/`: `windows` (unchanged Win32
+  code), `macos` (macOS lead), `linux` (**the Linux lead's from now on**),
+  `unix` (helpers both share: counters, clipboard images, the native handle,
+  the text report view). Every module exports the same functions. The split
+  has landed (2026-10-31); `macos` and `linux` start as identical stand-ins.
+- Ownership (manager's decision, 2026-10-31): the Linux lead owns the
+  `Scheduler` trait, the built-in automations launcher, the systemd-user and
+  cron backends and Linux `service install` ("shared:" commits on `linux`);
+  the macOS lead adds the launchd backend and macOS `service install` on top
+  after merging them, and goes to Phase 3 (GUI on Metal) first.
 - Task Scheduler stays Windows-only (`taskschd_none.rs` lists nothing and
   refuses changes elsewhere) until the `Scheduler` backends of Phase 2.
 - `canvas-push` uses rustls (ring) on Linux, native-tls elsewhere (§5.9).
