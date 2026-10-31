@@ -758,7 +758,7 @@ pub fn agent(agent: Option<&str>) -> Result<()> {
         None => agents::default_agent(),
     };
     let program = kind.provider().program().with_context(|| format!("{} is not installed on this machine", kind.label()))?;
-    let root = std::env::temp_dir().join(format!("copilot-canvas-check-{}", uuid::Uuid::new_v4()));
+    let root = real_temp_dir().join(format!("copilot-canvas-check-{}", uuid::Uuid::new_v4()));
     let work = root.join("work");
     let home = root.join("home");
     std::fs::create_dir_all(&work)?;
@@ -771,8 +771,10 @@ pub fn agent(agent: Option<&str>) -> Result<()> {
         // against a throw-away configuration that trusts the work folder, so ~/.claude stays untouched.
         let config = root.join("claude-config");
         std::fs::create_dir_all(&config)?;
+        // The folder as given and as Claude Code resolves it (macOS: /var is /private/var).
         let trusted = work.display().to_string().replace('\\', "/");
-        let seed = serde_json::json!({ "hasCompletedOnboarding": true, "theme": "dark", "bypassPermissionsModeAccepted": true, "projects": { trusted: { "hasTrustDialogAccepted": true } } });
+        let resolved = work.canonicalize().map(|p| p.display().to_string().replace('\\', "/")).unwrap_or_else(|_| trusted.clone());
+        let seed = serde_json::json!({ "hasCompletedOnboarding": true, "theme": "dark", "bypassPermissionsModeAccepted": true, "projects": { trusted: { "hasTrustDialogAccepted": true }, resolved: { "hasTrustDialogAccepted": true } } });
         std::fs::write(config.join(".claude.json"), seed.to_string())?;
         env.push(("CLAUDE_CONFIG_DIR", config));
     }
@@ -1108,7 +1110,7 @@ pub fn agent_paste(agent: Option<&str>) -> Result<()> {
         None => agents::default_agent(),
     };
     let program = kind.provider().program().with_context(|| format!("{} is not installed on this machine", kind.label()))?;
-    let root = std::env::temp_dir().join(format!("copilot-canvas-paste-{}", uuid::Uuid::new_v4()));
+    let root = real_temp_dir().join(format!("copilot-canvas-paste-{}", uuid::Uuid::new_v4()));
     let (work, home) = (root.join("work"), root.join("home"));
     std::fs::create_dir_all(&work)?;
     std::fs::create_dir_all(&home)?;
@@ -1120,8 +1122,10 @@ pub fn agent_paste(agent: Option<&str>) -> Result<()> {
     match kind {
         AgentKind::Claude => {
             std::fs::create_dir_all(&claude_config)?;
+            // The folder as given and as Claude Code resolves it (macOS: /var is /private/var).
             let trusted = work.display().to_string().replace('\\', "/");
-            let seed = serde_json::json!({ "hasCompletedOnboarding": true, "theme": "dark", "bypassPermissionsModeAccepted": true, "projects": { trusted: { "hasTrustDialogAccepted": true } } });
+            let resolved = work.canonicalize().map(|p| p.display().to_string().replace('\\', "/")).unwrap_or_else(|_| trusted.clone());
+            let seed = serde_json::json!({ "hasCompletedOnboarding": true, "theme": "dark", "bypassPermissionsModeAccepted": true, "projects": { trusted: { "hasTrustDialogAccepted": true }, resolved: { "hasTrustDialogAccepted": true } } });
             std::fs::write(claude_config.join(".claude.json"), seed.to_string())?;
             env.push(("CLAUDE_CONFIG_DIR", claude_config.clone()));
         }
@@ -1367,6 +1371,14 @@ pub(crate) const SIDEBAR: (u16, u16) = (3, 33);
 
 pub(crate) fn step(name: &str) {
     println!("  · {name}");
+}
+
+/// The temporary folder without symbolic links (macOS: `/var` is
+/// `/private/var`): agents record the folders they run in resolved, and the
+/// real-agent checks look their sessions up by folder.
+pub(crate) fn real_temp_dir() -> std::path::PathBuf {
+    let temp = std::env::temp_dir();
+    temp.canonicalize().unwrap_or(temp)
 }
 
 /// A process's command line (PowerShell's CIM query on Windows; the process

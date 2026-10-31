@@ -1230,8 +1230,12 @@ mod tests {
         let log = ProbeLog::default();
         // 64 queued chunks of 20 ms each: input behind them would wait ~1.3 s.
         let harness = Harness::new(Probe { feed_delay: Duration::from_millis(20), ..Probe::new(&log) });
-        let flood = harness.flood(Duration::from_secs(3));
-        std::thread::sleep(Duration::from_millis(300));
+        let flood = harness.flood(Duration::from_secs(4));
+        // A throttled machine may take longer than usual to fill the backlog.
+        let filling = Instant::now();
+        while !harness.output.is_full() && filling.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         assert!(harness.output.is_full(), "the output backlog is full");
         let mut worst = Duration::ZERO;
         for i in 0..10u8 {

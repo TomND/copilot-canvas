@@ -29,7 +29,8 @@ const EXTRA_STEPS: [&str; 2] = ["busystop", "streamstop"];
 
 const MAIN: &str = "Canvas prompt check";
 const ASK: &str = "Canvas permission check";
-const PASSIVE: &str = "Canvas passive check";
+/// Short enough for the sidebar's indented "⟲ Passive sessions" rows.
+const PASSIVE: &str = "Passive probe";
 const PASSIVE_GROUP: &str = "Passive check";
 /// Columns right of the canvas: terminal tiles and detail panels.
 const RIGHT: (u16, u16) = (95, 170);
@@ -126,7 +127,7 @@ pub fn run(options: Options) -> Result<()> {
     let listed = agents::config::run(&program, &["models", "opencode"], &cli_env[..2], Duration::from_secs(90))?;
     anyhow::ensure!(listed.lines().any(|l| l.trim() == model), "{model} is not one of OpenCode's models (`opencode models opencode`)");
 
-    let root = std::env::temp_dir().join(format!("copilot-canvas-prompt-{}", uuid::Uuid::new_v4()));
+    let root = crate::selftest::real_temp_dir().join(format!("copilot-canvas-prompt-{}", uuid::Uuid::new_v4()));
     let paths = Paths { work: root.join("work"), home: root.join("home"), group: root.join("passive-group"), remote: root.join("remote.git"), root };
     prepare(&paths)?;
     let instance = Instance::new(Some(format!("ocprompt{}", std::process::id())), Some(paths.home.clone()), None)?;
@@ -245,9 +246,7 @@ pub(crate) fn launched_command_line(instance: &Instance, id: &str) -> Result<(u3
         .and_then(|l| l.rsplit(" pid ").next())
         .and_then(|p| p.trim().parse::<u32>().ok())
         .with_context(|| format!("no launch of {id} in the service log"))?;
-    let query = format!("(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine");
-    let out = std::process::Command::new("powershell.exe").args(["-NoProfile", "-Command", &query]).output()?;
-    let line = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    let line = crate::selftest::command_line_of(pid)?.trim().to_owned();
     anyhow::ensure!(!line.is_empty(), "cannot read the command line of pid {pid}");
     Ok((pid, line))
 }
@@ -550,7 +549,7 @@ fn scenario<U: Ui>(instance: &Instance, paths: &Paths, model: &str, steps: &[Str
     may_prompt(&command_line, model)?;
     anyhow::ensure!(command_line.split_whitespace().any(|a| a == "--auto"), "allow-all (the default) means --auto: {command_line}");
     wait_log(instance, "the launch with its model", &format!("terminal {main}: opencode new session, model {model}"), Duration::from_secs(5))?;
-    println!("    pid {pid}: …{}", command_line.split_once("opencode.exe").map(|(_, rest)| rest.trim_start_matches('"')).unwrap_or(&command_line));
+    println!("    pid {pid}: …{}", command_line.split_once(canvas_sys::host::exe_name("opencode").as_str()).map(|(_, rest)| rest.trim_start_matches('"')).unwrap_or(&command_line));
 
     step("the service talks to the TUI's server only after checking its listener belongs to the TUI");
     wait_log(instance, "the TUI's folder from its server", &format!("terminal {main} works in "), Duration::from_secs(30))?;
