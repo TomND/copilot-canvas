@@ -39,10 +39,13 @@ windows-sys = { workspace = true, features = ["Win32_Graphics_Gdi", "Win32_UI_In
 # (MAC-LINUX-PLAN D2); DX12 on Windows (the workspace default).
 [target.'cfg(target_os = "macos")'.dependencies]
 wgpu = { workspace = true, features = ["metal"] }
-# AppKit at the edges (posted keys, screens; later the Dock, menus, WKWebView).
+# AppKit at the edges (posted keys, screens, the Dock, menus) and the
+# report's WKWebView (MAC-LINUX-PLAN D9); the versions winit 0.30 uses.
 objc2 = "0.5.2"
-objc2-foundation = { version = "0.2.2", features = ["NSGeometry", "NSString", "NSProcessInfo"] }
-objc2-app-kit = { version = "0.2.2", features = ["NSEvent", "NSGraphicsContext", "NSApplication", "NSResponder", "NSScreen"] }
+block2 = "0.5.1"
+objc2-foundation = { version = "0.2.2", features = ["NSGeometry", "NSString", "NSProcessInfo", "NSURL", "NSURLRequest", "NSError", "NSData", "NSValue", "NSObject", "NSArray", "NSDictionary", "block2"] }
+objc2-app-kit = { version = "0.2.2", features = ["NSEvent", "NSGraphicsContext", "NSApplication", "NSResponder", "NSScreen", "NSView", "NSWindow", "NSColor", "NSImage", "NSImageRep", "NSBitmapImageRep", "block2"] }
+objc2-web-kit = { version = "0.2.2", features = ["WKWebView", "WKWebViewConfiguration", "WKPreferences", "WKWebpagePreferences", "WKWebsiteDataStore", "WKUserContentController", "WKContentRuleList", "WKContentRuleListStore", "WKNavigationDelegate", "WKNavigationAction", "WKNavigation", "WKUIDelegate", "WKFrameInfo", "WKSnapshotConfiguration", "WKContentWorld", "WKUserScript", "WKScriptMessage", "WKScriptMessageHandler", "WKSecurityOrigin", "WKWindowFeatures", "block2", "objc2-app-kit"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 wgpu = { workspace = true, features = ["vulkan", "gles"] }

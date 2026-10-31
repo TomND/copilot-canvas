@@ -60,7 +60,7 @@ work resumes after any interruption: read it first, then `git log`.
       machine: keystroke p50 5.5 ms, p99 7.2 ms; service 7 % of one core,
       0.5 MB per terminal)
 
-### Phase 2 Lifecycle and automations — Linux: done (CI) · macOS: launchd pending
+### Phase 2 Lifecycle and automations — Linux: done (CI) · macOS: done locally (CI pending)
 
 - **The `Scheduler` trait has landed** (0675e2e, `crates/canvas-agents/src/scheduler/`,
   owner: the Linux lead). The macOS lead adds `scheduler/launchd.rs`
@@ -83,7 +83,12 @@ work resumes after any interruption: read it first, then `git log`.
       `copilot-canvas-default.service` active; the TUI self-test passes that
       way), run of 2e92d2e. A real Dev Tunnel hosted by the manifest is an
       owner check (no tunnel account on CI).
-- [ ] macOS: launchd backend, `service install` LaunchAgent
+- [x] macOS: launchd backend and `service install` as a LaunchAgent
+      (c9f410a): `selftest automations` PASS on launchd in 27 s locally
+      (plists in a temporary folder through `COPILOT_CANVAS_LAUNCHD_DIR`,
+      the probe's job unloaded afterwards); `service install` → the service
+      answers within 3 s, `uninstall` leaves it running, nothing stays loaded;
+      `doctor` shows `launchd (N task(s) installed)`
 
 - `service install`; `Scheduler` trait; Launchd / SystemdUser / Cron; built-in
   launcher; import, apply, backups, drift, run, enable; tunnel manifest.
@@ -133,13 +138,24 @@ work resumes after any interruption: read it first, then `git log`.
 
 ### Phase 5 Parity, goldens, hardening — macOS: started
 
-- 2026-10-31, locally on a locked Mac (no presents): 54 of 64 rows pass
+- 2026-10-31, locally on a locked Mac (no presents): 61 of 64 rows pass
   (62 + T1, T2). Failing: 7b and V3 (frame counts: need an uncovered
-  screen), 41b (HTML view: Phase 4), 22, 23 (settings and MCP views from the
-  stand-in CLI), 26 (automations: launchd backend, Phase 2), 14 (a long line
-  wraps differently; also fails on main's Windows run 41228257005), 18
-  (Ctrl+click on a path), 44 (paste probe), V5. Run alone, row 1 fails after
-  its box drag (it needs the state the rows before it leave).
+  screen), 41b (HTML view: Phase 4). Run alone, row 1 fails after its box
+  drag (it needs the state the rows before it leave).
+- **Shared parity fixes** (the macOS lead's; `linux` merges them):
+  - 85e186e: G1 runs the demo through `test_shell::run_self`; G3 expects
+    the local shell's quoting; the stand-in agent reports every mouse event
+    of a read.
+  - 883102c: row 14 discards its line without a bare Esc (zsh read it as
+    Meta+p), `test_shell::discard` spaces the two interrupts (zsh held the
+    second and dropped the next command's first key); row 18 clicks the
+    path on the output's row (the typed command wraps onto a row with the
+    path); row 44 and the self-test's upgrade steps run through
+    `test_shell`; a failed 41b closes its report, so 22, 23 and 26 no longer
+    fail behind it.
+  - f876447 (product fix): the remote folder browser joins entries with the
+    service's path style; on a macOS or Linux service V5 asked for
+    `…/ai-docs\notes.md`.
 
 - Exit: `selftest --client gui --parity` PASS 60 rows; `--hardening` PASS;
   goldens recorded per OS.
@@ -177,19 +193,19 @@ Wayland (headless weston).
 | 11b | Detach and reattach | PASS | PASS |
 | 12 | Wheel rules | PASS | wip (shared terminal rows) |
 | 13 | User-message tint | PASS | PASS |
-| 14 | Copy and paste | wip | wip (shared terminal rows) |
+| 14 | Copy and paste | PASS | wip (shared terminal rows) |
 | 15 | Image paste; thumbnail | PASS | PASS |
 | 16 | Click forwarding in mouse mode | PASS | PASS |
 | 17 | Title, taskbar state, bell, OSC 777 | PASS | PASS |
-| 18 | Links: URLs, OSC 8, paths | wip | wip (shared terminal rows) |
+| 18 | Links: URLs, OSC 8, paths | PASS | wip (shared terminal rows) |
 | 19 | New session dialog | PASS | PASS |
 | 20 | Import; VS Code sync | PASS | PASS |
 | 21 | Activity bar views | PASS | PASS |
-| 22 | Copilot defaults, group overrides | wip | PASS |
-| 23 | Plugins, MCP, skills | wip | PASS |
+| 22 | Copilot defaults, group overrides | PASS | PASS |
+| 23 | Plugins, MCP, skills | PASS | PASS |
 | 24 | Migrate from VS Code | PASS | PASS |
 | 25 | Passive sessions | PASS | PASS |
-| 26 | Automations | wip | PASS |
+| 26 | Automations | PASS | PASS |
 | 27 | Copilot automations, session schedules | PASS | PASS |
 | 28 | Idle auto-stop, priority manager, upgrade, crash log | PASS | PASS |
 | 29 | Keyboard map, F6 / Ctrl+], quit dialog, help | PASS | PASS |
@@ -211,7 +227,7 @@ Wayland (headless weston).
 | 41c | Remote reports | PASS | PASS |
 | 42 | Pull request coordination | PASS | PASS |
 | 43 | Review follow-ups | PASS | PASS |
-| 44 | Undo/redo of layout changes | wip | wip (shared terminal rows) |
+| 44 | Undo/redo of layout changes | PASS | wip (shared terminal rows) |
 | 45 | Area selection of subsessions and subagents | PASS | PASS |
 | 46 | Subagents folded into decks by default | PASS | PASS |
 | G1 | Inline images | PASS | wip (shared terminal rows) |
@@ -222,7 +238,7 @@ Wayland (headless weston).
 | V2 | Stacks and hidden subsessions | PASS | PASS |
 | V3 | Effects | wip | PASS |
 | V4 | Group chips at any zoom; sidebar rows | PASS | PASS |
-| V5 | Remote group files in the canvas | wip | wip |
+| V5 | Remote group files in the canvas | PASS | wip |
 | V6 | Remote group passive sessions | PASS | PASS |
 | T1 | Trackpad on the canvas (D15) | PASS | — |
 | T2 | Trackpad over terminals (D15) | PASS | — |
@@ -336,6 +352,22 @@ Wayland (headless weston).
   or any interpreter running a script named `copilot`); only those holding a
   session's in-use lock become subsessions.
 - Copied text goes to the Mac (and Linux) clipboard with LF line breaks.
+- launchd (D7, §5.5): `~/Library/LaunchAgents/com.copilot-canvas.task.<name>.plist`
+  (the name `%XX`-escaped in the label), loaded into `gui/<uid>` (else
+  `user/<uid>`). The task's name, manifest and schedule are XML comments in
+  the plist. A disabled task keeps its plist with `Disabled` and is unloaded;
+  enabled means loaded (`not loaded` otherwise, which `apply` repairs).
+  Every minute is one empty `StartCalendarInterval` entry; an interval that
+  does not divide a day is `StartInterval` from load (its `from` is lost);
+  `logon` is `RunAtLoad`, which also runs the task once when installed or
+  enabled; `start_when_available: false` cannot be honoured (launchd
+  coalesces a missed run on wake). Replacing a loaded definition reloads the
+  job and stops a run in progress.
+- `service install` on macOS: the LaunchAgent runs `copilot-canvas service
+  start` (`RunAtLoad`, `AbandonProcessGroup`), not the service itself as the
+  plan's table had it, so launchd never owns the service: it keeps exiting
+  when idle, clients restart it, and uninstalling (`bootout`) cannot stop it
+  or its terminals (as on Linux, where uninstall only disables the unit).
 
 ## Known gaps
 

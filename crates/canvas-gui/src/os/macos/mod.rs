@@ -1,10 +1,10 @@
-//! macOS: the Dock tile, notifications, the WKWebView report view, menus
-//! and posted keys come here (MAC-LINUX-PLAN §5.6, §5.7); until they land,
-//! the same stand-ins as Linux.
+//! macOS: the WKWebView report view, posted keys and work areas; the Dock
+//! tile, notifications and menus come here too (MAC-LINUX-PLAN §5.6, §5.7).
 
 mod appkit;
+pub mod webview;
 
-pub use super::unix::{clip_image, native_window, process, since_start, webview};
+pub use super::unix::{clip_image, native_window, process, since_start};
 pub use appkit::{post_key, work_area};
 
 /// wgpu's backend: Metal (macOS has no software adapter).

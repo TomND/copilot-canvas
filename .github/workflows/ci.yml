@@ -172,12 +172,34 @@ jobs:
         run: target/debug/copilot-canvas selftest --client gui
       - name: GUI self-test over loopback TCP
         run: target/debug/copilot-canvas selftest --client gui --remote loopback
+      # Automations on launchd (a probe task with its own label, removed at
+      # the end) and the service started at login by a LaunchAgent.
+      - name: automations self-test on launchd
+        run: COPILOT_CANVAS_SCHEDULER=launchd target/debug/copilot-canvas selftest automations
+      - name: service install (LaunchAgent)
+        run: |
+          home="$(mktemp -d)"
+          target/debug/copilot-canvas --home "$home" service install
+          for i in $(seq 1 60); do target/debug/copilot-canvas --home "$home" service status 2>/dev/null | grep -q '"running": true' && break; sleep 0.5; done
+          target/debug/copilot-canvas --home "$home" service status | grep -q '"running": true'
+          target/debug/copilot-canvas --home "$home" service uninstall
+          target/debug/copilot-canvas --home "$home" service status | grep -q '"running": true'
+          target/debug/copilot-canvas --home "$home" service stop
+          ! launchctl list | grep -q com.copilot-canvas.service
       # The GPU client's budgets (PLAN §9) need a screen nobody covers or
-      # locks (macOS presents nothing to a covered window): measured here,
-      # advisory (a debug build on a shared runner).
+      # locks (macOS presents nothing to a covered window): measured here on a
+      # release build, advisory (a shared runner's paravirtual GPU).
+      - name: release build
+        run: cargo build --release
       - name: GUI bench (advisory)
         continue-on-error: true
-        run: CANVAS_GUI_TEST_VISIBLE=1 target/debug/copilot-canvas bench --client gui --json gui-bench-macos.json
+        run: CANVAS_GUI_TEST_VISIBLE=1 target/release/copilot-canvas bench --client gui --json gui-bench-macos.json
+      # Rows that count frames (7b, V3) need presents: the runner has them.
+      - name: GUI parity suite (reporting)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 30
+        run: CANVAS_GUI_TEST_VISIBLE=1 target/release/copilot-canvas selftest --client gui --parity
       - name: keep the GUI bench
         if: always()
         uses: actions/upload-artifact@v7

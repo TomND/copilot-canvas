@@ -55,6 +55,19 @@ pub fn machine_name() -> String {
     })
 }
 
+/// The user id this process runs as (Unix; 0 on Windows, which has none).
+pub fn user_id() -> u32 {
+    #[cfg(unix)]
+    {
+        // SAFETY: geteuid has no preconditions.
+        unsafe { libc::geteuid() }
+    }
+    #[cfg(not(unix))]
+    {
+        0
+    }
+}
+
 /// The signed-in user's account name.
 pub fn user_name() -> String {
     #[cfg(unix)]

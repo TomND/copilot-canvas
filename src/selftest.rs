@@ -1453,7 +1453,7 @@ pub(crate) fn copy_paste_check<U: Ui>(ui: &mut U) -> Result<String> {
     std::thread::sleep(Duration::from_millis(1500));
     let text = ui.text();
     anyhow::ensure!(text.matches("PASTE_A").count() == 1 && text.matches("PASTE_B").count() == 1, "the shell ran a pasted line\n{text}");
-    ui.send(crate::test_shell::discard_input())?;
+    crate::test_shell::discard(|b| ui.send(b))?;
     if cfg!(windows) {
         ui.wait("PowerShell's input cleared (Esc)", Duration::from_secs(5), |t| !t.contains("PASTE_B"))?;
     } else {
@@ -1473,7 +1473,8 @@ pub(crate) fn copy_paste_check<U: Ui>(ui: &mut U) -> Result<String> {
     anyhow::ensure!(!text.contains(crate::paste_probe::ENTER), "the program received an Enter\n{text}");
     ui.send(b"\x04")?;
     ui.wait("the probe ended (Ctrl+D)", Duration::from_secs(10), |t| t.contains("BYE"))?;
-    Ok(format!("copied {} lines exactly; PowerShell ran no pasted line; the program got one bracketed paste of 4 lines and no Enter", expected.lines().count()))
+    let shell = if cfg!(windows) { "PowerShell" } else { "the shell" };
+    Ok(format!("copied {} lines exactly; {shell} ran no pasted line; the program got one bracketed paste of 4 lines and no Enter", expected.lines().count()))
 }
 
 /// The front end the self-test drives.
@@ -2884,7 +2885,7 @@ mod upgrade_probe {
                 ui.click(bx, by)?;
                 ui.wait("terminal focus", Duration::from_secs(5), |t| t.contains("Typing goes to the terminal"))?;
                 ui.wait("resumed shell", Duration::from_secs(20), |t| t.contains("PS "))?;
-                ui.send(b"Write-Output ('UPGRADE_' + 'OK')\r")?;
+                ui.send(crate::test_shell::print("UPGRADE_", "OK").as_bytes())?;
                 ui.wait("shell works", Duration::from_secs(10), |t| t.contains("UPGRADE_OK"))?;
                 println!("startup restart: old service replaced, shell resumed");
                 ui.send(b"\x1d")?;
@@ -2913,7 +2914,7 @@ mod upgrade_probe {
             ui.click(bx, by)?;
             ui.wait("terminal focus", Duration::from_secs(5), |t| t.contains("Typing goes to the terminal"))?;
             ui.wait("resumed shell", Duration::from_secs(20), |t| t.contains("PS "))?;
-            ui.send(b"Write-Output ('UPGRADE_' + 'OK')\r")?;
+            ui.send(crate::test_shell::print("UPGRADE_", "OK").as_bytes())?;
             ui.wait("shell works", Duration::from_secs(10), |t| t.contains("UPGRADE_OK"))?;
             ui.send(b"\x1d")?;
             ui.send(b"q")?;

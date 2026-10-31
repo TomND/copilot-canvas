@@ -1,7 +1,7 @@
 //! `copilot-canvas service install|uninstall`: start the service at login
 //! (MAC-LINUX-PLAN D5). Linux: a systemd user unit. Windows: the
 //! `CopilotCanvas-Service` logon task from an automation manifest (README).
-//! macOS: a LaunchAgent (with the launchd backend).
+//! macOS: a LaunchAgent that runs `service start` at login.
 
 use anyhow::{Result, bail};
 use canvas_sys::host::Platform;
@@ -19,7 +19,12 @@ pub fn install(instance: &Instance) -> Result<()> {
             Ok(())
         }
         Platform::Windows => bail!("on Windows the service starts at logon from a scheduled task: see the CopilotCanvas-Service manifest example in README (copilot-canvas automations apply)"),
-        Platform::MacOs => bail!("service install on macOS comes with the launchd backend"),
+        Platform::MacOs => {
+            let exe = canvas_agents::scheduler::common::launcher_exe();
+            let path = canvas_agents::scheduler::launchd::service_agent::install(&exe, &instance.name, &instance.home, &instance.sessions_dir)?;
+            println!("Installed {} (loaded: the service starts at login, and now unless it runs).", path.display());
+            Ok(())
+        }
     }
 }
 
@@ -33,6 +38,12 @@ pub fn uninstall(instance: &Instance) -> Result<()> {
             Ok(())
         }
         Platform::Windows => bail!("on Windows remove the CopilotCanvas-Service task: copilot-canvas automations remove CopilotCanvas-Service"),
-        Platform::MacOs => bail!("service uninstall on macOS comes with the launchd backend"),
+        Platform::MacOs => {
+            match canvas_agents::scheduler::launchd::service_agent::uninstall(&instance.name)? {
+                Some(path) => println!("Removed {} (a running service keeps running until it stops).", path.display()),
+                None => println!("No login agent was installed for instance {}.", instance.name),
+            }
+            Ok(())
+        }
     }
 }
