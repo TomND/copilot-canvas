@@ -142,6 +142,41 @@ Without Zig, `cargo build --release --no-default-features` uses the alacritty
 terminal engine instead. Optional: `cargo install --path .` puts the CLI/TUI
 on your PATH; the GPU client still needs its executable beside it.
 
+### Linux
+
+Copilot Canvas runs on Linux x86_64 and aarch64 with glibc 2.35 or newer
+(Ubuntu 22.04, Debian 12, Fedora 36 and later), under X11 or Wayland. CI
+builds four packages per architecture (the `linux-packages-x86_64` and
+`linux-packages-aarch64` artifacts of a CI run); install one:
+
+```sh
+sudo apt install ./copilot-canvas_<version>_amd64.deb     # Debian, Ubuntu (arm64 alike)
+sudo dnf install ./copilot-canvas-<version>.x86_64.rpm     # Fedora and relatives
+chmod +x Copilot_Canvas-<version>-x86_64.AppImage          # any distribution, nothing installed:
+./Copilot_Canvas-<version>-x86_64.AppImage --demo          #   the GUI; `… cli ARGS` runs the CLI
+tar -xzf copilot-canvas-<version>-linux-x86_64.tar.gz      # or the tarball, into ~/.local
+./copilot-canvas-<version>/install.sh                      #   (PREFIX=… elsewhere; --uninstall)
+copilot-canvas --gui --demo                                # or Copilot Canvas in the app menu
+```
+
+The programs link only glibc; the rest is loaded when used, and the .deb and
+.rpm recommend it: a Vulkan or OpenGL driver (Mesa's software renderer works,
+more slowly), WebKitGTK 4.1 for HTML reports (else they show as formatted
+text), a Secret Service (GNOME Keyring, KWallet, KeePassXC) for pairing
+secrets (else a key file in the canvas home), and wl-clipboard or xclip.
+Automations and `copilot-canvas service install` use systemd's user manager
+(cron without one). To build from source (Ubuntu's package names):
+
+```sh
+sudo apt install build-essential pkg-config libssl-dev libfontconfig1-dev libvulkan-dev \
+  libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev
+git clone https://github.com/TomND/copilot-canvas.git && cd copilot-canvas
+cargo xtask build-ghostty --target x86_64-unknown-linux-gnu   # Zig 0.17.0: ZIG=…, ~/.local/zig-0.17.0 or PATH
+cargo build --release
+./target/release/copilot-canvas --gui --demo
+packaging/linux/build.sh --arch x86_64 --bin target/release --out dist   # optional: the packages
+```
+
 ### Make it yours
 
 - **Agents.** New sessions use the first installed of Copilot, OpenCode and
@@ -1068,10 +1103,14 @@ cargo test                            unit tests
   pixel-smooth, and draws no inline images (as in Windows Terminal); the GPU
   client (`--gui`) draws Kitty graphics and iTerm2 inline PNG images. OSC 52
   copy is forwarded to your terminal.
-- The service and the desktop clients are Windows only (ConPTY, named
-  pipes, job objects); the iPhone app is a remote client of a Windows
-  service (the protocol, model and terminal-view crates also build for
-  macOS and iOS).
+- The service and the desktop clients run on Windows and Linux (the port's
+  state per OS is in [docs/PORT-STATUS.md](docs/PORT-STATUS.md)); the
+  iPhone app is a remote client of a service. On Linux: a trackpad pans
+  pixel for pixel under Wayland and in wheel notches under X11 (which tells
+  no touchpad from a wheel); pinch, smart zoom and force click wait for
+  winit's Linux gestures (Ctrl+scroll, the toolbar and keys zoom); under
+  Wayland the window comes back at its size and maximized state but not its
+  position (Wayland lets no program place its window).
 - A terminal selection covers the rows in view (dragging does not scroll).
   On full-screen views every row is copied as its own line: such programs
   wrap their paragraphs themselves, so a paragraph copied from Copilot or
