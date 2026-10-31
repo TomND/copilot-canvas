@@ -128,3 +128,39 @@ jobs:
           cd ios
           COPILOT_CANVAS_SKIP_CORE=1 xcodebuild -project CopilotCanvas.xcodeproj -scheme CopilotCanvas \
             -destination 'platform=iOS Simulator,name=iPhone 16' test
+
+  # Linux (docs/MAC-LINUX-PLAN.md §7.2): the whole workspace on the glibc 2.35
+  # floor (Ubuntu 22.04), on Ubuntu 24.04 and on arm64. Alacritty engine only
+  # until libghostty-vt is built for Linux targets. Separate from the Windows
+  # jobs so they keep their time.
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-22.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    env:
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - name: system packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends pkg-config libssl-dev \
+            libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
+            libvulkan-dev mesa-vulkan-drivers libfontconfig1-dev
+      - name: clippy
+        run: cargo clippy --workspace --exclude ghostty-vt-sys --no-default-features --all-targets -- -D warnings
+      - name: unit and integration tests
+        run: cargo test --workspace --exclude ghostty-vt-sys --no-default-features
+      - name: release build
+        run: cargo build --release --no-default-features
+      - name: keep logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-logs-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/**/*.log
+          if-no-files-found: ignore

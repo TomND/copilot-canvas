@@ -155,3 +155,17 @@ plan §6.1 equivalent, documented).
 ## Log
 
 - 2026-10-30: status file created; Phase 0 started on `macos`.
+
+### Linux log
+
+(The Linux lead's entries, on `linux`. Commits whose message starts with
+`shared:` touch shared code and are for `macos` to merge.)
+
+- 2026-10-31: `linux` merged `origin/macos` (ed67588, Phase 0 groundwork).
+  `cargo check` and `cargo clippy -D warnings` of the whole workspace
+  (`--no-default-features`, Ghostty excluded) are clean for
+  `x86_64-unknown-linux-gnu` from the Mac (C build scripts through
+  `zig cc -target x86_64-linux-gnu.2.35`, Zig 0.17.0 in `~/.local/zig-0.17.0`).
+  CI job `linux` added (ubuntu-24.04, ubuntu-22.04 = glibc 2.35 floor,
+  ubuntu-24.04-arm): clippy, `cargo test --workspace`, release build;
+  alacritty engine only until libghostty-vt builds for Linux targets.
