@@ -159,8 +159,10 @@ mod tests {
     #[test]
     fn keys_keep_their_modifiers_and_text() {
         let ctrl = ModifiersState::CONTROL;
-        assert_eq!(key(&Key::Character("c".into()), ElementState::Pressed, ctrl), Some(InputEvent::Key(KeyEvent::new(KeyCode::Char('c'), Modifiers::CONTROL))));
-        assert_eq!(key(&Key::Character("]".into()), ElementState::Pressed, ctrl), Some(InputEvent::Key(KeyEvent::new(KeyCode::Char(']'), Modifiers::CONTROL))));
+        // The platform's key policy decides whose a Ctrl key is (macOS: the program's).
+        let policy = |event: KeyEvent| Some(InputEvent::Key(crate::os::KEY_POLICY.key(event)));
+        assert_eq!(key(&Key::Character("c".into()), ElementState::Pressed, ctrl), policy(KeyEvent::new(KeyCode::Char('c'), Modifiers::CONTROL)));
+        assert_eq!(key(&Key::Character("]".into()), ElementState::Pressed, ctrl), policy(KeyEvent::new(KeyCode::Char(']'), Modifiers::CONTROL)));
         assert_eq!(key(&Key::Named(NamedKey::Tab), ElementState::Pressed, ModifiersState::SHIFT), Some(InputEvent::Key(KeyEvent::new(KeyCode::BackTab, Modifiers::SHIFT))));
         assert_eq!(key(&Key::Character("@".into()), ElementState::Pressed, ModifiersState::empty()), Some(InputEvent::Key(KeyEvent::new(KeyCode::Char('@'), Modifiers::NONE))), "AltGr text arrives composed");
         assert_eq!(key(&Key::Character("ab".into()), ElementState::Pressed, ModifiersState::empty()), Some(InputEvent::Text("ab".into())));

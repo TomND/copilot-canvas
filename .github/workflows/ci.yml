@@ -211,8 +211,14 @@ jobs:
           target/debug/canvas-mock --quiet &
           target/debug/canvas-mock --quiet --listen 127.0.0.1:47601 --state "$RUNNER_TEMP/canvas-mock-personal" &
           cd ios
+          # An iPhone 16 when the runner image has one, else its first iPhone simulator.
+          DEVICE="iPhone 16"
+          if ! xcrun simctl list devices available | grep -q "iPhone 16 ("; then
+            DEVICE=$(xcrun simctl list devices available | grep -m1 -oE 'iPhone [^(]+' | sed 's/ *$//')
+          fi
+          echo "simulator: $DEVICE"
           COPILOT_CANVAS_SKIP_CORE=1 xcodebuild -project CopilotCanvas.xcodeproj -scheme CopilotCanvas \
-            -destination 'platform=iOS Simulator,name=iPhone 16' test
+            -destination "platform=iOS Simulator,name=$DEVICE" test
 
   # libghostty-vt for Linux (glibc 2.35 floor), one per architecture, cached
   # by the pin's checksum file and the target triple.
