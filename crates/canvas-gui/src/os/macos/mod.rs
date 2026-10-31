@@ -1,6 +1,7 @@
 //! macOS: the WKWebView report view, the Dock tile and attention,
 //! notifications, posted keys and work areas (MAC-LINUX-PLAN §5.6, §5.7).
 
+pub mod access;
 mod appkit;
 mod dock;
 mod menu;

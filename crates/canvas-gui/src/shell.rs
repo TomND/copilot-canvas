@@ -1483,6 +1483,20 @@ impl Win {
                 json!({ "ok": true })
             }
             #[cfg(target_os = "macos")]
+            "ax" => {
+                // The NSAccessibility tree as VoiceOver reads it, or a button pressed through it.
+                let view = hwnd_of(&self.window);
+                match command["press"].as_str() {
+                    Some(name) => json!({ "ok": crate::os::access::press(view, name) }),
+                    None => {
+                        let mut snap = crate::os::access::snapshot(view);
+                        snap["ok"] = json!(true);
+                        snap["window"] = json!(self.window.title());
+                        snap
+                    }
+                }
+            }
+            #[cfg(target_os = "macos")]
             "post_chord" => {
                 // Command (plus Shift) and a key through AppKit: the menu bar's key equivalents first.
                 let view = hwnd_of(&self.window);
@@ -1599,9 +1613,12 @@ impl Win {
     /// Housekeeping, then a frame when one is due; returns when to wake next.
     fn tick(&mut self, gpu: Option<&mut Gpu>, fonts: Option<&mut Fonts>, options: &Options) -> Instant {
         self.flush_dropped();
-        // Text size steps (pinching over terminals, Command+plus and minus): the whole grid.
-        if self.app.text_zoom_steps != 0 {
+        // Text size steps (pinching over terminals, Command+plus and minus, Command+0): the whole grid.
+        if self.app.text_zoom_steps != 0 || self.app.text_zoom_reset {
             let steps = std::mem::take(&mut self.app.text_zoom_steps);
+            if std::mem::take(&mut self.app.text_zoom_reset) {
+                self.text_zoom = 1.0;
+            }
             self.text_zoom = (self.text_zoom * 1.1f32.powi(steps)).clamp(0.5, 3.0);
             let advance = fonts.as_ref().map(|f| f.advance).unwrap_or(0.6);
             self.rescale(self.window.scale_factor() as f32, advance, gpu.as_deref(), options);
@@ -1630,6 +1647,7 @@ impl Win {
                 || app.glide.is_some()
                 || app.view_anim.is_some()
                 || app.text_zoom_steps != 0
+                || app.text_zoom_reset
                 || app.recent_pending()
                 || app.reconnecting
                 || app.restarting.is_some()

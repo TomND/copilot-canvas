@@ -428,7 +428,32 @@ fn placement() -> Result<String> {
 
 /// The outside accessibility client: UI Automation on Windows, AT-SPI on
 /// Linux (what Orca reads).
-const CLIENT: &str = if cfg!(target_os = "linux") { "AT-SPI" } else { "UIA" };
+const CLIENT: &str = if cfg!(target_os = "linux") {
+    "AT-SPI"
+} else if cfg!(target_os = "macos") {
+    "NSAccessibility"
+} else {
+    "UIA"
+};
+
+/// The accessibility tree as the OS's client sees it: UIA (Windows) and
+/// AT-SPI (Linux) from this process; on macOS the GUI walks its own
+/// NSAccessibility tree, as VoiceOver's AX calls do (an AX client in another
+/// process needs the Accessibility permission, a prompt).
+fn access_snapshot(ui: &GuiDriver, handle: isize) -> Result<Value> {
+    if cfg!(target_os = "macos") {
+        return ui.request(json!({ "cmd": "ax" }));
+    }
+    crate::uia::uia_snapshot(handle)
+}
+
+fn access_press(ui: &GuiDriver, handle: isize, name: &str) -> Result<()> {
+    if cfg!(target_os = "macos") {
+        anyhow::ensure!(ui.request(json!({ "cmd": "ax", "press": name }))?["ok"] == true, "no button {name:?} pressed through NSAccessibility");
+        return Ok(());
+    }
+    crate::uia::uia_invoke(handle, name)
+}
 
 fn uia_tree() -> Result<String> {
     let result = uia_tree_inner();
@@ -460,7 +485,7 @@ fn uia_tree_inner() -> Result<String> {
     let status = |n: &Value| n["description"].as_str().is_some_and(|s| !s.is_empty());
     let deadline = Instant::now() + Duration::from_secs(20);
     let snap = loop {
-        let snap = crate::uia::uia_snapshot(hwnd)?;
+        let snap = access_snapshot(&ui, hwnd)?;
         let ready = has(&snap, &|n| ty(n, "Button") && name(n, "+ New"))
             && has(&snap, &|n| ty(n, "TreeItem") && name(n, "Build session canvas"))
             && has(&snap, &|n| ty(n, "Button") && name(n, "Build session canvas") && status(n))
@@ -482,9 +507,9 @@ fn uia_tree_inner() -> Result<String> {
     let hook_names: Vec<&str> = hook["access"]["nodes"].as_array().into_iter().flatten().filter_map(|n| n["name"].as_str()).collect();
     anyhow::ensure!(hook_names.contains(&"+ New") && hook_names.iter().any(|n| n.contains("Build session canvas")), "the tree hook lists the same elements");
     // The client presses a button: "+ New" opens the new-session dialog.
-    crate::uia::uia_invoke(hwnd, "+ New")?;
+    access_press(&ui, hwnd, "+ New")?;
     wait_tree(&ui, &format!("the dialog opened through {CLIENT}"), 10, |t| t["modals"].as_u64().unwrap_or(0) > 0)?;
-    let dialog = crate::uia::uia_snapshot(hwnd)?;
+    let dialog = access_snapshot(&ui, hwnd)?;
     let dialog_seen = dialog["nodes"].as_array().is_some_and(|n| n.iter().any(|n| n["type"] == "dialog" || n["type"].as_str().is_some_and(|t| t.contains("dialog"))));
     let _ = ui.request(json!({ "cmd": "quit" }));
     let _ = ui.wait_exit(Duration::from_secs(10));
