@@ -53,6 +53,11 @@ pub const GPU_BACKENDS: wgpu::Backends = wgpu::Backends::DX12;
 /// wheel notches, as before.
 pub const POINTER_POLICY: canvas_core::input::PointerPolicy = canvas_core::input::PointerPolicy::Notches;
 
+/// How touchpad pixel scrolling is taken (MAC-LINUX-PLAN D15). Windows: notches (unchanged).
+pub fn scroll_policy() -> canvas_core::input::PointerPolicy {
+    POINTER_POLICY
+}
+
 /// Which modifier is the app's (MAC-LINUX-PLAN D8).
 pub const KEY_POLICY: canvas_core::input::KeyPolicy = canvas_core::input::KeyPolicy::CtrlApp;
 
