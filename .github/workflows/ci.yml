@@ -196,21 +196,72 @@ jobs:
           COPILOT_CANVAS_SKIP_CORE=1 xcodebuild -project CopilotCanvas.xcodeproj -scheme CopilotCanvas \
             -destination 'platform=iOS Simulator,name=iPhone 16' test
 
-  # Linux (docs/MAC-LINUX-PLAN.md §7.2): the whole workspace on the glibc 2.35
-  # floor (Ubuntu 22.04), on Ubuntu 24.04 and on arm64. Alacritty engine only
-  # until libghostty-vt is built for Linux targets. Separate from the Windows
-  # jobs so they keep their time.
+  # libghostty-vt for Linux (glibc 2.35 floor), one per architecture, cached
+  # by the pin's checksum file and the target triple.
+  ghostty-linux:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+            zig_sha256: "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026"
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+            zig_sha256: "9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8"
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: cache
+        uses: actions/cache@v6
+        with:
+          path: target/ghostty
+          key: ghostty-${{ matrix.arch }}-unknown-linux-gnu-${{ hashFiles('crates/ghostty-vt-sys/vendor/CHECKSUMS.sha256') }}
+      - name: Install Zig ${{ env.ZIG_VERSION }}
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          curl -sSfL "https://ziglang.org/download/$ZIG_VERSION/zig-${{ matrix.arch }}-linux-$ZIG_VERSION.tar.xz" -o "$RUNNER_TEMP/zig.tar.xz"
+          echo "${{ matrix.zig_sha256 }}  $RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP"
+          echo "ZIG=$RUNNER_TEMP/zig-${{ matrix.arch }}-linux-$ZIG_VERSION/zig" >> "$GITHUB_ENV"
+      - name: cargo xtask build-ghostty --target ${{ matrix.arch }}-unknown-linux-gnu
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          cargo xtask build-ghostty --target ${{ matrix.arch }}-unknown-linux-gnu
+          rm -rf target/ghostty/src-* target/ghostty/zig-cache
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ghostty-linux-${{ matrix.arch }}
+          path: target/ghostty
+
+  # Linux (docs/MAC-LINUX-PLAN.md §7.2): the whole workspace with Ghostty on
+  # the glibc 2.35 floor (Ubuntu 22.04), on Ubuntu 24.04 and on arm64, the
+  # alacritty-only build, the corpus and the TUI self-tests. Separate from the
+  # Windows jobs so they keep their time.
   linux:
+    needs: ghostty-linux
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-22.04, ubuntu-24.04-arm]
-    runs-on: ${{ matrix.os }}
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-22.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
     env:
       RUST_BACKTRACE: "1"
+      COPILOT_CANVAS_SECRETS: file
     steps:
       - uses: actions/checkout@v7
+      # The Rust cache first: when it restores a partial match it cleans
+      # target/, which would remove the library below.
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v8
+        with:
+          name: ghostty-linux-${{ matrix.arch }}
+          path: target/ghostty
       - name: system packages
         run: |
           sudo apt-get update -q
@@ -218,15 +269,17 @@ jobs:
             libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
             libvulkan-dev mesa-vulkan-drivers libfontconfig1-dev xvfb xauth xclip
       - name: clippy
-        run: cargo clippy --workspace --exclude ghostty-vt-sys --no-default-features --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: unit and integration tests
-        run: cargo test --workspace --exclude ghostty-vt-sys --no-default-features
+        run: cargo test --workspace
+      - name: alacritty-only build (no Zig)
+        run: cargo build --no-default-features
       - name: release build
-        run: cargo build --release --no-default-features
+        run: cargo build --release
       # The self-tests run every step even when one before failed (each is
       # independent), so one run shows them all. The TUI's copy and paste use
       # the X11 clipboard (xclip) of a virtual display.
-      - name: golden corpus
+      - name: golden corpus (both engines)
         if: ${{ !cancelled() }}
         run: target/release/copilot-canvas corpus check
       - name: doctor
@@ -248,7 +301,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: linux-logs-${{ matrix.os }}
+          name: linux-logs-${{ matrix.runner }}
           path: |
             /tmp/copilot-canvas-*/**/*.log
             /tmp/copilot-canvas-*/**/*.json
