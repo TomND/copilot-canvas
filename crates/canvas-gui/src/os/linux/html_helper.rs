@@ -281,6 +281,8 @@ unsafe extern "C" fn on_damage(_widget: gpointer, _event: gpointer, data: gpoint
 struct EvalCall {
     state: gpointer,
     id: u64,
+    /// A copy of the selection rather than a hook's evaluation.
+    copy: bool,
 }
 
 unsafe extern "C" fn on_evaluated(view: gpointer, result: gpointer, data: gpointer) {
@@ -288,7 +290,23 @@ unsafe extern "C" fn on_evaluated(view: gpointer, result: gpointer, data: gpoint
     let g = gtk();
     let mut error: *mut GError = std::ptr::null_mut();
     let value = unsafe { (g.webkit_web_view_evaluate_javascript_finish)(view, result, &mut error) };
-    let reply = if !error.is_null() {
+    let reply = if call.copy {
+        let text = if error.is_null() && !value.is_null() {
+            let raw = unsafe { (g.jsc_value_to_string)(value) };
+            let text = self::text(raw);
+            unsafe {
+                (g.g_free)(raw as gpointer);
+                (g.g_object_unref)(value);
+            }
+            text
+        } else {
+            if !error.is_null() {
+                unsafe { (g.g_error_free)(error) };
+            }
+            String::new()
+        };
+        json!({ "event": "copied", "text": text })
+    } else if !error.is_null() {
         let message = text(unsafe { (*error).message });
         unsafe { (g.g_error_free)(error) };
         json!({ "event": "reply", "id": call.id, "ok": false, "error": message })
@@ -545,8 +563,21 @@ fn command_of(state: &'static RefCell<State>, command: &Value, next_eval: &mut u
                 s.settings
             };
             set_bool(settings, "enable-javascript", true);
-            let call = Box::into_raw(Box::new(EvalCall { state: state as *const RefCell<State> as gpointer, id }));
+            let call = Box::into_raw(Box::new(EvalCall { state: state as *const RefCell<State> as gpointer, id, copy: false }));
             // SAFETY: the script is copied; the call box is freed by the callback.
+            unsafe { (g.webkit_web_view_evaluate_javascript)(view, script.as_ptr(), -1, null(), null(), std::ptr::null_mut(), on_evaluated as *const c_void, call as gpointer) };
+        }
+        "copy" => {
+            // The selection's text, read with the API's JavaScript (on only while it runs).
+            let settings = {
+                let mut s = state.borrow_mut();
+                s.evals.push(u64::MAX);
+                s.settings
+            };
+            set_bool(settings, "enable-javascript", true);
+            let call = Box::into_raw(Box::new(EvalCall { state: state as *const RefCell<State> as gpointer, id: u64::MAX, copy: true }));
+            let script = cstr("window.getSelection().toString()");
+            // SAFETY: as for eval.
             unsafe { (g.webkit_web_view_evaluate_javascript)(view, script.as_ptr(), -1, null(), null(), std::ptr::null_mut(), on_evaluated as *const c_void, call as gpointer) };
         }
         "wheel" | "motion" | "button" | "key" => input(view, command),
