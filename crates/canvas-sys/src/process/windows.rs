@@ -41,3 +41,8 @@ pub fn handle_count(pid: u32) -> u32 {
         if ok != 0 { count } else { 0 }
     }
 }
+
+/// Windows has no per-process descriptor limit to raise.
+pub fn raise_fd_limit() -> u64 {
+    0
+}

@@ -379,6 +379,13 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
     if let Err(error) = canvas_sys::process::contain_descendants() {
         log(&instance, &format!("job containment unavailable: {error}"));
     }
+    #[cfg(unix)]
+    {
+        let ended = sweep_orphans(&instance);
+        if ended > 0 {
+            log(&instance, &format!("ended {ended} process(es) a previous service left running"));
+        }
+    }
     let token = protocol::nonce();
     canvas_sys::token::write_token(&instance.token_path(), &token)?;
     // Files left by a service that did not exit cleanly.
@@ -434,6 +441,8 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
     spawn_named("notifications", { let h = host.clone(); move || notify_loop(h, notify_rx) });
     spawn_named("idle", { let h = host.clone(); move || idle_loop(h) });
     spawn_named("priority", { let h = host.clone(); move || priority_loop(h, prio_rx) });
+    #[cfg(unix)]
+    spawn_named("remember", { let h = host.clone(); move || remember_loop(h) });
     spawn_named("liveness", { let h = host.clone(); move || liveness_loop(h) });
     if let Some(addr) = settings.listen() {
         // Failures are logged and recorded for `doctor` by `listen_remote`.
@@ -679,6 +688,8 @@ impl Host {
         for terminal in &terms {
             terminal.force_kill();
         }
+        #[cfg(unix)]
+        let _ = std::fs::remove_file(remembered_path(&self.instance));
         self.app().shutdown();
         self.remove_published_files();
         log(&self.instance, "service exiting");
@@ -1465,6 +1476,79 @@ fn priority_loop(host: Arc<Host>, wake: Receiver<()>) {
     }
 }
 
+/// Remembers every live terminal's descendants (pid and start time) every
+/// 2 s, in memory for `force_kill` and in `<home>/run/terminals-<instance>.json`
+/// for the next service: a service that died cannot end processes that
+/// re-parented away from their terminal's session (an MCP server that called
+/// `setsid`; macOS has no subreaper), so its successor does at start
+/// ([`sweep_orphans`]). Unix only (Windows uses a kill-on-close job).
+#[cfg(unix)]
+fn remember_loop(host: Arc<Host>) {
+    let path = remembered_path(&host.instance);
+    if let Some(dir) = path.parent() {
+        let _ = canvas_sys::fs::private_dir(dir);
+    }
+    loop {
+        std::thread::sleep(Duration::from_secs(2));
+        if host.shutting_down.load(Ordering::Relaxed) {
+            return;
+        }
+        let terms: Vec<Arc<Terminal>> = lock(&host.terms).values().filter(|t| t.alive.load(Ordering::Acquire) && t.pid != 0).cloned().collect();
+        let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (pid, parent) in canvas_sys::process::process_pairs() {
+            children.entry(parent).or_default().push(pid);
+        }
+        let mut all: Vec<(u32, u64)> = Vec::new();
+        for terminal in &terms {
+            let mut remembered = lock(&terminal.remembered);
+            // Forget processes that ended (or whose pid was reused).
+            remembered.retain(|(pid, started)| canvas_sys::process::process_start_ms(*pid) == Some(*started));
+            for pid in canvas_sys::process::process_tree(terminal.pid, &children) {
+                if let Some(started) = canvas_sys::process::process_start_ms(pid)
+                    && !remembered.iter().any(|(p, _)| *p == pid)
+                {
+                    remembered.push((pid, started));
+                }
+            }
+            // The tree walk only finds what is still below the terminal: keep
+            // what moved away (still the same process) too.
+            all.extend(remembered.iter().copied());
+        }
+        let text = remembered_text(&all);
+        let _ = canvas_sys::fs::write_private(&path, text.as_bytes());
+    }
+}
+
+#[cfg(unix)]
+fn remembered_path(instance: &Instance) -> std::path::PathBuf {
+    instance.home.join("run").join(format!("terminals-{}.txt", instance.name))
+}
+
+/// `pid start_ms` per line.
+#[cfg(unix)]
+fn remembered_text(processes: &[(u32, u64)]) -> String {
+    processes.iter().map(|(pid, started)| format!("{pid} {started}\n")).collect()
+}
+
+/// Ends the processes a previous service of this instance remembered for its
+/// terminals and that still run (same pid and start time): that service died
+/// without stopping them. Returns how many were ended.
+#[cfg(unix)]
+pub fn sweep_orphans(instance: &Instance) -> usize {
+    let path = remembered_path(instance);
+    let Ok(text) = std::fs::read_to_string(&path) else { return 0 };
+    let mut ended = 0;
+    for line in text.lines() {
+        let mut words = line.split_whitespace();
+        let (Some(pid), Some(started)) = (words.next().and_then(|w| w.parse::<u32>().ok()), words.next().and_then(|w| w.parse::<u64>().ok())) else { continue };
+        if pid != std::process::id() && canvas_sys::process::process_start_ms(pid) == Some(started) && canvas_sys::process::kill_tree(pid).is_ok_and(|n| n > 0) {
+            ended += 1;
+        }
+    }
+    let _ = std::fs::remove_file(&path);
+    ended
+}
+
 fn exit_loop(host: Arc<Host>, exited: Receiver<String>) {
     for id in exited {
         // Not holding `terms` while broadcasting (lock order: clients before terms).
@@ -1759,6 +1843,31 @@ mod tests {
             Ok(_) => false,
             Err(error) => !matches!(error.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock),
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_new_service_ends_what_a_dead_one_remembered() {
+        use std::os::unix::process::CommandExt;
+        let home = std::env::temp_dir().join(format!("cc-sweep-{}", uuid_like()));
+        let instance = Instance::new(Some("sweep".into()), Some(home.clone()), Some(home.join("sessions"))).unwrap();
+        // A process in a session of its own (as an MCP server that called setsid).
+        let mut orphan = std::process::Command::new("/bin/sleep").arg("30").process_group(0).spawn().unwrap();
+        let started = canvas_sys::process::process_start_ms(orphan.id()).unwrap();
+        let path = remembered_path(&instance);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // A recycled pid (another start time) is never touched.
+        std::fs::write(&path, format!("{} {started}\n{} 1\n", orphan.id(), std::process::id())).unwrap();
+        assert_eq!(sweep_orphans(&instance), 1);
+        orphan.wait().unwrap();
+        assert!(!path.exists(), "the list is used once");
+        assert_eq!(sweep_orphans(&instance), 0);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn uuid_like() -> String {
+        format!("{}-{}", std::process::id(), now_ms())
     }
 
     #[test]

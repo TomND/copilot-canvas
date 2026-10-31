@@ -136,6 +136,22 @@ impl Deref for Agents {
 }
 
 pub fn run(instance: Instance) -> Result<()> {
+    // Before any thread starts: the user's login environment (agents, node,
+    // gh on PATH; MAC-LINUX-PLAN §5.2) and room for many terminals.
+    #[cfg(unix)]
+    let resolved = canvas_sys::env::adopt_login_environment();
+    let files = canvas_sys::process::raise_fd_limit();
+    #[cfg(unix)]
+    {
+        let what = match &resolved.error {
+            Some(error) => format!("login environment not read ({error})"),
+            None if resolved.added.is_empty() => "login environment: nothing to add".to_owned(),
+            None => format!("login environment: {} variable(s) added ({})", resolved.added.len(), resolved.added.join(", ")),
+        };
+        server::log(&instance, &format!("{what}; PATH {}; open files {files}", resolved.path));
+    }
+    #[cfg(windows)]
+    let _ = files;
     server::run(instance, |host| Agents::start(host.clone()))
 }
 

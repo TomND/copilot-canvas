@@ -9,6 +9,8 @@
 
 pub mod clipboard;
 pub mod console;
+#[cfg(unix)]
+pub mod env;
 pub mod fs;
 pub mod host;
 pub mod ipc;
