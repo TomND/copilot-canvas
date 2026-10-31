@@ -177,14 +177,17 @@ impl Gui {
         self.mouse("up", button, to, mods)
     }
 
-    /// A quick drag released while still moving (a flick: a background pan glides on).
+    /// A quick drag released while still moving (a flick: a background pan glides
+    /// on). One batch, so the pipe's round trips cannot make it look held still.
     fn flick(&self, button: &str, from: (f64, f64), to: (f64, f64)) -> Result<()> {
-        self.mouse("down", button, from, &[])?;
+        let at = |t: f64| (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
+        let mut events = vec![json!({ "kind": "down", "button": button, "x": from.0, "y": from.1 })];
         for i in 1..=4 {
-            let t = i as f64 / 4.0;
-            self.mouse("drag", button, (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t), &[])?;
+            let (x, y) = at(i as f64 / 4.0);
+            events.push(json!({ "kind": "drag", "button": button, "x": x, "y": y }));
         }
-        self.mouse("up", button, to, &[])
+        events.push(json!({ "kind": "up", "button": button, "x": to.0, "y": to.1 }));
+        self.req(json!({ "cmd": "mice", "events": events })).map(|_| ())
     }
 
     fn wheel(&self, dir: &str, at: (f64, f64), mods: &[&str]) -> Result<()> {

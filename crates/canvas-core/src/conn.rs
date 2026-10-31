@@ -771,7 +771,9 @@ mod tests {
         let target = ConnTarget::Tcp { addr, remote_id: None, secret: b"secret".to_vec() };
         let conn = open(&target, &options, &session).unwrap();
         assert_eq!((conn.protocol, conn.remote), (PROTOCOL, true));
-        assert_eq!(session.acked(), 7, "Ready8 reports the applied input");
+        // The fake service's first heartbeat (ack 9) may already have arrived.
+        let acked = session.acked();
+        assert!(acked == 7 || acked == 9, "Ready8 reports the applied input (then heartbeats do): {acked}");
         go.send(()).unwrap();
         let started = Instant::now();
         assert_eq!(conn.rx.recv_timeout(Duration::from_secs(5)).err(), Some(RecvTimeoutError::Disconnected));
