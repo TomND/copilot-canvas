@@ -30,7 +30,9 @@ use crate::factory::{Defaults, Imported, Manifest};
 // The launcher-based backends build everywhere (their rendering is tested on
 // every OS); `choose` picks them on Linux only.
 pub mod common;
+pub mod cron;
 mod none;
+pub mod systemd;
 #[cfg(windows)]
 mod task_scheduler;
 
@@ -119,6 +121,20 @@ fn choose() -> Box<dyn Scheduler> {
 
 #[cfg(unix)]
 fn choose() -> Box<dyn Scheduler> {
+    match std::env::var("COPILOT_CANVAS_SCHEDULER").ok().as_deref().map(str::trim) {
+        Some("systemd") => return Box::new(systemd::Systemd::user()),
+        Some("cron") => return Box::new(cron::Cron::user()),
+        Some("none") => return Box::new(NoScheduler),
+        _ => {}
+    }
+    if canvas_sys::host::platform() == canvas_sys::host::Platform::Linux {
+        if systemd::Systemd::available() {
+            return Box::new(systemd::Systemd::user());
+        }
+        if cron::Cron::available() {
+            return Box::new(cron::Cron::user());
+        }
+    }
     Box::new(NoScheduler)
 }
 
