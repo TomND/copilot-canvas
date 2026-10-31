@@ -1334,8 +1334,12 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         gui.send("\x1b")?;
         // Multi-line: copy exactly, paste without Enter (PowerShell and a program with bracketed paste).
         let multi = crate::selftest::copy_paste_check(&mut gui.driver)?;
-        // IME text with a line break is a paste too.
+        // IME text with a line break is a paste too. The screen is cleared first:
+        // the multi-line check above left its own probe's READY on it, and waiting
+        // for that one would send the IME text to PowerShell before this probe runs.
         let exe = std::env::current_exe()?;
+        gui.send(crate::test_shell::clear())?;
+        gui.wait("the screen cleared before the probe", 10, |t| !t.contains(crate::paste_probe::READY))?;
         gui.send(&crate::test_shell::run_self(&exe, "paste-probe"))?;
         gui.wait("the paste probe", 20, |t| t.contains(crate::paste_probe::READY))?;
         let ime = (|| -> Result<()> {
@@ -1355,6 +1359,11 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         if ended.is_err() {
             gui.send("\x03")?;
         }
+        // Esc empties a line PowerShell may hold (text that missed the probe); a
+        // pause keeps it from joining the next key as Alt+key. (zsh and bash:
+        // Ctrl+C, as Esc would be a Meta prefix there.)
+        gui.send(std::str::from_utf8(crate::test_shell::discard_input()).unwrap_or("\x1b"))?;
+        std::thread::sleep(Duration::from_millis(300));
         // Later rows print near the top again (the --perf overlay covers the tile's last rows).
         gui.send(crate::test_shell::clear())?;
         gui.wait("the screen cleared", 10, |t| !t.contains("PASTE 2 lines") && !t.contains(crate::paste_probe::READY))?;
