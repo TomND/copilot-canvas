@@ -1545,7 +1545,7 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     anyhow::ensure!(after("--instance") == Some(instance.name.as_str()) && rest.contains(&"--demo"), "same instance and demo canvas: {rest:?}");
     anyhow::ensure!(after("--remote") == remote, "same connection ({remote:?}): {rest:?}");
 
-    step("mouse drag moves a session together with its subagent");
+    step("mouse drag moves a session together with its subagent box (folded into its deck)");
     let before = wait_doc(&canvas, "initial save", |d| d.node("demo-main").is_some())?;
     let main = before.node("demo-main").context("demo node")?.clone();
     let agent = before.node("demo-main:explore").context("demo agent")?.clone();
@@ -2400,16 +2400,27 @@ fn layout_undo_steps<U: Ui>(ui: &mut U, canvas: &Path) -> Result<()> {
     back_to_terminal(ui)
 }
 
-/// A right-drag (the TUI's area selection; the GUI's Shift-drag is the
-/// same gesture) that starts on a session and reaches its subagent box
-/// selects both, at 100 % and at 50 %; dragging the session then moves the
-/// subagent box once (not twice), and Ctrl+Z puts both back.
+/// Subagent boxes are folded into a deck beneath their session by default:
+/// K shows the demo session's box at its saved place. A right-drag (the
+/// TUI's area selection; the GUI's Shift-drag is the same gesture) that
+/// starts on the session and reaches its subagent box selects both, at
+/// 100 % and at 50 %; dragging the session then moves the subagent box once
+/// (not twice), and Ctrl+Z puts both back. K folds it again, its place kept.
 fn area_selection_steps<U: Ui>(ui: &mut U, canvas: &Path) -> Result<()> {
-    step("an area selection over a session and its subagent box selects both at 100 % and 50 %; moving them moves the subagent once");
+    step("K shows a session's folded subagent box at its saved place; an area selection over the session and the box selects both at 100 % and 50 %; moving them moves the subagent once; K folds it again");
+    let at = |d: &Doc, id: &str| d.node(id).map(|n| (n.x, n.y)).unwrap_or_default();
+    let saved = at(&load(canvas)?, "demo-main:explore");
+    canvas_at(ui, 100)?;
+    ui.send(b"k")?;
+    wait_doc(canvas, "K showed the subagent box at its saved place", |d| d.node("demo-main").is_some_and(|n| n.subagents_shown == Some(true)) && at(d, "demo-main:explore") == saved)?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while ui.find_in("Explore terminal", CANVAS.0, CANVAS.1).is_none() {
+        anyhow::ensure!(Instant::now() < deadline, "the subagent box is not drawn on the canvas\n--- screen ---\n{}", ui.text());
+        std::thread::sleep(Duration::from_millis(100));
+    }
     for pct in [100, 50] {
         canvas_at(ui, pct)?;
         let before = load(canvas)?;
-        let at = |d: &Doc, id: &str| d.node(id).map(|n| (n.x, n.y)).unwrap_or_default();
         let (main, agent) = (at(&before, "demo-main"), at(&before, "demo-main:explore"));
         // The name sits two cells into the box; the band starts on the box's
         // corner and ends inside the subagent box (found from the document:
@@ -2428,7 +2439,10 @@ fn area_selection_steps<U: Ui>(ui: &mut U, canvas: &Path) -> Result<()> {
         wait_doc(canvas, "Ctrl+Z put both back", |doc| at(doc, "demo-main") == main && at(doc, "demo-main:explore") == agent)?;
         back_to_terminal(ui)?;
     }
-    Ok(())
+    canvas_at(ui, 100)?;
+    ui.send(b"k")?;
+    wait_doc(canvas, "K folded it again, its place kept", |d| d.node("demo-main").is_some_and(|n| n.subagents_shown == Some(false)) && at(d, "demo-main:explore") == saved)?;
+    back_to_terminal(ui)
 }
 
 #[cfg(test)]
@@ -2506,7 +2520,8 @@ mod stress_probe {
             std::fs::create_dir_all(d).unwrap();
         }
         let pid = std::process::id();
-        let mut doc = Doc::default();
+        // Every subagent box drawn on its own (the workload this measures).
+        let mut doc = Doc { subagents_shown: true, ..Doc::default() };
         let n_sessions: usize = std::env::var("STRESS_SESSIONS").ok().and_then(|v| v.parse().ok()).unwrap_or(100);
         let n_agents: usize = std::env::var("STRESS_AGENTS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
         let ids: Vec<String> = (0..n_sessions).map(|_| uuid::Uuid::new_v4().to_string()).collect();
@@ -2541,7 +2556,7 @@ mod stress_probe {
                 command: None,
                 fresh: false,
                 automation: None,
-                synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
+                synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
             });
         }
         for g in 0..n_sessions.div_ceil(10) as i32 {
@@ -2647,7 +2662,7 @@ mod user_message_canvas_probe {
         let mut doc = crate::client::doc::Doc::default();
         doc.nodes.push(crate::client::doc::Node {
             id: id.clone(), kind: crate::client::doc::NodeKind::Session, name: "Probe".into(), x: 2, y: 2,
-            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
+            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -2894,7 +2909,7 @@ mod canvas_image_paste_probe {
         let mut doc = crate::client::doc::Doc::default();
         doc.nodes.push(crate::client::doc::Node {
             id: id.clone(), kind: crate::client::doc::NodeKind::Session, name: "Paste probe".into(), x: 2, y: 2,
-            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: true, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
+            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: true, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -3066,7 +3081,7 @@ mod fork_canvas_probe {
         let mut doc = crate::client::doc::Doc::default();
         doc.nodes.push(crate::client::doc::Node {
             id: id.clone(), kind: crate::client::doc::NodeKind::Session, name: "Fork parent".into(), x: 2, y: 2,
-            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
+            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -3347,7 +3362,7 @@ mod loop_canvas_probe {
             cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None,
             mcp_off: Some(crate::copilot_cfg::snapshot().mcp.into_iter().map(|s| s.name).collect()),
             passive: None,
-            no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
+            no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -3477,7 +3492,7 @@ mod passive_probe {
         doc.nodes.push(crate::client::doc::Node {
             id: active.clone(), kind: crate::client::doc::NodeKind::Session, name: "Active probe".into(), x: 2, y: 2,
             cwd: Some(work.display().to_string()), parent: None, agent_key: None, source: None, command: None, fresh: true, automation: None, synced_name: None, reviewed_ms: None,
-            mcp_off: Some(off.clone()), passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
+            mcp_off: Some(off.clone()), passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
         });
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
         let instance = crate::paths::Instance::new(Some(format!("psv{}", std::process::id())), Some(home.clone()), Some(sessions.clone())).unwrap();

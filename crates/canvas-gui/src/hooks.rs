@@ -125,8 +125,8 @@ pub fn tree(app: &canvas_core::app::App, view: &View, chrome: &Buffer) -> Value 
             "boxes": model.boxes.iter().zip(&levels).map(|(b, level)| json!({
                 "id": b.id, "name": b.name, "prefix": b.prefix, "status": b.status.label(), "line": b.line, "rect": screen(b.rect),
                 "selected": b.selected, "attention": b.attention.is_some(), "border": format!("{:?}", b.border), "loop": b.every, "level": level,
-                "dust": b.dust, "alpha": b.alpha, "deck": b.deck.as_ref().map(|d| json!({ "root": d.root, "count": d.count, "back": d.back })),
-                "hidden": b.hidden.map(|(count, _)| count),
+                "dust": b.dust, "alpha": b.alpha, "deck": b.deck.as_ref().map(|d| json!({ "root": d.root, "count": d.count, "back": d.back, "agents": d.agents })),
+                "hidden": b.hidden.map(|h| h.total()), "hidden_agents": b.hidden.map(|h| h.agents),
             })).collect::<Vec<_>>(),
             "effects": model.effects.iter().map(|e| json!({ "id": e.id, "kind": e.kind, "badge": e.badge, "rect": screen(e.rect), "group": e.group, "age_ms": e.age_ms })).collect::<Vec<_>>(),
             "motion": format!("{:?}", model.motion),

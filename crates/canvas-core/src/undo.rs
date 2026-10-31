@@ -441,7 +441,14 @@ pub(crate) mod fixture {
     /// `p:helper`, a subsession `c` with its subagent box `c:x` (both in the
     /// nested group "g-in"), and `o`; `z` is outside. The view starts at the
     /// world origin on a 200×60 canvas (100 %: a cell is a world unit).
+    /// Subagent boxes are shown on this canvas (Settings › Subagents);
+    /// [`folded_doc`] is the same canvas with the default, folded ones.
     pub fn doc() -> Doc {
+        Doc { subagents_shown: true, ..folded_doc() }
+    }
+
+    /// [`doc`] with subagent boxes folded into decks (the default).
+    pub fn folded_doc() -> Doc {
         let nodes = vec![
             node("p", NodeKind::Session, None, 2, 2),
             node("p:helper", NodeKind::Agent, Some("p"), 6, 8),
@@ -753,5 +760,34 @@ mod tests {
         ctrl(&mut app, 'z');
         assert_eq!((at(&app, "p"), at(&app, "c"), at(&app, "c:x")), ((2, 2), (40, 2), (44, 8)));
         assert_eq!(app.doc.nodes.iter().filter(|n| n.kind == NodeKind::Session).count(), 4);
+    }
+
+    #[test]
+    fn folded_subagent_boxes_move_with_their_session_and_undo_restores_them() {
+        use crate::visual::VisualAction;
+        for gpu in [false, true] {
+            let (mut app, sent) = app_on(folded_doc(), gpu);
+            let before = layout(&app);
+            // Not drawn on their own, yet a drag of their session carries them.
+            drag(&mut app, MouseButton::Left, (5.5, 3.5), (10.5, 6.5), NONE);
+            assert_eq!((at(&app, "p"), at(&app, "p:helper")), ((7, 5), (11, 11)), "gpu {gpu}");
+            assert_eq!(app.undo.len(), 1);
+            // Showing and stacking them again are toggles, not undo steps.
+            app.run(crate::dialogs::Action::Visual(VisualAction::FoldSubagents("p".into(), false)));
+            app.run(crate::dialogs::Action::Visual(VisualAction::FoldSubagents("p".into(), true)));
+            assert_eq!(app.undo.len(), 1, "folding is not an undo step (gpu {gpu})");
+            ctrl(&mut app, 'z');
+            assert_eq!(layout(&app), before, "the folded box is back in its place too (gpu {gpu})");
+            assert_eq!(starts_or_stops(&sent), 0);
+        }
+        // A group drag carries a folded box with its session, wherever its saved place is.
+        let mut doc = folded_doc();
+        doc.node_mut("p:helper").unwrap().y = 40;
+        let (mut app, _sent) = app_on(doc, false);
+        assert_eq!(app.doc.group_of(app.doc.node("p:helper").unwrap()).map(|g| g.id.as_str()), Some("g"), "it belongs where its session is");
+        drag(&mut app, MouseButton::Left, (10.5, 0.5), (14.5, 2.5), NONE);
+        assert_eq!((at(&app, "p"), at(&app, "p:helper")), ((6, 4), (10, 42)));
+        ctrl(&mut app, 'z');
+        assert_eq!(at(&app, "p:helper"), (6, 40));
     }
 }

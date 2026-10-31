@@ -257,15 +257,17 @@ pub(super) fn rows(sb: &Sandbox, rows: &mut Vec<Row>) {
         let passive = chips.iter().find(|c| c["label"] == "⟲ 1").context("the passive chip")?;
         let at = center(rect(&passive["rect"]).context("chip rect")?);
         gui.click((at.0 - 0.0, at.1), &[])?;
-        gui.wait("the passive sessions menu", 5, |t| t.contains("Passive sessions of") && t.contains("Watcher"))?;
+        gui.wait("the group's passive sessions panel", 5, |t| t.contains("Passive sessions of “Visual group”") && t.contains("Watcher") && t.contains("Canvas-wide agents"))?;
         let _ = gui.png(0, "visual-chips-25");
-        gui.key("Enter", &[])?;
+        let (x, y) = gui.driver.find("⟲ Passive sessions of").context("the panel's title")?;
+        let (x, y) = gui.driver.find_in("⟲ Watcher", x, x + 1).filter(|&(_, row)| row > y).context("the panel's Watcher row")?;
+        gui.click((x as f64 + 3.5, y as f64 + 0.5), &[])?;
         gui.wait("the passive panel", 5, |t| t.contains("⟲ Watcher") && t.contains("Reacts to"))?;
         anyhow::ensure!(gui.tree()?["tiles"].as_array().is_some_and(Vec::is_empty), "the panel, no session started");
         gui.key("Esc", &[])?;
         gui.send("+")?;
         gui.send("+")?;
-        Ok(format!("{} chips at 25 %, passive chip → menu → panel; sidebar rows", chips.len()))
+        Ok(format!("{} chips at 25 %, passive chip → the group's passive panel → a session's panel; sidebar rows", chips.len()))
     });
 
     let _ = gui.req(json!({ "cmd": "quit" }));
@@ -300,5 +302,37 @@ pub(super) fn rows(sb: &Sandbox, rows: &mut Vec<Row>) {
         let _ = gui.req(json!({ "cmd": "quit" }));
         let _ = gui.driver.wait_exit(Duration::from_secs(10));
         Ok("AI docs chip → browser (files listed) → notes.md in the viewer; passive rules in the viewer; no Explorer on the service".into())
+    });
+
+    check_kind(rows, "V6", "Remote mode: a group's ⟲ Passive sessions row and chip open its labelled passive panel (state, Open / Run now / Pause, canvas-wide agents apart); nothing starts", "remote_group_passive_sessions", gui_only("the TUI draws the same row and panel (snapshot tests)"), || {
+        let mut gui = sb.start(&["--remote", "loopback", "--canvas", &canvas_arg], "gui-visuals-passives.log")?;
+        gui.wait("the visuals canvas over TCP", 25, |t| t.contains("Visual group"))?;
+        gui.send("f")?;
+        // The sidebar's row of the group's passive sessions, with their count.
+        gui.wait("the sidebar's passive sessions row", 10, |t| t.lines().any(|l| l.contains("⟲ Passive sessions") && l.contains(" 1")))?;
+        let (x, y) = gui.driver.find_in("⟲ Passive sessions", 0, 33).context("the sidebar row")?;
+        gui.click((x as f64 + 3.5, y as f64 + 0.5), &[])?;
+        gui.wait("the group's passive panel", 10, |t| t.contains("Passive sessions of “Visual group” · 1") && t.contains("They belong to this group") && t.contains("Canvas-wide agents · 0"))?;
+        gui.wait("its session with state and buttons", 5, |t| t.contains("⟲ Watcher") && t.contains("Run now") && t.contains("Pause"))?;
+        let _ = gui.png(0, "visual-remote-passives");
+        // The chip on the group's title opens the same panel.
+        gui.key("Esc", &[])?;
+        gui.canvas_focus()?;
+        let tree = gui.wait_tree("the chips", 5, |t| t["canvas"]["groups"][0]["chips"].as_array().is_some_and(|c| !c.is_empty()))?;
+        let chips = tree["canvas"]["groups"][0]["chips"].as_array().cloned().unwrap_or_default();
+        let chip = chips.iter().find(|c| c["label"].as_str().is_some_and(|l| l.starts_with("⟲"))).context("the passive chip")?;
+        anyhow::ensure!(chip["label"].as_str().is_some_and(|l| l.contains("passive") || l == "⟲ 1"), "a labelled chip: {chip}");
+        gui.click(center(rect(&chip["rect"]).context("chip rect")?), &[])?;
+        gui.wait("the panel from the chip", 10, |t| t.contains("Passive sessions of “Visual group”"))?;
+        // Open: the session's own panel, nothing started.
+        let (x, y) = gui.find(" Open ").context("the Open button")?;
+        gui.click((x + 1.0, y), &[])?;
+        gui.wait("the passive session's panel", 10, |t| t.contains("Reacts to") && t.contains("Group's passive"))?;
+        anyhow::ensure!(gui.tree()?["tiles"].as_array().is_some_and(Vec::is_empty), "no session started");
+        gui.key("Esc", &[])?;
+        let label = chip["label"].as_str().unwrap_or_default().to_owned();
+        let _ = gui.req(json!({ "cmd": "quit" }));
+        let _ = gui.driver.wait_exit(Duration::from_secs(10));
+        Ok(format!("over TCP: sidebar row → panel (1 session, state, buttons, 0 canvas-wide agents apart); chip \"{label}\" → panel; Open → its panel; nothing started"))
     });
 }

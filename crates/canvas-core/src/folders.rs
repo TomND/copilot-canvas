@@ -41,9 +41,9 @@ impl App {
         self.doc.nodes.iter().filter(|n| !n.is_canvas_agent() && n.passive.as_ref().is_some_and(|p| p.group == group)).collect()
     }
 
-    /// A group's chips: passive sessions ("⟲ 2", or "+ passive"), then its
-    /// folders ("◧ AI docs", "◨ Outputs", or "Set folder…"). `compact`: the
-    /// short forms for small sizes.
+    /// A group's chips: passive sessions ("⟲ 2 passive", or "⟲ + passive";
+    /// both open the group's passive panel), then its folders ("◧ AI docs",
+    /// "◨ Outputs", or "Set folder…"). `compact`: the short forms for small sizes.
     pub fn group_chips(&self, group: &Group, compact: bool) -> Vec<Chip> {
         if group.is_canvas_agents() {
             return if self.demo { Vec::new() } else { self.frame_chips(compact) };
@@ -52,9 +52,11 @@ impl App {
         let chip = |label: &str, action: Action, lit: bool| Chip { label: label.to_owned(), action, lit };
         let passives = self.group_passives(&group.id).len();
         if !self.demo && (passives > 0 || !group.is_automations()) {
+            let panel = Action::Visual(VisualAction::GroupPassives(group.id.clone()));
             chips.push(match passives {
-                0 => chip(if compact { " ⟲+ " } else { " ⟲ + passive " }, Action::NewPassive(group.id.clone()), false),
-                n => chip(&format!(" ⟲ {n} "), Action::Visual(VisualAction::GroupPassives(group.id.clone())), true),
+                0 => chip(if compact { " ⟲+ " } else { " ⟲ + passive " }, panel, false),
+                n if compact => chip(&format!(" ⟲ {n} "), panel, true),
+                n => chip(&format!(" ⟲ {n} passive "), panel, true),
             });
         }
         if !group.is_automations() {
@@ -92,20 +94,14 @@ impl App {
         compact
     }
 
-    /// A menu of the group's passive sessions (each opens its panel; none starts).
-    pub fn group_passives_menu(&mut self, group: &str) {
-        let name = self.doc.group(group).map(|g| g.name.clone()).unwrap_or_default();
-        let mut items: Vec<MenuItem> = self
-            .group_passives(group)
-            .into_iter()
-            .map(|n| {
-                let status = self.node_status(n);
-                MenuItem { label: format!("{} ⟲ {}", status.icon(0), n.name), hint: self.passive_line(n), action: Action::PassiveDetail(n.id.clone()), enabled: true }
-            })
-            .collect();
-        items.push(MenuItem { label: "New passive session…".into(), hint: String::new(), action: Action::NewPassive(group.to_owned()), enabled: !self.demo });
-        let (x, y) = self.menu_spot();
-        self.open_menu(x, y, (format!("Passive sessions of “{name}”"), items));
+    /// Opens the panel of a group's passive sessions (each opens its own
+    /// panel from there; none starts).
+    pub fn open_group_passives(&mut self, group: &str) {
+        if self.doc.group(group).is_some_and(|g| g.is_canvas_agents()) {
+            return self.run_agents(crate::canvas_wide::AgentAction::Panel);
+        }
+        self.right_detail = Some(crate::side::RightDetail::GroupPassives(group.to_owned()));
+        self.needs_draw = true;
     }
 
     /// A menu of the group's folders.
@@ -237,6 +233,7 @@ mod tests {
         let labels = |chips: &[Chip]| chips.iter().map(|c| c.label.trim().to_owned()).collect::<Vec<_>>();
         let group = app_no_folder.doc.group("g").unwrap().clone();
         assert_eq!(labels(&app_no_folder.group_chips(&group, false)), ["⟲ + passive", "◧ Set folder…"]);
+        assert_eq!(app_no_folder.group_chips(&group, false)[0].action, Action::Visual(VisualAction::GroupPassives("g".into())), "the empty chip opens the panel with its Create");
         assert_eq!(app_no_folder.group_chips(&group, false)[1].action, Action::SetGroupFolder("g".into()));
         doc.groups[0].folder = Some(r"C:\g".into());
         let mut p: Node = serde_json::from_value(serde_json::json!({ "id": "p1", "kind": "session", "name": "Rollout", "x": 2, "y": 2 })).unwrap();
@@ -245,13 +242,46 @@ mod tests {
         let app = app(doc, false);
         let group = app.doc.group("g").unwrap().clone();
         let full = app.fit_group_chips(&group, 14, 80);
-        assert_eq!(labels(&full), ["⟲ 1", "◧ AI docs", "◨ Outputs"]);
+        assert_eq!(labels(&full), ["⟲ 1 passive", "◧ AI docs", "◨ Outputs"]);
         assert_eq!(full[0].action, Action::Visual(VisualAction::GroupPassives("g".into())));
         assert_eq!(labels(&app.fit_group_chips(&group, 14, 40)), ["⟲ 1", "◧", "◨"], "compact when the title would not fit");
         assert_eq!(labels(&app.fit_group_chips(&group, 14, 18)), ["◧", "◨"], "the passive chip goes first");
         assert!(app.fit_group_chips(&group, 14, 8).is_empty());
         let demo = super::tests::app(app.doc.clone(), true);
         assert_eq!(labels(&demo.group_chips(&group, false)), ["◧ AI docs", "◨ Outputs"], "no passive sessions in the demo");
+    }
+
+    #[test]
+    fn every_group_shows_where_its_passive_sessions_belong() {
+        use crate::app::SideKind;
+        use crate::side::RightDetail;
+        let mut doc = Doc::default();
+        doc.groups.push(Group { id: "g".into(), name: "Payments".into(), x: 0, y: 0, w: 80, h: 10, folder: Some(r"C:\g".into()), ..Default::default() });
+        doc.groups.push(Group { id: "e".into(), name: "Empty".into(), x: 0, y: 20, w: 80, h: 10, ..Default::default() });
+        let mut p: Node = serde_json::from_value(serde_json::json!({ "id": "p1", "kind": "session", "name": "Rollout", "x": 2, "y": 2 })).unwrap();
+        p.passive = Some(Passive { key: "k".into(), group: "g".into(), ..Default::default() });
+        doc.nodes.push(p);
+        let mut app = app(doc, false);
+        let rows = crate::ui::build_side_rows(&app);
+        let at = |kind: SideKind| rows.iter().position(|r| r.kind == kind).expect("row");
+        let header = at(SideKind::Passives("g".into()));
+        assert_eq!((rows[header].label.as_str(), rows[header].count), ("Passive sessions", Some(1)));
+        let session = at(SideKind::Session("p1".into()));
+        assert!(session == header + 1 && rows[session].depth == rows[header].depth + 1, "listed beneath its header");
+        let empty = at(SideKind::Passives("e".into()));
+        assert_eq!((rows[empty].label.as_str(), rows[empty].count), ("Passive: none · + add…", Some(0)));
+        // A click on the empty group's row opens its panel, which offers Create; nothing starts.
+        app.side_rows = rows;
+        app.view_side_row(empty);
+        assert_eq!(app.right_detail, Some(RightDetail::GroupPassives("e".into())));
+        assert!(app.modals.is_empty(), "viewing makes nothing");
+        app.run(Action::Visual(VisualAction::GroupPassives("g".into())));
+        assert_eq!(app.right_detail, Some(RightDetail::GroupPassives("g".into())), "the chip and the menu open it too");
+        let (title, items) = app.group_menu("g");
+        assert_eq!(title, "Payments");
+        assert!(items.iter().any(|i| i.action == Action::Visual(VisualAction::GroupPassives("g".into()))), "the group menu names it");
+        // Canvas-wide agents are not a group's: their frame's chip leads to ◎ Agents.
+        assert_eq!(app.group_passives("e").len(), 0);
     }
 
     #[test]

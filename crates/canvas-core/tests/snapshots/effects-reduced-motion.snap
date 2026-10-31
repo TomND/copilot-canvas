@@ -6,9 +6,9 @@
                                  │ ╎                                              ╎
  ◷  ▾ ▣ Payments               2 │ ╎ ╭ Payments API ──────────────╮               ╎
       ◧ pay                      │ ╎ │ ■ stopped                  │    ·     ·    ╎·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
- ⧉    ■ Payments API             │ ╎ │ canvas                     │               ╎
-      ■ Billing UI               │ ╎ ╰─ ✦ PR !12 approved ────────╯               ╎
- ⌁                               │ ╎     ·     ·     ·     ·     ·     ·     ·    ╎·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+ ⧉    ⟲ Passive: none · + add…   │ ╎ │ canvas                     │               ╎
+      ■ Payments API             │ ╎ ╰─ ✦ PR !12 approved ────────╯               ╎
+ ⌁    ■ Billing UI               │ ╎     ·     ·     ·     ·     ·     ·     ·    ╎·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
                                  │ ╎                                              ╎
  ✦                               │ ╎                                              ╎
                                  │ ╎ ╭ Billing UI ────────────────╮    ·     ·    ╎·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
@@ -44,7 +44,7 @@
 view cursor=none modal=none banner=None
 canvas area=34,1 116x38 origin=-1,-1 scale=1 grid=true tick=0 empty=false
 group g-pay "Payments" icon=▣ members=2 rect=0,0 48x16 color=#20be96 style=[fg #20be96 +DIM] selected=false drop_target=false automations=false folder=true
-  chip " ⟲+ " action=NewPassive("g-pay") rect=33,0 4x1 fixed=false lit=false
+  chip " ⟲+ " action=Visual(GroupPassives("g-pay")) rect=33,0 4x1 fixed=false lit=false
   chip " ◧ " action=OpenGroupFolder("g-pay", false) rect=38,0 3x1 fixed=false lit=true
   chip " ◨ " action=OpenGroupFolder("g-pay", true) rect=42,0 3x1 fixed=false lit=true
 box e1 Session rect=2,2 30x4 prefix="" name="Payments API"

@@ -238,6 +238,53 @@ impl Lines {
         self.spans.insert(self.lines.len(), spans);
         self.lines.push((text, Style::default()));
     }
+
+    /// One line whose text acts on a click (`open`), with small buttons at
+    /// its end (the text is cut to leave them room).
+    fn entry(&mut self, text: &str, style: Style, open: Action, buttons: Vec<(String, Action)>) {
+        let labels: Vec<String> = buttons.iter().map(|(label, _)| format!(" {label} ")).collect();
+        let room: usize = labels.iter().map(|l| crate::paint::text_width(l) + 1).sum();
+        let text = truncate(text, self.width.saturating_sub(room).max(4));
+        let width = crate::paint::text_width(&text) as i32;
+        self.clicks.push((self.lines.len(), 0, width, open));
+        let mut x = width + 1;
+        let mut spans = vec![(text, style), (" ".into(), Style::default())];
+        for ((_, action), label) in buttons.into_iter().zip(labels) {
+            let w = crate::paint::text_width(&label) as i32;
+            self.clicks.push((self.lines.len(), x, w, action));
+            spans.push((label, Style::default().fg(ACCENT).bg(PANEL_HI)));
+            spans.push((" ".into(), Style::default()));
+            x += w + 1;
+        }
+        self.spans(spans);
+    }
+}
+
+/// Subagent rows listed in a session's details panel at most.
+const SUBAGENT_ROWS: usize = 12;
+
+/// A session's subagent boxes in its details panel: each with its state (a
+/// click on its name views it, Inspect opens its transcript), and whether
+/// they are stacked or shown. Nothing here starts anything.
+fn subagent_rows(app: &App, out: &mut Lines, node: &crate::doc::Node) {
+    let agents: Vec<&crate::doc::Node> = app.doc.nodes.iter().filter(|n| n.kind == crate::doc::NodeKind::Agent && n.parent.as_deref() == Some(node.id.as_str())).collect();
+    if agents.is_empty() {
+        return;
+    }
+    let folded = canvas_model::visual::subagents_folded(&app.doc, node);
+    out.gap();
+    let how = if folded { "stacked · K shows them" } else { "shown · K stacks them" };
+    out.text(format!("SUBAGENTS {} ({how})", agents.len()), bold(MUTED));
+    // The newest first: they are the likeliest to be running.
+    for agent in agents.iter().rev().take(SUBAGENT_ROWS) {
+        let status = app.node_status(agent);
+        let text = format!("{} {} · {}", status.icon(app.tick), agent.name, crate::ui_canvas::box_label(agent, status));
+        let inspect = app.transcript_request(&agent.id).map(|_| ("Inspect".to_owned(), Action::Inspect(agent.id.clone())));
+        out.entry(&text, fg(status.color()), Action::Open(agent.id.clone()), inspect.into_iter().collect());
+    }
+    if agents.len() > SUBAGENT_ROWS {
+        out.text(format!("… and {} older (the sidebar lists every one)", agents.len() - SUBAGENT_ROWS), fg(MUTED));
+    }
 }
 
 /// Info and health page of a manifest-managed automation.
@@ -517,6 +564,7 @@ fn session_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)
         primary = true;
     }
     out.text("S subsession · R rename · G group · X stop", fg(MUTED));
+    subagent_rows(app, out, node);
     if app.transcript_request(&node.id).is_some() {
         actions.push(("Inspect transcript".into(), Action::Inspect(node.id.clone())));
     }
@@ -638,6 +686,60 @@ fn canvas_agents_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Ac
     if app.doc.canvas_frame().is_some() {
         actions.push(("Show frame".into(), Action::Agents(AgentAction::Reveal)));
     }
+}
+
+/// A group's passive sessions: what they are, each one's state with Open,
+/// Run now and Pause / Resume, an empty state with an explicit Create, and
+/// the canvas-wide agents named apart (they are not the group's). Nothing
+/// here starts a session but Run now.
+fn group_passives_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>, group: &str) {
+    use crate::canvas_wide::{AgentAction, MARK};
+    let Some(g) = app.doc.group(group).cloned() else {
+        out.text("This group was removed.", fg(MUTED));
+        return;
+    };
+    let passives: Vec<crate::doc::Node> = app.group_passives(group).into_iter().cloned().collect();
+    out.text(format!("⟲ Passive sessions of “{}” · {}", g.name, passives.len()), bold(TEXT));
+    out.text(
+        format!("They belong to this group: each watches only “{}”'s events, its schedule and messages to it, and keeps its rules, memory and log in the group's folder. Viewing one never starts it.", g.name),
+        fg(MUTED),
+    );
+    if g.folder.is_none() && !g.is_automations() {
+        out.text("This group has no folder yet: a passive session needs one (Create asks for it first).", fg(ATTENTION));
+    }
+    out.gap();
+    if passives.is_empty() {
+        out.text("No passive sessions in this group yet.", fg(TEXT));
+        if !app.demo {
+            out.link("+ Create a passive session for this group…", fg(ACCENT), Action::NewPassive(group.to_owned()));
+        }
+    }
+    for node in &passives {
+        let passive = node.passive.clone().unwrap_or_default();
+        let status = app.node_status(node);
+        out.link(&format!("⟲ {}  {} {}", node.name, status.icon(app.tick), app.passive_line(node)), bold(status.color()), Action::PassiveDetail(node.id.clone()));
+        out.indented(3, format!("{} · {}", App::passive_trigger(&passive), passive.template), fg(MUTED));
+        let mut buttons = vec![("Open".to_owned(), Action::PassiveDetail(node.id.clone()))];
+        if !passive.paused {
+            buttons.push(("▸ Run now".into(), Action::PassiveRun(node.id.clone())));
+        }
+        buttons.push((if passive.paused { "▶ Resume".into() } else { "‖ Pause".into() }, Action::PassivePause(node.id.clone())));
+        out.buttons(3, buttons);
+    }
+    out.gap();
+    out.text("NOT THIS GROUP'S", bold(MUTED));
+    let agents = app.canvas_agents().len();
+    out.link(&format!("{MARK} Canvas-wide agents · {agents}: every group, in ◎ Agents ▸"), fg(TEXT), Action::Agents(AgentAction::Panel));
+    if !app.demo {
+        actions.push(("+ New passive session".into(), Action::NewPassive(group.to_owned())));
+    }
+    if g.folder.is_none() && !g.is_automations() {
+        actions.push(("Set folder…".into(), Action::SetGroupFolder(group.to_owned())));
+    }
+    if !app.demo {
+        actions.push(("Send event…".into(), Action::SendEvent(group.to_owned())));
+    }
+    actions.push(("Canvas agents".into(), Action::Agents(AgentAction::Panel)));
 }
 
 /// One canvas-wide agent's panel: what it watches, its skills and state,
@@ -1039,6 +1141,7 @@ pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &R
             }
         },
         RightDetail::CanvasAgents => canvas_agents_panel(app, &mut out, &mut actions),
+        RightDetail::GroupPassives(group) => group_passives_panel(app, &mut out, &mut actions, group),
         RightDetail::Prs => prs_panel(app, &mut out, &mut actions),
         RightDetail::Reviews => reviews_panel(app, &mut out, &mut actions),
         RightDetail::Passive(id) if app.doc.node(id).is_some_and(|n| n.is_canvas_agent()) => {
@@ -1111,6 +1214,7 @@ pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &R
                 actions.push(("Folder".into(), Action::PassiveOpen(id.clone(), 3)));
                 actions.push(("Message…".into(), Action::MessagePassive(id.clone())));
                 actions.push(("Open chat".into(), Action::PassiveChat(id.clone())));
+                actions.push(("Group's passive".into(), Action::Visual(crate::visual::VisualAction::GroupPassives(passive.group.clone()))));
             }
         },
         RightDetail::Item(item) => match item {
