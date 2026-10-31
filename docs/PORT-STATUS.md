@@ -158,6 +158,55 @@ plan §6.1 equivalent, documented).
 - Task Scheduler stays Windows-only (`taskschd_none.rs` lists nothing and
   refuses changes elsewhere) until the `Scheduler` backends of Phase 2.
 - `canvas-push` uses rustls (ring) on Linux, native-tls elsewhere (§5.9).
+- **Linux HTML view (D9, §5.7): WebKitGTK 4.1 rendered offscreen**, not WPE,
+  not Blitz, not an X11 child (spike 2026-10-31, `spikes/linux-html/`, CI
+  workflow `linux-html-spike`, run 41222103421). Why:
+  - **WPE is not packaged where we need it**: Ubuntu publishes `wpewebkit`
+    only for 20.04 and 22.04 (2.36.0 from 2022, never updated), nothing for
+    24.04 or later; Debian 12 has 2.38.6. Shipping it would mean bundling
+    WebKit and owning its security updates. WebKitGTK 4.1 is maintained in
+    every target distribution (22.04: 2.50.4, 24.04: 2.52.6, Debian, Fedora).
+  - **Offscreen works on X11 and Wayland alike**: a `GtkOffscreenWindow`
+    (no surface on screen, its own display connection) rendered the report
+    under Xvfb and headless weston with `hardware-acceleration-policy=NEVER`
+    (CPU, no GPU needed). The texture route keeps one code path and makes
+    the parity capture the normal offscreen `png`.
+  - **Fidelity**: WebKitGTK matches Chrome (the WebView2 engine) on the
+    realistic report (`pages/brief.html`: gradient-clipped heading, flex
+    cards, grid, table pills, `::marker`, `<kbd>`, dashed `<details>`, data:
+    PNG, colour emoji, CJK) except for font faces. Blitz 0.2 lost the
+    `background-clip:text` heading, colour emoji, `<kbd>` borders, marker
+    colours and dashed borders, and laid the table out differently.
+  - **Measured** (GitHub runners, 1000×800): first frame 155–890 ms cold
+    (WebKit's processes start), 12–16 ms for the next report; snapshot of
+    the view 6–10 ms (`webkit_web_view_get_snapshot`), offscreen pixbuf
+    42–52 ms; memory (PSS) ≈ 80–114 MB for the GTK side, ≈ 82–96 MB
+    WebProcess, ≈ 18–29 MB NetworkProcess. Blitz: 20–25 MB, 24–408 ms.
+  - **Lock-down verified**: page JavaScript off at parse
+    (`enable-javascript-markup=false`: script elements and handler
+    attributes are removed, so the raw probe sees 0 scripts where WebView2
+    keeps 1 inert one; the title never changed); `evaluate_javascript`
+    needs `enable-javascript=true` ("Cannot execute JavaScript in this
+    document" otherwise), so production keeps it off and the test hooks
+    turn it on only around an `eval`; navigation refused in `decide-policy`
+    (the script's `location.href` change was blocked, the page stayed; a
+    clicked link arrives as a user-gesture `LINK_CLICKED` for the canvas to
+    ask about); nothing reached the local listener. **WebKit preconnects to
+    a clicked link's host** (`CONNECT example.com:443`) even though the
+    navigation is refused and the content rule list is on: the view
+    therefore gets a **deny proxy** (an in-process listener on 127.0.0.1
+    answering 403 and counting, like WebView2's 403 answers) for http(s)
+    and ws(s), and the iPhone's content rule list for file/blob/ftp.
+  - **bubblewrap sandbox**: works on 22.04; on 24.04 (AppArmor restricts
+    unprivileged user namespaces) bwrap fails and WebKit aborts the whole
+    process (`g_error`). So the view runs in a **helper process**
+    (`copilot-canvas-gui --html-view`, GTK and WebKit loaded with `dlopen`,
+    nothing linked at build time) that talks to the GUI over a socket pair
+    (commands one way, BGRA frames the other), and the sandbox is enabled
+    only when a `bwrap` probe succeeds. Missing library or a failed helper:
+    the formatted-text view with a note, as on Windows without WebView2.
+  - Input: wheel and click forwarded as synthesized GDK events worked
+    (scrollY 0 → 258; the click became a link request).
 - Timing-sensitive `canvas-host` terminal tests run serially (a test-only
   mutex): on 3-core macOS runners they starved each other's 100 ms ticks.
 - Canvas locks (`Store::open`) use an exclusive `flock` off Windows.
@@ -192,3 +241,7 @@ plan §6.1 equivalent, documented).
   CI job `linux` added (ubuntu-24.04, ubuntu-22.04 = glibc 2.35 floor,
   ubuntu-24.04-arm): clippy, `cargo test --workspace`, release build;
   alacritty engine only until libghostty-vt builds for Linux targets.
+- 2026-10-31: HTML view spike done (see Decisions): WebKitGTK 4.1 offscreen
+  in a dlopen'ed helper process, deny proxy + content rule list, sandbox
+  when bwrap works. WPE rejected (not packaged on Ubuntu 24.04; 2.36 on
+  22.04), Blitz rejected (fidelity).
