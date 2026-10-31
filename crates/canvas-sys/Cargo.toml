@@ -27,7 +27,7 @@ secret-service = { version = "5.2.0", features = ["rt-async-io-crypto-rust"] }
 security-framework = "3.7.0"
 objc2 = "0.5.2"
 objc2-foundation = { version = "0.2.2", features = ["NSArray", "NSData", "NSDictionary", "NSEnumerator", "NSString"] }
-objc2-app-kit = { version = "0.2.2", features = ["NSPasteboard", "NSBitmapImageRep", "NSImageRep"] }
+objc2-app-kit = { version = "0.2.2", features = ["NSPasteboard", "NSBitmapImageRep", "NSImageRep", "NSWorkspace", "NSAccessibility"] }
 
 [build-dependencies]
 cfg_aliases.workspace = true

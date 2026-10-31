@@ -429,7 +429,32 @@ fn placement() -> Result<String> {
 
 /// The outside accessibility client: UI Automation on Windows, AT-SPI on
 /// Linux (what Orca reads).
-const CLIENT: &str = if cfg!(target_os = "linux") { "AT-SPI" } else { "UIA" };
+const CLIENT: &str = if cfg!(target_os = "linux") {
+    "AT-SPI"
+} else if cfg!(target_os = "macos") {
+    "NSAccessibility"
+} else {
+    "UIA"
+};
+
+/// The accessibility tree as the OS's client sees it: UIA (Windows) and
+/// AT-SPI (Linux) from this process; on macOS the GUI walks its own
+/// NSAccessibility tree, as VoiceOver's AX calls do (an AX client in another
+/// process needs the Accessibility permission, a prompt).
+fn access_snapshot(ui: &GuiDriver, handle: isize) -> Result<Value> {
+    if cfg!(target_os = "macos") {
+        return ui.request(json!({ "cmd": "ax" }));
+    }
+    crate::uia::uia_snapshot(handle)
+}
+
+fn access_press(ui: &GuiDriver, handle: isize, name: &str) -> Result<()> {
+    if cfg!(target_os = "macos") {
+        anyhow::ensure!(ui.request(json!({ "cmd": "ax", "press": name }))?["ok"] == true, "no button {name:?} pressed through NSAccessibility");
+        return Ok(());
+    }
+    crate::uia::uia_invoke(handle, name)
+}
 
 fn uia_tree() -> Result<String> {
     let result = uia_tree_inner();
@@ -461,7 +486,7 @@ fn uia_tree_inner() -> Result<String> {
     let status = |n: &Value| n["description"].as_str().is_some_and(|s| !s.is_empty());
     let deadline = Instant::now() + Duration::from_secs(20);
     let snap = loop {
-        let snap = crate::uia::uia_snapshot(hwnd)?;
+        let snap = access_snapshot(&ui, hwnd)?;
         let ready = has(&snap, &|n| ty(n, "Button") && name(n, "+ New"))
             && has(&snap, &|n| ty(n, "TreeItem") && name(n, "Build session canvas"))
             && has(&snap, &|n| ty(n, "Button") && name(n, "Build session canvas") && status(n))
@@ -483,9 +508,9 @@ fn uia_tree_inner() -> Result<String> {
     let hook_names: Vec<&str> = hook["access"]["nodes"].as_array().into_iter().flatten().filter_map(|n| n["name"].as_str()).collect();
     anyhow::ensure!(hook_names.contains(&"+ New") && hook_names.iter().any(|n| n.contains("Build session canvas")), "the tree hook lists the same elements");
     // The client presses a button: "+ New" opens the new-session dialog.
-    crate::uia::uia_invoke(hwnd, "+ New")?;
+    access_press(&ui, hwnd, "+ New")?;
     wait_tree(&ui, &format!("the dialog opened through {CLIENT}"), 10, |t| t["modals"].as_u64().unwrap_or(0) > 0)?;
-    let dialog = crate::uia::uia_snapshot(hwnd)?;
+    let dialog = access_snapshot(&ui, hwnd)?;
     let dialog_seen = dialog["nodes"].as_array().is_some_and(|n| n.iter().any(|n| n["type"] == "dialog" || n["type"].as_str().is_some_and(|t| t.contains("dialog"))));
     let _ = ui.request(json!({ "cmd": "quit" }));
     let _ = ui.wait_exit(Duration::from_secs(10));
@@ -525,6 +550,20 @@ fn software_fallback() -> Result<String> {
     let sb = Sandbox::new("warp")?;
     let canvas = static_canvas(&sb)?;
     let nohw = PathBuf::from("nohw");
+    if cfg!(target_os = "macos") {
+        // Metal has no software adapter (MAC-LINUX-PLAN §6): without the GPU
+        // the GUI says so, points to the terminal UI and logs the refusal.
+        let mut seen = Vec::new();
+        for (what, log) in [(&nohw, "nohw.log"), (&PathBuf::from("none"), "none.log")] {
+            let mut ui = sb.start(&["--canvas", &canvas], &[("CANVAS_GUI_TEST_GPU", what)], Some((170, 46)), log)?;
+            let code = ui.wait_exit(Duration::from_secs(20))?;
+            let stderr = std::fs::read_to_string(sb.root.join(log)).unwrap_or_default();
+            anyhow::ensure!(code == 1 && stderr.contains("terminal UI") && stderr.contains("copilot-canvas"), "{}: exit {code}: {stderr}", what.display());
+            seen.push(stderr.lines().next().unwrap_or_default().to_owned());
+        }
+        anyhow::ensure!(sb.crash_log().contains("hardware adapter: refused"), "the hardware failure is logged:\n{}", sb.crash_log());
+        return Ok(format!("no software adapter on macOS: without the GPU (and without any adapter) exit 1 with {:?}; the refusal logged", seen[0]));
+    }
     let mut ui = sb.start(&["--canvas", &canvas], &[("CANVAS_GUI_TEST_GPU", &nohw)], Some((170, 46)), "warp.log")?;
     wait_tree(&ui, "the boxes", 30, |t| t["canvas"]["boxes"].as_array().is_some_and(|b| !b.is_empty()))?;
     let size = ui.request(json!({ "cmd": "size" }))?;

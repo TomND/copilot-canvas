@@ -429,9 +429,14 @@ impl App {
             if ctrl && is('v') {
                 return self.paste_clipboard(&id);
             }
-            // Command+plus and Command+minus: the terminals' text size.
+            // Command+plus and Command+minus: the terminals' text size; Command+0 resets it.
             if ctrl && matches!(key.code, KeyCode::Char('+' | '=' | '-')) {
                 self.text_zoom_steps += if key.code == KeyCode::Char('-') { -1 } else { 1 };
+                return;
+            }
+            if ctrl && key.code == KeyCode::Char('0') {
+                self.text_zoom_steps = 0;
+                self.text_zoom_reset = true;
                 return;
             }
             self.focus = Focus::Canvas;

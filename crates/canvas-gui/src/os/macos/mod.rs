@@ -1,11 +1,18 @@
-//! macOS: the WKWebView report view, posted keys and work areas; the Dock
-//! tile, notifications and menus come here too (MAC-LINUX-PLAN §5.6, §5.7).
+//! macOS: the WKWebView report view, the Dock tile and attention,
+//! notifications, posted keys and work areas (MAC-LINUX-PLAN §5.6, §5.7).
 
+pub mod access;
 mod appkit;
+mod dock;
+mod menu;
+mod notify;
 pub mod webview;
 
+pub use dock::{Taskbar, flash, in_front, track_window};
+pub use notify::{show_toast, toast_history_count, toast_thread_init};
+
 pub use super::unix::{clip_image, native_window, process, since_start};
-pub use appkit::{post_key, work_area};
+pub use appkit::{post_chord, post_key, work_area};
 
 /// wgpu's backend: Metal (macOS has no software adapter).
 pub const GPU_BACKENDS: wgpu::Backends = wgpu::Backends::METAL;
@@ -65,31 +72,11 @@ pub const KEY_POLICY: canvas_core::input::KeyPolicy = canvas_core::input::KeyPol
 pub fn configure_event_loop(builder: &mut winit::event_loop::EventLoopBuilder<crate::shell::UserEvent>, quiet_tests: bool) {
     use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
     builder.with_activation_policy(if quiet_tests { ActivationPolicy::Accessory } else { ActivationPolicy::Regular });
+    // Ours instead (menu.rs): winit's Quit would end the app without asking.
+    builder.with_default_menu(false);
     if quiet_tests {
         builder.with_activate_ignoring_other_apps(false);
     }
-}
-
-pub fn in_front(_window: isize) -> bool {
-    false
-}
-
-/// The windows and their focus, for `in_front` and `flash` where the OS
-/// cannot be asked by handle (macOS asks AppKit: nothing to track).
-pub fn track_window(_window: &std::sync::Arc<winit::window::Window>, _focused: bool) {}
-
-pub fn flash(_window: isize) {}
-
-pub fn toast_thread_init() -> Result<(), String> {
-    Err("notifications are not available on this platform yet".into())
-}
-
-pub fn show_toast(_title: &str, _body: &str) -> Result<(), String> {
-    Err("notifications are not available on this platform yet".into())
-}
-
-pub fn toast_history_count() -> Option<u32> {
-    None
 }
 
 /// Nothing to register outside Windows (the bundle identifier or the
@@ -101,25 +88,13 @@ pub fn helper() -> Option<i32> {
 
 pub fn set_app_id() {}
 
-/// The Dock tile or launcher entry (not shown yet).
-#[derive(Default)]
-pub struct Taskbar {
-    pub shown: Option<u8>,
-}
-
-impl Taskbar {
-    pub fn set(&mut self, window: isize, state: u8) {
-        if window != 0 {
-            self.shown = Some(state);
-        }
-    }
-}
-
 
 /// Every window: the left Option key is Alt (Meta) for terminals, the right
 /// one composes characters (MAC-LINUX-PLAN D8); the bundle's icon is used.
 pub fn window_attributes(attrs: WindowAttributes) -> WindowAttributes {
     use winit::platform::macos::{OptionAsAlt, WindowAttributesExtMacOS};
+    // The menu bar, once the app runs (the first window is being made).
+    menu::install();
     attrs.with_option_as_alt(OptionAsAlt::OnlyLeft)
 }
 

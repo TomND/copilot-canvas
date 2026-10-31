@@ -203,8 +203,12 @@ pub struct App {
     /// Text size steps asked for by pinching over terminals (the GUI applies
     /// and clears them).
     pub text_zoom_steps: i32,
+    /// Command+0 in a terminal: the text size back to the default.
+    pub text_zoom_reset: bool,
     /// How the front end's pointer scrolls (help text; MAC-LINUX-PLAN D15).
     pub pointer_policy: crate::input::PointerPolicy,
+    /// How the GUI's keyboard names the app's shortcuts in hints (macOS: ⌘).
+    pub key_policy: crate::input::KeyPolicy,
     /// Ctrl+L: repaint every cell on the next frame.
     pub repaint_requested: bool,
     /// When you last typed into each terminal (for idle auto-stop).
@@ -461,7 +465,9 @@ impl App {
             view_anim: None,
             smart_back: None,
             text_zoom_steps: 0,
+            text_zoom_reset: false,
             pointer_policy: Default::default(),
+            key_policy: Default::default(),
             side_rows_key: 0,
             sessions_rev: 0,
             terms_rev: 0,

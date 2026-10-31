@@ -77,6 +77,28 @@ pub enum UserEvent {
     Access(accesskit_winit::Event),
     /// The HTML view of a report has news (ready, failed, a clicked link, Esc).
     Web,
+    /// A menu bar item (macOS).
+    Menu(MenuCommand),
+}
+
+/// What a menu bar item asks of the window in front (macOS: MAC-LINUX-PLAN §5.6).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Clone, Copy, Debug)]
+pub enum MenuCommand {
+    /// Quit the app: the window in front asks (detach or stop all) and the others follow it.
+    Quit,
+    /// The canvas key the item stands for: Command (plus Shift) and the character, as if pressed.
+    Key(char, bool),
+    Help,
+    Settings,
+}
+
+/// Hands a menu bar item to the event loop.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn menu_command(command: MenuCommand) {
+    if let Some(proxy) = PROXY.get() {
+        let _ = proxy.send_event(UserEvent::Menu(command));
+    }
 }
 
 impl From<accesskit_winit::Event> for UserEvent {
@@ -147,6 +169,8 @@ struct Win {
     scratch: Buffer,
     /// After a DPI change: the world point kept at the canvas's centre, until when.
     recenter: Option<((f32, f32), Instant)>,
+    /// The app's Quit asked this window: when it quits, every window does.
+    quit_app: bool,
     placement: Placement,
     placement_path: std::path::PathBuf,
     placement_dirty: Option<Instant>,
@@ -554,6 +578,19 @@ impl Shell {
 
     /// Saves and closes windows whose app quit; leaves when none is left.
     fn close_finished(&mut self, event_loop: &ActiveEventLoop) {
+        // The app's Quit: the window that asked quits, the others with it; a
+        // cancelled question asks nothing of the others.
+        if self.wins.iter().any(|w| w.quit_app && w.app.quit) {
+            for win in &mut self.wins {
+                win.app.quit = true;
+            }
+        }
+        for win in &mut self.wins {
+            let asking = win.app.modals.iter().any(|m| matches!(m, canvas_core::dialogs::Modal::Confirm(c) if c.title == "Close Copilot Canvas"));
+            if win.quit_app && !win.app.quit && !asking {
+                win.quit_app = false;
+            }
+        }
         let mut index = 0;
         while index < self.wins.len() {
             if self.wins[index].app.quit {
@@ -606,6 +643,7 @@ impl Win {
             damage_frames: 0,
             scratch: Buffer::empty(area),
             recenter: None,
+            quit_app: false,
             placement: Placement::default(),
             placement_path: std::path::PathBuf::new(),
             placement_dirty: None,
@@ -1444,6 +1482,29 @@ impl Win {
                 });
                 json!({ "ok": true })
             }
+            #[cfg(target_os = "macos")]
+            "ax" => {
+                // The NSAccessibility tree as VoiceOver reads it, or a button pressed through it.
+                let view = hwnd_of(&self.window);
+                match command["press"].as_str() {
+                    Some(name) => json!({ "ok": crate::os::access::press(view, name) }),
+                    None => {
+                        let mut snap = crate::os::access::snapshot(view);
+                        snap["ok"] = json!(true);
+                        snap["window"] = json!(self.window.title());
+                        snap
+                    }
+                }
+            }
+            #[cfg(target_os = "macos")]
+            "post_chord" => {
+                // Command (plus Shift) and a key through AppKit: the menu bar's key equivalents first.
+                let view = hwnd_of(&self.window);
+                let c = command["char"].as_str().and_then(|s| s.chars().next()).unwrap_or('q');
+                let shift = command["shift"].as_bool().unwrap_or(false);
+                std::thread::spawn(move || crate::os::post_chord(view, c, shift));
+                json!({ "ok": true })
+            }
             "quit" => {
                 self.app.quit = true;
                 json!({ "ok": true })
@@ -1552,9 +1613,12 @@ impl Win {
     /// Housekeeping, then a frame when one is due; returns when to wake next.
     fn tick(&mut self, gpu: Option<&mut Gpu>, fonts: Option<&mut Fonts>, options: &Options) -> Instant {
         self.flush_dropped();
-        // Text size steps (pinching over terminals, Command+plus and minus): the whole grid.
-        if self.app.text_zoom_steps != 0 {
+        // Text size steps (pinching over terminals, Command+plus and minus, Command+0): the whole grid.
+        if self.app.text_zoom_steps != 0 || self.app.text_zoom_reset {
             let steps = std::mem::take(&mut self.app.text_zoom_steps);
+            if std::mem::take(&mut self.app.text_zoom_reset) {
+                self.text_zoom = 1.0;
+            }
             self.text_zoom = (self.text_zoom * 1.1f32.powi(steps)).clamp(0.5, 3.0);
             let advance = fonts.as_ref().map(|f| f.advance).unwrap_or(0.6);
             self.rescale(self.window.scale_factor() as f32, advance, gpu.as_deref(), options);
@@ -1583,6 +1647,7 @@ impl Win {
                 || app.glide.is_some()
                 || app.view_anim.is_some()
                 || app.text_zoom_steps != 0
+                || app.text_zoom_reset
                 || app.recent_pending()
                 || app.reconnecting
                 || app.restarting.is_some()
@@ -1822,6 +1887,25 @@ impl ApplicationHandler<UserEvent> for Shell {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::GpuCheck => self.check_gpu(event_loop),
+            UserEvent::Menu(command) => {
+                // The window in front, else the first.
+                let at = self.wins.iter().position(|w| crate::os::in_front(hwnd_of(&w.window))).unwrap_or(0);
+                let Some(win) = self.wins.get_mut(at) else { return };
+                match command {
+                    MenuCommand::Quit => {
+                        win.quit_app = true;
+                        win.app.request_quit();
+                    }
+                    MenuCommand::Key(c, shift) => {
+                        let mods = if shift { Modifiers::SUPER | Modifiers::SHIFT } else { Modifiers::SUPER };
+                        win.key_input(crate::os::KEY_POLICY.key(KeyEvent::new(KeyCode::Char(c), mods)));
+                    }
+                    MenuCommand::Help => win.app.run(canvas_core::dialogs::Action::Help),
+                    MenuCommand::Settings => win.app.run(canvas_core::dialogs::Action::View(canvas_core::side::SideView::Settings)),
+                }
+                win.input_waiting = true;
+                self.after_input(event_loop);
+            }
             UserEvent::Web => {
                 for win in &mut self.wins {
                     win.apply_web();

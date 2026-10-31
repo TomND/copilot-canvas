@@ -2325,7 +2325,7 @@ pub(crate) fn recent_names(text: &str) -> Vec<String> {
 fn recent_steps<U: Ui>(ui: &mut U, instance: &Instance) -> Result<()> {
     let launches = || std::fs::read_to_string(instance.log_path()).unwrap_or_default().matches("launched ").count();
     step("recent sessions: Ctrl+F6 / Ctrl+Shift+F6 view recent sessions without starting them; the RECENT list reorders when the walk ends");
-    ui.wait("the RECENT section with its keys", Duration::from_secs(5), |t| t.contains("RECENT") && t.contains("Ctrl+F6 · [ ]") && recent_names(t).len() >= 3)?;
+    ui.wait("the RECENT section with its keys", Duration::from_secs(5), |t| t.contains("RECENT") && (t.contains("Ctrl+F6 · [ ]") || t.contains("⌘F6 · [ ]")) && recent_names(t).len() >= 3)?;
     let names = recent_names(&ui.text());
     ui.wait("a terminal with the keyboard", Duration::from_secs(5), |t| t.contains("Typing goes to the terminal"))?;
     let before = launches();

@@ -139,13 +139,19 @@ pub fn system_animations() -> bool {
     {
         return value;
     }
-    let read = |program: &str, args: &[&str]| {
-        std::process::Command::new(program).args(args).stderr(std::process::Stdio::null()).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
-    };
-    let value = match platform() {
-        Platform::MacOs => read("/usr/bin/defaults", &["read", "com.apple.universalaccess", "reduceMotion"]).is_none_or(|v| v != "1"),
-        _ => read("gsettings", &["get", "org.gnome.desktop.interface", "enable-animations"]).is_none_or(|v| v != "false"),
-    };
+    // macOS: System Settings › Accessibility › Display › Reduce motion.
+    #[cfg(target_os = "macos")]
+    // SAFETY: a plain property read of the shared workspace (any thread).
+    let value = !unsafe { objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion() };
+    // Linux: GNOME's (and most desktops' portal-backed) animations setting.
+    #[cfg(not(target_os = "macos"))]
+    let value = std::process::Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", "enable-animations"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .is_none_or(|o| String::from_utf8_lossy(&o.stdout).trim() != "false");
     *cache = Some((Instant::now(), value));
     value
 }
@@ -180,5 +186,19 @@ pub fn local_offset_minutes() -> i32 {
             return 0;
         }
         (tm.tm_gmtoff / 60) as i32
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    /// Reduce motion as AppKit reports it agrees with the preference itself
+    /// (when `defaults` can read it; unset means motion on).
+    #[test]
+    fn reduce_motion_follows_the_accessibility_setting() {
+        let out = std::process::Command::new("/usr/bin/defaults").args(["read", "com.apple.universalaccess", "reduceMotion"]).output();
+        let reduced = out.ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim() == "1");
+        if let Some(reduced) = reduced {
+            assert_eq!(super::system_animations(), !reduced);
+        }
     }
 }

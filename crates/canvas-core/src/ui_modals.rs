@@ -57,7 +57,7 @@ const TRACKPAD_HELP: &[(&str, &str)] = &[
     ("Shift + scroll", "history even in programs"),
     ("Click · two-finger click", "select · context menu"),
     ("Force click", "open a link · box details"),
-    ("⌘ + · ⌘ − (terminal)", "text size"),
+    ("⌘ + · ⌘ − · ⌘ 0 (terminal)", "text size · default size"),
     ("Keys on a Mac", ""),
     ("⌘ (Command)", "the Ctrl of the list on the left"),
     ("Ctrl + any key", "goes to the terminal's program"),

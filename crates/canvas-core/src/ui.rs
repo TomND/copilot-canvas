@@ -651,10 +651,10 @@ fn draw_sidebar(app: &mut App, buf: &mut Buffer, area: Rect) {
                 let end = put(buf, x, y, caret, fg(MUTED).bg(bg), area) + 1;
                 let end = put(buf, end, y, "RECENT", bold(GRAY).bg(bg), area);
                 let end = put(buf, end + 1, y, &row.count.unwrap_or(0).to_string(), fg(MUTED).bg(bg), area);
-                let hint = "Ctrl+F6 · [ ]";
-                let hint_w = crate::paint::text_width(hint) as i32;
+                let hint = app.key_policy.label("Ctrl+F6 · [ ]");
+                let hint_w = crate::paint::text_width(&hint) as i32;
                 if width - 1 - hint_w > end + 1 {
-                    put(buf, width - 1 - hint_w, y, hint, fg(MUTED).bg(bg), area);
+                    put(buf, width - 1 - hint_w, y, &hint, fg(MUTED).bg(bg), area);
                 }
             }
             SideKind::Recent(id) => {
@@ -1049,7 +1049,7 @@ fn draw_status(app: &mut App, buf: &mut Buffer, area: Rect) {
             Focus::Sidebar => "click view · double-click/Enter start · ] [ or Ctrl+F6 recent · ←→ collapse · / filter · Tab canvas · Alt+1…9 views · ? help",
             Focus::Canvas => "click view · double-click/Enter start · ] [ or Ctrl+F6 recent · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom · right-click menu · ? help",
         };
-        (hints.to_owned(), fg(MUTED).bg(PANEL))
+        (app.key_policy.label(hints).into_owned(), fg(MUTED).bg(PANEL))
     };
     let right = match (&app.banner, &app.perf, &app.stats) {
         // The connection banner replaces the (stale) service figures.

@@ -648,4 +648,19 @@ mod tests {
         assert_eq!(crate::input::KeyPolicy::CommandApp.gesture(g).modifiers, Modifiers::CONTROL);
         assert_eq!(crate::input::KeyPolicy::CtrlApp.gesture(g).modifiers, Modifiers::SUPER);
     }
+
+    #[test]
+    fn command_plus_minus_and_zero_set_the_terminal_text_size() {
+        use crate::input::{InputEvent, KeyCode, KeyEvent, KeyPolicy};
+        let (mut app, sent) = split(0);
+        app.focused_term = Some("t".into());
+        app.focus = Focus::Terminal;
+        let command = |c: char| InputEvent::Key(KeyPolicy::CommandApp.key(KeyEvent::new(KeyCode::Char(c), Modifiers::SUPER)));
+        app.on_input(vec![command('='), command('='), command('-')]);
+        assert_eq!((app.text_zoom_steps, app.text_zoom_reset), (1, false));
+        app.on_input(vec![command('0')]);
+        assert_eq!((app.text_zoom_steps, app.text_zoom_reset), (0, true), "Command+0: the default size");
+        assert_eq!(app.focus, Focus::Terminal, "the terminal keeps the keyboard");
+        assert!(sent.try_iter().all(|m| !matches!(m, ClientMsg::Input { .. })), "nothing reached the program");
+    }
 }
