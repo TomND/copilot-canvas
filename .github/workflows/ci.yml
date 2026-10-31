@@ -454,6 +454,27 @@ jobs:
           for i in $(seq 1 40); do [ -S "$XDG_RUNTIME_DIR/wl-41b" ] && break; sleep 0.25; done
           unset DISPLAY
           CANVAS_PARITY_ROWS=41b,T1,T2 WAYLAND_DISPLAY=wl-41b timeout 600 dbus-run-session -- target/release/copilot-canvas selftest --client gui --parity
+      # Linux's own golden screenshots (X11, scale 1, lavapipe, the runner's
+      # fonts): recorded once into tests/golden/gui/linux-1x (kept as an
+      # artifact to review and commit), compared from then on.
+      - name: GUI golden screenshots on X11 (Linux set)
+        if: ${{ !cancelled() }}
+        run: |
+          dir="$PWD/tests/golden/gui/linux-1x"
+          unset WAYLAND_DISPLAY
+          if [ -d "$dir" ]; then
+            CANVAS_GOLDEN_DIR="$dir" timeout 900 xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- target/release/copilot-canvas selftest --client gui --golden
+          else
+            mkdir -p "$dir"
+            CANVAS_GOLDEN_DIR="$dir" timeout 900 xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- target/release/copilot-canvas selftest --client gui --golden --update
+          fi
+      - name: keep the Linux goldens and their diffs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-goldens
+          path: tests/golden/gui/linux-1x
+          if-no-files-found: ignore
       - name: GUI hardening checks on X11 (reporting)
         if: ${{ !cancelled() }}
         continue-on-error: true
