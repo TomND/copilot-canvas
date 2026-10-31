@@ -372,6 +372,41 @@ M0 (macOS TUI client of the Windows service) proves the shared foundation
 with real value at once; M1 (local service + TUI) and M2 (GUI) follow; Linux
 reuses Phases 0–1 and adds its own desktop integration. §9 has the phases.
 
+### D15. Trackpads feel native: a pointer policy per OS
+
+(The owner's requirement, 2026-10-31; ahead of the remaining parity rows and
+Phase 4.) `canvas-core/src/gesture.rs` handles `InputEvent::Gesture`
+(scroll with pixel deltas and phases, pinch, smart zoom, force click) under
+a per-OS `PointerPolicy` (`os::POINTER_POLICY`): **Precise** on macOS;
+**Notches** on Windows (unchanged: pixel deltas add up into wheel notches)
+and on Linux until its lead checks trackpads on Wayland and X11. A mouse
+wheel (line deltas) keeps row 12's notches everywhere. Under Precise:
+
+- **Two-finger scroll** pans the canvas pixel for pixel. The system's
+  momentum moves it on; the canvas adds no glide of its own.
+- **One target per gesture.** The gesture latches to what is under the
+  pointer when it begins (canvas, a terminal, the sidebar, a dialog) and
+  keeps it through its momentum (a momentum phase within 150 ms of
+  lift-off), wherever the pointer goes; after 350 ms without events a new
+  gesture latches afresh.
+- **Over a terminal**: scrollback by whole lines, the fraction carried to
+  the next event; a program in mouse mode gets a wheel notch per 3 lines;
+  an alternate-screen program without mouse reporting gets a page per half
+  screen; Shift forces scrollback.
+- **Pinch** zooms the canvas around the pointer and, when it ends within
+  0.08 of a power of two, settles there. Over a terminal pane it changes the
+  text size (×1.1 per step, 0.5–3.0), as Command+plus/minus there does.
+- **Smart zoom** (two-finger double tap) fits the box under the pointer, or
+  everything, and a second one goes back; animated over 260 ms, a jump with
+  reduced motion.
+- **Force click** opens a link, or selects a box and shows its details.
+- **Command+scroll** zooms as Ctrl+scroll does (`KeyPolicy::gesture`).
+- Help (`?`) lists the gestures in a second column.
+
+Checked by parity rows T1 and T2 (where the policy is Precise) and the
+canvas-core `gesture` tests. How it feels (momentum, natural scrolling on and
+off, force-click pressure) is the owner's check on hardware.
+
 ## 5. Subsystem designs
 
 ### 5.1 The platform layer (`canvas-sys`)
@@ -727,17 +762,18 @@ least 140 × 40 is still the comfortable size.
 
 ## 6. Parity matrix
 
-Every row of [PARITY.md](PARITY.md) (row ids as there; 60 rows). "Core"
-means the row is implemented in `canvas-core`, `canvas-model`, the service or
-the renderer and only needs the platform layer underneath; its check moves to
-macOS and Linux with the parity suite (§7). Difficulty S/M/L is the
-OS-specific work for that row; risk L/M/H is the chance it cannot be matched
-exactly or needs rework. Every row applies to the TUI as well where PARITY.md
-says so; the TUI needs no OS work beyond §5.8.
+Every row of [PARITY.md](PARITY.md) (row ids as there; 60 rows), plus the
+trackpad rows T1 and T2 of D15. "Core" means the row is implemented in
+`canvas-core`, `canvas-model`, the service or the renderer and only needs the
+platform layer underneath; its check moves to macOS and Linux with the
+parity suite (§7). Difficulty S/M/L is the OS-specific work for that row;
+risk L/M/H is the chance it cannot be matched exactly or needs rework. Every
+row applies to the TUI as well where PARITY.md says so; the TUI needs no OS
+work beyond §5.8.
 
 | # | Feature | macOS | Linux | Platform API | Diff mac / lin | Risk |
 |---|---|---|---|---|---|---|
-| 1 | Canvas: drag, pan, zoom, Show all nodes, centre, double-click, menus | core; trackpad pixel scrolling accumulates into notches; Cmd/Option+wheel zoom alongside Ctrl/Alt (Ctrl+scroll can be the system zoom); pinch zoom added | core; libinput smooth scrolling | winit `MouseWheel` (`PixelDelta`), `PinchGesture` | S / S | L |
+| 1 | Canvas: drag, pan, zoom, Show all nodes, centre, double-click, menus | core; the trackpad as D15 (pixel-exact pan, the system's momentum, pinch, smart zoom); Cmd/Option+wheel zoom alongside Ctrl/Alt (Ctrl+scroll can be the system zoom) | core; libinput smooth scrolling | winit `MouseWheel` (`PixelDelta`), `PinchGesture` | S / S | L |
 | 2 | Status (seven states), OSC 9;4, background subagents, Esc not done | core + history readers on Unix paths; verify each agent's files on macOS/Linux | same | file system, PTY | M / M | M |
 | 3 | Attention borders and tints; halo | renderer | renderer | wgpu | S / S | L |
 | 4 | Colour-blind palette; icons ◆ ✓ ○ ■ ✗ ↗ | renderer; glyph coverage from SF/Apple Symbols or the bundled fonts | renderer; DejaVu/Noto or bundled | fonts | S / S | L |
@@ -750,7 +786,7 @@ says so; the TUI needs no OS work beyond §5.8.
 | 10 | Sidebar tree, filter, fly-to, group rows | core | core | — | S / S | L |
 | 11 | Terminals: PTY, single or 4 tiles, survive client exit | `portable-pty` Unix; UDS service | same | `openpty`, `setsid`, UDS | M / M | M |
 | 11b | Detach and reattach | service started with `setsid` | `systemd-run --user` or `setsid` | — | S / S | M |
-| 12 | Wheel rules (mouse mode, PgUp/PgDn, scrollback, Shift) | core; trackpad momentum accumulation | core | winit | S / S | L |
+| 12 | Wheel rules (mouse mode, PgUp/PgDn, scrollback, Shift) | core; a trackpad scrolls terminals by fractional lines (D15) | core | winit | S / S | L |
 | 13 | User-message tint | renderer | renderer | — | S / S | L |
 | 14 | Copy and paste (drag-select, copy on release, copy/paste keys, pane menu; a paste never sends) | Cmd+C (with selection), Cmd+V; Ctrl+C always to the program; `NSPasteboard`; paste into zsh/bash runs nothing (bracketed paste) | Ctrl+C with selection, Ctrl+Shift+C/V, Ctrl+V; X11/Wayland clipboards | `canvas_sys::clipboard` | M / M | M |
 | 15 | Image paste; thumbnail | Cmd+V with only an image → Ctrl+V to the agent; PNG/TIFF from the pasteboard | Ctrl+V/Alt+V; `image/png` from the selection | pasteboard / selections | M / M | H (agents' image keys on Unix unverified) |
@@ -797,6 +833,8 @@ says so; the TUI needs no OS work beyond §5.8.
 | V3 | Effects | renderer | renderer | — | S / S | L |
 | V4 | Group chips at any zoom; sidebar rows | renderer | renderer | — | S / S | L |
 | V5 | Remote group files in the canvas | core; the service's path style | same | `PathStyle` | S / S | L |
+| T1 | Trackpad on the canvas (D15): pan, momentum latching, pinch, smart zoom, force click | `MouseWheel` `PixelDelta` with phases, `PinchGesture`, `DoubleTapGesture`, `TouchpadPressure` | notches until checked; then `PixelDelta` (Wayland, X11 XInput2) and `PinchGesture` where winit has it | winit | M / M | M |
+| T2 | Trackpad over terminals (D15): fractional scrollback, notches for mouse mode, latching | core | core | winit | S / S | L |
 
 The hardening checks (GUI.md §3) map too: device loss (Metal and Vulkan
 devices can be destroyed the same way), DPI change, window placement
