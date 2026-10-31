@@ -34,7 +34,7 @@ pub fn process_start_ms(pid: u32) -> Option<u64> {
     Some(info.pbi_start_tvsec * 1000 + info.pbi_start_tvusec / 1000)
 }
 
-fn all_pids() -> Vec<u32> {
+pub(crate) fn all_pids() -> Vec<u32> {
     // SAFETY: a null buffer asks for the count.
     let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
     if count <= 0 {

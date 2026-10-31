@@ -22,6 +22,8 @@ mod os;
 #[cfg(linux)]
 #[path = "linux.rs"]
 mod os;
+#[cfg(macos)]
+pub(crate) use os::all_pids;
 
 /// How the priority manager treats a terminal's process tree
 /// (README "The session you type in comes first").

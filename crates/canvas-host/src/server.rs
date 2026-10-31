@@ -42,7 +42,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounde
 
 use crate::emulator::{Engine, Snapshot, SnapshotImage};
 use crate::paths::{Instance, build_id, now_ms};
-use crate::pipe::{Pipe, PipeServer};
+use canvas_sys::ipc::{Pipe, PipeServer};
 use crate::protocol::{self, CAP_COMPRESS, CAP_IMAGES, ClientMsg, Frame8, ImageRef, Input, LaunchKind, MAX_FRAME, PRE_AUTH_FRAME, Placement, Run8, ServiceMsg, ServiceStats};
 use crate::term::{EncodedImage, Hooks, ImagePng, Notice, Spawn, Terminal, lock};
 use canvas_common::handshake::{Credential, Opening, Pairing};
@@ -368,7 +368,7 @@ pub fn try_spawn<F: FnOnce() + Send + 'static>(name: &str, body: F) -> std::io::
 /// is configured), starts the host threads, lets `make_app` build the
 /// backend, then serves clients until shutdown.
 pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn HostApp>) -> Result<()> {
-    crate::win::raise_priority();
+    canvas_sys::process::raise_priority();
     let mut server = match PipeServer::bind(&instance.pipe_name()) {
         Ok(server) => server,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -376,11 +376,11 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
         }
         Err(error) => return Err(error).context("cannot create the service pipe"),
     };
-    if let Err(error) = crate::win::contain_descendants() {
+    if let Err(error) = canvas_sys::process::contain_descendants() {
         log(&instance, &format!("job containment unavailable: {error}"));
     }
     let token = protocol::nonce();
-    canvas_common::auth::write_token(&instance.token_path(), &token)?;
+    canvas_sys::token::write_token(&instance.token_path(), &token)?;
     // Files left by a service that did not exit cleanly.
     let _ = std::fs::remove_file(instance.port_path());
     let _ = std::fs::remove_file(instance.listen_error_path());
@@ -420,7 +420,7 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
         remote: Mutex::new(None),
         unauthenticated: Arc::default(),
         surplus_logged: Mutex::new(None),
-        user_sid: crate::win::current_user_sid().unwrap_or_default(),
+        user_sid: canvas_sys::process::current_user_id().unwrap_or_default(),
         sizes: Mutex::new(HashMap::new()),
         app: OnceLock::new(),
     });
@@ -525,12 +525,12 @@ impl Host {
             Ok(started) => started,
             Err(error) => {
                 log(&self.instance, &format!("NOT LISTENING for remote clients: {error:#}"));
-                let _ = canvas_common::win::write_private(&self.instance.listen_error_path(), format!("{} {error:#}", now_ms()).as_bytes());
+                let _ = canvas_sys::fs::write_private(&self.instance.listen_error_path(), format!("{} {error:#}", now_ms()).as_bytes());
                 return Err(error);
             }
         };
         let _ = std::fs::remove_file(self.instance.listen_error_path());
-        if let Err(error) = canvas_common::win::write_private(&self.instance.port_path(), bound.port().to_string().as_bytes()) {
+        if let Err(error) = canvas_sys::fs::write_private(&self.instance.port_path(), bound.port().to_string().as_bytes()) {
             log(&self.instance, &format!("cannot publish the remote port: {error}"));
         }
         log(&self.instance, &format!("listening for remote clients on {bound}"));
@@ -565,8 +565,8 @@ impl Host {
     /// Whether the TCP peer at `tcp` may authenticate with the token: a
     /// process of this user on this machine.
     fn token_allowed(&self, tcp: &TcpEnds) -> bool {
-        let owner = tcp::peer_process(tcp.local, tcp.peer).ok();
-        let user = owner.and_then(|pid| crate::win::process_user_sid(pid).ok());
+        let owner = canvas_sys::net::peer_process(tcp.local, tcp.peer).ok();
+        let user = owner.and_then(|pid| canvas_sys::process::process_user_id(pid).ok());
         let allowed = tcp::token_peer_allowed(tcp.peer, user.as_deref(), &self.user_sid);
         if !allowed {
             log(&self.instance, &format!("refused token authentication over TCP from {} (process {owner:?}, user {user:?})", tcp.peer));
@@ -648,7 +648,7 @@ impl Host {
 
     pub fn stats(&self) -> ServiceStats {
         let terms = lock(&self.terms);
-        let usage = crate::win::process_usage(None);
+        let usage = canvas_sys::process::process_usage(None);
         ServiceStats {
             pid: std::process::id(),
             terminals: terms.len() as u32,
@@ -1418,13 +1418,15 @@ fn send_images(client: &Client, terminal: &Arc<Terminal>, id: &str, images: &[Sn
 /// sessions shown on screen at normal, all others below normal. Background
 /// sessions still use all spare CPU; they just yield to you. Only processes
 /// inside our own sessions are touched. `COPILOT_CANVAS_NO_PRIORITY=1` turns
-/// it off.
+/// it off. Unix forbids raising priorities without privilege, so there the
+/// others are lowered instead (`canvas_sys::process::set_priority`:
+/// `PRIO_DARWIN_BG` on macOS, nice on Linux; MAC-LINUX-PLAN §5.3).
 fn priority_loop(host: Arc<Host>, wake: Receiver<()>) {
-    use windows_sys::Win32::System::Threading::{ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS};
+    use canvas_sys::process::Class;
     if std::env::var_os("COPILOT_CANVAS_NO_PRIORITY").is_some() {
         return;
     }
-    let mut applied: HashMap<u32, u32> = HashMap::new();
+    let mut applied: HashMap<u32, Class> = HashMap::new();
     loop {
         // Re-check every 2 s so new child processes (tools, builds) follow their session.
         let _ = wake.recv_timeout(Duration::from_secs(2));
@@ -1440,21 +1442,21 @@ fn priority_loop(host: Arc<Host>, wake: Receiver<()>) {
         let active = lock(&host.active_input).clone();
         let visible = host.visible();
         let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
-        for (pid, parent) in crate::win::process_pairs() {
+        for (pid, parent) in canvas_sys::process::process_pairs() {
             children.entry(parent).or_default().push(pid);
         }
         let mut seen = HashSet::new();
         for (id, root) in terms {
             let class = if active.as_deref() == Some(id.as_str()) {
-                ABOVE_NORMAL_PRIORITY_CLASS
+                Class::Focused
             } else if visible.contains(&id) {
-                NORMAL_PRIORITY_CLASS
+                Class::Visible
             } else {
-                BELOW_NORMAL_PRIORITY_CLASS
+                Class::Background
             };
-            for pid in crate::win::process_tree(root, &children) {
+            for pid in canvas_sys::process::process_tree(root, &children) {
                 seen.insert(pid);
-                if applied.get(&pid) != Some(&class) && crate::win::set_priority_class(pid, class) {
+                if applied.get(&pid) != Some(&class) && canvas_sys::process::set_priority(pid, class) {
                     applied.insert(pid, class);
                 }
             }
@@ -1792,7 +1794,7 @@ mod tests {
             assert!(closed_within(&mut stream, HANDSHAKE_TIMEOUT + Duration::from_secs(2)), "the handshake deadline closes it");
         }
         // The service still serves a legitimate client: the token, from this user.
-        let token = canvas_common::auth::read_token(&instance.token_path()).unwrap();
+        let token = canvas_sys::token::read_token(&instance.token_path()).unwrap();
         let (reader, writer, closer) = tcp::split(TcpStream::connect(addr).unwrap()).unwrap();
         let (mut reader, mut writer) = (FrameReader::new(Box::new(reader)), FrameWriter::new(Box::new(writer)));
         let info = protocol::ClientInfo { name: "test".into(), caps: protocol::CAP_FRAME8, session: vec![3; 16], remote_id: None };
@@ -1857,7 +1859,7 @@ mod tests {
         };
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
         // The service token is refused through a WebSocket, even from this user.
-        let token = canvas_common::auth::read_token(&instance.token_path()).unwrap();
+        let token = canvas_sys::token::read_token(&instance.token_path()).unwrap();
         let (mut reader, mut writer, _s) = websocket(addr);
         let info = protocol::ClientInfo { name: "iphone".into(), caps: protocol::CAP_FRAME8 | CAP_COMPRESS, session: vec![4; 16], remote_id: None };
         assert!(handshake::open(&mut reader, &mut writer, &token, "test", Some(info.clone())).is_err(), "no token over web forwarding");

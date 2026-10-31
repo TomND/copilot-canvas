@@ -32,6 +32,8 @@ impl Instance {
         Ok(Self { name, home: absolute(&home), sessions_dir: absolute(&sessions_dir) })
     }
 
+    /// The service's local endpoint: a named pipe on Windows.
+    #[cfg(windows)]
     pub fn pipe_name(&self) -> String {
         let user: String = std::env::var("USERNAME")
             .unwrap_or_else(|_| "user".into())
@@ -44,6 +46,26 @@ impl Instance {
         hash.update(self.home.to_string_lossy().to_lowercase().as_bytes());
         let digest = hash.finalize();
         format!(r"\\.\pipe\copilot-canvas-{user}-{}-{}", self.name, hex(&digest[..6]))
+    }
+
+    /// The service's local endpoint on macOS and Linux: a Unix domain socket
+    /// `<home>/run/<hash>.sock` (MAC-LINUX-PLAN D4), or, when that path would
+    /// not fit a socket address (104 bytes on macOS, 108 on Linux), the same
+    /// name in a per-user folder of the runtime or temporary directory.
+    #[cfg(not(windows))]
+    pub fn pipe_name(&self) -> String {
+        let mut hash = Sha256::new();
+        hash.update(self.home.to_string_lossy().as_bytes());
+        hash.update([0]);
+        hash.update(self.name.as_bytes());
+        let file = format!("{}.sock", hex(&hash.finalize()[..6]));
+        let local = self.home.join("run").join(&file);
+        if local.as_os_str().len() < 100 {
+            return local.to_string_lossy().into_owned();
+        }
+        let base = std::env::var_os("XDG_RUNTIME_DIR").or_else(|| std::env::var_os("TMPDIR")).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
+        let user: String = std::env::var("USER").unwrap_or_else(|_| "user".into()).chars().filter(|c| c.is_ascii_alphanumeric()).take(32).collect();
+        base.join(format!("copilot-canvas-{user}")).join(file).to_string_lossy().into_owned()
     }
 
     pub fn token_path(&self) -> PathBuf {

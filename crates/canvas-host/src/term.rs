@@ -524,7 +524,7 @@ impl Terminal {
     pub fn force_kill(&self) {
         self.forced.store(true, Ordering::Release);
         if self.pid != 0 {
-            let _ = crate::win::kill_tree(self.pid);
+            let _ = canvas_sys::process::kill_tree(self.pid);
         }
         let _ = lock(&self.killer).kill();
     }
@@ -1354,6 +1354,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn agents_the_canvas_stops_are_stopped_whatever_their_exit_code() {
         let cwd = std::env::temp_dir().display().to_string();
         // Quits with code 3 on the first key (the stop's Ctrl+D).
@@ -1388,6 +1389,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn an_agent_whose_ui_quit_but_whose_process_lingers_is_ended_promptly() {
         let cwd = std::env::temp_dir().display().to_string();
         let (hooks, _keep) = hooks();
@@ -1411,12 +1413,87 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn conpty_resizes_are_never_lost_while_output_floods() {
         let (hooks, _keep) = hooks();
         let cwd = std::env::temp_dir().display().to_string();
         let args = ["/d".to_owned(), "/c".to_owned(), "for /l %i in (1,1,200000) do @echo 0123456789abcdefghijklmnopqrstuvwxyz 0123456789".to_owned()];
         let spec = Spawn { id: "flood", program: "cmd.exe", args: &args, env: &[], cwd: &cwd, cols: 80, rows: 24, copilot: false, engine: Engine::Alacritty };
         let terminal = Terminal::spawn(spec, hooks).expect("spawn cmd.exe");
+        let started = Instant::now();
+        while terminal.last_output_ms.load(Ordering::Relaxed) == 0 && started.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        for i in 0..30u16 {
+            terminal.resize(40 + i, 10 + i % 7).expect("resize under flood");
+        }
+        terminal.resize(69, 10 + 29 % 7).expect("same size again");
+        let snap = terminal.snapshot().expect("snapshot under flood");
+        assert_eq!((snap.cols, snap.rows), (69, 10 + 29 % 7));
+        terminal.force_kill();
+    }
+
+    // Unix twins of the three ConPTY tests above: a PTY session, POSIX
+    // programs, the same stop rules (MAC-LINUX-PLAN §5.2).
+    #[cfg(unix)]
+    fn sh(id: &str, script: &str, copilot: bool) -> Arc<Terminal> {
+        let cwd = std::env::temp_dir().display().to_string();
+        let (hooks, keep) = hooks();
+        std::mem::forget(keep);
+        let args = ["-c".to_owned(), script.to_owned()];
+        let spec = Spawn { id, program: "/bin/sh", args: &args, env: &[], cwd: &cwd, cols: 80, rows: 24, copilot, engine: Engine::Alacritty };
+        Terminal::spawn(spec, hooks).expect("spawn /bin/sh")
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn agents_the_canvas_stops_are_stopped_whatever_their_exit_code_on_unix() {
+        // Quits with code 3 on the first key (the stop's Ctrl+D ends the read).
+        let quits = sh("quits", "read line; exit 3", true);
+        std::thread::sleep(Duration::from_millis(500));
+        quits.stop(false);
+        assert_eq!(wait_exit(&quits, Duration::from_secs(4)), (Some(0), Some(3)), "quit on request: reported as a clean stop");
+        assert!(!quits.was_forced());
+        // Stuck: ignores Ctrl+D but ends on the stop's Ctrl+C (SIGINT to the foreground group).
+        let stuck = sh("stuck", "exec sleep 30", true);
+        std::thread::sleep(Duration::from_millis(300));
+        let asked = Instant::now();
+        stuck.stop(false);
+        let (code, raw) = wait_exit(&stuck, Duration::from_secs(10));
+        assert_eq!(code, Some(0), "stopped by the canvas: not a failure ({raw:?})");
+        assert!(!stuck.was_forced() && asked.elapsed() < Duration::from_millis(4_900), "Ctrl+C ended it before the kill");
+        // Ignores everything: killed when the grace period runs out, still reported as stopped.
+        let ignores = sh("ignores", "trap '' INT HUP; sleep 30", true);
+        std::thread::sleep(Duration::from_millis(500));
+        ignores.stop(false);
+        let (code, raw) = wait_exit(&ignores, Duration::from_secs(10));
+        assert!(ignores.was_forced() && code == Some(0) && raw.is_some_and(|c| c != 0), "killed after the grace period: {code:?} {raw:?}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_agent_whose_ui_quit_but_whose_process_lingers_is_ended_promptly_on_unix() {
+        // Full-screen view; the first key leaves it, then the process lingers.
+        let script = "printf '\\033[?1049hfull screen'; stty raw -echo; dd bs=1 count=1 >/dev/null 2>&1; printf '\\033[?1049l'; trap '' INT HUP; sleep 30";
+        let lingers = sh("lingers", script, true);
+        let started = Instant::now();
+        while !lingers.state.alt_screen.load(Ordering::Acquire) && started.elapsed() < Duration::from_secs(15) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(lingers.state.alt_screen.load(Ordering::Acquire), "the program entered its full-screen view");
+        std::thread::sleep(Duration::from_millis(200));
+        let asked = Instant::now();
+        lingers.stop(false);
+        let (code, _) = wait_exit(&lingers, Duration::from_secs(10));
+        assert_eq!(code, Some(0), "stopped, not failed");
+        assert!(lingers.ui_quit_lingered(), "ended because its UI had quit");
+        assert!(asked.elapsed() < Duration::from_millis(4_900), "ended 3 s after its UI quit, before the grace period ran out: {:?}", asked.elapsed());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pty_resizes_are_never_lost_while_output_floods() {
+        let terminal = sh("flood", "yes 0123456789abcdefghijklmnopqrstuvwxyz 0123456789 | head -n 200000", false);
         let started = Instant::now();
         while terminal.last_output_ms.load(Ordering::Relaxed) == 0 && started.elapsed() < Duration::from_secs(10) {
             std::thread::sleep(Duration::from_millis(10));
