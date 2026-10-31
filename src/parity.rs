@@ -1291,7 +1291,7 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
 
     check(rows, "12", "Wheel rules (mouse mode, PgUp/PgDn, scrollback, Shift forces scrollback)", "wheel_scrollback_and_shift", || {
         gui.open("Shell A", "PS ")?;
-        gui.send("1..120 | % { \"WHEEL_LINE_$_\" }\r")?;
+        gui.send(&crate::test_shell::print_numbered("WHEEL_LINE_", 120))?;
         gui.wait("lines printed", 10, |t| t.contains("WHEEL_LINE_120"))?;
         let (_, inner) = gui.tile()?;
         let at = (inner[0] + 10.5, inner[1] + 5.5);
@@ -1305,6 +1305,23 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         // In mouse mode (the stand-in agent) Shift+wheel still scrolls the scrollback.
         Ok("wheel scrolls back; typing returns".into())
     });
+
+    // Trackpad rows (MAC-LINUX-PLAN D15): where scrolling is pixel-precise.
+    if cfg!(target_os = "macos") {
+        // Both hand the keyboard back to Shell A, as row 12 leaves it for row 14, pass or fail.
+        check(rows, "T1", "Trackpad: two-finger pan (system momentum, latched, no glide), pinch around the pointer, smart zoom, force click", "trackpad_canvas", || {
+            let result = trackpad_canvas(gui);
+            let back = gui.open("Shell A", "PS ");
+            let summary = result?;
+            back.map(|_| summary)
+        });
+        check(rows, "T2", "Trackpad: terminal scrollback from pixel scrolls, notches for mouse-mode programs, latching", "trackpad_terminal", || {
+            let result = trackpad_terminal(gui);
+            let back = gui.open("Shell A", "PS ");
+            let summary = result?;
+            back.map(|_| summary)
+        });
+    }
 
     check(rows, "14", "Copy and paste: drag-select (rejoin), copy on release, Ctrl+C, Ctrl+Shift+C, Ctrl+V, pane menu", "copy_on_release_and_paste", || {
         // Cleared first: on the full screen row 12 leaves, the text lands on the last row and the
@@ -1436,8 +1453,7 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
     });
 
     check_kind(rows, "G1", "New: inline images (Kitty graphics; iTerm2 OSC 1337 through ConPTY)", "kitty_image_pixels_png", Kind::Only("GUI only: the TUI cannot draw images"), || {
-        let cli = sb.exe.display().to_string();
-        gui.send(&format!("& '{cli}' kitty-demo\r"))?;
+        gui.send(&crate::test_shell::run_self(&sb.exe, "kitty-demo"))?;
         gui.wait("demo printed", 15, |t| t.contains(crate::kitty_demo::END))?;
         let tree = gui.wait_tree("an image placement", 10, |t| t["tiles"].as_array().is_some_and(|t| t.iter().any(|t| t["images"].as_array().is_some_and(|i| i.iter().any(|i| i["loaded"] == true)))))?;
         let image = tree["tiles"].as_array().and_then(|t| t.iter().find_map(|t| t["images"].as_array().and_then(|i| i.first().cloned()))).context("image")?;
@@ -1472,10 +1488,11 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         std::fs::write(&file, "dropped")?;
         let (_, inner) = gui.tile()?;
         gui.req(json!({ "cmd": "drop", "paths": [file.display().to_string()], "x": inner[0] + 5.5, "y": inner[1] + 2.5 }))?;
-        let quoted = format!("\"{}\"", file.display());
+        // As the local shell takes it: Windows Terminal's double quotes, POSIX single quotes.
+        let quoted = canvas_core::files::quote_path_for(&file.display().to_string(), canvas_model::path_style::PathStyle::local());
         gui.wait_tile("the quoted path at the prompt", 5, |t| t.contains(&quoted))?;
         gui.chord('u', &["ctrl"])?;
-        gui.send("\x1b")?;
+        gui.send(std::str::from_utf8(crate::test_shell::discard_input()).unwrap_or("\x1b"))?;
         // A folder dropped on the canvas starts a new session there.
         let folder = sb.root.join("drop-folder");
         std::fs::create_dir_all(&folder)?;
@@ -2189,4 +2206,155 @@ fn plain_client_sees(instance: &Instance, id: &str) -> Result<(usize, usize)> {
         }
     }
     Ok((images, frames))
+}
+
+/// The view's origin (world) and scale, the canvas area and a cell's size in pixels.
+type TrackpadView = ((f64, f64), f64, [f64; 4], (f64, f64));
+
+fn trackpad_view(gui: &Gui) -> Result<TrackpadView> {
+    let tree = gui.tree()?;
+    let f = |v: &Value| v.as_f64().unwrap_or(0.0);
+    let origin = (f(&tree["view"]["origin"][0]), f(&tree["view"]["origin"][1]));
+    let area: Vec<f64> = tree["canvas"]["area"].as_array().map(|a| a.iter().map(f).collect()).unwrap_or_default();
+    anyhow::ensure!(area.len() == 4, "no canvas area: {}", tree["canvas"]);
+    Ok((origin, f(&tree["view"]["scale"]), [area[0], area[1], area[2], area[3]], (f(&tree["cell"][0]), f(&tree["cell"][1]))))
+}
+
+fn gesture(gui: &Gui, cmd: &str, at: (f64, f64), extra: Value) -> Result<()> {
+    let mut command = json!({ "cmd": cmd, "x": at.0, "y": at.1 });
+    if let (Some(command), Some(extra)) = (command.as_object_mut(), extra.as_object()) {
+        command.extend(extra.clone());
+    }
+    gui.req(command).map(|_| ())
+}
+
+/// T1: the canvas under a trackpad.
+fn trackpad_canvas(gui: &mut Gui) -> Result<String> {
+    gui.canvas_focus()?;
+    let (origin, scale, area, (cw, ch)) = trackpad_view(gui)?;
+    let at = (area[0] + area[2] * 0.5, area[1] + area[3] * 0.5);
+    // Two-finger scroll: ten moves of (1.5, 0.75) cells, then the system's momentum.
+    gesture(gui, "scroll_px", at, json!({ "phase": "began", "dx": 0, "dy": 0 }))?;
+    for _ in 0..10 {
+        gesture(gui, "scroll_px", at, json!({ "phase": "changed", "dx": 1.5 * cw, "dy": 0.75 * ch }))?;
+    }
+    gesture(gui, "scroll_px", at, json!({ "phase": "ended" }))?;
+    // Momentum right after lift-off, even with the pointer over a terminal: still the canvas.
+    let elsewhere = gui.tile().map(|(_, r)| (r[0] + 2.0, r[1] + 2.0)).unwrap_or(at);
+    gesture(gui, "scroll_px", elsewhere, json!({ "phase": "began", "dx": 2.0 * cw, "dy": 0 }))?;
+    gesture(gui, "scroll_px", elsewhere, json!({ "phase": "ended" }))?;
+    let (moved, _, _, _) = trackpad_view(gui)?;
+    let (dx, dy) = ((origin.0 - moved.0) * scale, (origin.1 - moved.1) * scale);
+    anyhow::ensure!((dx - 17.0).abs() < 0.01 && (dy - 7.5).abs() < 0.01, "pixel for pixel: moved ({dx}, {dy}) cells, expected (17, 7.5); at {at:?}, cell {cw}×{ch}; {}", {
+        let t = gui.tree()?;
+        format!("gesture {}, view {}, focus {}, modals {}", t["gesture"], t["view"], t["focus"], t["modals"])
+    });
+    let tree = gui.tree()?;
+    anyhow::ensure!(tree["gliding"] == false, "no glide on top of a trackpad pan");
+    // And back, so later rows find the canvas where they left it.
+    gesture(gui, "scroll_px", at, json!({ "phase": "began", "dx": -17.0 * cw, "dy": -7.5 * ch }))?;
+    gesture(gui, "scroll_px", at, json!({ "phase": "ended" }))?;
+    // Pinch: the world point under the fingers stays put.
+    let p = (at.0 - 10.0, at.1 - 5.0);
+    let world = |o: (f64, f64), s: f64| (o.0 + (p.0 - area[0]) / s, o.1 + (p.1 - area[1]) / s);
+    let (o0, s0, _, _) = trackpad_view(gui)?;
+    gesture(gui, "pinch", p, json!({ "phase": "began", "delta": 0.2 }))?;
+    gesture(gui, "pinch", p, json!({ "phase": "changed", "delta": 0.2 }))?;
+    let (o1, s1, _, _) = trackpad_view(gui)?;
+    let (w0, w1) = (world(o0, s0), world(o1, s1));
+    anyhow::ensure!((s1 / s0 - 1.44).abs() < 0.01, "pinched ×1.44: {s0} → {s1}");
+    anyhow::ensure!((w0.0 - w1.0).abs() < 0.05 && (w0.1 - w1.1).abs() < 0.05, "anchored at the pointer: {w0:?} → {w1:?}");
+    // Back to where it was: a pinch that ends near a level settles on it.
+    gesture(gui, "pinch", p, json!({ "phase": "changed", "delta": 1.0 / 1.44 - 1.0 + 0.01 }))?;
+    gesture(gui, "pinch", p, json!({ "phase": "ended", "delta": 0.0 }))?;
+    let (_, s2, _, _) = trackpad_view(gui)?;
+    anyhow::ensure!((s2.log2() - s2.log2().round()).abs() < 1e-4, "settled on a zoom level: {s2}");
+    // Smart zoom over a box fits it; again returns.
+    let (before, s_before, _, _) = trackpad_view(gui)?;
+    let center = gui.box_center("Idle one")?;
+    gesture(gui, "smart_zoom", center, json!({}))?;
+    gui.wait_tree("the smart zoom", 5, |t| t["smart_zooming"] == false)?;
+    let (_, r) = gui.find_box("Idle one")?;
+    let (bx, by) = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    anyhow::ensure!((bx - (area[0] + area[2] / 2.0)).abs() < 1.5 && (by - (area[1] + area[3] / 2.0)).abs() < 1.5, "the box is centred: {r:?} in {area:?}");
+    let (_, s_fit, _, _) = trackpad_view(gui)?;
+    anyhow::ensure!(s_fit > s_before, "zoomed in to the box: {s_before} → {s_fit}");
+    gesture(gui, "smart_zoom", (bx, by), json!({}))?;
+    gui.wait_tree("the smart zoom back", 5, |t| t["smart_zooming"] == false)?;
+    let (after, s_after, _, _) = trackpad_view(gui)?;
+    anyhow::ensure!((s_after - s_before).abs() < 1e-3 && (after.0 - before.0).abs() < 0.5 && (after.1 - before.1).abs() < 0.5, "back where it was");
+    // Force click on a box: its details.
+    let (stopped, _) = gui.find_box("Stopped one")?;
+    gesture(gui, "force_click", gui.box_center("Stopped one")?, json!({}))?;
+    let id = stopped["id"].as_str().unwrap_or_default().to_owned();
+    gui.wait_tree("the box selected", 5, |t| t["selection"].as_array().is_some_and(|s| s.iter().any(|v| v == id.as_str())))?;
+    Ok(format!("pan 17 × 7.5 cells exact, momentum latched, no glide; pinch ×1.44 anchored, settled at {s2}; smart zoom {s_before} → {s_fit:.2} → back; force click selects"))
+}
+
+/// T2: terminals under a trackpad.
+fn trackpad_terminal(gui: &mut Gui) -> Result<String> {
+    gui.open("Shell A", "PS ")?;
+    gui.send(crate::test_shell::clear())?;
+    gui.send(&crate::test_shell::print_numbered("TRACK_LINE_", 150))?;
+    gui.wait("lines printed", 10, |t| t.contains("TRACK_LINE_150"))?;
+    let (id, inner) = gui.tile()?;
+    let (_, _, area, (_, ch)) = trackpad_view(gui)?;
+    let at = (inner[0] + inner[2] / 2.0, inner[1] + inner[3] / 2.0);
+    let offset = |gui: &Gui| -> Result<u64> {
+        let tree = gui.tree()?;
+        Ok(tree["tiles"].as_array().and_then(|t| t.iter().find(|t| t["id"] == id.as_str())).and_then(|t| t["offset"].as_u64()).unwrap_or(0))
+    };
+    // Half a line per event: whole lines arrive as they add up.
+    gesture(gui, "scroll_px", at, json!({ "phase": "began", "dy": 0 }))?;
+    for _ in 0..21 {
+        gesture(gui, "scroll_px", at, json!({ "phase": "changed", "dy": 0.5 * ch }))?;
+    }
+    gesture(gui, "scroll_px", at, json!({ "phase": "ended" }))?;
+    let wait_offset = |gui: &Gui, want: u64| -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while offset(gui)? != want {
+            anyhow::ensure!(Instant::now() < deadline, "the scrollback is {} lines back, expected {want}", offset(gui)?);
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        Ok(())
+    };
+    wait_offset(gui, 10)?;
+    // A new gesture on the terminal whose momentum (right after lift-off, as
+    // the system sends it) passes over the canvas: it stays on the terminal.
+    let canvas_point = (area[0] + 5.0, area[1] + 5.0);
+    let (origin, _, _, _) = trackpad_view(gui)?;
+    gesture(gui, "scroll_px", at, json!({ "phase": "began", "dy": ch }))?;
+    gesture(gui, "scroll_px", at, json!({ "phase": "ended" }))?;
+    gesture(gui, "scroll_px", canvas_point, json!({ "phase": "began", "dy": 2.0 * ch }))?;
+    gesture(gui, "scroll_px", canvas_point, json!({ "phase": "ended" }))?;
+    wait_offset(gui, 13)?;
+    anyhow::ensure!(trackpad_view(gui)?.0 == origin, "the canvas did not move");
+    // Down past the live screen: it stops there.
+    gesture(gui, "scroll_px", at, json!({ "phase": "began", "dy": -40.0 * ch }))?;
+    gesture(gui, "scroll_px", at, json!({ "phase": "ended" }))?;
+    wait_offset(gui, 0)?;
+    // A program that reads the mouse (the stand-in agent): a notch per three lines.
+    // Row 8 starts "MCP parity"; run on its own, this row starts an agent of its own.
+    if gui.find_box("MCP parity").is_ok() {
+        gui.open("MCP parity", "Fake Copilot")?;
+    } else {
+        gui.canvas_focus()?;
+        gui.send("n")?;
+        gui.wait("the new-session dialog", 20, |t| t.contains("Create & start"))?;
+        gui.send("Trackpad agent")?;
+        let (x, y) = gui.find("Create & start").context("create button")?;
+        gui.click((x + 1.0, y), &[])?;
+        gui.wait("the stand-in agent", 25, |t| t.contains("Fake Copilot"))?;
+        gui.wait_tree("its terminal with the keyboard", 10, |t| t["focus"] == "Terminal")?;
+    }
+    let (_, inner) = gui.tile()?;
+    let at = (inner[0] + inner[2] / 2.0, inner[1] + inner[3] / 2.0);
+    let before = gui.screen().matches("MOUSE 64;").count();
+    gesture(gui, "scroll_px", at, json!({ "phase": "began", "dy": 6.5 * ch }))?;
+    gesture(gui, "scroll_px", at, json!({ "phase": "ended" }))?;
+    gui.wait("two wheel notches reached the program", 10, |t| t.matches("MOUSE 64;").count() >= before + 2)?;
+    std::thread::sleep(Duration::from_millis(300));
+    let notches = gui.screen().matches("MOUSE 64;").count() - before;
+    anyhow::ensure!(notches == 2, "{notches} notches for 6.5 lines");
+    Ok("21 half-line moves → 10 lines; momentum stayed latched (13); stopped at the live screen; 6.5 lines → 2 notches for a mouse-mode program".into())
 }

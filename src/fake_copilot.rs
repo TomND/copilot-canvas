@@ -217,9 +217,12 @@ fn session(args: &[String]) -> Result<()> {
         if text.contains('\u{4}') || text.contains('\u{3}') {
             break;
         }
-        if let Some(at) = text.find("\x1b[<") {
-            let report: String = text[at + 3..].chars().take_while(|c| c.is_ascii_digit() || *c == ';' || *c == 'M' || *c == 'm').collect();
-            write!(out, "\r\nMOUSE {report}\r\n❯ ")?;
+        if text.contains("\x1b[<") {
+            // Every report in the read (wheel notches arrive together).
+            for part in text.split("\x1b[<").skip(1) {
+                let report: String = part.chars().take_while(|c| c.is_ascii_digit() || *c == ';' || *c == 'M' || *c == 'm').collect();
+                write!(out, "\r\nMOUSE {report}\r\n❯ ")?;
+            }
         } else if !text.starts_with('\x1b') {
             write!(out, "{}", text.replace('\r', "\r\n❯ "))?;
         }
