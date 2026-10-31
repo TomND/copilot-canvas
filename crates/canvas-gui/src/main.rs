@@ -213,6 +213,10 @@ impl Launch {
 }
 
 fn real_main() -> Result<i32> {
+    // Linux's HTML view runs in a helper process: this binary, started for it.
+    if let Some(code) = os::helper() {
+        return Ok(code);
+    }
     let args = parse()?;
     let service_exe = use_sibling_service();
     os::set_app_id();

@@ -80,6 +80,11 @@ pub fn toast_history_count() -> Option<u32> {
 
 /// Nothing to register outside Windows (the bundle identifier or the
 /// `.desktop` file names the app).
+/// No helper process mode on macOS (the HTML view is a WKWebView in-process).
+pub fn helper() -> Option<i32> {
+    None
+}
+
 pub fn set_app_id() {}
 
 /// The Dock tile or launcher entry (not shown yet).

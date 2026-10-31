@@ -173,6 +173,11 @@ fn register_aumid() -> Result<(), String> {
 
 /// Gives the process the app id toasts are registered under (call before
 /// the first window, so the taskbar button carries it too).
+/// No helper process mode on Windows (the HTML view is WebView2 in-process).
+pub fn helper() -> Option<i32> {
+    None
+}
+
 pub fn set_app_id() {
     // SAFETY: a static NUL-terminated string.
     let _ = unsafe { windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(windows::core::w!("CopilotCanvas.Gui")) };

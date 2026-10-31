@@ -159,7 +159,7 @@ fn html_check(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     open_from_inbox(gui, "Parity triage")?;
     let state = web_state(gui, "the HTML view showing the report", 30, |s| s["report"] == id.as_str() && s["visible"] == true && s["loads"].as_u64().unwrap_or(0) >= 1)?;
     if state["phase"].as_str().is_some_and(|p| p.starts_with("failed")) {
-        bail!("WebView2 failed: {state}");
+        bail!("the HTML view failed: {state}");
     }
     let tree = gui.tree()?;
     let pane = tree["html"].clone();
@@ -188,7 +188,10 @@ fn html_check(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     web_state(gui, "the raw page", 15, |s| s["loads"].as_u64().unwrap_or(0) > loads)?;
     let raw_seen = eval(gui, "JSON.stringify({title: document.title, h1: document.getElementById('r').textContent, scripts: document.scripts.length})")?;
     let raw_seen: Value = serde_json::from_str(raw_seen.as_str().unwrap_or("{}"))?;
-    anyhow::ensure!(raw_seen["scripts"] == 1 && raw_seen["h1"] == "RAW", "the raw page: {raw_seen}");
+    // WebView2 keeps the inert script element; Linux's WebKit removes script
+    // elements and handler attributes while parsing (JavaScript markup off).
+    let kept = if canvas_sys::host::platform() == canvas_sys::host::Platform::Linux { 0 } else { 1 };
+    anyhow::ensure!(raw_seen["scripts"] == kept && raw_seen["h1"] == "RAW", "the raw page: {raw_seen}");
     anyhow::ensure!(raw_seen["title"] != "RAW-SCRIPT-RAN" && raw_seen["title"] != "RAW-ONERROR", "a script ran with scripts off: {raw_seen}");
     let state = web_state(gui, "the blocked requests", 10, |s| s["blocked_requests"].as_u64().unwrap_or(0) >= 1)?;
     // A navigation (as a script would start it) is cancelled: the page stays.
@@ -206,7 +209,8 @@ fn html_check(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     gui.canvas_focus()?;
     web_state(gui, "the view hidden", 10, |s| s["visible"] == false)?;
     Ok(format!(
-        "WebView2 {}: styles applied ({magenta} magenta px), {composed}, 0 scripts kept, raw script not run, {} request(s) answered 403 and 0 reached the listener, navigation blocked",
+        "{} {}: styles applied ({magenta} magenta px), {composed}, 0 scripts kept, raw script not run, {} request(s) answered 403 and 0 reached the listener, navigation blocked",
+        state["engine"].as_str().unwrap_or("WebView2"),
         state["phase"].as_str().unwrap_or_default(),
         state["blocked_requests"]
     ))

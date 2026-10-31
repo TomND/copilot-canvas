@@ -452,9 +452,14 @@ impl Shell {
                 if let Some(html) = command["probe_raw"].as_str() {
                     win.web.probe_raw(html)
                 } else if let Some(path) = command["window_capture"].as_str() {
-                    // The window as composed, the HTML view over the canvas included.
+                    // The window as composed, the HTML view over the canvas included
+                    // (a view the GUI draws itself is part of its own frame).
                     let path = std::path::PathBuf::from(path);
-                    match crate::os::webview::capture_window(hwnd_of(&win.window), &path) {
+                    let composed = match (win.web.frame().is_some(), &mut self.gpu, &mut self.fonts) {
+                        (true, Some(gpu), Some(fonts)) => win.png(gpu, fonts, &self.options, &path),
+                        _ => crate::os::webview::capture_window(hwnd_of(&win.window), &path),
+                    };
+                    match composed {
                         Ok((w, h)) => json!({ "ok": true, "path": path, "width": w, "height": h, "cell_w": win.grid.cell_w, "cell_h": win.grid.cell_h }),
                         Err(error) => json!({ "ok": false, "error": format!("{error:#}") }),
                     }
