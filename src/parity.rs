@@ -270,7 +270,10 @@ impl Gui {
                 return Ok(());
             }
             if Instant::now() > deadline {
-                bail!("timed out waiting for {what} in the terminal\n--- screen ---\n{}", self.screen());
+                // The status line first: the report keeps a failure's first 30 lines.
+                let screen = self.screen();
+                let status = screen.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default().trim().to_owned();
+                bail!("timed out waiting for {what} in the terminal\n--- status line ---\n{status}\n--- screen ---\n{screen}");
             }
             std::thread::sleep(Duration::from_millis(100));
         }
