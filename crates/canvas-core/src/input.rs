@@ -261,6 +261,29 @@ pub enum KeyPolicy {
 }
 
 impl KeyPolicy {
+    /// Key names in a hint as this policy's keyboard says them: on macOS the
+    /// app's shortcuts are Command (⌘), and Control stays Control (Ctrl+]).
+    pub fn label(self, text: &str) -> std::borrow::Cow<'_, str> {
+        if self != KeyPolicy::CommandApp {
+            return std::borrow::Cow::Borrowed(text);
+        }
+        let mut out = text.to_owned();
+        for (from, to) in [
+            ("Ctrl+Shift+F6", "⇧⌘F6"),
+            ("Ctrl+F6", "⌘F6"),
+            ("Ctrl+V paste", "⌘V paste"),
+            ("Ctrl+click", "⌘-click"),
+            ("Alt+1…9", "⌘1…9"),
+            ("Alt+wheel zoom", "⌘-scroll zoom"),
+            ("Alt+V", "⌥V"),
+        ] {
+            out = out.replace(from, to);
+        }
+        std::borrow::Cow::Owned(out)
+    }
+}
+
+impl KeyPolicy {
     /// A key as the core's Ctrl-based shortcuts expect it.
     pub fn key(self, key: KeyEvent) -> KeyEvent {
         if self == KeyPolicy::CtrlApp {
@@ -671,6 +694,13 @@ mod tests {
         assert_eq!(format!("{:?}", Modifiers::CONTROL | Modifiers::ALT), "Modifiers(CONTROL | ALT)");
         assert_eq!(format!("{:?}", Modifiers::NONE), "Modifiers(NONE)");
         assert_eq!(mods(Modifiers::SHIFT | Modifiers::ALT | Modifiers::CONTROL | Modifiers::SUPER), MOD_SHIFT | MOD_ALT | MOD_CTRL);
+    }
+
+    #[test]
+    fn hints_name_the_command_key_on_macos() {
+        let hint = "Ctrl+] or F6 back · Ctrl+F6 / Ctrl+Shift+F6 recent · Ctrl+V paste · Alt+V image · Ctrl+click links · Alt+1…9 views";
+        assert_eq!(KeyPolicy::CtrlApp.label(hint), hint);
+        assert_eq!(KeyPolicy::CommandApp.label(hint), "Ctrl+] or F6 back · ⌘F6 / ⇧⌘F6 recent · ⌘V paste · ⌥V image · ⌘-click links · ⌘1…9 views");
     }
 
     #[test]
