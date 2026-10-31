@@ -316,6 +316,16 @@ jobs:
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
           for i in $(seq 1 40); do systemctl --user show-environment >/dev/null 2>&1 && break; sleep 0.5; done
           COPILOT_CANVAS_SCHEDULER=systemd target/release/copilot-canvas selftest automations
+          # service install: the unit starts the service, which answers; then it goes away.
+          home="$RUNNER_TEMP/service-home"
+          target/release/copilot-canvas --home "$home" service install
+          systemctl --user start copilot-canvas.service
+          for i in $(seq 1 40); do target/release/copilot-canvas --home "$home" service status >/dev/null 2>&1 && break; sleep 0.5; done
+          systemctl --user is-active copilot-canvas.service
+          target/release/copilot-canvas --home "$home" service status
+          target/release/copilot-canvas --home "$home" service stop
+          target/release/copilot-canvas --home "$home" service uninstall
+          test ! -e "$HOME/.config/systemd/user/copilot-canvas.service"
       - name: automations on cron
         if: ${{ !cancelled() }}
         run: |
