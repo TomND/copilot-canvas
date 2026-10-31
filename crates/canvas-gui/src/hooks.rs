@@ -1,7 +1,8 @@
 //! `--test-hooks`: a local, owner-only named pipe
 //! (`\\.\pipe\copilot-canvas-gui-test-<pid>`) taking one JSON command per
 //! line and answering one JSON line each. Commands inject input (`key`,
-//! `text`, `paste`, `mouse`, `wheel`, `drop`), read the UI (`screen`, `tree`
+//! `text`, `paste`, `mouse`, `mice` (several mouse events as one batch),
+//! `wheel`, `drop`), read the UI (`screen`, `tree`
 //! with the UI Automation nodes, `access`, `size`, `perf`, `platform`),
 //! render offscreen (`png`), hold animations at one frame (`freeze`), manage
 //! windows (`new_window`, `windows`, `close_window`; others take
