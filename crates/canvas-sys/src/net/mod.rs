@@ -35,7 +35,17 @@ mod tests {
     fn loopback_connections_and_listeners_are_traced_to_this_process() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        assert_eq!(super::listener_owners(addr.port()).unwrap(), vec![std::process::id()]);
+        // A child another test forks shares the socket until it execs (the
+        // descriptor is close-on-exec): wait that moment out.
+        let mut owners = Vec::new();
+        for _ in 0..50 {
+            owners = super::listener_owners(addr.port()).unwrap();
+            if owners == [std::process::id()] {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(owners, vec![std::process::id()]);
         let client = TcpStream::connect(addr).unwrap();
         let (server, peer) = listener.accept().unwrap();
         assert_eq!(peer, client.local_addr().unwrap());
