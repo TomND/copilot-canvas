@@ -861,6 +861,7 @@ checked), damage frames.
 | `SM_REMOTESESSION` for `client auto` | Screen Sharing cannot be detected reliably | `auto` = GUI unless SSH (or no display on Linux) |
 | AppUserModelID taskbar grouping | — | bundle identifier (macOS), `.desktop` file + `app_id` (Linux) |
 | Ghostty's ConPTY-specific workarounds | no ConPTY | Unix behaviour per §5.2 (Kitty APC works natively; the OSC 1337 bridge moves the cursor) |
+| Trackpad pinch, smart zoom and force click on Linux (D15) | winit 0.30 delivers no pinch, two-finger double tap or pressure on Linux, and X11's smooth scrolling has no phases (wheels and touchpads alike) | Wayland: two-finger scroll is pixel-precise (pan with the system's momentum, one target per gesture, fractional terminal scrollback: T1's pan and T2); zoom with Ctrl+scroll, the toolbar and keys; X11: wheel notches for every device; pinch when winit adds Wayland pointer gestures |
 
 ## 7. Testing and CI
 
