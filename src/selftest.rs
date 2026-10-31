@@ -1861,7 +1861,8 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     if ui.text().contains("Typing goes to the terminal") {
         ui.send(b"\x1d")?;
     }
-    ui.wait("canvas focus", Duration::from_secs(5), |t| t.contains("empty-drag pan"))?;
+    // A reattached client's first notice can hold the status line about as long.
+    ui.wait("canvas focus", Duration::from_secs(10), |t| t.contains("empty-drag pan"))?;
     ui.send(b"n")?;
     ui.wait("the remembered model in the dialog", Duration::from_secs(5), |t| t.contains(&format!("claude-selftest  ▾ · remembered default for {}", kind.label())))?;
     ui.send(b"\x1b")?;
