@@ -345,7 +345,7 @@ jobs:
           target/release/copilot-canvas --home "$home" service install
           cat "$HOME/.config/systemd/user/copilot-canvas.service"
           systemctl --user start copilot-canvas.service
-          for i in $(seq 1 60); do target/release/copilot-canvas --home "$home" service status >/dev/null 2>&1 && break; sleep 0.5; done
+          for i in $(seq 1 60); do target/release/copilot-canvas --home "$home" service status 2>/dev/null | grep -q '"running": true' && break; sleep 0.5; done
           systemctl --user status copilot-canvas.service --no-pager || true
           tail -30 "$home/service-default.log" || true
           ls -la "$home" "$home/run" || true
