@@ -150,6 +150,10 @@ pub fn tree(app: &canvas_core::app::App, view: &View, chrome: &Buffer) -> Value 
         "banner": view.banner,
         "connected": app.connected,
         "gliding": app.glide.is_some(),
+        // Trackpad gestures (MAC-LINUX-PLAN D15).
+        "gesture": app.gesture.as_ref().map(|g| format!("{:?}", g.target)),
+        "smart_zooming": app.view_anim.is_some(),
+        "view": { "scale": app.view_scale, "origin": [app.origin_f().0, app.origin_f().1] },
         "hits": hits,
         "canvas": canvas,
         "tiles": view.tiles.iter().map(|t| {
@@ -160,7 +164,8 @@ pub fn tree(app: &canvas_core::app::App, view: &View, chrome: &Buffer) -> Value 
                 "z": p.z,
                 "loaded": v.images.contains_key(&p.image_id),
             })).collect()).unwrap_or_default();
-            json!({ "id": t.id, "outer": rect(t.outer), "inner": rect(t.inner), "focused": t.focused, "alive": t.alive, "title": t.title, "tint": t.tint, "images": images })
+            let offset = app.views.get(&t.id).map(|v| v.display_offset);
+            json!({ "id": t.id, "outer": rect(t.outer), "inner": rect(t.inner), "focused": t.focused, "alive": t.alive, "title": t.title, "tint": t.tint, "images": images, "offset": offset })
         }).collect::<Vec<_>>(),
         "term_selection": app.term_select.as_ref().map(|s| json!({ "id": s.id, "anchor": [s.anchor.0, s.anchor.1], "head": [s.head.0, s.head.1] })),
         "notice": app.notice.as_ref().map(|n| json!({ "text": n.text, "error": n.error })),

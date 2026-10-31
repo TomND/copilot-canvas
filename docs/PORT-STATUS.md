@@ -112,6 +112,11 @@ work resumes after any interruption: read it first, then `git log`.
       nothing); measured on CI (advisory step), the local Mac was locked
 - [ ] IME, DPI changes, several windows, crash log and device loss checked
       on macOS (the parity and hardening suites, Phase 5)
+- [x] D15 trackpad (b84377f): `PointerPolicy::Precise` on macOS (pixel-exact
+      pan with the system's momentum, one target per gesture, fractional
+      terminal scrollback, pinch around the pointer and for text size, smart
+      zoom, force click, Command+scroll zooms); Windows and Linux keep
+      notches. Parity T1/T2 pass locally (85e186e)
 
 - Exit: `selftest --client gui` (39 steps) local and `--remote loopback`;
   `bench --client gui` within PLAN §9.
@@ -128,12 +133,13 @@ work resumes after any interruption: read it first, then `git log`.
 
 ### Phase 5 Parity, goldens, hardening — macOS: started
 
-- 2026-10-31, locally on a locked Mac (no presents): 44 of 62 rows pass.
-  Failing: 2 (status from history), 7b and V3 (frame counts: need an
-  uncovered screen), 41b (HTML view: Phase 4), 22, 23 (settings and MCP
-  views from the stand-in CLI), 26 (automations: launchd backend, Phase 2),
-  12, 14, 18, G1, 44 (terminal rows still typing Windows-only text or
-  wrapping differently), 33, V5, V6 (remote rows), V1, V2, 46.
+- 2026-10-31, locally on a locked Mac (no presents): 54 of 64 rows pass
+  (62 + T1, T2). Failing: 7b and V3 (frame counts: need an uncovered
+  screen), 41b (HTML view: Phase 4), 22, 23 (settings and MCP views from the
+  stand-in CLI), 26 (automations: launchd backend, Phase 2), 14 (a long line
+  wraps differently; also fails on main's Windows run 41228257005), 18
+  (Ctrl+click on a path), 44 (paste probe), V5. Run alone, row 1 fails after
+  its box drag (it needs the state the rows before it leave).
 
 - Exit: `selftest --client gui --parity` PASS 60 rows; `--hardening` PASS;
   goldens recorded per OS.
@@ -148,74 +154,78 @@ work resumes after any interruption: read it first, then `git log`.
 ## Parity rows (PARITY.md; plan §6)
 
 State per OS: `—` not started · `wip` in progress · `PASS` · `equiv` (the
-plan §6.1 equivalent, documented). Linux: CI `linux-gui` (X11, Xvfb, Mesa
+plan §6.1 equivalent, documented). macOS: the full suite run locally on a
+locked Mac, 2026-10-31 (CI's run pending); 7b and V3 count frames, which a
+locked screen never presents. Linux: CI `linux-gui` (X11, Xvfb, Mesa
 lavapipe), 55 of 62 rows on 2026-10-31 (run of 2e92d2e); 41b also on
 Wayland (headless weston).
 
 | # | Feature | macOS | Linux |
 |---|---|---|---|
-| 1 | Canvas: drag, pan, zoom, Show all nodes, menus | — | PASS |
-| 2 | Status (seven states), OSC 9;4, background subagents | — | PASS |
-| 3 | Attention borders and tints; halo | — | PASS |
-| 4 | Colour-blind palette; icons | — | PASS |
-| 5 | Subagents from history | — | PASS |
-| 6 | Subsessions; spawned-subsession detection | — | PASS |
-| 7 | Loops | — | PASS |
-| 7b | Smooth loop dot; reduced motion | — | PASS |
-| 8 | MCP picker with presets | — | PASS |
-| 9 | Groups, chips, launch defaults | — | PASS |
-| 10 | Sidebar tree, filter, fly-to | — | PASS |
-| 11 | Terminals: PTY, tiles, survive client exit | — | PASS |
-| 11b | Detach and reattach | — | PASS |
-| 12 | Wheel rules | — | wip (shared terminal rows) |
-| 13 | User-message tint | — | PASS |
-| 14 | Copy and paste | — | wip (shared terminal rows) |
-| 15 | Image paste; thumbnail | — | PASS |
-| 16 | Click forwarding in mouse mode | — | PASS |
-| 17 | Title, taskbar state, bell, OSC 777 | — | PASS |
-| 18 | Links: URLs, OSC 8, paths | — | wip (shared terminal rows) |
-| 19 | New session dialog | — | PASS |
-| 20 | Import; VS Code sync | — | PASS |
-| 21 | Activity bar views | — | PASS |
-| 22 | Copilot defaults, group overrides | — | PASS |
-| 23 | Plugins, MCP, skills | — | PASS |
-| 24 | Migrate from VS Code | — | PASS |
-| 25 | Passive sessions | — | PASS |
-| 26 | Automations | — | PASS |
-| 27 | Copilot automations, session schedules | — | PASS |
-| 28 | Idle auto-stop, priority manager, upgrade, crash log | — | PASS |
-| 29 | Keyboard map, F6 / Ctrl+], quit dialog, help | — | PASS |
-| 30 | `--demo` | — | PASS |
-| 31 | `--perf` overlay | — | PASS |
-| 32 | CLI | — | PASS |
-| 33 | Remote mode | — | PASS |
-| 34 | View versus start | — | PASS |
-| 35 | Transcript inspector; child resume | — | PASS |
-| 36 | Removing a multi-selection | — | PASS |
-| 37 | Group background and border selection | — | PASS |
-| 38 | Recent sessions | — | PASS |
-| 39 | Default model per agent | — | PASS |
-| 39b | Remembered model after restart | — | PASS |
-| 40 | Canvas-wide agents | — | PASS |
-| 40b | Canvas-wide agent runs across groups | — | PASS |
-| 41 | Reports inbox, unread count, toast | — | PASS |
-| 41b | HTML reports, locked down | — | PASS |
-| 41c | Remote reports | — | PASS |
-| 42 | Pull request coordination | — | PASS |
-| 43 | Review follow-ups | — | PASS |
-| 44 | Undo/redo of layout changes | — | wip (shared terminal rows) |
-| 45 | Area selection of subsessions and subagents | — | PASS |
-| G1 | Inline images | — | wip (shared terminal rows) |
-| G2 | Taskbar progress, flash, toasts | — | PASS |
-| G3 | File drag and drop | — | wip |
-| G4 | Several windows | — | PASS |
-| V1 | Dust | — | PASS |
-| V2 | Stacks and hidden subsessions | — | PASS |
-| V3 | Effects | — | PASS |
-| V4 | Group chips at any zoom; sidebar rows | — | PASS |
-| V5 | Remote group files in the canvas | — | wip |
-| V6 | Remote group passive sessions | — | PASS |
-| 46 | Subagents folded by default | — | PASS |
+| 1 | Canvas: drag, pan, zoom, Show all nodes, menus | PASS | PASS |
+| 2 | Status (seven states), OSC 9;4, background subagents | PASS | PASS |
+| 3 | Attention borders and tints; halo | PASS | PASS |
+| 4 | Colour-blind palette; icons | PASS | PASS |
+| 5 | Subagents from history | PASS | PASS |
+| 6 | Subsessions; spawned-subsession detection | PASS | PASS |
+| 7 | Loops | PASS | PASS |
+| 7b | Smooth loop dot; reduced motion | wip | PASS |
+| 8 | MCP picker with presets | PASS | PASS |
+| 9 | Groups, chips, launch defaults | PASS | PASS |
+| 10 | Sidebar tree, filter, fly-to | PASS | PASS |
+| 11 | Terminals: PTY, tiles, survive client exit | PASS | PASS |
+| 11b | Detach and reattach | PASS | PASS |
+| 12 | Wheel rules | PASS | wip (shared terminal rows) |
+| 13 | User-message tint | PASS | PASS |
+| 14 | Copy and paste | wip | wip (shared terminal rows) |
+| 15 | Image paste; thumbnail | PASS | PASS |
+| 16 | Click forwarding in mouse mode | PASS | PASS |
+| 17 | Title, taskbar state, bell, OSC 777 | PASS | PASS |
+| 18 | Links: URLs, OSC 8, paths | wip | wip (shared terminal rows) |
+| 19 | New session dialog | PASS | PASS |
+| 20 | Import; VS Code sync | PASS | PASS |
+| 21 | Activity bar views | PASS | PASS |
+| 22 | Copilot defaults, group overrides | wip | PASS |
+| 23 | Plugins, MCP, skills | wip | PASS |
+| 24 | Migrate from VS Code | PASS | PASS |
+| 25 | Passive sessions | PASS | PASS |
+| 26 | Automations | wip | PASS |
+| 27 | Copilot automations, session schedules | PASS | PASS |
+| 28 | Idle auto-stop, priority manager, upgrade, crash log | PASS | PASS |
+| 29 | Keyboard map, F6 / Ctrl+], quit dialog, help | PASS | PASS |
+| 30 | `--demo` | PASS | PASS |
+| 31 | `--perf` overlay | PASS | PASS |
+| 32 | CLI | PASS | PASS |
+| 33 | Remote mode | PASS | PASS |
+| 34 | View versus start | PASS | PASS |
+| 35 | Transcript inspector; child resume | PASS | PASS |
+| 36 | Removing a multi-selection | PASS | PASS |
+| 37 | Group background and border selection | PASS | PASS |
+| 38 | Recent sessions | PASS | PASS |
+| 39 | Default model per agent | PASS | PASS |
+| 39b | Remembered model after restart | PASS | PASS |
+| 40 | Canvas-wide agents | PASS | PASS |
+| 40b | Canvas-wide agent runs across groups | PASS | PASS |
+| 41 | Reports inbox, unread count, toast | PASS | PASS |
+| 41b | HTML reports, locked down | wip | PASS |
+| 41c | Remote reports | PASS | PASS |
+| 42 | Pull request coordination | PASS | PASS |
+| 43 | Review follow-ups | PASS | PASS |
+| 44 | Undo/redo of layout changes | wip | wip (shared terminal rows) |
+| 45 | Area selection of subsessions and subagents | PASS | PASS |
+| 46 | Subagents folded into decks by default | PASS | PASS |
+| G1 | Inline images | PASS | wip (shared terminal rows) |
+| G2 | Taskbar progress, flash, toasts | PASS | PASS |
+| G3 | File drag and drop | PASS | wip |
+| G4 | Several windows | PASS | PASS |
+| V1 | Dust | PASS | PASS |
+| V2 | Stacks and hidden subsessions | PASS | PASS |
+| V3 | Effects | wip | PASS |
+| V4 | Group chips at any zoom; sidebar rows | PASS | PASS |
+| V5 | Remote group files in the canvas | wip | wip |
+| V6 | Remote group passive sessions | PASS | PASS |
+| T1 | Trackpad on the canvas (D15) | PASS | — |
+| T2 | Trackpad over terminals (D15) | PASS | — |
 
 ## Decisions taken during the port
 
@@ -329,6 +339,9 @@ Wayland (headless weston).
 
 ## Known gaps
 
+- D15: Command+0 does not reset a terminal's text size yet (pinch and
+  Command+plus/minus change it).
+
 - OpenCode < 1.19 (1.18.35 on the development Mac): rejecting a question or
   a permission with Esc does not end the turn, so `selftest agent --agent
   opencode --prompt` skips its question and permission steps there (with a
@@ -343,6 +356,12 @@ Wayland (headless weston).
   VoiceOver (macOS), Orca (Linux); real Linux desktops (GNOME/KDE × X11/
   Wayland) and GPUs (NVIDIA, Intel/AMD).
 - M0 checklist against the owner's Windows Cloud PC over the Dev Tunnel.
+- Trackpad (D15) on hardware: two-finger pan and its momentum feel native
+  with natural scrolling on and off; momentum stays on the box or terminal
+  it started in; pinch, smart zoom (two-finger double tap) and force click
+  (System Settings › Trackpad › Force Click) on a Force Touch trackpad.
+- With the screen unlocked and the window uncovered: `bench --client gui`,
+  parity rows 7b and V3 (if CI's macOS runners cannot present either).
 
 ## Log
 
@@ -361,6 +380,17 @@ Wayland (headless weston).
   on Metal (8c3c87e); D8 keys (06c3a8f); parity suite ported to the Unix
   shells (1c7975f, 44/62 locally). Windows parity rows 14/G1 and the `ios`
   job also fail on main (41228257005): main's, not the port's.
+- 2026-10-31: merged origin/linux and origin/main (8cdd05a). D15 trackpad
+  (b84377f) and its parity rows T1/T2 (85e186e). Found on the way: a
+  trackpad pan within 800 ms of a DPI change was undone by the GUI's
+  recentring (now the user's view is kept); the stand-in agent printed only
+  the first mouse report of a read; G1 typed PowerShell syntax and G3
+  expected Windows quoting on macOS. Merged origin/main and origin/linux
+  again (a8744b2, 92f2dfe; main's heartbeat test fix answers the `macos`
+  CI failure of run 41233445777). macOS sends a scale-factor event with
+  the window's own scale as it first shows; the GUI refitted and recentred
+  for 800 ms, so early clicks that opened a panel moved the view and rows
+  1, 45, 46, V2 passed or failed by timing (e635e2a). Parity 54/64 locally.
 
 ### Linux log
 

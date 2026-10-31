@@ -13,6 +13,11 @@ pub fn clear_then_print(a: &str, b: &str) -> String {
     if cfg!(windows) { format!("Clear-Host; Write-Output ('{a}' + '{b}')\r") } else { format!("clear; echo '{a}''{b}'\r") }
 }
 
+/// Prints `prefix1` … `prefix<count>`, one per line.
+pub fn print_numbered(prefix: &str, count: u32) -> String {
+    if cfg!(windows) { format!("1..{count} | % {{ \"{prefix}$_\" }}\r") } else { format!("for i in $(seq 1 {count}); do echo {prefix}$i; done\r") }
+}
+
 /// Clears the screen.
 pub fn clear() -> &'static str {
     if cfg!(windows) { "Clear-Host\r" } else { "clear\r" }

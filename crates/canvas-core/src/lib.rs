@@ -21,6 +21,7 @@ pub mod events;
 pub mod factory_client;
 pub mod files;
 pub mod folders;
+pub mod gesture;
 pub mod glide;
 pub mod input;
 pub mod inspect;

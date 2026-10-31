@@ -47,6 +47,11 @@ pub mod fonts {
 
 use winit::window::{Window, WindowAttributes};
 
+/// How scrolling arrives (MAC-LINUX-PLAN D15): trackpad scrolls are
+/// pixel-precise gestures (pinch, smart zoom and force click too); a mouse
+/// wheel's line deltas stay wheel notches.
+pub const POINTER_POLICY: canvas_core::input::PointerPolicy = canvas_core::input::PointerPolicy::Precise;
+
 /// Which modifier is the app's (MAC-LINUX-PLAN D8).
 pub const KEY_POLICY: canvas_core::input::KeyPolicy = canvas_core::input::KeyPolicy::CommandApp;
 

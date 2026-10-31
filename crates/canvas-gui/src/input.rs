@@ -105,6 +105,32 @@ pub fn mouse(kind: MouseEventKind, (x, y): (f32, f32), mods: ModifiersState) -> 
     InputEvent::Mouse(crate::os::KEY_POLICY.mouse(MouseEvent::at(kind, x, y, modifiers(mods))))
 }
 
+/// A gesture event at the pointer (fractional cells), with the platform's
+/// key policy applied to its modifiers (macOS: Command+scroll zooms).
+pub fn gesture(kind: canvas_core::input::GestureKind, (x, y): (f32, f32), mods: ModifiersState) -> InputEvent {
+    InputEvent::Gesture(crate::os::KEY_POLICY.gesture(canvas_core::input::Gesture { kind, x, y, modifiers: modifiers(mods) }))
+}
+
+/// winit's touch phase as a gesture phase (the system's momentum after
+/// lift-off arrives as a second Started … Ended).
+pub fn phase(phase: winit::event::TouchPhase) -> canvas_core::input::GesturePhase {
+    use canvas_core::input::GesturePhase;
+    match phase {
+        winit::event::TouchPhase::Started => GesturePhase::Began,
+        winit::event::TouchPhase::Moved => GesturePhase::Changed,
+        winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => GesturePhase::Ended,
+    }
+}
+
+/// A pixel scroll as the content's movement in cells, when the platform's
+/// pointer policy takes it as a trackpad gesture (`None`: wheel notches).
+pub fn precise_scroll(delta: MouseScrollDelta, cell: (f32, f32)) -> Option<(f32, f32)> {
+    match (crate::os::POINTER_POLICY, delta) {
+        (canvas_core::input::PointerPolicy::Precise, MouseScrollDelta::PixelDelta(p)) => Some((p.x as f32 / cell.0.max(1.0), p.y as f32 / cell.1.max(1.0))),
+        _ => None,
+    }
+}
+
 /// Accumulates wheel movement into notches (a pixel delta of three rows is one).
 #[derive(Default)]
 pub struct Wheel {

@@ -28,6 +28,7 @@ impl App {
             let navigates = match &event {
                 InputEvent::Key(key) => key.kind != KeyEventKind::Release,
                 InputEvent::Mouse(mouse) => !matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::Drag(_) | MouseEventKind::Up(_)),
+                InputEvent::Gesture(_) => true,
                 _ => false,
             };
             if navigates {
@@ -45,6 +46,7 @@ impl App {
                 }
                 InputEvent::Key(_) => {}
                 InputEvent::Mouse(mouse) => self.on_mouse(mouse),
+                InputEvent::Gesture(gesture) => self.on_gesture(gesture),
                 // The front end resizes its surface; the next draw lays out anew.
                 InputEvent::Resize(_, _) => {}
                 InputEvent::Focus(focused) => {
@@ -426,6 +428,11 @@ impl App {
             }
             if ctrl && is('v') {
                 return self.paste_clipboard(&id);
+            }
+            // Command+plus and Command+minus: the terminals' text size.
+            if ctrl && matches!(key.code, KeyCode::Char('+' | '=' | '-')) {
+                self.text_zoom_steps += if key.code == KeyCode::Char('-') { -1 } else { 1 };
+                return;
             }
             self.focus = Focus::Canvas;
             self.on_key(key.from(crate::input::KeySource::Any));

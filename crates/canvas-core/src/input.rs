@@ -24,6 +24,49 @@ pub enum InputEvent {
     Focus(bool),
     /// The surface is now this many cells (columns, rows).
     Resize(u16, u16),
+    /// A trackpad or touchpad gesture (MAC-LINUX-PLAN D15).
+    Gesture(Gesture),
+}
+
+/// A trackpad or touchpad gesture at a point in fractional cells.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Gesture {
+    pub kind: GestureKind,
+    pub x: f32,
+    pub y: f32,
+    pub modifiers: Modifiers,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GestureKind {
+    /// Two-finger scrolling, pixel-precise: the content follows the fingers
+    /// by `(dx, dy)` cells (positive: it moves right and down, showing what
+    /// was left of and above it). The system's momentum after lift-off comes
+    /// as a second gesture right after the first ends.
+    Scroll { dx: f32, dy: f32, phase: GesturePhase },
+    /// Pinching: the size changes by the factor `1 + delta`.
+    Pinch { delta: f32, phase: GesturePhase },
+    /// A two-finger double tap (macOS smart zoom).
+    SmartZoom,
+    /// A deep press (macOS force click).
+    ForceClick,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GesturePhase {
+    Began,
+    Changed,
+    Ended,
+}
+
+/// What a pointing device's scrolling becomes (MAC-LINUX-PLAN D15): wheel
+/// notches (Windows, and every line-based wheel), or pixel-precise gestures
+/// with pinch, smart zoom and force click (macOS trackpads, Linux touchpads).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PointerPolicy {
+    #[default]
+    Notches,
+    Precise,
 }
 
 /// Keyboard modifiers held during a key or mouse event.
@@ -243,6 +286,15 @@ impl KeyPolicy {
             return key.from(KeySource::Program);
         }
         key
+    }
+
+    /// A gesture as the core expects it: Command acts as Ctrl (Command+scroll
+    /// zooms, as Ctrl+wheel does elsewhere).
+    pub fn gesture(self, mut gesture: Gesture) -> Gesture {
+        if self == KeyPolicy::CommandApp && gesture.modifiers.contains(Modifiers::SUPER) {
+            gesture.modifiers = gesture.modifiers.difference(Modifiers::SUPER).union(Modifiers::CONTROL);
+        }
+        gesture
     }
 
     /// A mouse event as the core expects it: Command acts as Ctrl
