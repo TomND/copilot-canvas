@@ -312,8 +312,12 @@ impl Gui {
     /// Which clipboard the copy and paste checks used.
     fn clipboard_source(&self) -> &'static str {
         match self.req(json!({ "cmd": "platform" })) {
-            Ok(p) if p["clipboard"]["system_unavailable"] == true => "the Windows clipboard is locked: the hooks' clipboard stood in",
-            _ => "Windows clipboard",
+            Ok(p) if p["clipboard"]["system_unavailable"] == true => {
+                if cfg!(windows) { "the Windows clipboard is locked: the hooks' clipboard stood in" } else { "the system clipboard is unavailable: the hooks' clipboard stood in" }
+            }
+            _ if cfg!(windows) => "Windows clipboard",
+            _ if cfg!(target_os = "macos") => "the Mac's pasteboard",
+            _ => "the desktop clipboard",
         }
     }
 
@@ -1351,7 +1355,8 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         gui.chord('v', &["ctrl"])?;
         gui.wait("Ctrl+V pasted", 5, |t| t.contains("PASTED_BY_PARITY"))?;
         gui.chord('u', &["ctrl"])?;
-        gui.send("\x1b")?;
+        // PSReadLine: Esc; zsh and bash: Ctrl+C (Esc would be a Meta prefix to the next key).
+        crate::test_shell::discard(|b| gui.send(std::str::from_utf8(b).unwrap_or_default()))?;
         // Multi-line: copy exactly, paste without Enter (PowerShell and a program with bracketed paste).
         let multi = crate::selftest::copy_paste_check(&mut gui.driver)?;
         // IME text with a line break is a paste too. The screen is cleared first:
@@ -1382,7 +1387,7 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         // Esc empties a line PowerShell may hold (text that missed the probe); a
         // pause keeps it from joining the next key as Alt+key. (zsh and bash:
         // Ctrl+C, as Esc would be a Meta prefix there.)
-        gui.send(std::str::from_utf8(crate::test_shell::discard_input()).unwrap_or("\x1b"))?;
+        crate::test_shell::discard(|b| gui.send(std::str::from_utf8(b).unwrap_or_default()))?;
         std::thread::sleep(Duration::from_millis(300));
         // Later rows print near the top again (the --perf overlay covers the tile's last rows).
         gui.send(crate::test_shell::clear())?;
@@ -1403,7 +1408,9 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         gui.wait("links printed", 10, |t| t.contains(&format!("OSC8LINK and {missing}")))?;
         let tree = gui.wait_tree("links found", 5, |t| t["links"].as_array().is_some_and(|l| l.iter().any(|l| l["target"].as_str().is_some_and(|s| s.contains("osc8.txt")))))?;
         let count = tree["links"].as_array().map(|l| l.iter().filter(|l| l["terminal"] == true).count()).unwrap_or(0);
-        let (x, y) = gui.driver.text().lines().enumerate().find_map(|(i, l)| l.find("plain.txt").filter(|_| !l.contains("Write-Host") && !l.contains("printf")).map(|c| (crate::client::paint::text_width(&l[..c]) as f64 + 0.5, i as f64 + 0.5))).context("plain path")?;
+        // On the output's row (the typed command can wrap onto a row of its own with the path).
+        let output = |l: &str| !l.contains("Write-Host") && !l.contains("printf") && l.contains("OSC8LINK and");
+        let (x, y) = gui.driver.text().lines().enumerate().find_map(|(i, l)| l.find("plain.txt").filter(|_| output(l)).map(|c| (crate::client::paint::text_width(&l[..c]) as f64 + 0.5, i as f64 + 0.5))).context("plain path")?;
         gui.click((x, y), &["ctrl"])?;
         gui.wait("Ctrl+click resolved the path (nothing executed)", 5, |t| t.contains("plain.txt does not exist"))?;
         Ok(format!("{count} terminal link(s) incl. OSC 8; Ctrl+click → notice"))
@@ -1495,7 +1502,7 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         let quoted = canvas_core::files::quote_path_for(&file.display().to_string(), canvas_model::path_style::PathStyle::local());
         gui.wait_tile("the quoted path at the prompt", 5, |t| t.contains(&quoted))?;
         gui.chord('u', &["ctrl"])?;
-        gui.send(std::str::from_utf8(crate::test_shell::discard_input()).unwrap_or("\x1b"))?;
+        crate::test_shell::discard(|b| gui.send(std::str::from_utf8(b).unwrap_or_default()))?;
         // A folder dropped on the canvas starts a new session there.
         let folder = sb.root.join("drop-folder");
         std::fs::create_dir_all(&folder)?;

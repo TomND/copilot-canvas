@@ -46,6 +46,21 @@ pub fn discard_input() -> &'static [u8] {
     if cfg!(windows) { b"\x1b" } else { b"\x03\x03" }
 }
 
+/// Discards the shell's input line through `send`: PSReadLine's Esc alone; on
+/// Unix the two interrupts of [`discard_input`] one at a time, each given time
+/// to land (a second one that arrives while the shell redraws after the first
+/// is held until the next key typed, which it then discards with its line).
+pub fn discard(mut send: impl FnMut(&[u8]) -> anyhow::Result<()>) -> anyhow::Result<()> {
+    if cfg!(windows) {
+        return send(discard_input());
+    }
+    for interrupt in discard_input().chunks(1) {
+        send(interrupt)?;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    Ok(())
+}
+
 /// An absolute path that does not exist, for link checks.
 pub fn missing_path() -> &'static str {
     if cfg!(windows) { r"C:\canvas-link-probe\missing.txt" } else { "/canvas-link-probe/missing.txt" }

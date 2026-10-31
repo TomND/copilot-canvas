@@ -136,7 +136,14 @@ pub(super) fn rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         "New: HTML reports in the GUI's WebView2 view: their own styles; scripts never run, nothing is fetched, navigation blocked (sanitized and raw)",
         "html_report_locked_down",
         Kind::Only("GUI only: the TUI shows HTML as formatted text (snapshot report-viewer-html)"),
-        || html_check(sb, gui),
+        || {
+            let result = html_check(sb, gui);
+            if result.is_err() {
+                // The report closed whatever failed, so the rows after this one start on the canvas.
+                let _ = gui.canvas_focus();
+            }
+            result
+        },
     );
 }
 

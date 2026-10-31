@@ -207,7 +207,7 @@ pub(super) fn rows(sb: &Sandbox, rows: &mut Vec<Row>) {
         // A terminal with the keyboard: Ctrl+Z reaches the program, the canvas keeps both changes.
         gui.open("Layout shell", "PS ")?;
         let exe = std::env::current_exe()?;
-        gui.send(&format!("& '{}' paste-probe\r", exe.display()))?;
+        gui.send(&crate::test_shell::run_self(&exe, "paste-probe"))?;
         gui.wait("the paste probe", 20, |t| t.contains(crate::paste_probe::READY))?;
         gui.chord('z', &["ctrl"])?;
         gui.wait("Ctrl+Z in the program", 10, |t| t.contains("KEY \\x1a"))?;
