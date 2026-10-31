@@ -365,16 +365,18 @@ pub fn read_report(path: &Path) -> Option<Report> {
     serde_json::from_slice(bytes).ok()
 }
 
-/// Newest file matching a glob (`*` within path segments).
+/// Newest file matching a glob (`*` within path segments). Patterns use this
+/// machine's separator (`/` is accepted for `\` on Windows).
 pub fn newest_match(pattern: &str) -> Option<PathBuf> {
-    let pattern = pattern.replace('/', "\\");
+    let sep = std::path::MAIN_SEPARATOR_STR;
+    let pattern = pattern.replace('/', sep);
     if !pattern.contains('*') {
         let path = PathBuf::from(&pattern);
         return path.is_file().then_some(path);
     }
-    let parts: Vec<&str> = pattern.split('\\').collect();
+    let parts: Vec<&str> = pattern.split(sep).collect();
     let first_glob = parts.iter().position(|p| p.contains('*'))?;
-    let mut candidates = vec![PathBuf::from(parts[..first_glob].join("\\") + "\\")];
+    let mut candidates = vec![PathBuf::from(parts[..first_glob].join(sep) + sep)];
     for (i, part) in parts.iter().enumerate().skip(first_glob) {
         let last = i + 1 == parts.len();
         let mut next = Vec::new();

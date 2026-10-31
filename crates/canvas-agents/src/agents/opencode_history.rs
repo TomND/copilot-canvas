@@ -499,7 +499,7 @@ impl OpenCodeHistory {
             } else if let Some(entry) = self.entries.get_mut(&id) {
                 entry.tracked = None;
             }
-            let cwd = self.entries[&id].row.directory.replace('/', "\\");
+            let cwd = canvas_model::path_style::PathStyle::local().native(&self.entries[&id].row.directory);
             let git_root = self.git_roots.entry(cwd.clone()).or_insert_with(|| super::claude_history::find_git_root(Path::new(&cwd))).clone();
             let entry = self.entries.get_mut(&id).expect("entry exists");
             let summary = summarize(entry, is_tracked, overlay.get(&id), git_root, now);
@@ -777,7 +777,7 @@ fn summarize(entry: &mut Entry, tracked: bool, overlay: Option<&Overlay>, git_ro
     let mut summary = SessionSummary {
         id: row.id.clone(),
         name: if row.title.trim().is_empty() { row.id.clone() } else { row.title.clone() },
-        cwd: row.directory.replace('/', "\\"),
+        cwd: canvas_model::path_style::PathStyle::local().native(&row.directory),
         git_root,
         client: "opencode".to_owned(),
         created_ms: row.created_ms,
@@ -933,7 +933,7 @@ mod tests {
         let (changed, _) = history.poll(&HashSet::new(), Duration::ZERO);
         assert_eq!(changed.len(), 2, "subagent sessions are not listed");
         let mine = changed.iter().find(|s| s.id == SES).unwrap();
-        assert_eq!((mine.name.as_str(), mine.cwd.as_str(), mine.client.as_str()), ("Fix the build", r"C:\repos\demo", "opencode"));
+        assert_eq!((mine.name.as_str(), mine.cwd.as_str(), mine.client.as_str()), ("Fix the build", canvas_model::path_style::PathStyle::local().native("C:/repos/demo").as_str(), "opencode"));
         assert_eq!(mine.activity, Activity::Unknown);
         // Working: a prompt, then a streaming answer.
         db.message(SES, "msg_1", now - 10_000, user(now - 10_000));
