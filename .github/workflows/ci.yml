@@ -267,11 +267,19 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends pkg-config libssl-dev \
             libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
-            libvulkan-dev mesa-vulkan-drivers libfontconfig1-dev xvfb xauth xclip
+            libvulkan-dev mesa-vulkan-drivers libfontconfig1-dev xvfb xauth xclip \
+            dbus dbus-x11 gnome-keyring
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: unit and integration tests
         run: cargo test --workspace
+      # The master key in a real Secret Service: GNOME Keyring on a private
+      # session bus, unlocked with a throw-away password; the test deletes
+      # its items, and the bus and keyring end with the step.
+      - name: Secret Service backend
+        run: |
+          dbus-run-session -- sh -c 'printf runner | gnome-keyring-daemon --unlock --components=secrets >/dev/null &&
+            COPILOT_CANVAS_SECRET_SERVICE_TESTS=1 cargo test -p canvas-sys --lib secret -- --nocapture'
       - name: alacritty-only build (no Zig)
         run: cargo build --no-default-features
       - name: release build
