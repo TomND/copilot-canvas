@@ -534,7 +534,7 @@ mod tests {
         assert_eq!(odd, "agent");
         // Skills: created in the library, listed, never overwritten, names checked.
         let path = slug(handle(&ctx, Request::CreateCanvasSkill { canvas: "c1".into(), name: "pr-etiquette".into(), description: "Routes\nPR feedback".into() }));
-        assert!(path.ends_with(r"canvas-agents\c1\skills\pr-etiquette\SKILL.md"), "{path}");
+        assert!(Path::new(&path).ends_with(Path::new("canvas-agents").join("c1").join("skills").join("pr-etiquette").join("SKILL.md")), "{path}");
         assert!(matches!(handle(&ctx, Request::CreateCanvasSkill { canvas: "c1".into(), name: "pr-etiquette".into(), description: String::new() }), Response::Error(e) if e.contains("already")));
         assert!(matches!(handle(&ctx, Request::CreateCanvasSkill { canvas: "c1".into(), name: "../evil".into(), description: String::new() }), Response::Error(_)));
         let Response::Skills(skills) = handle(&ctx, Request::CanvasSkills { canvas: "c1".into() }) else { panic!("skills") };
@@ -551,7 +551,8 @@ mod tests {
         std::fs::create_dir_all(dir.join("A")).unwrap();
         std::fs::write(dir.join("f.txt"), "x").unwrap();
         assert_eq!(list_dir(Some(&dir.display().to_string())).unwrap(), ["..", "A", "b"]);
-        assert!(list_dir(None).unwrap().iter().any(|d| d.ends_with(":\\")));
+        // The drives on Windows; `/` and the home folder elsewhere.
+        assert!(list_dir(None).unwrap().iter().any(|d| if cfg!(windows) { d.ends_with(":\\") } else { d == "/" }));
         let info = path_info(&dir.join("b"));
         assert!(info.exists && info.dir && !info.occupied);
         assert!(path_info(&dir).occupied && path_info(&dir.join("f.txt")).occupied);
@@ -568,7 +569,7 @@ mod tests {
         let backend: &dyn Backend = &LocalBackend::new(Ctx { home: home.clone(), sessions_dir: home.clone() });
         assert_eq!(backend.upload_piece(r"C:\x\..\re:port?.txt", "u1", 0, b64(b"hello "), false).unwrap(), None);
         let path = backend.upload_piece(r"C:\x\..\re:port?.txt", "u1", 6, b64(b"world"), true).unwrap().unwrap();
-        assert!(path.ends_with("re_port_.txt") && path.contains(r"\uploads\"), "{path}");
+        assert!(path.ends_with("re_port_.txt") && Path::new(&path).components().any(|c| c.as_os_str() == "uploads"), "{path}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello world");
         let second = backend.upload_piece("re_port_.txt", "u2", 0, b64(b"x"), true).unwrap().unwrap();
         assert!(second.ends_with("re_port_ (2).txt"), "{second}");

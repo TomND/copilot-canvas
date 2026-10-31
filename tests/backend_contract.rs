@@ -118,7 +118,8 @@ fn contract(backend: &dyn Backend, ctx: &Ctx, work: &Path, tag: &str) -> Vec<Str
     assert_eq!(listing, ["..", "Alpha", "beta"]);
     answers.push(format!("{listing:?}"));
     let drives = backend.list_dir(None).unwrap();
-    assert!(drives.iter().any(|d| d.ends_with(":\\")));
+    // The drives on Windows; `/` and the home folder elsewhere.
+    assert!(drives.iter().any(|d| if cfg!(windows) { d.ends_with(":\\") } else { d == "/" }));
     answers.push(format!("{drives:?}"));
     let folder = backend.path_info(&work.join("shared").display().to_string()).unwrap();
     assert!(folder.exists && folder.dir && folder.occupied && !folder.file);

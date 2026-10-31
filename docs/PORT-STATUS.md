@@ -17,12 +17,16 @@ work resumes after any interruption: read it first, then `git log`.
 
 ### Phase 0 Groundwork — macOS: in progress · Linux: not started
 
-- [ ] Windows dependencies target-gated (`windows`, `windows-sys`,
+- [x] Windows dependencies target-gated (`windows`, `windows-sys`,
       `webview2-com` under `[target.'cfg(windows)'.dependencies]`)
-- [ ] `canvas-sys` crate: `process`, `fs`, `spawn`, `host`, `ipc`, `net`,
-      `secret` (file backend first), `open`, `clipboard`; Windows re-exports
-      `canvas_common::{win, pipe, dpapi, auth}` unchanged
-- [ ] `PathStyle` and `BackendInfo::platform` (D10)
+- [x] `canvas-sys` crate: `process`, `fs`, `spawn`, `host`, `ipc`, `net`,
+      `secret` (file backend first), `open`, `clipboard`, `console`, `token`;
+      Windows re-exports `canvas_common::{win, pipe, dpapi, auth}` unchanged
+- [x] `PathStyle` and `BackendInfo::platform` (D10); service paths shown
+      in the service's separators
+- [x] the whole workspace (without Ghostty) builds, clippy-clean, on
+      macOS; type-checks for x86_64 Linux; `cargo test --workspace
+      --no-default-features` green on macOS
 - [ ] Ghostty for Unix targets (xtask `--target`, build script, per-target ABI
       manifests)
 - [ ] CI jobs for the portable and `canvas-sys` tests on macOS (and Linux on
@@ -139,9 +143,24 @@ plan §6.1 equivalent, documented).
 
 (Where the plan is silent; each consistent with it.)
 
-- 2026-10-30: the orchestration Task tool was not available in the session
-  that started the port, so the program manager does the work directly,
-  macOS first, in the order of plan §9; workers can be added later.
+- 2026-10-31: the top-level session orchestrates two leads that work
+  directly (no sub-agents): the macOS lead on `macos` (shared Unix code
+  lands here first) and the Linux lead on `linux` (merges `macos`; shared
+  fixes made on `linux` are marked "shared:" and merged back into `macos`).
+- `canvas-sys` holds every non-GUI OS call (D1); on Windows it re-exports
+  `canvas_common::{win, pipe, dpapi, auth, tcp}` and the moved Win32 code
+  unchanged. Off Windows: `ipc` = Unix sockets with `flock` single
+  instance and peer-uid checks; `secret` = `v1u:` envelope sealing with a
+  per-home master key (key file backend first, Keychain next);
+  `net` = libproc socket tables (macOS) and `/proc/net/tcp*` (Linux).
+- GUI OS edges live in `canvas-gui/src/os/{windows,unix}`; the Unix side is
+  a stub (no toasts, no Dock state, text report view) until Phase 4.
+- Task Scheduler stays Windows-only (`taskschd_none.rs` lists nothing and
+  refuses changes elsewhere) until the `Scheduler` backends of Phase 2.
+- `canvas-push` uses rustls (ring) on Linux, native-tls elsewhere (§5.9).
+- Timing-sensitive `canvas-host` terminal tests run serially (a test-only
+  mutex): on 3-core macOS runners they starved each other's 100 ms ticks.
+- Canvas locks (`Store::open`) use an exclusive `flock` off Windows.
 
 ## Owner-only items (do not block "done")
 
@@ -155,3 +174,7 @@ plan §6.1 equivalent, documented).
 ## Log
 
 - 2026-10-30: status file created; Phase 0 started on `macos`.
+- 2026-10-31: canvas-sys, the terminal host, core, backend, TUI, CLI and
+  GUI build on macOS (443cc87…ed67588); Unix twins of the Windows-only
+  tests; CI fixes for the macOS `ios` job (serial timing tests, EINVAL on
+  reset sockets). Next: Ghostty for Unix targets, CI `macos` job, M0.

@@ -88,6 +88,26 @@ impl PathStyle {
         }
     }
 
+    /// A path with this style's separators (Windows programs such as git may
+    /// print forward slashes).
+    pub fn native(self, path: &str) -> String {
+        match self {
+            PathStyle::Windows => path.replace('/', "\\"),
+            PathStyle::Posix => path.to_owned(),
+        }
+    }
+
+    /// A path built by this machine's `Path::join` in this style's
+    /// separators (a Mac client joining under a Windows service's home, or a
+    /// Windows client under a Mac's).
+    pub fn normalize(self, path: &std::path::Path) -> String {
+        let text = path.display().to_string();
+        match self {
+            PathStyle::Windows => text.replace('/', "\\"),
+            PathStyle::Posix => text.replace('\\', "/"),
+        }
+    }
+
     /// A path in this style with forward slashes, as VS Code URIs want it.
     pub fn to_uri_path(self, path: &str) -> String {
         match self {

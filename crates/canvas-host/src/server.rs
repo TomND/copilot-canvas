@@ -1749,7 +1749,10 @@ mod tests {
 
     /// Whether the service closed `stream` within `within` (end of stream or a reset).
     fn closed_within(stream: &mut TcpStream, within: Duration) -> bool {
-        stream.set_read_timeout(Some(within)).unwrap();
+        // macOS refuses socket options on a connection the peer already reset (EINVAL): closed.
+        if stream.set_read_timeout(Some(within)).is_err() {
+            return true;
+        }
         let mut byte = [0u8; 1];
         match stream.read(&mut byte) {
             Ok(0) => true,

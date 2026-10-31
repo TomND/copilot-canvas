@@ -267,6 +267,12 @@ impl App {
     }
 
     /// The canvas's canvas-agents folder on the service's machine.
+    /// A path of the service's machine built with `Path::join` here, in the
+    /// service's separators (MAC-LINUX-PLAN D10).
+    pub fn service_path(&self, path: &std::path::Path) -> String {
+        self.info.path_style().normalize(path)
+    }
+
     pub fn canvas_agents_dir(&self) -> Option<std::path::PathBuf> {
         let id = self.doc.canvas_id.as_deref().filter(|id| crate::doc::valid_canvas_id(id))?;
         (!self.info.home.is_empty()).then(|| wide::canvas_dir(std::path::Path::new(&self.info.home), id))
@@ -366,7 +372,7 @@ impl App {
         let canvas_name = self.replica_name();
         let files = crate::rpc::CanvasAgentFiles { canvas: canvas.clone(), canvas_name, base_slug: slugify(&name), taken, name: name.clone(), rules };
         let slug = self.backend.create_canvas_agent(files).map_err(|e| format!("{e:#}"))?;
-        let dir = self.canvas_agents_dir().map(|d| wide::agent_paths(&d, &slug).dir.display().to_string());
+        let dir = self.canvas_agents_dir().map(|d| self.service_path(&wide::agent_paths(&d, &slug).dir));
         let frame = self.ensure_canvas_frame();
         let (_, (x, y)) = self.slot_or_overflow(&frame);
         let id = uuid::Uuid::new_v4().to_string();
@@ -474,8 +480,9 @@ impl App {
             },
             AgentAction::Folder => match self.canvas_agents_dir() {
                 Some(dir) => {
-                    if self.backend.path_info(&dir.display().to_string()).is_ok_and(|i| i.dir) {
-                        self.open_folder(&dir.display().to_string());
+                    let dir = self.service_path(&dir);
+                    if self.backend.path_info(&dir).is_ok_and(|i| i.dir) {
+                        self.open_folder(&dir);
                     } else {
                         self.notify("The canvas-agents folder is made with the first canvas-wide agent.", false);
                     }
@@ -599,8 +606,8 @@ impl App {
     }
 
     fn open_library_folder(&mut self) {
-        match self.canvas_agents_dir().map(|d| wide::skills_dir(&d)) {
-            Some(dir) if self.backend.path_info(&dir.display().to_string()).is_ok_and(|i| i.dir) => self.open_folder(&dir.display().to_string()),
+        match self.canvas_agents_dir().map(|d| self.service_path(&wide::skills_dir(&d))) {
+            Some(dir) if self.backend.path_info(&dir).is_ok_and(|i| i.dir) => self.open_folder(&dir),
             Some(_) => self.notify("The canvas has no skills yet: + New skill… makes the first.", false),
             None => self.notify(format!("Canvas-wide agents are unavailable: {}", self.canvas_agents_unavailable().unwrap_or_default()), true),
         }
@@ -781,7 +788,13 @@ mod tests {
         assert!(matches!(app.canvas_agent_state(&app.doc.nodes[0].clone()), AgentState::Unavailable(_)));
         app.doc.canvas_id = Some("c1".into());
         assert_eq!(app.canvas_agents_unavailable(), None);
-        assert_eq!(app.canvas_agents_dir(), Some(std::path::PathBuf::from(r"C:\h").join("canvas-agents").join("c1")));
+        // The service's style: a Windows service's path on every client.
+        assert_eq!(app.service_path(&app.canvas_agents_dir().unwrap()), r"C:\h\canvas-agents\c1");
+        app.info.platform = "macos".into();
+        app.info.home = "/Users/me/.copilot-canvas".into();
+        assert_eq!(app.service_path(&app.canvas_agents_dir().unwrap()), "/Users/me/.copilot-canvas/canvas-agents/c1");
+        app.info.platform = String::new();
+        app.info.home = r"C:\h".into();
         app.installed_agents = vec![crate::agents::AgentKind::OpenCode];
         assert!(app.agent_unavailable(&app.doc.nodes[0].clone()).unwrap().contains("not installed"));
         app.installed_agents = vec![crate::agents::AgentKind::Copilot];

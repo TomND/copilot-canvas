@@ -1203,6 +1203,7 @@ mod tests {
 
     #[test]
     fn input_is_handled_promptly_under_an_output_flood() {
+        let _serial = serial();
         let log = ProbeLog::default();
         // 64 queued chunks of 20 ms each: input behind them would wait ~1.3 s.
         let harness = Harness::new(Probe { feed_delay: Duration::from_millis(20), ..Probe::new(&log) });
@@ -1225,6 +1226,7 @@ mod tests {
 
     #[test]
     fn resizes_are_applied_in_order_under_a_flood() {
+        let _serial = serial();
         let log = ProbeLog::default();
         let harness = Harness::new(Probe { feed_delay: Duration::from_millis(5), ..Probe::new(&log) });
         let flood = harness.flood(Duration::from_millis(800));
@@ -1238,6 +1240,7 @@ mod tests {
 
     #[test]
     fn a_synchronized_update_times_out_under_continuous_input_and_output() {
+        let _serial = serial();
         let log = ProbeLog::default();
         let harness = Harness::new(Probe::new(&log));
         harness.output.send(b"\x1b[?2026h".to_vec()).unwrap();
@@ -1308,6 +1311,7 @@ mod tests {
 
     #[test]
     fn at_most_one_snapshot_request_is_outstanding() {
+        let _serial = serial();
         let log = ProbeLog::default();
         let harness = Harness::new(Probe { snapshot_delay: Duration::from_millis(300), ..Probe::new(&log) });
         for _ in 0..5 {
@@ -1337,6 +1341,14 @@ mod tests {
         }
     }
 
+    /// Timing tests (stop timelines, output floods that keep cores busy) run
+    /// one at a time: in parallel on a small CI machine they starve each
+    /// other's 100 ms ticks.
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        static SERIAL: Mutex<()> = Mutex::new(());
+        SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn hooks() -> (Hooks, Vec<Box<dyn Any>>) {
         let (pump, a) = bounded::<()>(1);
         let (exited, b) = bounded::<String>(16);
@@ -1356,6 +1368,7 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn agents_the_canvas_stops_are_stopped_whatever_their_exit_code() {
+        let _serial = serial();
         let cwd = std::env::temp_dir().display().to_string();
         // Quits with code 3 on the first key (the stop's Ctrl+D).
         let (hooks_a, _keep_a) = hooks();
@@ -1391,6 +1404,7 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn an_agent_whose_ui_quit_but_whose_process_lingers_is_ended_promptly() {
+        let _serial = serial();
         let cwd = std::env::temp_dir().display().to_string();
         let (hooks, _keep) = hooks();
         // Full-screen view; the first key leaves it, then the process lingers.
@@ -1415,6 +1429,7 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn conpty_resizes_are_never_lost_while_output_floods() {
+        let _serial = serial();
         let (hooks, _keep) = hooks();
         let cwd = std::env::temp_dir().display().to_string();
         let args = ["/d".to_owned(), "/c".to_owned(), "for /l %i in (1,1,200000) do @echo 0123456789abcdefghijklmnopqrstuvwxyz 0123456789".to_owned()];
@@ -1448,6 +1463,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn agents_the_canvas_stops_are_stopped_whatever_their_exit_code_on_unix() {
+        let _serial = serial();
         // Quits with code 3 on the first key (the stop's Ctrl+D ends the read).
         let quits = sh("quits", "read line; exit 3", true);
         std::thread::sleep(Duration::from_millis(500));
@@ -1473,6 +1489,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn an_agent_whose_ui_quit_but_whose_process_lingers_is_ended_promptly_on_unix() {
+        let _serial = serial();
         // Full-screen view; the first key leaves it, then the process lingers.
         let script = "printf '\\033[?1049hfull screen'; stty raw -echo; dd bs=1 count=1 >/dev/null 2>&1; printf '\\033[?1049l'; trap '' INT HUP; sleep 30";
         let lingers = sh("lingers", script, true);
@@ -1493,6 +1510,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn pty_resizes_are_never_lost_while_output_floods() {
+        let _serial = serial();
         let terminal = sh("flood", "yes 0123456789abcdefghijklmnopqrstuvwxyz 0123456789 | head -n 200000", false);
         let started = Instant::now();
         while terminal.last_output_ms.load(Ordering::Relaxed) == 0 && started.elapsed() < Duration::from_secs(10) {

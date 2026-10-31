@@ -956,14 +956,14 @@ mod tests {
         let home = Path::new(r"C:\h");
         let wide = r.passive.iter().find(|p| p.canvas_wide).unwrap();
         let place = run_place(home, &r, wide).unwrap();
-        assert_eq!(place.allowed, PathBuf::from(r"C:\h\canvas-agents\c1"));
-        assert_eq!(place.cwd, PathBuf::from(r"C:\h\canvas-agents\c1\agents\pr-coordinator"));
+        assert_eq!(place.allowed, home.join("canvas-agents").join("c1"));
+        assert_eq!(place.cwd, home.join("canvas-agents").join("c1").join("agents").join("pr-coordinator"));
         assert_eq!(place.paths.rules, place.cwd.join("rules.md"));
         let unnamed = Routing { canvas: String::new(), ..r.clone() };
         assert!(run_place(home, &unnamed, wide).unwrap_err().contains("no id"), "an older window's routing: no canvas, no run");
         assert!(run_place(home, &r, &r.passive[0]).unwrap_err().contains("no folder"), "a group passive session still needs its group's folder");
         let launch = passive_launch(AgentKind::Copilot, wide, None, true, &place.allowed, "run".into(), 1);
-        assert_eq!(launch.group_folder.as_deref(), Some(r"C:\h\canvas-agents\c1"), "the canvas folder is allowed (skills, goals)");
+        assert_eq!(launch.group_folder.as_deref().map(std::path::PathBuf::from), Some(home.join("canvas-agents").join("c1")), "the canvas folder is allowed (skills, goals)");
     }
 
     #[test]

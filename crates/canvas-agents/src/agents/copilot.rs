@@ -33,7 +33,7 @@ impl Provider for Copilot {
     }
 
     fn program(&self) -> Result<String> {
-        super::find_program("COPILOT_CANVAS_COPILOT", &["copilot.exe"])
+        super::find_program("COPILOT_CANVAS_COPILOT", &[&canvas_sys::host::exe_name("copilot")])
     }
 
     fn is_session_id(&self, id: &str) -> bool {

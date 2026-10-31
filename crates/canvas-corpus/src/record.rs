@@ -449,11 +449,18 @@ mod tests {
     #[test]
     fn records_a_program_and_its_scripted_input() {
         let script = parse_script("wait-for ready\nmark ready\nline echo typed-in\nwait-for typed-in\nline exit\n").unwrap();
+        // cmd.exe on Windows; elsewhere a plain bash (its prompt is `> `).
+        let (program, args) = if cfg!(windows) {
+            ("cmd.exe", vec!["/q".into(), "/k".into(), "prompt $g& echo ready".into()])
+        } else {
+            ("/bin/bash", vec!["--noprofile".into(), "--norc".into(), "-i".into()])
+        };
+        let env = if cfg!(windows) { Vec::new() } else { vec![("PS1".to_owned(), "> ".to_owned()), ("PROMPT_COMMAND".to_owned(), "echo ready; unset PROMPT_COMMAND".to_owned())] };
         let spec = Spec {
-            program: "cmd.exe".into(),
-            args: vec!["/q".into(), "/k".into(), "prompt $g& echo ready".into()],
+            program: program.into(),
+            args,
             cwd: None,
-            env: Vec::new(),
+            env,
             cols: 60,
             rows: 10,
             limit: Duration::from_secs(20),
@@ -474,9 +481,14 @@ mod tests {
 
     #[test]
     fn output_beyond_the_cap_ends_the_recording() {
+        let (program, args) = if cfg!(windows) {
+            ("cmd.exe", vec!["/d".into(), "/c".into(), "for /l %i in (1,1,100000) do @echo 0123456789abcdefghijklmnopqrstuvwxyz".into()])
+        } else {
+            ("/bin/sh", vec!["-c".into(), "yes 0123456789abcdefghijklmnopqrstuvwxyz | head -n 100000".into()])
+        };
         let spec = Spec {
-            program: "cmd.exe".into(),
-            args: vec!["/d".into(), "/c".into(), "for /l %i in (1,1,100000) do @echo 0123456789abcdefghijklmnopqrstuvwxyz".into()],
+            program: program.into(),
+            args,
             cwd: None,
             env: Vec::new(),
             cols: 60,

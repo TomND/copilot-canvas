@@ -984,8 +984,8 @@ impl Store {
         let lock_path = path.with_extension("lock");
         let mut options = std::fs::OpenOptions::new();
         options.create(true).truncate(false).write(true);
-        // Share mode 0: released automatically if this process dies.
-        // (Elsewhere, only the macOS mock service opens canvases: no lock.)
+        // Share mode 0 on Windows, an exclusive advisory lock (`flock`)
+        // elsewhere: released automatically if this process dies.
         #[cfg(windows)]
         std::os::windows::fs::OpenOptionsExt::share_mode(&mut options, 0);
         let lock = options
@@ -997,6 +997,13 @@ impl Store {
                     anyhow::Error::new(e).context(format!("cannot lock {}", lock_path.display()))
                 }
             })?;
+        #[cfg(not(windows))]
+        if let Err(error) = lock.try_lock() {
+            return Err(match error {
+                std::fs::TryLockError::WouldBlock => anyhow::anyhow!("this canvas is already open in another Copilot Canvas window"),
+                std::fs::TryLockError::Error(e) => anyhow::Error::new(e).context(format!("cannot lock {}", lock_path.display())),
+            });
+        }
         Ok(Self { path: path.to_owned(), _lock: lock })
     }
 

@@ -626,7 +626,7 @@ fn canvas_agents_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Ac
     }
     if let Some(dir) = app.canvas_agents_dir() {
         out.gap();
-        out.field_left("Folder", &dir.display().to_string());
+        out.field_left("Folder", &app.service_path(&dir));
     }
     if unavailable.is_none() {
         actions.push(("+ New canvas agent".into(), Action::Agents(AgentAction::New)));
