@@ -37,7 +37,7 @@ fn canvas(home: &Path, work: &Path) -> Result<PathBuf> {
     (child_helper.kind, child_helper.parent, child_helper.agent_key) = (NodeKind::Agent, Some("l-child".into()), Some("x".into()));
     doc.nodes.push(child_helper);
     let mut shell = session("l-shell", "Layout shell", 36, 2, work);
-    shell.command = Some(vec!["powershell.exe".into(), "-NoLogo".into(), "-NoProfile".into()]);
+    shell.command = Some(crate::client::doc::demo_shell(std::env::consts::OS));
     shell.fresh = true;
     doc.nodes.push(shell);
     doc.nodes.push(session("l-other", "Other", 36, 9, work));

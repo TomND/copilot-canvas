@@ -49,6 +49,12 @@ pub const AUMID: &str = "CopilotCanvas.Gui";
 /// wgpu's backend: DX12 (WARP as the software fallback).
 pub const GPU_BACKENDS: wgpu::Backends = wgpu::Backends::DX12;
 
+/// Which modifier is the app's (MAC-LINUX-PLAN D8).
+pub const KEY_POLICY: canvas_core::input::KeyPolicy = canvas_core::input::KeyPolicy::CtrlApp;
+
+/// Nothing to set up before the event loop on Windows.
+pub fn configure_event_loop(_builder: &mut winit::event_loop::EventLoopBuilder<crate::shell::UserEvent>, _quiet_tests: bool) {}
+
 /// The window is the foreground window (no toast, no flashing).
 pub fn in_front(hwnd: isize) -> bool {
     // SAFETY: no arguments.
@@ -91,7 +97,7 @@ pub fn work_area(monitor: &winit::monitor::MonitorHandle) -> Option<[i32; 4]> {
 
 /// The app icon embedded by build.rs: small in the title bar, large on the
 /// taskbar button and in Alt+Tab.
-pub fn with_app_icon(attrs: WindowAttributes) -> WindowAttributes {
+pub fn window_attributes(attrs: WindowAttributes) -> WindowAttributes {
     use winit::dpi::PhysicalSize;
     use winit::platform::windows::{IconExtWindows, WindowAttributesExtWindows};
     let icon = |px: u32| winit::window::Icon::from_resource(1, Some(PhysicalSize::new(px, px))).ok();

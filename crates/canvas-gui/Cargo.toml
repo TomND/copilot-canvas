@@ -39,6 +39,10 @@ windows-sys = { workspace = true, features = ["Win32_Graphics_Gdi", "Win32_UI_In
 # (MAC-LINUX-PLAN D2); DX12 on Windows (the workspace default).
 [target.'cfg(target_os = "macos")'.dependencies]
 wgpu = { workspace = true, features = ["metal"] }
+# AppKit at the edges (posted keys, screens; later the Dock, menus, WKWebView).
+objc2 = "0.5.2"
+objc2-foundation = { version = "0.2.2", features = ["NSGeometry", "NSString", "NSProcessInfo"] }
+objc2-app-kit = { version = "0.2.2", features = ["NSEvent", "NSGraphicsContext", "NSApplication", "NSResponder", "NSScreen"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 wgpu = { workspace = true, features = ["vulkan", "gles"] }

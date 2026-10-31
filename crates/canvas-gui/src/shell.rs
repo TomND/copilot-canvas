@@ -279,7 +279,7 @@ impl Shell {
         }
         // The app icon embedded by build.rs: small in the title bar, large on
         // the taskbar button and in Alt+Tab.
-        attrs = crate::os::with_app_icon(attrs);
+        attrs = crate::os::window_attributes(attrs);
         if self.options.test_hooks && quiet_tests() {
             // A test run on someone's desktop: never take the focus, stay out
             // of the taskbar and behind other windows (input comes from the hooks).
@@ -749,7 +749,7 @@ impl Win {
     /// terminal's own paste, with images, is the core's; pasting an image
     /// also shows what was attached).
     fn gui_key(&mut self, key: &KeyEvent, proxy: &EventLoopProxy<UserEvent>) -> bool {
-        if key.modifiers.contains(Modifiers::CONTROL | Modifiers::SHIFT) && matches!(key.code, KeyCode::Char('n' | 'N')) {
+        if is_new_window_key(key) {
             self.app.new_window_requested = true;
             return true;
         }
@@ -1577,8 +1577,11 @@ fn cursor_cell(window: &Window, grid: &Grid) -> Option<(f32, f32)> {
 }
 
 
-/// Ctrl+V or Shift+Insert.
+/// Ctrl+V or Shift+Insert (macOS: Command+V; a Control+V is the program's).
 fn is_paste_key(key: &KeyEvent) -> bool {
+    if key.source == canvas_core::input::KeySource::Program {
+        return false;
+    }
     let ctrl_v = key.modifiers.contains(Modifiers::CONTROL) && matches!(key.code, KeyCode::Char('v' | 'V'));
     ctrl_v || key.modifiers.contains(Modifiers::SHIFT) && key.code == KeyCode::Insert
 }
@@ -1589,7 +1592,8 @@ fn is_alt_v(key: &KeyEvent) -> bool {
 }
 
 fn is_new_window_key(key: &KeyEvent) -> bool {
-    key.modifiers.contains(Modifiers::CONTROL | Modifiers::SHIFT) && matches!(key.code, KeyCode::Char('n' | 'N'))
+    key.source != canvas_core::input::KeySource::Program
+        && key.modifiers.contains(Modifiers::CONTROL | Modifiers::SHIFT) && matches!(key.code, KeyCode::Char('n' | 'N'))
 }
 
 fn parse_mods(value: &Value) -> Modifiers {

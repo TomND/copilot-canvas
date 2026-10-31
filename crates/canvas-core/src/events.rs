@@ -413,16 +413,40 @@ impl App {
         };
         let ctrl = key.modifiers.contains(Modifiers::CONTROL);
         let is = |c: char| matches!(key.code, KeyCode::Char(k) if k.eq_ignore_ascii_case(&c));
+        if key.source == crate::input::KeySource::App {
+            // An app shortcut (macOS: Command): copy and paste here, every
+            // other one acts as on the canvas while the terminal keeps the
+            // keyboard. It never reaches the program.
+            if ctrl && is('c') {
+                if self.term_select.as_ref().is_some_and(|s| s.id == id) {
+                    self.copy_selection();
+                    self.term_select = None;
+                }
+                return;
+            }
+            if ctrl && is('v') {
+                return self.paste_clipboard(&id);
+            }
+            self.focus = Focus::Canvas;
+            self.on_key(key.from(crate::input::KeySource::Any));
+            // (A dialog it opened takes the keys first anyway.)
+            if self.focus == Focus::Canvas {
+                self.focus = Focus::Terminal;
+            }
+            return;
+        }
+        // The program's key (macOS: Control): never a copy or paste.
+        let program = key.source == crate::input::KeySource::Program;
         // Like Windows Terminal: Ctrl+C copies while text is selected; otherwise it reaches the agent.
-        if ctrl && is('c') && self.term_select.as_ref().is_some_and(|s| s.id == id) {
+        if !program && ctrl && is('c') && self.term_select.as_ref().is_some_and(|s| s.id == id) {
             self.copy_selection();
             self.term_select = None;
             return;
         }
-        if ctrl && key.modifiers.contains(Modifiers::SHIFT) && is('c') {
+        if !program && ctrl && key.modifiers.contains(Modifiers::SHIFT) && is('c') {
             return;
         }
-        if ctrl && is('v') {
+        if !program && ctrl && is('v') {
             return self.paste_clipboard(&id);
         }
         self.term_select = None;
@@ -1309,6 +1333,24 @@ mod paste_tests {
         assert!(inputs(&rx).is_empty(), "line breaks alone paste nothing (no Enter)");
         app.on_input(vec![InputEvent::Paste(String::new())]);
         assert_eq!(inputs(&rx), [Input::Key { key: Key::Char('v'), mods: MOD_CTRL }], "an empty paste lets the agent read an image");
+    }
+
+    #[test]
+    fn on_macos_command_keys_are_the_apps_and_control_keys_the_programs() {
+        use crate::input::{KeyCode, KeyEvent, KeyPolicy, Modifiers};
+        let mac = |c: char, m: Modifiers| InputEvent::Key(KeyPolicy::CommandApp.key(KeyEvent::new(KeyCode::Char(c), m)));
+        let (mut app, rx, _) = app("pasted");
+        app.on_input(vec![mac('v', Modifiers::CONTROL)]);
+        assert_eq!(inputs(&rx), [Input::Key { key: Key::Char('v'), mods: MOD_CTRL }], "Control+V is the program's");
+        app.on_input(vec![mac('c', Modifiers::CONTROL)]);
+        assert_eq!(inputs(&rx), [Input::Key { key: Key::Char('c'), mods: MOD_CTRL }], "Control+C is the program's");
+        app.on_input(vec![mac('v', Modifiers::SUPER)]);
+        assert_eq!(inputs(&rx), [Input::Paste("pasted".into())], "Command+V pastes");
+        app.on_input(vec![mac('c', Modifiers::SUPER)]);
+        assert!(inputs(&rx).is_empty(), "Command+C without a selection copies nothing and never interrupts");
+        app.on_input(vec![mac('q', Modifiers::SUPER)]);
+        assert!(inputs(&rx).is_empty() && app.focus == Focus::Terminal, "Command+Q is the canvas's (its quit dialog), the terminal keeps the keyboard");
+        assert!(!app.modals.is_empty(), "the quit dialog");
     }
 
     #[test]

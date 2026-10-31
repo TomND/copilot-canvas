@@ -172,16 +172,99 @@ pub struct KeyEvent {
     pub code: KeyCode,
     pub modifiers: Modifiers,
     pub kind: KeyEventKind,
+    /// Whose key it is ([`KeyPolicy`]): the canvas's or the program's in a
+    /// terminal, or decided by today's rules.
+    pub source: KeySource,
 }
 
 impl KeyEvent {
     /// A key press.
     pub const fn new(code: KeyCode, modifiers: Modifiers) -> Self {
-        Self { code, modifiers, kind: KeyEventKind::Press }
+        Self { code, modifiers, kind: KeyEventKind::Press, source: KeySource::Any }
     }
 
     pub const fn with_kind(code: KeyCode, modifiers: Modifiers, kind: KeyEventKind) -> Self {
-        Self { code, modifiers, kind }
+        Self { code, modifiers, kind, source: KeySource::Any }
+    }
+
+    pub const fn from(self, source: KeySource) -> Self {
+        Self { source, ..self }
+    }
+}
+
+/// Who a key belongs to when a terminal has the keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum KeySource {
+    /// Windows' rules (and the TUI's): Ctrl+C copies a selection, Ctrl+V
+    /// pastes, every other key reaches the program.
+    #[default]
+    Any,
+    /// An app shortcut (macOS: the Command key): never the program's.
+    App,
+    /// The program's (macOS: the Control key): reaches it untouched, but for
+    /// Ctrl+] and Ctrl+F6.
+    Program,
+}
+
+/// Which modifier is the app's (MAC-LINUX-PLAN D8): Ctrl on Windows and
+/// Linux; Command on macOS, where every Ctrl combination goes to the program,
+/// Command+digit picks a view (Option+digit types characters) and a
+/// Command-click is the Ctrl-click (a Ctrl-click is the secondary click).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyPolicy {
+    #[default]
+    CtrlApp,
+    CommandApp,
+}
+
+impl KeyPolicy {
+    /// A key as the core's Ctrl-based shortcuts expect it.
+    pub fn key(self, key: KeyEvent) -> KeyEvent {
+        if self == KeyPolicy::CtrlApp {
+            return key;
+        }
+        let mods = key.modifiers;
+        if mods.contains(Modifiers::SUPER) {
+            let rest = mods.difference(Modifiers::SUPER);
+            let modifiers = match key.code {
+                // Command+1…9: the activity bar's views (Alt+1…9 elsewhere).
+                KeyCode::Char('1'..='9') if rest.is_empty() => Modifiers::ALT,
+                // Command+N: a new window (Ctrl+Shift+N elsewhere).
+                KeyCode::Char('n' | 'N') => Modifiers::CONTROL | Modifiers::SHIFT,
+                _ => rest.union(Modifiers::CONTROL),
+            };
+            let code = match key.code {
+                KeyCode::Char(c) if modifiers.contains(Modifiers::CONTROL) => KeyCode::Char(c.to_ascii_lowercase()),
+                other => other,
+            };
+            return KeyEvent { code, modifiers, ..key }.from(KeySource::App);
+        }
+        if mods.contains(Modifiers::CONTROL) {
+            return key.from(KeySource::Program);
+        }
+        key
+    }
+
+    /// A mouse event as the core expects it: Command acts as Ctrl
+    /// (Command-click opens links and toggles selection); a Ctrl-click is
+    /// the secondary (right) click.
+    pub fn mouse(self, mut event: MouseEvent) -> MouseEvent {
+        if self == KeyPolicy::CtrlApp {
+            return event;
+        }
+        let mods = event.modifiers;
+        let left = matches!(event.kind, MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left));
+        if left && mods.contains(Modifiers::CONTROL) && !mods.contains(Modifiers::SUPER) {
+            event.kind = match event.kind {
+                MouseEventKind::Down(_) => MouseEventKind::Down(MouseButton::Right),
+                MouseEventKind::Up(_) => MouseEventKind::Up(MouseButton::Right),
+                _ => MouseEventKind::Drag(MouseButton::Right),
+            };
+            event.modifiers = mods.difference(Modifiers::CONTROL);
+        } else if mods.contains(Modifiers::SUPER) {
+            event.modifiers = mods.difference(Modifiers::SUPER).union(Modifiers::CONTROL);
+        }
+        event
     }
 }
 
@@ -390,6 +473,22 @@ pub fn is_leave_terminal(key: &KeyEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_command_key_is_the_apps_on_macos_and_ctrl_the_programs() {
+        let mac = KeyPolicy::CommandApp;
+        let key = |c: char, m: Modifiers| mac.key(KeyEvent::new(KeyCode::Char(c), m));
+        assert_eq!(key('c', Modifiers::SUPER), KeyEvent::new(KeyCode::Char('c'), Modifiers::CONTROL).from(KeySource::App));
+        assert_eq!(key('Z', Modifiers::SUPER | Modifiers::SHIFT), KeyEvent::new(KeyCode::Char('z'), Modifiers::CONTROL | Modifiers::SHIFT).from(KeySource::App));
+        assert_eq!(key('3', Modifiers::SUPER), KeyEvent::new(KeyCode::Char('3'), Modifiers::ALT).from(KeySource::App));
+        assert_eq!(key('n', Modifiers::SUPER), KeyEvent::new(KeyCode::Char('n'), Modifiers::CONTROL | Modifiers::SHIFT).from(KeySource::App));
+        assert_eq!(key('c', Modifiers::CONTROL).source, KeySource::Program);
+        assert_eq!(key('x', Modifiers::ALT).source, KeySource::Any, "Option (as Alt) is unchanged");
+        assert_eq!(KeyPolicy::CtrlApp.key(KeyEvent::new(KeyCode::Char('c'), Modifiers::CONTROL)).source, KeySource::Any);
+        let click = |m: Modifiers| mac.mouse(MouseEvent::at(MouseEventKind::Down(MouseButton::Left), 1.0, 1.0, m));
+        assert_eq!(click(Modifiers::CONTROL).kind, MouseEventKind::Down(MouseButton::Right));
+        assert_eq!(click(Modifiers::SUPER).modifiers, Modifiers::CONTROL);
+    }
 
     fn key(code: KeyCode, modifiers: Modifiers) -> InputEvent {
         InputEvent::Key(KeyEvent::new(code, modifiers))

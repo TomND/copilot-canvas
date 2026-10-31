@@ -167,6 +167,24 @@ jobs:
         run: target/debug/copilot-canvas selftest --remote faults
       - name: pairing and the Dev Tunnel stand-in
         run: target/debug/copilot-canvas selftest --remote paired
+      # The GPU client on Metal (Apple-silicon runners have a paravirtual GPU).
+      - name: GUI self-test
+        run: target/debug/copilot-canvas selftest --client gui
+      - name: GUI self-test over loopback TCP
+        run: target/debug/copilot-canvas selftest --client gui --remote loopback
+      # The GPU client's budgets (PLAN §9) need a screen nobody covers or
+      # locks (macOS presents nothing to a covered window): measured here,
+      # advisory (a debug build on a shared runner).
+      - name: GUI bench (advisory)
+        continue-on-error: true
+        run: CANVAS_GUI_TEST_VISIBLE=1 target/debug/copilot-canvas bench --client gui --json gui-bench-macos.json
+      - name: keep the GUI bench
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gui-bench-macos
+          path: gui-bench-macos.json
+          if-no-files-found: ignore
 
   # The iPhone app (docs/IOS-PLAN.md): the portable crates on macOS, the Rust
   # core for iOS, the app on a simulator with its unit tests and its UI tests
@@ -193,8 +211,14 @@ jobs:
           target/debug/canvas-mock --quiet &
           target/debug/canvas-mock --quiet --listen 127.0.0.1:47601 --state "$RUNNER_TEMP/canvas-mock-personal" &
           cd ios
+          # An iPhone 16 when the runner image has one, else its first iPhone simulator.
+          DEVICE="iPhone 16"
+          if ! xcrun simctl list devices available | grep -q "iPhone 16 ("; then
+            DEVICE=$(xcrun simctl list devices available | grep -m1 -oE 'iPhone [^(]+' | sed 's/ *$//')
+          fi
+          echo "simulator: $DEVICE"
           COPILOT_CANVAS_SKIP_CORE=1 xcodebuild -project CopilotCanvas.xcodeproj -scheme CopilotCanvas \
-            -destination 'platform=iOS Simulator,name=iPhone 16' test
+            -destination "platform=iOS Simulator,name=$DEVICE" test
 
   # libghostty-vt for Linux (glibc 2.35 floor), one per architecture, cached
   # by the pin's checksum file and the target triple.

@@ -596,14 +596,15 @@ impl Sandbox {
         crate::automations::write_sample_db(&copilot_home.join("data.db"))?;
         // The stand-in agent CLI.
         let exe = std::env::current_exe()?;
-        let fake = root.join("fake").join("copilot.exe");
+        let fake_named = |name: &str| root.join("fake").join(canvas_sys::host::exe_name(name));
+        let fake = fake_named("copilot");
         std::fs::create_dir_all(fake.parent().unwrap_or(&root))?;
         std::fs::copy(&exe, &fake)?;
-        let fake_opencode = root.join("fake").join("opencode.exe");
+        let fake_opencode = fake_named("opencode");
         std::fs::copy(&exe, &fake_opencode)?;
-        let fake_claude = root.join("fake").join("claude.exe");
+        let fake_claude = fake_named("claude");
         std::fs::copy(&exe, &fake_claude)?;
-        let (fake_gh, fake_az, prs) = (root.join("fake").join("gh.exe"), root.join("fake").join("az.exe"), root.join("prs"));
+        let (fake_gh, fake_az, prs) = (fake_named("gh"), fake_named("az"), root.join("prs"));
         std::fs::copy(&exe, &fake_gh)?;
         std::fs::copy(&exe, &fake_az)?;
         std::fs::create_dir_all(&prs)?;
@@ -658,7 +659,7 @@ impl Sandbox {
         let mut add = |id: &str, name: &str, slot: i32, shell: bool| {
             let mut n = node(id, name, 2 + (slot % 3) * (GRID_X + 2), 2 + (slot / 3) * (GRID_Y + 2), &work);
             if shell {
-                n.command = Some(vec!["powershell.exe".to_owned(), "-NoLogo".to_owned(), "-NoProfile".to_owned()]);
+                n.command = Some(crate::client::doc::demo_shell(std::env::consts::OS));
                 n.fresh = true;
             }
             doc.nodes.push(n);
@@ -1012,7 +1013,7 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         let (review, _) = gui.find_box("Review me")?;
         anyhow::ensure!(waiting["attention"] == true && review["attention"] == true, "attention flags");
         gui.open("Shell A", "PS ")?;
-        gui.send("Write-Output halo")?;
+        gui.send(if cfg!(windows) { "Write-Output halo" } else { "echo halo" })?;
         let tree = gui.wait_tree("the halo", 5, |t| !t["canvas"]["halo"].is_null())?;
         anyhow::ensure!(tree["canvas"]["halo"]["typing"] == true, "halo not heavy while typing: {}", tree["canvas"]["halo"]);
         gui.send("\r")?;
@@ -1309,7 +1310,7 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         // Cleared first: on the full screen row 12 leaves, the text lands on the last row and the
         // prompt after it scrolls it up one row, away from a drag aimed at it (and the later
         // steps of this row would run at the bottom of a full pane too).
-        gui.send("Clear-Host; Write-Output ('COPY_' + 'PROBE_TEXT')\r")?;
+        gui.send(&crate::test_shell::clear_then_print("COPY_", "PROBE_TEXT"))?;
         // Wait for the prompt after the output too, so the screen has settled.
         gui.wait("text printed and the next prompt", 10, |t| {
             let lines: Vec<&str> = t.lines().collect();
@@ -1335,7 +1336,7 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         let multi = crate::selftest::copy_paste_check(&mut gui.driver)?;
         // IME text with a line break is a paste too.
         let exe = std::env::current_exe()?;
-        gui.send(&format!("& '{}' paste-probe\r", exe.display()))?;
+        gui.send(&crate::test_shell::run_self(&exe, "paste-probe"))?;
         gui.wait("the paste probe", 20, |t| t.contains(crate::paste_probe::READY))?;
         let ime = (|| -> Result<()> {
             gui.req(json!({ "cmd": "ime", "commit": "ime one\nime two" }))?;
@@ -1355,7 +1356,7 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
             gui.send("\x03")?;
         }
         // Later rows print near the top again (the --perf overlay covers the tile's last rows).
-        gui.send("Clear-Host\r")?;
+        gui.send(crate::test_shell::clear())?;
         gui.wait("the screen cleared", 10, |t| !t.contains("PASTE 2 lines") && !t.contains(crate::paste_probe::READY))?;
         ime?;
         ended?;
@@ -1363,11 +1364,17 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
     });
 
     check(rows, "18", "Links: URLs, OSC 8, Windows paths; Ctrl+click; nothing executed", "links_osc8_and_paths", || {
-        gui.send("$e=[char]27; Write-Host \"see $e]8;;file:///C:/canvas-parity-missing/osc8.txt$e\\OSC8LINK$e]8;;$e\\ and C:\\canvas-parity-missing\\plain.txt\"\r")?;
-        gui.wait("links printed", 10, |t| t.contains("OSC8LINK and C:\\canvas-parity-missing"))?;
+        // A missing folder of the service's style (Windows: C:\…, elsewhere /…).
+        let (missing, url_dir) = if cfg!(windows) { (r"C:\canvas-parity-missing", "C:/canvas-parity-missing") } else { ("/canvas-parity-missing", "/canvas-parity-missing") };
+        if cfg!(windows) {
+            gui.send("$e=[char]27; Write-Host \"see $e]8;;file:///C:/canvas-parity-missing/osc8.txt$e\\OSC8LINK$e]8;;$e\\ and C:\\canvas-parity-missing\\plain.txt\"\r")?;
+        } else {
+            gui.send(&format!("printf 'see \\033]8;;file://{url_dir}/osc8.txt\\033\\\\OSC8LINK\\033]8;;\\033\\\\ and {missing}/plain.txt\\n'\r"))?;
+        }
+        gui.wait("links printed", 10, |t| t.contains(&format!("OSC8LINK and {missing}")))?;
         let tree = gui.wait_tree("links found", 5, |t| t["links"].as_array().is_some_and(|l| l.iter().any(|l| l["target"].as_str().is_some_and(|s| s.contains("osc8.txt")))))?;
         let count = tree["links"].as_array().map(|l| l.iter().filter(|l| l["terminal"] == true).count()).unwrap_or(0);
-        let (x, y) = gui.driver.text().lines().enumerate().find_map(|(i, l)| l.find("plain.txt").filter(|_| !l.contains("Write-Host")).map(|c| (crate::client::paint::text_width(&l[..c]) as f64 + 0.5, i as f64 + 0.5))).context("plain path")?;
+        let (x, y) = gui.driver.text().lines().enumerate().find_map(|(i, l)| l.find("plain.txt").filter(|_| !l.contains("Write-Host") && !l.contains("printf")).map(|c| (crate::client::paint::text_width(&l[..c]) as f64 + 0.5, i as f64 + 0.5))).context("plain path")?;
         gui.click((x, y), &["ctrl"])?;
         gui.wait("Ctrl+click resolved the path (nothing executed)", 5, |t| t.contains("plain.txt does not exist"))?;
         Ok(format!("{count} terminal link(s) incl. OSC 8; Ctrl+click → notice"))
@@ -1383,13 +1390,13 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         };
         // A session needs you: paused (yellow) on the taskbar, counted in the title.
         gui.poll_platform("paused while one needs you", 10, &|p| p["progress"] == 4 && p["taskbar"] == 4 && p["title"].as_str().is_some_and(|t| t.contains("need")))?;
-        gui.send("$e=[char]27; Write-Host -NoNewline \"$e]0;Parity title$([char]7)$e]9;4;3;0$([char]7)$([char]7)\"\r")?;
+        gui.send(&crate::test_shell::emit("\\e]0;Parity title\\a\\e]9;4;3;0\\a\\a"))?;
         gui.wait("title in the pane header", 10, |t| t.lines().any(|l| l.contains("Shell A · working · Parity title")))?;
         gui.poll_platform("the bell", 5, &|p| p["bells"].as_u64().unwrap_or(0) >= 1)?;
         // Answered: busy (sessions work) and no attention count.
         append(&sb.sessions.waiting, "permission.completed", json!({ "requestId": "p1" }))?;
         gui.poll_platform("busy once nothing needs you", 15, &|p| p["progress"] == 3 && p["taskbar"] == 3 && p["title"].as_str().is_some_and(|t| !t.contains("need")))?;
-        gui.send("Write-Host -NoNewline \"$e]9;4;0;0$([char]7)$e]777;notify;Parity;Toast body$([char]7)\"\r")?;
+        gui.send(&crate::test_shell::emit("\\e]9;4;0;0\\a\\e]777;notify;Parity;Toast body\\a"))?;
         // A session that starts to need you: toast (and flash in the background).
         append(&sb.sessions.review, "permission.requested", json!({ "requestId": "p9" }))?;
         let ok = |t: Option<&Value>| t.is_some_and(|t| t["status"] == "shown" || t["status"] == "in front" || t["status"] == "quiet");
