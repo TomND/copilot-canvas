@@ -1,7 +1,8 @@
 //! Automations defined by manifests ("the factory").
 //!
 //! One YAML manifest per automation (`<dir>/<family>/<name>.yaml`) is the source
-//! of truth; Windows Task Scheduler is generated from it (`automations apply`).
+//! of truth; the machine's scheduler (`scheduler`: Windows Task Scheduler, a
+//! user systemd or cron) is generated from it (`automations apply`).
 //! Each run goes through a hidden launcher that appends `Starting task.` /
 //! `Exited with code N.` to `<state>/logs/<name>.log` and passes
 //! `AUTOMATION_STATUS_FILE`, where the automation writes a status report
@@ -92,8 +93,17 @@ pub fn parse_defaults(text: &str) -> Result<Defaults> {
     })
 }
 
+/// The launcher's state folder: `%LOCALAPPDATA%\BackgroundAutomations` on
+/// Windows, `$XDG_STATE_HOME/background-automations` on Linux,
+/// `~/Library/Application Support/BackgroundAutomations` on macOS.
 pub fn default_state() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("BackgroundAutomations")
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        return PathBuf::from(local).join("BackgroundAutomations");
+    }
+    if let Some(state) = dirs::state_dir() {
+        return state.join("background-automations");
+    }
+    dirs::data_dir().unwrap_or_else(std::env::temp_dir).join("BackgroundAutomations")
 }
 
 pub fn parse_manifest(text: &str, path: &Path) -> Result<Manifest> {
@@ -806,8 +816,9 @@ pub fn drift(m: &Manifest, d: &Defaults, registered: &Imported) -> Vec<String> {
 
 // ---------- runtime view ----------
 
-pub fn live(repo: &Repo, tasks: &BTreeMap<String, crate::taskschd::TaskInfo>) -> Vec<Live> {
-    let offset = local_offset_minutes();
+/// Every manifest with its runs, report and installed task (`scheduler`'s
+/// list), and the drift between them.
+pub fn live(repo: &Repo, tasks: &BTreeMap<String, crate::scheduler::TaskInfo>, scheduler: &dyn crate::scheduler::Scheduler) -> Vec<Live> {
     repo.manifests
         .iter()
         .map(|m| {
@@ -822,8 +833,8 @@ pub fn live(repo: &Repo, tasks: &BTreeMap<String, crate::taskschd::TaskInfo>) ->
                 open.error = "no exit recorded (stopped or the machine went down)".into();
             }
             let drift = match &task {
-                None => vec!["not registered in Task Scheduler (run apply)".into()],
-                Some(t) => drift(m, &repo.defaults, &import_xml(&m.name, &t.xml, offset)),
+                None => vec![format!("not registered in {} (run apply)", scheduler.name())],
+                Some(t) => scheduler.drift(m, &repo.defaults, t),
             };
             Live {
                 manifest: m.clone(),

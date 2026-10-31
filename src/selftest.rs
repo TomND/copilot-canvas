@@ -3815,7 +3815,7 @@ mod factory_probe {
             std::thread::sleep(Duration::from_secs(3));
 
             println!("2. the task fails: its box pulses and the toolbar counts it");
-            crate::taskschd::run(&task)?;
+            crate::scheduler::get().run(&task)?;
             ui.wait("failure shown", Duration::from_secs(60), |t| t.contains("last run failed") && t.contains("1 automation failing"))?;
             println!("3. the service wakes the doctor, which reports");
             let started = std::time::Instant::now();
@@ -3836,7 +3836,7 @@ mod factory_probe {
             println!("--- service log ---\n{}", log.lines().rev().take(25).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n"));
         }
         quit(&mut ui, &instance);
-        let _ = crate::taskschd::delete(&task);
+        let _ = crate::scheduler::get().delete(&task);
         if result.is_ok() {
             let _ = std::fs::remove_dir_all(&root);
         } else {

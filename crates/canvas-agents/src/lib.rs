@@ -16,19 +16,17 @@ pub mod factory_cli;
 pub mod fork;
 pub mod git;
 pub mod index;
+pub mod launcher;
 pub mod migrate;
 pub mod prs_cli;
 pub mod remote;
 pub mod reports;
 pub mod reviews_cli;
 pub mod service;
-// Task Scheduler on Windows; macOS and Linux get their scheduler backends
-// (launchd, systemd user timers, cron) behind a `Scheduler` trait in Phase 2
-// of MAC-LINUX-PLAN; until then they have none.
+// Task Scheduler's COM API (Windows); every platform's backend is behind
+// `scheduler::Scheduler` (MAC-LINUX-PLAN D7).
+pub mod scheduler;
 #[cfg(windows)]
-pub mod taskschd;
-#[cfg(not(windows))]
-#[path = "taskschd_none.rs"]
 pub mod taskschd;
 pub mod tunnel_access;
 pub mod vscode;

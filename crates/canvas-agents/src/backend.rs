@@ -12,7 +12,7 @@ use canvas_model::rpc::{Backend, BackendInfo, CanvasAgentFiles, PassiveFiles, Pa
 
 use crate::agents::{AgentKind, Provide};
 use crate::paths::Instance;
-use crate::{agents, automations, bus, canvas_wide, copilot_cfg, doc, factory, factory_cli, fork, git, migrate, taskschd, vscode};
+use crate::{agents, automations, bus, canvas_wide, copilot_cfg, doc, factory, factory_cli, fork, git, migrate, vscode};
 
 /// Largest text file the viewer reads.
 const MAX_TEXT: u64 = 4 << 20;
@@ -104,11 +104,11 @@ fn run(ctx: &Ctx, request: Request) -> Result<Response> {
         }
         Request::TaskSetEnabled { name, manifest, enabled } => {
             factory_cli::set_manifest_enabled(Path::new(&manifest), enabled)?;
-            taskschd::set_enabled(&name, enabled)?;
+            crate::scheduler::get().set_enabled(&name, enabled)?;
             Response::Done
         }
         Request::TaskRun { name } => {
-            taskschd::run(&name)?;
+            crate::scheduler::get().run(&name)?;
             Response::Done
         }
         Request::NewestMatches { patterns } => Response::Texts(patterns.iter().filter_map(|p| factory::newest_match(p)).map(|p| p.display().to_string()).collect()),

@@ -384,7 +384,7 @@ pub fn doctor_lines(instance: &Instance, dir: &Path) -> Vec<(Mark, &'static str,
     });
     let manifest = canvas_agents::remote::tunnel_manifest_path(dir);
     lines.push(if manifest.is_file() {
-        let task = canvas_agents::taskschd::list().ok().and_then(|tasks| tasks.get(&remote::TUNNEL_TASK.to_lowercase()).map(|t| if t.enabled { t.state.clone() } else { "disabled".into() }));
+        let task = canvas_agents::scheduler::get().list().ok().and_then(|tasks| tasks.get(&remote::TUNNEL_TASK.to_lowercase()).map(|t| if t.enabled { t.state.clone() } else { "disabled".into() }));
         match task {
             Some(state) => (Mark::Ok, "Tunnel automation", format!("{} · task {state}", manifest.display())),
             None => (Mark::Info, "Tunnel automation", format!("{} · not registered (copilot-canvas automations apply {} --yes)", manifest.display(), remote::TUNNEL_TASK)),

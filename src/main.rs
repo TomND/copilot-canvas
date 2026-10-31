@@ -25,7 +25,7 @@ mod uia;
 
 use canvas_agents::{automations, cli, factory_cli, index, prs_cli, reports, reviews_cli, service, vscode};
 #[cfg(test)]
-use canvas_agents::{bus, copilot_cfg, taskschd};
+use canvas_agents::{bus, copilot_cfg, scheduler};
 use canvas_common::{paths, protocol};
 use canvas_sys::process as win;
 
@@ -275,7 +275,7 @@ fn parse() -> Result<Args> {
             "--canvas" => args.canvas = Some(PathBuf::from(value("--canvas")?)),
             "--cwd" => args.cwd = Some(PathBuf::from(value("--cwd")?)),
             "--remote" => args.remote = Some(value("--remote")?),
-            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--unread" | "--sent" | "--qr" => {
+            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--unread" | "--sent" | "--qr" | "--detach" => {
                 args.flags.push(arg.trim_start_matches("--").to_owned())
             }
             "--" => {
@@ -395,6 +395,14 @@ fn real_main() -> Result<()> {
         && first == "devtunnel-standin"
     {
         return standin::run(&rest.iter().map(String::as_str).collect::<Vec<_>>());
+    }
+    // The automations launcher reads only its task file (a schedule starts it).
+    if let [first, second, file] = args.command.as_slice()
+        && first == "automations"
+        && second == "launch"
+    {
+        let code = canvas_agents::launcher::launch(Path::new(file), args.flags.iter().any(|f| f == "detach"))?;
+        std::process::exit(code);
     }
     // So does the paste probe.
     if args.command.first().map(String::as_str) == Some("paste-probe") {
@@ -553,6 +561,7 @@ fn real_main() -> Result<()> {
         ["automations", "run", name] => factory_cli::run(&dir(), name),
         ["automations", "enable", name] => factory_cli::set_enabled(&dir(), name, true),
         ["automations", "disable", name] => factory_cli::set_enabled(&dir(), name, false),
+        ["automations", "remove", names @ ..] => factory_cli::remove(&dir(), &owned(names)),
         ["automations", "report", state, headline @ ..] => factory_cli::report(
             &dir(),
             factory_cli::ReportArgs {

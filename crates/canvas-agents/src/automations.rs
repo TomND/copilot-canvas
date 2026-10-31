@@ -167,11 +167,12 @@ pub fn load_all(db: &Path, dir: Option<&Path>) -> (Vec<Automation>, Vec<String>)
     if let Some(dir) = dir.filter(|d| d.is_dir()) {
         let repo = crate::factory::load_repo(dir);
         errors.extend(repo.errors.iter().cloned());
-        let tasks = crate::taskschd::list().unwrap_or_else(|e| {
-            errors.push(format!("Task Scheduler: {e:#}"));
+        let scheduler = crate::scheduler::get();
+        let tasks = scheduler.list().unwrap_or_else(|e| {
+            errors.push(format!("{}: {e:#}", scheduler.name()));
             Default::default()
         });
-        let mut tasks_out: Vec<Automation> = crate::factory::live(&repo, &tasks).into_iter().map(from_live).collect();
+        let mut tasks_out: Vec<Automation> = crate::factory::live(&repo, &tasks, scheduler).into_iter().map(from_live).collect();
         tasks_out.sort_by_key(|a| (a.project.to_lowercase(), a.name.to_lowercase()));
         out.extend(tasks_out);
     }

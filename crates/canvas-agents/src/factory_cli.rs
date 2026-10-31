@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use crate::factory::{self, Manifest, Principal, Report};
-use crate::taskschd;
+use crate::factory::{self, Manifest, Report};
+use crate::scheduler;
 
 /// Where the manifests live: `--dir`, `COPILOT_CANVAS_AUTOMATIONS`, the
 /// canvas setting, or `<home>/automations`.
@@ -40,8 +40,9 @@ fn ago(ms: u64) -> String {
 
 pub fn list(dir: &Path) -> Result<()> {
     let repo = load(dir)?;
-    let tasks = taskschd::list().unwrap_or_default();
-    let live = factory::live(&repo, &tasks);
+    let sched = scheduler::get();
+    let tasks = sched.list().unwrap_or_default();
+    let live = factory::live(&repo, &tasks, sched);
     println!("{:<30} {:<24} {:<9} {:<26} {:<8} REPORT", "NAME", "FAMILY", "STATE", "LAST RUN", "RESULT");
     for l in &live {
         let m = &l.manifest;
@@ -69,8 +70,9 @@ pub fn list(dir: &Path) -> Result<()> {
 pub fn show(dir: &Path, name: &str) -> Result<()> {
     let repo = load(dir)?;
     let m = find(&repo, name)?;
-    let tasks = taskschd::list().unwrap_or_default();
-    let live = factory::live(&repo, &tasks).into_iter().find(|l| l.manifest.name == m.name).context("not found")?;
+    let sched = scheduler::get();
+    let tasks = sched.list().unwrap_or_default();
+    let live = factory::live(&repo, &tasks, sched).into_iter().find(|l| l.manifest.name == m.name).context("not found")?;
     println!("{} ({})\nmanifest: {}\ncommand:  {} {}\nfolder:   {}\nschedule: {}", m.name, m.family, m.path.display(), m.command, m.args, m.cwd, m.schedule.iter().map(factory::Trigger::text).collect::<Vec<_>>().join(" · "));
     match &live.task {
         Some(t) => println!("task:     {} · enabled {} · last {} (result {:#x}) · next {}", t.state, t.enabled, ago(t.last_run_ms), t.last_result, ago(t.next_run_ms)),
@@ -114,10 +116,10 @@ fn slug(text: &str) -> String {
 /// Writes manifests for existing tasks (the ones run through a launcher, or
 /// the named ones). Existing manifest files are kept unless `force`.
 pub fn import(dir: &Path, names: &[String], family: Option<String>, force: bool) -> Result<()> {
-    let tasks = taskschd::list()?;
-    let offset = factory::local_offset_minutes();
-    let picked: Vec<&taskschd::TaskInfo> = if names.is_empty() {
-        tasks.values().filter(|t| t.xml.contains(".py&quot;") || t.xml.contains(".py\"")).filter(|t| t.xml.contains(".json")).collect()
+    let sched = scheduler::get();
+    let tasks = sched.list()?;
+    let picked: Vec<&scheduler::TaskInfo> = if names.is_empty() {
+        tasks.values().filter(|t| sched.importable(t)).collect()
     } else {
         names.iter().map(|n| tasks.get(&n.to_lowercase()).with_context(|| format!("no task named {n:?}"))).collect::<Result<_>>()?
     };
@@ -129,7 +131,7 @@ pub fn import(dir: &Path, names: &[String], family: Option<String>, force: bool)
     let mut defaults_written = dir.join(factory::DEFAULTS_FILE).exists();
     let mut written = 0;
     for task in picked {
-        let imported = factory::import_xml(&task.name, &task.xml, offset);
+        let imported = sched.import(task);
         let mut m = imported.manifest.clone();
         m.family = family.clone().unwrap_or_else(|| family_of(&m.name));
         if let Some(have) = existing.manifests.iter().find(|x| x.name.eq_ignore_ascii_case(&m.name))
@@ -138,7 +140,7 @@ pub fn import(dir: &Path, names: &[String], family: Option<String>, force: bool)
             println!("= {} (manifest exists: {})", m.name, have.path.display());
             continue;
         }
-        if !defaults_written && let Some(d) = &imported.defaults {
+        if !defaults_written && let Some(d) = imported.defaults.as_ref().filter(|d| !d.launcher.is_empty() || d.state != factory::default_state()) {
             let text = format!(
                 "# Shared settings for the automations in this folder (Copilot Canvas).\n# launcher: hidden launcher script run with `python` (windowless pythonw.exe)\n# state: launcher folder with tasks/, logs/, status/, backups/\nlauncher: '{}'\npython: '{}'\nstate: '{}'\n",
                 d.launcher.replace('\'', "''"),
@@ -163,8 +165,8 @@ pub fn import(dir: &Path, names: &[String], family: Option<String>, force: bool)
     Ok(())
 }
 
-/// Brings Task Scheduler in line with the manifests. Without `yes` it only
-/// shows what would change.
+/// Brings the scheduler (Task Scheduler, systemd, cron) in line with the
+/// manifests. Without `yes` it only shows what would change.
 pub fn apply(dir: &Path, names: &[String], yes: bool) -> Result<()> {
     let repo = load(dir)?;
     if !repo.errors.is_empty() {
@@ -173,27 +175,23 @@ pub fn apply(dir: &Path, names: &[String], yes: bool) -> Result<()> {
         }
         bail!("fix the manifests above first");
     }
-    let tasks = taskschd::list()?;
-    let offset = factory::local_offset_minutes();
+    let sched = scheduler::get();
+    let tasks = sched.list()?;
     let stamp = crate::paths::rfc3339_now().replace([':', '.'], "-");
     let backups = repo.defaults.state.join("backups").join(format!("{stamp}-canvas"));
     let mut pending = 0;
     for m in repo.manifests.iter().filter(|m| names.is_empty() || names.iter().any(|n| n.eq_ignore_ascii_case(&m.name))) {
         let existing = tasks.get(&m.name.to_lowercase());
-        let imported = existing.map(|t| factory::import_xml(&m.name, &t.xml, offset));
-        let current = Principal::current();
-        let who = Principal {
-            user_id: imported.as_ref().map(|i| i.user_id.clone()).filter(|u| !u.is_empty()).unwrap_or(current.user_id),
-            logon_user: imported.as_ref().map(|i| i.logon_user.clone()).filter(|u| !u.is_empty()).unwrap_or(current.logon_user),
-        };
-        let mut changes = match &imported {
+        let mut changes = match existing {
             None => vec!["new task".to_owned()],
-            Some(i) => factory::drift(m, &repo.defaults, i),
+            Some(t) => sched.drift(m, &repo.defaults, t),
         };
         let json_path = repo.defaults.task_json(&m.name);
-        let json = factory::task_json(m, &repo.defaults);
-        let uses_launcher = !repo.defaults.launcher.is_empty();
-        if uses_launcher && std::fs::read_to_string(&json_path).ok().as_deref() != Some(json.as_str()) {
+        let json = sched.task_json(m, &repo.defaults);
+        let uses_launcher = sched.uses_task_json(&repo.defaults);
+        // (Backends whose drift reads the launcher's file already listed what changed in it.)
+        let listed = sched.drift_covers_task_json() && !changes.is_empty();
+        if uses_launcher && !listed && std::fs::read_to_string(&json_path).ok().as_deref() != Some(json.as_str()) {
             changes.push(format!("launcher settings {} (name, status file, manifest)", if json_path.exists() { "updated" } else { "created" }));
         }
         if changes.is_empty() {
@@ -210,15 +208,15 @@ pub fn apply(dir: &Path, names: &[String], yes: bool) -> Result<()> {
         }
         if let Some(t) = existing {
             std::fs::create_dir_all(&backups)?;
-            std::fs::write(backups.join(format!("{}.xml", m.name)), &t.xml)?;
+            std::fs::write(backups.join(format!("{}.{}", m.name, if sched.name() == "Task Scheduler" { "xml" } else { "txt" })), &t.xml)?;
         }
         if uses_launcher {
             std::fs::create_dir_all(json_path.parent().context("task folder")?)?;
             std::fs::write(&json_path, &json)?;
         }
-        taskschd::register(&m.name, &factory::task_xml(m, &repo.defaults, &who, offset))?;
-        let after = taskschd::xml(&m.name)?.context("the task did not register")?;
-        let left = factory::drift(m, &repo.defaults, &factory::import_xml(&m.name, &after, offset));
+        sched.register(&m.name, &sched.render(m, &repo.defaults, existing))?;
+        let after = sched.task(&m.name)?.context("the task did not register")?;
+        let left = sched.drift(m, &repo.defaults, &after);
         if left.is_empty() {
             println!("    applied");
         } else {
@@ -227,7 +225,7 @@ pub fn apply(dir: &Path, names: &[String], yes: bool) -> Result<()> {
     }
     let unmanaged: Vec<&String> = tasks
         .values()
-        .filter(|t| !repo.defaults.launcher.is_empty() && t.xml.to_lowercase().contains(&repo.defaults.launcher.to_lowercase()))
+        .filter(|t| sched.launched_by(t, &repo.defaults))
         .map(|t| &t.name)
         .filter(|n| !repo.manifests.iter().any(|m| m.name.eq_ignore_ascii_case(n)))
         .collect();
@@ -241,7 +239,7 @@ pub fn apply(dir: &Path, names: &[String], yes: bool) -> Result<()> {
     } else if pending > 0 {
         println!("{pending} task(s) would change. Apply with: copilot-canvas automations apply --yes");
     } else {
-        println!("Task Scheduler matches the manifests.");
+        println!("{} matches the manifests.", capitalized(sched.name()));
     }
     Ok(())
 }
@@ -249,7 +247,7 @@ pub fn apply(dir: &Path, names: &[String], yes: bool) -> Result<()> {
 pub fn run(dir: &Path, name: &str) -> Result<()> {
     let repo = load(dir)?;
     let m = find(&repo, name)?;
-    taskschd::run(&m.name)?;
+    scheduler::get().run(&m.name)?;
     println!("Started {}. Follow it with: copilot-canvas automations show \"{}\"", m.name, m.name);
     Ok(())
 }
@@ -259,8 +257,30 @@ pub fn set_enabled(dir: &Path, name: &str, enabled: bool) -> Result<()> {
     let repo = load(dir)?;
     let m = find(&repo, name)?;
     set_manifest_enabled(&m.path, enabled)?;
-    taskschd::set_enabled(&m.name, enabled)?;
+    scheduler::get().set_enabled(&m.name, enabled)?;
     println!("{} {}.", m.name, if enabled { "enabled" } else { "disabled" });
+    Ok(())
+}
+
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
+}
+
+/// Removes the named tasks from the scheduler (their manifests stay).
+pub fn remove(dir: &Path, names: &[String]) -> Result<()> {
+    let repo = load(dir)?;
+    let sched = scheduler::get();
+    let tasks = sched.list()?;
+    anyhow::ensure!(!names.is_empty(), "name the automations to remove from {}", sched.name());
+    for name in names {
+        let task = tasks.get(&name.to_lowercase()).with_context(|| format!("{name} is not installed in {}", sched.name()))?;
+        let backups = repo.defaults.state.join("backups").join(format!("{}-canvas", crate::paths::rfc3339_now().replace([':', '.'], "-")));
+        std::fs::create_dir_all(&backups)?;
+        std::fs::write(backups.join(format!("{}.txt", task.name)), &task.xml)?;
+        sched.delete(&task.name)?;
+        println!("- {} (definition saved in {})", task.name, backups.display());
+    }
     Ok(())
 }
 
