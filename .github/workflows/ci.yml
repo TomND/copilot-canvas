@@ -353,6 +353,17 @@ jobs:
           target/release/copilot-canvas --home "$home" service stop
           target/release/copilot-canvas --home "$home" service uninstall
           test ! -e "$HOME/.config/systemd/user/copilot-canvas.service"
+      # The service started by the client as a transient systemd user unit
+      # (the user manager runs since the step above enabled lingering).
+      - name: TUI self-test with the service in a user unit (systemd-run)
+        if: ${{ !cancelled() }}
+        run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          home="$RUNNER_TEMP/unit-home"
+          target/release/copilot-canvas --home "$home" service start
+          systemctl --user is-active copilot-canvas-default.service
+          target/release/copilot-canvas --home "$home" service stop
+          xvfb-run -a target/release/copilot-canvas selftest
       - name: automations on cron
         if: ${{ !cancelled() }}
         run: |
