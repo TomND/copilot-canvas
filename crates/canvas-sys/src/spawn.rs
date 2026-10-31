@@ -26,10 +26,45 @@ pub trait CommandExt {
         self.spawn_flags(NO_WINDOW)
     }
 
-    /// Linux: the child gets `SIGTERM` when this thread's process dies
-    /// (`PR_SET_PDEATHSIG`). Windows uses jobs and macOS the service's own
-    /// sweep instead (no-op there).
+    /// Linux: the child gets `SIGTERM` when this process dies
+    /// (`PR_SET_PDEATHSIG`); start it with [`spawn_tied`], since the signal
+    /// follows the *thread* that forked it. Windows uses jobs and macOS the
+    /// service's own sweep instead (no-op there).
     fn die_with_parent(&mut self) -> &mut Self;
+}
+
+/// Starts `command` (set up with [`CommandExt::die_with_parent`]) so it is
+/// tied to this process, not to the calling thread: on Linux the parent-death
+/// signal fires when the forking thread ends, so every tied child is forked
+/// by one thread that lives as long as the process. Elsewhere a plain spawn.
+pub fn spawn_tied(command: Command) -> std::io::Result<std::process::Child> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::sync::mpsc::{Sender, channel};
+        use std::sync::{Mutex, OnceLock};
+        type Job = (Command, Sender<std::io::Result<std::process::Child>>);
+        static SPAWNER: OnceLock<Mutex<Sender<Job>>> = OnceLock::new();
+        let spawner = SPAWNER.get_or_init(|| {
+            let (tx, rx) = channel::<Job>();
+            let _ = std::thread::Builder::new().name("tied-spawner".into()).spawn(move || {
+                for (mut command, reply) in rx {
+                    let _ = reply.send(command.spawn());
+                }
+            });
+            Mutex::new(tx)
+        });
+        let (reply, answer) = channel();
+        let sent = spawner.lock().unwrap_or_else(|e| e.into_inner()).send((command, reply));
+        if let Err(std::sync::mpsc::SendError((mut command, _))) = sent {
+            return command.spawn();
+        }
+        answer.recv().unwrap_or_else(|_| Err(std::io::Error::other("the spawner thread ended")))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let mut command = command;
+        command.spawn()
+    }
 }
 
 #[cfg(windows)]
