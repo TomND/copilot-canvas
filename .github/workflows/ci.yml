@@ -157,8 +157,16 @@ jobs:
       # Debug builds (dependencies at opt-level 2): the TUI and GUI binaries.
       - name: build
         run: cargo build
+      - name: golden corpus (both engines)
+        run: target/debug/copilot-canvas corpus check
       - name: TUI self-test
         run: target/debug/copilot-canvas selftest
+      - name: TUI self-test over loopback TCP
+        run: target/debug/copilot-canvas selftest --remote loopback
+      - name: remote fault injection
+        run: target/debug/copilot-canvas selftest --remote faults
+      - name: pairing and the Dev Tunnel stand-in
+        run: target/debug/copilot-canvas selftest --remote paired
 
   # The iPhone app (docs/IOS-PLAN.md): the portable crates on macOS, the Rust
   # core for iOS, the app on a simulator with its unit tests and its UI tests

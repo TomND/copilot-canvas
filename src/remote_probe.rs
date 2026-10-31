@@ -586,7 +586,7 @@ fn tui_over_dropped_link(exe: &Path, instance: &Instance, root: &Path, proxy: &P
     ui.wait("the canvas", Duration::from_secs(20), |t| t.contains("Build session canvas"))?;
     ui.send(b"\r")?;
     ui.wait("PowerShell prompt", Duration::from_secs(20), |t| t.contains("PS "))?;
-    ui.send(b"Write-Output ('BEFORE_' + 'DROP')\r")?;
+    ui.send(crate::test_shell::print("BEFORE_", "DROP").as_bytes())?;
     ui.wait("output before the drop", Duration::from_secs(10), |t| t.contains("BEFORE_DROP"))?;
     proxy.set_down(true);
     proxy.drop_all();
@@ -599,9 +599,11 @@ fn tui_over_dropped_link(exe: &Path, instance: &Instance, root: &Path, proxy: &P
     let back = up.elapsed();
     anyhow::ensure!(back < RECONNECT_LIMIT, "the canvas reconnected {:.2} s after the network came back", back.as_secs_f64());
     ui.wait("the pane resynced", Duration::from_secs(5), |t| t.contains("BEFORE_DROP"))?;
-    ui.send(b"Write-Output ('AFTER_' + 'DROP')\r")?;
+    let after = crate::test_shell::print("AFTER_", "DROP");
+    ui.send(after.as_bytes())?;
     ui.wait("typing works again", Duration::from_secs(10), |t| t.contains("AFTER_DROP"))?;
-    anyhow::ensure!(!ui.text().contains("xWrite-Output"), "a key typed while offline reached the shell\n{}", ui.text());
+    let typed = format!("x{}", after.split_whitespace().next().unwrap_or_default());
+    anyhow::ensure!(!ui.text().contains(&typed), "a key typed while offline reached the shell\n{}", ui.text());
     ui.send(b"\x1d")?;
     ui.send(b"q")?;
     ui.wait("quit dialog", Duration::from_secs(5), |t| t.contains("Detach (keep running)"))?;
@@ -616,7 +618,7 @@ mod tests {
     use std::time::Duration;
 
     fn release_exe() -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\copilot-canvas.exe")
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").join("release").join(canvas_sys::host::exe_name("copilot-canvas"))
     }
 
     /// Needs the release build: `cargo build --release`, then

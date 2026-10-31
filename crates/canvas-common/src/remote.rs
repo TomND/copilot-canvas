@@ -155,12 +155,21 @@ pub fn devtunnel() -> Option<DevTunnelCli> {
     find_devtunnel_exe().map(|program| DevTunnelCli { program, prefix: Vec::new() })
 }
 
-/// `devtunnel.exe` on PATH, among WinGet's links, or in WinGet's package folder.
+/// `devtunnel.exe` on PATH, among WinGet's links, or in WinGet's package
+/// folder; elsewhere `devtunnel` on PATH, in `~/bin` (the install script's
+/// folder), Homebrew's or `/usr/local/bin` (a service started by launchd or
+/// systemd has a minimal PATH).
 pub fn find_devtunnel_exe() -> Option<PathBuf> {
+    let name = format!("devtunnel{}", std::env::consts::EXE_SUFFIX);
     if let Some(path) = std::env::var_os("PATH")
-        && let Some(found) = std::env::split_paths(&path).map(|d| d.join("devtunnel.exe")).find(|p| p.is_file())
+        && let Some(found) = std::env::split_paths(&path).map(|d| d.join(&name)).find(|p| p.is_file())
     {
         return Some(found);
+    }
+    if !cfg!(windows) {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let folders = [home.map(|h| h.join("bin")), Some(PathBuf::from("/opt/homebrew/bin")), Some(PathBuf::from("/usr/local/bin"))];
+        return folders.into_iter().flatten().map(|d| d.join(&name)).find(|p| p.is_file());
     }
     let local = PathBuf::from(std::env::var_os("LOCALAPPDATA")?);
     let winget = local.join("Microsoft").join("WinGet");
@@ -174,6 +183,15 @@ pub fn find_devtunnel_exe() -> Option<PathBuf> {
         .filter(|e| e.file_name().to_string_lossy().to_ascii_lowercase().starts_with("microsoft.devtunnel"))
         .map(|e| e.path().join("devtunnel.exe"))
         .find(|p| p.is_file())
+}
+
+/// How to install the Dev Tunnels CLI on this platform.
+pub fn devtunnel_install_hint() -> &'static str {
+    match std::env::consts::OS {
+        "windows" => "winget install Microsoft.devtunnel",
+        "macos" => "brew install --cask devtunnel",
+        _ => "curl -sL https://aka.ms/DevTunnelCliInstall | bash",
+    }
 }
 
 /// A Dev Tunnels access token (a JWT) and when it expires.

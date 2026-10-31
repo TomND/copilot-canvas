@@ -265,9 +265,9 @@ impl Tunnel {
 
     fn spawn(&self) -> Result<Running> {
         anyhow::ensure!(canvas_common::remote::valid_tunnel_id(&self.id), "{:?} is not a Dev Tunnel id; add the server again", self.id);
-        let cli = canvas_common::remote::devtunnel().context(
-            "devtunnel.exe was not found: install the Dev Tunnels CLI (`winget install Microsoft.devtunnel`) or set COPILOT_CANVAS_DEVTUNNEL",
-        )?;
+        let cli = canvas_common::remote::devtunnel().with_context(|| {
+            format!("devtunnel was not found: install the Dev Tunnels CLI (`{}`) or set COPILOT_CANVAS_DEVTUNNEL", canvas_common::remote::devtunnel_install_hint())
+        })?;
         let mut child = Command::new(&cli.program)
             .args(&cli.prefix)
             .args(["connect", &self.id])
