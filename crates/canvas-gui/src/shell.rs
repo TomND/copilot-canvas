@@ -750,17 +750,18 @@ impl Win {
             self.perf.echoed = false;
             self.typed_at = Some(now);
         }
-        let view = (self.app.origin_f(), self.app.scale_f());
-        self.app.on_input(events);
-        // Panning or zooming right after a DPI change: the centre kept from
-        // then on is the user's (a click that only narrows the canvas keeps it).
-        if let Some((_, until)) = self.recenter {
-            if self.app.view_anim.is_some() {
-                self.recenter = None;
-            } else if (self.app.origin_f(), self.app.scale_f()) != view {
-                self.recenter = Some((self.app.canvas_center_f(), until));
-            }
+        // Input right after a DPI change (a press, a key, the wheel, a
+        // gesture): the view is the user's from then on, as they see it.
+        let acts = |e: &InputEvent| match e {
+            InputEvent::Key(key) => key.kind != canvas_core::input::KeyEventKind::Release,
+            InputEvent::Mouse(mouse) => !matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::Drag(_) | MouseEventKind::Up(_)),
+            InputEvent::Gesture(_) => true,
+            _ => false,
+        };
+        if events.iter().any(acts) {
+            self.recenter = None;
         }
+        self.app.on_input(events);
         self.input_waiting = true;
         self.after_events(proxy);
     }
@@ -966,7 +967,9 @@ impl Win {
     /// After a DPI change: keeps the canvas's centre where it was.
     fn apply_recenter(&mut self) {
         let Some((center, until)) = self.recenter else { return };
-        if Instant::now() >= until {
+        // A view moving on its own after the user's input (a glide, an
+        // animated zoom) is theirs: recentring would stop it.
+        if Instant::now() >= until || self.app.glide.is_some() || self.app.view_anim.is_some() {
             self.recenter = None;
             return;
         }
@@ -1912,9 +1915,10 @@ impl ApplicationHandler<UserEvent> for Shell {
                 win.track_placement();
             }
             WindowEvent::Moved(_) => win.track_placement(),
-            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                // Another monitor's DPI: cell metrics and the grid follow; the
-                // new window size arrives as `Resized`.
+            // Another monitor's DPI: cell metrics and the grid follow; the new
+            // window size arrives as `Resized`. The scale the window already has
+            // (macOS reports it when a window first shows) changes nothing.
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } if (scale_factor as f32 * win.text_zoom - win.grid.scale).abs() > 1e-6 => {
                 let advance = self.fonts.as_ref().map(|f| f.advance).unwrap_or(0.6);
                 win.rescale(scale_factor as f32, advance, self.gpu.as_ref(), options);
             }
