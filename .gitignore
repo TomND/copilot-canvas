@@ -10,3 +10,5 @@
 /ios/CopilotCanvas.xcodeproj/project.xcworkspace/xcuserdata/
 spikes/linux-html/out/
 spikes/linux-html/blitz/target/
+/tests/golden/gui/*/*.actual.png
+/tests/golden/gui/*/*.diff.png
