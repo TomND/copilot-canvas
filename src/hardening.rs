@@ -521,7 +521,7 @@ fn uia_tree_inner() -> Result<String> {
         snap["window"].as_str().unwrap_or(""),
         tile["name"].as_str().unwrap_or(""),
         tile["value"].as_str().map(str::len).unwrap_or(0),
-        if dialog_seen { format!(" ({} {CLIENT} dialog element)", if CLIENT.starts_with('A') { "an" } else { "a" }) } else { String::new() }
+        if dialog_seen { format!(" ({} {CLIENT} dialog element)", if CLIENT.starts_with(['A', 'N']) { "an" } else { "a" }) } else { String::new() }
     ))
 }
 
