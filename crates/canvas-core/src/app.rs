@@ -190,6 +190,10 @@ pub struct App {
     pub undo: crate::undo::History,
     /// While wheel/trackpad panning, the dot grid is hidden until this time.
     pub pan_quiet_until: Option<Instant>,
+    /// Momentum after a background pan (`glide.rs`).
+    pub glide: Option<crate::glide::Glide>,
+    /// The pointer's recent places during a background pan.
+    pub pan_track: crate::glide::PanTrack,
     /// Ctrl+L: repaint every cell on the next frame.
     pub repaint_requested: bool,
     /// When you last typed into each terminal (for idle auto-stop).
@@ -440,6 +444,8 @@ impl App {
             idle_check_at: Instant::now(),
             repaint_requested: false,
             pan_quiet_until: None,
+            glide: None,
+            pan_track: Default::default(),
             side_rows_key: 0,
             sessions_rev: 0,
             terms_rev: 0,
@@ -939,6 +945,7 @@ impl App {
     }
 
     pub fn center_on(&mut self, wx: i32, wy: i32) {
+        self.glide = None;
         if self.render_mode == RenderMode::Gpu {
             return self.center_on_f(wx as f32, wy as f32);
         }
@@ -952,6 +959,7 @@ impl App {
 
     /// Gpu mode: puts world point `(wx, wy)` at the canvas's centre.
     pub fn center_on_f(&mut self, wx: f32, wy: f32) {
+        self.glide = None;
         let c = self.layout.canvas;
         let s = self.view_scale;
         self.set_origin(wx - c.width.max(20) as f32 / s / 2.0, wy - c.height.max(10) as f32 / s / 2.0);
@@ -1001,11 +1009,11 @@ impl App {
     }
 
     pub fn fit_all(&mut self) {
-        // End an in-flight pan before changing its coordinate system. There is
-        // no inertial pan timer; the quiet period only suppresses the grid.
+        // End an in-flight pan or glide before changing its coordinate system.
         if matches!(self.drag, Some(Drag::Pan { .. })) {
             self.drag = None;
         }
+        self.glide = None;
         self.pan_quiet_until = None;
         let concealed = self.concealed_now();
         let nodes = self.doc.nodes.iter().filter(|n| !concealed.contains_key(&n.id)).map(|n| n.rect());
@@ -2057,6 +2065,7 @@ impl App {
             self.pan_quiet_until = None;
             self.needs_draw = true;
         }
+        self.step_glide();
         self.baseline_reviewed();
         if self.routing_check_at.elapsed() >= Duration::from_secs(1) {
             self.sync_routing();

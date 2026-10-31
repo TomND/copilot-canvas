@@ -269,7 +269,7 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
     let step_x = (6 * n / d).max(3);
     let step_y = (3 * n / d).max(2);
     let (ox, oy) = app.to_screen(0, 0);
-    let panning = matches!(app.drag, Some(Drag::Pan { moved: true, .. })) || app.pan_quiet_until.is_some();
+    let panning = matches!(app.drag, Some(Drag::Pan { moved: true, .. })) || app.pan_quiet_until.is_some() || app.glide.is_some();
     if !panning {
         draw_grid(buf, area, (ox, oy), (step_x, step_y));
     }
@@ -676,7 +676,7 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
         area,
         origin,
         scale,
-        grid: !(matches!(app.drag, Some(Drag::Pan { moved: true, .. })) || app.pan_quiet_until.is_some()),
+        grid: !(matches!(app.drag, Some(Drag::Pan { moved: true, .. })) || app.pan_quiet_until.is_some() || app.glide.is_some()),
         groups: Vec::new(),
         edges: Vec::new(),
         boxes: Vec::new(),

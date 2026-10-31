@@ -149,6 +149,8 @@ impl Console {
             let y = from.1 as i32 + (to.1 as i32 - from.1 as i32) * i / steps;
             self.send(format!("\x1b[<{};{};{}M", button + 32, x + 1, y + 1).as_bytes())?;
         }
+        // Held still before release: a placed drag, no momentum after a pan.
+        std::thread::sleep(Duration::from_millis(120));
         self.send(format!("\x1b[<{button};{};{}m", to.0 + 1, to.1 + 1).as_bytes())
     }
 
@@ -241,6 +243,8 @@ pub trait Ui {
             let y = from.1 as i32 + (to.1 as i32 - from.1 as i32) * i / steps;
             self.send(format!("\x1b[<{};{};{}M", button + 32, x + 1, y + 1).as_bytes())?;
         }
+        // Held still before release: a placed drag, no momentum after a pan.
+        std::thread::sleep(Duration::from_millis(120));
         self.send(format!("\x1b[<{button};{};{}m", to.0 + 1, to.1 + 1).as_bytes())
     }
 
