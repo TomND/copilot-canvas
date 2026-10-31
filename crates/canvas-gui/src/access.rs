@@ -32,6 +32,9 @@ pub struct Item {
     /// Click (and default action) at this cell (fractional cells).
     pub click: Option<(f32, f32)>,
     pub selected: Option<bool>,
+    /// The first text row (px: x, y, w, h) of a node whose value is rows of
+    /// text (a terminal tile), for the text runs AT-SPI reads.
+    pub line: Option<[f64; 4]>,
 }
 
 fn id_of(key: &str) -> u64 {
@@ -81,7 +84,7 @@ impl Builder<'_> {
             self.items[p].children.push(id);
         }
         self.index.insert(id, self.items.len());
-        self.items.push(Item { id, role, name, description: None, value: None, rect, children: Vec::new(), click: None, selected: None });
+        self.items.push(Item { id, role, name, description: None, value: None, rect, children: Vec::new(), click: None, selected: None, line: None });
         self.items.len() - 1
     }
 
@@ -95,7 +98,7 @@ pub fn items(app: &App, view: &View, chrome: &Buffer, overlay: &Buffer, grid: &G
     let screen = chrome.area;
     let mut b = Builder { items: Vec::new(), index: Default::default(), grid };
     let root_rect = b.cells(screen);
-    b.items.push(Item { id: ROOT, role: Role::Window, name: title.to_owned(), description: None, value: None, rect: root_rect, children: Vec::new(), click: None, selected: None });
+    b.items.push(Item { id: ROOT, role: Role::Window, name: title.to_owned(), description: None, value: None, rect: root_rect, children: Vec::new(), click: None, selected: None, line: None });
     b.index.insert(ROOT, 0);
     let layout = &app.layout;
 
@@ -207,6 +210,7 @@ pub fn items(app: &App, view: &View, chrome: &Buffer, overlay: &Buffer, grid: &G
             let text: Vec<String> = (0..term.lines.len()).map(|row| term.row_cells(row).concat().trim_end().to_owned()).collect();
             let end = text.iter().rposition(|l| !l.is_empty()).map_or(0, |p| p + 1);
             b.items[i].value = Some(text[..end].join("\n"));
+            b.items[i].line = Some(b.cells(Rect::new(tile.inner.x, tile.inner.y, tile.inner.width, 1)));
         }
         b.items[i].description = Some(if tile.alive { "terminal" } else { "terminal · exited" }.into());
         b.items[i].selected = Some(tile.focused);
@@ -262,7 +266,8 @@ pub fn items(app: &App, view: &View, chrome: &Buffer, overlay: &Buffer, grid: &G
 
 /// The nodes as an AccessKit update (a full tree).
 pub fn update(items: &[Item], focus: u64) -> TreeUpdate {
-    let nodes = items
+    let mut runs = Vec::new();
+    let mut nodes: Vec<(NodeId, Node)> = items
         .iter()
         .map(|item| {
             let mut node = Node::new(item.role);
@@ -278,7 +283,15 @@ pub fn update(items: &[Item], focus: u64) -> TreeUpdate {
             }
             let [x, y, w, h] = item.rect;
             node.set_bounds(AkRect { x0: x, y0: y, x1: x + w, y1: y + h });
-            node.set_children(item.children.iter().map(|c| NodeId(*c)).collect::<Vec<_>>());
+            let mut children: Vec<NodeId> = item.children.iter().map(|c| NodeId(*c)).collect();
+            if cfg!(target_os = "linux")
+                && let (Some(text), Some(line)) = (&item.value, item.line)
+            {
+                let start = runs.len();
+                text_runs(item.id, text, line, &mut runs);
+                children.extend(runs[start..].iter().map(|(id, _)| *id));
+            }
+            node.set_children(children);
             if item.click.is_some() {
                 node.add_action(Action::Click);
                 node.add_action(Action::Focus);
@@ -293,10 +306,53 @@ pub fn update(items: &[Item], focus: u64) -> TreeUpdate {
             (NodeId(item.id), node)
         })
         .collect();
+    nodes.append(&mut runs);
     let mut tree = TreeInfo::new(NodeId(ROOT));
     tree.toolkit_name = Some("Copilot Canvas".into());
     tree.toolkit_version = Some(env!("CARGO_PKG_VERSION").into());
     TreeUpdate { nodes, tree: Some(tree), tree_id: TreeId::ROOT, focus: NodeId(focus) }
+}
+
+/// Rows of text as AccessKit text runs, one per row (a line each, its line
+/// break included). AT-SPI reads a node's text only through runs (its Value
+/// interface is numeric), so on Linux a terminal tile's visible text is what
+/// Orca reads and reviews this way; UIA reads the value (Windows keeps the
+/// tree without runs). Runs are not nodes of the platform tree themselves.
+fn text_runs(parent: u64, text: &str, line: [f64; 4], out: &mut Vec<(NodeId, Node)>) {
+    if text.is_empty() {
+        return;
+    }
+    let rows: Vec<&str> = text.split('\n').collect();
+    let [x, y, w, h] = line;
+    for (n, row) in rows.iter().enumerate() {
+        let mut value = (*row).to_owned();
+        if n + 1 < rows.len() {
+            value.push('\n');
+        }
+        let mut node = Node::new(Role::TextRun);
+        node.set_character_lengths(value.chars().map(|c| c.len_utf8() as u8).collect::<Vec<_>>());
+        node.set_word_starts(word_starts(&value));
+        let top = y + n as f64 * h;
+        node.set_bounds(AkRect { x0: x, y0: top, x1: x + w, y1: top + h });
+        node.set_value(value);
+        out.push((NodeId(id_of(&format!("{parent}/run/{n}"))), node));
+    }
+}
+
+/// Where a text run's words start (characters; a word keeps the spaces
+/// after it, leading spaces are a word). AccessKit counts them in a byte, so
+/// a row's words past its 255th character have no start of their own.
+fn word_starts(text: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut after_space = false;
+    for (i, c) in text.chars().enumerate().take(256) {
+        let space = c.is_whitespace();
+        if i == 0 || (after_space && !space) {
+            out.push(i as u8);
+        }
+        after_space = space;
+    }
+    out
 }
 
 /// The nodes as JSON (the `tree` and `access` hooks), parents before children.
@@ -312,4 +368,28 @@ pub fn json(items: &[Item], focus: u64) -> Value {
         })
         .collect();
     json!({ "focus": focus, "nodes": nodes })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_runs_are_rows_with_their_line_breaks() {
+        let mut runs = Vec::new();
+        text_runs(7, "PS> ls\n\nfoo  中文 bar", [10.0, 20.0, 300.0, 16.0], &mut runs);
+        let values: Vec<&str> = runs.iter().map(|(_, n)| n.value().unwrap_or_default()).collect();
+        assert_eq!(values, ["PS> ls\n", "\n", "foo  中文 bar"]);
+        for (_, node) in &runs {
+            let value = node.value().unwrap_or_default();
+            assert_eq!(node.character_lengths().iter().map(|&l| l as usize).sum::<usize>(), value.len());
+        }
+        assert_eq!(runs[0].1.word_starts(), [0, 4]);
+        assert_eq!(runs[2].1.word_starts(), [0, 5, 8]);
+        assert_eq!(word_starts("  ab"), [0, 2]);
+        assert_eq!(runs[1].1.bounds().map(|b| (b.y0, b.y1)), Some((36.0, 52.0)));
+        let mut none = Vec::new();
+        text_runs(7, "", [0.0; 4], &mut none);
+        assert!(none.is_empty());
+    }
 }
