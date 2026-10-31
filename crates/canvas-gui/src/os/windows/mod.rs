@@ -62,6 +62,10 @@ pub fn in_front(hwnd: isize) -> bool {
 }
 
 /// Flashes the taskbar button three times (until the window comes to the front).
+/// The windows and their focus, for `in_front` and `flash` where the OS
+/// cannot be asked by handle (Windows asks the OS (`GetForegroundWindow`, `FlashWindowEx`): nothing to track).
+pub fn track_window(_window: &std::sync::Arc<winit::window::Window>, _focused: bool) {}
+
 pub fn flash(hwnd: isize) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO, FlashWindowEx};
     let info = FLASHWINFO { cbSize: std::mem::size_of::<FLASHWINFO>() as u32, hwnd: hwnd as _, dwFlags: FLASHW_TRAY | FLASHW_TIMERNOFG, uCount: 3, dwTimeout: 0 };

@@ -308,6 +308,7 @@ impl Shell {
         };
         trace("gpu");
         let mut win = Win::new(opened, window.clone(), surface, grid, &self.proxy);
+        crate::os::track_window(&win.window, false);
         win.access = Some(access);
         win.web = crate::os::webview::ReportWeb::new(&self.options.home);
         win.placement_path = placement_path;
@@ -1851,6 +1852,7 @@ impl ApplicationHandler<UserEvent> for Shell {
             WindowEvent::RedrawRequested => win.redraw = true,
             WindowEvent::Focused(focused) => {
                 win.focused = focused;
+                crate::os::track_window(&win.window, focused);
                 win.input(vec![InputEvent::Focus(focused)], proxy);
             }
             WindowEvent::ModifiersChanged(m) => {

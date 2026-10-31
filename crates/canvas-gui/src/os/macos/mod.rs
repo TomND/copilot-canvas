@@ -64,6 +64,10 @@ pub fn in_front(_window: isize) -> bool {
     false
 }
 
+/// The windows and their focus, for `in_front` and `flash` where the OS
+/// cannot be asked by handle (macOS asks AppKit: nothing to track).
+pub fn track_window(_window: &std::sync::Arc<winit::window::Window>, _focused: bool) {}
+
 pub fn flash(_window: isize) {}
 
 pub fn toast_thread_init() -> Result<(), String> {
