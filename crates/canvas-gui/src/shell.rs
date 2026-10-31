@@ -196,6 +196,8 @@ struct Win {
     focused: bool,
     /// The HTML view of an open HTML report (WebView2, created when first needed).
     web: crate::os::webview::ReportWeb,
+    /// The HTML view frame the last full frame drew (views the GUI draws itself).
+    web_frame: Option<u64>,
 }
 
 pub struct Shell {
@@ -623,6 +625,7 @@ impl Win {
             preview: None,
             focused: false,
             web: crate::os::webview::ReportWeb::new(std::path::Path::new(".")),
+            web_frame: None,
         };
         let rx = win.app.conn.rx.clone();
         win.forward_service(rx, proxy);
@@ -1067,6 +1070,12 @@ impl Win {
             let full = [0.0, 0.0, width as f32, height as f32];
             p.over(layer, Quad::rect((x as f32 * grid.cell_w).round(), (y as f32 * grid.cell_h).round(), thin, grid.cell_h, theme::color(canvas_core::paint::TEXT, 1.0), full));
         }
+        // An HTML view the GUI draws itself (Linux) covers the report pane.
+        let web = self.web.frame();
+        self.web_frame = web.as_ref().map(|f| f.key);
+        if let Some(frame) = web {
+            p.image(scene::OVERLAY, true, frame);
+        }
         let ime = self.paint_dynamic(&mut scene, fonts, options, width, height);
         (scene, ime)
     }
@@ -1409,6 +1418,10 @@ impl Win {
             }
             self.app.needs_draw = true;
             self.input_waiting = true;
+        }
+        // A new frame of an HTML view the GUI draws itself.
+        if self.web.frame().map(|f| f.key) != self.web_frame {
+            self.redraw = true;
         }
     }
 
@@ -1849,6 +1862,11 @@ impl ApplicationHandler<UserEvent> for Shell {
                 if matches!(event.logical_key, Key::Named(NamedKey::Control | NamedKey::Shift | NamedKey::Alt | NamedKey::Super)) {
                     return;
                 }
+                // An HTML view drawn by the GUI that has the keyboard (after a click into it).
+                if win.web.input(&crate::os::WebInput::Key { key: event.logical_key.clone(), pressed: event.state == ElementState::Pressed, mods: win.mods }) {
+                    self.after_input(event_loop);
+                    return;
+                }
                 let Some(input) = crate::input::key(&event.logical_key, event.state, win.mods) else { return };
                 if let InputEvent::Key(key) = &input
                     && win.gui_key(key, proxy)
@@ -1870,6 +1888,11 @@ impl ApplicationHandler<UserEvent> for Shell {
                 Ime::Enabled | Ime::Disabled => {}
             },
             WindowEvent::CursorMoved { position, .. } => {
+                if win.held.is_empty() && win.web.input(&crate::os::WebInput::Motion { x: position.x as f32, y: position.y as f32 }) {
+                    win.pointer = (position.x as f32 / win.grid.cell_w, position.y as f32 / win.grid.cell_h);
+                    self.after_input(event_loop);
+                    return;
+                }
                 let point = (position.x as f32 / win.grid.cell_w, position.y as f32 / win.grid.cell_h);
                 let cell = (point.0.max(0.0) as u16, point.1.max(0.0) as u16);
                 let moved_cell = (win.pointer.0 as u16, win.pointer.1 as u16) != cell;
@@ -1888,6 +1911,11 @@ impl ApplicationHandler<UserEvent> for Shell {
             }
             WindowEvent::CursorLeft { .. } => win.hover = None,
             WindowEvent::MouseInput { state, button, .. } => {
+                let (x, y) = (win.pointer.0 * win.grid.cell_w, win.pointer.1 * win.grid.cell_h);
+                if win.held.is_empty() && win.web.input(&crate::os::WebInput::Button { x, y, button, pressed: state == ElementState::Pressed }) {
+                    self.after_input(event_loop);
+                    return;
+                }
                 let Some(button) = crate::input::button(button) else { return };
                 match state {
                     ElementState::Pressed => {
@@ -1901,7 +1929,12 @@ impl ApplicationHandler<UserEvent> for Shell {
                     }
                 }
             }
-            WindowEvent::MouseWheel { delta, .. } => {
+            WindowEvent::MouseWheel { delta, phase, .. } => {
+                let (x, y) = (win.pointer.0 * win.grid.cell_w, win.pointer.1 * win.grid.cell_h);
+                if win.web.input(&crate::os::WebInput::Wheel { x, y, delta, phase }) {
+                    self.after_input(event_loop);
+                    return;
+                }
                 for kind in win.wheel.notches(delta, win.grid.cell_h) {
                     win.mouse(kind);
                 }

@@ -143,6 +143,18 @@ impl ReportWeb {
         std::mem::take(&mut self.state.borrow_mut().events)
     }
 
+    /// The view's latest frame, for views the GUI draws itself (none here:
+    /// this view is drawn by the OS).
+    pub fn frame(&self) -> Option<crate::scene::ImageItem> {
+        None
+    }
+
+    /// Input for views the GUI draws itself; this one gets its own from the
+    /// OS, so nothing is taken.
+    pub fn input(&mut self, _event: &crate::os::WebInput) -> bool {
+        false
+    }
+
     /// Shows `pane` (an HTML report) over its area, or hides the view. The
     /// view is created the first time one is shown.
     pub fn sync(&mut self, hwnd: isize, pane: Option<&HtmlPane>, cell_w: f32, cell_h: f32) {

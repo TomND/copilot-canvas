@@ -34,6 +34,18 @@ impl ReportWeb {
         std::mem::take(&mut self.events)
     }
 
+    /// The view's latest frame, for views the GUI draws itself (none here:
+    /// this view is drawn by the OS).
+    pub fn frame(&self) -> Option<crate::scene::ImageItem> {
+        None
+    }
+
+    /// Input for views the GUI draws itself; this one gets its own from the
+    /// OS, so nothing is taken.
+    pub fn input(&mut self, _event: &crate::os::WebInput) -> bool {
+        false
+    }
+
     pub fn sync(&mut self, _window: isize, pane: Option<&HtmlPane>, _cell_w: f32, _cell_h: f32) {
         if pane.is_some() && !self.failed {
             self.failed = true;

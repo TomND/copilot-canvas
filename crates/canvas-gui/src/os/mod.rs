@@ -10,6 +10,23 @@
 
 pub(crate) mod font_sources;
 
+/// Input for an HTML view the GUI draws itself (Linux's offscreen WebKit:
+/// MAC-LINUX-PLAN §5.7): what the window received while the pointer or the
+/// keyboard was the view's. Positions are the window's physical pixels.
+/// Views that are native child windows (WebView2, WKWebView) get their input
+/// from the OS and ignore these.
+// Read only by views the GUI draws itself.
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+pub enum WebInput {
+    /// A wheel or touchpad scroll: line steps or pixel deltas with the
+    /// gesture's phase (touchpads: started, moved, ended; momentum follows).
+    Wheel { x: f32, y: f32, delta: winit::event::MouseScrollDelta, phase: winit::event::TouchPhase },
+    Motion { x: f32, y: f32 },
+    Button { x: f32, y: f32, button: winit::event::MouseButton, pressed: bool },
+    Key { key: winit::keyboard::Key, pressed: bool, mods: winit::keyboard::ModifiersState },
+}
+
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
