@@ -199,7 +199,39 @@ jobs:
         if: ${{ !cancelled() }}
         continue-on-error: true
         timeout-minutes: 30
-        run: CANVAS_GUI_TEST_VISIBLE=1 target/release/copilot-canvas selftest --client gui --parity
+        run: |
+          mkdir -p "$RUNNER_TEMP/gui-screens/parity"
+          CANVAS_GUI_SCREENS="$RUNNER_TEMP/gui-screens/parity" CANVAS_GUI_TEST_VISIBLE=1 target/release/copilot-canvas selftest --client gui --parity
+      - name: GUI hardening checks (reporting)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 20
+        run: |
+          mkdir -p "$RUNNER_TEMP/gui-screens/hardening"
+          CANVAS_GUI_SCREENS="$RUNNER_TEMP/gui-screens/hardening" CANVAS_GUI_TEST_VISIBLE=1 target/release/copilot-canvas selftest --client gui --hardening
+      # macOS's own golden screenshots (scale 1, the runner's paravirtual GPU
+      # and Apple's fonts): recorded into tests/golden/gui/macos-1x while the
+      # set is missing (an artifact to review and commit), compared from then on.
+      - name: GUI golden screenshots (macOS set)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 20
+        run: |
+          dir="$PWD/tests/golden/gui/macos-1x"
+          if [ -d "$dir" ]; then
+            CANVAS_GOLDEN_DIR="$dir" CANVAS_GUI_TEST_VISIBLE=1 target/release/copilot-canvas selftest --client gui --golden
+          else
+            mkdir -p "$dir"
+            CANVAS_GOLDEN_DIR="$dir" CANVAS_GUI_TEST_VISIBLE=1 target/release/copilot-canvas selftest --client gui --golden --update
+          fi
+      - name: keep the macOS goldens, screenshots and GUI logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-gui
+          path: |
+            tests/golden/gui/macos-1x
+            ${{ runner.temp }}/gui-screens
+          if-no-files-found: ignore
       - name: keep the GUI bench
         if: always()
         uses: actions/upload-artifact@v7

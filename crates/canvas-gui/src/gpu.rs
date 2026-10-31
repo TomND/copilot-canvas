@@ -140,7 +140,11 @@ impl Gpu {
                     return Ok((gpu, surface));
                 }
                 Err(error) => {
-                    let what = if software { "software adapter (WARP)" } else { "hardware adapter" };
+                    let what = match (software, cfg!(windows)) {
+                        (true, true) => "software adapter (WARP)",
+                        (true, false) => "software adapter",
+                        (false, _) => "hardware adapter",
+                    };
                     crate::crashlog::event("gpu", &format!("{what}: {error:#}"));
                     failures.push(format!("{what}: {error:#}"));
                 }

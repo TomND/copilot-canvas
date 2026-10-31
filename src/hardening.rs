@@ -549,6 +549,20 @@ fn software_fallback() -> Result<String> {
     let sb = Sandbox::new("warp")?;
     let canvas = static_canvas(&sb)?;
     let nohw = PathBuf::from("nohw");
+    if cfg!(target_os = "macos") {
+        // Metal has no software adapter (MAC-LINUX-PLAN §6): without the GPU
+        // the GUI says so, points to the terminal UI and logs the refusal.
+        let mut seen = Vec::new();
+        for (what, log) in [(&nohw, "nohw.log"), (&PathBuf::from("none"), "none.log")] {
+            let mut ui = sb.start(&["--canvas", &canvas], &[("CANVAS_GUI_TEST_GPU", what)], Some((170, 46)), log)?;
+            let code = ui.wait_exit(Duration::from_secs(20))?;
+            let stderr = std::fs::read_to_string(sb.root.join(log)).unwrap_or_default();
+            anyhow::ensure!(code == 1 && stderr.contains("terminal UI") && stderr.contains("copilot-canvas"), "{}: exit {code}: {stderr}", what.display());
+            seen.push(stderr.lines().next().unwrap_or_default().to_owned());
+        }
+        anyhow::ensure!(sb.crash_log().contains("hardware adapter: refused"), "the hardware failure is logged:\n{}", sb.crash_log());
+        return Ok(format!("no software adapter on macOS: without the GPU (and without any adapter) exit 1 with {:?}; the refusal logged", seen[0]));
+    }
     let mut ui = sb.start(&["--canvas", &canvas], &[("CANVAS_GUI_TEST_GPU", &nohw)], Some((170, 46)), "warp.log")?;
     wait_tree(&ui, "the boxes", 30, |t| t["canvas"]["boxes"].as_array().is_some_and(|b| !b.is_empty()))?;
     let size = ui.request(json!({ "cmd": "size" }))?;
