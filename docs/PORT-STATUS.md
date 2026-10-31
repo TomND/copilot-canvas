@@ -15,7 +15,7 @@ work resumes after any interruption: read it first, then `git log`.
 
 ## Phases (plan §9)
 
-### Phase 0 Groundwork — macOS: done (CI confirming) · Linux: in progress (CI job `linux`)
+### Phase 0 Groundwork — macOS: done (CI confirming) · Linux: done (CI jobs `ghostty-linux`, `linux`)
 
 - [x] Windows dependencies target-gated (`windows`, `windows-sys`,
       `webview2-com` under `[target.'cfg(windows)'.dependencies]`)
@@ -39,7 +39,7 @@ work resumes after any interruption: read it first, then `git log`.
   of the touched crates green on the OS; Windows CI and `cargo xwin clippy`
   green.
 
-### Phase 1 Service and TUI (M0, M1) — macOS: in progress · Linux: in progress (self-tests on CI)
+### Phase 1 Service and TUI (M0, M1) — macOS: in progress · Linux: self-tests green on CI (x86_64 and aarch64; M0 is the owner's)
 
 - M0: REMOTE.md checklist 1–12 from a Mac TUI against the Windows service.
 - M1: `cargo test --workspace`, `corpus check`, `selftest`, `selftest --remote
@@ -95,13 +95,21 @@ work resumes after any interruption: read it first, then `git log`.
 - Exit: TUI self-test automation steps and factory probes on the backend; a
   real tunnel hosted by the manifest; `doctor` clean.
 
-### Phase 3 GUI core (M2) — macOS: in progress · Linux: self-tests done (CI)
+### Phase 3 GUI core (M2) — macOS: in progress · Linux: done except the bench's numbers (CI)
 
 - Linux: `selftest --client gui` passes under Xvfb (X11) and headless weston
   (Wayland) and `--remote loopback` under X11, on Mesa's lavapipe, in the
-  blocking `linux-gui` CI job; fonts from fontconfig, app id, icon. Still
-  open: `bench --client gui` numbers on Linux, Wayland drag and drop (winit
-  0.30 has none), XTest posted keys, X11 work areas.
+  blocking `linux-gui` CI job; fonts from fontconfig, app id, icon; Wayland
+  drag and drop on winit's own connection (f04e04f; winit 0.30 has none);
+  typed keys for the benches through the X server (466a0ef). `bench
+  --client gui` runs on CI as advisory (llvmpipe on a shared runner): first
+  paint 420 ms cold / 321 ms warm, idle 1.5–2.6 % of a core with 10 live
+  sessions, 74 MB with 4 tiles and 1,300 boxes, full frame of 1,300 boxes
+  p50 21.7 ms; keystroke → present (keys typed through the X server since
+  466a0ef) p50 28.5 / p99 31.9 ms and input → present p50 14.1 ms on
+  llvmpipe: software rendering, so PLAN §9's 8 / 20 ms needs a real GPU.
+  Still open: X11 work areas (`_NET_WORKAREA`; winit reports whole
+  monitors), the bench on real GPUs (owner).
 
 - [x] Metal (`os::GPU_BACKENDS`), fonts per OS (macOS: Cascadia Mono when
       installed, SF Mono, Menlo; system UI font; Apple fallbacks), test hooks
@@ -129,9 +137,14 @@ work resumes after any interruption: read it first, then `git log`.
 ### Phase 4 GUI platform integration — Linux: rows 17, 41, 41b, G2 pass (CI)
 
 - Linux: the HTML view (WebKitGTK offscreen helper) passes row 41b on X11
-  and Wayland; notifications (`org.freedesktop.Notifications`), the
-  launcher entry, `in_front`, flashing (xdg-activation / urgency). Owner
-  checks: IME (IBus/Fcitx), dead keys, AltGr, Orca, GNOME/KDE docks.
+  and Wayland, Ctrl+C copies its selection; notifications
+  (`org.freedesktop.Notifications`), the launcher entry, `in_front`,
+  flashing (xdg-activation / urgency). D15: Wayland touchpads pan precisely
+  (5cacb17, `os::scroll_policy`), T1/T2 pass under weston; X11 stays on
+  notches. Accessibility: AT-SPI (AccessKit) with terminal text as text
+  runs, read by an outside AT-SPI client in the hardening check (718bebd).
+  Owner checks: IME (IBus/Fcitx), dead keys, AltGr, Orca by ear, GNOME/KDE
+  docks.
 
 - Exit: parity rows 17, 41, 41b, G2 pass; manual IME / dead-key / AltGr /
   VoiceOver / Orca checks recorded (owner).
@@ -157,13 +170,33 @@ work resumes after any interruption: read it first, then `git log`.
     service's path style; on a macOS or Linux service V5 asked for
     `…/ai-docs\notes.md`.
 
+- Linux (CI `linux-gui`, X11): 60 of 62 rows pass on the run of 2432279
+  (after merging 883102c and f876447: 12, 14, 18, 44, G1, V5 pass); G3 and
+  33 (a dropped path pasted into Shell A) regressed after G1 on Linux only
+  and are being looked at. Goldens: Linux's own set recorded on CI and
+  committed (`tests/golden/gui/linux-1x`, bbe91dc); the step compares from
+  now on. Hardening: 8 of 9 on the run of 3706059 (placement passes under
+  openbox, 1e8c102); the accessibility check reached the GUI over AT-SPI
+  and stopped at a method AccessKit does not answer (fixed in ca88f10).
 - Exit: `selftest --client gui --parity` PASS 60 rows; `--hardening` PASS;
   goldens recorded per OS.
 
-### Phase 6 Packaging — not started
+### Phase 6 Packaging — macOS: not started · Linux: built and installed on CI
 
 - macOS `.app` / DMG (universal); Linux AppImage / `.deb` / `.rpm` / tarball.
   Signing and notarization: owner-blocked (Developer ID).
+- Linux (`packaging/linux/`, CI `linux-package` on the glibc 2.35 floor,
+  x86_64 and aarch64): artifacts `linux-packages-<arch>` hold
+  `copilot-canvas_<ver>_<deb arch>.deb`, `copilot-canvas-<ver>.<arch>.rpm`,
+  `Copilot_Canvas-<ver>-<arch>.AppImage` and
+  `copilot-canvas-<ver>-linux-<arch>.tar.gz` (18–23 MB each; binaries need
+  only libc, libm, libgcc_s, highest symbol GLIBC_2.35; GTK, WebKit,
+  Vulkan, Wayland and X11 libraries are loaded at run time and recommended
+  by the .deb and .rpm). `linux-package-test` installs them on clean
+  runners: the .deb on 22.04, 24.04 and 24.04-arm (CLI self-test; the GUI
+  self-test from the installed .deb on 24.04), the tarball into a prefix
+  and back out, the AppImage extracted, the .rpm in a Fedora 41 container.
+  appimagetool 1.9.1 and runtime 20251108 are pinned by SHA-256.
 
 ### Phase 7 Dogfood and rollout — not started
 
@@ -173,8 +206,8 @@ State per OS: `—` not started · `wip` in progress · `PASS` · `equiv` (the
 plan §6.1 equivalent, documented). macOS: the full suite run locally on a
 locked Mac, 2026-10-31 (CI's run pending); 7b and V3 count frames, which a
 locked screen never presents. Linux: CI `linux-gui` (X11, Xvfb, Mesa
-lavapipe), 55 of 62 rows on 2026-10-31 (run of 2e92d2e); 41b also on
-Wayland (headless weston).
+lavapipe), 60 of 62 rows on 2026-10-31 (run of 2432279); 41b, T1 and T2
+under Wayland (headless weston), where the touchpad rows apply.
 
 | # | Feature | macOS | Linux |
 |---|---|---|---|
@@ -191,13 +224,13 @@ Wayland (headless weston).
 | 10 | Sidebar tree, filter, fly-to | PASS | PASS |
 | 11 | Terminals: PTY, tiles, survive client exit | PASS | PASS |
 | 11b | Detach and reattach | PASS | PASS |
-| 12 | Wheel rules | PASS | wip (shared terminal rows) |
+| 12 | Wheel rules | PASS | PASS |
 | 13 | User-message tint | PASS | PASS |
-| 14 | Copy and paste | PASS | wip (shared terminal rows) |
+| 14 | Copy and paste | PASS | PASS |
 | 15 | Image paste; thumbnail | PASS | PASS |
 | 16 | Click forwarding in mouse mode | PASS | PASS |
 | 17 | Title, taskbar state, bell, OSC 777 | PASS | PASS |
-| 18 | Links: URLs, OSC 8, paths | PASS | wip (shared terminal rows) |
+| 18 | Links: URLs, OSC 8, paths | PASS | PASS |
 | 19 | New session dialog | PASS | PASS |
 | 20 | Import; VS Code sync | PASS | PASS |
 | 21 | Activity bar views | PASS | PASS |
@@ -212,7 +245,7 @@ Wayland (headless weston).
 | 30 | `--demo` | PASS | PASS |
 | 31 | `--perf` overlay | PASS | PASS |
 | 32 | CLI | PASS | PASS |
-| 33 | Remote mode | PASS | PASS |
+| 33 | Remote mode | PASS | wip (its drop, as G3) |
 | 34 | View versus start | PASS | PASS |
 | 35 | Transcript inspector; child resume | PASS | PASS |
 | 36 | Removing a multi-selection | PASS | PASS |
@@ -227,21 +260,21 @@ Wayland (headless weston).
 | 41c | Remote reports | PASS | PASS |
 | 42 | Pull request coordination | PASS | PASS |
 | 43 | Review follow-ups | PASS | PASS |
-| 44 | Undo/redo of layout changes | PASS | wip (shared terminal rows) |
+| 44 | Undo/redo of layout changes | PASS | PASS |
 | 45 | Area selection of subsessions and subagents | PASS | PASS |
 | 46 | Subagents folded into decks by default | PASS | PASS |
-| G1 | Inline images | PASS | wip (shared terminal rows) |
+| G1 | Inline images | PASS | PASS |
 | G2 | Taskbar progress, flash, toasts | PASS | PASS |
-| G3 | File drag and drop | PASS | wip |
+| G3 | File drag and drop | PASS | wip (regressed after G1, Linux only) |
 | G4 | Several windows | PASS | PASS |
 | V1 | Dust | PASS | PASS |
 | V2 | Stacks and hidden subsessions | PASS | PASS |
 | V3 | Effects | wip | PASS |
 | V4 | Group chips at any zoom; sidebar rows | PASS | PASS |
-| V5 | Remote group files in the canvas | PASS | wip |
+| V5 | Remote group files in the canvas | PASS | PASS |
 | V6 | Remote group passive sessions | PASS | PASS |
-| T1 | Trackpad on the canvas (D15) | PASS | — |
-| T2 | Trackpad over terminals (D15) | PASS | — |
+| T1 | Trackpad on the canvas (D15) | PASS | PASS (Wayland; pan part) |
+| T2 | Trackpad over terminals (D15) | PASS | PASS (Wayland) |
 
 ## Decisions taken during the port
 
@@ -368,6 +401,26 @@ Wayland (headless weston).
   plan's table had it, so launchd never owns the service: it keeps exiting
   when idle, clients restart it, and uninstalling (`bootout`) cannot stop it
   or its terminals (as on Linux, where uninstall only disables the unit).
+- D15 on Linux: `os::scroll_policy()` is Precise on Wayland (touchpads give
+  pixel deltas with phases) and Notches on X11 (XInput2 smooth scrolling
+  gives phase-less fractional lines); `POINTER_POLICY` stays Notches (help
+  text, pinch guards). Pinch, smart zoom and force click need winit's
+  pointer gestures (not in 0.30): plan §6.1 and PARITY.md say so.
+- Linux packages: binaries link only libc/libm/libgcc_s (GLIBC_2.35 at
+  most); GTK/WebKit, Vulkan/GL, Wayland, X11, xkbcommon and fontconfig are
+  `dlopen`ed and the .deb/.rpm *recommend* them (a minimal install still
+  runs the CLI, service and TUI). The package licence is
+  `LicenseRef-proprietary` until the owner names one (there is no LICENSE).
+- Linux accessibility: AccessKit's AT-SPI bridge exposes text only through
+  text runs, so on Linux a terminal tile's visible rows are also text runs
+  (Windows keeps the UIA value only). The hardening check is an outside
+  AT-SPI client: it turns `org.a11y.Status.IsEnabled` on (as Orca does) and
+  back off afterwards when it was off (GNOME stores it as a setting).
+- Linux CI runs the hardening checks under openbox: a bare X server has no
+  window manager, so nothing maximizes a window there.
+- Linux test hooks: posted keys go through the X server (focus, then
+  `KeyPress`/`KeyRelease` sent to the window); Wayland lets no client type
+  into another's surface, so the latency bench types under X11.
 
 ## Known gaps
 
@@ -379,6 +432,11 @@ Wayland (headless weston).
   opencode --prompt` skips its question and permission steps there (with a
   note). Verified behaviour is OpenCode 1.19.4's (docs/AGENTS.md); the
   owner's OpenCode is not updated by the port.
+
+- Linux: pinch, smart zoom and force click (winit 0.30 has no pointer
+  gestures on Wayland or X11); X11 touchpads scroll in notches. Wayland
+  drag and drop is checked only by unit tests on CI (a headless drag has no
+  pointer serial). X11 work areas are whole monitors (no `_NET_WORKAREA`).
 
 ## Owner-only items (do not block "done")
 
@@ -394,6 +452,10 @@ Wayland (headless weston).
   (System Settings › Trackpad › Force Click) on a Force Touch trackpad.
 - With the screen unlocked and the window uncovered: `bench --client gui`,
   parity rows 7b and V3 (if CI's macOS runners cannot present either).
+- Linux on a real desktop: a file dragged from Files/Dolphin onto a
+  terminal under Wayland and X11; Orca reading boxes and a terminal; the
+  .deb/.rpm/AppImage installed from the desktop (menu entry, icon, dock
+  badge); the package licence (`LicenseRef-proprietary` is a placeholder).
 
 ## Log
 
@@ -516,3 +578,19 @@ view helper (WebKitGTK offscreen); the GUI on Wayland/X11.
   0.30** (`PinchGesture` is macOS/iOS only): a known gap until winit adds
   Wayland pointer gestures. Linux waits for the macOS lead's note before
   touching canvas-core's input model.
+- 2026-10-31: D15 on Linux (5cacb17, shared: `os::scroll_policy`; ca9905d:
+  docs, CI runs 41b, T1, T2 under Wayland, blocking). Wayland drag and
+  drop (f04e04f, shared: `os::take_dropped`; `os/linux/dnd.rs` on winit's
+  own Wayland connection). HTML view: Ctrl+C copies the selection.
+- 2026-10-31: Linux packages (`packaging/linux/`, CI `linux-package` and
+  `linux-package-test`; see Phase 6). The .deb's GUI did not start on a
+  clean 24.04 runner until the packages recommended the run-time libraries
+  (79669b5). CI also runs the hardening checks and the GUI bench under X11
+  (reporting) and records Linux's goldens; the golden scripts' terminal
+  text has a POSIX twin for the Unix demo shells (3c1b8ef, shared).
+- 2026-10-31: merged origin/macos (2432279: launchd, the macOS HTML view,
+  883102c's terminal-row fixes, f876447). Parity on X11: 60 of 62 (G3 and
+  33 regressed after G1 on Linux only; macOS CI passes both). Goldens
+  committed (bbe91dc). Hardening: AT-SPI client and terminal text runs
+  (718bebd, shared), openbox for the placement check (1e8c102); typed keys
+  through the X server for the bench (466a0ef).
