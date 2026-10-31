@@ -4,6 +4,44 @@
 
 pub use super::unix::{clip_image, native_window, process, since_start, webview};
 
+/// wgpu's backend: Metal (macOS has no software adapter).
+pub const GPU_BACKENDS: wgpu::Backends = wgpu::Backends::METAL;
+
+/// Fonts: named files (no full scan, as on Windows): Cascadia Mono when the
+/// user installed it, else SF Mono, Menlo; labels in SF; emoji, symbols and
+/// CJK from Apple's fallback fonts (MAC-LINUX-PLAN §5.6).
+pub mod fonts {
+    use std::path::PathBuf;
+
+    pub use crate::os::font_sources::FontSources;
+
+    const SYSTEM_FILES: [&str; 13] = [
+        "SFNSMono.ttf",
+        "SFNSMonoItalic.ttf",
+        "Menlo.ttc",
+        "SFNS.ttf",
+        "SFNSItalic.ttf",
+        "Apple Color Emoji.ttc",
+        "Apple Symbols.ttf",
+        "AppleSDGothicNeo.ttc",
+        "Hiragino Sans GB.ttc",
+        "ヒラギノ角ゴシック W3.ttc",
+        "ヒラギノ角ゴシック W6.ttc",
+        "STHeiti Light.ttc",
+        "CJKSymbolsFallback.ttc",
+    ];
+
+    pub fn sources() -> FontSources {
+        let system = PathBuf::from("/System/Library/Fonts");
+        let mut files: Vec<PathBuf> = SYSTEM_FILES.iter().map(|f| system.join(f)).collect();
+        let user = std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library").join("Fonts"));
+        for dir in user.into_iter().chain([PathBuf::from("/Library/Fonts")]) {
+            files.extend(["CascadiaMono.ttf", "CascadiaMonoItalic.ttf", "CascadiaMono-Regular.ttf"].iter().map(|f| dir.join(f)));
+        }
+        FontSources { files, dirs: Vec::new(), mono: &["Cascadia Mono", "SF Mono", ".SF NS Mono", "Menlo"], ui: &["SF Pro", "System Font", ".AppleSystemUIFont", "Helvetica Neue"] }
+    }
+}
+
 use winit::window::{Window, WindowAttributes};
 
 pub fn in_front(_window: isize) -> bool {

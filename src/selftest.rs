@@ -2391,11 +2391,6 @@ fn group_click_steps<U: Ui>(ui: &mut U) -> Result<()> {
         ui.send(b"t")?;
     }
     ui.wait("no group selected", Duration::from_secs(5), |t| !t.contains("Del: delete group") && t.contains("▢ Single"))?;
-    // The title is drawn two cells right of the group's left edge (" ▣ name").
-    let (tx, ty) = ui.locate("▣ Canvas project", CANVAS)?;
-    let (bx, by) = (tx.saturating_sub(3), ty + 2);
-    ui.click(bx, by)?;
-    ui.wait("the group's panel", Duration::from_secs(5), |t| t.contains("Del: delete group") && t.contains("Canvas project"))?;
     let at_column = |line: &str, column: usize| {
         let mut x = 0;
         line.chars().find(|c| {
@@ -2404,6 +2399,21 @@ fn group_click_steps<U: Ui>(ui: &mut U) -> Result<()> {
             here
         })
     };
+    if ui.locate("▣ Canvas project", CANVAS).is_err() {
+        // Groups may touch where earlier steps placed them (the GUI's metrics
+        // move the view, so new boxes land elsewhere): another group's border
+        // then covers this title row. That group is moved up out of the way.
+        let (sx, sy) = ui.locate("▣ Selftest group", CANVAS)?;
+        ui.drag(0, (sx + 2, sy), (sx + 2, sy.saturating_sub(4)))?;
+        ui.wait("the group's title uncovered", Duration::from_secs(5), |t| t.contains("▣ Canvas project"))?;
+        ui.send(b"\x1b")?;
+        ui.wait("no group selected", Duration::from_secs(5), |t| !t.contains("Del: delete group"))?;
+    }
+    // The title is drawn two cells right of the group's left edge (" ▣ name").
+    let (tx, ty) = ui.locate("▣ Canvas project", CANVAS)?;
+    let (bx, by) = (tx.saturating_sub(3), ty + 2);
+    ui.click(bx, by)?;
+    ui.wait("the group's panel", Duration::from_secs(5), |t| t.contains("Del: delete group") && t.contains("Canvas project"))?;
     let corner = ui.text().lines().nth(ty as usize).and_then(|l| at_column(l, bx as usize));
     anyhow::ensure!(corner == Some('┏'), "a selected group has a heavy outline, found {corner:?} at ({bx}, {ty})\n{}", ui.text());
     ui.send(b"\x1b")?;

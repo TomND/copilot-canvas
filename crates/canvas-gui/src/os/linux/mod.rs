@@ -4,6 +4,20 @@
 
 pub use super::unix::{clip_image, native_window, process, since_start, webview};
 
+/// wgpu's backends: Vulkan, GL as the fallback (llvmpipe and lavapipe are
+/// the software adapters).
+pub const GPU_BACKENDS: wgpu::Backends = wgpu::Backends::VULKAN.union(wgpu::Backends::GL);
+
+/// Fonts: the system's (fontconfig folders) until the Linux lead picks named
+/// files with fc-match (MAC-LINUX-PLAN §5.6).
+pub mod fonts {
+    pub use crate::os::font_sources::FontSources;
+
+    pub fn sources() -> FontSources {
+        FontSources { files: Vec::new(), dirs: Vec::new(), mono: &["Cascadia Mono", "DejaVu Sans Mono", "Noto Sans Mono", "Liberation Mono"], ui: &["Cantarell", "Noto Sans", "DejaVu Sans"] }
+    }
+}
+
 use winit::window::{Window, WindowAttributes};
 
 pub fn in_front(_window: isize) -> bool {

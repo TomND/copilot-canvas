@@ -8,6 +8,8 @@
 //! Win32 code), `macos` (AppKit) and `linux` (X11 / Wayland, D-Bus); `unix`
 //! holds what macOS and Linux share.
 
+pub(crate) mod font_sources;
+
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]

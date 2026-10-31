@@ -122,7 +122,7 @@ impl Gpu {
     /// adapter's details.
     pub fn new(window: Arc<Window>, display: winit::event_loop::OwnedDisplayHandle) -> Result<(Self, Surface)> {
         let mut desc = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(display));
-        desc.backends = wgpu::Backends::DX12;
+        desc.backends = crate::os::GPU_BACKENDS;
         let instance = wgpu::Instance::new(desc);
         let surface = instance.create_surface(window.clone()).context("cannot create the window surface")?;
         let forced = std::env::var_os("WGPU_FORCE_FALLBACK_ADAPTER").is_some_and(|v| v == "1");
