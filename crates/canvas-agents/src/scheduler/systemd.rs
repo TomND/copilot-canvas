@@ -392,7 +392,7 @@ impl Scheduler for Systemd {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::path::Path;
@@ -521,7 +521,7 @@ pub mod service_unit {
         Ok(Some(path))
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     mod tests {
         #[test]
         fn the_unit_starts_the_instances_service_at_login() {

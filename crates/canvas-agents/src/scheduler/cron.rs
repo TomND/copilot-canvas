@@ -328,7 +328,7 @@ impl Scheduler for Cron {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::path::Path;
@@ -360,7 +360,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn a_fake_crontab_holds_the_block_and_the_users_own_lines() {
         let dir = std::env::temp_dir().join(format!("cc-cron-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).unwrap();
