@@ -530,6 +530,9 @@ jobs:
             ${{ github.workspace }}/gui-screens
             /tmp/copilot-canvas-selftest-*/gui-stderr.log
             /tmp/copilot-canvas-selftest-*/home/*.log
+            /tmp/copilot-canvas-parity-*/*.log
+            /tmp/copilot-canvas-parity-*/home/*.log
+            /tmp/copilot-canvas-hardening-*/*.log
             ${{ runner.temp }}/weston.log
           if-no-files-found: ignore
 
