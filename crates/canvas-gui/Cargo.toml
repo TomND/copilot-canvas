@@ -49,6 +49,8 @@ wgpu = { workspace = true, features = ["vulkan", "gles"] }
 # Notifications and the launcher entry on the session bus (the zbus the
 # accessibility bridge already uses).
 zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
+# GTK and WebKitGTK for the HTML view's helper, loaded at run time.
+libloading = "0.8"
 
 [build-dependencies]
 embed-resource.workspace = true

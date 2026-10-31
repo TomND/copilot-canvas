@@ -2,9 +2,18 @@
 //! notifications, the WebKitGTK report view, work areas) belongs here and to
 //! the Linux lead (MAC-LINUX-PLAN §5.6, §5.7); until it lands, stand-ins.
 
-pub use super::unix::{clip_image, native_window, process, since_start, webview};
+pub use super::unix::{clip_image, native_window, process, since_start};
 
 mod bus;
+mod gtk;
+mod html_helper;
+pub mod webview;
+
+/// The GUI binary runs as the HTML view's helper when started for it
+/// (`COPILOT_CANVAS_HTML_VIEW=1`): answers its exit code.
+pub fn helper() -> Option<i32> {
+    std::env::var_os(html_helper::ENV).filter(|v| v == "1").map(|_| html_helper::main())
+}
 
 /// wgpu's backends: Vulkan, GL as the fallback (llvmpipe and lavapipe are
 /// the software adapters).
