@@ -368,15 +368,16 @@ pub fn read_report(path: &Path) -> Option<Report> {
 /// Newest file matching a glob (`*` within path segments). Patterns use this
 /// machine's separator (`/` is accepted for `\` on Windows).
 pub fn newest_match(pattern: &str) -> Option<PathBuf> {
-    let sep = std::path::MAIN_SEPARATOR_STR;
-    let pattern = pattern.replace('/', sep);
+    // This machine's separators (`\` on Windows, `/` elsewhere).
+    let sep = canvas_model::path_style::PathStyle::local().separator();
+    let pattern = canvas_model::path_style::PathStyle::local().native(pattern);
     if !pattern.contains('*') {
         let path = PathBuf::from(&pattern);
         return path.is_file().then_some(path);
     }
     let parts: Vec<&str> = pattern.split(sep).collect();
     let first_glob = parts.iter().position(|p| p.contains('*'))?;
-    let mut candidates = vec![PathBuf::from(parts[..first_glob].join(sep) + sep)];
+    let mut candidates = vec![PathBuf::from(parts[..first_glob].join(&sep.to_string()) + &sep.to_string())];
     for (i, part) in parts.iter().enumerate().skip(first_glob) {
         let last = i + 1 == parts.len();
         let mut next = Vec::new();

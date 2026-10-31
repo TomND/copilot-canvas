@@ -1061,12 +1061,17 @@ impl Store {
                     anyhow::Error::new(e).context(format!("cannot lock {}", lock_path.display()))
                 }
             })?;
+        // A lock just released can linger for a moment in a child process
+        // between its fork and its exec (it shares the open file): try again
+        // briefly before calling the canvas taken.
         #[cfg(not(windows))]
-        if let Err(error) = lock.try_lock() {
-            return Err(match error {
-                std::fs::TryLockError::WouldBlock => anyhow::anyhow!("this canvas is already open in another Copilot Canvas window"),
-                std::fs::TryLockError::Error(e) => anyhow::Error::new(e).context(format!("cannot lock {}", lock_path.display())),
-            });
+        for attempt in 0.. {
+            match lock.try_lock() {
+                Ok(()) => break,
+                Err(std::fs::TryLockError::WouldBlock) if attempt < 10 => std::thread::sleep(std::time::Duration::from_millis(30)),
+                Err(std::fs::TryLockError::WouldBlock) => anyhow::bail!("this canvas is already open in another Copilot Canvas window"),
+                Err(std::fs::TryLockError::Error(e)) => return Err(anyhow::Error::new(e).context(format!("cannot lock {}", lock_path.display()))),
+            }
         }
         Ok(Self { path: path.to_owned(), _lock: lock })
     }
@@ -1155,9 +1160,24 @@ pub fn list_backups(canvas: &Path) -> Result<Vec<PathBuf>> {
     Ok(existing)
 }
 
-/// The `--demo` canvas: PowerShell sessions in `cwd`, a subagent and a group.
+/// The shell of demo sessions on a service's platform (`BackendInfo::platform`):
+/// PowerShell on Windows; elsewhere a shell without the user's rc files and
+/// with the prompt `PS > ` (as the self-tests expect from PowerShell's), so
+/// screens stay deterministic (MAC-LINUX-PLAN §5.2): zsh on macOS (its
+/// /bin/bash 3.2 has no bracketed paste), bash on Linux.
+pub fn demo_shell(platform: &str) -> Vec<String> {
+    let words: &[&str] = match platform {
+        "" | "windows" => &["powershell.exe", "-NoLogo", "-NoProfile"],
+        "macos" => &["/usr/bin/env", "PS1=PS > ", "/bin/zsh", "-f"],
+        _ => &["/usr/bin/env", "PS1=PS > ", "/bin/bash", "--noprofile", "--norc"],
+    };
+    words.iter().map(|w| (*w).to_owned()).collect()
+}
+
+/// The `--demo` canvas: demo shells ([`demo_shell`] of this machine) in
+/// `cwd`, a subagent and a group.
 pub fn demo_doc(cwd: &str) -> Doc {
-    let shell = Some(vec!["powershell.exe".to_owned(), "-NoLogo".to_owned(), "-NoProfile".to_owned()]);
+    let shell = Some(demo_shell(std::env::consts::OS));
     let session = |id: &str, name: &str, x: i32, y: i32| Node {
         id: id.into(),
         kind: NodeKind::Session,

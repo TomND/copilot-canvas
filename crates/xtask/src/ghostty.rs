@@ -21,6 +21,66 @@ const ZIG_FLAGS: &[&str] = &["-Demit-lib-vt=true", "-Doptimize=ReleaseFast", "-D
 /// Where the pinned Zig is installed on the development machines.
 const DEFAULT_ZIG: &str = r"C:\tools\zig-x86_64-windows-0.17.0\zig.exe";
 pub const STATIC_LIB: &str = "ghostty-vt-static.lib";
+/// The archive's name on macOS and Linux (Ghostty's own install name).
+pub const STATIC_LIB_UNIX: &str = "libghostty-vt.a";
+
+/// A Rust target the library is built for (MAC-LINUX-PLAN §5.2): the Zig
+/// target, the install folder below `target/ghostty/<commit>/`, the archive.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Target {
+    pub triple: String,
+    /// `-Dtarget=` (none: Zig's default, the MSVC ABI on Windows hosts).
+    pub zig: Option<&'static str>,
+    pub lib_name: &'static str,
+}
+
+impl Target {
+    /// The supported Rust targets; `None` for others.
+    pub fn of(triple: &str) -> Option<Target> {
+        let (zig, lib_name) = match triple {
+            "x86_64-pc-windows-msvc" => (None, STATIC_LIB),
+            "aarch64-apple-darwin" => (Some("aarch64-macos.13.0"), STATIC_LIB_UNIX),
+            "x86_64-apple-darwin" => (Some("x86_64-macos.13.0"), STATIC_LIB_UNIX),
+            "x86_64-unknown-linux-gnu" => (Some("x86_64-linux-gnu.2.35"), STATIC_LIB_UNIX),
+            "aarch64-unknown-linux-gnu" => (Some("aarch64-linux-gnu.2.35"), STATIC_LIB_UNIX),
+            _ => return None,
+        };
+        Some(Target { triple: triple.to_owned(), zig, lib_name })
+    }
+
+    /// This machine's target (the MSVC build on Windows, as before).
+    pub fn host() -> Result<Target> {
+        let triple = match (std::env::consts::ARCH, std::env::consts::OS) {
+            ("x86_64", "windows") => "x86_64-pc-windows-msvc",
+            ("aarch64", "macos") => "aarch64-apple-darwin",
+            ("x86_64", "macos") => "x86_64-apple-darwin",
+            ("x86_64", "linux") => "x86_64-unknown-linux-gnu",
+            ("aarch64", "linux") => "aarch64-unknown-linux-gnu",
+            (arch, os) => bail!("no libghostty-vt target for {arch}-{os}; pass --target"),
+        };
+        Ok(Target::of(triple).expect("listed"))
+    }
+
+    /// The install prefix: `target/ghostty/<commit>/` for Windows (unchanged
+    /// layout), `target/ghostty/<commit>/<triple>/` for the others.
+    pub fn prefix(&self, root: &Path, pin: &Pin) -> PathBuf {
+        let base = ghostty_dir(root).join(&pin.commit);
+        if self.zig.is_none() { base } else { base.join(&self.triple) }
+    }
+
+    /// Every flag of the build (recorded in BUILD-INFO.txt).
+    pub fn flags(&self) -> Vec<String> {
+        let mut flags: Vec<String> = ZIG_FLAGS.iter().map(|f| f.to_string()).collect();
+        if let Some(zig) = self.zig {
+            flags.push(format!("-Dtarget={zig}"));
+        }
+        if self.triple.ends_with("-apple-darwin") {
+            // Not the iOS/macOS xcframework, only this target's archive.
+            flags.push("-Demit-xcframework=false".into());
+        }
+        flags
+    }
+}
 
 /// The pinned engine version.
 pub struct Pin {
@@ -77,14 +137,15 @@ fn run(command: &mut Command, what: &str) -> Result<()> {
     Ok(())
 }
 
-/// `cargo xtask build-ghostty`: returns the install prefix.
-pub fn build(force: bool) -> Result<PathBuf> {
+/// `cargo xtask build-ghostty [--target TRIPLE]`: returns the install prefix.
+pub fn build(force: bool, target: &Target) -> Result<PathBuf> {
     let root = workspace_root();
     let pin = read_pin(&checksums_file(&root))?;
-    let out = ghostty_dir(&root).join(&pin.commit);
-    let lib = out.join("lib").join(STATIC_LIB);
+    let out = target.prefix(&root, &pin);
+    let lib = out.join("lib").join(target.lib_name);
     let info_path = out.join("BUILD-INFO.txt");
-    if !force && up_to_date(&info_path, &lib, &pin) {
+    let flags = target.flags();
+    if !force && up_to_date(&info_path, &lib, &pin, target.lib_name, &flags) {
         println!("libghostty-vt {} is up to date: {}", pin.short(), lib.display());
         return Ok(out);
     }
@@ -92,15 +153,21 @@ pub fn build(force: bool) -> Result<PathBuf> {
     let src = fetch(&root, &pin)?;
     let zig = find_zig(&pin)?;
     // BUILD-INFO.txt is written last, so an interrupted build is never taken as complete.
-    if out.exists() {
-        fs::remove_dir_all(&out).with_context(|| format!("cannot clean {}", out.display()))?;
+    // The Windows prefix also holds the other targets' folders: clean only its own files.
+    for own in ["lib", "include", "share", "bin", "BUILD-INFO.txt"] {
+        let path = out.join(own);
+        if path.is_dir() {
+            fs::remove_dir_all(&path).with_context(|| format!("cannot clean {}", path.display()))?;
+        } else if path.exists() {
+            fs::remove_file(&path).with_context(|| format!("cannot clean {}", path.display()))?;
+        }
     }
-    println!("building libghostty-vt {} with {} {}", pin.short(), zig.display(), ZIG_FLAGS.join(" "));
+    println!("building libghostty-vt {} for {} with {} {}", pin.short(), target.triple, zig.display(), flags.join(" "));
     let started = SystemTime::now();
     run(
         Command::new(&zig)
             .arg("build")
-            .args(ZIG_FLAGS)
+            .args(&flags)
             .arg("--prefix")
             .arg(&out)
             .arg("--cache-dir")
@@ -116,25 +183,27 @@ pub fn build(force: bool) -> Result<PathBuf> {
     let lib_hash = sha256_file(&lib)?;
     let seconds = started.elapsed().map(|d| d.as_secs()).unwrap_or(0);
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let name = target.lib_name;
     let info = format!(
-        "ghostty-commit: {}\nzig-version: {}\nzig-flags: {}\nsource: {REPO}\n{STATIC_LIB} sha256: {lib_hash}\nbuilt-unix: {now}\nbuild-seconds: {seconds}\n",
+        "ghostty-commit: {}\nzig-version: {}\nzig-flags: {}\ntarget: {}\nsource: {REPO}\n{name} sha256: {lib_hash}\nbuilt-unix: {now}\nbuild-seconds: {seconds}\n",
         pin.commit,
         pin.zig,
-        ZIG_FLAGS.join(" "),
+        flags.join(" "),
+        target.triple,
     );
     fs::write(&info_path, info).with_context(|| format!("cannot write {}", info_path.display()))?;
-    println!("built {} ({seconds} s)\n{STATIC_LIB} sha256 {lib_hash}", lib.display());
+    println!("built {} ({seconds} s)\n{name} sha256 {lib_hash}", lib.display());
     Ok(out)
 }
 
 /// A finished build of the same pin and flags whose library is unchanged.
-fn up_to_date(info_path: &Path, lib: &Path, pin: &Pin) -> bool {
+fn up_to_date(info_path: &Path, lib: &Path, pin: &Pin, lib_name: &str, flags: &[String]) -> bool {
     let Ok(info) = fs::read_to_string(info_path) else { return false };
     let field = |key: &str| info.lines().find_map(|l| l.strip_prefix(key)).map(str::trim);
     field("ghostty-commit:") == Some(pin.commit.as_str())
         && field("zig-version:") == Some(pin.zig.as_str())
-        && field("zig-flags:") == Some(ZIG_FLAGS.join(" ").as_str())
-        && field(&format!("{STATIC_LIB} sha256:")).is_some_and(|hash| sha256_file(lib).is_ok_and(|h| h == hash))
+        && field("zig-flags:") == Some(flags.join(" ").as_str())
+        && field(&format!("{lib_name} sha256:")).is_some_and(|hash| sha256_file(lib).is_ok_and(|h| h == hash))
 }
 
 /// The pinned source under target/ghostty/src-<short>: a git checkout of
@@ -198,11 +267,14 @@ fn git_checkout(src: &Path, commit: &str) -> Result<()> {
     ensure!(head.trim().eq_ignore_ascii_case(commit), "checked out {}, expected {commit}", head.trim());
     Ok(())
 }
-/// `ZIG`, then the default install, then `zig` on PATH; must be the pinned version.
+/// `ZIG`, then the default install (Windows: `C:\tools`; elsewhere
+/// `~/.local/zig-<version>/zig`), then `zig` on PATH; must be the pinned version.
 fn find_zig(pin: &Pin) -> Result<PathBuf> {
+    let local = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join(format!("zig-{}", pin.zig)).join("zig"));
     let zig = match std::env::var_os("ZIG") {
         Some(path) => PathBuf::from(path),
-        None if Path::new(DEFAULT_ZIG).is_file() => PathBuf::from(DEFAULT_ZIG),
+        None if cfg!(windows) && Path::new(DEFAULT_ZIG).is_file() => PathBuf::from(DEFAULT_ZIG),
+        None if !cfg!(windows) && local.as_ref().is_some_and(|z| z.is_file()) => local.expect("checked"),
         None => PathBuf::from("zig"),
     };
     let output = Command::new(&zig)
@@ -284,7 +356,7 @@ pub fn vendor(checksums_only: bool) -> Result<()> {
     let checksums = checksums_file(&root);
     let pin = read_pin(&checksums)?;
     if !checksums_only {
-        let out = ghostty_dir(&root).join(&pin.commit);
+        let out = Target::host()?.prefix(&root, &pin);
         ensure!(out.join("BUILD-INFO.txt").is_file(), "no build of {}; run `cargo xtask build-ghostty` first", pin.short());
         let include = sys.join("vendor").join("include");
         if include.exists() {

@@ -266,18 +266,20 @@ pub fn write_plugin(home: &Path) -> Result<std::path::PathBuf> {
     Ok(dir)
 }
 
-/// Copies this executable to `<home>/cli/copilot-canvas.exe` (on the PATH of
-/// canvas sessions) unless an identical copy is there or it is in use.
+/// Copies this executable to `<home>/cli/copilot-canvas.exe` (`copilot-canvas`
+/// off Windows; on the PATH of canvas sessions) unless an identical copy is
+/// there or it is in use.
 pub fn install_cli(home: &Path) -> Result<std::path::PathBuf> {
     let dir = home.join("cli");
     std::fs::create_dir_all(&dir)?;
-    let target = dir.join("copilot-canvas.exe");
+    let target = dir.join(canvas_sys::host::exe_name("copilot-canvas"));
     let current = std::env::current_exe()?;
     let same = std::fs::metadata(&target).ok().map(|m| m.len()) == std::fs::metadata(&current).ok().map(|m| m.len())
         && std::fs::read(&target).ok() == std::fs::read(&current).ok();
     if !same {
         let temp = dir.join(format!("copilot-canvas.{}.tmp", std::process::id()));
         std::fs::copy(&current, &temp)?;
+        canvas_sys::fs::strip_quarantine(&temp);
         if std::fs::rename(&temp, &target).is_err() {
             let _ = std::fs::remove_file(&temp);
         }

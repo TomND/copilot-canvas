@@ -195,7 +195,14 @@ pub struct Config {
     pub scrollback: usize,
     /// Answer kitty keyboard protocol queries (Copilot uses it).
     pub kitty_keyboard: bool,
+    /// A resize to a taller screen pulls scrollback rows back (Ghostty's
+    /// default; right for a Unix PTY, whose program redraws only on
+    /// SIGWINCH). Off behind ConPTY, which repaints the viewport itself.
+    pub pull_scrollback: bool,
 }
+
+/// [`Config::pull_scrollback`] for terminals of this machine's PTY.
+pub const PTY_PULLS_SCROLLBACK: bool = !cfg!(windows);
 
 /// A terminal engine.
 pub trait Emulator {

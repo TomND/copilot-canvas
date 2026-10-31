@@ -268,7 +268,7 @@ impl Terminal {
         let (output_tx, output_rx) = bounded::<Vec<u8>>(OUTPUT_QUEUE);
         let state = Arc::new(State::default());
         let generation = Arc::new(AtomicU64::new(1));
-        let config = Config { cols, rows, scrollback: 5000, kitty_keyboard: true };
+        let config = Config { cols, rows, scrollback: 5000, kitty_keyboard: true, pull_scrollback: emulator::PTY_PULLS_SCROLLBACK };
         let engine = spec.engine;
         let terminal = Arc::new(Self {
             id: spec.id.to_owned(),
@@ -1028,7 +1028,7 @@ pub fn row_hash<T: Hash>(runs: &[T]) -> u64 {
 
 /// A standalone alacritty emulator (tests, the self-test and the corpus).
 pub fn headless(cols: u16, rows: u16, kitty_keyboard: bool) -> emulator::alacritty::AlacrittyEmulator {
-    emulator::alacritty::AlacrittyEmulator::new(&Config { cols, rows, scrollback: 1000, kitty_keyboard })
+    emulator::alacritty::AlacrittyEmulator::new(&Config { cols, rows, scrollback: 1000, kitty_keyboard, pull_scrollback: emulator::PTY_PULLS_SCROLLBACK })
 }
 
 /// Plain text of the visible screen, as protocol-7 clients lay it out.

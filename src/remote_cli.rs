@@ -211,7 +211,7 @@ pub fn tunnel_setup(instance: &Instance, dir: &Path, tunnel: Option<String>, por
     println!("Set remote.listen = 127.0.0.1:{port} in {} (the service listens there; `remote pair` also turns it on in a running service).", canvas_common::settings::path(&instance.home).display());
     match &devtunnel {
         Some(exe) => println!("Dev Tunnels CLI: {}", exe.display()),
-        None => println!("Dev Tunnels CLI not found: install it (`winget install Microsoft.devtunnel`) and run this again."),
+        None => println!("Dev Tunnels CLI not found: install it (`{}`) and run this again.", canvas_common::remote::devtunnel_install_hint()),
     }
     let on_path = devtunnel.as_ref().and_then(|p| p.parent()).is_some_and(|d| std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).any(|p| p == d));
     println!();
@@ -375,7 +375,7 @@ pub fn doctor_lines(instance: &Instance, dir: &Path) -> Vec<(Mark, &'static str,
         Err(error) => (Mark::Fail, "Paired servers", format!("{error:#}")),
     });
     lines.push(match remote::find_devtunnel_exe() {
-        None => (Mark::Info, "Dev Tunnels CLI", "not installed (remote mode needs it: `winget install Microsoft.devtunnel`)".into()),
+        None => (Mark::Info, "Dev Tunnels CLI", format!("not installed (remote mode needs it: `{}`)", canvas_common::remote::devtunnel_install_hint())),
         Some(exe) => match devtunnel_user(&exe) {
             Ok(status) if signed_in(&status) => (Mark::Ok, "Dev Tunnels CLI", format!("{} · {status}", exe.display())),
             Ok(status) => (Mark::Info, "Dev Tunnels CLI", format!("{} · {status} (sign in once: devtunnel user login -g)", exe.display())),

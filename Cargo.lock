@@ -933,6 +933,7 @@ dependencies = [
  "objc2 0.5.3",
  "objc2-app-kit",
  "objc2-foundation 0.2.2",
+ "security-framework",
  "uuid",
  "windows-sys 0.61.2",
 ]

@@ -20,7 +20,9 @@ pub const END: &str = "end";
 
 /// The emulator configuration of hosted terminals.
 pub fn config(cols: u16, rows: u16) -> Config {
-    Config { cols, rows, scrollback: SCROLLBACK, kitty_keyboard: true }
+    // The corpus's expectations were recorded and blessed behind ConPTY
+    // (no scrollback pulled back on resize), on every OS.
+    Config { cols, rows, scrollback: SCROLLBACK, kitty_keyboard: true, pull_scrollback: false }
 }
 
 /// A fresh emulator; fails instead of silently falling back to another engine.

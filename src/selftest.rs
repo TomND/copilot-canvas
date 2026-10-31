@@ -322,7 +322,7 @@ impl GuiDriver {
     /// The same; `None`: the window's own size decides the grid (placements).
     pub fn start_sized(args: &[String], env: &[(&str, &Path)], size: Option<(u16, u16)>, log: &Path) -> Result<Self> {
         use std::io::BufRead;
-        let exe = std::env::current_exe()?.with_file_name("copilot-canvas-gui.exe");
+        let exe = std::env::current_exe()?.with_file_name(canvas_sys::host::exe_name("copilot-canvas-gui"));
         anyhow::ensure!(exe.is_file(), "{} is missing (cargo build --release builds it)", exe.display());
         let mut command = std::process::Command::new(&exe);
         command.args(args).arg("--test-hooks");
@@ -924,9 +924,7 @@ fn agent_scenario(instance: &Instance, work: &Path, kind: AgentKind, env: &[(&st
     step(&format!("new sessions start with {flag} (Settings → Permissions default)"));
     let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
     let pid = log.lines().rev().find_map(|l| l.split(" pid ").nth(1)).and_then(|p| p.trim().parse::<u32>().ok()).context("launched pid in the service log")?;
-    let query = format!("(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine");
-    let out = std::process::Command::new("powershell.exe").args(["-NoProfile", "-Command", &query]).output()?;
-    let command_line = String::from_utf8_lossy(&out.stdout).to_string();
+    let command_line = command_line_of(pid)?;
     anyhow::ensure!(command_line.split_whitespace().any(|a| a == flag), "{label} was launched without {flag}: {command_line}");
     let (model_flag, initial) = (model_flag(kind), canvas_model::models::initial(kind));
     step(&format!("new sessions start with the initial default model ({model_flag} {initial}: Claude Opus 5.5), recorded on the box"));
@@ -1328,6 +1326,18 @@ pub(crate) fn step(name: &str) {
     println!("  · {name}");
 }
 
+/// A process's command line (PowerShell's CIM query on Windows; the process
+/// table elsewhere).
+pub(crate) fn command_line_of(pid: u32) -> Result<String> {
+    if cfg!(windows) {
+        let query = format!("(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine");
+        let out = std::process::Command::new("powershell.exe").args(["-NoProfile", "-Command", &query]).output()?;
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    } else {
+        Ok(canvas_sys::process::process_argv(pid).context("cannot read the command line")?.join(" "))
+    }
+}
+
 /// The copy-and-paste check, in a PowerShell terminal that has keyboard
 /// focus (the self-test's scenario and the GUI parity suite): a drag over a
 /// soft-wrapped line, a hard break, a blank line and indentation copies
@@ -1335,10 +1345,15 @@ pub(crate) fn step(name: &str) {
 /// four-line paste with a blank line, indentation and a trailing line break
 /// reaches a program (the paste probe) as one bracketed paste without Enter.
 pub(crate) fn copy_paste_check<U: Ui>(ui: &mut U) -> Result<String> {
-    // A short prompt keeps the pasted lines on one row ("PS " as checks expect).
-    ui.send(b"function prompt { 'PS > ' }\r")?;
-    std::thread::sleep(Duration::from_millis(800));
-    ui.send(b"Write-Output (('COPY' + 'TOP ') + ('wrap me ' * 20).Trim()), '  hard line', '', '    indented line', ('COPY' + 'END')\r")?;
+    // A short prompt keeps the pasted lines on one row ("PS " as checks expect;
+    // the Unix demo shells already have it).
+    if cfg!(windows) {
+        ui.send(b"function prompt { 'PS > ' }\r")?;
+        std::thread::sleep(Duration::from_millis(800));
+        ui.send(b"Write-Output (('COPY' + 'TOP ') + ('wrap me ' * 20).Trim()), '  hard line', '', '    indented line', ('COPY' + 'END')\r")?;
+    } else {
+        ui.send(format!("printf '%s\\n' 'COPY''TOP {}' '  hard line' '' '    indented line' 'COPY''END'\r", "wrap me ".repeat(20).trim()).as_bytes())?;
+    }
     ui.wait("the block to copy", Duration::from_secs(10), |t| t.contains("COPYTOP") && t.contains("COPYEND"))?;
     // The prompt after the block may still scroll it: wait until it shows.
     ui.wait("the prompt after the block", Duration::from_secs(10), |t| {
@@ -1349,7 +1364,8 @@ pub(crate) fn copy_paste_check<U: Ui>(ui: &mut U) -> Result<String> {
     let (x0, y0) = ui.find("COPYTOP").context("COPYTOP")?;
     let (x1, y1) = ui.find("COPYEND").context("COPYEND")?;
     anyhow::ensure!(y1 >= y0 + 5, "the long line wraps over two rows or more (rows {y0}..{y1})\n{}", ui.text());
-    let expected = format!("COPYTOP {}\r\n  hard line\r\n\r\n    indented line\r\nCOPYEND", "wrap me ".repeat(20).trim());
+    let nl = crate::test_shell::newline();
+    let expected = format!("COPYTOP {}{nl}  hard line{nl}{nl}    indented line{nl}COPYEND", "wrap me ".repeat(20).trim());
     ui.drag(0, (x0, y0), (x1 + 6, y1))?;
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -1361,17 +1377,28 @@ pub(crate) fn copy_paste_check<U: Ui>(ui: &mut U) -> Result<String> {
         std::thread::sleep(Duration::from_millis(100));
     }
     // PowerShell (PSReadLine) has no bracketed paste: each line break arrives
-    // as Alt+Enter, which it ignores; nothing runs.
+    // as Alt+Enter, which it ignores; nothing runs. zsh and bash take one
+    // bracketed paste into their line editor; nothing runs either.
     ui.paste("echo PASTE_A\r\necho PASTE_B\r\n")?;
-    ui.wait("both pasted lines in PowerShell's input", Duration::from_secs(10), |t| t.contains("echo PASTE_Aecho PASTE_B"))?;
+    if cfg!(windows) {
+        ui.wait("both pasted lines in PowerShell's input", Duration::from_secs(10), |t| t.contains("echo PASTE_Aecho PASTE_B"))?;
+    } else {
+        ui.wait("both pasted lines in the shell's input", Duration::from_secs(10), |t| t.contains("echo PASTE_A") && t.contains("echo PASTE_B"))?;
+    }
     std::thread::sleep(Duration::from_millis(1500));
     let text = ui.text();
-    anyhow::ensure!(text.matches("PASTE_A").count() == 1 && text.matches("PASTE_B").count() == 1, "PowerShell ran a pasted line\n{text}");
-    ui.send(b"\x1b")?;
-    ui.wait("PowerShell's input cleared (Esc)", Duration::from_secs(5), |t| !t.contains("PASTE_B"))?;
+    anyhow::ensure!(text.matches("PASTE_A").count() == 1 && text.matches("PASTE_B").count() == 1, "the shell ran a pasted line\n{text}");
+    ui.send(crate::test_shell::discard_input())?;
+    if cfg!(windows) {
+        ui.wait("PowerShell's input cleared (Esc)", Duration::from_secs(5), |t| !t.contains("PASTE_B"))?;
+    } else {
+        // zsh and bash keep the discarded lines on screen above a new prompt;
+        // the probe below starts only from an empty input line.
+        std::thread::sleep(Duration::from_millis(800));
+    }
     // A program with bracketed paste.
     let exe = std::env::current_exe()?;
-    ui.send(format!("& '{}' paste-probe\r", exe.display()).as_bytes())?;
+    ui.send(crate::test_shell::run_self(&exe, "paste-probe").as_bytes())?;
     ui.wait("the paste probe", Duration::from_secs(20), |t| t.contains(crate::paste_probe::READY))?;
     ui.paste("a1\r\n\r\n  b2\r\nc3\r\n")?;
     let pasted = "PASTE 4 lines: a1\\r\\r  b2\\rc3";
@@ -1514,7 +1541,7 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     step("Enter opens a real native terminal for the selected session");
     ui.send(b"\r")?;
     ui.wait("PowerShell prompt", Duration::from_secs(20), |t| t.contains("PS "))?;
-    ui.send(b"Write-Output ('CANVAS_' + 'TERMINAL_OK')\r")?;
+    ui.send(crate::test_shell::print("CANVAS_", "TERMINAL_OK").as_bytes())?;
     ui.wait("command output", Duration::from_secs(10), |t| t.contains("CANVAS_TERMINAL_OK"))?;
     step("the active terminal's box gets a halo on the canvas (heavy while typing)");
     let (bx, by) = ui.locate("Build session canvas", CANVAS)?;
@@ -1538,8 +1565,8 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     };
     let parts: Vec<&str> = line.split('\u{1f}').collect();
     let (exe, rest) = parts.split_first().context("command line")?;
-    let wants = if client == "tui" { "copilot-canvas-gui.exe" } else { "copilot-canvas.exe" };
-    anyhow::ensure!(exe.ends_with(wants), "the {client} opened {exe}, not {wants}");
+    let wants = canvas_sys::host::exe_name(if client == "tui" { "copilot-canvas-gui" } else { "copilot-canvas" });
+    anyhow::ensure!(exe.ends_with(&wants), "the {client} opened {exe}, not {wants}");
     anyhow::ensure!(client == "tui" || rest.first() == Some(&"--tui"), "the GUI opens the TUI with --tui: {rest:?}");
     let after = |flag: &str| rest.iter().position(|a| *a == flag).and_then(|i| rest.get(i + 1)).copied();
     anyhow::ensure!(after("--instance") == Some(instance.name.as_str()) && rest.contains(&"--demo"), "same instance and demo canvas: {rest:?}");
@@ -1628,7 +1655,7 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     let group = doc.groups.iter().find(|g| g.name == "Selftest group").context("group")?;
     let folder = std::path::PathBuf::from(group.folder.clone().unwrap_or_default());
     anyhow::ensure!(folder.starts_with(instance.home.join("groups")), "suggested folder under the canvas home: {}", folder.display());
-    for sub in ["ai-docs", "human-outputs", r".canvas\canvas-group.instructions.md"] {
+    for sub in ["ai-docs", "human-outputs", ".canvas/canvas-group.instructions.md"] {
         anyhow::ensure!(folder.join(sub).exists(), "{} exists", folder.join(sub).display());
     }
     ui.wait("group panel folder actions", Duration::from_secs(5), |t| t.contains("Open AI docs") && t.contains("Open human outputs"))?;
@@ -1644,9 +1671,11 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     ui.wait("focus on terminal", Duration::from_secs(5), |t| t.contains("Typing goes to the terminal"))?;
 
     step("links in terminals: plain click focuses, Ctrl+click opens (missing path → notice, nothing launched)");
-    ui.send(b"Write-Output ('probe ' + 'C:\\canvas-link-probe\\missing.txt' + ' end')\r")?;
-    ui.wait("path printed", Duration::from_secs(10), |t| t.contains("probe C:\\canvas-link"))?;
-    let (lx, ly) = ui.find("probe C:\\canvas-link-probe").context("printed path")?;
+    let missing = crate::test_shell::missing_path();
+    ui.send(crate::test_shell::print("probe ", &format!("{missing} end")).as_bytes())?;
+    let printed = format!("probe {}", &missing[..missing.len() - "missing.txt".len()]);
+    ui.wait("path printed", Duration::from_secs(10), |t| t.contains(&printed))?;
+    let (lx, ly) = ui.find(&printed).context("printed path")?;
     let (lx, ly) = (lx + 10, ly + 1);
     ui.send(format!("\x1b[<0;{lx};{ly}M\x1b[<0;{lx};{ly}m").as_bytes())?;
     std::thread::sleep(Duration::from_millis(600));
@@ -1658,7 +1687,7 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     let summary = copy_paste_check(&mut ui)?;
     println!("    {summary}");
     // The reattach step looks for this terminal's earlier output.
-    ui.send(b"Clear-Host; Write-Output ('CANVAS_' + 'TERMINAL_OK')\r")?;
+    ui.send(crate::test_shell::clear_then_print("CANVAS_", "TERMINAL_OK").as_bytes())?;
     ui.wait("command output", Duration::from_secs(10), |t| t.contains("CANVAS_TERMINAL_OK"))?;
 
     step("activity bar: Automations view lists Copilot automations and adds them to an Automations group");
@@ -1776,28 +1805,43 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     ui.wait("terminal focus after canvas click", Duration::from_secs(5), |t| t.contains("Typing goes to the terminal"))?;
 
     step("a session's progress (OSC 9;4), title and bell reach the canvas");
-    ui.send(b"$e=[char]27; Write-Host -NoNewline \"$e]9;4;3;0$([char]7)$e]0;Canvas intent$([char]7)\"\r")?;
+    ui.send(crate::test_shell::emit("\\e]9;4;3;0\\a\\e]0;Canvas intent\\a").as_bytes())?;
     ui.wait("working from progress + intent in the pane header", Duration::from_secs(10), |t| {
         t.lines().any(|l| l.contains("Renamed by selftest · working · Canvas intent"))
     })?;
-    ui.send(b"Write-Host -NoNewline \"$e]9;4;0;0$([char]7)\"\r")?;
+    ui.send(crate::test_shell::emit("\\e]9;4;0;0\\a").as_bytes())?;
     ui.wait("progress cleared", Duration::from_secs(10), |t| t.lines().any(|l| l.contains("Renamed by selftest · running · Canvas intent")))?;
     step("a Copilot session started inside a session's terminal appears as its linked subsession");
     {
-        // A stand-in copilot.exe (a copy of ping) holding a session's in-use lock.
+        // A stand-in copilot.exe (a copy of ping; elsewhere `copilot`, a copy of sleep) holding a session's in-use lock.
         let fake = work.join("fake-copilot");
         std::fs::create_dir_all(&fake)?;
-        std::fs::copy(r"C:\Windows\System32\PING.EXE", fake.join("copilot.exe"))?;
+        let stand_in = fake.join(canvas_sys::host::exe_name("copilot"));
+        #[cfg(windows)]
+        std::fs::copy(r"C:\Windows\System32\PING.EXE", &stand_in)?;
+        #[cfg(unix)]
+        {
+            // A script named `copilot`, as npm installs the Node CLI (macOS
+            // also refuses to run copies of its own binaries elsewhere).
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(&stand_in, "#!/bin/sh\nsleep \"$1\"\n")?;
+            std::fs::set_permissions(&stand_in, std::fs::Permissions::from_mode(0o755))?;
+        }
         let child = uuid::Uuid::new_v4().to_string();
         let dir = instance.sessions_dir.join(&child);
         std::fs::create_dir_all(&dir)?;
         std::fs::write(dir.join("workspace.yaml"), format!("id: {child}\nname: Spawned tracker\ncwd: {}\n", work.display()))?;
-        let command = format!(
-            "$p = Start-Process -PassThru -NoNewWindow '{}' -ArgumentList '-n','40','127.0.0.1' -RedirectStandardOutput '{}'; New-Item -ItemType File \"{}\\inuse.$($p.Id).lock\" | Out-Null\r",
-            fake.join("copilot.exe").display(),
-            fake.join("ping.txt").display(),
-            dir.display()
-        );
+        let command = if cfg!(windows) {
+            format!(
+                "$p = Start-Process -PassThru -NoNewWindow '{}' -ArgumentList '-n','40','127.0.0.1' -RedirectStandardOutput '{}'; New-Item -ItemType File \"{}\\inuse.$($p.Id).lock\" | Out-Null\r",
+                stand_in.display(),
+                fake.join("ping.txt").display(),
+                dir.display()
+            )
+        } else {
+            // Inside single quotes (no history expansion of `$!`); `sh` stays its parent.
+            format!("/bin/sh -c '\"$0\" 40 & touch \"$1/inuse.$!.lock\"; wait' '{}' '{}' &\r", stand_in.display(), dir.display())
+        };
         ui.send(command.as_bytes())?;
         let doc = wait_doc(&canvas, "spawned subsession linked to its parent", |d| {
             d.nodes.iter().any(|n| n.id == child && n.parent.as_deref() == Some("demo-main") && n.name == "Spawned tracker")
@@ -1830,7 +1874,8 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     ui.wait("folder browser", Duration::from_secs(5), |t| t.contains("Choose a folder") && t.contains("repo"))?;
     ui.send(b"repo")?;
     ui.send(b"\r")?;
-    ui.wait("inside repo", Duration::from_secs(5), |t| t.contains("\\repo") && t.contains("↑ .."))?;
+    let sep = std::path::MAIN_SEPARATOR;
+    ui.wait("inside repo", Duration::from_secs(5), |t| t.contains(&format!("{sep}repo")) && t.contains("↑ .."))?;
     ui.send(b"\x13")?;
     ui.wait("Git detected", Duration::from_secs(10), |t| t.contains("Git:") && t.contains("on main"))?;
     for _ in 0..4 {
@@ -1842,13 +1887,19 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     ui.send(b"\t")?;
     ui.send(b"\r")?;
     let doc = wait_doc(&canvas, "worktree session node", |d| {
-        d.nodes.iter().any(|n| n.name == "Worktree session" && n.cwd.as_deref().is_some_and(|c| c.ends_with(r"repo.worktrees\worktree-session")))
+        d.nodes.iter().any(|n| n.name == "Worktree session" && n.cwd.as_deref().is_some_and(|c| c.ends_with(&format!("repo.worktrees{sep}worktree-session"))))
     })?;
     let expected = std::path::PathBuf::from(doc.nodes.iter().find(|n| n.name == "Worktree session").and_then(|n| n.cwd.clone()).unwrap_or_default());
     // The prompt's end is enough: a narrow tile wraps the long temp path
     // (its length depends on the user name), so the full path may span rows.
+    if !cfg!(windows) {
+        // The Unix demo prompt does not show the folder: ask the shell (the
+        // folder's end only, so a narrow tile does not wrap it).
+        ui.wait("the worktree session's shell", Duration::from_secs(30), |t| t.contains("Worktree session · ") && t.contains("PS > "))?;
+        ui.send(b"echo \"${PWD##*/work/}\"\r")?;
+    }
     ui.wait("shell running inside the worktree", Duration::from_secs(30), |t| {
-        t.contains(r"repo.worktrees\worktree-session") || t.contains(r"\worktree-session>")
+        t.contains(&format!("repo.worktrees{sep}worktree-session")) || t.contains(r"\worktree-session>")
     })?;
     let branches = std::process::Command::new("git").arg("-C").arg(&expected).args(["branch", "--show-current"]).output()?;
     anyhow::ensure!(String::from_utf8_lossy(&branches.stdout).trim() == "worktree-session", "worktree is on the new branch");
@@ -1889,7 +1940,7 @@ fn canvas_agent_steps<U: Ui>(instance: &Instance, work: &Path, args: &[String], 
     let canvas = instance.home.join("agents-canvas.json");
     let mut shell: Node = serde_json::from_value(serde_json::json!({ "id": "agents-shell", "kind": "session", "name": "Team shell", "x": 2, "y": 2 }))?;
     shell.cwd = Some(work.display().to_string());
-    shell.command = Some(vec!["powershell.exe".into(), "-NoLogo".into(), "-NoProfile".into()]);
+    shell.command = Some(crate::client::doc::demo_shell(std::env::consts::OS));
     shell.fresh = true;
     let mut doc = Doc::default();
     doc.nodes.push(shell);
@@ -2380,10 +2431,10 @@ fn layout_undo_steps<U: Ui>(ui: &mut U, canvas: &Path) -> Result<()> {
     ui.wait("the undo hint", Duration::from_secs(5), |t| t.contains("Ctrl+Z undo move"))?;
     // A terminal with the keyboard: Ctrl+Z is the program's (the probe prints it).
     back_to_terminal(ui)?;
-    ui.send(b"Clear-Host\r")?;
+    ui.send(crate::test_shell::clear().as_bytes())?;
     ui.wait("a cleared terminal", Duration::from_secs(10), |t| !t.contains(crate::paste_probe::READY))?;
     let exe = std::env::current_exe()?;
-    ui.send(format!("& '{}' paste-probe\r", exe.display()).as_bytes())?;
+    ui.send(crate::test_shell::run_self(&exe, "paste-probe").as_bytes())?;
     ui.wait("the paste probe", Duration::from_secs(20), |t| t.contains(crate::paste_probe::READY))?;
     ui.send(b"\x1a")?;
     ui.wait("Ctrl+Z reached the program", Duration::from_secs(10), |t| t.contains("KEY \\x1a"))?;

@@ -160,8 +160,8 @@ fn scenario(exe: &Path, cloud: &Instance, root: &Path) -> Result<()> {
     let secrets = std::fs::read_to_string(canvas_common::remote::Servers::path(&home))?;
     let stored = canvas_common::remote::Servers::load(&home)?;
     let test = stored.find("test").context("test stored")?.clone();
-    anyhow::ensure!(!secrets.contains(&crate::paths::hex(&test.secret()?)), "the secret is stored in the clear");
-    println!("    {} and {} paired; secrets DPAPI-protected in servers.json", test.client_id, stored.find("test2").map(|s| s.client_id.as_str()).unwrap_or("?"));
+    anyhow::ensure!(!secrets.contains(&crate::paths::hex(&canvas_sys::secret::open(&home, &test.secret)?)), "the secret is stored in the clear");
+    println!("    {} and {} paired; secrets sealed in servers.json ({})", test.client_id, stored.find("test2").map(|s| s.client_id.as_str()).unwrap_or("?"), canvas_sys::secret::backend(&home));
 
     step("wrong secrets and unpaired clients are refused (without being told anything)");
     let options = ConnOptions { name: "probe".into(), ..Default::default() };
@@ -206,7 +206,7 @@ fn scenario(exe: &Path, cloud: &Instance, root: &Path) -> Result<()> {
         let first = read_pid(&tui_control).context("the canvas started the tunnel child")?;
         ui.send(b"\r")?;
         ui.wait("PowerShell prompt", Duration::from_secs(20), |t| t.contains("PS "))?;
-        ui.send(b"Write-Output ('BEFORE_' + 'DROP')\r")?;
+        ui.send(crate::test_shell::print("BEFORE_", "DROP").as_bytes())?;
         ui.wait("output", Duration::from_secs(10), |t| t.contains("BEFORE_DROP"))?;
 
         std::fs::write(tui_control.join("drop"), "")?;
@@ -215,7 +215,7 @@ fn scenario(exe: &Path, cloud: &Instance, root: &Path) -> Result<()> {
         ui.wait("reconnected", RECONNECT_LIMIT, |t| t.contains("Reconnected") && !t.contains("Offline — reconnecting"))?;
         let after_drop = dropped.elapsed();
         ui.wait("the pane resynced", Duration::from_secs(5), |t| t.contains("BEFORE_DROP"))?;
-        ui.send(b"Write-Output ('AFTER_' + 'DROP')\r")?;
+        ui.send(crate::test_shell::print("AFTER_", "DROP").as_bytes())?;
         ui.wait("typing after the drop", Duration::from_secs(10), |t| t.contains("AFTER_DROP"))?;
         anyhow::ensure!(read_pid(&tui_control) == Some(first) && canvas_sys::process::alive(first), "a dropped connection keeps the tunnel child");
 
@@ -226,12 +226,12 @@ fn scenario(exe: &Path, cloud: &Instance, root: &Path) -> Result<()> {
         let after_kill = killed.elapsed();
         let second = read_pid(&tui_control).context("pid")?;
         anyhow::ensure!(second != first && canvas_sys::process::alive(second), "the tunnel child was started again");
-        ui.send(b"Write-Output ('AFTER_' + 'KILL')\r")?;
+        ui.send(crate::test_shell::print("AFTER_", "KILL").as_bytes())?;
         ui.wait("typing after the restart", Duration::from_secs(10), |t| t.contains("AFTER_KILL"))?;
         println!("    reconnected {:.1} s after a drop and {:.1} s after the tunnel child was killed (pid {first} → {second})", after_drop.as_secs_f64(), after_kill.as_secs_f64());
 
         // A path in the terminal opens in the canvas's viewer (no VS Code tunnel configured).
-        ui.send(format!("Write-Output ('probe ' + '{}' + ' end')\r", viewed.display()).as_bytes())?;
+        ui.send(crate::test_shell::print("probe ", &format!("{} end", viewed.display())).as_bytes())?;
         let needle = format!("probe {}", viewed.display());
         ui.wait("path printed", Duration::from_secs(10), |t| t.contains(&needle))?;
         let (lx, ly) = ui.find(&needle).context("printed path")?;

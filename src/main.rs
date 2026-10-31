@@ -16,6 +16,7 @@ mod remote_probe;
 mod selftest;
 mod soak;
 mod standin;
+mod test_shell;
 #[cfg(windows)]
 mod uia;
 #[cfg(not(windows))]
@@ -374,7 +375,7 @@ fn config(home: &std::path::Path, key: Option<&str>, value: Option<&str>) -> Res
 /// `copilot-canvas --gui …`: runs the GPU client next to this program with
 /// the same options, and exits with its exit code.
 fn launch_gui() -> Result<()> {
-    let exe = std::env::current_exe()?.with_file_name("copilot-canvas-gui.exe");
+    let exe = std::env::current_exe()?.with_file_name(canvas_sys::host::exe_name("copilot-canvas-gui"));
     anyhow::ensure!(exe.is_file(), "the GPU client {} is missing", exe.display());
     let args: Vec<String> = std::env::args().skip(1).filter(|a| a != "--gui" && a != "--tui").collect();
     if canvas_core::platform::other_client_dryrun().is_some() {

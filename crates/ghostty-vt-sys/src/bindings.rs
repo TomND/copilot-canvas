@@ -654,6 +654,12 @@ pub const GHOSTTY_KEY_ENCODER_OPT_KITTY_FLAGS: GhosttyKeyEncoderOption = 5;
 pub const GHOSTTY_KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT: GhosttyKeyEncoderOption = 6;
 pub const GHOSTTY_KEY_ENCODER_OPT_BACKARROW_KEY_MODE: GhosttyKeyEncoderOption = 7;
 
+pub type GhosttyOptionAsAlt = c_int;
+pub const GHOSTTY_OPTION_AS_ALT_FALSE: GhosttyOptionAsAlt = 0;
+pub const GHOSTTY_OPTION_AS_ALT_TRUE: GhosttyOptionAsAlt = 1;
+pub const GHOSTTY_OPTION_AS_ALT_LEFT: GhosttyOptionAsAlt = 2;
+pub const GHOSTTY_OPTION_AS_ALT_RIGHT: GhosttyOptionAsAlt = 3;
+
 pub type GhosttyKittyKeyFlags = u8;
 pub const GHOSTTY_KITTY_KEY_DISABLED: GhosttyKittyKeyFlags = 0;
 pub const GHOSTTY_KITTY_KEY_DISAMBIGUATE: GhosttyKittyKeyFlags = 1 << 0;

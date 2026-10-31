@@ -49,11 +49,46 @@ fn trim_end(chars: &[char], start: usize, mut end: usize) -> usize {
 }
 
 /// URLs and absolute Windows paths in a line: (start, end) char indices and target.
+/// URLs and absolute paths in a row of text: drive-letter and UNC paths for
+/// a Windows service, `/…` and `~/…` paths for a macOS or Linux one (the
+/// service's [`PathStyle`], MAC-LINUX-PLAN D10).
 pub fn find(chars: &[char]) -> Vec<(usize, usize, String)> {
+    find_in(chars, PathStyle::Windows)
+}
+
+/// Where a POSIX path may start: the start of the text, after a space or an
+/// opening quote or bracket (`a/b` and `http://x/y` are not paths).
+fn posix_start(chars: &[char], i: usize) -> bool {
+    let before = if i == 0 { None } else { Some(chars[i - 1]) };
+    let opens = before.is_none_or(|c| c.is_whitespace() || matches!(c, '(' | '[' | '{' | '<' | '\'' | '"' | '`' | '=' | ','));
+    let next = |k: usize| chars.get(i + k).copied();
+    let path_char_after = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-' | '~' | '@'));
+    opens
+        && match chars[i] {
+            '/' => path_char_after(next(1)),
+            '~' => next(1) == Some('/') && path_char_after(next(2)),
+            _ => false,
+        }
+}
+
+pub fn find_in(chars: &[char], style: PathStyle) -> Vec<(usize, usize, String)> {
     let mut found = Vec::new();
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
+        if style == PathStyle::Posix && posix_start(chars, i) {
+            let mut end = i + 1;
+            while end < chars.len() && path_char(chars[end]) {
+                end += 1;
+            }
+            let truncated = chars.get(end) == Some(&'…');
+            let end = trim_end(chars, i, end);
+            if !truncated && end > i + 2 {
+                found.push((i, end, chars[i..end].iter().collect()));
+                i = end;
+                continue;
+            }
+        }
         // Cheap reject: links start with h, m, f, a drive letter or a backslash.
         if !c.is_ascii_alphabetic() && c != '\\' {
             i += 1;
@@ -74,8 +109,9 @@ pub fn find(chars: &[char]) -> Vec<(usize, usize, String)> {
             }
         }
         // C:\… (drive paths) and \\server\share paths.
-        let drive = boundary && chars[i].is_ascii_alphabetic() && chars.get(i + 1) == Some(&':') && chars.get(i + 2) == Some(&'\\');
-        let unc = boundary && chars[i] == '\\' && chars.get(i + 1) == Some(&'\\') && chars.get(i + 2).is_some_and(|c| c.is_alphanumeric());
+        let windows = style == PathStyle::Windows;
+        let drive = windows && boundary && chars[i].is_ascii_alphabetic() && chars.get(i + 1) == Some(&':') && chars.get(i + 2) == Some(&'\\');
+        let unc = windows && boundary && chars[i] == '\\' && chars.get(i + 1) == Some(&'\\') && chars.get(i + 2).is_some_and(|c| c.is_alphanumeric());
         if drive || unc {
             let mut end = i + 2;
             while end < chars.len() && path_char(chars[end]) {
@@ -103,7 +139,7 @@ impl Link {
 /// Finds links in a screen area of the rendered buffer and underlines them.
 /// In terminals, a row that fills the full width continues on the next row
 /// (soft wrap), so wrapped URLs and paths are found whole.
-pub fn scan(buf: &mut Buffer, area: Rect, terminal: bool, skip: &[Rect], out: &mut Vec<Link>) {
+pub fn scan(buf: &mut Buffer, area: Rect, terminal: bool, skip: &[Rect], out: &mut Vec<Link>, style: PathStyle) {
     let area = area.intersection(buf.area);
     let mut y = area.y;
     let mut chars = Vec::with_capacity(area.width as usize);
@@ -127,7 +163,7 @@ pub fn scan(buf: &mut Buffer, area: Rect, terminal: bool, skip: &[Rect], out: &m
                 break;
             }
         }
-        for (start, end, target) in find(&chars) {
+        for (start, end, target) in find_in(&chars, style) {
             let mut rects: Vec<Rect> = Vec::new();
             for &(x, row) in &cells[start..end] {
                 match rects.last_mut() {
@@ -185,7 +221,13 @@ pub fn resolve(target: &str) -> Result<Target> {
         return Ok(Target::Url(target.to_owned()));
     }
     let (raw, line) = split_line(target);
-    let path = if lower.starts_with("file://") { file_url_to_path(raw, PathStyle::local()).context("bad file link")? } else { PathBuf::from(raw) };
+    let path = if lower.starts_with("file://") {
+        file_url_to_path(raw, PathStyle::local()).context("bad file link")?
+    } else if let Some(rest) = raw.strip_prefix("~/").filter(|_| PathStyle::local() == PathStyle::Posix) {
+        dirs::home_dir().context("no home folder")?.join(rest)
+    } else {
+        PathBuf::from(raw)
+    };
     anyhow::ensure!(path.is_absolute(), "only absolute paths can be opened");
     let meta = std::fs::metadata(&path).with_context(|| format!("{} does not exist", path.display()))?;
     Ok(if meta.is_dir() { Target::Folder(path) } else { Target::File(path, line) })
@@ -199,13 +241,20 @@ pub fn is_url(target: &str) -> bool {
 
 /// A path link on another machine (a remote service's): the absolute path
 /// and line, without touching this machine's file system.
-pub fn remote_path(target: &str) -> Result<(String, Option<u32>)> {
+/// A path of the service's machine (its `style`; `~/` is `user_home`) and
+/// its line, without local checks.
+pub fn remote_path(target: &str, style: PathStyle, user_home: &str) -> Result<(String, Option<u32>)> {
     let target = target.trim();
     anyhow::ensure!(target.len() < 4096 && !target.chars().any(|c| c.is_control() || c == '"'), "unsupported link");
     let (raw, line) = split_line(target);
-    let path = if target.to_ascii_lowercase().starts_with("file://") { file_url_to_path(raw, PathStyle::Windows).context("bad file link")? } else { PathBuf::from(raw) };
-    let text = path.display().to_string();
-    anyhow::ensure!(PathStyle::Windows.is_absolute(&text), "only absolute paths can be opened");
+    let text = if target.to_ascii_lowercase().starts_with("file://") {
+        file_url_to_path(raw, style).context("bad file link")?.display().to_string()
+    } else if let Some(rest) = raw.strip_prefix("~/").filter(|_| style == PathStyle::Posix && !user_home.is_empty()) {
+        style.join(user_home, rest)
+    } else {
+        raw.to_owned()
+    };
+    anyhow::ensure!(style.is_absolute(&text), "only absolute paths can be opened");
     Ok((text, line))
 }
 
@@ -281,6 +330,16 @@ mod tests {
     }
 
     #[test]
+    fn posix_services_link_absolute_and_home_paths() {
+        let posix = |line: &str| find_in(&line.chars().collect::<Vec<_>>(), PathStyle::Posix).into_iter().map(|(_, _, t)| t).collect::<Vec<_>>();
+        assert_eq!(posix("error in /Users/me/src/main.rs:12:3, see ~/notes.md."), ["/Users/me/src/main.rs:12:3", "~/notes.md"]);
+        assert_eq!(posix("(\"/tmp/a.txt\") and https://x.io/y/z"), ["/tmp/a.txt", "https://x.io/y/z"]);
+        assert!(posix("and/or 1/2 a//b / // ~ ~x").is_empty(), "{:?}", posix("and/or 1/2 a//b / // ~ ~x"));
+        assert!(posix(r"C:\x\y.rs").is_empty(), "no Windows paths on a POSIX service");
+        assert!(targets("/Users/me/x.rs").is_empty(), "no POSIX paths on a Windows service");
+    }
+
+    #[test]
     fn finds_urls_and_windows_paths_with_sensible_edges() {
         assert_eq!(targets("see https://github.com/org/repo/pull/12."), vec!["https://github.com/org/repo/pull/12"]);
         assert_eq!(targets("(https://en.wikipedia.org/wiki/Foo_(bar)) and"), vec!["https://en.wikipedia.org/wiki/Foo_(bar)"]);
@@ -298,7 +357,7 @@ mod tests {
         buf.set_string(2, 0, "go 中 https://a.io/x", ratatui::style::Style::default());
         buf.set_string(0, 1, "skip https://b.io", ratatui::style::Style::default());
         let mut out = Vec::new();
-        scan(&mut buf, Rect::new(0, 0, 40, 2), false, &[Rect::new(0, 1, 40, 1)], &mut out);
+        scan(&mut buf, Rect::new(0, 0, 40, 2), false, &[Rect::new(0, 1, 40, 1)], &mut out, PathStyle::Windows);
         assert_eq!(out.len(), 1, "{out:?}");
         // "go " (3) + wide char (2 cells) + space → URL starts at column 2 + 6.
         assert_eq!((out[0].rects.clone(), out[0].target.as_str()), (vec![Rect::new(8, 0, 14, 1)], "https://a.io/x"));
@@ -314,24 +373,32 @@ mod tests {
         buf.set_string(0, 1, "a.io/long", style);
         buf.set_string(0, 2, "next", style);
         let mut out = Vec::new();
-        scan(&mut buf, Rect::new(0, 0, 10, 3), true, &[], &mut out);
+        scan(&mut buf, Rect::new(0, 0, 10, 3), true, &[], &mut out, PathStyle::Windows);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].target, "https://a.io/long");
         assert_eq!(out[0].rects, vec![Rect::new(2, 0, 8, 1), Rect::new(0, 1, 9, 1)]);
         assert!(out[0].contains(0, 1) && !out[0].contains(0, 2));
         // Outside terminals rows are independent.
         let mut out = Vec::new();
-        scan(&mut buf, Rect::new(0, 0, 10, 3), false, &[], &mut out);
+        scan(&mut buf, Rect::new(0, 0, 10, 3), false, &[], &mut out, PathStyle::Windows);
         assert!(out.is_empty());
     }
 
     #[test]
     fn remote_paths_map_to_vscode_tunnel_uris_without_local_checks() {
-        assert_eq!(remote_path(r"C:\definitely\missing\x.rs:42:3").unwrap(), (r"C:\definitely\missing\x.rs".to_owned(), Some(42)));
-        assert_eq!(remote_path("file:///C:/a%20b/c.md").unwrap(), (r"C:\a b\c.md".to_owned(), None));
-        assert_eq!(remote_path(r"\\server\share\f.txt").unwrap().0, r"\\server\share\f.txt");
-        assert!(remote_path(r"relative\x.rs").is_err());
-        assert!(remote_path("C:\\a\"b").is_err());
+        let w = |t: &str| remote_path(t, PathStyle::Windows, r"C:\Users\me");
+        assert_eq!(w(r"C:\definitely\missing\x.rs:42:3").unwrap(), (r"C:\definitely\missing\x.rs".to_owned(), Some(42)));
+        assert_eq!(w("file:///C:/a%20b/c.md").unwrap(), (r"C:\a b\c.md".to_owned(), None));
+        assert_eq!(w(r"\\server\share\f.txt").unwrap().0, r"\\server\share\f.txt");
+        assert!(w(r"relative\x.rs").is_err());
+        assert!(w("C:\\a\"b").is_err());
+        assert!(w("/Users/me/x.rs").is_err(), "a POSIX path is not a Windows service's");
+        // A macOS or Linux service's paths.
+        let p = |t: &str| remote_path(t, PathStyle::Posix, "/Users/me");
+        assert_eq!(p("/Users/me/a b/x.rs:7").unwrap(), ("/Users/me/a b/x.rs".to_owned(), Some(7)));
+        assert_eq!(p("~/src/x.rs").unwrap().0, "/Users/me/src/x.rs");
+        assert_eq!(p("file:///tmp/a%20b.md").unwrap().0, "/tmp/a b.md");
+        assert!(p(r"C:\x.rs").is_err() && p("rel/x").is_err());
         assert_eq!(vscode_tunnel_uri("cloud-pc", r"C:\Repos\my app\main.rs", Some(12)), "vscode://vscode-remote/tunnel+cloud-pc/C:/Repos/my%20app/main.rs:12");
         assert_eq!(vscode_tunnel_uri("cpc", r"C:\Notes\#1.md", None), "vscode://vscode-remote/tunnel+cpc/C:/Notes/%231.md");
         assert!(is_url("HTTPS://x.io") && is_url("mailto:a@b") && !is_url(r"C:\x") && !is_url("file:///C:/x"));

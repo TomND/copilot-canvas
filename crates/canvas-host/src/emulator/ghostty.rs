@@ -187,11 +187,11 @@ impl GhosttyEmulator {
             check(sys::ghostty_key_event_new(null, &mut emu.key_event), "ghostty_key_event_new")?;
             (*emu.shared).render = emu.render;
         }
-        emu.configure(config.scrollback)?;
+        emu.configure(config.scrollback, config.pull_scrollback)?;
         Ok(emu)
     }
 
-    fn configure(&mut self, scrollback: usize) -> anyhow::Result<()> {
+    fn configure(&mut self, scrollback: usize, pull_scrollback: bool) -> anyhow::Result<()> {
         let t = self.terminal;
         let (cols, rows) = (self.shared().cols, self.shared().rows);
         let rgb = |c: alacritty_terminal::vte::ansi::Rgb| sys::GhosttyColorRgb { r: c.r, g: c.g, b: c.b };
@@ -201,7 +201,6 @@ impl GhosttyEmulator {
         let background = rgb(palette(NamedColor::Background as usize));
         let terminfo = "xterm-256color";
         let terminfo = sys::GhosttyString { ptr: terminfo.as_ptr(), len: terminfo.len() };
-        let pull_scrollback = false;
         macro_rules! set {
             ($option:ident, $value:expr) => {
                 // SAFETY: the value has the type the option documents; values
@@ -234,7 +233,9 @@ impl GhosttyEmulator {
         set!(GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, (&raw const background).cast());
         set!(GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, colors.as_ptr().cast());
         set!(GHOSTTY_TERMINAL_OPT_TERMINFO_NAME, (&raw const terminfo).cast());
-        // ConPTY keeps no scrollback of its own: a resize must not pull rows back.
+        // ConPTY repaints the viewport itself after a resize, so behind it a
+        // resize must not pull rows back; a Unix PTY's program redraws only on
+        // SIGWINCH, so there Ghostty's default applies (`Config::pull_scrollback`).
         set!(GHOSTTY_TERMINAL_OPT_RESIZE_PULL_SCROLLBACK, (&raw const pull_scrollback).cast());
         // Bounds OSC 5522 transactions; OSC 52 writes are checked in `on_clipboard_write`.
         let clipboard_max: usize = CLIPBOARD_MAX_BYTES;
@@ -498,6 +499,11 @@ impl GhosttyEmulator {
         // SAFETY: encoder, event and terminal handles are valid; `text` outlives the encode.
         unsafe {
             sys::ghostty_key_encoder_setopt_from_terminal(self.encoder, self.terminal);
+            // Alt is Alt: the client already decided which Option key means
+            // Alt (MAC-LINUX-PLAN D8). A macOS build of the library would
+            // otherwise treat Alt as Option and drop the ESC prefix.
+            let option_as_alt: sys::GhosttyOptionAsAlt = sys::GHOSTTY_OPTION_AS_ALT_TRUE;
+            sys::ghostty_key_encoder_setopt(self.encoder, sys::GHOSTTY_KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT, (&raw const option_as_alt).cast());
             sys::ghostty_key_event_set_action(event, sys::GHOSTTY_KEY_ACTION_PRESS);
             sys::ghostty_key_event_set_key(event, spec.key);
             sys::ghostty_key_event_set_mods(event, spec.mods);
@@ -1373,7 +1379,7 @@ mod tests {
     use crate::emulator::{create, feed_collect};
 
     fn config(cols: u16, rows: u16, kitty_keyboard: bool) -> Config {
-        Config { cols, rows, scrollback: 1000, kitty_keyboard }
+        Config { cols, rows, scrollback: 1000, kitty_keyboard, pull_scrollback: false }
     }
 
     fn emulator(cols: u16, rows: u16) -> GhosttyEmulator {
