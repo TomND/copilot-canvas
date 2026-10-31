@@ -69,9 +69,12 @@ pub mod fonts {
             files.extend(faces(&family));
             ui.push(family);
         }
-        // Fallbacks cosmic-text picks per character: emoji, symbols, CJK.
-        for pattern in ["emoji:color=true", "Noto Color Emoji", "DejaVu Sans", "Noto Sans Symbols2", ":lang=zh-cn", ":lang=ja", ":lang=ko"] {
-            if let Some((_, file)) = fc_match(pattern) {
+        // Fallbacks cosmic-text picks per character: emoji, symbols, CJK, and
+        // fonts with the canvas's own symbols that DejaVu lacks (⧉ ⏻ ⟲ ⟳ ⋯ ◌ ⌁ ✳ ✎ ❯ ⇢ ⇩).
+        let symbols = ["29c9", "23fb", "27f2", "27f3", "22ef", "25cc", "2301", "2733", "270e", "276f", "21e2", "21e9"].map(|c| format!(":charset={c}"));
+        let patterns = ["emoji:color=true", "Noto Color Emoji", "DejaVu Sans", "Noto Sans Symbols2", "Noto Sans Math", ":lang=zh-cn", ":lang=ja", ":lang=ko"];
+        for pattern in patterns.iter().map(|p| p.to_string()).chain(symbols) {
+            if let Some((_, file)) = fc_match(&pattern) {
                 files.push(file);
             }
         }
