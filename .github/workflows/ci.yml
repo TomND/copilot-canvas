@@ -268,7 +268,7 @@ jobs:
           sudo apt-get install -y -q --no-install-recommends pkg-config libssl-dev \
             libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
             libvulkan-dev mesa-vulkan-drivers libfontconfig1-dev xvfb xauth xclip \
-            dbus dbus-x11 gnome-keyring
+            dbus dbus-x11 gnome-keyring cron
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: unit and integration tests
@@ -281,8 +281,10 @@ jobs:
           dbus-run-session -- sh -c 'printf runner | gnome-keyring-daemon --unlock --components=secrets >/dev/null &&
             COPILOT_CANVAS_SECRET_SERVICE_TESTS=1 cargo test -p canvas-sys --lib secret -- --nocapture'
       - name: alacritty-only build (no Zig)
+        if: ${{ !cancelled() }}
         run: cargo build --no-default-features
       - name: release build
+        if: ${{ !cancelled() }}
         run: cargo build --release
       # The self-tests run every step even when one before failed (each is
       # independent), so one run shows them all. The TUI's copy and paste use
@@ -305,6 +307,20 @@ jobs:
       - name: pairing and the Dev Tunnel stand-in
         if: ${{ !cancelled() }}
         run: xvfb-run -a target/release/copilot-canvas selftest --remote paired
+      # Automations on the runner's real schedulers; the probe task is
+      # removed at the end of each run (also on failure).
+      - name: automations on a user systemd
+        if: ${{ !cancelled() }}
+        run: |
+          sudo loginctl enable-linger "$USER"
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          for i in $(seq 1 40); do systemctl --user show-environment >/dev/null 2>&1 && break; sleep 0.5; done
+          COPILOT_CANVAS_SCHEDULER=systemd target/release/copilot-canvas selftest automations
+      - name: automations on cron
+        if: ${{ !cancelled() }}
+        run: |
+          sudo systemctl start cron || sudo service cron start
+          COPILOT_CANVAS_SCHEDULER=cron target/release/copilot-canvas selftest automations
       - name: keep logs
         if: failure()
         uses: actions/upload-artifact@v7
@@ -313,5 +329,6 @@ jobs:
           path: |
             /tmp/copilot-canvas-*/**/*.log
             /tmp/copilot-canvas-*/**/*.json
+            /tmp/copilot-canvas-*/**/*.yaml
             ${{ runner.temp }}/**/*.log
           if-no-files-found: ignore
