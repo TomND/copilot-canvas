@@ -417,8 +417,9 @@ fn placement() -> Result<String> {
     anyhow::ensure!(on_screen, "clamped onto a monitor: {clamped}");
     ui.request(json!({ "cmd": "quit" }))?;
     ui.wait_exit(Duration::from_secs(10))?;
+    let work = clamped["monitors"].as_array().and_then(|m| m.iter().find(|m| m["name"] == clamped["monitor"])).map(|m| m["work"].to_string()).unwrap_or_default();
     Ok(format!(
-        "moved to {} {}, restored there; maximized restored; a gone monitor → {px},{py} on {}",
+        "moved to {} {}, restored there; maximized restored; a gone monitor → {px},{py} on {} (work area {work})",
         moved["position"],
         moved["size"],
         clamped["monitor"].as_str().unwrap_or("?")
