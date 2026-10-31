@@ -18,7 +18,7 @@ use crate::paint::{
     truncate,
 };
 use crate::status::{Status, StatusStyle};
-use crate::view::{Border, BoxKind, BoxModel, CanvasModel, ChipModel, DeckInfo, EdgeKind, EdgeModel, EffectModel, GroupModel, LoopModel, PulseModel, WRect};
+use crate::view::{Border, BoxKind, BoxModel, CanvasModel, ChipModel, DeckInfo, EdgeKind, EdgeModel, EffectModel, GroupModel, Hidden, LoopModel, PulseModel, WRect};
 use crate::visual::{Deck, VisualFrame};
 
 /// Gpu mode: chips are laid out in world units (scaled with the zoom) from
@@ -219,29 +219,44 @@ pub fn box_model(app: &App, node: &Node, rect: WRect, status: Status, selected: 
     }
 }
 
-/// A stack's top card: the newest stacked session with the most important
-/// status of the stack (needs you, failed, done · review, working).
+/// A deck's top card. A stack: the newest stacked session with the most
+/// important status of the deck (needs you, failed, done · review,
+/// working). Folded subagent boxes alone: a slim "◇ 12 subagents" card with
+/// what they do ("working · 2 of 12", "failed · 1 running", "just finished").
 pub fn deck_model(app: &App, deck: &Deck, rect: WRect, boxes: &Boxes) -> Option<BoxModel> {
     let top = app.doc.node(&deck.top)?;
-    let status = app.aggregate_status(&deck.sessions).unwrap_or_else(|| app.node_status(top));
-    let selected = deck.sessions.iter().any(|s| app.selection.contains(s)) || boxes.flashing(&deck.top);
+    let status = deck.status.unwrap_or_else(|| app.node_status(top));
+    let selected = deck.members.iter().any(|s| app.selection.contains(s) || boxes.flashing(s));
     let mut b = box_model(app, top, rect, status, selected, boxes);
-    let count = deck.sessions.len() as u32;
-    b.subtitle = format!("stack of {count} · double-click to unstack");
+    let count = (deck.sessions.len() + deck.agents.len()) as u32;
+    let agents = deck.agents.len();
+    if deck.agents_only() {
+        let running = deck.running;
+        b.name = format!("{agents} subagent{}", if agents == 1 { "" } else { "s" });
+        b.line = match running {
+            n if status == Status::Working && agents > 1 => format!("{} {} · {n} of {agents}", b.icon, b.label),
+            _ if status == Status::Working => format!("{} {}", b.icon, b.label),
+            0 => format!("{} {}", b.icon, b.label),
+            n => format!("{} {} · {n} running", b.icon, b.label),
+        };
+        b.subtitle = "double-click to show them".into();
+    } else if agents > 0 {
+        b.subtitle = format!("stack of {} · {agents} subagent{} · double-click to unfold", deck.sessions.len(), if agents == 1 { "" } else { "s" });
+    } else {
+        b.subtitle = format!("stack of {count} · double-click to unstack");
+    }
     b.dust = 0;
     b.alpha = deck.alpha;
     b.mailbox = deck.sessions.iter().map(|s| app.bus.mailbox.get(s).copied().unwrap_or(0)).sum();
     b.active = deck.sessions.iter().any(|s| boxes.active_term.as_deref() == Some(s.as_str()));
-    b.deck = Some(DeckInfo { root: deck.root.clone(), count, back: deck.back() });
+    b.deck = Some(DeckInfo { root: deck.root.clone(), count, back: deck.back(), agents: agents as u32 });
     Some(b)
 }
 
-/// Subsessions hidden into a box: their count and the attention colour of
-/// the most important one.
-fn hidden_badge(app: &App, frame: &VisualFrame, id: &str) -> Option<(u32, Option<Color>)> {
-    let ids = frame.hidden.get(id)?;
-    let color = app.aggregate_status(ids).and_then(|s| s.attention().map(|(c, _)| c).or((s == Status::Failed).then_some(crate::paint::NEGATIVE)));
-    Some((ids.len() as u32, color))
+/// Subsessions and subagent boxes hidden into a box: how many of each and
+/// the attention colour of the most important one.
+fn hidden_badge(frame: &VisualFrame, id: &str) -> Option<Hidden> {
+    frame.hidden_badges.get(id).copied()
 }
 
 pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
@@ -268,10 +283,8 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
     };
 
     let mut member_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-    for node in &app.doc.nodes {
-        if let Some(group) = app.doc.group_of(node) {
-            *member_counts.entry(group.id.as_str()).or_default() += 1;
-        }
+    for group in app.doc.groups_by_node().into_values() {
+        *member_counts.entry(group.id.as_str()).or_default() += 1;
     }
     let mut chip_hits: Vec<(ratatui::layout::Rect, crate::dialogs::Hit)> = Vec::new();
     let mut groups: Vec<&crate::doc::Group> = app.doc.groups.iter().collect();
@@ -334,7 +347,7 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
     }
     for deck in &frame.decks {
         if let Some(root) = app.doc.node(&deck.root) {
-            links.push((app.node_screen(root), deck_screen(deck), true));
+            links.push((app.node_screen(root), deck_screen(deck), !deck.agents_only()));
         }
     }
     for ((px, py, pw, ph), (cx, cy, cw, ch), subsession) in links {
@@ -350,14 +363,30 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
         draw_path(buf, &path, vertical, horizontal, style, clip);
     }
 
-    // Nodes; selected ones on top.
+    // Nodes, then the decks, then the selected nodes (on top).
     let mut order: Vec<&Node> = app.doc.nodes.iter().filter(|n| !frame.skip(&n.id)).collect();
     order.sort_by_key(|n| app.selection.contains(&n.id));
     let zoom = app.doc.view.zoom;
     // The session whose terminal is the active one on the right.
     let active_term = boxes.active_term.clone();
     let typing = app.focus == crate::app::Focus::Terminal;
-    for node in order {
+    let paint_decks = |buf: &mut Buffer| {
+        // Decks: the top card beneath its session, the other cards behind it.
+        for deck in &frame.decks {
+            let (x, y, w, h) = deck_screen(deck);
+            if x + w + 2 < area.x as i32 || x > area.right() as i32 || y + h + 2 < area.y as i32 || y > area.bottom() as i32 {
+                continue;
+            }
+            if let Some(b) = deck_model(app, deck, deck.rect, &boxes) {
+                paint_box(buf, &b, (x, y, w, h), zoom, clip);
+            }
+        }
+    };
+    let first_selected = order.iter().position(|n| app.selection.contains(&n.id));
+    for (i, node) in order.into_iter().enumerate() {
+        if Some(i) == first_selected {
+            paint_decks(buf);
+        }
         let (x, y, w, h) = app.node_screen(node);
         if x + w < area.x as i32 || x > area.right() as i32 || y + h < area.y as i32 || y > area.bottom() as i32 {
             continue;
@@ -365,18 +394,11 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
         let status = app.node_status(node);
         let selected = app.selection.contains(&node.id) || boxes.flashing(&node.id);
         let mut b = box_model(app, node, WRect::from(node.rect()), status, selected, &boxes);
-        b.hidden = hidden_badge(app, &frame, &node.id);
+        b.hidden = hidden_badge(&frame, &node.id);
         paint_box(buf, &b, (x, y, w, h), zoom, clip);
     }
-    // Stacks: the top card beneath its parent, the other cards behind it.
-    for deck in &frame.decks {
-        let (x, y, w, h) = deck_screen(deck);
-        if x + w + 2 < area.x as i32 || x > area.right() as i32 || y + h + 2 < area.y as i32 || y > area.bottom() as i32 {
-            continue;
-        }
-        if let Some(b) = deck_model(app, deck, deck.rect, &boxes) {
-            paint_box(buf, &b, (x, y, w, h), zoom, clip);
-        }
+    if first_selected.is_none() {
+        paint_decks(buf);
     }
 
     // Queued messages for a session: a badge on its top edge.
@@ -448,16 +470,17 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
 }
 
 /// One box as characters at screen cells `(x, y, w, h)` for a zoom step
-/// (0: full, 1: compact, 2: one line), with a stack's back cards and the
-/// stack and hidden-subsession badges.
+/// (0: full, 1: compact, 2: one line), with a deck's back cards and the
+/// stack and hidden-box badges.
 pub fn paint_box(buf: &mut Buffer, b: &BoxModel, (x, y, w, h): (i32, i32, i32, i32), zoom: u8, clip: Rect) {
     let status_style = fg(b.status.color());
     match zoom {
         0 => {
             if let Some(deck) = &b.deck {
+                let cards = if b.kind == BoxKind::Agent { &LIGHT } else { &ROUND };
                 for i in (1..=deck.back as i32).rev() {
                     fill(buf, x + i + 1, y + i + 1, w - 2, h - 2, Style::default().bg(PANEL), clip);
-                    outline(buf, x + i, y + i, w, h, &ROUND, fg(MUTED), clip);
+                    outline(buf, x + i, y + i, w, h, cards, fg(MUTED), clip);
                 }
             }
             fill(buf, x + 1, y + 1, w - 2, h - 2, Style::default().bg(b.fill), clip);
@@ -497,13 +520,13 @@ pub fn paint_box(buf: &mut Buffer, b: &BoxModel, (x, y, w, h): (i32, i32, i32, i
         }
     }
     if zoom < 2 {
-        if let Some(deck) = b.deck.as_ref().filter(|d| d.count > 1) {
-            let badge = format!(" +{} ", deck.count - 1);
+        if let Some(badge) = b.deck.as_ref().and_then(DeckInfo::badge) {
+            let badge = format!(" {badge} ");
             put(buf, x + w - 2 - paint::text_width(&badge) as i32, y, &badge, crate::paint::bold(PANEL).bg(ACCENT), clip);
         }
-        if let Some((count, color)) = b.hidden {
-            let badge = format!(" ⋯ {count} hidden ");
-            let style = match color {
+        if let Some(hidden) = b.hidden {
+            let badge = format!(" {} ", hidden.text());
+            let style = match hidden.color {
                 Some(color) => crate::paint::bold(PANEL).bg(color),
                 None => fg(TEXT).bg(crate::paint::PANEL_HI),
             };
@@ -687,10 +710,8 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
     let deck_rect = |deck: &Deck| if moving_nodes.contains(deck.root.as_str()) { deck.rect.offset(offset) } else { deck.rect };
 
     let mut member_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-    for node in &app.doc.nodes {
-        if let Some(group) = app.doc.group_of(node) {
-            *member_counts.entry(group.id.as_str()).or_default() += 1;
-        }
+    for group in app.doc.groups_by_node().into_values() {
+        *member_counts.entry(group.id.as_str()).or_default() += 1;
     }
     let mut chip_hits: Vec<(Rect, crate::dialogs::Hit)> = Vec::new();
     let mut groups: Vec<&crate::doc::Group> = app.doc.groups.iter().collect();
@@ -765,7 +786,7 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
     }
     for deck in &frame.decks {
         if let Some(root) = app.doc.node(&deck.root) {
-            edge(&mut model, node_rect(root), deck_rect(deck), true);
+            edge(&mut model, node_rect(root), deck_rect(deck), !deck.agents_only());
         }
     }
 
@@ -781,7 +802,7 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
         let status = app.node_status(node);
         let selected = app.selection.contains(&node.id) || boxes.flashing(&node.id);
         let mut b = box_model(app, node, rect, status, selected, &boxes);
-        b.hidden = hidden_badge(app, &frame, &node.id);
+        b.hidden = hidden_badge(&frame, &node.id);
         if let Some((_, alpha)) = frame.moving.get(&node.id) {
             b.alpha = alpha.clamp(0.0, 1.0);
         }
@@ -800,15 +821,17 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
         }
         model.boxes.push(b);
     }
-    for deck in &frame.decks {
-        let rect = deck_rect(deck);
-        if !shows(WRect::new(rect.x, rect.y, rect.w + 2.0, rect.h + 2.0)) {
-            continue;
-        }
-        if let Some(b) = deck_model(app, deck, rect, &boxes) {
-            model.boxes.push(b);
-        }
-    }
+    // The decks go above the other boxes and under the selected ones.
+    let decks: Vec<BoxModel> = frame
+        .decks
+        .iter()
+        .filter_map(|deck| {
+            let rect = deck_rect(deck);
+            shows(WRect::new(rect.x, rect.y, rect.w + 2.0, rect.h + 2.0)).then(|| deck_model(app, deck, rect, &boxes)).flatten()
+        })
+        .collect();
+    let at = model.boxes.iter().position(|b| app.selection.contains(&b.id)).unwrap_or(model.boxes.len());
+    model.boxes.splice(at..at, decks);
 
     for (from, to, start) in &app.pulses {
         let (Some(a), Some(b)) = (app.doc.node(from), app.doc.node(to)) else { continue };

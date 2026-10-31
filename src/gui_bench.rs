@@ -108,7 +108,8 @@ fn perf(ui: &GuiDriver, reset: bool) -> Result<Value> {
 /// 100 sessions with 12 subagents each in 10 groups, plus the benchmark's
 /// four terminals (tiled; the echo terminal first).
 fn canvas(tiles: &[String]) -> Doc {
-    let mut doc = Doc::default();
+    // Every subagent box drawn on its own (the workload this measures).
+    let mut doc = Doc { subagents_shown: true, ..Doc::default() };
     for (i, id) in tiles.iter().enumerate() {
         doc.nodes.push(node(id, &format!("Bench {id}"), -40, i as i32 * GRID_Y, Some(vec!["cmd".into()])));
     }
@@ -154,7 +155,7 @@ fn node(id: &str, name: &str, x: i32, y: i32, command: Option<Vec<String>>) -> N
         passive: None,
         no_messages: false,
         agent: None,
-        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
+        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
     }
 }
 
@@ -419,7 +420,7 @@ fn stress(instance: &Instance, root: &Path, options: &Options, n: usize, m: usiz
     let sessions = instance.sessions_dir.clone();
     let work = root.join("work").to_string_lossy().into_owned();
     let ids: Vec<String> = (0..n).map(|_| uuid::Uuid::new_v4().to_string()).collect();
-    let mut doc = Doc::default();
+    let mut doc = Doc { subagents_shown: true, ..Doc::default() };
     eprintln!("{n} live sessions with {m} subagents each…");
     for (i, id) in ids.iter().enumerate() {
         let dir = sessions.join(id);
@@ -550,7 +551,7 @@ fn stress(instance: &Instance, root: &Path, options: &Options, n: usize, m: usiz
 /// A realistic canvas for `--perf-canvas synthetic`: 94 sessions in 9 groups
 /// with subagents and a few subsessions (no real canvas file is needed).
 fn synthetic_canvas() -> Doc {
-    let mut doc = Doc::default();
+    let mut doc = Doc { subagents_shown: true, ..Doc::default() };
     let mut i = 0;
     for g in 0..9i32 {
         let (gx, gy) = ((g % 3) * 140, (g / 3) * 70);

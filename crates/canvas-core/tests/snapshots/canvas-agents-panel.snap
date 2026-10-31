@@ -2,17 +2,17 @@
 ## cells (the TUI screen)
  ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents 3 · ⚠ 1   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit    ◆ 1 needs you   5 sessions
     SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
-▌▤  / filter…                    │ ┌╌ ▣ Payments · 2 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ 1 ╌ ◧ AI d││ ◎ Canvas agents · 3                                         │
+▌▤  / filter…                    │ ┌╌ ▣ Payments · 2 ╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ 1 passive ╌ ◧ AI d││ ◎ Canvas agents · 3                                         │
                                  │ ╎                                                  ││ Canvas-wide agents watch every group of this canvas: events │
  ◷  ▾ ▣ Payments               2 │ ╎ ╭ Fix flaky test ────────────╮    ┌ ⟲ Drift guard││ from any session (pr.* anywhere), schedules, messages to    │
       ◧ pay                      │ ╎ │ ■ stopped                  │    ╎ ○ waiting    ││ any session, and the canvas skills you give them. A group's │
- ⧉    ■ Fix flaky test           │ ╎ │ canvas                     │    ╎ on pr.pushed ││ passive sessions (⟲) see only their own group.              │
-      ⟲ ○ ↻ Drift guard          │ ╎ ╰────────────────────────────╯    └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││                                                             │
- ⌁  ▾ ◎ Canvas agents          3 │ ╎     ·     ·     ·     ·     ·     ·     ·     ·  ││ ◎ PR coordinator  ● monitoring                              │
-      ◎ ● ↻ PR coordinator       │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ on pr.*, build.failed · skills: pr-etiquette                │
- ✦    ◎ ‖ Cross-group digest     │                                                    ││ monitoring · last: 2 PRs tracked                            │
-      ◎ ⚠ ↻ Release watch        │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││     ▸ Run now   ‖ Pause   ⏻ Disable   Open                  │
- ◈                               │ ┌╌ ◎ Canvas agents · 3 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ ◎ Cross-group digest  ‖ paused                              │
+ ⧉    ⟲ Passive sessions       1 │ ╎ │ canvas                     │    ╎ on pr.pushed ││ passive sessions (⟲) see only their own group.              │
+        ⟲ ○ ↻ Drift guard        │ ╎ ╰────────────────────────────╯    └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││                                                             │
+ ⌁    ■ Fix flaky test           │ ╎     ·     ·     ·     ·     ·     ·     ·     ·  ││ ◎ PR coordinator  ● monitoring                              │
+    ▾ ◎ Canvas agents          3 │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ on pr.*, build.failed · skills: pr-etiquette                │
+ ✦    ◎ ● ↻ PR coordinator       │                                                    ││ monitoring · last: 2 PRs tracked                            │
+      ◎ ‖ Cross-group digest     │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││     ▸ Run now   ‖ Pause   ⏻ Disable   Open                  │
+ ◈    ◎ ⚠ ↻ Release watch        │ ┌╌ ◎ Canvas agents · 3 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ ◎ Cross-group digest  ‖ paused                              │
                                  │ ╎                                                  ││ on session.done                                             │
  ⇄                               │ ╎ ┌ ◎ PR coordinator ╌╌╌╌╌╌╌╌╌╌┐┄•● ┌ ◎ Cross-group││     ▶ Resume   ⏻ Disable   Open                             │
                                  │ ╎ ╎ ● monitoring · 2 PRs trac… ╎  ┆ ╎ ‖ paused     ││ ◎ Release watch  ⚠ needs attention                          │
@@ -47,7 +47,7 @@ group g-agents "Canvas agents" icon=◎ members=3 rect=0,10 104x8 color=#cc79a7 
   chip " ◎ 3 · manage " action=Agents(Panel) rect=76,10 14x1 fixed=false lit=true
   chip " ✦ Skills " action=Agents(Library) rect=91,10 10x1 fixed=false lit=true
 group g-pay "Payments" icon=▣ members=2 rect=0,0 70x8 color=#56b4e9 style=[fg #56b4e9 +DIM] selected=false drop_target=false automations=false folder=true
-  chip " ⟲ 1 " action=Visual(GroupPassives("g-pay")) rect=38,0 5x1 fixed=false lit=true
+  chip " ⟲ 1 passive " action=Visual(GroupPassives("g-pay")) rect=30,0 13x1 fixed=false lit=true
   chip " ◧ AI docs " action=OpenGroupFolder("g-pay", false) rect=44,0 11x1 fixed=false lit=true
   chip " ◨ Outputs " action=OpenGroupFolder("g-pay", true) rect=56,0 11x1 fixed=false lit=true
 box s-fix Session rect=2,2 30x4 prefix="" name="Fix flaky test"
@@ -72,17 +72,17 @@ loop a-pr rect=2,12 30x4 halo=false lap=0.153 grow=1 ending=false
 ## gpu screen (chrome and the model painted as text)
  ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents 3 · ⚠ 1   ▢ Single   Show all nodes   −   +   ?   ⧉   ⏻ Quit             ◆ 1 needs you
     SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
-▌▤  / filter…                    │ ┌╌ ▣ Payments · 2 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ 1 ╌ ◧ AI d││ ◎ Canvas agents · 3                                         │
+▌▤  / filter…                    │ ┌╌ ▣ Payments · 2 ╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ 1 passive ╌ ◧ AI d││ ◎ Canvas agents · 3                                         │
                                  │ ╎                                                  ││ Canvas-wide agents watch every group of this canvas: events │
  ◷  ▾ ▣ Payments               2 │ ╎ ╭ Fix flaky test ────────────╮    ┌ ⟲ Drift guard││ from any session (pr.* anywhere), schedules, messages to    │
       ◧ pay                      │ ╎ │ ■ stopped                  │    ╎ ○ waiting    ││ any session, and the canvas skills you give them. A group's │
- ⧉    ■ Fix flaky test           │ ╎ │ canvas                     │    ╎ on pr.pushed ││ passive sessions (⟲) see only their own group.              │
-      ⟲ ○ ↻ Drift guard          │ ╎ ╰────────────────────────────╯    └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││                                                             │
- ⌁  ▾ ◎ Canvas agents          3 │ ╎     ·     ·     ·     ·     ·     ·     ·     ·  ││ ◎ PR coordinator  ● monitoring                              │
-      ◎ ● ↻ PR coordinator       │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ on pr.*, build.failed · skills: pr-etiquette                │
- ✦    ◎ ‖ Cross-group digest     │                                                    ││ monitoring · last: 2 PRs tracked                            │
-      ◎ ⚠ ↻ Release watch        │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││     ▸ Run now   ‖ Pause   ⏻ Disable   Open                  │
- ◈                               │ ┌╌ ◎ Canvas agents · 3 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ ◎ Cross-group digest  ‖ paused                              │
+ ⧉    ⟲ Passive sessions       1 │ ╎ │ canvas                     │    ╎ on pr.pushed ││ passive sessions (⟲) see only their own group.              │
+        ⟲ ○ ↻ Drift guard        │ ╎ ╰────────────────────────────╯    └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││                                                             │
+ ⌁    ■ Fix flaky test           │ ╎     ·     ·     ·     ·     ·     ·     ·     ·  ││ ◎ PR coordinator  ● monitoring                              │
+    ▾ ◎ Canvas agents          3 │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ on pr.*, build.failed · skills: pr-etiquette                │
+ ✦    ◎ ● ↻ PR coordinator       │                                                    ││ monitoring · last: 2 PRs tracked                            │
+      ◎ ‖ Cross-group digest     │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││     ▸ Run now   ‖ Pause   ⏻ Disable   Open                  │
+ ◈    ◎ ⚠ ↻ Release watch        │ ┌╌ ◎ Canvas agents · 3 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ ◎ Cross-group digest  ‖ paused                              │
                                  │ ╎                                                  ││ on session.done                                             │
  ⇄                               │ ╎ ┌ ◎ PR coordinator ╌╌╌╌╌╌╌╌╌╌┐┄•● ┌ ◎ Cross-group││     ▶ Resume   ⏻ Disable   Open                             │
                                  │ ╎ ╎ ● monitoring · 2 PRs trac… ╎  ┆ ╎ ‖ paused     ││ ◎ Release watch  ⚠ needs attention                          │

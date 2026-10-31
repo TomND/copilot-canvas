@@ -762,21 +762,45 @@ fn copilot_program() -> Result<String> {
     if let Some(custom) = std::env::var_os("COPILOT_CANVAS_COPILOT") {
         return Ok(custom.to_string_lossy().into_owned());
     }
-    find_on_path("copilot.exe")
-        .map(|p| p.to_string_lossy().into_owned())
-        .context("copilot.exe was not found on PATH (set COPILOT_CANVAS_COPILOT to override)")
+    let name = canvas_sys::host::exe_name("copilot");
+    find_on_path(&name).map(|p| p.to_string_lossy().into_owned()).with_context(|| format!("{name} was not found on PATH (set COPILOT_CANVAS_COPILOT to override)"))
 }
 
 /// Copilot processes inside a terminal's process tree that are a session's
 /// own CLI process: `copilot.exe` started by something else (the shim) or by
 /// that shim (the real CLI). Deeper `copilot.exe` are the CLI's workers.
+/// (`copilot` on macOS and Linux, where [`name_node_copilots`] also names
+/// the Node processes that run the CLI's script.)
 pub fn nested_copilots(tree: &[u32], procs: &HashMap<u32, (u32, String)>) -> Vec<u32> {
-    let is_copilot = |pid: u32| procs.get(&pid).is_some_and(|(_, name)| name == "copilot.exe");
+    let copilot = canvas_sys::host::exe_name("copilot");
+    let is_copilot = |pid: u32| procs.get(&pid).is_some_and(|(_, name)| *name == copilot);
     let parent = |pid: u32| procs.get(&pid).map(|(p, _)| *p).unwrap_or(0);
     tree.iter()
         .copied()
         .filter(|&pid| is_copilot(pid) && (!is_copilot(parent(pid)) || !is_copilot(parent(parent(pid)))))
         .collect()
+}
+
+/// Names `copilot` the processes of `tree` that run the Copilot CLI as a
+/// script (`node …/bin/copilot`, `node …/@github/copilot/index.js`): on
+/// macOS and Linux the CLI is a Node program, so its process name is `node`
+/// (MAC-LINUX-PLAN §5.10). Command lines are not read on Windows.
+pub fn name_node_copilots(tree: &[u32], procs: &mut HashMap<u32, (u32, String)>) {
+    let copilot = canvas_sys::host::exe_name("copilot");
+    for &pid in tree {
+        let Some((_, name)) = procs.get(&pid) else { continue };
+        if *name == copilot || !name.starts_with("node") {
+            continue;
+        }
+        let Some(argv) = canvas_sys::process::process_argv(pid) else { continue };
+        let runs_copilot = argv.iter().skip(1).take(2).any(|arg| {
+            let base = arg.rsplit('/').next().unwrap_or(arg);
+            base == "copilot" || arg.contains("/@github/copilot/")
+        });
+        if runs_copilot && let Some(entry) = procs.get_mut(&pid) {
+            entry.1 = copilot.clone();
+        }
+    }
 }
 
 /// The session whose in-use lock this process holds.
@@ -808,7 +832,7 @@ fn subsession_loop(shared: Arc<Agents>) {
             continue;
         }
         let entries = canvas_sys::process::process_entries();
-        let procs: HashMap<u32, (u32, String)> = entries.iter().map(|(pid, parent, name)| (*pid, (*parent, name.clone()))).collect();
+        let mut procs: HashMap<u32, (u32, String)> = entries.iter().map(|(pid, parent, name)| (*pid, (*parent, name.clone()))).collect();
         let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
         for (pid, parent, _) in &entries {
             children.entry(*parent).or_default().push(*pid);
@@ -816,6 +840,7 @@ fn subsession_loop(shared: Arc<Agents>) {
         let mut alive = HashSet::new();
         for (parent_id, root) in terms {
             let tree = canvas_sys::process::process_tree(root, &children);
+            name_node_copilots(&tree, &mut procs);
             for pid in nested_copilots(&tree, &procs) {
                 alive.insert(pid);
                 let state = checked.entry(pid).or_insert((0, None));
@@ -1055,7 +1080,8 @@ mod tests {
             (24, (20, "node.exe")),
         ]
         .into_iter()
-        .map(|(pid, (parent, name))| (pid, (parent, name.to_owned())))
+        // The CLI's name on this platform (`copilot` off Windows).
+        .map(|(pid, (parent, name))| (pid, (parent, if name == "copilot.exe" { canvas_sys::host::exe_name("copilot") } else { name.to_owned() })))
         .collect();
         let tree = [10, 11, 12, 20, 21, 22, 23, 24];
         assert_eq!(nested_copilots(&tree, &procs), vec![10, 11, 21, 22]);

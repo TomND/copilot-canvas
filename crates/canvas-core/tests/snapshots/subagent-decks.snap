@@ -1,0 +1,65 @@
+# subagent-decks (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit              ⠋ 2 working   2 sessions
+    SESSIONS                     │▌·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+▌▤  / filter…                    │  ╭ Orchestrator ──────────────╮     ╭ Fix the build ─────────────╮
+                                 │  │ ⠋ working · ↗ elsewhere    │     │ ⠋ working · ↗ elsewhere    │
+ ◷  ⠋ ↗ Orchestrator             │ ·│ canvas · main              │     │ canvas · main              │·     ·     ·     ·     ·     ·     ·     ·     ·
+      ◇ ⠋ Explore the API        │  ╰────────────────────────────╯     ╰────────────────────────────╯
+ ⧉  ⠋ ↗ Fix the build            │    ─────                              ─────
+      ◇ ⠋ Search the logs        │ ·    ┌ ◇ 3 subagents ───────┐ ·     ·   ┌ ◇ 2 subagents ───────┐  ·     ·     ·     ·     ·     ·     ·     ·     ·
+ ⌁                               │      │ ✗ failed · 1 running │┐          │ ⠋ working · 1 of 2   │┐
+                                 │      └──────────────────────┘│┐         └──────────────────────┘│
+ ✦                               │ ·     └──────────────────────┘│     ·    └──────────────────────┘ ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │        └──────────────────────┘
+ ◈                               │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+ ⇄                               │
+                                 │
+ ≡                               │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+ ✉                               │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+ click view · double-click/Enter start · ] [ or Ctrl+F6 recent · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom ·…
+## gpu view model
+view cursor=none modal=none banner=None
+canvas area=34,1 116x38 origin=-1,0 scale=1 grid=true tick=0 empty=false
+edge Subagent color=#6e7681 from=1,1 30x4 to=5,6 24x3 path=(3.5,5) (3.5,5.5) (7.5,5.5) (7.5,6)
+edge Subagent color=#6e7681 from=36,1 30x4 to=40,6 24x3 path=(38.5,5) (38.5,5.5) (42.5,5.5) (42.5,6)
+box orch Session rect=1,1 30x4 prefix="" name="Orchestrator"
+  status=Working icon="⠋" label="working" line="⠋ working" subtitle="canvas · main" elsewhere=true every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #c9d1d9]
+  selected=false focused_term=false active=false
+box fix Session rect=36,1 30x4 prefix="" name="Fix the build"
+  status=Working icon="⠋" label="working" line="⠋ working" subtitle="canvas · main" elsewhere=true every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #c9d1d9]
+  selected=false focused_term=false active=false
+box orch:lint Agent rect=5,6 24x3 prefix="◇ " name="3 subagents"
+  status=Failed icon="✗" label="failed" line="✗ failed · 1 running" subtitle="double-click to show them" elsewhere=false every=None mailbox=0
+  border=Light border_style=[fg #6e7681] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #e66100]
+  selected=false focused_term=false active=false
+  deck root=orch count=3 back=2 agents=3
+box fix:patch Agent rect=40,6 24x3 prefix="◇ " name="2 subagents"
+  status=Working icon="⠋" label="working" line="⠋ working · 1 of 2" subtitle="double-click to show them" elsewhere=false every=None mailbox=0
+  border=Light border_style=[fg #6e7681] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #c9d1d9]
+  selected=false focused_term=false active=false
+  deck root=fix count=2 back=1 agents=2

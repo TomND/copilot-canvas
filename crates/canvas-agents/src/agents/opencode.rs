@@ -40,7 +40,7 @@ fn find_cli_in(custom: Option<std::ffi::OsString>, path: std::ffi::OsString) -> 
         return Ok(custom);
     }
     for dir in std::env::split_paths(&path) {
-        let exe = dir.join("opencode.exe");
+        let exe = dir.join(canvas_sys::host::exe_name("opencode"));
         if exe.is_file() {
             return Ok(exe.display().to_string());
         }
@@ -160,7 +160,7 @@ pub fn classify_listener(owners: &[u32], tree: &[u32]) -> Listener {
 /// chosen by binding port 0 and releasing it, so another process could have
 /// taken it before the TUI did: the password goes only to the TUI's own tree.
 pub fn listener_of(port: u16, root: u32) -> Result<Listener> {
-    let owners = canvas_common::tcp::listener_owners(port).context("cannot list TCP listeners")?;
+    let owners = canvas_sys::net::listener_owners(port).context("cannot list TCP listeners")?;
     if owners.is_empty() {
         return Ok(Listener::None);
     }
@@ -721,6 +721,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn npm_shims_are_resolved_to_the_binary_or_refused() {
         let root = std::env::temp_dir().join(format!("cc-oc-cli-{}", uuid::Uuid::new_v4()));
         let npm = root.join("npm");
@@ -747,6 +748,27 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// Another process that waits `seconds`.
+    fn sleeper(seconds: u32) -> std::process::Child {
+        if cfg!(windows) {
+            std::process::Command::new("cmd.exe").args(["/d", "/c", &format!("ping -n {seconds} 127.0.0.1 >nul")]).spawn().unwrap()
+        } else {
+            std::process::Command::new("sleep").arg(seconds.to_string()).spawn().unwrap()
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn the_cli_is_found_on_path_by_its_unix_name() {
+        let root = std::env::temp_dir().join(format!("cc-oc-cli-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = std::env::join_paths([&root]).unwrap();
+        assert!(find_cli_in(None, path.clone()).is_err());
+        std::fs::write(root.join("opencode"), "").unwrap();
+        assert_eq!(find_cli_in(None, path).unwrap(), root.join("opencode").display().to_string());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn the_password_only_goes_to_listeners_in_the_terminals_process_tree() {
         let tree = [10, 11, 12];
@@ -759,7 +781,7 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         assert_eq!(listener_of(port, std::process::id()).unwrap(), Listener::Ours);
-        let mut other = std::process::Command::new("cmd.exe").args(["/d", "/c", "ping -n 5 127.0.0.1 >nul"]).spawn().unwrap();
+        let mut other = sleeper(5);
         assert_eq!(listener_of(port, other.id()).unwrap(), Listener::Foreign(vec![std::process::id()]));
         drop(listener);
         assert_eq!(listener_of(port, std::process::id()).unwrap(), Listener::None);
@@ -773,7 +795,7 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();
-        let mut other = std::process::Command::new("cmd.exe").args(["/d", "/c", "ping -n 30 127.0.0.1 >nul"]).spawn().unwrap();
+        let mut other = sleeper(30);
         let terminal = format!("foreign-{}", uuid::Uuid::new_v4().simple());
         register_server(Server { terminal: terminal.clone(), port, password: "secret".into(), session: None, registered_ms: now_ms() });
         set_terminal_pid(&terminal, other.id());

@@ -645,12 +645,15 @@ mod tests {
 
     #[test]
     fn opencode_skills_are_grouped_by_where_they_live() {
-        let home = PathBuf::from(r"C:\Users\me");
+        // This machine's paths: OpenCode reports its skills where they are.
+        let root = PathBuf::from(if cfg!(windows) { r"C:\" } else { "/" });
+        let home = root.join("Users").join("me");
+        let at = |base: &std::path::Path, parts: &[&str]| parts.iter().fold(base.to_path_buf(), |p, part| p.join(part)).display().to_string();
         let value = json!([
             { "name": "customize-opencode", "description": "d", "location": "<built-in>" },
-            { "name": "pdf", "location": r"C:\Users\me\.claude\skills\pdf\SKILL.md" },
-            { "name": "mine", "location": r"C:\Users\me\.config\opencode\skills\mine\SKILL.md" },
-            { "name": "repo", "location": r"C:\repos\x\.opencode\skills\repo\SKILL.md" }
+            { "name": "pdf", "location": at(&home, &[".claude", "skills", "pdf", "SKILL.md"]) },
+            { "name": "mine", "location": at(&home, &[".config", "opencode", "skills", "mine", "SKILL.md"]) },
+            { "name": "repo", "location": at(&root, &["repos", "x", ".opencode", "skills", "repo", "SKILL.md"]) }
         ]);
         let sources: Vec<_> = opencode_skills(&value, &home).into_iter().map(|s| s.source).collect();
         assert_eq!(sources, ["built-in", "claude", "personal", "project"]);
@@ -764,6 +767,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn cli_runs_use_pipes_time_out_and_clean_up() {
         let comspec = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".into());
         assert_eq!(run(&comspec, &["/d", "/c", "echo hello"], &[], TIMEOUT).unwrap().trim(), "hello");
@@ -774,6 +778,20 @@ mod tests {
         assert!(error.contains("timed out") && started.elapsed() < Duration::from_secs(10), "{error}");
         // A large output never blocks the child.
         let big = run(&comspec, &["/d", "/c", "for /l %i in (1,1,3000) do @echo 0123456789012345678901234567890123456789"], &[], TIMEOUT).unwrap();
+        assert_eq!(big.lines().count(), 3000);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cli_runs_use_pipes_time_out_and_clean_up_on_unix() {
+        assert_eq!(run("/bin/sh", &["-c", "echo hello"], &[], TIMEOUT).unwrap().trim(), "hello");
+        let error = run("/bin/sh", &["-c", "echo --token SECRET 1>&2; exit 3"], &[], TIMEOUT).unwrap_err().to_string();
+        assert_eq!(error, "--token (hidden)");
+        let started = Instant::now();
+        let error = run("/bin/sh", &["-c", "sleep 30"], &[], Duration::from_millis(300)).unwrap_err().to_string();
+        assert!(error.contains("timed out") && started.elapsed() < Duration::from_secs(10), "{error}");
+        // A large output never blocks the child.
+        let big = run("/bin/sh", &["-c", "i=0; while [ $i -lt 3000 ]; do echo 0123456789012345678901234567890123456789; i=$((i+1)); done"], &[], TIMEOUT).unwrap();
         assert_eq!(big.lines().count(), 3000);
     }
 

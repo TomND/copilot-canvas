@@ -45,7 +45,7 @@ fn find_cli_in(custom: Option<std::ffi::OsString>, path: std::ffi::OsString, hom
         return Ok(custom);
     }
     for dir in std::env::split_paths(&path) {
-        let exe = dir.join("claude.exe");
+        let exe = dir.join(canvas_sys::host::exe_name("claude"));
         if exe.is_file() && !is_desktop_app(&exe) {
             return Ok(exe.display().to_string());
         }
@@ -57,11 +57,11 @@ fn find_cli_in(custom: Option<std::ffi::OsString>, path: std::ffi::OsString, hom
             }
         }
     }
-    let local = home.join(".local").join("bin").join("claude.exe");
+    let local = home.join(".local").join("bin").join(canvas_sys::host::exe_name("claude"));
     if local.is_file() {
         return Ok(local.display().to_string());
     }
-    anyhow::bail!("Claude Code (claude.exe) was not found on PATH (set COPILOT_CANVAS_CLAUDE to override)")
+    anyhow::bail!("Claude Code ({}) was not found on PATH (set COPILOT_CANVAS_CLAUDE to override)", canvas_sys::host::exe_name("claude"))
 }
 
 /// `--mcp-config` content: the user's MCP servers (`.claude.json`) minus `off`.
@@ -405,11 +405,19 @@ mod tests {
         write_private(&file, b"{}").unwrap();
         write_private(&file, b"{\"a\":1}").unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "{\"a\":1}");
-        let run = |program: &str, arg: &Path| String::from_utf8_lossy(&std::process::Command::new(program).arg(arg).output().unwrap().stdout).to_ascii_lowercase();
-        let acl = run("icacls", &file).replace(&file.display().to_string().to_ascii_lowercase(), "");
-        let user = run("whoami", Path::new("/user")).lines().filter_map(|l| l.split_whitespace().next()).find(|w| w.contains('\\')).unwrap().to_owned();
-        let entries: Vec<&str> = acl.lines().map(str::trim).filter(|l| l.contains(":(")).collect();
-        assert_eq!(entries, [format!("{user}:(f)")], "{acl}");
+        #[cfg(windows)]
+        {
+            let run = |program: &str, arg: &Path| String::from_utf8_lossy(&std::process::Command::new(program).arg(arg).output().unwrap().stdout).to_ascii_lowercase();
+            let acl = run("icacls", &file).replace(&file.display().to_string().to_ascii_lowercase(), "");
+            let user = run("whoami", Path::new("/user")).lines().filter_map(|l| l.split_whitespace().next()).find(|w| w.contains('\\')).unwrap().to_owned();
+            let entries: Vec<&str> = acl.lines().map(str::trim).filter(|l| l.contains(":(")).collect();
+            assert_eq!(entries, [format!("{user}:(f)")], "{acl}");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600, "only this user may read it");
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 

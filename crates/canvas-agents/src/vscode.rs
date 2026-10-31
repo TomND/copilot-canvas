@@ -89,12 +89,8 @@ pub fn session_uuid(resource: &str) -> Option<String> {
 fn uri_to_path(uri: &str) -> Option<String> {
     let rest = uri.strip_prefix("file://")?;
     let decoded = percent_decode_str(rest).decode_utf8_lossy().into_owned();
-    // file:///c:/x -> c:/x ; file://server/share -> \\server\share
-    let path = match decoded.strip_prefix('/') {
-        Some(local) if local.as_bytes().get(1) == Some(&b':') => local.to_owned(),
-        Some(_) | None => format!("//{decoded}"),
-    };
-    Some(path.replace('/', "\\"))
+    // Windows: file:///c:/x -> c:\x ; file://server/share -> \\server\share. POSIX: file:///x -> /x.
+    Some(canvas_model::path_style::PathStyle::local().from_file_url(&decoded))
 }
 
 fn label_for(folder: Option<&str>, workspace_file: Option<&str>) -> String {
@@ -103,7 +99,7 @@ fn label_for(folder: Option<&str>, workspace_file: Option<&str>) -> String {
         return match parts.as_slice() {
             [] => folder.to_owned(),
             [only] => (*only).to_owned(),
-            [.., parent, last] => format!("{parent}\\{last}"),
+            [.., parent, last] => format!("{parent}{}{last}", canvas_model::path_style::PathStyle::local().separator()),
         };
     }
     if let Some(file) = workspace_file {
@@ -565,6 +561,15 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn workspace_labels_from_posix_uris() {
+        assert_eq!(uri_to_path("file:///Users/me/contoso%20x/src").as_deref(), Some("/Users/me/contoso x/src"));
+        assert_eq!(label_for(Some("/Users/me/contoso/src"), None), "contoso/src");
+        assert_eq!(label_for(None, Some("/w/team.code-workspace")), "team");
+    }
+
+    #[test]
+    #[cfg(windows)]
     fn workspace_labels_from_uris() {
         assert_eq!(uri_to_path("file:///q%3A/contoso/src").as_deref(), Some(r"q:\contoso\src"));
         assert_eq!(label_for(Some(r"q:\contoso\src"), None), r"contoso\src");
@@ -599,6 +604,8 @@ mod tests {
     }
 
     #[test]
+    // Synthetic storage with Windows `file:///q%3A/…` URIs (POSIX storage: `workspace_labels_from_posix_uris`).
+    #[cfg(windows)]
     fn sync_prefers_a_real_workspace_groups_the_rest_by_folder_and_adds_vscode_created_sessions() {
         let session = |id: &str, cwd: &str| VsSession { session_id: id.into(), label: id.into(), archived: false, cwd: Some(cwd.into()), created_ms: None, active_ms: None };
         let workspace = |id: &str, folder: Option<&str>, sessions: Vec<VsSession>| VsWorkspace {
@@ -648,6 +655,8 @@ mod tests {
     }
 
     #[test]
+    // Synthetic storage with Windows `file:///q%3A/…` URIs (POSIX storage: `workspace_labels_from_posix_uris`).
+    #[cfg(windows)]
     fn scans_a_synthetic_workspace_storage_read_only() {
         let root = std::env::temp_dir().join(format!("cc-vs-{}", uuid::Uuid::new_v4()));
         let ws = root.join("abc123");
@@ -670,6 +679,8 @@ mod tests {
     }
 
     #[test]
+    // Synthetic storage with Windows `file:///q%3A/…` URIs (POSIX storage: `workspace_labels_from_posix_uris`).
+    #[cfg(windows)]
     fn agents_window_sessions_map_to_copilot_sessions_with_sub_sessions_and_groups() {
         const MAIN: &str = "f8276756-c2e0-46ed-af12-dcae55e00b1b";
         const PEER: &str = "941cc8bd-23f0-4d45-aa61-3db2d9cfe73c";

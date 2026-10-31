@@ -345,7 +345,7 @@ impl App {
             no_messages: false,
             // Passive sessions (the automation doctor too) run the canvas's default agent.
             agent: Some(self.default_agent().id().to_owned()),
-            agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
+            agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
         });
         self.mark_dirty();
         self.select_node(&id, false);
@@ -504,11 +504,15 @@ impl App {
     /// folder, or a canvas-wide agent's in the canvas-agents folder.
     pub fn passive_paths(&self, node: &Node) -> Option<bus::PassivePaths> {
         let passive = node.passive.as_ref()?;
-        if node.is_canvas_agent() {
-            return self.canvas_agents_dir().map(|dir| canvas_model::canvas_wide::agent_paths(&dir, &passive.slug));
-        }
-        let folder = self.doc.group(&passive.group)?.folder.clone()?;
-        Some(bus::passive_paths(std::path::Path::new(&folder), &passive.slug))
+        let paths = if node.is_canvas_agent() {
+            self.canvas_agents_dir().map(|dir| canvas_model::canvas_wide::agent_paths(&dir, &passive.slug))?
+        } else {
+            let folder = self.doc.group(&passive.group)?.folder.clone()?;
+            bus::passive_paths(std::path::Path::new(&folder), &passive.slug)
+        };
+        // The service's separators (D10): these paths are opened and shown there.
+        let fix = |p: std::path::PathBuf| std::path::PathBuf::from(self.service_path(&p));
+        Some(bus::PassivePaths { dir: fix(paths.dir), rules: fix(paths.rules), state: fix(paths.state), log: fix(paths.log), context: fix(paths.context), goals: fix(paths.goals) })
     }
 
     pub fn bus_action(&mut self, action: serde_json::Value) {

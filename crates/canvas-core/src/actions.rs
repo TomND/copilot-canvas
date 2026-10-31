@@ -65,7 +65,11 @@ impl App {
                 let resumable = !matches!(self.child_resume(node), crate::inspect::ChildResume::No(_));
                 items.push(item("Resume as subsession", "", Action::ResumeChild(id.to_owned()), resumable));
             }
-            items.push(item(if parent_alive { "Open parent terminal" } else { "Start parent session" }, "", Action::Start(parent), !external));
+            items.push(item(if parent_alive { "Open parent terminal" } else { "Start parent session" }, "", Action::Start(parent.clone()), !external));
+            if self.doc.node(&parent).is_some_and(|p| p.kind == NodeKind::Session) {
+                let stack = crate::visual::VisualAction::FoldSubagents(parent, true);
+                items.push(item("Stack subagents", "K", Action::Visual(stack), true));
+            }
             items.push(item("Rename box", "R", Action::Rename(Target::Node(id.to_owned())), true));
             items.push(self.remove_item(id, "Remove box"));
             return (node.name.clone(), items);
@@ -136,6 +140,7 @@ impl App {
                 item("Open human outputs folder", "", Action::OpenGroupFolder(id.to_owned(), true), true),
                 item("Change group folder…", "", Action::SetGroupFolder(id.to_owned()), true),
                 item("Session defaults for group…", "", Action::GroupDefaults(id.to_owned()), true),
+                item("Passive sessions of this group…", "", Action::Visual(crate::visual::VisualAction::GroupPassives(id.to_owned())), !self.demo),
                 item("New passive session…", "", Action::NewPassive(id.to_owned()), !self.demo),
                 item("Send event…", "", Action::SendEvent(id.to_owned()), !self.demo),
                 item("Edit events…", "", Action::OpenEvents(id.to_owned()), !self.demo),
@@ -1157,7 +1162,7 @@ impl App {
             passive: None,
             no_messages: false,
             agent: (!self.demo).then(|| agent.id().to_owned()),
-            agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
+            agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
         };
         // The model shown in the dialog is the one it starts with (and keeps on
         // resume); a choice made there becomes its agent's default.

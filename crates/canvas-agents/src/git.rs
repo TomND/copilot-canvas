@@ -47,7 +47,7 @@ pub fn probe(dir: &Path) -> Result<Option<GitInfo>> {
     let mut branches: Vec<String> = local.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect();
     let local_count = branches.len();
     branches.extend(remote.lines().map(str::trim).filter(|l| !l.is_empty() && !l.ends_with("/HEAD") && l.contains('/')).map(str::to_owned));
-    Ok(Some(GitInfo { root: PathBuf::from(root.to_string_lossy().replace('/', "\\")), branch, branches, local_count }))
+    Ok(Some(GitInfo { root: PathBuf::from(canvas_model::path_style::PathStyle::local().native(&root.to_string_lossy())), branch, branches, local_count }))
 }
 
 /// `git worktree add`, creating `new_branch` from `base`, or checking out `base` if no new branch.

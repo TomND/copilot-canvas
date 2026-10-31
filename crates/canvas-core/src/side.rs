@@ -204,6 +204,10 @@ pub enum RightDetail {
     /// The canvas-wide agents: their states and controls, the canvas skills,
     /// and the group passive sessions for contrast.
     CanvasAgents,
+    /// A group's passive sessions (group id): each one's state with Open,
+    /// Run now and Pause, an empty state that offers to create one, and how
+    /// they differ from the canvas-wide agents.
+    GroupPassives(String),
     /// The routed canvas's tracked pull requests and their follow-ups.
     Prs,
     /// The routed canvas's review follow-ups.
@@ -1063,7 +1067,7 @@ impl App {
             command: Some(command),
             fresh: true,
             automation: None,
-            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
+            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
         });
         self.select_node(&id, false);
         self.launch(&id);
@@ -1326,7 +1330,7 @@ impl App {
                 command: None,
                 fresh: false,
                 automation: Some(key),
-                synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
+                synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
             });
         }
     }
@@ -1616,7 +1620,7 @@ impl App {
             fresh: false,
             automation: None,
             synced_name,
-            reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
+            reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
         });
     }
 

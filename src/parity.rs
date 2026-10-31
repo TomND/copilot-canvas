@@ -569,7 +569,7 @@ fn node(id: &str, name: &str, x: i32, y: i32, cwd: &Path) -> Node {
         passive: None,
         no_messages: false,
         agent: None,
-        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None,
+        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
     }
 }
 
@@ -972,11 +972,18 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         Ok(format!("borders {waiting} / {review} / {plain}; icons {}", icons.join(" ")))
     });
 
-    check(rows, "5", "Subagents from history", "subagent_boxes_from_history", || {
-        let tree = gui.wait_tree("the subagent box", 15, |t| t["canvas"]["boxes"].as_array().is_some_and(|b| b.iter().any(|b| b["name"] == "Parity explorer")))?;
+    check(rows, "5", "Subagents from history, folded into a deck beneath their session by default", "subagent_boxes_from_history", || {
+        let parent = sb.sessions.agents.clone();
+        let deck = |t: &Value| t["canvas"]["boxes"].as_array().and_then(|b| b.iter().find(|b| b["deck"]["root"] == parent.as_str()).cloned());
+        let tree = gui.wait_tree("the subagent's deck", 15, |t| deck(t).is_some_and(|d| d["deck"]["agents"] == 1))?;
+        let found = deck(&tree).context("the deck")?;
+        anyhow::ensure!(found["name"] == "1 subagent" && found["status"] == "working", "a slim “1 subagent” card, working while it runs: {found}");
+        anyhow::ensure!(!tree["canvas"]["boxes"].as_array().is_some_and(|b| b.iter().any(|b| b["name"] == "Parity explorer")), "folded: not drawn on its own");
+        let doc = wait_doc(&sb.canvas, "the subagent box in the canvas file", |d| d.nodes.iter().any(|n| n.kind == NodeKind::Agent && n.name == "Parity explorer" && n.parent.as_deref() == Some(parent.as_str())))?;
+        let unplaced = doc.nodes.iter().any(|n| n.name == "Parity explorer" && n.unplaced);
         let edges = tree["canvas"]["edges"].as_u64().unwrap_or(0);
-        anyhow::ensure!(edges >= 1, "no edge to the subagent");
-        Ok(format!("“Parity explorer” box, {edges} edge(s)"))
+        anyhow::ensure!(edges >= 1, "no edge to the deck");
+        Ok(format!("“Parity explorer” box from subagent.started (no place of its own yet: {unplaced}), in “With agents”'s deck (working), {edges} edge(s)"))
     });
 
     check(rows, "7", "Looping sessions: loopback arc, ↻ every, sidebar ↻, pulsing ↻", "loop_from_session_schedule", || {
@@ -1460,13 +1467,13 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         gui.canvas_focus()?;
         let tree = gui.tree()?;
         let g = tree["canvas"]["groups"].as_array().and_then(|g| g.iter().find(|g| g["id"] == "g-parity").cloned()).context("group")?;
-        let r: Vec<f64> = g["rect"].as_array().map(|a| a.iter().filter_map(|v| v.as_f64()).collect()).unwrap_or_default();
-        let title = (r[0] + 3.5, r[1] + 0.5);
-        gui.mouse("down", "right", title, &[])?;
-        gui.mouse("up", "right", title, &[])?;
-        gui.wait("group menu", 5, |t| t.contains("New passive session"))?;
-        let (x, y) = gui.find("New passive session").context("menu item")?;
-        gui.click((x, y), &[])?;
+        // The group's ⟲ chip opens its passive panel, empty so far, with Create.
+        let chip = g["chips"].as_array().and_then(|c| c.iter().find(|c| c["label"].as_str().is_some_and(|l| l.starts_with("⟲"))).cloned()).context("the group's passive chip")?;
+        let r: Vec<f64> = chip["rect"].as_array().map(|a| a.iter().filter_map(|v| v.as_f64()).collect()).unwrap_or_default();
+        gui.click((r[0] + (r[2] / 2.0).min(3.0), r[1] + r[3] / 2.0), &[])?;
+        gui.wait("the empty passive panel", 5, |t| t.contains("No passive sessions in this group yet") && t.contains("Create a passive session for this group"))?;
+        let (x, y) = gui.find("+ Create a passive session").context("the Create link")?;
+        gui.click((x + 2.0, y), &[])?;
         gui.wait("templates", 5, |t| t.contains("Drift guard") && t.contains("Custom"))?;
         gui.send("Custom")?;
         gui.send("\r")?;
@@ -1478,8 +1485,11 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         anyhow::ensure!(sb.group_folder.join(".canvas").join("passive").join(&slug).join("rules.md").is_file(), "rules scaffolded");
         let (passive, _) = gui.find_box("Parity watcher")?;
         anyhow::ensure!(passive["prefix"].as_str().is_some_and(|p| p.contains('⟲')) && (passive["border"] == "Dashed" || passive["selected"] == true), "dashed ⟲ box: {passive}");
+        gui.wait_tree("the chip counts it", 5, |t| {
+            t["canvas"]["groups"].as_array().and_then(|g| g.iter().find(|g| g["id"] == "g-parity")).and_then(|g| g["chips"].as_array()).is_some_and(|c| c.iter().any(|c| c["label"].as_str().is_some_and(|l| l.starts_with("⟲ 1"))))
+        })?;
         gui.canvas_focus()?;
-        Ok("template → panel, rules scaffolded, dashed box".into())
+        Ok("⟲ chip → empty panel → Create → template → panel, rules scaffolded, dashed box, chip ⟲ 1".into())
     });
 
     check(rows, "29", "Keyboard map, F6 / Ctrl+] to leave a terminal, Q quit dialog (detach or stop all), ? help", "help_f6_and_quit_dialog", || {
@@ -1562,6 +1572,13 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
     check(rows, "35", "New: transcript inspector (sessions and subagents, live while they run); a finished child resumes as its own subsession", "inspector_and_child_resume", || {
         gui.canvas_focus()?;
         gui.send("f")?;
+        // The OpenCode session's children arrive folded into its deck; K shows them
+        // (each gets a place of its own the first time).
+        gui.wait_tree("the OpenCode session's subagent deck", 20, |t| t["canvas"]["boxes"].as_array().is_some_and(|b| b.iter().any(|b| b["deck"]["root"] == "oc-parent" && b["deck"]["agents"] == 2)))?;
+        let at = gui.box_center("OpenCode parent")?;
+        gui.click(at, &[])?;
+        gui.canvas_focus()?;
+        gui.send("k")?;
         gui.wait_tree("the OpenCode session's subagent boxes", 20, |t| {
             let boxes = t["canvas"]["boxes"].as_array().cloned().unwrap_or_default();
             boxes.iter().any(|b| b["name"] == "explore") && boxes.iter().any(|b| b["name"] == "general")
@@ -1570,18 +1587,24 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         let launches = log().matches("launched ").count();
         let inspect = |gui: &mut Gui, name: &str| -> Result<()> {
             gui.canvas_focus()?;
+            let (found, _) = gui.find_box(name)?;
+            let id = found["id"].as_str().unwrap_or_default().to_owned();
             let at = gui.box_center(name)?;
             gui.click(at, &[])?;
+            // Its own details panel, drawn (the panel before it has the same button).
+            gui.wait_tree(&format!("{name} selected"), 5, |t| t["selection"].as_array().is_some_and(|s| s.iter().any(|v| v == id.as_str())))?;
+            std::thread::sleep(Duration::from_millis(250));
             gui.wait(&format!("{name}'s details"), 5, |t| t.contains("Inspect transcript"))?;
             let (x, y) = gui.find("Inspect transcript").context("the Inspect button")?;
             gui.click((x + 1.0, y), &[])?;
             gui.wait("the inspector", 10, |t| t.contains("Transcript · ") && !t.contains("Loading…"))
         };
-        // A Copilot session's own transcript, and a subagent known only by its start and end.
+        // A Copilot session's own transcript, and (through its session's deck,
+        // which lists it) a subagent known only by its start and end.
         inspect(gui, "With agents")?;
         gui.wait("its prompt", 5, |t| t.contains("❯ parity"))?;
         gui.key("Esc", &[])?;
-        inspect(gui, "Parity explorer")?;
+        inspect_in_deck(gui, &sb.sessions.agents, "Parity explorer")?;
         gui.wait("why it does not resume on its own", 5, |t| t.contains("part of its parent's conversation") && !t.contains("Resume as subsession"))?;
         gui.key("Esc", &[])?;
         // An OpenCode child that works: its transcript grows while it is open.
@@ -1922,6 +1945,26 @@ fn group_menu(gui: &mut Gui, item: &str) -> Result<()> {
     gui.click(at, &[])
 }
 
+/// A folded subagent's transcript, through its session's deck: a click on
+/// the deck lists the subagents in the session's details panel (nothing
+/// starts), and the Inspect button of its row opens the inspector.
+fn inspect_in_deck(gui: &mut Gui, root: &str, name: &str) -> Result<()> {
+    gui.canvas_focus()?;
+    let tree = gui.tree()?;
+    let deck = tree["canvas"]["boxes"].as_array().and_then(|b| b.iter().find(|b| b["deck"]["root"] == root).cloned()).context("the session's deck")?;
+    let r: Vec<f64> = deck["rect"].as_array().map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
+    anyhow::ensure!(r.len() == 4, "deck rect");
+    gui.click((r[0] + 2.5, r[1] + r[3] / 2.0), &[])?;
+    gui.wait(&format!("{name} listed in its session's details"), 5, |t| t.contains("SUBAGENTS") && t.lines().any(|l| l.contains(name) && l.contains("Inspect")))?;
+    let screen = gui.screen();
+    let (row, line) = screen.lines().enumerate().find(|(_, l)| l.contains(name) && l.contains("Inspect")).context("its row")?;
+    let at = line.find(name).unwrap_or(0);
+    let button = at + line[at..].find("Inspect").unwrap_or(0);
+    let col = crate::client::paint::text_width(&line[..button]) as f64;
+    gui.click((col + 2.5, row as f64 + 0.5), &[])?;
+    gui.wait("the inspector", 10, |t| t.contains("Transcript · ") && !t.contains("Loading…"))
+}
+
 /// Rows that restart the GUI or use other clients.
 fn late_rows(sb: &Sandbox, rows: &mut Vec<Row>) {
     check(rows, "11b", "Terminals survive client exit (detach, reattach)", "detach_and_reattach", || {
@@ -2025,6 +2068,7 @@ fn late_rows(sb: &Sandbox, rows: &mut Vec<Row>) {
     reports::late_rows(sb, rows);
     visual::rows(sb, rows);
     layout::rows(sb, rows);
+    subagents::rows(sb, rows);
 }
 
 #[path = "parity_visual.rs"]
@@ -2032,6 +2076,9 @@ pub(crate) mod visual;
 
 #[path = "parity_layout.rs"]
 mod layout;
+
+#[path = "parity_subagents.rs"]
+mod subagents;
 
 #[path = "parity_agents.rs"]
 mod agents;
