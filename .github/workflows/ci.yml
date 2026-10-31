@@ -216,18 +216,41 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends pkg-config libssl-dev \
             libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
-            libvulkan-dev mesa-vulkan-drivers libfontconfig1-dev
+            libvulkan-dev mesa-vulkan-drivers libfontconfig1-dev xvfb xauth xclip
       - name: clippy
         run: cargo clippy --workspace --exclude ghostty-vt-sys --no-default-features --all-targets -- -D warnings
       - name: unit and integration tests
         run: cargo test --workspace --exclude ghostty-vt-sys --no-default-features
       - name: release build
         run: cargo build --release --no-default-features
+      # The self-tests run every step even when one before failed (each is
+      # independent), so one run shows them all. The TUI's copy and paste use
+      # the X11 clipboard (xclip) of a virtual display.
+      - name: golden corpus
+        if: ${{ !cancelled() }}
+        run: target/release/copilot-canvas corpus check
+      - name: doctor
+        if: ${{ !cancelled() }}
+        run: target/release/copilot-canvas doctor || true
+      - name: TUI self-test
+        if: ${{ !cancelled() }}
+        run: xvfb-run -a target/release/copilot-canvas selftest
+      - name: TUI self-test over loopback TCP
+        if: ${{ !cancelled() }}
+        run: xvfb-run -a target/release/copilot-canvas selftest --remote loopback
+      - name: remote fault injection
+        if: ${{ !cancelled() }}
+        run: xvfb-run -a target/release/copilot-canvas selftest --remote faults
+      - name: pairing and the Dev Tunnel stand-in
+        if: ${{ !cancelled() }}
+        run: xvfb-run -a target/release/copilot-canvas selftest --remote paired
       - name: keep logs
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: linux-logs-${{ matrix.os }}
           path: |
+            /tmp/copilot-canvas-*/**/*.log
+            /tmp/copilot-canvas-*/**/*.json
             ${{ runner.temp }}/**/*.log
           if-no-files-found: ignore
