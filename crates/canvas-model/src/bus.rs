@@ -288,11 +288,28 @@ impl Local {
         Self { year: t.wYear, month: t.wMonth, day: t.wDay, hour: t.wHour, minute: t.wMinute }
     }
 
-    /// Elsewhere (the macOS mock service; schedules never run on a phone) UTC
-    /// stands in for local time.
-    #[cfg(not(windows))]
+    /// macOS and Linux: the local time zone (`localtime_r`'s offset); UTC
+    /// when it cannot be read.
+    #[cfg(unix)]
     pub fn now() -> Self {
         let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) as i64;
+        // SAFETY: localtime_r with valid pointers to stack values.
+        let offset = unsafe {
+            let now = secs as libc::time_t;
+            let mut tm: libc::tm = std::mem::zeroed();
+            if libc::localtime_r(&now, &mut tm).is_null() { 0 } else { tm.tm_gmtoff as i64 }
+        };
+        Self::at(secs + offset)
+    }
+
+    #[cfg(not(any(windows, unix)))]
+    pub fn now() -> Self {
+        Self::at(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) as i64)
+    }
+
+    /// The calendar fields of `secs` (seconds since 1970 in the wanted zone).
+    #[cfg(not(windows))]
+    fn at(secs: i64) -> Self {
         let (days, rest) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
         // Howard Hinnant's civil_from_days.
         let z = days + 719_468;

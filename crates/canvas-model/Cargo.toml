@@ -15,3 +15,7 @@ yaml-rust2.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+
+# Local time for schedules (localtime_r) on macOS, Linux and iOS.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
