@@ -473,3 +473,97 @@ jobs:
             /tmp/copilot-canvas-selftest-*/home/*.log
             ${{ runner.temp }}/weston.log
           if-no-files-found: ignore
+
+  # Linux packages (MAC-LINUX-PLAN §8.2): tarball, AppImage, .deb and .rpm per
+  # architecture, built on the glibc 2.35 floor (Ubuntu 22.04), kept as
+  # artifacts.
+  linux-package:
+    needs: ghostty-linux
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: x86_64
+          - runner: ubuntu-22.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v8
+        with:
+          name: ghostty-linux-${{ matrix.arch }}
+          path: target/ghostty
+      - name: tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends pkg-config libssl-dev imagemagick rpm file
+      - name: release build
+        run: cargo build --release
+      - name: packages
+        run: packaging/linux/build.sh --arch ${{ matrix.arch }} --bin target/release --out dist
+      - name: what the binaries link
+        run: |
+          ldd target/release/copilot-canvas target/release/copilot-canvas-gui
+          objdump -T target/release/copilot-canvas-gui | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-packages-${{ matrix.arch }}
+          path: dist
+
+  # The packages installed on clean runners and a Fedora container, then run:
+  # versions, doctor, the TUI self-test (and the GUI's on Ubuntu 24.04).
+  linux-package-test:
+    needs: linux-package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: x86_64
+          - runner: ubuntu-24.04
+            arch: x86_64
+            gui: true
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    env:
+      COPILOT_CANVAS_SECRETS: file
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux-packages-${{ matrix.arch }}
+          path: dist
+      - name: .deb installs and runs
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q ./dist/copilot-canvas_*.deb xvfb xauth xclip
+          copilot-canvas --version
+          copilot-canvas-gui --version
+          copilot-canvas doctor || true
+          xvfb-run -a copilot-canvas selftest
+      - name: the GUI from the .deb
+        if: matrix.gui
+        run: |
+          sudo apt-get install -y -q dbus-x11 mesa-vulkan-drivers fonts-dejavu-core
+          xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- copilot-canvas selftest --client gui
+          sudo apt-get remove -y -q copilot-canvas
+          test ! -e /usr/bin/copilot-canvas
+      - name: tarball installs into a prefix
+        run: |
+          tar -xzf dist/copilot-canvas-*-linux-${{ matrix.arch }}.tar.gz -C "$RUNNER_TEMP"
+          PREFIX="$RUNNER_TEMP/prefix" "$RUNNER_TEMP"/copilot-canvas-*/install.sh
+          "$RUNNER_TEMP/prefix/bin/copilot-canvas" --version
+          test -f "$RUNNER_TEMP/prefix/share/applications/copilot-canvas.desktop"
+          PREFIX="$RUNNER_TEMP/prefix" "$RUNNER_TEMP"/copilot-canvas-*/install.sh --uninstall
+          test ! -e "$RUNNER_TEMP/prefix/bin/copilot-canvas"
+      - name: AppImage runs (extracted, no FUSE on runners)
+        run: |
+          chmod +x dist/*.AppImage
+          APPIMAGE_EXTRACT_AND_RUN=1 dist/Copilot_Canvas-*-${{ matrix.arch }}.AppImage cli --version
+          APPIMAGE_EXTRACT_AND_RUN=1 dist/Copilot_Canvas-*-${{ matrix.arch }}.AppImage --version
+      - name: .rpm on Fedora (container)
+        if: matrix.arch == 'x86_64'
+        run: |
+          docker run --rm -v "$PWD/dist:/dist" fedora:41 sh -c 'dnf install -y -q --setopt=install_weak_deps=False /dist/copilot-canvas-*.x86_64.rpm && copilot-canvas --version && copilot-canvas-gui --version && (copilot-canvas doctor || true) && rpm -e copilot-canvas'

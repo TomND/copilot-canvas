@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.tomnd.CopilotCanvas</id>
+  <launchable type="desktop-id">copilot-canvas.desktop</launchable>
+  <name>Copilot Canvas</name>
+  <summary>An infinite canvas of AI coding-agent sessions in real terminals</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+  <description>
+    <p>Copilot Canvas lays out GitHub Copilot CLI, OpenCode and Claude Code sessions on an
+    infinite canvas, each in a real terminal hosted by a background service that keeps
+    running when the window closes. Passive sessions, an event bus, automations, a reports
+    inbox and remote mode over Dev Tunnels are built in.</p>
+  </description>
+  <url type="homepage">https://github.com/TomND/copilot-canvas</url>
+  <provides>
+    <binary>copilot-canvas</binary>
+    <binary>copilot-canvas-gui</binary>
+  </provides>
+  <content_rating type="oars-1.1"/>
+</component>
