@@ -88,27 +88,17 @@ pub fn clamp(mut p: Placement, monitors: &[Monitor]) -> Placement {
 
 /// The monitors winit knows, with their work areas (taskbar excluded).
 pub fn monitors(event_loop: &winit::event_loop::ActiveEventLoop) -> Vec<Monitor> {
-    use winit::platform::windows::MonitorHandleExtWindows;
     let primary = event_loop.primary_monitor();
     event_loop
         .available_monitors()
         .map(|m| {
             let (pos, size) = (m.position(), m.size());
             let full = [pos.x, pos.y, pos.x + size.width as i32, pos.y + size.height as i32];
-            Monitor { name: m.name().unwrap_or_default(), work: work_area(m.hmonitor()).unwrap_or(full), primary: primary.as_ref() == Some(&m) }
+            Monitor { name: m.name().unwrap_or_default(), work: crate::os::work_area(&m).unwrap_or(full), primary: primary.as_ref() == Some(&m) }
         })
         .collect()
 }
 
-fn work_area(hmonitor: isize) -> Option<[i32; 4]> {
-    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITORINFO};
-    let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
-    info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-    // SAFETY: a monitor handle from winit and a properly sized out-struct.
-    let ok = unsafe { GetMonitorInfoW(hmonitor as _, &mut info) } != 0;
-    let r = info.rcWork;
-    ok.then_some([r.left, r.top, r.right, r.bottom])
-}
 
 #[cfg(test)]
 mod tests {

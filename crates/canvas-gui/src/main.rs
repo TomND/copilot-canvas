@@ -6,13 +6,13 @@ mod access;
 mod boxdraw;
 mod canvas;
 mod chrome;
-mod clipimage;
 mod crashlog;
 mod effects;
 mod gpu;
 mod hooks;
 mod images;
 mod input;
+mod os;
 mod perf;
 mod placement;
 mod platform;
@@ -22,7 +22,6 @@ mod shell;
 mod text;
 mod theme;
 mod tiles;
-mod webview;
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -216,7 +215,7 @@ impl Launch {
 fn real_main() -> Result<i32> {
     let args = parse()?;
     let service_exe = use_sibling_service();
-    platform::set_app_id();
+    os::set_app_id();
     // System fonts load while the service connects and the window comes up.
     let fonts = std::thread::Builder::new().name("fonts".into()).spawn(text::load)?;
     let instance = Instance::new(args.instance.clone(), args.home.clone(), args.sessions_dir.clone())?;

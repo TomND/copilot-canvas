@@ -152,39 +152,8 @@ pub fn ms(d: Duration) -> f32 {
     d.as_secs_f32() * 1000.0
 }
 
-/// Process CPU time and private memory (Win32).
-pub fn process() -> (Duration, u64) {
-    use windows_sys::Win32::Foundation::FILETIME;
-    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
-    let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
-    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
-    let mut memory: PROCESS_MEMORY_COUNTERS_EX = unsafe { std::mem::zeroed() };
-    memory.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
-    // SAFETY: the current process's pseudo handle and properly sized out-structs.
-    unsafe {
-        GetProcessTimes(GetCurrentProcess(), &mut created, &mut exited, &mut kernel, &mut user);
-        GetProcessMemoryInfo(GetCurrentProcess(), &mut memory as *mut _ as *mut _, memory.cb);
-    }
-    let ticks = |t: FILETIME| ((t.dwHighDateTime as u64) << 32) | t.dwLowDateTime as u64;
-    (Duration::from_nanos((ticks(kernel) + ticks(user)) * 100), memory.PrivateUsage as u64)
-}
-
-/// Time since this process was created.
-pub fn since_start() -> Duration {
-    use windows_sys::Win32::Foundation::FILETIME;
-    use windows_sys::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
-    let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
-    let (mut created, mut exited, mut kernel, mut user, mut now) = (zero, zero, zero, zero, zero);
-    // SAFETY: as above.
-    unsafe {
-        GetProcessTimes(GetCurrentProcess(), &mut created, &mut exited, &mut kernel, &mut user);
-        GetSystemTimeAsFileTime(&mut now);
-    }
-    let ticks = |t: FILETIME| ((t.dwHighDateTime as u64) << 32) | t.dwLowDateTime as u64;
-    Duration::from_nanos(ticks(now).saturating_sub(ticks(created)) * 100)
-}
+/// Process CPU time and private memory.
+pub use crate::os::{process, since_start};
 
 #[cfg(test)]
 mod tests {

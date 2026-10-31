@@ -19,8 +19,6 @@ use std::time::{Duration, Instant};
 use canvas_core::platform::Platform;
 use crossbeam_channel::{Sender, unbounded};
 
-/// The app id toasts and the taskbar button use.
-pub const AUMID: &str = "CopilotCanvas.Gui";
 /// The same toast text is not shown twice within this time.
 const DEDUPE: Duration = Duration::from_secs(3);
 
@@ -80,7 +78,7 @@ impl GuiPlatform {
     }
 
     /// Applies title and taskbar changes (on the UI thread).
-    pub fn apply(&self, window: &winit::window::Window, taskbar: &mut Taskbar) {
+    pub fn apply(&self, window: &winit::window::Window, taskbar: &mut crate::os::Taskbar) {
         if !self.dirty.swap(false, Ordering::AcqRel) {
             return;
         }
@@ -101,9 +99,7 @@ impl GuiPlatform {
 
     /// The window is the active one (no toast, no flashing).
     fn in_front(&self) -> bool {
-        let hwnd = self.hwnd.load(Ordering::Acquire);
-        // SAFETY: no arguments.
-        hwnd != 0 && unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() } as isize == hwnd
+        crate::os::in_front(self.hwnd.load(Ordering::Acquire))
     }
 
     fn flash(&self) {
@@ -115,10 +111,7 @@ impl GuiPlatform {
             self.flashes.fetch_add(1, Ordering::Relaxed);
             return;
         }
-        use windows_sys::Win32::UI::WindowsAndMessaging::{FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO, FlashWindowEx};
-        let info = FLASHWINFO { cbSize: std::mem::size_of::<FLASHWINFO>() as u32, hwnd: hwnd as _, dwFlags: FLASHW_TRAY | FLASHW_TIMERNOFG, uCount: 3, dwTimeout: 0 };
-        // SAFETY: a valid FLASHWINFO for this process's window.
-        unsafe { FlashWindowEx(&info) };
+        crate::os::flash(hwnd);
         self.flashes.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -147,7 +140,7 @@ impl GuiPlatform {
 impl Platform for GuiPlatform {
     /// The TUI in a new console window (Windows' default terminal).
     fn open_other_client(&self, args: &[String]) -> anyhow::Result<String> {
-        let tui = canvas_core::platform::build_sibling("copilot-canvas.exe")?;
+        let tui = canvas_core::platform::build_sibling(&canvas_sys::host::exe_name("copilot-canvas"))?;
         let mut all = vec!["--tui".to_owned()];
         all.extend(args.iter().cloned());
         canvas_core::platform::spawn_client(&tui, &all, true)?;
@@ -260,15 +253,11 @@ fn toaster() -> &'static Sender<Job> {
     TX.get_or_init(|| {
         let (tx, rx) = unbounded::<Job>();
         let _ = std::thread::Builder::new().name("toasts".into()).spawn(move || {
-            // SAFETY: initializes COM for this thread only.
-            unsafe {
-                let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
-            }
-            let registered = register_aumid();
+            let registered = crate::os::toast_thread_init();
             for job in rx {
                 match job {
                     Job::Show { title, body, records, index } => {
-                        let status = match registered.clone().and_then(|_| show_toast(&title, &body).map_err(|e| e.message().to_string())) {
+                        let status = match registered.clone().and_then(|_| crate::os::show_toast(&title, &body)) {
                             Ok(()) => "shown".to_owned(),
                             Err(error) => format!("failed: {error}"),
                         };
@@ -277,7 +266,7 @@ fn toaster() -> &'static Sender<Job> {
                         }
                     }
                     Job::History(reply) => {
-                        let _ = reply.send(history_count().ok());
+                        let _ = reply.send(crate::os::toast_history_count());
                     }
                 }
             }
@@ -293,105 +282,10 @@ pub fn toast_history() -> Option<u32> {
     rx.recv_timeout(Duration::from_secs(5)).ok()?
 }
 
-fn history_count() -> windows::core::Result<u32> {
-    use windows::UI::Notifications::ToastNotificationManager;
-    ToastNotificationManager::History()?.GetHistoryWithId(&windows::core::HSTRING::from(AUMID))?.Size()
-}
 
-fn show_toast(title: &str, body: &str) -> windows::core::Result<()> {
-    use windows::Data::Xml::Dom::XmlDocument;
-    use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
-    use windows::core::HSTRING;
-    let xml = XmlDocument::new()?;
-    xml.LoadXml(&HSTRING::from(format!(
-        "<toast><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual></toast>",
-        xml_escape(title),
-        xml_escape(body)
-    )))?;
-    let toast = ToastNotification::CreateToastNotification(&xml)?;
-    toast.SetGroup(&HSTRING::from("copilot-canvas"))?;
-    ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID))?.Show(&toast)
-}
 
-fn xml_escape(text: &str) -> String {
-    text.chars().take(400).fold(String::new(), |mut out, c| {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            c if c.is_control() => out.push(' '),
-            c => out.push(c),
-        }
-        out
-    })
-}
 
-/// Registers [`AUMID`] for toasts (per user; idempotent).
-fn register_aumid() -> Result<(), String> {
-    use windows_sys::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey, RegCreateKeyExW, RegSetValueExW};
-    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
-    let path = wide(&format!(r"Software\Classes\AppUserModelId\{AUMID}"));
-    let mut key: HKEY = std::ptr::null_mut();
-    // SAFETY: valid NUL-terminated strings; the key is closed below.
-    let status = unsafe { RegCreateKeyExW(HKEY_CURRENT_USER, path.as_ptr(), 0, std::ptr::null(), REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, std::ptr::null(), &mut key, std::ptr::null_mut()) };
-    if status != 0 {
-        return Err(format!("cannot register the app for toasts (error {status})"));
-    }
-    let name = wide("Copilot Canvas");
-    let value = wide("DisplayName");
-    // SAFETY: `name` is a NUL-terminated UTF-16 string of the given byte length.
-    let status = unsafe { RegSetValueExW(key, value.as_ptr(), 0, REG_SZ, name.as_ptr().cast(), (name.len() * 2) as u32) };
-    // SAFETY: opened above.
-    unsafe { RegCloseKey(key) };
-    if status != 0 { Err(format!("cannot register the app for toasts (error {status})")) } else { Ok(()) }
-}
 
-/// Gives the process the app id toasts are registered under (call before
-/// the first window, so the taskbar button carries it too).
-pub fn set_app_id() {
-    // SAFETY: a static NUL-terminated string.
-    let _ = unsafe { windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(windows::core::w!("CopilotCanvas.Gui")) };
-}
-
-/// The taskbar button's progress indicator.
-#[derive(Default)]
-pub struct Taskbar {
-    list: Option<windows::Win32::UI::Shell::ITaskbarList3>,
-    pub shown: Option<u8>,
-}
-
-impl Taskbar {
-    fn set(&mut self, hwnd: isize, state: u8) {
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx};
-        use windows::Win32::UI::Shell::{ITaskbarList3, TBPF_INDETERMINATE, TBPF_NOPROGRESS, TBPF_PAUSED, TaskbarList};
-        if hwnd == 0 || self.shown == Some(state) {
-            return;
-        }
-        if self.list.is_none() {
-            // SAFETY: COM on the UI thread (already initialized by winit; this is a no-op then).
-            let list: Option<ITaskbarList3> = unsafe {
-                let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-                CoCreateInstance(&TaskbarList, None, CLSCTX_INPROC_SERVER).ok()
-            };
-            // SAFETY: HrInit before first use, as documented.
-            self.list = list.filter(|l| unsafe { l.HrInit() }.is_ok());
-        }
-        let Some(list) = &self.list else { return };
-        let hwnd = HWND(hwnd as *mut core::ffi::c_void);
-        // SAFETY: a valid taskbar list and this process's window.
-        unsafe {
-            let _ = match state {
-                3 => list.SetProgressState(hwnd, TBPF_INDETERMINATE),
-                4 => list.SetProgressState(hwnd, TBPF_PAUSED).and_then(|_| list.SetProgressValue(hwnd, 100, 100)),
-                _ => list.SetProgressState(hwnd, TBPF_NOPROGRESS),
-            };
-        }
-        self.shown = Some(state);
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -421,6 +315,5 @@ mod tests {
         assert!(!recently_shown(&title, "b"));
         assert!(recently_shown(&title, "b"));
         assert!(!recently_shown(&title, "other body"));
-        assert_eq!(xml_escape("a<b>&\"c'\n"), "a&lt;b&gt;&amp;&quot;c&apos; ");
     }
 }

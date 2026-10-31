@@ -27,12 +27,12 @@ pub struct Request {
 }
 
 pub fn pipe_name() -> String {
-    format!(r"\\.\pipe\copilot-canvas-gui-test-{}", std::process::id())
+    canvas_sys::ipc::local_name(&format!("copilot-canvas-gui-test-{}", std::process::id()))
 }
 
 /// Serves the pipe on background threads; commands run on the UI thread.
 pub fn serve(name: &str, proxy: EventLoopProxy<UserEvent>) -> Result<()> {
-    let mut server = canvas_common::pipe::PipeServer::bind(name)?;
+    let mut server = canvas_sys::ipc::PipeServer::bind(name)?;
     std::thread::Builder::new().name("test-hooks".into()).spawn(move || {
         while let Ok(pipe) = server.accept() {
             let proxy = proxy.clone();

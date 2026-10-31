@@ -7,6 +7,23 @@
 //! while another process serves the name; a connection splits into a reader,
 //! a writer and a closer that wakes a blocked reader.
 
+/// The endpoint for a per-process local name (the GUI's test hooks):
+/// `\\.\pipe\NAME` on Windows, `<temp>/copilot-canvas-<user>/NAME.sock` elsewhere
+/// (a 0700 folder of this user).
+pub fn local_name(name: &str) -> String {
+    if cfg!(windows) {
+        format!(r"\\.\pipe\{name}")
+    } else {
+        let base = std::env::var_os("XDG_RUNTIME_DIR").or_else(|| std::env::var_os("TMPDIR")).map(std::path::PathBuf::from).unwrap_or_else(|| "/tmp".into());
+        base.join(format!("copilot-canvas-{}", crate::host::user_name())).join(format!("{name}.sock")).display().to_string()
+    }
+}
+
+/// Whether `name` is a local endpoint [`local_name`] made.
+pub fn is_local_name(name: &str) -> bool {
+    name.starts_with(r"\\.\pipe\") || name.starts_with('/')
+}
+
 #[cfg(windows)]
 pub use canvas_common::pipe::{Pipe, PipeCloser, PipeReader, PipeServer, PipeWriter, connect};
 

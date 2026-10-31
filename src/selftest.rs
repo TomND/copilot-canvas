@@ -339,7 +339,7 @@ impl GuiDriver {
         let mut name = String::new();
         reader.read_line(&mut name)?;
         let name = name.trim().to_owned();
-        if !name.starts_with(r"\\.\pipe\") {
+        if !canvas_sys::ipc::is_local_name(&name) {
             let _ = child.kill();
             bail!("the GUI did not start its test hooks; see {}", log.display());
         }

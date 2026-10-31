@@ -35,7 +35,8 @@ use winit::window::{Window, WindowId};
 use crate::gpu::{self, Gpu, Skip, Surface};
 use crate::perf::{Perf, ms};
 use crate::placement::Placement;
-use crate::platform::{GuiPlatform, Taskbar};
+use crate::os::Taskbar;
+use crate::platform::GuiPlatform;
 use crate::quads::Quad;
 use crate::scene::{self, ImageItem, Painter, Scene};
 use crate::text::{Fonts, Grid, ShapeCache, Spec};
@@ -194,7 +195,7 @@ struct Win {
     preview: Option<Preview>,
     focused: bool,
     /// The HTML view of an open HTML report (WebView2, created when first needed).
-    web: crate::webview::ReportWeb,
+    web: crate::os::webview::ReportWeb,
 }
 
 pub struct Shell {
@@ -278,16 +279,11 @@ impl Shell {
         }
         // The app icon embedded by build.rs: small in the title bar, large on
         // the taskbar button and in Alt+Tab.
-        {
-            use winit::platform::windows::{IconExtWindows, WindowAttributesExtWindows};
-            let icon = |px: u32| winit::window::Icon::from_resource(1, Some(PhysicalSize::new(px, px))).ok();
-            attrs = attrs.with_window_icon(icon(32)).with_taskbar_icon(icon(256));
-        }
+        attrs = crate::os::with_app_icon(attrs);
         if self.options.test_hooks && quiet_tests() {
             // A test run on someone's desktop: never take the focus, stay out
             // of the taskbar and behind other windows (input comes from the hooks).
-            use winit::platform::windows::WindowAttributesExtWindows;
-            attrs = attrs.with_active(false).with_skip_taskbar(true).with_window_level(winit::window::WindowLevel::AlwaysOnBottom);
+            attrs = crate::os::quiet_window(attrs);
         }
         let window = Arc::new(event_loop.create_window(attrs)?);
         let access = accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, self.proxy.clone());
@@ -311,7 +307,7 @@ impl Shell {
         trace("gpu");
         let mut win = Win::new(opened, window.clone(), surface, grid, &self.proxy);
         win.access = Some(access);
-        win.web = crate::webview::ReportWeb::new(&self.options.home);
+        win.web = crate::os::webview::ReportWeb::new(&self.options.home);
         win.placement_path = placement_path;
         win.placement = saved.unwrap_or_default();
         win.track_placement();
@@ -456,7 +452,7 @@ impl Shell {
                 } else if let Some(path) = command["window_capture"].as_str() {
                     // The window as composed, the HTML view over the canvas included.
                     let path = std::path::PathBuf::from(path);
-                    match crate::webview::capture_window(hwnd_of(&win.window), &path) {
+                    match crate::os::webview::capture_window(hwnd_of(&win.window), &path) {
                         Ok((w, h)) => json!({ "ok": true, "path": path, "width": w, "height": h, "cell_w": win.grid.cell_w, "cell_h": win.grid.cell_h }),
                         Err(error) => json!({ "ok": false, "error": format!("{error:#}") }),
                     }
@@ -626,7 +622,7 @@ impl Win {
             dropped: Vec::new(),
             preview: None,
             focused: false,
-            web: crate::webview::ReportWeb::new(std::path::Path::new(".")),
+            web: crate::os::webview::ReportWeb::new(std::path::Path::new(".")),
         };
         let rx = win.app.conn.rx.clone();
         win.forward_service(rx, proxy);
@@ -773,7 +769,7 @@ impl Win {
     /// Shows a thumbnail of the clipboard's image (pasted into a terminal).
     fn show_paste_preview(&mut self) {
         static SERIAL: AtomicU64 = AtomicU64::new(1);
-        let Some((width, height, rgba)) = self.platform.test_image().or_else(crate::clipimage::read) else { return };
+        let Some((width, height, rgba)) = self.platform.test_image().or_else(crate::os::clip_image) else { return };
         let max = (self.grid.cell_w * 28.0) as u32;
         let (tw, th, pixels) = crate::images::thumbnail(width, height, &rgba, max, max * 2 / 3);
         let key = 1 << 63 | SERIAL.fetch_add(1, Ordering::Relaxed);
@@ -1376,7 +1372,7 @@ impl Win {
                 let every = Duration::from_millis(command["interval_ms"].as_u64().unwrap_or(100));
                 std::thread::spawn(move || {
                     for c in text.chars() {
-                        post_key(hwnd, c);
+                        crate::os::post_key(hwnd, c);
                         std::thread::sleep(every);
                     }
                 });
@@ -1406,10 +1402,10 @@ impl Win {
         use canvas_core::reports::{ReportAction, WebState};
         for event in self.web.take_events() {
             match event {
-                crate::webview::WebEvent::Ready => self.app.reports.web = WebState::Ready,
-                crate::webview::WebEvent::Failed(why) => self.app.reports.web = WebState::Failed(why),
-                crate::webview::WebEvent::Link(url) => self.app.report_action(ReportAction::Link(url)),
-                crate::webview::WebEvent::Escape => self.app.modals.retain(|m| !matches!(m, canvas_core::dialogs::Modal::Report(_))),
+                crate::os::webview::WebEvent::Ready => self.app.reports.web = WebState::Ready,
+                crate::os::webview::WebEvent::Failed(why) => self.app.reports.web = WebState::Failed(why),
+                crate::os::webview::WebEvent::Link(url) => self.app.report_action(ReportAction::Link(url)),
+                crate::os::webview::WebEvent::Escape => self.app.modals.retain(|m| !matches!(m, canvas_core::dialogs::Modal::Report(_))),
             }
             self.app.needs_draw = true;
             self.input_waiting = true;
@@ -1564,43 +1560,17 @@ fn trace(what: &str) {
     }
 }
 
+/// The window's native handle (HWND on Windows, NSView on macOS, the X11
+/// window or Wayland surface on Linux) for the platform module.
 fn hwnd_of(window: &Window) -> isize {
-    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    match window.window_handle().map(|h| h.as_raw()) {
-        Ok(RawWindowHandle::Win32(h)) => h.hwnd.get(),
-        _ => 0,
-    }
+    crate::os::native_window(window)
 }
 
 /// The mouse pointer's cell in a window (files are dropped where it is).
 fn cursor_cell(window: &Window, grid: &Grid) -> Option<(f32, f32)> {
-    use windows_sys::Win32::Foundation::POINT;
-    use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
-    let mut point = POINT { x: 0, y: 0 };
-    // SAFETY: plain Win32 calls on this process's window.
-    let ok = unsafe { GetCursorPos(&mut point) != 0 && ScreenToClient(hwnd_of(window) as _, &mut point) != 0 };
-    ok.then(|| (point.x as f32 / grid.cell_w, point.y as f32 / grid.cell_h))
+    crate::os::cursor_position(window).map(|(x, y)| (x / grid.cell_w, y / grid.cell_h))
 }
 
-/// Posts a key press for an ASCII character to the window (as the OS would).
-fn post_key(hwnd: isize, c: char) {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{MAPVK_VK_TO_VSC, MapVirtualKeyW};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_KEYDOWN, WM_KEYUP};
-    let vk = match c {
-        '\r' | '\n' => 0x0d,
-        '\u{8}' => 0x08,
-        c => c.to_ascii_uppercase() as u32,
-    };
-    // SAFETY: posting messages to this process's own window.
-    unsafe {
-        let scan = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
-        let down = 1isize | ((scan as isize) << 16);
-        PostMessageW(hwnd as _, WM_KEYDOWN, vk as usize, down);
-        std::thread::sleep(Duration::from_millis(10));
-        PostMessageW(hwnd as _, WM_KEYUP, vk as usize, down | (1 << 30) | (1 << 31));
-    }
-}
 
 /// Ctrl+V or Shift+Insert.
 fn is_paste_key(key: &KeyEvent) -> bool {
