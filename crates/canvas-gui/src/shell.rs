@@ -1505,6 +1505,7 @@ impl Win {
                 || app.dirty_at.is_some()
                 || app.drag.is_some()
                 || app.visual.animating()
+                || app.glide.is_some()
                 || app.recent_pending()
                 || app.reconnecting
                 || app.restarting.is_some()
@@ -1516,6 +1517,10 @@ impl Win {
         // Stack and hide transitions draw at the display's rate until they end.
         if self.app.visual.animating() {
             self.app.needs_draw = true;
+        }
+        // A glide after a pan moves the view every frame.
+        if self.app.glide.is_some() {
+            self.app.step_glide();
         }
         self.platform.apply(&self.window, &mut self.taskbar);
         if self.placement_dirty.is_some_and(|t| t.elapsed() >= PLACEMENT_SAVE) {

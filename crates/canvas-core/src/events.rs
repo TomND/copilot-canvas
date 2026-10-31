@@ -24,6 +24,15 @@ impl App {
             self.needs_draw = true;
             // Anything but the walk keys ends a walk through the recent sessions.
             self.recent_input(&event);
+            // New navigation input (a key, a press, the wheel) stops a glide at once.
+            let navigates = match &event {
+                InputEvent::Key(key) => key.kind != KeyEventKind::Release,
+                InputEvent::Mouse(mouse) => !matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::Drag(_) | MouseEventKind::Up(_)),
+                _ => false,
+            };
+            if navigates {
+                self.stop_glide();
+            }
             match event {
                 InputEvent::Paste(text) => self.on_paste(text),
                 InputEvent::Text(text) => self.on_text(&text),
@@ -521,9 +530,14 @@ impl App {
         match mouse.kind {
             MouseEventKind::Down(button) => {
                 self.drag_origin = self.pointer;
-                self.mouse_down(button, x, y, mouse.modifiers)
+                self.pan_track.clear();
+                self.mouse_down(button, x, y, mouse.modifiers);
+                self.track_pan();
             }
-            MouseEventKind::Drag(_) => self.mouse_drag(x, y),
+            MouseEventKind::Drag(_) => {
+                self.mouse_drag(x, y);
+                self.track_pan();
+            }
             MouseEventKind::Up(_) => self.mouse_up(x, y),
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown | MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
                 self.mouse_scroll(mouse.kind, x, y, mouse.modifiers)
@@ -532,6 +546,7 @@ impl App {
                 // Some consoles report drags as moves; keep active drags responsive.
                 if self.drag.is_some() {
                     self.mouse_drag(x, y);
+                    self.track_pan();
                 } else {
                     self.needs_draw = false;
                 }
@@ -845,6 +860,8 @@ impl App {
             Drag::Group { moved: false, id, .. } => self.open_group(&id),
             Drag::Pan { moved: false, group: Some(group), .. } => self.select_group(&group),
             Drag::Pan { moved: false, group: None, .. } => self.clear_selection(),
+            // Released while still moving: gentle momentum.
+            Drag::Pan { moved: true, .. } => self.release_pan(Instant::now()),
             Drag::Rubber { start, now, additive, right, click } => {
                 // The GUI measures the precise pointer (a jitter across a row
                 // boundary is still a click); the TUI whole cells.

@@ -172,7 +172,19 @@ impl Gui {
             let t = i as f64 / 4.0;
             self.mouse("drag", button, (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t), mods)?;
         }
+        // Held still before release: a placed drag, no momentum after a pan.
+        std::thread::sleep(std::time::Duration::from_millis(120));
         self.mouse("up", button, to, mods)
+    }
+
+    /// A quick drag released while still moving (a flick: a background pan glides on).
+    fn flick(&self, button: &str, from: (f64, f64), to: (f64, f64)) -> Result<()> {
+        self.mouse("down", button, from, &[])?;
+        for i in 1..=4 {
+            let t = i as f64 / 4.0;
+            self.mouse("drag", button, (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t), &[])?;
+        }
+        self.mouse("up", button, to, &[])
     }
 
     fn wheel(&self, dir: &str, at: (f64, f64), mods: &[&str]) -> Result<()> {
@@ -1094,6 +1106,25 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         let origin = tree["canvas"]["origin"].clone();
         gui.drag("middle", empty, (empty.0 - 6.0, empty.1 - 3.0), &[])?;
         anyhow::ensure!(gui.tree()?["canvas"]["origin"] != origin, "middle-drag did not pan");
+        // A flick glides on briefly after release and stops by itself; a key stops it
+        // at once; reduced motion does not glide. Released held still, it does not either.
+        let motion = gui.tree()?["canvas"]["motion"].as_str().unwrap_or("On").to_lowercase();
+        gui.req(json!({ "cmd": "motion", "value": "on" }))?;
+        gui.flick("left", empty, (empty.0 - 8.0, empty.1 - 2.0))?;
+        let released = gui.tree()?;
+        anyhow::ensure!(released["gliding"] == true, "a flick did not glide");
+        gui.wait_tree("the glide stops by itself", 3, |t| t["gliding"] == false)?;
+        anyhow::ensure!(gui.tree()?["canvas"]["origin"] != released["canvas"]["origin"], "the glide did not move the view");
+        // Pressed on another cell each time (two presses on one cell are a double-click).
+        let next = (empty.0 - 2.0, empty.1 - 1.0);
+        gui.flick("left", next, (next.0 - 8.0, next.1 - 2.0))?;
+        gui.key("Esc", &[])?;
+        anyhow::ensure!(gui.tree()?["gliding"] == false, "a key did not stop the glide");
+        gui.req(json!({ "cmd": "motion", "value": "reduced" }))?;
+        let last = (empty.0 - 4.0, empty.1 - 2.0);
+        gui.flick("left", last, (last.0 - 8.0, last.1 - 2.0))?;
+        anyhow::ensure!(gui.tree()?["gliding"] == false, "reduced motion glided");
+        gui.req(json!({ "cmd": "motion", "value": motion }))?;
         // Zoom with Ctrl+wheel around the pointer.
         let scale = gui.tree()?["canvas"]["scale"].as_f64().unwrap_or(0.0);
         gui.wheel("up", empty, &["ctrl"])?;
@@ -1124,7 +1155,7 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         gui.wait("double-click opens the new-session dialog", 5, |t| t.contains("New session") && t.contains("Folder"))?;
         gui.key("Esc", &[])?;
         gui.send("f")?;
-        Ok("pan, Ctrl+wheel zoom, fit, box drag, right-click menu, double-click".into())
+        Ok("pan, flick glide, Ctrl+wheel zoom, fit, box drag, right-click menu, double-click".into())
     });
 
     check(rows, "9", "Groups: select, G, move by title, resize ◢, nested, membership, folder chips, defaults", "group_move_resize_chips", || {

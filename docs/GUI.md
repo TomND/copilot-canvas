@@ -473,7 +473,7 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
 | Action | GUI |
 |---|---|
 | Zoom | Ctrl+wheel or Alt+wheel: continuous, around the pointer (1/8 of a doubling per notch); toolbar − / + and the `-` / `+` keys step 25 % · 50 % · 100 % · 200 %; `F` fits everything (at most 100 %); `C` / Home centres the selection |
-| Pan | drag empty canvas or middle-drag, pixel-smooth; wheel / Shift+wheel; Ctrl+arrows |
+| Pan | drag empty canvas or middle-drag, pixel-smooth; released while moving it glides on and slows to a stop within about half a second (at most 8 columns or 4 rows, `glide.rs`, both clients; time-based, so the same at any frame rate; a key, press or wheel stops it at once; none with reduced motion or effects off, never for box, group or area drags); wheel / Shift+wheel; Ctrl+arrows |
 | Move | drag a box (its subagents follow) or a group title, pixel-smooth; the document stores whole units |
 | View / start | a click (canvas or sidebar) only views a box: its live terminal, else its details panel; a double-click, Enter, the panel's **▸ Start** / **▸ Resume** or the box menu starts it. An exited terminal stays on screen while it has the focus |
 | Recent sessions | the sidebar's **RECENT** rows (newest first; a click views, a double-click starts; the header folds them); **Ctrl+F6** / **Ctrl+Shift+F6** anywhere (a terminal too) and `]` / `[` on the canvas or sidebar view the next older or newer one without starting it; the list reorders a second after the last step |
