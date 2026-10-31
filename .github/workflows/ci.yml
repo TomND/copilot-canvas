@@ -332,3 +332,67 @@ jobs:
             /tmp/copilot-canvas-*/**/*.yaml
             ${{ runner.temp }}/**/*.log
           if-no-files-found: ignore
+
+  # The GUI on Linux (MAC-LINUX-PLAN §7.2): the self-test under X11 (Xvfb)
+  # and under a headless Wayland compositor (weston), rendering on Mesa's
+  # software Vulkan (lavapipe) or GL (llvmpipe), with a private session bus.
+  # Until the GUI's Linux phase lands these steps report without blocking;
+  # stderr logs and screenshots are kept.
+  linux-gui:
+    needs: ghostty-linux
+    runs-on: ubuntu-24.04
+    env:
+      RUST_BACKTRACE: "1"
+      COPILOT_CANVAS_SECRETS: file
+      CANVAS_GUI_SCREENS: ${{ github.workspace }}/gui-screens
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v8
+        with:
+          name: ghostty-linux-x86_64
+          path: target/ghostty
+      - name: system packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends pkg-config libssl-dev \
+            libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
+            libvulkan1 libvulkan-dev mesa-vulkan-drivers libegl1 libegl-mesa0 libgl1-mesa-dri libgles2 \
+            xvfb xauth xclip wl-clipboard weston dbus dbus-x11 at-spi2-core \
+            fonts-dejavu-core fonts-noto-color-emoji fonts-noto-cjk libfontconfig1-dev
+      - name: release build
+        run: cargo build --release
+      - name: vulkaninfo (software adapters)
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y -q --no-install-recommends vulkan-tools >/dev/null
+          vulkaninfo --summary 2>&1 | head -40
+      - name: GUI self-test on X11 (Xvfb)
+        continue-on-error: true
+        run: |
+          mkdir -p "$CANVAS_GUI_SCREENS/x11"
+          unset WAYLAND_DISPLAY
+          CANVAS_GUI_SCREENS="$CANVAS_GUI_SCREENS/x11" timeout 900 xvfb-run -a -s "-screen 0 1920x1080x24" \
+            dbus-run-session -- target/release/copilot-canvas selftest --client gui
+      - name: GUI self-test on Wayland (headless weston)
+        continue-on-error: true
+        run: |
+          mkdir -p "$CANVAS_GUI_SCREENS/wayland"
+          export XDG_RUNTIME_DIR="$(mktemp -d)"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          weston --backend=headless --renderer=pixman --socket=wl-ci --idle-time=0 --width=1920 --height=1080 > "$RUNNER_TEMP/weston.log" 2>&1 &
+          for i in $(seq 1 40); do [ -S "$XDG_RUNTIME_DIR/wl-ci" ] && break; sleep 0.25; done
+          unset DISPLAY
+          CANVAS_GUI_SCREENS="$CANVAS_GUI_SCREENS/wayland" WAYLAND_DISPLAY=wl-ci timeout 900 \
+            dbus-run-session -- target/release/copilot-canvas selftest --client gui
+      - name: keep GUI logs and screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-gui
+          path: |
+            ${{ github.workspace }}/gui-screens
+            /tmp/copilot-canvas-selftest-*/gui-stderr.log
+            /tmp/copilot-canvas-selftest-*/home/*.log
+            ${{ runner.temp }}/weston.log
+          if-no-files-found: ignore
