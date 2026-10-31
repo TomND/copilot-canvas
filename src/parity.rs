@@ -1337,14 +1337,28 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         let exe = std::env::current_exe()?;
         gui.send(&format!("& '{}' paste-probe\r", exe.display()))?;
         gui.wait("the paste probe", 20, |t| t.contains(crate::paste_probe::READY))?;
-        gui.req(json!({ "cmd": "ime", "commit": "ime one\nime two" }))?;
-        gui.wait("the IME text as one paste", 10, |t| t.contains("PASTE 2 lines: ime one\\rime two"))?;
-        anyhow::ensure!(!gui.screen().contains(crate::paste_probe::ENTER), "the IME text sent Enter");
+        let ime = (|| -> Result<()> {
+            gui.req(json!({ "cmd": "ime", "commit": "ime one\nime two" }))?;
+            if let Err(error) = gui.wait("the IME text as one paste", 15, |t| t.contains("PASTE 2 lines: ime one\\rime two")) {
+                // Where the commit went decides what to fix: the keyboard focus then.
+                let tree = gui.tree().unwrap_or_default();
+                anyhow::bail!("{error:#}\n(focus {}, focused terminal {})", tree["focus"], tree["focused_term"]);
+            }
+            anyhow::ensure!(!gui.screen().contains(crate::paste_probe::ENTER), "the IME text sent Enter");
+            Ok(())
+        })();
+        // End the probe and clear the screen whatever happened, so a failure here
+        // does not leave Shell A in the probe for the rows after it.
         gui.send("\x04")?;
-        gui.wait("the probe ended", 10, |t| t.contains("BYE"))?;
+        let ended = gui.wait("the probe ended", 10, |t| t.contains("BYE"));
+        if ended.is_err() {
+            gui.send("\x03")?;
+        }
         // Later rows print near the top again (the --perf overlay covers the tile's last rows).
         gui.send("Clear-Host\r")?;
-        gui.wait("the screen cleared", 10, |t| !t.contains("PASTE 2 lines"))?;
+        gui.wait("the screen cleared", 10, |t| !t.contains("PASTE 2 lines") && !t.contains(crate::paste_probe::READY))?;
+        ime?;
+        ended?;
         Ok(format!("selection copied on release; Ctrl+V pasted ({}); {multi}; IME text with a line break pasted", gui.clipboard_source()))
     });
 
