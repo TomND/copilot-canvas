@@ -395,7 +395,10 @@ fn loop_dot_steps(gui: &mut Gui, id: &str) -> Result<String> {
         let path = dir.join(format!("{name}.png"));
         let reply = gui.req(json!({ "cmd": "png", "path": path }))?;
         let at = Instant::now();
-        let found = arc(&reply["loops"]).context("the loop in the capture")?;
+        let mut found = arc(&reply["loops"]).context("the loop in the capture")?;
+        // The animation clock the capture was drawn at (a loaded machine can take
+        // a while between drawing and answering).
+        found["clock_ms"] = reply["clock_ms"].clone();
         Ok((at, found, path))
     };
     let point = |v: &Value| -> Option<(f64, f64)> { Some((v[0].as_f64()?, v[1].as_f64()?)) };
@@ -432,7 +435,13 @@ fn loop_dot_steps(gui: &mut Gui, id: &str) -> Result<String> {
     for pair in samples.windows(2) {
         let (a, b) = (point(&pair[0].1["dot_px"]).context("dot")?, point(&pair[1].1["dot_px"]).context("dot")?);
         let lap = (pair[1].1["lap"].as_f64().unwrap_or(0.0) - pair[0].1["lap"].as_f64().unwrap_or(0.0)).rem_euclid(1.0);
-        let elapsed = pair[1].0.duration_since(pair[0].0).as_secs_f64();
+        let wall = pair[1].0.duration_since(pair[0].0).as_secs_f64();
+        // Measured on the clock the captures were drawn at; that clock keeps pace with real time.
+        let elapsed = match (pair[0].1["clock_ms"].as_u64(), pair[1].1["clock_ms"].as_u64()) {
+            (Some(a), Some(b)) => b.saturating_sub(a) as f64 / 1000.0,
+            _ => wall,
+        };
+        anyhow::ensure!((elapsed - wall).abs() < 0.4, "the animation clock moved {elapsed:.3} s in {wall:.3} s");
         // The lap advances with the clock (2 s a lap), whatever was drawn in between.
         anyhow::ensure!((lap * 2.0 - elapsed).abs() < 0.08, "the lap moved {lap:.3} in {elapsed:.3} s");
         let moved = (b.0 - a.0).hypot(b.1 - a.1);
