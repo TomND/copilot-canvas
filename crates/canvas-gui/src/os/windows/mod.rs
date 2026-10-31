@@ -287,6 +287,11 @@ pub fn native_window(window: &Window) -> isize {
 }
 
 /// The mouse pointer's position in a window's client area, in pixels.
+/// Dropped files arrive as winit's `DroppedFile` here.
+pub fn take_dropped(_window: &Window) -> Vec<String> {
+    Vec::new()
+}
+
 pub fn cursor_position(window: &Window) -> Option<(f32, f32)> {
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::Graphics::Gdi::ScreenToClient;

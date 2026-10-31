@@ -131,6 +131,11 @@ pub fn quiet_window(attrs: WindowAttributes) -> WindowAttributes {
 }
 
 /// The pointer's position comes from winit's cursor events instead.
+/// Dropped files arrive as winit's `DroppedFile` here.
+pub fn take_dropped(_window: &Window) -> Vec<String> {
+    Vec::new()
+}
+
 pub fn cursor_position(_window: &Window) -> Option<(f32, f32)> {
     None
 }

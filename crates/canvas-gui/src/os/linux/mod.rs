@@ -5,6 +5,7 @@
 pub use super::unix::{clip_image, native_window, process, since_start};
 
 mod bus;
+mod dnd;
 mod gtk;
 mod html_helper;
 pub mod webview;
@@ -131,6 +132,8 @@ pub fn track_window(window: &std::sync::Arc<Window>, focused: bool) {
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
     if matches!(window.window_handle().map(|h| h.as_raw()), Ok(RawWindowHandle::Wayland(_))) {
         WAYLAND.store(true, std::sync::atomic::Ordering::Relaxed);
+        // File drops: winit 0.30 has none on Wayland.
+        dnd::start(window);
     }
     let handle = native_window(window);
     let mut windows = WINDOWS.lock().unwrap_or_else(|p| p.into_inner());
@@ -220,9 +223,16 @@ pub fn quiet_window(attrs: WindowAttributes) -> WindowAttributes {
     attrs.with_active(false)
 }
 
-/// The pointer's position comes from winit's cursor events instead.
-pub fn cursor_position(_window: &Window) -> Option<(f32, f32)> {
-    None
+/// The pointer's position comes from winit's cursor events, except where a
+/// Wayland drop landed (the pointer is the drag's then, not the window's).
+pub fn cursor_position(window: &Window) -> Option<(f32, f32)> {
+    dnd::place(window)
+}
+
+/// Files dropped on `window` by Wayland drag and drop since the last call
+/// (X11's arrive as winit's `DroppedFile`).
+pub fn take_dropped(window: &Window) -> Vec<String> {
+    dnd::take(window)
 }
 
 /// Posted keys (latency benches) are not available yet.

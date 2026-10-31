@@ -51,6 +51,9 @@ wgpu = { workspace = true, features = ["vulkan", "gles"] }
 zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
 # GTK and WebKitGTK for the HTML view's helper, loaded at run time.
 libloading = "0.8"
+# Wayland drag and drop on winit's own connection (winit 0.30 has none).
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
 
 [build-dependencies]
 embed-resource.workspace = true
