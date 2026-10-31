@@ -7,14 +7,14 @@
 //! - Windows: Task Scheduler (`taskschd` and the XML of `factory`), as before.
 //! - Linux: systemd user units (a service and a timer per task) when a user
 //!   manager runs, else a marked block in the user's crontab.
-//! - macOS: launchd (added by the macOS port); none until then.
+//! - macOS: launchd, a LaunchAgent per task.
 //!
 //! Off Windows every run goes through the built-in launcher
 //! (`copilot-canvas automations launch <state>/tasks/<name>.json`, see
 //! [`crate::launcher`]), which writes the Python launcher's log lines and
 //! environment and enforces what a backend cannot (time limit, overlap,
 //! retries, success codes). A folder's `automations.yaml` may still name its
-//! own `launcher` and `python`. `COPILOT_CANVAS_SCHEDULER=systemd|cron|none`
+//! own `launcher` and `python`. `COPILOT_CANVAS_SCHEDULER=launchd|systemd|cron|none`
 //! picks a backend explicitly.
 
 use std::collections::BTreeMap;
@@ -28,9 +28,10 @@ pub use canvas_model::automation::TaskInfo;
 use crate::factory::{Defaults, Imported, Manifest};
 
 // The launcher-based backends build everywhere (their rendering is tested on
-// every OS); `choose` picks them on Linux only.
+// every OS); `choose` picks launchd on macOS, systemd or cron on Linux.
 pub mod common;
 pub mod cron;
+pub mod launchd;
 mod none;
 pub mod systemd;
 #[cfg(windows)]
@@ -124,18 +125,16 @@ fn choose() -> Box<dyn Scheduler> {
     match std::env::var("COPILOT_CANVAS_SCHEDULER").ok().as_deref().map(str::trim) {
         Some("systemd") => return Box::new(systemd::Systemd::user()),
         Some("cron") => return Box::new(cron::Cron::user()),
+        Some("launchd") => return Box::new(launchd::Launchd::user()),
         Some("none") => return Box::new(NoScheduler),
         _ => {}
     }
-    if canvas_sys::host::platform() == canvas_sys::host::Platform::Linux {
-        if systemd::Systemd::available() {
-            return Box::new(systemd::Systemd::user());
-        }
-        if cron::Cron::available() {
-            return Box::new(cron::Cron::user());
-        }
+    match canvas_sys::host::platform() {
+        canvas_sys::host::Platform::Linux if systemd::Systemd::available() => Box::new(systemd::Systemd::user()),
+        canvas_sys::host::Platform::Linux if cron::Cron::available() => Box::new(cron::Cron::user()),
+        canvas_sys::host::Platform::MacOs if launchd::Launchd::available() => Box::new(launchd::Launchd::user()),
+        _ => Box::new(NoScheduler),
     }
-    Box::new(NoScheduler)
 }
 
 /// The state folder a launcher's task file belongs to (`<state>/tasks/x.json`).
