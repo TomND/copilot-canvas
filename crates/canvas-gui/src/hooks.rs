@@ -148,6 +148,7 @@ pub fn tree(app: &canvas_core::app::App, view: &View, chrome: &Buffer) -> Value 
         "cursor": view.cursor.map(|(x, y)| json!([x, y])),
         "banner": view.banner,
         "connected": app.connected,
+        "gliding": app.glide.is_some(),
         "hits": hits,
         "canvas": canvas,
         "tiles": view.tiles.iter().map(|t| {
