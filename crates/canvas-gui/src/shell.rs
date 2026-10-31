@@ -482,7 +482,7 @@ impl Shell {
                 };
                 match self.wins[at].png(gpu, fonts, &self.options, &path) {
                     // With the loop dots where this capture drew them.
-                    Ok((w, h)) => json!({ "ok": true, "path": path, "width": w, "height": h, "loops": self.wins[at].loops_json(self.wins[at].scene_clock) }),
+                    Ok((w, h)) => json!({ "ok": true, "path": path, "width": w, "height": h, "clock_ms": self.wins[at].scene_clock, "loops": self.wins[at].loops_json(self.wins[at].scene_clock) }),
                     Err(error) => json!({ "ok": false, "error": format!("{error:#}") }),
                 }
             }
