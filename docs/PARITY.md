@@ -81,7 +81,7 @@ and unit tests that cover the row.
 | 22 | Copilot defaults, group overrides, `copilot config` list and edit | `settings_defaults_and_config`: `config --list` shown, the default model edited and saved | step "Settings view edits Copilot launch defaults" | ✓ |
 | 23 | Plugins, MCP, skills: list, toggle, remove (confirmed), add, install in a terminal; secrets hidden | `mcp_view_lists_and_toggles`: servers listed from the CLI, Space toggles through it, the plugins view loads | canvas-agents `mcp_listing_shapes_are_normalized_without_secrets` | ✓ |
 | 24 | Migrate from VS Code (preview, tick, backup, redacted log) | `migration_preview_dialog`: the read-only preview opens and closes | canvas-agents migrate tests | ✓ |
-| 25 | Passive sessions: templates, panel, dashed ⟲ boxes, ✉ badge, pulses, idle-only messages, mute, rollover, budgets | `passive_create_and_panel`: group menu → template → name → panel, rules scaffolded, a dashed ⟲ box | canvas-core passive tests | ✓ |
+| 25 | Passive sessions: templates, panel, dashed ⟲ boxes, ✉ badge, pulses, idle-only messages, mute, rollover, budgets | `passive_create_and_panel`: the empty group's ⟲ + passive chip → its passive panel's empty state → *+ Create a passive session for this group…* → template → name → panel, rules scaffolded, a dashed ⟲ box, the chip reads ⟲ 1 (the group menu's *New passive session…*: the TUI self-test probe) | canvas-core passive tests | ✓ |
 | 26 | Automations: families, failure pulse, toolbar badge, info and health page, run, enable, ask doctor, outputs | `automations_view_and_details`: listed with prompt, schedule and runs | steps "Automations view lists Copilot automations", "clicking an automation … Space toggles it" | ✓ |
 | 27 | Copilot automations (`data.db`) and session schedules | `automation_boxes_and_session_loops`: three automation boxes; the session schedule loops | | ✓ |
 | 28 | Idle auto-stop, priority manager, upgrade with resume, protocol-mismatch tolerance, crash log | `crash_log_and_build_match`: no update prompt for a current service; a crash is written to `crash.log` and the sessions keep running (idle stop, priorities and upgrades are the service's, shared with the TUI) | `upgrade_probe` (manual), canvas-host tests | ✓ |
@@ -121,7 +121,7 @@ not a front-end feature.
 | G4 | **Several windows.** Ctrl+Shift+N or the toolbar's ⧉ opens another window on the same canvas: its own `App`, connection and view preferences; the service's document sync keeps them consistent; the process ends with its last window | `second_window_rename_sync`: a rename in window 1 appears in window 2; closing window 2 leaves window 1 | ✓ |
 | — | **Pasted screenshots** are shown as a thumbnail with their size for 5 s (the agent attaches the image itself) | row 15 | ✓ |
 
-## Canvas visuals (rows V1–V5)
+## Canvas visuals (rows V1–V6)
 
 Both front ends have these features (the TUI draws them as characters and
 switches without animation; the ViewModel snapshot tests `dusty-sessions`,
@@ -136,12 +136,30 @@ fixed-size chips) have these checks, on a separate canvas of the sandbox
 | V1 | **Dust on unused sessions** (static; age in the box and the sidebar; *Select unused sessions*) | `dust_levels_and_select_unused`: boxes last used 0/5/20/90 days ago have dust 0/1/2/3, "unused 20d" in the status line, the ages in the sidebar; the canvas menu selects exactly the three unused ones | ✓ |
 | V2 | **Stacks and hidden subsessions** (animated, end states) | `stack_unstack_and_hide`: the session menu stacks; a frame mid-transition shows fading cards; the end state has one deck (the newest on top, +1) beneath the parent and the document says stacked; a double-click unstacks and the boxes are back at exactly the same places; `H` hides both (⋯ 2 hidden on the parent) and shows them in place | ✓ |
 | V3 | **Effects** (`copilot-canvas effect`, acknowledged by a click that starts nothing, animated only while visible) | `effect_fireworks_ack`: fireworks from the CLI appear with their badge; 26 frames in 2 s while they run (≤ 15 fps); a click on the box clears them here, in the service's state and so everywhere, selects the box and starts no session; a few frames in 2 s afterwards (frames that only move the passive session's loop dot are not counted) | ✓ |
-| V4 | **Group chips at any zoom; sidebar folder and passive rows** | `chips_low_zoom_and_sidebar`: the sidebar lists the folder (◧) and the passive session (⟲); at 25 % the title row has three fixed-size chips; ⟲ 1 opens the passive sessions menu and its item the panel (no session starts) | ✓ |
+| V4 | **Group chips at any zoom; sidebar folder and passive rows** | `chips_low_zoom_and_sidebar`: the sidebar lists the folder (◧) and the passive session (⟲); at 25 % the title row has three fixed-size chips; ⟲ 1 opens the group's passive panel (“Passive sessions of “Visual group””, the session, canvas-wide agents apart) and its Watcher row the session's panel (no session starts) | ✓ |
 | V5 | **Group files in remote mode** (`--remote loopback`) | `remote_group_files_in_canvas`: the ◧ AI docs chip opens the canvas's folder browser with the folder's files; a click on `notes.md` shows it in the read-only viewer; the passive panel's *Rules* shows the rules in the viewer; the service log shows no Explorer or program opened for the client | ✓ |
+| V6 | **Where a group's passive sessions are, in remote mode** (`--remote loopback`; WI-021) | `remote_group_passive_sessions`: the sidebar's “⟲ Passive sessions 1” row opens the group's passive panel (title with the count, “They belong to this group”, the session with its state and *Run now* / *Pause*, “Canvas-wide agents · 0” apart); the title chip (“⟲ 1 passive”, or compact “⟲ 1”) opens the same panel; *Open* shows the session's panel (with *Group's passive*); no session starts. Row 25 creates its passive session from the empty group's ⟲ + passive chip: the panel's empty state (“No passive sessions in this group yet”) and *+ Create a passive session for this group…*, then the chip reads ⟲ 1 | ✓ |
 
 ## Last run
 
-WI-022 folds every session's subagent boxes into one slim deck beneath it by
+WI-021 makes a group's passive sessions discoverable: a sidebar row
+“⟲ Passive sessions N” (or “Passive: none · + add…”) under every group, the
+labelled title chip (⟲ N passive / ⟲ + passive), *Passive sessions of this
+group…* in the group menu and a PASSIVE SESSIONS section in the group's
+details all open the group's passive panel (state, Open / Run now / Pause,
+an empty state with Create, canvas-wide agents apart). Row V6 is new; row 25
+creates through the chip's empty state; V4 goes chip → panel → session. The
+shared self-test remains 39 steps; the parity suite has 62 rows.
+
+Verified 2026-10-30: `PASS: 62 rows in 252.8s` (V6: `over TCP: sidebar row →
+panel (1 session, state, buttons, 0 canvas-wide agents apart); chip → panel;
+Open → its panel; nothing started`); two golden screenshots re-blessed after
+review (all-statuses and visuals: the sidebar's new ⟲ Passive row and the
+“⟲ 1 passive” chip) and then matched; the view snapshots
+`group-passives-panel` and `group-passives-empty` are new and ten others gain
+the sidebar row; nine hardening checks passed.
+
+The run before (WI-022) folds every session's subagent boxes into one slim deck beneath it by
 default. Row 46 is new (above); rows 5, 35, 44 and 45 keep their intent and
 now work with folded subagent boxes: row 5 finds “Parity explorer” in its
 session's deck, row 35 inspects it through the deck's list and shows the
@@ -233,7 +251,8 @@ V2   | Stacks: K or the menu stacks subsessions (animated), double-c… | stack_
 V3   | Effects: copilot-canvas effect on a box, animated ≤ 15 fps wh… | effect_fireworks_ack (the TUI shows a badge… | ✓
 V4   | Group chips at any zoom (folders, ⟲ passive), sidebar folder … | chips_low_zoom_and_sidebar (the TUI draws t… | ✓
 V5   | Remote mode: group folders in the canvas's browser, passive f… | remote_group_files_in_canvas (the TUI uses … | ✓
-PASS: 61 rows in 235.2s
+V6   | Remote mode: a group's ⟲ Passive sessions row and chip open i… | remote_group_passive_sessions (the TUI draw… | ✓
+PASS: 62 rows in 252.8s
 ```
 
 Rows 42 and 43 in the WI-020 run: `tracked by its owner; baseline poll; 3 comments

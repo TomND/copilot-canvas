@@ -381,11 +381,20 @@ folder).
   the sending session's box. The *Rollout tracker* template celebrates
   approvals with fireworks and marks review requests and comments with
   attention; the *Drift guard* marks scope creep.
-- **Within reach**: a group's title row shows **⟲ N** (its passive sessions;
-  a click lists them, each opens its panel) or **⟲ + passive**; the sidebar
-  lists them under their group; the panel opens rules, memory, log, the group
+- **Within reach**: every group has a labelled place for its passive
+  sessions. The sidebar shows a **⟲ Passive sessions N** row under each group
+  (its passive sessions listed beneath it), or **⟲ Passive: none · + add…**;
+  the group's title row shows **⟲ N passive** (compact: ⟲ N) or **⟲ +
+  passive**; the group menu has *Passive sessions of this group…*; the
+  group's details panel has a PASSIVE SESSIONS section. Each opens the
+  group's **passive panel**: what they are (this group's events only, files in
+  the group's folder), each one's state, trigger and template with *Open*,
+  *Run now* and *Pause* / *Resume*, an empty state with **+ Create a passive
+  session for this group…** (it asks for the group's folder first when there
+  is none), and the canvas-wide agents named apart (◎ Agents). Viewing never
+  starts anything. A passive session's own panel opens rules, memory, log, the group
   context and `GOALS.md` (in remote mode in VS Code through the tunnel or the
-  read-only viewer).
+  read-only viewer) and leads back with *Group's passive*.
 - **Messages**: sessions and passive sessions can message the sessions and
   passive sessions of their own group, and any canvas-wide agent (see below),
   with `copilot-canvas send`; canvas-wide agents reach every session of the

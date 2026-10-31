@@ -264,8 +264,9 @@ and size.
   mode draws the badge ("✦ PR !7 approved") on the anchor's bottom edge.
   Particles are seeded from the effect's kind and text (stable in every
   window and run); the `freeze` hook holds them at a mid-burst frame.
-- *Group chips* (`GroupModel::chips`, `folders.rs`): ⟲ N passive sessions
-  (or ⟲ + passive), ◧ AI docs and ◨ Outputs (or ◧ Set folder…), full or
+- *Group chips* (`GroupModel::chips`, `folders.rs`): ⟲ N passive (compact
+  ⟲ N) or ⟲ + passive, both opening the group's passive panel,
+  ◧ AI docs and ◨ Outputs (or ◧ Set folder…), full or
   compact (the passive chip first, then all) to fit next to the title, which
   is shortened for them. From 70 % up they scale with the zoom; below it they
   keep a readable size on screen (`ChipModel::fixed`) while the title shows.
@@ -491,7 +492,8 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
 | `--perf` | frame time (view, scene, encode), present and acquire, input → present, keystroke → echo → present, service round trip |
 | Decks | Subagent boxes are folded into a slim deck beneath their session by default (*Settings › Subagents*: stacked or shown; a session's own choice wins). `K` (on a session, a box of its, or a box in its deck) unfolds everything the session has folded, else folds its subagent boxes and subsessions into one deck; the session menu offers *Show/Stack subagents*, *Unstack/Stack subsessions* and, with both, *Unfold/Stack all*. A click on a subagent deck lists its subagents in the session's details panel, a click on a stack shows its top card (neither starts anything); a drag moves the session with its deck; a double-click unfolds it; `H` hides or shows every subsession and subagent box |
 | Effects | a click on an effect or its box clears it (in every window) and only selects the box; *Settings › Effects*: on · reduced motion · off |
-| Group chips | ⟲ N lists the passive sessions (each opens its panel), ⟲ + passive creates one, ◧ / ◨ open the folders (remote: the folder browser) |
+| Group chips | ⟲ N passive and ⟲ + passive open the group's passive panel (each session's state with Open / Run now / Pause; empty: + Create a passive session), ◧ / ◨ open the folders (remote: the folder browser) |
+| Sidebar ⟲ Passive sessions | under each group (with the count, its passive sessions beneath; or "Passive: none · + add…"): a click, Enter or right-click opens the group's passive panel; nothing starts |
 
 ## 3. Testing
 
@@ -609,7 +611,7 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   ViewModel snapshots `looping-sessions` and
   `looping-sessions-reduced-motion` pin both renderings; parity row 7b
   checks PNG captures against the clock.
-- The parity suite's rows V1–V5 and the `visuals` golden screenshot cover
+- The parity suite's rows V1–V6 and the `visuals` golden screenshot cover
   dust, stacks (with their transitions' end states), hidden subsessions,
   effects and the group chips; row 46 covers subagent boxes folded by
   default (the deck working while one runs, `K` to their saved places, kept
