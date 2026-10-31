@@ -8,6 +8,7 @@
 //! code that must behave differently at run time asks [`host::platform`].
 
 pub mod clipboard;
+pub mod console;
 pub mod fs;
 pub mod host;
 pub mod ipc;

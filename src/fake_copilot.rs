@@ -195,7 +195,7 @@ pub fn model_line(args: &[String]) -> String {
 /// reports mouse clicks (`MOUSE <report>`), reading raw VT input as Copilot does.
 fn session(args: &[String]) -> Result<()> {
     use std::io::Read;
-    console_modes();
+    canvas_sys::console::raw_vt_modes();
     let mut out = std::io::stdout();
     let disabled: Vec<&str> = args.windows(2).filter(|w| w[0] == "--disable-mcp-server").map(|w| w[1].as_str()).collect();
     // Mouse reports (SGR), as Copilot asks for them.
@@ -230,19 +230,3 @@ fn session(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Raw VT input (keys and mouse reports as escape sequences), VT output.
-fn console_modes() {
-    use windows_sys::Win32::System::Console::{
-        ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleMode, GetStdHandle, STD_INPUT_HANDLE,
-        STD_OUTPUT_HANDLE, SetConsoleMode,
-    };
-    // SAFETY: the process's own standard handles.
-    unsafe {
-        SetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), ENABLE_VIRTUAL_TERMINAL_INPUT);
-        let output = GetStdHandle(STD_OUTPUT_HANDLE);
-        let mut mode = 0;
-        if GetConsoleMode(output, &mut mode) != 0 {
-            SetConsoleMode(output, mode | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
-        }
-    }
-}

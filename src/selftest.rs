@@ -307,8 +307,8 @@ impl Ui for Console {
 /// centres), the screen is the GUI's text rendering of its frame.
 pub struct GuiDriver {
     child: std::process::Child,
-    pipe: Mutex<(std::io::BufReader<canvas_common::pipe::PipeReader>, canvas_common::pipe::PipeWriter)>,
-    _closer: canvas_common::pipe::PipeCloser,
+    pipe: Mutex<(std::io::BufReader<canvas_sys::ipc::PipeReader>, canvas_sys::ipc::PipeWriter)>,
+    _closer: canvas_sys::ipc::PipeCloser,
     _stdout: std::process::ChildStdout,
 }
 
@@ -343,7 +343,7 @@ impl GuiDriver {
             let _ = child.kill();
             bail!("the GUI did not start its test hooks; see {}", log.display());
         }
-        let pipe = canvas_common::pipe::connect(&name, Duration::from_secs(10)).with_context(|| format!("cannot connect to {name}"))?;
+        let pipe = canvas_sys::ipc::connect(&name, Duration::from_secs(10)).with_context(|| format!("cannot connect to {name}"))?;
         let (pipe_reader, writer, closer) = pipe.split()?;
         Ok(Self { child, pipe: Mutex::new((std::io::BufReader::new(pipe_reader), writer)), _closer: closer, _stdout: reader.into_inner() })
     }

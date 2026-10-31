@@ -369,7 +369,7 @@ fn protocol7_client(instance: &Instance) -> Result<(usize, usize)> {
     use canvas_common::protocol::SERVICE_V7_VARIANTS;
     use canvas_common::wire::{FrameReader, FrameWriter};
     let pipe = crate::client::pipe::connect(&instance.pipe_name(), Duration::from_secs(2))?;
-    let token = canvas_common::auth::read_token(&instance.token_path())?;
+    let token = canvas_sys::token::read_token(&instance.token_path())?;
     let (reader, writer, closer) = pipe.split()?;
     let (mut reader, mut writer) = (FrameReader::new(Box::new(reader)), FrameWriter::new(Box::new(writer)));
     let greeting = canvas_common::handshake::open(&mut reader, &mut writer, &token, "protocol-7 probe", None)?;
@@ -437,7 +437,7 @@ fn scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
         anyhow::ensure!(Instant::now() < deadline, "the service did not publish its TCP port; see {}", instance.log_path().display());
         std::thread::sleep(Duration::from_millis(100));
     };
-    let token = canvas_common::auth::read_token(&instance.token_path())?;
+    let token = canvas_sys::token::read_token(&instance.token_path())?;
     let proxy = Proxy::start(format!("127.0.0.1:{port}"))?;
     let target = ConnTarget::Tcp { addr: proxy.addr.clone(), remote_id: None, secret: token };
     let mut typist = Typist::connect(target)?;
@@ -581,7 +581,7 @@ fn tui_over_dropped_link(exe: &Path, instance: &Instance, root: &Path, proxy: &P
         "--remote".into(),
         proxy.addr.clone(),
     ];
-    let secret = crate::paths::hex(&canvas_common::auth::read_token(&instance.token_path())?);
+    let secret = crate::paths::hex(&canvas_sys::token::read_token(&instance.token_path())?);
     let mut ui = crate::selftest::Console::start_with_env(exe, &args, &[("COPILOT_CANVAS_REMOTE_SECRET", Path::new(&secret))], 170, 46)?;
     ui.wait("the canvas", Duration::from_secs(20), |t| t.contains("Build session canvas"))?;
     ui.send(b"\r")?;

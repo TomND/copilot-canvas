@@ -209,7 +209,7 @@ pub fn run(plain: bool, kitty: bool, keys: bool, raw: bool) -> Result<()> {
     if keys {
         return run_keys(plain);
     }
-    console_modes();
+    canvas_sys::console::raw_vt_modes();
     let mut out = std::io::stdout();
     if !plain {
         write!(out, "\x1b[?2004h")?;
@@ -219,7 +219,7 @@ pub fn run(plain: bool, kitty: bool, keys: bool, raw: bool) -> Result<()> {
     }
     write!(out, "{READY} (bracketed paste {}, kitty keyboard {})\r\n", if plain { "off" } else { "on" }, if kitty { "on" } else { "off" })?;
     out.flush()?;
-    let mut stdin = RawStdin::new();
+    let mut stdin = canvas_sys::console::RawStdin::new();
     let mut decoder = Decoder::default();
     'read: loop {
         let input = stdin.read_some()?;
@@ -285,56 +285,6 @@ fn run_keys(plain: bool) -> Result<()> {
     }
     ratatui::crossterm::terminal::disable_raw_mode()?;
     Ok(())
-}
-
-/// Standard input as the console delivers it: unlike `std::io::stdin`,
-/// which ends a console's input at Ctrl+Z (0x1A), Ctrl+Z arrives as a key
-/// (`KEY \x1a`), as it does in the agent CLIs. Text comes as UTF-8.
-struct RawStdin(windows_sys::Win32::Foundation::HANDLE);
-
-impl RawStdin {
-    fn new() -> Self {
-        // SAFETY: the process's own standard input handle.
-        Self(unsafe { windows_sys::Win32::System::Console::GetStdHandle(windows_sys::Win32::System::Console::STD_INPUT_HANDLE) })
-    }
-
-    /// The next input (empty at its end).
-    fn read_some(&mut self) -> std::io::Result<Vec<u8>> {
-        let mut wide = [0u16; 4096];
-        let mut chars = 0u32;
-        // SAFETY: `wide` is valid for its length for the whole (synchronous) call; no read control.
-        let console = unsafe { windows_sys::Win32::System::Console::ReadConsoleW(self.0, wide.as_mut_ptr().cast(), wide.len() as u32, &mut chars, std::ptr::null()) };
-        if console != 0 {
-            return Ok(String::from_utf16_lossy(&wide[..chars as usize]).into_bytes());
-        }
-        // Not a console (a pipe): its bytes.
-        let mut buf = vec![0u8; 8192];
-        let mut read = 0u32;
-        // SAFETY: as above.
-        let ok = unsafe { windows_sys::Win32::Storage::FileSystem::ReadFile(self.0, buf.as_mut_ptr(), buf.len() as u32, &mut read, std::ptr::null_mut()) };
-        if ok == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        buf.truncate(read as usize);
-        Ok(buf)
-    }
-}
-
-/// Raw VT input (no line editing, echo or Ctrl+C handling), VT output.
-fn console_modes() {
-    use windows_sys::Win32::System::Console::{
-        ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleMode, GetStdHandle, STD_INPUT_HANDLE,
-        STD_OUTPUT_HANDLE, SetConsoleMode,
-    };
-    // SAFETY: the process's own standard handles; failures leave the modes as they were.
-    unsafe {
-        SetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), ENABLE_VIRTUAL_TERMINAL_INPUT);
-        let output = GetStdHandle(STD_OUTPUT_HANDLE);
-        let mut mode = 0;
-        if GetConsoleMode(output, &mut mode) != 0 {
-            SetConsoleMode(output, mode | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
-        }
-    }
 }
 
 /// `--drive TEXT`: the probe (or `program`, once `ready` shows) in a hidden

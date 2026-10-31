@@ -24,3 +24,20 @@ pub fn set_priority(pid: u32, class: Class) -> bool {
 pub fn process_argv(_pid: u32) -> Option<Vec<String>> {
     None
 }
+
+/// Open handles of `pid` (the soak test watches for leaks).
+pub fn handle_count(pid: u32) -> u32 {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{GetProcessHandleCount, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // SAFETY: plain Win32 calls with a handle closed right after.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return 0;
+        }
+        let mut count = 0;
+        let ok = GetProcessHandleCount(handle, &mut count);
+        CloseHandle(handle);
+        if ok != 0 { count } else { 0 }
+    }
+}

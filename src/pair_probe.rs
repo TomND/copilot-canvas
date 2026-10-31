@@ -152,7 +152,7 @@ fn scenario(exe: &Path, cloud: &Instance, root: &Path) -> Result<()> {
     let added = ok(exe, &args(&home_args, &["remote", "add", "test2", "--tunnel", "fake", "--port", &port.to_string(), "--code", &code2]), &tunnel_env(&add_control))?;
     anyhow::ensure!(added.contains("tunnel fake"), "{added}");
     let add_pid = read_pid(&add_control).context("the stand-in ran for `remote add`")?;
-    wait_until("the stand-in of `remote add` to end", Duration::from_secs(5), || !canvas_common::win::alive(add_pid))?;
+    wait_until("the stand-in of `remote add` to end", Duration::from_secs(5), || !canvas_sys::process::alive(add_pid))?;
     let listed = ok(exe, &args(&home_args, &["remote", "servers"]), &[])?;
     anyhow::ensure!(listed.contains("test ") && listed.contains("test2") && listed.contains("tunnel fake, port"), "{listed}");
     let clients = ok(exe, &args(&cloud_args, &["remote", "clients"]), &[])?;
@@ -217,15 +217,15 @@ fn scenario(exe: &Path, cloud: &Instance, root: &Path) -> Result<()> {
         ui.wait("the pane resynced", Duration::from_secs(5), |t| t.contains("BEFORE_DROP"))?;
         ui.send(b"Write-Output ('AFTER_' + 'DROP')\r")?;
         ui.wait("typing after the drop", Duration::from_secs(10), |t| t.contains("AFTER_DROP"))?;
-        anyhow::ensure!(read_pid(&tui_control) == Some(first) && canvas_common::win::alive(first), "a dropped connection keeps the tunnel child");
+        anyhow::ensure!(read_pid(&tui_control) == Some(first) && canvas_sys::process::alive(first), "a dropped connection keeps the tunnel child");
 
-        canvas_common::win::kill_tree(first)?;
+        canvas_sys::process::kill_tree(first)?;
         ui.wait("offline banner after the tunnel child died", Duration::from_secs(10), |t| t.contains("Offline — reconnecting"))?;
         let killed = Instant::now();
         ui.wait("reconnected through a new tunnel child", RECONNECT_LIMIT, |t| t.contains("Reconnected") && !t.contains("Offline — reconnecting"))?;
         let after_kill = killed.elapsed();
         let second = read_pid(&tui_control).context("pid")?;
-        anyhow::ensure!(second != first && canvas_common::win::alive(second), "the tunnel child was started again");
+        anyhow::ensure!(second != first && canvas_sys::process::alive(second), "the tunnel child was started again");
         ui.send(b"Write-Output ('AFTER_' + 'KILL')\r")?;
         ui.wait("typing after the restart", Duration::from_secs(10), |t| t.contains("AFTER_KILL"))?;
         println!("    reconnected {:.1} s after a drop and {:.1} s after the tunnel child was killed (pid {first} → {second})", after_drop.as_secs_f64(), after_kill.as_secs_f64());
@@ -255,7 +255,7 @@ fn scenario(exe: &Path, cloud: &Instance, root: &Path) -> Result<()> {
         ui.send(b"\r")?;
         let code = ui.wait_exit(Duration::from_secs(10))?;
         anyhow::ensure!(code == 0, "the canvas exited with {code}");
-        wait_until("the tunnel child to end with the canvas", Duration::from_secs(5), || !canvas_common::win::alive(second))?;
+        wait_until("the tunnel child to end with the canvas", Duration::from_secs(5), || !canvas_sys::process::alive(second))?;
         Ok(())
     })();
     let _ = std::fs::remove_file(&viewed);

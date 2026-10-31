@@ -123,3 +123,7 @@ pub fn set_priority(pid: u32, class: Class) -> bool {
         nice >= 5 || libc::setpriority(libc::PRIO_PROCESS, pid as libc::id_t, 5) == 0
     }
 }
+
+pub fn fd_count(pid: u32) -> u32 {
+    std::fs::read_dir(format!("/proc/{pid}/fd")).map(|d| d.count() as u32).unwrap_or(0)
+}

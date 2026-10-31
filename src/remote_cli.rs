@@ -9,7 +9,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use canvas_common::remote::{self, ServerRecord, Servers};
 use canvas_common::settings::Settings;
-use canvas_common::{dpapi, pairing};
+use canvas_common::pairing;
 
 use crate::client::conn::{self, ClientSession, Conn, ConnOptions, ConnTarget};
 use crate::client::remote::RemoteBackend;
@@ -163,7 +163,7 @@ pub fn push_key(instance: &Instance, file: &Path, key_id: Option<String>, team: 
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    canvas_common::win::write_private(&path, serde_json::to_string_pretty(&key)?.as_bytes()).with_context(|| format!("cannot write {}", path.display()))?;
+    canvas_sys::fs::write_private(&path, serde_json::to_string_pretty(&key)?.as_bytes()).with_context(|| format!("cannot write {}", path.display()))?;
     println!("APNs key {} of team {} saved ({}); the running service uses it at once.", key.key_id, key.team_id, path.display());
     println!("Phones register when they connect; try one with `copilot-canvas remote push-test`.");
     Ok(())
@@ -293,7 +293,7 @@ pub fn add(instance: &Instance, args: AddArgs) -> Result<()> {
     let addr = route.address()?;
     let (client_id, secret) = conn::pair(&addr, &code, &client_name).context("pairing failed")?;
     record.client_id = client_id.clone();
-    record.secret = dpapi::protect_hex(&secret, "Copilot Canvas server secret").context("cannot protect the secret")?;
+    record.secret = canvas_sys::secret::seal(&instance.home, &secret, "Copilot Canvas server secret").context("cannot protect the secret")?;
     let mut servers = Servers::load(&instance.home)?;
     let previous = servers.find(&record.name).map(|s| s.client_id.clone());
     servers.upsert(record.clone());
@@ -406,13 +406,13 @@ fn signed_in(status: &str) -> bool {
 /// The first line `devtunnel user show` prints ("Logged in as … using GitHub.",
 /// "Not logged in."; it exits 0 either way).
 fn devtunnel_user(exe: &Path) -> Result<String> {
-    use std::os::windows::process::CommandExt;
+    use canvas_sys::spawn::CommandExt;
     let mut child = std::process::Command::new(exe)
         .args(["user", "show"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .creation_flags(0x0800_0000)
+        .no_window()
         .spawn()?;
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     while child.try_wait()?.is_none() {

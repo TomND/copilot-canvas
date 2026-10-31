@@ -325,7 +325,7 @@ pub fn record(spec: &Spec) -> Result<Recording> {
                 eprintln!("record: time limit reached; ending the program");
             }
             if pid != 0 {
-                let _ = canvas_common::win::kill_tree(pid);
+                let _ = canvas_sys::process::kill_tree(pid);
             }
             let _ = child.kill();
             killed = true;

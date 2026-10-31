@@ -487,21 +487,6 @@ struct Sample {
     service_handles: u32,
 }
 
-fn handles(pid: u32) -> u32 {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{GetProcessHandleCount, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-    // SAFETY: plain Win32 calls with a handle closed right after.
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle.is_null() {
-            return 0;
-        }
-        let mut count = 0;
-        let ok = GetProcessHandleCount(handle, &mut count);
-        CloseHandle(handle);
-        if ok != 0 { count } else { 0 }
-    }
-}
 
 fn megabytes(pid: u32) -> f64 {
     crate::win::process_usage(Some(pid)).private as f64 / 1_048_576.0
@@ -579,7 +564,7 @@ fn soak(exe: &Path, instance: &Instance, root: &Path, options: &Options) -> Resu
         anyhow::ensure!(Instant::now() < deadline, "the service did not publish its TCP port; see {}", instance.log_path().display());
         std::thread::sleep(Duration::from_millis(100));
     };
-    let token = canvas_common::auth::read_token(&instance.token_path())?;
+    let token = canvas_sys::token::read_token(&instance.token_path())?;
     let proxy = Proxy::start(format!("127.0.0.1:{port}"))?;
     let target = ConnTarget::Tcp { addr: proxy.addr.clone(), remote_id: None, secret: token.clone() };
     let mut typist = Typist::connect(target)?;
@@ -877,8 +862,8 @@ fn soak(exe: &Path, instance: &Instance, root: &Path, options: &Options) -> Resu
                 at: elapsed.as_secs_f64(),
                 client_mb: megabytes(client_pid),
                 service_mb: megabytes(service_pid),
-                client_handles: handles(client_pid),
-                service_handles: handles(service_pid),
+                client_handles: canvas_sys::process::handle_count(client_pid),
+                service_handles: canvas_sys::process::handle_count(service_pid),
             });
         }
         if elapsed >= next_minute {

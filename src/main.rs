@@ -16,11 +16,17 @@ mod remote_probe;
 mod selftest;
 mod soak;
 mod standin;
+#[cfg(windows)]
+mod uia;
+#[cfg(not(windows))]
+#[path = "uia_none.rs"]
+mod uia;
 
 use canvas_agents::{automations, cli, factory_cli, index, prs_cli, reports, reviews_cli, service, vscode};
 #[cfg(test)]
 use canvas_agents::{bus, copilot_cfg, taskschd};
-use canvas_common::{paths, protocol, win};
+use canvas_common::{paths, protocol};
+use canvas_sys::process as win;
 
 /// The TUI front end plus the shared core (`client::conn`, `client::doc`, …).
 mod client {
@@ -312,7 +318,7 @@ fn main() {
 fn wants_gui(home: Option<&std::path::Path>) -> bool {
     let home = home.map(std::path::Path::to_path_buf).or_else(|| std::env::var_os("COPILOT_CANVAS_HOME").map(PathBuf::from)).or_else(|| dirs::home_dir().map(|h| h.join(".copilot-canvas")));
     let setting = home.map(|h| canvas_common::settings::Settings::load(&h)).unwrap_or_default().client().unwrap_or_default();
-    let gui_present = std::env::current_exe().map(|e| e.with_file_name("copilot-canvas-gui.exe").is_file()).unwrap_or(false);
+    let gui_present = std::env::current_exe().map(|e| e.with_file_name(canvas_sys::host::exe_name("copilot-canvas-gui")).is_file()).unwrap_or(false);
     match setting.trim().to_ascii_lowercase().as_str() {
         "gui" => gui_present,
         "auto" => gui_present && !remote_session(),
@@ -320,12 +326,10 @@ fn wants_gui(home: Option<&std::path::Path>) -> bool {
     }
 }
 
-/// A remote desktop (Cloud PC over RDP: no GPU) or an SSH session.
+/// A remote desktop (Cloud PC over RDP: no GPU), an SSH session, or (Linux)
+/// no display (MAC-LINUX-PLAN §5.9; macOS Screen Sharing cannot be told).
 fn remote_session() -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_REMOTESESSION};
-    // SAFETY: a plain query.
-    let rdp = unsafe { GetSystemMetrics(SM_REMOTESESSION) } != 0;
-    rdp || std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_CLIENT").is_some()
+    canvas_sys::host::remote_session()
 }
 
 /// `copilot-canvas config [KEY [VALUE]]`: machine settings (settings.json).

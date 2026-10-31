@@ -69,7 +69,7 @@ pub fn iterm() -> Result<String> {
 /// placement); `apc` prints the Kitty graphics command itself (dropped by
 /// Windows' inbox ConPTY, shown by hosts that pass APC through).
 pub fn run(mode: Option<&str>) -> Result<()> {
-    enable_vt();
+    canvas_sys::console::vt_output();
     let mut out = std::io::stdout().lock();
     write!(out, "{BEGIN}\r\n")?;
     match mode {
@@ -82,18 +82,6 @@ pub fn run(mode: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Lets the console pass escape sequences through to the pseudoconsole.
-fn enable_vt() {
-    use windows_sys::Win32::System::Console::{ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleMode, GetStdHandle, STD_OUTPUT_HANDLE, SetConsoleMode};
-    // SAFETY: the process's own standard output handle; failures leave the mode as it was.
-    unsafe {
-        let handle = GetStdHandle(STD_OUTPUT_HANDLE);
-        let mut mode = 0;
-        if GetConsoleMode(handle, &mut mode) != 0 {
-            SetConsoleMode(handle, mode | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {

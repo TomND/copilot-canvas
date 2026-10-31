@@ -148,6 +148,11 @@ pub fn process_user_id(pid: u32) -> io::Result<String> {
     os::process_uid(pid).map(|uid| format!("uid:{uid}"))
 }
 
+/// Open file descriptors of `pid` (the soak test watches for leaks).
+pub fn handle_count(pid: u32) -> u32 {
+    os::fd_count(pid)
+}
+
 /// This process's user (`uid:N`, the effective uid).
 pub fn current_user_id() -> io::Result<String> {
     // SAFETY: geteuid cannot fail.

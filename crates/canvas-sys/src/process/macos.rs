@@ -144,3 +144,9 @@ pub fn set_priority(pid: u32, class: Class) -> bool {
     // SAFETY: setpriority on a checked pid; the same user may set and clear the band.
     unsafe { libc::setpriority(libc::PRIO_DARWIN_PROCESS, pid as libc::id_t, value) == 0 }
 }
+
+pub fn fd_count(pid: u32) -> u32 {
+    // SAFETY: a null buffer asks for the size of the descriptor list.
+    let size = unsafe { libc::proc_pidinfo(pid as i32, libc::PROC_PIDLISTFDS, 0, std::ptr::null_mut(), 0) };
+    (size.max(0) as usize / size_of::<libc::proc_fdinfo>()) as u32
+}

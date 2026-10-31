@@ -77,6 +77,22 @@ pub fn ssh_session() -> bool {
     ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"].iter().any(|v| std::env::var_os(v).is_some_and(|v| !v.is_empty()))
 }
 
+/// A session where the GPU client is the wrong choice: a remote desktop
+/// (Windows `SM_REMOTESESSION`), SSH, or (Linux) no display.
+pub fn remote_session() -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_REMOTESESSION};
+        // SAFETY: a plain query.
+        let rdp = unsafe { GetSystemMetrics(SM_REMOTESESSION) } != 0;
+        rdp || std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_CLIENT").is_some()
+    }
+    #[cfg(not(windows))]
+    {
+        ssh_session() || !has_display()
+    }
+}
+
 /// Whether a graphical session is reachable from this process (Linux: an
 /// X11 or Wayland display; macOS and Windows: always).
 pub fn has_display() -> bool {
