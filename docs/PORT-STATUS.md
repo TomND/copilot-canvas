@@ -60,7 +60,7 @@ work resumes after any interruption: read it first, then `git log`.
       machine: keystroke p50 5.5 ms, p99 7.2 ms; service 7 % of one core,
       0.5 MB per terminal)
 
-### Phase 2 Lifecycle and automations — Linux: in progress (trait, launcher, systemd, cron, service install landed; CI probe pending)
+### Phase 2 Lifecycle and automations — Linux: done (CI) · macOS: launchd pending
 
 - **The `Scheduler` trait has landed** (0675e2e, `crates/canvas-agents/src/scheduler/`,
   owner: the Linux lead). The macOS lead adds `scheduler/launchd.rs`
@@ -77,8 +77,12 @@ work resumes after any interruption: read it first, then `git log`.
 - [x] Linux: `selftest automations` green on CI on the runners' user
       systemd and cron (run 41230428742: PASS in 61 s / 61 s; a scheduled
       run fires within the minute on both)
-- [ ] Linux: `service install` checked on CI (the unit starts; the CLI did
-      not reach the service yet: being diagnosed)
+- [x] Linux: `service install` checked on CI (the unit starts a service
+      that answers, stop, uninstall) and clients start the service with
+      `systemd-run --user` when a user manager runs (CI: `service start` →
+      `copilot-canvas-default.service` active; the TUI self-test passes that
+      way), run of 2e92d2e. A real Dev Tunnel hosted by the manifest is an
+      owner check (no tunnel account on CI).
 - [ ] macOS: launchd backend, `service install` LaunchAgent
 
 - `service install`; `Scheduler` trait; Launchd / SystemdUser / Cron; built-in
@@ -86,7 +90,13 @@ work resumes after any interruption: read it first, then `git log`.
 - Exit: TUI self-test automation steps and factory probes on the backend; a
   real tunnel hosted by the manifest; `doctor` clean.
 
-### Phase 3 GUI core (M2) — macOS: in progress
+### Phase 3 GUI core (M2) — macOS: in progress · Linux: self-tests done (CI)
+
+- Linux: `selftest --client gui` passes under Xvfb (X11) and headless weston
+  (Wayland) and `--remote loopback` under X11, on Mesa's lavapipe, in the
+  blocking `linux-gui` CI job; fonts from fontconfig, app id, icon. Still
+  open: `bench --client gui` numbers on Linux, Wayland drag and drop (winit
+  0.30 has none), XTest posted keys, X11 work areas.
 
 - [x] Metal (`os::GPU_BACKENDS`), fonts per OS (macOS: Cascadia Mono when
       installed, SF Mono, Menlo; system UI font; Apple fallbacks), test hooks
@@ -106,7 +116,12 @@ work resumes after any interruption: read it first, then `git log`.
 - Exit: `selftest --client gui` (39 steps) local and `--remote loopback`;
   `bench --client gui` within PLAN §9.
 
-### Phase 4 GUI platform integration — not started
+### Phase 4 GUI platform integration — Linux: rows 17, 41, 41b, G2 pass (CI)
+
+- Linux: the HTML view (WebKitGTK offscreen helper) passes row 41b on X11
+  and Wayland; notifications (`org.freedesktop.Notifications`), the
+  launcher entry, `in_front`, flashing (xdg-activation / urgency). Owner
+  checks: IME (IBus/Fcitx), dead keys, AltGr, Orca, GNOME/KDE docks.
 
 - Exit: parity rows 17, 41, 41b, G2 pass; manual IME / dead-key / AltGr /
   VoiceOver / Orca checks recorded (owner).
@@ -133,70 +148,74 @@ work resumes after any interruption: read it first, then `git log`.
 ## Parity rows (PARITY.md; plan §6)
 
 State per OS: `—` not started · `wip` in progress · `PASS` · `equiv` (the
-plan §6.1 equivalent, documented).
+plan §6.1 equivalent, documented). Linux: CI `linux-gui` (X11, Xvfb, Mesa
+lavapipe), 55 of 62 rows on 2026-10-31 (run of 2e92d2e); 41b also on
+Wayland (headless weston).
 
 | # | Feature | macOS | Linux |
 |---|---|---|---|
-| 1 | Canvas: drag, pan, zoom, Show all nodes, menus | — | — |
-| 2 | Status (seven states), OSC 9;4, background subagents | — | — |
-| 3 | Attention borders and tints; halo | — | — |
-| 4 | Colour-blind palette; icons | — | — |
-| 5 | Subagents from history | — | — |
-| 6 | Subsessions; spawned-subsession detection | — | — |
-| 7 | Loops | — | — |
-| 7b | Smooth loop dot; reduced motion | — | — |
-| 8 | MCP picker with presets | — | — |
-| 9 | Groups, chips, launch defaults | — | — |
-| 10 | Sidebar tree, filter, fly-to | — | — |
-| 11 | Terminals: PTY, tiles, survive client exit | — | — |
-| 11b | Detach and reattach | — | — |
-| 12 | Wheel rules | — | — |
-| 13 | User-message tint | — | — |
-| 14 | Copy and paste | — | — |
-| 15 | Image paste; thumbnail | — | — |
-| 16 | Click forwarding in mouse mode | — | — |
-| 17 | Title, taskbar state, bell, OSC 777 | — | — |
-| 18 | Links: URLs, OSC 8, paths | — | — |
-| 19 | New session dialog | — | — |
-| 20 | Import; VS Code sync | — | — |
-| 21 | Activity bar views | — | — |
-| 22 | Copilot defaults, group overrides | — | — |
-| 23 | Plugins, MCP, skills | — | — |
-| 24 | Migrate from VS Code | — | — |
-| 25 | Passive sessions | — | — |
-| 26 | Automations | — | — |
-| 27 | Copilot automations, session schedules | — | — |
-| 28 | Idle auto-stop, priority manager, upgrade, crash log | — | — |
-| 29 | Keyboard map, F6 / Ctrl+], quit dialog, help | — | — |
-| 30 | `--demo` | — | — |
-| 31 | `--perf` overlay | — | — |
-| 32 | CLI | — | — |
-| 33 | Remote mode | — | — |
-| 34 | View versus start | — | — |
-| 35 | Transcript inspector; child resume | — | — |
-| 36 | Removing a multi-selection | — | — |
-| 37 | Group background and border selection | — | — |
-| 38 | Recent sessions | — | — |
-| 39 | Default model per agent | — | — |
-| 39b | Remembered model after restart | — | — |
-| 40 | Canvas-wide agents | — | — |
-| 40b | Canvas-wide agent runs across groups | — | — |
-| 41 | Reports inbox, unread count, toast | — | — |
-| 41b | HTML reports, locked down | — | — |
-| 41c | Remote reports | — | — |
-| 42 | Pull request coordination | — | — |
-| 43 | Review follow-ups | — | — |
-| 44 | Undo/redo of layout changes | — | — |
-| 45 | Area selection of subsessions and subagents | — | — |
-| G1 | Inline images | — | — |
-| G2 | Taskbar progress, flash, toasts | — | — |
-| G3 | File drag and drop | — | — |
-| G4 | Several windows | — | — |
-| V1 | Dust | — | — |
-| V2 | Stacks and hidden subsessions | — | — |
-| V3 | Effects | — | — |
-| V4 | Group chips at any zoom; sidebar rows | — | — |
-| V5 | Remote group files in the canvas | — | — |
+| 1 | Canvas: drag, pan, zoom, Show all nodes, menus | — | PASS |
+| 2 | Status (seven states), OSC 9;4, background subagents | — | PASS |
+| 3 | Attention borders and tints; halo | — | PASS |
+| 4 | Colour-blind palette; icons | — | PASS |
+| 5 | Subagents from history | — | PASS |
+| 6 | Subsessions; spawned-subsession detection | — | PASS |
+| 7 | Loops | — | PASS |
+| 7b | Smooth loop dot; reduced motion | — | PASS |
+| 8 | MCP picker with presets | — | PASS |
+| 9 | Groups, chips, launch defaults | — | PASS |
+| 10 | Sidebar tree, filter, fly-to | — | PASS |
+| 11 | Terminals: PTY, tiles, survive client exit | — | PASS |
+| 11b | Detach and reattach | — | PASS |
+| 12 | Wheel rules | — | wip (shared terminal rows) |
+| 13 | User-message tint | — | PASS |
+| 14 | Copy and paste | — | wip (shared terminal rows) |
+| 15 | Image paste; thumbnail | — | PASS |
+| 16 | Click forwarding in mouse mode | — | PASS |
+| 17 | Title, taskbar state, bell, OSC 777 | — | PASS |
+| 18 | Links: URLs, OSC 8, paths | — | wip (shared terminal rows) |
+| 19 | New session dialog | — | PASS |
+| 20 | Import; VS Code sync | — | PASS |
+| 21 | Activity bar views | — | PASS |
+| 22 | Copilot defaults, group overrides | — | PASS |
+| 23 | Plugins, MCP, skills | — | PASS |
+| 24 | Migrate from VS Code | — | PASS |
+| 25 | Passive sessions | — | PASS |
+| 26 | Automations | — | PASS |
+| 27 | Copilot automations, session schedules | — | PASS |
+| 28 | Idle auto-stop, priority manager, upgrade, crash log | — | PASS |
+| 29 | Keyboard map, F6 / Ctrl+], quit dialog, help | — | PASS |
+| 30 | `--demo` | — | PASS |
+| 31 | `--perf` overlay | — | PASS |
+| 32 | CLI | — | PASS |
+| 33 | Remote mode | — | PASS |
+| 34 | View versus start | — | PASS |
+| 35 | Transcript inspector; child resume | — | PASS |
+| 36 | Removing a multi-selection | — | PASS |
+| 37 | Group background and border selection | — | PASS |
+| 38 | Recent sessions | — | PASS |
+| 39 | Default model per agent | — | PASS |
+| 39b | Remembered model after restart | — | PASS |
+| 40 | Canvas-wide agents | — | PASS |
+| 40b | Canvas-wide agent runs across groups | — | PASS |
+| 41 | Reports inbox, unread count, toast | — | PASS |
+| 41b | HTML reports, locked down | — | PASS |
+| 41c | Remote reports | — | PASS |
+| 42 | Pull request coordination | — | PASS |
+| 43 | Review follow-ups | — | PASS |
+| 44 | Undo/redo of layout changes | — | wip (shared terminal rows) |
+| 45 | Area selection of subsessions and subagents | — | PASS |
+| G1 | Inline images | — | wip (shared terminal rows) |
+| G2 | Taskbar progress, flash, toasts | — | PASS |
+| G3 | File drag and drop | — | wip |
+| G4 | Several windows | — | PASS |
+| V1 | Dust | — | PASS |
+| V2 | Stacks and hidden subsessions | — | PASS |
+| V3 | Effects | — | PASS |
+| V4 | Group chips at any zoom; sidebar rows | — | PASS |
+| V5 | Remote group files in the canvas | — | wip |
+| V6 | Remote group passive sessions | — | PASS |
+| 46 | Subagents folded by default | — | PASS |
 
 ## Decisions taken during the port
 
