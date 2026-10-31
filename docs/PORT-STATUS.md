@@ -126,7 +126,20 @@ work resumes after any interruption: read it first, then `git log`.
 - Exit: `selftest --client gui` (39 steps) local and `--remote loopback`;
   `bench --client gui` within PLAN §9.
 
-### Phase 4 GUI platform integration — Linux: rows 17, 41, 41b, G2 pass (CI)
+### Phase 4 GUI platform integration — Linux: rows 17, 41, 41b, G2 pass (CI) · macOS: in progress (41b)
+
+- macOS: the HTML view (a17b069) is a WKWebView child view over the
+  viewer's content area, locked down as the iPhone app's (page JavaScript
+  off, the content rule list compiled into `<home>/webkit-rules`, only the
+  page's own navigation, links asked about, no windows, link previews or
+  inspector, a non-persistent store, camera and microphone denied); refused
+  loads are counted by a script in an isolated world; Esc in it closes the
+  report. Row 41b passes locally on a locked screen (WebKit renders
+  snapshots without presents). The window capture is the GUI's frame with
+  the view's snapshot at the view's own frame: macOS has no capture of a
+  window's composition without the Screen Recording permission (a prompt).
+  Next: the Dock tile and attention (G2), notifications, the menu bar and
+  Quit, reduced motion and accessibility.
 
 - Linux: the HTML view (WebKitGTK offscreen helper) passes row 41b on X11
   and Wayland; notifications (`org.freedesktop.Notifications`), the
@@ -138,9 +151,9 @@ work resumes after any interruption: read it first, then `git log`.
 
 ### Phase 5 Parity, goldens, hardening — macOS: started
 
-- 2026-10-31, locally on a locked Mac (no presents): 61 of 64 rows pass
+- 2026-10-31, locally on a locked Mac (no presents): 62 of 64 rows pass
   (62 + T1, T2). Failing: 7b and V3 (frame counts: need an uncovered
-  screen), 41b (HTML view: Phase 4). Run alone, row 1 fails after its box
+  screen; CI's macOS runner presents, so the suite reports there too). Run alone, row 1 fails after its box
   drag (it needs the state the rows before it leave).
 - **Shared parity fixes** (the macOS lead's; `linux` merges them):
   - 85e186e: G1 runs the demo through `test_shell::run_self`; G3 expects
@@ -223,7 +236,7 @@ Wayland (headless weston).
 | 40 | Canvas-wide agents | PASS | PASS |
 | 40b | Canvas-wide agent runs across groups | PASS | PASS |
 | 41 | Reports inbox, unread count, toast | PASS | PASS |
-| 41b | HTML reports, locked down | wip | PASS |
+| 41b | HTML reports, locked down | PASS | PASS |
 | 41c | Remote reports | PASS | PASS |
 | 42 | Pull request coordination | PASS | PASS |
 | 43 | Review follow-ups | PASS | PASS |
