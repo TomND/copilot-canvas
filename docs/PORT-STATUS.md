@@ -67,7 +67,22 @@ work resumes after any interruption: read it first, then `git log`.
 - Exit: TUI self-test automation steps and factory probes on the backend; a
   real tunnel hosted by the manifest; `doctor` clean.
 
-### Phase 3 GUI core (M2) — not started
+### Phase 3 GUI core (M2) — macOS: in progress
+
+- [x] Metal (`os::GPU_BACKENDS`), fonts per OS (macOS: Cascadia Mono when
+      installed, SF Mono, Menlo; system UI font; Apple fallbacks), test hooks
+      over a Unix socket (short /tmp path when `$TMPDIR` is too long)
+- [x] `selftest --client gui` (39 steps) and `--remote loopback` pass locally
+      on macOS (Apple M1 Pro, Metal); CI steps added
+- [x] D8 keys: `KeyPolicy::CommandApp` (Command = app shortcuts, Control =
+      the program's, Command-click = Ctrl-click, Control-click = right click,
+      left Option = Alt); posted keys (`NSApp postEvent`), work areas
+      (`NSScreen.visibleFrame`), POSIX quoting of dropped paths
+- [ ] `bench --client gui` within PLAN §9: needs an unlocked, uncovered
+      screen (macOS reports a covered window occluded and wgpu presents
+      nothing); measured on CI (advisory step), the local Mac was locked
+- [ ] IME, DPI changes, several windows, crash log and device loss checked
+      on macOS (the parity and hardening suites, Phase 5)
 
 - Exit: `selftest --client gui` (39 steps) local and `--remote loopback`;
   `bench --client gui` within PLAN §9.

@@ -51,7 +51,8 @@ impl App {
 
     /// Pastes paths into a terminal, quoted when they contain spaces.
     pub fn paste_paths(&mut self, id: &str, paths: &[String]) {
-        let text = paths.iter().map(|p| quote_path(p)).collect::<Vec<_>>().join(" ");
+        let style = self.info.path_style();
+        let text = paths.iter().map(|p| quote_path_for(p, style)).collect::<Vec<_>>().join(" ");
         self.send(ClientMsg::Input { id: id.to_owned(), input: Input::Paste(text) });
     }
 
@@ -122,6 +123,18 @@ pub fn quote_path(path: &str) -> String {
     if path.chars().any(|c| c.is_whitespace() || "&()[]{}^=;!'+,`~$#@".contains(c)) { format!("\"{path}\"") } else { path.to_owned() }
 }
 
+/// A path as an argument of the service's shell: Windows Terminal's double
+/// quotes for a Windows service, POSIX single quotes (`'\''` for a quote) for
+/// a macOS or Linux one (MAC-LINUX-PLAN D10, G3).
+pub fn quote_path_for(path: &str, style: canvas_model::path_style::PathStyle) -> String {
+    use canvas_model::path_style::PathStyle;
+    match style {
+        PathStyle::Windows => quote_path(path),
+        PathStyle::Posix if !path.is_empty() && path.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+:@%,=".contains(c)) => path.to_owned(),
+        PathStyle::Posix => format!("'{}'", path.replace('\'', "'\\''")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,6 +144,14 @@ mod tests {
         assert_eq!(quote_path(r"C:\work\a.txt"), r"C:\work\a.txt");
         assert_eq!(quote_path(r"C:\My Files\a b.png"), "\"C:\\My Files\\a b.png\"");
         assert_eq!(quote_path(r"C:\x\(1).txt"), "\"C:\\x\\(1).txt\"");
+    }
+
+    #[test]
+    fn paths_for_a_posix_service_are_single_quoted() {
+        use canvas_model::path_style::PathStyle::Posix;
+        assert_eq!(quote_path_for("/Users/me/a.txt", Posix), "/Users/me/a.txt");
+        assert_eq!(quote_path_for("/Users/me/My Files/a b.png", Posix), "'/Users/me/My Files/a b.png'");
+        assert_eq!(quote_path_for("/tmp/it's $HOME.txt", Posix), "'/tmp/it'\\''s $HOME.txt'");
     }
 
     #[test]
