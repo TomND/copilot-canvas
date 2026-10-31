@@ -6,19 +6,19 @@
                                  │ ┃                                              ┃   ││ 2 sessions                                                  │
  ◷  ▾ ▣ Docs                   2 │ ┃ ╭ Write the spec ────────────╮               ┃   ││ Folder   C:\work\docs                                       │
       ◧ docs                     │ ┃ │ ■ stopped                  │    ·     ·    ┃·  ││ ◧ Open AI docs (ai-docs)                                    │
- ⧉    ■ Write the spec           │ ┃ │ canvas                     │               ┃   ││ ◨ Open human outputs (human-outputs)                        │
-      ■ Draft the docs           │ ┃ ╰────────────────────────────╯               ┃   ││   Change folder…                                            │
- ⌁  ▾ ▣ Ideas                  1 │ ┃     ·     ·     ·     ·     ·     ·     ·    ┃·  ││ ⚙ Launch defaults for this group…                           │
-      ◧ Set folder…              │ ┃ ╭ Draft the docs ────────────╮               ┃   ││ ⟲ Add a passive session…                                    │
- ✦    ■ Unfiled idea             │ ┃ │ ■ stopped                  │               ┃   ││                                                             │
-                                 │ ┃ │ canvas                     │    ·     ·    ┃·  ││ ■ Write the spec — stopped                                  │
- ◈                               │ ┃ ╰────────────────────────────╯               ┃   ││ ■ Draft the docs — stopped                                  │
-                                 │ ┃                                              ┃   ││                                                             │
- ⇄                               │ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━◢·  ││ Enter: show running terminals · R: rename · Del: delete gr… │
-                                 │                                                    ││                                                             │
- ≡                               │                                                    ││                                                             │
+ ⧉    ⟲ Passive: none · + add…   │ ┃ │ canvas                     │               ┃   ││ ◨ Open human outputs (human-outputs)                        │
+      ■ Write the spec           │ ┃ ╰────────────────────────────╯               ┃   ││   Change folder…                                            │
+ ⌁    ■ Draft the docs           │ ┃     ·     ·     ·     ·     ·     ·     ·    ┃·  ││ ⚙ Launch defaults for this group…                           │
+    ▾ ▣ Ideas                  1 │ ┃ ╭ Draft the docs ────────────╮               ┃   ││                                                             │
+ ✦    ◧ Set folder…              │ ┃ │ ■ stopped                  │               ┃   ││ PASSIVE SESSIONS · 0 (this group's events only)             │
+      ⟲ Passive: none · + add…   │ ┃ │ canvas                     │    ·     ·    ┃·  ││ None yet.                                                   │
+ ◈    ■ Unfiled idea             │ ┃ ╰────────────────────────────╯               ┃   ││ ⟲ + Create a passive session for this group…                │
+                                 │ ┃                                              ┃   ││ ◎ Canvas-wide agents (every group) are in ◎ Agents          │
+ ⇄                               │ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━◢·  ││                                                             │
+                                 │                                                    ││ ■ Write the spec — stopped                                  │
+ ≡                               │                                                    ││ ■ Draft the docs — stopped                                  │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
- ✉                               │ ┌╌ ▣ Ideas · 1 ╌╌╌╌╌╌ ⟲+ ╌ ◧ Set folder… ╌╌┐       ││                                                             │
+ ✉                               │ ┌╌ ▣ Ideas · 1 ╌╌╌╌╌╌ ⟲+ ╌ ◧ Set folder… ╌╌┐       ││ Enter: show running terminals · R: rename · Del: delete gr… │
                                  │ ╎                                          ╎       ││                                                             │
                                  │ ╎ ╭ Unfiled idea ──────────────╮    ·     ·╎    ·  ││                                                             │
                                  │ ╎ │ ■ stopped                  │           ╎       ││                                                             │
@@ -44,11 +44,11 @@
 view cursor=none modal=none banner=None
 canvas area=34,1 52x38 origin=-1,-1 scale=1 grid=true tick=0 empty=false
 group g-docs "Docs" icon=▣ members=2 rect=0,0 48x13 color=#e69f00 style=[fg #e69f00 +BOLD] selected=true drop_target=false automations=false folder=true
-  chip " ⟲+ " action=NewPassive("g-docs") rect=17,0 4x1 fixed=false lit=false
+  chip " ⟲+ " action=Visual(GroupPassives("g-docs")) rect=17,0 4x1 fixed=false lit=false
   chip " ◧ AI docs " action=OpenGroupFolder("g-docs", false) rect=22,0 11x1 fixed=false lit=true
   chip " ◨ Outputs " action=OpenGroupFolder("g-docs", true) rect=34,0 11x1 fixed=false lit=true
 group g-ideas "Ideas" icon=▣ members=1 rect=0,16 44x8 color=#cc79a7 style=[fg #cc79a7 +DIM] selected=false drop_target=false automations=false folder=false
-  chip " ⟲+ " action=NewPassive("g-ideas") rect=21,16 4x1 fixed=false lit=false
+  chip " ⟲+ " action=Visual(GroupPassives("g-ideas")) rect=21,16 4x1 fixed=false lit=false
   chip " ◧ Set folder… " action=SetGroupFolder("g-ideas") rect=26,16 15x1 fixed=false lit=false
 box a Session rect=2,2 30x4 prefix="" name="Write the spec"
   status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0

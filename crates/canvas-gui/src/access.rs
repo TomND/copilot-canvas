@@ -146,6 +146,7 @@ pub fn items(app: &App, view: &View, chrome: &Buffer, overlay: &Buffer, grid: &G
                     SideKind::Group(id) | SideKind::Session(id) | SideKind::Agent(id) => format!("side/{id}"),
                     SideKind::Section => format!("side/section/{}", row.label),
                     SideKind::Folder(id) => format!("side/folder/{id}"),
+                    SideKind::Passives(id) => format!("side/passives/{id}"),
                     SideKind::RecentHeader => "side/recent".to_owned(),
                     SideKind::Recent(id) => format!("side/recent/{id}"),
                 };

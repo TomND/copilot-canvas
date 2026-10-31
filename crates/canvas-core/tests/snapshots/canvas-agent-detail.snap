@@ -2,20 +2,20 @@
 ## cells (the TUI screen)
  ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents 3 · ⚠ 1   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit    ◆ 1 needs you   5 sessions
     SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
-▌▤  / filter…                    │ ┌╌ ▣ Payments · 2 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ 1 ╌ ◧ AI d││ ◎ PR coordinator                                            │
+▌▤  / filter…                    │ ┌╌ ▣ Payments · 2 ╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ 1 passive ╌ ◧ AI d││ ◎ PR coordinator                                            │
                                  │ ╎                                                  ││ ● canvas-wide agent · monitoring                            │
  ◷  ▾ RECENT 1     Ctrl+F6 · [ ] │ ╎ ╭ Fix flaky test ────────────╮    ┌ ⟲ Drift guard││ Last report: ok 2 PRs tracked                               │
     ○ PR coordinator copilot now │ ╎ │ ■ stopped                  │    ╎ ○ waiting    ││                                                             │
  ⧉  ── All sessions (5)          │ ╎ │ canvas                     │    ╎ on pr.pushed ││ Watches    every group of this canvas                       │
     ▾ ▣ Payments               2 │ ╎ ╰────────────────────────────╯    └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ Reacts to  on pr.*, build.failed                            │
  ⌁    ◧ pay                      │ ╎     ·     ·     ·     ·     ·     ·     ·     ·  ││ Skills     pr-etiquette                                     │
-      ■ Fix flaky test           │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ PRs        on: every 5 min, created ones tracked            │
- ✦    ⟲ ○ ↻ Drift guard          │                                                    ││            automatically · follow-ups read-only · none      │
-    ▾ ◎ Canvas agents          3 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││            tracked yet                                      │
- ◈    ◎ ● ↻ PR coordinator       │ ┌╌ ◎ Canvas agents · 3 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ Template   PR coordinator                                   │
-      ◎ ‖ Cross-group digest     │ ╎                                                  ││ Agent      GitHub Copilot · runs with claude-opus-5.5       │
- ⇄    ◎ ⚠ ↻ Release watch        │ ╎ ┏ ◎ PR coordinator ━━━━━━━━━━┓┄•● ┌ ◎ Cross-group││ Runs today 0 of 24 a day                                    │
-                                 │ ╎ ┃ ● monitoring · 2 PRs trac… ┃  ┆ ╎ ‖ paused     ││ Fresh chat after 20 runs · conversation 1 (0 earlier)       │
+      ⟲ Passive sessions       1 │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ PRs        on: every 5 min, created ones tracked            │
+ ✦      ⟲ ○ ↻ Drift guard        │                                                    ││            automatically · follow-ups read-only · none      │
+      ■ Fix flaky test           │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││            tracked yet                                      │
+ ◈  ▾ ◎ Canvas agents          3 │ ┌╌ ◎ Canvas agents · 3 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ Template   PR coordinator                                   │
+      ◎ ● ↻ PR coordinator       │ ╎                                                  ││ Agent      GitHub Copilot · runs with claude-opus-5.5       │
+ ⇄    ◎ ‖ Cross-group digest     │ ╎ ┏ ◎ PR coordinator ━━━━━━━━━━┓┄•● ┌ ◎ Cross-group││ Runs today 0 of 24 a day                                    │
+      ◎ ⚠ ↻ Release watch        │ ╎ ┃ ● monitoring · 2 PRs trac… ┃  ┆ ╎ ‖ paused     ││ Fresh chat after 20 runs · conversation 1 (0 earlier)       │
  ≡                               │ ╎ ┃ on pr.*, build.failed      ┃  ┆ ╎ on session.do││ Last run   —                                                │
                                  │ ╎ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛◂┄╯ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ Next run   when an event arrives                            │
  ✉                               │ ╎                                                  ││ Folder     C:\data\canvas-agents\canvas-1\agents\a-pr       │
@@ -47,7 +47,7 @@ group g-agents "Canvas agents" icon=◎ members=3 rect=0,10 104x8 color=#cc79a7 
   chip " ◎ 3 · manage " action=Agents(Panel) rect=76,10 14x1 fixed=false lit=true
   chip " ✦ Skills " action=Agents(Library) rect=91,10 10x1 fixed=false lit=true
 group g-pay "Payments" icon=▣ members=2 rect=0,0 70x8 color=#56b4e9 style=[fg #56b4e9 +DIM] selected=false drop_target=false automations=false folder=true
-  chip " ⟲ 1 " action=Visual(GroupPassives("g-pay")) rect=38,0 5x1 fixed=false lit=true
+  chip " ⟲ 1 passive " action=Visual(GroupPassives("g-pay")) rect=30,0 13x1 fixed=false lit=true
   chip " ◧ AI docs " action=OpenGroupFolder("g-pay", false) rect=44,0 11x1 fixed=false lit=true
   chip " ◨ Outputs " action=OpenGroupFolder("g-pay", true) rect=56,0 11x1 fixed=false lit=true
 box s-fix Session rect=2,2 30x4 prefix="" name="Fix flaky test"

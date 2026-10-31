@@ -204,6 +204,10 @@ pub enum RightDetail {
     /// The canvas-wide agents: their states and controls, the canvas skills,
     /// and the group passive sessions for contrast.
     CanvasAgents,
+    /// A group's passive sessions (group id): each one's state with Open,
+    /// Run now and Pause, an empty state that offers to create one, and how
+    /// they differ from the canvas-wide agents.
+    GroupPassives(String),
     /// The routed canvas's tracked pull requests and their follow-ups.
     Prs,
     /// The routed canvas's review follow-ups.

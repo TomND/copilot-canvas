@@ -1,0 +1,53 @@
+# group-passives-empty (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit                            1 sessions
+    SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
+▌▤  / filter…                    │ ┌╌ ▣ Docs · 1 ╌╌╌ ⟲+ ╌ ◧ AI docs ╌ ◨ Outputs ╌╌┐·  ││ ⟲ Passive sessions of “Docs” · 0                            │
+                                 │ ╎                                              ╎   ││ They belong to this group: each watches only “Docs”'s       │
+ ◷  ▾ ▣ Docs                   1 │ ╎ ╭ Write the spec ────────────╮               ╎   ││ events, its schedule and messages to it, and keeps its      │
+      ◧ docs                     │ ╎ │ ■ stopped                  │    ·     ·    ╎·  ││ rules, memory and log in the group's folder. Viewing one    │
+ ⧉    ⟲ Passive: none · + add…   │ ╎ │ canvas                     │               ╎   ││ never starts it.                                            │
+      ■ Write the spec           │ ╎ ╰────────────────────────────╯               ╎   ││                                                             │
+ ⌁                               │ ╎     ·     ·     ·     ·     ·     ·     ·    ╎·  ││ No passive sessions in this group yet.                      │
+                                 │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌◢   ││ + Create a passive session for this group…                  │
+ ✦                               │                                                    ││                                                             │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││ NOT THIS GROUP'S                                            │
+ ◈                               │                                                    ││ ◎ Canvas-wide agents · 0: every group, in ◎ Agents ▸        │
+                                 │                                                    ││                                                             │
+ ⇄                               │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+                                 │                                                    ││                                                             │
+ ≡                               │                                                    ││                                                             │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+ ✉                               │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+                                 │                                                    ││  + New passive session    Send event…    Canvas agents      │
+                                 │                                                    ││  Close                                                      │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  │└─────────────────────────────────────────────────────────────┘
+ click view · double-click/Enter start · ] [ or Ctrl+F6 recent · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom ·…
+## gpu view model
+view cursor=none modal=none banner=None
+canvas area=34,1 52x38 origin=-1,-1 scale=1 grid=true tick=0 empty=false
+group g-docs "Docs" icon=▣ members=1 rect=0,0 48x8 color=#e69f00 style=[fg #e69f00 +DIM] selected=false drop_target=false automations=false folder=true
+  chip " ⟲+ " action=Visual(GroupPassives("g-docs")) rect=17,0 4x1 fixed=false lit=false
+  chip " ◧ AI docs " action=OpenGroupFolder("g-docs", false) rect=22,0 11x1 fixed=false lit=true
+  chip " ◨ Outputs " action=OpenGroupFolder("g-docs", true) rect=34,0 11x1 fixed=false lit=true
+box a Session rect=2,2 30x4 prefix="" name="Write the spec"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]
+  selected=false focused_term=false active=false

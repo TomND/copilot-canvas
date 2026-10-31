@@ -127,6 +127,9 @@ pub enum SideKind {
     Section,
     /// A group's folders (its menu opens them).
     Folder(String),
+    /// A group's passive sessions header (a click opens their panel; the
+    /// sessions are listed beneath it).
+    Passives(String),
     /// The RECENT section's header (a click folds it).
     RecentHeader,
     /// A recently used session in the RECENT section.

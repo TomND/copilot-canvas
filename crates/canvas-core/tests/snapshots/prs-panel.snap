@@ -2,19 +2,19 @@
 ## cells (the TUI screen)
  ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents 3 · ⚠ 1   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit    ◆ 1 needs you   6 sessions
     SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
-▌▤  / filter…                    │ ┌╌ ▣ Payments · 2 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ 1 ╌ ◧ AI d││ ⇅ Pull requests · 4 tracked · 3 active · 2 need you         │
+▌▤  / filter…                    │ ┌╌ ▣ Payments · 2 ╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ 1 passive ╌ ◧ AI d││ ⇅ Pull requests · 4 tracked · 3 active · 2 need you         │
                                  │ ╎                                                  ││ Monitored read-only (gh / az) for PR coordinator;           │
  ◷  ▾ ▣ Payments               2 │ ╎ ╭ Fix flaky test ────────────╮    ┌ ⟲ Drift guard││ follow-ups reach owners when they are idle.                 │
       ◧ pay                      │ ╎ │ ■ stopped                  │    ╎ ○ waiting    ││ Follow-ups: tracking grants no permission to push, reply,   │
- ⧉    ■ Fix flaky test           │ ╎ │ canvas                     │    ╎ on pr.pushed ││ resolve, vote, merge: fix and test locally; ask the user    │
-      ⟲ ○ ↻ Drift guard          │ ╎ ╰────────────────────────────╯    └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ before any of these.                                        │
- ⌁  ▾ ◎ Canvas agents          3 │ ╎     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
-      ◎ ● ↻ PR coordinator       │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ ⚠ api!1234 “Retry on 429” · active                          │
- ✦    ◎ ‖ Cross-group digest     │                                                    ││   owner Payments API · checked 2m ago · next in 3m          │
-      ◎ ⚠ ↻ Release watch        │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││   failing: CI · last: a check is failing: CI 5m ago         │
- ◈  ── Ungrouped (1)             │ ┌╌ ◎ Canvas agents · 3 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││    Open PR   View owner   Check now   Untrack               │
-    ■ Payments API               │ ╎                                                  ││   ⚠ blocked 5m ago → Payments API: Investigate the failing  │
- ⇄                               │ ╎ ┌ ◎ PR coordinator ╌╌╌╌╌╌╌╌╌╌┐┄•● ┌ ◎ Cross-group││   CI build and fix it                                       │
+ ⧉    ⟲ Passive sessions       1 │ ╎ │ canvas                     │    ╎ on pr.pushed ││ resolve, vote, merge: fix and test locally; ask the user    │
+        ⟲ ○ ↻ Drift guard        │ ╎ ╰────────────────────────────╯    └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ before any of these.                                        │
+ ⌁    ■ Fix flaky test           │ ╎     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+    ▾ ◎ Canvas agents          3 │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ ⚠ api!1234 “Retry on 429” · active                          │
+ ✦    ◎ ● ↻ PR coordinator       │                                                    ││   owner Payments API · checked 2m ago · next in 3m          │
+      ◎ ‖ Cross-group digest     │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││   failing: CI · last: a check is failing: CI 5m ago         │
+ ◈    ◎ ⚠ ↻ Release watch        │ ┌╌ ◎ Canvas agents · 3 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││    Open PR   View owner   Check now   Untrack               │
+    ── Ungrouped (1)             │ ╎                                                  ││   ⚠ blocked 5m ago → Payments API: Investigate the failing  │
+ ⇄  ■ Payments API               │ ╎ ┌ ◎ PR coordinator ╌╌╌╌╌╌╌╌╌╌┐┄•● ┌ ◎ Cross-group││   CI build and fix it                                       │
                                  │ ╎ ╎ ● monitoring · 2 PRs trac… ╎  ┆ ╎ ‖ paused     ││     the session is not running: resume it (the follow-up is │
  ≡                               │ ╎ ╎ on pr.*, build.failed      ╎  ┆ ╎ on session.do││     typed in once it is idle), reassign or dismiss          │
                                  │ ╎ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┘◂┄╯ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││      ▸ Resume owner   Reassign…   Dismiss                   │
@@ -47,7 +47,7 @@ group g-agents "Canvas agents" icon=◎ members=3 rect=0,10 104x8 color=#cc79a7 
   chip " ◎ 3 · manage " action=Agents(Panel) rect=76,10 14x1 fixed=false lit=true
   chip " ✦ Skills " action=Agents(Library) rect=91,10 10x1 fixed=false lit=true
 group g-pay "Payments" icon=▣ members=2 rect=0,0 70x8 color=#56b4e9 style=[fg #56b4e9 +DIM] selected=false drop_target=false automations=false folder=true
-  chip " ⟲ 1 " action=Visual(GroupPassives("g-pay")) rect=38,0 5x1 fixed=false lit=true
+  chip " ⟲ 1 passive " action=Visual(GroupPassives("g-pay")) rect=30,0 13x1 fixed=false lit=true
   chip " ◧ AI docs " action=OpenGroupFolder("g-pay", false) rect=44,0 11x1 fixed=false lit=true
   chip " ◨ Outputs " action=OpenGroupFolder("g-pay", true) rect=56,0 11x1 fixed=false lit=true
 box s-fix Session rect=2,2 30x4 prefix="" name="Fix flaky test"
@@ -72,19 +72,19 @@ loop a-pr rect=2,12 30x4 halo=false lap=0.153 grow=1 ending=false
 ## gpu screen (chrome and the model painted as text)
  ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents 3 · ⚠ 1   ▢ Single   Show all nodes   −   +   ?   ⧉   ⏻ Quit             ◆ 1 needs you
     SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
-▌▤  / filter…                    │ ┌╌ ▣ Payments · 2 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ 1 ╌ ◧ AI d││ ⇅ Pull requests · 4 tracked · 3 active · 2 need you         │
+▌▤  / filter…                    │ ┌╌ ▣ Payments · 2 ╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ 1 passive ╌ ◧ AI d││ ⇅ Pull requests · 4 tracked · 3 active · 2 need you         │
                                  │ ╎                                                  ││ Monitored read-only (gh / az) for PR coordinator;           │
  ◷  ▾ ▣ Payments               2 │ ╎ ╭ Fix flaky test ────────────╮    ┌ ⟲ Drift guard││ follow-ups reach owners when they are idle.                 │
       ◧ pay                      │ ╎ │ ■ stopped                  │    ╎ ○ waiting    ││ Follow-ups: tracking grants no permission to push, reply,   │
- ⧉    ■ Fix flaky test           │ ╎ │ canvas                     │    ╎ on pr.pushed ││ resolve, vote, merge: fix and test locally; ask the user    │
-      ⟲ ○ ↻ Drift guard          │ ╎ ╰────────────────────────────╯    └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ before any of these.                                        │
- ⌁  ▾ ◎ Canvas agents          3 │ ╎     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
-      ◎ ● ↻ PR coordinator       │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ ⚠ api!1234 “Retry on 429” · active                          │
- ✦    ◎ ‖ Cross-group digest     │                                                    ││   owner Payments API · checked 2m ago · next in 3m          │
-      ◎ ⚠ ↻ Release watch        │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││   failing: CI · last: a check is failing: CI 5m ago         │
- ◈  ── Ungrouped (1)             │ ┌╌ ◎ Canvas agents · 3 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││    Open PR   View owner   Check now   Untrack               │
-    ■ Payments API               │ ╎                                                  ││   ⚠ blocked 5m ago → Payments API: Investigate the failing  │
- ⇄                               │ ╎ ┌ ◎ PR coordinator ╌╌╌╌╌╌╌╌╌╌┐┄•● ┌ ◎ Cross-group││   CI build and fix it                                       │
+ ⧉    ⟲ Passive sessions       1 │ ╎ │ canvas                     │    ╎ on pr.pushed ││ resolve, vote, merge: fix and test locally; ask the user    │
+        ⟲ ○ ↻ Drift guard        │ ╎ ╰────────────────────────────╯    └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ before any of these.                                        │
+ ⌁    ■ Fix flaky test           │ ╎     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+    ▾ ◎ Canvas agents          3 │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ ⚠ api!1234 “Retry on 429” · active                          │
+ ✦    ◎ ● ↻ PR coordinator       │                                                    ││   owner Payments API · checked 2m ago · next in 3m          │
+      ◎ ‖ Cross-group digest     │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││   failing: CI · last: a check is failing: CI 5m ago         │
+ ◈    ◎ ⚠ ↻ Release watch        │ ┌╌ ◎ Canvas agents · 3 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││    Open PR   View owner   Check now   Untrack               │
+    ── Ungrouped (1)             │ ╎                                                  ││   ⚠ blocked 5m ago → Payments API: Investigate the failing  │
+ ⇄  ■ Payments API               │ ╎ ┌ ◎ PR coordinator ╌╌╌╌╌╌╌╌╌╌┐┄•● ┌ ◎ Cross-group││   CI build and fix it                                       │
                                  │ ╎ ╎ ● monitoring · 2 PRs trac… ╎  ┆ ╎ ‖ paused     ││     the session is not running: resume it (the follow-up is │
  ≡                               │ ╎ ╎ on pr.*, build.failed      ╎  ┆ ╎ on session.do││     typed in once it is idle), reassign or dismiss          │
                                  │ ╎ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┘◂┄╯ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││      ▸ Resume owner   Reassign…   Dismiss                   │

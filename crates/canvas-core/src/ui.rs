@@ -522,6 +522,17 @@ pub fn build_side_rows(app: &App) -> Vec<SideRow> {
             };
             rows.push(SideRow { kind: SideKind::Folder(group.id.clone()), label, depth: depth + 1, status: None, count: None, collapsed: false });
         }
+        // Its passive sessions, wherever their boxes are, under a header that
+        // opens the group's passive panel (there even when it has none).
+        let passives: Vec<&Node> = app.doc.nodes.iter().filter(|n| n.passive.as_ref().is_some_and(|p| p.group == group.id)).collect();
+        let header = !app.demo && !group.is_canvas_agents() && (!passives.is_empty() || !group.is_automations());
+        if header {
+            let label = if passives.is_empty() { "Passive: none · + add…" } else { "Passive sessions" };
+            rows.push(SideRow { kind: SideKind::Passives(group.id.clone()), label: label.into(), depth: depth + 1, status: None, count: Some(passives.len()), collapsed: false });
+        }
+        for node in &passives {
+            rows.push(row(node, depth + 1 + header as u16));
+        }
         for child in tree.groups.iter().filter(|g| tree.parent_of_group.get(g.id.as_str()).copied().flatten() == Some(group.id.as_str())) {
             emit_group(app, child, depth + 1, rows, tree, row);
         }
@@ -530,10 +541,6 @@ pub fn build_side_rows(app: &App) -> Vec<SideRow> {
             if !parent_here {
                 emit_session(app, node, depth + 1, rows, tree, row);
             }
-        }
-        // Its passive sessions, wherever their boxes are (a click opens their panel).
-        for node in app.doc.nodes.iter().filter(|n| n.passive.as_ref().is_some_and(|p| p.group == group.id)) {
-            rows.push(row(node, depth + 1));
         }
     }
 
@@ -593,6 +600,7 @@ fn draw_sidebar(app: &mut App, buf: &mut Buffer, area: Rect) {
         let is_selected = match &row.kind {
             SideKind::Group(id) => app.selected_group.as_deref() == Some(id),
             SideKind::Session(id) | SideKind::Agent(id) | SideKind::Recent(id) => app.selection.contains(id),
+            SideKind::Passives(id) => matches!(&app.right_detail, Some(crate::side::RightDetail::GroupPassives(g)) if g == id),
             SideKind::Section | SideKind::Folder(_) | SideKind::RecentHeader => false,
         };
         let highlight = focused && i == app.side_sel;
@@ -625,6 +633,16 @@ fn draw_sidebar(app: &mut App, buf: &mut Buffer, area: Rect) {
                 let color = app.doc.group(id).map(|g| crate::paint::GROUP_COLORS[g.color as usize % 6]).unwrap_or(ACCENT);
                 let end = put(buf, x, y, "◧", fg(if set { color } else { MUTED }).bg(bg), area) + 1;
                 put(buf, end, y, &truncate(&row.label, (width - end - 1).max(1) as usize), fg(if set { GRAY } else { MUTED }).bg(bg), area);
+            }
+            SideKind::Passives(id) => {
+                // ⟲ in the group's colour while it has passive sessions, then their count.
+                let n = row.count.unwrap_or(0);
+                let color = app.doc.group(id).map(|g| crate::paint::GROUP_COLORS[g.color as usize % 6]).unwrap_or(ACCENT);
+                let end = put(buf, x, y, "⟲", fg(if n > 0 { color } else { MUTED }).bg(bg), area) + 1;
+                let count = if n > 0 { format!(" {n}") } else { String::new() };
+                let room = (width - end - 2 - count.len() as i32).max(1) as usize;
+                put(buf, end, y, &truncate(&row.label, room), fg(if n > 0 { GRAY } else { ACCENT }).bg(bg), area);
+                put(buf, width - count.len() as i32 - 1, y, &count, fg(MUTED).bg(bg), area);
             }
             SideKind::RecentHeader => {
                 // ▾ RECENT 5 … and the keys that walk it.
@@ -966,14 +984,29 @@ fn draw_details(app: &mut App, buf: &mut Buffer, area: Rect) {
             }
             clicks.push((lines.len(), Action::GroupDefaults(group.id.clone())));
             lines.push(("⚙ Launch defaults for this group…".into(), fg(ACCENT)));
-            let passives = app.group_passives(&group.id).len();
-            if passives > 0 {
-                clicks.push((lines.len(), Action::Visual(crate::visual::VisualAction::GroupPassives(group.id.clone()))));
-                lines.push((format!("⟲ {passives} passive session(s)…"), fg(ACCENT)));
-            } else if !app.demo {
+        }
+        // Its passive sessions (the automations group's doctor too), labelled
+        // as this group's, apart from the canvas-wide agents.
+        let passives: Vec<Node> = app.group_passives(&group.id).into_iter().cloned().collect();
+        if !app.demo && (!passives.is_empty() || !group.is_automations()) {
+            lines.push((String::new(), Style::default()));
+            lines.push((format!("PASSIVE SESSIONS · {} (this group's events only)", passives.len()), bold(MUTED)));
+            if passives.is_empty() {
+                lines.push(("None yet.".into(), fg(MUTED)));
                 clicks.push((lines.len(), Action::NewPassive(group.id.clone())));
-                lines.push(("⟲ Add a passive session…".into(), fg(ACCENT)));
+                lines.push(("⟲ + Create a passive session for this group…".into(), fg(ACCENT)));
             }
+            for node in passives.iter().take(6) {
+                let status = app.node_status(node);
+                clicks.push((lines.len(), Action::PassiveDetail(node.id.clone())));
+                lines.push((format!("⟲ {} — {} {}", node.name, status.icon(app.tick), app.passive_line(node)), fg(status.color())));
+            }
+            if !passives.is_empty() {
+                clicks.push((lines.len(), Action::Visual(crate::visual::VisualAction::GroupPassives(group.id.clone()))));
+                lines.push(("⟲ Manage this group's passive sessions…".into(), fg(ACCENT)));
+            }
+            clicks.push((lines.len(), Action::Agents(crate::canvas_wide::AgentAction::Panel)));
+            lines.push((format!("{} Canvas-wide agents (every group) are in ◎ Agents", crate::canvas_wide::MARK), fg(MUTED)));
         }
         lines.push((String::new(), Style::default()));
         for member in members.iter().filter_map(|m| app.doc.node(m)).filter(shown).take(inner.height as usize) {

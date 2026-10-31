@@ -688,6 +688,60 @@ fn canvas_agents_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Ac
     }
 }
 
+/// A group's passive sessions: what they are, each one's state with Open,
+/// Run now and Pause / Resume, an empty state with an explicit Create, and
+/// the canvas-wide agents named apart (they are not the group's). Nothing
+/// here starts a session but Run now.
+fn group_passives_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>, group: &str) {
+    use crate::canvas_wide::{AgentAction, MARK};
+    let Some(g) = app.doc.group(group).cloned() else {
+        out.text("This group was removed.", fg(MUTED));
+        return;
+    };
+    let passives: Vec<crate::doc::Node> = app.group_passives(group).into_iter().cloned().collect();
+    out.text(format!("⟲ Passive sessions of “{}” · {}", g.name, passives.len()), bold(TEXT));
+    out.text(
+        format!("They belong to this group: each watches only “{}”'s events, its schedule and messages to it, and keeps its rules, memory and log in the group's folder. Viewing one never starts it.", g.name),
+        fg(MUTED),
+    );
+    if g.folder.is_none() && !g.is_automations() {
+        out.text("This group has no folder yet: a passive session needs one (Create asks for it first).", fg(ATTENTION));
+    }
+    out.gap();
+    if passives.is_empty() {
+        out.text("No passive sessions in this group yet.", fg(TEXT));
+        if !app.demo {
+            out.link("+ Create a passive session for this group…", fg(ACCENT), Action::NewPassive(group.to_owned()));
+        }
+    }
+    for node in &passives {
+        let passive = node.passive.clone().unwrap_or_default();
+        let status = app.node_status(node);
+        out.link(&format!("⟲ {}  {} {}", node.name, status.icon(app.tick), app.passive_line(node)), bold(status.color()), Action::PassiveDetail(node.id.clone()));
+        out.indented(3, format!("{} · {}", App::passive_trigger(&passive), passive.template), fg(MUTED));
+        let mut buttons = vec![("Open".to_owned(), Action::PassiveDetail(node.id.clone()))];
+        if !passive.paused {
+            buttons.push(("▸ Run now".into(), Action::PassiveRun(node.id.clone())));
+        }
+        buttons.push((if passive.paused { "▶ Resume".into() } else { "‖ Pause".into() }, Action::PassivePause(node.id.clone())));
+        out.buttons(3, buttons);
+    }
+    out.gap();
+    out.text("NOT THIS GROUP'S", bold(MUTED));
+    let agents = app.canvas_agents().len();
+    out.link(&format!("{MARK} Canvas-wide agents · {agents}: every group, in ◎ Agents ▸"), fg(TEXT), Action::Agents(AgentAction::Panel));
+    if !app.demo {
+        actions.push(("+ New passive session".into(), Action::NewPassive(group.to_owned())));
+    }
+    if g.folder.is_none() && !g.is_automations() {
+        actions.push(("Set folder…".into(), Action::SetGroupFolder(group.to_owned())));
+    }
+    if !app.demo {
+        actions.push(("Send event…".into(), Action::SendEvent(group.to_owned())));
+    }
+    actions.push(("Canvas agents".into(), Action::Agents(AgentAction::Panel)));
+}
+
 /// One canvas-wide agent's panel: what it watches, its skills and state,
 /// recent events of the canvas, and every control (none starts it: Open
 /// chat is the explicit start).
@@ -1087,6 +1141,7 @@ pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &R
             }
         },
         RightDetail::CanvasAgents => canvas_agents_panel(app, &mut out, &mut actions),
+        RightDetail::GroupPassives(group) => group_passives_panel(app, &mut out, &mut actions, group),
         RightDetail::Prs => prs_panel(app, &mut out, &mut actions),
         RightDetail::Reviews => reviews_panel(app, &mut out, &mut actions),
         RightDetail::Passive(id) if app.doc.node(id).is_some_and(|n| n.is_canvas_agent()) => {
@@ -1159,6 +1214,7 @@ pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &R
                 actions.push(("Folder".into(), Action::PassiveOpen(id.clone(), 3)));
                 actions.push(("Message…".into(), Action::MessagePassive(id.clone())));
                 actions.push(("Open chat".into(), Action::PassiveChat(id.clone())));
+                actions.push(("Group's passive".into(), Action::Visual(crate::visual::VisualAction::GroupPassives(passive.group.clone()))));
             }
         },
         RightDetail::Item(item) => match item {

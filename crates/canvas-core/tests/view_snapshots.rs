@@ -453,6 +453,30 @@ fn canvas_agents_app() -> App {
     app
 }
 
+/// The panel of a group's passive sessions (its ⟲ chip, sidebar row or menu
+/// opens it): each one's state and buttons, and the canvas-wide agents
+/// named apart.
+#[test]
+fn group_passive_sessions_panel() {
+    let mut app = canvas_agents_app();
+    app.run(Action::Visual(canvas_core::visual::VisualAction::GroupPassives("g-pay".into())));
+    check("group-passives-panel", &mut app, Sections { cells: true, painted: false });
+}
+
+/// A group without passive sessions: its panel's empty state with Create.
+#[test]
+fn group_passive_sessions_empty() {
+    let mut doc = Doc::default();
+    doc.nodes.push(node("a", "Write the spec", 2, 2));
+    doc.groups.push(Group { id: "g-docs".into(), name: "Docs".into(), x: 0, y: 0, w: 48, h: 8, color: 1, folder: Some(r"C:\work\docs".into()), source: None, defaults: None });
+    doc.view.x = -1;
+    doc.view.y = -1;
+    let mut app = app(doc, false);
+    app.selection.clear();
+    app.run(Action::Visual(canvas_core::visual::VisualAction::GroupPassives("g-docs".into())));
+    check("group-passives-empty", &mut app, Sections { cells: true, painted: false });
+}
+
 /// The top bar's ◎ Agents entry (one needs attention), the frame with its
 /// chips and dashed ◎ boxes, the sidebar rows, and the management panel.
 #[test]

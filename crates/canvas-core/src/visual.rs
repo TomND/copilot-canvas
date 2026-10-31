@@ -54,7 +54,7 @@ pub enum VisualAction {
     SelectUnused,
     /// Clears the effects on a box (node id) or a group (`group:<id>`).
     AckEffects(String),
-    /// A menu of the group's passive sessions.
+    /// The panel of the group's passive sessions.
     GroupPassives(String),
     /// A menu of the group's folders.
     GroupFolders(String),
@@ -1085,7 +1085,7 @@ impl App {
                 };
                 self.ack_effects(ids);
             }
-            VisualAction::GroupPassives(group) => self.group_passives_menu(&group),
+            VisualAction::GroupPassives(group) => self.open_group_passives(&group),
             VisualAction::GroupFolders(group) => self.group_folders_menu(&group),
             VisualAction::Browse(path) => self.browse_remote(&path),
             VisualAction::PassiveFile(id, which) => self.open_passive_file(&id, which),

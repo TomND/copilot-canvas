@@ -140,6 +140,7 @@ impl App {
                 item("Open human outputs folder", "", Action::OpenGroupFolder(id.to_owned(), true), true),
                 item("Change group folder…", "", Action::SetGroupFolder(id.to_owned()), true),
                 item("Session defaults for group…", "", Action::GroupDefaults(id.to_owned()), true),
+                item("Passive sessions of this group…", "", Action::Visual(crate::visual::VisualAction::GroupPassives(id.to_owned())), !self.demo),
                 item("New passive session…", "", Action::NewPassive(id.to_owned()), !self.demo),
                 item("Send event…", "", Action::SendEvent(id.to_owned()), !self.demo),
                 item("Edit events…", "", Action::OpenEvents(id.to_owned()), !self.demo),

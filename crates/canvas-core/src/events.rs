@@ -475,6 +475,7 @@ impl App {
                 self.start_node(&id);
             }
             SideKind::Folder(id) => self.side_folder(&id),
+            SideKind::Passives(id) => self.open_group_passives(&id),
             SideKind::RecentHeader => self.toggle_collapse(crate::recent::COLLAPSED),
             SideKind::Section => {}
         }
@@ -497,6 +498,7 @@ impl App {
                 self.side_sel = index;
             }
             SideKind::Folder(id) => self.side_folder(&id),
+            SideKind::Passives(id) => self.open_group_passives(&id),
             SideKind::RecentHeader => self.toggle_collapse(crate::recent::COLLAPSED),
             SideKind::Section => {}
         }
@@ -685,6 +687,7 @@ impl App {
                     self.node_menu(id)
                 }
                 SideKind::Folder(id) => return self.side_folder(id),
+                SideKind::Passives(id) => return self.open_group_passives(id),
                 SideKind::Section | SideKind::RecentHeader => return,
             };
             return self.open_menu(x, y, menu);

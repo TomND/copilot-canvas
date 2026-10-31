@@ -1467,13 +1467,13 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         gui.canvas_focus()?;
         let tree = gui.tree()?;
         let g = tree["canvas"]["groups"].as_array().and_then(|g| g.iter().find(|g| g["id"] == "g-parity").cloned()).context("group")?;
-        let r: Vec<f64> = g["rect"].as_array().map(|a| a.iter().filter_map(|v| v.as_f64()).collect()).unwrap_or_default();
-        let title = (r[0] + 3.5, r[1] + 0.5);
-        gui.mouse("down", "right", title, &[])?;
-        gui.mouse("up", "right", title, &[])?;
-        gui.wait("group menu", 5, |t| t.contains("New passive session"))?;
-        let (x, y) = gui.find("New passive session").context("menu item")?;
-        gui.click((x, y), &[])?;
+        // The group's ⟲ chip opens its passive panel, empty so far, with Create.
+        let chip = g["chips"].as_array().and_then(|c| c.iter().find(|c| c["label"].as_str().is_some_and(|l| l.starts_with("⟲"))).cloned()).context("the group's passive chip")?;
+        let r: Vec<f64> = chip["rect"].as_array().map(|a| a.iter().filter_map(|v| v.as_f64()).collect()).unwrap_or_default();
+        gui.click((r[0] + (r[2] / 2.0).min(3.0), r[1] + r[3] / 2.0), &[])?;
+        gui.wait("the empty passive panel", 5, |t| t.contains("No passive sessions in this group yet") && t.contains("Create a passive session for this group"))?;
+        let (x, y) = gui.find("+ Create a passive session").context("the Create link")?;
+        gui.click((x + 2.0, y), &[])?;
         gui.wait("templates", 5, |t| t.contains("Drift guard") && t.contains("Custom"))?;
         gui.send("Custom")?;
         gui.send("\r")?;
@@ -1485,8 +1485,11 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         anyhow::ensure!(sb.group_folder.join(".canvas").join("passive").join(&slug).join("rules.md").is_file(), "rules scaffolded");
         let (passive, _) = gui.find_box("Parity watcher")?;
         anyhow::ensure!(passive["prefix"].as_str().is_some_and(|p| p.contains('⟲')) && (passive["border"] == "Dashed" || passive["selected"] == true), "dashed ⟲ box: {passive}");
+        gui.wait_tree("the chip counts it", 5, |t| {
+            t["canvas"]["groups"].as_array().and_then(|g| g.iter().find(|g| g["id"] == "g-parity")).and_then(|g| g["chips"].as_array()).is_some_and(|c| c.iter().any(|c| c["label"].as_str().is_some_and(|l| l.starts_with("⟲ 1"))))
+        })?;
         gui.canvas_focus()?;
-        Ok("template → panel, rules scaffolded, dashed box".into())
+        Ok("⟲ chip → empty panel → Create → template → panel, rules scaffolded, dashed box, chip ⟲ 1".into())
     });
 
     check(rows, "29", "Keyboard map, F6 / Ctrl+] to leave a terminal, Q quit dialog (detach or stop all), ? help", "help_f6_and_quit_dialog", || {
