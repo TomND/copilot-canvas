@@ -1604,7 +1604,21 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         gui.send("q")?;
         gui.wait("quit dialog", 5, |t| t.contains("Detach (keep running)") && t.contains("Stop all and quit"))?;
         gui.key("Esc", &[])?;
-        Ok("help, F6, quit dialog".into())
+        let mut done = "help, F6, quit dialog".to_owned();
+        if cfg!(target_os = "macos") {
+            // A real ⌘Q goes to the menu bar's Quit (AppKit's key equivalents), which asks too.
+            // Posted keys reach only the key window: a quiet test window never is one.
+            let key = gui.req(json!({ "cmd": "windows" }))?["windows"].as_array().and_then(|w| w.first().map(|w| w["focused"] == true)).unwrap_or(false);
+            if key {
+                gui.req(json!({ "cmd": "post_chord", "char": "q" }))?;
+                gui.wait("⌘Q through the menu bar asks", 5, |t| t.contains("Detach (keep running)") && t.contains("Stop all and quit"))?;
+                gui.key("Esc", &[])?;
+                done.push_str("; ⌘Q through the menu bar asks");
+            } else {
+                done.push_str("; ⌘Q not posted (the test window is not the key window)");
+            }
+        }
+        Ok(done)
     });
 
     check(rows, "31", "--perf overlay: GPU timings, round-trip time", "perf_overlay_rtt", || {

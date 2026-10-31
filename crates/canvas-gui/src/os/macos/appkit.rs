@@ -26,6 +26,20 @@ fn key_code(c: char) -> u16 {
 
 /// Posts a key press and release for `c` to the window whose content view is `view`.
 pub fn post_key(view: isize, c: char) {
+    post(view, c, NSEventModifierFlags::empty());
+}
+
+/// Posts Command (plus Shift) and `c`: AppKit tries the menu bar's key
+/// equivalents first, as with a real key press.
+pub fn post_chord(view: isize, c: char, shift: bool) {
+    let mut flags = NSEventModifierFlags::NSEventModifierFlagCommand;
+    if shift {
+        flags |= NSEventModifierFlags::NSEventModifierFlagShift;
+    }
+    post(view, c, flags);
+}
+
+fn post(view: isize, c: char, flags: NSEventModifierFlags) {
     if view == 0 {
         return;
     }
@@ -48,7 +62,7 @@ pub fn post_key(view: isize, c: char) {
             let event: Option<Retained<NSEvent>> = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
                 kind,
                 NSPoint::new(0.0, 0.0),
-                NSEventModifierFlags::empty(),
+                flags,
                 time,
                 number,
                 None,

@@ -3,6 +3,7 @@
 
 mod appkit;
 mod dock;
+mod menu;
 mod notify;
 pub mod webview;
 
@@ -10,7 +11,7 @@ pub use dock::{Taskbar, flash, in_front, track_window};
 pub use notify::{show_toast, toast_history_count, toast_thread_init};
 
 pub use super::unix::{clip_image, native_window, process, since_start};
-pub use appkit::{post_key, work_area};
+pub use appkit::{post_chord, post_key, work_area};
 
 /// wgpu's backend: Metal (macOS has no software adapter).
 pub const GPU_BACKENDS: wgpu::Backends = wgpu::Backends::METAL;
@@ -70,6 +71,8 @@ pub const KEY_POLICY: canvas_core::input::KeyPolicy = canvas_core::input::KeyPol
 pub fn configure_event_loop(builder: &mut winit::event_loop::EventLoopBuilder<crate::shell::UserEvent>, quiet_tests: bool) {
     use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
     builder.with_activation_policy(if quiet_tests { ActivationPolicy::Accessory } else { ActivationPolicy::Regular });
+    // Ours instead (menu.rs): winit's Quit would end the app without asking.
+    builder.with_default_menu(false);
     if quiet_tests {
         builder.with_activate_ignoring_other_apps(false);
     }
@@ -89,6 +92,8 @@ pub fn set_app_id() {}
 /// one composes characters (MAC-LINUX-PLAN D8); the bundle's icon is used.
 pub fn window_attributes(attrs: WindowAttributes) -> WindowAttributes {
     use winit::platform::macos::{OptionAsAlt, WindowAttributesExtMacOS};
+    // The menu bar, once the app runs (the first window is being made).
+    menu::install();
     attrs.with_option_as_alt(OptionAsAlt::OnlyLeft)
 }
 
