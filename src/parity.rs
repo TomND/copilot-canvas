@@ -2410,6 +2410,7 @@ fn trackpad_terminal(gui: &mut Gui) -> Result<String> {
     // the system sends it) passes over the canvas: it stays on the terminal.
     let canvas_point = (area[0] + 5.0, area[1] + 5.0);
     let (origin, _, _, _) = trackpad_view(gui)?;
+    std::thread::sleep(Duration::from_millis(400));
     gesture(gui, "scroll_px", at, json!({ "phase": "began", "dy": ch }))?;
     gesture(gui, "scroll_px", at, json!({ "phase": "ended" }))?;
     gesture(gui, "scroll_px", canvas_point, json!({ "phase": "began", "dy": 2.0 * ch }))?;
@@ -2437,6 +2438,9 @@ fn trackpad_terminal(gui: &mut Gui) -> Result<String> {
     let (_, inner) = gui.tile()?;
     let at = (inner[0] + inner[2] / 2.0, inner[1] + inner[3] / 2.0);
     let before = gui.screen().matches("MOUSE 64;").count();
+    // A new gesture, not the last one's momentum: a began within 150 ms of a
+    // lift-off continues that gesture (a release build opens the tile that fast).
+    std::thread::sleep(Duration::from_millis(400));
     gesture(gui, "scroll_px", at, json!({ "phase": "began", "dy": 6.5 * ch }))?;
     let latched = gui.tree()?["gesture"].clone();
     gesture(gui, "scroll_px", at, json!({ "phase": "ended" }))?;
