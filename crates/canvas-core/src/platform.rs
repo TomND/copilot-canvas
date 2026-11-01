@@ -82,7 +82,7 @@ pub trait Platform: Send + Sync {
 
 /// `name` next to the running program (or the build that runs the service).
 pub fn build_sibling(name: &str) -> Result<std::path::PathBuf> {
-    let exe = std::env::current_exe()?.with_file_name(name);
+    let exe = crate::paths::own_exe()?.with_file_name(name);
     if exe.is_file() {
         return Ok(exe);
     }

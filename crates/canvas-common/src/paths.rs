@@ -143,8 +143,19 @@ static BUILD_EXE: OnceLock<PathBuf> = OnceLock::new();
 pub fn build_exe() -> std::io::Result<PathBuf> {
     match BUILD_EXE.get() {
         Some(exe) => Ok(exe.clone()),
-        None => std::env::current_exe(),
+        None => own_exe(),
     }
+}
+
+/// This program's file. On macOS and Linux a link to it is followed (Homebrew
+/// links `copilot-canvas` into `PATH`; the GUI and the service copy are next
+/// to the real file, inside the app bundle).
+pub fn own_exe() -> std::io::Result<PathBuf> {
+    let exe = std::env::current_exe()?;
+    if cfg!(unix) {
+        return Ok(exe.canonicalize().unwrap_or(exe));
+    }
+    Ok(exe)
 }
 
 /// Content hash of the build's executable; identifies compatible client/service pairs.
