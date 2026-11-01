@@ -48,6 +48,37 @@ not listed, and the full suite is what counts.
   text or an image on it. The checks report which clipboard they used; on an
   unlocked desktop they go through the Windows clipboard.
 
+## On macOS and Linux
+
+The same suite runs on macOS and Linux (MAC-LINUX-PLAN §7.1):
+
+```sh
+cargo build --release
+target/release/copilot-canvas selftest --client gui --parity
+```
+
+- **Shells and stand-ins.** Terminals are the demo shells, `bash --noprofile
+  --norc` on Linux and `zsh -f` on macOS, both with the `PS > ` prompt; the
+  rows type through `src/test_shell.rs` (POSIX commands, POSIX quoting of
+  dropped paths, Ctrl+C where PowerShell takes Esc). The stand-ins are
+  `copilot`, `opencode`, `gh` and `az` without `.exe`.
+- **Clipboard.** The desktop's: wl-clipboard (Wayland) or xclip (X11) on
+  Linux, the pasteboard on macOS.
+- **Rows with an OS equivalent** (MAC-LINUX-PLAN §6.1): 17 and G2 check
+  freedesktop notifications and the launcher entry with the window's
+  urgency on Linux; 41b checks the HTML view in WebKitGTK (Linux, offscreen
+  in a helper) or WKWebView (macOS) with the same lock-down; T1 and T2 run
+  where scrolling is pixel-precise: macOS, and Linux under Wayland (T1's pan
+  part; winit 0.30 has no Linux pinch, smart zoom or force click). Under X11
+  every device scrolls in notches (rows 1 and 12).
+- **Linux on CI** (job `linux-gui`, blocking): the whole suite under Xvfb
+  (X11, 1920×1080, Mesa's lavapipe, a private `dbus-run-session`), and rows
+  41b, T1 and T2 under headless weston (Wayland). Last run (2026-11-01, run
+  of 0aa54e0): `PASS: 62 rows in 239.5s` under X11, `PASS: 3 rows in 7.4s`
+  under Wayland.
+- **macOS**: its state per row is the macOS column of
+  [PORT-STATUS.md](PORT-STATUS.md).
+
 ## The matrix
 
 `GUI check` is the parity suite's check; `also` lists the 39-step GUI

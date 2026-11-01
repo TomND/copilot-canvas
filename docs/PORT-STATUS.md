@@ -95,7 +95,7 @@ work resumes after any interruption: read it first, then `git log`.
 - Exit: TUI self-test automation steps and factory probes on the backend; a
   real tunnel hosted by the manifest; `doctor` clean.
 
-### Phase 3 GUI core (M2) — macOS: in progress · Linux: done except the bench's numbers (CI)
+### Phase 3 GUI core (M2) — macOS: in progress · Linux: done (CI; numbers on a real GPU are the owner's)
 
 - Linux: `selftest --client gui` passes under Xvfb (X11) and headless weston
   (Wayland) and `--remote loopback` under X11, on Mesa's lavapipe, in the
@@ -107,9 +107,11 @@ work resumes after any interruption: read it first, then `git log`.
   sessions, 74 MB with 4 tiles and 1,300 boxes, full frame of 1,300 boxes
   p50 21.7 ms; keystroke → present (keys typed through the X server since
   466a0ef) p50 28.5 / p99 31.9 ms and input → present p50 14.1 ms on
-  llvmpipe: software rendering, so PLAN §9's 8 / 20 ms needs a real GPU.
-  Still open: X11 work areas (`_NET_WORKAREA`; winit reports whole
-  monitors), the bench on real GPUs (owner).
+  llvmpipe: software rendering, so PLAN §9's 8 / 20 ms needs a real GPU
+  (owner). X11 work areas come from the window manager (061e54d: Mutter's
+  per-monitor `_GTK_WORKAREAS_D<n>`, else `_NET_WORKAREA` cut to the
+  monitor); CI's hardening runs a tint2 panel so placement must keep out
+  of it.
 
 - [x] Metal (`os::GPU_BACKENDS`), fonts per OS (macOS: Cascadia Mono when
       installed, SF Mono, Menlo; system UI font; Apple fallbacks), test hooks
@@ -134,7 +136,7 @@ work resumes after any interruption: read it first, then `git log`.
 - Exit: `selftest --client gui` (39 steps) local and `--remote loopback`;
   `bench --client gui` within PLAN §9.
 
-### Phase 4 GUI platform integration — Linux: rows 17, 41, 41b, G2 pass (CI) · macOS: in progress (41b)
+### Phase 4 GUI platform integration — Linux: done (CI; IME, AltGr and Orca by ear are the owner's) · macOS: in progress (41b)
 
 - macOS: the HTML view (a17b069) is a WKWebView child view over the
   viewer's content area, locked down as the iPhone app's (page JavaScript
@@ -162,7 +164,7 @@ work resumes after any interruption: read it first, then `git log`.
 - Exit: parity rows 17, 41, 41b, G2 pass; manual IME / dead-key / AltGr /
   VoiceOver / Orca checks recorded (owner).
 
-### Phase 5 Parity, goldens, hardening — macOS: started
+### Phase 5 Parity, goldens, hardening — macOS: started · Linux: done (CI, blocking)
 
 - 2026-10-31, locally on a locked Mac (no presents): 62 of 64 rows pass
   (62 + T1, T2). Failing: 7b and V3 (frame counts: need an uncovered
@@ -183,14 +185,15 @@ work resumes after any interruption: read it first, then `git log`.
     service's path style; on a macOS or Linux service V5 asked for
     `…/ai-docs\notes.md`.
 
-- Linux (CI `linux-gui`, X11): 60 of 62 rows pass on the run of 2432279
-  (after merging 883102c and f876447: 12, 14, 18, 44, G1, V5 pass); G3 and
-  33 (a dropped path pasted into Shell A) regressed after G1 on Linux only
-  and are being looked at. Goldens: Linux's own set recorded on CI and
-  committed (`tests/golden/gui/linux-1x`, bbe91dc); the step compares from
-  now on. Hardening: 8 of 9 on the run of 3706059 (placement passes under
-  openbox, 1e8c102); the accessibility check reached the GUI over AT-SPI
-  and stopped at a method AccessKit does not answer (fixed in ca88f10).
+- Linux (CI `linux-gui`, run of 0aa54e0, 2026-11-01): **`PASS: 62 rows in
+  239.5s`** under X11 and 41b, T1, T2 under Wayland; **9 of 9 goldens**
+  match Linux's own set (`tests/golden/gui/linux-1x`, bbe91dc); **9 of 9
+  hardening checks** (placement under openbox, the accessibility tree over
+  AT-SPI). All of them block from 45d164a. G3 and 33 had failed after the
+  merge of 883102c: row 14 now reached the paste probe, whose raw terminal
+  modes were never restored; bash keeps a finished command's modes, so
+  Shell A echoed nothing and a pasted path never reached it (8cba4df,
+  shared: `raw_vt_modes` restores them at exit, with a PTY test).
 - Exit: `selftest --client gui --parity` PASS 60 rows; `--hardening` PASS;
   goldens recorded per OS.
 
@@ -211,7 +214,12 @@ work resumes after any interruption: read it first, then `git log`.
   and back out, the AppImage extracted, the .rpm in a Fedora 41 container.
   appimagetool 1.9.1 and runtime 20251108 are pinned by SHA-256.
 
-### Phase 7 Dogfood and rollout — not started
+### Phase 7 Dogfood and rollout — Linux: docs done; dogfood and release are the owner's
+
+- Linux: README's Linux section (packages, run-time libraries, building
+  from source and the packages; 2bdaed9), PARITY.md's macOS and Linux
+  section, this file. Releases (publishing the CI packages) and the dogfood
+  week are the owner's.
 
 ## Parity rows (PARITY.md; plan §6)
 
@@ -219,8 +227,8 @@ State per OS: `—` not started · `wip` in progress · `PASS` · `equiv` (the
 plan §6.1 equivalent, documented). macOS: the full suite run locally on a
 locked Mac, 2026-10-31 (CI's run pending); 7b and V3 count frames, which a
 locked screen never presents. Linux: CI `linux-gui` (X11, Xvfb, Mesa
-lavapipe), 60 of 62 rows on 2026-10-31 (run of 2432279); 41b, T1 and T2
-under Wayland (headless weston), where the touchpad rows apply.
+lavapipe), 62 of 62 rows on 2026-11-01 (run of 0aa54e0); 41b, T1 and T2
+also under Wayland (headless weston), where the touchpad rows apply.
 
 | # | Feature | macOS | Linux |
 |---|---|---|---|
@@ -258,7 +266,7 @@ under Wayland (headless weston), where the touchpad rows apply.
 | 30 | `--demo` | PASS | PASS |
 | 31 | `--perf` overlay | PASS | PASS |
 | 32 | CLI | PASS | PASS |
-| 33 | Remote mode | PASS | wip (its drop, as G3) |
+| 33 | Remote mode | PASS | PASS |
 | 34 | View versus start | PASS | PASS |
 | 35 | Transcript inspector; child resume | PASS | PASS |
 | 36 | Removing a multi-selection | PASS | PASS |
@@ -278,7 +286,7 @@ under Wayland (headless weston), where the touchpad rows apply.
 | 46 | Subagents folded into decks by default | PASS | PASS |
 | G1 | Inline images | PASS | PASS |
 | G2 | Taskbar progress, flash, toasts | PASS | PASS |
-| G3 | File drag and drop | PASS | wip (regressed after G1, Linux only) |
+| G3 | File drag and drop | PASS | PASS (Wayland drops: unit tests; owner on a desktop) |
 | G4 | Several windows | PASS | PASS |
 | V1 | Dust | PASS | PASS |
 | V2 | Stacks and hidden subsessions | PASS | PASS |
@@ -449,7 +457,9 @@ under Wayland (headless weston), where the touchpad rows apply.
 - Linux: pinch, smart zoom and force click (winit 0.30 has no pointer
   gestures on Wayland or X11); X11 touchpads scroll in notches. Wayland
   drag and drop is checked only by unit tests on CI (a headless drag has no
-  pointer serial). X11 work areas are whole monitors (no `_NET_WORKAREA`).
+  pointer serial). With one desktop-wide `_NET_WORKAREA` (window managers
+  other than Mutter), a panel on one monitor shrinks every monitor's work
+  area (as in GTK).
 
 ## Owner-only items (do not block "done")
 
@@ -607,3 +617,13 @@ view helper (WebKitGTK offscreen); the GUI on Wayland/X11.
   committed (bbe91dc). Hardening: AT-SPI client and terminal text runs
   (718bebd, shared), openbox for the placement check (1e8c102); typed keys
   through the X server for the bench (466a0ef).
+- 2026-11-01: **Linux parity 62 of 62** (X11) after the paste probe's
+  terminal modes were restored at exit (8cba4df, shared; found through a
+  listing of the PTY's processes added to rows G3 and 33: bash alone, in
+  the foreground, waiting in `poll`, with commands no longer echoed).
+  Goldens compare 9 of 9, hardening 9 of 9 (AT-SPI roles from `GetRole`,
+  ca88f10); parity and hardening block (45d164a). X11 work areas (061e54d),
+  CI with a tint2 panel; the terminal bench on every Linux runner
+  (advisory). README Linux section (2bdaed9), PARITY.md per OS, plan D15
+  and PARITY.md T1/T2 for Linux (14737e5). Merged origin/macos (6f4f9b6:
+  menu bar, Dock, notifications, accessibility and goldens on macOS).
