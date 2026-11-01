@@ -22,6 +22,9 @@ pub struct Settings {
     /// "off" (unset: reduced when Windows' animations are off, else on).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effects: Option<String>,
+    /// The canvas's dot grid pulses while agents work (unset: on).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid_pulse: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -106,6 +109,17 @@ impl Settings {
         let value = std::env::var("COPILOT_CANVAS_EFFECTS").ok().filter(|v| !v.trim().is_empty()).or_else(|| self.effects.clone())?;
         let value = value.trim().to_ascii_lowercase();
         matches!(value.as_str(), "on" | "reduced" | "off").then_some(value)
+    }
+
+    /// The dot grid's pulse while agents work: `COPILOT_CANVAS_GRID_PULSE`
+    /// ("on"/"off"), else the setting, else on.
+    pub fn grid_pulse(&self) -> bool {
+        let env = std::env::var("COPILOT_CANVAS_GRID_PULSE").ok().map(|v| v.trim().to_ascii_lowercase());
+        match env.as_deref() {
+            Some("on" | "1" | "true" | "yes") => true,
+            Some("off" | "0" | "false" | "no") => false,
+            _ => self.grid_pulse.unwrap_or(true),
+        }
     }
 
     /// Address the service listens on for remote clients:
