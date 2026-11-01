@@ -217,10 +217,13 @@ work resumes after any interruption: read it first, then `git log`.
 - macOS on CI (runs 41260077261 and 41271941822, visible windows on the
   runner's paravirtual GPU): **`PASS: 65 rows`** (62 + T1, T2 and main's
   47: 32 grid repaints in 2 s while working, none when idle; 7b and V3
-  count their frames there). The suite blocks from now on. T2 failed in two
-  earlier runs (no wheel notch reached the stand-in agent) and has passed
-  in every run since; if it fails again it says where its gesture went and
-  what the terminal asked for (9f0fd2d, 2254a37). Locally on a locked Mac
+  count their frames there). The suite blocks from now on. T2 failed now
+  and then: its diagnostics showed the gesture over the agent's tile latched
+  to Shell A. A began within 150 ms of a lift-off is that gesture's
+  momentum (winit reports momentum and a new touch alike), and CI's release
+  build opened the agent's tile that fast; the row now starts its new
+  gestures a moment after the last lift-off (5a37471). The product behaves
+  as designed. Locally on a locked Mac
   62 of 64 (7b, V3 and 47 need presents). Run alone, row 1 fails after its
   box drag (it needs the state the rows before it leave).
 - macOS hardening on CI: **9 of 9** (blocking): toolbar counts, overlapping
@@ -627,9 +630,17 @@ touchpad rows apply.
   give each test's first connection 90 s and look for the inbox row again
   before tapping it (98817b7); a failure keeps the result bundle and the
   mocks' logs. Windows: the self-test's "open the other client" step read
-  the dry-run file before it was written (an empty read; fixed), and
+  the dry-run file before it was written (an empty read; fixed); the reports
+  test wrote a spool file in place while the service polled (a half-written
+  read on a Windows runner; it spools as the CLI does now, 44e1d05);
   `opencode_history`'s git push test failed once on a Windows runner (40 of
-  40 passes on macOS; left to main).
+  40 passes on macOS; left to main). iOS CI, second cause: the keyboard
+  checks allowed 5 s while each look took up to a second on a busy runner;
+  15 s now, and the simulator boots without a hardware keyboard (464a24c);
+  third: instant `isHittable` checks right after the keyboard or the layout
+  moved now wait for the element to become hittable. `selftest
+  automations` reads the newest *finished* run (the every-minute schedule
+  can start another one right after "run now"; seen on Linux's systemd).
 
 - 2026-10-30: status file created; Phase 0 started on `macos`.
 - 2026-10-31: canvas-sys, the terminal host, core, backend, TUI, CLI and

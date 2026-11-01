@@ -141,8 +141,10 @@ fn scenario(p: &Probe) -> Result<()> {
     step("run now goes through the launcher: log lines, environment, exit code, report");
     p.cli(&["automations", "run", &p.name, "--dir", &p.dir_arg()])?;
     p.wait("the run's exit line", Duration::from_secs(60), |p| p.log().contains("Exited with code 3."))?;
+    // The newest finished run (the every-minute schedule may have started
+    // another one since, still running).
     let runs = factory::parse_runs(&p.log());
-    anyhow::ensure!(runs.first().is_some_and(|r| r.exit == Some(3)), "the newest run exited with 3: {runs:?}");
+    anyhow::ensure!(runs.iter().find(|r| !r.ended.is_empty()).is_some_and(|r| r.exit == Some(3)), "the newest finished run exited with 3: {runs:?}");
     let ran = std::fs::read_to_string(p.work.join("ran.txt")).unwrap_or_default();
     anyhow::ensure!(ran.contains(&format!("ran {}", p.name)), "AUTOMATION_NAME reached the run: {ran:?}");
     p.wait("the status report", Duration::from_secs(20), |p| {
