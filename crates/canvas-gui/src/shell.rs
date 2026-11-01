@@ -2103,7 +2103,10 @@ impl ApplicationHandler<UserEvent> for Shell {
                 let advance = self.fonts.as_ref().map(|f| f.advance).unwrap_or(0.6);
                 win.rescale(scale_factor as f32, advance, self.gpu.as_ref(), options);
             }
-            WindowEvent::RedrawRequested => win.redraw = true,
+            WindowEvent::RedrawRequested => {
+                win.perf.redraw_requests += 1;
+                win.redraw = true;
+            }
             WindowEvent::Focused(focused) => {
                 win.focused = focused;
                 crate::os::track_window(&win.window, focused);

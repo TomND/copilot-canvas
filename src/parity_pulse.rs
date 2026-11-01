@@ -79,14 +79,25 @@ fn capture(gui: &Gui, dir: &Path, name: &str) -> Result<Capture> {
 /// moved loop dots (the sandbox's automations loop on their own), repaints
 /// of the grid layer (in frames of its own or in loop frames), full frames).
 fn frames_in(gui: &Gui, secs: f64) -> Result<(u64, u64, u64)> {
+    frames_why(gui, secs).map(|(frames, _)| frames)
+}
+
+/// As [`frames_in`], with what made full frames besides the core's changes:
+/// presents skipped (each retried in full) and redraws the window system
+/// asked for.
+/// Frames (not loops), grid paints, full frames; skipped presents, redraws asked.
+type FramesWhy = ((u64, u64, u64), (u64, u64));
+
+fn frames_why(gui: &Gui, secs: f64) -> Result<FramesWhy> {
     let counts = |p: &Value| {
         let n = |key: &str| p["perf"][key].as_u64().unwrap_or(0);
-        (n("presented").saturating_sub(n("loop_frames")), n("grid_paints"), n("full_frames"))
+        [n("presented").saturating_sub(n("loop_frames")), n("grid_paints"), n("full_frames"), n("skipped"), n("redraw_requests")]
     };
     let before = counts(&gui.req(json!({ "cmd": "perf" }))?);
     std::thread::sleep(Duration::from_secs_f64(secs));
     let after = counts(&gui.req(json!({ "cmd": "perf" }))?);
-    Ok((after.0.saturating_sub(before.0), after.1.saturating_sub(before.1), after.2.saturating_sub(before.2)))
+    let d = |i: usize| after[i].saturating_sub(before[i]);
+    Ok(((d(0), d(1), d(2)), (d(3), d(4))))
 }
 
 fn pulse_state(tree: &Value) -> &Value {
@@ -202,14 +213,14 @@ fn steps(sb: &Sandbox, gui: &mut Gui, id: &str, dir: &Path) -> Result<String> {
     anyhow::ensure!(down.iter().all(|l| l.iter().all(|v| v.abs() <= 8)), "the bottom of a breath is not the normal colour: {:?}", down.iter().find(|l| l.iter().any(|v| v.abs() > 8)));
     // While work runs only the grid layer is repainted for it, about 15 times a second at
     // most (when its colour changes); with the pulse off never, and no fewer full frames.
-    let (_, grid_on, full_on) = frames_in(gui, 2.0)?;
+    let ((_, grid_on, full_on), (skipped_on, asked_on)) = frames_why(gui, 2.0)?;
     gui.req(json!({ "cmd": "grid_pulse", "value": "off" }))?;
     std::thread::sleep(Duration::from_millis(200));
-    let (_, grid_off, full_off) = frames_in(gui, 2.0)?;
+    let ((_, grid_off, full_off), (skipped_off, asked_off)) = frames_why(gui, 2.0)?;
     gui.req(json!({ "cmd": "grid_pulse", "value": "on" }))?;
     anyhow::ensure!(
         (5..=44).contains(&grid_on) && grid_off == 0 && full_on <= full_off + 3,
-        "in 2 s while a session works: {grid_on} grid repaints and {full_on} full frames with the pulse on, {grid_off} and {full_off} with it off"
+        "in 2 s while a session works: {grid_on} grid repaints and {full_on} full frames with the pulse on, {grid_off} and {full_off} with it off (presents skipped {skipped_on} and {skipped_off}, redraws asked by the window system {asked_on} and {asked_off})"
     );
     // Settings › Dot grid pulse off (saved on this machine): still; on again.
     let toggle = |gui: &mut Gui, on: bool| -> Result<()> {

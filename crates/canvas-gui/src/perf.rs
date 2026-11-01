@@ -83,6 +83,9 @@ pub struct Perf {
     pub output_at: Option<Instant>,
     pub presented: u64,
     pub skipped: u64,
+    /// Redraws the window system asked for (X11 exposes, macOS and Windows
+    /// paint requests): each is a full frame.
+    pub redraw_requests: u64,
 }
 
 impl Perf {
@@ -133,6 +136,7 @@ impl Perf {
             "grid_frames": self.grid_frames,
             "grid_paints": self.grid_paints,
             "skipped": self.skipped,
+            "redraw_requests": self.redraw_requests,
             "frame_ms": self.frame_ms.json(),
             "full_ms": self.full_ms.json(),
             "damage_ms": self.damage_ms.json(),
@@ -152,7 +156,7 @@ impl Perf {
 
     /// Starts a measurement from scratch (the frame counts keep running).
     pub fn reset(&mut self) {
-        *self = Perf { presented: self.presented, full_frames: self.full_frames, damage_frames: self.damage_frames, loop_frames: self.loop_frames, grid_frames: self.grid_frames, grid_paints: self.grid_paints, ..Perf::default() };
+        *self = Perf { presented: self.presented, full_frames: self.full_frames, damage_frames: self.damage_frames, loop_frames: self.loop_frames, grid_frames: self.grid_frames, grid_paints: self.grid_paints, skipped: self.skipped, redraw_requests: self.redraw_requests, ..Perf::default() };
     }
 }
 
