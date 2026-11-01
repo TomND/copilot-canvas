@@ -2437,10 +2437,11 @@ fn trackpad_terminal(gui: &mut Gui) -> Result<String> {
     let latched = gui.tree()?["gesture"].clone();
     gesture(gui, "scroll_px", at, json!({ "phase": "ended" }))?;
     if let Err(error) = gui.wait("two wheel notches reached the program", 10, |t| t.matches("MOUSE 64;").count() >= before + 2) {
-        // Where the gesture went and what the terminal said it wanted.
+        // Where the gesture went and what the terminal said it wanted (first:
+        // the report keeps a failure's first lines).
         let tree = gui.tree()?;
         let tile = tree["tiles"].as_array().and_then(|t| t.iter().find(|t| t["focused"] == true).cloned()).unwrap_or_default();
-        anyhow::bail!("{error:#}\n(at {at:?}; latched {latched}; tile {} modes {} offset {}, inner {})", tile["id"], tile["modes"], tile["offset"], tile["inner"]);
+        anyhow::bail!("no wheel notches reached the program: at {at:?}, latched {latched}, tile {} modes {} offset {} inner {}, cell {}, {} MOUSE 64 before\n{error:#}", tile["id"], tile["modes"], tile["offset"], tile["inner"], tree["cell"], before);
     }
     std::thread::sleep(Duration::from_millis(300));
     let notches = gui.screen().matches("MOUSE 64;").count() - before;

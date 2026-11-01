@@ -317,6 +317,13 @@ impl Shell {
             attrs = crate::os::quiet_window(attrs);
         }
         let window = Arc::new(event_loop.create_window(attrs)?);
+        // macOS: winit 0.30 puts a new window's content where its frame should
+        // go, so the frame came back a title bar higher on every start; the
+        // frame goes where it was.
+        #[cfg(target_os = "macos")]
+        if let Some(p) = &saved {
+            window.set_outer_position(PhysicalPosition::new(p.x, p.y));
+        }
         let access = accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, self.proxy.clone());
         window.set_visible(true);
         if saved.as_ref().is_some_and(|p| p.maximized) {
