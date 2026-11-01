@@ -383,7 +383,11 @@ fn placement() -> Result<String> {
     let work = first["monitors"].as_array().and_then(|m| m.iter().find(|m| m["primary"] == true).or(m.first())).map(|m| m["work"].clone()).context("a monitor")?;
     let (wx, wy) = (work[0].as_i64().unwrap_or(0), work[1].as_i64().unwrap_or(0));
     let (x, y) = (wx + 137, wy + 91);
-    ui.request(json!({ "cmd": "place", "x": x, "y": y, "width": 1280, "height": 760 }))?;
+    // Well inside the work area, also on a small screen (a CI runner's 1024 × 768):
+    // a window as large as the screen comes back as maximized (macOS calls it zoomed).
+    let (ww, wh) = (work[2].as_i64().unwrap_or(1920) - wx, work[3].as_i64().unwrap_or(1080) - wy);
+    let (width, height) = (1280.min(ww - 137 - 120).max(640), 760.min(wh - 91 - 80).max(360));
+    ui.request(json!({ "cmd": "place", "x": x, "y": y, "width": width, "height": height }))?;
     std::thread::sleep(Duration::from_millis(1800));
     let moved = state(&ui)?;
     anyhow::ensure!(moved["saved"]["x"] == moved["tracked"]["x"] && moved["saved"]["width"] == moved["tracked"]["width"], "the placement was saved: {moved}");
