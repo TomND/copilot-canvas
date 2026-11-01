@@ -2134,6 +2134,7 @@ fn late_rows(sb: &Sandbox, rows: &mut Vec<Row>) {
     visual::rows(sb, rows);
     layout::rows(sb, rows);
     subagents::rows(sb, rows);
+    pulse::rows(sb, rows);
 }
 
 #[path = "parity_visual.rs"]
@@ -2144,6 +2145,9 @@ mod layout;
 
 #[path = "parity_subagents.rs"]
 mod subagents;
+
+#[path = "parity_pulse.rs"]
+mod pulse;
 
 #[path = "parity_agents.rs"]
 mod agents;

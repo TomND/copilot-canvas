@@ -8,7 +8,7 @@ cargo build --release
 target\release\copilot-canvas.exe selftest --client gui --parity
 ```
 
-It takes about 240 s on the development machine (rows 40b, 42 and 43 wait out event debounces, an owner's
+It takes about 255 s on the development machine (rows 40b, 42 and 43 wait out event debounces, an owner's
 20 idle seconds and stand-in agent runs; RTX 3070), prints each check as it runs and ends with the table below;
 `CANVAS_GUI_SCREENS=DIR` keeps the PNG captures the checks inspect.
 `CANVAS_PARITY_ROWS=41,41b` (a comma-separated list of row numbers) runs only
@@ -102,6 +102,7 @@ and unit tests that cover the row.
 | 44 | **New:** undo canvas movement: Ctrl+Z takes back this window's latest layout change, one completed gesture per step (a drag of boxes, a stack or a group with everything that moved with it, a ◢ resize, *Fit to members*, a burst of arrow keys), to the exact places and sizes; successive undos go further back through moves, removals and syncs in one history; Ctrl+Y / Ctrl+Shift+Z redo; nothing starts or stops; a terminal with the keyboard gets Ctrl+Z itself | `layout_undo_redo`, on a canvas of its own (a group with a parent and its subagent box, a nested group with a subsession and its subagent box (still folded into its deck), a shell, another box): the group dragged by its title (every box, the folded one too, and the nested group moved by the same delta) and resized by ◢; in the shell's terminal the paste probe receives Ctrl+Z (`KEY \x1a`) and the canvas file keeps both changes; on the canvas Ctrl+Z restores the size, a second Ctrl+Z every place exactly (the canvas file), Ctrl+Y moves it again and Ctrl+Z back; no launch in the service log | step "Ctrl+Z undoes a group drag exactly … in a terminal Ctrl+Z reaches the program" (TUI and GUI, also over `--remote loopback`); canvas-core `undo` tests (box, group with members, children and nested groups, resize, multi-selection moved once, arrow-key bursts, removals and syncs in one history, the 100-step limit, items removed or moved by another window since, the undo as a document edit, Ctrl+Z in a terminal, a dialog and the sidebar filter, *Fit to members*, stacks, folded subagent boxes carried by a box or group drag and put back by its undo, folding never an undo step), canvas-model `a_selection_with_its_children_moves_each_box_once` | ✓ |
 | 45 | **New:** area selection takes subsessions and subagent boxes like sessions: Shift-drag (and right-drag) selects every visible box the band touches as drawn, parents and children together, at every zoom; boxes in a deck (stacked, folded) and hidden ones are left out; a Shift-drag that starts on a box selects by area and never drags or starts it; moving a mixed selection moves each box once | `subsession_area_selection`, on the canvas of row 44 at 100 % and at 50 %: `K` first shows the parent's subagent box at its saved place (folded by default); a Shift-drag from on top of the parent over its subagent box selects exactly those two (the tree's selection), a second one adds the subsession; no box moved, nothing launched; dragging the parent moves the parent, its subagent box, the subsession and the subsession's (folded) subagent box by one and the same delta in the canvas file, the other boxes stay; Ctrl+Z puts them back; with `H` (hide subagents and subsessions) a band over the whole group leaves the subsession and both subagent boxes out | step "K shows a session's folded subagent box at its saved place; an area selection over the session and the box selects both at 100 % and 50 %; moving them moves the subagent once; K folds it again" (a right-drag in the TUI and the GUI, also over `--remote loopback`); canvas-core `selection_tests` (every zoom of both render modes and a continuous 70 % with a fractional origin, the band against the drawn cells at 25 %, hidden, stacked and folded boxes, Shift- and Ctrl-clicks, a Shift-double-click never starts, right-click menus, removing a mixed selection and its undo), `undo` `a_mixed_selection_moves_each_box_once`; snapshots `selection-subsessions-100`, `selection-subsessions-50` | ✓ |
 | 46 | **New (WI-022):** subagent boxes fold into one slim deck beneath their session by default (also on canvases saved before; *Settings › Subagents* for the default; a session's own choice wins), showing the most important state of what it holds; `K`, the menus or a double-click show them at exactly their saved places; the choice is saved in the canvas; `H` hides them too; nothing starts | `subagents_folded_by_default`, on a canvas of its own (a live session with a running subagent in its history; two subagent boxes saved at places of their own by a build that did not fold, no choice saved): one “2 subagents” deck with a card behind it, working (“1 of 2”), no box of their own, their saved places kept; a click on the deck lists both in the session's details (SUBAGENTS 2); `K` shows them (a transition frame seen) exactly at their saved places (the canvas file and the drawn offsets from the session); the GUI restarted: still shown; `H` hides them (◇ 2 hidden on the session, ↳ 2 hidden in the toolbar) and shows them; `K` folds them again, places kept; no launch in the service log; PNG captures `subagent-deck`, `subagent-deck-50`, `subagent-deck-details`, `subagent-deck-unfolded` | step "K shows a session's folded subagent box …" (TUI and GUI, also over `--remote loopback`); canvas-model `visual` tests (old canvases fold and round-trip the choices, a shared field, one deck per session, folded boxes take no room, *Fit to members* shrinks to what shows, group membership and group drags follow the session), canvas-core `visual` tests (the slim deck and its status, a click views and a double-click unfolds, K with subagent boxes only, subsessions only and both, the menus, new boxes arrive folded and get a slot and a grown group when first shown, the Settings default and per-session choices, H hides subagent boxes with a count, effects on the deck, GPU transitions and reduced motion), `undo` and `selection_tests` (above); snapshots `subagent-decks`, `subagent-decks-unfolded`, `subagent-deck-details` | ✓ |
+| 47 | **New (WI-023):** the canvas's dot grid breathes gently while at least one session works (a slow 3 s brightness pulse, about 40 % brighter and a touch bluer at its top; it fades in and out over 0.8 s and follows the clock); reduced motion, effects off and *Settings › Dot grid pulse* off keep it still; only the grid's layer is repainted for it (≤ 15 frames/s of its own), nothing when nothing works | `grid_pulse_while_working`, on a canvas of its own (one session working from its synthetic history, a tool running): reduced motion gives the reference captures (the dots' normal colour; two captures half a breath apart identical, no grid repaints), effects off the same; motion on: captures scheduled at the top and the bottom of a breath on the animation clock the GUI shares (each `png` reply carries its `clock_ms` and the grid's level, which must be the clock's, so nothing depends on the time between requests): at the top every sampled dot (24, clear of boxes and groups) is lighter and a little bluer within the pulse's range, at the bottom the normal colour; in 2 s while working only grid repaints for it (≤ 15 frames of its own a second; it may also ride on the sandbox's loop frames) and no extra full frames, none with the pulse off; *Settings › Dot grid pulse* (a click on its row) off: saved in `settings.json`, the normal colour; on again; the session stops (an `abort`): the pulse fades out, then no frames at all and the normal colour | canvas-core `pulse` tests (bounded, periodic, the normal colour at the bottom of a breath, continuous and the same at any frame rate, fades turning around mid-way, a switch between working sessions changing nothing, subagents, reduced motion, effects off, the setting off and `freeze`, the TUI's steps and its return at once, grid frames only while it shows, the Settings row), canvas-gui `the_grid_dots_breathe_with_the_pulse_and_hold_their_colour_without_it`; snapshot `grid-pulse`; `bench --client gui --pulse` | ✓ |
 
 | 40 | **New:** canvas-wide agents: the top bar's **◎ Agents** (a management panel: each agent's state and controls, the canvas skills, the group passive sessions for contrast), the *Canvas agents* frame (◎ chips) and the sidebar show one agent per box; templates (PR coordinator, Cross-group digest, Custom); canvas skills given per agent; viewing one never starts it | `canvas_agents_one_agent_every_entry`: ◎ Agents → *+ New canvas agent* → *PR coordinator* → named: a dashed ◎ box in the new frame, its files under `<home>/canvas-agents/<canvas id>/agents/<slug>`, routed as canvas-wide for this canvas id; the panel's row, a click on the box and the sidebar row select the same box (its panel); a double-click launches nothing; a skill of the canvas library given with *Skills…* (document, routing, panel) | step "canvas-wide agents: ◎ Agents opens their panel; a new agent is one box in the Canvas agents frame …" (TUI and GUI, and over `--remote loopback`); canvas-core `canvas_wide` tests (state machine, routing per canvas id, disable, pause, stop, frame, group filter), canvas-model `canvas_wide` and `bus` tests (folders per home and canvas, skills, plugin, prompt, subscribers across groups, isolation, permissions), canvas-agents backend, CLI and provider tests; snapshots `canvas-agents-panel`, `canvas-agent-detail` | ✓ |
 | 40b | **New:** a canvas-wide agent runs on events of every group of its canvas (never another canvas's), with its skills delivered to the agent CLI; Pause, Run now, Stop run, Disable | `canvas_agent_runs_across_groups`: a `pr.published` from a session of the parity group runs the agent with the stand-in Copilot (`-p`, its skills plugin as a second `--plugin-dir`), which reports `fake run of pr.published · skills: parity-skill` through `copilot-canvas status`; paused, an event of the canvas and one from a session no canvas routes start nothing (12 s); *Run now* then *Stop run* ends the run as stopped with no failure; disabled, it is no longer routed and an event starts nothing | canvas-agents `passive` tests (addressed events, effects on any box for canvas-wide agents, run folders, state kept for another canvas), canvas-model `bus` tests | ✓ |
@@ -142,7 +143,28 @@ fixed-size chips) have these checks, on a separate canvas of the sandbox
 
 ## Last run
 
-WI-021 makes a group's passive sessions discoverable: a sidebar row
+WI-023 makes the canvas's dot grid breathe while an agent works: a slow
+3 s brightness pulse of the background dots (about 40 % brighter and a
+touch bluer at its top, the normal colour at its bottom), faded in and out
+over 0.8 s, from the animation clock; the GUI repaints only the grid's own
+layer for it (in frames of its own at most 15 a second, and only when its colour changes), the TUI
+steps through three lighter colours on its spinner frames. Reduced motion,
+effects off and the new *Settings › Dot grid pulse* off keep it still, and
+the `freeze` hook holds the normal colour. Row 47 is new (above); the
+shared self-test remains 39 steps; the parity suite has 63 rows.
+
+Verified 2026-10-31: `PASS: 63 rows in 256.2s` (row 47 in 18.1 s: `24
+dots: top of a breath +16/+25/+35 (level 0.350 at 1475 ms), bottom ±0
+(level 0.000, 1500 ms apart in the breath); while working in 2 s: 22 grid
+repaints, 8 full frames (0 and 9 with the pulse off); still with reduced
+motion, effects off and the setting off (saved); fade-out seen: true, then
+2 frames in 2 s`; two more runs of the row alone: 22 grid repaints, 1 frame
+in 2 s once nothing worked); the nine golden screenshots matched pixel for
+pixel without re-blessing (their canvases have working sessions, and the
+`freeze` hook holds the grid at its normal colour); no view snapshot
+changed and `grid-pulse` is new; nine hardening checks passed.
+
+The run before (WI-021) makes a group's passive sessions discoverable: a sidebar row
 “⟲ Passive sessions N” (or “Passive: none · + add…”) under every group, the
 labelled title chip (⟲ N passive / ⟲ + passive), *Passive sessions of this
 group…* in the group menu and a PASSIVE SESSIONS section in the group's
@@ -242,6 +264,7 @@ row  | feature                                                        | GUI test
 44   | New: Ctrl+Z undoes a group drag (boxes, subagents, nested gro… | layout_undo_redo                             | ✓
 45   | New: Shift-drag selects subagent boxes and subsessions like s… | subsession_area_selection                    | ✓
 46   | New: subagent boxes fold into a deck beneath their session by… | subagents_folded_by_default                  | ✓
+47   | New: the dot grid breathes gently while an agent works (fades… | grid_pulse_while_working                     | ✓
 G1   | New: inline images (Kitty graphics; iTerm2 OSC 1337 through C… | kitty_image_pixels_png (GUI only: the TUI c… | ✓
 G2   | New: taskbar progress (ITaskbarList3), FlashWindowEx, toasts   | taskbar_flash_toasts (GUI only: a console h… | ✓
 G3   | New: file drag and drop (paths pasted; uploaded in remote mod… | drop_files_local (GUI only: a console canno… | ✓
@@ -252,7 +275,7 @@ V3   | Effects: copilot-canvas effect on a box, animated ≤ 15 fps wh… | effe
 V4   | Group chips at any zoom (folders, ⟲ passive), sidebar folder … | chips_low_zoom_and_sidebar (the TUI draws t… | ✓
 V5   | Remote mode: group folders in the canvas's browser, passive f… | remote_group_files_in_canvas (the TUI uses … | ✓
 V6   | Remote mode: a group's ⟲ Passive sessions row and chip open i… | remote_group_passive_sessions (the TUI draw… | ✓
-PASS: 62 rows in 252.8s
+PASS: 63 rows in 256.2s
 ```
 
 Rows 42 and 43 in the WI-020 run: `tracked by its owner; baseline poll; 3 comments
@@ -293,6 +316,12 @@ once by (3, 1); 50 %: parent + subagent, + subsession, each moved once by
   agents are the stand-in following the skills' contracts. Checks run every
   2 s (`COPILOT_CANVAS_PR_POLL_SECS`) and review checks every 10 s
   (`COPILOT_CANVAS_REVIEW_CHECK_SECS`) instead of 5 and 60 minutes.
+- Row 47 compares the grid's dots in offscreen PNG captures with a
+  reduced-motion capture of the same view (its frame counts leave out the
+  loop frames of the sandbox's looping automations); how a given monitor
+  shows such a small change is a matter for the eye, not the suite. The
+  TUI's colour steps are checked by canvas-core unit tests (the view
+  snapshots hold characters, not colours).
 - The checks assert behaviour and a few pixels, not whole images. Visual
   regressions are the job of `selftest --client gui --golden`
   (`docs/GUI.md` §3), whose `all-statuses` golden screenshot is this suite's

@@ -33,6 +33,7 @@ pub mod passive;
 pub mod platform;
 pub mod prefs;
 pub mod prs;
+pub mod pulse;
 pub mod recent;
 pub mod remote;
 pub mod remove;
