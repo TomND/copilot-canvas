@@ -1,9 +1,10 @@
 # macOS and Linux port: status
 
-> **macOS: done** (2026-11-01, branch `macos`; CI run 41282516535 of
-> 31cb33f with every job green: macOS with the parity suite blocking,
-> hardening, goldens and packages, Linux, Windows and iOS; main's WI-023
-> and row 47 merged): every phase's exit
+> **macOS: done** (2026-11-01, branch `macos`; CI runs 41282516535 of
+> 31cb33f and 41287607972 of 9266cdd with every job green: macOS with the
+> parity suite blocking, hardening, goldens and packages, Linux, Windows and
+> iOS, whose job then passed three times in a row; main's WI-023 and row 47
+> merged): every phase's exit
 > criteria that a machine can check pass on CI, blocking where the plan asks
 > (the parity suite's 65 rows, the nine hardening checks and macOS's nine
 > goldens block from 055cef3 on); what is left needs the owner (the checklist
