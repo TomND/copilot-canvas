@@ -3,7 +3,8 @@
 //! halo and the rubber band. Labels are shaped once and scaled with the zoom;
 //! below a readable size boxes show one compact line, then shapes only.
 //! Loop arcs have a layer of their own ([`paint_loops`]): while their dots
-//! move, a frame repaints only that layer.
+//! move, a frame repaints only that layer. So do the background and its dot
+//! grid ([`paint_grid`]), which breathes while a session works.
 
 use canvas_core::loops;
 use canvas_core::paint;
@@ -64,19 +65,19 @@ pub(crate) fn rgb(c: Color) -> [u8; 3] {
     theme::rgb(c, theme::FG)
 }
 
-/// The canvas of a frame; animations (loop dots) at `clock_ms`.
+/// The canvas of a frame; animations (loop dots, the grid's pulse) at `clock_ms`.
 pub fn paint(p: &mut Painter, grid: &Grid, model: &CanvasModel, clock_ms: u64) {
     let area = model.area;
     let clip = [area.x as f32 * grid.cell_w, area.y as f32 * grid.cell_h, area.right() as f32 * grid.cell_w, area.bottom() as f32 * grid.cell_h];
     let cx = Ctx { model, grid, clip, dpi: grid.scale };
     let layer = scene::CANVAS;
-    p.under(layer, Quad::rect(clip[0], clip[1], clip[2] - clip[0], clip[3] - clip[1], theme::rgba(BG, 1.0), clip));
+    // The background and the dot grid have a layer of their own: while the
+    // grid breathes (a session works), a frame repaints only that. The grid
+    // stays while panning (cheap here; the TUI hides it).
+    background(p, &cx, clock_ms);
     let (ux, uy) = cx.unit();
     let label_px = grid.font_px * model.scale;
     let readable = label_px >= MIN_LABEL * cx.dpi;
-
-    // The dot grid stays while panning (cheap here; the TUI hides it).
-    dots(p, &cx);
 
     for group in &model.groups {
         let r = cx.rect(group.rect);
@@ -299,27 +300,88 @@ fn halo_pad(cx: &Ctx) -> f32 {
     (0.4 * cx.unit().0).clamp(3.0 * cx.dpi, 8.0 * cx.dpi)
 }
 
-fn dots(p: &mut Painter, cx: &Ctx) {
+/// The dot grid's dots in view (px centres, on whole pixels): every 6 × 3
+/// world units, thinned out by powers of two when zoomed out.
+fn dot_points(cx: &Ctx) -> Vec<(f32, f32)> {
     let (ux, uy) = cx.unit();
-    // Every 6 × 3 world units, thinned out by powers of two when zoomed out.
     let mut k = 1.0;
     while 6.0 * k * ux < 26.0 * cx.dpi || 3.0 * k * uy < 26.0 * cx.dpi {
         k *= 2.0;
     }
     let (sx, sy) = (6.0 * k, 3.0 * k);
     let v = cx.model.visible();
-    let color = theme::color(paint::FAINT, 1.0);
-    let d = (1.0 * cx.dpi).max(1.0);
+    let mut points = Vec::new();
     let mut wy = (v.y / sy).floor() * sy;
     while wy <= v.bottom() {
         let mut wx = (v.x / sx).floor() * sx;
         while wx <= v.right() {
             let (x, y) = cx.px(wx, wy);
-            p.under(scene::CANVAS, Quad::rounded(x.round() - d, y.round() - d, 2.0 * d, 2.0 * d, d, color, [0.0; 4], 0.0, cx.clip));
+            points.push((x.round(), y.round()));
             wx += sx;
         }
         wy += sy;
     }
+    points
+}
+
+/// The grid dots' colour at `clock_ms`: their normal colour, lit a little
+/// while a session works.
+fn dot_color(model: &CanvasModel, clock_ms: u64) -> [f32; 4] {
+    theme::rgba(dot_rgb8(model, clock_ms), 1.0)
+}
+
+/// The grid dots' colour at `clock_ms` in whole 8-bit steps (the grid layer
+/// is repainted only when it changes).
+pub fn dot_rgb8(model: &CanvasModel, clock_ms: u64) -> [u8; 3] {
+    canvas_core::pulse::dot_rgb(model.grid_level(clock_ms)).map(|c| c.round() as u8)
+}
+
+/// The canvas background and the dot grid at `clock_ms`, into the grid layer.
+fn background(p: &mut Painter, cx: &Ctx, clock_ms: u64) {
+    let clip = cx.clip;
+    p.under(scene::GRID, Quad::rect(clip[0], clip[1], clip[2] - clip[0], clip[3] - clip[1], theme::rgba(BG, 1.0), clip));
+    let color = dot_color(cx.model, clock_ms);
+    let d = (1.0 * cx.dpi).max(1.0);
+    for (x, y) in dot_points(cx) {
+        p.under(scene::GRID, Quad::rounded(x - d, y - d, 2.0 * d, 2.0 * d, d, color, [0.0; 4], 0.0, clip));
+    }
+}
+
+/// The grid layer alone at `clock_ms` (a frame while the grid breathes).
+pub fn paint_grid(p: &mut Painter, grid: &Grid, model: &CanvasModel, clock_ms: u64) {
+    let area = model.area;
+    let clip = [area.x as f32 * grid.cell_w, area.y as f32 * grid.cell_h, area.right() as f32 * grid.cell_w, area.bottom() as f32 * grid.cell_h];
+    background(p, &Ctx { model, grid, clip, dpi: grid.scale }, clock_ms);
+}
+
+/// The grid's pulse at `clock_ms` as the test hooks report it: its level and
+/// colour, whether work runs and how far it has faded in, and up to `limit`
+/// dots (px centres) clear of groups, boxes and the canvas's edges, where
+/// their colour can be sampled.
+pub fn grid_info(grid: &Grid, model: &CanvasModel, clock_ms: u64, limit: usize) -> serde_json::Value {
+    let area = model.area;
+    let clip = [area.x as f32 * grid.cell_w, area.y as f32 * grid.cell_h, area.right() as f32 * grid.cell_w, area.bottom() as f32 * grid.cell_h];
+    let cx = Ctx { model, grid, clip, dpi: grid.scale };
+    let margin = 4.0 * cx.dpi;
+    let covered = |x: f32, y: f32| {
+        let near = |r: [f32; 4], m: f32| x >= r[0] - m && x <= r[0] + r[2] + m && y >= r[1] - m && y <= r[1] + r[3] + m;
+        model.groups.iter().any(|g| near(cx.rect(g.rect), margin)) || model.boxes.iter().any(|b| near(cx.rect(b.rect), margin + 4.0 * cx.unit().0))
+    };
+    let dots: Vec<[f32; 2]> = dot_points(&cx)
+        .into_iter()
+        .filter(|&(x, y)| x > clip[0] + margin && x < clip[2] - margin && y > clip[1] + margin && y < clip[3] - margin && !covered(x, y))
+        .take(limit)
+        .map(|(x, y)| [x, y])
+        .collect();
+    let level = model.grid_level(clock_ms);
+    serde_json::json!({
+        "level": level,
+        "rgb": dot_rgb8(model, clock_ms),
+        "on": model.pulse.map(|f| f.on),
+        "envelope": model.pulse.map(|f| f.envelope(clock_ms)),
+        "busy": model.grid_busy(clock_ms),
+        "dots": dots,
+    })
 }
 
 /// A pill-shaped badge centred on a box edge point; `right`: it ends there.
@@ -781,6 +843,29 @@ mod tests {
             motion,
             clock_ms: 0,
             frozen: false,
+            pulse: None,
+        }
+    }
+
+    #[test]
+    fn the_grid_dots_breathe_with_the_pulse_and_hold_their_colour_without_it() {
+        use canvas_core::pulse::{AMPLITUDE, Fade, PERIOD_MS};
+        let grid = Grid::new(0.6, 1.25);
+        let mut model = loop_model(Motion::On, 1.0);
+        let still = theme::color(paint::FAINT, 1.0);
+        assert_eq!(dot_color(&model, PERIOD_MS / 2), still, "no pulse: the normal colour, exactly as before");
+        model.pulse = Some(Fade { on: true, since: None });
+        assert_eq!(dot_color(&model, 10 * PERIOD_MS), still, "the start of a breath");
+        let top = dot_color(&model, 10 * PERIOD_MS + PERIOD_MS / 2);
+        assert!(top[2] > still[2] && top[0] > still[0] && top[2] - still[2] > top[0] - still[0], "lighter and a little cooler: {top:?}");
+        let info = grid_info(&grid, &model, 10 * PERIOD_MS + PERIOD_MS / 2, 8);
+        assert!((info["level"].as_f64().unwrap() - AMPLITUDE as f64).abs() < 1e-5 && info["on"] == true);
+        let dots = info["dots"].as_array().unwrap();
+        assert_eq!(dots.len(), 8);
+        // Sampled dots are on whole pixels (their quads are centred there).
+        for d in dots {
+            let (x, y) = (d[0].as_f64().unwrap() as f32, d[1].as_f64().unwrap() as f32);
+            assert!(x.fract() == 0.0 && y.fract() == 0.0, "({x}, {y})");
         }
     }
 

@@ -9,11 +9,14 @@ use crate::text::{Fonts, ShapeCache, Spec};
 
 /// Chrome outside the canvas and the terminal grids.
 pub const BASE: usize = 0;
-/// The canvas background, dot grid, groups and connectors.
-pub const CANVAS: usize = 1;
+/// The canvas background and its dot grid: while the grid breathes (a
+/// session works), a frame repaints this layer alone.
+pub const GRID: usize = 1;
+/// Groups and connectors.
+pub const CANVAS: usize = 2;
 /// Boxes with their labels, in [`BOX_LEVELS`] layers: a box that overlaps an
 /// earlier one goes one level up, so its fill covers the labels below it.
-pub const BOXES: usize = 2;
+pub const BOXES: usize = 3;
 pub const BOX_LEVELS: usize = 3;
 /// Loop arcs and their moving dots (above the boxes): while loops move, a
 /// frame repaints this layer alone.

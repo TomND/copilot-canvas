@@ -384,6 +384,25 @@ fn looping_sessions_in_reduced_motion() {
     check("looping-sessions-reduced-motion", &mut looping(canvas_core::view::Motion::Reduced), BOTH);
 }
 
+/// A session at work: the GPU model's dot grid at the top of a breath (the
+/// pulse faded in a while ago; a fixed clock). The TUI's dots take the
+/// pulse's top colour (these snapshots hold characters, not colours: the
+/// `pulse` unit tests pin those).
+#[test]
+fn grid_pulse_while_a_session_works() {
+    let mut doc = Doc::default();
+    doc.nodes.push(node("busy", "Working on it", 1, 1));
+    doc.nodes.push(node("quiet", "Idle one", 40, 1));
+    doc.view.x = -1;
+    doc.view.y = 0;
+    let mut app = app(doc, false);
+    app.sessions.insert("busy".into(), summary("busy", Activity::Working, true));
+    app.sessions.insert("quiet".into(), summary("quiet", Activity::Idle, true));
+    app.visual.pulse = canvas_core::pulse::Fade { on: true, since: Some((NOW - 10_000, 0.0)) };
+    app.visual.clock_ms = Some(NOW + canvas_core::pulse::PERIOD_MS / 2);
+    check("grid-pulse", &mut app, BOTH);
+}
+
 /// Two groups: one with a folder (chips lit), one without (dim chips); the
 /// first is selected, so the right panel shows its folders and members.
 #[test]

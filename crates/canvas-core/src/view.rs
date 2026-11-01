@@ -345,12 +345,27 @@ pub struct CanvasModel {
     pub clock_ms: u64,
     /// Animations stand still at `clock_ms` (the `freeze` hook, tests).
     pub frozen: bool,
+    /// The dot grid's pulse while a session works (`crate::pulse`); `None`:
+    /// the dots keep their normal colour.
+    pub pulse: Option<crate::pulse::Fade>,
 }
 
 impl CanvasModel {
     /// The clock to draw animations at: now, or `clock_ms` when frozen.
     pub fn anim_clock(&self) -> u64 {
         if self.frozen { self.clock_ms } else { crate::paths::now_ms() }
+    }
+
+    /// How far the grid's dots are lit at `clock_ms` (0: their normal
+    /// colour … `crate::pulse::AMPLITUDE`).
+    pub fn grid_level(&self, clock_ms: u64) -> f32 {
+        self.pulse.map_or(0.0, |fade| fade.level(clock_ms))
+    }
+
+    /// The grid breathes at `clock_ms` (work runs, or the pulse fades out):
+    /// the GPU client repaints its grid layer at its own pace meanwhile.
+    pub fn grid_busy(&self, clock_ms: u64) -> bool {
+        self.pulse.is_some_and(|fade| fade.on || fade.changing(clock_ms))
     }
 
     /// Loop dots move on their own (motion on, a running clock): the front
@@ -536,6 +551,17 @@ impl CanvasModel {
             self.tick,
             self.empty
         )];
+        // The grid's pulse on a fixed clock, while it shows (else it is the time of the run).
+        if let Some(fade) = self.pulse.filter(|_| self.frozen && self.grid_level(self.clock_ms) > 0.0) {
+            let level = self.grid_level(self.clock_ms);
+            out.push(format!(
+                "grid pulse on={} envelope={} level={} color={}",
+                fade.on,
+                num(fade.envelope(self.clock_ms)),
+                num(level),
+                color_name(crate::pulse::dot_color(level))
+            ));
+        }
         for g in &self.groups {
             out.push(format!(
                 "group {} {:?} icon={} members={} rect={} color={} style={} selected={} drop_target={} automations={} folder={}",

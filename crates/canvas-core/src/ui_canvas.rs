@@ -14,7 +14,7 @@ use ratatui::style::{Color, Modifier, Style};
 use crate::app::{App, Drag};
 use crate::doc::{Node, NodeKind};
 use crate::paint::{
-    self, ACCENT, BoxSet, DASHED, FAINT, GROUP_COLORS, HEAVY, LIGHT, MUTED, PANEL, ROUND, SELECT, TEXT, fill, fg, outline, put, put_sym,
+    self, ACCENT, BoxSet, DASHED, GROUP_COLORS, HEAVY, LIGHT, MUTED, PANEL, ROUND, SELECT, TEXT, fill, fg, outline, put, put_sym,
     truncate,
 };
 use crate::status::{Status, StatusStyle};
@@ -321,13 +321,17 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
     app.prepare_effects();
     // Dot grid anchored to world coordinates so it moves with panning. It is
     // hidden while panning: shifting it rewrites nearly every cell each frame.
+    // While a session works it steps through a few lighter colours (the
+    // pulse), on the frames the working spinners draw anyway.
     let (n, d) = app.scale();
     let step_x = (6 * n / d).max(3);
     let step_y = (3 * n / d).max(2);
     let (ox, oy) = app.to_screen(0, 0);
     let panning = matches!(app.drag, Some(Drag::Pan { moved: true, .. })) || app.pan_quiet_until.is_some() || app.glide.is_some();
+    let (clock, _) = app.anim_clock();
+    let pulse = app.grid_pulse(clock).map_or(0.0, |fade| fade.level(clock));
     if !panning {
-        draw_grid(buf, area, (ox, oy), (step_x, step_y));
+        draw_grid(buf, area, (ox, oy), (step_x, step_y), crate::pulse::tui_color(pulse));
     }
 
     let boxes = Boxes::new(app);
@@ -612,14 +616,14 @@ pub fn paint_effect(buf: &mut Buffer, effect: &EffectModel, (x, y, w, h): (i32, 
     put(buf, x + 2, y + h.max(1) - 1, &truncate(&text, room), crate::visual::effect_style(effect.kind), clip);
 }
 
-fn draw_grid(buf: &mut Buffer, area: Rect, (ox, oy): (i32, i32), (step_x, step_y): (i32, i32)) {
+fn draw_grid(buf: &mut Buffer, area: Rect, (ox, oy): (i32, i32), (step_x, step_y): (i32, i32), color: Color) {
     for y in area.y..area.bottom() {
         if (y as i32 - oy).rem_euclid(step_y) != 0 {
             continue;
         }
         for x in area.x..area.right() {
             if (x as i32 - ox).rem_euclid(step_x) == 0 {
-                put_sym(buf, x as i32, y as i32, "·", fg(FAINT), area);
+                put_sym(buf, x as i32, y as i32, "·", fg(color), area);
             }
         }
     }
@@ -742,6 +746,7 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
     let (clock_ms, frozen) = app.anim_clock();
     let looping: HashSet<String> = app.doc.nodes.iter().filter(|n| app.node_loop(n).is_some()).map(|n| n.id.clone()).collect();
     app.sync_loops(looping, clock_ms, frozen);
+    let pulse = app.grid_pulse(clock_ms);
     let mut model = CanvasModel {
         area,
         origin,
@@ -760,6 +765,7 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
         motion: app.motion(),
         clock_ms,
         frozen,
+        pulse,
     };
     let visible = model.visible();
     // Loop arcs, halos and labels reach a few units past a box.
@@ -960,7 +966,8 @@ pub fn paint_model(model: &CanvasModel, buf: &mut Buffer) {
         (x, y, ((r.w * s).round() as i32).max(min_w), ((r.h * s).round() as i32).max(min_h))
     };
     if model.grid {
-        draw_grid(buf, clip, at(0.0, 0.0), (((6.0 * s) as i32).max(3), ((3.0 * s) as i32).max(2)));
+        let color = crate::pulse::tui_color(model.grid_level(model.clock_ms));
+        draw_grid(buf, clip, at(0.0, 0.0), (((6.0 * s) as i32).max(3), ((3.0 * s) as i32).max(2)), color);
     }
     let off = |x: i32, y: i32, w: i32, h: i32| x + w < clip.x as i32 || x > clip.right() as i32 || y + h < clip.y as i32 || y > clip.bottom() as i32;
     for group in &model.groups {

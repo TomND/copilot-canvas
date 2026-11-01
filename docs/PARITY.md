@@ -108,6 +108,7 @@ and unit tests that cover the row.
 | 48b | **New:** the Notebook and Tasks in remote mode (`--remote loopback`): folders listed, notes read and written, the todo book, all through the service | `remote_notebook_and_tasks`: a GUI over loopback TCP; the ✎ Notes chip lists the group's folder, `remote.md` opens in Source (read through the service) and Ctrl+S writes it on the service's machine; Ctrl+3 shows the board and its todos from the service's book; nothing launched | `selftest --client gui --remote loopback` and `selftest --remote loopback` (every notebook and Tasks step over TCP); `backend_contract` over loopback TCP | ✓ |
 | 49 | **New:** Tasks: the todo canvas (board frames, columns, cards) of the book the service keeps; a todo's details; A accepts a proposal; a card dragged to another column changes its status; changes apply at once and go to the service | `tasks_canvas_details_accept_drag`: `copilot-canvas todo board add`, `board link`, `add` ×2 as you and `todo propose` from a canvas session's environment (an agent's own idea: Proposed); Ctrl+3 shows “Parity board · PAR” with PAR-001…003; a click on PAR-003 shows its details, A accepts it (Backlog in the service's `book.json`); PAR-002 dragged from Backlog into Todo (Todo in `book.json`; its details say Todo); Esc closes the details, ↓ selects the first card in view, Enter opens its details; nothing launched | steps "tasks: a box's ☑ WI-002 badge opens its card; … A accepts a proposal; a card dragged …" (the demo book) and "todos through the CLI …" (TUI and GUI, also over `--remote loopback`); canvas-core `tasks` tests (layout at three zooms, hit testing, drops and ranks, keys, optimistic changes replaced by the service's book, demo changes kept, one-cell glyphs), canvas-model `todos` tests (operations, policy, import, mirror, export), canvas-agents `todos_cli` and `service::todos` tests; snapshots `tasks-space`, `tasks-demo-100`, `tasks-demo-50`, `tasks-demo-25`, `tasks-details`, `tasks-link-boards` | ✓ |
 | 50 | **New:** links between the spaces on the canvas: a group's ✎ Notes chip and its ☑ chip (open · in progress · proposed; gold while proposals wait; `☑ +` without a board) and a session's ☑ ID badge (the todo it claimed) open their place in the Notebook or Tasks; nothing starts | `chips_and_badges_navigate`: `todo claim PAR-001` from the stopped session's environment and a second proposal; Go to the session: its box has the `PAR-001` badge, the group's ☑ chip is gold; a click on the badge opens PAR-001's details in Tasks; the proposal declined (CLI): the chip is no longer gold and opens the group's board; the ✎ Notes chip opens the folder in the Notebook; no launch | steps "tasks: a box's ☑ WI-002 badge opens its card; the group's ☑ chip opens its board …" and "todos through the CLI … the group's ☑ chip counts them … the session's ☑ badge opens the card" (TUI and GUI, also over `--remote loopback`); canvas-core `folders` tests (chips and how they fit), `tasks` test `group_chips_and_session_badges_come_from_the_book`; snapshot `canvas-spaces-chips`; golden screenshots `demo-canvas`, `demo-zoom-50` | ✓ |
+| 51 | **New (WI-023):** the canvas's dot grid breathes gently while at least one session works (a slow 3 s brightness pulse, about 40 % brighter and a touch bluer at its top; it fades in and out over 0.8 s and follows the clock); reduced motion, effects off and *Settings › Dot grid pulse* off keep it still; only the grid's layer is repainted for it (≤ 15 frames/s of its own), nothing when nothing works | `grid_pulse_while_working`, on a canvas of its own (one session working from its synthetic history, a tool running): reduced motion gives the reference captures (the dots' normal colour; two captures half a breath apart identical, no grid repaints), effects off the same; motion on: captures scheduled at the top and the bottom of a breath on the animation clock the GUI shares (each `png` reply carries its `clock_ms` and the grid's level, which must be the clock's, so nothing depends on the time between requests): at the top every sampled dot (24, clear of boxes and groups) is lighter and a little bluer within the pulse's range, at the bottom the normal colour; in 2 s while working only grid repaints for it (≤ 15 frames of its own a second; it may also ride on the sandbox's loop frames) and no extra full frames, none with the pulse off; *Settings › Dot grid pulse* (a click on its row) off: saved in `settings.json`, the normal colour; on again; the session stops (an `abort`): the pulse fades out, then no frames at all and the normal colour | canvas-core `pulse` tests (bounded, periodic, the normal colour at the bottom of a breath, continuous and the same at any frame rate, fades turning around mid-way, a switch between working sessions changing nothing, subagents, reduced motion, effects off, the setting off and `freeze`, the TUI's steps and its return at once, grid frames only while it shows, the Settings row), canvas-gui `the_grid_dots_breathe_with_the_pulse_and_hold_their_colour_without_it`; snapshot `grid-pulse`; `bench --client gui --pulse` | ✓ |
 
 | 40 | **New:** canvas-wide agents: the top bar's **◎ Agents** (a management panel: each agent's state and controls, the canvas skills, the group passive sessions for contrast), the *Canvas agents* frame (◎ chips) and the sidebar show one agent per box; templates (PR coordinator, Cross-group digest, Custom); canvas skills given per agent; viewing one never starts it | `canvas_agents_one_agent_every_entry`: ◎ Agents → *+ New canvas agent* → *PR coordinator* → named: a dashed ◎ box in the new frame, its files under `<home>/canvas-agents/<canvas id>/agents/<slug>`, routed as canvas-wide for this canvas id; the panel's row, a click on the box and the sidebar row select the same box (its panel); a double-click launches nothing; a skill of the canvas library given with *Skills…* (document, routing, panel) | step "canvas-wide agents: ◎ Agents opens their panel; a new agent is one box in the Canvas agents frame …" (TUI and GUI, and over `--remote loopback`); canvas-core `canvas_wide` tests (state machine, routing per canvas id, disable, pause, stop, frame, group filter), canvas-model `canvas_wide` and `bus` tests (folders per home and canvas, skills, plugin, prompt, subscribers across groups, isolation, permissions), canvas-agents backend, CLI and provider tests; snapshots `canvas-agents-panel`, `canvas-agent-detail` | ✓ |
 | 40b | **New:** a canvas-wide agent runs on events of every group of its canvas (never another canvas's), with its skills delivered to the agent CLI; Pause, Run now, Stop run, Disable | `canvas_agent_runs_across_groups`: a `pr.published` from a session of the parity group runs the agent with the stand-in Copilot (`-p`, its skills plugin as a second `--plugin-dir`), which reports `fake run of pr.published · skills: parity-skill` through `copilot-canvas status`; paused, an event of the canvas and one from a session no canvas routes start nothing (12 s); *Run now* then *Stop run* ends the run as stopped with no failure; disabled, it is no longer routed and an event starts nothing | canvas-agents `passive` tests (addressed events, effects on any box for canvas-wide agents, run folders, state kept for another canvas), canvas-model `bus` tests | ✓ |
@@ -147,6 +148,14 @@ fixed-size chips) have these checks, on a separate canvas of the sandbox
 | V6 | **Where a group's passive sessions are, in remote mode** (`--remote loopback`; WI-021) | `remote_group_passive_sessions`: the sidebar's “⟲ Passive sessions 1” row opens the group's passive panel (title with the count, “They belong to this group”, the session with its state and *Run now* / *Pause*, “Canvas-wide agents · 0” apart); the title chip (“⟲ 1 passive”, or compact “⟲ 1”) opens the same panel; *Open* shows the session's panel (with *Group's passive*); no session starts. Row 25 creates its passive session from the empty group's ⟲ + passive chip: the panel's empty state (“No passive sessions in this group yet”) and *+ Create a passive session for this group…*, then the chip reads ⟲ 1 | ✓ |
 
 ## Last run
+
+Merged with WI-023 (2026-11-01): its dot-grid pulse row, numbered 47 on
+`main`, is row 51 here (47 to 50 are the spaces rows). Verified on the
+merged tree: `PASS: 69 rows in 268.1s`; the 45-step self-test passed in the
+TUI (145.0 s), over loopback (145.0 s), in the GUI (142.3 s) and in the GUI
+over loopback (143.2 s); the 11 golden screenshots matched without
+re-blessing; nine hardening checks passed; the view snapshot `grid-pulse`
+gains the toolbar's space tabs.
 
 The Notebook, Tasks and spaces (docs/NOTEBOOK-TASKS.md) add rows 41d, 47, 48,
 48b, 49 and 50 (`parity_spaces.rs`): spaces, Go to and the history; the
@@ -190,6 +199,27 @@ the demo sessions' ☑ WI-002 / ☑ WI-003 badges) and two new ones
 (`tasks-board`, `notebook-source`), then all 11 matched pixel-for-pixel; nine
 hardening checks passed (the UIA client finds the three toolbar TabItems, the
 canvas's selected, and switches to the Notebook through one).
+
+WI-023 makes the canvas's dot grid breathe while an agent works: a slow
+3 s brightness pulse of the background dots (about 40 % brighter and a
+touch bluer at its top, the normal colour at its bottom), faded in and out
+over 0.8 s, from the animation clock; the GUI repaints only the grid's own
+layer for it (in frames of its own at most 15 a second, and only when its colour changes), the TUI
+steps through three lighter colours on its spinner frames. Reduced motion,
+effects off and the new *Settings › Dot grid pulse* off keep it still, and
+the `freeze` hook holds the normal colour. Row 51 is new (above); the
+shared self-test remains 39 steps; the parity suite has 63 rows.
+
+Verified 2026-10-31: `PASS: 63 rows in 256.2s` (row 51 in 18.1 s: `24
+dots: top of a breath +16/+25/+35 (level 0.350 at 1475 ms), bottom ±0
+(level 0.000, 1500 ms apart in the breath); while working in 2 s: 22 grid
+repaints, 8 full frames (0 and 9 with the pulse off); still with reduced
+motion, effects off and the setting off (saved); fade-out seen: true, then
+2 frames in 2 s`; two more runs of the row alone: 22 grid repaints, 1 frame
+in 2 s once nothing worked); the nine golden screenshots matched pixel for
+pixel without re-blessing (their canvases have working sessions, and the
+`freeze` hook holds the grid at its normal colour); no view snapshot
+changed and `grid-pulse` is new; nine hardening checks passed.
 
 The run before (WI-021) makes a group's passive sessions discoverable: a sidebar row
 “⟲ Passive sessions N” (or “Passive: none · + add…”) under every group, the
@@ -297,6 +327,7 @@ row  | feature                                                        | GUI test
 48b  | New: the Notebook and Tasks in remote mode: listing, reading … | remote_notebook_and_tasks                    | ✓
 49   | New: Tasks: the todo canvas (boards, columns, cards) of a boo… | tasks_canvas_details_accept_drag             | ✓
 50   | New: canvas links: a group's ✎ Notes and ☑ chips (counts, gol… | chips_and_badges_navigate                    | ✓
+51   | New: the dot grid breathes gently while an agent works (fades… | grid_pulse_while_working                     | ✓
 G1   | New: inline images (Kitty graphics; iTerm2 OSC 1337 through C… | kitty_image_pixels_png (GUI only: the TUI c… | ✓
 G2   | New: taskbar progress (ITaskbarList3), FlashWindowEx, toasts   | taskbar_flash_toasts (GUI only: a console h… | ✓
 G3   | New: file drag and drop (paths pasted; uploaded in remote mod… | drop_files_local (GUI only: a console canno… | ✓
@@ -307,7 +338,7 @@ V3   | Effects: copilot-canvas effect on a box, animated ≤ 15 fps wh… | effe
 V4   | Group chips at any zoom (⟲ passive, ✎ notes, ☑ todos), sideba… | chips_low_zoom_and_sidebar (the TUI draws t… | ✓
 V5   | Remote mode: group folders in the canvas's browser, passive f… | remote_group_files_in_canvas (the TUI uses … | ✓
 V6   | Remote mode: a group's ⟲ Passive sessions row and chip open i… | remote_group_passive_sessions (the TUI draw… | ✓
-PASS: 68 rows in 255.1s
+PASS: 69 rows in 268.1s
 ```
 
 Rows 42 and 43 in the WI-020 run: `tracked by its owner; baseline poll; 3 comments
@@ -352,6 +383,12 @@ once by (3, 1); 50 %: parent + subagent, + subsession, each moved once by
   an error, not what it would print; the offscreen captures (`png`) never
   contain the WebView2 view, so the Notebook's golden screenshot shows a note
   in Source (cells) and the HTML view is checked through the `webview` hook.
+- Row 51 compares the grid's dots in offscreen PNG captures with a
+  reduced-motion capture of the same view (its frame counts leave out the
+  loop frames of the sandbox's looping automations); how a given monitor
+  shows such a small change is a matter for the eye, not the suite. The
+  TUI's colour steps are checked by canvas-core unit tests (the view
+  snapshots hold characters, not colours).
 - The checks assert behaviour and a few pixels, not whole images. Visual
   regressions are the job of `selftest --client gui --golden`
   (`docs/GUI.md` §3), whose `all-statuses` golden screenshot is this suite's
