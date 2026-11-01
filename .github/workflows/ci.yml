@@ -437,6 +437,20 @@ jobs:
           name: bench-terminals-${{ matrix.runner }}
           path: ${{ runner.temp }}/bench-terminals.json
           if-no-files-found: ignore
+      # The real agent TUIs (no sign-in, nothing submitted): a multi-line paste
+      # reaches OpenCode's and Claude Code's input boxes as one paste through
+      # a Linux PTY (docs/AGENTS.md, Pasting). Advisory: the CLIs come from npm.
+      - name: "real-agent paste check: OpenCode and Claude Code (advisory)"
+        if: ${{ !cancelled() && matrix.runner == 'ubuntu-24.04' }}
+        continue-on-error: true
+        run: |
+          npm install -g --silent opencode-ai@1.19.4 || npm install -g --silent opencode-ai
+          npm install -g --silent @anthropic-ai/claude-code@2.1.309 || npm install -g --silent @anthropic-ai/claude-code
+          opencode --version; claude --version
+          status=0
+          xvfb-run -a target/release/copilot-canvas selftest agent --agent opencode --paste || status=1
+          xvfb-run -a target/release/copilot-canvas selftest agent --agent claude --paste || status=1
+          exit $status
       - name: keep logs
         if: failure()
         uses: actions/upload-artifact@v7
