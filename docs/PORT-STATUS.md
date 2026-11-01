@@ -1,5 +1,10 @@
 # macOS and Linux port: status
 
+> **Linux: done** (2026-11-01, branch `linux`, run of fadd7c0): every
+> phase's exit criteria that a machine can check pass on CI, blocking where
+> the plan asks; what is left needs the owner (the checklist under
+> "Owner-only items: Linux").
+
 The working log of the port described in [MAC-LINUX-PLAN.md](MAC-LINUX-PLAN.md)
 (approved 2026-10-30, every recommended option of its §11). This file is how
 work resumes after any interruption: read it first, then `git log`.
@@ -39,7 +44,7 @@ work resumes after any interruption: read it first, then `git log`.
   of the touched crates green on the OS; Windows CI and `cargo xwin clippy`
   green.
 
-### Phase 1 Service and TUI (M0, M1) — macOS: in progress · Linux: self-tests green on CI (x86_64 and aarch64; M0 is the owner's)
+### Phase 1 Service and TUI (M0, M1) — macOS: in progress · Linux: M1 done (CI, x86_64 and aarch64; M0 is the owner's)
 
 - M0: REMOTE.md checklist 1–12 from a Mac TUI against the Windows service.
 - M1: `cargo test --workspace`, `corpus check`, `selftest`, `selftest --remote
@@ -59,6 +64,14 @@ work resumes after any interruption: read it first, then `git log`.
 - [ ] `bench --terminals 100` on a release build (debug build, loaded
       machine: keystroke p50 5.5 ms, p99 7.2 ms; service 7 % of one core,
       0.5 MB per terminal)
+- Linux (CI `linux`, every runner): `cargo test --workspace` (backend
+  contract included), `corpus check` with both engines, `selftest`,
+  `selftest --remote loopback|faults|paired`; on ubuntu-24.04 OpenCode
+  1.19.4 and Claude Code 2.1.309 from npm: `doctor` with no failing check
+  and `selftest agent --paste` PASS for both (nothing submitted). `bench
+  --terminals 100` (release, 4 vCPUs): keystroke → screen p50 3.9 / p99
+  4.3 ms (x86_64), 3.8 / 4.0 ms (aarch64); the service 10–12 % of one
+  core, about 650 KB per terminal (PLAN §9's Windows row: 14.5 %, ~5 MB).
 
 ### Phase 2 Lifecycle and automations — Linux: done (CI) · macOS: done locally (CI pending)
 
@@ -197,7 +210,7 @@ work resumes after any interruption: read it first, then `git log`.
 - Exit: `selftest --client gui --parity` PASS 60 rows; `--hardening` PASS;
   goldens recorded per OS.
 
-### Phase 6 Packaging — macOS: not started · Linux: built and installed on CI
+### Phase 6 Packaging — macOS: not started · Linux: done on CI (a KDE desktop install is the owner's)
 
 - macOS `.app` / DMG (universal); Linux AppImage / `.deb` / `.rpm` / tarball.
   Signing and notarization: owner-blocked (Developer ID).
@@ -475,10 +488,26 @@ also under Wayland (headless weston), where the touchpad rows apply.
   (System Settings › Trackpad › Force Click) on a Force Touch trackpad.
 - With the screen unlocked and the window uncovered: `bench --client gui`,
   parity rows 7b and V3 (if CI's macOS runners cannot present either).
-- Linux on a real desktop: a file dragged from Files/Dolphin onto a
-  terminal under Wayland and X11; Orca reading boxes and a terminal; the
-  .deb/.rpm/AppImage installed from the desktop (menu entry, icon, dock
-  badge); the package licence (`LicenseRef-proprietary` is a placeholder).
+- **Owner-only items: Linux** (what remains after "Linux: done"):
+  1. A real tunnel hosted by the tunnel manifest on a Linux machine (Dev
+     Tunnels account; plan Phase 2 exit).
+  2. GNOME and KDE desktops, each under Wayland and X11: install the .deb
+     (Ubuntu), the .rpm (Fedora) and the AppImage from the desktop; menu
+     entry, icon, dock badge and progress (LauncherEntry), notifications,
+     attention; first run with GNOME Keyring or KWallet.
+  3. A file dragged from Files/Dolphin onto a terminal (Wayland and X11) and
+     a folder onto the canvas.
+  4. Manual input: IME (IBus or Fcitx: Japanese, Chinese, Korean), dead
+     keys, AltGr; Orca reading the toolbar, boxes and a terminal.
+  5. Touchpad under Wayland: two-finger pan and momentum feel native, the
+     gesture stays on its target; X11 scrolls in notches (expected).
+  6. `bench --client gui` on real GPUs (NVIDIA, Intel/AMD): PLAN §9's
+     keystroke → present p50 ≤ 8 / p99 ≤ 20 ms and idle ≤ 1 % (CI's
+     software renderer gives 28.5 / 31.9 ms and 1.5–2.6 %).
+  7. Phase 7: a dogfood week on Linux and the 48 h remote soak with Linux
+     as client and as service; publishing the CI packages as a release.
+  8. The package licence: `LicenseRef-proprietary` stays until the owner
+     names one (there is no LICENSE file).
 
 ## Log
 
@@ -627,3 +656,12 @@ view helper (WebKitGTK offscreen); the GUI on Wayland/X11.
   (advisory). README Linux section (2bdaed9), PARITY.md per OS, plan D15
   and PARITY.md T1/T2 for Linux (14737e5). Merged origin/macos (6f4f9b6:
   menu bar, Dock, notifications, accessibility and goldens on macOS).
+- 2026-11-01: run of fadd7c0 green, `ios` on a re-run (its simulator UI
+  tests failed twice before, a different test each time; the job also fails
+  2 of the last 6 runs on `main`, and its mock never reaches the code
+  changed here): parity 62/62
+  and hardening 9/9 blocking, a tint2 panel gives the work area
+  [0,0,1920,1050] and placement centres in it; doctor clean and the
+  real-agent paste checks PASS with OpenCode and Claude Code installed;
+  the terminal bench within PLAN §9. **Linux: done**; the owner's
+  checklist is under Owner-only items.
