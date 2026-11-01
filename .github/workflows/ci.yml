@@ -193,20 +193,29 @@ jobs:
       # release build, advisory (a shared runner's paravirtual GPU).
       - name: release build
         run: cargo build --release
+      - name: "terminal bench, 100 streaming terminals (advisory)"
+        continue-on-error: true
+        run: target/release/copilot-canvas bench --terminals 100 --json bench-terminals-macos.json
+      - name: keep the terminal bench
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-terminals-macos
+          path: bench-terminals-macos.json
+          if-no-files-found: ignore
       - name: GUI bench (advisory)
         continue-on-error: true
         run: CANVAS_GUI_TEST_VISIBLE=1 target/release/copilot-canvas bench --client gui --json gui-bench-macos.json
-      # Rows that count frames (7b, V3) need presents: the runner has them.
-      - name: GUI parity suite (reporting)
+      # Every PARITY.md row, blocking. Rows that count frames (7b, V3, 47)
+      # need presents: the runner has them.
+      - name: GUI parity suite
         if: ${{ !cancelled() }}
-        continue-on-error: true
         timeout-minutes: 30
         run: |
           mkdir -p "$RUNNER_TEMP/gui-screens/parity"
           CANVAS_GUI_SCREENS="$RUNNER_TEMP/gui-screens/parity" CANVAS_GUI_TEST_VISIBLE=1 target/release/copilot-canvas selftest --client gui --parity
-      - name: GUI hardening checks (reporting)
+      - name: GUI hardening checks
         if: ${{ !cancelled() }}
-        continue-on-error: true
         timeout-minutes: 20
         run: |
           mkdir -p "$RUNNER_TEMP/gui-screens/hardening"

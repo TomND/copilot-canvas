@@ -1623,7 +1623,10 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     ui.send(b"o")?;
     let deadline = Instant::now() + Duration::from_secs(5);
     let line = loop {
-        if let Ok(line) = std::fs::read_to_string(&other_client) {
+        // The dry run creates the file, then writes it: an empty read is too early.
+        if let Ok(line) = std::fs::read_to_string(&other_client)
+            && !line.is_empty()
+        {
             break line;
         }
         anyhow::ensure!(Instant::now() < deadline, "O did not open the other client");
