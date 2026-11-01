@@ -31,6 +31,8 @@ pub fn draw_activity_bar(app: &mut App, buf: &mut Buffer, area: Rect) {
         }
         // Unread reports: the icon in gold with their count beside it (9+ as "+").
         let unread_here = *view == SideView::Reports && unread > 0;
+        // Slot 1 is the space's own sidebar (sessions, the explorer, the boards).
+        let icon = if *view == SideView::Sessions { app.space.side().0 } else { icon };
         put(buf, area.x as i32 + 1, y, icon, if unread_here { bold(ATTENTION).bg(bg) } else { style }, area);
         if unread_here {
             let count = if unread > 9 { "+".to_owned() } else { unread.to_string() };
@@ -1083,7 +1085,14 @@ fn reviews_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>
     actions.push(("Canvas agents".into(), Action::Agents(crate::canvas_wide::AgentAction::Panel)));
 }
 
-pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &RightDetail) {
+/// The right pane's details; the text cursor a module's details want shown.
+pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &RightDetail) -> Option<(u16, u16)> {
+    // Notes and todos are drawn by their spaces.
+    match detail {
+        RightDetail::Note(path) => return crate::notebook::draw_detail(app, buf, area, path),
+        RightDetail::Todo(id) => return crate::tasks::draw_detail(app, buf, area, id),
+        _ => {}
+    }
     outline(buf, area.x as i32, area.y as i32, area.width as i32, area.height as i32, &LIGHT, fg(FAINT), area);
     let inner = Rect::new(area.x + 2, area.y + 1, area.width.saturating_sub(4), area.height.saturating_sub(3));
     let mut out = Lines { lines: Vec::new(), width: inner.width as usize, spans: Default::default(), clicks: Vec::new() };
@@ -1144,6 +1153,7 @@ pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &R
         RightDetail::GroupPassives(group) => group_passives_panel(app, &mut out, &mut actions, group),
         RightDetail::Prs => prs_panel(app, &mut out, &mut actions),
         RightDetail::Reviews => reviews_panel(app, &mut out, &mut actions),
+        RightDetail::Note(_) | RightDetail::Todo(_) => {}
         RightDetail::Passive(id) if app.doc.node(id).is_some_and(|n| n.is_canvas_agent()) => {
             let node = app.doc.node(id).cloned().expect("checked");
             canvas_agent_panel(app, &mut out, &mut actions, &node);
@@ -1327,4 +1337,5 @@ pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &R
     }
     let clip = Rect::new(area.x, area.y, area.width, area.height);
     buttons(app, buf, inner.x as i32, area.bottom() as i32 - 1 - button_lines, rows, clip, primary);
+    None
 }

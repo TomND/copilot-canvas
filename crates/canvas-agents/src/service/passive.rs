@@ -169,6 +169,7 @@ fn write_context(shared: &Shared, routing: &Routing, group: &bus::RouteGroup, st
         let status = s.map(|s| format!("{} {}", s.status, s.headline)).unwrap_or_default();
         text.push_str(&format!("- {} (on {}){}\n", p.name, if p.subscribe.is_empty() { "schedule".into() } else { p.subscribe.join(", ") }, if status.trim().is_empty() { String::new() } else { format!(": {}", status.trim()) }));
     }
+    text.push_str(&super::todos::group_digest(shared, routing, &group.id));
     write_atomic(path, text.as_bytes());
 }
 
@@ -237,6 +238,7 @@ fn write_canvas_context(shared: &Shared, routing: &Routing, state: &BusState, pa
         let status = state.passive.get(&p.key).map(|s| format!("{} {}", s.status, s.headline)).unwrap_or_default();
         text.push_str(&format!("- {} (on {}){}\n", p.name, if p.subscribe.is_empty() { "schedule".into() } else { p.subscribe.join(", ") }, if status.trim().is_empty() { String::new() } else { format!(": {}", status.trim()) }));
     }
+    text.push_str(&super::todos::canvas_digest(shared, routing));
     write_atomic(path, text.as_bytes());
 }
 
@@ -452,6 +454,10 @@ fn start_run(shared: &Shared, routing: &Routing, spec: &PassiveSpec, state: &mut
     };
     let paths = &place.paths;
     ensure_files(paths, spec);
+    if !spec.canvas_wide {
+        // The group's catalog (an old one gains the events added since it was made).
+        let _ = bus::ensure_catalog(&place.allowed);
+    }
     if s.session_id.is_empty() {
         s.session_id = spec.session_id.clone();
     }
@@ -636,6 +642,9 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
             events.push(event);
         }
         events.extend(incoming.try_iter());
+        // Events from the service itself and windows (the PR monitor, history
+        // detection) come first; those from inbox files, which any process can write, after.
+        let from_channel = events.len();
         if shared.shutting_down.load(Ordering::Relaxed) {
             return;
         }
@@ -667,7 +676,7 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
         if watch_changed {
             write_atomic(&super::factory_watch::path(&home), serde_json::to_string(&watch).unwrap_or_default().as_bytes());
         }
-        for event in events {
+        for (index, event) in events.into_iter().enumerate() {
             if event.kind == effects::ACK {
                 // A click on an effect: gone for every client.
                 let ids: Vec<&str> = event.data["ids"].as_array().map(|ids| ids.iter().filter_map(|i| i.as_str()).collect()).unwrap_or_default();
@@ -692,10 +701,22 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
                 }
                 continue;
             }
+            // Todo requests (copilot-canvas todo …): the same; windows' are applied when they arrive.
+            if super::todos::is_request(&event) {
+                for follow in super::todos::request(&shared, &routing, &event, now) {
+                    handle_event(&shared, &routing, &mut state, follow, now);
+                }
+                continue;
+            }
+            // A merged pull request finishes its todos (never on an inbox file's word).
+            let finished = if index < from_channel { super::todos::merged(&shared, &routing, &event, now) } else { Vec::new() };
             let tracked = super::prs::observe(&shared, &routing, &event, now);
             handle_event(&shared, &routing, &mut state, event, now);
             if let Some(tracked) = tracked {
                 handle_event(&shared, &routing, &mut state, tracked, now);
+            }
+            for done in finished {
+                handle_event(&shared, &routing, &mut state, done, now);
             }
         }
         state.effects.retain(|e| e.alive(now));
@@ -746,14 +767,18 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
             super::reviews::delivered(&shared, &routing, &mail, delivered_at);
         }
         *lock(&shared.bus) = state.clone();
+        // In turn with windows' todo changes (todos.rs): a snapshot made before a newer one is never sent after it.
+        let turn = lock(&shared.snapshots);
         let mut view = state.snapshot(&routing, now);
         view.prs = super::prs::view(&shared, &routing);
         view.reviews = super::reviews::view(&shared, &routing);
+        view.todos = super::todos::view(&shared, &routing);
         let snapshot = serde_json::to_string(&view).unwrap_or_default();
         if snapshot != last_snapshot {
             shared.broadcast(ServiceMsg::Bus { json: snapshot.clone() });
             last_snapshot = snapshot;
         }
+        drop(turn);
         let saved = serde_json::to_string(&state).unwrap_or_default();
         if saved != last_saved {
             write_atomic(&bus_dir(&home).join("state.json"), saved.as_bytes());
@@ -861,6 +886,7 @@ pub(super) fn snapshot(shared: &Shared) -> String {
     let mut view = lock(&shared.bus).snapshot(&routing, now_ms());
     view.prs = super::prs::view(shared, &routing);
     view.reviews = super::reviews::view(shared, &routing);
+    view.todos = super::todos::view(shared, &routing);
     serde_json::to_string(&view).unwrap_or_default()
 }
 

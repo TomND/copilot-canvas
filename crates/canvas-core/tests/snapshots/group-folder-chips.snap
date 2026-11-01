@@ -1,32 +1,32 @@
 # group-folder-chips (150x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit                            3 sessions
+ ◆ Copilot Canvas   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit                 3 sessions
     SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
-▌▤  / filter…                    │ ┏━ ▣ Docs · 2 ━━━ ⟲+ ━ ◧ AI docs ━ ◨ Outputs ━━┓·  ││ ▣ Docs                                                      │
+▌▤  / filter…                    │ ┏━ ▣ Docs · 2 ━━ ⟲ + passive ━ ✎ Notes ━ ☑ + ━━┓·  ││ ▣ Docs                                                      │
                                  │ ┃                                              ┃   ││ 2 sessions                                                  │
- ◷  ▾ ▣ Docs                   2 │ ┃ ╭ Write the spec ────────────╮               ┃   ││ Folder   C:\work\docs                                       │
-      ◧ docs                     │ ┃ │ ■ stopped                  │    ·     ·    ┃·  ││ ◧ Open AI docs (ai-docs)                                    │
- ⧉    ⟲ Passive: none · + add…   │ ┃ │ canvas                     │               ┃   ││ ◨ Open human outputs (human-outputs)                        │
-      ■ Write the spec           │ ┃ ╰────────────────────────────╯               ┃   ││   Change folder…                                            │
- ⌁    ■ Draft the docs           │ ┃     ·     ·     ·     ·     ·     ·     ·    ┃·  ││ ⚙ Launch defaults for this group…                           │
-    ▾ ▣ Ideas                  1 │ ┃ ╭ Draft the docs ────────────╮               ┃   ││                                                             │
- ✦    ◧ Set folder…              │ ┃ │ ■ stopped                  │               ┃   ││ PASSIVE SESSIONS · 0 (this group's events only)             │
-      ⟲ Passive: none · + add…   │ ┃ │ canvas                     │    ·     ·    ┃·  ││ None yet.                                                   │
- ◈    ■ Unfiled idea             │ ┃ ╰────────────────────────────╯               ┃   ││ ⟲ + Create a passive session for this group…                │
-                                 │ ┃                                              ┃   ││ ◎ Canvas-wide agents (every group) are in ◎ Agents          │
- ⇄                               │ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━◢·  ││                                                             │
-                                 │                                                    ││ ■ Write the spec — stopped                                  │
- ≡                               │                                                    ││ ■ Draft the docs — stopped                                  │
+ ◷  ▾ ▣ Docs                   2 │ ┃ ╭ Write the spec ────────────╮               ┃   ││                                                             │
+      ◧ docs                     │ ┃ │ ■ stopped                  │    ·     ·    ┃·  ││ NOTES                                                       │
+ ⧉    ⟲ Passive: none · + add…   │ ┃ │ canvas                     │               ┃   ││ ✎ Open notes                                                │
+      ■ Write the spec           │ ┃ ╰────────────────────────────╯               ┃   ││ Folder   C:\work\docs                                       │
+ ⌁    ■ Draft the docs           │ ┃     ·     ·     ·     ·     ·     ·     ·    ┃·  ││ ◧ Open AI docs (ai-docs)                                    │
+    ▾ ▣ Ideas                  1 │ ┃ ╭ Draft the docs ────────────╮               ┃   ││ ◨ Open human outputs (human-outputs)                        │
+ ✦    ◧ Set folder…              │ ┃ │ ■ stopped                  │               ┃   ││   Change folder…                                            │
+      ⟲ Passive: none · + add…   │ ┃ │ canvas                     │    ·     ·    ┃·  ││                                                             │
+ ◈    ■ Unfiled idea             │ ┃ ╰────────────────────────────╯               ┃   ││ TODOS                                                       │
+                                 │ ┃                                              ┃   ││ No todo board linked.                                       │
+ ⇄                               │ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━◢·  ││ ☑ Create or link a todo board…                              │
+                                 │                                                    ││                                                             │
+ ≡                               │                                                    ││ ⚙ Launch defaults for this group…                           │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
- ✉                               │ ┌╌ ▣ Ideas · 1 ╌╌╌╌╌╌ ⟲+ ╌ ◧ Set folder… ╌╌┐       ││ Enter: show running terminals · R: rename · Del: delete gr… │
-                                 │ ╎                                          ╎       ││                                                             │
-                                 │ ╎ ╭ Unfiled idea ──────────────╮    ·     ·╎    ·  ││                                                             │
-                                 │ ╎ │ ■ stopped                  │           ╎       ││                                                             │
+ ✉                               │ ┌╌ ▣ Ideas · 1  ⟲+ ╌ ✎ Set folder… ╌ ☑ + ╌╌┐       ││ PASSIVE SESSIONS · 0 (this group's events only)             │
+                                 │ ╎                                          ╎       ││ None yet.                                                   │
+                                 │ ╎ ╭ Unfiled idea ──────────────╮    ·     ·╎    ·  ││ ⟲ + Create a passive session for this group…                │
+                                 │ ╎ │ ■ stopped                  │           ╎       ││ ◎ Canvas-wide agents (every group) are in ◎ Agents          │
                                  │ ╎ │ canvas                     │           ╎       ││                                                             │
-                                 │ ╎ ╰────────────────────────────╯    ·     ·╎    ·  ││                                                             │
-                                 │ ╎                                          ╎       ││                                                             │
+                                 │ ╎ ╰────────────────────────────╯    ·     ·╎    ·  ││ ■ Write the spec — stopped                                  │
+                                 │ ╎                                          ╎       ││ ■ Draft the docs — stopped                                  │
                                  │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌◢       ││                                                             │
-                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││ Enter: show running terminals · R: rename · Del: delete gr… │
                                  │                                                    ││                                                             │
                                  │                                                    ││                                                             │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
@@ -44,12 +44,13 @@
 view cursor=none modal=none banner=None
 canvas area=34,1 52x38 origin=-1,-1 scale=1 grid=true tick=0 empty=false
 group g-docs "Docs" icon=▣ members=2 rect=0,0 48x13 color=#e69f00 style=[fg #e69f00 +BOLD] selected=true drop_target=false automations=false folder=true
-  chip " ⟲+ " action=Visual(GroupPassives("g-docs")) rect=17,0 4x1 fixed=false lit=false
-  chip " ◧ AI docs " action=OpenGroupFolder("g-docs", false) rect=22,0 11x1 fixed=false lit=true
-  chip " ◨ Outputs " action=OpenGroupFolder("g-docs", true) rect=34,0 11x1 fixed=false lit=true
+  chip " ⟲ + passive " action=Visual(GroupPassives("g-docs")) rect=16,0 13x1 fixed=false lit=false
+  chip " ✎ Notes " action=Notebook(OpenGroup("g-docs")) rect=30,0 9x1 fixed=false lit=true
+  chip " ☑ + " action=Tasks(LinkBoards("g-docs")) rect=40,0 5x1 fixed=false lit=false
 group g-ideas "Ideas" icon=▣ members=1 rect=0,16 44x8 color=#cc79a7 style=[fg #cc79a7 +DIM] selected=false drop_target=false automations=false folder=false
-  chip " ⟲+ " action=Visual(GroupPassives("g-ideas")) rect=21,16 4x1 fixed=false lit=false
-  chip " ◧ Set folder… " action=SetGroupFolder("g-ideas") rect=26,16 15x1 fixed=false lit=false
+  chip " ⟲+ " action=Visual(GroupPassives("g-ideas")) rect=15,16 4x1 fixed=false lit=false
+  chip " ✎ Set folder… " action=Notebook(LinkFolder("g-ideas")) rect=20,16 15x1 fixed=false lit=false
+  chip " ☑ + " action=Tasks(LinkBoards("g-ideas")) rect=36,16 5x1 fixed=false lit=false
 box a Session rect=2,2 30x4 prefix="" name="Write the spec"
   status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
   border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]

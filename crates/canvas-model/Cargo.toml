@@ -8,8 +8,12 @@ description = "Canvas document and event-bus data model shared by the backend an
 [dependencies]
 canvas-common.workspace = true
 anyhow.workspace = true
+# Markdown notes and reports become HTML (notebook::markdown_html).
+pulldown-cmark = { workspace = true, features = ["html"] }
 serde.workspace = true
 serde_json.workspace = true
+# Note revisions (notebook::rev_of).
+sha2.workspace = true
 uuid.workspace = true
 yaml-rust2.workspace = true
 

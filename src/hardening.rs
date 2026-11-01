@@ -423,8 +423,8 @@ fn uia_snapshot(hwnd: isize) -> Result<Value> {
         use windows::Win32::Foundation::HWND;
         use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
         use windows::Win32::UI::Accessibility::{
-            CUIAutomation, IUIAutomation, IUIAutomationElement6, IUIAutomationValuePattern, TreeScope_Descendants, UIA_ButtonControlTypeId, UIA_DocumentControlTypeId,
-            UIA_TreeItemControlTypeId, UIA_ValuePatternId,
+            CUIAutomation, IUIAutomation, IUIAutomationElement6, IUIAutomationSelectionItemPattern, IUIAutomationValuePattern, TreeScope_Descendants, UIA_ButtonControlTypeId,
+            UIA_DocumentControlTypeId, UIA_SelectionItemPatternId, UIA_TabItemControlTypeId, UIA_TreeItemControlTypeId, UIA_ValuePatternId,
         };
         use windows::core::Interface;
         // SAFETY: COM calls on this thread's own apartment and objects.
@@ -441,11 +441,13 @@ fn uia_snapshot(hwnd: isize) -> Result<Value> {
                     c if c == UIA_ButtonControlTypeId.0 => "Button".to_owned(),
                     c if c == UIA_TreeItemControlTypeId.0 => "TreeItem".to_owned(),
                     c if c == UIA_DocumentControlTypeId.0 => "Document".to_owned(),
+                    c if c == UIA_TabItemControlTypeId.0 => "TabItem".to_owned(),
                     _ => e.CurrentLocalizedControlType().map(|b| b.to_string()).unwrap_or_default(),
                 };
                 let description = e.cast::<IUIAutomationElement6>().ok().and_then(|e| e.CurrentFullDescription().ok()).map(|b| b.to_string()).unwrap_or_default();
                 let value = e.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId).ok().and_then(|p| p.CurrentValue().ok()).map(|b| b.to_string());
-                nodes.push(json!({ "type": kind, "name": e.CurrentName().map(|b| b.to_string()).unwrap_or_default(), "description": description, "value": value }));
+                let selected = e.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(UIA_SelectionItemPatternId).ok().and_then(|p| p.CurrentIsSelected().ok()).map(|b| b.as_bool());
+                nodes.push(json!({ "type": kind, "name": e.CurrentName().map(|b| b.to_string()).unwrap_or_default(), "description": description, "value": value, "selected": selected }));
             }
             Ok(json!({ "window": window.CurrentName().map(|b| b.to_string()).unwrap_or_default(), "count": nodes.len(), "nodes": nodes }))
         }
@@ -454,13 +456,17 @@ fn uia_snapshot(hwnd: isize) -> Result<Value> {
     .map_err(|_| anyhow::anyhow!("the UIA client thread panicked"))?
 }
 
-/// Presses the first button named `name` through UIA's Invoke pattern.
+/// Presses the first button or tab named `name` through UIA: its Invoke
+/// pattern, else (a tab) its SelectionItem pattern's Select.
 fn uia_invoke(hwnd: isize, name: &str) -> Result<()> {
     let name = name.to_owned();
     std::thread::spawn(move || -> Result<()> {
         use windows::Win32::Foundation::HWND;
         use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
-        use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation, IUIAutomationInvokePattern, TreeScope_Descendants, UIA_ButtonControlTypeId, UIA_InvokePatternId};
+        use windows::Win32::UI::Accessibility::{
+            CUIAutomation, IUIAutomation, IUIAutomationInvokePattern, IUIAutomationSelectionItemPattern, TreeScope_Descendants, UIA_ButtonControlTypeId, UIA_InvokePatternId,
+            UIA_SelectionItemPatternId, UIA_TabItemControlTypeId,
+        };
         // SAFETY: COM calls on this thread's own apartment and objects.
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
@@ -469,12 +475,16 @@ fn uia_invoke(hwnd: isize, name: &str) -> Result<()> {
             let all = window.FindAll(TreeScope_Descendants, &uia.CreateTrueCondition()?)?;
             for i in 0..all.Length()? {
                 let e = all.GetElement(i)?;
-                if e.CurrentControlType().map(|c| c.0) == Ok(UIA_ButtonControlTypeId.0) && e.CurrentName().map(|b| b.to_string()).is_ok_and(|n| n.trim() == name) {
-                    e.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)?.Invoke()?;
-                    return Ok(());
+                let control = e.CurrentControlType().map(|c| c.0);
+                let pressable = control.is_ok_and(|c| c == UIA_ButtonControlTypeId.0 || c == UIA_TabItemControlTypeId.0);
+                if pressable && e.CurrentName().map(|b| b.to_string()).is_ok_and(|n| n.trim() == name) {
+                    return match e.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId) {
+                        Ok(invoke) => Ok(invoke.Invoke()?),
+                        Err(_) => Ok(e.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(UIA_SelectionItemPatternId)?.Select()?),
+                    };
                 }
             }
-            anyhow::bail!("no button {name:?}")
+            anyhow::bail!("no button or tab {name:?}")
         }
     })
     .join()
@@ -528,11 +538,24 @@ fn uia_tree() -> Result<String> {
     wait_tree(&ui, "the dialog opened through UIA", 10, |t| t["modals"].as_u64().unwrap_or(0) > 0)?;
     let dialog = uia_snapshot(hwnd)?;
     let dialog_seen = dialog["nodes"].as_array().is_some_and(|n| n.iter().any(|n| n["type"] == "dialog" || n["type"].as_str().is_some_and(|t| t.contains("dialog"))));
+    // The toolbar's three space tabs (the canvas's selected); a UIA client switches to the Notebook.
+    let tab = |snap: &Value, name: &str| snap["nodes"].as_array().and_then(|n| n.iter().find(|n| n["type"] == "TabItem" && n["name"] == name).cloned());
+    let spaces: Vec<Value> = ["Canvas", "Notebook", "Tasks"].iter().filter_map(|n| tab(&snap, n)).collect();
+    anyhow::ensure!(spaces.len() == 3 && spaces[0]["selected"] == true && spaces[1]["selected"] != true, "three space tabs, the canvas's selected: {spaces:?}");
+    ui.request(json!({ "cmd": "key", "key": "Esc", "mods": [] }))?;
+    wait_tree(&ui, "the dialog closed", 10, |t| t["modals"].as_u64() == Some(0))?;
+    uia_invoke(hwnd, "Notebook")?;
+    ui.wait("the Notebook through UIA", Duration::from_secs(10), |t| t.contains("✎ EXPLORER"))?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while tab(&uia_snapshot(hwnd)?, "Notebook").is_none_or(|t| t["selected"] != true) {
+        anyhow::ensure!(Instant::now() < deadline, "the Notebook tab is not selected in the UIA tree");
+        std::thread::sleep(Duration::from_millis(300));
+    }
     let _ = ui.request(json!({ "cmd": "quit" }));
     let _ = ui.wait_exit(Duration::from_secs(10));
     let status = boxed["description"].as_str().unwrap_or("").to_owned();
     Ok(format!(
-        "{} UIA elements in window {:?}: Button \"+ New\", TreeItem and Button \"Build session canvas\" ({status}), Document {:?} with {} chars of text; \"+ New\" invoked through UIA opened the dialog{}",
+        "{} UIA elements in window {:?}: Button \"+ New\", TreeItem and Button \"Build session canvas\" ({status}), Document {:?} with {} chars of text; \"+ New\" invoked through UIA opened the dialog{}; TabItems Canvas (selected), Notebook, Tasks; the Notebook tab pressed through UIA switched the space",
         snap["count"],
         snap["window"].as_str().unwrap_or(""),
         tile["name"].as_str().unwrap_or(""),

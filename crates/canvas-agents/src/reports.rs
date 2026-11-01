@@ -148,6 +148,9 @@ pub struct Ingested {
     pub rejected: Vec<Rejected>,
     /// Submissions that could not be written (kept for a later try): (id, why).
     pub failed: Vec<(String, String)>,
+    /// Stored reports also filed in their group's folder ([`file_report`]):
+    /// (id, the note or why it could not be written).
+    pub filed: Vec<(String, std::result::Result<PathBuf, String>)>,
 }
 
 impl Ingested {
@@ -262,6 +265,12 @@ impl Store {
                 Ok(()) => {
                     let _ = std::fs::remove_file(&file);
                     self.retry.remove(&report.id);
+                    // Also a note in the group's folder; never a reason to refuse the report.
+                    match file_report(&report, &submission.body, routing, &crate::bus::Local::now().date()) {
+                        Ok(Some(note)) => done.filed.push((report.id.clone(), Ok(note))),
+                        Ok(None) => {}
+                        Err(error) => done.filed.push((report.id.clone(), Err(format!("{error:#}")))),
+                    }
                     self.reports.push(report.clone());
                     done.stored.push(report);
                 }
@@ -414,6 +423,38 @@ fn stored_report(s: &Submission, routing: &Routing, now: u64) -> Report {
         size: s.body.len() as u64,
         read_ms: 0,
     }
+}
+
+/// Files a stored Markdown or HTML report of a canvas session whose group
+/// has a folder as a note for you: `<folder>/human-outputs/reports/<date>-<slug>.<md|html>`
+/// with provenance (audience human, author ai, the session, its agent as the
+/// window routed it, the report id), never over another file. `Ok(None)`:
+/// not filed (a message, a report from outside the canvas, a group without
+/// a folder).
+pub fn file_report(report: &Report, body: &str, routing: &Routing, date: &str) -> Result<Option<PathBuf>> {
+    use canvas_model::notebook::{self, Audience, Author, Kind, NewNote};
+    let (kind, ext) = match report.format {
+        Format::Markdown => (Kind::Markdown, "md"),
+        Format::Html => (Kind::Html, "html"),
+        Format::Message => return Ok(None),
+    };
+    let folder = routing.group(&report.group).and_then(|g| g.folder.as_deref()).map(str::trim).filter(|f| !f.is_empty());
+    let (Some(folder), false) = (folder, report.source.is_empty()) else { return Ok(None) };
+    let folder = notebook::checked_path(folder).map_err(|e| anyhow::anyhow!("the group's folder: {e}"))?;
+    let slug = notebook::slug(&report.title);
+    let slug = if slug.is_empty() { "report".to_owned() } else { slug };
+    let note = NewNote {
+        title: report.title.clone(),
+        audience: Audience::Human,
+        author: Author::Ai,
+        agent: routing.agent_of(&report.source),
+        session: Some(report.source.clone()),
+        created: crate::paths::format_rfc3339_ms(report.created_ms),
+        extra: vec![("report".to_owned(), report.id.clone())],
+    };
+    let text = notebook::new_note_text(kind, body, &note);
+    let dir = folder.join(crate::doc::HUMAN_OUTPUTS).join("reports");
+    crate::notebook::create_new(&dir, &format!("{date}-{slug}"), ext, text.as_bytes()).map(Some)
 }
 
 // ---------- the CLI: copilot-canvas report publish|list ----------
@@ -858,5 +899,84 @@ mod tests {
         assert_eq!(title_from(Format::Html, "<html><head><TITLE>Brief &amp; plan</TITLE></head>"), "Brief & plan");
         assert_eq!(title_from(Format::Html, "<body><h1 class=x>Status</h1>"), "Status");
         assert_eq!(title_from(Format::Message, "\n  first line\nsecond"), "first line");
+    }
+
+    /// A submission in the spool, as `report publish` writes it.
+    fn spool_one(home: &Path, format: Format, title: &str, body: &str, source: &str) -> String {
+        let now = now_ms();
+        let s = Submission { version: SUBMISSION_VERSION, id: reports::new_id(now), title: title.into(), format, kind: "info".into(), body: body.into(), created_ms: now, source: source.into(), source_name: "x".into(), ..Default::default() };
+        spool(home, &s).unwrap();
+        s.id
+    }
+
+    #[test]
+    fn reports_of_sessions_in_a_group_with_a_folder_are_also_filed_as_notes() {
+        let home = home("filed");
+        let folder = home.join("team");
+        let mut routing = routing();
+        routing.groups[0].folder = Some(folder.display().to_string());
+        let before = crate::bus::Local::now().date();
+        let brief = spool_one(&home, Format::Markdown, "Morning brief", "- 3 PRs need you\n", "box-1");
+        let again = spool_one(&home, Format::Markdown, "Morning brief", "- again\n", "box-1");
+        let page = spool_one(&home, Format::Html, "Triage board", "<html><head><title>Triage board</title></head><body>x</body></html>", "pass-1");
+        let message = spool_one(&home, Format::Message, "PR 7 merged", "PR 7 merged", "box-1");
+        let outside = spool_one(&home, Format::Markdown, "External", "# External\n", "");
+        let mut store = Store::open(&home, now_ms());
+        let done = store.ingest(&routing, now_ms());
+        let after = crate::bus::Local::now().date();
+        assert_eq!(done.stored.len(), 5, "{done:?}");
+        let filed: Vec<(&str, PathBuf)> = done.filed.iter().map(|(id, note)| (id.as_str(), note.clone().unwrap())).collect();
+        assert_eq!(filed.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [brief.as_str(), again.as_str(), page.as_str()], "messages and reports from outside the canvas are not filed");
+        let names: Vec<String> = filed.iter().map(|(_, p)| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        for (name, expected) in names.iter().zip(["-morning-brief.md", "-morning-brief-2.md", "-triage-board.html"]) {
+            assert!(name.ends_with(expected) && [before.as_str(), after.as_str()].contains(&&name[..10]), "{name}");
+        }
+        assert!(filed.iter().all(|(_, p)| p.parent() == Some(folder.join("human-outputs").join("reports").as_path())));
+        let text = std::fs::read_to_string(&filed[0].1).unwrap();
+        let meta = canvas_model::notebook::markdown_meta(&text);
+        assert_eq!(
+            (meta.get("title"), meta.get("audience"), meta.get("author"), meta.get("source_session"), meta.get("report"), meta.get("agent")),
+            (Some("Morning brief"), Some("human"), Some("ai"), Some("box-1"), Some(brief.as_str()), None)
+        );
+        assert!(text.ends_with("# Morning brief\n\n- 3 PRs need you\n"), "{text}");
+        assert_eq!(content(&home, &brief).unwrap().body, "- 3 PRs need you\n", "the inbox keeps the report as published");
+        let html = canvas_model::notebook::html_meta(&std::fs::read_to_string(&filed[2].1).unwrap());
+        assert_eq!((html.get("audience"), html.get("agent"), html.get("source_session")), (Some("human"), Some("copilot"), Some("pass-1")), "a passive session's agent");
+        assert!(!message.is_empty() && !outside.is_empty());
+        // A folder that cannot be written: the report is stored anyway, the failure is told.
+        let blocker = home.join("blocker");
+        std::fs::write(&blocker, "a file").unwrap();
+        routing.groups[0].folder = Some(blocker.join("sub").display().to_string());
+        let stuck = spool_one(&home, Format::Markdown, "Still stored", "x", "box-1");
+        let done = store.ingest(&routing, now_ms());
+        assert_eq!(done.stored.len(), 1);
+        assert!(matches!(&done.filed[..], [(id, Err(why))] if *id == stuck && why.contains("cannot create")), "{done:?}");
+        assert!(store.snapshot().reports.iter().any(|r| r.id == stuck));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn filing_names_slugs_and_skips() {
+        let dir = home("file-one");
+        let mut routing = routing();
+        routing.groups[0].folder = Some(dir.display().to_string());
+        let report = Report { id: "0001-x".into(), title: "Q3: plan / review!".into(), format: Format::Markdown, source: "box-1".into(), group: "g1".into(), created_ms: 1_700_000_000_000, ..Default::default() };
+        let note = file_report(&report, "body", &routing, "2026-10-31").unwrap().unwrap();
+        assert_eq!(note, dir.join("human-outputs").join("reports").join("2026-10-31-q3-plan-review.md"));
+        assert!(std::fs::read_to_string(&note).unwrap().contains("created: 2023-11-14T22:13:20.000Z"));
+        // An ordinary session's agent, as its window routed it (older windows: none).
+        routing.agents.insert("box-1".into(), "opencode".into());
+        let again = file_report(&report, "body", &routing, "2026-10-31").unwrap().unwrap();
+        assert!(again.ends_with("2026-10-31-q3-plan-review-2.md"));
+        assert_eq!(canvas_model::notebook::markdown_meta(&std::fs::read_to_string(&again).unwrap()).get("agent"), Some("opencode"));
+        assert_eq!(canvas_model::notebook::markdown_meta(&std::fs::read_to_string(&note).unwrap()).get("agent"), None);
+        let untitled = Report { title: "???".into(), ..report.clone() };
+        assert!(file_report(&untitled, "x", &routing, "2026-10-31").unwrap().unwrap().ends_with("2026-10-31-report.md"));
+        assert_eq!(file_report(&Report { format: Format::Message, ..report.clone() }, "x", &routing, "d").unwrap(), None);
+        assert_eq!(file_report(&Report { source: String::new(), ..report.clone() }, "x", &routing, "d").unwrap(), None);
+        assert_eq!(file_report(&Report { group: "g9".into(), ..report.clone() }, "x", &routing, "d").unwrap(), None);
+        routing.groups[0].folder = Some("relative\\team".into());
+        assert!(file_report(&report, "x", &routing, "d").unwrap_err().to_string().contains("absolute"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

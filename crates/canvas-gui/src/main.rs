@@ -22,6 +22,7 @@ mod shell;
 mod text;
 mod theme;
 mod tiles;
+mod webpane;
 mod webview;
 
 use std::io::Write;

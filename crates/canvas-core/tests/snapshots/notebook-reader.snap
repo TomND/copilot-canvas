@@ -1,0 +1,46 @@
+# notebook-reader (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   ?   ⏻ Quit                                          3 sessions
+    ✎ EXPLORER                   │▌ ● Overview.md ×                                   │┌─────────────────────────────────────────────────────────────┐
+▌✎  + Capture  + Note  ⟳         │ Notebook › Overview.md   Rendered │ Source │ Live  ││ NOTE INFO                                                   │
+     Human │ All │ AI            │ ● For you · written by you (inferred)              ││                                                             │
+ ◷  / filter names               │  Open externally   Ask agent to revise…            ││ ✎ Overview                                                  │
+    ▾ Notebook                   │ ────────────────────────────────────────────────── ││ Overview.md                                                 │
+ ⧉    ▸ Inbox                    │  Overview                                          ││                                                             │
+      ● Overview.md              │  ━━━━━━━━                                          ││ OUTLINE                                                     │
+ ⌁  ▸ ◫ Docs ☑                   │                                                    ││ Overview                                                    │
+    ▸ Canvas (canvas-wide)       │  The plan is in plan; fix DEC-031 first.           ││   Steps                                                     │
+ ✦  ▸ Reports (0)                │                                                    ││   Open questions                                            │
+                                 │  Steps                                             ││                                                             │
+ ◈                               │  ─────                                             ││ LINKED                                                      │
+                                 │                                                    ││ ☑ DEC-031 Write the loader spec                             │
+ ⇄                               │  • Read the plan                                   ││ ✎ plan                                                      │
+                                 │  • Write the spec                                  ││                                                             │
+ ≡                               │                                                    ││ BACKLINKS                                                   │
+                                 │  Open questions                                    ││ ✎ plan.md:9                                                 │
+ ✉                               │  ──────────────                                    ││   See [[Overview]].                                         │
+                                 │                                                    ││ ✎ summary.md:3                                              │
+                                 │  ▎ Who reviews it?                                 ││   Back to [[Overview]].                                     │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││ PROVENANCE                                                  │
+                                 │                                                    ││ ● For you, by default (inferred)                            │
+                                 │                                                    ││ written by you                                              │
+                                 │                                                    ││ not reviewed                                                │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+    [ ] Show internal files      │                                                    │└─────────────────────────────────────────────────────────────┘
+ Ctrl+1 Canvas · Ctrl+2 Notebook · Ctrl+3 Tasks · Alt+, back · Alt+. forward · Ctrl+P go to · F6 focus · Alt+1…9 views · ? help
+## gpu view model
+view cursor=none modal=none banner=None
+canvas none
+html note:C:\nb\Overview.md#1 rect=36,7 49x32 bytes=2616 csp=true

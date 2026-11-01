@@ -234,7 +234,8 @@ pub const MOD_CTRL: u8 = canvas_common::protocol::MOD_CTRL;
 pub enum CoreEvent {
     /// The connection changed state.
     Connection { state: ConnState, message: String },
-    /// Sessions, statuses or the canvas changed: read `overview()` again.
+    /// Sessions, statuses, the canvas or the todo boards changed: read
+    /// `overview()` (and `todos()` when shown) again.
     Overview,
     /// A terminal's screen changed: read `take_screen(id)`.
     Screen { id: String },
@@ -341,6 +342,439 @@ pub struct ReportPage {
     pub id: String,
     pub format: ReportFormat,
     pub html: String,
+}
+
+// ---------- todos (docs/NOTEBOOK-TASKS.md §3) ----------
+
+/// Where a todo stands: fixed categories in board order (boards may rename them).
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TodoStatus {
+    /// An agent's idea: waits for you to accept or decline it.
+    Proposed,
+    Backlog,
+    /// Accepted and ready to be worked on.
+    Todo,
+    InProgress,
+    InReview,
+    Done,
+    Canceled,
+}
+
+/// What kind of work a todo is.
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TodoKind {
+    Bug,
+    Feature,
+    Improvement,
+    Optimization,
+    Chore,
+    Docs,
+    Research,
+}
+
+/// How urgent a todo is (`NoPriority` sorts last).
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TodoPriority {
+    Urgent,
+    High,
+    Medium,
+    Low,
+    NoPriority,
+}
+
+/// Why a todo waits for you.
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TodoNeed {
+    /// A proposal: accept or decline it.
+    Proposed,
+    /// Submitted for review.
+    InReview,
+    /// Claimed by a session that is gone or stopped.
+    StaleClaim,
+}
+
+/// A todo as lists and cards show it.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct TodoItem {
+    /// `DEC-031`.
+    pub id: String,
+    pub title: String,
+    pub kind: TodoKind,
+    /// The type's glyph on the desktop's cards (✱ ✚ ▲ » ∷ ¶ ?).
+    pub kind_glyph: String,
+    pub status: TodoStatus,
+    /// Its column's name on its board.
+    pub status_label: String,
+    pub priority: TodoPriority,
+    /// `!!!` urgent, `!!` high, `!` medium.
+    pub priority_marks: String,
+    /// It cannot go on: a reason, or open todos it waits for (`⚑`).
+    pub blocked: bool,
+    /// Why: the reason, then "waits for DEC-003".
+    pub blocked_reason: String,
+    /// It blocks the work of others (`‼`).
+    pub blocker: bool,
+    /// Open todos waiting for it.
+    pub blocks: u32,
+    /// Its board or swimlane (id), that board's name and the top-level board (id).
+    pub board: String,
+    pub board_name: String,
+    pub root_board: String,
+    /// The swimlane's name (empty: the top-level board's own lane).
+    pub lane: String,
+    /// Who works on it: the session's box name (else the name it had), "you"; empty: nobody.
+    pub claimed_by: String,
+    /// The claiming session's box on this canvas (empty: none).
+    pub claimed_session: String,
+    /// That session works right now (`⟳`).
+    pub claim_working: bool,
+    /// An agent created it (`◇`).
+    pub ai_created: bool,
+    /// Why an agent proposed it (empty: not a proposal).
+    pub proposal_why: String,
+    pub checklist_done: u32,
+    pub checklist_total: u32,
+    pub labels: Vec<String>,
+    /// Its pull requests (web links).
+    pub prs: Vec<String>,
+    /// Status todo, not blocked, not claimed.
+    pub ready: bool,
+    pub created_ms: u64,
+    pub updated_ms: u64,
+}
+
+/// A swimlane: the board itself first, then its sub-boards.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct TodoLane {
+    pub id: String,
+    pub name: String,
+}
+
+/// A column's todos in one swimlane (ids in rank order).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct TodoCell {
+    pub lane: String,
+    pub ids: Vec<String>,
+}
+
+/// A column of a board (Proposed only when there are proposals or the
+/// board's policy makes agents' todos proposals).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct TodoColumn {
+    pub status: TodoStatus,
+    /// The board's name for it.
+    pub name: String,
+    pub count: u32,
+    /// In progress: the WIP limit (0: none) and whether it is over it.
+    pub wip: u32,
+    pub over: bool,
+    /// Done: shown collapsed to its count.
+    pub collapsed: bool,
+    /// One per swimlane, in lane order.
+    pub cells: Vec<TodoCell>,
+}
+
+/// A top-level board with its swimlanes and columns.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct TodoBoardItem {
+    pub id: String,
+    pub name: String,
+    /// Todo ids are `<PREFIX>-<n>`.
+    pub prefix: String,
+    /// Index into the canvas' group palette.
+    pub color: u8,
+    /// Canvas groups (ids) it is linked to.
+    pub groups: Vec<String>,
+    pub lanes: Vec<TodoLane>,
+    pub columns: Vec<TodoColumn>,
+    /// Canceled todos (a count only) and open todos that are blocked.
+    pub canceled: u32,
+    pub blocked: u32,
+    /// The progress bar: done, of the accepted todos not canceled.
+    pub done: u32,
+    pub total: u32,
+    /// Every todo an agent creates on it is a proposal.
+    pub agents_propose: bool,
+}
+
+/// A todo that waits for you, and why.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct TodoNeedItem {
+    pub need: TodoNeed,
+    pub todo: TodoItem,
+}
+
+/// A canvas group's todos (its title chip: `☑ 4 · 2▸ · 1◇`).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct TodoGroupCounts {
+    pub group: String,
+    /// Accepted and not finished; of those in progress; proposals waiting.
+    pub open: u32,
+    pub in_progress: u32,
+    pub proposed: u32,
+}
+
+/// The canvas's todo boards.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct TodosOverview {
+    /// The service sent its boards (an older service never does).
+    pub loaded: bool,
+    /// Top-level boards in book order (sub-boards are their swimlanes).
+    pub boards: Vec<TodoBoardItem>,
+    /// Every todo, in book order.
+    pub todos: Vec<TodoItem>,
+    /// Proposals (oldest first), todos in review, then stale claims.
+    pub needs_you: Vec<TodoNeedItem>,
+    /// Ready todos (ids) by priority, then rank.
+    pub ready: Vec<String>,
+    /// Open todos claimed by sessions (ids), the newest claim first.
+    pub claimed: Vec<String>,
+    /// Canvas groups with a linked board.
+    pub groups: Vec<TodoGroupCounts>,
+}
+
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct TodoCheck {
+    pub text: String,
+    pub done: bool,
+}
+
+/// What a todo links to.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct TodoLink {
+    /// "session", "pr", "note", "report", "file", "url".
+    pub kind: String,
+    /// A session id, a web link, a path or a report id.
+    pub target: String,
+    pub title: String,
+}
+
+/// How a todo relates to another.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct TodoRelation {
+    /// "blocked by", "related to", "discovered from", "duplicate of".
+    pub kind: String,
+    pub id: String,
+    /// The other todo's title (empty: not in the book).
+    pub title: String,
+    /// The other todo is done or canceled.
+    pub closed: bool,
+}
+
+/// A line of a todo's log: a note someone added, or a change.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct TodoLogLine {
+    pub ms: u64,
+    pub by: String,
+    /// A note (else a recorded change).
+    pub note: bool,
+    pub text: String,
+}
+
+/// Everything about one todo (its details pane).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct TodoDetail {
+    pub item: TodoItem,
+    /// Markdown, and as a page for the locked-down web view (empty without a body).
+    pub body: String,
+    pub body_html: String,
+    pub checklist: Vec<TodoCheck>,
+    pub relations: Vec<TodoRelation>,
+    pub links: Vec<TodoLink>,
+    /// The newest first.
+    pub log: Vec<TodoLogLine>,
+    /// How it ended: "done", "wont_do", "duplicate", "declined", "obsolete" (empty: open).
+    pub resolution: String,
+    pub created_by: String,
+    /// Its spec note (a path on the service's machine) and parent todo (empty: none).
+    pub note: String,
+    pub parent: String,
+}
+
+/// A todo to add (`Client::add_todo`).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct TodoDraft {
+    /// A board id, name or prefix (`Decomps/Parser`: a swimlane).
+    pub board: String,
+    pub title: String,
+    pub kind: TodoKind,
+    pub priority: TodoPriority,
+    /// Backlog when none.
+    pub status: Option<TodoStatus>,
+    /// Markdown (empty: none).
+    pub body: String,
+}
+
+/// What a todo action did (already shown here; the service confirms it).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct TodoChange {
+    /// The todo it changed or created.
+    pub id: String,
+    /// For people, with warnings (over a WIP limit, …).
+    pub message: String,
+}
+
+// ---------- notebook (docs/NOTEBOOK-TASKS.md §2) ----------
+
+/// Whom a note is for.
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NoteAudience {
+    /// For you (`●`).
+    Human,
+    /// For agents (`◇`).
+    Ai,
+}
+
+/// Who wrote a note.
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NoteAuthor {
+    Human,
+    Ai,
+    /// An agent's note you edited.
+    Mixed,
+}
+
+/// What a notebook entry is.
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NoteKind {
+    Folder,
+    Markdown,
+    Html,
+    /// Other known text files.
+    Text,
+    /// `png jpg jpeg gif svg webp`.
+    Image,
+    Other,
+}
+
+/// Which notes a listing shows (folders always show).
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NoteFilter {
+    All,
+    /// Notes for you.
+    Human,
+    /// Notes for agents.
+    Ai,
+}
+
+/// What an explorer root is.
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NotebookRootKind {
+    /// The canvas's notebook root.
+    Notebook,
+    /// A group's folder outside the root.
+    Group,
+    /// The canvas-wide folder (written by and for agents).
+    CanvasWide,
+    /// An extra folder mounted in the notebook.
+    Mount,
+}
+
+/// Whom a note is for and who wrote it.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct NoteProvenance {
+    pub audience: NoteAudience,
+    pub author: NoteAuthor,
+    /// The audience was inferred (folder, file type), not the note's own metadata.
+    pub inferred: bool,
+    /// A file of the canvas's own (listings hide it unless asked).
+    pub internal_file: bool,
+    /// A passive session's memory.
+    pub passive: bool,
+    /// The agent that wrote it ("copilot", "opencode", "claude"; empty: unknown).
+    pub agent: String,
+    /// The session that wrote it (its id) and its box's name on this canvas (empty: not on it).
+    pub session: String,
+    pub session_name: String,
+    /// When it was written, as the note says.
+    pub created: String,
+    pub reviewed: bool,
+}
+
+/// One root of the notebook's explorer.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct NotebookRoot {
+    pub kind: NotebookRootKind,
+    /// "Notebook", "◫ Payments", "Canvas (canvas-wide)", a mount's folder name.
+    pub label: String,
+    /// A folder on the service's machine.
+    pub path: String,
+    /// The group whose folder it is (empty: none).
+    pub group: String,
+}
+
+/// The canvas's notebook on the service's machine.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct NotebookOverview {
+    /// The notebook root (the service creates it with `Groups`, `Inbox`, `Todos`).
+    pub root: String,
+    /// The canvas-wide folder (empty: the canvas has no id).
+    pub canvas_dir: String,
+    /// The explorer's roots: the notebook, group folders outside it, the
+    /// canvas-wide folder, mounts.
+    pub roots: Vec<NotebookRoot>,
+}
+
+/// A file or folder of the notebook.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct NoteEntry {
+    pub name: String,
+    pub path: String,
+    /// Relative to its root, `/` separators.
+    pub rel: String,
+    pub kind: NoteKind,
+    /// Bytes (0 for folders).
+    pub size: u64,
+    pub modified_ms: u64,
+    /// Its metadata title, first heading, else its name without the extension.
+    pub title: String,
+    pub provenance: NoteProvenance,
+}
+
+/// A notebook folder as the phone lists it.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct NoteListing {
+    pub folder: String,
+    /// Folders first, then files, by name.
+    pub entries: Vec<NoteEntry>,
+    /// Notes the filter hid, and the canvas's own files left out.
+    pub hidden: u32,
+    pub internal_files: u32,
+}
+
+/// A note's page for the locked-down web view.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct NotePage {
+    pub path: String,
+    pub title: String,
+    pub kind: NoteKind,
+    /// Its revision (`note_revisions` tells when it changed).
+    pub rev: String,
+    /// Its text (empty for pictures and other files).
+    pub text: String,
+    /// One sanitized page: Markdown rendered, HTML sanitized, text as a
+    /// block, pictures (and pictures of its folder) inline.
+    pub html: String,
+    pub provenance: NoteProvenance,
+}
+
+/// A notebook search hit.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct NoteHit {
+    pub path: String,
+    /// 1-based line of a text hit; 0: the file's name matched.
+    pub line: u32,
+    /// The line around the match, or the file's name.
+    pub text: String,
+}
+
+/// What a link of a note page opens in the app (`#note:` / `#todo:` links).
+#[derive(uniffi::Enum, Clone, Debug, PartialEq, Eq)]
+pub enum NoteLink {
+    /// A `[[Name]]` link (the name as written, maybe with `#heading`): `resolve_note` finds it.
+    Note { name: String },
+    /// A todo id (`DEC-031`).
+    Todo { id: String },
 }
 
 /// A new session to create and start.

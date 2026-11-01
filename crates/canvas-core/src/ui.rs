@@ -16,6 +16,7 @@ use crate::paint::{
 };
 use crate::status::{Status, StatusStyle};
 use crate::paths::now_ms;
+use crate::spaces::Space;
 use crate::view::{RenderMode, View};
 
 pub fn draw(app: &mut App, frame: &mut Frame) {
@@ -36,11 +37,13 @@ pub fn render(app: &mut App, buf: &mut Buffer, screen: Rect, overlay: Option<&mu
     app.layout.links.clear();
     app.layout.modal_rect = None;
     app.layout.html_pane = None;
+    app.layout.space_areas.clear();
     app.layout.screen = screen;
     if screen.width < 60 || screen.height < 16 {
         put(buf, 1, 1, "Copilot Canvas needs at least 60×16 cells. Ctrl+Q quits.", fg(ATTENTION), screen);
         return view;
     }
+    let space = app.space;
     let toolbar = Rect::new(0, 0, screen.width, 1);
     let status = Rect::new(0, screen.height - 1, screen.width, 1);
     let body = Rect::new(0, 1, screen.width, screen.height - 2);
@@ -52,7 +55,8 @@ pub fn render(app: &mut App, buf: &mut Buffer, screen: Rect, overlay: Option<&mu
     let sidebar = Rect::new(bar.right(), body.y, sidebar_w, body.height);
     let rest_x = bar.right() + if sidebar_w > 0 { sidebar_w + 1 } else { 0 };
     let rest_w = body.width - rest_x;
-    let want_terms = !app.visible_terminals().is_empty() || app.selection.last().is_some() || app.selected_group.is_some() || app.right_detail.is_some();
+    // The Notebook and Tasks always have their own panel on the right.
+    let want_terms = space != Space::Canvas || !app.visible_terminals().is_empty() || app.selection.last().is_some() || app.selected_group.is_some() || app.right_detail.is_some();
     let term_w = if want_terms { (rest_w as u32 * app.doc.ui.terminal_percent as u32 / 100) as u16 } else { 0 }.min(rest_w.saturating_sub(20));
     let canvas_w = rest_w - term_w - if term_w > 0 { 1 } else { 0 };
     let canvas = Rect::new(rest_x, body.y, canvas_w, body.height);
@@ -76,9 +80,24 @@ pub fn render(app: &mut App, buf: &mut Buffer, screen: Rect, overlay: Option<&mu
     draw_toolbar(app, buf, toolbar);
     crate::ui_side::draw_activity_bar(app, buf, bar);
     phase(app, "toolbar");
+    let mut space_cursor = None;
     if sidebar_w > 0 {
-        if app.side_view == crate::side::SideView::Sessions {
+        if app.side_view == crate::side::SideView::Sessions && space == Space::Canvas {
             draw_sidebar(app, buf, sidebar);
+        } else if app.side_view == crate::side::SideView::Sessions {
+            // Slot 1 is the space's own sidebar (the session tree stays fresh for the canvas).
+            refresh_side_rows(app);
+            app.layout.sidebar_rows.clear();
+            app.layout.sidebar_filter_row = None;
+            app.layout.space_areas.push(sidebar);
+            let cursor = match space {
+                Space::Notebook => crate::notebook::draw_side(app, buf, sidebar),
+                Space::Tasks => crate::tasks::draw_side(app, buf, sidebar),
+                Space::Canvas => None,
+            };
+            if app.focus == Focus::Sidebar {
+                space_cursor = cursor;
+            }
         } else {
             refresh_side_rows(app);
             crate::ui_side::draw_list(app, buf, sidebar);
@@ -91,10 +110,20 @@ pub fn render(app: &mut App, buf: &mut Buffer, screen: Rect, overlay: Option<&mu
         app.layout.sidebar_rows.clear();
     }
     phase(app, "sidebar");
-    if gpu {
-        view.canvas = Some(crate::ui_canvas::canvas_model(app, canvas));
-    } else {
-        crate::ui_canvas::draw_canvas(app, buf, canvas);
+    match space {
+        Space::Canvas if gpu => view.canvas = Some(crate::ui_canvas::canvas_model(app, canvas)),
+        Space::Canvas => crate::ui_canvas::draw_canvas(app, buf, canvas),
+        // Drawn from cells in both front ends (the GPU client has no canvas model there).
+        Space::Notebook | Space::Tasks => {
+            app.layout.space_areas.push(canvas);
+            let cursor = match space {
+                Space::Notebook => crate::notebook::draw_main(app, buf, canvas),
+                _ => crate::tasks::draw_main(app, buf, canvas),
+            };
+            if app.focus == Focus::Canvas {
+                space_cursor = cursor;
+            }
+        }
     }
     phase(app, "canvas");
     if app.focus == Focus::Canvas {
@@ -108,7 +137,8 @@ pub fn render(app: &mut App, buf: &mut Buffer, screen: Rect, overlay: Option<&mu
     let cursor = draw_terminals(app, buf, terms, &mut view);
     phase(app, "terminals");
     // Plain-text URLs and paths: terminals first (Ctrl+click), then everything
-    // else. (Gpu mode scanned each terminal before blanking its grid.)
+    // else but what the Notebook and Tasks draw (they register their own).
+    // (Gpu mode scanned each terminal before blanking its grid.)
     let inners: Vec<Rect> = app.layout.tiles.iter().map(|(_, _, inner)| *inner).collect();
     let mut links = std::mem::take(&mut app.layout.links);
     if !gpu {
@@ -116,7 +146,9 @@ pub fn render(app: &mut App, buf: &mut Buffer, screen: Rect, overlay: Option<&mu
             crate::links::scan(buf, *inner, true, &[], &mut links);
         }
     }
-    crate::links::scan(buf, body, false, &inners, &mut links);
+    let mut skip = inners.clone();
+    skip.extend(app.layout.space_areas.iter().copied());
+    crate::links::scan(buf, body, false, &skip, &mut links);
     app.layout.links = links;
     phase(app, "links");
     draw_status(app, buf, status);
@@ -125,9 +157,10 @@ pub fn render(app: &mut App, buf: &mut Buffer, screen: Rect, overlay: Option<&mu
         _ => crate::ui_modals::draw_modals(app, buf, screen),
     };
     phase(app, "status+modals");
-    view.cursor = modal_cursor.or(cursor);
+    view.cursor = modal_cursor.or(cursor).or(space_cursor.filter(|_| app.modals.is_empty()));
     view.modal = app.layout.modal_rect;
-    view.html = app.layout.html_pane.clone().map(|(rect, id, document)| crate::view::HtmlPane { rect, id, document });
+    view.html = app.layout.html_pane.clone();
+    view.html_print = view.html.is_some() && std::mem::take(&mut app.html_print);
     view
 }
 
@@ -160,9 +193,48 @@ fn agents_button(app: &mut App, buf: &mut Buffer, x: i32, area: Rect) -> i32 {
     end + 1
 }
 
+/// A space's toolbar tab: ` ◫ Canvas ` (compact ` ◫ `).
+pub fn space_tab_label(space: Space, compact: bool) -> String {
+    if compact { format!(" {} ", space.glyph()) } else { format!(" {} {} ", space.glyph(), space.name()) }
+}
+
+/// The toolbar's buttons after the tabs need about this many cells (the
+/// canvas's set, the widest), so the tabs keep one form in every space.
+fn toolbar_buttons_width(app: &App) -> i32 {
+    let mut labels = vec![" + New ", if app.doc.ui.tiled { " ▦ Tiled " } else { " ▢ Single " }, " Show all nodes ", " − ", " + ", " ? ", " ⏻ Quit "];
+    if app.demo {
+        labels.push("DEMO · native shells ");
+    } else {
+        labels.extend([" ⇩ Import ", " ⟳ VS Code "]);
+    }
+    if app.render_mode == crate::view::RenderMode::Gpu {
+        labels.push(" ⧉ ");
+    }
+    let agents = if app.demo { 0 } else { crate::paint::text_width(&agents_button_label(app).0) as i32 + 1 };
+    labels.iter().map(|l| crate::paint::text_width(l) as i32 + 1).sum::<i32>() + agents
+}
+
+/// The space tabs are compact (`◫ ✎ ☑`) unless their full form leaves the
+/// status counts room for a few parts.
+pub fn compact_tabs(app: &App, width: u16) -> bool {
+    let full: i32 = Space::ALL.iter().map(|s| crate::paint::text_width(&space_tab_label(*s, false)) as i32).sum::<i32>() + 2;
+    // Brand, tabs, buttons, then room for "⚠ 1 needs you" and more.
+    19 + full + toolbar_buttons_width(app) + 24 > width as i32
+}
+
 fn draw_toolbar(app: &mut App, buf: &mut Buffer, area: Rect) {
     fill(buf, area.x as i32, area.y as i32, area.width as i32, 1, Style::default().bg(PANEL), area);
     let mut x = put(buf, 1, area.y as i32, "◆ Copilot Canvas", bold(ACCENT).bg(PANEL), area) + 2;
+    // The space tabs: the session canvas, the notebook, the todo boards.
+    let compact = compact_tabs(app, area.width);
+    for space in Space::ALL {
+        let active = space == app.space;
+        let style = if active { bold(PANEL).bg(ACCENT) } else { fg(GRAY).bg(PANEL_HI) };
+        let end = put(buf, x, area.y as i32, &space_tab_label(space, compact), style, area);
+        app.layout.hits.push((Rect::new(x as u16, area.y, (end - x).max(0) as u16, 1), Hit::Toolbar(Action::Space(space))));
+        x = end;
+    }
+    x += 2;
     if app.demo {
         x = put(buf, x, area.y as i32, "DEMO · native shells", fg(ATTENTION).bg(PANEL), area) + 2;
     }
@@ -180,9 +252,12 @@ fn draw_toolbar(app: &mut App, buf: &mut Buffer, area: Rect) {
         x = agents_button(app, buf, x, area);
     }
     x = toolbar_button(app, buf, x, if app.doc.ui.tiled { " ▦ Tiled " } else { " ▢ Single " }, Action::ToggleTiled, area);
-    x = toolbar_button(app, buf, x, " Show all nodes ", Action::FitAll, area);
-    x = toolbar_button(app, buf, x, " − ", Action::Zoom(1), area);
-    x = toolbar_button(app, buf, x, " + ", Action::Zoom(-1), area);
+    // Fitting and zooming are the session canvas's.
+    if app.space == Space::Canvas {
+        x = toolbar_button(app, buf, x, " Show all nodes ", Action::FitAll, area);
+        x = toolbar_button(app, buf, x, " − ", Action::Zoom(1), area);
+        x = toolbar_button(app, buf, x, " + ", Action::Zoom(-1), area);
+    }
     let mut x = toolbar_button(app, buf, x, " ? ", Action::Help, area);
     if app.render_mode == crate::view::RenderMode::Gpu {
         x = toolbar_button(app, buf, x, " ⧉ ", Action::NewWindow, area);
@@ -776,12 +851,29 @@ fn draw_terminals(app: &mut App, buf: &mut Buffer, area: Rect, view_model: &mut 
     // An open detail panel (automation, passive session, item) takes the right
     // side until it is closed or a terminal is opened.
     if let Some(detail) = app.right_detail.clone() {
-        crate::ui_side::draw_right_detail(app, buf, area, &detail);
-        return None;
+        if matches!(detail, crate::side::RightDetail::Note(_) | crate::side::RightDetail::Todo(_)) {
+            app.layout.space_areas.push(area);
+        }
+        let cursor = crate::ui_side::draw_right_detail(app, buf, area, &detail);
+        return cursor.filter(|_| app.space_has_keys());
     }
     if ids.is_empty() {
-        draw_details(app, buf, area);
-        return None;
+        // The space's own panel: the canvas's details, the note's or the todos' info.
+        let cursor = match app.space {
+            Space::Canvas => {
+                draw_details(app, buf, area);
+                None
+            }
+            Space::Notebook => {
+                app.layout.space_areas.push(area);
+                crate::notebook::draw_info(app, buf, area)
+            }
+            Space::Tasks => {
+                app.layout.space_areas.push(area);
+                crate::tasks::draw_info(app, buf, area)
+            }
+        };
+        return cursor.filter(|_| app.space_has_keys());
     }
     let mut cursor = None;
     for (id, outer) in ids.iter().zip(tile_rects(area, ids.len())) {
@@ -963,21 +1055,47 @@ fn draw_details(app: &mut App, buf: &mut Buffer, area: Rect) {
         lines.push((format!("{} {}", if group.is_automations() { "◷" } else { "▣" }, group.name), bold(TEXT)));
         lines.push((format!("{count} {}", if group.is_automations() { "automations" } else { "sessions" }), fg(MUTED)));
         if !group.is_automations() {
+            use crate::notebook::Action as Notebook;
+            use crate::tasks::Action as Tasks;
+            // Its notes: the Notebook at its folder, and the folder's own files.
+            lines.push((String::new(), Style::default()));
+            lines.push(("NOTES".into(), bold(MUTED)));
             match &group.folder {
                 Some(folder) => {
+                    clicks.push((lines.len(), Action::Notebook(Notebook::OpenGroup(group.id.clone()))));
+                    lines.push(("✎ Open notes".into(), fg(ACCENT)));
                     lines.push((format!("Folder   {}", truncate_left(folder, w.saturating_sub(9))), fg(TEXT)));
                     clicks.push((lines.len(), Action::OpenGroupFolder(group.id.clone(), false)));
                     lines.push((format!("◧ Open AI docs ({})", crate::doc::AI_DOCS), fg(ACCENT)));
                     clicks.push((lines.len(), Action::OpenGroupFolder(group.id.clone(), true)));
                     lines.push((format!("◨ Open human outputs ({})", crate::doc::HUMAN_OUTPUTS), fg(ACCENT)));
-                    clicks.push((lines.len(), Action::SetGroupFolder(group.id.clone())));
+                    clicks.push((lines.len(), Action::Notebook(Notebook::LinkFolder(group.id.clone()))));
                     lines.push(("  Change folder…".into(), fg(MUTED)));
                 }
                 None => {
-                    clicks.push((lines.len(), Action::SetGroupFolder(group.id.clone())));
-                    lines.push(("◧ Choose a folder for AI docs + human outputs…".into(), fg(ACCENT)));
+                    clicks.push((lines.len(), Action::Notebook(Notebook::LinkFolder(group.id.clone()))));
+                    lines.push(("✎ Choose a folder for its notes (AI docs + human outputs)…".into(), fg(ACCENT)));
                 }
             }
+            // Its todos: the linked boards' counts, or an offer to link one.
+            lines.push((String::new(), Style::default()));
+            lines.push(("TODOS".into(), bold(MUTED)));
+            match crate::tasks::group_counts(app, &group.id) {
+                Some(counts) => {
+                    clicks.push((lines.len(), Action::Tasks(Tasks::OpenGroup(group.id.clone()))));
+                    let waiting = if counts.proposed > 0 { format!(" · {} proposed ◇", counts.proposed) } else { String::new() };
+                    let style = if counts.proposed > 0 { bold(ATTENTION) } else { fg(ACCENT) };
+                    lines.push((format!("☑ Open todo board · {} open · {} in progress{waiting}", counts.open, counts.in_progress), style));
+                    clicks.push((lines.len(), Action::Tasks(Tasks::LinkBoards(group.id.clone()))));
+                    lines.push(("  Link todo boards…".into(), fg(MUTED)));
+                }
+                None => {
+                    lines.push(("No todo board linked.".into(), fg(MUTED)));
+                    clicks.push((lines.len(), Action::Tasks(Tasks::LinkBoards(group.id.clone()))));
+                    lines.push(("☑ Create or link a todo board…".into(), fg(ACCENT)));
+                }
+            }
+            lines.push((String::new(), Style::default()));
             let overrides = group.defaults.as_ref().map(|d| d.summary()).unwrap_or_default();
             if !overrides.is_empty() {
                 lines.push((format!("Launch   {overrides}"), fg(TEXT)));
@@ -1021,7 +1139,8 @@ fn draw_details(app: &mut App, buf: &mut Buffer, area: Rect) {
             (Some(key), NodeKind::Automation) => crate::side::RightDetail::Automation(key.clone()),
             _ => crate::side::RightDetail::Session(node.id.clone()),
         };
-        return crate::ui_side::draw_right_detail(app, buf, area, &detail);
+        crate::ui_side::draw_right_detail(app, buf, area, &detail);
+        return;
     } else {
         lines.push(("Select a session to see it here.".into(), fg(MUTED)));
     }
@@ -1043,6 +1162,9 @@ fn draw_status(app: &mut App, buf: &mut Buffer, area: Rect) {
     } else {
         let hints = match app.focus {
             Focus::Terminal => "Typing goes to the terminal · Ctrl+] or F6 back to canvas · Ctrl+F6 / Ctrl+Shift+F6 recent sessions · drag to copy · Ctrl+V paste · Alt+V image · Ctrl+click links · Shift+PgUp history · click canvas to leave",
+            // The GUI gets Alt+← / Alt+→; in a terminal Alt+, / Alt+. (Windows Terminal keeps Alt+arrows for its panes).
+            _ if app.space_has_keys() && app.render_mode == RenderMode::Gpu => "Ctrl+1 Canvas · Ctrl+2 Notebook · Ctrl+3 Tasks · Alt+← back · Alt+→ forward · Ctrl+P go to · F6 focus · Alt+1…9 views · ? help",
+            _ if app.space_has_keys() => "Ctrl+1 Canvas · Ctrl+2 Notebook · Ctrl+3 Tasks · Alt+, back · Alt+. forward · Ctrl+P go to · F6 focus · Alt+1…9 views · ? help",
             Focus::Sidebar if app.side_view == crate::side::SideView::Reports => "↑↓ move · Enter read · Space read/unread · Del delete · Esc back · Alt+1…9 views · ? help",
             Focus::Sidebar if app.side_view != crate::side::SideView::Sessions => "↑↓ move · Enter open/edit · Space enable/disable · Del remove · Esc back · Alt+1…9 views · ? help",
             Focus::Sidebar => "click view · double-click/Enter start · ] [ or Ctrl+F6 recent · ←→ collapse · / filter · Tab canvas · Alt+1…9 views · ? help",

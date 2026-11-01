@@ -265,11 +265,13 @@ and size.
   Particles are seeded from the effect's kind and text (stable in every
   window and run); the `freeze` hook holds them at a mid-burst frame.
 - *Group chips* (`GroupModel::chips`, `folders.rs`): ⟲ N passive (compact
-  ⟲ N) or ⟲ + passive, both opening the group's passive panel,
-  ◧ AI docs and ◨ Outputs (or ◧ Set folder…), full or
-  compact (the passive chip first, then all) to fit next to the title, which
-  is shortened for them. From 70 % up they scale with the zoom; below it they
-  keep a readable size on screen (`ChipModel::fixed`) while the title shows.
+  ⟲ N) or ⟲ + passive, both opening the group's passive panel, ✎ Notes
+  (or ✎ Set folder…) opening the group's folder in the Notebook, and the
+  todo chip ☑ 4 · 2▸ · 1◇ (open · in progress · proposed; gold while
+  proposals wait; ☑ + when no board is linked) opening its board in Tasks,
+  full or compact to fit next to the title, which is shortened for them.
+  From 70 % up they scale with the zoom; below it they keep a readable size
+  on screen (`ChipModel::fixed`) while the title shows.
 - *Loops* (`CanvasModel::loops`, `LoopModel`; canvas-core `loops.rs`,
   canvas-gui `canvas.rs`): the loopback beside a looping box (out along its
   top row, round a bend of 12-segment quarter circles, down, back into its
@@ -341,15 +343,20 @@ inbox (README, Reports) gets the same treatment: a toast with its title and
 publisher and a flashing button while the window is in the background
 (`Platform::report_arrived`).
 
-**Reports and the HTML view (`webview.rs`; canvas-core `reports.rs`,
-`richtext.rs`; canvas-model `report_html.rs`, shared with the iPhone app).** The inbox and the viewer are core cell
+**Reports, notes and the HTML view (`webview.rs`, `webpane.rs`; canvas-core `reports.rs`,
+`notebook/reader.rs`, `richtext.rs`; canvas-model `report_html.rs` and
+`report_html/notes.rs`, shared with the iPhone app).** The inbox and the viewer are core cell
 layouts like every dialog: Markdown (pulldown-cmark; HTML inside it becomes
 formatted text too) and short messages are laid out as styled lines (headings, emphasis, lists,
 tables with rules, code, quotes, links that ask before they open). An HTML
-report is shown by Microsoft Edge **WebView2** (`webview2-com` 0.39, the
+report, a rendered Markdown note, an HTML note or a picture of the notebook
+is shown by Microsoft Edge **WebView2** (`webview2-com` 0.39, the
 static loader, so no `WebView2Loader.dll` ships) as a child window over the
-viewer's content area (`View::html`: the pane's cell rectangle and the safe
-document; the window moves, resizes and hides it after each frame). Layers:
+pane's area (`View::html`: an `HtmlPane` with the cell rectangle, an id that
+changes with the page, who published it, `HtmlOrigin::Report` or `Note`, and
+its source: `HtmlSource::Document` for a page the core made, or
+`HtmlSource::File { path, root, scripts }` for an HTML note; the window
+moves, resizes and hides it after each frame). Layers:
 
 1. The core's sanitizer (`report_html::sanitize`) keeps an allow-list of
    formatting elements (including inline SVG and `<style>`) and inline
@@ -359,28 +366,150 @@ document; the window moves, resizes and hides it after each frame). Layers:
    removes every `on*` attribute, attributes that fetch, navigate or run
    (`action`, `formaction`, `srcdoc`, `srcset`, `ping`, `http-equiv`, …),
    `href`s that are not `http(s)`, `mailto` or `#`, and image sources that
-   are not `data:image/…`. `safe_document` puts a Content-Security-Policy first
+   are not `data:image/…`; a kept `<style>`'s CSS has every `<` written as
+   the CSS escape `\3C ` (inside `<svg>` a browser parses a style's content
+   as markup, so no tag may start there). `safe_document` puts a Content-Security-Policy first
    (`default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src
    'none'; connect-src 'none'; …`) and a dark default style the page can
    override.
-2. The view: scripts, web messages, host objects, script dialogs, devtools,
-   the context menu, the status bar, zoom, the browser's accelerator keys,
-   autofill and password saving off; every request (`WebResourceRequested`
-   for `*`) answered with a 403 inside the view; downloads cancelled,
-   permission requests denied, external URI schemes never launched, new
-   windows refused; every navigation but the canvas's own `NavigateToString`
-   cancelled (a link the user clicks becomes a request to the canvas, which
-   asks before opening it in the browser); Esc in the view closes the
-   report. Its browser process gets its own user-data folder
-   (`<home>\webview2`, never the user's Edge profile) and
+2. The views: web messages, host objects, script dialogs, devtools,
+   the context menu, the status bar, zoom (also pinch and swipe), the
+   browser's accelerator keys, autofill, password saving and the built-in
+   error page off, SmartScreen off (`IsReputationCheckingRequired`: its
+   lookups would send the notes' addresses away), files dropped on the pane
+   refused (`AllowExternalDrop` off: no `file:` load, nothing for a page's
+   script); every request
+   (`WebResourceRequested` for `*`; with a runtime that has
+   `AddWebResourceRequestedFilterWithRequestSourceKinds`, workers' requests
+   too) is answered inside the view: 403
+   (`Blocked by Copilot Canvas`) unless it is a file of the HTML note shown
+   (3, below); downloads cancelled, permission requests denied, external URI
+   schemes never launched, new windows refused; every navigation but the
+   canvas's own load of the page cancelled (a link the user clicks becomes a
+   request to the canvas: http(s) and `mailto` ask before the browser, in
+   words that say whether a report or a note holds it; `#note:` / `#todo:`
+   links and links to other files under the note's root open them in the app,
+   and the keyboard comes back to the canvas;
+   in-page `#fragment`s scroll). There are **two views**: the plain one
+   never runs scripts (`IsScriptEnabled` off for good: reports, rendered
+   Markdown, pictures, HTML notes without scripts); an HTML note allowed to
+   run its scripts gets the second, created when first needed in its own
+   in-private profile (`canvas-scripts`) when the runtime has profiles, and
+   its page is replaced by `about:blank` whenever it is hidden (only that
+   load is let through, and the requests it still waited on are answered at
+   once), so no script runs out of sight (if that view cannot start, such
+   notes show in the plain view without scripts and a notice says so). Their
+   browser process gets its own user-data folder (`<home>\webview2`, never
+   the user's Edge profile) and `webpane::BROWSER_ARGS`:
    `--disable-background-networking --disable-component-update
-   --disable-sync --no-first-run --disable-default-apps`.
+   --disable-sync --no-first-run --disable-default-apps --dns-prefetch-disable
+   --proxy-server=127.0.0.1:9 --proxy-bypass-list=<-loopback>
+   --force-webrtc-ip-handling-policy=disable_non_proxied_udp` (no traffic of
+   its own, no DNS prefetching, a proxy that answers nothing, also for
+   loopback addresses, for whatever a page could reach past
+   `WebResourceRequested`, WebRTC only through it). The views' own pages
+   never need the network or the proxy: a request answered in
+   `WebResourceRequested` (the notes origin's files included; `.invalid`
+   never resolves) is not sent anywhere.
+3. HTML notes are served from the virtual origin
+   **`https://notes.canvas.invalid/`** mapped to the note's explorer root
+   (`webpane::url_for` / `file_for`: only names inside it, percent-encoded
+   and decoded once; no `.`, `..`, separators, drive or stream colons,
+   wildcards, control characters, trailing dots or spaces, device names), so
+   its relative links resolve as on disk; of that root only the **note's own
+   folder and the folders below it** are served (`webpane::classify`):
+   pictures, styles and fonts next to the note (as `copilot-canvas note`
+   tells agents), never a sibling folder's files or the rest of a mount. A
+   link to another file under the root still opens it in the app. Only
+   `GET`s are served, and a document (the page or a frame) only when it is
+   the note itself. Each request is
+   **deferred** (`GetDeferral`), its file read through the backend
+   (`Request::ReadBytes`, at most `notebook::MAX_BYTES`, 16 MiB) on one of 4
+   reader threads, and answered back on the UI thread (WebView2 is
+   single-threaded; `ReportWeb::pump`), so relative pictures, style sheets and
+   fonts load from the service's machine locally and remotely. At most
+   `webpane::MAX_PENDING` (256) requests of a window wait at once (more are
+   answered 503); a view whose page is replaced answers its waiting requests
+   at once and its reads not yet started are skipped. The service reads any
+   absolute path its client names (as `NoteRead` does: the client is yours);
+   the containment is the client's, and a symbolic link or junction inside
+   the folder is followed like any file there (whoever can make one there can
+   read its target already, and a page has no way to send what it shows
+   anywhere). The note
+   itself is sanitized (`report_html::notes::page`: the report sanitizer, plus
+   links, pictures, media and `<link rel="stylesheet">` that stay on the
+   origin; a whole document keeps its author's look, a fragment gets the
+   reading look)
+   unless its scripts may run. Every answer carries `Content-Type` by
+   extension (unknown: `application/octet-stream`), the note's
+   `Content-Security-Policy`, `X-Content-Type-Options: nosniff`,
+   `Cache-Control: no-store`, `Referrer-Policy: no-referrer` and
+   `X-DNS-Prefetch-Control: off` (the scripts view also
+   `Access-Control-Allow-Origin: *`: its sandboxed page has an opaque origin,
+   so its fonts and module scripts are cross-origin loads); a missing file is
+   404 (for the note, a page saying why). The policies
+   (`report_html::notes::{CSP, SCRIPTS_CSP}`):
+   - without scripts: `default-src 'none'; img-src https://notes.canvas.invalid data:; style-src 'unsafe-inline' https://notes.canvas.invalid; font-src data: https://notes.canvas.invalid; media-src https://notes.canvas.invalid data:; script-src 'none'; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'`
+   - scripts allowed for this file (*Scripts: on*, kept in `Doc::notebook_scripts`): `sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' https://notes.canvas.invalid; style-src 'unsafe-inline' https://notes.canvas.invalid; img-src https://notes.canvas.invalid data: blob:; font-src data: https://notes.canvas.invalid; media-src https://notes.canvas.invalid data: blob:; connect-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; form-action 'none'; base-uri 'none'` (never `allow-same-origin`, nor popups, forms or top navigation; no frames, plugins or workers).
 
-A page larger than 2,000,000 bytes (WebView2's `NavigateToString` limit) or
-a machine without the WebView2 runtime gets the core's formatted text with a
-note saying why, as the TUI always does. The offscreen `png` hook does not
+   A same-document change of the page's address to a `#note:` / `#todo:`
+   link (`SourceChanged`) is followed while the pane shows; in the scripts
+   view only while it has the keyboard (the user clicked into it), at most
+   once a second, and following one gives the keyboard back to the canvas
+   (`webpane::AppLinks`), so a script gets at most one app link per click
+   into its page and cannot drive the app.
+
+**Keys, Esc, printing and overlap.** The view never takes the keyboard on
+its own; a click into it does. While it has it, the page keeps scrolling,
+selection and Ctrl+C, and `webpane::web_key` hands the canvas Esc, F6,
+Ctrl+], Ctrl+1/2/3, Ctrl+P, Alt+←/→ and Alt+, / Alt+., Ctrl+E, Ctrl+W,
+Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+N, Ctrl+Shift+N, Ctrl+S, Ctrl+F and Alt+N
+(Ctrl with Alt is AltGr, typing, never one of these). Esc closes a report;
+from a note it gives the keyboard back to the canvas, as F6 does. *Print /
+PDF* (the reader's button, Rendered Markdown and HTML notes) waits for the
+page to load and opens WebView2's print dialog (`ShowPrintUI`, which offers
+*Save as PDF*); a runtime without it saves `<Downloads>\<title>.pdf` (never
+over a file: each name is claimed by creating it only where none is, then
+`-2`, `-3`; a failed PDF leaves no empty file) and says where. The pane shows only while no dialog
+or menu overlaps it, or the top one holds it whole (a report's own viewer):
+`webpane::pane_clear`; the Notebook publishes its pane only while no dialog
+is open at all.
+
+A page larger than 2,000,000 bytes (WebView2's `NavigateToString` limit: a
+report or a rendered Markdown note; HTML notes are served, not passed as a
+string) or a machine without the WebView2 runtime gets the core's formatted
+text with a note saying why, as the TUI always does. The offscreen `png` hook does not
 contain the view (it is a separate window); `webview` with
 `window_capture` takes the composed window.
+
+**Spaces (canvas-core `spaces.rs`, `notebook/`, `tasks/`, `editor.rs`).** The
+toolbar starts with the tabs ` ◫ Canvas `, ` ✎ Notebook `, ` ☑ Tasks `
+(compact ` ◫ `, ` ✎ `, ` ☑ ` when the full ones would leave the status counts
+too little room); a click is `Action::Space`. They are chrome cells like the
+rest of the toolbar; UI Automation sees them as tabs named by their space
+(also when compact), the active one selected. In the Notebook and Tasks the
+main area is drawn from cells in both clients (the GPU client builds no
+`CanvasModel` there; the window shows that cell area like the chrome), the
+sidebar of slot 1 is the space's (its activity-bar icon ✎ or ☑, its UIA name
+EXPLORER or TASKS), the right pane is the space's panel, and the toolbar has
+no *Show all nodes* or − +. UIA sees such a main area as a group named after
+the space with one list item per drawn line. The notes' editor is the same
+cell editor in both clients (the caret is the core's cursor, so IME
+composition shows there); rendered notes, HTML notes and pictures use the
+HTML view above. The mouse's back and forward buttons (XButton1 and
+XButton2, which winit reports as `Back` / `Forward`) walk the window's
+navigation history like Alt+← / Alt+→, also while a terminal has the
+keyboard, never while a dialog is open (`App::nav_button`). The window's
+space is kept in its preferences (`ClientPrefs::space`, `notebook` or
+`tasks`; the canvas is not written).
+
+**Canvas extras of the Notebook and Tasks.** A group's title chips include
+**✎ Notes** and the todo chip **☑ 4 · 2▸ · 1◇**; a chip with
+`ChipModel::attention` (proposals wait) is drawn in gold, a lit one in the
+group's colour, else muted. A session that claimed a todo has
+`BoxModel::badge` (`DEC-031`): the GPU canvas draws it as a pill ` ☑ DEC-031 `
+on the box's bottom edge, from 30 % zoom and only at full opacity; a click on
+it opens the card in Tasks (decks never show one).
 
 **Connection and upgrades.** Local pipe by default, `--remote` as the TUI;
 the offline banner, reconnect with backoff and blocked input come from the
@@ -492,7 +621,10 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
 | `--perf` | frame time (view, scene, encode), present and acquire, input → present, keystroke → echo → present, service round trip |
 | Decks | Subagent boxes are folded into a slim deck beneath their session by default (*Settings › Subagents*: stacked or shown; a session's own choice wins). `K` (on a session, a box of its, or a box in its deck) unfolds everything the session has folded, else folds its subagent boxes and subsessions into one deck; the session menu offers *Show/Stack subagents*, *Unstack/Stack subsessions* and, with both, *Unfold/Stack all*. A click on a subagent deck lists its subagents in the session's details panel, a click on a stack shows its top card (neither starts anything); a drag moves the session with its deck; a double-click unfolds it; `H` hides or shows every subsession and subagent box |
 | Effects | a click on an effect or its box clears it (in every window) and only selects the box; *Settings › Effects*: on · reduced motion · off |
-| Group chips | ⟲ N passive and ⟲ + passive open the group's passive panel (each session's state with Open / Run now / Pause; empty: + Create a passive session), ◧ / ◨ open the folders (remote: the folder browser) |
+| Group chips | ⟲ N passive and ⟲ + passive open the group's passive panel (each session's state with Open / Run now / Pause; empty: + Create a passive session); ✎ Notes opens the Notebook at the group's folder (✎ Set folder… asks for one); ☑ 4 · 2▸ · 1◇ opens its first linked board in Tasks, gold while proposals wait (☑ + creates or links one) |
+| Spaces | the toolbar's tabs or Ctrl+1/2/3; Alt+← / Alt+→, Alt+, / Alt+. and the mouse's back / forward buttons walk the history; Ctrl+P opens Go to; Alt+N writes a quick note; each window remembers its space |
+| Notebook pane | a rendered note, HTML note or picture shows in the HTML view; a click into it gives it the keyboard (scrolling, selecting, Ctrl+C stay in the page; the canvas's keys above, Ctrl+E/W/S/F/N, Ctrl+Tab and F6 reach the canvas; Esc gives the keyboard back); a web link asks first, `[[links]]` and todo ids open in the app; *Print / PDF* opens the print dialog; *Scripts: off/on* (HTML notes) switches a note's own scripts |
+| Todo badge | ☑ DEC-031 on a session's box (a pill from 30 % zoom): a click opens the card in Tasks |
 | Sidebar ⟲ Passive sessions | under each group (with the count, its passive sessions beneath; or "Passive: none · + add…"): a click, Enter or right-click opens the group's passive panel; nothing starts |
 
 ## 3. Testing
@@ -533,7 +665,7 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   `UPDATE_SNAPSHOTS=1 cargo test -p canvas-core --test view_snapshots`
   accepts the new texts.
 - `copilot-canvas selftest --client gui [--remote loopback]` runs the TUI
-  self-test's 39 steps against the GUI in a 170 × 46 cell window. A `Ui`
+  self-test's 45 steps against the GUI in a 170 × 46 cell window. A `Ui`
   trait has two drivers: the TUI's hidden pseudoconsole and `GuiDriver`,
   which starts `copilot-canvas-gui.exe --test-hooks --size 170x46` and turns
   the terminal input the scenario sends (keys, Alt+digits, Ctrl+letters, SGR
@@ -635,7 +767,7 @@ one (`"window": n`, the creation index):
 | `{"cmd":"wheel","dir":"up\|down\|left\|right","x":…,"y":…,"mods":["ctrl"]}` | one wheel notch |
 | `{"cmd":"drop","paths":["…"],"x":…,"y":…}` | files dropped at a cell |
 | `{"cmd":"screen"}` | `lines`: the screen as text (chrome, canvas as TUI characters, terminal text, dialogs) |
-| `{"cmd":"tree"}` | automation tree: click targets with their text, canvas boxes (status, border, prefix, loop, drawing `level`, `dust`, `deck`, `hidden`, `alpha`), `loop_arcs` (box, lap, grow, ending, moving, the dot now), effects (kind, badge, rect) and groups (with their chips) with screen rects, tiles (tint, image placements as cell rects), links, terminal selection, notice, focus, modal, paste preview, and `access`: the UI Automation nodes |
+| `{"cmd":"tree"}` | automation tree: click targets with their text, canvas boxes (status, border, prefix, loop, drawing `level`, `dust`, `deck`, `hidden`, `alpha`, the todo `badge`), `loop_arcs` (box, lap, grow, ending, moving, the dot now), effects (kind, badge, rect) and groups (with their chips: label, rect, `fixed`, `attention`, action) with screen rects, tiles (tint, image placements as cell rects), links, terminal selection, notice, focus, modal, paste preview, `html` (the published pane's id and rect), `space` (`canvas`, `notebook`, `tasks`), and `access`: the UI Automation nodes |
 | `{"cmd":"access"}` | the UI Automation nodes (role, name, description, value, rect, children, focus) and whether a UIA client listens |
 | `{"cmd":"png","path":"…"}` | renders the current frame offscreen to a PNG (works on a locked workstation); `loops`: each loop arc's dot (px and cells), lap and bounds at the instant drawn |
 | `{"cmd":"freeze","tick":0}`, `{"cmd":"freeze"}` | animations (spinners, loop dots, pulsing borders, effects mid-burst) hold frame `tick` (the loop clock at tick × 80 ms); without it they run again |
@@ -649,7 +781,7 @@ one (`"window": n`, the creation index):
 | `{"cmd":"new_window"}`, `{"cmd":"windows"}`, `{"cmd":"close_window","window":1}` | opens a window (answers its index once it is up), lists them (with their `hwnd`), closes one |
 | `{"cmd":"post_keys","text":"xxx","interval_ms":120}` | real WM_KEYDOWN messages to the window (latency measurement) |
 | `{"cmd":"panic"}`, `{"cmd":"panic_thread"}` | crashes on purpose on the UI thread or a helper thread (the crash-log checks) |
-| `{"cmd":"webview"}`, `…,"eval":"JS"`, `…,"capture":"x.png"`, `…,"window_capture":"x.png"`, `…,"probe_raw":"<html>"` | the report HTML view: its state (phase, pane rectangle and size, what was blocked: navigations, requests, new windows, downloads, permissions); a host script's result (the page's own scripts never run); a PNG of the view (`CapturePreview`) or of the composed window (`PrintWindow`); load unsanitized HTML to test the view's own lock-down alone |
+| `{"cmd":"webview"}`, `…,"eval":"JS"`, `…,"capture":"x.png"`, `…,"window_capture":"x.png"`, `…,"probe_raw":"<html>"`, `…,"probe_file":{"path","root","scripts","rect":[x,y,w,h],"id"}` (null removes it), `…,"print":true` | the HTML view of reports and notes: its state (`phase`; the shown view's `visible`, `bounds`, `report` (the pane id), `view` (`plain` or `scripts`), `title`, `source`; `views` with each view's phase, visibility, shown pane, `serving` (`root`, `main`, `scripts`), `loading` and `focused`; `loads`, `blocked_navigations`, `blocked_requests` and `blocked_request_uris`, `served_requests` and `served_request_uris`, `pending_requests`, `app_links`, `print_pending`, `blocked_windows`, `blocked_downloads`, `denied_permissions`, `folder`; `pane` with its id, rect, `bytes` (a page) or `file` (`path`, `root`, `scripts`) and `covered` (a dialog or menu hides it); `core`, the core's view state); a host script's result (the plain view's pages never run their own); a PNG of the view (`CapturePreview`) or of the composed window (`PrintWindow`); load unsanitized HTML to test the view's own lock-down alone; show an HTML note as the Notebook would publish it (served from the notes origin, through the backend); *Print / PDF* for the page shown, once it has loaded |
 | `{"cmd":"quit"}` | saves and exits every window (detach); with `"window"`, closes that one |
 
 ## 4. Measured (PLAN §9)
@@ -808,9 +940,13 @@ view over the viewer) with `CANVAS_GUI_SCREENS`.
   engine's animation tick is not driven); JPEG and GIF files are not shown.
 - **Toasts:** clicking one does not bring the window forward (no COM
   activator is registered); Focus Assist decides whether they pop up.
-- **HTML reports:** pages over 2 MB, and machines without the WebView2
-  runtime, get formatted text instead of the page's own styling. The view is
-  a separate child window, so the offscreen `png` hook leaves it out.
+- **HTML reports and notes:** pages over 2 MB (reports, rendered Markdown
+  notes), and machines without the WebView2 runtime, get formatted text
+  instead of the page's own styling; files an HTML note loads are read whole
+  through the backend (at most 16 MiB each, no ranges, so long media start
+  only once read). The view is a separate child window, so the offscreen
+  `png` hook leaves it out. A note allowed to run scripts loses whatever it
+  kept in memory each time it is hidden (its page is unloaded).
 - **Clipboard on a locked workstation:** Windows refuses it; copy and paste
   fail with a notice (the test hooks use a clipboard of their own then).
 - **Widgets:** dialogs, menus and lists are the TUI's cell layouts drawn

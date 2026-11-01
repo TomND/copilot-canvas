@@ -8,9 +8,13 @@ and lists the agent's configuration. Everything agent-specific goes through
 the provider; the canvas, the service and the event bus are shared.
 
 Every launch also gets the canvas integration: `COPILOT_CANVAS_HOME`,
-`COPILOT_CANVAS_SESSION` (the box id) and the `copilot-canvas` command on
-`PATH` (events, messages, passive status, reports, pull requests, review follow-ups), plus the canvas skills
-(`canvas-events`, `canvas-passive`, `canvas-reports`, `canvas-prs`, `canvas-review-followup`).
+`COPILOT_CANVAS_SESSION` (the box id), `COPILOT_CANVAS_AGENT` with
+`COPILOT_CANVAS_SESSION_AGENT` (the session's agent, see [Notes and
+todos](#notes-and-todos)) and the `copilot-canvas` command on
+`PATH` (events, messages, passive status, reports, pull requests, review
+follow-ups, notes, todos), plus the canvas skills (`canvas-events`,
+`canvas-passive`, `canvas-reports`, `canvas-prs`, `canvas-review-followup`,
+`canvas-todos`, `canvas-notes`; plugin 1.3.0).
 
 ## At a glance
 
@@ -396,6 +400,78 @@ Every change is a report on behalf of the agent in the thread
 `review:<pull request key>`. The service also tracks a reviewed pull request
 in the PR registry (role *reviewed*: never dispatched, only its end), so a
 PR coordinator's monitor tells it when the pull request ended.
+
+## Notes and todos
+
+The canvas's notebook and todo boards (README, *Notebook* and *Todos*;
+docs/NOTEBOOK-TASKS.md) reach every agent the same way: a command, a skill
+and the group instructions.
+
+**The session's agent.** Every launch and every passive run (ordinary
+sessions, subsessions, passive sessions, canvas-wide agents) gets
+`COPILOT_CANVAS_AGENT` set to its agent (`copilot`, `opencode`, `claude`) and
+`COPILOT_CANVAS_SESSION_AGENT` set to the same value
+(`agents::session_agent_env`). `copilot-canvas note new` records it as the
+note's `agent`. `COPILOT_CANVAS_AGENT` also chooses the agent for new
+sessions (`default_agent`, `machine_default`: before the machine's
+`settings.json` and the first installed agent), so the marker tells the two
+apart (`agent_from_env`): when `COPILOT_CANVAS_SESSION_AGENT` holds the same
+value (case-insensitive), the variable only names the session a process runs
+in, and a canvas started inside that session does not take it as a choice;
+set by you (without the marker, or to another agent than the marker's), it
+chooses as before.
+
+**The skills** (plugin 1.3.0, beside the others; `canvas-events` points to
+both, `canvas-reports` to the notes, `canvas-passive` to the todos):
+
+| | `canvas-notes` | `canvas-todos` |
+|---|---|---|
+| When | writing a plan, research, an investigation log, a decision or a hand-off worth keeping; a document the user asked for; before substantial work in a group (read its `ai-docs`, `GOALS.md` first) | the group has boards, the user mentions todos, a backlog or an id like `DEC-031`, picking up or finishing work, finding work worth doing later |
+| Commands | `copilot-canvas note path [--audience ai\|human]`, `note new --title T (--md FILE\|- \| --html FILE\|-) [--audience ai\|human] [--folder REL] [--name FILE]`, `note list [--audience ai\|human] [--format json]` | `todo prime` first; `todo ready` → `todo show ID` → `todo claim ID` → `todo note` / `todo check` → `todo submit ID --pr URL [--summary FILE]`; `todo add` (asked for) or `todo propose --why` (own idea), `--discovered-from ID`; `todo update --blocked`, `todo relate --blocked-by`, `todo release` |
+| Rules | notes for agents in `ai-docs` (`audience: ai`), for the user in `human-outputs` (`audience: human`; one self-contained HTML file when layout matters); no secrets; HTML self-contained and offline (no scripts, CDNs, web fonts or remote images); `[[Note name]]` and todo ids become links; what the user should notice now is a report | never edit the book's files or a `TODOs.md` mirror; never take another session's claim; never run `todo done` (Done is the user's or a merged pull request's); a refusal exits non-zero and says why |
+
+The commands find the caller from `COPILOT_CANVAS_SESSION` (its agent from
+`COPILOT_CANVAS_SESSION_AGENT`, else the routing) and its group, the group's folder and the notebook
+root from the routing the windows send (`<home>/bus/routing.json`). `note`
+writes the files itself (never over another note); `todo` reads the stored
+book and sends every change to the service as a `canvas.todo` request,
+applied as that session (outside a session: you, or the automation
+`AUTOMATION_NAME` names) under the rules in the README. A canvas-wide agent
+is in no group: it reads every board and names `--board` when the canvas has
+several. A Markdown or HTML report a session publishes is also filed in its
+group's `human-outputs/reports` (README, *Reports*).
+
+**The group instructions.** A group with a folder has
+`<folder>/.canvas/canvas-group.instructions.md`, written when the folder is
+prepared (`doc::prepare_group_folders`; rewritten only when its text
+changes; a `"` in the group's name becomes `'`):
+
+```markdown
+---
+applyTo: '**'
+---
+# Canvas group: {name}
+
+You are working in a session of the "{name}" group in Copilot Canvas.
+
+## Notes (the canvas notebook)
+- Notes for other agents (plans, research, investigation logs, context): `{ai_docs}`
+- Deliverables for the user (reports, summaries, final documents; prefer one self-contained HTML file when layout matters): `{outputs}`
+- Start Markdown notes with front matter (`audience: ai` or `audience: human`, `author: ai`, `source_session: <COPILOT_CANVAS_SESSION>`); `copilot-canvas note new` writes it for you.
+- Before substantial work, read `{ai_docs}` (GOALS.md first) for context left by other sessions.
+
+## Todos
+- The canvas keeps todo boards. Run `copilot-canvas todo prime` to see the boards linked to this group and how to use them; change todos only with `copilot-canvas todo …`.
+```
+
+| | Copilot CLI | OpenCode | Claude Code |
+|---|---|---|---|
+| The instructions | `<folder>/.canvas` added to `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` | the file in `instructions` of `OPENCODE_CONFIG_CONTENT` | `--append-system-prompt-file <file>` |
+| `ai-docs`, `human-outputs` | `--add-dir` each | `external_directory` allowed for each (`OPENCODE_PERMISSION`) | `--add-dir` each |
+
+The wording is the same for every agent (it said "This Copilot session"
+before). The digests passive runs read also name the boards: `group-context.md`
+gains a `# Todos` section and `canvas-context.md` a per-board summary.
 
 ## Verified end to end
 

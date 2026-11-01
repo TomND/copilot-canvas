@@ -43,7 +43,7 @@ impl Provide for AgentKind {
 /// else the first installed of Copilot, OpenCode, Claude Code (Copilot when
 /// none is).
 pub fn default_agent() -> AgentKind {
-    if let Some(kind) = std::env::var("COPILOT_CANVAS_AGENT").ok().and_then(|v| AgentKind::parse(&v)) {
+    if let Some(kind) = agent_from_env() {
         return kind;
     }
     ALL.into_iter().find(|kind| kind.provider().program().is_ok()).unwrap_or(AgentKind::Copilot)
@@ -52,10 +52,42 @@ pub fn default_agent() -> AgentKind {
 /// The machine's agent for new sessions: `COPILOT_CANVAS_AGENT`, else
 /// settings.json `agent` in `home`, else the first installed agent.
 pub fn machine_default(home: &Path) -> AgentKind {
-    if let Some(kind) = std::env::var("COPILOT_CANVAS_AGENT").ok().and_then(|v| AgentKind::parse(&v)) {
+    if let Some(kind) = agent_from_env() {
         return kind;
     }
     canvas_common::settings::Settings::load(home).agent.as_deref().and_then(AgentKind::parse).unwrap_or_else(default_agent)
+}
+
+/// Marks `COPILOT_CANVAS_AGENT` as a canvas session's own agent (same value).
+const SESSION_AGENT: &str = "COPILOT_CANVAS_SESSION_AGENT";
+
+/// The environment naming a canvas session's agent (sessions and passive
+/// runs; `copilot-canvas note` records it as a note's `agent`):
+/// `COPILOT_CANVAS_AGENT`, marked as the session's own so that a canvas
+/// started inside the session does not take it as a choice for new sessions.
+pub fn session_agent_env(kind: AgentKind) -> [(String, String); 2] {
+    [("COPILOT_CANVAS_AGENT".to_owned(), kind.id().to_owned()), (SESSION_AGENT.to_owned(), kind.id().to_owned())]
+}
+
+/// `COPILOT_CANVAS_AGENT` as a choice for new sessions: not when it names
+/// the agent its marker (`session`) says the canvas session runs (compared
+/// as agents: `OpenCode` and `opencode` are one).
+fn env_choice(value: Option<&str>, session: Option<&str>) -> Option<AgentKind> {
+    let kind = AgentKind::parse(value?)?;
+    (session.and_then(AgentKind::parse) != Some(kind)).then_some(kind)
+}
+
+/// `COPILOT_CANVAS_AGENT` when it chooses the agent for new sessions (not
+/// when it only names the canvas session this process runs in).
+pub fn agent_from_env() -> Option<AgentKind> {
+    env_choice(std::env::var("COPILOT_CANVAS_AGENT").ok().as_deref(), std::env::var(SESSION_AGENT).ok().as_deref())
+}
+
+/// The agent of the canvas session this process runs in (its marker,
+/// `COPILOT_CANVAS_SESSION_AGENT`; `None` outside one, or from a service
+/// before it): never `COPILOT_CANVAS_AGENT` alone, which may be your choice.
+pub fn session_agent() -> Option<AgentKind> {
+    std::env::var(SESSION_AGENT).ok().as_deref().and_then(AgentKind::parse)
 }
 
 /// Agents whose CLI is installed.
@@ -77,7 +109,8 @@ pub struct Command {
 pub struct Integration {
     /// Canvas skills (`canvas-events`, `canvas-passive`).
     pub plugin_dir: Option<PathBuf>,
-    /// Environment: `COPILOT_CANVAS_HOME`, `COPILOT_CANVAS_SESSION`, `PATH`.
+    /// Environment: `COPILOT_CANVAS_HOME`, `COPILOT_CANVAS_SESSION`, `PATH`
+    /// (agent launches also `COPILOT_CANVAS_AGENT`: [`session_agent_env`]).
     pub env: Vec<(String, String)>,
     /// More plugins with skills (a canvas-wide agent's assigned canvas skills):
     /// another `--plugin-dir` for Copilot and Claude Code, their `skills`
@@ -239,5 +272,21 @@ mod tests {
             assert_eq!(kind.provider().caps(), kind.caps(), "{kind:?}");
             assert_eq!(kind.provider().kind(), kind);
         }
+    }
+
+    #[test]
+    fn a_sessions_own_agent_is_named_but_chooses_nothing() {
+        let env = session_agent_env(AgentKind::OpenCode);
+        assert_eq!(env[0], ("COPILOT_CANVAS_AGENT".to_owned(), "opencode".to_owned()));
+        // Inside a canvas session the variable names that session's agent.
+        assert_eq!(env_choice(Some(&env[0].1), Some(&env[1].1)), None);
+        // Set by you (also inside a session, to another agent): a choice.
+        assert_eq!(env_choice(Some("claude"), None), Some(AgentKind::Claude));
+        assert_eq!(env_choice(Some("copilot"), Some("opencode")), Some(AgentKind::Copilot));
+        assert_eq!((env_choice(None, Some("opencode")), env_choice(Some("nonsense"), None)), (None, None));
+        // The same agent written another way is still the session's own, not a choice.
+        assert_eq!(env_choice(Some(" OpenCode "), Some("opencode")), None);
+        assert_eq!(env_choice(Some("claude-code"), Some("claude")), None);
+        assert_eq!(env_choice(Some("claude"), Some("nonsense")), Some(AgentKind::Claude), "a marker naming no agent marks nothing");
     }
 }

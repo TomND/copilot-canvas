@@ -85,6 +85,9 @@ pub enum Drag {
     TermDivider,
     /// Selecting text in a terminal pane.
     Select { id: String, anchor: (u16, u16), moved: bool },
+    /// A press in the Notebook's or Tasks' main area or sidebar: its drag and
+    /// release go to that module too.
+    Space,
 }
 
 /// What a press that begins an area selection was on.
@@ -114,9 +117,12 @@ pub struct Layout {
     /// Clickable links on screen (rebuilt every frame).
     pub links: Vec<crate::links::Link>,
     pub modal_rect: Option<Rect>,
-    /// Gpu mode: the open HTML report's content area and its safe page
-    /// (the GUI shows it in its HTML view there): (cells, report id, page).
-    pub html_pane: Option<(Rect, String, Arc<String>)>,
+    /// Gpu mode: the HTML page to show over a rectangle of cells (the open
+    /// HTML report's content area; the GUI shows it in its HTML view there).
+    pub html_pane: Option<crate::view::HtmlPane>,
+    /// Areas the Notebook or Tasks module drew (plain-text links are not
+    /// looked for there: the module registers its own).
+    pub space_areas: Vec<Rect>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -196,6 +202,9 @@ pub struct App {
     pub pan_track: crate::glide::PanTrack,
     /// Ctrl+L: repaint every cell on the next frame.
     pub repaint_requested: bool,
+    /// Gpu mode: show the print dialog of the HTML pane on the next frame
+    /// (a one-shot request; the GUI's web view prints or saves a PDF).
+    pub html_print: bool,
     /// When you last typed into each terminal (for idle auto-stop).
     pub last_input_at: HashMap<String, Instant>,
     pub idle_check_at: Instant,
@@ -347,6 +356,15 @@ pub struct App {
     pub canvas_skills: Option<Result<Vec<canvas_model::canvas_wide::SkillInfo>, String>>,
     /// The Reports inbox and its viewer (`reports.rs`).
     pub reports: crate::reports::ReportsState,
+    /// What the main area shows: the session canvas, the notebook or the
+    /// todo boards (`spaces.rs`; kept in this window's preferences).
+    pub space: crate::spaces::Space,
+    /// Where this window has been (Alt+← / Alt+→).
+    pub nav: crate::spaces::History,
+    /// The Notebook space (`notebook/`).
+    pub notebook: crate::notebook::State,
+    /// The Tasks space (`tasks/`).
+    pub tasks: crate::tasks::State,
 }
 
 impl App {
@@ -366,8 +384,11 @@ impl App {
         let replica = Replica::new(&opened);
         let mut doc = opened.doc;
         let mut prefs = prefs.map(PrefsFile::new);
+        let mut space = crate::spaces::Space::Canvas;
         if let Some(file) = prefs.as_mut() {
-            file.load().unwrap_or_else(|| ClientPrefs::of(&doc)).apply(&mut doc);
+            let loaded = file.load().unwrap_or_else(|| ClientPrefs::of(&doc));
+            space = loaded.space.as_deref().and_then(crate::spaces::Space::parse).unwrap_or_default();
+            loaded.apply(&mut doc);
         }
         let (info, info_error) = match backend.info() {
             Ok(info) => (info, None),
@@ -443,6 +464,7 @@ impl App {
             last_input_at: HashMap::new(),
             idle_check_at: Instant::now(),
             repaint_requested: false,
+            html_print: false,
             pan_quiet_until: None,
             glide: None,
             pan_track: Default::default(),
@@ -484,6 +506,10 @@ impl App {
             recent: Default::default(),
             canvas_skills: None,
             reports: Default::default(),
+            space,
+            nav: Default::default(),
+            notebook: Default::default(),
+            tasks: Default::default(),
             instance: None,
             new_service_rx: None,
             restarting: None,
@@ -525,8 +551,11 @@ impl App {
         self.needs_draw = true;
     }
 
-    /// Sends pending edits and writes changed preferences now.
+    /// Sends pending edits, writes changed preferences and the notes typed
+    /// in the last second now (every quit, detach and window close of both
+    /// clients ends here).
     pub fn save_now(&mut self) {
+        crate::notebook::flush(self);
         self.flush_doc();
         self.save_prefs();
     }
@@ -554,7 +583,9 @@ impl App {
     pub fn save_prefs(&mut self) {
         self.prefs_dirty_at = None;
         self.doc.selected = self.selection.last().cloned();
-        let prefs = ClientPrefs::of(&self.doc);
+        let mut prefs = ClientPrefs::of(&self.doc);
+        // The canvas is the default space (not written).
+        prefs.space = (self.space != crate::spaces::Space::Canvas).then(|| self.space.key().to_owned());
         if let Some(Err(error)) = self.prefs.as_mut().map(|file| file.save(&prefs)) {
             self.save_error = Some(format!("cannot save the view: {error:#}"));
         }
@@ -1485,6 +1516,11 @@ impl App {
             }
             slots
         } else {
+            // Another space shows its own panel; a terminal shows there only
+            // while you are in it (a session started from that space).
+            if self.space != crate::spaces::Space::Canvas {
+                return self.focused_term.clone().filter(|id| self.focus == Focus::Terminal && self.terms.contains_key(id)).into_iter().collect();
+            }
             // A selected group shows its own panel (folders, defaults, members).
             if self.selected_group.is_some() && self.selection.is_empty() {
                 return Vec::new();
@@ -1682,6 +1718,10 @@ impl App {
                 if let Some(id) = &id {
                     self.launching.remove(id);
                     self.node_errors.insert(id.clone(), "launch failed".into());
+                }
+                // A todo change of this window refused (the book as it is follows): it is undone now.
+                if id.is_none() && message.starts_with("Todo change ") {
+                    crate::tasks::refused(self);
                 }
                 // A resumed child that may not start goes again (with its own notice).
                 if !id.is_some_and(|id| self.launch_refused(&id, &message)) {
@@ -2089,6 +2129,9 @@ impl App {
         self.tick_inspector();
         self.tick_recent();
         self.visual_tick();
+        // The Notebook and Tasks spaces (autosave, polling), whichever shows.
+        crate::notebook::tick(self);
+        crate::tasks::tick(self);
         // A burst of arrow-key moves ends a second after the last one (one undo step).
         self.tick_undo();
         // Failed automations pulse until their next good run. Loop dots: the

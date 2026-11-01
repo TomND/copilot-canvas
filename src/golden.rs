@@ -6,7 +6,9 @@
 //! do not depend on the machine's data or the clock: the demo canvas (idle,
 //! zoomed out to 50 %, a context menu, the new-session dialog), two tiled
 //! PowerShell terminals printing fixed text (colours, styles, underline
-//! kinds, emoji, CJK) under a fixed prompt, and the parity sandbox's canvas
+//! kinds, emoji, CJK) under a fixed prompt, the Reports inbox and viewer,
+//! the demo's todo boards in Tasks, a note in the Notebook's editor, and the
+//! parity sandbox's canvas
 //! with every status. Animations hold one frame (the `freeze` hook), notices
 //! are waited out, and a capture counts once the screen text has settled and
 //! two renders in a row are identical. Regions that change legitimately are
@@ -666,6 +668,24 @@ fn demo_shots(shots: &mut Shots) -> Result<()> {
     ui.wait("the brief", Duration::from_secs(10), |t| t.contains("Report · Morning brief") && t.contains("│ State"))?;
     shots.shot(&ui, "report-viewer", &|_: &GuiDriver| vec![status_figures()]);
     ui.send(b"\x1b")?;
+
+    // The other spaces: the demo's todo boards, and a note in the editor
+    // (Source: cells; Rendered is the WebView2 view, which a capture of the frame has not).
+    ui.send(&crate::selftest::ctrl_digit(3))?;
+    // Slot 1 of the activity bar: this space's sidebar (the inbox stayed in its slot).
+    ui.send(b"\x1b1")?;
+    ui.wait("the demo boards", Duration::from_secs(10), |t| t.contains("☑ TASKS") && t.contains("Canvas App · WI") && t.contains("WI-006"))?;
+    shots.shot(&ui, "tasks-board", &|_: &GuiDriver| vec![status_figures()]);
+    let root = sb.instance.home.join("notebook");
+    std::fs::create_dir_all(&root)?;
+    std::fs::write(root.join("Golden note.md"), "# Golden note\n\n- [[Plan]] for **today**, see WI-003\n- [ ] a task\n\n> A quote.\n")?;
+    ui.send(&crate::selftest::ctrl_digit(2))?;
+    ui.wait("the note in the explorer", Duration::from_secs(10), |t| t.contains("✎ EXPLORER") && t.contains("Golden note.md"))?;
+    let (x, y) = ui.find("Golden note.md").context("the note's row")?;
+    click(&ui, "left", (x as f64 + 0.5, y as f64 + 0.5))?;
+    ui.send(b"\x05")?;
+    ui.wait("the note in Source", Duration::from_secs(10), |t| t.contains("# Golden note") && t.contains("[[Plan]]"))?;
+    shots.shot(&ui, "notebook-source", &|_: &GuiDriver| vec![status_figures()]);
 
     let _ = ui.request(json!({ "cmd": "quit" }));
     let _ = ui.wait_exit(Duration::from_secs(10));

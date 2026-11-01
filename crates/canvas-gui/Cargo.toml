@@ -15,6 +15,7 @@ accesskit_winit.workspace = true
 canvas-agents.workspace = true
 canvas-common.workspace = true
 canvas-core.workspace = true
+canvas-model.workspace = true
 canvas-termview.workspace = true
 anyhow.workspace = true
 bytemuck.workspace = true

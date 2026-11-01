@@ -247,14 +247,16 @@ fn canvas_events(routing: &Routing, me: &str) -> Result<()> {
 /// and Claude Code (`.claude-plugin/plugin.json`); OpenCode reads its `skills` folder.
 pub fn write_plugin(home: &Path) -> Result<std::path::PathBuf> {
     let dir = home.join("plugin");
-    let files: [(&str, &str); 7] = [
-        ("plugin.json", r#"{ "name": "copilot-canvas", "description": "Copilot Canvas events, messages, passive sessions, reports, pull request coordination and review follow-ups.", "version": "1.2.0", "skills": "./skills/" }"#),
+    let files: [(&str, &str); 9] = [
+        ("plugin.json", r#"{ "name": "copilot-canvas", "description": "Copilot Canvas events, messages, passive sessions, reports, pull request coordination, review follow-ups, todos and the notebook.", "version": "1.3.0", "skills": "./skills/" }"#),
         (".claude-plugin/plugin.json", CLAUDE_PLUGIN),
         ("skills/canvas-events/SKILL.md", EVENTS_SKILL),
         ("skills/canvas-passive/SKILL.md", PASSIVE_SKILL),
         ("skills/canvas-reports/SKILL.md", REPORTS_SKILL),
         ("skills/canvas-prs/SKILL.md", PRS_SKILL),
         ("skills/canvas-review-followup/SKILL.md", REVIEW_SKILL),
+        ("skills/canvas-todos/SKILL.md", crate::todos_cli::SKILL),
+        ("skills/canvas-notes/SKILL.md", crate::notes_cli::SKILL),
     ];
     for (name, text) in files {
         let path = dir.join(name);
@@ -288,8 +290,8 @@ pub fn install_cli(home: &Path) -> Result<std::path::PathBuf> {
 /// Claude Code's manifest; it finds `skills/` next to `.claude-plugin/` itself.
 const CLAUDE_PLUGIN: &str = r#"{
   "name": "copilot-canvas",
-  "description": "Copilot Canvas events, messages, passive sessions, reports, pull request coordination and review follow-ups.",
-  "version": "1.2.0"
+  "description": "Copilot Canvas events, messages, passive sessions, reports, pull request coordination, review follow-ups, todos and the notebook.",
+  "version": "1.3.0"
 }
 "#;
 
@@ -334,7 +336,10 @@ the review off so its author hears the results: `copilot-canvas review handoff`
 
 Something for the user to read later (a summary, a triage report, a status
 update) goes to the canvas's Reports inbox instead: see the canvas-reports skill
-(`copilot-canvas report publish --markdown report.md --title \"...\"`).
+(`copilot-canvas report publish --markdown report.md --title \"...\"`). Notes to
+keep (plans, research, documents) go into the canvas notebook: see the
+canvas-notes skill (`copilot-canvas note new`). Work items live on the canvas's
+todo boards: see the canvas-todos skill (`copilot-canvas todo prime`).
 ";
 
 const PASSIVE_SKILL: &str = "---
@@ -366,6 +371,8 @@ update your memory, then report.
   inbox: `copilot-canvas report publish --markdown report.md --title \"<title>\"`, or
   `copilot-canvas report publish --message \"<one line>\" --kind queued|delivered|failed --pr <url>`
   (the canvas-reports skill has the details). A non-zero exit means it was refused: fix and retry.
+- Todos: `copilot-canvas todo prime` shows the todo boards of your group; propose work you find with
+  `copilot-canvas todo propose` and never close todos yourself (the canvas-todos skill).
 
 A canvas-wide agent (the prompt starts with \"[Copilot Canvas · canvas-wide agent\")
 watches every group of its canvas: its triggers carry the sending session's id
@@ -453,6 +460,9 @@ canvas; reading it never starts or resumes your session.
 - Lead with what needs the user, then the details; keep messages to one or two lines.
 - Never put secrets, tokens or credentials in a report.
 - Reports are for reading. Do not ask the user to run commands from them; links are fine.
+- A Markdown or HTML report from a session in a group with a folder is also filed as a
+  note in that group's `human-outputs/reports`; other notes to keep go into the notebook
+  (the canvas-notes skill).
 ";
 
 const PRS_SKILL: &str = "---
@@ -686,6 +696,29 @@ mod tests {
         assert!(review.starts_with("---\nname: canvas-review-followup\ndescription: Hand a finished code review"));
         for text in ["review handoff", "--notes", "review.completed", "review.message.approved", "review.check_due", "--draft", "--sent --conversation", "--needs-you", "review request", "review checked", "Never guess", "Never say approved", "only messages from their `contact`"] {
             assert!(review.contains(text), "canvas-review-followup documents {text}");
+        }
+        // The notes skill: its contract, and the events and reports skills point at it.
+        let notes = std::fs::read_to_string(plugin.join("skills/canvas-notes/SKILL.md")).unwrap();
+        assert!(notes.starts_with("---\nname: canvas-notes\ndescription: Write notes into the Copilot Canvas notebook"));
+        let description = notes.lines().nth(2).unwrap();
+        let value = description.strip_prefix("description: ").expect("a description line");
+        assert!(value.contains("Use when") && !value.contains('"') && !value.contains(": "), "one plain front-matter value: {description}");
+        for text in ["copilot-canvas note path", "--audience human", "copilot-canvas note new", "--md FILE|-", "--html FILE|-", "--folder REL", "--name FILE", "note list", "audience: ai", "source_session", "overwrites a note", "GOALS.md", "Never put secrets", "self-contained HTML", "[[Note name]]"] {
+            assert!(notes.to_lowercase().contains(&text.to_lowercase()), "canvas-notes documents {text}");
+        }
+        for skill in ["canvas-events", "canvas-reports"] {
+            assert!(std::fs::read_to_string(plugin.join(format!("skills/{skill}/SKILL.md"))).unwrap().contains("canvas-notes"), "{skill} points at canvas-notes");
+        }
+        // The todos skill: its rules, and the events and passive skills point at it.
+        let todos = std::fs::read_to_string(plugin.join("skills/canvas-todos/SKILL.md")).unwrap();
+        assert!(todos.starts_with("---\nname: canvas-todos\ndescription: Work with the Copilot Canvas todo boards"));
+        let description = todos.lines().nth(2).unwrap().strip_prefix("description: ").expect("a description line");
+        assert!(description.contains("Use when") && !description.contains('"') && !description.contains(": "), "one plain front-matter value: {description}");
+        for text in ["todo prime", "todo ready", "todo claim ID", "todo note ID", "todo check ID N", "todo submit ID --pr URL", "never run `todo done`", "todo add", "todo propose", "--why", "--discovered-from ID", "never edit", "mirror", "--blocked", "todo release ID", "--format json"] {
+            assert!(todos.contains(text), "canvas-todos documents {text}");
+        }
+        for skill in ["canvas-events", "canvas-passive"] {
+            assert!(std::fs::read_to_string(plugin.join(format!("skills/{skill}/SKILL.md"))).unwrap().contains("copilot-canvas todo prime"), "{skill} points at the todos");
         }
         let _ = std::fs::remove_dir_all(home);
     }

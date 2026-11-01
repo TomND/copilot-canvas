@@ -10,6 +10,7 @@ mod passive;
 mod prs;
 mod reviews;
 mod push;
+mod todos;
 pub use canvas_host::{keys, term};
 
 use std::collections::{HashMap, HashSet};
@@ -117,6 +118,11 @@ pub struct Agents {
     prs: Mutex<prs::Hub>,
     /// The routed canvas's review follow-ups (`reviews.rs`).
     reviews: Mutex<reviews::Hub>,
+    /// The routed canvas's todo boards (`todos.rs`).
+    todos: Mutex<todos::Hub>,
+    /// Held while a bus snapshot is made and sent (the bus loop, windows'
+    /// todo changes), so a snapshot never overtakes a newer one.
+    snapshots: Mutex<()>,
     /// The Dev Tunnels access token phone clients get (`CAP_TUNNEL_ACCESS`).
     tunnel_access: Mutex<Option<crate::tunnel_access::Access>>,
     /// Asks the tunnel access thread to issue a token now.
@@ -168,6 +174,8 @@ impl Agents {
             reports: Mutex::new(crate::reports::Store::open(&instance.home, now_ms())),
             prs: Mutex::new(prs::Hub::default()),
             reviews: Mutex::new(reviews::Hub::default()),
+            todos: Mutex::new(todos::Hub::default()),
+            snapshots: Mutex::new(()),
             tunnel_access: Mutex::new(None),
             tunnel_wake: tunnel_tx,
             push: push::Push::new(&instance.home),
@@ -264,6 +272,8 @@ impl Agents {
             launch.resume = false;
         }
         let mut integration = self.integration(id);
+        // Sessions and passive runs know their agent (`COPILOT_CANVAS_AGENT`).
+        integration.env.extend(crate::agents::session_agent_env(kind));
         integration.skill_plugins.extend(self.skill_plugin(id));
         let command = provider.command(id, &launch, &integration)?;
         let how = if launch.headless_prompt.is_some() { "headless run" } else if launch.fork_from.is_some() { "fork" } else if launch.resume { "resume" } else { "new session" };
@@ -383,7 +393,10 @@ impl HostApp for Agents {
         for (id, native) in lock(&self.agent_sessions).iter() {
             client.send(ServiceMsg::AgentSession { id: id.clone(), native: native.clone() });
         }
-        client.send(ServiceMsg::Bus { json: passive::snapshot(self) });
+        {
+            let _turn = lock(&self.snapshots);
+            client.send(ServiceMsg::Bus { json: passive::snapshot(self) });
+        }
         // Only clients that show the inbox get it (`CAP_REPORTS`).
         client.send(inbox::message(self));
         if client.caps() & CAP_TUNNEL_ACCESS != 0 {
@@ -423,8 +436,9 @@ impl HostApp for Agents {
                 }
             }
             ClientMsg::Bus { json } => {
-                // Inbox requests travel as bus requests (older services ignore them).
-                let handled = serde_json::from_str::<serde_json::Value>(&json).is_ok_and(|value| inbox::action(self, &value));
+                // Inbox requests travel as bus requests (older services ignore them);
+                // todo operations are applied at once, as you.
+                let handled = serde_json::from_str::<serde_json::Value>(&json).is_ok_and(|value| inbox::action(self, &value) || todos::action(self, client, &value));
                 if !handled {
                     passive::action(self, &json, &self.bus_tx);
                 }

@@ -123,6 +123,9 @@ pub struct BoxModel {
     pub deck: Option<DeckInfo>,
     /// Subsessions and subagent boxes hidden into this box ("hide all").
     pub hidden: Option<Hidden>,
+    /// The todo the session claimed (its id, drawn as `☑ DEC-031`; a click
+    /// opens its card in Tasks).
+    pub badge: Option<String>,
 }
 
 /// A deck drawn beneath its session: stacked subsessions and/or the
@@ -254,7 +257,7 @@ pub struct GroupModel {
     pub families: Vec<(f32, f32, String)>,
 }
 
-/// A clickable chip on a group's title row ("◧ AI docs", "⟲ 2", "+ passive").
+/// A clickable chip on a group's title row ("✎ Notes", "☑ 4 · 2▸", "⟲ 2", "⟲ + passive").
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChipModel {
     pub label: String,
@@ -265,6 +268,8 @@ pub struct ChipModel {
     pub fixed: bool,
     /// Drawn in the group's colour (else muted: nothing set up yet).
     pub lit: bool,
+    /// Drawn in gold: something waits for you (todo proposals).
+    pub attention: bool,
 }
 
 /// A looping box's loopback arc. The lit dot's place is a function of the
@@ -402,17 +407,57 @@ pub struct View {
     /// The top-most dialog or menu.
     pub modal: Option<Rect>,
     pub banner: Option<String>,
-    /// An HTML report to show over the report viewer's content area (GUI).
+    /// An HTML page to show over a rectangle of cells (GUI).
     pub html: Option<HtmlPane>,
+    /// Gpu mode: show the HTML pane's print dialog now (one-shot).
+    pub html_print: bool,
 }
 
-/// An HTML report for the GUI's HTML view: where (cells), which report, and
-/// its sanitized page with its Content-Security-Policy.
+/// An HTML page for the GUI's web view: where (cells), what (an id that
+/// changes when the page does), its source and who published it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HtmlPane {
     pub rect: Rect,
     pub id: String,
-    pub document: std::sync::Arc<String>,
+    pub source: HtmlSource,
+    pub origin: HtmlOrigin,
+}
+
+impl HtmlPane {
+    /// What a web link clicked in the page does: the canvas asks first, in
+    /// words that say where the link comes from (a report or a note).
+    pub fn link(&self, url: String) -> crate::reports::ReportAction {
+        match self.origin {
+            HtmlOrigin::Report => crate::reports::ReportAction::Link(url),
+            HtmlOrigin::Note => crate::reports::ReportAction::NoteLink(url),
+        }
+    }
+}
+
+/// Who published an HTML pane.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HtmlOrigin {
+    /// The report viewer.
+    #[default]
+    Report,
+    /// The notebook's reader (rendered Markdown, an HTML note, an image).
+    Note,
+}
+
+/// Where an HTML pane's page comes from.
+#[derive(Clone, Debug, PartialEq)]
+pub enum HtmlSource {
+    /// A whole page made by the core (reports, rendered Markdown): sanitized,
+    /// with its Content-Security-Policy first.
+    Document(std::sync::Arc<String>),
+    /// An HTML note on the service's machine (`path`, inside `root`, the
+    /// explorer root it is in, else its folder): the GUI serves it from
+    /// `https://notes.canvas.invalid/` mapped to `root` (so its relative
+    /// links resolve as on disk) and, of that, only the files in the note's
+    /// own folder and the folders below it (read through the backend),
+    /// sanitized unless `scripts` (its own scripts may run, sandboxed),
+    /// always under a Content-Security-Policy that allows no other host.
+    File { path: String, root: String, scripts: bool },
 }
 
 // ---------- stable text dump (snapshot tests) ----------
@@ -507,7 +552,8 @@ impl CanvasModel {
                 g.has_folder
             ));
             for chip in &g.chips {
-                out.push(format!("  chip {:?} action={:?} rect={} fixed={} lit={}", chip.label, chip.action, wrect(chip.rect), chip.fixed, chip.lit));
+                let attention = if chip.attention { " attention=true" } else { "" };
+                out.push(format!("  chip {:?} action={:?} rect={} fixed={} lit={}{attention}", chip.label, chip.action, wrect(chip.rect), chip.fixed, chip.lit));
             }
             for (x, y, family) in &g.families {
                 out.push(format!("  family {:?} at={},{}", family, num(*x), num(*y)));
@@ -546,6 +592,9 @@ impl CanvasModel {
             if let Some(hidden) = b.hidden {
                 let agents = if hidden.agents > 0 { format!(" agents={}", hidden.agents) } else { String::new() };
                 out.push(format!("  hidden={}{agents} color={}", hidden.total(), hidden.color.map(color_name).unwrap_or_else(|| "none".into())));
+            }
+            if let Some(badge) = &b.badge {
+                out.push(format!("  badge={badge}"));
             }
         }
         for e in &self.effects {
@@ -608,7 +657,10 @@ impl View {
         out.extend(self.tiles.iter().map(TileModel::dump));
         if let Some(html) = &self.html {
             // The page itself is pinned by the sanitizer's tests; its size and policy here.
-            out.push(format!("html {} rect={} bytes={} csp={}", html.id, cells(html.rect), html.document.len(), html.document.contains("script-src 'none'")));
+            match &html.source {
+                HtmlSource::Document(document) => out.push(format!("html {} rect={} bytes={} csp={}", html.id, cells(html.rect), document.len(), document.contains("script-src 'none'"))),
+                HtmlSource::File { path, root, scripts } => out.push(format!("html {} rect={} file={path:?} root={root:?} scripts={scripts}", html.id, cells(html.rect))),
+            }
         }
         out.join("\n")
     }
@@ -641,6 +693,34 @@ mod tests {
         assert_eq!(style_name(Style::default()), "[]");
         assert_eq!(color_name(Color::Indexed(7)), "idx7");
         assert_eq!(color_name(Color::DarkGray), "darkgray");
+    }
+
+    #[test]
+    fn html_panes_dump_their_source() {
+        let page = std::sync::Arc::new("<meta content=\"script-src 'none'\"><p>x</p>".to_owned());
+        let mut view = View { html: Some(HtmlPane { rect: Rect::new(1, 2, 30, 10), id: "r1".into(), source: HtmlSource::Document(page.clone()), origin: HtmlOrigin::Report }), ..View::default() };
+        assert!(view.dump().ends_with(&format!("html r1 rect=1,2 30x10 bytes={} csp=true", page.len())), "{}", view.dump());
+        view.html = Some(HtmlPane { rect: Rect::new(1, 2, 30, 10), id: "n1".into(), source: HtmlSource::File { path: r"C:\notes\a.html".into(), root: r"C:\notes".into(), scripts: false }, origin: HtmlOrigin::Note });
+        assert!(view.dump().ends_with(r#"html n1 rect=1,2 30x10 file="C:\\notes\\a.html" root="C:\\notes" scripts=false"#), "{}", view.dump());
+    }
+
+    #[test]
+    fn links_from_a_pane_ask_in_words_that_say_where_they_come_from() {
+        use crate::reports::ReportAction;
+        let pane = |origin, source| HtmlPane { rect: Rect::new(0, 0, 4, 4), id: "x".into(), source, origin };
+        let page = HtmlSource::Document(std::sync::Arc::new(String::new()));
+        let file = HtmlSource::File { path: r"C:\n\a.html".into(), root: r"C:\n".into(), scripts: false };
+        let url = || "https://example.com/".to_owned();
+        assert_eq!(pane(HtmlOrigin::Report, page.clone()).link(url()), ReportAction::Link(url()));
+        assert_eq!(pane(HtmlOrigin::Note, page).link(url()), ReportAction::NoteLink(url()), "rendered Markdown of a note");
+        assert_eq!(pane(HtmlOrigin::Note, file).link(url()), ReportAction::NoteLink(url()), "an HTML note");
+        let (mut app, _dir) = app(crate::demo::demo_doc("."));
+        for (action, title) in [(ReportAction::Link(url()), "Open this link from a report?"), (ReportAction::NoteLink(url()), "Open this link from a note?")] {
+            app.report_action(action);
+            let Some(crate::dialogs::Modal::Confirm(confirm)) = app.modals.pop() else { panic!("it asks first") };
+            assert_eq!(confirm.title, title);
+            assert_eq!(confirm.buttons[0].1, crate::dialogs::Action::Report(ReportAction::OpenUrl(url())), "Open opens it in the browser");
+        }
     }
 
     #[test]

@@ -162,6 +162,52 @@ REPORTS (the canvas inbox, Reports in the activity bar; see the canvas-reports s
   copilot-canvas report list [--unread] [--limit N]
                                         stored, queued and refused reports
 
+NOTES (the canvas notebook; see the canvas-notes skill)
+  copilot-canvas note path [--audience ai|human]
+                                        the folder for this session's notes: its group's ai-docs (for
+                                        agents, the default) or human-outputs (for you); a session in no
+                                        group with a folder: the notebook's Inbox
+  copilot-canvas note new --title TITLE (--md FILE|- | --html FILE|-) [--audience ai|human]
+                 [--folder REL] [--name FILE]
+                                        write a note there with its provenance (author ai, agent, session,
+                                        created; audience ai unless the option or the note says human);
+                                        never overwrites (adds -2, -3); prints its path
+  copilot-canvas note list [--audience ai|human] [--internal] [--format json]
+                                        the notes of this session's group, newest first (--internal: also
+                                        internal files, such as dot files and the trash; never .git)
+
+TODOS (the canvas's todo boards, the Tasks space; see the canvas-todos skill)
+  copilot-canvas todo prime             the boards linked to this session's group, its claims, what is
+                                        ready, the rules and the commands (agents: run it first)
+  copilot-canvas todo boards [--tree] [--format json]
+  copilot-canvas todo list [--board B] [--status S] [--type T] [--mine] [--all] [--format json]
+                                        open todos of this group's boards (--all: every board, done too)
+  copilot-canvas todo show ID [--format json] · todo ready [--board B] [--format json]
+  copilot-canvas todo add TITLE --type T [--board B] [--priority P] [--status backlog|todo] [--body FILE|-]
+                 [--parent ID] [--label L]… [--check TEXT]…     a todo the user asked for
+  copilot-canvas todo propose TITLE --type T --why TEXT [--board B] [--discovered-from ID] [--priority P]
+                 [--body FILE|-]                                 your own idea: the user accepts or declines it
+  copilot-canvas todo update ID [--title T] [--type T] [--priority P] [--blocked WHY|none] [--blocker yes|no]
+                 [--body FILE|-] [--label L|-L]…
+  copilot-canvas todo move ID --status S [--board B]
+  copilot-canvas todo claim ID [--session NAME|ID] [--force] · todo release ID · todo note ID TEXT
+                                        (--session: you assign it to a session of the canvas)
+  copilot-canvas todo check ID N [--undo] · todo check ID --add TEXT
+  copilot-canvas todo link ID (--pr URL | --note PATH | --session ID | --url URL | --file PATH)
+  copilot-canvas todo relate ID (--blocked-by ID | --related ID | --duplicate-of ID)
+  copilot-canvas todo submit ID [--pr URL] [--summary FILE|-]    finished: in review until done
+  copilot-canvas todo accept ID [--status backlog|todo|in_progress|in_review] · decline ID [--reason TEXT]
+                 · done ID · cancel ID [--reason TEXT] · reopen ID · delete ID   (you; agents never close todos)
+  copilot-canvas todo board add NAME [--prefix P] [--parent B] · todo board link B [--group NAME|ID]
+  copilot-canvas todo board unlink B --group NAME|ID · todo board delete B [--with-todos]
+                                        (you; a board goes with its swimlanes; one holding todos only with
+                                        --with-todos, which deletes them too: their ids are never reused)
+  copilot-canvas todo import FILE [--board B] [--prefix P]       the TODOs.md format (keeps the ids)
+  copilot-canvas todo mirror [--out FILE | --set FILE|off]       that format (--set: rewritten after
+                                        every change) · todo export --canvas FILE [--board B] (JSON Canvas)
+                                        Writes go through the service (it waits for its answer); a
+                                        refusal exits non-zero with the reason
+
 PULL REQUESTS (a canvas-wide PR coordinator follows them; see the canvas-prs skill)
   copilot-canvas pr track URL [--session NAME|ID] [--title TEXT]
                                         hand a GitHub or Azure DevOps pull request to the canvas: it is
@@ -208,7 +254,8 @@ OPTIONS
   --instance NAME      separate service + canvas namespace (default: default)
   --home DIR           data directory (default: ~/.copilot-canvas, or COPILOT_CANVAS_HOME)
   --sessions-dir DIR   Copilot session history to index (default: ~/.copilot/session-state)
-  --canvas FILE        canvas file (default: <home>/canvas.json; with --remote, a path on the service's machine)
+  --canvas FILE        canvas file (default: <home>/canvas.json; with --remote, a path on the service's machine;
+                       `todo export`: the JSON Canvas file it writes)
   --cwd DIR            default folder for new sessions (default: current folder)
   --remote TARGET      connect over TCP: `loopback`, a paired server's name or HOST:PORT (see above)
   -h, --help · -V, --version
@@ -268,7 +315,7 @@ fn parse() -> Result<Args> {
             "--canvas" => args.canvas = Some(PathBuf::from(value("--canvas")?)),
             "--cwd" => args.cwd = Some(PathBuf::from(value("--cwd")?)),
             "--remote" => args.remote = Some(value("--remote")?),
-            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--unread" | "--sent" | "--qr" => {
+            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--unread" | "--sent" | "--qr" | "--mine" | "--tree" | "--all" | "--internal" | "--undo" | "--with-todos" => {
                 args.flags.push(arg.trim_start_matches("--").to_owned())
             }
             "--" => {
@@ -504,6 +551,12 @@ fn real_main() -> Result<()> {
             Ok(())
         }
         ["report", ..] => bail!("usage: copilot-canvas report publish (--markdown FILE | --html FILE | --message TEXT) [--title T] [options] · report list (see copilot-canvas --help)"),
+        ["todo", words @ ..] => {
+            // The global --canvas FILE is `todo export`'s output; other verbs leave it to the client.
+            let options = canvas_agents::todos_cli::options_with_canvas(words, &args.rest, args.canvas.as_deref());
+            canvas_agents::todos_cli::run(&instance.home, words, &options, &args.flags)
+        }
+        ["note", words @ ..] => canvas_agents::notes_cli::run(&instance.home, words, &args.rest, &args.flags),
         ["pr", "track", url] => prs_cli::track(&instance.home, url, option("session"), option("title")),
         ["pr", "untrack", url] => prs_cli::untrack(&instance.home, url),
         ["pr", "check"] => prs_cli::check(&instance.home, None),

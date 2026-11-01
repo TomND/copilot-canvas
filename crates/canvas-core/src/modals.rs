@@ -7,7 +7,9 @@ use crate::dialogs::{Action, FolderBrowser, GitState, Hit, Modal, NewSession, Ns
 use crate::input::{KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseEventKind};
 use crate::paint::rect_contains;
 
-enum Outcome {
+/// What a key or click in a dialog leaves: the dialog kept or closed, and an
+/// action to run after it.
+pub enum Outcome {
     Keep,
     Close,
     CloseAndRun(Action),
@@ -61,6 +63,20 @@ impl App {
             Some(Modal::ImportCopilot(dialog)) => dialog.filter.insert(text),
             Some(Modal::Folder(browser)) => browser.filter.push_str(text.trim()),
             Some(Modal::Pick(pick)) => pick.filter.push_str(text.trim()),
+            Some(Modal::GoTo(goto)) => {
+                goto.input.insert(text);
+                goto.refilter();
+            }
+            Some(Modal::Notebook(_) | Modal::Tasks(_)) => {
+                if let Some(mut modal) = self.modals.pop() {
+                    match &mut modal {
+                        Modal::Notebook(dialog) => crate::notebook::dialog_text(self, dialog, text),
+                        Modal::Tasks(dialog) => crate::tasks::dialog_text(self, dialog, text),
+                        _ => {}
+                    }
+                    self.modals.push(modal);
+                }
+            }
             _ => {}
         }
         self.needs_draw = true;
@@ -172,6 +188,9 @@ impl App {
                 crate::reports::ViewerOutcome::Run(action) => Outcome::KeepAndRun(action),
                 crate::reports::ViewerOutcome::CloseAndRun(action) => Outcome::CloseAndRun(action),
             },
+            Modal::GoTo(goto) => crate::spaces::goto_key(self, goto, key),
+            Modal::Notebook(dialog) => crate::notebook::dialog_key(self, dialog, key),
+            Modal::Tasks(dialog) => crate::tasks::dialog_key(self, dialog, key),
             Modal::ImportCopilot(dialog) => {
                 let candidates = self.copilot_import_candidates(&dialog.filter.text);
                 let ctrl = key.modifiers.contains(Modifiers::CONTROL);
@@ -672,6 +691,17 @@ impl App {
 
     pub fn modal_mouse(&mut self, mouse: MouseEvent) {
         let (x, y) = (mouse.column, mouse.row);
+        // The Notebook's and Tasks' dialogs get every mouse event themselves.
+        if matches!(self.modals.last(), Some(Modal::Notebook(_) | Modal::Tasks(_))) {
+            let hit = self.layout.hits.iter().rev().find(|(r, _)| rect_contains(*r, x, y)).map(|(_, h)| h.clone());
+            let Some(mut modal) = self.modals.pop() else { return };
+            let outcome = match &mut modal {
+                Modal::Notebook(dialog) => crate::notebook::dialog_mouse(self, dialog, mouse, hit),
+                Modal::Tasks(dialog) => crate::tasks::dialog_mouse(self, dialog, mouse, hit),
+                _ => Outcome::Keep,
+            };
+            return self.finish_modal(modal, outcome);
+        }
         let wheel = match mouse.kind {
             MouseEventKind::ScrollUp => Some(-3i32),
             MouseEventKind::ScrollDown => Some(3),
@@ -689,7 +719,7 @@ impl App {
         let MouseEventKind::Down(button) = mouse.kind else { return };
         let inside = self.layout.modal_rect.is_some_and(|r| rect_contains(r, x, y));
         if !inside {
-            if matches!(self.modals.last(), Some(Modal::Menu(_)) | Some(Modal::Help)) {
+            if matches!(self.modals.last(), Some(Modal::Menu(_)) | Some(Modal::Help) | Some(Modal::GoTo(_))) {
                 self.modals.pop();
                 self.needs_draw = true;
             }
@@ -812,6 +842,10 @@ impl App {
             }
             // A link in a report, or one of its details (they ask or only view).
             (Some(Modal::Report(_)), Hit::Toolbar(action)) => self.run(action),
+            (Some(Modal::GoTo(goto)), Hit::ListRow(i)) => {
+                goto.sel = i;
+                self.modal_key(enter);
+            }
             (Some(_), Hit::Button(_)) => {
                 self.modals.pop();
             }

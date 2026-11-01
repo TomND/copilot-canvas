@@ -1170,9 +1170,9 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         Ok("pan, flick glide, Ctrl+wheel zoom, fit, box drag, right-click menu, double-click".into())
     });
 
-    check(rows, "9", "Groups: select, G, move by title, resize ◢, nested, membership, folder chips, defaults", "group_move_resize_chips", || {
+    check(rows, "9", "Groups: select, G, move by title, resize ◢, nested, membership, ✎ notes and ☑ todos chips, defaults", "group_move_resize_chips", || {
         gui.canvas_focus()?;
-        gui.wait("folder chips", 5, |t| t.contains("◧ AI") && t.contains("◨ Out"))?;
+        gui.wait("notes and todos chips", 5, |t| t.contains("✎ Notes") && t.contains("☑ +"))?;
         let group = sb.doc()?.groups.iter().find(|g| g.id == "g-parity").cloned().context("group")?;
         let tree = gui.tree()?;
         let g = tree["canvas"]["groups"].as_array().and_then(|g| g.iter().find(|g| g["id"] == "g-parity").cloned()).context("group in the view")?;
@@ -1808,7 +1808,7 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         let corner = (g[0] + g[2] - 0.5, g[1] + g[3] - 0.5);
         gui.drag("left", corner, (corner.0 + 2.0, corner.1 + 1.0), &[])?;
         wait_doc(&sb.canvas, "resized by ◢", |d| d.groups.iter().any(|x| x.id == "g-parity" && (x.w, x.h) != (group.w, group.h)))?;
-        anyhow::ensure!(gui.tree()?["hits"].as_array().is_some_and(|h| h.iter().any(|h| h["hit"].as_str().is_some_and(|s| s.contains("OpenGroupFolder")))), "folder chips are clickable");
+        anyhow::ensure!(gui.tree()?["hits"].as_array().is_some_and(|h| h.iter().any(|h| h["hit"].as_str().is_some_and(|s| s.contains("Notebook(OpenGroup")))), "the notes chips are clickable");
         // A double-click on the background still creates a session there.
         let tree = gui.tree()?;
         let g = rect(&tree, "groups", "g-parity").context("group")?;
@@ -1933,7 +1933,7 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         anyhow::ensure!(windows["windows"].as_array().is_some_and(|w| w.len() == 1), "the second window closed alone: {windows}");
         Ok(format!("rename synced; {}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()))
     });
-
+    spaces::rows(sb, gui, rows);
 }
 
 /// The new-session dialog (opened with `n` unless `opened`) with `name`
@@ -2131,6 +2131,7 @@ fn late_rows(sb: &Sandbox, rows: &mut Vec<Row>) {
     });
 
     reports::late_rows(sb, rows);
+    spaces::late_rows(sb, rows);
     visual::rows(sb, rows);
     layout::rows(sb, rows);
     subagents::rows(sb, rows);
@@ -2151,6 +2152,8 @@ mod agents;
 mod prs;
 #[path = "parity_reports.rs"]
 pub(crate) mod reports;
+#[path = "parity_spaces.rs"]
+mod spaces;
 
 fn walk(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();

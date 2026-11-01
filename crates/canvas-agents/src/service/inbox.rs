@@ -46,6 +46,12 @@ pub(super) fn run(shared: Arc<Shared>) {
         for (id, error) in &done.failed {
             log(&shared.instance, &format!("report {id} not stored yet (tried again in 30 s): {error}"));
         }
+        for (id, note) in &done.filed {
+            match note {
+                Ok(path) => log(&shared.instance, &format!("report {id} filed in {}", path.display())),
+                Err(error) => log(&shared.instance, &format!("report {id} stored but not filed in its group's folder: {error}")),
+            }
+        }
         if done.changed() {
             shared.broadcast(message(&shared));
         }

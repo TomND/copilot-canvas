@@ -74,7 +74,8 @@ pub enum UserEvent {
     GpuCheck,
     /// A screen reader or UI Automation client asked something.
     Access(accesskit_winit::Event),
-    /// The HTML view of a report has news (ready, failed, a clicked link, Esc).
+    /// The HTML view (reports, notes) has news (ready, failed, a clicked
+    /// link, a key, a file read for it).
     Web,
 }
 
@@ -193,8 +194,10 @@ struct Win {
     dropped: Vec<String>,
     preview: Option<Preview>,
     focused: bool,
-    /// The HTML view of an open HTML report (WebView2, created when first needed).
+    /// The HTML view of reports and notes (WebView2, created when first needed).
     web: crate::webview::ReportWeb,
+    /// Test hooks: an HTML note shown as if the core published it (`probe_file`).
+    web_probe: Option<canvas_core::view::HtmlPane>,
 }
 
 pub struct Shell {
@@ -439,9 +442,11 @@ impl Shell {
         };
         let answer = match name {
             "webview" => {
-                // The HTML view of reports: its state; `eval` (host script, the
-                // page's own never runs), `capture` (a PNG of what it shows) and
-                // `probe_raw` (unsanitized HTML: the view's own lock-down alone).
+                // The HTML view of reports and notes: its state; `eval` (host
+                // script; the plain view's pages never run their own), `capture`
+                // (a PNG of what it shows), `probe_raw` (unsanitized HTML: the
+                // view's own lock-down alone), `probe_file` (an HTML note shown
+                // as the notebook would), `print` (*Print / PDF*).
                 let win = &mut self.wins[at];
                 if let Some(script) = command["eval"].as_str() {
                     win.web.eval(script, reply);
@@ -453,6 +458,27 @@ impl Shell {
                 }
                 if let Some(html) = command["probe_raw"].as_str() {
                     win.web.probe_raw(html)
+                } else if let Some(file) = command.get("probe_file") {
+                    // An HTML note shown as the notebook would publish it
+                    // (`{"path", "root", "scripts", "rect": [x, y, w, h]}`; null removes it).
+                    let area = Rect::new(2, 2, win.cols.saturating_sub(4), win.rows.saturating_sub(4));
+                    let rect = file["rect"].as_array().and_then(|r| {
+                        let n: Vec<u16> = r.iter().filter_map(|v| v.as_u64().map(|v| v.min(u16::MAX as u64) as u16)).collect();
+                        (n.len() == 4).then(|| Rect::new(n[0], n[1], n[2], n[3]))
+                    });
+                    win.web_probe = file["path"].as_str().map(|path| canvas_core::view::HtmlPane {
+                        rect: rect.unwrap_or(area),
+                        id: format!("probe:{path}:{}", file["id"].as_str().unwrap_or_default()),
+                        source: canvas_core::view::HtmlSource::File { path: path.to_owned(), root: file["root"].as_str().unwrap_or_default().to_owned(), scripts: file["scripts"].as_bool().unwrap_or(false) },
+                        origin: canvas_core::view::HtmlOrigin::Note,
+                    });
+                    win.app.needs_draw = true;
+                    win.input_waiting = true;
+                    json!({ "ok": true, "shown": win.web_probe.is_some() })
+                } else if command["print"].as_bool() == Some(true) {
+                    // *Print / PDF* for the page shown (once it has loaded).
+                    win.web.print();
+                    json!({ "ok": true })
                 } else if let Some(path) = command["window_capture"].as_str() {
                     // The window as composed, the HTML view over the canvas included.
                     let path = std::path::PathBuf::from(path);
@@ -462,7 +488,14 @@ impl Shell {
                     }
                 } else {
                     let mut state = win.web.json();
-                    state["pane"] = json!(win.view.html.as_ref().map(|h| json!({ "id": h.id, "rect": [h.rect.x, h.rect.y, h.rect.width, h.rect.height], "bytes": h.document.len() })));
+                    state["pane"] = json!(win.view.html.as_ref().or(win.web_probe.as_ref()).map(|h| {
+                        let (bytes, file) = match &h.source {
+                            canvas_core::view::HtmlSource::Document(document) => (json!(document.len()), json!(null)),
+                            canvas_core::view::HtmlSource::File { path, root, scripts } => (json!(null), json!({ "path": path, "root": root, "scripts": scripts })),
+                        };
+                        let covered = !crate::webpane::pane_clear(h.rect, win.view.modal);
+                        json!({ "id": h.id, "rect": [h.rect.x, h.rect.y, h.rect.width, h.rect.height], "bytes": bytes, "file": file, "covered": covered })
+                    }));
                     state["core"] = json!(format!("{:?}", win.app.reports.web));
                     state
                 }
@@ -627,6 +660,7 @@ impl Win {
             preview: None,
             focused: false,
             web: crate::webview::ReportWeb::new(std::path::Path::new(".")),
+            web_probe: None,
         };
         let rx = win.app.conn.rx.clone();
         win.forward_service(rx, proxy);
@@ -924,8 +958,13 @@ impl Win {
             return;
         }
         if !damage {
-            // An open HTML report shows in the HTML view over its area (or the view hides).
-            self.web.sync(hwnd_of(&self.window), self.view.html.as_ref(), self.grid.cell_w, self.grid.cell_h);
+            // An HTML pane (a report, a note) shows in the HTML view over its
+            // area, unless a dialog or menu other than its own covers it (or the view hides).
+            let pane = self.view.html.as_ref().or(self.web_probe.as_ref()).filter(|pane| crate::webpane::pane_clear(pane.rect, self.view.modal));
+            self.web.sync(hwnd_of(&self.window), pane, &self.app.backend, self.grid.cell_w, self.grid.cell_h);
+            if self.view.html_print && pane.is_some() {
+                self.web.print();
+            }
         }
         self.app.after_draw();
         self.app.raw_out.clear();
@@ -1269,6 +1308,7 @@ impl Win {
                 let (items, focus) = self.access_nodes();
                 tree["access"] = crate::access::json(&items, focus);
                 tree["html"] = json!(self.view.html.as_ref().map(|h| json!({ "id": h.id, "rect": [h.rect.x, h.rect.y, h.rect.width, h.rect.height] })));
+                tree["space"] = json!(self.app.space.key());
                 json!({ "ok": true, "tree": tree })
             }
             "access" => {
@@ -1396,16 +1436,48 @@ impl Win {
     }
 
     /// The HTML view's news reach the core: it is ready or failed (the
-    /// viewer says so; a failure shows the report as formatted text), a
-    /// clicked link (the canvas asks first), Esc (the report closes).
+    /// viewer says so; a failure shows the page as formatted text), a
+    /// clicked link (the canvas asks first), an app link (`#note:`,
+    /// `#todo:`, another file under the note's root; the keyboard comes back
+    /// to the canvas), Esc (a report closes;
+    /// from a note the keyboard comes back to the canvas), a global key,
+    /// a notice. Files read for the view are answered first.
     fn apply_web(&mut self) {
         use canvas_core::reports::{ReportAction, WebState};
+        self.web.pump();
         for event in self.web.take_events() {
             match event {
                 crate::webview::WebEvent::Ready => self.app.reports.web = WebState::Ready,
                 crate::webview::WebEvent::Failed(why) => self.app.reports.web = WebState::Failed(why),
-                crate::webview::WebEvent::Link(url) => self.app.report_action(ReportAction::Link(url)),
-                crate::webview::WebEvent::Escape => self.app.modals.retain(|m| !matches!(m, canvas_core::dialogs::Modal::Report(_))),
+                crate::webview::WebEvent::Link(url) => {
+                    // A report's link or a note's: the core asks in words that say which.
+                    let action = match self.view.html.as_ref().or(self.web_probe.as_ref()) {
+                        Some(pane) => pane.link(url),
+                        None => ReportAction::Link(url),
+                    };
+                    self.app.report_action(action);
+                }
+                crate::webview::WebEvent::Escape => {
+                    if self.app.modals.iter().any(|m| matches!(m, canvas_core::dialogs::Modal::Report(_))) {
+                        self.app.modals.retain(|m| !matches!(m, canvas_core::dialogs::Modal::Report(_)));
+                    } else {
+                        self.web.blur();
+                    }
+                }
+                crate::webview::WebEvent::Key(key) => {
+                    // F6 moves the keyboard on: out of the page, to where the core puts it.
+                    if key.code == canvas_core::input::KeyCode::F(6) {
+                        self.web.blur();
+                    }
+                    self.key_input(key);
+                }
+                crate::webview::WebEvent::Navigate(space, target) => {
+                    // The app goes elsewhere: so does the keyboard (and a page's
+                    // script needs another click into its view for another app link).
+                    self.web.blur();
+                    self.app.navigate(space, target);
+                }
+                crate::webview::WebEvent::Notice(text, error) => self.app.notify(text, error),
             }
             self.app.needs_draw = true;
             self.input_waiting = true;
@@ -1928,6 +2000,14 @@ impl ApplicationHandler<UserEvent> for Shell {
             }
             WindowEvent::CursorLeft { .. } => win.hover = None,
             WindowEvent::MouseInput { state, button, .. } => {
+                if let Some(forward) = crate::input::history_button(button) {
+                    // Back / forward walk the navigation history (as Alt+← / Alt+→).
+                    if state == ElementState::Pressed {
+                        win.app.nav_button(forward);
+                        win.input_waiting = true;
+                    }
+                    return self.after_input(event_loop);
+                }
                 let Some(button) = crate::input::button(button) else { return };
                 match state {
                     ElementState::Pressed => {

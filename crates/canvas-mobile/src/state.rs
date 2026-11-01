@@ -1,6 +1,6 @@
 //! The phone's view of the service: the canvas replica, session summaries,
-//! terminals and their screens, and what to send. Pure (no threads, no FFI):
-//! every change returns [`Effect`]s for the client to carry out.
+//! terminals and their screens, the todo boards, and what to send. Pure (no
+//! threads, no FFI): every change returns [`Effect`]s for the client to carry out.
 //!
 //! The phone is a *light* client (docs/IOS-PLAN.md D5): it edits the shared
 //! canvas only for what you do on it (open, review, rename, new session,
@@ -17,8 +17,11 @@ use canvas_model::launch::agent_launch;
 use canvas_model::rpc::BackendInfo;
 use canvas_model::status::{Status, agent_status, session_status};
 use canvas_model::sync::{Opened, Replica};
+use canvas_model::todos::{Actor, TodoOp};
 
-use crate::model::{BoxKind, ConnState, CoreEvent, GroupItem, NewSession, Overview, ReportsOverview, Screen, SessionItem, StatusKind, SubagentItem};
+use crate::model::{
+    BoxKind, ConnState, CoreEvent, GroupItem, NewSession, NotebookOverview, NotebookRoot, Overview, ReportsOverview, Screen, SessionItem, StatusKind, SubagentItem, TodoChange, TodoDetail, TodosOverview,
+};
 use crate::screen::ViewState;
 
 /// Something for the client to do after a state change.
@@ -70,6 +73,8 @@ pub struct State {
     have_sessions: bool,
     /// The reports inbox (`CAP_REPORTS`).
     reports: crate::reports::Inbox,
+    /// The notebook's folders as the service last said (asked for again after a reconnect).
+    pub notebook: Option<canvas_model::notebook::Info>,
 }
 
 impl State {
@@ -82,6 +87,7 @@ impl State {
         self.resync_terms = true;
         self.last_tracked = None;
         self.doc_resync = true;
+        self.notebook = None;
         let mut effects = vec![Effect::Send(ClientMsg::DocOpen { path: None, demo: false, cwd: String::new() })];
         effects.extend(self.subscription_messages());
         effects.push(Effect::Emit(CoreEvent::Connection { state: ConnState::Online, message: String::new() }));
@@ -575,6 +581,68 @@ impl State {
         Ok(vec![Effect::Send(ClientMsg::Bus { json }), Effect::Emit(CoreEvent::Reports)])
     }
 
+    // ---------- todos ----------
+
+    /// The canvas's sessions as the todo boards see them.
+    fn todo_canvas(&self, now: u64) -> crate::todos::Canvas<'_> {
+        let (mut stopped, mut working) = (HashSet::new(), HashSet::new());
+        for node in self.doc.nodes.iter().filter(|n| n.kind == NodeKind::Session) {
+            let status = self.node_status(node, now);
+            if self.have_sessions && matches!(status, Status::Stopped | Status::Failed) {
+                stopped.insert(node.id.clone());
+            }
+            if status.animated() {
+                working.insert(node.id.clone());
+            }
+        }
+        crate::todos::Canvas { doc: &self.doc, stopped, working }
+    }
+
+    /// The todo boards (the service's book with this phone's changes until it sends the next one).
+    pub fn todos_overview(&self, now: u64) -> TodosOverview {
+        crate::todos::overview(self.bus.todos.as_ref(), &self.todo_canvas(now))
+    }
+
+    pub fn todo_detail(&self, id: &str, now: u64) -> Option<TodoDetail> {
+        crate::todos::detail(self.bus.todos.as_ref()?, id, &self.todo_canvas(now))
+    }
+
+    /// Applies a todo operation as you: to this phone's copy of the book at
+    /// once, then sent as the window's bus action. Refused here: nothing is
+    /// sent; refused by the service: a notice, and its next book undoes it.
+    pub fn todo_op(&mut self, op: TodoOp, now: u64) -> Result<(TodoChange, Vec<Effect>), String> {
+        if self.conn != ConnState::Online {
+            return Err("Offline: the todos cannot be changed now.".into());
+        }
+        let ctx = self.todo_canvas(now).ctx(now);
+        let book = self.bus.todos.as_mut().ok_or("The todo boards are not loaded yet (the service has not sent them).")?;
+        let applied = book.apply(op.clone(), &Actor::human(), &ctx)?;
+        let mut message = applied.message.clone();
+        for warning in &applied.warnings {
+            message.push_str(&format!(" ⚠ {warning}."));
+        }
+        let id = applied.created.or_else(|| op.todo_id().map(str::to_owned)).unwrap_or_default();
+        let effects = vec![Effect::Send(ClientMsg::Bus { json: crate::todos::action_json(&op) }), Effect::Emit(CoreEvent::Overview)];
+        Ok((TodoChange { id, message }, effects))
+    }
+
+    // ---------- notebook ----------
+
+    /// The notebook root setting and the canvas id (`Request::NotebookInfo`).
+    pub fn notebook_request(&self) -> (Option<String>, Option<String>) {
+        (self.doc.notebook_root.clone().filter(|r| !r.trim().is_empty()), self.doc.canvas_id.clone())
+    }
+
+    /// The explorer's roots (none before the service said where the notebook is).
+    pub fn note_roots(&self) -> Vec<NotebookRoot> {
+        self.notebook.as_ref().map(|info| crate::notes::roots(info, &self.doc)).unwrap_or_default()
+    }
+
+    pub fn notebook_overview(&self) -> Option<NotebookOverview> {
+        let info = self.notebook.as_ref()?;
+        Some(NotebookOverview { root: info.root.clone(), canvas_dir: info.canvas_dir.clone().unwrap_or_default(), roots: self.note_roots() })
+    }
+
     // ---------- launching ----------
 
     /// The folder a session starts in.
@@ -1005,5 +1073,71 @@ mod tests {
         assert!(bus(&effects).iter().any(|j| j.contains("\"resume\"")));
         assert!(bus(&state.discard_mail("a"))[0].contains("discard_mail"));
         assert!(state.run_passive("b").is_err(), "not a passive session");
+    }
+
+    #[test]
+    fn todos_come_with_the_bus_and_changes_apply_here_then_go_out_as_the_windows_action() {
+        use crate::model::{TodoDraft, TodoKind, TodoNeed, TodoPriority, TodoStatus};
+        let mut state = online();
+        assert!(!state.todos_overview(0).loaded, "no book yet");
+        assert!(state.todo_op(TodoOp::Done { id: "WI-004".into(), note: None }, 0).unwrap_err().contains("not loaded"));
+        // The book comes in the bus snapshot; the session working on WI-002 is on this canvas.
+        state.doc.nodes.push(node("demo-main", "Momentum work", 80));
+        state.on_service(ServiceMsg::Terminals(vec![TermInfo { id: "demo-main".into(), alive: true, ..Default::default() }]), 0);
+        state.on_service(ServiceMsg::Sessions { full: true, upsert: vec![SessionSummary { id: "demo-main".into(), live: true, activity: Activity::Working, ..Default::default() }], remove: Vec::new() }, 0);
+        let snapshot = serde_json::to_string(&bus::Snapshot { todos: Some(canvas_model::todos::demo_book()), ..Default::default() }).unwrap();
+        let effects = state.on_service(ServiceMsg::Bus { json: snapshot.clone() }, 0);
+        assert!(effects.contains(&Effect::Emit(CoreEvent::Overview)), "the app reads todos() on Overview");
+        let overview = state.todos_overview(0);
+        assert!(overview.loaded && overview.boards.len() == 2);
+        let momentum = overview.todos.iter().find(|t| t.id == "WI-002").unwrap();
+        assert_eq!((momentum.claimed_by.as_str(), momentum.claim_working), ("Momentum work", true));
+        let needs: Vec<(TodoNeed, String)> = overview.needs_you.iter().map(|n| (n.need, n.todo.id.clone())).collect();
+        assert!(needs.contains(&(TodoNeed::StaleClaim, "WI-003".into())) && !needs.contains(&(TodoNeed::StaleClaim, "WI-002".into())), "{needs:?}");
+
+        // Accepting a proposal: here at once, and the window's bus action for the service.
+        let proposal = needs.iter().find(|(n, _)| *n == TodoNeed::Proposed).unwrap().1.clone();
+        let (change, effects) = state.todo_op(TodoOp::Accept { id: proposal.clone(), status: None }, 5).unwrap();
+        assert!(change.id == proposal && change.message.contains(&proposal), "{change:?}");
+        let ClientMsg::Bus { json } = sent(&effects)[0] else { panic!("a bus action") };
+        assert_eq!(serde_json::from_str::<serde_json::Value>(json).unwrap(), serde_json::json!({ "action": "todos", "op": { "op": "accept", "id": proposal } }));
+        assert!(effects.contains(&Effect::Emit(CoreEvent::Overview)));
+        let status = |state: &State, id: &str| state.todos_overview(5).todos.into_iter().find(|t| t.id == id).map(|t| t.status);
+        assert_eq!(status(&state, &proposal), Some(TodoStatus::Backlog));
+        // Moves, done and new todos; refusals send nothing.
+        let (_, effects) = state.todo_op(TodoOp::Move { id: "WI-004".into(), status: Some(TodoStatus::InProgress.into()), board: None, after: None, before: None, rank: None }, 6).unwrap();
+        assert!(sent(&effects).iter().any(|m| matches!(m, ClientMsg::Bus { json } if json.contains("\"op\":\"move\"") && json.contains("\"in_progress\""))));
+        let (change, _) = state.todo_op(TodoOp::Move { id: "WI-005".into(), status: Some(TodoStatus::InProgress.into()), board: None, after: None, before: None, rank: None }, 6).unwrap();
+        assert!(change.message.contains('⚠'), "over the WIP limit of 2: a warning, not a refusal: {}", change.message);
+        state.todo_op(TodoOp::Done { id: "WI-004".into(), note: None }, 7).unwrap();
+        assert_eq!(status(&state, "WI-004"), Some(TodoStatus::Done));
+        let draft = TodoDraft { board: "Canvas App".into(), title: "Todos on the phone".into(), kind: TodoKind::Feature, priority: TodoPriority::High, status: None, body: "From the train.".into() };
+        let (change, effects) = state.todo_op(crate::todos::add_op(draft), 8).unwrap();
+        assert_eq!(change.id, "WI-008");
+        assert!(matches!(sent(&effects)[0], ClientMsg::Bus { json } if json.contains("\"op\":\"add\"") && json.contains("Todos on the phone")));
+        assert_eq!(state.todo_detail("WI-008", 8).map(|d| (d.item.status, d.body)), Some((TodoStatus::Backlog, "From the train.".to_owned())));
+        assert!(state.todo_op(TodoOp::Done { id: "NOPE-001".into(), note: None }, 9).is_err());
+        // The service's next book replaces this phone's copy.
+        state.on_service(ServiceMsg::Bus { json: snapshot }, 10);
+        assert_eq!((status(&state, &proposal), status(&state, "WI-008")), (Some(TodoStatus::Proposed), None));
+        state.on_disconnected(ConnState::Offline, String::new());
+        assert!(state.todo_op(TodoOp::Done { id: "WI-004".into(), note: None }, 11).unwrap_err().contains("Offline"));
+    }
+
+    #[test]
+    fn the_notebooks_roots_come_from_the_service_and_the_canvas() {
+        use crate::model::NotebookRootKind;
+        let mut state = online();
+        assert!(state.note_roots().is_empty() && state.notebook_overview().is_none());
+        state.doc.notebook_root = Some(r"D:\Notes".into());
+        state.doc.canvas_id = Some("c-1".into());
+        state.doc.notebook_mounts = vec![r"E:\Vault".into()];
+        assert_eq!(state.notebook_request(), (Some(r"D:\Notes".to_owned()), Some("c-1".to_owned())));
+        state.notebook = Some(canvas_model::notebook::Info { root: r"D:\Notes".into(), canvas_dir: None, home: r"C:\Users\me\.copilot-canvas".into() });
+        let overview = state.notebook_overview().unwrap();
+        assert_eq!((overview.root.as_str(), overview.canvas_dir.as_str()), (r"D:\Notes", ""));
+        assert_eq!(overview.roots.iter().map(|r| r.kind).collect::<Vec<_>>(), [NotebookRootKind::Notebook, NotebookRootKind::Mount]);
+        state.on_connected();
+        assert!(state.notebook.is_none(), "asked for again after a reconnect");
     }
 }

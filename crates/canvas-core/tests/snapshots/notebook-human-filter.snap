@@ -1,0 +1,46 @@
+# notebook-human-filter (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   ?   ⏻ Quit                                          3 sessions
+    ✎ EXPLORER       2 AI hidden │  ● summary.md ×   ◇ log.md ×                       │┌─────────────────────────────────────────────────────────────┐
+▌✎  + Capture  + Note  ⟳         │ …ocs › ai-docs › log.md  Rendered │ Source │ Live  ││ NOTE INFO                                                   │
+     Human │ All │ AI            │ ◇ For agents · ◇ written by an agent (inferred)    ││                                                             │
+ ◷  / filter names               │  Mark reviewed   Open externally                   ││ ✎ Log                                                       │
+    ▾ Notebook                   │  Ask agent to revise…                              ││ log.md                                                      │
+ ⧉    ▸ Inbox                    │ ────────────────────────────────────────────────── ││                                                             │
+      ● Overview.md              │  Log                                               ││ OUTLINE                                                     │
+ ⌁  ▾ ◫ Docs ☑                   │  ━━━                                               ││ Log                                                         │
+      ▾ human-outputs            │                                                    ││                                                             │
+ ✦      ● summary.md             │  Started.                                          ││ LINKED                                                      │
+    ▸ Canvas (canvas-wide)       │                                                    ││ ◫ Docs                                                      │
+ ◈  ▸ Reports (0)                │                                                    ││ ☑ 4 open · 2 in progress · 1 proposed                       │
+                                 │                                                    ││                                                             │
+ ⇄                               │                                                    ││ BACKLINKS                                                   │
+                                 │                                                    ││ (none)                                                      │
+ ≡                               │                                                    ││                                                             │
+                                 │                                                    ││ PROVENANCE                                                  │
+ ✉                               │                                                    ││ ◇ For agents, from its folder (inferred)                    │
+                                 │                                                    ││ ◇ written by an agent                                       │
+                                 │                                                    ││ not reviewed                                                │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+    [ ] Show internal files      │                                                    │└─────────────────────────────────────────────────────────────┘
+ Ctrl+1 Canvas · Ctrl+2 Notebook · Ctrl+3 Tasks · Alt+, back · Alt+. forward · Ctrl+P go to · F6 focus · Alt+1…9 views · ? help
+## gpu view model
+view cursor=none modal=none banner=None
+canvas none
+html note:C:\work\docs\ai-docs\log.md#1 rect=36,7 49x32 bytes=2350 csp=true

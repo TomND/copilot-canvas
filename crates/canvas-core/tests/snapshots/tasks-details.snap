@@ -1,0 +1,45 @@
+# tasks-details (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   ◫  ✎  ☑   DEMO · native shells   + New   ▢ Single   ?   ⏻ Quit                                                      3 sessions
+    ☑ TASKS                      │▌                                                   │┌─────────────────────────────────────────────────────────────┐
+▌☑  / filter        all types ▾  │────────────────────────────────────────────────────││ ✚ WI-002 · feature                                  ≡   ✕   │
+                                 │Todo 2                   │In progress 1/2          │││ Gentle momentum when panning                                │
+ ◷  NEEDS YOU 3                  │▌¶ WI-004             !  │▌✚ WI-002            !!  │││                                                             │
+     ◇ WI-006 Show tod… proposed │▌Docs for the Tasks      │▌Gentle momentum when    │││ Status   In progress ▾                                      │
+ ⧉   ◇ DEC-007 Cache d… proposed │▌space                   │▌panning                 │││ Priority !! high ▾                                          │
+     ◎ WI-003 Todo bo… in review │▌                        │▌☑ 2/4                   │││ Type     ✚ feature ▾                                        │
+ ⌁                               │                         │                         │││ Board    Canvas App                                         │
+    READY 3                      │▌✱ WI-005            !!  │                         │││ Claimed  Build session canvas · 2026-10-27 10:00            │
+ ✦   ✱ DEC-003 Crash when a… !!! │▌Flaky reconnect test    │                         │││ Blocked  no  set…                                           │
+     ✚ DEC-005 Parse the com… !! │▌                        │                         │││ Blocker  no  mark                                           │
+ ◈   ¶ WI-004 Docs for the Ta… ! │▌⚑ blocked               │                         │││ Created  you · 2026-10-27 07:00                             │
+                                 │                         │                         │││                                                             │
+ ⇄  CLAIMED BY SESSIONS 2        │                         │                         │││  Start a session on this…   Open spec note   Claim for…     │
+     ◫ Build session canvas      │                         │                         │││  Release   Done   Cancel                                    │
+ ≡     ✚ WI-002 Gen… In progress │                         │                         │││                                                             │
+     ◫ Review implementation     │                         │                         │││ CHECKLIST 2/4   + add                                       │
+ ✉     ✚ WI-003 Todo … In review │                         │                         │││ ☑ Velocity from the last 60 ms                              │
+                                 │                         │                         │││ ☑ Friction curve                                            │
+    BOARDS 2                     │                         │                         │││ ☐ Stop on click                                             │
+     ▦ Canvas App · WI         5 │                         │                         │││ ☐ Reduced motion: no glide                                  │
+     ▦ Decomps · DEC           3 │                         │                         │││                                                             │
+       └ Parser                2 │                         │                         │││ BODY   edit                                                 │
+     + New board                 │                         │                         │││ A flick keeps the canvas gliding and slows down gently.     │
+                                 │                         │                         │││                                                             │
+                                 │                         │                         │││ LOG                                                         │
+                                 │                         │                         │││ 10-27 19:00 Build session canvas: Glide works; tuning the   │
+                                 │                         │                         │││ friction next.                                              │
+                                 │                         │                         │││ 10-27 16:00 Build session canvas: checked “Friction curve”  │
+                                 │                         │                         │││ 10-27 13:00 Build session canvas: checked “Velocity from    │
+                                 │                         │                         │││ the last 60 ms”                                             │
+                                 │                         │                         │││ 10-27 10:00 Build session canvas: Todo → In progress        │
+                                 │                         │                         │││ 10-27 10:00 Build session canvas: claimed by Build session  │
+                                 │                         │                         │││ canvas                                                      │
+                                 │                         │                         │││ 10-27 07:00 you: created in Todo                            │
+                                 │                         │                         │││                                                             │
+                                 │                         │                         │││                                                             │
+                                 │                         │     −   100%   +   Fit  ││└─────────────────────────────────────────────────────────────┘
+ Ctrl+1 Canvas · Ctrl+2 Notebook · Ctrl+3 Tasks · Alt+, back · Alt+. forward · Ctrl+P go to · F6 focus · Alt+1…9 views · ? help
+## gpu view model
+view cursor=none modal=none banner=None
+canvas none

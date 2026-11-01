@@ -29,6 +29,9 @@ pub struct Answer {
     /// A dispatch's state, `tracked`, …
     #[serde(default)]
     pub state: String,
+    /// Details for `--format json` (`copilot-canvas todo …`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 }
 
 pub fn answers_dir(home: &Path) -> PathBuf {
@@ -62,10 +65,15 @@ fn hop() -> u32 {
 /// Posts a request for the service (`kind`: [`REQUEST`] or review
 /// follow-ups') and waits for its answer while the service runs (`None`: it
 /// does not run, or did not answer in time; the request stays in the inbox).
-pub fn ask(home: &Path, kind: &str, mut data: serde_json::Value) -> Result<Option<Answer>> {
+pub fn ask(home: &Path, kind: &str, data: serde_json::Value) -> Result<Option<Answer>> {
+    ask_from(home, kind, &session(), data)
+}
+
+/// [`ask`] as `source` (a canvas session id; empty: you).
+pub fn ask_from(home: &Path, kind: &str, source: &str, mut data: serde_json::Value) -> Result<Option<Answer>> {
     let request = uuid::Uuid::new_v4().to_string();
     data["request"] = request.clone().into();
-    let event = Event { kind: kind.to_owned(), source: session(), data, hop: hop(), ..Default::default() };
+    let event = Event { kind: kind.to_owned(), source: source.to_owned(), data, hop: hop(), ..Default::default() };
     bus::post(home, &event)?;
     if !crate::reports::service_alive(home) {
         return Ok(None);
@@ -214,7 +222,7 @@ mod tests {
         assert_eq!((dispatch.data["key"].as_str(), dispatch.data["text"].as_str()), (Some("comments:c:9"), Some("Address the 3 new comments")));
         // Answers: written atomically, only for plain request ids.
         write_answer(&home, "../evil", &Answer::default());
-        write_answer(&home, "abc-1", &Answer { ok: true, message: "Tracking".into(), state: "tracked".into() });
+        write_answer(&home, "abc-1", &Answer { ok: true, message: "Tracking".into(), state: "tracked".into(), data: None });
         assert!(answers_dir(&home).join("abc-1.json").is_file() && std::fs::read_dir(answers_dir(&home)).unwrap().count() == 1);
         let _ = std::fs::remove_dir_all(home);
     }

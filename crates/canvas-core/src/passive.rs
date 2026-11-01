@@ -93,8 +93,10 @@ impl App {
     pub fn build_routing(&self) -> Routing {
         let mut routing = Routing { groups: self.doc.groups.iter().map(|g| RouteGroup { id: g.id.clone(), name: g.name.clone(), folder: g.folder.clone() }).collect(), ..Default::default() };
         routing.canvas = self.doc.canvas_id.clone().filter(|id| crate::doc::valid_canvas_id(id)).unwrap_or_default();
+        routing.notebook_root = self.doc.notebook_root.as_deref().map(str::trim).filter(|r| !r.is_empty()).map(str::to_owned);
         for node in self.doc.nodes.iter().filter(|n| n.kind == NodeKind::Session && n.command.is_none()) {
             routing.names.insert(node.id.clone(), node.name.clone());
+            routing.agents.insert(node.id.clone(), crate::agents::agent_of(node).id().to_owned());
             if node.no_messages {
                 routing.no_messages.push(node.id.clone());
             }
@@ -187,6 +189,14 @@ impl App {
             if node.passive.as_ref().and_then(|p| snapshot.passive.get(&p.key)).is_some_and(|v| v.running || v.last_run_ms > 0) {
                 node.fresh = false;
             }
+        }
+        // Demo mode changes its own todo book (the service routes no canvas for it, so it sends none);
+        // else your changes the service does not have yet stay on top of its book.
+        let mut snapshot = snapshot;
+        if self.demo && snapshot.todos.is_none() {
+            snapshot.todos = self.bus.todos.take();
+        } else {
+            snapshot.todos = crate::tasks::receive(self, snapshot.todos.take());
         }
         self.bus = snapshot;
         self.needs_draw = true;
@@ -552,6 +562,26 @@ mod tests {
         assert_eq!(model("kp2"), Some(("opencode".into(), "big".into(), None)), "the group's default wins");
         assert_eq!(model("kp3"), Some(("claude".into(), "claude-opus-5-5".into(), None)), "its agent's default: nothing chosen, so Opus 5.5");
         assert_eq!(model("kp4"), Some(("opencode".into(), "opencode/x-free".into(), Some("github-copilot/claude-opus-5.5".into()))), "its own recorded model for resumes");
+        assert_eq!((routing.agents.get("p1").map(String::as_str), routing.agents.get("p3").map(String::as_str)), (Some("opencode"), Some("claude")), "every session's agent is routed");
+    }
+
+    #[test]
+    fn the_routing_names_the_notebook_and_new_groups_get_a_folder_in_it() {
+        use crate::doc::{Doc, Group};
+        let (tx, _sent) = crossbeam_channel::bounded(64);
+        let (_service, service_rx) = crossbeam_channel::bounded(1);
+        let (app_tx, _app_rx) = crossbeam_channel::unbounded();
+        let doc = Doc { groups: vec![Group { id: "g1".into(), name: "Release: v2".into(), ..Default::default() }], ..Doc::default() };
+        let mut app = App::new(crate::conn::Conn::detached(tx, service_rx), std::sync::Arc::new(crate::rpc::Offline), crate::sync::Opened::detached(doc), false, ".".into(), app_tx, None);
+        let home = std::env::temp_dir().join("cc-home");
+        app.info.home = home.display().to_string();
+        assert_eq!(app.build_routing().notebook_root, None, "the default: <home>/notebook");
+        assert_eq!(std::path::PathBuf::from(app.suggested_group_folder("g1")), home.join("notebook").join("Groups").join("Release- v2"));
+        let custom = std::env::temp_dir().join("My Notes");
+        app.doc.notebook_root = Some(format!(" {} ", custom.display()));
+        assert_eq!(app.build_routing().notebook_root, Some(custom.display().to_string()));
+        assert_eq!(std::path::PathBuf::from(app.suggested_group_folder("g1")), custom.join("Groups").join("Release- v2"));
+        assert!(!serde_json::to_string(&Routing::default()).unwrap().contains("notebook_root"), "older services never see it unset");
     }
 
     #[test]

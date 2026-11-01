@@ -1,0 +1,45 @@
+# notebook-source (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   ?   ⏻ Quit                                          3 sessions
+    ✎ EXPLORER                   │▌ ◇ plan.md ×                                       │┌─────────────────────────────────────────────────────────────┐
+▌✎  + Capture  + Note  ⟳         │ …cs › ai-docs › plan.md  Rendered │ Source │ Live  ││ NOTE INFO                                                   │
+     Human │ All │ AI            │ ◇ For agents · ◇ written by OpenCode               ││                                                             │
+ ◷  / filter names               │ session Write the spec   View session              ││ ✎ Plan                                                      │
+    ▾ Notebook                   │  Mark reviewed   Open externally                   ││ plan.md                                                     │
+ ⧉    ▸ Inbox                    │  Ask agent to revise…                              ││                                                             │
+      ● Overview.md              │ ────────────────────────────────────────────────── ││ OUTLINE                                                     │
+ ⌁  ▾ ◫ Docs ☑                   │  ---                                               ││ Plan                                                        │
+      ▾ ai-docs                  │  audience: ai                                      ││                                                             │
+ ✦      ◇ log.md                 │  author: ai                                        ││ LINKED                                                      │
+        ◇ plan.md                │  agent: opencode                                   ││ ◫ Docs                                                      │
+ ◈    ▸ human-outputs            │  source_session: a                                 ││ ☑ 4 open · 2 in progress · 1 proposed                       │
+    ▸ Canvas (canvas-wide)       │  ---                                               ││ ✎ Overview                                                  │
+ ⇄  ▸ Reports (0)                │  # Plan                                            ││                                                             │
+                                 │                                                    ││ BACKLINKS                                                   │
+ ≡                               │  See [[Overview]].                                 ││ ✎ Overview.md:3                                             │
+                                 │                                                    ││   The plan is in [[plan]]; fix DEC-031 first.               │
+ ✉                               │  1. Draft                                          ││                                                             │
+                                 │  2. Review                                         ││ PROPERTIES                                                  │
+                                 │                                                    ││ audience: ai                                                │
+                                 │                                                    ││ author: ai                                                  │
+                                 │                                                    ││ agent: opencode                                             │
+                                 │                                                    ││ source_session: a                                           │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││ PROVENANCE                                                  │
+                                 │                                                    ││ ◇ For agents, from its front matter                         │
+                                 │                                                    ││ ◇ written by OpenCode                                       │
+                                 │                                                    ││ session Write the spec                                      │
+                                 │                                                    ││   View session                                              │
+                                 │                                                    ││ not reviewed                                                │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+    [ ] Show internal files      │                                                    │└─────────────────────────────────────────────────────────────┘
+ Ctrl+1 Canvas · Ctrl+2 Notebook · Ctrl+3 Tasks · Alt+, back · Alt+. forward · Ctrl+P go to · F6 focus · Alt+1…9 views · ? help
+## gpu view model
+view cursor=36,8 modal=none banner=None
+canvas none

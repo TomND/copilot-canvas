@@ -29,6 +29,8 @@ on `canvas-agents`.
 | `canvas_model::rpc` | `Request`, `Response`, `trait Backend` (`fn call(&self, Request) -> Result<Response>`), typed helpers on `dyn Backend` (`backend.list_dir(…)`, …), `BackendInfo`, `PathInfo`, `PassiveFiles`, `Offline` (a backend that is not there) |
 | `canvas_model::sync` | `Op`, `apply`, `diff`, `Replica`, `DocReply`, `Opened`, `ClientPrefs`, `doc_key`, `stable_id` |
 | `canvas_model::{agent, config, automation, vscode, migrate, git}` | data types the front ends use (moved out of `canvas-agents`, which re-exports them) |
+| `canvas_model::{notebook, todos}` | note provenance, front matter and the notebook requests' types; the todo book, its operations (`TodoOp`) and rules, applied alike by the service, the windows and the phone |
+| `canvas_agents::notebook`, `canvas_agents::service::todos` | the notebook requests on the service's machine; the todo hub (the routed canvas's book, its single writer) |
 | `canvas_agents::backend` | `handle(&Ctx, Request) -> Response` (the one implementation) and `LocalBackend` (in-process) |
 | `canvas_agents::service` | `Docs` (open documents), the RPC worker pool (8 threads), `DocOpen` / `DocEdit` / `Rpc` handling |
 | `canvas_core::remote` | `RemoteBackend`: sends `ClientMsg::Rpc`, waits for the `ServiceMsg::RpcReply` with the same id |
@@ -97,6 +99,32 @@ the connection dropped while waiting).
 | `CreateCanvasSkill { canvas, name, description }` | `Text` (its SKILL.md) | *New skill…* (never over an existing skill; the name is checked) |
 | `Reports` | `Reports(Snapshot)`: the inbox (newest first, at most 600 rows, with read state and the refused submissions) | the Reports view before the service's first push (normally `ServiceMsg::Reports` brings it) |
 | `ReportContent { id }` | `Report(Content)`: the report and its body (Markdown, HTML or text; at most 2 MiB) | the report viewer, on open; also over `--remote`, so HTML is shown by the home GUI |
+| `NotebookInfo { root, canvas }` | `NotebookInfo(Info)`: `root` (the canvas setting, else `<home>/notebook`; created with `Groups/`, `Inbox/`, `Todos/`), `canvas_dir` (`<home>/canvas-agents/<canvas>` for a valid canvas id, else none), `home` | the Notebook (its roots), quick capture, spec notes, exports |
+| `NotebookList { dir, root }` | `NoteEntries(Vec<Entry>)`: name, absolute path, `rel` (to `root`, `/` separators), kind, size, modification time, `Provenance` and title (metadata from the first 8 KiB); folders first, then by name; at most 5,000 (of the first 50,000 names read); names starting with `$` and `System Volume Information` left out. `root` (optional; `None`: `dir` itself) is the explorer root the entries are classified under; a root inside `<home>/canvas-agents` is the canvas-wide folder | the explorer (lazily, as folders open, and every 5 s while the Notebook shows), the known-notes walk |
+| `NoteRead { path }` | `Note(NoteText { text, rev })`: UTF-8 (invalid bytes replaced: such a note is shown, `NoteWrite` never replaces it); a file over 4 MiB is refused | opening a note, conflicts, *Mark reviewed* |
+| `NoteWrite { path, text, base, roots }` | `NoteSaved { rev }`, or `NoteConflict(NoteText)` with what is there now when the file's revision is not `base` (`None`: the file must not exist yet; a file that is there is a conflict). Atomic (a hidden temporary file renamed over it, tried again for about 0.6 s while another program holds the file), parent folders created, at most 4 MiB; a file gone since its `base` and a file that is not UTF-8 are errors; a link to a note changes its target (inside the roots) | saving (Ctrl+S, autosave), new notes, quick capture, *Mark reviewed*, spec notes, JSON Canvas exports |
+| `NoteRevs { paths }` | `NoteRevs(Vec<Option<String>>)`: each file's revision (`None`: missing, unreadable or over 16 MiB); at most 500 paths | change polling of open notes every 2 s |
+| `ReadBytes { path, max_bytes }` | `Bytes(Vec<u8>)` (base64 in JSON); a file over `max_bytes` or 16 MiB is an error | pictures in the reader, the GUI's web pane (every file an HTML note loads), the phone's pictures |
+| `NoteMkdir { path, roots }` | `Done` (an existing path is an error) | *New folder…* |
+| `NoteRename { from, to, roots }` | `Done`; never over another file, also one that appears meanwhile (a change of case only is allowed), never a folder into itself | *Rename…*, *Move to…* |
+| `NoteTrash { path, root }` | `Done`: moved to `<root>/.trash/<ms>-<name>` (`<ms>-<n>-<name>` when taken) | *Delete* in the explorer |
+| `NoteSearch { roots, query, limit }` | `NoteHits(Vec<Hit { path, line, text }>)`: case-insensitive matches in file names (`line` 0) and in the lines of text files (Markdown, HTML and known text extensions, at most 2 MiB each; the line shortened to 200 characters around the match); `.trash`, `.git`, `node_modules` and links skipped, and the contents of files only in the cloud (OneDrive placeholders: reading would download them; listings classify them by folder); a root inside another searched once; at most `limit` (1 to 500) hits, 20,000 files, 50,000 names a folder, 256 MiB and 10 s | backlinks, `[[` completion, opening a `[[name]]`, the phone's search |
+
+Paths are absolute paths on the service's machine. Every notebook request
+refuses relative paths and `.` or `..` components. The reads (`NotebookList`,
+`NoteRead`, `NoteRevs`, `ReadBytes`, `NoteSearch`) take any such path, as
+`ReadText` does: a client can do what you can on that machine. The writes
+(`NoteWrite`, `NoteMkdir`, `NoteRename`, `NoteTrash`) also refuse paths inside a `.git`
+folder and paths that are not strictly inside one of `roots` (the client
+names the explorer's roots: the notebook root, group folders outside it, the
+canvas-wide folder, the mounts; they keep mistakes inside the notebook), on
+Windows names Windows would read as other names below the root (a trailing
+dot or space, `:` streams, device names such as `nul.md`, `GIT~1`), and
+paths a link or junction leads out of every root (checked right before the
+change). A revision is the lowercase hex of the first
+8 bytes of the SHA-256 of the file's bytes. Each backend process (the
+service, a window's in-process backend) makes one write at a time (the
+revision check and the write together).
 
 The three remote-access requests are answered by the service itself (they
 need its pairing state) and only for clients on its local pipe; TCP clients
@@ -107,7 +135,10 @@ their results come back as `AppEvent`s, as before. Quick ones (a folder
 listing, a path check) are made where the answer is needed; locally they cost
 what the direct call cost, remotely one round trip. Remote callers wait up to
 `Request::timeout()`: 30 s, 2 min for scans and Task Scheduler, 5 min for
-agent configuration, 15 min for plugin updates, migrations, worktrees and forks.
+agent configuration, 15 min for plugin updates, migrations, worktrees and
+forks; `NoteSearch` waits up to 60 s (it bounds itself to 10 s), so it is
+not served with the quick requests (those of 30 s or less, kept apart from
+slow ones).
 
 The draw path does no I/O: log tails, the automation folder, plugin folders
 and the backend's paths are cached in `App` and refreshed in the background.
@@ -144,7 +175,7 @@ A client changes its working copy and marks it dirty; within 100 ms
 | `PutNode(node)` / `PutGroup(group)` | insert (appended), or replace the whole object |
 | `NodeFields(node, fields)` / `GroupFields(group, fields)` | set those fields of the object; dropped when it no longer exists |
 | `DelNode(id)` / `DelGroup(id)` | delete |
-| `SetField(name, json)` | set a shared top-level field: `recent_folders`, `defaults`, `vscode`, `idle_stop_minutes`, `idle_stop_v2`, `mcp`, `automations_dir`, `doctor_created`, `default_agent`, `dust_after_days`, `subagents_shown` (Settings › Subagents; a session's own choice is its node's `subagents_shown`) |
+| `SetField(name, json)` | set a shared top-level field: `recent_folders`, `defaults`, `vscode`, `idle_stop_minutes`, `idle_stop_v2`, `mcp`, `automations_dir`, `doctor_created`, `default_agent`, `dust_after_days`, `subagents_shown` (Settings › Subagents; a session's own choice is its node's `subagents_shown`), `notebook_root` (the notebook's folder; absent: `<home>/notebook`), `notebook_mounts` (extra explorer roots), `notebook_scripts` (HTML notes allowed to run scripts, by path) |
 
 `ClientMsg::DocEdit { key, base, ops_json }` carries the list (`base`: the
 version the client had). The service applies the edits of all clients in
@@ -179,7 +210,7 @@ When another window overwrites a field this client changed in the last 30 s
 (a box's name, position, …; not review or last-use times), the client shows "“name” was
 changed in another window." The same goes for user-facing settings
 (defaults, VS Code settings, MCP presets, idle stop, automations folder,
-default agent).
+default agent, the notebook folder and mounts).
 
 Boxes created at the same time by several windows for the same thing
 (automation boxes, the Automations group) get ids derived from what they
@@ -285,11 +316,79 @@ The same pattern (`service/reviews.rs`; records in
 | bus events | `review.completed` (subscribers), `review.message.approved` and `review.check_due` (addressed to the agent, `to` = its key) | ordinary events |
 | mailbox | requests are `Mail` with their id (`q-…`); delivery confirms them | — |
 
+## The notebook and the todo boards on the wire
+
+The notebook's files are read and written only through the backend requests
+above (front ends, the phone included, never touch them); the todo book only
+through the service's todo hub (`service/todos.rs`). Everything is JSON with
+defaults:
+
+| Where | Addition | An older peer |
+|---|---|---|
+| `Doc` | `notebook_root`, `notebook_mounts`, `notebook_scripts` (shared fields, not written until set) | a client ignores them; a service refuses a `SetField` it does not know (the sender gets `Error` and the whole document again), so changing these settings needs a current service |
+| `ClientMsg::Routing` (`bus::Routing`) | `notebook_root` (the canvas setting, trimmed; absent for the default) for `copilot-canvas note` and report filing | ignores it |
+| `ClientPrefs` | `space` (`notebook` or `tasks`; absent: the canvas) | — (the client's own file) |
+| `Request` / `Response` | the ten notebook requests and their answers, appended at the end of the enums; `NotebookList::root` and `NoteWrite::base` may be left out (`None`) | answers "does not support this request (update it)"; the explorer says the notebook is not available |
+| `ClientMsg::Bus` | `{"action": "todos", "op": <TodoOp>}` from windows and phones (`todos::client_action`), applied at once (not on the bus loop's next pass) as you; then every client gets the new book. A refusal goes back to that client only, as `ServiceMsg::Error { id: None, message: "Todo change refused: …" }` followed by the book as it is (its optimistic change is undone); an operation the service cannot read is refused the same way | ignores unknown actions |
+| bus inbox | requests `{"type": "canvas.todo", "source": <session>, "data": {"op": …, "request": <uuid>, "bot": <automation>}}` (`copilot-canvas todo …`), intercepted by the bus loop, never routed to agents, applied as their sender; a session not on the routed canvas is refused | routes it as an ordinary event nobody subscribes to; the command then says the change is handed over |
+| `<home>/bus/answers/<request>.json` | `{ok, message, state: "applied" \| "refused", data}`; `data` is the `--format json` answer (`{"schemaVersion": 1, "kind": "todo-change", "ok", "message", "warnings", "id", "created", "changed"}` plus the `todo` or `board` it names). `data` is optional: `pr` and `review` answers leave it out | — |
+| `ServiceMsg::Bus` (`bus::Snapshot`) | `todos`: the routed canvas's whole `TodoBook` | absent from older services and while the routed canvas has no id: Tasks shows "Waiting for the todo boards from the service…" |
+| bus events | `todo.created`, `todo.proposed`, `todo.accepted`, `todo.status`, `todo.claimed`, `todo.submitted`, `todo.done` (data: `id`, `title`, `type`, `priority`, `status`, `board`, `board_name`, `by`, `by_session`, and `from`, `to`, `why`, `resolution`, `pr`, `for`, `for_session` where they apply) in the first canvas group linked to the board (else its parent's), from the actor's session (so never back to it), with the canvas id and the request's hop | ordinary events |
+| group catalog | `events.yaml` gains the seven `todo.*` entries (below) | — |
+
+**The hub.** The service holds the routed canvas's book, read from
+`<home>/canvas-agents/<canvas id>/todos/book.json` when that canvas is
+routed (the one held before is saved first), and is its only writer: after
+every applied operation it writes the book atomically when its text changed,
+rewrites the Markdown mirror (`settings.mirror`: an absolute `.md` path on its
+machine; a relative one is refused) when its text changed, and appends to
+`log.jsonl` one line per applied or refused operation (`ms`, `actor`, `op`,
+`ok`, `message`, `warnings`; an import's text over 2,000 bytes is logged as
+its size; moved to `log.jsonl.old` beyond 5 MB). A failed save or mirror
+write is a warning in the answer, never a refusal. Every operation runs
+through `TodoBook::apply` (all or nothing, refusals in words for the actor)
+with the actor (`Actor`: human, agent with its session, or bot with a name),
+the actor's group (none for canvas-wide agents), the canvas's groups and
+sessions, and the sessions that run here or elsewhere (`live`: a claim by any
+other session is stale). Window operations are applied as you with hop 0;
+requests with their sender and hop.
+
+**Merged pull requests.** A `pr.merged` event that came from the service
+itself (the PR monitor, a session's history), never from an inbox file,
+finishes the todos linked to that pull request that are in progress or in
+review: `TodoOp::Done` as the bot "pull request merged", the link matched by
+the pull request's key.
+
+**Digests.** A group passive run's `group-context.md` gains `# Todos` (the
+boards linked to the group: counts, rules, up to 20 open todos, in progress
+first); a canvas-wide agent's `canvas-context.md` gains every board in a few
+lines.
+
+**The catalog upgrade.** `bus::ensure_catalog` (the `EnsureCatalog` request,
+and every run of a group passive session) creates a missing catalog from the
+default; an existing one with none of the `todo.*` events gains the seven
+default ones (`bus::upgrade_catalog`). Only lines are inserted, after its last
+event, in its indentation and line ends, and only when the result reads as
+the same catalog plus those events (one YAML document with a top-level
+`events:` list of `- name:` entries; any other layout is left alone, and a
+catalog with some `todo.*` event is the owner's choice). It is written to a
+`.yaml.tmp` file renamed over the catalog.
+
+**Compatibility.** The book is new with this service, so an older service
+sends no `todos` and ignores the windows' todo actions and requests. Within
+the book, unknown-safe defaults apply (`#[serde(default)]` on every struct);
+a service whose `TodoOp::Claim` has no `session` field ignores it and claims
+the todo for the requester instead of the session (clients and service come
+from one build). Agents get `COPILOT_CANVAS_AGENT` and
+`COPILOT_CANVAS_SESSION_AGENT` from the service that launches them
+(docs/AGENTS.md).
+
 ## Per-client preferences
 
 The view (position, zoom), panels (sidebar width and visibility, terminal
-share, tiled mode, collapsed groups), the recent tile order and the selected
-box belong to each client. They live in the client's own data folder:
+share, tiled mode, collapsed groups), the recent tile order, the selected
+box and the space it shows (`space`: `notebook` or `tasks`; not written for
+the canvas) belong to each client. They live in the client's own data folder:
 `<home>\prefs\<instance>-<document key>.json`, written 400 ms after a change
 and on quit. The first time a client opens a document it starts from the
 document's own (legacy) fields. Patches never carry them, so two windows on
@@ -316,6 +415,16 @@ holding 1,000 unread reports refuses new ones; unread reports are never
 dropped), keeps read reports for 30 days and at most 500, and broadcasts the
 inbox (`ServiceMsg::Reports`, a `reports::Snapshot` as JSON) to every client
 with `CAP_REPORTS` when it changed, and to each such client when it connects.
+
+A stored Markdown or HTML report from a canvas session whose group has a
+folder is also filed as a note (`reports::file_report`):
+`<folder>/human-outputs/reports/<local date>-<slug of the title>.<md|html>`
+(`report` when the slug is empty; `-2`, `-3` when taken), with `title`,
+`audience: human`, `author: ai`, `agent` (passive sessions' agent),
+`source_session`, `created` (the report's time) and `report: <id>`. Messages
+and reports from outside the canvas are not filed; a failure is logged
+(`report … stored but not filed in its group's folder: …`) and never refuses
+the report.
 
 Read state changes are bus requests, like the passive actions:
 `{"action": "reports", "op": "read" | "unread" | "read_all" | "delete", "ids":
@@ -419,6 +528,26 @@ most 8 files and 4 MiB in all.
   `service::reviews`: requests posted for the service, which agent checks;
   `canvas_core::review_followups`: the panel's buttons, pausing is the
   agent's setting; the `review-followups` snapshot.
+- `canvas_model::notebook`: front matter read and rewritten (quotes,
+  comments, lists, CRLF, unknown keys and order kept), `canvas-` meta tags,
+  classification (metadata, folder, file type, default; internal files and
+  passive memory), titles, kinds, revisions, paths that must be absolute,
+  inside a root and outside `.git`, Markdown with `#note:` / `#todo:` links,
+  new notes' provenance. `canvas_model::todos`: ids and prefixes, ranks,
+  every operation and the rules for people, agents and bots, claims (live,
+  stale, forced, for a session), WIP warnings, events, the board view,
+  import, mirror and JSON Canvas export, digests. `canvas_agents::notebook`
+  and the contract's `notebook_contract`: every notebook request against a
+  temporary notebook, locally and over loopback TCP, with the same answers.
+  `canvas_agents::service::todos`: requests applied as their sender and
+  answered, window actions, refusals with the book resent, the log, the
+  mirror, `pr.merged`, digests. `canvas_agents::{notes_cli, todos_cli}`:
+  parsing, defaults, the skills' contracts. `canvas_agents::reports`: filing
+  as notes. `canvas_model::bus`: the catalog upgrade. `canvas_core::{spaces,
+  notebook, tasks, editor}` and the view snapshots `notebook-*`, `tasks-*`,
+  `goto-dialog`, `canvas-spaces-chips`; `canvas_gui::webpane`: the origin's
+  path mapping, what each request is answered, links, keys and the overlap
+  rule. `canvas_mobile`: the phone's todos and notebook against the mock.
 - `two_clients_probe` (manual: `cargo test --release two_clients_probe --
   --ignored`): two TUI clients in hidden pseudoconsoles, one over `--remote
   loopback`, one over the pipe; a rename in either shows in the other, panning
@@ -440,3 +569,8 @@ most 8 files and 4 MiB in all.
   machine (it can already run anything in a terminal).
 - An old service (protocol 8 from before this change) cannot open canvases:
   the client says so and asks to restart it.
+- The todo hub holds one canvas's book at a time (the routed one); another
+  canvas's book waits on disk until a window opens that canvas. The notebook
+  requests trust the roots the client names (a paired client can write
+  wherever it can name a root on the service's machine, as it can through a
+  terminal anyway).

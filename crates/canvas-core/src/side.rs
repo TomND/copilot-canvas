@@ -163,6 +163,8 @@ pub enum ItemRef {
     /// A report the service refused after it was queued (Del dismisses it).
     ReportRefused(String),
     ReportsAllRead,
+    /// A Notebook setting (`notebook::setting_rows`).
+    Notebook(crate::notebook::SettingRow),
 }
 
 #[derive(Clone, Debug)]
@@ -212,6 +214,10 @@ pub enum RightDetail {
     Prs,
     /// The routed canvas's review follow-ups.
     Reviews,
+    /// A note's details (its path; `notebook::draw_detail`).
+    Note(String),
+    /// A todo's card (its id; `tasks::draw_detail`).
+    Todo(String),
 }
 
 fn enabled_icon(enabled: bool) -> (&'static str, Color) {
@@ -518,6 +524,8 @@ impl App {
                     rows.extend(self.visual_setting_rows());
                     rows.push(ListRow::header("Automations"));
                     rows.push(ListRow::row(ItemRef::AutomationsDir, "›", TEXT, "Manifest folder", self.automations_folder.clone()));
+                    rows.push(ListRow::header("Notebook"));
+                    rows.extend(crate::notebook::setting_rows(self).into_iter().map(|(row, label, value)| ListRow::row(ItemRef::Notebook(row), "›", TEXT, label, value)));
                 }
                 rows.push(ListRow::header(if self.config_agent == AgentKind::Copilot { "Copilot settings (copilot config)".to_owned() } else { format!("{label} settings (read-only)") }));
                 rows.push(ListRow::row(ItemRef::ConfigAgent, "⇄", BLUE, format!("Agent: {label}"), "A: switch"));
@@ -761,6 +769,7 @@ impl App {
                 self.mark_dirty();
             }
             ItemRef::Visual(setting) => self.visual_setting(setting),
+            ItemRef::Notebook(row) => crate::notebook::run(self, crate::notebook::Action::Setting(row)),
             ItemRef::Header | ItemRef::Info | ItemRef::Detail => {}
         }
         self.needs_draw = true;
@@ -1075,12 +1084,12 @@ impl App {
 
     // ---------- group folders ----------
 
-    /// `<backend home>\groups\<slug of the group name>`.
+    /// `<notebook root>\Groups\<group name>` (the root: the canvas's notebook
+    /// folder, else `<backend home>\notebook`).
     pub fn suggested_group_folder(&self, group_id: &str) -> String {
         let name = self.doc.group(group_id).map(|g| g.name.clone()).unwrap_or_else(|| "group".into());
-        let slug = crate::git::slug(&name).replace('/', "-");
-        let slug = if slug.is_empty() { "group".to_owned() } else { slug };
-        PathBuf::from(&self.info.home).join("groups").join(slug).display().to_string()
+        let root = canvas_model::notebook::root_of(self.doc.notebook_root.as_deref(), std::path::Path::new(&self.info.home));
+        canvas_model::notebook::group_folder(&root, &name).display().to_string()
     }
 
     pub fn set_group_folder(&mut self, group_id: &str, path: &str) -> Result<(), String> {

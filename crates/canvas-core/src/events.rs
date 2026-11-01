@@ -8,6 +8,7 @@ use crate::doc::NodeKind;
 use crate::input::{self, InputEvent, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind};
 use crate::paint::rect_contains;
 use crate::protocol::{ClientMsg, Input};
+use crate::spaces::Space;
 use crate::undo::Source;
 use crate::view::RenderMode;
 
@@ -72,8 +73,19 @@ impl App {
                     self.paste_text(&id, &text);
                 }
             }
+        } else if self.space_has_keys() {
+            self.space_text(&text);
         } else if self.side_filter_active {
             self.side_filter.insert(&text);
+        }
+    }
+
+    /// Text for the Notebook's or Tasks' module (it has the keyboard).
+    fn space_text(&mut self, text: &str) -> bool {
+        match self.space {
+            Space::Notebook => crate::notebook::on_text(self, text),
+            Space::Tasks => crate::tasks::on_text(self, text),
+            Space::Canvas => false,
         }
     }
 
@@ -102,6 +114,8 @@ impl App {
                     self.send(ClientMsg::Input { id: id.clone(), input: Input::Key { key: crate::protocol::Key::Char(c), mods: 0 } });
                 }
             }
+        } else if self.space_has_keys() && self.space_text(&text) {
+            // The module took it.
         } else if self.side_filter_active {
             self.side_filter.insert(&text);
             self.side_sel = 0;
@@ -112,7 +126,7 @@ impl App {
         }
     }
 
-    fn cycle_focus(&mut self) {
+    pub(crate) fn cycle_focus(&mut self) {
         let next = match self.focus {
             Focus::Sidebar => Focus::Canvas,
             Focus::Canvas if !self.layout.tiles.is_empty() => Focus::Terminal,
@@ -139,6 +153,14 @@ impl App {
             self.terminal_key(key);
             return;
         }
+        // Ctrl+1/2/3, Alt+← / Alt+→, Ctrl+P: spaces, history, Go to.
+        if self.space_key(&key) {
+            return;
+        }
+        // Alt+N: a quick note in the notebook's Inbox, from every space.
+        if crate::notebook::is_capture_key(&key) {
+            return crate::notebook::capture(self);
+        }
         let ctrl = key.modifiers.contains(Modifiers::CONTROL);
         let shift = key.modifiers.contains(Modifiers::SHIFT);
         if key.modifiers.contains(Modifiers::ALT)
@@ -146,6 +168,19 @@ impl App {
         {
             let view = crate::side::VIEWS[(c as u8 - b'1') as usize].0;
             return self.set_view(view);
+        }
+        // The Notebook's and Tasks' main area and sidebar are their module's;
+        // what it leaves goes to the few global keys (never to the canvas).
+        if self.space_has_keys() {
+            let handled = match self.space {
+                Space::Notebook => crate::notebook::on_key(self, key),
+                Space::Tasks => crate::tasks::on_key(self, key),
+                Space::Canvas => false,
+            };
+            if !handled {
+                self.space_fallback_key(key);
+            }
+            return;
         }
         if self.focus == Focus::Sidebar && self.side_view != crate::side::SideView::Sessions {
             match key.code {
@@ -513,7 +548,9 @@ impl App {
         }
     }
 
-    fn is_double_click(&mut self, x: u16, y: u16) -> bool {
+    /// A press at the same cell as the last one, less than 400 ms after it
+    /// (the Notebook and Tasks use it for their own double-clicks too).
+    pub fn is_double_click(&mut self, x: u16, y: u16) -> bool {
         let now = Instant::now();
         let double = self.last_click.is_some_and(|(t, cx, cy)| now - t < Duration::from_millis(400) && cx == x && cy == y);
         self.last_click = if double { None } else { Some((now, x, y)) };
@@ -527,6 +564,22 @@ impl App {
             return;
         }
         let (x, y) = (mouse.column, mouse.row);
+        // A press in the Notebook's or Tasks' area: its drag and release are the module's.
+        if matches!(self.drag, Some(Drag::Space)) && matches!(mouse.kind, MouseEventKind::Drag(_) | MouseEventKind::Up(_) | MouseEventKind::Moved) {
+            if matches!(mouse.kind, MouseEventKind::Up(_)) {
+                self.drag = None;
+            }
+            return self.space_mouse(mouse);
+        }
+        // The wheel and hovering there too (the wheel also while a press there is held:
+        // it pans the todo canvas under a dragged card, never the hidden session canvas).
+        let space_press = matches!(self.drag, None | Some(Drag::Space));
+        if self.space != Space::Canvas && space_press && matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown | MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight) && self.in_space_area(x, y) {
+            if mouse.kind == MouseEventKind::Moved {
+                self.needs_draw = false;
+            }
+            return self.space_mouse(mouse);
+        }
         match mouse.kind {
             MouseEventKind::Down(button) => {
                 self.drag_origin = self.pointer;
@@ -567,6 +620,17 @@ impl App {
             return;
         }
         let hit = self.layout.hits.iter().find(|(r, _)| rect_contains(*r, x, y)).map(|(_, h)| h.clone());
+        // The Notebook's and Tasks' own click targets take any button.
+        if let Some(Hit::Notebook(_) | Hit::Tasks(_)) = &hit {
+            self.space_focus_at(x, y);
+            let event = MouseEvent { kind: MouseEventKind::Down(button), column: x, row: y, x: self.pointer.0, y: self.pointer.1, modifiers };
+            match hit {
+                Some(Hit::Notebook(hit)) => crate::notebook::click(self, hit, event),
+                Some(Hit::Tasks(hit)) => crate::tasks::click(self, hit, event),
+                _ => {}
+            }
+            return;
+        }
         if button == MouseButton::Left {
             match hit {
                 Some(Hit::Toolbar(action)) => return self.run(action),
@@ -588,6 +652,12 @@ impl App {
                 self.drag = Some(Drag::TermDivider);
                 return;
             }
+        }
+        // The Notebook's and Tasks' areas: a press there (and its drag and release) is the module's.
+        if self.in_space_area(x, y) {
+            self.space_focus_at(x, y);
+            self.drag = Some(Drag::Space);
+            return self.space_mouse(MouseEvent { kind: MouseEventKind::Down(button), column: x, row: y, x: self.pointer.0, y: self.pointer.1, modifiers });
         }
         if rect_contains(self.layout.sidebar, x, y) {
             return self.sidebar_click(button, x, y);
@@ -800,6 +870,8 @@ impl App {
                 self.mark_dirty();
                 Drag::TermDivider
             }
+            // `on_mouse` gives these to the module.
+            Drag::Space => Drag::Space,
         });
     }
 

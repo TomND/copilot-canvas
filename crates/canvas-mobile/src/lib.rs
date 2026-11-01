@@ -8,15 +8,22 @@
 //! It reuses the desktop clients' code: the wire protocol, framing and
 //! handshake (`canvas-common`), the canvas replica, status rules and launch
 //! builder (`canvas-model`) and the terminal view (`canvas-termview`).
+//!
+//! The canvas's todo boards and notebook (docs/NOTEBOOK-TASKS.md) are
+//! exposed too: the boards from the service's bus snapshot with your
+//! changes as the windows send them (`todos.rs`), and the notebook's folders
+//! and notes as sanitized pages, read only but for *Mark reviewed* (`notes.rs`).
 
 uniffi::setup_scaffolding!();
 
 mod client;
 mod link;
 mod model;
+mod notes;
 mod reports;
 mod screen;
 mod state;
+mod todos;
 
 pub use client::{Client, ClientConfig, Listener, Pairing};
 pub use link::{Inbox, InboxReader, Transport, TransportWriter};
@@ -66,6 +73,13 @@ pub fn report_page_html(format: ReportFormat, body: String) -> String {
         ReportFormat::Html => canvas_model::reports::Format::Html,
     };
     reports::page(&canvas_model::reports::Content { id: String::new(), format, body }).html
+}
+
+/// What a link of a note page (or a todo's body) opens in the app:
+/// `#note:Name` and `#todo:DEC-031` (`None`: another link).
+#[uniffi::export]
+pub fn note_link_target(href: String) -> Option<NoteLink> {
+    notes::link(&href)
 }
 
 /// The core's version (the service logs it as the client's build).

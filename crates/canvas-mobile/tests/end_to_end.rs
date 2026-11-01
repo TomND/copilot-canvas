@@ -1,6 +1,7 @@
 //! The phone's core against the mock service over a real WebSocket: pairing,
 //! the handshake, the canvas, a real shell typed into at the phone's size,
-//! renames, folder listings, reconnecting.
+//! renames, folder listings, reconnecting, the reports inbox, the todo
+//! boards and the notebook.
 #![cfg(unix)]
 
 use std::io::Read;
@@ -9,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use canvas_common::ws;
-use canvas_mobile::{Client, ClientConfig, ConnState, CoreEvent, KeyCode, Listener, Pairing, StatusKind, Transport};
+use canvas_mobile::{Client, ClientConfig, ConnState, CoreEvent, KeyCode, Listener, NoteFilter, NoteKind, NoteLink, Pairing, StatusKind, TodoDraft, TodoKind, TodoPriority, TodoStatus, Transport};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 
 /// A WebSocket to the mock, as the app's `URLSessionWebSocketTask` would be.
@@ -273,5 +274,67 @@ fn the_reports_inbox_reaches_phones_and_reports_open_as_safe_pages() {
     wait_until("the delete on another phone", || !other.reports().threads.iter().any(|t| t.id == arrived));
     client.mark_all_reports_read().unwrap();
     wait_until("everything read", || other.reports().unread == 0);
+    let _ = std::fs::remove_dir_all(state);
+}
+
+#[test]
+fn todo_boards_and_the_notebook_reach_phones_and_changes_reach_every_phone() {
+    let state = std::env::temp_dir().join(format!("canvas-mock-notes-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&state);
+    let cwd = std::env::temp_dir().display().to_string();
+    let handle = canvas_mock::serve(canvas_mock::Config { state_dir: state.clone(), ..canvas_mock::Config::local("127.0.0.1:0", &cwd) }).unwrap();
+    let addr = handle.addr.to_string();
+    let (client, _events) = phone(&addr);
+    let (other, _other_events) = phone(&addr);
+
+    // The boards come with the bus snapshot, on the mock's canvas.
+    wait_until("the canvas", || client.overview().sessions.len() == 7);
+    wait_until("the todo boards", || client.todos().loaded);
+    let todos = client.todos();
+    assert_eq!(todos.boards.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(), ["Canvas App", "Decomps"]);
+    let momentum = todos.todos.iter().find(|t| t.id == "WI-002").unwrap();
+    assert_eq!((momentum.claimed_by.as_str(), momentum.claimed_session.as_str()), ("Fix flaky test", "mock-fix"));
+    assert!(todos.groups.iter().any(|g| g.group == "g-payments" && g.proposed == 1));
+    // Accepted here at once, on the other phone once the service has it.
+    let change = client.accept_todo("WI-006".into(), Some(TodoStatus::Todo)).unwrap();
+    assert!(change.id == "WI-006" && change.message.starts_with("Accepted WI-006"), "{change:?}");
+    assert_eq!(client.todos().todos.iter().find(|t| t.id == "WI-006").map(|t| t.status), Some(TodoStatus::Todo));
+    wait_until("the accepted todo on the other phone", || other.todos().todos.iter().any(|t| t.id == "WI-006" && t.status == TodoStatus::Todo));
+    assert!(client.accept_todo("WI-006".into(), None).is_err(), "not a proposal any more: refused here");
+    let draft = TodoDraft { board: "Decomps".into(), title: "Fuzz the parser".into(), kind: TodoKind::Research, priority: TodoPriority::Low, status: None, body: String::new() };
+    assert_eq!(client.add_todo(draft).unwrap().id, "DEC-009");
+    client.done_todo("WI-004".into()).unwrap();
+    wait_until("the new and finished todos on the other phone", || other.todo("DEC-009".into()).is_some() && other.todo("WI-004".into()).is_some_and(|t| t.item.status == TodoStatus::Done));
+
+    // The notebook: its root, folders with provenance, notes as safe pages.
+    let notebook = client.notebook().unwrap();
+    assert_eq!(notebook.roots.len(), 1, "the mock's groups have no folders of their own");
+    let root = std::path::Path::new(&notebook.root);
+    let path = |parts: &[&str]| parts.iter().fold(root.to_path_buf(), |p, part| p.join(part)).display().to_string();
+    let top = client.list_notes(notebook.root.clone(), NoteFilter::All, false).unwrap();
+    assert!(top.entries.iter().any(|e| e.name == "Welcome.md" && e.title == "Welcome to the notebook"), "{top:?}");
+    let outputs = client.list_notes(path(&["Groups", "Payments", "human-outputs"]), NoteFilter::Human, false).unwrap();
+    assert_eq!(outputs.entries.iter().map(|e| e.kind).collect::<Vec<_>>(), [NoteKind::Html, NoteKind::Markdown]);
+    let docs = client.list_notes(path(&["Groups", "Payments", "ai-docs"]), NoteFilter::Human, false).unwrap();
+    assert_eq!((docs.entries.len(), docs.hidden), (0, 2), "notes for agents left out");
+    let plan_path = path(&["Groups", "Payments", "human-outputs", "Release plan.md"]);
+    let plan = client.read_note(plan_path.clone()).unwrap();
+    assert!(plan.html.contains("<h1>Release plan</h1>") && plan.html.contains("src=\"data:image/svg+xml;base64,"), "{}", plan.html);
+    assert_eq!((plan.provenance.session_name.as_str(), plan.provenance.reviewed), ("Fix flaky test", false));
+    let dashboard = client.read_note(path(&["Groups", "Payments", "human-outputs", "Payments dashboard.html"])).unwrap();
+    assert!(dashboard.html.contains("Payments dashboard") && dashboard.html.contains("src=\"data:image/svg+xml;base64,"), "{}", dashboard.html);
+    assert!(!dashboard.html.contains("<script") && !dashboard.html.contains("SCRIPT RAN") && !dashboard.html.contains("127.0.0.1:9"), "{}", dashboard.html);
+    let chart = client.read_note(path(&["pictures", "chart.svg"])).unwrap();
+    assert!(chart.kind == NoteKind::Image && chart.html.contains("<img src=\"data:image/svg+xml;base64,"));
+    assert_eq!(canvas_mobile::note_link_target("#note:Release%20plan".into()), Some(NoteLink::Note { name: "Release plan".into() }));
+    assert_eq!(client.resolve_note("Release plan".into()).unwrap(), Some(plan_path.clone()));
+    assert!(client.search_notes("refunds never".into(), 20).unwrap().iter().any(|h| h.path.ends_with("GOALS.md") && h.line > 0));
+
+    // Mark reviewed: written based on the note's revision, seen by the next read.
+    client.mark_note_reviewed(plan_path.clone()).unwrap();
+    let marked = other.read_note(plan_path.clone()).unwrap();
+    assert!(marked.provenance.reviewed && marked.rev != plan.rev && marked.text.contains("reviewed: true"));
+    assert_eq!(client.note_revisions(vec![plan_path, path(&["missing.md"])]).unwrap(), [Some(marked.rev), None]);
+    assert!(client.mark_note_reviewed(path(&["pictures", "chart.svg"])).is_err(), "pictures carry no mark");
     let _ = std::fs::remove_dir_all(state);
 }
