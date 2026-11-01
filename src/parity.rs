@@ -2245,7 +2245,16 @@ fn tty_processes(instance: &Instance, term: &str) -> String {
     let tty = ps(&["-o", "tty=", "-p", &pid]).trim().to_owned();
     let columns = if cfg!(target_os = "linux") { "pid,ppid,pgid,tpgid,stat,wchan:20,args" } else { "pid,ppid,pgid,tpgid,stat,wchan,command" };
     let list: String = ps(&["-t", &tty, "-o", columns]).lines().map(|l| l.chars().take(150).collect::<String>() + "\n").collect();
-    format!("{term}: pid {pid} on {tty}\n{list}--- the terminal ---")
+    // The line discipline's modes, and where the service's threads wait.
+    let stty = std::process::Command::new("stty").args([if cfg!(target_os = "linux") { "-F" } else { "-f" }, &format!("/dev/{tty}"), "-a"]).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    let modes: String = stty.lines().skip(1).map(|l| l.trim().to_owned() + " ").collect();
+    let service = log.lines().find_map(|l| l.split_once(" [").and_then(|(_, r)| r.split_once(']')).map(|(p, _)| p.to_owned())).unwrap_or_default();
+    let threads: String = if cfg!(target_os = "linux") && !service.is_empty() {
+        ps(&["-L", "-o", "tid,stat,wchan:22,comm", "-p", &service]).lines().skip(1).map(|l| l.split_whitespace().skip(1).collect::<Vec<_>>().join(" ") + "; ").collect()
+    } else {
+        String::new()
+    };
+    format!("{term}: pid {pid} on {tty}\n{list}modes: {modes}\nservice {service} threads: {threads}\n--- the terminal ---")
 }
 
 fn plain_client_sees(instance: &Instance, id: &str) -> Result<(usize, usize)> {

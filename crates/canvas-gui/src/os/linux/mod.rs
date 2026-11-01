@@ -9,7 +9,7 @@ mod dnd;
 mod gtk;
 mod html_helper;
 pub mod webview;
-mod xkeys;
+mod x11;
 
 /// The GUI binary runs as the HTML view's helper when started for it
 /// (`COPILOT_CANVAS_HTML_VIEW=1`): answers its exit code.
@@ -190,9 +190,23 @@ impl Taskbar {
     }
 }
 
-/// Work areas are the monitors' full areas for now.
-pub fn work_area(_monitor: &winit::monitor::MonitorHandle) -> Option<[i32; 4]> {
-    None
+/// A monitor's work area on X11: without the panels and docks, as the
+/// window manager reports it (placement keeps windows inside it, as Windows
+/// keeps them off the taskbar). Wayland has no such protocol (the compositor
+/// places windows): the whole monitor there, and on X11 without a window
+/// manager that sets one.
+pub fn work_area(monitor: &winit::monitor::MonitorHandle) -> Option<[i32; 4]> {
+    if wayland() {
+        return None;
+    }
+    let (pos, size) = (monitor.position(), monitor.size());
+    x11::work_area([pos.x, pos.y, pos.x + size.width as i32, pos.y + size.height as i32])
+}
+
+/// winit's choice of backend: Wayland when `WAYLAND_DISPLAY` or
+/// `WAYLAND_SOCKET` is set (before any window exists too).
+fn wayland() -> bool {
+    WAYLAND.load(std::sync::atomic::Ordering::Relaxed) || ["WAYLAND_DISPLAY", "WAYLAND_SOCKET"].iter().any(|v| std::env::var_os(v).is_some_and(|v| !v.is_empty()))
 }
 
 /// The app's identity for docks, launchers and `LauncherEntry`: the Wayland
@@ -240,7 +254,7 @@ pub fn take_dropped(window: &Window) -> Vec<String> {
 /// on X11. Wayland gives no client a way to type into another's surface, so
 /// the benches type under X11.
 pub fn post_key(window: isize, c: char) {
-    if window != 0 && !WAYLAND.load(std::sync::atomic::Ordering::Relaxed) {
-        xkeys::post_key(window as u64, c);
+    if window != 0 && !wayland() {
+        x11::post_key(window as u64, c);
     }
 }
