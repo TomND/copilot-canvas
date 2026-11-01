@@ -50,10 +50,15 @@ pub struct Perf {
     pub damage_ms: Samples,
     /// … and frames that only moved loop dots (the loop layer alone).
     pub loop_ms: Samples,
+    /// … and frames that only repainted the breathing dot grid (its layer alone).
+    pub grid_ms: Samples,
     /// Frames presented of each kind.
     pub full_frames: u64,
     pub damage_frames: u64,
     pub loop_frames: u64,
+    pub grid_frames: u64,
+    /// The grid layer repainted on its own in any of those frames.
+    pub grid_paints: u64,
     /// Building the view (core) only.
     pub view_ms: Samples,
     pub scene_ms: Samples,
@@ -78,6 +83,9 @@ pub struct Perf {
     pub output_at: Option<Instant>,
     pub presented: u64,
     pub skipped: u64,
+    /// Redraws the window system asked for (X11 exposes, macOS and Windows
+    /// paint requests): each is a full frame.
+    pub redraw_requests: u64,
 }
 
 impl Perf {
@@ -125,11 +133,15 @@ impl Perf {
             "full_frames": self.full_frames,
             "damage_frames": self.damage_frames,
             "loop_frames": self.loop_frames,
+            "grid_frames": self.grid_frames,
+            "grid_paints": self.grid_paints,
             "skipped": self.skipped,
+            "redraw_requests": self.redraw_requests,
             "frame_ms": self.frame_ms.json(),
             "full_ms": self.full_ms.json(),
             "damage_ms": self.damage_ms.json(),
             "loop_ms": self.loop_ms.json(),
+            "grid_ms": self.grid_ms.json(),
             "view_ms": self.view_ms.json(),
             "scene_ms": self.scene_ms.json(),
             "encode_ms": self.encode_ms.json(),
@@ -144,7 +156,7 @@ impl Perf {
 
     /// Starts a measurement from scratch (the frame counts keep running).
     pub fn reset(&mut self) {
-        *self = Perf { presented: self.presented, full_frames: self.full_frames, damage_frames: self.damage_frames, loop_frames: self.loop_frames, ..Perf::default() };
+        *self = Perf { presented: self.presented, full_frames: self.full_frames, damage_frames: self.damage_frames, loop_frames: self.loop_frames, grid_frames: self.grid_frames, grid_paints: self.grid_paints, skipped: self.skipped, redraw_requests: self.redraw_requests, ..Perf::default() };
     }
 }
 

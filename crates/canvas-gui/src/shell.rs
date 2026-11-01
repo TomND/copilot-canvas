@@ -9,7 +9,8 @@
 //!
 //! A frame in which only terminal contents changed (streaming output) keeps
 //! the previous frame's other layers: it repaints the terminal tiles and the
-//! HUD only. A lost GPU device is rebuilt with every window's surface; a DPI
+//! HUD only; moving loop dots and the breathing dot grid repaint their own
+//! layers alone. A lost GPU device is rebuilt with every window's surface; a DPI
 //! change re-lays out the cells and keeps the canvas centred; each window's
 //! placement is saved and restored; AccessKit exposes the UI Automation tree.
 
@@ -52,6 +53,11 @@ const EFFECT_TICK: Duration = Duration::from_millis(80);
 /// Moving loop dots are redrawn at most this often (30 frames/s, the loop
 /// layer alone; small arcs less often, see `canvas::loop_interval`).
 const LOOP_FRAME: Duration = Duration::from_millis(33);
+/// The breathing dot grid is redrawn at most this often (15 frames/s, the
+/// grid layer alone, and only when its colour changed) …
+const GRID_FRAME: Duration = Duration::from_millis(66);
+/// … or this much sooner when a frame is drawn anyway (loop dots, terminals).
+const GRID_SHARE: Duration = Duration::from_millis(20);
 /// Longest the UI thread spends on service messages before handling input again.
 const SERVICE_BUDGET: Duration = Duration::from_millis(4);
 /// How long the preview of a pasted image stays.
@@ -204,6 +210,10 @@ struct Win {
     scene_clock: u64,
     /// How often the loop layer is redrawn while its dots move (from the arcs' size).
     loop_interval: Duration,
+    /// When the grid layer was last drawn (or found unchanged), and the dots'
+    /// colour it shows.
+    grid_drawn: Instant,
+    grid_color: Option<[u8; 3]>,
     input_waiting: bool,
     /// Present again even though the app has nothing new (resize, hover, retry).
     redraw: bool,
@@ -530,8 +540,11 @@ impl Shell {
                     return;
                 };
                 match self.wins[at].png(gpu, fonts, &self.options, &path) {
-                    // With the loop dots where this capture drew them.
-                    Ok((w, h)) => json!({ "ok": true, "path": path, "width": w, "height": h, "clock_ms": self.wins[at].scene_clock, "loops": self.wins[at].loops_json(self.wins[at].scene_clock) }),
+                    // With the loop dots and the grid's colour where this capture drew them.
+                    Ok((w, h)) => {
+                        let (win, clock) = (&self.wins[at], self.wins[at].scene_clock);
+                        json!({ "ok": true, "path": path, "width": w, "height": h, "clock_ms": clock, "loops": win.loops_json(clock), "grid": win.grid_json(clock, 24) })
+                    }
                     Err(error) => json!({ "ok": false, "error": format!("{error:#}") }),
                 }
             }
@@ -675,6 +688,8 @@ impl Win {
             loop_drawn: Instant::now() - Duration::from_secs(1),
             scene_clock: 0,
             loop_interval: LOOP_FRAME,
+            grid_drawn: Instant::now() - Duration::from_secs(1),
+            grid_color: None,
             input_waiting: true,
             redraw: true,
             retry_at: None,
@@ -886,8 +901,9 @@ impl Win {
     }
 
     /// Builds the view, draws it and presents. When only terminal contents
-    /// changed or loop dots moved, the previous frame's other layers stay (a
-    /// damage frame: the tiles and HUD, and the loop layer).
+    /// changed, loop dots moved or the breathing grid's colour changed, the
+    /// previous frame's other layers stay (a damage frame: the tiles and HUD,
+    /// the loop layer, the grid layer).
     fn frame(&mut self, gpu: &mut Gpu, fonts: &mut Fonts, options: &Options) {
         if self.cols == 0 || self.surface.is_none() {
             return;
@@ -895,8 +911,8 @@ impl Win {
         let started = Instant::now();
         let (width, height) = self.surface_size();
         let damage = !(self.app.needs_draw || self.redraw) && self.scene.as_ref().is_some_and(|s| (s.width, s.height) == (width, height));
-        // Only loop dots moved: the loop layer alone (nothing else is rebuilt or rescanned).
-        let mut loops_only = false;
+        // Only loop dots moved or the grid breathed: those layers alone (nothing else is rebuilt or rescanned).
+        let (mut loops_only, mut grid_only) = (false, false);
         let (scene, ime, dirty, viewed) = if damage {
             let ids = std::mem::take(&mut self.damaged);
             let tiles = !ids.is_empty();
@@ -931,6 +947,30 @@ impl Win {
                 self.loop_drawn = Instant::now();
                 loops_only = !tiles;
             }
+            if let Some(model) = &self.view.canvas {
+                // The breathing grid: repainted when its dots' colour changed, at
+                // most every GRID_FRAME (a little sooner to share a frame drawn anyway).
+                let clock = model.anim_clock();
+                let color = crate::canvas::dot_rgb8(model, clock);
+                let due = self.grid_drawn.elapsed() + GRID_SHARE >= GRID_FRAME;
+                if due && self.grid_color != Some(color) {
+                    scene.layers[scene::GRID] = Default::default();
+                    let mut p = Painter { scene: &mut scene, cache: &mut self.cache, fonts };
+                    crate::canvas::paint_grid(&mut p, &self.grid, model, clock);
+                    dirty[scene::GRID] = true;
+                    self.grid_color = Some(color);
+                    self.perf.grid_paints += 1;
+                    grid_only = !tiles && !dirty[scene::LOOPS];
+                }
+                if due {
+                    self.grid_drawn = Instant::now();
+                }
+            }
+            if !dirty.iter().any(|d| *d) {
+                // Nothing to show that is not on screen already (the grid's colour held).
+                self.scene = Some(scene);
+                return;
+            }
             (scene, ime, dirty, viewed)
         } else {
             self.damaged.clear();
@@ -938,8 +978,11 @@ impl Win {
             self.apply_recenter();
             let viewed = Instant::now();
             let (scene, ime) = self.build_scene(fonts, options, width, height);
+            self.grid_color = self.view.canvas.as_ref().map(|m| crate::canvas::dot_rgb8(m, self.scene_clock));
+            self.grid_drawn = Instant::now();
             (scene, ime, gpu::ALL, viewed)
         };
+        let layers_only = loops_only || grid_only;
         let built = Instant::now();
         // Minimized: nothing to present (the view is still built for the hooks).
         let minimized = self.window.inner_size().width == 0 || self.window.inner_size().height == 0;
@@ -957,6 +1000,9 @@ impl Win {
                 if loops_only {
                     self.perf.loop_ms.push(cost);
                     self.perf.loop_frames += 1;
+                } else if grid_only {
+                    self.perf.grid_ms.push(cost);
+                    self.perf.grid_frames += 1;
                 } else if damage {
                     self.perf.damage_ms.push(cost);
                     self.perf.damage_frames += 1;
@@ -976,8 +1022,8 @@ impl Win {
                 }
                 self.first_paint.get_or_insert_with(crate::perf::since_start);
                 self.scene = Some(scene);
-                // Moving loop dots change nothing UI Automation shows.
-                self.access_due |= !loops_only;
+                // Moving loop dots and the breathing grid change nothing UI Automation shows.
+                self.access_due |= !layers_only;
             }
             Some(Err(Skip::Retry)) => {
                 // Occluded or resized: try again (all layers), backing off while it lasts.
@@ -996,7 +1042,7 @@ impl Win {
                 self.scene = None;
             }
         }
-        if loops_only {
+        if layers_only {
             // Nothing the core laid out changed: no subscriptions, sizes or IME position to send.
             return;
         }
@@ -1211,6 +1257,13 @@ impl Win {
         json!(crate::canvas::loop_info(&self.grid, model, clock_ms))
     }
 
+    /// The dot grid's pulse at `clock_ms` (test hooks): level, colour, fade,
+    /// and up to `dots` dots where its colour can be sampled.
+    fn grid_json(&self, clock_ms: u64, dots: usize) -> Value {
+        let Some(model) = &self.view.canvas else { return Value::Null };
+        crate::canvas::grid_info(&self.grid, model, clock_ms, dots)
+    }
+
     /// When the loop layer is due again: loop dots in view move (or an arc
     /// grows in or fades out), every `loop_interval` and never faster
     /// than the display; `None` while nothing moves or the window is
@@ -1222,6 +1275,20 @@ impl Win {
             return None;
         }
         Some((self.loop_drawn + self.loop_interval).max(self.last_draw + self.frame_interval))
+    }
+
+    /// When the grid layer is due again: while the grid breathes (a session
+    /// works, or the pulse fades out) and until it shows the colour of now,
+    /// every [`GRID_FRAME`] and never faster than the display; `None` while
+    /// it holds still or the window is minimized.
+    fn grid_due(&self) -> Option<Instant> {
+        let model = self.view.canvas.as_ref()?;
+        let size = self.window.inner_size();
+        let clock = model.anim_clock();
+        if self.surface.is_none() || size.width == 0 || size.height == 0 || !model.grid_busy(clock) && self.grid_color == Some(crate::canvas::dot_rgb8(model, clock)) {
+            return None;
+        }
+        Some((self.grid_drawn + GRID_FRAME).max(self.last_draw + self.frame_interval))
     }
 
     /// Builds the view for the hooks when something changed since the last frame.
@@ -1373,6 +1440,7 @@ impl Win {
                 if !tree["canvas"].is_null() {
                     tree["canvas"]["loop_arcs"] = self.loops_json(self.view.canvas.as_ref().map(|m| m.anim_clock()).unwrap_or_default());
                     tree["canvas"]["loop_interval_ms"] = json!(self.loop_interval.as_millis() as u64);
+                    tree["canvas"]["grid_pulse"] = self.grid_json(self.view.canvas.as_ref().map(|m| m.anim_clock()).unwrap_or_default(), 0);
                 }
                 // The UI Automation tree, from the same builder AccessKit gets.
                 let (items, focus) = self.access_nodes();
@@ -1475,6 +1543,17 @@ impl Win {
                 self.app.visual.motion = Some(motion);
                 self.app.needs_draw = true;
                 json!({ "ok": true, "motion": motion.name() })
+            }
+            "grid_pulse" => {
+                // Settings › Dot grid pulse for this window: "on" or "off" (not saved).
+                let on = match command["value"].as_str().unwrap_or_default() {
+                    "on" => true,
+                    "off" => false,
+                    other => return Some(json!({ "ok": false, "error": format!("unknown grid_pulse {other:?}") })),
+                };
+                self.app.visual.grid_pulse = Some(on);
+                self.app.needs_draw = true;
+                json!({ "ok": true, "grid_pulse": on })
             }
             "post_keys" => {
                 // Real window messages, through winit's keyboard handling.
@@ -1681,8 +1760,8 @@ impl Win {
         self.update_access(false);
         let due = |s: &Self| -> Option<Instant> {
             if !(s.app.needs_draw || s.redraw || !s.damaged.is_empty()) {
-                // Moving loop dots: a frame of the loop layer alone.
-                return s.loops_due();
+                // Moving loop dots or the breathing grid: a frame of their layers alone.
+                return [s.loops_due(), s.grid_due()].into_iter().flatten().min();
             }
             if let Some(at) = s.retry_at {
                 return Some(at);
@@ -2024,7 +2103,10 @@ impl ApplicationHandler<UserEvent> for Shell {
                 let advance = self.fonts.as_ref().map(|f| f.advance).unwrap_or(0.6);
                 win.rescale(scale_factor as f32, advance, self.gpu.as_ref(), options);
             }
-            WindowEvent::RedrawRequested => win.redraw = true,
+            WindowEvent::RedrawRequested => {
+                win.perf.redraw_requests += 1;
+                win.redraw = true;
+            }
             WindowEvent::Focused(focused) => {
                 win.focused = focused;
                 crate::os::track_window(&win.window, focused);

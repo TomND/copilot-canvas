@@ -483,6 +483,35 @@ jobs:
         run: |
           sudo systemctl start cron || sudo service cron start
           COPILOT_CANVAS_SCHEDULER=cron target/release/copilot-canvas selftest automations
+      # PLAN §9's service numbers: keystroke → screen through a real PTY
+      # while 100 terminals stream, memory per terminal, the service's CPU.
+      # Advisory on shared runners; the JSON is kept.
+      - name: "terminal bench, 100 streaming terminals (advisory)"
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: target/release/copilot-canvas bench --terminals 100 --json "$RUNNER_TEMP/bench-terminals.json"
+      - name: keep the terminal bench
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-terminals-${{ matrix.runner }}
+          path: ${{ runner.temp }}/bench-terminals.json
+          if-no-files-found: ignore
+      # The real agent TUIs (no sign-in, nothing submitted): a multi-line paste
+      # reaches OpenCode's and Claude Code's input boxes as one paste through
+      # a Linux PTY (docs/AGENTS.md, Pasting). Advisory: the CLIs come from npm.
+      - name: "doctor with agents, real-agent paste check: OpenCode and Claude Code (advisory)"
+        if: ${{ !cancelled() && matrix.runner == 'ubuntu-24.04' }}
+        continue-on-error: true
+        run: |
+          npm install -g --silent opencode-ai@1.19.4 || npm install -g --silent opencode-ai
+          npm install -g --silent @anthropic-ai/claude-code@2.1.309 || npm install -g --silent @anthropic-ai/claude-code
+          opencode --version; claude --version
+          status=0
+          target/release/copilot-canvas doctor || status=1
+          xvfb-run -a target/release/copilot-canvas selftest agent --agent opencode --paste || status=1
+          xvfb-run -a target/release/copilot-canvas selftest agent --agent claude --paste || status=1
+          exit $status
       - name: keep logs
         if: failure()
         uses: actions/upload-artifact@v7
@@ -498,8 +527,9 @@ jobs:
   # The GUI on Linux (MAC-LINUX-PLAN §7.2): the self-test under X11 (Xvfb)
   # and under a headless Wayland compositor (weston), rendering on Mesa's
   # software Vulkan (lavapipe) or GL (llvmpipe), with a private session bus;
-  # the parity suite reports without blocking until Phase 5. Stderr logs and
-  # screenshots are kept.
+  # Linux's goldens, the hardening checks and the full parity suite (X11; the
+  # touchpad rows and 41b also under Wayland) block, the bench reports.
+  # Stderr logs and screenshots are kept.
   linux-gui:
     needs: ghostty-linux
     runs-on: ubuntu-24.04
@@ -593,9 +623,8 @@ jobs:
       # server nothing maximizes a window, and the panel's strut makes the
       # work area smaller than the screen (placement keeps out of it). The
       # accessibility check reads the tree over AT-SPI.
-      - name: GUI hardening checks on X11 (reporting)
+      - name: GUI hardening checks on X11
         if: ${{ !cancelled() }}
-        continue-on-error: true
         run: |
           mkdir -p "$CANVAS_GUI_SCREENS/hardening"
           unset WAYLAND_DISPLAY
@@ -607,9 +636,8 @@ jobs:
         run: |
           unset WAYLAND_DISPLAY
           timeout 900 xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- target/release/copilot-canvas bench --client gui --json "$CANVAS_GUI_SCREENS/bench-gui-x11.json"
-      - name: GUI parity suite on X11 (reporting)
+      - name: GUI parity suite on X11
         if: ${{ !cancelled() }}
-        continue-on-error: true
         run: |
           mkdir -p "$CANVAS_GUI_SCREENS/parity"
           unset WAYLAND_DISPLAY
