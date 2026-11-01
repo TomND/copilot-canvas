@@ -218,8 +218,13 @@ fn steps(sb: &Sandbox, gui: &mut Gui, id: &str, dir: &Path) -> Result<String> {
     std::thread::sleep(Duration::from_millis(200));
     let ((_, grid_off, full_off), (skipped_off, asked_off)) = frames_why(gui, 2.0)?;
     gui.req(json!({ "cmd": "grid_pulse", "value": "on" }))?;
+    // Were grid repaints full frames, each would add one. The working session's
+    // spinner draws full frames on the core's tick, and on a software renderer
+    // (CI's llvmpipe) a grid repaint delays a tick enough to see a few more
+    // spinner steps: half the grid repaints (at least 3) is the margin.
+    let margin = (grid_on / 2).max(3);
     anyhow::ensure!(
-        (5..=44).contains(&grid_on) && grid_off == 0 && full_on <= full_off + 3,
+        (5..=44).contains(&grid_on) && grid_off == 0 && full_on <= full_off + margin,
         "in 2 s while a session works: {grid_on} grid repaints and {full_on} full frames with the pulse on, {grid_off} and {full_off} with it off (presents skipped {skipped_on} and {skipped_off}, redraws asked by the window system {asked_on} and {asked_off})"
     );
     // Settings › Dot grid pulse off (saved on this machine): still; on again.
