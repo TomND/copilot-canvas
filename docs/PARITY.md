@@ -49,7 +49,9 @@ check differs by OS:
   its fallback check expects the clear error instead.
 - Linux on CI (job `linux-gui`, blocking): X11 under Xvfb at 1920×1080 on
   Mesa's lavapipe with a private `dbus-run-session`; last run (2026-11-01,
-  fadd7c0) `PASS: 62 rows in 232.7s`, and 41b, T1, T2 under headless weston.
+  dadd6b9) `PASS: 63 rows in 248.3s`, and 41b, T1, T2 under headless weston.
+- **47** counts full frames against grid repaints; on a software renderer a
+  grid repaint delays the core's tick, so the spinner draws a few more.
 
 ## How the suite works
 

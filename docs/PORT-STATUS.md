@@ -1,6 +1,7 @@
 # macOS and Linux port: status
 
-> **Linux: done** (2026-11-01, branch `linux`, run of fadd7c0): every
+> **Linux: done** (2026-11-01, branch `linux`, runs of fadd7c0 and
+> dadd6b9, the latter with main's WI-023 and row 47 merged): every
 > phase's exit criteria that a machine can check pass on CI, blocking where
 > the plan asks; what is left needs the owner (the checklist under
 > "Owner-only items: Linux").
@@ -293,8 +294,9 @@ State per OS: `—` not started · `wip` in progress · `PASS` · `equiv` (the
 plan §6.1 equivalent, documented). macOS: the full suite run locally on a
 locked Mac, 2026-10-31 (CI's run pending); 7b and V3 count frames, which a
 locked screen never presents. Linux: CI `linux-gui` (X11, Xvfb, Mesa
-lavapipe), 62 of 62 rows on 2026-11-01 (run of 0aa54e0); 41b, T1 and T2
-also under Wayland (headless weston), where the touchpad rows apply.
+lavapipe), 63 of 63 rows on 2026-11-01 (run of dadd6b9, with main's row
+47); 41b, T1 and T2 also under Wayland (headless weston), where the
+touchpad rows apply.
 
 | # | Feature | macOS | Linux |
 |---|---|---|---|
@@ -350,6 +352,7 @@ also under Wayland (headless weston), where the touchpad rows apply.
 | 44 | Undo/redo of layout changes | PASS | PASS |
 | 45 | Area selection of subsessions and subagents | PASS | PASS |
 | 46 | Subagents folded into decks by default | PASS | PASS |
+| 47 | Dot grid pulse while agents work (WI-023) | — | PASS |
 | G1 | Inline images | PASS | PASS |
 | G2 | Taskbar progress, flash, toasts | PASS | PASS |
 | G3 | File drag and drop | PASS | PASS (Wayland drops: unit tests; owner on a desktop) |
@@ -733,3 +736,11 @@ view helper (WebKitGTK offscreen); the GUI on Wayland/X11.
   real-agent paste checks PASS with OpenCode and Claude Code installed;
   the terminal bench within PLAN §9. **Linux: done**; the owner's
   checklist is under Owner-only items.
+- 2026-11-01: merged origin/macos (54d42fd) and origin/main (42c742f:
+  WI-023, the dot grid's pulse, parity row 47). Row 47 failed once on
+  Linux (14 full frames with the pulse against 9 without, 3 allowed) and
+  passed on the next run (10 and 8): the spinner's full frames follow the
+  core's tick, which a grid repaint delays on llvmpipe. The row now names
+  skipped presents and window-system redraws when it fails (dadd6b9) and
+  allows half the grid repaints (1812362, shared). Run of dadd6b9: every
+  job green, `PASS: 63 rows in 248.3s` on X11.
