@@ -1,5 +1,12 @@
 # macOS and Linux port: status
 
+> **macOS: done** (2026-11-01, branch `macos`, CI run 41271941822 of
+> 98817b7, with main's WI-023 and row 47 merged): every phase's exit
+> criteria that a machine can check pass on CI, blocking where the plan asks
+> (the parity suite's 65 rows, the nine hardening checks and macOS's nine
+> goldens block from 055cef3 on); what is left needs the owner (the checklist
+> under "Owner-only items: macOS").
+>
 > **Linux: done** (2026-11-01, branch `linux`, runs of fadd7c0 and
 > dadd6b9, the latter with main's WI-023 and row 47 merged): every
 > phase's exit criteria that a machine can check pass on CI, blocking where
@@ -21,7 +28,7 @@ work resumes after any interruption: read it first, then `git log`.
 
 ## Phases (plan §9)
 
-### Phase 0 Groundwork — macOS: done (CI confirming) · Linux: done (CI jobs `ghostty-linux`, `linux`)
+### Phase 0 Groundwork — macOS: done (CI jobs `ghostty-macos`, `macos`) · Linux: done (CI jobs `ghostty-linux`, `linux`)
 
 - [x] Windows dependencies target-gated (`windows`, `windows-sys`,
       `webview2-com` under `[target.'cfg(windows)'.dependencies]`)
@@ -45,7 +52,7 @@ work resumes after any interruption: read it first, then `git log`.
   of the touched crates green on the OS; Windows CI and `cargo xwin clippy`
   green.
 
-### Phase 1 Service and TUI (M0, M1) — macOS: in progress · Linux: M1 done (CI, x86_64 and aarch64; M0 is the owner's)
+### Phase 1 Service and TUI (M0, M1) — macOS: M1 done (CI `macos`; M0 is the owner's) · Linux: M1 done (CI, x86_64 and aarch64; M0 is the owner's)
 
 - M0: REMOTE.md checklist 1–12 from a Mac TUI against the Windows service.
 - M1: `cargo test --workspace`, `corpus check`, `selftest`, `selftest --remote
@@ -57,14 +64,17 @@ work resumes after any interruption: read it first, then `git log`.
 - [x] locally on macOS: `cargo test --workspace` (with Ghostty), `corpus
       check` (26 entries, both engines), `selftest` (39 steps), `selftest
       --remote loopback|faults|paired`, backend contract
-- [ ] the same green on the CI `macos` job
+- [x] the same green on the CI `macos` job (every run since 41240250214:
+      clippy, workspace tests, corpus with both engines, `selftest`,
+      `--remote loopback|faults|paired`)
 - [x] `selftest agent --paste` (OpenCode 1.18.35, Claude Code), `doctor`
 - [x] `selftest agent --agent opencode --prompt`: status, wheel, push,
       subagent, resume, passive steps; the question and permission steps are
       skipped on OpenCode < 1.19 (known gap below)
-- [ ] `bench --terminals 100` on a release build (debug build, loaded
-      machine: keystroke p50 5.5 ms, p99 7.2 ms; service 7 % of one core,
-      0.5 MB per terminal)
+- [x] `bench --terminals 100` on a release build (M1 Pro, 2026-11-01):
+      keystroke → screen p50 4.9 / p99 6.5 ms, the service 3 % of one core,
+      522 KB per terminal (PLAN §9's Windows row: 14.5 %, ~5 MB); CI runs it
+      too (advisory, artifact `bench-terminals-macos`)
 - Linux (CI `linux`, every runner): `cargo test --workspace` (backend
   contract included), `corpus check` with both engines, `selftest`,
   `selftest --remote loopback|faults|paired`; on ubuntu-24.04 OpenCode
@@ -74,7 +84,7 @@ work resumes after any interruption: read it first, then `git log`.
   4.3 ms (x86_64), 3.8 / 4.0 ms (aarch64); the service 10–12 % of one
   core, about 650 KB per terminal (PLAN §9's Windows row: 14.5 %, ~5 MB).
 
-### Phase 2 Lifecycle and automations — Linux: done (CI) · macOS: done locally (CI pending)
+### Phase 2 Lifecycle and automations — Linux: done (CI) · macOS: done (CI: `selftest automations` on launchd PASS, `service install` checked; a real tunnel is the owner's)
 
 - **The `Scheduler` trait has landed** (0675e2e, `crates/canvas-agents/src/scheduler/`,
   owner: the Linux lead). The macOS lead adds `scheduler/launchd.rs`
@@ -202,21 +212,25 @@ work resumes after any interruption: read it first, then `git log`.
 - Exit: parity rows 17, 41, 41b, G2 pass; manual IME / dead-key / AltGr /
   VoiceOver / Orca checks recorded (owner).
 
-### Phase 5 Parity, goldens, hardening — macOS: CI 63 of 64 (T2 being looked at), hardening 8 of 9 (placement fixed), goldens committed · Linux: done (CI, blocking)
+### Phase 5 Parity, goldens, hardening — macOS: done (CI, blocking) · Linux: done (CI, blocking)
 
-- macOS on CI (run 41253552824, visible windows on the runner's
-  paravirtual GPU): 63 of 64 rows pass, 7b and V3 included; T2's wheel
-  notches did not reach the stand-in agent there (they do locally, quiet and
-  visible, in CI's order): T2 now reports where its gesture went (9f0fd2d).
-  Locally on a locked Mac: 62 of 64 (7b, V3 need presents). Run alone, row
-  1 fails after its box drag (it needs the state the rows before it leave).
-- macOS hardening on CI: 8 of 9 (device loss, DPI, the NSAccessibility
-  tree, crash log, no software adapter's clear error, damage frames);
-  placement failed on the runner's 1024 × 768 screen (a window as large as
-  the screen comes back zoomed): the check now sizes its window inside the
-  work area (9f0fd2d).
+- macOS on CI (runs 41260077261 and 41271941822, visible windows on the
+  runner's paravirtual GPU): **`PASS: 65 rows`** (62 + T1, T2 and main's
+  47: 32 grid repaints in 2 s while working, none when idle; 7b and V3
+  count their frames there). The suite blocks from now on. T2 failed in two
+  earlier runs (no wheel notch reached the stand-in agent) and has passed
+  in every run since; if it fails again it says where its gesture went and
+  what the terminal asked for (9f0fd2d, 2254a37). Locally on a locked Mac
+  62 of 64 (7b, V3 and 47 need presents). Run alone, row 1 fails after its
+  box drag (it needs the state the rows before it leave).
+- macOS hardening on CI: **9 of 9** (blocking): toolbar counts, overlapping
+  boxes, device loss, DPI, placement, the NSAccessibility tree, crash log,
+  no software adapter's clear error, damage frames. Placement found a real
+  bug: winit 0.30 put a restored window's content where its frame belongs,
+  so the window moved up by its title bar on every start (2254a37).
 - macOS goldens: the nine screenshots recorded on CI (scale 1), reviewed and
-  committed as `tests/golden/gui/macos-1x` (aed6693); CI compares from now on.
+  committed as `tests/golden/gui/macos-1x` (aed6693); they match with 0
+  pixels differing and block.
 - **Shared parity fixes** (the macOS lead's; `linux` merges them):
   - 85e186e: G1 runs the demo through `test_shell::run_self`; G3 expects
     the local shell's quoting; the stand-in agent reports every mouse event
@@ -244,7 +258,7 @@ work resumes after any interruption: read it first, then `git log`.
 - Exit: `selftest --client gui --parity` PASS 60 rows; `--hardening` PASS;
   goldens recorded per OS.
 
-### Phase 6 Packaging — macOS: built, installed and smoke-tested (CI pending) · Linux: done on CI (a KDE desktop install is the owner's)
+### Phase 6 Packaging — macOS: done on CI (Developer ID signing waits for the owner) · Linux: done on CI (a KDE desktop install is the owner's)
 
 - macOS (`packaging/macos/`, CI `macos-package`, da0c0f2):
   `packaging/macos/build.sh` builds both slices with their own Ghostty
@@ -281,7 +295,13 @@ work resumes after any interruption: read it first, then `git log`.
   and back out, the AppImage extracted, the .rpm in a Fedora 41 container.
   appimagetool 1.9.1 and runtime 20251108 are pinned by SHA-256.
 
-### Phase 7 Dogfood and rollout — Linux: docs done; dogfood and release are the owner's
+### Phase 7 Dogfood and rollout — macOS and Linux: docs done; dogfood and release are the owner's
+
+- macOS: README's macOS section (the DMG and the cask, ⌘ as the app's key,
+  the trackpad, Dock and notifications, launchd, building from source and
+  the bundle; f8dc571), PARITY.md's macOS and Linux section, the plan's
+  implementation status, this file. Signing, a release and the dogfood
+  week are the owner's.
 
 - Linux: README's Linux section (packages, run-time libraries, building
   from source and the packages; 2bdaed9), PARITY.md's macOS and Linux
@@ -291,9 +311,8 @@ work resumes after any interruption: read it first, then `git log`.
 ## Parity rows (PARITY.md; plan §6)
 
 State per OS: `—` not started · `wip` in progress · `PASS` · `equiv` (the
-plan §6.1 equivalent, documented). macOS: the full suite run locally on a
-locked Mac, 2026-10-31 (CI's run pending); 7b and V3 count frames, which a
-locked screen never presents. Linux: CI `linux-gui` (X11, Xvfb, Mesa
+plan §6.1 equivalent, documented). macOS: CI `macos` (visible windows on
+the runner's paravirtual GPU), 65 of 65 on 2026-11-01 (run 41271941822). Linux: CI `linux-gui` (X11, Xvfb, Mesa
 lavapipe), 63 of 63 rows on 2026-11-01 (run of dadd6b9, with main's row
 47); 41b, T1 and T2 also under Wayland (headless weston), where the
 touchpad rows apply.
@@ -307,7 +326,7 @@ touchpad rows apply.
 | 5 | Subagents from history | PASS | PASS |
 | 6 | Subsessions; spawned-subsession detection | PASS | PASS |
 | 7 | Loops | PASS | PASS |
-| 7b | Smooth loop dot; reduced motion | wip | PASS |
+| 7b | Smooth loop dot; reduced motion | PASS | PASS |
 | 8 | MCP picker with presets | PASS | PASS |
 | 9 | Groups, chips, launch defaults | PASS | PASS |
 | 10 | Sidebar tree, filter, fly-to | PASS | PASS |
@@ -352,14 +371,14 @@ touchpad rows apply.
 | 44 | Undo/redo of layout changes | PASS | PASS |
 | 45 | Area selection of subsessions and subagents | PASS | PASS |
 | 46 | Subagents folded into decks by default | PASS | PASS |
-| 47 | Dot grid pulse while agents work (WI-023) | — | PASS |
+| 47 | Dot grid pulse while agents work (WI-023) | PASS | PASS |
 | G1 | Inline images | PASS | PASS |
 | G2 | Taskbar progress, flash, toasts | PASS | PASS |
 | G3 | File drag and drop | PASS | PASS (Wayland drops: unit tests; owner on a desktop) |
 | G4 | Several windows | PASS | PASS |
 | V1 | Dust | PASS | PASS |
 | V2 | Stacks and hidden subsessions | PASS | PASS |
-| V3 | Effects | wip | PASS |
+| V3 | Effects | PASS | PASS |
 | V4 | Group chips at any zoom; sidebar rows | PASS | PASS |
 | V5 | Remote group files in the canvas | PASS | PASS |
 | V6 | Remote group passive sessions | PASS | PASS |
@@ -545,20 +564,37 @@ touchpad rows apply.
   VoiceOver (macOS), Orca (Linux); real Linux desktops (GNOME/KDE × X11/
   Wayland) and GPUs (NVIDIA, Intel/AMD).
 - M0 checklist against the owner's Windows Cloud PC over the Dev Tunnel.
-- macOS signing secrets for CI: `MACOS_CERTIFICATE_P12` (base64 .p12),
-  `MACOS_CERTIFICATE_PASSWORD`, `MACOS_SIGN_IDENTITY`, `APPSTORE_API_KEY_P8`
-  (base64), `APPSTORE_API_KEY_ID`, `APPSTORE_API_ISSUER_ID`; then a tap
-  repository (`homebrew-tap`) with `packaging/homebrew-tap/Casks`.
-- macOS by hand: the bundled app's first notification asks for permission
-  and later ones show (and appear in Notification Center); VoiceOver reads
-  the canvas and a terminal; IME and dead keys in a terminal; the Dock's
-  Quit asks.
-- Trackpad (D15) on hardware: two-finger pan and its momentum feel native
-  with natural scrolling on and off; momentum stays on the box or terminal
-  it started in; pinch, smart zoom (two-finger double tap) and force click
-  (System Settings › Trackpad › Force Click) on a Force Touch trackpad.
-- With the screen unlocked and the window uncovered: `bench --client gui`,
-  parity rows 7b and V3 (if CI's macOS runners cannot present either).
+- **Owner-only items: macOS** (what remains after "macOS: done"):
+  1. Signing: the Developer ID Application certificate and an App Store
+     Connect API key as repository secrets (`MACOS_CERTIFICATE_P12` base64,
+     `MACOS_CERTIFICATE_PASSWORD`, `MACOS_SIGN_IDENTITY`,
+     `APPSTORE_API_KEY_P8` base64, `APPSTORE_API_KEY_ID`,
+     `APPSTORE_API_ISSUER_ID`); CI's `macos-package` then signs, notarizes
+     and staples the app and the DMG (`packaging/macos/sign.sh`).
+  2. A tap repository (`homebrew-tap`) holding
+     `packaging/homebrew-tap/Casks/copilot-canvas.rb` with a release's
+     version and SHA-256 (build.sh writes it), and a GitHub release with the
+     DMG.
+  3. The installed app on a Mac: Gatekeeper opens the signed DMG's app
+     without a warning; the first notification asks for permission, later
+     ones show and are listed in Notification Center; the Dock badge and
+     dot; ⌘Q and the Dock's Quit ask; `copilot-canvas service install`
+     starts the service at the next login.
+  4. Manual input: IME (Japanese, Chinese, Korean) and dead keys in a
+     terminal and in the dialogs; VoiceOver reading the toolbar, the boxes
+     and a terminal.
+  5. Trackpad (D15) on hardware: two-finger pan and its momentum feel
+     native with natural scrolling on and off; momentum stays on the box or
+     terminal it started in; pinch, smart zoom (two-finger double tap) and
+     force click on a Force Touch trackpad.
+  6. `bench --client gui` on real hardware with the screen unlocked (PLAN
+     §9: keystroke → present p50 ≤ 8 / p99 ≤ 20 ms, idle ≤ 1 %; CI's
+     paravirtual GPU gives input → present p50 7.4 ms, keystroke → present
+     p50 31 ms with the shell's echo, idle 2.2 %).
+  7. M0 (REMOTE.md checklist 1–12) from a Mac against the Windows service,
+     and a real tunnel hosted by the tunnel manifest on a Mac.
+  8. Phase 7: a dogfood week on macOS and the 48 h remote soak with a Mac
+     as client and as service.
 - **Owner-only items: Linux** (what remains after "Linux: done"):
   1. A real tunnel hosted by the tunnel manifest on a Linux machine (Dev
      Tunnels account; plan Phase 2 exit).
@@ -581,6 +617,19 @@ touchpad rows apply.
      names one (there is no LICENSE file).
 
 ## Log
+
+- 2026-11-01 (macOS): merged origin/linux (row 47's margin and diagnostics,
+  the accessibility check's client name) and with it main's WI-023 (row
+  47); **macOS: done**. CI run 41271941822: parity 65 of 65, hardening 9 of
+  9, goldens 9 of 9, packages built, installed and smoke-tested; the parity
+  suite and the hardening checks block on macOS (055cef3). iOS CI: the UI tests
+  wait for both mocks' ports and a booted simulator, run on one simulator,
+  give each test's first connection 90 s and look for the inbox row again
+  before tapping it (98817b7); a failure keeps the result bundle and the
+  mocks' logs. Windows: the self-test's "open the other client" step read
+  the dry-run file before it was written (an empty read; fixed), and
+  `opencode_history`'s git push test failed once on a Windows runner (40 of
+  40 passes on macOS; left to main).
 
 - 2026-10-30: status file created; Phase 0 started on `macos`.
 - 2026-10-31: canvas-sys, the terminal host, core, backend, TUI, CLI and

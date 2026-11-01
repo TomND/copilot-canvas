@@ -47,6 +47,10 @@ check differs by OS:
   hardening checks read the accessibility tree through NSAccessibility
   in-process (macOS) or AT-SPI (Linux); macOS has no software renderer, so
   its fallback check expects the clear error instead.
+- macOS on CI (job `macos`, blocking from 055cef3): visible windows on the
+  runner's paravirtual GPU at 1024×768, scale 1; on the run of 98817b7
+  (41271941822) `PASS: 65 rows in 284.0s` (the 63 rows above with T1 and
+  T2), with the nine hardening checks and macOS's nine goldens.
 - Linux on CI (job `linux-gui`, blocking): X11 under Xvfb at 1920×1080 on
   Mesa's lavapipe with a private `dbus-run-session`; last run (2026-11-01,
   dadd6b9) `PASS: 63 rows in 248.3s`, and 41b, T1, T2 under headless weston.
