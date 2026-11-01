@@ -31,6 +31,7 @@ pub fn is_session_id(id: &str) -> bool {
 /// never started (see [`super::ensure_not_batch`]).
 pub fn find_cli() -> Result<String> {
     find_cli_in(std::env::var_os("COPILOT_CANVAS_OPENCODE"), std::env::var_os("PATH").unwrap_or_default())
+        .or_else(|error| super::find_installed(&canvas_sys::host::exe_name("opencode")).map(|p| p.display().to_string()).ok_or(error))
 }
 
 fn find_cli_in(custom: Option<std::ffi::OsString>, path: std::ffi::OsString) -> Result<String> {

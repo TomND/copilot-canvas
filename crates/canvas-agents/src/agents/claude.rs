@@ -36,6 +36,7 @@ fn is_desktop_app(path: &Path) -> bool {
 /// Batch scripts (`claude.cmd`) are never started (see [`super::ensure_not_batch`]).
 pub fn find_cli() -> Result<String> {
     find_cli_in(std::env::var_os("COPILOT_CANVAS_CLAUDE"), std::env::var_os("PATH").unwrap_or_default(), &super::home())
+        .or_else(|error| super::find_installed(&canvas_sys::host::exe_name("claude")).filter(|p| !is_desktop_app(p)).map(|p| p.display().to_string()).ok_or(error))
 }
 
 fn find_cli_in(custom: Option<std::ffi::OsString>, path: std::ffi::OsString, home: &Path) -> Result<String> {

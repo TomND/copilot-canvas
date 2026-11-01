@@ -160,8 +160,32 @@ pub fn find_program(env: &str, names: &[&str]) -> Result<String> {
     names
         .iter()
         .find_map(|name| crate::service::find_on_path(name))
+        .or_else(|| names.iter().find_map(|name| find_installed(name)))
         .map(|p| p.to_string_lossy().into_owned())
         .ok_or_else(|| anyhow::anyhow!("{} was not found on PATH (set {env} to override)", names[0]))
+}
+
+/// Where agent CLIs' own installers and the package managers put them on
+/// macOS and Linux, searched after PATH: an app opened from Finder, the Dock
+/// or a desktop launcher starts with a bare PATH, and some shells add these
+/// folders only for interactive shells (MAC-LINUX-PLAN §5.2). None on Windows.
+pub fn install_dirs(home: &Path) -> Vec<PathBuf> {
+    if cfg!(windows) {
+        return Vec::new();
+    }
+    let mut dirs: Vec<PathBuf> = [".local/bin", ".opencode/bin", ".bun/bin", ".npm-global/bin", ".volta/bin"].iter().map(|d| home.join(d)).collect();
+    dirs.extend(["/opt/homebrew/bin", "/usr/local/bin", "/home/linuxbrew/.linuxbrew/bin"].map(PathBuf::from));
+    dirs
+}
+
+/// `name` in one of [`install_dirs`] of `home`.
+pub fn find_installed_in(home: &Path, name: &str) -> Option<PathBuf> {
+    install_dirs(home).into_iter().map(|dir| dir.join(name)).find(|path| path.is_file())
+}
+
+/// `name` in one of the user's [`install_dirs`].
+pub fn find_installed(name: &str) -> Option<PathBuf> {
+    find_installed_in(&home(), name)
 }
 
 /// True for `.cmd` / `.bat` files.
@@ -211,6 +235,24 @@ pub fn exists(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agents_installed_outside_path_are_found_in_their_usual_folders() {
+        let home = std::env::temp_dir().join(format!("cc-install-dirs-{}", uuid::Uuid::new_v4()));
+        assert_eq!(find_installed_in(&home, "opencode"), None);
+        if cfg!(windows) {
+            assert!(install_dirs(&home).is_empty(), "Windows finds agents on PATH only");
+            return;
+        }
+        // OpenCode's installer: ~/.opencode/bin, added to PATH by ~/.zshrc only.
+        let bin = home.join(".opencode").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("opencode"), b"").unwrap();
+        assert_eq!(find_installed_in(&home, "opencode"), Some(bin.join("opencode")));
+        assert!(install_dirs(&home).contains(&PathBuf::from("/opt/homebrew/bin")), "Homebrew, which an app opened from the Dock does not have on PATH");
+        assert_eq!(find_installed_in(&home, "a-directory-is-not-a-program"), None);
+        let _ = std::fs::remove_dir_all(home);
+    }
 
     #[test]
     fn free_text_and_option_values_never_become_options() {
