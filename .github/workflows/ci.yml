@@ -423,6 +423,20 @@ jobs:
         run: |
           sudo systemctl start cron || sudo service cron start
           COPILOT_CANVAS_SCHEDULER=cron target/release/copilot-canvas selftest automations
+      # PLAN §9's service numbers: keystroke → screen through a real PTY
+      # while 100 terminals stream, memory per terminal, the service's CPU.
+      # Advisory on shared runners; the JSON is kept.
+      - name: "terminal bench, 100 streaming terminals (advisory)"
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: target/release/copilot-canvas bench --terminals 100 --json "$RUNNER_TEMP/bench-terminals.json"
+      - name: keep the terminal bench
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-terminals-${{ matrix.runner }}
+          path: ${{ runner.temp }}/bench-terminals.json
+          if-no-files-found: ignore
       - name: keep logs
         if: failure()
         uses: actions/upload-artifact@v7
