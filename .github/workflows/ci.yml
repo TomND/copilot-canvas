@@ -438,8 +438,9 @@ jobs:
   # The GUI on Linux (MAC-LINUX-PLAN §7.2): the self-test under X11 (Xvfb)
   # and under a headless Wayland compositor (weston), rendering on Mesa's
   # software Vulkan (lavapipe) or GL (llvmpipe), with a private session bus;
-  # the parity suite reports without blocking until Phase 5. Stderr logs and
-  # screenshots are kept.
+  # Linux's goldens, the hardening checks and the full parity suite (X11; the
+  # touchpad rows and 41b also under Wayland) block, the bench reports.
+  # Stderr logs and screenshots are kept.
   linux-gui:
     needs: ghostty-linux
     runs-on: ubuntu-24.04
@@ -533,9 +534,8 @@ jobs:
       # server nothing maximizes a window, and the panel's strut makes the
       # work area smaller than the screen (placement keeps out of it). The
       # accessibility check reads the tree over AT-SPI.
-      - name: GUI hardening checks on X11 (reporting)
+      - name: GUI hardening checks on X11
         if: ${{ !cancelled() }}
-        continue-on-error: true
         run: |
           mkdir -p "$CANVAS_GUI_SCREENS/hardening"
           unset WAYLAND_DISPLAY
@@ -547,9 +547,8 @@ jobs:
         run: |
           unset WAYLAND_DISPLAY
           timeout 900 xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- target/release/copilot-canvas bench --client gui --json "$CANVAS_GUI_SCREENS/bench-gui-x11.json"
-      - name: GUI parity suite on X11 (reporting)
+      - name: GUI parity suite on X11
         if: ${{ !cancelled() }}
-        continue-on-error: true
         run: |
           mkdir -p "$CANVAS_GUI_SCREENS/parity"
           unset WAYLAND_DISPLAY
