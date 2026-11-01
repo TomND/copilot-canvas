@@ -49,7 +49,7 @@ final class TerminalUITests: XCTestCase {
         // The key bar sends keys the keyboard lacks; its hide button is always there.
         XCTAssertTrue(app.buttons["esc"].firstMatch.waitForExistence(timeout: 10))
         let hide = app.buttons["Hide keyboard"].firstMatch
-        XCTAssertTrue(waitHittable(hide), "the hide button is pinned, not scrolled away")
+        XCTAssertTrue(waitHittable(app, hide), "the hide button is pinned, not scrolled away")
         hide.tap()
         XCTAssertTrue(waitForKeyboard(app, shown: false), "the hide button closes the keyboard")
         terminal.tap()
@@ -77,7 +77,7 @@ final class TerminalUITests: XCTestCase {
         XCTAssertTrue(waitForKeyboard(app, shown: false), "no keyboard after picking a folder")
         // The prompt can be typed in, then the Done button hides the keyboard.
         let prompt = app.textViews["prompt"]
-        XCTAssertTrue(waitHittable(prompt), "the prompt is reachable")
+        XCTAssertTrue(waitHittable(app, prompt), "the prompt is reachable")
         prompt.tap()
         prompt.typeText("Explain this repository")
         XCTAssertTrue(waitForKeyboard(app, shown: true))
@@ -248,13 +248,25 @@ final class TerminalUITests: XCTestCase {
 
     /// Until `element` can be tapped: the keyboard's and the layout's
     /// animations end late on a busy CI simulator.
-    private func waitHittable(_ element: XCUIElement, timeout: TimeInterval = 10) -> Bool {
+    private func waitHittable(_ app: XCUIApplication, _ element: XCUIElement, timeout: TimeInterval = 10) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
+            dismissKeyboardTip(app)
             if element.exists && element.isHittable { return true }
             RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         }
         return false
+    }
+
+    /// iOS's one-time keyboard tip ("Speed up your typing by sliding your
+    /// finger…") covers the keyboard and the app's key bar the first time the
+    /// on-screen keyboard shows on a fresh simulator: Continue closes it. Only
+    /// that tip, found by its text.
+    private func dismissKeyboardTip(_ app: XCUIApplication) {
+        let tip = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "sliding your finger")).firstMatch
+        if tip.exists, app.buttons["Continue"].exists {
+            app.buttons["Continue"].tap()
+        }
     }
 
     /// Each look at the keyboard takes up to a second on a busy CI simulator:
@@ -262,6 +274,7 @@ final class TerminalUITests: XCTestCase {
     private func waitForKeyboard(_ app: XCUIApplication, shown: Bool, timeout: TimeInterval = 15) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
+            dismissKeyboardTip(app)
             if app.keyboards.firstMatch.exists == shown { return true }
             RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         }

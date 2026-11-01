@@ -355,6 +355,9 @@ jobs:
           defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b
+          # iOS's one-time slide-to-type tip would cover the keyboard and the
+          # app's key bar the first time it shows (the tests close it too).
+          xcrun simctl spawn "$UDID" defaults write com.apple.Preferences DidShowContinuousPathIntroduction -bool true || true
           cd ios
           COPILOT_CANVAS_SKIP_CORE=1 xcodebuild -project CopilotCanvas.xcodeproj -scheme CopilotCanvas \
             -destination "platform=iOS Simulator,id=$UDID" -parallel-testing-enabled NO \

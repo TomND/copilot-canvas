@@ -640,7 +640,11 @@ touchpad rows apply.
   checks allowed 5 s while each look took up to a second on a busy runner;
   15 s now, and the simulator boots without a hardware keyboard (464a24c);
   third: instant `isHittable` checks right after the keyboard or the layout
-  moved now wait for the element to become hittable. `selftest
+  moved now wait for the element to become hittable; fourth, once the
+  on-screen keyboard showed: iOS's one-time slide-to-type tip covered the
+  keyboard and the key bar on a fresh simulator (the result bundle's
+  screenshot), so the simulator is told it was shown and the tests close it
+  if it appears anyway. The checks themselves are unchanged. `selftest
   automations` reads the newest *finished* run (the every-minute schedule
   can start another one right after "run now"; seen on Linux's systemd).
 
