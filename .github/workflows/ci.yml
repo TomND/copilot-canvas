@@ -351,6 +351,8 @@ jobs:
           fi
           UDID=$(xcrun simctl list devices available | grep -m1 "    $DEVICE (" | grep -oE '[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}')
           echo "simulator: $DEVICE ($UDID)"
+          # The on-screen keyboard (a connected hardware keyboard hides it; the tests look for it).
+          defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b
           cd ios

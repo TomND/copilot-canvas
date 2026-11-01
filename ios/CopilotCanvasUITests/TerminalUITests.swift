@@ -244,7 +244,9 @@ final class TerminalUITests: XCTestCase {
         }
     }
 
-    private func waitForKeyboard(_ app: XCUIApplication, shown: Bool, timeout: TimeInterval = 5) -> Bool {
+    /// Each look at the keyboard takes up to a second on a busy CI simulator:
+    /// 15 s gives the keyboard's animation time to finish there too.
+    private func waitForKeyboard(_ app: XCUIApplication, shown: Bool, timeout: TimeInterval = 15) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if app.keyboards.firstMatch.exists == shown { return true }
