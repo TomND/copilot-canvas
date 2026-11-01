@@ -6,6 +6,10 @@ import XCTest
 final class TerminalUITests: XCTestCase {
     private let link = "ccanvas://pair?v=1&name=mock&url=ws%3A%2F%2F127%2E0%2E0%2E1%3A47600&code=ABCDEFGHJKMN"
 
+    /// The first wait of a test: the app's launch, pairing with the mock and
+    /// its first data (a simulator's first launch of the app is slow on CI).
+    private let firstConnection: TimeInterval = 90
+
     override func setUp() {
         continueAfterFailure = false
     }
@@ -19,7 +23,7 @@ final class TerminalUITests: XCTestCase {
 
     func testSessionsAreListedByWhatTheyNeed() throws {
         let app = launch()
-        XCTAssertTrue(app.staticTexts["Fix flaky test"].waitForExistence(timeout: 45), "the canvas arrived")
+        XCTAssertTrue(app.staticTexts["Fix flaky test"].waitForExistence(timeout: firstConnection), "the canvas arrived")
         // Lists build rows as they scroll in: other sessions may be further down.
         XCTAssertTrue(app.buttons["machineMenu"].exists)
         attach(app, "sessions")
@@ -31,7 +35,7 @@ final class TerminalUITests: XCTestCase {
     func testTypingInATerminalReachesTheShell() throws {
         let app = launch(["-openSession", "mock-loose"])
         let terminal = app.descendants(matching: .any).matching(identifier: "terminal").firstMatch
-        XCTAssertTrue(terminal.waitForExistence(timeout: 45))
+        XCTAssertTrue(terminal.waitForExistence(timeout: firstConnection))
         // The session starts: wait for the shell's prompt (zsh `%`, bash `$`, root `#`).
         let prompt = NSPredicate(format: "value MATCHES %@", "(?s).*[%$#>][ \\n]*")
         expectation(for: prompt, evaluatedWith: terminal)
@@ -55,7 +59,7 @@ final class TerminalUITests: XCTestCase {
     func testTheKeyboardStaysOutOfTheWayOfTheNewSessionForm() throws {
         let app = launch()
         let add = app.buttons["New session"]
-        XCTAssertTrue(add.waitForExistence(timeout: 45))
+        XCTAssertTrue(add.waitForExistence(timeout: firstConnection))
         expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: add)
         waitForExpectations(timeout: 45)
         add.tap()
@@ -97,7 +101,7 @@ final class TerminalUITests: XCTestCase {
         app.launchArguments = ["-noNotificationPrompt", "-noLock", "-pairLink", link, "-pairLink", personal, "-machine", "mock"]
         app.launch()
         let menu = app.buttons["machineMenu"]
-        XCTAssertTrue(menu.waitForExistence(timeout: 45))
+        XCTAssertTrue(menu.waitForExistence(timeout: firstConnection))
         expectation(for: NSPredicate(format: "label ENDSWITH ': mock'"), evaluatedWith: menu)
         waitForExpectations(timeout: 45)
         // What wants you on the other machine shows at the top.
@@ -130,7 +134,7 @@ final class TerminalUITests: XCTestCase {
     func testASubsessionStartsNextToItsParent() throws {
         let app = launch()
         let scratch = app.staticTexts["Scratch"].firstMatch
-        XCTAssertTrue(scratch.waitForExistence(timeout: 45))
+        XCTAssertTrue(scratch.waitForExistence(timeout: firstConnection))
         scratch.press(forDuration: 1.0)
         let item = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'New subsession'")).firstMatch
         XCTAssertTrue(item.waitForExistence(timeout: 10))
@@ -158,7 +162,7 @@ final class TerminalUITests: XCTestCase {
     func testPassiveSessionsPauseAndResume() throws {
         let app = launch()
         let drift = app.staticTexts["Drift guard"].firstMatch
-        XCTAssertTrue(drift.waitForExistence(timeout: 45))
+        XCTAssertTrue(drift.waitForExistence(timeout: firstConnection))
         let pause = app.buttons.matching(identifier: "Pause").firstMatch
         let resume = app.buttons.matching(identifier: "Resume").firstMatch
         /// Opens the session's actions (again once the previous dialog has gone).
@@ -193,13 +197,15 @@ final class TerminalUITests: XCTestCase {
     func testReportsOpenInALockedDownViewAndLinksAskFirst() throws {
         let app = launch()
         let inbox = app.buttons["reportsButton"]
-        XCTAssertTrue(inbox.waitForExistence(timeout: 45))
-        XCTAssertTrue(app.staticTexts["Fix flaky test"].waitForExistence(timeout: 45), "connected")
+        XCTAssertTrue(inbox.waitForExistence(timeout: firstConnection))
+        XCTAssertTrue(app.staticTexts["Fix flaky test"].waitForExistence(timeout: firstConnection), "connected")
         inbox.tap()
         let brief = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Payments health")).firstMatch
         XCTAssertTrue(brief.waitForExistence(timeout: 20), "the inbox")
         XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "PR #42: 2 new review comments")).firstMatch.exists, "a thread")
         attach(app, "reports-inbox")
+        // The list re-renders as the inbox's reports arrive: the row again before the tap.
+        XCTAssertTrue(brief.waitForExistence(timeout: 20), "the brief in the inbox")
         brief.tap()
         // The HTML report in the web view: its own text and styles, its script never ran.
         let page = app.webViews["reportPage"]

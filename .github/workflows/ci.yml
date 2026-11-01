@@ -319,20 +319,42 @@ jobs:
         run: ios/build-core.sh
       - name: XcodeGen
         run: brew install xcodegen && cd ios && xcodegen
+      # The UI tests pair with two mock services and wait for their first data:
+      # both mocks listen and the simulator has booted before any test starts
+      # (a cold boot during the first test ate its waits), one simulator at a
+      # time, and a failure keeps the result bundle and the mocks' logs.
       - name: app tests on a simulator (unit, and UI against the mock)
         run: |
           cargo build -p canvas-mock
-          target/debug/canvas-mock --quiet &
-          target/debug/canvas-mock --quiet --listen 127.0.0.1:47601 --state "$RUNNER_TEMP/canvas-mock-personal" &
-          cd ios
+          logs="$RUNNER_TEMP/ios-logs"
+          mkdir -p "$logs"
+          target/debug/canvas-mock --quiet > "$logs/mock.log" 2>&1 &
+          target/debug/canvas-mock --quiet --listen 127.0.0.1:47601 --state "$RUNNER_TEMP/canvas-mock-personal" > "$logs/mock-personal.log" 2>&1 &
+          for port in 47600 47601; do
+            for i in $(seq 1 120); do nc -z 127.0.0.1 "$port" && break; sleep 0.5; done
+            nc -z 127.0.0.1 "$port" || { echo "the mock on port $port does not listen"; cat "$logs"/*.log; exit 1; }
+          done
+          echo "both mocks listen"
           # An iPhone 16 when the runner image has one, else its first iPhone simulator.
           DEVICE="iPhone 16"
           if ! xcrun simctl list devices available | grep -q "iPhone 16 ("; then
             DEVICE=$(xcrun simctl list devices available | grep -m1 -oE 'iPhone [^(]+' | sed 's/ *$//')
           fi
-          echo "simulator: $DEVICE"
+          UDID=$(xcrun simctl list devices available | grep -m1 "    $DEVICE (" | grep -oE '[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}')
+          echo "simulator: $DEVICE ($UDID)"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          cd ios
           COPILOT_CANVAS_SKIP_CORE=1 xcodebuild -project CopilotCanvas.xcodeproj -scheme CopilotCanvas \
-            -destination "platform=iOS Simulator,name=$DEVICE" test
+            -destination "platform=iOS Simulator,id=$UDID" -parallel-testing-enabled NO \
+            -resultBundlePath "$logs/tests.xcresult" test
+      - name: keep the iOS test results and the mocks' logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-tests
+          path: ${{ runner.temp }}/ios-logs
+          if-no-files-found: ignore
 
   # libghostty-vt for Linux (glibc 2.35 floor), one per architecture, cached
   # by the pin's checksum file and the target triple.
