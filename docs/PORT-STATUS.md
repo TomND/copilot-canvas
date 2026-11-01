@@ -624,6 +624,7 @@ touchpad rows apply.
 
 ## Log
 
+- 2026-11-01: owner report: the macOS app opened from Finder did not see OpenCode (in `~/.opencode/bin`, put on PATH by `~/.zshrc` only). The app's in-process backend decides which agents are installed with the app's own PATH, which Finder and the Dock leave bare; only the service read the login environment. Fixed: the GUI reads the login environment too when it has no terminal (`TERM` unset), and every agent CLI is also looked for in the usual install folders after PATH (`~/.local/bin`, `~/.opencode/bin`, `~/.bun/bin`, `~/.npm-global/bin`, `~/.volta/bin`, Homebrew; none on Windows). `doctor` with a bare PATH now finds OpenCode.
 - 2026-11-01 (macOS): merged origin/linux (row 47's margin and diagnostics,
   the accessibility check's client name) and with it main's WI-023 (row
   47); **macOS: done**. CI run 41271941822: parity 65 of 65, hardening 9 of

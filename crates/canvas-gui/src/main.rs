@@ -220,6 +220,14 @@ fn real_main() -> Result<i32> {
         return Ok(code);
     }
     let args = parse()?;
+    // Opened from Finder, the Dock or a desktop launcher (no terminal): the
+    // user's login environment, as the service reads it, so the in-process
+    // backend finds the agents the user's shell finds (MAC-LINUX-PLAN §5.2).
+    // Before any thread starts.
+    #[cfg(unix)]
+    if std::env::var_os("TERM").is_none() {
+        canvas_sys::env::adopt_login_environment();
+    }
     let service_exe = use_sibling_service();
     os::set_app_id();
     // System fonts load while the service connects and the window comes up.
