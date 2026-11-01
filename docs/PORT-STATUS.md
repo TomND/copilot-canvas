@@ -95,7 +95,7 @@ work resumes after any interruption: read it first, then `git log`.
 - Exit: TUI self-test automation steps and factory probes on the backend; a
   real tunnel hosted by the manifest; `doctor` clean.
 
-### Phase 3 GUI core (M2) — macOS: in progress · Linux: done except the bench's numbers (CI)
+### Phase 3 GUI core (M2) — macOS: done (CI) · Linux: done except the bench's numbers (CI)
 
 - Linux: `selftest --client gui` passes under Xvfb (X11) and headless weston
   (Wayland) and `--remote loopback` under X11, on Mesa's lavapipe, in the
@@ -120,11 +120,12 @@ work resumes after any interruption: read it first, then `git log`.
       the program's, Command-click = Ctrl-click, Control-click = right click,
       left Option = Alt); posted keys (`NSApp postEvent`), work areas
       (`NSScreen.visibleFrame`), POSIX quoting of dropped paths
-- [ ] `bench --client gui` within PLAN §9: needs an unlocked, uncovered
-      screen (macOS reports a covered window occluded and wgpu presents
-      nothing); measured on CI (advisory step), the local Mac was locked
-- [ ] IME, DPI changes, several windows, crash log and device loss checked
-      on macOS (the parity and hardening suites, Phase 5)
+- [x] `bench --client gui` measured on CI (a locked Mac presents nothing):
+      the macOS runner's paravirtual GPU presents, the release build's
+      numbers are the `gui-bench-macos` artifact (advisory; a VM's GPU, not
+      PLAN §9's reference machine). On real hardware: owner checklist
+- [x] DPI changes, several windows, the crash log and device loss on macOS
+      (the parity and hardening suites, Phase 5); IME: owner checklist
 - [x] D15 trackpad (b84377f): `PointerPolicy::Precise` on macOS (pixel-exact
       pan with the system's momentum, one target per gesture, fractional
       terminal scrollback, pinch around the pointer and for text size, smart
@@ -134,7 +135,7 @@ work resumes after any interruption: read it first, then `git log`.
 - Exit: `selftest --client gui` (39 steps) local and `--remote loopback`;
   `bench --client gui` within PLAN §9.
 
-### Phase 4 GUI platform integration — Linux: rows 17, 41, 41b, G2 pass (CI) · macOS: in progress (41b)
+### Phase 4 GUI platform integration — Linux: rows 17, 41, 41b, G2 pass (CI) · macOS: done (CI; owner's manual checks open)
 
 - macOS: the HTML view (a17b069) is a WKWebView child view over the
   viewer's content area, locked down as the iPhone app's (page JavaScript
@@ -146,8 +147,31 @@ work resumes after any interruption: read it first, then `git log`.
   snapshots without presents). The window capture is the GUI's frame with
   the view's snapshot at the view's own frame: macOS has no capture of a
   window's composition without the Screen Recording permission (a prompt).
-  Next: the Dock tile and attention (G2), notifications, the menu bar and
-  Quit, reduced motion and accessibility.
+- macOS, the rest (5fa77df, e495c12, 5cd296b, 2662318):
+  - **Dock tile** (row G2's equivalent): the badge counts the sessions that
+    need you, an amber dot then and a blue one while sessions work;
+    attention bounces the icon (`requestUserAttention`); `in_front` from
+    winit's focus events.
+  - **Notifications**: UserNotifications from the app bundle (the first one
+    asks); outside the bundle (the bare binaries, tests, CI) a toast records
+    `not shown: …` with the reason, which rows 17 and G2 count as recorded
+    only (plan §5.6). The bundled path is the owner's check (a permission
+    prompt).
+  - **Menu bar** in place of winit's, whose Quit ended the app without
+    asking: Quit (⌘Q, the Dock's Quit, the 'quit' Apple Event) asks to
+    detach or stop all, the other windows follow the window that asked;
+    logout, restart and shutdown quit without asking (the service keeps the
+    sessions). Edit and Window items act as the canvas keys (the report
+    page's Copy while it has the keyboard); Settings…, Help. Row 29 posts a
+    real ⌘Q through AppKit where the window is key (CI: passes).
+  - **Reduced motion** from `NSWorkspace.accessibilityDisplayShouldReduceMotion`.
+  - **Accessibility**: VoiceOver reads AccessKit's NSAccessibility tree; the
+    hardening check walks it in-process (an outside AX client needs the
+    Accessibility permission, a prompt) and finds the toolbar buttons, the
+    sidebar's rows, the box with its status and the terminal as an
+    `AXTextArea` whose value is its text, and presses + New through it.
+  - **⌘0** resets a terminal's text size; hints say ⌘ where the app's
+    shortcuts are Command (status line, the sidebar's RECENT keys).
 
 - Linux: the HTML view (WebKitGTK offscreen helper) passes row 41b on X11
   and Wayland, Ctrl+C copies its selection; notifications
@@ -162,12 +186,21 @@ work resumes after any interruption: read it first, then `git log`.
 - Exit: parity rows 17, 41, 41b, G2 pass; manual IME / dead-key / AltGr /
   VoiceOver / Orca checks recorded (owner).
 
-### Phase 5 Parity, goldens, hardening — macOS: started
+### Phase 5 Parity, goldens, hardening — macOS: CI 63 of 64 (T2 being looked at), hardening 8 of 9 (placement fixed), goldens committed
 
-- 2026-10-31, locally on a locked Mac (no presents): 62 of 64 rows pass
-  (62 + T1, T2). Failing: 7b and V3 (frame counts: need an uncovered
-  screen; CI's macOS runner presents, so the suite reports there too). Run alone, row 1 fails after its box
-  drag (it needs the state the rows before it leave).
+- macOS on CI (run 41253552824, visible windows on the runner's
+  paravirtual GPU): 63 of 64 rows pass, 7b and V3 included; T2's wheel
+  notches did not reach the stand-in agent there (they do locally, quiet and
+  visible, in CI's order): T2 now reports where its gesture went (9f0fd2d).
+  Locally on a locked Mac: 62 of 64 (7b, V3 need presents). Run alone, row
+  1 fails after its box drag (it needs the state the rows before it leave).
+- macOS hardening on CI: 8 of 9 (device loss, DPI, the NSAccessibility
+  tree, crash log, no software adapter's clear error, damage frames);
+  placement failed on the runner's 1024 × 768 screen (a window as large as
+  the screen comes back zoomed): the check now sizes its window inside the
+  work area (9f0fd2d).
+- macOS goldens: the nine screenshots recorded on CI (scale 1), reviewed and
+  committed as `tests/golden/gui/macos-1x` (aed6693); CI compares from now on.
 - **Shared parity fixes** (the macOS lead's; `linux` merges them):
   - 85e186e: G1 runs the demo through `test_shell::run_self`; G3 expects
     the local shell's quoting; the stand-in agent reports every mouse event
@@ -194,10 +227,30 @@ work resumes after any interruption: read it first, then `git log`.
 - Exit: `selftest --client gui --parity` PASS 60 rows; `--hardening` PASS;
   goldens recorded per OS.
 
-### Phase 6 Packaging — macOS: not started · Linux: built and installed on CI
+### Phase 6 Packaging — macOS: built, installed and smoke-tested (CI pending) · Linux: built and installed on CI
 
-- macOS `.app` / DMG (universal); Linux AppImage / `.deb` / `.rpm` / tarball.
-  Signing and notarization: owner-blocked (Developer ID).
+- macOS (`packaging/macos/`, CI `macos-package`, da0c0f2):
+  `packaging/macos/build.sh` builds both slices with their own Ghostty
+  archive (Zig cross-compiles x86_64), joins them with `lipo` into the
+  universal `Copilot Canvas.app` (the GUI is the bundle executable,
+  `copilot-canvas` beside it; `Info.plist` with the plan's keys and folder
+  usage texts; `AppIcon.icns` made from the icon's PNG with `sips` and
+  `iconutil`; hardened runtime, ad hoc signed, no entitlements), the DMG
+  (`CopilotCanvas-<ver>-macos-universal.dmg`, 41 MB, with an Applications
+  link), its SHA-256 and the Homebrew cask filled in with it
+  (`packaging/homebrew-tap/Casks/copilot-canvas.rb`: `app` plus `binary`;
+  nothing stopped on uninstall, since `brew upgrade` uninstalls too).
+  `sign.sh` signs with the Developer ID and notarizes the app and the DMG
+  once the secrets exist (exits 0 with a note until then). `smoke.sh`
+  installs from the DMG and runs it: the signature, both slices (the Intel
+  one under Rosetta), the doctor, the TUI and GUI self-tests from the
+  bundle. Locally all of that passed; CI also installs the cask from a local
+  tap. The plan named `cargo xtask bundle-macos`; the shell script follows
+  Linux's `packaging/linux/build.sh` (the work is lipo, iconutil, hdiutil,
+  codesign and notarytool). The CLI follows a link to its real file
+  (b6cc82e: Homebrew's link into PATH).
+- Linux AppImage / `.deb` / `.rpm` / tarball. Signing and notarization of
+  the macOS app: owner-blocked (Developer ID).
 - Linux (`packaging/linux/`, CI `linux-package` on the glibc 2.35 floor,
   x86_64 and aarch64): artifacts `linux-packages-<arch>` hold
   `copilot-canvas_<ver>_<deb arch>.deb`, `copilot-canvas-<ver>.<arch>.rpm`,
@@ -398,6 +451,13 @@ under Wayland (headless weston), where the touchpad rows apply.
   or any interpreter running a script named `copilot`); only those holding a
   session's in-use lock become subsessions.
 - Copied text goes to the Mac (and Linux) clipboard with LF line breaks.
+- macOS GUI decisions (Phase 4): winit's default menu replaced (its Quit
+  ended the app without asking); toasts outside the app bundle record
+  `not shown: …` instead of failing; the window capture of row 41b is the
+  GUI's frame with the WKWebView's snapshot at the view's own frame (no
+  composition capture without the Screen Recording permission); the
+  accessibility check reads NSAccessibility in-process; the core knows the
+  key policy for hints (`KeyPolicy::label`; the TUI and Windows keep Ctrl).
 - launchd (D7, §5.5): `~/Library/LaunchAgents/com.copilot-canvas.task.<name>.plist`
   (the name `%XX`-escaped in the label), loaded into `gui/<uid>` (else
   `user/<uid>`). The task's name, manifest and schedule are XML comments in
@@ -459,6 +519,14 @@ under Wayland (headless weston), where the touchpad rows apply.
   VoiceOver (macOS), Orca (Linux); real Linux desktops (GNOME/KDE × X11/
   Wayland) and GPUs (NVIDIA, Intel/AMD).
 - M0 checklist against the owner's Windows Cloud PC over the Dev Tunnel.
+- macOS signing secrets for CI: `MACOS_CERTIFICATE_P12` (base64 .p12),
+  `MACOS_CERTIFICATE_PASSWORD`, `MACOS_SIGN_IDENTITY`, `APPSTORE_API_KEY_P8`
+  (base64), `APPSTORE_API_KEY_ID`, `APPSTORE_API_ISSUER_ID`; then a tap
+  repository (`homebrew-tap`) with `packaging/homebrew-tap/Casks`.
+- macOS by hand: the bundled app's first notification asks for permission
+  and later ones show (and appear in Notification Center); VoiceOver reads
+  the canvas and a terminal; IME and dead keys in a terminal; the Dock's
+  Quit asks.
 - Trackpad (D15) on hardware: two-finger pan and its momentum feel native
   with natural scrolling on and off; momentum stays on the box or terminal
   it started in; pinch, smart zoom (two-finger double tap) and force click

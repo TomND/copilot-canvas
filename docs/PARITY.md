@@ -15,6 +15,35 @@ It takes about 240 s on the development machine (rows 40b, 42 and 43 wait out ev
 those rows, for work on one feature; rows outside the list are not run and
 not listed, and the full suite is what counts.
 
+## On macOS and Linux
+
+The same suite runs there (`target/release/copilot-canvas selftest --client
+gui --parity`; MAC-LINUX-PLAN §6, §7), its terminals zsh (macOS) or bash
+(Linux) with the prompt `PS > ` and the commands of `src/test_shell.rs`.
+The state of every row per OS is in [PORT-STATUS.md](PORT-STATUS.md#parity-rows-paritymd-plan-6);
+CI runs the suite on macOS (visible windows on the runner's paravirtual GPU)
+and on Linux (X11 under Xvfb; 41b, T1 and T2 under Wayland too). Where a
+check differs by OS:
+
+- **7b, V3** count presented frames: a locked or covered Mac presents
+  nothing (CI's runners do).
+- **17, G2**: the Dock tile (badge and status dot; macOS) or the launcher
+  entry (Linux) mirror the taskbar button; attention bounces the Dock icon
+  or sets the urgency hint. macOS shows notifications only for the app
+  bundle: outside it a toast records `not shown: …`, which counts as
+  recorded only, like a quiet test window's.
+- **29** also posts a real ⌘Q on macOS, through the menu bar, where the
+  window is the key window.
+- **41b**: a WKWebView child view (macOS) or WebKitGTK offscreen (Linux);
+  WebKit drops `<script>` elements while parsing (0 kept); macOS's window
+  capture is the GUI's frame with the view's snapshot at the view's frame.
+- **T1, T2**: where scrolling is pixel-precise (macOS; Linux under
+  Wayland, the pan and the terminal parts).
+- Goldens are per OS (`tests/golden/gui/macos-1x`, `linux-1x`), and the
+  hardening checks read the accessibility tree through NSAccessibility
+  in-process (macOS) or AT-SPI (Linux); macOS has no software renderer, so
+  its fallback check expects the clear error instead.
+
 ## How the suite works
 
 - **Over the test hooks.** It starts `copilot-canvas-gui.exe --test-hooks

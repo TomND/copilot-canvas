@@ -10,6 +10,19 @@ the parity suite) on macOS and Linux with **1:1 feature parity** with the
 Windows version (every row of [PARITY.md](PARITY.md)), while the Windows code
 stays as it is.
 
+Implementation status (2026-11-01; the working log is
+[PORT-STATUS.md](PORT-STATUS.md)): on macOS, phases 0–6 are done and checked
+on CI (the service, the TUI and the GUI with every self-test; launchd and
+`service install`; the WKWebView report view, the Dock, notifications, the
+menu bar, accessibility; the parity suite, hardening checks and macOS's own
+goldens; a universal, ad hoc signed app with its DMG and a Homebrew cask);
+Developer ID signing and notarization wait for the owner's certificate, and
+Phase 7 (dogfooding) is the owner's. Linux's state is in PORT-STATUS.md.
+Where the work departs from this plan, PORT-STATUS.md's decisions say why:
+D15 (trackpads) was added; `service install` on macOS runs `service start`
+at login; macOS toasts outside the app bundle are recorded, not shown; the
+packages are built by `packaging/{macos,linux}/build.sh`.
+
 ## 1. Summary
 
 **Effort headline** (§9 has the phases; assumptions there):
