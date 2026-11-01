@@ -1,7 +1,9 @@
 # macOS and Linux port: status
 
-> **macOS: done** (2026-11-01, branch `macos`, CI run 41271941822 of
-> 98817b7, with main's WI-023 and row 47 merged): every phase's exit
+> **macOS: done** (2026-11-01, branch `macos`; CI run 41282516535 of
+> 31cb33f with every job green: macOS with the parity suite blocking,
+> hardening, goldens and packages, Linux, Windows and iOS; main's WI-023
+> and row 47 merged): every phase's exit
 > criteria that a machine can check pass on CI, blocking where the plan asks
 > (the parity suite's 65 rows, the nine hardening checks and macOS's nine
 > goldens block from 055cef3 on); what is left needs the owner (the checklist
@@ -214,8 +216,8 @@ work resumes after any interruption: read it first, then `git log`.
 
 ### Phase 5 Parity, goldens, hardening — macOS: done (CI, blocking) · Linux: done (CI, blocking)
 
-- macOS on CI (runs 41260077261 and 41271941822, visible windows on the
-  runner's paravirtual GPU): **`PASS: 65 rows`** (62 + T1, T2 and main's
+- macOS on CI (runs 41260077261, 41271941822 and 41282516535, the last
+  blocking; visible windows on the runner's paravirtual GPU): **`PASS: 65 rows`** (62 + T1, T2 and main's
   47: 32 grid repaints in 2 s while working, none when idle; 7b and V3
   count their frames there). The suite blocks from now on. T2 failed now
   and then: its diagnostics showed the gesture over the agent's tile latched
