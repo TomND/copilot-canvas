@@ -10,11 +10,15 @@
 > goldens block from 055cef3 on); what is left needs the owner (the checklist
 > under "Owner-only items: macOS").
 >
-> **Linux: done** (2026-11-01, branch `linux`, runs of fadd7c0 and
-> dadd6b9, the latter with main's WI-023 and row 47 merged): every
-> phase's exit criteria that a machine can check pass on CI, blocking where
-> the plan asks; what is left needs the owner (the checklist under
-> "Owner-only items: Linux").
+> **Linux: done** (2026-11-01, branch `linux` at b8e9824, which holds
+> `macos` done and main's WI-023; CI run 41293367152 with all 17 jobs green
+> on the first attempt: Linux on three runners with the TUI self-tests,
+> automations and the agent paste checks, `linux-gui` with the parity suite
+> blocking (`PASS: 63 rows` under X11, 41b, T1, T2 under Wayland), nine
+> goldens and nine hardening checks, the packages built and installed,
+> macOS, Windows and iOS): every phase's exit criteria that a machine can
+> check pass on CI, blocking where the plan asks; what is left needs the
+> owner (the checklist under "Owner-only items: Linux").
 
 The working log of the port described in [MAC-LINUX-PLAN.md](MAC-LINUX-PLAN.md)
 (approved 2026-10-30, every recommended option of its §11). This file is how
