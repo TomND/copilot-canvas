@@ -333,7 +333,7 @@ fn main() {
 fn wants_gui(home: Option<&std::path::Path>) -> bool {
     let home = home.map(std::path::Path::to_path_buf).or_else(|| std::env::var_os("COPILOT_CANVAS_HOME").map(PathBuf::from)).or_else(|| dirs::home_dir().map(|h| h.join(".copilot-canvas")));
     let setting = home.map(|h| canvas_common::settings::Settings::load(&h)).unwrap_or_default().client().unwrap_or_default();
-    let gui_present = std::env::current_exe().map(|e| e.with_file_name(canvas_sys::host::exe_name("copilot-canvas-gui")).is_file()).unwrap_or(false);
+    let gui_present = paths::own_exe().map(|e| e.with_file_name(canvas_sys::host::exe_name("copilot-canvas-gui")).is_file()).unwrap_or(false);
     match setting.trim().to_ascii_lowercase().as_str() {
         "gui" => gui_present,
         "auto" => gui_present && !remote_session(),
@@ -389,7 +389,7 @@ fn config(home: &std::path::Path, key: Option<&str>, value: Option<&str>) -> Res
 /// `copilot-canvas --gui …`: runs the GPU client next to this program with
 /// the same options, and exits with its exit code.
 fn launch_gui() -> Result<()> {
-    let exe = std::env::current_exe()?.with_file_name(canvas_sys::host::exe_name("copilot-canvas-gui"));
+    let exe = paths::own_exe()?.with_file_name(canvas_sys::host::exe_name("copilot-canvas-gui"));
     anyhow::ensure!(exe.is_file(), "the GPU client {} is missing", exe.display());
     let args: Vec<String> = std::env::args().skip(1).filter(|a| a != "--gui" && a != "--tui").collect();
     if canvas_core::platform::other_client_dryrun().is_some() {

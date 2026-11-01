@@ -113,7 +113,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: target/ghostty
-          key: ghostty-aarch64-apple-darwin-${{ hashFiles('crates/ghostty-vt-sys/vendor/CHECKSUMS.sha256') }}
+          key: ghostty-apple-darwin-universal-${{ hashFiles('crates/ghostty-vt-sys/vendor/CHECKSUMS.sha256') }}
       - name: Install Zig ${{ env.ZIG_VERSION }}
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
@@ -121,10 +121,12 @@ jobs:
           echo "$ZIG_SHA256_MACOS  $RUNNER_TEMP/zig.tar.xz" | shasum -a 256 -c -
           tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP"
           echo "ZIG=$RUNNER_TEMP/zig-aarch64-macos-$ZIG_VERSION/zig" >> "$GITHUB_ENV"
-      - name: cargo xtask build-ghostty --target aarch64-apple-darwin
+      # Both slices of the universal app (x86_64 cross-compiled by Zig).
+      - name: cargo xtask build-ghostty (aarch64 and x86_64)
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           cargo xtask build-ghostty --target aarch64-apple-darwin
+          cargo xtask build-ghostty --target x86_64-apple-darwin
           rm -rf target/ghostty/src-* target/ghostty/zig-cache
       - uses: actions/upload-artifact@v7
         with:
@@ -238,6 +240,64 @@ jobs:
         with:
           name: gui-bench-macos
           path: gui-bench-macos.json
+          if-no-files-found: ignore
+
+  # The macOS app as users get it (MAC-LINUX-PLAN §8.1): the universal
+  # Copilot Canvas.app and its DMG, signed and notarized once the owner's
+  # Developer ID secrets exist (ad hoc signed until then), installed from the
+  # DMG and run (the Intel slice under Rosetta too), and the Homebrew cask
+  # installed from a local tap.
+  macos-package:
+    needs: ghostty-macos
+    runs-on: macos-15
+    env:
+      COPILOT_CANVAS_SECRETS: file
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v8
+        with:
+          name: ghostty-macos
+          path: target/ghostty
+      - name: Rust targets and Rosetta
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          softwareupdate --install-rosetta --agree-to-license || true
+      - name: build the universal app and DMG
+        run: packaging/macos/build.sh
+      - name: sign and notarize (skipped without the owner's secrets)
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          APPSTORE_API_KEY_P8: ${{ secrets.APPSTORE_API_KEY_P8 }}
+          APPSTORE_API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          APPSTORE_API_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+        run: packaging/macos/sign.sh
+      - name: install from the DMG and run (TUI and GUI self-tests from the bundle)
+        run: packaging/macos/smoke.sh target/macos-package/CopilotCanvas-*-macos-universal.dmg --gui
+      - name: the Homebrew cask from a local tap
+        run: |
+          dmg="$(ls "$PWD"/target/macos-package/CopilotCanvas-*-macos-universal.dmg)"
+          brew tap-new --no-git local/canvas
+          tap="$(brew --repository local/canvas)"
+          mkdir -p "$tap/Casks"
+          sed -e "s|^  url .*|  url \"file://$dmg\"|" target/macos-package/Casks/copilot-canvas.rb > "$tap/Casks/copilot-canvas.rb"
+          brew install --cask local/canvas/copilot-canvas
+          copilot-canvas --version
+          copilot-canvas --home "$(mktemp -d)" doctor || true
+          brew uninstall --cask local/canvas/copilot-canvas
+          ! test -e "$(brew --prefix)/bin/copilot-canvas"
+          brew untap local/canvas
+      - name: keep the DMG and the cask
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-package
+          path: |
+            target/macos-package/*.dmg
+            target/macos-package/*.sha256
+            target/macos-package/Casks
           if-no-files-found: ignore
 
   # The iPhone app (docs/IOS-PLAN.md): the portable crates on macOS, the Rust

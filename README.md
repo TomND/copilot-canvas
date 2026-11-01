@@ -177,6 +177,46 @@ cargo build --release
 packaging/linux/build.sh --arch x86_64 --bin target/release --out dist   # optional: the packages
 ```
 
+### macOS
+
+Copilot Canvas runs on macOS 13 Ventura or newer, on Apple silicon and Intel
+(one universal app). CI builds `CopilotCanvas-<version>-macos-universal.dmg`
+(the `macos-package` artifact of a CI run): open it and drag **Copilot
+Canvas** to Applications. The app carries the command line too:
+
+```sh
+"/Applications/Copilot Canvas.app/Contents/MacOS/copilot-canvas" --gui --demo
+sudo ln -s "/Applications/Copilot Canvas.app/Contents/MacOS/copilot-canvas" /usr/local/bin/   # CLI and TUI on PATH
+```
+
+A Homebrew cask (`packaging/homebrew-tap/Casks/copilot-canvas.rb`, for a
+tap) installs both. Until the project's Developer ID signing is set up the
+app is signed ad hoc and not notarized: open it the first time with
+right-click › Open.
+
+What differs from Windows: **⌘ is the app's modifier** (⌘C / ⌘V copy and
+paste, ⌘Z undo, ⌘1…9 views, ⌘N and ⇧⌘N windows, ⌘-click links), while
+Control always goes to the terminal's program (Ctrl+C included); the left
+Option key is Alt (Meta) for terminals. ⌘Q and the Dock's Quit ask, as
+closing the last window does on Windows: detach and keep the sessions
+running, or stop them all. A **trackpad** pans pixel for pixel with the
+system's momentum, pinches to zoom around the pointer (over a terminal:
+its text size; ⌘+ ⌘− ⌘0 too), double-taps to fit a box and force-clicks a
+box for its details. The Dock icon shows how many sessions need you and a
+dot while sessions work; notifications come from the app (the first one
+asks for permission). HTML reports open in a locked-down WKWebView.
+Automations and `copilot-canvas service install` use launchd (LaunchAgents
+in `~/Library/LaunchAgents`). To build from source (Xcode's command line
+tools, Rust, Zig 0.17.0):
+
+```sh
+git clone https://github.com/TomND/copilot-canvas.git && cd copilot-canvas
+cargo xtask build-ghostty --target aarch64-apple-darwin   # Zig 0.17.0: ZIG=…, ~/.local/zig-0.17.0 or PATH
+cargo build --release
+./target/release/copilot-canvas --gui --demo
+packaging/macos/build.sh --arch arm64    # optional: Copilot Canvas.app and its DMG (universal: both Ghostty targets)
+```
+
 ### Make it yours
 
 - **Agents.** New sessions use the first installed of Copilot, OpenCode and
@@ -781,10 +821,12 @@ copilot-canvas report list [--unread] [--limit N]
 
 ## Automations (scheduled tasks from manifests)
 
-Copilot Canvas manages Windows Task Scheduler automations from **one YAML
-manifest per automation**, kept in a folder (ideally a git repository; set it
-in *Settings › Automations*, with `COPILOT_CANVAS_AUTOMATIONS`, or `--dir`).
-The manifests are the source of truth; Task Scheduler is generated from them.
+Copilot Canvas manages scheduled automations (Windows Task Scheduler;
+launchd on macOS, systemd or cron on Linux) from **one YAML manifest per
+automation**, kept in a folder (ideally a git repository; set it in
+*Settings › Automations*, with `COPILOT_CANVAS_AUTOMATIONS`, or `--dir`).
+The manifests are the source of truth; the scheduler's tasks are generated
+from them.
 
 ```yaml
 name: 'ExcelTeams-Morning'
@@ -1103,9 +1145,13 @@ cargo test                            unit tests
   pixel-smooth, and draws no inline images (as in Windows Terminal); the GPU
   client (`--gui`) draws Kitty graphics and iTerm2 inline PNG images. OSC 52
   copy is forwarded to your terminal.
-- The service and the desktop clients run on Windows and Linux (the port's
-  state per OS is in [docs/PORT-STATUS.md](docs/PORT-STATUS.md)); the
-  iPhone app is a remote client of a service. On Linux: a trackpad pans
+- The service and the desktop clients run on Windows, macOS and Linux (the
+  port's state per OS is in [docs/PORT-STATUS.md](docs/PORT-STATUS.md)); the
+  iPhone app is a remote client of a service. On macOS: notifications need
+  the app bundle (the bare binaries record why none was shown) and the Dock
+  has no progress bar (a badge and a status dot instead); a launchd
+  schedule's `start_when_available: false` cannot be honoured (launchd
+  catches a missed run up on wake). On Linux: a trackpad pans
   pixel for pixel under Wayland and in wheel notches under X11 (which tells
   no touchpad from a wheel); pinch, smart zoom and force click wait for
   winit's Linux gestures (Ctrl+scroll, the toolbar and keys zoom); under

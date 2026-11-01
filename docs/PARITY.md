@@ -15,6 +15,42 @@ It takes about 240 s on the development machine (rows 40b, 42 and 43 wait out ev
 those rows, for work on one feature; rows outside the list are not run and
 not listed, and the full suite is what counts.
 
+## On macOS and Linux
+
+The same suite runs there (`target/release/copilot-canvas selftest --client
+gui --parity`; MAC-LINUX-PLAN §6, §7), its terminals zsh (macOS) or bash
+(Linux) with the prompt `PS > ` and the commands of `src/test_shell.rs`.
+The state of every row per OS is in [PORT-STATUS.md](PORT-STATUS.md#parity-rows-paritymd-plan-6);
+CI runs the suite on macOS (visible windows on the runner's paravirtual GPU)
+and on Linux (X11 under Xvfb; 41b, T1 and T2 under Wayland too). Where a
+check differs by OS:
+
+- **7b, V3** count presented frames: a locked or covered Mac presents
+  nothing (CI's runners do).
+- **17, G2**: the Dock tile (badge and status dot; macOS) or the launcher
+  entry (Linux) mirror the taskbar button; attention bounces the Dock icon
+  or sets the urgency hint. macOS shows notifications only for the app
+  bundle: outside it a toast records `not shown: …`, which counts as
+  recorded only, like a quiet test window's.
+- **29** also posts a real ⌘Q on macOS, through the menu bar, where the
+  window is the key window.
+- **41b**: a WKWebView child view (macOS) or WebKitGTK offscreen (Linux);
+  WebKit drops `<script>` elements while parsing (0 kept); macOS's window
+  capture is the GUI's frame with the view's snapshot at the view's frame.
+- **T1, T2**: where scrolling is pixel-precise (macOS; Linux under
+  Wayland, the pan and the terminal parts; winit 0.30 has no Linux pinch,
+  smart zoom or force click). Under X11 every device scrolls in notches
+  (rows 1 and 12).
+- The stand-ins are `copilot`, `opencode`, `gh` and `az` without `.exe`;
+  the clipboard is the desktop's (the pasteboard; wl-clipboard or xclip).
+- Goldens are per OS (`tests/golden/gui/macos-1x`, `linux-1x`), and the
+  hardening checks read the accessibility tree through NSAccessibility
+  in-process (macOS) or AT-SPI (Linux); macOS has no software renderer, so
+  its fallback check expects the clear error instead.
+- Linux on CI (job `linux-gui`, blocking): X11 under Xvfb at 1920×1080 on
+  Mesa's lavapipe with a private `dbus-run-session`; last run (2026-11-01,
+  fadd7c0) `PASS: 62 rows in 232.7s`, and 41b, T1, T2 under headless weston.
+
 ## How the suite works
 
 - **Over the test hooks.** It starts `copilot-canvas-gui.exe --test-hooks
@@ -47,37 +83,6 @@ not listed, and the full suite is what counts.
   in only then: copies are recorded there and the `clipboard` hook can put
   text or an image on it. The checks report which clipboard they used; on an
   unlocked desktop they go through the Windows clipboard.
-
-## On macOS and Linux
-
-The same suite runs on macOS and Linux (MAC-LINUX-PLAN §7.1):
-
-```sh
-cargo build --release
-target/release/copilot-canvas selftest --client gui --parity
-```
-
-- **Shells and stand-ins.** Terminals are the demo shells, `bash --noprofile
-  --norc` on Linux and `zsh -f` on macOS, both with the `PS > ` prompt; the
-  rows type through `src/test_shell.rs` (POSIX commands, POSIX quoting of
-  dropped paths, Ctrl+C where PowerShell takes Esc). The stand-ins are
-  `copilot`, `opencode`, `gh` and `az` without `.exe`.
-- **Clipboard.** The desktop's: wl-clipboard (Wayland) or xclip (X11) on
-  Linux, the pasteboard on macOS.
-- **Rows with an OS equivalent** (MAC-LINUX-PLAN §6.1): 17 and G2 check
-  freedesktop notifications and the launcher entry with the window's
-  urgency on Linux; 41b checks the HTML view in WebKitGTK (Linux, offscreen
-  in a helper) or WKWebView (macOS) with the same lock-down; T1 and T2 run
-  where scrolling is pixel-precise: macOS, and Linux under Wayland (T1's pan
-  part; winit 0.30 has no Linux pinch, smart zoom or force click). Under X11
-  every device scrolls in notches (rows 1 and 12).
-- **Linux on CI** (job `linux-gui`, blocking): the whole suite under Xvfb
-  (X11, 1920×1080, Mesa's lavapipe, a private `dbus-run-session`), and rows
-  41b, T1 and T2 under headless weston (Wayland). Last run (2026-11-01, run
-  of 0aa54e0): `PASS: 62 rows in 239.5s` under X11, `PASS: 3 rows in 7.4s`
-  under Wayland.
-- **macOS**: its state per row is the macOS column of
-  [PORT-STATUS.md](PORT-STATUS.md).
 
 ## The matrix
 

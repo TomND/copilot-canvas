@@ -165,7 +165,8 @@ pub fn tree(app: &canvas_core::app::App, view: &View, chrome: &Buffer) -> Value 
                 "loaded": v.images.contains_key(&p.image_id),
             })).collect()).unwrap_or_default();
             let offset = app.views.get(&t.id).map(|v| v.display_offset);
-            json!({ "id": t.id, "outer": rect(t.outer), "inner": rect(t.inner), "focused": t.focused, "alive": t.alive, "title": t.title, "tint": t.tint, "images": images, "offset": offset })
+            let modes = app.views.get(&t.id).map(|v| v.modes);
+            json!({ "id": t.id, "outer": rect(t.outer), "inner": rect(t.inner), "focused": t.focused, "alive": t.alive, "title": t.title, "tint": t.tint, "images": images, "offset": offset, "modes": modes })
         }).collect::<Vec<_>>(),
         "term_selection": app.term_select.as_ref().map(|s| json!({ "id": s.id, "anchor": [s.anchor.0, s.anchor.1], "head": [s.head.0, s.head.1] })),
         "notice": app.notice.as_ref().map(|n| json!({ "text": n.text, "error": n.error })),
