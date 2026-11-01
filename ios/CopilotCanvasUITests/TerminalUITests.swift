@@ -140,7 +140,7 @@ final class TerminalUITests: XCTestCase {
         XCTAssertTrue(item.waitForExistence(timeout: 10))
         item.tap()
         XCTAssertTrue(app.navigationBars["New subsession"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["Scratch"].exists, "the parent is named")
+        XCTAssertTrue(app.staticTexts["Scratch"].waitForExistence(timeout: 10), "the parent is named")
         let name = app.textFields["Name (default: the folder's name)"]
         let title = "Scratch follow-up \(Int.random(in: 100...999))"
         name.tap()
@@ -156,7 +156,7 @@ final class TerminalUITests: XCTestCase {
             app.collectionViews.firstMatch.swipeUp()
         }
         XCTAssertTrue(row.waitForExistence(timeout: 10), "listed")
-        XCTAssertTrue(app.staticTexts["↳"].exists, "shown as a subsession")
+        XCTAssertTrue(app.staticTexts["↳"].waitForExistence(timeout: 10), "shown as a subsession")
     }
 
     func testPassiveSessionsPauseAndResume() throws {
@@ -202,7 +202,7 @@ final class TerminalUITests: XCTestCase {
         inbox.tap()
         let brief = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Payments health")).firstMatch
         XCTAssertTrue(brief.waitForExistence(timeout: 20), "the inbox")
-        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "PR #42: 2 new review comments")).firstMatch.exists, "a thread")
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "PR #42: 2 new review comments")).firstMatch.waitForExistence(timeout: 10), "a thread")
         attach(app, "reports-inbox")
         // The list re-renders as the inbox's reports arrive: the row again before the tap.
         XCTAssertTrue(brief.waitForExistence(timeout: 20), "the brief in the inbox")
@@ -230,8 +230,10 @@ final class TerminalUITests: XCTestCase {
         // Back in the inbox: it was read; left unread again for the next run.
         app.navigationBars.buttons["Reports"].tap()
         XCTAssertTrue(brief.waitForExistence(timeout: 10))
-        XCTAssertFalse(brief.label.contains("unread"), brief.label)
+        expectation(for: NSPredicate(format: "NOT (label CONTAINS %@)", "unread"), evaluatedWith: brief)
+        waitForExpectations(timeout: 10)
         brief.swipeRight()
+        XCTAssertTrue(app.buttons["Unread"].waitForExistence(timeout: 10))
         app.buttons["Unread"].tap()
         expectation(for: NSPredicate(format: "label CONTAINS %@", "unread"), evaluatedWith: brief)
         waitForExpectations(timeout: 10)
