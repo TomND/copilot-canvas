@@ -793,7 +793,9 @@ mod tests {
         assert_eq!(title, "Build is green");
         // A submission the CLI's checks let through but the service refuses: the CLI says why.
         let sneaky = Submission { version: SUBMISSION_VERSION, id: reports::new_id(now_ms()), title: "x".into(), format: Format::Html, kind: "info".into(), body: " ".into(), ..Default::default() };
-        std::fs::write(spool_dir(&home).join(format!("{}.json", sneaky.id)), serde_json::to_vec(&sneaky).unwrap()).unwrap();
+        // Spooled as the CLI does (written, then renamed): the service, polling,
+        // must not read it half written (it did on a Windows runner).
+        spool(&home, &sneaky).unwrap();
         let snapshot = service.join().unwrap();
         assert_eq!(snapshot.reports[0].source_name, "Fix flaky test", "named after its box");
         assert_eq!((snapshot.reports[0].group_name.as_str(), snapshot.reports[0].source_kind.as_str()), ("Payments", "session"));
