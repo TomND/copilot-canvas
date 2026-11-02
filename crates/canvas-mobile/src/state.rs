@@ -1111,7 +1111,7 @@ mod tests {
         assert!(change.message.contains('⚠'), "over the WIP limit of 2: a warning, not a refusal: {}", change.message);
         state.todo_op(TodoOp::Done { id: "WI-004".into(), note: None }, 7).unwrap();
         assert_eq!(status(&state, "WI-004"), Some(TodoStatus::Done));
-        let draft = TodoDraft { board: "Canvas App".into(), title: "Todos on the phone".into(), kind: TodoKind::Feature, priority: TodoPriority::High, status: None, body: "From the train.".into() };
+        let draft = TodoDraft { board: "Canvas App".into(), title: "Todos on the phone".into(), kind: TodoKind::Feature, priority: TodoPriority::High, status: None, body: "From the train.".into(), blocker: false };
         let (change, effects) = state.todo_op(crate::todos::add_op(draft), 8).unwrap();
         assert_eq!(change.id, "WI-008");
         assert!(matches!(sent(&effects)[0], ClientMsg::Bus { json } if json.contains("\"op\":\"add\"") && json.contains("Todos on the phone")));

@@ -311,6 +311,18 @@ pub enum TodoOp {
         prefix: Option<String>,
         text: String,
     },
+    /// Rewords checklist item `index` (0-based; its tick stays). An older
+    /// service answers "not understood" (the change is undone).
+    EditCheck {
+        id: String,
+        index: usize,
+        text: String,
+    },
+    /// Removes checklist item `index` (0-based; people only).
+    RemoveCheck {
+        id: String,
+        index: usize,
+    },
 }
 
 fn yes() -> bool {
@@ -330,6 +342,8 @@ impl TodoOp {
             | TodoOp::Note { id, .. }
             | TodoOp::Check { id, .. }
             | TodoOp::AddCheck { id, .. }
+            | TodoOp::EditCheck { id, .. }
+            | TodoOp::RemoveCheck { id, .. }
             | TodoOp::Link { id, .. }
             | TodoOp::Unlink { id, .. }
             | TodoOp::Relate { id, .. }
@@ -1299,6 +1313,28 @@ impl TodoBook {
                 self.todos[i].checklist.push(CheckItem { text: text.clone(), done: false });
                 record(&mut self.todos[i], actor, now, LogKind::History, format!("added checklist item “{text}”"));
                 out.message = format!("Added checklist item {} to {id}.", self.todos[i].checklist.len());
+            }
+            TodoOp::EditCheck { index, text, .. } => {
+                let text = clean_line(&text, "checklist item", MAX_TEXT)?;
+                let count = self.todos[i].checklist.len();
+                let item = self.todos[i].checklist.get_mut(index).ok_or_else(|| format!("{id} has {count} checklist item(s): pick 1 to {count}"))?;
+                if item.text == text {
+                    out.message = format!("Nothing changed on {id}.");
+                    return Ok(());
+                }
+                let old = std::mem::replace(&mut item.text, text.clone());
+                record(&mut self.todos[i], actor, now, LogKind::History, format!("reworded checklist item “{old}” as “{text}”"));
+                out.message = format!("Changed checklist item {} of {id}.", index + 1);
+            }
+            TodoOp::RemoveCheck { index, .. } => {
+                only_people(actor, "remove checklist items")?;
+                let count = self.todos[i].checklist.len();
+                if index >= count {
+                    return Err(format!("{id} has {count} checklist item(s): pick 1 to {count}"));
+                }
+                let item = self.todos[i].checklist.remove(index);
+                record(&mut self.todos[i], actor, now, LogKind::History, format!("removed checklist item “{}”", item.text));
+                out.message = format!("Removed checklist item {} from {id}.", index + 1);
             }
             TodoOp::Link { kind, target, title: link_title, .. } => {
                 let (target, default_title) = clean_link(kind, &target)?;

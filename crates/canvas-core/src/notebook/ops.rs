@@ -2,7 +2,7 @@
 //! trash, mark reviewed, quick capture, open externally, *Ask agent to
 //! revise…*, the scripts switch of HTML notes and the settings.
 
-use canvas_model::notebook::{self as nb, Audience, Author, Kind, NewNote, Saved};
+use canvas_model::notebook::{self as nb, Kind, Saved};
 
 use super::tabs::{self, View};
 use super::{Action, file_name, is_inside, join, load, norm, parent, same_path, tree};
@@ -23,16 +23,7 @@ pub fn capture_name(local: &crate::bus::Local, attempt: u32) -> String {
 
 /// A new note's text: its provenance (written by you, for you), a title heading for Markdown.
 pub fn new_text(kind: Kind, title: &str) -> String {
-    let note = NewNote { title: title.to_owned(), audience: Audience::Human, author: Author::Human, created: crate::paths::rfc3339_now(), ..NewNote::default() };
-    match kind {
-        Kind::Markdown => nb::new_note_text(kind, "", &note),
-        Kind::Html => {
-            let escaped = title.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
-            let body = format!("<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<title>{escaped}</title>\n</head>\n<body>\n<h1>{escaped}</h1>\n</body>\n</html>\n");
-            nb::new_note_text(kind, &body, &note)
-        }
-        _ => String::new(),
-    }
+    nb::your_new_note(kind, title, &crate::paths::rfc3339_now())
 }
 
 /// Quick capture (Alt+N anywhere outside terminals, `+ Capture`): a new note
@@ -82,14 +73,7 @@ fn opened_new(app: &mut App, path: &str, at_end: bool) {
 
 /// A name typed for a file or folder: one name (no separators), not empty.
 fn checked_name(name: &str) -> Result<String, String> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err("Type a name.".into());
-    }
-    if name.contains(['/', '\\']) || name == "." || name == ".." {
-        return Err("One name, without / or \\.".into());
-    }
-    Ok(nb::safe_name(name, "Untitled"))
+    nb::typed_name(name)
 }
 
 /// Creates a note in `folder` (asked from the name dialog; `.md` added

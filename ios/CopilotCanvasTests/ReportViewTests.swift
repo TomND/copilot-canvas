@@ -135,4 +135,37 @@ final class ReportViewTests: XCTestCase {
         XCTAssertFalse(reportLinkAllowed(url: "file:///etc/hosts"))
         XCTAssertFalse(reportLinkAllowed(url: "ccanvas://pair?code=x"))
     }
+
+    /// A note page (the same lock-down): `#note:` and `#todo:` links become
+    /// app navigations, web links are asked about, nothing loads.
+    func testNotePagesOpenNotesAndTodosInTheAppAndLoadNothing() async throws {
+        let probe = try Probe()
+        await probe.start()
+        let at = "http://127.0.0.1:\(probe.port)"
+        let controller = ReportWebController(rules: try await ReportLockdown.ruleList(), identifier: "notePage")
+        XCTAssertEqual(controller.webView.accessibilityIdentifier, "notePage")
+        var appLinks: [NoteLink] = []
+        var links: [URL] = []
+        controller.onAppLink = { appLinks.append($0) }
+        controller.onLink = { links.append($0) }
+        try await load(controller, """
+        <h1 id="h">Plan</h1><p><a id="n" href="#note:Release%20plan">Release plan</a> <a id="t" href="#todo:WI-002">WI-002</a>
+        <a id="w" href="https://example.com/x">web</a> <a id="j" href="#h">top</a></p><img src="\(at)/beacon.png">
+        <script>document.getElementById('h').textContent = 'SCRIPT RAN'</script>
+        """)
+        for id in ["n", "t", "w", "j"] {
+            _ = await eval(controller, "document.getElementById('\(id)').click()")
+            await pause(0.4)
+        }
+        XCTAssertEqual(appLinks, [.note(name: "Release plan"), .todo(id: "WI-002")])
+        XCTAssertEqual(links.map(\.absoluteString), ["https://example.com/x"])
+        let heading = await eval(controller, "document.getElementById('h') ? document.getElementById('h').textContent : 'gone'") as? String
+        XCTAssertEqual(heading, "Plan", "the page stayed and its script did not run")
+        XCTAssertEqual(probe.connections, 0, "nothing reached the network")
+        XCTAssertNil(ReportWebController.appLink("about:blank#h"))
+        XCTAssertEqual(ReportWebController.appLink("canvas-app:note:Release%20plan"), .note(name: "Release plan"))
+        XCTAssertEqual(ReportWebController.appLinks("<a href=\"#note:A\">A</a><a href='#todo:B-1'>B</a><a href=\"#top\">t</a>"), "<a href=\"canvas-app:note:A\">A</a><a href='canvas-app:todo:B-1'>B</a><a href=\"#top\">t</a>")
+        XCTAssertEqual(ReportWebController.appLink("about:blank#todo:DEC-031"), .todo(id: "DEC-031"))
+        probe.stop()
+    }
 }

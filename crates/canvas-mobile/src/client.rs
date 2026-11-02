@@ -18,8 +18,8 @@ use crossbeam_channel::{RecvTimeoutError, Sender, bounded, unbounded};
 
 use crate::link::{Inbox, InboxReader, Transport, TransportWriter};
 use crate::model::{
-    ConnState, CoreError, CoreEvent, FolderListing, KeyCode, NewSession, NoteFilter, NoteHit, NoteListing, NotePage, NotebookOverview, NotebookRoot, Overview, ReportPage, ReportsOverview, Screen, TodoChange,
-    TodoDetail, TodoDraft, TodoStatus, TodosOverview,
+    ConnState, CoreError, CoreEvent, FolderListing, KeyCode, NewSession, NoteFilter, NoteHit, NoteListing, NotePage, NoteSaved, NoteSource, NotebookOverview, NotebookRoot, Overview, ReportPage, ReportsOverview,
+    Screen, TodoChange, TodoDetail, TodoDraft, TodoEdit, TodoStatus, TodosOverview,
 };
 use crate::notes;
 use crate::state::{Effect, State};
@@ -47,9 +47,7 @@ pub trait Listener: Send + Sync {
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 
 fn describe(error: &CoreError) -> String {
-    match error {
-        CoreError::Failed { message } => message.clone(),
-    }
+    error.message().to_owned()
 }
 
 fn now_ms() -> u64 {
@@ -461,6 +459,42 @@ impl Client {
         self.todo_op(crate::todos::add_op(draft))
     }
 
+    /// Changes a todo's fields (title, type, priority, body, labels, blocker, blocked reason).
+    pub fn update_todo(&self, id: String, edit: TodoEdit) -> Result<TodoChange, CoreError> {
+        self.todo_op(crate::todos::update_op(id, edit))
+    }
+
+    /// A done or canceled todo goes back to todo (a declined proposal: proposed).
+    pub fn reopen_todo(&self, id: String) -> Result<TodoChange, CoreError> {
+        self.todo_op(TodoOp::Reopen { id })
+    }
+
+    /// Cancels a todo (won't do; a proposal: declined). `reason`: empty for none.
+    pub fn cancel_todo(&self, id: String, reason: String) -> Result<TodoChange, CoreError> {
+        let reason = Some(reason.trim().to_owned()).filter(|r| !r.is_empty());
+        self.todo_op(TodoOp::Cancel { id, reason, resolution: None })
+    }
+
+    /// Releases a todo's claim (in progress goes back to todo).
+    pub fn release_todo(&self, id: String) -> Result<TodoChange, CoreError> {
+        self.todo_op(TodoOp::Release { id })
+    }
+
+    /// Adds a checklist item at the end.
+    pub fn add_check(&self, id: String, text: String) -> Result<TodoChange, CoreError> {
+        self.todo_op(TodoOp::AddCheck { id, text })
+    }
+
+    /// Rewords checklist item `index` (0-based; its tick stays).
+    pub fn edit_check(&self, id: String, index: u32, text: String) -> Result<TodoChange, CoreError> {
+        self.todo_op(TodoOp::EditCheck { id, index: index as usize, text })
+    }
+
+    /// Removes checklist item `index` (0-based).
+    pub fn remove_check(&self, id: String, index: u32) -> Result<TodoChange, CoreError> {
+        self.todo_op(TodoOp::RemoveCheck { id, index: index as usize })
+    }
+
     // ---------- notebook ----------
 
     /// The notebook's folders (blocking: the service resolves the root and creates it).
@@ -481,7 +515,7 @@ impl Client {
     }
 
     /// A note as one sanitized page for the web view (blocking: the note and
-    /// the pictures it shows from its root come from the service). Read only.
+    /// the pictures it shows from its root come from the service).
     pub fn read_note(&self, path: String) -> Result<NotePage, CoreError> {
         let roots = self.shared.note_roots();
         let name = notes::file_name(&path).to_owned();
@@ -538,9 +572,8 @@ impl Client {
         Ok(notes::find_note(&name, &hits))
     }
 
-    /// Writes `reviewed: true` into a Markdown or HTML note, the phone's only
-    /// change to notes (based on its revision: a note that changed meanwhile
-    /// is left alone and the call fails).
+    /// Writes `reviewed: true` into a Markdown or HTML note (based on its
+    /// revision: a note that changed meanwhile is left alone and the call fails).
     pub fn mark_note_reviewed(&self, path: String) -> Result<(), CoreError> {
         let kind = Kind::of(notes::file_name(&path));
         if !matches!(kind, Kind::Markdown | Kind::Html) {
@@ -555,6 +588,90 @@ impl Client {
         match self.shared.call(Request::NoteWrite { path, text: marked, base: Some(note.rev), roots })? {
             Response::NoteSaved { .. } => Ok(()),
             Response::NoteConflict(_) => Err(CoreError::msg("The note changed meanwhile; read it again and retry.")),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// A note's text for the source editor (blocking), with its revision
+    /// and whether the phone may change it (and why not).
+    pub fn note_source(&self, path: String) -> Result<NoteSource, CoreError> {
+        let roots = self.shared.note_roots();
+        let kind = Kind::of(notes::file_name(&path));
+        let refusal = notes::edit_refusal(&path, kind, &roots);
+        let note = if kind.is_text() { self.shared.note_text(&path)? } else { NoteText::default() };
+        Ok(NoteSource { path, kind: kind.into(), text: note.text, rev: note.rev, editable: refusal.is_none(), why_not: refusal.unwrap_or_default() })
+    }
+
+    /// Writes a note you edited (blocking), only while it is still at `base`
+    /// (its revision when you opened it; empty: a new file that must not
+    /// exist). An agent's note gets `author: mixed`. A note changed
+    /// elsewhere meanwhile is a `CoreError::Conflict` with its text now:
+    /// nothing was written (saving again on that revision keeps yours).
+    pub fn save_note(&self, path: String, text: String, base: String) -> Result<NoteSaved, CoreError> {
+        let roots = self.shared.note_roots();
+        let kind = Kind::of(notes::file_name(&path));
+        if let Some(why) = notes::edit_refusal(&path, kind, &roots) {
+            return Err(CoreError::msg(why));
+        }
+        let text = notes::with_your_change(&path, kind, &text, &roots);
+        let base = Some(base.trim().to_owned()).filter(|b| !b.is_empty());
+        let roots = roots.into_iter().map(|r| r.path).collect();
+        match self.shared.call(Request::NoteWrite { path, text: text.clone(), base, roots })? {
+            Response::NoteSaved { rev } => Ok(NoteSaved { rev, text }),
+            Response::NoteConflict(now) => Err(CoreError::Conflict { message: "The note changed elsewhere since you opened it: nothing was written.".into(), text: now.text, rev: now.rev }),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Creates a note in `folder` (blocking): `name` (`.md` added unless it
+    /// names a note or text file) with `text` (empty: a title heading),
+    /// written as a note for you, by you. Never over another file. Returns its path.
+    pub fn create_note(&self, folder: String, name: String, text: String) -> Result<String, CoreError> {
+        let file = notes::new_file_name(&name).map_err(CoreError::msg)?;
+        let path = notes::join(&folder, &file);
+        let text = notes::new_note_text(&file, &text, &canvas_common::paths::rfc3339_now());
+        let roots: Vec<NotebookRoot> = self.shared.note_roots();
+        if let Some(why) = notes::edit_refusal(&path, Kind::of(&file), &roots) {
+            return Err(CoreError::msg(why));
+        }
+        let roots = roots.into_iter().map(|r| r.path).collect();
+        match self.shared.call(Request::NoteWrite { path: path.clone(), text, base: None, roots })? {
+            Response::NoteSaved { .. } => Ok(path),
+            Response::NoteConflict(_) => Err(CoreError::msg(format!("{file} exists already."))),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Creates a folder in `folder` (blocking). Returns its path.
+    pub fn create_folder(&self, folder: String, name: String) -> Result<String, CoreError> {
+        let path = notes::join(&folder, &notebook::typed_name(&name).map_err(CoreError::msg)?);
+        let roots = self.shared.note_roots().into_iter().map(|r| r.path).collect();
+        match self.shared.call(Request::NoteMkdir { path: path.clone(), roots })? {
+            Response::Done => Ok(path),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Renames a note or folder in its folder (blocking; a file's name typed
+    /// without an extension keeps the old one; never over another). Returns the new path.
+    pub fn rename_note(&self, path: String, name: String) -> Result<String, CoreError> {
+        let roots = self.shared.note_roots();
+        let to = notes::renamed(&path, &name, &roots).map_err(CoreError::msg)?;
+        if to == path {
+            return Ok(path);
+        }
+        let roots = roots.into_iter().map(|r| r.path).collect();
+        match self.shared.call(Request::NoteRename { from: path, to: to.clone(), roots })? {
+            Response::Done => Ok(to),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Moves a note or folder to its root's trash (`<root>/.trash`, blocking).
+    pub fn delete_note(&self, path: String) -> Result<(), CoreError> {
+        let root = notes::trash_root(&path, &self.shared.note_roots()).map_err(CoreError::msg)?;
+        match self.shared.call(Request::NoteTrash { path, root })? {
+            Response::Done => Ok(()),
             other => Err(unexpected(other)),
         }
     }

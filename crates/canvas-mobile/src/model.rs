@@ -589,6 +589,10 @@ pub struct TodoDetail {
     /// Its spec note (a path on the service's machine) and parent todo (empty: none).
     pub note: String,
     pub parent: String,
+    /// The blocked reason as written (empty: none; `item.blocked_reason`
+    /// adds the todos it waits for).
+    pub blocked_text: String,
+    pub actions: TodoActions,
 }
 
 /// A todo to add (`Client::add_todo`).
@@ -603,6 +607,39 @@ pub struct TodoDraft {
     pub status: Option<TodoStatus>,
     /// Markdown (empty: none).
     pub body: String,
+    /// It blocks the work of others (`‼`).
+    pub blocker: bool,
+}
+
+/// Field changes to a todo (`Client::update_todo`); `None` keeps a field.
+#[derive(uniffi::Record, Clone, Debug, Default, PartialEq)]
+pub struct TodoEdit {
+    pub title: Option<String>,
+    pub kind: Option<TodoKind>,
+    pub priority: Option<TodoPriority>,
+    /// Markdown (empty: none).
+    pub body: Option<String>,
+    /// Replaces the labels.
+    pub labels: Option<Vec<String>>,
+    pub blocker: Option<bool>,
+    /// Why it cannot go on; empty: not blocked any more.
+    pub blocked: Option<String>,
+}
+
+/// What you may do with a todo now (the desktop's buttons for it).
+#[derive(uniffi::Record, Clone, Debug, Default, PartialEq)]
+pub struct TodoActions {
+    /// A proposal: accept it (into a status) or decline it.
+    pub accept: bool,
+    pub decline: bool,
+    pub done: bool,
+    pub cancel: bool,
+    /// Done or canceled (a declined proposal reopens as a proposal).
+    pub reopen: bool,
+    /// Claimed: release the claim.
+    pub release: bool,
+    /// Columns it can move to (not its own; Done and Canceled have their actions).
+    pub moves: Vec<TodoStatus>,
 }
 
 /// What a todo action did (already shown here; the service confirms it).
@@ -758,6 +795,29 @@ pub struct NotePage {
     pub provenance: NoteProvenance,
 }
 
+/// A note's text for the source editor (`Client::note_source`).
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct NoteSource {
+    pub path: String,
+    pub kind: NoteKind,
+    pub text: String,
+    /// Its revision: the base `save_note` writes on.
+    pub rev: String,
+    /// Markdown, HTML and text files inside the notebook's roots.
+    pub editable: bool,
+    /// Why it cannot be edited here (empty: it can).
+    pub why_not: String,
+}
+
+/// What `Client::save_note` wrote.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct NoteSaved {
+    /// The new revision (the next save's base).
+    pub rev: String,
+    /// The text written: yours, and `author: mixed` when an agent wrote the note.
+    pub text: String,
+}
+
 /// A notebook search hit.
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct NoteHit {
@@ -832,11 +892,22 @@ pub struct FolderListing {
 pub enum CoreError {
     #[error("{message}")]
     Failed { message: String },
+    /// A note changed elsewhere since the revision a save was based on:
+    /// nothing was written; its text and revision now.
+    #[error("{message}")]
+    Conflict { message: String, text: String, rev: String },
 }
 
 impl CoreError {
     pub fn msg(message: impl Into<String>) -> Self {
         CoreError::Failed { message: message.into() }
+    }
+
+    /// What to tell people.
+    pub fn message(&self) -> &str {
+        match self {
+            CoreError::Failed { message } | CoreError::Conflict { message, .. } => message,
+        }
     }
 }
 

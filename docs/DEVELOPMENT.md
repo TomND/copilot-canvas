@@ -776,7 +776,7 @@ to the same branch cancels the older run.
 |---|---|---|
 | `ghostty` | `windows-latest` | restores `target/ghostty` from the cache keyed by `crates/ghostty-vt-sys/vendor/CHECKSUMS.sha256`; on a miss installs Zig 0.17.0 (checksum checked) and runs `cargo xtask build-ghostty`; uploads the library |
 | `test` | `windows-latest` | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test --workspace`; `cargo build --no-default-features`; `cargo build --release`; `corpus check`; `selftest`; `selftest --remote loopback`; `selftest --remote faults`; `selftest --remote paired`; `selftest --client gui`; `selftest --client gui --parity`; `selftest --client gui --golden` with `continue-on-error` (it reports, it does not block); uploads `*.actual.png` and `*.diff.png` as `golden-diffs` |
-| `ios` | `macos-15` | clippy and tests of the portable crates (`canvas-common`, `canvas-model`, `canvas-termview`, `canvas-push`, `canvas-mobile`, `canvas-mock`) and of `canvas-host --no-default-features`; `ios/build-core.sh`; XcodeGen; the app's unit and UI tests on an iPhone 16 simulator against two `canvas-mock` services |
+| `ios` | `macos-15` | clippy and tests of the portable crates (`canvas-common`, `canvas-model`, `canvas-termview`, `canvas-push`, `canvas-mobile`, `canvas-mock`) and of `canvas-host --no-default-features`; `ios/build-core.sh`; XcodeGen; the app's unit and UI tests on an iPhone 16 simulator (booted first, one at a time, no hardware keyboard) against two `canvas-mock` services (waited for); a failure uploads the result bundle and the mocks' logs (`ios-tests`) |
 
 Hosted runners have no GPU: the GUI runs on WARP at 100 % DPI, so its golden
 screenshots differ from the reference machine's (RTX 3070, 125 %) without a

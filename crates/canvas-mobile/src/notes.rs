@@ -1,11 +1,18 @@
-//! The notebook on the phone (the desktop's Notebook space; read-only but
-//! for *Mark reviewed*): the explorer's roots, folder listings with each
+//! The notebook on the phone (the desktop's Notebook space): the
+//! explorer's roots, folder listings with each
 //! note's provenance (for you or for agents, who wrote it), and a note as one
 //! sanitized page for the app's locked-down web view. Markdown is rendered
 //! with `notebook::markdown_html` (`[[Note]]` and todo ids become `#note:` /
 //! `#todo:` links, see [`link`]), HTML notes are sanitized like reports,
 //! other text is shown as a block. Pictures a note shows from its own root
 //! come inline as `data:` URLs (the web view loads nothing).
+//!
+//! Changes (the source editor, new notes and folders, renames, the trash)
+//! follow the desktop's rules: only Markdown, HTML and text files inside
+//! the explorer's roots, saves on the revision the editor opened (a note
+//! changed elsewhere is a conflict, never overwritten unasked), an agent's
+//! note becomes `author: mixed` with your change, new notes are for you and
+//! by you.
 //!
 //! Paths are the service's machine's (Windows or POSIX): handled as text.
 
@@ -165,6 +172,88 @@ pub fn listing(folder: &str, entries: &[Entry], filter: NoteFilter, show_interna
 
 pub fn hit(hit: Hit) -> NoteHit {
     NoteHit { path: hit.path, line: hit.line, text: hit.text }
+}
+
+// ---------- changes (the source editor, new notes, rename, trash) ----------
+
+/// Two paths of the service's machine are the same (compared as text).
+pub fn same_path(a: &str, b: &str) -> bool {
+    norm(a) == norm(b)
+}
+
+/// `name` in `folder`, with the folder's separator.
+pub fn join(folder: &str, name: &str) -> String {
+    let folder = folder.trim();
+    let sep = if folder.contains('\\') { '\\' } else { '/' };
+    format!("{}{sep}{name}", folder.trim_end_matches(['/', '\\']))
+}
+
+/// Why a file cannot be changed from the phone (`None`: it can): only
+/// Markdown, HTML and text files strictly inside one of the explorer's
+/// roots, never in a `.git` folder (the service checks again).
+pub fn edit_refusal(path: &str, kind: Kind, roots: &[NotebookRoot]) -> Option<String> {
+    match kind {
+        Kind::Image => return Some("Pictures cannot be edited on the phone.".into()),
+        Kind::Folder | Kind::Other => return Some("Only notes (Markdown, HTML) and text files can be edited.".into()),
+        Kind::Markdown | Kind::Html | Kind::Text => {}
+    }
+    if path.split(['/', '\\']).any(|part| part.eq_ignore_ascii_case(".git")) {
+        return Some("Files inside a .git folder are not edited here.".into());
+    }
+    match root_of(roots, path) {
+        Some(root) if !same_path(&root.path, path) => None,
+        _ => Some("Only files inside the notebook's folders can be edited here.".into()),
+    }
+}
+
+/// The text a save writes: yours, and `author: mixed` in a note an agent
+/// wrote (the desktop's rule for your first change to it).
+pub fn with_your_change(path: &str, kind: Kind, text: &str, roots: &[NotebookRoot]) -> String {
+    if !matches!(kind, Kind::Markdown | Kind::Html) {
+        return text.to_owned();
+    }
+    let (_, found) = classify(path, text, roots);
+    if found.author == Author::Ai { notebook::set_meta(kind, text, &[("author", Some(Author::Mixed.id()))]) } else { text.to_owned() }
+}
+
+/// A new note's file name from a typed name: `.md` added unless it names
+/// a note or text file.
+pub fn new_file_name(typed: &str) -> Result<String, String> {
+    let name = notebook::typed_name(typed)?;
+    Ok(if matches!(Kind::of(&name), Kind::Markdown | Kind::Html | Kind::Text) { name } else { format!("{name}.md") })
+}
+
+/// A new note's text: `text` (empty: a title heading from its name) with
+/// the provenance of notes you create (for you, by you, now).
+pub fn new_note_text(file: &str, text: &str, created: &str) -> String {
+    let kind = Kind::of(file);
+    if text.trim().is_empty() {
+        return notebook::your_new_note(kind, notebook::stem(file), created);
+    }
+    if !matches!(kind, Kind::Markdown | Kind::Html) {
+        return text.to_owned();
+    }
+    let note = notebook::NewNote { audience: Audience::Human, author: Author::Human, created: created.to_owned(), ..Default::default() };
+    notebook::new_note_text(kind, text, &note)
+}
+
+/// Where a note or folder goes when renamed to `typed` in its folder (a
+/// file's name typed without an extension keeps the old one). Roots stay.
+pub fn renamed(path: &str, typed: &str, roots: &[NotebookRoot]) -> Result<String, String> {
+    let mut name = notebook::typed_name(typed)?;
+    if !root_of(roots, path).is_some_and(|r| !same_path(&r.path, path)) {
+        return Err("Only notes and folders inside the notebook's folders can be renamed here.".into());
+    }
+    let old = file_name(path);
+    if !name.contains('.') && Kind::of(old) != Kind::Other && let Some((_, ext)) = old.rsplit_once('.') {
+        name = format!("{name}.{ext}");
+    }
+    Ok(join(parent(path), &name))
+}
+
+/// The root whose `.trash` a note or folder goes to (never a root itself).
+pub fn trash_root(path: &str, roots: &[NotebookRoot]) -> Result<String, String> {
+    root_of(roots, path).filter(|r| !same_path(&r.path, path)).map(|r| r.path.clone()).ok_or_else(|| "Only notes and folders inside the notebook's folders go to the trash.".into())
 }
 
 /// What a link of a note page opens (`None`: another link).
@@ -533,5 +622,47 @@ mod tests {
         assert_eq!(find_note("outputs/Release plan", &hits), None, "a folder name matches whole");
         assert_eq!(find_note("x", &hits), None, "text hits do not count");
         assert_eq!([base64(b""), base64(b"f"), base64(b"fo"), base64(b"foo"), base64(b"foob")], ["", "Zg==", "Zm8=", "Zm9v", "Zm9vYg=="]);
+    }
+
+    #[test]
+    fn the_phone_edits_notes_and_text_inside_the_roots_and_marks_agents_notes_mixed() {
+        let roots = roots(&info(), &doc());
+        assert_eq!(edit_refusal(r"C:\nb\Inbox\idea.md", Kind::Markdown, &roots), None);
+        assert_eq!(edit_refusal(r"D:\src\web\notes.txt", Kind::Text, &roots), None, "a group folder outside the root");
+        assert!(edit_refusal(r"C:\nb\pictures\chart.svg", Kind::Image, &roots).is_some_and(|w| w.contains("Pictures")));
+        assert!(edit_refusal(r"C:\nb\data.bin", Kind::Other, &roots).is_some());
+        assert!(edit_refusal(r"C:\elsewhere\a.md", Kind::Markdown, &roots).is_some_and(|w| w.contains("inside the notebook")));
+        assert!(edit_refusal(r"C:\nb", Kind::Markdown, &roots).is_some(), "a root itself");
+        assert!(edit_refusal(r"C:\nb\repo\.GIT\config.md", Kind::Markdown, &roots).is_some());
+        // Your change to an agent's note makes it mixed; yours stay yours.
+        let agents = "---\naudience: ai\nauthor: ai\n---\n# Log\nMore.\n";
+        assert_eq!(with_your_change(r"C:\nb\a.md", Kind::Markdown, agents, &roots), "---\naudience: ai\nauthor: mixed\n---\n# Log\nMore.\n");
+        assert_eq!(with_your_change(r"C:\nb\Groups\Payments\ai-docs\log.md", Kind::Markdown, "# Log\n", &roots), "---\nauthor: mixed\n---\n# Log\n", "inferred from its folder");
+        assert_eq!(with_your_change(r"C:\nb\mine.md", Kind::Markdown, "# Mine\n", &roots), "# Mine\n");
+        assert_eq!(with_your_change(r"C:\nb\Groups\Payments\ai-docs\x.txt", Kind::Text, "x", &roots), "x", "text files carry no provenance");
+        let html = with_your_change(r"C:\nb\Groups\Payments\ai-docs\d.html", Kind::Html, "<html><head></head><body>x</body></html>", &roots);
+        assert!(html.contains("<meta name=\"canvas-author\" content=\"mixed\">"), "{html}");
+    }
+
+    #[test]
+    fn new_notes_folders_renames_and_the_trash_follow_the_desktops_rules() {
+        let roots = roots(&info(), &doc());
+        assert_eq!(new_file_name(" Trip plan ").as_deref(), Ok("Trip plan.md"));
+        assert_eq!(new_file_name("page.html").as_deref(), Ok("page.html"));
+        assert_eq!(new_file_name("v1.2").as_deref(), Ok("v1.2.md"));
+        assert!(new_file_name("a/b").is_err() && new_file_name(" ").is_err());
+        assert_eq!(join(r"C:\nb\Inbox\", "a.md"), r"C:\nb\Inbox\a.md");
+        assert_eq!(join("/Users/me/nb", "a.md"), "/Users/me/nb/a.md");
+        let text = new_note_text("Trip plan.md", "", "2026-11-02T08:00:00Z");
+        assert_eq!(text, "---\ntitle: Trip plan\naudience: human\nauthor: human\ncreated: 2026-11-02T08:00:00Z\n---\n# Trip plan\n");
+        assert_eq!(new_note_text("a.md", "Body.\n", "t"), "---\naudience: human\nauthor: human\ncreated: t\n---\nBody.\n");
+        assert_eq!(new_note_text("a.txt", "plain", "t"), "plain");
+        assert_eq!(renamed(r"C:\nb\Inbox\idea.md", "Better idea", &roots).as_deref(), Ok(r"C:\nb\Inbox\Better idea.md"), "the extension stays");
+        assert_eq!(renamed(r"C:\nb\Inbox\idea.md", "idea.txt", &roots).as_deref(), Ok(r"C:\nb\Inbox\idea.txt"));
+        assert_eq!(renamed(r"C:\nb\Groups", "Teams", &roots).as_deref(), Ok(r"C:\nb\Teams"), "folders");
+        assert!(renamed(r"C:\nb", "x", &roots).is_err() && renamed(r"F:\x.md", "y", &roots).is_err() && renamed(r"C:\nb\a.md", "../b", &roots).is_err());
+        assert_eq!(trash_root(r"C:\nb\Inbox\idea.md", &roots).as_deref(), Ok(r"C:\nb"));
+        assert_eq!(trash_root(r"D:\src\web\x.md", &roots).as_deref(), Ok(r"D:\src\web"));
+        assert!(trash_root(r"C:\nb\", &roots).is_err() && trash_root(r"Z:\x.md", &roots).is_err());
     }
 }
