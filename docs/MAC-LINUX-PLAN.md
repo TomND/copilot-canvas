@@ -332,6 +332,24 @@ selection (Ctrl-click is the macOS right click); left Option is Meta (Alt)
 for terminals, right Option composes characters. Ctrl+] and F6 still leave a
 terminal. **Linux GUI and every TUI:** the Windows map, unchanged.
 
+As built for main's spaces (Notebook, Tasks; 2026-11-02, c4fbce9):
+
+| Windows | macOS | What |
+|---|---|---|
+| Ctrl+1 / 2 / 3 | ⌘1 / ⌘2 / ⌘3 | the Canvas, Notebook and Tasks spaces |
+| Ctrl+P | ⌘P | Go to |
+| Alt+← / Alt+→ | ⌘[ / ⌘] | back and forward |
+| Ctrl+Shift+Tab / Ctrl+Tab | ⇧⌘[ / ⇧⌘] | the previous and next note tab |
+| Alt+1…9, Alt+N, Alt+H … | ⌃⌘1…9, ⌃⌘N, ⌃⌘H … | Windows' Alt shortcuts (the views, a quick note, the filter); ⌥⌘H stays *Hide Others* |
+| Ctrl+N | ⌘N in the Notebook (a new note), a new window elsewhere; ⇧⌘N always a new window | |
+| Ctrl+←/→, Home/End, Ctrl+Home/End, Ctrl+Backspace | ⌥←/→ (word), ⌘←/→ (line), ⌘↑/↓ (text), ⌥⌫ / ⌥⌦, ⌃A / ⌃E | the note editor's caret (`KeyPolicy::edit`) |
+
+Option composes characters outside terminals (`input::composed`: ⌥E E
+types é in a note); Option is Alt only while a terminal has the keyboard
+(left Option, `OptionAsAlt::OnlyLeft`, set per frame). On a Mac an Alt
+shortcut comes only from a ⌘ chord (`KeyPolicy::alt_shortcut`), so typing
+never triggers one. Hints and help name the Mac keys (`KeyPolicy::label`).
+
 ### D9. HTML reports: native WebKit on both, composed differently
 
 **macOS:** a `WKWebView` child view over the viewer's content area, created
@@ -345,6 +363,16 @@ forced to XWayland; the Blitz HTML/CSS renderer, which has no script engine at
 all). The formatted-text fallback the TUI uses stays for both, as on Windows
 without the WebView2 runtime. `wry` is not used: it exposes neither JavaScript
 off nor content blocking nor permission denial.
+
+HTML notes (main's Notebook) get WebView2's two views on both: a plain one
+that never runs a page's scripts and a sandboxed, offline one for files the
+user allowed. WebKit lets no handler serve `https`, so both load the notes
+origin's paths from **`canvas-notes://notes.canvas.invalid/`** (a
+`WKURLSchemeHandler` on macOS, a registered URI scheme on Linux); replies
+name that origin in their policy and links, the decisions stay in
+`webpane`. *Print / PDF* saves `<title>.pdf` in Downloads (never over a
+file; `COPILOT_CANVAS_DOWNLOADS` under the test hooks), as an offscreen or
+headless view has no print dialog to show.
 
 ### D10. Path semantics belong to the service's platform
 
@@ -420,11 +448,24 @@ Under Precise:
   reduced motion.
 - **Force click** opens a link, or selects a box and shows its details.
 - **Command+scroll** zooms as Ctrl+scroll does (`KeyPolicy::gesture`).
+- **In the Notebook and Tasks** (main's spaces) a gesture latches to the
+  space's area it began over: the explorer, a note (Source and the cell
+  reader), the info panel, the Tasks sidebar and details scroll row by row
+  (fractions carried); the todo canvas pans cell by cell on both axes and
+  pinching or Command+scroll steps its three zoom levels (one per half a
+  doubling); smart zoom over it fits every board, as F does. The session
+  canvas behind them never pans, zooms or selects. HTML notes and reports
+  scroll natively in their web view (momentum and rubber band included).
+- **No swipe navigation.** A two-finger horizontal swipe is not back and
+  forward (it pans the canvas and the board, the gesture this design is
+  for), and the web views' own swipe navigation is off; back and forward
+  are ⌘[ / ⌘] and the mouse's side buttons.
 - Help (`?`) lists the gestures in a second column.
 
-Checked by parity rows T1 and T2 (where the policy is Precise: macOS, and
+Checked by parity rows T1, T2 and T3 (where the policy is Precise: macOS;
 Linux under Wayland for T1's pan part and T2, blocking on CI under headless
-weston) and the canvas-core `gesture` tests. How it feels (momentum, natural scrolling on and
+weston; T3 there runs its scroll part when a Wayland run includes it) and the
+canvas-core `gesture`, `notebook` and `tasks` tests. How it feels (momentum, natural scrolling on and
 off, force-click pressure) is the owner's check on hardware.
 
 ## 5. Subsystem designs
