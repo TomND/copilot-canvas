@@ -6,6 +6,10 @@ import XCTest
 final class TerminalUITests: XCTestCase {
     private let link = "ccanvas://pair?v=1&name=mock&url=ws%3A%2F%2F127%2E0%2E0%2E1%3A47600&code=ABCDEFGHJKMN"
 
+    /// The first wait of a test: the app's launch, pairing with the mock and
+    /// its first data (a simulator's first launch of the app is slow on CI).
+    private let firstConnection: TimeInterval = 90
+
     override func setUp() {
         continueAfterFailure = false
     }
@@ -19,7 +23,7 @@ final class TerminalUITests: XCTestCase {
 
     func testSessionsAreListedByWhatTheyNeed() throws {
         let app = launch()
-        XCTAssertTrue(app.staticTexts["Fix flaky test"].waitForExistence(timeout: 45), "the canvas arrived")
+        XCTAssertTrue(app.staticTexts["Fix flaky test"].waitForExistence(timeout: firstConnection), "the canvas arrived")
         // Lists build rows as they scroll in: other sessions may be further down.
         XCTAssertTrue(app.buttons["machineMenu"].exists)
         attach(app, "sessions")
@@ -31,7 +35,7 @@ final class TerminalUITests: XCTestCase {
     func testTypingInATerminalReachesTheShell() throws {
         let app = launch(["-openSession", "mock-loose"])
         let terminal = app.descendants(matching: .any).matching(identifier: "terminal").firstMatch
-        XCTAssertTrue(terminal.waitForExistence(timeout: 45))
+        XCTAssertTrue(terminal.waitForExistence(timeout: firstConnection))
         // The session starts: wait for the shell's prompt (zsh `%`, bash `$`, root `#`).
         let prompt = NSPredicate(format: "value MATCHES %@", "(?s).*[%$#>][ \\n]*")
         expectation(for: prompt, evaluatedWith: terminal)
@@ -43,9 +47,9 @@ final class TerminalUITests: XCTestCase {
         waitForExpectations(timeout: 45)
         attach(app, "terminal")
         // The key bar sends keys the keyboard lacks; its hide button is always there.
-        XCTAssertTrue(app.buttons["esc"].firstMatch.exists)
+        XCTAssertTrue(app.buttons["esc"].firstMatch.waitForExistence(timeout: 10))
         let hide = app.buttons["Hide keyboard"].firstMatch
-        XCTAssertTrue(hide.isHittable, "the hide button is pinned, not scrolled away")
+        XCTAssertTrue(waitHittable(app, hide), "the hide button is pinned, not scrolled away")
         hide.tap()
         XCTAssertTrue(waitForKeyboard(app, shown: false), "the hide button closes the keyboard")
         terminal.tap()
@@ -55,7 +59,7 @@ final class TerminalUITests: XCTestCase {
     func testTheKeyboardStaysOutOfTheWayOfTheNewSessionForm() throws {
         let app = launch()
         let add = app.buttons["New session"]
-        XCTAssertTrue(add.waitForExistence(timeout: 45))
+        XCTAssertTrue(add.waitForExistence(timeout: firstConnection))
         expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: add)
         waitForExpectations(timeout: 45)
         add.tap()
@@ -73,7 +77,7 @@ final class TerminalUITests: XCTestCase {
         XCTAssertTrue(waitForKeyboard(app, shown: false), "no keyboard after picking a folder")
         // The prompt can be typed in, then the Done button hides the keyboard.
         let prompt = app.textViews["prompt"]
-        XCTAssertTrue(prompt.isHittable, "the prompt is reachable")
+        XCTAssertTrue(waitHittable(app, prompt), "the prompt is reachable")
         prompt.tap()
         prompt.typeText("Explain this repository")
         XCTAssertTrue(waitForKeyboard(app, shown: true))
@@ -97,7 +101,7 @@ final class TerminalUITests: XCTestCase {
         app.launchArguments = ["-noNotificationPrompt", "-noLock", "-pairLink", link, "-pairLink", personal, "-machine", "mock"]
         app.launch()
         let menu = app.buttons["machineMenu"]
-        XCTAssertTrue(menu.waitForExistence(timeout: 45))
+        XCTAssertTrue(menu.waitForExistence(timeout: firstConnection))
         expectation(for: NSPredicate(format: "label ENDSWITH ': mock'"), evaluatedWith: menu)
         waitForExpectations(timeout: 45)
         // What wants you on the other machine shows at the top.
@@ -130,13 +134,13 @@ final class TerminalUITests: XCTestCase {
     func testASubsessionStartsNextToItsParent() throws {
         let app = launch()
         let scratch = app.staticTexts["Scratch"].firstMatch
-        XCTAssertTrue(scratch.waitForExistence(timeout: 45))
+        XCTAssertTrue(scratch.waitForExistence(timeout: firstConnection))
         scratch.press(forDuration: 1.0)
         let item = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'New subsession'")).firstMatch
         XCTAssertTrue(item.waitForExistence(timeout: 10))
         item.tap()
         XCTAssertTrue(app.navigationBars["New subsession"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["Scratch"].exists, "the parent is named")
+        XCTAssertTrue(app.staticTexts["Scratch"].waitForExistence(timeout: 10), "the parent is named")
         let name = app.textFields["Name (default: the folder's name)"]
         let title = "Scratch follow-up \(Int.random(in: 100...999))"
         name.tap()
@@ -152,13 +156,13 @@ final class TerminalUITests: XCTestCase {
             app.collectionViews.firstMatch.swipeUp()
         }
         XCTAssertTrue(row.waitForExistence(timeout: 10), "listed")
-        XCTAssertTrue(app.staticTexts["↳"].exists, "shown as a subsession")
+        XCTAssertTrue(app.staticTexts["↳"].waitForExistence(timeout: 10), "shown as a subsession")
     }
 
     func testPassiveSessionsPauseAndResume() throws {
         let app = launch()
         let drift = app.staticTexts["Drift guard"].firstMatch
-        XCTAssertTrue(drift.waitForExistence(timeout: 45))
+        XCTAssertTrue(drift.waitForExistence(timeout: firstConnection))
         let pause = app.buttons.matching(identifier: "Pause").firstMatch
         let resume = app.buttons.matching(identifier: "Resume").firstMatch
         /// Opens the session's actions (again once the previous dialog has gone).
@@ -193,13 +197,15 @@ final class TerminalUITests: XCTestCase {
     func testReportsOpenInALockedDownViewAndLinksAskFirst() throws {
         let app = launch()
         let inbox = app.buttons["reportsButton"]
-        XCTAssertTrue(inbox.waitForExistence(timeout: 45))
-        XCTAssertTrue(app.staticTexts["Fix flaky test"].waitForExistence(timeout: 45), "connected")
+        XCTAssertTrue(inbox.waitForExistence(timeout: firstConnection))
+        XCTAssertTrue(app.staticTexts["Fix flaky test"].waitForExistence(timeout: firstConnection), "connected")
         inbox.tap()
         let brief = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Payments health")).firstMatch
         XCTAssertTrue(brief.waitForExistence(timeout: 20), "the inbox")
-        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "PR #42: 2 new review comments")).firstMatch.exists, "a thread")
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "PR #42: 2 new review comments")).firstMatch.waitForExistence(timeout: 10), "a thread")
         attach(app, "reports-inbox")
+        // The list re-renders as the inbox's reports arrive: the row again before the tap.
+        XCTAssertTrue(brief.waitForExistence(timeout: 20), "the brief in the inbox")
         brief.tap()
         // The HTML report in the web view: its own text and styles, its script never ran.
         let page = app.webViews["reportPage"]
@@ -224,8 +230,10 @@ final class TerminalUITests: XCTestCase {
         // Back in the inbox: it was read; left unread again for the next run.
         app.navigationBars.buttons["Reports"].tap()
         XCTAssertTrue(brief.waitForExistence(timeout: 10))
-        XCTAssertFalse(brief.label.contains("unread"), brief.label)
+        expectation(for: NSPredicate(format: "NOT (label CONTAINS %@)", "unread"), evaluatedWith: brief)
+        waitForExpectations(timeout: 10)
         brief.swipeRight()
+        XCTAssertTrue(app.buttons["Unread"].waitForExistence(timeout: 10))
         app.buttons["Unread"].tap()
         expectation(for: NSPredicate(format: "label CONTAINS %@", "unread"), evaluatedWith: brief)
         waitForExpectations(timeout: 10)
@@ -238,9 +246,35 @@ final class TerminalUITests: XCTestCase {
         }
     }
 
-    private func waitForKeyboard(_ app: XCUIApplication, shown: Bool, timeout: TimeInterval = 5) -> Bool {
+    /// Until `element` can be tapped: the keyboard's and the layout's
+    /// animations end late on a busy CI simulator.
+    private func waitHittable(_ app: XCUIApplication, _ element: XCUIElement, timeout: TimeInterval = 10) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
+            dismissKeyboardTip(app)
+            if element.exists && element.isHittable { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        return false
+    }
+
+    /// iOS's one-time keyboard tip ("Speed up your typing by sliding your
+    /// finger…") covers the keyboard and the app's key bar the first time the
+    /// on-screen keyboard shows on a fresh simulator: Continue closes it. Only
+    /// that tip, found by its text.
+    private func dismissKeyboardTip(_ app: XCUIApplication) {
+        let tip = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "sliding your finger")).firstMatch
+        if tip.exists, app.buttons["Continue"].exists {
+            app.buttons["Continue"].tap()
+        }
+    }
+
+    /// Each look at the keyboard takes up to a second on a busy CI simulator:
+    /// 15 s gives the keyboard's animation time to finish there too.
+    private func waitForKeyboard(_ app: XCUIApplication, shown: Bool, timeout: TimeInterval = 15) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            dismissKeyboardTip(app)
             if app.keyboards.firstMatch.exists == shown { return true }
             RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         }

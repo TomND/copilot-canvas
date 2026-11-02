@@ -39,6 +39,13 @@ final class TapOutsideDismisser: NSObject, UIGestureRecognizerDelegate {
             }
             view = current.superview
         }
+        // An alert's buttons (a name typed into it): its own field keeps the
+        // keyboard until the alert closes, or the button's tap is lost.
+        var responder: UIResponder? = touch.view
+        while let current = responder {
+            if current is UIAlertController { return false }
+            responder = current.next
+        }
         return true
     }
 

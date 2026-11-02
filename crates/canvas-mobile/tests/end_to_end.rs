@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use canvas_common::ws;
-use canvas_mobile::{Client, ClientConfig, ConnState, CoreEvent, KeyCode, Listener, NoteFilter, NoteKind, NoteLink, Pairing, StatusKind, TodoDraft, TodoKind, TodoPriority, TodoStatus, Transport};
+use canvas_mobile::{Client, ClientConfig, ConnState, CoreError, CoreEvent, KeyCode, Listener, NoteFilter, NoteKind, NoteLink, Pairing, StatusKind, TodoDraft, TodoKind, TodoPriority, TodoStatus, Transport};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 
 /// A WebSocket to the mock, as the app's `URLSessionWebSocketTask` would be.
@@ -301,7 +301,7 @@ fn todo_boards_and_the_notebook_reach_phones_and_changes_reach_every_phone() {
     assert_eq!(client.todos().todos.iter().find(|t| t.id == "WI-006").map(|t| t.status), Some(TodoStatus::Todo));
     wait_until("the accepted todo on the other phone", || other.todos().todos.iter().any(|t| t.id == "WI-006" && t.status == TodoStatus::Todo));
     assert!(client.accept_todo("WI-006".into(), None).is_err(), "not a proposal any more: refused here");
-    let draft = TodoDraft { board: "Decomps".into(), title: "Fuzz the parser".into(), kind: TodoKind::Research, priority: TodoPriority::Low, status: None, body: String::new() };
+    let draft = TodoDraft { board: "Decomps".into(), title: "Fuzz the parser".into(), kind: TodoKind::Research, priority: TodoPriority::Low, status: None, body: String::new(), blocker: false };
     assert_eq!(client.add_todo(draft).unwrap().id, "DEC-009");
     client.done_todo("WI-004".into()).unwrap();
     wait_until("the new and finished todos on the other phone", || other.todo("DEC-009".into()).is_some() && other.todo("WI-004".into()).is_some_and(|t| t.item.status == TodoStatus::Done));
@@ -336,5 +336,95 @@ fn todo_boards_and_the_notebook_reach_phones_and_changes_reach_every_phone() {
     assert!(marked.provenance.reviewed && marked.rev != plan.rev && marked.text.contains("reviewed: true"));
     assert_eq!(client.note_revisions(vec![plan_path, path(&["missing.md"])]).unwrap(), [Some(marked.rev), None]);
     assert!(client.mark_note_reviewed(path(&["pictures", "chart.svg"])).is_err(), "pictures carry no mark");
+    let _ = std::fs::remove_dir_all(state);
+}
+
+#[test]
+fn phones_edit_notes_and_todos_and_a_note_changed_elsewhere_is_never_overwritten_unasked() {
+    let state = std::env::temp_dir().join(format!("canvas-mock-edits-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&state);
+    let cwd = std::env::temp_dir().display().to_string();
+    let handle = canvas_mock::serve(canvas_mock::Config { state_dir: state.clone(), ..canvas_mock::Config::local("127.0.0.1:0", &cwd) }).unwrap();
+    let addr = handle.addr.to_string();
+    let (client, _events) = phone(&addr);
+    let (other, _other_events) = phone(&addr);
+    wait_until("the canvas", || client.overview().sessions.len() == 7 && other.overview().sessions.len() == 7);
+
+    // A note's source, saved on its revision; the other phone reads the change.
+    let notebook = client.notebook().unwrap();
+    let root = std::path::Path::new(&notebook.root);
+    let path = |parts: &[&str]| parts.iter().fold(root.to_path_buf(), |p, part| p.join(part)).display().to_string();
+    let idea = path(&["Inbox", "Idea - offline mode.md"]);
+    let source = client.note_source(idea.clone()).unwrap();
+    assert!(source.editable && source.why_not.is_empty() && source.kind == NoteKind::Markdown && source.text.starts_with("# Idea"), "{source:?}");
+    let mine = format!("{}\nWritten on the phone.\n", source.text);
+    let saved = client.save_note(idea.clone(), mine.clone(), source.rev.clone()).unwrap();
+    assert_eq!(saved.text, mine, "your note stays yours");
+    let page = other.read_note(idea.clone()).unwrap();
+    assert!(page.text.contains("Written on the phone.") && page.rev == saved.rev && page.html.contains("Written on the phone."));
+
+    // The other phone, still on the old revision: a conflict with the text now, nothing written.
+    let theirs = format!("{}\nFrom the other phone.\n", source.text);
+    match other.save_note(idea.clone(), theirs.clone(), source.rev.clone()) {
+        Err(CoreError::Conflict { text, rev, .. }) => {
+            assert!(text.contains("Written on the phone.") && rev == saved.rev);
+            // Keep mine: saved on the revision it conflicted with, after asking.
+            other.save_note(idea.clone(), theirs.clone(), rev).unwrap();
+        }
+        other => panic!("a conflict: {other:?}"),
+    }
+    assert_eq!(client.note_source(idea.clone()).unwrap().text, theirs);
+    // An agent's note becomes mixed with your change.
+    let log = path(&["Groups", "Payments", "ai-docs", "investigation-log.md"]);
+    let source = client.note_source(log.clone()).unwrap();
+    let saved = client.save_note(log.clone(), format!("{}- 10:00 Checked from the phone.\n", source.text), source.rev).unwrap();
+    assert!(saved.text.starts_with("---\nauthor: mixed\n---\n") && client.read_note(log).unwrap().provenance.author == canvas_mobile::NoteAuthor::Mixed, "{}", saved.text);
+    let chart = client.note_source(path(&["pictures", "chart.svg"])).unwrap();
+    assert!(!chart.editable && chart.why_not.contains("Pictures"));
+    assert!(client.save_note(path(&["pictures", "chart.svg"]), "<svg/>".into(), chart.rev).is_err());
+
+    // New notes and folders, renames and the trash.
+    let inbox = path(&["Inbox"]);
+    let made = client.create_note(inbox.clone(), "Phone note".into(), String::new()).unwrap();
+    assert_eq!(made, path(&["Inbox", "Phone note.md"]));
+    let made_page = client.read_note(made.clone()).unwrap();
+    assert!(made_page.title == "Phone note" && made_page.provenance.audience == canvas_mobile::NoteAudience::Human && made_page.provenance.author == canvas_mobile::NoteAuthor::Human && !made_page.provenance.inferred);
+    assert!(made_page.text.contains("created: "), "{}", made_page.text);
+    assert!(client.create_note(inbox.clone(), "Phone note.md".into(), String::new()).unwrap_err().to_string().contains("exists already"), "never over another note");
+    let folder = client.create_folder(inbox.clone(), "Trips".into()).unwrap();
+    assert!(std::path::Path::new(&folder).is_dir());
+    let renamed = client.rename_note(made.clone(), "Trip ideas".into()).unwrap();
+    assert_eq!(renamed, path(&["Inbox", "Trip ideas.md"]));
+    let listed = |dir: &str| other.list_notes(dir.into(), NoteFilter::All, false).unwrap().entries.into_iter().map(|e| e.name).collect::<Vec<_>>();
+    assert!(listed(&inbox).contains(&"Trip ideas.md".to_owned()) && !listed(&inbox).contains(&"Phone note.md".to_owned()));
+    client.delete_note(renamed.clone()).unwrap();
+    client.delete_note(folder).unwrap();
+    assert!(!listed(&inbox).iter().any(|n| n == "Trip ideas.md" || n == "Trips"), "in the trash");
+    assert!(std::fs::read_dir(path(&[".trash"])).unwrap().count() == 2);
+    assert!(client.delete_note(notebook.root.clone()).is_err() && client.rename_note(notebook.root.clone(), "x".into()).is_err(), "the root stays");
+
+    // Todos: fields, the checklist, cancel and reopen, release; the other phone follows.
+    wait_until("the todo boards", || client.todos().loaded && other.todos().loaded);
+    let edit = canvas_mobile::TodoEdit { title: Some("Glide after a flick".into()), priority: Some(TodoPriority::Urgent), labels: Some(vec!["ui".into()]), blocker: Some(true), ..Default::default() };
+    assert!(client.update_todo("WI-002".into(), edit).unwrap().message.starts_with("Updated WI-002"));
+    client.add_check("WI-002".into(), "Try it on the phone".into()).unwrap();
+    client.edit_check("WI-002".into(), 0, "Glide on release".into()).unwrap();
+    client.remove_check("WI-002".into(), 1).unwrap();
+    client.check_todo("WI-002".into(), 3, true).unwrap();
+    wait_until("the edits on the other phone", || {
+        other.todo("WI-002".into()).is_some_and(|t| {
+            let checks: Vec<(&str, bool)> = t.checklist.iter().map(|c| (c.text.as_str(), c.done)).collect();
+            t.item.title == "Glide after a flick" && t.item.blocker && t.item.labels == ["ui"] && checks.len() == 4 && checks[0].0 == "Glide on release" && checks[3] == ("Try it on the phone", true)
+        })
+    });
+    client.cancel_todo("WI-004".into(), "Not needed".into()).unwrap();
+    assert!(client.todo("WI-004".into()).unwrap().actions.reopen);
+    client.reopen_todo("WI-004".into()).unwrap();
+    client.release_todo("WI-003".into()).unwrap();
+    wait_until("canceled, reopened and released on the other phone", || {
+        other.todo("WI-004".into()).is_some_and(|t| t.item.status == TodoStatus::Todo && t.log.iter().any(|l| l.text.contains("Not needed"))) && other.todo("WI-003".into()).is_some_and(|t| t.item.claimed_by.is_empty())
+    });
+    // The service refuses what the book does: a removed item beyond the list.
+    assert!(client.remove_check("WI-002".into(), 40).is_err());
     let _ = std::fs::remove_dir_all(state);
 }

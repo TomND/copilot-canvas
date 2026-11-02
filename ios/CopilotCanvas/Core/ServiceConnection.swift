@@ -36,6 +36,8 @@ final class ServiceConnection: ObservableObject {
     @Published private(set) var overview: Overview?
     /// The reports inbox (nil until the first read; `loaded` once the service sent it).
     @Published private(set) var reports: ReportsOverview?
+    /// The todo boards (nil until the first read; `loaded` once the service sent them).
+    @Published private(set) var todos: TodosOverview?
     @Published var toast: Toast?
 
     let client: Client
@@ -45,6 +47,7 @@ final class ServiceConnection: ObservableObject {
     private var retry: Task<Void, Never>?
     private var overviewPending = false
     private var reportsPending = false
+    private var todosPending = false
     private var active = false
     private var background: UIBackgroundTaskIdentifier = .invalid
     /// Terminal views waiting for screen updates.
@@ -180,10 +183,13 @@ final class ServiceConnection: ObservableObject {
             }
             refreshOverview()
             refreshReports()
+            refreshTodos()
         case .overview:
             refreshOverview()
             // Report rows name boxes of the canvas.
             refreshReports()
+            // The boards come with the bus snapshot (and name the canvas's sessions).
+            refreshTodos()
         case .reports:
             refreshReports()
         case .reportArrived(let id, let title, let source, let more):
@@ -247,6 +253,35 @@ final class ServiceConnection: ObservableObject {
         }
     }
 
+    /// The todo boards change with the service's books and your changes.
+    func refreshTodos() {
+        guard !todosPending else { return }
+        todosPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self else { return }
+            self.todosPending = false
+            self.todos = self.client.todos()
+        }
+    }
+
+    /// A change to the todo boards: applied here at once (the service
+    /// confirms it, or its refusal comes back as a toast and undoes it).
+    /// `say`: show what happened (warnings always show).
+    @discardableResult
+    func todoChange(say: Bool = true, _ work: (Client) throws -> TodoChange) -> TodoChange? {
+        do {
+            let change = try work(client)
+            todos = client.todos()
+            if say || change.message.contains("⚠") {
+                toast = Toast(text: change.message, error: false)
+            }
+            return change
+        } catch {
+            show(error)
+            return nil
+        }
+    }
+
     /// The machine was renamed or recoloured (same address and credentials).
     func updateServer(_ updated: PairedServer) {
         server = updated
@@ -272,9 +307,7 @@ final class ServiceConnection: ObservableObject {
     }
 
     func show(_ error: Error) {
-        let text: String
-        if case let CoreError.Failed(message) = error { text = message } else { text = error.localizedDescription }
-        toast = Toast(text: text, error: true)
+        toast = Toast(text: describe(error), error: true)
     }
 
     // MARK: Notifications

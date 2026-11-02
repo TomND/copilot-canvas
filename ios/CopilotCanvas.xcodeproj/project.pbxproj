@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		007B5D34BC0B24C5D8358834 /* BoxDrawing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 941C0AFAA4E94625ADF4DDB3 /* BoxDrawing.swift */; };
+		1A63B609D0185BB9AE399CDF /* NoteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA95D96C40072A0B02A182BC /* NoteView.swift */; };
 		238AA111F2A58A1CA990D5BD /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 371B4CAFAC6D35D925863CC9 /* HomeView.swift */; };
 		27E6E2BBE6C6B63C64A09CCC /* TerminalUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CA872B980D2EB3F2BA1095E /* TerminalUITests.swift */; };
 		2995C159A2A054E1C5E89557 /* CopilotCanvasApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63433A27CD72195FE5BAF7D5 /* CopilotCanvasApp.swift */; };
@@ -16,11 +17,16 @@
 		36187071DF3D5182D1F33AB2 /* CanvasMobileCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 95DED45AB5969DE56CDBF2A5 /* CanvasMobileCore.xcframework */; };
 		3B818A884E8E6A1AACDAA171 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 587FF3C800703B9B53D3F44E /* SettingsView.swift */; };
 		3C71F3A621CCDBD2848746DB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CE1EA5E0CFCD3DB8211B5D1F /* Assets.xcassets */; };
+		423C838FB123CAB4EC63232C /* NoteEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47E5E65523A835508319A89C /* NoteEditor.swift */; };
 		44EC1E918541DDE546C4A7A2 /* SessionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0188D57AC0E74E4481E361E /* SessionsView.swift */; };
 		4D67292AECD72512406C0F46 /* ServerStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D387408BFE4F7650FAAB8E /* ServerStore.swift */; };
 		57CA8E53C67778D84F381942 /* PushRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02098422FE393BDE6A29DAAC /* PushRegistration.swift */; };
 		5F6300F2882B73B14270F595 /* PairView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37CA17908C7859DF5E5EC92E /* PairView.swift */; };
+		60F3BDE76FEFC0813BAA4849 /* TodoDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62130F8DF5F6AB9AFB3767F7 /* TodoDetailView.swift */; };
+		6C26268B2836451BAEC15612 /* TasksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FC21C8F0C7C51DDED06513F /* TasksView.swift */; };
+		6CE955F716908C8FE55A6607 /* NotebookView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 363095399E607F77D7537924 /* NotebookView.swift */; };
 		7138F9C66C98F01D5B91C149 /* Pairer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1A18FF4D04EBC4B7E3F66C /* Pairer.swift */; };
+		740B0D217D4F70C5B90D374D /* NotebookTasksUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E044B6B7AD505F377E3DDAB1 /* NotebookTasksUITests.swift */; };
 		75578567D23442C13FACA607 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E44C0FB2065B9025E30AAA67 /* AppModel.swift */; };
 		7630F111291E90F528B6C144 /* FileViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18E6681C7760CA66FFB63C69 /* FileViewer.swift */; };
 		76911BB6DCF109C03EDB4B28 /* Machines.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B9E83239559BC6B0F5A6F7A /* Machines.swift */; };
@@ -33,6 +39,7 @@
 		A1E95B5F2572263C9CCC4B5F /* WebSocketTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F4108B7E513FB12B790FDD7 /* WebSocketTransport.swift */; };
 		A385795DC84109669C544895 /* ReportWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF05EDD46B30A5BF1D7F04A6 /* ReportWebView.swift */; };
 		AD948EEDAFFCDAEDF75F8951 /* KeyBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C999D513E4C2DD264204D5FA /* KeyBar.swift */; };
+		B7CC9B2A54C81862974B0CD4 /* TodoForms.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1679AE38F255BFF7A6BC6A7 /* TodoForms.swift */; };
 		BF0CF98767320D25ABC31698 /* Keyboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0E9E8D0EEA2B412B2E472B4 /* Keyboard.swift */; };
 		C25D81E0404A7792CECE36C9 /* TerminalScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04029A4BF1C2557757BFB954 /* TerminalScreen.swift */; };
 		CB2C0540839842AF660C0EE3 /* ServiceConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6407AA58A49B014FCB5D516C /* ServiceConnection.swift */; };
@@ -69,13 +76,17 @@
 		18E6681C7760CA66FFB63C69 /* FileViewer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileViewer.swift; sourceTree = "<group>"; };
 		2AFBCD8066EBAB23A03992C0 /* TerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalView.swift; sourceTree = "<group>"; };
 		3532502B507E9C3DD275CF0A /* CanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasView.swift; sourceTree = "<group>"; };
+		363095399E607F77D7537924 /* NotebookView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookView.swift; sourceTree = "<group>"; };
 		36429106D3674C507FADD6CD /* CoreBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreBridgeTests.swift; sourceTree = "<group>"; };
 		371B4CAFAC6D35D925863CC9 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		37CA17908C7859DF5E5EC92E /* PairView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairView.swift; sourceTree = "<group>"; };
 		3B9E83239559BC6B0F5A6F7A /* Machines.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Machines.swift; sourceTree = "<group>"; };
+		3FC21C8F0C7C51DDED06513F /* TasksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TasksView.swift; sourceTree = "<group>"; };
+		47E5E65523A835508319A89C /* NoteEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteEditor.swift; sourceTree = "<group>"; };
 		4F4108B7E513FB12B790FDD7 /* WebSocketTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketTransport.swift; sourceTree = "<group>"; };
 		587FF3C800703B9B53D3F44E /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		5D89495A983BAB0BEC1B2140 /* SystemConfiguration.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemConfiguration.framework; path = System/Library/Frameworks/SystemConfiguration.framework; sourceTree = SDKROOT; };
+		62130F8DF5F6AB9AFB3767F7 /* TodoDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoDetailView.swift; sourceTree = "<group>"; };
 		62EF5A0229710D7BCFF88E00 /* CopilotCanvas.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = CopilotCanvas.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		63433A27CD72195FE5BAF7D5 /* CopilotCanvasApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CopilotCanvasApp.swift; sourceTree = "<group>"; };
 		6407AA58A49B014FCB5D516C /* ServiceConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceConnection.swift; sourceTree = "<group>"; };
@@ -89,6 +100,7 @@
 		AF501242B20E88A63EAABC47 /* ReportViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportViewTests.swift; sourceTree = "<group>"; };
 		B0D387408BFE4F7650FAAB8E /* ServerStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerStore.swift; sourceTree = "<group>"; };
 		B0E9E8D0EEA2B412B2E472B4 /* Keyboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Keyboard.swift; sourceTree = "<group>"; };
+		B1679AE38F255BFF7A6BC6A7 /* TodoForms.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoForms.swift; sourceTree = "<group>"; };
 		B7C6C290CDACE8D8AA1EF46F /* canvas_mobile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = canvas_mobile.swift; sourceTree = "<group>"; };
 		BE0EEF3C29668868F62A8686 /* CopilotCanvasTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = CopilotCanvasTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BF05EDD46B30A5BF1D7F04A6 /* ReportWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportWebView.swift; sourceTree = "<group>"; };
@@ -97,7 +109,9 @@
 		C999D513E4C2DD264204D5FA /* KeyBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyBar.swift; sourceTree = "<group>"; };
 		CE1EA5E0CFCD3DB8211B5D1F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		DAE6888F27607F6BAA88F818 /* ReportViewer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportViewer.swift; sourceTree = "<group>"; };
+		E044B6B7AD505F377E3DDAB1 /* NotebookTasksUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookTasksUITests.swift; sourceTree = "<group>"; };
 		E44C0FB2065B9025E30AAA67 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		EA95D96C40072A0B02A182BC /* NoteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -166,6 +180,16 @@
 			name = Frameworks;
 			sourceTree = "<group>";
 		};
+		1C68DDD69E1D19C8D78B804A /* Tasks */ = {
+			isa = PBXGroup;
+			children = (
+				3FC21C8F0C7C51DDED06513F /* TasksView.swift */,
+				62130F8DF5F6AB9AFB3767F7 /* TodoDetailView.swift */,
+				B1679AE38F255BFF7A6BC6A7 /* TodoForms.swift */,
+			);
+			path = Tasks;
+			sourceTree = "<group>";
+		};
 		2173CE0D3303BFCF0C7A3778 /* Resources */ = {
 			isa = PBXGroup;
 			children = (
@@ -180,10 +204,12 @@
 				9DAD523F8E7F9607E7ABF932 /* Canvas */,
 				89E5021259F9C97440BDAF40 /* Machines */,
 				B3339E13444874F8075049EA /* NewSession */,
+				793EFA3CE6BE3DD4E92103C6 /* Notebook */,
 				12560FF933EC508AC4FBBB06 /* Pair */,
 				76DE2A691D6C9A7C2718E754 /* Reports */,
 				C7A286A3455C18DCA1732A5D /* Sessions */,
 				4805D59A068920EBDF54D093 /* Settings */,
+				1C68DDD69E1D19C8D78B804A /* Tasks */,
 				84AB636702D3814C405A5C91 /* Terminal */,
 			);
 			path = Features;
@@ -219,6 +245,16 @@
 				885993B14A573EC085DE47AA /* Support */,
 			);
 			path = CopilotCanvas;
+			sourceTree = "<group>";
+		};
+		793EFA3CE6BE3DD4E92103C6 /* Notebook */ = {
+			isa = PBXGroup;
+			children = (
+				363095399E607F77D7537924 /* NotebookView.swift */,
+				47E5E65523A835508319A89C /* NoteEditor.swift */,
+				EA95D96C40072A0B02A182BC /* NoteView.swift */,
+			);
+			path = Notebook;
 			sourceTree = "<group>";
 		};
 		82BB3AB7E003BDED9AB06C1F /* CopilotCanvasTests */ = {
@@ -306,6 +342,7 @@
 		C8DDE900B04BD25B8DB9C344 /* CopilotCanvasUITests */ = {
 			isa = PBXGroup;
 			children = (
+				E044B6B7AD505F377E3DDAB1 /* NotebookTasksUITests.swift */,
 				0CA872B980D2EB3F2BA1095E /* TerminalUITests.swift */,
 			);
 			path = CopilotCanvasUITests;
@@ -459,6 +496,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				740B0D217D4F70C5B90D374D /* NotebookTasksUITests.swift in Sources */,
 				27E6E2BBE6C6B63C64A09CCC /* TerminalUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -486,6 +524,9 @@
 				BF0CF98767320D25ABC31698 /* Keyboard.swift in Sources */,
 				76911BB6DCF109C03EDB4B28 /* Machines.swift in Sources */,
 				34B84F6AB7EEAAEA0595C03E /* NewSessionView.swift in Sources */,
+				423C838FB123CAB4EC63232C /* NoteEditor.swift in Sources */,
+				1A63B609D0185BB9AE399CDF /* NoteView.swift in Sources */,
+				6CE955F716908C8FE55A6607 /* NotebookView.swift in Sources */,
 				5F6300F2882B73B14270F595 /* PairView.swift in Sources */,
 				7138F9C66C98F01D5B91C149 /* Pairer.swift in Sources */,
 				77305682749AAD715786B71D /* Palette.swift in Sources */,
@@ -497,8 +538,11 @@
 				CB2C0540839842AF660C0EE3 /* ServiceConnection.swift in Sources */,
 				44EC1E918541DDE546C4A7A2 /* SessionsView.swift in Sources */,
 				3B818A884E8E6A1AACDAA171 /* SettingsView.swift in Sources */,
+				6C26268B2836451BAEC15612 /* TasksView.swift in Sources */,
 				C25D81E0404A7792CECE36C9 /* TerminalScreen.swift in Sources */,
 				FF37A10AEB4A408583EFDB9B /* TerminalView.swift in Sources */,
+				60F3BDE76FEFC0813BAA4849 /* TodoDetailView.swift in Sources */,
+				B7CC9B2A54C81862974B0CD4 /* TodoForms.swift in Sources */,
 				A1E95B5F2572263C9CCC4B5F /* WebSocketTransport.swift in Sources */,
 				95E6A0F1523699B47786493E /* canvas_mobile.swift in Sources */,
 			);

@@ -12,7 +12,8 @@
 //! The canvas's todo boards and notebook (docs/NOTEBOOK-TASKS.md) are
 //! exposed too: the boards from the service's bus snapshot with your
 //! changes as the windows send them (`todos.rs`), and the notebook's folders
-//! and notes as sanitized pages, read only but for *Mark reviewed* (`notes.rs`).
+//! and notes as sanitized pages, with their source to edit, new notes and
+//! folders, renames and the trash (`notes.rs`).
 
 uniffi::setup_scaffolding!();
 

@@ -172,8 +172,9 @@ on your PATH; the GPU client still needs its executable beside it.
   `copilot-canvas --remote NAME` at home. See [docs/REMOTE.md](docs/REMOTE.md).
 - **iPhone.** The same canvas on your phone over the same Dev Tunnel:
   sessions by what needs you, the canvas, real terminals with a key bar
-  and a prompt composer, and the reports inbox (HTML reports in a locked-down
-  web view). `copilot-canvas remote pair --qr` on the Cloud PC,
+  and a prompt composer, the reports inbox (HTML reports in a locked-down
+  web view), and the Notebook and Tasks to read and edit notes and todos.
+  `copilot-canvas remote pair --qr` on the Cloud PC,
   scan it in the app. See [ios/README.md](ios/README.md) and
   [docs/IOS-PLAN.md](docs/IOS-PLAN.md).
 - **Terminal engine.** Terminals run on libghostty-vt (graphemes, Kitty
@@ -1444,8 +1445,9 @@ cargo test                            unit tests
   network access. Go to and `[[` completion know the notes the window has
   listed or opened and those a walk of the roots finds (every 60 s while the
   Notebook shows: at most 60 folders and 2,000 notes); a search reads at most
-  20,000 files, 256 MB and 10 s per request. The iPhone app's core has the todos and notebook
-  (see docs/IOS-STATUS.md); its screens for them are not built yet. Undo
+  20,000 files, 256 MB and 10 s per request. The iPhone app has Notebook and
+  Tasks places to view and edit notes and todos (not parity: see ios/README.md
+  and docs/NOTEBOOK-TASKS.md §7); it never runs an HTML note's scripts. Undo
   (Ctrl+Z) covers neither notes (the editor has its own undo) nor todos.
 
 ---
