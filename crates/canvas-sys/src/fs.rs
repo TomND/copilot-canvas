@@ -1,5 +1,6 @@
 //! Private files: created for this user only (Windows: a protected DACL
-//! naming only the user's SID; Unix: mode 0600, created exclusively).
+//! naming only the user's SID; Unix: mode 0600, created exclusively), and
+//! renames that never replace a file (Unix).
 
 #[cfg(windows)]
 pub use canvas_common::win::{create_private, write_private};
@@ -50,6 +51,88 @@ mod unix {
             std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
         }
         Ok(())
+    }
+
+    /// Renames `from` to `to`, never over something at `to` (`AlreadyExists`
+    /// then), also something that appeared a moment before: Linux's
+    /// `renameat2(RENAME_NOREPLACE)`, atomic in the kernel. Filesystems that
+    /// refuse the flag (some FUSE, NFS and older kernels: `EINVAL`, `ENOSYS`,
+    /// `EOPNOTSUPP`) get [`rename_claimed`].
+    #[cfg(target_os = "linux")]
+    pub fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+        use std::os::unix::ffi::OsStrExt;
+        let c = |path: &Path| std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput));
+        let (old, new) = (c(from)?, c(to)?);
+        // SAFETY: two NUL-terminated paths that live across the call.
+        if unsafe { libc::renameat2(libc::AT_FDCWD, old.as_ptr(), libc::AT_FDCWD, new.as_ptr(), libc::RENAME_NOREPLACE) } == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::EINVAL | libc::ENOSYS | libc::EOPNOTSUPP) => rename_claimed(from, to),
+            _ => Err(error),
+        }
+    }
+
+    /// A no-replace rename without the kernel's help: a file's new name is
+    /// claimed with a hard link (which fails when the name is taken), then the
+    /// old name goes; folders, and filesystems without hard links, are checked
+    /// and renamed (a name taken in between is the only gap).
+    #[cfg(unix)]
+    pub fn rename_claimed(from: &Path, to: &Path) -> io::Result<()> {
+        if std::fs::symlink_metadata(from)?.is_file() {
+            match std::fs::hard_link(from, to) {
+                Ok(()) => {
+                    return std::fs::remove_file(from).inspect_err(|_| {
+                        // Not both names: the new one goes again.
+                        let _ = std::fs::remove_file(to);
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Err(error),
+                Err(_) => {}
+            }
+        }
+        if std::fs::symlink_metadata(to).is_ok() {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
+        std::fs::rename(from, to)
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    mod rename_tests {
+        use super::*;
+
+        fn folder(name: &str) -> std::path::PathBuf {
+            let dir = std::env::temp_dir().join(format!("canvas-sys-rename-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        }
+
+        #[test]
+        fn renames_never_replace() {
+            for (name, rename) in [("kernel", rename_no_replace as fn(&Path, &Path) -> io::Result<()>), ("claimed", rename_claimed)] {
+                let dir = folder(name);
+                let (a, b, c) = (dir.join("a.md"), dir.join("b.md"), dir.join("c.md"));
+                std::fs::write(&a, "a").unwrap();
+                std::fs::write(&b, "b").unwrap();
+                assert_eq!(rename(&a, &b).unwrap_err().kind(), io::ErrorKind::AlreadyExists, "{name}");
+                assert_eq!((std::fs::read_to_string(&a).unwrap(), std::fs::read_to_string(&b).unwrap()), ("a".into(), "b".into()), "{name}: both kept");
+                rename(&a, &c).unwrap();
+                assert!(!a.exists() && std::fs::read_to_string(&c).unwrap() == "a", "{name}");
+                // Folders too, also onto an empty folder (rename(2) would replace it).
+                let (x, y) = (dir.join("x"), dir.join("y"));
+                std::fs::create_dir_all(x.join("inner")).unwrap();
+                std::fs::create_dir_all(&y).unwrap();
+                assert_eq!(rename(&x, &y).unwrap_err().kind(), io::ErrorKind::AlreadyExists, "{name}: an empty folder is not replaced");
+                rename(&x, &dir.join("z")).unwrap();
+                assert!(dir.join("z").join("inner").is_dir(), "{name}");
+                // A link at the target counts as taken, even one that leads nowhere.
+                std::os::unix::fs::symlink(dir.join("missing"), dir.join("link")).unwrap();
+                assert_eq!(rename(&c, &dir.join("link")).unwrap_err().kind(), io::ErrorKind::AlreadyExists, "{name}: a dangling link");
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
     }
 }
 

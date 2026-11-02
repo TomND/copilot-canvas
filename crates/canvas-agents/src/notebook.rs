@@ -143,7 +143,17 @@ fn move_once(from: &Path, to: &Path) -> std::io::Result<()> {
     if unsafe { windows_sys::Win32::Storage::FileSystem::MoveFileExW(from.as_ptr(), to.as_ptr(), 0) } != 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
 }
 
-#[cfg(not(windows))]
+/// Linux: `renameat2(RENAME_NOREPLACE)` (a link-claimed or checked rename
+/// where the filesystem refuses the flag); a rename onto itself changes nothing.
+#[cfg(target_os = "linux")]
+fn move_once(from: &Path, to: &Path) -> std::io::Result<()> {
+    if same_path(from, to) {
+        return Ok(());
+    }
+    canvas_sys::fs::rename_no_replace(from, to)
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn move_once(from: &Path, to: &Path) -> std::io::Result<()> {
     if std::fs::symlink_metadata(to).is_ok() && !same_path(from, to) {
         return Err(std::io::ErrorKind::AlreadyExists.into());
