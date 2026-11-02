@@ -46,7 +46,8 @@ final class NotebookTasksUITests: XCTestCase {
         XCTAssertTrue(provenance.waitForExistence(timeout: 20), "written by an agent for you")
         attach(app, "linked-note")
         XCTAssertTrue(back(app, until: app.navigationBars["Welcome to the notebook"]), "back on the first note")
-        let plus = app.buttons["newNoteMenu"]
+        // The toolbar's + menu (iOS 18 drops its identifier: its label too).
+        let plus = menu(app, "newNoteMenu", label: "New note or folder")
         XCTAssertTrue(back(app, until: plus), "back in the notebook's folder")
 
         // A new note, written in the source editor and saved; then renamed and deleted.
@@ -78,7 +79,9 @@ final class NotebookTasksUITests: XCTestCase {
         XCTAssertTrue(app.webViews["notePage"].staticTexts["now"].exists, "bold from the key row")
         attach(app, "note-saved")
         // Delete it (to the trash), back to its folder: gone.
-        app.buttons["noteActions"].tap()
+        let actions = menu(app, "noteActions", label: "Note actions")
+        XCTAssertTrue(waitHittable(app, actions))
+        actions.tap()
         let delete = app.buttons["Delete…"]
         XCTAssertTrue(delete.waitForExistence(timeout: 10))
         delete.tap()
@@ -171,6 +174,11 @@ final class NotebookTasksUITests: XCTestCase {
 
     // MARK: Helpers
 
+    /// A toolbar menu by its identifier, or by its label where iOS 18 drops the identifier.
+    private func menu(_ app: XCUIApplication, _ id: String, label: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(NSPredicate(format: "identifier == %@ OR (label == %@ AND elementType == %d)", id, label, XCUIElement.ElementType.button.rawValue)).firstMatch
+    }
+
     /// Back until `element` can be tapped: a tap on Back during a busy
     /// simulator's animation can be lost, so it is tapped again (never once
     /// `element` is there: at a place's first screen the bar's first button
@@ -178,6 +186,8 @@ final class NotebookTasksUITests: XCTestCase {
     private func back(_ app: XCUIApplication, until element: XCUIElement) -> Bool {
         for _ in 0..<4 {
             if waitHittable(app, element, timeout: 2) { return true }
+            // A place's first screen: nothing to go back from.
+            if app.buttons["machineMenu"].exists && app.buttons["machineMenu"].isHittable { return false }
             let button = app.navigationBars.buttons.element(boundBy: 0)
             if button.exists && button.isHittable { button.tap() }
             if waitHittable(app, element, timeout: 6) { return true }

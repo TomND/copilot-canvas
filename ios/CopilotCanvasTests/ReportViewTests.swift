@@ -45,7 +45,8 @@ final class ReportViewTests: XCTestCase {
         let finished = expectation(description: "the page loaded")
         controller.onFinish = { finished.fulfill() }
         controller.load(html)
-        await fulfillment(of: [finished], timeout: 15)
+        // A cold simulator's first web view takes a while to start on CI.
+        await fulfillment(of: [finished], timeout: 45)
         controller.onFinish = nil
     }
 
