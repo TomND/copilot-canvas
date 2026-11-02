@@ -547,6 +547,31 @@ touchpad rows apply.
 - Linux test hooks: posted keys go through the X server (focus, then
   `KeyPress`/`KeyRelease` sent to the window); Wayland lets no client type
   into another's surface, so the latency bench types under X11.
+- HTML notes in WebKit (Linux; proposed for macOS): WebKit lets no handler
+  serve `https`, so the views load the notes origin's host through the
+  custom scheme **`canvas-notes://notes.canvas.invalid/`** (Linux:
+  `webkit_web_context_register_uri_scheme`; macOS: a `WKURLSchemeHandler`
+  for the same scheme name, so row 41d's check holds for both). The GUI
+  puts each request in the origin's form (`https://notes.canvas.invalid/…`)
+  for `webpane::classify` / `link_action`, and its replies back in the
+  view's: the policy header and a sanitized page (its CSP meta and links to
+  the origin's files) name `canvas-notes://notes.canvas.invalid`
+  (`os/linux/webview.rs` `to_view`, `to_origin`, `for_view`; plain
+  functions with tests, ready to move into `webpane` once macOS needs them).
+  The scripts view is a second ephemeral WebKit context (its own website
+  data manager), unloaded when hidden. Print / PDF has no dialog in an
+  offscreen view: the page goes to `<Downloads>/<title>.pdf` through GTK's
+  file printer (`GTK_PRINT_BACKENDS=file` in the helper), never over a file
+  (`webpane::pdf_path`); under the test hooks `<home>/downloads`.
+- Note renames that never replace (NOTEBOOK-TASKS §2.3): Linux uses
+  `canvas_sys::fs::rename_no_replace` (`renameat2(RENAME_NOREPLACE)`; where
+  the filesystem refuses the flag, `rename_claimed`: a file's new name is
+  claimed with a hard link, folders are checked and renamed), wired into
+  the notebook's `move_once` for Linux only (345b52c). **For the macOS
+  lead:** a macOS arm of `rename_no_replace` (`renamex_np(RENAME_EXCL)`,
+  same `AlreadyExists` contract; case-only renames on a case-blind volume
+  need the same-file check `move_once` already has), then one non-Windows
+  `move_once` for both.
 
 ## Known gaps
 
@@ -829,3 +854,11 @@ view helper (WebKitGTK offscreen); the GUI on Wayland/X11.
   skipped presents and window-system redraws when it fails (dadd6b9) and
   allows half the grid repaints (1812362, shared). Run of dadd6b9: every
   job green, `PASS: 63 rows in 248.3s` on X11.
+- 2026-11-02: merged origin/macos (7f0a54a) with main's Notebook, Tasks and
+  Spaces at a640512. Linux parts: the HTML notes view (75886ec: two WebKit
+  views, the `canvas-notes:` scheme served through `webpane`, app links,
+  keys, Print / PDF), note renames through `renameat2(RENAME_NOREPLACE)`
+  (345b52c, shared; that commit also removed the Linux goldens so CI
+  records them again with the space tabs and main's two new shots), the
+  AT-SPI client's tabs (5ae4e36), row 41d's origin and PDF check (1b01ea2,
+  shared).
