@@ -199,7 +199,7 @@ pub fn uia_snapshot(pid: isize) -> Result<Value> {
         } else {
             None
         };
-        nodes.push(json!({ "type": kind(&f.role), "role": f.role, "name": f.name, "description": f.description, "value": value, "selected": f.selected }));
+        nodes.push(json!({ "type": kind(&f.role), "role": f.role, "name": f.name, "description": f.description, "value": value, "selected": f.selected, "interfaces": f.interfaces }));
     }
     let window = found.iter().find(|f| f.role == "frame" || f.role == "window").map(|f| f.name.clone()).unwrap_or_default();
     Ok(json!({ "window": window, "count": nodes.len(), "nodes": nodes, "client": CLIENT }))
@@ -210,11 +210,21 @@ pub fn uia_snapshot(pid: isize) -> Result<Value> {
 pub fn uia_invoke(pid: isize, name: &str) -> Result<()> {
     let bus = a11y_bus()?;
     let app = app_of(&bus, u32::try_from(pid)?)?;
-    let button = walk(&bus, &app)?
-        .into_iter()
-        .find(|f| matches!(f.role.as_str(), "push button" | "page tab") && f.name.trim() == name && f.interfaces.iter().any(|i| i == "org.a11y.atspi.Action"))
-        .with_context(|| format!("no button or tab {name:?} with an action"))?;
-    let done: bool = call(&bus, &button.object.0, button.object.1.as_str(), "org.a11y.atspi.Action", "DoAction", &(0i32,))?;
+    let pressable = |f: &Found| matches!(f.role.as_str(), "push button" | "page tab") && f.name.trim() == name;
+    // The tree may still be changing (a dialog just closed): looked for again for a few seconds.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let button = loop {
+        let found = walk(&bus, &app)?;
+        if let Some(button) = found.iter().find(|f| pressable(f) && f.interfaces.iter().any(|i| i == "org.a11y.atspi.Action")) {
+            break button.object.clone();
+        }
+        if Instant::now() > deadline {
+            let seen: Vec<String> = found.iter().filter(|f| f.name.trim() == name).map(|f| format!("{} {:?} {:?}", f.role, f.name, f.interfaces)).collect();
+            bail!("no button or tab {name:?} with an action (named so: {})", if seen.is_empty() { "none".to_owned() } else { seen.join("; ") });
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    };
+    let done: bool = call(&bus, &button.0, button.1.as_str(), "org.a11y.atspi.Action", "DoAction", &(0i32,))?;
     anyhow::ensure!(done, "the button {name:?} refused its action");
     Ok(())
 }
