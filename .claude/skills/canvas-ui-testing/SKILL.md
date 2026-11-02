@@ -50,6 +50,11 @@ Driving a GUI by hand (a sandboxed instance, a PowerShell
 a GUI by hand*; stop that instance's service afterwards with
 `copilot-canvas service stop --instance <name> --home <dir>`.
 
+Never send keys to a test-hook window on the owner's real canvas before
+checking `tree`'s `focus`: a window that opens with a terminal focused sends
+every key, text and paste to that session (an agent's unsent draft). Leave
+it with `Ctrl+]`, prefer clicks on `hits`, and use a sandbox whenever you can.
+
 ## Parity rows (`src/parity.rs`, `src/parity_*.rs`)
 
 - Register with `check(rows, "<row>", "<feature>", "<test_name>", || body)`

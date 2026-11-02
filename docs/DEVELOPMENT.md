@@ -746,6 +746,17 @@ sandbox path free of spaces.) `CANVAS_GUI_TRACE=1` prints start-up
 milestones and GPU events on stderr.
 The offscreen `png` never contains the WebView2 view (below).
 
+**A test-hook window on a real canvas types into real sessions.** A second
+`--test-hooks` window can join the owner's canvas (same instance, no
+`--demo`) to make an edit, but it opens with the window's saved focus: often
+a terminal, and then every `key`, `keys`, `text` and `paste` command goes to
+that session's program (an agent's unsent draft). Before sending any key,
+read `tree` and check that `focus` is not `Terminal`; leave a terminal with
+`Ctrl+]` (it never reaches the program). Prefer clicks on `hits` and chips
+by their action over typed keys, prefer a sandbox whenever the edit does not
+have to be on the real canvas, and quit the window with `{"cmd":"quit"}`
+(it detaches; the sessions keep running).
+
 ### Benches
 
 `copilot-canvas bench [--terminals N] [--seconds S] [--json FILE] [--remote
