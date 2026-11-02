@@ -188,6 +188,7 @@ struct TasksView: View {
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
+        .accessibilityIdentifier("tasksList")
         .refreshable { connection.refreshTodos() }
     }
 

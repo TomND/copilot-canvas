@@ -197,9 +197,11 @@ final class NotebookTasksUITests: XCTestCase {
 
     /// Scrolls the list down until `element` can be tapped (lists build rows as they scroll in).
     private func scrollTo(_ app: XCUIApplication, _ element: XCUIElement) -> Bool {
+        let named = app.collectionViews["tasksList"]
+        let list = named.exists ? named : app.collectionViews.firstMatch
         for _ in 0..<10 {
             if element.exists && element.isHittable { return true }
-            app.collectionViews.firstMatch.swipeUp()
+            list.swipeUp()
         }
         return element.exists && element.isHittable
     }
