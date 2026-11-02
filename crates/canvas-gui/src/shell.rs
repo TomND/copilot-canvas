@@ -1374,6 +1374,9 @@ impl Win {
         Some(match name {
             "key" => match hook_key(command, mods) {
                 Some(key) => {
+                    // `"source": "app"`: a shortcut as the app's keyboard map gives it
+                    // (a Mac's ⌘ or ⌃⌘ chord), not Option or Control typed.
+                    let key = if command["source"] == "app" { key.from(canvas_core::input::KeySource::App) } else { key };
                     self.key_input(key);
                     json!({ "ok": true })
                 }

@@ -333,6 +333,10 @@ impl GuiDriver {
         if let Some((cols, rows)) = size {
             command.args(["--size".to_owned(), format!("{cols}x{rows}")]);
         }
+        // A GUI under test saves files it would put in Downloads (Print / PDF) next to its log.
+        if let Some(dir) = log.parent() {
+            command.env("COPILOT_CANVAS_DOWNLOADS", dir);
+        }
         for (key, value) in env {
             command.env(key, value);
         }

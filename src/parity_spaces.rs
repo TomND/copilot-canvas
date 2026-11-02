@@ -477,7 +477,9 @@ fn html_note_check(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     click_side(gui, "page.html")?;
     web(gui, "the page in the plain view", 30, |s| page_loaded(s, "plain"))?;
     let seen = eval(gui, PAGE_SEEN)?;
-    anyhow::ensure!(seen["href"].as_str().is_some_and(|h| h.starts_with("https://notes.canvas.invalid/") && h.ends_with("page.html")), "served from the notes origin: {seen}");
+    // macOS serves the notes origin's paths from a scheme of its own (a WKWebView answers no https:).
+    let origin = |h: &str| [canvas_model::report_html::notes::ORIGIN, canvas_model::report_html::notes::SCHEME_ORIGIN].iter().any(|o| h.starts_with(&format!("{o}/")));
+    anyhow::ensure!(seen["href"].as_str().is_some_and(|h| origin(h) && h.ends_with("page.html")), "served from the notes origin: {seen}");
     anyhow::ensure!(seen["color"] == "rgb(255, 0, 255)" && seen["image"] == 4, "its relative style and image: {seen}");
     anyhow::ensure!(seen["scripts"] == 0 && seen["title"] == "Parity page", "scripts are off by default: {seen}");
     let state = web(gui, "the files served", 10, |s| {
@@ -509,6 +511,14 @@ fn html_note_check(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     web(gui, "back to the page", 30, |s| page_loaded(s, "plain"))?;
     gui.req(json!({ "cmd": "webview", "print": true }))?;
     web(gui, "the print dialog shown", 10, |s| s["print_pending"] == false)?;
+    if cfg!(target_os = "macos") {
+        // macOS saves the page as a PDF in Downloads (a GUI under test: the sandbox), never over a file.
+        let tree = gui.wait_tree("the PDF saved", 15, |t| t["notice"]["text"].as_str().is_some_and(|n| n.contains("PDF")))?;
+        let notice = tree["notice"].clone();
+        anyhow::ensure!(notice["error"] != true, "printing failed: {notice}");
+        let pdf = sb.root.join("Parity page.pdf");
+        anyhow::ensure!(std::fs::read(&pdf).is_ok_and(|b| b.starts_with(b"%PDF")), "no PDF at {}: {notice}", pdf.display());
+    }
     std::thread::sleep(Duration::from_millis(800));
     let notice = gui.tree()?["notice"].clone();
     anyhow::ensure!(notice["error"] != true, "printing failed: {notice}");
@@ -520,7 +530,9 @@ fn html_note_check(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     gui.chord('1', &["ctrl"])?;
     web(gui, "the view hidden on the canvas", 10, |s| s["visible"] == false)?;
     Ok(format!(
-        "page.html from https://notes.canvas.invalid/ with its style.css and pixel.png; scripts off (0 kept), on for the file (it ran, sandboxed), off again; #todo: and #note: links → {} app links; print dialog without error; 0 connections to the listener",
-        state["app_links"]
+        "page.html from {} with its style.css and pixel.png; scripts off (0 kept), on for the file (it ran, sandboxed), off again; #todo: and #note: links → {} app links; {}; 0 connections to the listener",
+        if cfg!(target_os = "macos") { "canvas-notes://notes.canvas.invalid/" } else { "https://notes.canvas.invalid/" },
+        state["app_links"],
+        if cfg!(target_os = "macos") { "Print / PDF saved Parity page.pdf" } else { "print dialog without error" }
     ))
 }

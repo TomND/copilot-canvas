@@ -24,6 +24,13 @@ pub const HOST: &str = "notes.canvas.invalid";
 /// `https://` + [`HOST`] (no trailing slash).
 pub const ORIGIN: &str = "https://notes.canvas.invalid";
 
+/// macOS serves notes from this scheme instead (a WKWebView answers only
+/// schemes of its own, never `https:`): the same host and paths; responses
+/// name it where [`ORIGIN`] stands (MAC-LINUX-PLAN D9).
+pub const SCHEME: &str = "canvas-notes";
+/// [`SCHEME`] + `://` + [`HOST`].
+pub const SCHEME_ORIGIN: &str = "canvas-notes://notes.canvas.invalid";
+
 /// The policy of a note without scripts (every response carries it).
 pub const CSP: &str = "default-src 'none'; img-src https://notes.canvas.invalid data:; style-src 'unsafe-inline' https://notes.canvas.invalid; font-src data: https://notes.canvas.invalid; media-src https://notes.canvas.invalid data:; script-src 'none'; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'";
 

@@ -7,7 +7,9 @@
 //! to the canvas, when a dialog covers the pane, and the browser process's
 //! arguments. `webview.rs` only wires these to the view.
 
-// macOS and Linux wire these to their own views (MAC-LINUX-PLAN D9).
+// macOS wires these to its WKWebViews (WebView2's browser arguments and
+// virtual keys are Windows'), Windows to WebView2; Linux's helper view
+// serves no notes yet (MAC-LINUX-PLAN D9).
 #![cfg_attr(not(windows), allow(dead_code))]
 
 use std::path::{Path, PathBuf};
