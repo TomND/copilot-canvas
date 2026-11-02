@@ -308,5 +308,8 @@ mod tests {
         // Ctrl+2 and Esc pressed; a release (Kd 0) is no key.
         let bytes = [super::ctrl_digit(2), super::ESC_KEY.to_vec(), b"\x1b[50;3;50;0;8;1_".to_vec()].concat();
         assert_eq!(super::super::vt_events(&bytes), [json!({ "char": "2", "mods": ["ctrl"] }), json!({ "key": "Esc", "mods": [] })]);
+        // The kitty keyboard protocol's form (what Unix self-tests send) too.
+        let bytes = b"\x1b[51;5u\x1b[27u\x1b[97;4u";
+        assert_eq!(super::super::vt_events(bytes), [json!({ "char": "3", "mods": ["ctrl"] }), json!({ "key": "Esc", "mods": [] }), json!({ "char": "a", "mods": ["shift", "alt"] })]);
     }
 }

@@ -6,8 +6,9 @@
 //! process, walks its tree and presses a button through the Action
 //! interface. The snapshot has the UIA client's shape: roles get UIA's
 //! control type names where the check looks for them (push button → Button,
-//! tree item → TreeItem, terminal → Document), other roles keep their AT-SPI
-//! name; a terminal's value is its text from the Text interface.
+//! tree item → TreeItem, terminal → Document, page tab → TabItem), other
+//! roles keep their AT-SPI name; a terminal's value is its text from the
+//! Text interface, `selected` the SELECTED state.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -100,7 +101,11 @@ struct Found {
     name: String,
     description: String,
     interfaces: Vec<String>,
+    selected: bool,
 }
+
+/// AT-SPI's `ATSPI_STATE_SELECTED` (a bit of `GetState`'s first word).
+const STATE_SELECTED: u32 = 23;
 
 fn describe(bus: &Connection, object: &Object) -> Result<Found> {
     let (dest, path) = (object.0.as_str(), object.1.as_str());
@@ -111,6 +116,7 @@ fn describe(bus: &Connection, object: &Object) -> Result<Found> {
         name: text("Name"),
         description: text("Description"),
         interfaces: call(bus, dest, path, ACCESSIBLE, "GetInterfaces", &())?,
+        selected: call::<_, Vec<u32>>(bus, dest, path, ACCESSIBLE, "GetState", &()).is_ok_and(|words| words.first().is_some_and(|w| w & (1 << STATE_SELECTED) != 0)),
         object: object.clone(),
     })
 }
@@ -146,6 +152,8 @@ fn role_name(role: u32) -> String {
         31 => "list",
         32 => "list item",
         33 => "menu",
+        37 => "page tab",
+        38 => "page tab list",
         39 => "panel",
         43 => "push button",
         54 => "status bar",
@@ -172,6 +180,7 @@ fn kind(role: &str) -> &str {
     match role {
         "push button" => "Button",
         "tree item" => "TreeItem",
+        "page tab" => "TabItem",
         "terminal" | "document frame" | "document text" => "Document",
         other => other,
     }
@@ -190,21 +199,21 @@ pub fn uia_snapshot(pid: isize) -> Result<Value> {
         } else {
             None
         };
-        nodes.push(json!({ "type": kind(&f.role), "role": f.role, "name": f.name, "description": f.description, "value": value }));
+        nodes.push(json!({ "type": kind(&f.role), "role": f.role, "name": f.name, "description": f.description, "value": value, "selected": f.selected }));
     }
     let window = found.iter().find(|f| f.role == "frame" || f.role == "window").map(|f| f.name.clone()).unwrap_or_default();
     Ok(json!({ "window": window, "count": nodes.len(), "nodes": nodes, "client": CLIENT }))
 }
 
-/// Presses the button named `name` through its AT-SPI action (AccessKit's
-/// click, as UIA's Invoke).
+/// Presses the button or tab named `name` through its AT-SPI action
+/// (AccessKit's click, as UIA's Invoke and a tab's Select).
 pub fn uia_invoke(pid: isize, name: &str) -> Result<()> {
     let bus = a11y_bus()?;
     let app = app_of(&bus, u32::try_from(pid)?)?;
     let button = walk(&bus, &app)?
         .into_iter()
-        .find(|f| f.role == "push button" && f.name.trim() == name && f.interfaces.iter().any(|i| i == "org.a11y.atspi.Action"))
-        .with_context(|| format!("no button {name:?} with an action"))?;
+        .find(|f| matches!(f.role.as_str(), "push button" | "page tab") && f.name.trim() == name && f.interfaces.iter().any(|i| i == "org.a11y.atspi.Action"))
+        .with_context(|| format!("no button or tab {name:?} with an action"))?;
     let done: bool = call(&bus, &button.object.0, button.object.1.as_str(), "org.a11y.atspi.Action", "DoAction", &(0i32,))?;
     anyhow::ensure!(done, "the button {name:?} refused its action");
     Ok(())
@@ -221,6 +230,7 @@ mod tests {
         assert_eq!(kind(&role_name(91)), "TreeItem");
         assert_eq!(kind(&role_name(60)), "Document");
         assert_eq!(kind(&role_name(16)), "dialog");
+        assert_eq!(kind(&role_name(37)), "TabItem");
         assert_eq!(role_name(1000), "role 1000");
     }
 }

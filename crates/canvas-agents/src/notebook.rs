@@ -144,7 +144,10 @@ fn move_once(from: &Path, to: &Path) -> std::io::Result<()> {
     if unsafe { windows_sys::Win32::Storage::FileSystem::MoveFileExW(from.as_ptr(), to.as_ptr(), 0) } != 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
 }
 
-/// macOS and Linux: an atomic no-replace rename (`renamex_np` / `renameat2`).
+/// macOS and Linux: an atomic no-replace rename (`renamex_np` /
+/// `renameat2`; a link-claimed or checked rename where the file system
+/// refuses the flag). A rename onto itself changes nothing; a case change on
+/// a case-blind file system (APFS) renames.
 #[cfg(not(windows))]
 fn move_once(from: &Path, to: &Path) -> std::io::Result<()> {
     canvas_sys::fs::rename_no_replace(from, to)

@@ -530,6 +530,18 @@ fn vt_events(bytes: &[u8]) -> Vec<serde_json::Value> {
                     out.push(json!({ "cmd": "mouse", "kind": kind, "button": button, "x": px, "y": py, "mods": mods }));
                     continue;
                 }
+                if fin == 'u' && !params.starts_with('?') {
+                    // A kitty keyboard protocol key (`codepoint;modifiers u`).
+                    let mut n = params.split(';').map(|p| p.split(':').next().unwrap_or_default().parse::<u32>().unwrap_or(0));
+                    let (code, modifier) = (n.next().unwrap_or(0), n.next().unwrap_or(1).max(1) - 1);
+                    let mods: Vec<&str> = [(1, "shift"), (2, "alt"), (4, "ctrl")].into_iter().filter(|(bit, _)| modifier & bit != 0).map(|(_, name)| name).collect();
+                    match char::from_u32(code) {
+                        Some('\x1b') => out.push(key("Esc", &mods)),
+                        Some(c) if !c.is_control() => out.push(json!({ "char": c.to_string(), "mods": mods })),
+                        _ => {}
+                    }
+                    continue;
+                }
                 if fin == '_' {
                     // A win32-input-mode key (`Vk;Sc;Uc;Kd;Cs;Rc _`): its press.
                     let n: Vec<u32> = params.split(';').map(|p| p.parse().unwrap_or(0)).collect();
@@ -550,15 +562,6 @@ fn vt_events(bytes: &[u8]) -> Vec<serde_json::Value> {
                     if modifier & bit != 0 {
                         mods.push(name);
                     }
-                }
-                if fin == 'u' {
-                    // The kitty keyboard protocol's `CSI code;mods u` (macOS and Linux).
-                    match char::from_u32(number) {
-                        Some('\x1b') => out.push(key("Esc", &mods)),
-                        Some(c) if !c.is_control() => out.push(json!({ "char": c.to_string(), "mods": mods })),
-                        _ => {}
-                    }
-                    continue;
                 }
                 let name = match (fin, number) {
                     ('A', _) => "Up",
@@ -1455,24 +1458,19 @@ pub(crate) fn command_line_of(pid: u32) -> Result<String> {
     }
 }
 
-/// Ctrl+digit as a terminal reports it: legacy VT has no sequence for it.
-/// Windows: a win32-input-mode key press (`CSI Vk;Sc;Uc;Kd;Cs;Rc _`; ConPTY
-/// hands the TUI the console key event a keyboard gives). macOS and Linux:
-/// the kitty keyboard protocol's `CSI code;5 u`, which the TUI asks
-/// terminals for. The GUI driver turns either into the key. Once ConPTY has
-/// seen a win32 key, it holds a lone ESC as the start of a sequence: send
-/// [`ESC_KEY`] for Esc from then on.
+/// Ctrl+digit, which legacy VT has no sequence for. Windows: a
+/// win32-input-mode key press (`CSI Vk;Sc;Uc;Kd;Cs;Rc _`): ConPTY hands the
+/// TUI the console key event a keyboard gives. Once ConPTY has seen one, it
+/// holds a lone ESC as the start of a sequence: send [`ESC_KEY`] for Esc from
+/// then on. Unix: the kitty keyboard protocol's `CSI codepoint;5 u`, which
+/// the TUI's input reader (crossterm) parses. The GUI driver turns either
+/// into the key.
 pub(crate) fn ctrl_digit(digit: u8) -> Vec<u8> {
-    let code = 0x30 + digit as u32;
-    if cfg!(windows) {
-        let scan = if digit == 0 { 11 } else { digit as u32 + 1 };
-        format!("\x1b[{code};{scan};{code};1;8;1_").into_bytes()
-    } else {
-        format!("\x1b[{code};5u").into_bytes()
-    }
+    let (code, scan) = (0x30 + digit as u32, if digit == 0 { 11 } else { digit as u32 + 1 });
+    if cfg!(windows) { format!("\x1b[{code};{scan};{code};1;8;1_").into_bytes() } else { format!("\x1b[{code};5u").into_bytes() }
 }
 
-/// Esc in the same encoding as [`ctrl_digit`]'s.
+/// Esc as a key press of the same kind (see [`ctrl_digit`]).
 pub(crate) const ESC_KEY: &[u8] = if cfg!(windows) { b"\x1b[27;1;27;1;0;1_" } else { b"\x1b[27u" };
 
 /// The copy-and-paste check, in a PowerShell terminal that has keyboard

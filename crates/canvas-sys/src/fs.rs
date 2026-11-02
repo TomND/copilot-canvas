@@ -1,5 +1,6 @@
 //! Private files: created for this user only (Windows: a protected DACL
-//! naming only the user's SID; Unix: mode 0600, created exclusively).
+//! naming only the user's SID; Unix: mode 0600, created exclusively), and
+//! renames that never replace a file (Unix).
 
 #[cfg(windows)]
 pub use canvas_common::win::{create_private, write_private};
@@ -51,6 +52,131 @@ mod unix {
         }
         Ok(())
     }
+
+    /// Renames `from` to `to`, never over something at `to` (`AlreadyExists`
+    /// then), also something that appeared a moment before, atomic in the
+    /// kernel: macOS `renamex_np(RENAME_EXCL)`, Linux
+    /// `renameat2(RENAME_NOREPLACE)`. File systems that refuse the flag (some
+    /// FUSE, NFS, SMB and older kernels: `EINVAL`, `ENOSYS`, `ENOTSUP`,
+    /// `EOPNOTSUPP`) get [`rename_claimed`]. A rename onto itself changes
+    /// nothing; a case change of one file (a case-blind file system: APFS,
+    /// HFS+) renames it. (Windows: `MoveFileExW` without
+    /// `MOVEFILE_REPLACE_EXISTING`, in the notebook's backend.)
+    pub fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+        use std::os::unix::ffi::OsStrExt;
+        if same_file(from, to) && from.to_string_lossy().to_lowercase() == to.to_string_lossy().to_lowercase() {
+            return std::fs::rename(from, to);
+        }
+        let c = |path: &Path| std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput));
+        let (old, new) = (c(from)?, c(to)?);
+        // SAFETY: two NUL-terminated paths that live across the call.
+        #[cfg(target_os = "macos")]
+        let done = unsafe { libc::renamex_np(old.as_ptr(), new.as_ptr(), libc::RENAME_EXCL) };
+        // SAFETY: as above.
+        #[cfg(target_os = "linux")]
+        let done = unsafe { libc::renameat2(libc::AT_FDCWD, old.as_ptr(), libc::AT_FDCWD, new.as_ptr(), libc::RENAME_NOREPLACE) };
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        let done: libc::c_int = {
+            return rename_claimed(from, to);
+        };
+        if done == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(code) if [libc::EINVAL, libc::ENOSYS, libc::ENOTSUP, libc::EOPNOTSUPP].contains(&code) => rename_claimed(from, to),
+            _ => Err(error),
+        }
+    }
+
+    /// `a` and `b` are the same file (device and inode; links not followed):
+    /// two names of one file on a case-blind file system.
+    pub fn same_file(a: &Path, b: &Path) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        match (std::fs::symlink_metadata(a), std::fs::symlink_metadata(b)) {
+            (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+            _ => false,
+        }
+    }
+
+    /// A file whose content is not on this Mac (iCloud Drive's "optimize
+    /// storage" leaves a dataless placeholder; reading it downloads it): the
+    /// notebook's listings and search leave its content alone, as on Windows
+    /// with OneDrive's placeholders. Never on Linux.
+    pub fn cloud_only(meta: &std::fs::Metadata) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::macos::fs::MetadataExt;
+            /// `SF_DATALESS` of `<sys/stat.h>`.
+            const SF_DATALESS: u32 = 0x4000_0000;
+            meta.st_flags() & SF_DATALESS != 0
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = meta;
+            false
+        }
+    }
+
+    /// A no-replace rename without the kernel's help: a file's new name is
+    /// claimed with a hard link (which fails when the name is taken), then the
+    /// old name goes; folders, and filesystems without hard links, are checked
+    /// and renamed (a name taken in between is the only gap).
+    pub fn rename_claimed(from: &Path, to: &Path) -> io::Result<()> {
+        if std::fs::symlink_metadata(from)?.is_file() {
+            match std::fs::hard_link(from, to) {
+                Ok(()) => {
+                    return std::fs::remove_file(from).inspect_err(|_| {
+                        // Not both names: the new one goes again.
+                        let _ = std::fs::remove_file(to);
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Err(error),
+                Err(_) => {}
+            }
+        }
+        if std::fs::symlink_metadata(to).is_ok() {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
+        std::fs::rename(from, to)
+    }
+
+    #[cfg(test)]
+    mod rename_tests {
+        use super::*;
+
+        fn folder(name: &str) -> std::path::PathBuf {
+            let dir = std::env::temp_dir().join(format!("canvas-sys-rename-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        }
+
+        #[test]
+        fn renames_never_replace() {
+            for (name, rename) in [("kernel", rename_no_replace as fn(&Path, &Path) -> io::Result<()>), ("claimed", rename_claimed)] {
+                let dir = folder(name);
+                let (a, b, c) = (dir.join("a.md"), dir.join("b.md"), dir.join("c.md"));
+                std::fs::write(&a, "a").unwrap();
+                std::fs::write(&b, "b").unwrap();
+                assert_eq!(rename(&a, &b).unwrap_err().kind(), io::ErrorKind::AlreadyExists, "{name}");
+                assert_eq!((std::fs::read_to_string(&a).unwrap(), std::fs::read_to_string(&b).unwrap()), ("a".into(), "b".into()), "{name}: both kept");
+                rename(&a, &c).unwrap();
+                assert!(!a.exists() && std::fs::read_to_string(&c).unwrap() == "a", "{name}");
+                // Folders too, also onto an empty folder (rename(2) would replace it).
+                let (x, y) = (dir.join("x"), dir.join("y"));
+                std::fs::create_dir_all(x.join("inner")).unwrap();
+                std::fs::create_dir_all(&y).unwrap();
+                assert_eq!(rename(&x, &y).unwrap_err().kind(), io::ErrorKind::AlreadyExists, "{name}: an empty folder is not replaced");
+                rename(&x, &dir.join("z")).unwrap();
+                assert!(dir.join("z").join("inner").is_dir(), "{name}");
+                // A link at the target counts as taken, even one that leads nowhere.
+                std::os::unix::fs::symlink(dir.join("missing"), dir.join("link")).unwrap();
+                assert_eq!(rename(&c, &dir.join("link")).unwrap_err().kind(), io::ErrorKind::AlreadyExists, "{name}: a dangling link");
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
+    }
 }
 
 /// Where the folder browser starts: the drives (Windows).
@@ -98,83 +224,6 @@ pub fn strip_quarantine(path: &std::path::Path) {
     let _ = path;
 }
 
-/// Renames `from` to `to`, never over anything at `to`, also something that
-/// appeared after a look (atomic): macOS `renamex_np(RENAME_EXCL)`, Linux
-/// `renameat2(RENAME_NOREPLACE)`; where a file system has neither, a file is
-/// linked to its new name (which fails when the name is taken) and then
-/// unlinked, a folder renamed after a look. `AlreadyExists` when taken. A
-/// rename to the same file under another case (a case-blind file system:
-/// APFS, HFS+) renames it. (Windows: `MoveFileExW` without
-/// `MOVEFILE_REPLACE_EXISTING`, in the notebook's backend.)
-#[cfg(unix)]
-pub fn rename_no_replace(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
-    use std::io::{Error, ErrorKind};
-    use std::os::unix::ffi::OsStrExt;
-    if same_file(from, to) {
-        return std::fs::rename(from, to);
-    }
-    let c = |p: &std::path::Path| std::ffi::CString::new(p.as_os_str().as_bytes()).map_err(|_| Error::new(ErrorKind::InvalidInput, "a NUL in a path"));
-    let (cfrom, cto) = (c(from)?, c(to)?);
-    // SAFETY: NUL-terminated paths that live across the calls.
-    #[cfg(target_os = "macos")]
-    let done = unsafe { libc::renamex_np(cfrom.as_ptr(), cto.as_ptr(), libc::RENAME_EXCL) };
-    #[cfg(target_os = "linux")]
-    let done = unsafe { libc::renameat2(libc::AT_FDCWD, cfrom.as_ptr(), libc::AT_FDCWD, cto.as_ptr(), libc::RENAME_NOREPLACE) };
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    let done = {
-        let _ = (&cfrom, &cto);
-        -1
-    };
-    if done == 0 {
-        return Ok(());
-    }
-    let error = Error::last_os_error();
-    // Not supported here (a file system without it, an old kernel): the portable way.
-    let unsupported = matches!(error.raw_os_error(), Some(libc::EINVAL | libc::ENOSYS | libc::ENOTSUP)) || cfg!(not(any(target_os = "macos", target_os = "linux")));
-    if !unsupported {
-        return Err(error);
-    }
-    if std::fs::symlink_metadata(from)?.is_dir() {
-        if std::fs::symlink_metadata(to).is_ok() {
-            return Err(ErrorKind::AlreadyExists.into());
-        }
-        return std::fs::rename(from, to);
-    }
-    std::fs::hard_link(from, to)?;
-    std::fs::remove_file(from)
-}
-
-/// `a` and `b` are the same file (device and inode; links not followed):
-/// two names of one file on a case-blind file system.
-#[cfg(unix)]
-pub fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    match (std::fs::symlink_metadata(a), std::fs::symlink_metadata(b)) {
-        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
-        _ => false,
-    }
-}
-
-/// A file whose content is not on this Mac (iCloud Drive's "optimize
-/// storage" leaves a dataless placeholder; reading it downloads it): the
-/// notebook's listings and search leave its content alone, as on Windows
-/// with OneDrive's placeholders. Never on Linux.
-#[cfg(unix)]
-pub fn cloud_only(meta: &std::fs::Metadata) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        use std::os::macos::fs::MetadataExt;
-        /// `SF_DATALESS` of `<sys/stat.h>`.
-        const SF_DATALESS: u32 = 0x4000_0000;
-        meta.st_flags() & SF_DATALESS != 0
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = meta;
-        false
-    }
-}
-
 /// Creates `dir` (and its parents); on Windows folders inherit the profile's ACL.
 #[cfg(windows)]
 pub fn private_dir(dir: &std::path::Path) -> std::io::Result<()> {
@@ -200,18 +249,20 @@ mod tests {
     }
 
     #[test]
-    fn renames_never_replace_and_case_changes_rename() {
+    fn case_changes_rename_and_links_are_not_the_same_name() {
         let dir = std::env::temp_dir().join(format!("cs-mv-{}", uuid::Uuid::new_v4().simple()));
-        std::fs::create_dir_all(dir.join("folder")).unwrap();
-        let (a, b) = (dir.join("a.md"), dir.join("b.md"));
-        std::fs::write(&a, "a").unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let (b, c) = (dir.join("b.md"), dir.join("c.md"));
         std::fs::write(&b, "b").unwrap();
-        assert_eq!(super::rename_no_replace(&a, &b).unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
-        assert_eq!((std::fs::read_to_string(&a).unwrap(), std::fs::read_to_string(&b).unwrap()), ("a".into(), "b".into()), "nothing replaced");
-        assert_eq!(super::rename_no_replace(&dir.join("folder"), &b).unwrap_err().kind(), std::io::ErrorKind::AlreadyExists, "a folder neither");
-        let c = dir.join("c.md");
-        super::rename_no_replace(&a, &c).unwrap();
-        assert!(!a.exists() && std::fs::read_to_string(&c).unwrap() == "a");
+        std::fs::write(&c, "c").unwrap();
+        super::rename_no_replace(&c, &c).unwrap();
+        assert!(c.exists(), "a rename onto itself changes nothing");
+        // A second name of one file is taken all the same.
+        let link = dir.join("link.md");
+        std::fs::hard_link(&b, &link).unwrap();
+        assert!(super::same_file(&b, &link));
+        assert_eq!(super::rename_no_replace(&b, &link).unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(b.exists() && link.exists());
         // A case change: renamed where the file system ignores case, a new name where it does not.
         let upper = dir.join("C.md");
         super::rename_no_replace(&c, &upper).unwrap();
