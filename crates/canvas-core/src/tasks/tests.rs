@@ -1241,3 +1241,49 @@ fn the_space_draws_on_the_smallest_screen_with_huge_titles_and_empty_books() {
         }
     }
 }
+
+#[test]
+fn trackpad_gestures_pan_the_board_by_cells_scroll_the_lists_and_step_the_zoom() {
+    use crate::input::{Gesture, GestureKind, GesturePhase::*};
+    use std::time::{Duration, Instant};
+    let mut rig = demo();
+    rig.app.tasks.zoom = 1;
+    render(&mut rig.app, W, 50);
+    let (t0, ms) = (Instant::now(), Duration::from_millis);
+    let area = rig.app.layout.canvas;
+    let empty = (area.right() - 3, area.bottom() - 4);
+    let at = |kind, (x, y): (u16, u16), modifiers| Gesture { kind, x: x as f32 + 0.5, y: y as f32 + 0.5, modifiers };
+    let scroll = |dx, dy, phase| GestureKind::Scroll { dx, dy, phase };
+    let (origin, pan, d) = (rig.app.origin_f(), rig.app.tasks.pan, layout::DIVS[1]);
+    // Fingers left and up by 2.5 and 1.5 cells: the board follows them by whole cells, the halves wait.
+    rig.app.on_gesture_at(at(scroll(0.0, 0.0, Began), empty, Modifiers::NONE), t0);
+    rig.app.on_gesture_at(at(scroll(-1.25, -0.75, Changed), empty, Modifiers::NONE), t0 + ms(8));
+    rig.app.on_gesture_at(at(scroll(-1.25, -0.75, Changed), empty, Modifiers::NONE), t0 + ms(16));
+    assert_eq!(rig.app.tasks.pan, (pan.0 + 2 * d, pan.1 + d));
+    rig.app.on_gesture_at(at(scroll(-0.5, -0.5, Changed), empty, Modifiers::NONE), t0 + ms(24));
+    assert_eq!(rig.app.tasks.pan, (pan.0 + 3 * d, pan.1 + 2 * d), "the fractions carried over");
+    rig.app.on_gesture_at(at(scroll(0.0, 0.0, Ended), empty, Modifiers::NONE), t0 + ms(32));
+    assert_eq!(rig.app.origin_f(), origin, "the session canvas behind never moves");
+    // Command (Ctrl after the key policy) + scroll steps the zoom a level per half doubling; so does pinching.
+    rig.app.on_gesture_at(at(scroll(0.0, -8.0, Began), empty, Modifiers::CONTROL), t0 + ms(1000));
+    assert_eq!(rig.app.tasks.zoom, 2, "zoomed out");
+    rig.app.on_gesture_at(at(GestureKind::Pinch { delta: 0.3, phase: Began }, empty, Modifiers::NONE), t0 + ms(2000));
+    assert_eq!(rig.app.tasks.zoom, 2, "not yet half a doubling");
+    rig.app.on_gesture_at(at(GestureKind::Pinch { delta: 0.3, phase: Changed }, empty, Modifiers::NONE), t0 + ms(2010));
+    assert_eq!(rig.app.tasks.zoom, 1, "zoomed in");
+    assert_eq!(rig.app.view_scale, 1.0, "the session canvas did not zoom");
+    // The sidebar scrolls row by row, latched to it.
+    render(&mut rig.app, W, 50);
+    let side = rig.app.layout.sidebar;
+    let list = (side.x + 2, side.y + 6);
+    let before = rig.app.tasks.side_scroll;
+    rig.app.on_gesture_at(at(scroll(0.0, -1.5, Began), list, Modifiers::NONE), t0 + ms(3000));
+    rig.app.on_gesture_at(at(scroll(0.0, -1.5, Changed), empty, Modifiers::NONE), t0 + ms(3010));
+    assert_eq!(rig.app.tasks.side_scroll, before + 3);
+    assert_eq!(rig.app.tasks.zoom, 1, "the board did not move");
+    // Smart zoom over the board: every board in view.
+    rig.app.tasks.pan = (900, 900);
+    rig.app.smart_zoom_at(empty.0 as f32, empty.1 as f32, t0 + ms(4000));
+    assert_eq!((rig.app.tasks.pan, rig.app.tasks.zoom), layout::fit(book(&rig.app).unwrap(), area));
+    assert_eq!(rig.app.origin_f(), origin);
+}

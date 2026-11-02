@@ -506,7 +506,6 @@ fn up(app: &mut App, to: (u16, u16)) {
 }
 
 fn wheel(app: &mut App, kind: MouseEventKind, modifiers: Modifiers) {
-    let d = div(app);
     if modifiers.intersects(Modifiers::ALT | Modifiers::CONTROL) {
         match kind {
             MouseEventKind::ScrollUp => zoom(app, 1),
@@ -525,7 +524,14 @@ fn wheel(app: &mut App, kind: MouseEventKind, modifiers: Modifiers) {
         MouseEventKind::ScrollRight => (6, 0),
         _ => (0, 0),
     };
+    pan(app, dx, dy);
+}
+
+/// Moves the view over the board by whole cells (positive: right and down).
+pub(crate) fn pan(app: &mut App, dx: i32, dy: i32) {
+    let d = div(app);
     app.tasks.pan = (app.tasks.pan.0 + dx * d, app.tasks.pan.1 + dy * d);
+    app.needs_draw = true;
 }
 
 /// Zooms in (`delta` > 0) or out a level, keeping the middle of the area in place.

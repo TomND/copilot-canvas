@@ -25,6 +25,11 @@
 //!   is reduced.
 //! - **Force click** over a terminal link opens it (as Command-click does);
 //!   over a box it shows the box's details.
+//! - **Notebook and Tasks.** Their lists, notes, info panel and details
+//!   scroll row by row; the todo canvas pans cell by cell on both axes (the
+//!   fractions carry over), pinching or Command + scroll steps its zoom
+//!   levels and smart zoom fits every board. The session canvas behind them
+//!   never moves.
 
 use std::time::{Duration, Instant};
 
@@ -32,6 +37,7 @@ use crate::app::{App, CanvasHit, Focus, MAX_SCALE, MIN_SCALE};
 use crate::paint::rect_contains;
 use crate::input::{Gesture, GestureKind, GesturePhase, KeyCode, KeyEvent, Modifiers};
 use crate::protocol::{ClientMsg, MODE_ALT_SCREEN, MODE_MOUSE};
+use crate::spaces::Space;
 use crate::view::{Motion, RenderMode};
 
 /// Fingers lifted: the system's momentum begins within this, on the same target.
@@ -48,6 +54,9 @@ const SNAP: f32 = 0.08;
 const TEXT_STEP: f32 = 0.2;
 /// How long a smart zoom takes.
 const SMART_ZOOM: Duration = Duration::from_millis(260);
+/// Pinching (or Command + scrolling) this far, in powers of two, steps the
+/// todo canvas's zoom one level.
+const BOARD_LEVEL: f32 = 0.5;
 
 /// What a gesture is latched to.
 #[derive(Clone, Debug, PartialEq)]
@@ -56,6 +65,10 @@ pub enum Latched {
     Terminal(String),
     Sidebar,
     Dialog,
+    /// The Notebook's or Tasks' area, at the cell the gesture began over
+    /// (the explorer, a note, the info panel; the sidebar, the details, the
+    /// todo canvas).
+    Space(u16, u16),
     /// A pinch over a terminal pane: the text size.
     TextSize,
     Nothing,
@@ -133,6 +146,10 @@ impl App {
         let (cx, cy) = (x.max(0.0) as u16, y.max(0.0) as u16);
         if !self.modals.is_empty() {
             return if pinch { Latched::Nothing } else { Latched::Dialog };
+        }
+        // The Notebook and Tasks: their areas, never the session canvas behind them.
+        if self.space != Space::Canvas {
+            return if self.in_space_area(cx, cy) { Latched::Space(cx, cy) } else { Latched::Nothing };
         }
         if rect_contains(self.layout.sidebar, cx, cy) {
             return if pinch { Latched::Nothing } else { Latched::Sidebar };
@@ -219,7 +236,50 @@ impl App {
                     }
                 }
             }
+            Latched::Space(x, y) => self.space_scroll(x, y, dx, dy, gesture.modifiers),
             Latched::TextSize | Latched::Nothing => {}
+        }
+    }
+
+    /// A scroll over the Notebook's or Tasks' area: lists and notes move row
+    /// by row, the todo canvas cell by cell on both axes (the content
+    /// follows the fingers); Command (Ctrl, Alt) + scroll steps the board's zoom.
+    fn space_scroll(&mut self, x: u16, y: u16, dx: f32, dy: f32, modifiers: Modifiers) {
+        if self.space == Space::Tasks && crate::tasks::board_at(self, x, y) {
+            if modifiers.intersects(Modifiers::CONTROL | Modifiers::ALT) {
+                return self.board_zoom(dy / ZOOM_SCROLL_ROWS);
+            }
+            let Some(latch) = self.gesture.as_mut() else { return };
+            latch.pan_rest.0 += dx;
+            latch.pan_rest.1 += dy;
+            let (cx, cy) = (latch.pan_rest.0.trunc(), latch.pan_rest.1.trunc());
+            latch.pan_rest.0 -= cx;
+            latch.pan_rest.1 -= cy;
+            if cx != 0.0 || cy != 0.0 {
+                crate::tasks::pan_board(self, -cx as i32, -cy as i32);
+            }
+            return;
+        }
+        // Positive: towards the top (what is above comes into view).
+        let rows = self.take_units(dy, 1.0);
+        if rows == 0 {
+            return;
+        }
+        match self.space {
+            Space::Notebook => crate::notebook::scroll(self, x, y, -rows),
+            Space::Tasks => crate::tasks::scroll(self, x, y, -rows),
+            Space::Canvas => {}
+        }
+    }
+
+    /// Steps the todo canvas's zoom once `by` (powers of two) adds up to a level.
+    fn board_zoom(&mut self, by: f32) {
+        let Some(latch) = self.gesture.as_mut() else { return };
+        latch.zoom_rest += by;
+        if latch.zoom_rest.abs() >= BOARD_LEVEL {
+            let step = latch.zoom_rest.signum() as i32;
+            latch.zoom_rest = 0.0;
+            crate::tasks::zoom_board(self, step);
         }
     }
 
@@ -294,6 +354,7 @@ impl App {
                 latch.zoom_rest -= steps * TEXT_STEP;
                 self.text_zoom_steps += steps as i32;
             }
+            Latched::Space(x, y) if self.space == Space::Tasks && crate::tasks::board_at(self, x, y) => self.board_zoom(factor.log2()),
             _ => {}
         }
     }
@@ -338,7 +399,11 @@ impl App {
     /// Smart zoom (a two-finger double tap) at a point.
     pub(crate) fn smart_zoom_at(&mut self, x: f32, y: f32, now: Instant) {
         let (cx, cy) = (x.max(0.0) as u16, y.max(0.0) as u16);
-        if self.render_mode != RenderMode::Gpu || !self.modals.is_empty() || !rect_contains(self.layout.canvas, cx, cy) {
+        // Over the todo canvas: every board in view.
+        if self.space == Space::Tasks && self.modals.is_empty() && crate::tasks::board_at(self, cx, cy) {
+            return crate::tasks::fit_board(self);
+        }
+        if self.render_mode != RenderMode::Gpu || !self.modals.is_empty() || self.space != Space::Canvas || !rect_contains(self.layout.canvas, cx, cy) {
             return;
         }
         self.stop_glide();
@@ -421,7 +486,8 @@ impl App {
         if let Some(link) = self.layout.links.iter().find(|l| l.contains(cx, cy)).cloned() {
             return self.open_link(&link.target);
         }
-        if rect_contains(self.layout.canvas, cx, cy)
+        if self.space == Space::Canvas
+            && rect_contains(self.layout.canvas, cx, cy)
             && let CanvasHit::Node(id) = self.canvas_hit(cx, cy)
         {
             self.select_node(&id, false);

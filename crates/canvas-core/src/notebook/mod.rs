@@ -527,6 +527,16 @@ pub fn on_mouse(app: &mut App, mouse: MouseEvent) {
     }
 }
 
+/// A trackpad's scroll by whole `rows` (positive: further down) of what is
+/// at `(x, y)`: the explorer, the info panel or the note.
+pub(crate) fn scroll(app: &mut App, x: u16, y: u16, rows: i32) {
+    if crate::paint::rect_contains(app.layout.sidebar, x, y) {
+        explorer::scroll(app, rows);
+    } else {
+        tabs::scroll(app, x, y, rows);
+    }
+}
+
 /// IME text or a paste while the module has the keyboard; false: not taken.
 pub fn on_text(app: &mut App, text: &str) -> bool {
     app.needs_draw = true;

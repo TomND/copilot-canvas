@@ -211,6 +211,107 @@ pub(super) fn rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
     check(rows, "50", "New: canvas links: a group's ✎ Notes and ☑ chips (counts, gold while proposals wait) and a session's ☑ ID badge open the Notebook and Tasks; nothing starts", "chips_and_badges_navigate", || chips_check(sb, gui));
     check(rows, "47", "New: spaces: toolbar tabs and Ctrl+1/2/3; Go to (Ctrl+P) over groups, sessions, notes and todos; back and forward (Alt+← / Alt+→, Alt+, / Alt+.); nothing starts", "spaces_goto_and_history", || spaces_check(sb, gui));
     check_kind(rows, "41d", "New: HTML notes in the GUI's WebView2 view from the notes origin (relative images and styles), scripts off unless allowed, #note: / #todo: links, Print / PDF", "html_note_pane", Kind::Only("GUI only: the TUI shows HTML notes as formatted text"), || html_note_check(sb, gui));
+    // Trackpads (MAC-LINUX-PLAN D15), where scrolling is pixel-precise (as T1 and T2).
+    if cfg!(target_os = "macos") || super::linux_wayland() {
+        check_kind(rows, "T3", "Trackpad in the Notebook and Tasks: a note scrolls row by row, the todo canvas pans cell by cell and steps its zoom (Command + scroll, pinch), smart zoom fits the boards; the session canvas never moves", "trackpad_spaces", Kind::Only("GUI only: a terminal gives the TUI wheel notches"), || {
+            let result = trackpad_spaces(sb, gui);
+            let back = gui.chord('1', &["ctrl"]);
+            let summary = result?;
+            back.map(|_| summary)
+        });
+    }
+}
+
+/// T3: the Notebook's editor and the todo canvas under a trackpad.
+fn trackpad_spaces(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
+    let dir = sb.group_folder.join("human-outputs");
+    std::fs::create_dir_all(&dir)?;
+    let lines: String = (0..120).map(|i| format!("Long line {i}\n")).collect();
+    std::fs::write(dir.join("long.md"), format!("# Long\n{lines}"))?;
+    gui.canvas_focus()?;
+    gui.chord('1', &["ctrl"])?;
+    let view = gui.wait_tree("the canvas", 10, |t| !t["canvas"].is_null())?["view"].clone();
+    let tree = gui.tree()?;
+    let ch = tree["cell"][1].as_f64().unwrap_or(1.0);
+    let cw = tree["cell"][0].as_f64().unwrap_or(1.0);
+    let spaces = |gui: &Gui| gui.tree().map(|t| t["spaces"].clone());
+    let px = |dx: f64, dy: f64, phase: &str| json!({ "phase": phase, "dx": dx * cw, "dy": dy * ch });
+    // The note in Source (the editor; Rendered Markdown is the HTML view, which scrolls itself).
+    gui.chord('2', &["ctrl"])?;
+    gui.wait("the Notebook", 10, notebook)?;
+    let at = hit(gui, "Notebook(Refresh)").context("the explorer's ⟳")?;
+    gui.click(at, &[])?;
+    if gui.wait("long.md in the explorer", 5, |t| t.contains("long.md")).is_err() {
+        click_side(gui, "human-outputs")?;
+        gui.wait("long.md in the explorer", 15, |t| t.contains("long.md"))?;
+    }
+    click_side(gui, "long.md")?;
+    gui.chord('e', &["ctrl"])?;
+    gui.wait("the note in Source", 15, |t| t.contains("Long line 3"))?;
+    let first = |gui: &Gui| spaces(gui).ok().and_then(|s| s["notebook"]["first_line"].as_u64());
+    let start = first(gui).context("the editor's first line")?;
+    let page = in_main(gui, "Long line 3").context("the note's text")?;
+    // Fingers up 6.5 rows: 6 lines (the half waits); down 6: back.
+    super::gesture(gui, "scroll_px", page, px(0.0, 0.0, "began"))?;
+    for _ in 0..13 {
+        super::gesture(gui, "scroll_px", page, px(0.0, -0.5, "changed"))?;
+    }
+    wait_for("the note 6 lines down", 5, || (first(gui) == Some(start + 6)).then_some(()))?;
+    super::gesture(gui, "scroll_px", page, px(0.0, 6.0, "changed"))?;
+    super::gesture(gui, "scroll_px", page, px(0.0, 0.0, "ended"))?;
+    wait_for("the note back at its top", 5, || (first(gui) == Some(start)).then_some(()))?;
+    // The todo canvas: whole cells on both axes, the content following the fingers.
+    std::thread::sleep(Duration::from_millis(400));
+    gui.chord('3', &["ctrl"])?;
+    gui.wait("Tasks", 10, tasks)?;
+    let s = spaces(gui)?;
+    let main: Vec<f64> = s["main"].as_array().into_iter().flatten().filter_map(Value::as_f64).collect();
+    anyhow::ensure!(main.len() == 4, "the todo canvas's area: {s}");
+    let board = (main[0] + main[2] - 3.5, main[1] + main[3] - 4.5);
+    let tasks_view = |gui: &Gui| -> Result<((i64, i64), u64)> {
+        let t = spaces(gui)?["tasks"].clone();
+        Ok(((t["pan"][0].as_i64().unwrap_or(0), t["pan"][1].as_i64().unwrap_or(0)), t["zoom"].as_u64().unwrap_or(0)))
+    };
+    let (pan, zoom) = tasks_view(gui)?;
+    let d = canvas_core::tasks::layout::DIVS[(zoom as usize).min(2)] as i64;
+    super::gesture(gui, "scroll_px", board, px(0.0, 0.0, "began"))?;
+    super::gesture(gui, "scroll_px", board, px(-1.25, -0.75, "changed"))?;
+    super::gesture(gui, "scroll_px", board, px(-1.25, -0.75, "changed"))?;
+    super::gesture(gui, "scroll_px", board, px(-0.5, -0.5, "changed"))?;
+    super::gesture(gui, "scroll_px", board, px(0.0, 0.0, "ended"))?;
+    let (moved, _) = tasks_view(gui)?;
+    anyhow::ensure!(moved == (pan.0 + 3 * d, pan.1 + 2 * d), "panned (3, 2) cells: {pan:?} → {moved:?} (×{d})");
+    // Command + scroll: a zoom level per half a doubling (out, or in at the last level).
+    std::thread::sleep(Duration::from_millis(400));
+    let out = zoom < 2;
+    let command = if cfg!(target_os = "macos") { "super" } else { "ctrl" };
+    let mut scroll = px(0.0, if out { -8.0 } else { 8.0 }, "began");
+    scroll["mods"] = json!([command]);
+    super::gesture(gui, "scroll_px", board, scroll)?;
+    super::gesture(gui, "scroll_px", board, px(0.0, 0.0, "ended"))?;
+    let stepped = tasks_view(gui)?.1;
+    anyhow::ensure!(stepped == if out { zoom + 1 } else { zoom - 1 }, "Command + scroll stepped the zoom: {zoom} → {stepped}");
+    let mut summary = format!("a note in Source 6 rows down and back from 6.5 and 6 rows of movement; the todo canvas panned (3, 2) cells from (2.5, 1.5) + (0.5, 0.5); Command + scroll zoom {zoom} → {stepped}");
+    if cfg!(target_os = "macos") {
+        // Pinching back; smart zoom fits the boards as F does.
+        std::thread::sleep(Duration::from_millis(400));
+        super::gesture(gui, "pinch", board, json!({ "phase": "began", "delta": 0.0 }))?;
+        super::gesture(gui, "pinch", board, json!({ "phase": "changed", "delta": if out { 0.5 } else { -0.35 } }))?;
+        super::gesture(gui, "pinch", board, json!({ "phase": "ended", "delta": 0.0 }))?;
+        anyhow::ensure!(tasks_view(gui)?.1 == zoom, "the pinch stepped it back to {zoom}: {:?}", tasks_view(gui)?);
+        gui.send("f")?;
+        let fitted = tasks_view(gui)?;
+        super::gesture(gui, "scroll_px", board, px(0.0, 0.0, "began"))?;
+        super::gesture(gui, "scroll_px", board, px(4.0, 2.0, "changed"))?;
+        super::gesture(gui, "scroll_px", board, px(0.0, 0.0, "ended"))?;
+        anyhow::ensure!(tasks_view(gui)? != fitted, "panned away");
+        super::gesture(gui, "smart_zoom", board, json!({}))?;
+        anyhow::ensure!(tasks_view(gui)? == fitted, "smart zoom fits as F: {fitted:?} vs {:?}", tasks_view(gui)?);
+        summary.push_str(&format!(", a pinch back to {zoom}; smart zoom = F {fitted:?}"));
+    }
+    let now = gui.tree()?["view"].clone();
+    anyhow::ensure!(now == view, "the session canvas moved: {view} → {now}");
+    Ok(format!("{summary}; the session canvas never moved"))
 }
 
 /// With its own GUI over `--remote loopback`.

@@ -333,9 +333,14 @@ pub fn filter_key(app: &mut App, key: KeyEvent) -> bool {
 
 pub fn wheel(app: &mut App, kind: MouseEventKind) {
     match kind {
-        MouseEventKind::ScrollUp => app.tasks.side_scroll = app.tasks.side_scroll.saturating_sub(3),
-        MouseEventKind::ScrollDown => app.tasks.side_scroll = app.tasks.side_scroll.saturating_add(3),
+        MouseEventKind::ScrollUp => scroll(app, -3),
+        MouseEventKind::ScrollDown => scroll(app, 3),
         _ => {}
     }
+}
+
+/// Scrolls the sidebar by `rows` (positive: down).
+pub fn scroll(app: &mut App, rows: i32) {
+    app.tasks.side_scroll = app.tasks.side_scroll.saturating_add_signed(rows as isize);
     app.needs_draw = true;
 }

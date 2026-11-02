@@ -893,3 +893,42 @@ fn completion_offers_note_names_after_double_brackets() {
     let line = f.tab().editor.cursor().line;
     assert_eq!(tabs::link_at(f.tab().editor.line(line), 3), Some(LinkAt::Note("Planning".into())));
 }
+
+#[test]
+fn trackpad_scrolling_moves_the_note_and_the_explorer_row_by_row_never_the_canvas() {
+    use crate::input::{Gesture, GestureKind, GesturePhase::*};
+    use std::time::Instant;
+    let long: String = (0..200).map(|i| format!("Line {i}\n\n")).collect();
+    let disk = Disk::with(&[(&note("long.md"), &format!("# Long\n\n{long}"))]);
+    let mut f = fixture(disk, Doc::default());
+    f.open(&note("long.md"));
+    f.app.render_mode = crate::view::RenderMode::Cells;
+    let area = ratatui::layout::Rect::new(0, 0, 150, 40);
+    crate::ui::render(&mut f.app, &mut ratatui::buffer::Buffer::empty(area), area, None);
+    let (t0, ms) = (Instant::now(), Duration::from_millis);
+    let at = |kind, (x, y): (u16, u16)| Gesture { kind, x: x as f32 + 0.5, y: y as f32 + 0.5, modifiers: Modifiers::NONE };
+    let scroll = |dy, phase| GestureKind::Scroll { dx: 0.0, dy, phase };
+    let content = f.app.notebook.content;
+    let page = (content.x + 4, content.y + 4);
+    let (origin, view) = (f.app.origin_f(), f.app.doc.view.clone());
+    // Fingers up by 3.5 rows: the page follows by 3 (the half waits), then by 4.
+    f.app.on_gesture_at(at(scroll(0.0, Began), page), t0);
+    for i in 1..=7 {
+        f.app.on_gesture_at(at(scroll(-0.5, Changed), page), t0 + ms(i * 8));
+    }
+    assert_eq!(f.tab().scroll, 3);
+    f.app.on_gesture_at(at(scroll(-0.5, Changed), page), t0 + ms(64));
+    assert_eq!(f.tab().scroll, 4);
+    // Down again: back towards the top.
+    f.app.on_gesture_at(at(scroll(2.0, Changed), page), t0 + ms(72));
+    assert_eq!(f.tab().scroll, 2);
+    f.app.on_gesture_at(at(scroll(0.0, Ended), page), t0 + ms(80));
+    // A new gesture over the explorer scrolls it, not the note.
+    let side = f.app.layout.sidebar;
+    f.app.on_gesture_at(at(scroll(-2.0, Began), (side.x + 2, side.y + 3)), t0 + ms(1000));
+    assert_eq!((f.app.notebook.scroll, f.tab().scroll), (2, 2));
+    // A pinch over the note changes nothing; the session canvas never moved.
+    f.app.on_gesture_at(at(GestureKind::Pinch { delta: 0.5, phase: Began }, page), t0 + ms(2000));
+    assert_eq!((f.app.text_zoom_steps, f.app.view_scale), (0, 1.0));
+    assert_eq!((f.app.origin_f(), &f.app.doc.view), (origin, &view));
+}

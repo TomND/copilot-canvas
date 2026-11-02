@@ -1148,26 +1148,29 @@ pub(super) fn text(app: &mut App, text: &str) -> bool {
     true
 }
 
+/// Scrolls what is at `(x, y)` by `rows` (positive: further down): the
+/// info panel, or the note (its rendered page or its editor).
+pub(super) fn scroll(app: &mut App, x: u16, y: u16, rows: i32) {
+    if crate::paint::rect_contains(app.layout.terms, x, y) {
+        app.notebook.info_scroll = (app.notebook.info_scroll as i64 + rows as i64).max(0) as usize;
+    } else if let Some(tab) = app.notebook.tab_mut() {
+        if tab.view == View::Rendered || !tab.loaded {
+            let end = tab.total.saturating_sub(tab.rows);
+            tab.scroll = ((tab.scroll as i64 + rows as i64).max(0) as usize).min(end);
+        } else {
+            tab.editor.scroll(rows);
+        }
+    }
+    app.needs_draw = true;
+}
+
 /// The mouse in the reader (its content) or the info panel (scrolling).
 pub(super) fn mouse(app: &mut App, mouse: MouseEvent) {
     let (x, y) = (mouse.column, mouse.row);
     let content = app.notebook.content;
     let in_content = crate::paint::rect_contains(content, x, y);
     match mouse.kind {
-        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-            let delta: i32 = if mouse.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
-            if crate::paint::rect_contains(app.layout.terms, x, y) {
-                app.notebook.info_scroll = (app.notebook.info_scroll as i64 + delta as i64).max(0) as usize;
-            } else if let Some(tab) = app.notebook.tab_mut() {
-                if tab.view == View::Rendered || !tab.loaded {
-                    let end = tab.total.saturating_sub(tab.rows);
-                    tab.scroll = ((tab.scroll as i64 + delta as i64).max(0) as usize).min(end);
-                } else {
-                    tab.editor.scroll(delta);
-                }
-            }
-            app.needs_draw = true;
-        }
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => scroll(app, x, y, if mouse.kind == MouseEventKind::ScrollUp { -3 } else { 3 }),
         MouseEventKind::Down(MouseButton::Left) if in_content => {
             app.notebook.dragging = true;
             let now = Instant::now();
