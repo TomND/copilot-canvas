@@ -869,6 +869,18 @@ impl Win {
         self.after_events(proxy);
     }
 
+    /// A test hook's key in the core's (Windows) terms as a Mac's keyboard
+    /// gives it: an Alt shortcut (a view, back, a quick note) is a ⌃⌘ or ⌘[
+    /// chord there, the app's, except while a terminal has the keyboard,
+    /// where the left Option key is Alt (Meta). Elsewhere unchanged.
+    fn hook_source(&self, key: KeyEvent) -> KeyEvent {
+        let mac = crate::os::KEY_POLICY == canvas_core::input::KeyPolicy::CommandApp;
+        if mac && key.modifiers.contains(Modifiers::ALT) && !self.typing() {
+            return key.from(canvas_core::input::KeySource::App);
+        }
+        key
+    }
+
     /// Keyboard input goes to a terminal.
     fn typing(&self) -> bool {
         self.app.focus == Focus::Terminal && self.app.modals.is_empty()
@@ -1374,9 +1386,7 @@ impl Win {
         Some(match name {
             "key" => match hook_key(command, mods) {
                 Some(key) => {
-                    // `"source": "app"`: a shortcut as the app's keyboard map gives it
-                    // (a Mac's ⌘ or ⌃⌘ chord), not Option or Control typed.
-                    let key = if command["source"] == "app" { key.from(canvas_core::input::KeySource::App) } else { key };
+                    let key = self.hook_source(key);
                     self.key_input(key);
                     json!({ "ok": true })
                 }
@@ -1387,6 +1397,7 @@ impl Win {
                 let mut batch = Vec::new();
                 for spec in command["keys"].as_array().into_iter().flatten() {
                     let Some(key) = hook_key(spec, parse_mods(&spec["mods"])) else { return Some(json!({ "ok": false, "error": format!("unknown key {spec}") })) };
+                    let key = self.hook_source(key);
                     if is_paste_key(&key) || is_alt_v(&key) || is_new_window_key(&key) {
                         if !batch.is_empty() {
                             self.raw_input(std::mem::take(&mut batch));

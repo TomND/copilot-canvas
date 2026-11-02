@@ -144,11 +144,11 @@ impl Gui {
     }
 
     fn key(&self, name: &str, mods: &[&str]) -> Result<()> {
-        self.req(json!({ "cmd": "key", "key": name, "mods": mods, "source": key_source(mods) })).map(|_| ())
+        self.req(json!({ "cmd": "key", "key": name, "mods": mods })).map(|_| ())
     }
 
     fn chord(&self, c: char, mods: &[&str]) -> Result<()> {
-        self.req(json!({ "cmd": "key", "char": c.to_string(), "mods": mods, "source": key_source(mods) })).map(|_| ())
+        self.req(json!({ "cmd": "key", "char": c.to_string(), "mods": mods })).map(|_| ())
     }
 
     fn mouse(&self, kind: &str, button: &str, (x, y): (f64, f64), mods: &[&str]) -> Result<()> {
@@ -2302,13 +2302,6 @@ fn plain_client_sees(instance: &Instance, id: &str) -> Result<(usize, usize)> {
 /// outside the app bundle or with notifications off: "not shown: …").
 fn recorded_only(toast: &Value) -> bool {
     toast["status"] == "in front" || toast["status"] == "quiet" || toast["status"].as_str().is_some_and(|s| s.starts_with("not shown"))
-}
-
-/// The suite's Alt chords are the app's shortcuts (views, back, forward, a
-/// quick note): on a Mac its ⌃⌘ and ⌘[ chords give them (Option types
-/// characters there), so they come as the app's keys (MAC-LINUX-PLAN D8).
-fn key_source(mods: &[&str]) -> &'static str {
-    if cfg!(target_os = "macos") && mods.contains(&"alt") { "app" } else { "any" }
 }
 
 /// The view's origin (world) and scale, the canvas area and a cell's size in pixels.

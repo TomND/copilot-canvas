@@ -162,7 +162,9 @@ pub fn run(options: Options) -> Result<()> {
     let previous_hook = std::panic::take_hook();
     let crash_log = home.join("crash.log");
     std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableFocusChange, DisableBracketedPaste);
+        #[cfg(unix)]
+    let _ = execute!(std::io::stdout(), ratatui::crossterm::event::PopKeyboardEnhancementFlags);
+    let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableFocusChange, DisableBracketedPaste);
         let _ = std::io::stdout().write_all(b"\x1b[?7h");
         ratatui::restore();
         // Keep the details: the console that showed them is usually reused.
@@ -202,6 +204,11 @@ pub fn run(options: Options) -> Result<()> {
     // A fixed viewport is not cleared automatically; start from a blank screen.
     terminal.clear()?;
     let _ = execute!(std::io::stdout(), EnableMouseCapture, EnableFocusChange, EnableBracketedPaste);
+    // macOS and Linux: terminals that speak the kitty keyboard protocol
+    // (kitty, Ghostty, WezTerm, foot, iTerm2) report the keys legacy VT
+    // cannot tell apart, Ctrl+1/2/3 (the spaces) among them; others ignore it.
+    #[cfg(unix)]
+    let _ = execute!(std::io::stdout(), ratatui::crossterm::event::PushKeyboardEnhancementFlags(ratatui::crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES));
 
     let result = (|| -> Result<()> {
         let (input_tx, input_rx) = bounded(256);
@@ -402,6 +409,8 @@ pub fn run(options: Options) -> Result<()> {
         Ok(())
     })();
 
+    #[cfg(unix)]
+    let _ = execute!(std::io::stdout(), ratatui::crossterm::event::PopKeyboardEnhancementFlags);
     let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableFocusChange, DisableBracketedPaste);
     // Auto-wrap back on; clear the tab/taskbar progress the canvas mirrored.
     let _ = std::io::stdout().write_all(b"\x1b[?7h\x1b]9;4;0;0\x07");

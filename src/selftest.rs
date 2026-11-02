@@ -551,6 +551,15 @@ fn vt_events(bytes: &[u8]) -> Vec<serde_json::Value> {
                         mods.push(name);
                     }
                 }
+                if fin == 'u' {
+                    // The kitty keyboard protocol's `CSI code;mods u` (macOS and Linux).
+                    match char::from_u32(number) {
+                        Some('\x1b') => out.push(key("Esc", &mods)),
+                        Some(c) if !c.is_control() => out.push(json!({ "char": c.to_string(), "mods": mods })),
+                        _ => {}
+                    }
+                    continue;
+                }
                 let name = match (fin, number) {
                     ('A', _) => "Up",
                     ('B', _) => "Down",
@@ -1446,18 +1455,25 @@ pub(crate) fn command_line_of(pid: u32) -> Result<String> {
     }
 }
 
-/// Ctrl+digit as a win32-input-mode key press (`CSI Vk;Sc;Uc;Kd;Cs;Rc _`):
-/// legacy VT has no sequence for it; ConPTY hands the TUI the console key
-/// event a keyboard gives, and the GUI driver turns it into the key. Once
-/// ConPTY has seen one, it holds a lone ESC as the start of a sequence: send
+/// Ctrl+digit as a terminal reports it: legacy VT has no sequence for it.
+/// Windows: a win32-input-mode key press (`CSI Vk;Sc;Uc;Kd;Cs;Rc _`; ConPTY
+/// hands the TUI the console key event a keyboard gives). macOS and Linux:
+/// the kitty keyboard protocol's `CSI code;5 u`, which the TUI asks
+/// terminals for. The GUI driver turns either into the key. Once ConPTY has
+/// seen a win32 key, it holds a lone ESC as the start of a sequence: send
 /// [`ESC_KEY`] for Esc from then on.
 pub(crate) fn ctrl_digit(digit: u8) -> Vec<u8> {
-    let (code, scan) = (0x30 + digit as u32, if digit == 0 { 11 } else { digit as u32 + 1 });
-    format!("\x1b[{code};{scan};{code};1;8;1_").into_bytes()
+    let code = 0x30 + digit as u32;
+    if cfg!(windows) {
+        let scan = if digit == 0 { 11 } else { digit as u32 + 1 };
+        format!("\x1b[{code};{scan};{code};1;8;1_").into_bytes()
+    } else {
+        format!("\x1b[{code};5u").into_bytes()
+    }
 }
 
-/// Esc as a win32-input-mode key press (see [`ctrl_digit`]).
-pub(crate) const ESC_KEY: &[u8] = b"\x1b[27;1;27;1;0;1_";
+/// Esc in the same encoding as [`ctrl_digit`]'s.
+pub(crate) const ESC_KEY: &[u8] = if cfg!(windows) { b"\x1b[27;1;27;1;0;1_" } else { b"\x1b[27u" };
 
 /// The copy-and-paste check, in a PowerShell terminal that has keyboard
 /// focus (the self-test's scenario and the GUI parity suite): a drag over a
