@@ -120,7 +120,7 @@ fn draw_empty(app: &mut App, buf: &mut Buffer, area: Rect) -> Option<(u16, u16)>
     hit(app, Rect::new(x as u16, area.y + 3, (text_width(EMPTY) as u16).min(width as u16), 1), Hit::Empty);
     let hints = ["Enter in the explorer opens a note.", "Ctrl+P finds one · Alt+N quick note", "Ctrl+E Rendered ⇄ Source · Ctrl+S saves"];
     for (i, line) in hints.iter().enumerate() {
-        put(buf, x, area.y as i32 + 5 + i as i32, &truncate(line, width), fg(MUTED), area);
+        put(buf, x, area.y as i32 + 5 + i as i32, &truncate(&app.key_policy.label(line), width), fg(MUTED), area);
     }
     None
 }

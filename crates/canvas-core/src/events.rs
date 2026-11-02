@@ -160,12 +160,12 @@ impl App {
             return;
         }
         // Alt+N: a quick note in the notebook's Inbox, from every space.
-        if crate::notebook::is_capture_key(&key) {
+        if self.key_policy.alt_shortcut(&key) && crate::notebook::is_capture_key(&key) {
             return crate::notebook::capture(self);
         }
         let ctrl = key.modifiers.contains(Modifiers::CONTROL);
         let shift = key.modifiers.contains(Modifiers::SHIFT);
-        if key.modifiers.contains(Modifiers::ALT)
+        if self.key_policy.alt_shortcut(&key)
             && let KeyCode::Char(c @ '1'..='9') = key.code
         {
             let view = crate::side::VIEWS[(c as u8 - b'1') as usize].0;

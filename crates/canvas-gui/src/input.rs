@@ -91,6 +91,20 @@ pub fn key(logical: &Key, state: ElementState, mods: ModifiersState) -> Option<I
     Some(InputEvent::Key(crate::os::KEY_POLICY.key(KeyEvent::new(code, m))))
 }
 
+/// macOS: a character the Option key composed (`⌥2` → `™`, `⌥E E` → `é`
+/// through the IME): typed text, not Alt plus a key. Option with Command or
+/// Control, and Option as Alt (a terminal's left Option) give the key itself.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn composed(logical: &Key, plain: &Key, mods: ModifiersState) -> Option<InputEvent> {
+    if !mods.alt_key() || mods.control_key() || mods.super_key() {
+        return None;
+    }
+    match (logical, plain) {
+        (Key::Character(text), Key::Character(base)) if text.to_lowercase() != base.to_lowercase() && !text.chars().any(char::is_control) => Some(InputEvent::Text(text.to_string())),
+        _ => None,
+    }
+}
+
 pub fn button(button: winit::event::MouseButton) -> Option<MouseButton> {
     match button {
         winit::event::MouseButton::Left => Some(MouseButton::Left),
@@ -112,6 +126,21 @@ pub fn history_button(button: winit::event::MouseButton) -> Option<bool> {
 }
 
 /// A mouse event at a position in fractional cells.
+#[cfg(test)]
+mod composed_tests {
+    use winit::keyboard::{Key, ModifiersState};
+
+    #[test]
+    fn option_composed_characters_are_text() {
+        let ch = |s: &str| Key::Character(s.into());
+        assert!(matches!(super::composed(&ch("™"), &ch("2"), ModifiersState::ALT), Some(canvas_core::input::InputEvent::Text(t)) if t == "™"));
+        assert!(super::composed(&ch("h"), &ch("h"), ModifiersState::ALT).is_none(), "Option as Alt: the key itself");
+        assert!(super::composed(&ch("™"), &ch("2"), ModifiersState::ALT | ModifiersState::SUPER).is_none(), "⌥⌘: a shortcut");
+        assert!(super::composed(&ch("x"), &ch("x"), ModifiersState::empty()).is_none());
+        assert!(super::composed(&ch("H"), &ch("h"), ModifiersState::ALT | ModifiersState::SHIFT).is_none(), "a shifted letter is the same key");
+    }
+}
+
 pub fn mouse(kind: MouseEventKind, (x, y): (f32, f32), mods: ModifiersState) -> InputEvent {
     InputEvent::Mouse(crate::os::KEY_POLICY.mouse(MouseEvent::at(kind, x, y, modifiers(mods))))
 }

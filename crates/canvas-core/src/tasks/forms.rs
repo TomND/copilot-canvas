@@ -289,7 +289,7 @@ pub fn draw(app: &mut App, buf: &mut Buffer, screen: Rect, dialog: &Dialog, ctx:
         Dialog::Checks(checks) => draw_checks(buf, screen, checks, ctx),
         Dialog::Body { id } => {
             let rect = centered(screen, screen.width.saturating_sub(8).min(110), screen.height.saturating_sub(4).min(36));
-            panel(buf, rect, &format!("Body of {id} · Ctrl+S saves · Esc closes"));
+            panel(buf, rect, &app.key_policy.label(&format!("Body of {id} · Ctrl+S saves · Esc closes")));
             let area = Rect::new(rect.x + 2, rect.y + 1, rect.width.saturating_sub(4), rect.height.saturating_sub(4));
             app.tasks.body_area = area;
             let cursor = match app.tasks.body.as_mut() {
@@ -485,7 +485,7 @@ fn save_body(app: &mut App, id: &str, close: bool) -> Outcome {
 
 fn close_body(app: &mut App) -> Outcome {
     if app.tasks.body.take().is_some_and(|(_, e)| e.is_dirty()) {
-        app.notify("The body was not saved (Ctrl+S saves).", false);
+        app.notify(app.key_policy.label("The body was not saved (Ctrl+S saves).").into_owned(), false);
     }
     Outcome::Close
 }
@@ -565,8 +565,9 @@ pub fn key(app: &mut App, dialog: &mut Dialog, key: KeyEvent) -> Outcome {
             if key.code == KeyCode::Esc {
                 return close_body(app);
             }
+            let policy = app.key_policy;
             let outcome = match app.tasks.body.as_mut() {
-                Some((_, editor)) => editor.key(&key),
+                Some((_, editor)) => editor.key(&policy.edit(key)),
                 None => return Outcome::Close,
             };
             match outcome {

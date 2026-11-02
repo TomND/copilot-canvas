@@ -1082,6 +1082,7 @@ pub(super) fn key(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
     let ctrl = key.modifiers.contains(Modifiers::CONTROL) && !key.modifiers.contains(Modifiers::ALT);
+    let policy = app.key_policy;
     let index = app.notebook.active;
     let Some(tab) = app.notebook.tabs.get_mut(index) else { return false };
     if tab.view == View::Rendered || !tab.loaded {
@@ -1109,7 +1110,8 @@ pub(super) fn key(app: &mut App, key: KeyEvent) -> bool {
         find_step(app, !key.modifiers.contains(Modifiers::SHIFT));
         return true;
     }
-    match tab.editor.key(&key) {
+    // A Mac's text keys (⌥← a word, ⌘→ the line's end…) as the editor's.
+    match tab.editor.key(&policy.edit(key)) {
         Outcome::Unhandled => return false,
         Outcome::Handled => {}
         Outcome::Changed => tab.edited(),

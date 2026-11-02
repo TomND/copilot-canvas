@@ -353,7 +353,7 @@ pub fn click(app: &mut App, hit: Hit, mouse: MouseEvent) {
         Hit::Refresh => load::refresh_all(app),
         Hit::NameFilter => app.notebook.filtering = true,
         Hit::Retry => load::retry_info(app),
-        Hit::Empty => app.notify(EMPTY_HINT, false),
+        Hit::Empty => app.notify(app.key_policy.label(EMPTY_HINT).into_owned(), false),
         Hit::Tab(index) if mouse.kind == crate::input::MouseEventKind::Down(crate::input::MouseButton::Middle) => tabs::close_tab(app, index),
         Hit::Tab(index) => tabs::show_tab(app, index),
         Hit::CloseTab(index) => tabs::close_tab(app, index),
@@ -474,7 +474,7 @@ pub fn on_key(app: &mut App, key: KeyEvent) -> bool {
     app.needs_draw = true;
     let m = key.modifiers;
     let ctrl = m.contains(Modifiers::CONTROL) && !m.contains(Modifiers::ALT);
-    let alt = m.contains(Modifiers::ALT) && !m.contains(Modifiers::CONTROL);
+    let alt = app.key_policy.alt_shortcut(&key) && !m.contains(Modifiers::CONTROL);
     let shift = m.contains(Modifiers::SHIFT);
     // The name filter keeps its editing keys (Ctrl+W deletes a word there).
     if app.focus == Focus::Sidebar && app.notebook.filtering {
