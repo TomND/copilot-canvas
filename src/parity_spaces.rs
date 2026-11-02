@@ -74,26 +74,58 @@ fn center(rect: &Value) -> Option<(f64, f64)> {
     (r.len() == 4).then(|| (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0))
 }
 
-/// A chip of a canvas group (its label starts with `glyph`): (label, attention, centre).
-fn chip(gui: &Gui, group: &str, glyph: &str) -> Option<(String, bool, (f64, f64))> {
-    let tree = gui.tree().ok()?;
-    let groups = tree["canvas"]["groups"].as_array()?;
-    let group = groups.iter().find(|g| g["id"] == group)?;
+/// A chip of a canvas group (its label starts with `glyph`): (label, attention, rect `[x, y, w, h]`).
+fn chip_rect(tree: &Value, group: &str, glyph: &str) -> Option<(String, bool, [f64; 4])> {
+    let group = tree["canvas"]["groups"].as_array()?.iter().find(|g| g["id"] == group)?;
     let chip = group["chips"].as_array()?.iter().find(|c| c["label"].as_str().is_some_and(|l| l.starts_with(glyph)))?;
-    Some((chip["label"].as_str().unwrap_or_default().to_owned(), chip["attention"] == true, center(&chip["rect"])?))
+    let r: Vec<f64> = chip["rect"].as_array()?.iter().filter_map(Value::as_f64).collect();
+    Some((chip["label"].as_str().unwrap_or_default().to_owned(), chip["attention"] == true, r.try_into().ok()?))
 }
 
-/// A chip as [`chip`] that `ok` accepts, inside the canvas's area (else
-/// *Show all nodes* (`f`) brings the group into view).
+/// A chip of a canvas group (its label starts with `glyph`): (label, attention, centre).
+fn chip(gui: &Gui, group: &str, glyph: &str) -> Option<(String, bool, (f64, f64))> {
+    let (label, attention, r) = chip_rect(&gui.tree().ok()?, group, glyph)?;
+    Some((label, attention, (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0)))
+}
+
+/// A chip as [`chip`] that `ok` accepts, whole inside the canvas's area (a
+/// chip partly outside it has no click target) and where it was a poll
+/// before (a view that fits moves for a moment). *Show all nodes* (`f`)
+/// brings the group into view; Ctrl+arrows pan a chip that sticks out (chips
+/// keep their size at every zoom, so they can overhang a fitted frame, as in
+/// a window narrowed by the details pane).
 fn visible_chip(gui: &Gui, group: &str, glyph: &str, ok: impl Fn(&str, bool) -> bool) -> Result<(String, bool, (f64, f64))> {
+    let last = std::cell::Cell::new(None);
     wait_for(&format!("the {glyph} chip of {group} in view"), 10, || {
-        let found = chip(gui, group, glyph).filter(|(label, attention, _)| ok(label, *attention))?;
-        let area: Vec<f64> = gui.tree().ok()?["canvas"]["area"].as_array()?.iter().filter_map(Value::as_f64).collect();
-        let (x, y) = found.2;
-        if area.len() == 4 && x > area[0] && x < area[0] + area[2] && y > area[1] && y < area[1] + area[3] {
-            return Some(found);
+        let tree = gui.tree().ok()?;
+        let (label, attention, r) = chip_rect(&tree, group, glyph).filter(|(label, attention, _)| ok(label, *attention))?;
+        let a: Vec<f64> = tree["canvas"]["area"].as_array()?.iter().filter_map(Value::as_f64).collect();
+        if a.len() != 4 {
+            return None;
         }
-        let _ = gui.chord('f', &[]);
+        let at = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+        let near = at.0 > a[0] && at.0 < a[0] + a[2] && at.1 > a[1] && at.1 < a[1] + a[3];
+        let pan = if r[0] < a[0] {
+            Some("Left")
+        } else if r[0] + r[2] > a[0] + a[2] {
+            Some("Right")
+        } else if r[1] < a[1] {
+            Some("Up")
+        } else if r[1] + r[3] > a[1] + a[3] {
+            Some("Down")
+        } else {
+            None
+        };
+        match pan {
+            None => return (last.replace(Some(at)) == Some(at)).then_some((label, attention, at)),
+            Some(dir) if near => {
+                let _ = gui.key(dir, &["ctrl"]);
+            }
+            Some(_) => {
+                let _ = gui.chord('f', &[]);
+            }
+        }
+        last.set(None);
         None
     })
 }
