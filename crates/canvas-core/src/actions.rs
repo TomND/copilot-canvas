@@ -144,6 +144,7 @@ impl App {
                 item("Open AI docs folder", "", Action::OpenGroupFolder(id.to_owned(), false), true),
                 item("Open human outputs folder", "", Action::OpenGroupFolder(id.to_owned(), true), true),
                 item("Session defaults for group…", "", Action::GroupDefaults(id.to_owned()), true),
+                item("Skill folders…", "", Action::Skills(crate::skills::SkillAction::EditFolders(Some(id.to_owned()))), true),
                 item("Passive sessions of this group…", "", Action::Visual(crate::visual::VisualAction::GroupPassives(id.to_owned())), !self.demo),
                 item("New passive session…", "", Action::NewPassive(id.to_owned()), !self.demo),
                 item("Send event…", "", Action::SendEvent(id.to_owned()), !self.demo),
@@ -859,6 +860,7 @@ impl App {
             Action::Space(space) => self.switch_space(space),
             Action::Notebook(action) => crate::notebook::run(self, action),
             Action::Tasks(action) => crate::tasks::run(self, action),
+            Action::Skills(action) => self.run_skills(action),
             Action::OpenOtherClient => {
                 let args = self.other_client_args();
                 match self.platform.open_other_client(&args) {

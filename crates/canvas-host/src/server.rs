@@ -79,8 +79,9 @@ pub struct Resolved {
 
 /// The L3 backend running in the same process (the "agent supervisor").
 pub trait HostApp: Send + Sync {
-    /// Turns an agent launch (`LaunchKind::Copilot…`) into a program to run.
-    fn resolve_launch(&self, id: &str, kind: LaunchKind) -> Result<Resolved>;
+    /// Turns an agent launch (`LaunchKind::Copilot…`) into a program to run
+    /// in `cwd` (the folder the terminal starts in).
+    fn resolve_launch(&self, id: &str, kind: LaunchKind, cwd: &str) -> Result<Resolved>;
     /// Environment a plain command's terminal gets (`LaunchKind::Command`,
     /// e.g. the demo's shells): the canvas integration.
     fn command_env(&self, _id: &str) -> Vec<(String, String)> {
@@ -614,7 +615,7 @@ impl Host {
         }
         let resolved = match kind {
             LaunchKind::Command { program, args } => Resolved { program, args, env: self.app().command_env(id), agent: false },
-            other => self.app().resolve_launch(id, other)?,
+            other => self.app().resolve_launch(id, other, cwd)?,
         };
         let terminal = Terminal::spawn(
             Spawn {
@@ -1727,7 +1728,7 @@ mod tests {
     struct NoApp;
 
     impl HostApp for NoApp {
-        fn resolve_launch(&self, _: &str, _: LaunchKind) -> Result<Resolved> {
+        fn resolve_launch(&self, _: &str, _: LaunchKind, _: &str) -> Result<Resolved> {
             bail!("no agents here")
         }
         fn client_connected(&self, _: &Arc<Client>) {}
@@ -1808,7 +1809,7 @@ mod tests {
     struct PhoneApp(Vec<u8>);
 
     impl HostApp for PhoneApp {
-        fn resolve_launch(&self, _: &str, _: LaunchKind) -> Result<Resolved> {
+        fn resolve_launch(&self, _: &str, _: LaunchKind, _: &str) -> Result<Resolved> {
             bail!("no agents here")
         }
         fn client_connected(&self, _: &Arc<Client>) {}

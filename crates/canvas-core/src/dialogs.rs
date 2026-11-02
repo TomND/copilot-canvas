@@ -201,6 +201,8 @@ pub enum Action {
     Notebook(crate::notebook::Action),
     /// The Tasks space's commands (`tasks::run`).
     Tasks(crate::tasks::Action),
+    /// The Skills view and skill folders (`skills::run_skills`).
+    Skills(crate::skills::SkillAction),
 }
 
 #[derive(Clone, Debug)]
@@ -520,6 +522,8 @@ pub enum Modal {
     Notebook(Box<crate::notebook::Dialog>),
     /// A dialog of the Tasks space (`tasks::draw_dialog` and friends).
     Tasks(Box<crate::tasks::Dialog>),
+    /// The skill folders of a group or of every session (`skill_folders.rs`).
+    SkillFolders(Box<crate::skill_folders::Dialog>),
 }
 
 /// Clickable regions registered while drawing.

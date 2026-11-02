@@ -270,6 +270,12 @@ pub struct LaunchDefaults {
     pub add_dirs: Vec<String>,
     /// allow-all | ask. Unset means allow-all (applies to every launch, resumed too).
     pub permissions: Option<String>,
+    /// Folders of skills (`<name>/SKILL.md` children, or one skill: a folder
+    /// with a SKILL.md) every launch gets, new and resumed alike, and the
+    /// group's passive runs (`canvas_model::skills`). The canvas's and the
+    /// group's lists are combined, never replaced.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skill_dirs: Vec<String>,
 }
 
 /// [`LaunchDefaults`] as stored, including the single `model` of canvases
@@ -292,6 +298,8 @@ struct RawLaunchDefaults {
     add_dirs: Vec<String>,
     #[serde(default)]
     permissions: Option<String>,
+    #[serde(default)]
+    skill_dirs: Vec<String>,
 }
 
 impl From<RawLaunchDefaults> for LaunchDefaults {
@@ -312,6 +320,7 @@ impl From<RawLaunchDefaults> for LaunchDefaults {
             context: raw.context,
             add_dirs: raw.add_dirs,
             permissions: raw.permissions,
+            skill_dirs: raw.skill_dirs,
         }
     }
 }
@@ -322,7 +331,8 @@ pub const MODES: [&str; 3] = ["interactive", "plan", "autopilot"];
 pub const CONTEXTS: [&str; 2] = ["default", "long_context"];
 
 impl LaunchDefaults {
-    /// `self` overridden field-by-field by `over` (models per agent); folders are combined.
+    /// `self` overridden field-by-field by `over` (models per agent); folders
+    /// (`add_dirs`, `skill_dirs`) are combined, `self`'s first.
     pub fn merged(&self, over: Option<&LaunchDefaults>) -> LaunchDefaults {
         let Some(over) = over else { return self.clone() };
         let pick = |a: &Option<String>, b: &Option<String>| b.clone().filter(|v| !v.is_empty()).or_else(|| a.clone());
@@ -342,6 +352,7 @@ impl LaunchDefaults {
             context: pick(&self.context, &over.context),
             add_dirs,
             permissions: pick(&self.permissions, &over.permissions),
+            skill_dirs: union_dirs(&self.skill_dirs, &over.skill_dirs),
         }
     }
 
@@ -397,8 +408,33 @@ impl LaunchDefaults {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.models.is_empty() && self.args().is_empty() && self.permissions.is_none()
+        self.models.is_empty() && self.args().is_empty() && self.permissions.is_none() && self.skill_dirs.is_empty()
     }
+}
+
+/// The same folder written another way (case, separators, a trailing slash,
+/// a verbatim `\\?\` or `\\?\UNC\` prefix).
+pub fn same_dir(a: &str, b: &str) -> bool {
+    let norm = |p: &str| {
+        let p = p.trim().trim_matches('"').replace('/', "\\");
+        let p = match p.get(..8) {
+            Some(head) if head.eq_ignore_ascii_case(r"\\?\UNC\") => format!(r"\\{}", &p[8..]),
+            _ => p.strip_prefix(r"\\?\").map(str::to_owned).unwrap_or(p),
+        };
+        p.trim_end_matches('\\').to_lowercase()
+    };
+    norm(a) == norm(b)
+}
+
+/// `first` then the folders of `then` it does not have (blank ones dropped).
+pub fn union_dirs(first: &[String], then: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for dir in first.iter().chain(then).map(|d| d.trim()).filter(|d| !d.is_empty()) {
+        if !out.iter().any(|o| same_dir(o, dir)) {
+            out.push(dir.to_owned());
+        }
+    }
+    out
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -1438,6 +1474,29 @@ mod tests {
         // Canvases saved before this setting existed load as allow-all.
         let old: LaunchDefaults = serde_json::from_str(r#"{"model":"x"}"#).unwrap();
         assert_eq!(old.permission_args(), ["--allow-all"]);
+    }
+
+    #[test]
+    fn skill_folders_of_the_canvas_and_a_group_are_combined() {
+        let canvas = LaunchDefaults { skill_dirs: vec![r"C:\skills".into(), r"D:\team\skills\".into()], ..Default::default() };
+        let group = LaunchDefaults { skill_dirs: vec![r"c:/SKILLS".into(), r"E:\vault\skills".into(), "  ".into()], ..Default::default() };
+        // A union, the canvas's first; the same folder written another way counts once.
+        assert_eq!(canvas.merged(Some(&group)).skill_dirs, [r"C:\skills", r"D:\team\skills\", r"E:\vault\skills"]);
+        assert_eq!(LaunchDefaults::default().merged(Some(&group)).skill_dirs, [r"c:/SKILLS", r"E:\vault\skills"], "the group alone");
+        assert_eq!(canvas.merged(None).skill_dirs, canvas.skill_dirs);
+        assert!(!group.is_empty(), "a group with only skill folders keeps its overrides");
+        assert!(canvas.args().is_empty() && canvas.summary().is_empty(), "no agent flags: the service delivers them");
+        // Stored only when set; older canvases (and older writers) have none.
+        assert!(!serde_json::to_string(&LaunchDefaults::default()).unwrap().contains("skill_dirs"));
+        let text = serde_json::to_string(&canvas).unwrap();
+        assert!(text.contains(r#""skill_dirs":["C:\\skills","#), "{text}");
+        assert_eq!(serde_json::from_str::<LaunchDefaults>(&text).unwrap(), canvas);
+        let old: LaunchDefaults = serde_json::from_str(r#"{"model":"x","add_dirs":[]}"#).unwrap();
+        assert!(old.skill_dirs.is_empty());
+        assert!(same_dir(r"C:\A\b\", "c:/a/B") && !same_dir(r"C:\a", r"C:\ab"));
+        // Verbatim paths (canonicalized folders) are the same folders.
+        assert!(same_dir(r"\\?\C:\Repos\App", r"c:\repos\app\") && same_dir(r"\\?\UNC\server\share\x", r"\\server\share\X"));
+        assert_eq!(union_dirs(&[r"\\?\C:\skills".into()], &[r"C:\Skills".into()]), [r"\\?\C:\skills"]);
     }
 
     #[test]

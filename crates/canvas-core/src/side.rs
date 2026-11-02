@@ -131,7 +131,6 @@ pub enum ItemRef {
     Automation(String),
     Plugin(String),
     Mcp(String),
-    Skill(String),
     Agent(String),
     Instruction(String),
     Default(DefaultField),
@@ -165,6 +164,14 @@ pub enum ItemRef {
     ReportsAllRead,
     /// A Notebook setting (`notebook::setting_rows`).
     Notebook(crate::notebook::SettingRow),
+    /// The Skills view's *Agent* row (every agent, or one).
+    SkillFilter,
+    /// A source of skills in the Skills view (`skills::key`).
+    SkillSource(String),
+    /// A skill of a source: (`skills::key`, `skills::skill_id`).
+    SkillOf(String, String),
+    /// The skill folders editor of a group (its id), else of every session.
+    SkillFolders(Option<String>),
 }
 
 #[derive(Clone, Debug)]
@@ -177,16 +184,16 @@ pub struct ListRow {
 }
 
 impl ListRow {
-    fn header(label: impl Into<String>) -> Self {
+    pub(crate) fn header(label: impl Into<String>) -> Self {
         ListRow { item: ItemRef::Header, label: label.into(), right: String::new(), icon: "", color: MUTED }
     }
-    fn info(label: impl Into<String>) -> Self {
+    pub(crate) fn info(label: impl Into<String>) -> Self {
         ListRow { item: ItemRef::Info, label: label.into(), right: String::new(), icon: "", color: MUTED }
     }
     fn detail(label: impl Into<String>) -> Self {
         ListRow { item: ItemRef::Detail, label: label.into(), right: String::new(), icon: "", color: TEXT }
     }
-    fn row(item: ItemRef, icon: &'static str, color: Color, label: impl Into<String>, right: impl Into<String>) -> Self {
+    pub(crate) fn row(item: ItemRef, icon: &'static str, color: Color, label: impl Into<String>, right: impl Into<String>) -> Self {
         ListRow { item, label: label.into(), right: right.into(), icon, color }
     }
     pub fn selectable(&self) -> bool {
@@ -268,11 +275,13 @@ impl App {
         self.list_scroll = 0;
         self.doc.ui.sidebar_visible = true;
         match view {
-            SideView::Plugins | SideView::Mcp | SideView::Skills | SideView::Agents | SideView::Settings => {
+            SideView::Plugins | SideView::Mcp | SideView::Agents | SideView::Settings => {
                 if self.config.is_none() {
                     self.refresh_config();
                 }
             }
+            // Every source again (the agents' own listings when missing).
+            SideView::Skills => self.refresh_skills(false),
             SideView::Automations => self.refresh_automations(),
             _ => {}
         }
@@ -351,7 +360,7 @@ impl App {
         let mut rows = Vec::new();
         let label = self.config_agent.label();
         let loading = |rows: &mut Vec<ListRow>| rows.push(ListRow::info(format!("Loading from {label}…")));
-        if matches!(self.side_view, SideView::Plugins | SideView::Mcp | SideView::Skills | SideView::Agents) {
+        if matches!(self.side_view, SideView::Plugins | SideView::Mcp | SideView::Agents) {
             // Which agent's configuration this is; Enter or A shows the next one.
             rows.push(ListRow::row(ItemRef::ConfigAgent, "⇄", BLUE, format!("Agent: {label}"), "A: switch"));
         }
@@ -426,22 +435,7 @@ impl App {
                     rows.push(ListRow::row(ItemRef::Refresh, "⟳", BLUE, "Refresh", ""));
                 }
             },
-            SideView::Skills => match &self.config {
-                None => loading(&mut rows),
-                Some(config) => {
-                    let mut last = String::new();
-                    for s in &config.skills {
-                        if s.source != last {
-                            rows.push(ListRow::header(s.source.clone()));
-                            last = s.source.clone();
-                        }
-                        let (icon, color) = enabled_icon(s.enabled);
-                        rows.push(ListRow::row(ItemRef::Skill(s.name.clone()), icon, color, s.name.clone(), ""));
-                    }
-                    rows.push(ListRow::row(ItemRef::Add(AddKind::Skill), "+", BLUE, "Add skill (file, folder or URL)…", ""));
-                    rows.push(ListRow::row(ItemRef::Refresh, "⟳", BLUE, "Refresh", ""));
-                }
-            },
+            SideView::Skills => rows.extend(self.skill_rows()),
             SideView::Agents => match &self.config {
                 None => loading(&mut rows),
                 Some(config) => {
@@ -506,6 +500,11 @@ impl App {
                     };
                     rows.push(ListRow::row(ItemRef::Default(field), "›", TEXT, field.label(), shown));
                 }
+                // Skill folders every session (here: of the group) gets; a group's add to the canvas's.
+                let skill_dirs = crate::skill_folders::dirs(self, self.settings_group.as_deref());
+                let shown = if skill_dirs.is_empty() { "(none)".to_owned() } else { crate::skills::folders_summary(skill_dirs.len(), None) };
+                let label = if global { "Skill folders (all sessions)…" } else { "Skill folders (this group)…" };
+                rows.push(ListRow::row(ItemRef::SkillFolders(self.settings_group.clone()), "›", TEXT, label, shown));
                 rows.push(ListRow::info("Effort: Copilot, Claude Code"));
                 rows.push(ListRow::info("Mode, context tier: Copilot"));
                 if global {
@@ -544,7 +543,7 @@ impl App {
             }
         }
         if let Some(errors) = self.config.as_ref().map(|c| &c.errors).filter(|e| !e.is_empty())
-            && matches!(self.side_view, SideView::Plugins | SideView::Mcp | SideView::Skills | SideView::Agents | SideView::Settings)
+            && matches!(self.side_view, SideView::Plugins | SideView::Mcp | SideView::Agents | SideView::Settings)
         {
             for error in errors {
                 rows.push(ListRow::info(format!("⚠ {error}")));
@@ -633,7 +632,9 @@ impl App {
         if let Some(row) = rows.get(self.list_sel) {
             self.right_detail = match &row.item {
                 ItemRef::Automation(key) => Some(RightDetail::Automation(key.clone())),
-                ItemRef::Plugin(_) | ItemRef::Mcp(_) | ItemRef::Skill(_) | ItemRef::Agent(_) | ItemRef::Instruction(_) => Some(RightDetail::Item(row.item.clone())),
+                ItemRef::Plugin(_) | ItemRef::Mcp(_) | ItemRef::Agent(_) | ItemRef::Instruction(_) | ItemRef::SkillOf(..) | ItemRef::SkillSource(_) => {
+                    Some(RightDetail::Item(row.item.clone()))
+                }
                 _ => self.right_detail.clone(),
             };
         }
@@ -655,6 +656,9 @@ impl App {
             return;
         }
         self.list_sel = index;
+        if self.skills_activate(&row.item) {
+            return;
+        }
         match row.item {
             ItemRef::Report(id) => self.open_report(&id),
             ItemRef::ReportsAllRead => self.report_action(crate::reports::ReportAction::MarkAllRead),
@@ -668,19 +672,25 @@ impl App {
                     self.reveal_node(&node);
                 }
             }
-            ItemRef::Plugin(_) | ItemRef::Mcp(_) | ItemRef::Skill(_) | ItemRef::Agent(_) | ItemRef::Instruction(_) => {
+            ItemRef::Plugin(_) | ItemRef::Mcp(_) | ItemRef::Agent(_) | ItemRef::Instruction(_) => {
                 self.right_detail = Some(RightDetail::Item(row.item));
             }
             ItemRef::Refresh => {
                 if self.side_view == SideView::Automations {
                     self.refresh_automations();
+                } else if self.side_view == SideView::Skills {
+                    self.refresh_skills(true);
                 } else {
                     self.refresh_config();
                 }
             }
             ItemRef::Add(kind) => {
-                // Adding and installing go through Copilot's CLI only.
-                if !self.supported(self.config_agent == AgentKind::Copilot) {
+                // Adding and installing go through Copilot's CLI only (in the Skills view, whichever agent it shows).
+                if self.side_view == SideView::Skills {
+                    if !self.skill_agents().contains(&AgentKind::Copilot) {
+                        return self.notify("Adding a skill goes through GitHub Copilot CLI, which is not installed where the service runs.", true);
+                    }
+                } else if !self.supported(self.config_agent == AgentKind::Copilot) {
                     return;
                 }
                 let (title, hint, purpose) = match kind {
@@ -771,6 +781,8 @@ impl App {
             ItemRef::Visual(setting) => self.visual_setting(setting),
             ItemRef::Notebook(row) => crate::notebook::run(self, crate::notebook::Action::Setting(row)),
             ItemRef::Header | ItemRef::Info | ItemRef::Detail => {}
+            // The Skills view's own rows (`skills_activate`).
+            ItemRef::SkillFilter | ItemRef::SkillSource(_) | ItemRef::SkillOf(..) | ItemRef::SkillFolders(_) => {}
         }
         self.needs_draw = true;
     }
@@ -796,7 +808,9 @@ impl App {
             }
             ItemRef::Plugin(name) => self.set_config_enabled(Kind::Plugin, name.clone(), !enabled_now(Kind::Plugin, &name)),
             ItemRef::Mcp(name) => self.set_config_enabled(Kind::Mcp, name.clone(), !enabled_now(Kind::Mcp, &name)),
-            ItemRef::Skill(name) => self.set_config_enabled(Kind::Skill, name.clone(), !enabled_now(Kind::Skill, &name)),
+            ItemRef::SkillOf(key, id) => self.skills_toggle(&key, &id),
+            ItemRef::SkillSource(_) | ItemRef::SkillFolders(_) => self.notify("Space switches a skill its agent's CLI manages (PERSONAL): select one.", false),
+            ItemRef::SkillFilter => self.cycle_skill_filter(),
             ItemRef::VsArchived | ItemRef::VsCliSessions | ItemRef::VsAuto | ItemRef::IdleStop | ItemRef::ConfigAgent | ItemRef::DefaultAgent | ItemRef::Visual(_) => self.list_activate(index),
             _ => {}
         }
@@ -835,12 +849,15 @@ impl App {
                 return self.report_action(crate::reports::ReportAction::ConfirmDelete(ids));
             }
             ItemRef::ReportRefused(id) => return self.report_action(crate::reports::ReportAction::ConfirmDelete(vec![id.clone()])),
+            ItemRef::SkillOf(key, id) => return self.skills_delete(key, id),
+            ItemRef::SkillFolders(_) => return self.notify("Remove a skill folder in its editor (Enter).", false),
+            ItemRef::SkillSource(key) if key.starts_with("group:") => return self.notify("Remove a skill folder in its editor (Enter).", false),
+            ItemRef::SkillSource(_) => return self.notify("Projects and personal folders are not managed here: change them in their folders.", false),
             _ => {}
         }
         let what = match &row.item {
             ItemRef::Plugin(_) => Kind::Plugin,
             ItemRef::Mcp(_) => Kind::Mcp,
-            ItemRef::Skill(_) => Kind::Skill,
             _ => return,
         };
         if !self.supported(config::caps_for_changes(self.config_agent, what).1) {
@@ -854,13 +871,6 @@ impl App {
                     return self.notify(format!("“{name}” comes from {source}; disable it instead (Space)."), true);
                 }
                 (format!("Remove MCP server “{name}” from your user config?"), crate::dialogs::Action::RemoveConfig(Kind::Mcp, name.clone()))
-            }
-            ItemRef::Skill(name) => {
-                let source = self.config.as_ref().and_then(|c| c.skills.iter().find(|s| s.name == *name)).map(|s| s.source.to_lowercase()).unwrap_or_default();
-                if source.contains("plugin") || source.contains("project") || source.contains("builtin") {
-                    return self.notify(format!("“{name}” comes from {source}; disable it instead (Space)."), true);
-                }
-                (format!("Remove skill “{name}”?"), crate::dialogs::Action::RemoveConfig(Kind::Skill, name.clone()))
             }
             _ => return,
         };
@@ -953,7 +963,7 @@ impl App {
                 if value.is_empty() {
                     return Err("enter a path or URL".into());
                 }
-                self.run_cli_op(format!("Adding skill {value}"), move |backend| backend.skill_add(&value));
+                self.agent_skill_op(AgentKind::Copilot, format!("Adding skill {value}"), move |backend| backend.skill_add(&value));
             }
             PromptPurpose::AddMcp => {
                 config::parse_mcp_add(&value).map_err(|e| e.to_string())?;

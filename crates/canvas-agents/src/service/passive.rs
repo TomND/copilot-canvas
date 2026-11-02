@@ -545,13 +545,14 @@ fn start_run(shared: &Shared, routing: &Routing, spec: &PassiveSpec, state: &mut
 
 /// The headless launch of one passive run: a fresh conversation uses the
 /// spec's model (the default of its group), a resumed one the model recorded
-/// for it when there is one.
+/// for it when there is one. A group passive session's runs get its skill
+/// folders (canvas-wide agents get their own skills instead).
 fn passive_launch(kind: AgentKind, spec: &PassiveSpec, native: Option<String>, fresh: bool, folder: &Path, prompt: String, hop: u32) -> AgentLaunch {
     let model = match spec.session_model.as_deref() {
         Some(recorded) if !fresh => recorded,
         _ => spec.model.as_str(),
     };
-    AgentLaunch {
+    let mut launch = AgentLaunch {
         agent: kind.id().to_owned(),
         native_id: native,
         resume: !fresh,
@@ -563,7 +564,11 @@ fn passive_launch(kind: AgentKind, spec: &PassiveSpec, native: Option<String>, f
         headless_prompt: Some(prompt),
         env: vec![("COPILOT_CANVAS_PASSIVE".to_owned(), spec.key.clone()), ("COPILOT_CANVAS_HOP".to_owned(), hop.to_string())],
         ..Default::default()
+    };
+    if !spec.canvas_wide {
+        canvas_model::launch::attach_group_skills(&mut launch, &spec.group, &spec.skill_dirs);
     }
+    launch
 }
 
 /// Finishes runs whose terminal exited.
@@ -1041,5 +1046,20 @@ mod tests {
         assert_eq!(rolled.model.as_deref(), Some("opencode/x-free"));
         let own = passive_launch(AgentKind::Claude, &PassiveSpec { session_model: Some(String::new()), ..spec }, None, false, Path::new(r"C:\g"), "check".into(), 1);
         assert_eq!(own.model, None, "recorded as the agent's own default: no model flag");
+    }
+
+    #[test]
+    fn group_passive_runs_get_their_skill_folders_and_canvas_wide_agents_do_not() {
+        let spec = PassiveSpec { key: "k".into(), name: "Watch".into(), group: "g-1".into(), skill_dirs: vec![r"C:\skills".into(), r"D:\more".into()], ..Default::default() };
+        for kind in crate::agents::ALL {
+            let mut launch = passive_launch(kind, &spec, None, true, Path::new(r"C:\g"), "check".into(), 1);
+            let skills = canvas_model::launch::take_group_skills(&mut launch).expect("its group's skill folders");
+            assert_eq!((skills.group.as_str(), skills.dirs.clone()), ("g-1", vec![r"C:\skills".to_owned(), r"D:\more".to_owned()]), "{kind:?}");
+            assert_eq!(launch.env.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["COPILOT_CANVAS_PASSIVE", "COPILOT_CANVAS_HOP"]);
+        }
+        let wide = PassiveSpec { canvas_wide: true, ..spec.clone() };
+        assert_eq!(canvas_model::launch::take_group_skills(&mut passive_launch(AgentKind::Copilot, &wide, None, true, Path::new(r"C:\a"), "check".into(), 1)), None);
+        let none = PassiveSpec { skill_dirs: Vec::new(), ..spec };
+        assert_eq!(passive_launch(AgentKind::Claude, &none, None, false, Path::new(r"C:\g"), "check".into(), 1).env.len(), 2);
     }
 }

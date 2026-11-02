@@ -935,7 +935,9 @@ fn agent_scenario(instance: &Instance, work: &Path, kind: AgentKind, env: &[(&st
     ui.wait("mcp view", Duration::from_secs(30), |t| loaded(t) && t.contains("Add MCP server"))?;
     counts.push(format!("{} MCP servers", rows(&ui)));
     ui.send(b"\x1b5")?;
-    ui.wait("skills view", Duration::from_secs(30), |t| loaded(t) && t.contains("SKILLS") && t.contains("Add skill"))?;
+    // The Skills view shows every agent's skills: its own sources (the canvas plugin's
+    // skills at the top), then the agents' lists; its last rows may be below the first screen.
+    ui.wait("skills view", Duration::from_secs(30), |t| t.contains("Agent: All agents") && !t.contains("Loading the skill sources") && t.contains("SKILLS") && t.contains("canvas-events") && t.contains("PROJECTS"))?;
     counts.push(format!("{} skills", rows(&ui)));
     println!("    {} (first screen of each)", counts.join(", "));
     for warning in ui.text().lines().filter_map(|l| l.split('⚠').nth(1)) {

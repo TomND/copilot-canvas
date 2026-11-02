@@ -130,6 +130,10 @@ pub struct PassiveSpec {
     /// pull requests you reviewed and hourly checks of their replies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reviews: Option<crate::reviews::ReviewSettings>,
+    /// Skill folders its runs get (a group passive session: the canvas's and
+    /// its group's `LaunchDefaults::skill_dirs`; an older service ignores them).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skill_dirs: Vec<String>,
 }
 
 /// `emit --to canvas`: an event for the canvas-wide agents only.
@@ -1191,6 +1195,23 @@ mod tests {
         assert!(old.agents.is_empty());
         let back: Routing = serde_json::from_str(&serde_json::to_string(&routing).unwrap()).unwrap();
         assert_eq!(back, routing);
+    }
+
+    #[test]
+    fn passive_specs_carry_skill_folders_only_when_set() {
+        let spec = PassiveSpec { key: "k".into(), session_id: "p1".into(), skill_dirs: vec![r"C:\skills".into()], ..Default::default() };
+        let text = serde_json::to_string(&spec).unwrap();
+        assert!(text.contains(r#""skill_dirs":["C:\\skills"]"#), "{text}");
+        assert_eq!(serde_json::from_str::<PassiveSpec>(&text).unwrap(), spec);
+        // Older clients send none; older services read past them.
+        assert!(!serde_json::to_string(&PassiveSpec::default()).unwrap().contains("skill_dirs"));
+        let old: PassiveSpec = serde_json::from_str(r#"{"key":"k","session_id":"p","name":"n","group":"g","slug":"s","subscribe":[],"filter":"","every_minutes":0,"daily_at":"","paused":false,"rollover_runs":0,"max_runs_per_day":1,"mcp_off":[]}"#).unwrap();
+        assert!(old.skill_dirs.is_empty());
+        #[derive(serde::Deserialize)]
+        struct OlderSpec {
+            key: String,
+        }
+        assert_eq!(serde_json::from_str::<OlderSpec>(&text).unwrap().key, "k");
     }
 
     #[test]

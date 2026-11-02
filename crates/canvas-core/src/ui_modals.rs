@@ -273,6 +273,7 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
         Modal::GoTo(goto) => draw_goto(buf, screen, goto, ctx),
         Modal::Notebook(dialog) => crate::notebook::draw_dialog(app, buf, screen, dialog, ctx),
         Modal::Tasks(dialog) => crate::tasks::draw_dialog(app, buf, screen, dialog, ctx),
+        Modal::SkillFolders(dialog) => crate::skill_folders::draw(app, buf, screen, dialog, ctx),
         Modal::Folder(browser) => {
             let rect = centered(screen, 76, screen.height.saturating_sub(6).min(28));
             panel(buf, rect, "Choose a folder");

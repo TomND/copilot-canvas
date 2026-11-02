@@ -354,6 +354,8 @@ pub struct App {
     pub recent: crate::recent::RecentState,
     /// The canvas's skill library (canvas-wide agents), or why it could not be read.
     pub canvas_skills: Option<Result<Vec<canvas_model::canvas_wide::SkillInfo>, String>>,
+    /// The ✦ Skills view: where every session's skills come from (`skills.rs`).
+    pub skills: crate::skills::SkillsState,
     /// The Reports inbox and its viewer (`reports.rs`).
     pub reports: crate::reports::ReportsState,
     /// What the main area shows: the session canvas, the notebook or the
@@ -505,6 +507,7 @@ impl App {
             visual: Default::default(),
             recent: Default::default(),
             canvas_skills: None,
+            skills: Default::default(),
             reports: Default::default(),
             space,
             nav: Default::default(),

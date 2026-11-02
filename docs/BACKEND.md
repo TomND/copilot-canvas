@@ -109,6 +109,7 @@ the connection dropped while waiting).
 | `NoteRename { from, to, roots }` | `Done`; never over another file, also one that appears meanwhile (a change of case only is allowed), never a folder into itself | *Rename…*, *Move to…* |
 | `NoteTrash { path, root }` | `Done`: moved to `<root>/.trash/<ms>-<name>` (`<ms>-<n>-<name>` when taken) | *Delete* in the explorer |
 | `NoteSearch { roots, query, limit }` | `NoteHits(Vec<Hit { path, line, text }>)`: case-insensitive matches in file names (`line` 0) and in the lines of text files (Markdown, HTML and known text extensions, at most 2 MiB each; the line shortened to 200 characters around the match); `.trash`, `.git`, `node_modules` and links skipped, and the contents of files only in the cloud (OneDrive placeholders: reading would download them; listings classify them by folder); a root inside another searched once; at most `limit` (1 to 500) hits, 20,000 files, 50,000 names a folder, 256 MiB and 10 s | backlinks, `[[` completion, opening a `[[name]]`, the phone's search |
+| `SkillSources { dirs, canvas, folders }` | `SkillSources(Vec<SkillSource>)`: each source (`kind`: `Canvas`, `Group { id, name }` (`id` empty: every session's), `Project { root }`, `Personal { agent }`, `Library`), its folder, the agents that load it, the folders read with their counts, any problem, and its skills (name, description, SKILL.md, the agents that load it, its folder, any problem). `dirs`: the canvas's working folders (each one's project is the nearest folder holding `.git`, else itself; at most 200 folders, 40 projects); `folders`: `FolderSet { group, name, dirs }` (at most 20 folders each); `canvas`: its id (the library; an invalid id lists none). Personal sources for the agents installed where the service runs. Read only: SKILL.md front matter from the first 8 KB, at most 200 skills a folder, a few levels deep (docs/AGENTS.md, *Where agents find skills*) | the ✦ Skills view (on opening it and ⟳), the skill folders editor (counts, and checking a folder before it is added) |
 
 Paths are absolute paths on the service's machine. Every notebook request
 refuses relative paths and `.` or `..` components. The reads (`NotebookList`,
@@ -136,9 +137,9 @@ listing, a path check) are made where the answer is needed; locally they cost
 what the direct call cost, remotely one round trip. Remote callers wait up to
 `Request::timeout()`: 30 s, 2 min for scans and Task Scheduler, 5 min for
 agent configuration, 15 min for plugin updates, migrations, worktrees and
-forks; `NoteSearch` waits up to 60 s (it bounds itself to 10 s), so it is
-not served with the quick requests (those of 30 s or less, kept apart from
-slow ones).
+forks; `NoteSearch` and `SkillSources` wait up to 60 s (the first bounds itself
+to 10 s, the second scans at most 40 projects), so they are not served with
+the quick requests (those of 30 s or less, kept apart from slow ones).
 
 The draw path does no I/O: log tails, the automation folder, plugin folders
 and the backend's paths are cached in `App` and refreshed in the background.
@@ -279,6 +280,21 @@ group passive session reaches its own group's sessions and passive sessions
 canvas-wide agent and you (a window) reach every session and passive session
 of the canvas. Canvas-wide agents can put effects on any box of the canvas
 (`effects::resolve_canvas`).
+
+## Skills and skill folders on the wire
+
+The ✦ Skills view asks the backend (`SkillSources`); group skill folders are
+launch defaults (docs/AGENTS.md, *Group skill folders*):
+
+| Where | Addition | An older peer |
+|---|---|---|
+| `Doc` | `LaunchDefaults::skill_dirs` in `defaults` and a group's `defaults` (not written while empty) | an older client ignores them, but writes `defaults` without them when it changes the canvas's or a group's session defaults (the folders must be set again); an older service drops them when it saves the canvas: skill folders need a current service |
+| `ClientMsg::Launch` (`LaunchKind::Agent(AgentLaunch)`, postcard) | none in its shape: the folders and the group's id travel in `AgentLaunch::env` as `COPILOT_CANVAS_GROUP_SKILLS` (JSON `GroupSkills { group, dirs }`), taken out by the service (any case; malformed: dropped, the launch goes on) before the agent starts | an older service passes the variable to the agent (it does nothing there); an older client sends none |
+| `ClientMsg::Routing` (`bus::Routing`) | `PassiveSpec::skill_dirs`: a group passive session's folders (the canvas's and its group's) | ignores them: its runs get no skill folders |
+| `Request` / `Response` | `SkillSources` / `SkillSources` (appended last) | answers "does not support this request (update it)": the view says the service is older and lists the agents' own lists only; the editor refuses to add a folder |
+| `HostApp::resolve_launch` (in-process) | gets the terminal's folder (`cwd`), which tells the service which project skills the agent already loads | — |
+
+The service writes the copies only below its home (`<home>/group-skills/<instance>/<group>/<n>-<terminal>`, a folder for each launch) and removes only there; the skill folders themselves are only read.
 
 ## Pull request coordination on the wire
 
@@ -501,6 +517,21 @@ most 8 files and 4 MiB in all.
   `the_inbox_reaches_clients_that_show_it_and_read_state_is_the_services`
   checks that only `CAP_REPORTS` clients get `ServiceMsg::Reports` and that a
   read by one client reaches the other.
+  `skill_sources_answer_the_same_locally_and_remotely` lists a temporary
+  repository's project skills, a group skill folder (and a missing one), the
+  canvas plugin the service wrote and a canvas library both ways.
+- `canvas_model::skills`: each agent's folders, project roots and the folders
+  between, scanning (front matter from the first 8 KB, a few levels deep,
+  hidden folders skipped, at most 2,000 folders a scan), every source with
+  its agents, the 40-project cap, merging the agents' own lists, filtering by
+  agent, same names, group plugins (each name once, the project's own left
+  out, limits, rebuilt, removed only inside their root; links below the folders
+  chosen never followed, full paths only, a skill whose SKILL.md is not copied
+  left out); `canvas_model::launch`: the skill folders of every launch in a
+  group, their trip through the postcard `ClientMsg::Launch`, the entry taken
+  out whatever its case; `canvas_agents::service`: every agent's command line
+  with a group plugin, interactive and passive, and an exit handled after a
+  relaunch never removing the relaunch's plugin.
 - `canvas_agents::reports`: the command's checks (oversized, empty, bad
   links), queued then stored, waiting for stored or refused, read state and
   retention (never an unread report), a full inbox, titles from the body.

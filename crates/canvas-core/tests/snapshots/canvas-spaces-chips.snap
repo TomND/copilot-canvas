@@ -16,21 +16,21 @@
                                  │ ┃                                                              ┃││ ☑ Open todo board · 4 open · 2 in progress · 1 proposed ◇                    │
  ⇄                               │ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━◢││   Link todo boards…                                                          │
                                  │                                                                 ││                                                                              │
- ≡                               │                                                                 ││ ⚙ Launch defaults for this group…                                            │
+ ≡                               │                                                                 ││ SKILLS                                                                       │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·   ││ No skill folders of its own.                                                 │
+ ✉                               │ ┌╌ ▣ Ideas · 1  ⟲+ ╌ ✎ Set folder… ╌ ☑ + ╌╌┐                    ││   Edit skill folders…                                                        │
+                                 │ ╎                                          ╎                    ││                                                                              │
+                                 │ ╎ ╭ Unfiled idea ──────────────╮    ·     ·╎    ·     ·     ·   ││ ⚙ Launch defaults for this group…                                            │
+                                 │ ╎ │ ■ stopped                  │           ╎                    ││                                                                              │
+                                 │ ╎ │ canvas                     │           ╎                    ││ PASSIVE SESSIONS · 0 (this group's events only)                              │
+                                 │ ╎ ╰────────────────────────────╯    ·     ·╎    ·     ·     ·   ││ None yet.                                                                    │
+                                 │ ╎                                          ╎                    ││ ⟲ + Create a passive session for this group…                                 │
+                                 │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌◢                    ││ ◎ Canvas-wide agents (every group) are in ◎ Agents                           │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·   ││                                                                              │
- ✉                               │ ┌╌ ▣ Ideas · 1  ⟲+ ╌ ✎ Set folder… ╌ ☑ + ╌╌┐                    ││ PASSIVE SESSIONS · 0 (this group's events only)                              │
-                                 │ ╎                                          ╎                    ││ None yet.                                                                    │
-                                 │ ╎ ╭ Unfiled idea ──────────────╮    ·     ·╎    ·     ·     ·   ││ ⟲ + Create a passive session for this group…                                 │
-                                 │ ╎ │ ■ stopped                  │           ╎                    ││ ◎ Canvas-wide agents (every group) are in ◎ Agents                           │
-                                 │ ╎ │ canvas                     │           ╎                    ││                                                                              │
-                                 │ ╎ ╰────────────────────────────╯    ·     ·╎    ·     ·     ·   ││ ■ Write the spec — stopped                                                   │
-                                 │ ╎                                          ╎                    ││ ■ Draft the docs — stopped                                                   │
-                                 │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌◢                    ││                                                                              │
-                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·   ││ Enter: show running terminals · R: rename · Del: delete group                │
-                                 │                                                                 ││                                                                              │
-                                 │                                                                 ││                                                                              │
+                                 │                                                                 ││ ■ Write the spec — stopped                                                   │
+                                 │                                                                 ││ ■ Draft the docs — stopped                                                   │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·   ││                                                                              │
-                                 │                                                                 ││                                                                              │
+                                 │                                                                 ││ Enter: show running terminals · R: rename · Del: delete group                │
                                  │                                                                 ││                                                                              │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·   ││                                                                              │
                                  │                                                                 ││                                                                              │
@@ -81,21 +81,21 @@ box c Session rect=2,18 30x4 prefix="" name="Unfiled idea"
                                  │ ┃                                                              ┃││ ☑ Open todo board · 4 open · 2 in progress · 1 proposed ◇                    │
  ⇄                               │ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━◢││   Link todo boards…                                                          │
                                  │                                                                 ││                                                                              │
- ≡                               │                                                                 ││ ⚙ Launch defaults for this group…                                            │
+ ≡                               │                                                                 ││ SKILLS                                                                       │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·   ││ No skill folders of its own.                                                 │
+ ✉                               │ ┌╌ ▣ Ideas · 1  ⟲+ ╌ ✎ Set folder… ╌ ☑ + ╌╌┐                    ││   Edit skill folders…                                                        │
+                                 │ ╎                                          ╎                    ││                                                                              │
+                                 │ ╎ ╭ Unfiled idea ──────────────╮    ·     ·╎    ·     ·     ·   ││ ⚙ Launch defaults for this group…                                            │
+                                 │ ╎ │ ■ stopped                  │           ╎                    ││                                                                              │
+                                 │ ╎ │ canvas                     │           ╎                    ││ PASSIVE SESSIONS · 0 (this group's events only)                              │
+                                 │ ╎ ╰────────────────────────────╯    ·     ·╎    ·     ·     ·   ││ None yet.                                                                    │
+                                 │ ╎                                          ╎                    ││ ⟲ + Create a passive session for this group…                                 │
+                                 │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌◢                    ││ ◎ Canvas-wide agents (every group) are in ◎ Agents                           │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·   ││                                                                              │
- ✉                               │ ┌╌ ▣ Ideas · 1  ⟲+ ╌ ✎ Set folder… ╌ ☑ + ╌╌┐                    ││ PASSIVE SESSIONS · 0 (this group's events only)                              │
-                                 │ ╎                                          ╎                    ││ None yet.                                                                    │
-                                 │ ╎ ╭ Unfiled idea ──────────────╮    ·     ·╎    ·     ·     ·   ││ ⟲ + Create a passive session for this group…                                 │
-                                 │ ╎ │ ■ stopped                  │           ╎                    ││ ◎ Canvas-wide agents (every group) are in ◎ Agents                           │
-                                 │ ╎ │ canvas                     │           ╎                    ││                                                                              │
-                                 │ ╎ ╰────────────────────────────╯    ·     ·╎    ·     ·     ·   ││ ■ Write the spec — stopped                                                   │
-                                 │ ╎                                          ╎                    ││ ■ Draft the docs — stopped                                                   │
-                                 │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌◢                    ││                                                                              │
-                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·   ││ Enter: show running terminals · R: rename · Del: delete group                │
-                                 │                                                                 ││                                                                              │
-                                 │                                                                 ││                                                                              │
+                                 │                                                                 ││ ■ Write the spec — stopped                                                   │
+                                 │                                                                 ││ ■ Draft the docs — stopped                                                   │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·   ││                                                                              │
-                                 │                                                                 ││                                                                              │
+                                 │                                                                 ││ Enter: show running terminals · R: rename · Del: delete group                │
                                  │                                                                 ││                                                                              │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·   ││                                                                              │
                                  │                                                                 ││                                                                              │

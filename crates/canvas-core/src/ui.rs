@@ -1095,6 +1095,23 @@ fn draw_details(app: &mut App, buf: &mut Buffer, area: Rect) {
                     lines.push(("☑ Create or link a todo board…".into(), fg(ACCENT)));
                 }
             }
+            // Its skill folders: every session of the group gets them, all agents.
+            lines.push((String::new(), Style::default()));
+            lines.push(("SKILLS".into(), bold(MUTED)));
+            let folders = crate::skill_folders::dirs(app, Some(&group.id));
+            let key = crate::skills::group_key(Some(&group.id));
+            if folders.is_empty() {
+                lines.push(("No skill folders of its own.".into(), fg(MUTED)));
+            } else {
+                let found = app.skills.sources.as_ref().and_then(|s| s.as_ref().ok()).and_then(|s| s.iter().find(|s| canvas_model::skills::key(&s.kind) == key)).map(|s| s.skills.len());
+                clicks.push((lines.len(), Action::Skills(crate::skills::SkillAction::Show(key.clone()))));
+                lines.push((format!("✦ {} · every agent ▸", crate::skills::folders_summary(folders.len(), found)), fg(ACCENT)));
+                for folder in folders.iter().take(3) {
+                    lines.push((format!("  {}", truncate_left(folder, w.saturating_sub(2))), fg(TEXT)));
+                }
+            }
+            clicks.push((lines.len(), Action::Skills(crate::skills::SkillAction::EditFolders(Some(group.id.clone())))));
+            lines.push(("  Edit skill folders…".into(), fg(MUTED)));
             lines.push((String::new(), Style::default()));
             let overrides = group.defaults.as_ref().map(|d| d.summary()).unwrap_or_default();
             if !overrides.is_empty() {

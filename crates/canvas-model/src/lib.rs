@@ -23,6 +23,7 @@ pub mod report_html;
 pub mod reports;
 pub mod reviews;
 pub mod rpc;
+pub mod skills;
 pub mod status;
 pub mod sync;
 pub mod todos;

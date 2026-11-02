@@ -1094,6 +1094,59 @@ fn reports_inbox() {
     check("reports-inbox", &mut app, BOTH);
 }
 
+/// The ✦ Skills view (every agent): the canvas plugin's skills, a group's
+/// skill folder, the project of the canvas's sessions (each skill with the
+/// agents that read its folder; `≈` where one also has a skill of its name),
+/// two agents' personal folders and the canvas library; the project's
+/// `review` is selected, its details on the right.
+#[test]
+fn skills_view_with_every_source() {
+    use canvas_core::agents::AgentKind::{Claude, Copilot, OpenCode};
+    use canvas_model::skills::{SkillSource, SourceKind, SourceSkill};
+    let mut doc = Doc { canvas_id: Some("canvas-1".into()), ..Default::default() };
+    doc.nodes.push(node("s-fix", "Fix flaky test", 2, 2));
+    let defaults = canvas_core::doc::LaunchDefaults { skill_dirs: vec![r"C:\team\skills".into()], ..Default::default() };
+    doc.groups.push(Group { id: "g1".into(), name: "Payments".into(), x: 0, y: 0, w: 40, h: 10, folder: Some(r"C:\notes\Payments".into()), defaults: Some(defaults), ..Default::default() });
+    let mut app = app(doc, false);
+    app.set_view(canvas_core::side::SideView::Skills);
+    // The listing as the backend answers it (no background work in a snapshot).
+    app.skills.loading = false;
+    app.configs_loading.clear();
+    let skill = |name: &str, folder: &str, agents: &[canvas_core::agents::AgentKind], about: &str| SourceSkill {
+        name: name.into(),
+        description: about.into(),
+        path: format!(r"{folder}\{name}\SKILL.md"),
+        agents: agents.to_vec(),
+        folder: folder.into(),
+        ..Default::default()
+    };
+    let all = [Copilot, OpenCode, Claude];
+    let source = |kind: SourceKind, path: &str, skills: Vec<SourceSkill>| SkillSource { agents: canvas_model::skills::agents_of(&skills), kind, path: path.into(), folders: vec![(path.into(), skills.len())], skills, problem: String::new() };
+    let plugin = r"C:\data\plugin\skills";
+    let project = r"C:\work\canvas";
+    app.skills.sources = Some(Ok(vec![
+        source(SourceKind::Canvas, plugin, vec![skill("canvas-events", plugin, &all, "Send and react to canvas events."), skill("canvas-notes", plugin, &all, "Write notes for agents and people.")]),
+        source(SourceKind::Group { id: "g1".into(), name: "Payments".into() }, r"C:\team\skills", vec![skill("payments-review", r"C:\team\skills", &all, "How payments changes are reviewed.")]),
+        source(
+            SourceKind::Project { root: project.into() },
+            project,
+            vec![
+                skill("review", &format!(r"{project}\.claude\skills"), &all, "Review a change against the project's conventions before it is pushed."),
+                skill("release", &format!(r"{project}\.agents\skills"), &[Copilot, OpenCode], "Cut a release."),
+                skill("ci", &format!(r"{project}\.github\skills"), &[Copilot], "Fix the CI."),
+            ],
+        ),
+        source(SourceKind::Personal { agent: Copilot }, r"C:\Users\me\.copilot\skills", vec![skill("standup", r"C:\Users\me\.copilot\skills", &[Copilot], "Write a standup.")]),
+        source(SourceKind::Personal { agent: OpenCode }, r"C:\Users\me\.config\opencode\skills", vec![skill("review", r"C:\Users\me\.claude\skills", &[OpenCode, Claude], "My own review checklist.")]),
+        source(SourceKind::Library, r"C:\data\canvas-agents\canvas-1\skills", vec![skill("pr-etiquette", r"C:\data\canvas-agents\canvas-1\skills", &all, "Route PR feedback.")]),
+    ]));
+    let rows = app.build_list();
+    let at = rows.iter().position(|r| r.label == "review" && matches!(&r.item, canvas_core::side::ItemRef::SkillOf(key, _) if key.starts_with("project:"))).expect("the project's review");
+    app.list_sel = at;
+    app.right_detail = Some(canvas_core::side::RightDetail::Item(rows[at].item.clone()));
+    check("skills-view", &mut app, BOTH);
+}
+
 /// The viewer on the morning brief: who and when, the session it came from
 /// (viewed, never started), its pull request and links, the Markdown
 /// formatted (headings, emphasis, a list, a table, code, a quote, a link).

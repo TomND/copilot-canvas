@@ -29,6 +29,7 @@ follow-ups, notes, todos), plus the canvas skills (`canvas-events`,
 | MCP servers off | `--disable-mcp-server NAME` | `OPENCODE_CONFIG_CONTENT` `{"mcp": {NAME: {"enabled": false}}}` | a private `--strict-mcp-config --mcp-config` file without them |
 | Passive run | `copilot --session-id ID -p PROMPT --allow-all --no-ask-user` | `opencode run PROMPT [-s ses_…] --auto -m MODEL` | `claude -p PROMPT --session-id/-r ID --dangerously-skip-permissions` |
 | Canvas skills of a canvas-wide agent | another `--plugin-dir <agent>/plugin` (Copilot takes the option several times) | `<agent>/plugin/skills` added to `skills.paths` in `OPENCODE_CONFIG_CONTENT` | another `--plugin-dir <agent>/plugin` (`.claude-plugin/plugin.json`; repeatable) |
+| Group skill folders | another `--plugin-dir <home>/group-skills/<instance>/<group>/<n>-<terminal>` | that folder's `skills` added to `skills.paths` | another `--plugin-dir` (the same folder) |
 | History | `~/.copilot/session-state/<id>/events.jsonl` (tailed) | `~/.local/share/opencode/opencode.db` (SQLite, read-only, indexed lookups only) | `~/.claude/projects/<dir>/<id>.jsonl` (tailed) |
 | Live state | OSC 9;4 progress; `inuse.<pid>.lock` | the TUI's own HTTP server (busy, permission prompts, questions) | `~/.claude/sessions/<pid>.json` (busy / idle / waiting) |
 
@@ -134,7 +135,90 @@ plugin folder is removed. A skill the library no longer has is logged by the
 service (`canvas agent …: skills not in the canvas library: …`) and marked
 *(missing)* in the agent's panel. The service log line of the launch ends in
 `, with its canvas skills` when a run (or chat) got the plugin. Group passive
-sessions and ordinary sessions get no canvas skills.
+sessions and ordinary sessions get no skills of the canvas library; they get
+the group skill folders instead (below).
+
+## Where agents find skills
+
+Each agent CLI reads skills by itself from project and personal folders. The
+canvas does not change that; the ✦ Skills view lists what each agent finds
+(`canvas_model::skills`, `Request::SkillSources`). The folders, as each
+agent's documentation gives them (read 2026-11-01):
+
+| | Project folders (a session started in folder F of a repository) | Personal folders | Source |
+|---|---|---|---|
+| Claude Code | `.claude/skills/<name>/SKILL.md` in F and every parent up to the repository root (deeper ones only once Claude works on files there) | `~/.claude/skills` (`CLAUDE_CONFIG_DIR` when set) | [code.claude.com/docs/en/skills](https://code.claude.com/docs/en/skills) (*Choose where skills load*, *Load skills in monorepos and subdirectories*) |
+| OpenCode | `.opencode/skills` (also the singular `.opencode/skill`), `.claude/skills` and `.agents/skills`, from F up to the git worktree | `~/.config/opencode/skills` (and `skill`), `~/.claude/skills`, `~/.agents/skills` | [opencode.ai/docs/skills](https://opencode.ai/docs/skills) (*Place files*, *Understand discovery*); singular folder names: [opencode.ai/docs/config](https://opencode.ai/docs/config) |
+| Copilot CLI | `.github/skills`, `.agents/skills`, `.claude/skills` of the repository, and `.github/skills` of parent folders (monorepos) | `~/.copilot/skills` (`COPILOT_HOME` when set), `~/.agents/skills`; not `~/.claude/skills` | [About agent skills](https://docs.github.com/en/copilot/concepts/agents/about-agent-skills), [Adding agent skills for Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills), [CLI command reference › Skills reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference) |
+
+The repository root is the nearest folder at or above F holding `.git` (a
+folder, or a linked worktree's file); without one, F itself. For Copilot CLI
+the canvas reads `.agents/skills` and `.claude/skills` in F and at the root,
+`.github/skills` in every folder between. The listing looks a few levels below
+each skills folder (as `~/.claude/skills/synced/<account>/<skill>`, which Claude
+Code and OpenCode load) and leaves out hidden folders such as Claude Code's
+`.trash`. Same names: Claude Code prefers a personal skill to a project's,
+plugin skills keep their plugin's name (`plugin:skill`), Copilot CLI uses the
+first found in its order, OpenCode asks for unique names; the view marks a
+skill with `≈` when an agent that loads it also loads another of its name.
+Plugins, built-in skills and enabled/disabled state come from each agent's own
+listing (`ConfigSnapshot`), merged into its personal folders.
+
+What the listing reads (on the service's machine, never written): the canvas
+plugin (`<home>/plugin/skills`), the skill folders of every session and each
+group, the projects of the canvas's sessions (the distinct folders of its
+session boxes, from their history when a box has none, and the group folders;
+at most 40 project roots), the personal folders of the installed agents and
+the canvas library. Each SKILL.md is read for its front matter (`name`,
+`description`) from its first 8 KB; at most 200 skills a folder and 2,000
+folders looked at a scan.
+
+## Group skill folders
+
+A group's skill folders (*Skill folders…* in the group menu, *Edit skill
+folders…* in its details; the canvas's own in *Settings › Skill folders (all
+sessions)…*; `LaunchDefaults::skill_dirs`) are folders of skills (`<name>/SKILL.md`
+below them) or one skill (a folder with a SKILL.md). The canvas's and the
+group's lists both apply, the canvas's first, each folder once. Every
+session the canvas starts in the group (new, resumed, forked, subsessions,
+a passive session's chat) and every run of the group's passive sessions gets
+them, with all three agents; canvas-wide agents keep their own skills.
+
+| | Copilot CLI | OpenCode | Claude Code |
+|---|---|---|---|
+| Manifest | `plugin.json` (`name: canvas-group-skills`, `skills: ./skills/`) | none: the `skills` folder is read directly | `.claude-plugin/plugin.json` (`name: canvas-group-skills`) |
+| How the session gets it | one more `--plugin-dir <home>/group-skills/<instance>/<group>/<n>-<terminal>` | `skills.paths` gets that folder's `skills` | one more `--plugin-dir` (the same folder) |
+
+Right before the launch the service copies the skills into a new folder of
+that launch (`<instance>`: the service's instance name, `<n>`: a launch
+counter; the canvas library's limits: 200 files, 8 MB and 4 levels a skill,
+each folder's files first, no links; at most 100 skills and about 64 MB a
+launch). The previous launch's folder goes when the terminal launches again,
+the folder of a launch when its terminal exits (an exit handled after a
+relaunch never takes the relaunch's), and the instance's whole folder when
+the service starts (services of other instances sharing the home keep
+theirs). Nothing outside `<home>/group-skills/<instance>` is written or
+removed. Left out, and named in the service log (`terminal …: skill folders
+of group … (N folder(s)): a, b; skipped c (the session's project already has
+it)`): names the agent already loads from the session's own folder (its
+project folders above), a name an earlier folder gave, folders that are not
+full paths, more than 40 folders (the canvas's 20 and the group's 20), links
+below the folders chosen (a folder chosen may itself be a link), skills whose
+SKILL.md was not copied, and what does not fit. The launch's log line then
+ends in `, with its group skills`. The editor checks a folder on the service's
+machine in the background (the window never waits for it) and takes at most
+20 a list.
+
+**Carrying them.** `AgentLaunch` travels postcard-encoded, so it gets no new
+field: the client puts the folders and the group's id into its environment as
+`COPILOT_CANVAS_GROUP_SKILLS` (JSON `{"group": …, "dirs": […]}`;
+`canvas_model::launch`), and the service takes that entry out (its name in any
+case, as Windows reads it; one that is not valid JSON is dropped and the
+launch goes on without folders) before the agent starts; plain Copilot
+launches (`LaunchKind::CopilotWith`) never pass it on either. An older service
+passes it on to the agent as a variable that does nothing. Passive runs get
+them from the routing (`PassiveSpec::skill_dirs`, JSON with a default; an
+older service ignores them).
 
 ## How status is derived
 

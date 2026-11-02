@@ -62,6 +62,7 @@ impl App {
             }
             Some(Modal::ImportCopilot(dialog)) => dialog.filter.insert(text),
             Some(Modal::Folder(browser)) => browser.filter.push_str(text.trim()),
+            Some(Modal::SkillFolders(dialog)) => crate::skill_folders::text(dialog, text),
             Some(Modal::Pick(pick)) => pick.filter.push_str(text.trim()),
             Some(Modal::GoTo(goto)) => {
                 goto.input.insert(text);
@@ -153,6 +154,7 @@ impl App {
             },
             Modal::NewSession(dialog) => self.new_session_key(dialog, key),
             Modal::Folder(browser) => self.folder_key(browser, key),
+            Modal::SkillFolders(dialog) => crate::skill_folders::key(self, dialog, key),
             Modal::Pick(pick) => self.pick_key(pick, key),
             Modal::Mcp(picker) => self.mcp_key(picker, key),
             Modal::Viewer(viewer) => match viewer.key(&key) {
@@ -558,6 +560,9 @@ impl App {
             dialog.error = None;
         } else if let Some(Modal::Prompt(prompt)) = self.modals.last_mut() {
             prompt.input.set(&path);
+        } else if let Some(Modal::SkillFolders(dialog)) = self.modals.last_mut() {
+            dialog.input.set(&path);
+            dialog.error = None;
         }
     }
 
@@ -691,13 +696,14 @@ impl App {
 
     pub fn modal_mouse(&mut self, mouse: MouseEvent) {
         let (x, y) = (mouse.column, mouse.row);
-        // The Notebook's and Tasks' dialogs get every mouse event themselves.
-        if matches!(self.modals.last(), Some(Modal::Notebook(_) | Modal::Tasks(_))) {
+        // The Notebook's and Tasks' dialogs and the skill folders editor get every mouse event themselves.
+        if matches!(self.modals.last(), Some(Modal::Notebook(_) | Modal::Tasks(_) | Modal::SkillFolders(_))) {
             let hit = self.layout.hits.iter().rev().find(|(r, _)| rect_contains(*r, x, y)).map(|(_, h)| h.clone());
             let Some(mut modal) = self.modals.pop() else { return };
             let outcome = match &mut modal {
                 Modal::Notebook(dialog) => crate::notebook::dialog_mouse(self, dialog, mouse, hit),
                 Modal::Tasks(dialog) => crate::tasks::dialog_mouse(self, dialog, mouse, hit),
+                Modal::SkillFolders(dialog) => crate::skill_folders::mouse(self, dialog, mouse, hit),
                 _ => Outcome::Keep,
             };
             return self.finish_modal(modal, outcome);

@@ -127,6 +127,8 @@ impl App {
                     groups: if node.is_canvas_agent() { p.groups.clone() } else { Vec::new() },
                     prs: if node.is_canvas_agent() { p.prs.clone() } else { None },
                     reviews: if node.is_canvas_agent() { p.reviews.clone() } else { None },
+                    // The canvas's and its group's skill folders (canvas-wide agents have their own skills).
+                    skill_dirs: if node.is_canvas_agent() { Vec::new() } else { self.doc.defaults.merged(self.doc.group(&p.group).and_then(|g| g.defaults.as_ref())).skill_dirs },
                 }),
                 None => {
                     if let Some(group) = self.doc.group_of(node) {

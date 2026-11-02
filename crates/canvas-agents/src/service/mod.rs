@@ -82,6 +82,47 @@ fn session_plan(kind: AgentKind, launch: &AgentLaunch, id: &str, session: &str) 
     SessionPlan::Terminal
 }
 
+/// The plugin with a launch's skill folders (`None`: nothing to give), made
+/// under `root` as `launch`, and the service log's line about it: what it got
+/// and what it left out (names the agent already loads from the project of
+/// `cwd`, repeated names, links).
+fn group_skill_plugin(root: &Path, launch: &str, id: &str, kind: AgentKind, cwd: &Path, skills: &canvas_model::launch::GroupSkills) -> (Option<PathBuf>, String) {
+    let native = canvas_model::skills::native_skill_names(kind, cwd);
+    let group = if skills.group.is_empty() { "the canvas".to_owned() } else { format!("group {}", skills.group) };
+    match canvas_model::skills::prepare_group_plugin(root, &skills.group, launch, &skills.dirs, &native) {
+        Ok(made) => {
+            let given = if made.given.is_empty() { "none".to_owned() } else { made.given.join(", ") };
+            let skipped = if made.skipped.is_empty() { String::new() } else { format!("; skipped {}", made.skipped.join(", ")) };
+            (made.dir, format!("terminal {id}: skill folders of {group} ({} folder(s)): {given}{skipped}", skills.dirs.len()))
+        }
+        Err(error) => (None, format!("terminal {id}: cannot prepare the skill folders of {group}: {error}")),
+    }
+}
+
+/// The group skill plugin to remove when terminal `id` (started at
+/// `started`, when known) exits: the one registered for it, unless it was
+/// made after that terminal started (a relaunch of the id owns it then).
+fn take_exited_plugin(plugins: &mut HashMap<String, (PathBuf, u64)>, id: &str, started: Option<u64>) -> Option<PathBuf> {
+    let (_, made) = plugins.get(id)?;
+    if started.is_some_and(|started| *made > started) {
+        return None;
+    }
+    plugins.remove(id).map(|(plugin, _)| plugin)
+}
+
+/// The environment entry that removes the skill folders' variable from
+/// what an agent inherits ("-NAME" with an empty value: `Terminal::spawn`).
+fn no_group_skills_env() -> (String, String) {
+    (format!("-{}", canvas_model::launch::GROUP_SKILLS_ENV), String::new())
+}
+
+/// A plain Copilot launch's environment without the skill folders'
+/// variable (in any case): it travels only in agent launches.
+fn without_group_skills(mut env: Vec<(String, String)>) -> Vec<(String, String)> {
+    env.retain(|(k, _)| !k.eq_ignore_ascii_case(canvas_model::launch::GROUP_SKILLS_ENV));
+    env
+}
+
 /// The backend's state; dereferences to the terminal host it runs in.
 pub struct Agents {
     host: Arc<Host>,
@@ -106,6 +147,11 @@ pub struct Agents {
     /// Terminal id → the skills plugin its next launch gets (a canvas-wide
     /// agent's run, set right before the launch).
     skill_plugins: Mutex<HashMap<String, PathBuf>>,
+    /// Terminal id → the group skill plugin its latest launch got and when
+    /// it was made (a plugin newer than an exiting terminal is a relaunch's).
+    group_plugins: Mutex<HashMap<String, (PathBuf, u64)>>,
+    /// Numbers each launch's group skill plugin folder.
+    group_plugin_seq: std::sync::atomic::AtomicU64,
     /// Canvas documents clients opened.
     docs: docs::Docs,
     /// Backend requests for the worker threads (slow, quick).
@@ -168,6 +214,8 @@ impl Agents {
             pending_sessions: Mutex::new(HashMap::new()),
             agent_sessions: Mutex::new(HashMap::new()),
             skill_plugins: Mutex::new(HashMap::new()),
+            group_plugins: Mutex::new(HashMap::new()),
+            group_plugin_seq: std::sync::atomic::AtomicU64::new(0),
             docs: docs::Docs::default(),
             rpc: (rpc_tx, quick_tx),
             remote: crate::remote::Registry::new(&instance.home),
@@ -199,6 +247,9 @@ impl Agents {
         if let Err(error) = crate::cli::install_cli(&instance.home) {
             log(&instance, &format!("cannot install the copilot-canvas command: {error:#}"));
         }
+        // This service's copies of group skill folders: none of its terminals runs yet
+        // (other instances sharing the home keep theirs).
+        let _ = std::fs::remove_dir_all(canvas_model::skills::group_plugins_dir(&instance.home, &instance.name));
         server::spawn_named("bus", { let a = agents.clone(); move || passive::bus_loop(a, bus_rx) });
         server::spawn_named("reports", { let a = agents.clone(); move || inbox::run(a) });
         server::spawn_named("prs", { let a = agents.clone(); move || prs::run(a) });
@@ -251,10 +302,12 @@ impl Agents {
         }
     }
 
-    fn resolve_agent(&self, id: &str, mut launch: AgentLaunch) -> Result<Resolved> {
+    fn resolve_agent(&self, id: &str, mut launch: AgentLaunch, cwd: &str) -> Result<Resolved> {
         let kind = AgentKind::parse(&launch.agent).with_context(|| format!("unknown agent {:?}", launch.agent))?;
         let provider = kind.provider();
         let session = launch.native_id.clone().unwrap_or_else(|| id.to_owned());
+        // Skill folders travel in the environment; they never reach the agent.
+        let group_skills = canvas_model::launch::take_group_skills(&mut launch);
         // Never become a second writer for a session running elsewhere.
         anyhow::ensure!(
             !launch.resume || !provider.is_live(&session),
@@ -274,13 +327,38 @@ impl Agents {
         let mut integration = self.integration(id);
         // Sessions and passive runs know their agent (`COPILOT_CANVAS_AGENT`).
         integration.env.extend(crate::agents::session_agent_env(kind));
+        // The skill folders' variable never reaches the agent, also one this service
+        // inherited (started inside an older service's session).
+        integration.env.push(no_group_skills_env());
         integration.skill_plugins.extend(self.skill_plugin(id));
-        let command = provider.command(id, &launch, &integration)?;
+        let skills = if integration.skill_plugins.is_empty() { "" } else { ", with its canvas skills" };
+        // The previous launch's copy: that terminal has exited (a live one is never launched again).
+        let root = canvas_model::skills::group_plugins_dir(&self.instance.home, &self.instance.name);
+        if let Some((previous, _)) = lock(&self.group_plugins).remove(id) {
+            canvas_model::skills::remove_group_plugin(&root, &previous);
+        }
+        // A folder of its own for each launch: a late exit of the previous one never removes it.
+        let group_plugin = group_skills.and_then(|skills| {
+            let launch_key = format!("{}-{id}", self.group_plugin_seq.fetch_add(1, Ordering::Relaxed));
+            let (plugin, line) = group_skill_plugin(&root, &launch_key, id, kind, Path::new(cwd), &skills);
+            log(&self.instance, &line);
+            plugin
+        });
+        if let Some(plugin) = &group_plugin {
+            lock(&self.group_plugins).insert(id.to_owned(), (plugin.clone(), now_ms()));
+        }
+        let group = if group_plugin.is_some() { ", with its group skills" } else { "" };
+        integration.skill_plugins.extend(group_plugin.clone());
+        let command = provider.command(id, &launch, &integration).inspect_err(|_| {
+            if let Some(plugin) = &group_plugin {
+                lock(&self.group_plugins).remove(id);
+                canvas_model::skills::remove_group_plugin(&root, plugin);
+            }
+        })?;
         let how = if launch.headless_prompt.is_some() { "headless run" } else if launch.fork_from.is_some() { "fork" } else if launch.resume { "resume" } else { "new session" };
         // The model as the command line carries it (agents that keep a session's model get none on resume).
         let model = launch.model.as_deref().filter(|m| command.args.iter().any(|a| a == m)).map(|m| format!(", model {m}")).unwrap_or_default();
-        let skills = if integration.skill_plugins.is_empty() { "" } else { ", with its canvas skills" };
-        log(&self.instance, &format!("terminal {id}: {} {how}{model}{skills}", kind.id()));
+        log(&self.instance, &format!("terminal {id}: {} {how}{model}{skills}{group}", kind.id()));
         lock(&self.agent_terms).insert(id.to_owned(), kind);
         match session_plan(kind, &launch, id, &session) {
             SessionPlan::Expect { fork } => self.expect_session(id, None, fork),
@@ -353,11 +431,11 @@ impl HostApp for Agents {
         self.integration(id).env
     }
 
-    fn resolve_launch(&self, id: &str, kind: LaunchKind) -> Result<Resolved> {
+    fn resolve_launch(&self, id: &str, kind: LaunchKind, cwd: &str) -> Result<Resolved> {
         let (new_name, prompt, resume, extra, env) = match kind {
             LaunchKind::Copilot { new_name, prompt, resume } => (new_name, prompt, resume, Vec::new(), Vec::new()),
-            LaunchKind::CopilotWith { new_name, prompt, resume, args, env } => (new_name, prompt, resume, args, env),
-            LaunchKind::Agent(launch) => return self.resolve_agent(id, *launch),
+            LaunchKind::CopilotWith { new_name, prompt, resume, args, env } => (new_name, prompt, resume, args, without_group_skills(env)),
+            LaunchKind::Agent(launch) => return self.resolve_agent(id, *launch, cwd),
             LaunchKind::Command { .. } => anyhow::bail!("plain commands are launched by the host"),
         };
         anyhow::ensure!(is_session_id(id), "refusing to launch an invalid session id");
@@ -502,6 +580,12 @@ impl HostApp for Agents {
         let kind = lock(&self.agent_terms).remove(id);
         if let Some(kind) = kind {
             kind.provider().terminal_exited(id, &self.instance.home);
+        }
+        // Its copy of the group's skill folders, unless a relaunch (prepared
+        // after this terminal started) has made the one registered now.
+        let started = lock(&self.terms).get(id).map(|t| t.started_ms);
+        if let Some(plugin) = take_exited_plugin(&mut lock(&self.group_plugins), id, started) {
+            canvas_model::skills::remove_group_plugin(&canvas_model::skills::group_plugins_dir(&self.instance.home, &self.instance.name), &plugin);
         }
     }
 
@@ -1097,5 +1181,84 @@ mod tests {
         assert_eq!(session_for_pid(&root, 4242).as_deref(), Some(id));
         assert_eq!(session_for_pid(&root, 4243), None);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn group_skill_folders_reach_every_agents_command_line() {
+        use canvas_model::launch::{attach_group_skills, take_group_skills};
+        let root = std::env::temp_dir().join(format!("cc-group-skills-{}", uuid::Uuid::new_v4()));
+        let (home, skills, repo) = (root.join("home"), root.join("team-skills"), root.join("repo"));
+        for (dir, name) in [(&skills, "team-review"), (&skills, "shared"), (&repo.join(".claude").join("skills"), "shared")] {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+            std::fs::write(dir.join(name).join("SKILL.md"), format!("---\nname: {name}\ndescription: d\n---\n")).unwrap();
+        }
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        // SAFETY: as in the providers' own tests, these are only read.
+        unsafe {
+            std::env::set_var("COPILOT_CANVAS_COPILOT", r"C:\bin\copilot.exe");
+            std::env::set_var("COPILOT_CANVAS_OPENCODE", r"C:\bin\opencode.exe");
+            std::env::set_var("COPILOT_CANVAS_CLAUDE", r"C:\bin\claude.exe");
+        }
+        let id = "12345678-1234-1234-1234-123456789abc";
+        for kind in crate::agents::ALL {
+            for headless in [None, Some("run".to_owned())] {
+                let mut launch = AgentLaunch { agent: kind.id().into(), headless_prompt: headless.clone(), ..Default::default() };
+                attach_group_skills(&mut launch, "g-1", &[skills.display().to_string()]);
+                let carried = take_group_skills(&mut launch).expect("carried");
+                // Every agent reads the repository's .claude/skills itself: `shared` is not given again.
+                let (plugin, line) = group_skill_plugin(&home, &format!("1-{id}"), id, kind, &repo, &carried);
+                let plugin = plugin.expect("a plugin");
+                assert!(line.contains("skill folders of group g-1 (1 folder(s)): team-review; skipped shared (the session's project already has it)"), "{line}");
+                assert!(plugin.join("skills").join("team-review").join("SKILL.md").is_file() && !plugin.join("skills").join("shared").exists());
+                let integration = Integration { skill_plugins: vec![plugin.clone()], env: vec![no_group_skills_env()], ..Default::default() };
+                let command = match kind {
+                    AgentKind::OpenCode => crate::agents::opencode::OpenCode.command_with(id, &launch, &integration, false).unwrap(),
+                    _ => kind.provider().command(id, &launch, &integration).unwrap(),
+                };
+                match kind {
+                    AgentKind::OpenCode => {
+                        let config = command.env.iter().rev().find(|(k, _)| k == "OPENCODE_CONFIG_CONTENT").map(|(_, v)| v.clone()).unwrap_or_default();
+                        let config: serde_json::Value = serde_json::from_str(&config).unwrap();
+                        assert_eq!(config["skills"]["paths"], serde_json::json!([plugin.join("skills").display().to_string().replace('\\', "/")]), "{config}");
+                    }
+                    _ => assert!(command.args.windows(2).any(|w| w[0] == "--plugin-dir" && w[1] == plugin.display().to_string()), "{kind:?} {:?}", command.args),
+                }
+                assert!(!command.env.iter().any(|(k, _)| k.eq_ignore_ascii_case(canvas_model::launch::GROUP_SKILLS_ENV)), "never in the agent's environment");
+                // An inherited one is removed when the terminal starts ("-NAME").
+                assert!(command.env.contains(&no_group_skills_env()), "{kind:?} {:?}", command.env);
+            }
+        }
+        // A session outside the repository gets every skill; nothing to give: no plugin.
+        let elsewhere = root.join("notes");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let carried = canvas_model::launch::GroupSkills { group: String::new(), dirs: vec![skills.display().to_string()] };
+        let (plugin, line) = group_skill_plugin(&home, &format!("2-{id}"), id, AgentKind::Claude, &elsewhere, &carried);
+        assert!(plugin.is_some() && line.contains("skill folders of the canvas (1 folder(s)): shared, team-review"), "{line}");
+        let empty = canvas_model::launch::GroupSkills { group: "g-1".into(), dirs: vec![root.join("none").display().to_string()] };
+        assert_eq!(group_skill_plugin(&home, &format!("3-{id}"), id, AgentKind::Claude, &elsewhere, &empty).0, None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_exiting_terminal_never_takes_the_plugin_of_its_relaunch() {
+        let plugin = |n: u64| (PathBuf::from(format!(r"C:\h\group-skills\default\g\{n}-t")), n * 1000);
+        let mut plugins = HashMap::from([("t".to_owned(), plugin(1))]);
+        // The terminal started after its plugin was made: its own, removed on exit.
+        assert_eq!(take_exited_plugin(&mut plugins, "t", Some(1500)), Some(plugin(1).0));
+        assert!(plugins.is_empty());
+        // Relaunched before the exit was handled: the new plugin stays.
+        plugins.insert("t".into(), plugin(3));
+        assert_eq!(take_exited_plugin(&mut plugins, "t", Some(1500)), None);
+        assert_eq!(plugins.get("t"), Some(&plugin(3)));
+        // No terminal known any more, or none registered.
+        assert_eq!(take_exited_plugin(&mut plugins, "t", None), Some(plugin(3).0));
+        assert_eq!(take_exited_plugin(&mut plugins, "other", Some(1)), None);
+    }
+
+    #[test]
+    fn plain_copilot_launches_never_pass_the_skill_folders_on() {
+        let env = vec![("copilot_canvas_group_skills".to_owned(), r#"{"dirs":["C:\\s"]}"#.to_owned()), ("KEEP".to_owned(), "1".to_owned())];
+        assert_eq!(without_group_skills(env), [("KEEP".to_owned(), "1".to_owned())]);
+        assert_eq!(no_group_skills_env(), ("-COPILOT_CANVAS_GROUP_SKILLS".to_owned(), String::new()));
     }
 }

@@ -112,9 +112,9 @@ pub struct Integration {
     /// Environment: `COPILOT_CANVAS_HOME`, `COPILOT_CANVAS_SESSION`, `PATH`
     /// (agent launches also `COPILOT_CANVAS_AGENT`: [`session_agent_env`]).
     pub env: Vec<(String, String)>,
-    /// More plugins with skills (a canvas-wide agent's assigned canvas skills):
-    /// another `--plugin-dir` for Copilot and Claude Code, their `skills`
-    /// folders for OpenCode.
+    /// More plugins with skills (a canvas-wide agent's assigned canvas skills,
+    /// a group's skill folders): another `--plugin-dir` for Copilot and Claude
+    /// Code, their `skills` folders for OpenCode.
     pub skill_plugins: Vec<PathBuf>,
 }
 

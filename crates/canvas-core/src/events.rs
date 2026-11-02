@@ -200,6 +200,10 @@ impl App {
                             crate::side::SideView::Plugins | crate::side::SideView::Mcp | crate::side::SideView::Skills | crate::side::SideView::Agents | crate::side::SideView::Settings
                         ) =>
                 {
+                    // The Skills view shows every agent's skills, or one agent's.
+                    if self.side_view == crate::side::SideView::Skills {
+                        return self.cycle_skill_filter();
+                    }
                     return self.cycle_config_agent();
                 }
                 KeyCode::Esc => {
@@ -752,6 +756,10 @@ impl App {
                 if button == MouseButton::Right {
                     self.list_sel = index;
                     return self.list_toggle(index);
+                }
+                // A skill's first click shows it; opening is the second click's (or Enter's).
+                if self.skills_click(index) {
+                    return;
                 }
                 self.list_activate(index);
             }

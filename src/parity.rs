@@ -1934,6 +1934,7 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         Ok(format!("rename synced; {}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()))
     });
     spaces::rows(sb, gui, rows);
+    skills::rows(sb, gui, rows);
 }
 
 /// The new-session dialog (opened with `n` unless `opened`) with `name`
@@ -2002,10 +2003,24 @@ fn group_menu(gui: &mut Gui, item: &str) -> Result<()> {
     let g = tree["canvas"]["groups"].as_array().and_then(|g| g.iter().find(|g| g["id"] == "g-parity").cloned()).context("group")?;
     let r: Vec<f64> = g["rect"].as_array().map(|a| a.iter().filter_map(|v| v.as_f64()).collect()).unwrap_or_default();
     anyhow::ensure!(r.len() == 4, "group rect");
-    let title = (r[0] + 3.5, r[1] + 0.5);
+    // A free cell of the title row: earlier rows can leave a box (or a chip)
+    // over its start, and a right-click there opens that box's menu.
+    let rects = |key: &str, of: &Value| -> Vec<Vec<f64>> {
+        of[key].as_array().map(|a| a.iter().map(|b| b["rect"].as_array().map(|r| r.iter().filter_map(|v| v.as_f64()).collect()).unwrap_or_default()).collect()).unwrap_or_default()
+    };
+    let mut covers = rects("boxes", &tree["canvas"]);
+    covers.extend(rects("chips", &g));
+    let free = |x: f64| !covers.iter().any(|c| c.len() == 4 && x >= c[0] && x < c[0] + c[2] && r[1] + 0.5 >= c[1] && r[1] + 0.5 < c[1] + c[3]);
+    let x = (0..(r[2] as i32 - 2).max(1)).map(|dx| r[0] + 1.5 + dx as f64).find(|x| free(*x)).unwrap_or(r[0] + 3.5);
+    let title = (x, r[1] + 0.5);
     gui.mouse("down", "right", title, &[])?;
     gui.mouse("up", "right", title, &[])?;
-    gui.wait("group menu", 5, |t| t.contains(item))?;
+    if let Err(error) = gui.wait("group menu", 5, |t| t.contains(item)) {
+        // Say what the press opened instead (a box's menu, nothing), for the log.
+        let screen = gui.screen();
+        let lines: Vec<&str> = screen.lines().filter(|l| !l.trim().is_empty()).take(60).collect();
+        anyhow::bail!("{error:#} (right-click at {title:?} on the group at {r:?}); screen:\n{}", lines.join("\n"));
+    }
     let at = gui.find(item).context("menu item")?;
     gui.click(at, &[])
 }
@@ -2158,6 +2173,8 @@ mod prs;
 pub(crate) mod reports;
 #[path = "parity_spaces.rs"]
 mod spaces;
+#[path = "parity_skills.rs"]
+mod skills;
 
 fn walk(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();

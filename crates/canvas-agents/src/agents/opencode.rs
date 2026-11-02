@@ -451,7 +451,7 @@ impl OpenCode {
             merge(&mut config, json!({ "skills": { "paths": [path_text(&plugin.join("skills"))] } }));
         }
         for plugin in &integration.skill_plugins {
-            // A canvas-wide agent's skills (merging appends to the list).
+            // A canvas-wide agent's skills, a group's skill folders (merging appends to the list).
             merge(&mut config, json!({ "skills": { "paths": [path_text(&plugin.join("skills"))] } }));
         }
         let mut env = integration.env.clone();

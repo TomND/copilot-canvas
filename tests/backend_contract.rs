@@ -528,3 +528,46 @@ fn notebook_requests_answer_the_same_locally_and_remotely() {
     let remote_answers = notebook_contract(&*remote, &service.ctx(), &work, "remote");
     assert_eq!(local_answers, remote_answers, "both backends give the same answers");
 }
+
+/// `dir/<name>/SKILL.md` with front matter.
+fn skill(dir: &Path, name: &str) {
+    std::fs::create_dir_all(dir.join(name)).unwrap();
+    std::fs::write(dir.join(name).join("SKILL.md"), format!("---\nname: {name}\ndescription: The {name} skill.\n---\n# {name}\n")).unwrap();
+}
+
+#[test]
+fn skill_sources_answer_the_same_locally_and_remotely() {
+    use canvas_model::skills::{FolderSet, SourceKind};
+    let service = Service::start("skills");
+    let work = service.root.join("work");
+    // A repository with project skills, a session folder in it, a group's skill folder.
+    let repo = work.join("repo");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    skill(&repo.join(".claude").join("skills"), "review");
+    skill(&repo.join(".github").join("skills"), "ci");
+    std::fs::create_dir_all(repo.join("app")).unwrap();
+    let team = work.join("team-skills");
+    skill(&team, "payments");
+    let local = LocalBackend::new(service.ctx());
+    let local: &dyn Backend = &local;
+    local.create_canvas_skill("c-contract", "pr-etiquette", "Route PR feedback").unwrap();
+    let ask = |backend: &dyn Backend| {
+        let folders = vec![FolderSet { group: "g1".into(), name: "Payments".into(), dirs: vec![team.display().to_string(), work.join("missing").display().to_string()] }];
+        backend.skill_sources(vec![repo.join("app").display().to_string()], Some("c-contract".into()), folders).unwrap()
+    };
+    let (_conn, remote) = service.connect();
+    let (here, there) = (ask(local), ask(&*remote));
+    assert_eq!(here, there, "both backends give the same answer");
+    let find = |kind: &SourceKind| here.iter().find(|s| &s.kind == kind).unwrap_or_else(|| panic!("{kind:?} in {here:?}"));
+    let names = |kind: &SourceKind| find(kind).skills.iter().map(|s| (s.name.clone(), s.agents.clone())).collect::<Vec<_>>();
+    assert!(find(&SourceKind::Canvas).skills.iter().any(|s| s.name == "canvas-events"), "the canvas plugin the service wrote");
+    let group = SourceKind::Group { id: "g1".into(), name: "Payments".into() };
+    assert_eq!(names(&group), [("payments".to_owned(), canvas_model::agent::ALL.to_vec())]);
+    assert!(find(&group).problem.contains("missing"), "a folder that is not there is named");
+    let project = SourceKind::Project { root: repo.display().to_string() };
+    assert_eq!(names(&project), [("ci".to_owned(), vec![AgentKind::Copilot]), ("review".to_owned(), canvas_model::agent::ALL.to_vec())]);
+    assert_eq!(names(&SourceKind::Library), [("pr-etiquette".to_owned(), canvas_model::agent::ALL.to_vec())]);
+    // An unknown canvas id lists no library; the folders were only read.
+    assert!(!local.skill_sources(vec![], Some("../x".into()), vec![]).unwrap().iter().any(|s| s.kind == SourceKind::Library));
+    assert!(!team.join("plugin.json").exists() && !service.instance.home.join("group-skills").exists());
+}

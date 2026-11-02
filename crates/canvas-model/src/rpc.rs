@@ -209,6 +209,19 @@ pub enum Request {
     /// (case-insensitive; `.trash`, `.git` and `node_modules` skipped), at
     /// most `limit` hits (`Response::NoteHits`).
     NoteSearch { roots: Vec<String>, query: String, limit: u32 },
+    /// Every skill a canvas session can get, by where it comes from
+    /// (`Response::SkillSources`; [`crate::skills::list`]): the canvas plugin,
+    /// the skill folders of every session and of each group (`folders`), the
+    /// projects of the sessions' working folders `dirs` (each up to its
+    /// repository root), the personal folders of the installed agents and
+    /// the library of canvas `canvas` (its id). Read only.
+    SkillSources {
+        dirs: Vec<String>,
+        #[serde(default)]
+        canvas: Option<String>,
+        #[serde(default)]
+        folders: Vec<crate::skills::FolderSet>,
+    },
 }
 
 /// Largest file an upload writes.
@@ -248,6 +261,8 @@ pub enum Response {
     /// Bytes (base64 in JSON).
     Bytes(#[serde(with = "base64")] Vec<u8>),
     NoteHits(Vec<crate::notebook::Hit>),
+    /// The sources of skills (`Request::SkillSources`).
+    SkillSources(Vec<crate::skills::SkillSource>),
 }
 
 /// An open pairing code (`Request::PairCode`).
@@ -451,6 +466,7 @@ impl Request {
             Request::NoteRename { .. } => "rename note",
             Request::NoteTrash { .. } => "delete note",
             Request::NoteSearch { .. } => "notebook search",
+            Request::SkillSources { .. } => "skill sources",
         }
     }
 
@@ -484,6 +500,8 @@ impl Request {
             | Request::NewestMatches { .. } => 120,
             // Bounded by its own time budget, but never in the quick lane.
             Request::NoteSearch { .. } => 60,
+            // Folder scans of up to 40 projects: never in the quick lane.
+            Request::SkillSources { .. } => 60,
             _ => 30,
         };
         Duration::from_secs(secs)
@@ -866,6 +884,14 @@ impl dyn Backend + '_ {
             _ => None,
         })
     }
+
+    /// Where the skills of a canvas's sessions come from (see [`Request::SkillSources`]).
+    pub fn skill_sources(&self, dirs: Vec<String>, canvas: Option<String>, folders: Vec<crate::skills::FolderSet>) -> Result<Vec<crate::skills::SkillSource>> {
+        self.ask(Request::SkillSources { dirs, canvas, folders }, |r| match r {
+            Response::SkillSources(sources) => Some(sources),
+            _ => None,
+        })
+    }
 }
 
 /// The answer to a request this build does not know (from a newer client).
@@ -1037,5 +1063,34 @@ mod tests {
         backend.note_rename("a", "b", &[]).unwrap();
         assert_eq!(backend.note_trash("a", "r").unwrap_err().to_string(), "not inside its root");
         assert!(Offline.call(Request::NoteRead { path: "a".into() }).is_err());
+    }
+
+    #[test]
+    fn skill_source_requests_round_trip_and_old_services_say_so() {
+        use crate::skills::{FolderSet, SkillSource, SourceKind};
+        let request = Request::SkillSources { dirs: vec![r"C:\repos\app".into()], canvas: Some("c1".into()), folders: vec![FolderSet { group: "g1".into(), name: "Payments".into(), dirs: vec![r"D:\skills".into()] }] };
+        let json = serde_json::to_string(&request).unwrap();
+        assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), request);
+        assert!(!request.is_quick() && !request.is_remote_admin() && request.name() == "skill sources");
+        // Optional fields may be left out.
+        assert_eq!(serde_json::from_str::<Request>(r#"{"SkillSources":{"dirs":[]}}"#).unwrap(), Request::SkillSources { dirs: vec![], canvas: None, folders: vec![] });
+        // A service from before the request answers that it does not support it.
+        let reply = answer_json(&json.replacen("SkillSources", "FutureSkillSources", 1), |_| Response::Done);
+        assert!(matches!(serde_json::from_str::<Response>(&reply).unwrap(), Response::Error(e) if e.contains("does not support")));
+        struct Skills;
+        impl Backend for Skills {
+            fn call(&self, request: Request) -> Result<Response> {
+                Ok(match request {
+                    Request::SkillSources { dirs, .. } => Response::SkillSources(vec![SkillSource { kind: SourceKind::Project { root: dirs[0].clone() }, path: dirs[0].clone(), agents: vec![], skills: vec![], folders: vec![], problem: String::new() }]),
+                    _ => Response::Done,
+                })
+            }
+        }
+        let reply = Skills.call(request).unwrap();
+        assert!(matches!(&reply, Response::SkillSources(s) if s.len() == 1));
+        assert_eq!(serde_json::from_str::<Response>(&serde_json::to_string(&reply).unwrap()).unwrap(), reply);
+        let backend: &dyn Backend = &Skills;
+        assert_eq!(backend.skill_sources(vec!["x".into()], None, vec![]).unwrap()[0].path, "x");
+        assert!((&Offline as &dyn Backend).skill_sources(vec![], None, vec![]).is_err());
     }
 }

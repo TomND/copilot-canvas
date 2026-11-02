@@ -231,7 +231,17 @@ fn run(ctx: &Ctx, request: Request) -> Result<Response> {
         Request::NoteRename { from, to, roots } => crate::notebook::rename(&from, &to, &roots)?,
         Request::NoteTrash { path, root } => crate::notebook::trash(&path, &root)?,
         Request::NoteSearch { roots, query, limit } => crate::notebook::search(&roots, &query, limit)?,
+        Request::SkillSources { dirs, canvas, folders } => Response::SkillSources(skill_sources(ctx, &dirs, canvas.as_deref(), &folders)),
     })
+}
+
+/// Where the skills of a canvas's sessions come from, as this machine has
+/// them: its agents' personal folders (`CLAUDE_CONFIG_DIR`, `COPILOT_HOME`
+/// honoured) and the agents installed here. Folders are only read.
+fn skill_sources(ctx: &Ctx, dirs: &[String], canvas: Option<&str>, folders: &[canvas_model::skills::FolderSet]) -> Vec<canvas_model::skills::SkillSource> {
+    let homes = canvas_model::skills::Homes { user: agents::home(), claude: agents::claude_history::claude_dir(), copilot: copilot_cfg::copilot_home() };
+    let env = canvas_model::skills::Env { home: ctx.home.clone(), homes, installed: agents::installed() };
+    canvas_model::skills::list(&env, dirs, canvas, folders)
 }
 
 /// The folder of a canvas's canvas-wide agents under the backend's own data
