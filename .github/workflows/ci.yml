@@ -625,7 +625,7 @@ jobs:
         run: |
           unset WAYLAND_DISPLAY
           CANVAS_PARITY_ROWS=41b timeout 600 xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- target/release/copilot-canvas selftest --client gui --parity
-      - name: HTML report view and touchpad rows on Wayland (parity 41b, T1, T2)
+      - name: HTML report view and touchpad rows on Wayland (parity 41b, T1, T2, T3)
         if: ${{ !cancelled() }}
         run: |
           export XDG_RUNTIME_DIR="$(mktemp -d)"
@@ -633,7 +633,7 @@ jobs:
           weston --backend=headless --renderer=pixman --socket=wl-41b --idle-time=0 --width=1920 --height=1080 > "$RUNNER_TEMP/weston-41b.log" 2>&1 &
           for i in $(seq 1 40); do [ -S "$XDG_RUNTIME_DIR/wl-41b" ] && break; sleep 0.25; done
           unset DISPLAY
-          CANVAS_PARITY_ROWS=41b,T1,T2 WAYLAND_DISPLAY=wl-41b timeout 600 dbus-run-session -- target/release/copilot-canvas selftest --client gui --parity
+          CANVAS_PARITY_ROWS=41b,T1,T2,T3 WAYLAND_DISPLAY=wl-41b timeout 600 dbus-run-session -- target/release/copilot-canvas selftest --client gui --parity
       # Linux's own golden screenshots (X11, scale 1, lavapipe, the runner's
       # fonts): recorded once into tests/golden/gui/linux-1x (kept as an
       # artifact to review and commit), compared from then on.
