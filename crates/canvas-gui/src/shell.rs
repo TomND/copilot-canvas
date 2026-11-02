@@ -869,6 +869,18 @@ impl Win {
         self.after_events(proxy);
     }
 
+    /// A test hook's key in the core's (Windows) terms as a Mac's keyboard
+    /// gives it: an Alt shortcut (a view, back, a quick note) is a ⌃⌘ or ⌘[
+    /// chord there, the app's, except while a terminal has the keyboard,
+    /// where the left Option key is Alt (Meta). Elsewhere unchanged.
+    fn hook_source(&self, key: KeyEvent) -> KeyEvent {
+        let mac = crate::os::KEY_POLICY == canvas_core::input::KeyPolicy::CommandApp;
+        if mac && key.modifiers.contains(Modifiers::ALT) && !self.typing() {
+            return key.from(canvas_core::input::KeySource::App);
+        }
+        key
+    }
+
     /// Keyboard input goes to a terminal.
     fn typing(&self) -> bool {
         self.app.focus == Focus::Terminal && self.app.modals.is_empty()
@@ -879,7 +891,13 @@ impl Win {
     /// terminal's own paste, with images, is the core's; pasting an image
     /// also shows what was attached).
     fn gui_key(&mut self, key: &KeyEvent, proxy: &EventLoopProxy<UserEvent>) -> bool {
-        if is_new_window_key(key) {
+        // macOS: ⌘N is a new note in the Notebook and a new window elsewhere.
+        let command_n = crate::os::KEY_POLICY == canvas_core::input::KeyPolicy::CommandApp
+            && key.source == canvas_core::input::KeySource::App
+            && key.modifiers == Modifiers::CONTROL
+            && key.code == KeyCode::Char('n')
+            && self.app.space != canvas_core::spaces::Space::Notebook;
+        if is_new_window_key(key) || command_n {
             self.app.new_window_requested = true;
             return true;
         }
@@ -1368,6 +1386,7 @@ impl Win {
         Some(match name {
             "key" => match hook_key(command, mods) {
                 Some(key) => {
+                    let key = self.hook_source(key);
                     self.key_input(key);
                     json!({ "ok": true })
                 }
@@ -1378,6 +1397,7 @@ impl Win {
                 let mut batch = Vec::new();
                 for spec in command["keys"].as_array().into_iter().flatten() {
                     let Some(key) = hook_key(spec, parse_mods(&spec["mods"])) else { return Some(json!({ "ok": false, "error": format!("unknown key {spec}") })) };
+                    let key = self.hook_source(key);
                     if is_paste_key(&key) || is_alt_v(&key) || is_new_window_key(&key) {
                         if !batch.is_empty() {
                             self.raw_input(std::mem::take(&mut batch));
@@ -1770,6 +1790,16 @@ impl Win {
 
     /// Housekeeping, then a frame when one is due; returns when to wake next.
     fn tick(&mut self, gpu: Option<&mut Gpu>, fonts: Option<&mut Fonts>, options: &Options) -> Instant {
+        // macOS: the left Option key is Alt (Meta) for a terminal's program,
+        // and types characters everywhere else (accents, ™, the note editor).
+        #[cfg(target_os = "macos")]
+        {
+            use winit::platform::macos::{OptionAsAlt, WindowExtMacOS};
+            let want = if self.typing() { OptionAsAlt::OnlyLeft } else { OptionAsAlt::None };
+            if self.window.option_as_alt() != want {
+                self.window.set_option_as_alt(want);
+            }
+        }
         self.flush_dropped();
         // Text size steps (pinching over terminals, Command+plus and minus, Command+0): the whole grid.
         if self.app.text_zoom_steps != 0 || self.app.text_zoom_reset {
@@ -2203,7 +2233,19 @@ impl ApplicationHandler<UserEvent> for Shell {
                     self.after_input(event_loop);
                     return;
                 }
-                let Some(input) = crate::input::key(&event.logical_key, event.state, win.mods) else { return };
+                // macOS: a character Option composed (™ from ⌥2, an accent's
+                // second key) is text, not an Alt shortcut.
+                #[cfg(target_os = "macos")]
+                let composed = {
+                    use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+                    crate::input::composed(&event.logical_key, &event.key_without_modifiers(), win.mods)
+                };
+                #[cfg(not(target_os = "macos"))]
+                let composed: Option<InputEvent> = None;
+                let Some(input) = composed.or_else(|| crate::input::key(&event.logical_key, event.state, win.mods)) else { return };
+                if event.state == ElementState::Released && matches!(input, InputEvent::Text(_)) {
+                    return;
+                }
                 if let InputEvent::Key(key) = &input
                     && win.gui_key(key, proxy)
                 {

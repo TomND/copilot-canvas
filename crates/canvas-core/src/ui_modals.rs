@@ -62,10 +62,13 @@ const TRACKPAD_HELP: &[(&str, &str)] = &[
     ("⌘ + · ⌘ − · ⌘ 0 (terminal)", "text size · default size"),
     ("Keys on a Mac", ""),
     ("⌘ (Command)", "the Ctrl of the list on the left"),
+    ("⌃⌘ (Control+Command)", "its Alt: ⌃⌘1…9 views, ⌃⌘N quick note"),
+    ("⌘[ · ⌘] · ⇧⌘[ · ⇧⌘]", "back · forward · previous / next tab"),
     ("Ctrl + any key", "goes to the terminal's program"),
-    ("⌘1…9 · ⌘N · ⌘Q", "views · new window · quit"),
+    ("⌘N · ⇧⌘N · ⌘Q", "note (Notebook) or window · window · quit"),
     ("⌘-click", "open a link · add to selection"),
-    ("Left ⌥ (Option)", "Alt; right ⌥ types characters"),
+    ("⌥ (Option)", "types characters (left ⌥: Alt in a terminal)"),
+    ("⌥← ⌥→ · ⌘← ⌘→ · ⌘↑ ⌘↓", "notes: word · line · text start / end"),
 ];
 
 /// The Notebook's keys and clicks.
@@ -242,10 +245,12 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
             }
             for (i, (key, text)) in rows.iter().enumerate() {
                 let y = rect.y as i32 + 2 + i as i32;
+                // A Mac's keys where its keyboard says them otherwise (⌘P for Ctrl+P).
+                let key = app.key_policy.label(key);
                 if text.is_empty() {
-                    put(buf, rect.x as i32 + 2, y, key, bold(ACCENT).bg(MODAL), rect);
+                    put(buf, rect.x as i32 + 2, y, &key, bold(ACCENT).bg(MODAL), rect);
                 } else {
-                    put(buf, rect.x as i32 + 3, y, key, fg(TEXT).bg(MODAL), rect);
+                    put(buf, rect.x as i32 + 3, y, &key, fg(TEXT).bg(MODAL), rect);
                     put(buf, rect.x as i32 + 38, y, text, fg(GRAY).bg(MODAL), rect);
                 }
             }
@@ -265,7 +270,8 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
                 fill(buf, rect.x as i32 + 1, row_y, rect.width as i32 - 2, 1, Style::default().bg(bg), rect);
                 let style = if !item.enabled { fg(MUTED).bg(bg) } else if selected { bold(SELECT).bg(bg) } else { fg(TEXT).bg(bg) };
                 put(buf, rect.x as i32 + 2, row_y, &item.label, style, rect);
-                put(buf, rect.right() as i32 - 2 - crate::paint::text_width(&item.hint) as i32, row_y, &item.hint, fg(MUTED).bg(bg), rect);
+                let hint = app.key_policy.label(&item.hint);
+                put(buf, rect.right() as i32 - 2 - crate::paint::text_width(&hint) as i32, row_y, &hint, fg(MUTED).bg(bg), rect);
                 ctx.hit(Rect::new(rect.x + 1, row_y as u16, rect.width - 2, 1), Hit::MenuItem(i));
             }
             (rect, None)

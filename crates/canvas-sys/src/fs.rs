@@ -54,23 +54,67 @@ mod unix {
     }
 
     /// Renames `from` to `to`, never over something at `to` (`AlreadyExists`
-    /// then), also something that appeared a moment before: Linux's
-    /// `renameat2(RENAME_NOREPLACE)`, atomic in the kernel. Filesystems that
-    /// refuse the flag (some FUSE, NFS and older kernels: `EINVAL`, `ENOSYS`,
-    /// `EOPNOTSUPP`) get [`rename_claimed`].
-    #[cfg(target_os = "linux")]
+    /// then), also something that appeared a moment before, atomic in the
+    /// kernel: macOS `renamex_np(RENAME_EXCL)`, Linux
+    /// `renameat2(RENAME_NOREPLACE)`. File systems that refuse the flag (some
+    /// FUSE, NFS, SMB and older kernels: `EINVAL`, `ENOSYS`, `ENOTSUP`,
+    /// `EOPNOTSUPP`) get [`rename_claimed`]. A rename onto itself changes
+    /// nothing; a case change of one file (a case-blind file system: APFS,
+    /// HFS+) renames it. (Windows: `MoveFileExW` without
+    /// `MOVEFILE_REPLACE_EXISTING`, in the notebook's backend.)
     pub fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
         use std::os::unix::ffi::OsStrExt;
+        if same_file(from, to) && from.to_string_lossy().to_lowercase() == to.to_string_lossy().to_lowercase() {
+            return std::fs::rename(from, to);
+        }
         let c = |path: &Path| std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput));
         let (old, new) = (c(from)?, c(to)?);
         // SAFETY: two NUL-terminated paths that live across the call.
-        if unsafe { libc::renameat2(libc::AT_FDCWD, old.as_ptr(), libc::AT_FDCWD, new.as_ptr(), libc::RENAME_NOREPLACE) } == 0 {
+        #[cfg(target_os = "macos")]
+        let done = unsafe { libc::renamex_np(old.as_ptr(), new.as_ptr(), libc::RENAME_EXCL) };
+        // SAFETY: as above.
+        #[cfg(target_os = "linux")]
+        let done = unsafe { libc::renameat2(libc::AT_FDCWD, old.as_ptr(), libc::AT_FDCWD, new.as_ptr(), libc::RENAME_NOREPLACE) };
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        let done: libc::c_int = {
+            return rename_claimed(from, to);
+        };
+        if done == 0 {
             return Ok(());
         }
         let error = io::Error::last_os_error();
         match error.raw_os_error() {
-            Some(libc::EINVAL | libc::ENOSYS | libc::EOPNOTSUPP) => rename_claimed(from, to),
+            Some(code) if [libc::EINVAL, libc::ENOSYS, libc::ENOTSUP, libc::EOPNOTSUPP].contains(&code) => rename_claimed(from, to),
             _ => Err(error),
+        }
+    }
+
+    /// `a` and `b` are the same file (device and inode; links not followed):
+    /// two names of one file on a case-blind file system.
+    pub fn same_file(a: &Path, b: &Path) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        match (std::fs::symlink_metadata(a), std::fs::symlink_metadata(b)) {
+            (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+            _ => false,
+        }
+    }
+
+    /// A file whose content is not on this Mac (iCloud Drive's "optimize
+    /// storage" leaves a dataless placeholder; reading it downloads it): the
+    /// notebook's listings and search leave its content alone, as on Windows
+    /// with OneDrive's placeholders. Never on Linux.
+    pub fn cloud_only(meta: &std::fs::Metadata) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::macos::fs::MetadataExt;
+            /// `SF_DATALESS` of `<sys/stat.h>`.
+            const SF_DATALESS: u32 = 0x4000_0000;
+            meta.st_flags() & SF_DATALESS != 0
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = meta;
+            false
         }
     }
 
@@ -78,7 +122,6 @@ mod unix {
     /// claimed with a hard link (which fails when the name is taken), then the
     /// old name goes; folders, and filesystems without hard links, are checked
     /// and renamed (a name taken in between is the only gap).
-    #[cfg(unix)]
     pub fn rename_claimed(from: &Path, to: &Path) -> io::Result<()> {
         if std::fs::symlink_metadata(from)?.is_file() {
             match std::fs::hard_link(from, to) {
@@ -98,7 +141,7 @@ mod unix {
         std::fs::rename(from, to)
     }
 
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
     mod rename_tests {
         use super::*;
 
@@ -202,6 +245,31 @@ mod tests {
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no temporary file is left behind");
         assert!(super::create_private(&path).is_err(), "never opens an existing file");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn case_changes_rename_and_links_are_not_the_same_name() {
+        let dir = std::env::temp_dir().join(format!("cs-mv-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (b, c) = (dir.join("b.md"), dir.join("c.md"));
+        std::fs::write(&b, "b").unwrap();
+        std::fs::write(&c, "c").unwrap();
+        super::rename_no_replace(&c, &c).unwrap();
+        assert!(c.exists(), "a rename onto itself changes nothing");
+        // A second name of one file is taken all the same.
+        let link = dir.join("link.md");
+        std::fs::hard_link(&b, &link).unwrap();
+        assert!(super::same_file(&b, &link));
+        assert_eq!(super::rename_no_replace(&b, &link).unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(b.exists() && link.exists());
+        // A case change: renamed where the file system ignores case, a new name where it does not.
+        let upper = dir.join("C.md");
+        super::rename_no_replace(&c, &upper).unwrap();
+        let names: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert!(names.contains(&"C.md".to_owned()) && !names.contains(&"c.md".to_owned()), "{names:?}");
+        assert!(!super::same_file(&b, &upper) && super::same_file(&upper, &upper));
+        assert!(!super::cloud_only(&std::fs::metadata(&upper).unwrap()));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

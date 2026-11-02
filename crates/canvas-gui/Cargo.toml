@@ -44,10 +44,10 @@ wgpu = { workspace = true, features = ["metal"] }
 # report's WKWebView (MAC-LINUX-PLAN D9); the versions winit 0.30 uses.
 objc2 = "0.5.2"
 block2 = "0.5.1"
-objc2-foundation = { version = "0.2.2", features = ["NSGeometry", "NSString", "NSProcessInfo", "NSURL", "NSURLRequest", "NSError", "NSData", "NSValue", "NSObject", "NSArray", "NSDictionary", "NSBundle", "NSUUID", "NSAppleEventManager", "NSAppleEventDescriptor", "NSThread", "block2"] }
+objc2-foundation = { version = "0.2.2", features = ["NSGeometry", "NSString", "NSProcessInfo", "NSURL", "NSURLRequest", "NSURLResponse", "NSError", "NSData", "NSValue", "NSObject", "NSArray", "NSDictionary", "NSBundle", "NSUUID", "NSAppleEventManager", "NSAppleEventDescriptor", "NSThread", "block2"] }
 objc2-app-kit = { version = "0.2.2", features = ["NSEvent", "NSGraphicsContext", "NSApplication", "NSResponder", "NSScreen", "NSView", "NSWindow", "NSColor", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSDockTile", "NSBezierPath", "NSMenu", "NSMenuItem", "NSRunningApplication", "NSWorkspace", "NSAccessibility", "NSAccessibilityProtocols", "NSAccessibilityConstants", "block2"] }
 objc2-user-notifications = { version = "0.2.2", features = ["UNUserNotificationCenter", "UNNotificationContent", "UNNotificationRequest", "UNNotificationSettings", "UNNotification", "UNNotificationTrigger", "block2"] }
-objc2-web-kit = { version = "0.2.2", features = ["WKWebView", "WKWebViewConfiguration", "WKPreferences", "WKWebpagePreferences", "WKWebsiteDataStore", "WKUserContentController", "WKContentRuleList", "WKContentRuleListStore", "WKNavigationDelegate", "WKNavigationAction", "WKNavigation", "WKUIDelegate", "WKFrameInfo", "WKSnapshotConfiguration", "WKContentWorld", "WKUserScript", "WKScriptMessage", "WKScriptMessageHandler", "WKSecurityOrigin", "WKWindowFeatures", "block2", "objc2-app-kit"] }
+objc2-web-kit = { version = "0.2.2", features = ["WKWebView", "WKWebViewConfiguration", "WKPreferences", "WKWebpagePreferences", "WKWebsiteDataStore", "WKUserContentController", "WKContentRuleList", "WKContentRuleListStore", "WKNavigationDelegate", "WKNavigationAction", "WKNavigation", "WKUIDelegate", "WKFrameInfo", "WKSnapshotConfiguration", "WKContentWorld", "WKUserScript", "WKScriptMessage", "WKScriptMessageHandler", "WKSecurityOrigin", "WKWindowFeatures", "WKURLSchemeHandler", "WKURLSchemeTask", "WKPDFConfiguration", "block2", "objc2-app-kit"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 wgpu = { workspace = true, features = ["vulkan", "gles"] }

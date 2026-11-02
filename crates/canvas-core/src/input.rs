@@ -268,14 +268,36 @@ impl KeyPolicy {
             return std::borrow::Cow::Borrowed(text);
         }
         let mut out = text.to_owned();
+        // Longer phrases first (several share their keys). Ctrl+] and F6 are
+        // the same keys on a Mac (Control stays Control there).
         for (from, to) in [
+            ("Ctrl+1/2/3 · Ctrl+P · Alt+N", "⌘1/2/3 · ⌘P · ⌃⌘N"),
+            ("Alt+←/→ or Alt+, / Alt+.", "⌘[ / ⌘]"),
+            ("Alt+→ goes forward", "⌘] goes forward"),
+            ("Alt+← goes back", "⌘[ goes back"),
+            ("Alt+wheel or Ctrl+wheel · toolbar − +", "⌘-scroll or pinch · toolbar − +"),
+            ("Ctrl+Z · Ctrl+Y or Ctrl+Shift+Z", "⌘Z · ⇧⌘Z"),
+            ("Arrows / Shift / Ctrl", "Arrows / Shift / ⌘"),
+            ("Ctrl+Tab · Ctrl+PgDn/PgUp · Ctrl+W", "⇧⌘] / ⇧⌘[ · ⌘W"),
+            ("Ctrl+F · F3 / Shift+F3", "⌘F · F3 / Shift+F3"),
+            ("+ / - · Alt+wheel · F", "+ / - · ⌘-scroll or pinch · F"),
+            ("+ - · Alt+wheel · F", "+ - · ⌘-scroll or pinch · F"),
+            ("Wheel · Ctrl+arrows", "Two-finger scroll · ⌘-arrows"),
+            ("/ · Alt+H", "/ · ⌃⌘H"),
+            ("Alt+9 Reports", "⌃⌘9 Reports"),
             ("Ctrl+Shift+F6", "⇧⌘F6"),
             ("Ctrl+F6", "⌘F6"),
             ("Ctrl+V paste", "⌘V paste"),
             ("Ctrl+click", "⌘-click"),
-            ("Alt+1…9", "⌘1…9"),
+            ("Alt+1…9", "⌃⌘1…9"),
             ("Alt+wheel zoom", "⌘-scroll zoom"),
             ("Alt+V", "⌥V"),
+            ("Alt+N", "⌃⌘N"),
+            ("Ctrl+P", "⌘P"),
+            ("Ctrl+E", "⌘E"),
+            ("Ctrl+S", "⌘S"),
+            ("Ctrl+N", "⌘N"),
+            ("Ctrl+Q", "⌘Q"),
         ] {
             out = out.replace(from, to);
         }
@@ -292,23 +314,66 @@ impl KeyPolicy {
         let mods = key.modifiers;
         if mods.contains(Modifiers::SUPER) {
             let rest = mods.difference(Modifiers::SUPER);
-            let modifiers = match key.code {
-                // Command+1…9: the activity bar's views (Alt+1…9 elsewhere).
-                KeyCode::Char('1'..='9') if rest.is_empty() => Modifiers::ALT,
-                // Command+N: a new window (Ctrl+Shift+N elsewhere).
-                KeyCode::Char('n' | 'N') => Modifiers::CONTROL | Modifiers::SHIFT,
-                _ => rest.union(Modifiers::CONTROL),
+            let shift = rest.contains(Modifiers::SHIFT);
+            let app = |code, modifiers| KeyEvent { code, modifiers, ..key }.from(KeySource::App);
+            return match key.code {
+                // Control+Command + a letter or digit: Windows' Alt shortcuts
+                // (⌃⌘1…9 the activity views, ⌃⌘N a quick note, ⌃⌘H the
+                // notebook's filter); Option alone types characters on a Mac.
+                KeyCode::Char(c) if rest.contains(Modifiers::CONTROL) && c.is_ascii_alphanumeric() => {
+                    app(KeyCode::Char(c.to_ascii_lowercase()), Modifiers::ALT | (rest & Modifiers::SHIFT))
+                }
+                // ⌘[ / ⌘]: back and forward (Alt+← / Alt+→ elsewhere), as in Safari and Finder.
+                KeyCode::Char('[') if rest.is_empty() => app(KeyCode::Left, Modifiers::ALT),
+                KeyCode::Char(']') if rest.is_empty() => app(KeyCode::Right, Modifiers::ALT),
+                // ⇧⌘[ / ⇧⌘]: the previous and next tab (Ctrl+Shift+Tab / Ctrl+Tab).
+                KeyCode::Char('{' | '[') if rest == Modifiers::SHIFT => app(KeyCode::BackTab, Modifiers::CONTROL | Modifiers::SHIFT),
+                KeyCode::Char('}' | ']') if rest == Modifiers::SHIFT => app(KeyCode::Tab, Modifiers::CONTROL),
+                // ⌘N: a new note in the Notebook, else a new window (the GUI
+                // decides); ⇧⌘N always a new window.
+                KeyCode::Char('n' | 'N') if !rest.contains(Modifiers::CONTROL) => app(KeyCode::Char('n'), Modifiers::CONTROL | (if shift { Modifiers::SHIFT } else { Modifiers::NONE })),
+                // ⌘1/2/3 the spaces, ⌘P Go to, ⌘S, ⌘F, ⌘Z…: Command is Ctrl.
+                KeyCode::Char(c) => app(KeyCode::Char(c.to_ascii_lowercase()), rest.union(Modifiers::CONTROL)),
+                other => app(other, rest.union(Modifiers::CONTROL)),
             };
-            let code = match key.code {
-                KeyCode::Char(c) if modifiers.contains(Modifiers::CONTROL) => KeyCode::Char(c.to_ascii_lowercase()),
-                other => other,
-            };
-            return KeyEvent { code, modifiers, ..key }.from(KeySource::App);
         }
         if mods.contains(Modifiers::CONTROL) {
             return key.from(KeySource::Program);
         }
         key
+    }
+
+    /// A key for a text being edited (the note editor) as a Mac keyboard means
+    /// it: ⌥←/→ a word (Ctrl+←/→), ⌘←/→ the line's start or end, ⌘↑/↓ the
+    /// text's, ⌥⌫ / ⌥⌦ a word, ⌃A / ⌃E the line's start and end (Cocoa's
+    /// text keys). Other keys, and every key elsewhere, are unchanged.
+    pub fn edit(self, key: KeyEvent) -> KeyEvent {
+        if self != KeyPolicy::CommandApp {
+            return key;
+        }
+        let m = key.modifiers;
+        let shift = m & Modifiers::SHIFT;
+        let option = m.contains(Modifiers::ALT) && !m.intersects(Modifiers::CONTROL | Modifiers::SUPER);
+        let command = key.source == KeySource::App && m.contains(Modifiers::CONTROL) && !m.contains(Modifiers::ALT);
+        let control = key.source == KeySource::Program && m.difference(Modifiers::SHIFT) == Modifiers::CONTROL;
+        let to = |code, modifiers| KeyEvent { code, modifiers, ..key };
+        match key.code {
+            KeyCode::Left | KeyCode::Right | KeyCode::Backspace | KeyCode::Delete if option => to(key.code, Modifiers::CONTROL | shift),
+            KeyCode::Left if command => to(KeyCode::Home, shift),
+            KeyCode::Right if command => to(KeyCode::End, shift),
+            KeyCode::Up if command => to(KeyCode::Home, Modifiers::CONTROL | shift),
+            KeyCode::Down if command => to(KeyCode::End, Modifiers::CONTROL | shift),
+            KeyCode::Char('a' | 'A') if control => to(KeyCode::Home, shift),
+            KeyCode::Char('e' | 'E') if control => to(KeyCode::End, shift),
+            _ => key,
+        }
+    }
+
+    /// An Alt shortcut (back, forward, a view, a quick note) as the app's:
+    /// any Alt+key on Windows and Linux; on a Mac only from a Command chord
+    /// (⌘[, ⌃⌘…), since Option types characters and moves by words.
+    pub fn alt_shortcut(self, key: &KeyEvent) -> bool {
+        key.modifiers.contains(Modifiers::ALT) && (self != KeyPolicy::CommandApp || key.source == KeySource::App)
     }
 
     /// A gesture as the core expects it: Command acts as Ctrl (Command+scroll
@@ -555,8 +620,37 @@ mod tests {
         let key = |c: char, m: Modifiers| mac.key(KeyEvent::new(KeyCode::Char(c), m));
         assert_eq!(key('c', Modifiers::SUPER), KeyEvent::new(KeyCode::Char('c'), Modifiers::CONTROL).from(KeySource::App));
         assert_eq!(key('Z', Modifiers::SUPER | Modifiers::SHIFT), KeyEvent::new(KeyCode::Char('z'), Modifiers::CONTROL | Modifiers::SHIFT).from(KeySource::App));
-        assert_eq!(key('3', Modifiers::SUPER), KeyEvent::new(KeyCode::Char('3'), Modifiers::ALT).from(KeySource::App));
-        assert_eq!(key('n', Modifiers::SUPER), KeyEvent::new(KeyCode::Char('n'), Modifiers::CONTROL | Modifiers::SHIFT).from(KeySource::App));
+        // ⌘1/2/3 the spaces, ⌘P Go to; ⌃⌘ + a digit or letter is Windows' Alt.
+        assert_eq!(key('3', Modifiers::SUPER), KeyEvent::new(KeyCode::Char('3'), Modifiers::CONTROL).from(KeySource::App));
+        assert_eq!(key('p', Modifiers::SUPER), KeyEvent::new(KeyCode::Char('p'), Modifiers::CONTROL).from(KeySource::App));
+        assert_eq!(key('5', Modifiers::SUPER | Modifiers::CONTROL), KeyEvent::new(KeyCode::Char('5'), Modifiers::ALT).from(KeySource::App));
+        assert_eq!(key('N', Modifiers::SUPER | Modifiers::CONTROL), KeyEvent::new(KeyCode::Char('n'), Modifiers::ALT).from(KeySource::App));
+        // ⌘N a new note (or window: the GUI's), ⇧⌘N a new window.
+        assert_eq!(key('n', Modifiers::SUPER), KeyEvent::new(KeyCode::Char('n'), Modifiers::CONTROL).from(KeySource::App));
+        assert_eq!(key('N', Modifiers::SUPER | Modifiers::SHIFT), KeyEvent::new(KeyCode::Char('n'), Modifiers::CONTROL | Modifiers::SHIFT).from(KeySource::App));
+        // ⌘[ / ⌘] back and forward, ⇧⌘[ / ⇧⌘] the tabs.
+        assert_eq!(key('[', Modifiers::SUPER), KeyEvent::new(KeyCode::Left, Modifiers::ALT).from(KeySource::App));
+        assert_eq!(key(']', Modifiers::SUPER), KeyEvent::new(KeyCode::Right, Modifiers::ALT).from(KeySource::App));
+        assert_eq!(key('}', Modifiers::SUPER | Modifiers::SHIFT), KeyEvent::new(KeyCode::Tab, Modifiers::CONTROL).from(KeySource::App));
+        assert_eq!(key('{', Modifiers::SUPER | Modifiers::SHIFT), KeyEvent::new(KeyCode::BackTab, Modifiers::CONTROL | Modifiers::SHIFT).from(KeySource::App));
+        // Only a Command chord's Alt is a shortcut on a Mac.
+        assert!(mac.alt_shortcut(&key('[', Modifiers::SUPER)));
+        assert!(!mac.alt_shortcut(&mac.key(KeyEvent::new(KeyCode::Left, Modifiers::ALT))));
+        assert!(KeyPolicy::CtrlApp.alt_shortcut(&KeyEvent::new(KeyCode::Left, Modifiers::ALT)));
+        // Hints and help name the Mac's keys; Ctrl+] stays (Control is Control there).
+        assert_eq!(mac.label("Ctrl+1/2/3 · Ctrl+P · Alt+N"), "⌘1/2/3 · ⌘P · ⌃⌘N");
+        assert_eq!(mac.label("Alt+←/→ or Alt+, / Alt+."), "⌘[ / ⌘]");
+        assert_eq!(mac.label("F6 · Ctrl+]"), "F6 · Ctrl+]");
+        assert_eq!(mac.label("Ctrl+P finds one · Alt+N quick note"), "⌘P finds one · ⌃⌘N quick note");
+        assert_eq!(KeyPolicy::CtrlApp.label("Alt+N"), "Alt+N");
+        // Text editing keys: ⌥← a word, ⌘→ the line's end, ⌘↑ the text's start, ⌃A the line's start.
+        let edit = |code: KeyCode, m: Modifiers| mac.edit(mac.key(KeyEvent::new(code, m)));
+        assert_eq!((edit(KeyCode::Left, Modifiers::ALT).code, edit(KeyCode::Left, Modifiers::ALT).modifiers), (KeyCode::Left, Modifiers::CONTROL));
+        assert_eq!((edit(KeyCode::Right, Modifiers::SUPER | Modifiers::SHIFT).code, edit(KeyCode::Right, Modifiers::SUPER | Modifiers::SHIFT).modifiers), (KeyCode::End, Modifiers::SHIFT));
+        assert_eq!((edit(KeyCode::Up, Modifiers::SUPER).code, edit(KeyCode::Up, Modifiers::SUPER).modifiers), (KeyCode::Home, Modifiers::CONTROL));
+        assert_eq!(edit(KeyCode::Char('a'), Modifiers::CONTROL).code, KeyCode::Home);
+        assert_eq!(edit(KeyCode::Char('a'), Modifiers::SUPER).code, KeyCode::Char('a'), "⌘A selects all");
+        assert_eq!(KeyPolicy::CtrlApp.edit(KeyEvent::new(KeyCode::Left, Modifiers::ALT)).modifiers, Modifiers::ALT);
         assert_eq!(key('c', Modifiers::CONTROL).source, KeySource::Program);
         assert_eq!(key('x', Modifiers::ALT).source, KeySource::Any, "Option (as Alt) is unchanged");
         assert_eq!(KeyPolicy::CtrlApp.key(KeyEvent::new(KeyCode::Char('c'), Modifiers::CONTROL)).source, KeySource::Any);
@@ -700,7 +794,7 @@ mod tests {
     fn hints_name_the_command_key_on_macos() {
         let hint = "Ctrl+] or F6 back · Ctrl+F6 / Ctrl+Shift+F6 recent · Ctrl+V paste · Alt+V image · Ctrl+click links · Alt+1…9 views";
         assert_eq!(KeyPolicy::CtrlApp.label(hint), hint);
-        assert_eq!(KeyPolicy::CommandApp.label(hint), "Ctrl+] or F6 back · ⌘F6 / ⇧⌘F6 recent · ⌘V paste · ⌥V image · ⌘-click links · ⌘1…9 views");
+        assert_eq!(KeyPolicy::CommandApp.label(hint), "Ctrl+] or F6 back · ⌘F6 / ⇧⌘F6 recent · ⌘V paste · ⌥V image · ⌘-click links · ⌃⌘1…9 views");
     }
 
     #[test]

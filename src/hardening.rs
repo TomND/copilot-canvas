@@ -454,7 +454,7 @@ fn access_snapshot(ui: &GuiDriver, handle: isize) -> Result<Value> {
 
 fn access_press(ui: &GuiDriver, handle: isize, name: &str) -> Result<()> {
     if cfg!(target_os = "macos") {
-        anyhow::ensure!(ui.request(json!({ "cmd": "ax", "press": name }))?["ok"] == true, "no button {name:?} pressed through NSAccessibility");
+        anyhow::ensure!(ui.request(json!({ "cmd": "ax", "press": name }))?["ok"] == true, "no button or tab {name:?} pressed through NSAccessibility");
         return Ok(());
     }
     crate::uia::uia_invoke(handle, name)

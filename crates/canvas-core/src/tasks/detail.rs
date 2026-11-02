@@ -218,7 +218,7 @@ pub fn draw_info(app: &mut App, buf: &mut Buffer, area: Rect) -> Option<(u16, u1
         ("+ - · Alt+wheel · F", "zoom · fit all boards"),
         ("/ · right-click", "filter · menus"),
     ] {
-        out.line(vec![seg(format!("{keys:<20}"), fg(TEXT)), seg(what, fg(MUTED))]);
+        out.line(vec![seg(format!("{:<20}", app.key_policy.label(keys)), fg(TEXT)), seg(what, fg(MUTED))]);
     }
     paint(app, buf, area, out);
     None

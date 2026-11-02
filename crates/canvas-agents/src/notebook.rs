@@ -102,10 +102,11 @@ fn resolved_inside(path: &Path, roots: &[String], follow: bool) -> Result<()> {
     Ok(())
 }
 
-/// Access denied, or on Windows a sharing or lock violation: usually another
-/// program (an antivirus, an indexer, a sync client) holding the file a moment.
+/// Access denied, or on Windows a sharing or lock violation, elsewhere a busy
+/// file: usually another program (an antivirus, an indexer, a sync client)
+/// holding the file a moment.
 fn held(error: &std::io::Error) -> bool {
-    error.kind() == std::io::ErrorKind::PermissionDenied || (cfg!(windows) && matches!(error.raw_os_error(), Some(32 | 33)))
+    matches!(error.kind(), std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ResourceBusy) || (cfg!(windows) && matches!(error.raw_os_error(), Some(32 | 33)))
 }
 
 /// A file operation, tried again for about 0.6 s while the file is [`held`].
@@ -143,22 +144,13 @@ fn move_once(from: &Path, to: &Path) -> std::io::Result<()> {
     if unsafe { windows_sys::Win32::Storage::FileSystem::MoveFileExW(from.as_ptr(), to.as_ptr(), 0) } != 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
 }
 
-/// Linux: `renameat2(RENAME_NOREPLACE)` (a link-claimed or checked rename
-/// where the filesystem refuses the flag); a rename onto itself changes nothing.
-#[cfg(target_os = "linux")]
+/// macOS and Linux: an atomic no-replace rename (`renamex_np` /
+/// `renameat2`; a link-claimed or checked rename where the file system
+/// refuses the flag). A rename onto itself changes nothing; a case change on
+/// a case-blind file system (APFS) renames.
+#[cfg(not(windows))]
 fn move_once(from: &Path, to: &Path) -> std::io::Result<()> {
-    if same_path(from, to) {
-        return Ok(());
-    }
     canvas_sys::fs::rename_no_replace(from, to)
-}
-
-#[cfg(not(any(windows, target_os = "linux")))]
-fn move_once(from: &Path, to: &Path) -> std::io::Result<()> {
-    if std::fs::symlink_metadata(to).is_ok() && !same_path(from, to) {
-        return Err(std::io::ErrorKind::AlreadyExists.into());
-    }
-    std::fs::rename(from, to)
 }
 
 /// `Request::NotebookInfo`: the root (created with its three folders), the
@@ -198,8 +190,7 @@ fn cloud_only(meta: &std::fs::Metadata) -> bool {
     }
     #[cfg(not(windows))]
     {
-        let _ = meta;
-        false
+        canvas_sys::fs::cloud_only(meta)
     }
 }
 
@@ -403,8 +394,20 @@ pub(crate) fn mkdir(path: &str, roots: &[String]) -> Result<Response> {
     Ok(Response::Done)
 }
 
+/// The same file: the same path (case-blind on Windows), or on macOS and
+/// Linux the same file under two names (a case-blind file system: APFS).
 fn same_path(a: &Path, b: &Path) -> bool {
-    notebook::inside(a, b) && notebook::inside(b, a)
+    (notebook::inside(a, b) && notebook::inside(b, a)) || (cfg!(unix) && same_inode(a, b))
+}
+
+#[cfg(unix)]
+fn same_inode(a: &Path, b: &Path) -> bool {
+    canvas_sys::fs::same_file(a, b)
+}
+
+#[cfg(not(unix))]
+fn same_inode(_a: &Path, _b: &Path) -> bool {
+    false
 }
 
 /// `Request::NoteRename`.
@@ -702,6 +705,24 @@ mod tests {
         std::fs::write(&big, vec![b'x'; notebook::MAX_NOTE as usize + 1]).unwrap();
         assert!(backend.note_read(&s(&big)).unwrap_err().to_string().contains("at most 4 MiB"));
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// A rename that only changes case: on a case-blind file system (APFS,
+    /// Windows) the same file gets the new case; elsewhere a new name. A
+    /// name taken by another file is refused, as everywhere.
+    #[test]
+    fn a_case_change_renames_the_note() {
+        let dir = temp("case");
+        let roots = [s(&dir)];
+        std::fs::write(dir.join("Plan.md"), "plan").unwrap();
+        std::fs::write(dir.join("Other.md"), "other").unwrap();
+        assert!(matches!(rename(&s(&dir.join("Plan.md")), &s(&dir.join("plan.md")), &roots), Ok(Response::Done)));
+        let names: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert!(names.contains(&"plan.md".to_owned()) && !names.contains(&"Plan.md".to_owned()), "{names:?}");
+        assert_eq!(std::fs::read_to_string(dir.join("plan.md")).unwrap(), "plan");
+        let refused = rename(&s(&dir.join("plan.md")), &s(&dir.join("Other.md")), &roots).unwrap_err().to_string();
+        assert!(refused.contains("already exists") && std::fs::read_to_string(dir.join("Other.md")).unwrap() == "other", "{refused}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

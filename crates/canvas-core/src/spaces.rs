@@ -380,7 +380,8 @@ impl App {
     pub fn space_key(&mut self, key: &KeyEvent) -> bool {
         let m = key.modifiers;
         let ctrl = m.contains(Modifiers::CONTROL) && !m.contains(Modifiers::ALT);
-        let alt = m.contains(Modifiers::ALT) && !m.contains(Modifiers::CONTROL);
+        // On a Mac only ⌘[ / ⌘] (Option+arrows move by words there).
+        let alt = self.key_policy.alt_shortcut(key) && !m.contains(Modifiers::CONTROL);
         match key.code {
             KeyCode::Char(c @ '1'..='3') if ctrl => self.switch_space(Space::ALL[(c as u8 - b'1') as usize]),
             KeyCode::Left | KeyCode::Char(',') if alt => self.nav_back(),
@@ -427,7 +428,7 @@ impl App {
         self.record_here();
         match self.nav.back() {
             Some((space, target)) => self.go(space, target),
-            None => self.notify("Nothing to go back to (Alt+→ goes forward).", false),
+            None => self.notify(self.key_policy.label("Nothing to go back to (Alt+→ goes forward).").into_owned(), false),
         }
     }
 
@@ -436,7 +437,7 @@ impl App {
         self.record_here();
         match self.nav.forward() {
             Some((space, target)) => self.go(space, target),
-            None => self.notify("Nothing to go forward to (Alt+← goes back).", false),
+            None => self.notify(self.key_policy.label("Nothing to go forward to (Alt+← goes back).").into_owned(), false),
         }
     }
 

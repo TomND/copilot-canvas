@@ -44,15 +44,34 @@ fn children(object: &AnyObject) -> Vec<Retained<AnyObject>> {
 }
 
 /// UIA's names for the roles the check looks for (as on Windows and Linux).
+/// A tab is a radio button with the tab-button subrole on macOS.
 fn kind(role: &str, subrole: &str) -> String {
     match (role, subrole) {
         ("AXButton", _) => "Button",
+        (_, "AXTabButton") => "TabItem",
         ("AXRow" | "AXOutlineRow", _) | (_, "AXOutlineRow") => "TreeItem",
         ("AXTextArea" | "AXDocument" | "AXWebArea", _) => "Document",
         ("AXSheet" | "AXDialog", _) | (_, "AXDialog" | "AXSystemDialog") => "dialog",
         _ => role,
     }
     .to_owned()
+}
+
+/// The element is selected: a tab's value is its selection (checked, as a
+/// radio button); rows and other items answer `isAccessibilitySelected`.
+fn selected(object: &AnyObject, subrole: &str) -> bool {
+    if subrole == "AXTabButton" {
+        return text(object, "value").as_deref() == Some("1");
+    }
+    // SAFETY: an NSAccessibility getter, asked only where the element answers it.
+    unsafe {
+        let responds: bool = msg_send![object, respondsToSelector: objc2::sel!(isAccessibilitySelected)];
+        if !responds {
+            return false;
+        }
+        let selected: bool = msg_send![object, isAccessibilitySelected];
+        selected
+    }
 }
 
 /// Walks the content view `view`'s accessibility tree.
@@ -71,6 +90,7 @@ fn walk(view: isize, mut each: impl FnMut(&AnyObject, &Value) -> bool) -> Value 
             "name": text(&element, "label").or_else(|| text(&element, "title")),
             "description": text(&element, "help"),
             "value": text(&element, "value"),
+            "selected": selected(&element, &subrole),
         });
         if !each(&element, &node) {
             break;
@@ -86,16 +106,17 @@ fn walk(view: isize, mut each: impl FnMut(&AnyObject, &Value) -> bool) -> Value 
     json!({ "count": nodes.len(), "nodes": nodes })
 }
 
-/// The tree (`{"count", "nodes": [{type, role, name, description, value}]}`).
+/// The tree (`{"count", "nodes": [{type, role, name, description, value, selected}]}`).
 pub fn snapshot(view: isize) -> Value {
     walk(view, |_, _| true)
 }
 
-/// Presses the button named `name` (`accessibilityPerformPress`, as VoiceOver's VO-Space).
+/// Presses the button or tab named `name` (`accessibilityPerformPress`, as
+/// VoiceOver's VO-Space).
 pub fn press(view: isize, name: &str) -> bool {
     let mut pressed = false;
     walk(view, |element, node| {
-        if node["type"] == "Button" && node["name"].as_str().is_some_and(|n| n.trim() == name) {
+        if (node["type"] == "Button" || node["type"] == "TabItem") && node["name"].as_str().is_some_and(|n| n.trim() == name) {
             // SAFETY: an accessibility element's press action.
             pressed = unsafe { msg_send![element, accessibilityPerformPress] };
             return false;
