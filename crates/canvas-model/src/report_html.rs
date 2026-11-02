@@ -209,6 +209,15 @@ fn escape_attr(value: &str) -> String {
     value.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
+/// A `<style>` element's CSS as it is kept: every `<` becomes the CSS escape
+/// `\3C ` (the same character in strings, selectors and `content`). Raw text
+/// is not raw everywhere: inside `<svg>` (foreign content) a browser parses a
+/// style's children as markup, so a `<img onerror=…>` there would be an
+/// element the sanitizer never saw. Without `<` no tag can start.
+fn style_text(css: &str) -> String {
+    css.replace('<', "\\3C ")
+}
+
 /// The report's HTML with only formatting left (see the module docs).
 pub fn sanitize(html: &str) -> String {
     let mut out = String::with_capacity(html.len());
@@ -264,8 +273,8 @@ pub fn sanitize(html: &str) -> String {
             }
             Token::Text(text) if dropping.is_empty() => {
                 if in_style {
-                    // CSS as written (the tokenizer ended it at its end tag).
-                    out.push_str(text);
+                    // CSS as written (the tokenizer ended it at its end tag), no `<`.
+                    out.push_str(&style_text(text));
                 } else {
                     out.push_str(&escape_text(text));
                 }
@@ -295,6 +304,28 @@ pub const DESKTOP: Look = Look {
           table{border-collapse:collapse}td,th{border:1px solid #30363d;padding:4px 8px}img{max-width:100%}",
 };
 
+/// The notebook's reading look (rendered Markdown notes): the canvas's dark
+/// palette, proportional type in a centred column of about 80 characters,
+/// a clear heading scale, code blocks, tables, quotes and task lists.
+pub const NOTEBOOK: Look = Look {
+    head: "",
+    css: ":root{color-scheme:dark}html{background:#0d1117}\
+          body{box-sizing:border-box;max-width:80ch;margin:0 auto;padding:28px 32px 72px;font:15px/1.65 'Segoe UI',system-ui,sans-serif;color:#e6edf3;background:#0d1117;overflow-wrap:break-word}\
+          h1,h2,h3,h4,h5,h6{margin:1.6em 0 .6em;line-height:1.25;font-weight:600;color:#f0f6fc}\
+          h1{font-size:2em;margin-top:.2em;padding-bottom:.3em;border-bottom:1px solid #30363d}\
+          h2{font-size:1.5em;padding-bottom:.25em;border-bottom:1px solid #21262d}h3{font-size:1.25em}h4{font-size:1.05em}h5{font-size:.95em}h6{font-size:.9em;color:#9198a1}\
+          p,ul,ol,dl,blockquote,pre,table,details{margin:0 0 1em}ul,ol{padding-left:1.8em}li+li{margin-top:.25em}li>ul,li>ol{margin:.25em 0 0}\
+          a{color:#58a6ff;text-decoration:none}a:hover{text-decoration:underline}a[href^='#note:'],a[href^='#todo:']{border-bottom:1px dotted #58a6ff}\
+          code,kbd,pre,samp{font-family:'Cascadia Mono',Consolas,monospace}code{font-size:.88em;padding:.15em .35em;border-radius:4px;background:#161b22}\
+          pre{padding:12px 14px;overflow:auto;line-height:1.45;border:1px solid #30363d;border-radius:6px;background:#161b22}pre code{padding:0;font-size:.86em;background:none}\
+          kbd{padding:.1em .4em;font-size:.85em;border:1px solid #30363d;border-bottom-width:2px;border-radius:4px;background:#161b22}\
+          blockquote{margin-left:0;padding:.1em 1em;color:#9198a1;border-left:4px solid #3d444d}\
+          table{display:block;max-width:100%;overflow:auto;border-collapse:collapse}th,td{padding:6px 12px;border:1px solid #30363d}th{font-weight:600;background:#161b22}tr:nth-child(2n) td{background:#0f141a}\
+          hr{height:0;margin:1.6em 0;border:0;border-top:1px solid #30363d}img{max-width:100%}del{color:#9198a1}mark{color:inherit;background:#bb800940}\
+          li:has(>input[type=checkbox]){list-style:none}li>input[type=checkbox]{margin:0 .5em 0 -1.4em;vertical-align:middle}\
+          .footnote-definition{margin-top:1em;font-size:.9em;color:#9198a1}.footnote-definition p{display:inline}sup{line-height:0}",
+};
+
 /// A page for a web view: the policy and `look` first, then the sanitized
 /// report (its own styles win over the defaults).
 pub fn document(html: &str, look: &Look) -> String {
@@ -310,6 +341,8 @@ pub fn document(html: &str, look: &Look) -> String {
 pub fn safe_document(html: &str) -> String {
     document(html, &DESKTOP)
 }
+
+pub mod notes;
 
 #[cfg(test)]
 mod tests {
@@ -365,5 +398,28 @@ mod tests {
         assert_eq!(sanitize("<div><div>nested</div></div><style>p{}</style>"), "<div><div>nested</div></div><style>p{}</style>");
         // Nested dropped elements of the same name stay dropped to their own end.
         assert_eq!(sanitize("<select><select>x</select>y</select>z"), "z");
+    }
+
+    #[test]
+    fn a_style_inside_svg_cannot_carry_markup() {
+        // In foreign content a browser parses a style's children as markup:
+        // its raw text must hold no tag (mXSS through `<svg><style>`).
+        let dirty = "<svg><style><img src=x onerror=alert(1)><a href='javascript:x'>a</a></style></svg><style>p::before{content:'<b>'}</style>";
+        let clean = sanitize(dirty);
+        assert!(!clean.contains("<img") && !clean.contains("<a ") && !clean.contains("<b>"), "{clean}");
+        assert_eq!(clean, "<svg><style>\\3C img src=x onerror=alert(1)>\\3C a href='javascript:x'>a\\3C /a></style></svg><style>p::before{content:'\\3C b>'}</style>");
+        assert_eq!(sanitize("<style>a > b { color: red }</style>"), "<style>a > b { color: red }</style>", "the child combinator stays");
+    }
+
+    #[test]
+    fn notebook_pages_keep_note_and_todo_links_in_the_reading_look() {
+        let html = crate::notebook::markdown_html("# Plan\n\nSee [[Other note]] for DEC-031.\n\n<a href=\"#todo:X-1\" onclick=\"x()\">raw</a> <a href=\"javascript:x()\">bad</a>\n");
+        let clean = sanitize(&html);
+        assert!(clean.contains("<a href=\"#note:Other%20note\">Other note</a>"), "{clean}");
+        assert!(clean.contains("<a href=\"#todo:DEC-031\">DEC-031</a>"), "app links keep their href and get no rel: {clean}");
+        assert!(clean.contains("<a href=\"#todo:X-1\">raw</a>") && !clean.contains("onclick") && !clean.contains("javascript"), "{clean}");
+        let page = document(&html, &NOTEBOOK);
+        assert!(page.contains("max-width:80ch") && page.contains("#58a6ff") && page.contains("'Segoe UI'") && page.contains("script-src 'none'"), "{page}");
+        assert!(page.ends_with("</p>\n</body></html>"), "{page}");
     }
 }

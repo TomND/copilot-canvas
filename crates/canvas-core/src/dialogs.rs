@@ -195,6 +195,14 @@ pub enum Action {
     Prs(crate::prs::PrAction),
     /// Review follow-ups: messages to authors, watched conversations, requests.
     Reviews(crate::review_followups::ReviewAction),
+    /// Shows another space (the toolbar's tabs, Ctrl+1/2/3).
+    Space(crate::spaces::Space),
+    /// The Notebook space's commands (`notebook::run`).
+    Notebook(crate::notebook::Action),
+    /// The Tasks space's commands (`tasks::run`).
+    Tasks(crate::tasks::Action),
+    /// The Skills view and skill folders (`skills::run_skills`).
+    Skills(crate::skills::SkillAction),
 }
 
 #[derive(Clone, Debug)]
@@ -508,6 +516,14 @@ pub enum Modal {
     Inspector(Box<crate::inspect::Inspector>),
     /// A report or message from the Reports inbox (read-only).
     Report(Box<crate::reports::ReportViewer>),
+    /// Ctrl+P: one search over groups, sessions, notes and todos.
+    GoTo(Box<crate::spaces::GoTo>),
+    /// A dialog of the Notebook space (`notebook::draw_dialog` and friends).
+    Notebook(Box<crate::notebook::Dialog>),
+    /// A dialog of the Tasks space (`tasks::draw_dialog` and friends).
+    Tasks(Box<crate::tasks::Dialog>),
+    /// The skill folders of a group or of every session (`skill_folders.rs`).
+    SkillFolders(Box<crate::skill_folders::Dialog>),
 }
 
 /// Clickable regions registered while drawing.
@@ -522,6 +538,10 @@ pub enum Hit {
     Toolbar(Action),
     TileHeader(String),
     TileClose(String),
+    /// A click target of the Notebook space (`notebook::click`).
+    Notebook(crate::notebook::Hit),
+    /// A click target of the Tasks space (`tasks::click`).
+    Tasks(crate::tasks::Hit),
 }
 
 #[cfg(test)]

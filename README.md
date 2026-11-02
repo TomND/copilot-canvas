@@ -72,6 +72,16 @@ PC to the same canvas and live terminals.
       <p>An inbox for agent reports, briefs, and updates. Read Markdown or sanitized HTML without leaving the canvas.</p>
     </td>
   </tr>
+  <tr>
+    <td valign="top">
+      <h3>✎ Notes with a return address</h3>
+      <p>A Notebook space for Markdown and HTML notes: yours up front, the agents' dimmed, every note saying who it is for and who wrote it.</p>
+    </td>
+    <td valign="top">
+      <h3>☑ Todos your agents can pick up</h3>
+      <p>A Tasks space of todo boards: agents claim, note and submit work; their own ideas wait as proposals until you say yes.</p>
+    </td>
+  </tr>
 </table>
 
 ## In its element
@@ -224,7 +234,7 @@ packaging/macos/build.sh --arch arm64    # optional: Copilot Canvas.app and its 
   canvas in *Settings › Agent for new sessions*, or for the machine with
   `copilot-canvas config agent opencode`. Each agent's sessions, status,
   subagents and configuration views come from its own history and CLI. See
-  [docs/AGENTS.md](docs/AGENTS.md) for how each agent is launched, resumed and
+  [docs/AGENT-PROVIDERS.md](docs/AGENT-PROVIDERS.md) for how each agent is launched, resumed and
   forked, how its status is read, and what is verified end to end.
 - **Clients.** `copilot-canvas` opens the client set by
   `copilot-canvas config client tui|gui|auto` (default `tui`; `auto` picks the
@@ -300,37 +310,49 @@ behaviour, shortcuts, and agent-specific details.
 | **Status** | Accurate within a fraction of a second for canvas sessions: Copilot's own progress report (set when a turn starts, cleared when it ends) drives working and done; history events add needs-you, failures and sessions running elsewhere; a session whose subagents are still running stays working. States: working (spinner), needs you (permission / question), **done · review** (finished a turn you haven't looked at yet; stays until you open, click or type in that session), idle, stopped, failed, and **↗ open elsewhere** for sessions running in another terminal or VS Code. Sessions that **need you** get a gold heavy ━ border and sessions that are **done · review** a blue double ═ border with a blue-tinted box (boxes, terminal panes and sidebar names). Pressing Esc in Copilot (abort) doesn't count as done. The session whose terminal is active on the right has a blue halo around its box (heavy while you type in it) |
 | **Colour-blind safe** | The palette avoids red/green: OK is sky blue, failure is vermillion, attention is gold, finished is blue, selection is white, groups use the Okabe-Ito colours; every state also has its own icon and border shape |
 | **Subagents** | Discovered from session history (Copilot's `subagent.*` events, OpenCode task-tool children, Claude Code `Agent` calls) as boxes linked to their session. By default they are **folded into a slim deck** beneath the session, one card for all of them: **◇ 12 subagents** with the most important state of what it holds (failed first; **working · 2 of 12** while any runs; just finished), so they never fill the canvas and folding never hides activity (the session itself stays working while a subagent runs; effects on a folded box show on the deck). A click on the deck lists them in the session's details panel (state, a click on a name views that subagent, **Inspect** opens its transcript; nothing starts). A double-click on the deck, `K` or the session's menu (*Show subagents* / *Stack subagents*) shows them at exactly their saved places; a box found while they were folded gets a slot of its own (and its group grows) the first time it is shown. The choice is per session, kept in the canvas (every window and client sees it, also after a restart); *Settings › Subagents* (**stacked** by default, or shown) applies to sessions without a choice of their own. Folded boxes take no room: new boxes, *Show all nodes*, *Fit to members* and new groups use the deck; they still move with their session and its group, and count as members of their session's group |
-| **Inspect transcript** | Any session or subagent box (menu, details panel): a read-only transcript of its conversation (prompts, answers, tool calls with their result or exit code), newest at the bottom, refreshing every 1.5 s while it runs; nothing starts, nothing is written, it works remotely too. A finished OpenCode child session whose parent is stopped resumes in a terminal of its own as a new linked subsession (**Resume as subsession** or a double-click); Copilot and Claude Code subagents are part of their parent's conversation (see [docs/AGENTS.md](docs/AGENTS.md#inspecting-and-resuming-child-conversations)) |
+| **Inspect transcript** | Any session or subagent box (menu, details panel): a read-only transcript of its conversation (prompts, answers, tool calls with their result or exit code), newest at the bottom, refreshing every 1.5 s while it runs; nothing starts, nothing is written, it works remotely too. A finished OpenCode child session whose parent is stopped resumes in a terminal of its own as a new linked subsession (**Resume as subsession** or a double-click); Copilot and Claude Code subagents are part of their parent's conversation (see [docs/AGENT-PROVIDERS.md](docs/AGENT-PROVIDERS.md#inspecting-and-resuming-child-conversations)) |
 | **Subsessions** | `S` or menu → a new Copilot session linked to its parent (dotted connector, nested in the sidebar). By default it **forks the parent's conversation** (as Copilot's `/fork` and VS Code do: history and checkpoints are copied, the running parent is untouched); choose *Start fresh* for an empty one. Sessions an agent starts itself from inside a canvas session (`copilot -p …`, `copilot --resume …`) are detected from the process tree and added as linked subsessions automatically |
 | **Stacks and hidden subsessions** | Right-click a session › *Stack subsessions* (or `K`) gathers all its subsessions (recursively, with their subagents) into a deck beneath it: offset cards, the newest on top, a **+N** badge, and the stack's most important status (needs you, failed, done · review, working) on the top card, so stacking never hides activity; effects on a stacked session show on the deck. **One deck per session**: a stacked session's folded subagent boxes are in the same deck. `K` on a session (or on a box in its deck) unfolds everything it has folded (its subagent boxes and its subsessions), else folds both; where a session has both, its menu offers them separately (*Show/Stack subagents*, *Unstack/Stack subsessions*) and together (*Unfold all* / *Stack all*, `K`). A click on a stack shows its top card (it never starts anything); dragging a deck moves the session with it; a double-click, `K` or the deck's menu unfolds it: the boxes go back exactly where they were (their positions stay in the canvas, so this survives restarts and every window sees it). `H`, the canvas menu (*Hide subagents and subsessions*) or the toolbar's **↳ N hidden** hides every subsession and subagent box (each parent shows **⋯ N hidden**, **◇ N hidden** for subagent boxes, or both; the toolbar counts them all) and shows them again in place. The GUI animates both (about 300 ms, eased, reversible mid-way, then idle); the TUI and reduced motion switch at once |
 | **Looping sessions** | A session that repeats on a schedule gets a loopback arc on its right side with a lit dot running around it (bluish green), `↻ every 15m` in its status line and `↻` in the sidebar. The dot's place comes from the clock, not from frames, so it never jumps or restarts and keeps gliding while you pan, zoom or drag the box. GUI: a comet with a fading tail that leaves the box quickly, eases round the far bend and sends a soft ring through the arrowhead after each lap; a loop that starts grows its arc in, one that stops fades it out; only loops in view move, redrawing their own layer at about 30 frames/s (fewer when zoomed out). TUI: the dot steps cell by cell at one speed with a two-cell trail, redrawn only when it changes cell. With reduced motion (*Settings › Effects*, or Windows' *Show animations* off) the arc, its lit arrowhead and a `↻` badge stand still and loops switch at once. Detected from Copilot's schedule events (`/every`, the `manage_schedule` tool: created → looping, cancelled or session ended → not; the next status update shows it, and the saved schedules are read again then), Copilot's saved session schedules, and enabled repeating automations. Zoomed out, a breathing `↻` |
 | **MCP servers per session** | The new-session dialog has an *MCP servers* row: a checklist of your servers with presets (*All*, *None*, and your own: `Ctrl+S` saves the current choice, `←/→` switches, `Del` deletes). The last choice is the default next time; each session remembers its own choice for every resume (`--disable-mcp-server`). Change it later from the session's menu → *MCP servers…*. Every server is several processes in every session, so trimming them is the biggest saving in memory and CPU |
 | **Groups** | Shift-drag or right-drag to select (from anywhere, on a box too: a Shift-drag never moves a box), then `G` (or menu) draws a group box around them; a click on a group's empty background or its border (a few pixels around the outline in the GUI) selects it (the innermost of nested groups; a drag there still pans); drag the title to move everything inside, drag `◢` to resize; nested groups work; membership is geometric, like Obsidian canvas |
 | **Area selection** | The band takes every box it touches as drawn, at every zoom: sessions, subsessions and subagent boxes alike, so a parent and its children can be selected together (and moved, grouped or removed together: each box moves once, also a child whose selected parent drags it along). Boxes in a deck (stacked subsessions, folded subagent boxes) or hidden with `H` are left out; automation boxes stay with their group. Shift- or Ctrl-click toggles one box; a right-click without dragging opens the menu of what is under it. Nothing is ever started or dragged by a selection |
-| **Sidebar** | Groups → their folder row (◧) → sessions → subsessions → subagents (all of a selected session's, the running ones of the others; folded ones too: a click views that subagent's details and flies to its deck without unfolding it) → the group's passive sessions (⟲, a click opens their panel); stacked and hidden subsessions are listed dimmed, unused sessions with their age; `/` filters; click any row to fly the canvas to it, highlight it and view it (its live terminal, or its details); double-click or Enter starts it; group rows tile the group's running terminals (never starting stopped ones) |
+| **Sidebar** | On the canvas: groups → their folder row (◧) → sessions → subsessions → subagents (all of a selected session's, the running ones of the others; folded ones too: a click views that subagent's details and flies to its deck without unfolding it) → the group's passive sessions (⟲, a click opens their panel); stacked and hidden subsessions are listed dimmed, unused sessions with their age; `/` filters; click any row to fly the canvas to it, highlight it and view it (its live terminal, or its details); double-click or Enter starts it; group rows tile the group's running terminals (never starting stopped ones) |
 | **Recent sessions** | A **RECENT** section tops the Sessions panel: the sessions you used last (viewed, started or typed into), newest first, up to 8 (fewer in a short window), each with its status, agent and how long ago; a click on its header folds it. It is kept in the canvas document, so every window and client of the canvas (the home GUI and the Cloud PC alike) shows the same list, and removed boxes leave it. A click views a row, a double-click or Enter starts it (as elsewhere). **Ctrl+F6** / **Ctrl+Shift+F6** (anywhere, also while a terminal has the keyboard) and **`]`** / **`[`** (on the canvas and in the sidebar) step to the next older or newer recent session and only view it (its live terminal, or its details panel with Start / Resume); repeated presses walk the list without reordering it, and a second after the last one (or at any other key or click) the session you stopped on becomes the most recent, as with Alt+Tab |
 | **View versus start** | A click (canvas or sidebar), Tab, the arrows and the recent-session keys (Ctrl+F6, Ctrl+Shift+F6, `]`, `[`) only select and show: a running session's terminal comes into view with the keyboard, anything else shows a details panel (agent, status, folder and branch, last used, what starting it would do) with one primary button: **Start** (a new conversation or a box's command), **Resume** (its conversation) or **Open terminal**, plus Stop, MCP servers… and Remove. Only a double-click, Enter, that button or a menu item starts a session. Restoring tiles, reconnecting and clicks on exited terminals start nothing; sessions open elsewhere (↗) never get a Start / Resume |
 | **Terminals** | Real Copilot CLI in ConPTY; single view or up to four tiles (`T`); terminals keep running when you close the canvas and reappear when you reopen it |
 | **Scrolling** | The wheel goes to the app like in Windows Terminal: mouse-wheel events when Copilot's `mouse` setting is on (its default; 3 lines per notch), PageUp/PageDown on its full-screen view when it is off, scrollback otherwise; Shift+wheel or Shift+PgUp always scroll the scrollback |
 | **Your messages** | In Copilot terminals your own prompts get a navy background and a blue ▎ bar so they stand out from Copilot's output (recognised from how Copilot draws them: " ❯ text" and its indented continuation lines) |
-| **Copy & paste** | Drag inside a terminal to select; releasing copies it. Copies keep line breaks (CR LF), blank lines, indentation and spaces inside lines; lines a shell soft-wrapped rejoin (the terminal engine's own wrap state, so a line that just fills the width or a border in the last column never joins the next row). On full-screen views (Copilot, OpenCode, vim) every row is a line, and Copilot's scrollbar column is left out. Ctrl+C / Ctrl+Shift+C copy while text is selected (otherwise Ctrl+C reaches Copilot); Ctrl+V / Ctrl+Shift+V paste; the pane's right-click menu has Copy / Paste. **A paste never sends a message**: multi-line text (Ctrl+V, the pane menu, Windows Terminal's paste, IME text) reaches the agent as one bracketed paste whose line breaks stay text, a trailing line break is dropped, and a program without bracketed paste gets Shift+Enter or Alt+Enter between lines, never Enter ([docs/AGENTS.md](docs/AGENTS.md#pasting)) |
+| **Copy & paste** | Drag inside a terminal to select; releasing copies it. Copies keep line breaks (CR LF), blank lines, indentation and spaces inside lines; lines a shell soft-wrapped rejoin (the terminal engine's own wrap state, so a line that just fills the width or a border in the last column never joins the next row). On full-screen views (Copilot, OpenCode, vim) every row is a line, and Copilot's scrollbar column is left out. Ctrl+C / Ctrl+Shift+C copy while text is selected (otherwise Ctrl+C reaches Copilot); Ctrl+V / Ctrl+Shift+V paste; the pane's right-click menu has Copy / Paste. **A paste never sends a message**: multi-line text (Ctrl+V, the pane menu, Windows Terminal's paste, IME text) reaches the agent as one bracketed paste whose line breaks stay text, a trailing line break is dropped, and a program without bracketed paste gets Shift+Enter or Alt+Enter between lines, never Enter ([docs/AGENT-PROVIDERS.md](docs/AGENT-PROVIDERS.md#pasting)) |
 | **Images** | Copy a screenshot and press **Alt+V** (or Ctrl+V, or the pane menu's *Paste*): Copilot attaches it (`[📷 …png]`). With no text on the clipboard the canvas sends the keystroke and Copilot reads the image itself. Windows Terminal keeps Ctrl+V for its own text paste, so with only an image on the clipboard Ctrl+V never reaches any app there; use Alt+V |
 | **Copilot's terminal features** | Clicks reach Copilot when its `mouse` setting is on (its tab bar, "click here" actions); drags still select text in the canvas. Copilot's title (its current intent) shows in the pane header. Its progress report (OSC 9;4) drives the spinner instantly and the canvas mirrors overall state to the Windows Terminal tab and taskbar (busy while any session works, yellow while one needs you). Bells and OSC 777 notifications (Copilot's `beep` / `terminalNotifications` settings) ring Windows Terminal |
 | **Links** | URLs, OSC 8 hyperlinks and absolute Windows paths are underlined. In terminals Ctrl+click opens them, elsewhere a click does. Web links open in your browser, folders in Explorer, files in VS Code at the line (or revealed in Explorer); nothing is ever executed |
 | **New session** | Name, folder (type, **Browse…** folder picker, or **Recent ▾**), Git detection with current branch, **New Git worktree** (base branch picker, new branch, path), the **Model** it starts with (see below), optional first prompt |
-| **Default model** | The new-session dialog shows the model a session will start with and why: the group's (*from group X*), the one you chose before (*remembered default*), or the initial default, **Claude Opus 5.5** in each agent's own id (`claude-opus-5.5` for Copilot, `github-copilot/claude-opus-5.5` for OpenCode, `claude-opus-5-5` for Claude Code). Its picker lists the agent's models (`opencode models`, the choices in `copilot --help`, Claude Code's aliases) and takes any id you type. A model you pick there starts that session and becomes that agent's default for every later new session (kept in the canvas, so it survives restarts and reaches your other windows) until you pick another, there or in *Settings › Copilot / OpenCode / Claude Code model* (which also resets it). A group's own model (*Session defaults for group…*) wins in that group; picking another there applies to that session only and changes neither the group nor the canvas default. Every session records the model it started with (details panel) and keeps it: a new default never changes existing sessions or their resumes ([docs/AGENTS.md](docs/AGENTS.md#models)) |
+| **Default model** | The new-session dialog shows the model a session will start with and why: the group's (*from group X*), the one you chose before (*remembered default*), or the initial default, **Claude Opus 5.5** in each agent's own id (`claude-opus-5.5` for Copilot, `github-copilot/claude-opus-5.5` for OpenCode, `claude-opus-5-5` for Claude Code). Its picker lists the agent's models (`opencode models`, the choices in `copilot --help`, Claude Code's aliases) and takes any id you type. A model you pick there starts that session and becomes that agent's default for every later new session (kept in the canvas, so it survives restarts and reaches your other windows) until you pick another, there or in *Settings › Copilot / OpenCode / Claude Code model* (which also resets it). A group's own model (*Session defaults for group…*) wins in that group; picking another there applies to that session only and changes neither the group nor the canvas default. Every session records the model it started with (details panel) and keeps it: a new default never changes existing sessions or their resumes ([docs/AGENT-PROVIDERS.md](docs/AGENT-PROVIDERS.md#models)) |
 | **Import / sync** | `I` Copilot sessions (filter, multi-select, group by folder or client); `V` or toolbar **⟳ VS Code** syncs VS Code agent sessions (see below) |
-| **Activity bar** | VS Code-style icons on the far left (`Alt+1…9`): ▤ Sessions · ◷ Automations · ⧉ Plugins · ⌁ MCP servers · ✦ Skills · ◈ Agents & instructions · ⇄ VS Code · ≡ Settings · ✉ Reports (with its unread count) |
+| **Activity bar** | VS Code-style icons on the far left (`Alt+1…9`): the space's own sidebar (▤ Sessions on the canvas, ✎ Explorer in the Notebook, ☑ Tasks in Tasks) · ◷ Automations · ⧉ Plugins · ⌁ MCP servers · ✦ Skills · ◈ Agents & instructions · ⇄ VS Code · ≡ Settings · ✉ Reports (with its unread count) |
 | **Reports** | An inbox of reports and short messages agents publish (`copilot-canvas report publish`: Markdown, HTML or a one-line message; a morning brief, a triage report, "PR X received 12 new comments; dispatched the owning session"). The activity bar's ✉ shows how many are unread; new ones also get a notice (and in the GUI a toast and a flashing taskbar button while it is in the background). Click one to read it in the canvas: Markdown formatted, HTML in the GUI's locked-down WebView2 view; reading it never starts its session. See [Reports](#reports) |
 | **Dusty sessions** | Sessions you have not used for a while (started, typed into, or agent activity; looking at one does not count) gather dust: the TUI dims them, the GUI drains their colour and adds specks and a cobweb that grow with age (from *Settings › Dust unused sessions after*: off / 1 / 3 (default) / 7 / 14 days; medium from 14 days, heavy from 60), and the status line and the sidebar show **unused 12d**. Anything important (working, needs you, done · review, failed, open elsewhere, looping, passive sessions, an effect) is never dusty. The canvas menu's *Select unused sessions* selects them for a cleanup; nothing is ever removed automatically |
 | **Effects** | Passive sessions (and sessions) can put an effect on a box of their group until you click it: **fireworks** (an approved pull request), **attention** (a pulsing beacon: review requested, changes requested, comments), **sparkle** (a short success), **alert** (`copilot-canvas effect`, below). The service keeps them, so every window and the TUI show them, also after a restart. A click on the effect (or its box) clears it everywhere and only selects the box. GUI: fireworks bursts and rings at 12.5 frames/s, only while in view; *Settings › Effects*: on, reduced motion (still rings and badges) or off (badges only); the default follows Windows' *Show animations*. TUI: a badge (✦ ◉ ✧ ▲) on the box |
+| **Group chips, folders and badges** | Each group has a folder (asked when you create the group; suggested `<notebook>/Groups/<group name>`, the notebook being `~/.copilot-canvas/notebook` on the service's machine unless *Settings › Notebook folder* names another; folders chosen before stay where they are) with `ai-docs/` and `human-outputs/`. The group's title row has its chips: **⟲ N passive** (see [Passive sessions](#passive-sessions-and-events)), **✎ Notes** (opens the Notebook at the group's folder; **✎ Set folder…** before one is chosen) and **☑ 4 · 2▸ · 1◇** (the boards linked to the group: open · in progress · proposed, in gold while proposals wait; **☑ +** when no board is linked, which offers to create or link one). When the row is narrow the least important chip goes compact first (**✎**, **☑4**, **☑+**, **⟲ 1**), then chips that only offer to set something up give way, then the title is shortened; the chips stay clickable at every zoom while the title shows. The group menu has *Open notes*, *Open todo board*, *Link notes folder…*, *Link todo boards…*, *Open AI docs folder* and *Open human outputs folder*; the group's details panel has NOTES (*Open notes*, the folder, AI docs, human outputs, *Change folder…*), TODOS (*Open todo board* with its counts and *Link todo boards…*, or *Create or link a todo board…*) and SKILLS (its skill folders and their skills, a click opens the Skills view there; *Edit skill folders…*); the sidebar's **◧** row under the group keeps its menu (AI docs, outputs, the group folder, `GOALS.md`, change folder). A session that claimed a todo shows **☑ DEC-031** on its box (the TUI on its bottom border, at 50 % at the end of its last row, none on one-line boxes; the GUI as a pill on its bottom edge from 30 % zoom; decks show none); a click opens the card in Tasks. In remote mode (any `--remote`, `loopback` included) folders open in VS Code through the server's tunnel or in the canvas's **folder browser** (subfolders and files; Enter or a click opens a file in the read-only viewer, Backspace goes up, *Copy path*), never in Explorer on the service's machine. Sessions launched in the group may use both folders (`--add-dir`; OpenCode: `external_directory`) and get the group instructions (see [Notebook](#notebook)) |
+| **Spaces** | A window shows one of three spaces: the session canvas, the **Notebook** and **Tasks**. The toolbar's tabs **◫ Canvas · ✎ Notebook · ☑ Tasks** (compact **◫ ✎ ☑** when the toolbar is narrow) or **Ctrl+1/2/3** switch; each window remembers its space in its own preferences. The frame stays: toolbar, activity bar (slot 1 is the space's sidebar), sidebar, main area, right pane (the space's own panel; a terminal only while you are in it), status bar; *Show all nodes* and the toolbar's − + are the canvas's. Every jump between spaces (chips, badges, links between notes and todos, Go to) is recorded: **Alt+←** / **Alt+→**, or **Alt+,** / **Alt+.** (Windows Terminal keeps Alt+arrows for its panes), and the GUI's mouse back and forward buttons (also while a terminal has the keyboard) go back and forward (100 places per window, in memory). **Ctrl+P** opens **Go to**: one fuzzy search over groups, sessions, the notes this window has listed or opened, boards and todos; Enter goes there. These keys work outside terminals and dialogs (in a terminal they reach the agent); `?` shows the keys of the space you are in. No space ever starts a session by viewing |
+| **Notebook** | Notes on the service's machine, under one root folder per canvas (`~/.copilot-canvas/notebook` by default, with `Groups/`, `Inbox/` and `Todos/`; *Settings › Notebook folder*). The explorer (the sidebar, ✎ EXPLORER) shows it as a tree listed as you open folders, with each group folder outside it (**◫ group**), **Canvas (canvas-wide)** (the canvas-wide agents' folder), extra folders (*Settings › Notebook mounts…*: mounted, never moved) and **Reports** (the inbox; a report opens in the report viewer). A folder that is a group's shows **◫** (and **☑** when that group has a linked board). Notes are marked **●** for you or **◇** for agents, the agents' dimmed and italic; **Human \| All \| AI** (click a segment, or **Alt+H**; All to start with) hides the other audience and says how many it hides (**3 AI hidden**), and folders holding only hidden notes go too; `/` filters names; *Show internal files* shows the canvas's own files (`.canvas`, `events.yaml`, the instructions file, names starting with `.`, `.trash`). **+ Capture**, **+ Note** (Ctrl+N: a note in the selected folder; `.md` is added unless the name ends in a Markdown, HTML or text extension), **⟳** lists the open folders again (they are also listed again every 5 s while the Notebook shows); F2 renames, Del moves a note or folder to its root's `.trash` (asks first); right-click: *New note…*, *New folder…*, *Rename…*, *Move to…*, *Delete*, *Copy path*, *Open externally* (remote: VS Code through the tunnel, or the viewer), *Mark reviewed*, *Show group on canvas* |
+| **Note provenance** | Every note says whom it is for (`audience`: `human` or `ai`; `you`, `user` and `agent` are read too) and who wrote it (`author`: `human`, `ai` or `mixed`), plus `agent`, `source_session`, `created`, `reviewed` and `title`: Markdown in front matter (flat `key: value` lines between `---` lines at the very start), HTML as `<meta name="canvas-audience" content="human">`. Without an `audience` it is inferred: in a folder named `ai-docs` or `.canvas` (the deepest one decides) or the canvas-wide folder, for agents; in `human-outputs` or Reports, for you; HTML files, and everything else, for you. The author is inferred the same way (an agent in those folders, else you). The info panel says *(inferred)*. Editing an agent's note writes `author: mixed` (with your first change; undoing that change takes the line back too); *Mark reviewed* writes `reviewed: true` (HTML notes get the meta tag); unknown keys and their order are kept |
+| **Reading notes** | Notes open in tabs (at most 20; Ctrl+Tab / Ctrl+Shift+Tab or Ctrl+PgDn / Ctrl+PgUp, Ctrl+W or a middle-click closes). The header has the breadcrumb, the **Rendered \| Source \| Live** switch (Live for Markdown; text files are Source only and read only), the provenance pill (*● For you · ◇ written by OpenCode · session Fix flaky test · 2h ago · ✓ reviewed (inferred)*) and buttons: *View session* (views its box, never starts it), *Mark reviewed*, *Print / PDF* (GUI), *Open externally*, *Ask agent to revise…* (sends the note's path and what to change to a session of the note's group, typed in when it is idle, like `copilot-canvas send`) and, for HTML notes in the GUI, *Scripts: off* / *on*. Rendered Markdown has tables, task lists, strikethrough and footnotes; `[[Note]]` opens that note (a missing one offers to create it), a todo id such as `DEC-031` opens the todo in Tasks, a web link asks before the browser. The GUI renders in its locked-down WebView2 view: Markdown in the notebook's reading look; an HTML note served from the notebook's folders with the pictures and styles it links relatively in its folder and below (a whole page keeps its author's look, a fragment gets the reading look), its scripts only when you allowed them for that file (see [Safety](#safety)); pictures (up to 1.4 MB) as a page. The TUI, and the GUI without WebView2, show formatted text |
+| **Editing notes** | A multi-line editor drawn in cells (TUI, GUI, remote): soft wrap, undo and redo (Ctrl+Z; Ctrl+Y or Ctrl+Shift+Z; typing is one step until the caret moves), Ctrl+←/→ by words, Ctrl+Backspace / Ctrl+Del delete words, Home/End, PgUp/PgDn, Ctrl+Home/End, Shift selects, Ctrl+A, Ctrl+C / Ctrl+X / Ctrl+V, Tab / Shift+Tab indent by two spaces, Enter continues list items and quotes, find (Ctrl+F; F3 / Shift+F3 or Enter / Shift+Enter; every match lit). Source styles the Markdown; **Live** shows every line but the caret's (and the selected ones) formatted with its syntax hidden. `[[` completes note names (↑↓, Tab or Enter); Ctrl+click follows a `[[link]]`, todo id or web address (which asks first). **Ctrl+E** switches Rendered ⇄ Source, **Ctrl+S** saves, and a note saves itself 1 s after you stop typing. Open notes are checked every 2 s: a clean one reloads; one with unsaved changes shows *⚠ This note changed on disk while you edited it.* with **Compare** (a line diff), **Keep mine** and **Take theirs**. Every write is based on the revision it read, so it never overwrites a change it did not see; a note whose file went (moved or deleted elsewhere) says so, and its next save writes it again; quitting writes what was typed in the last second, and a note that cannot be written then (a conflict you did not settle) is kept beside it as `<name> (unsaved <date> <time>).md` |
+| **Quick capture and the info panel** | **Alt+N** in every space (not in a terminal or dialog) or **+ Capture** writes `<notebook>/Inbox/<yyyy-mm-dd HHMM>.md` (for you, by you; `-2`, `-3` within the same minute) and opens it in Source (the GUI keeps Ctrl+Shift+N for a new window). The right pane shows the open note's NOTE INFO: OUTLINE (a click goes to the heading), LINKED (its group, the group's board counts, the todo ids and `[[notes]]` in it), BACKLINKS (notes that link to it with `[[…]]`), PROPERTIES (its front matter) and PROVENANCE (audience and where that came from, the session with *View session*, created, reviewed) |
+| **Tasks** | Todo boards, one book per canvas kept by the service (every window and remote client sees the same). The main area is a todo canvas: each board a frame at its own place (drag its title to move it, `◢` to resize; drag the background, the wheel, Shift+wheel or Ctrl+arrows pan; `+` `-`, Alt+wheel or Ctrl+wheel zoom; `F` or *Fit* shows every board). Columns: **Proposed** (while the board has proposals, or makes agents' todos proposals), **Backlog**, **Todo**, **In progress** (`n/wip` in gold over the board's soft WIP limit), **In review**, **Done** (collapsed to a count); canceled todos are a count on the title row. A board's sub-boards are **swimlanes** with its columns and id prefix. At 100 % full cards, at 50 % id and title, at 25 % a summary per board (counts per column, a progress bar, blocked and canceled). Title chips: **◫ group** (**◫ +** links one) and **✎ notes** (**✎ +** chooses a folder). The sidebar (☑ TASKS): **NEEDS YOU** (proposals, todos in review, claims of sessions that are gone or stopped; gold while anything waits), **READY** (status Todo, not blocked, not claimed; on the boards of the group you looked at last on the canvas, else every board), **CLAIMED BY SESSIONS** (⟳ while the session works), **BOARDS** (a tree, **+ New board**); `/` filters by id, title or label and `t` (or the type button) by type, on the cards too |
+| **Todo cards** | Type glyph and coloured edge (✱ bug, ✚ feature, ▲ improvement, » optimization, ∷ chore, ¶ docs, ? research), the id, `‼` for a blocker, priority marks (`!!!` urgent, `!!` high, `!` medium), the title on two lines, then badges: `☑ 2/5` (checklist), `⚑ blocked` (a reason, or an open todo it waits for), `blocks 2`, `◇` (an agent created it), `⟳ <session>` while the claiming session works, `↗ #42 <state>` (a pull request). A click selects it (details on the right), arrows move the selection (on to the next board), Enter shows the details, Space a quick look, `N` a new todo in the selected column (title, type, priority), `A` / `D` accept / decline a proposal, `E` edits the body (the notes' editor; Ctrl+S saves), `R` renames, Del cancels (asks; *Reopen* brings it back). Drag a card to another column, swimlane, board or place in its column. Its menu adds *Decline with a reason…*, *Start a session on this…*, *Open spec note*, *Claim for…*, *Release*, *Done*, type, priority, status and *Add a note…*; a board's menu: new todo, rename, prefix, WIP limit, agents' todos as proposals or added directly, whether agents may close todos, *Link canvas groups…*, *Link notes folder…*, *New swimlane…*, *Mirror file…*, *Export JSON Canvas…*, *Delete board* (empty boards only) |
+| **Todo details** | The right pane: status, priority and type (pickers), board, claim (⟳ working, ⚠ gone or stopped), blocked (a reason, or what it waits for), blocker, who created it, labels, a proposal's reason, the checklist (a click ticks; *+ add*), the body (*edit*), links (a note opens in the Notebook, a session is viewed on the canvas, a pull request or web link asks before the browser), relations (blocked by, related to, discovered from, duplicate of, and what it blocks) and the log. Buttons: *Accept* / *Decline* (proposals), *Start a session on this…* (the new-session dialog in the board's group, named after the todo, with the first prompt "Work on DEC-031 (title). Run `copilot-canvas todo show DEC-031`, then `copilot-canvas todo claim DEC-031`."; the dialog is the explicit start), *Open spec note* (the linked note, else `<notebook>/Todos/<ID> - <title>.md`, created with the body, linked and opened), *Claim for…* (you, or a session of the canvas), *Release*, *Done*, *Cancel*, *Reopen*. Your changes show at once and go to the service (books it sends before it has them keep them); a refusal comes back as a notice with the board as it is. Demo mode has a demo book of its own (no spec notes or exports) |
+| **Proposals and claims** | Agents `todo add` what you asked for and `todo propose` their own ideas (with a reason); a proposal waits under NEEDS YOU and in the Proposed column until you accept it (into Backlog) or decline it, and a board can make every todo an agent adds a proposal. A session claims a todo before it works on it (Backlog and Todo move to In progress), and its box shows the badge; another session's live claim is never taken (you can force it or assign a todo with *Claim for…*), a claim of a session that is gone or stopped can be taken over. Agents submit finished work (In review, with its pull request); Done is yours, or the merged pull request's. See [Todos](#todos) |
 | **Dot grid pulse** | While at least one session of the canvas is working (the toolbar's ⠋ N working; a session whose subagents still run counts), the canvas's background dots breathe: a slow, smooth brightness pulse every 3 s, at its top about 40 % brighter and a touch bluer (towards a light grey-blue), back to their normal colour at the bottom; uniform across the grid and the same at every zoom. It fades in over 0.8 s when work starts and out when the last working session stops, follows the clock (never restarts while you pan, zoom or work moves between sessions) and stays well below boxes, text and status colours. GUI: only the grid's own layer is repainted for it, in frames of its own at most 15 times a second and only when its colour changes (about 1 % of one core); nothing when nothing works. TUI: the dots step through three lighter colours on the frames its spinners draw anyway, and return at once when work stops. Off with reduced motion or effects off (*Settings › Effects*, or Windows' *Show animations* off), or on its own with *Settings › Dot grid pulse: off* (this machine, beside Effects); works the same in remote mode |
-| **Group folders** | Each group has a folder (asked when you create the group; suggested `~/.copilot-canvas/groups/<name>`) with `ai-docs/` and `human-outputs/`. Open them from the group's title chips **◧ AI docs** / **◨ Outputs** (compact **◧** / **◨** when zoomed out or narrow, **◧ Set folder…** before a folder is chosen; the chips stay clickable at every zoom while the title shows), the sidebar's **◧** row under the group (a menu: AI docs, outputs, the group folder, `GOALS.md`, change folder), its menu, or its details panel. In remote mode (any `--remote`, `loopback` included) folders open in VS Code through the server's tunnel or in the canvas's **folder browser** (subfolders and files; Enter or a click opens a file in the read-only viewer, Backspace goes up, *Copy path*), never in Explorer on the service's machine. Sessions launched in the group get `--add-dir` for both and group instructions (via `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`) telling Copilot to write notes to `ai-docs` and deliverables to `human-outputs` |
 | **Canvas-wide agents** | Passive agents that watch the whole canvas, not one group: the top bar's **◎ Agents** lists them with their state (monitoring, working, paused, needs attention, failing, done, off, unavailable), triggers, skills, next run and last report, and controls (Run now, Pause / Resume, Stop, Disable / Enable, Open); each is also a dashed **◎** box in the **Canvas agents** frame (the same agent). They get events of every group, message any session, and use the canvas skills (SKILL.md) you give them. See [Canvas-wide passive agents and skills](#canvas-wide-passive-agents-and-skills) |
 | **Pull request coordination** | A session that publishes a pull request hands it to the canvas (`copilot-canvas pr track URL`, taught by the `canvas-prs` skill); the canvas checks it read-only with your own `gh` / `az` for new review comments, failing checks and its end, and the canvas-wide **PR coordinator** turns what is new into one follow-up for the owning session, typed in when that session is idle; queued, delivered, blocked and failed show in ◎ Agents › Pull requests and in Reports. See [Pull request coordination](#pull-request-coordination) |
 | **Review follow-ups** | When a review session finishes reviewing someone's pull request it hands the results off (`copilot-canvas review handoff`, the `canvas-review-followup` skill); the canvas-wide **Review follow-up** agent drafts a message to the author, you approve it, it sends it through the channel you configured (an MCP server such as Teams, a PR comment, or a folder), and every hour it reads only those conversations for requests for another review, which reach the review session that did the review, once. See [Review follow-ups](#review-follow-ups) |
-| **Copilot defaults** | Settings view: permissions (`allow-all` by default, or `ask`), each agent's model for new sessions, reasoning effort, start mode, custom agent, context tier, extra `--add-dir` folders for new sessions; any group can override them (group menu → *Launch defaults*). Also lists `copilot config` settings and edits them through `copilot config` |
+| **Copilot defaults** | Settings view: permissions (`allow-all` by default, or `ask`), each agent's model for new sessions, reasoning effort, start mode, custom agent, context tier, extra `--add-dir` folders for new sessions, *Skill folders (all sessions)…* (every launch, all agents); any group can override them (group menu → *Launch defaults*; its skill folders add to the canvas's). Also lists `copilot config` settings and edits them through `copilot config` |
 | **Plugins · MCP · skills** | Lists come from `copilot plugin/mcp/skill/instruction list --json`; Space enables/disables, Del removes (confirmed; servers and skills that come from a plugin, the project or Copilot itself can only be disabled), **+** rows add a skill, an MCP server (`copilot mcp add` syntax) or install a plugin (runs in a canvas terminal so you can answer prompts). Secrets (env, headers) are never shown |
+| **Skills view** | ✦ in the activity bar lists every skill a session of the canvas can get, by where it comes from: **CANVAS** (the canvas plugin's skills: every session, every agent), **GROUP SKILL FOLDERS** (every session's, then each group's), **PROJECTS** (each project of the canvas's sessions, e.g. `app · C:\repos\app`: the folders the agents read themselves, from a session's folder up to the repository root), **PERSONAL** (each installed agent's folders and its own list: plugins, built-in skills, on/off) and **CANVAS LIBRARY** (the canvas-wide agents' skills, with the agents given each). Every skill shows the agents that load it (`all`, or `CP` Copilot, `OC` OpenCode, `CC` Claude Code; `≈`: an agent that loads it also loads another skill of its name), its description and folder in the details; Enter (or a second click: the first shows it) opens its SKILL.md (remotely through the VS Code tunnel or the viewer). The *Agent* row (`A`) shows every agent or one. Space and Del work on skills an agent's CLI manages (Copilot's personal ones); the others say where they live. Listed again when the view opens and with ⟳; viewing starts nothing ([docs/AGENT-PROVIDERS.md](docs/AGENT-PROVIDERS.md#where-agents-find-skills)) |
+| **Group skill folders** | Folders of skills (`<name>/SKILL.md` below them, or one skill) that every session the canvas starts in a group gets (new, resumed, forked, subsessions) and the group's passive runs, with all three agents: the group menu's *Skill folders…* (or *Edit skill folders…* in its details), and *Settings › Skill folders (all sessions)…* for every session (a group's add to these). The editor lists them with their skills; a folder is typed or browsed (Tab) and checked on the service's machine in the background (it exists and holds a SKILL.md; at most 20 a list). Before a launch the service copies them into a plugin of that launch (a `--plugin-dir` for Copilot CLI and Claude Code, a `skills.paths` folder for OpenCode), leaving out names the session's own project already gives its agent ([docs/AGENT-PROVIDERS.md](docs/AGENT-PROVIDERS.md#group-skill-folders)) |
 | **Automations** | Reads Copilot's automations (`~/.copilot/data.db`: scheduled workflows, their last 10 runs, and per-session schedules). They appear in the Automations view and as ◷ boxes in a special **Automations** group on the canvas. Click one for its prompt, schedule, model, mode, project, last/next run and run history; Space or the button enables/disables a scheduled workflow (per-session schedules are managed with `/every` in that session). Refreshes every 15 s |
 | **Migrate from VS Code** | VS Code view → *Migrate skills & settings…* previews VS Code (Code, Insiders, all profiles) MCP servers, instruction files, prompt files (as skills), custom agents / chat modes and skill folders, marked new / already present / conflict / manual. Applies only the items you tick: backs up `~/.copilot` config first, never overwrites, writes a redacted `migration-log.txt` |
 
@@ -340,12 +362,14 @@ behaviour, shortcuts, and agent-specific details.
 
 | Find your way | Go deeper |
 |:---|:---|
-| [**Native GUI**](docs/GUI.md) &mdash; rendering, accessibility, screenshots | [**Agent providers**](docs/AGENTS.md) &mdash; launch, resume, models, transcripts |
+| [**Native GUI**](docs/GUI.md) &mdash; rendering, accessibility, screenshots | [**Agent providers**](docs/AGENT-PROVIDERS.md) &mdash; launch, resume, models, transcripts |
 | [**Remote workspace**](docs/REMOTE.md) &mdash; pairing, reconnect, trust model | [**Backend and shared document**](docs/BACKEND.md) &mdash; one service, multiple clients |
 | [**Terminal engine**](docs/GHOSTTY.md) &mdash; libghostty-vt and its pinned build | [**Feature parity**](docs/PARITY.md) &mdash; GUI and TUI coverage |
 | [**Architecture**](#architecture) &mdash; how the pieces fit together | [**Measured performance**](#performance-measured) &mdash; workloads and reproducible probes |
 | [**Reports**](#reports) &mdash; publish briefs and updates | [**Safety**](#safety) &mdash; permissions, history, remote access |
 | [**Commands**](#commands) &mdash; the CLI reference | [**Plan and status**](PLAN.md) &mdash; roadmap and remaining work |
+| [**Notebook**](#notebook) and [**Todos**](#todos) &mdash; notes and boards for agents | [**Notebook, Tasks and Spaces**](docs/NOTEBOOK-TASKS.md) &mdash; the design contract |
+| [**Working on the repository**](AGENTS.md) &mdash; build, verification and rules, for agents | [**Developer guide**](docs/DEVELOPMENT.md) &mdash; code map, test layers, CI, pitfalls |
 
 ## Controls
 
@@ -367,6 +391,7 @@ behaviour, shortcuts, and agent-specific details.
 | Switch side view | activity bar | `Alt+1` … `Alt+9` |
 | Read a report or message | Reports (✉) row | `Alt+9`, then Enter; Space read/unread, Del delete; in the viewer ↑↓ scroll, ←/→ older/newer in a thread, Ctrl+C copy, Esc close |
 | In a list view | click row | ↑↓, Enter open/edit, Space enable/disable, Del remove, Esc back |
+| Skills view: every agent's skills, or one agent's | the *Agent* row | `A` (in the view) |
 | Tile terminals | toolbar | `T` |
 | Leave a terminal | click canvas/sidebar | **Ctrl+]** or F6 |
 | Copy / paste in a terminal | drag to select; pane menu | Ctrl+C (with selection) · Ctrl+V / Ctrl+Shift+V |
@@ -380,13 +405,27 @@ behaviour, shortcuts, and agent-specific details.
 | Clear an effect | click it (or its box; nothing starts) | — |
 | Canvas-wide agents (their panel) | top bar **◎ Agents**; the *Canvas agents* frame's **◎ N · manage** chip | `A` |
 | Select unused (dusty) sessions | canvas menu › *Select unused sessions* | then Del removes them from the canvas |
+| Switch space: canvas, Notebook, Tasks | toolbar tabs **◫ Canvas** · **✎ Notebook** · **☑ Tasks** | **Ctrl+1** · **Ctrl+2** · **Ctrl+3** |
+| Back / forward between places (spaces, notes, todos, boxes) | the mouse's back and forward buttons (GUI) | **Alt+←** / **Alt+→**, or **Alt+,** / **Alt+.** |
+| Go to a group, session, note, board or todo (never starts anything) | — | **Ctrl+P**, type, Enter |
+| Quick note into the notebook's Inbox | Notebook explorer **+ Capture** | **Alt+N** (every space) |
+| Notes for you / all / for agents | explorer's **Human \| All \| AI** | **Alt+H** |
+| New note · rename · move to the trash | explorer **+ Note**, right-click a note or folder | Ctrl+N · F2 · Del (asks) |
+| Rendered ⇄ Source · save a note · find | header's **Rendered \| Source \| Live** | **Ctrl+E** · **Ctrl+S** (it also saves 1 s after typing) · Ctrl+F, F3 / Shift+F3 |
+| Next / previous / close a note tab | click a tab; middle-click closes | Ctrl+Tab / Ctrl+Shift+Tab or Ctrl+PgDn / Ctrl+PgUp · Ctrl+W |
+| Follow a link in a note | click it (rendered), Ctrl+click (Source, Live) | `[[` completes note names |
+| New todo · accept / decline · edit body · rename · cancel | right-click a card; the details' buttons | `N` · `A` / `D` · `E` · `R` · Del (asks) |
+| Move a todo (status, swimlane, board, order) | drag the card | arrows select, Enter details, Space peeks |
+| Todo canvas: pan, zoom, every board | drag the background, wheel; Alt+wheel; corner **− + Fit** | Ctrl+arrows; `+` `-`; `F` |
 | Help | toolbar `?` | `?` |
 
 While a terminal has focus, every key goes to Copilot (including Ctrl+G,
 Ctrl+Q and Ctrl+Z). Only **Ctrl+]** and **F6** are reserved, plus **Ctrl+F6** /
 **Ctrl+Shift+F6** (recent sessions; the agents do not use them, and Windows
 Terminal and the console host pass them on), Ctrl+C while text is selected
-and Ctrl+V (paste), as in Windows Terminal.
+and Ctrl+V (paste), as in Windows Terminal. The space keys (Ctrl+1/2/3,
+Alt+←/→, Alt+, / Alt+., Ctrl+P, Alt+N) reach the agent there too; leave the
+terminal first (the GUI's mouse back and forward buttons work anyway).
 
 ## VS Code sync
 
@@ -442,12 +481,17 @@ folder).
   Budget: *max runs per day* (default 24); failures back off 1 / 5 / 30 min
   and alert after 3.
 - **Events**: sessions launched from the canvas get the `canvas-events`,
-  `canvas-passive` and `canvas-reports` skills (`--plugin-dir
-  ~/.copilot-canvas/plugin`) and the `copilot-canvas` CLI on `PATH` (the
+  `canvas-passive`, `canvas-reports`, `canvas-prs`, `canvas-review-followup`,
+  `canvas-todos` and `canvas-notes` skills (`--plugin-dir
+  ~/.copilot-canvas/plugin`, plugin 1.3.0) and the `copilot-canvas` CLI on `PATH` (the
   demo's shells get the command too). `git push`, PR creation/update/merge/comments
   (git, `gh`, `az repos`, ADO MCP tools) are also **detected from session
   history** automatically. You can send one by hand from a group's menu
-  (*Send event…*). Events pulse on the canvas.
+  (*Send event…*). Events pulse on the canvas. The todo boards send `todo.*`
+  events to the first group linked to a board (see [Todos](#todos)); a
+  group's catalog that has no `todo.*` event yet gains the seven default ones
+  (only lines are inserted) when a passive session of the group runs or the
+  catalog is opened with *Edit events…*.
 - **Effects**: `copilot-canvas effect fireworks|attention|sparkle|alert --on NAME
   [--note TEXT]` puts an effect on a box of the sender's group (`--on group`:
   the group) until someone clicks it; `effect clear --on NAME [--kind K]`
@@ -491,6 +535,8 @@ copilot-canvas effect fireworks|attention|sparkle|alert --on NAME [--note TEXT] 
 copilot-canvas report publish --markdown FILE | --html FILE | --message TEXT [options]   (the Reports inbox, below)
 copilot-canvas pr track URL                             after publishing a pull request (Pull request coordination, below)
 copilot-canvas review handoff --pr URL --author NAME --results FILE   after reviewing one (Review follow-ups, below)
+copilot-canvas note new --title TITLE --md FILE                        a note with its provenance (Notebook, below)
+copilot-canvas todo prime                                              the group's todo boards and how to use them (Todos, below)
 ```
 
 The bus lives in `~/.copilot-canvas/bus/` (`inbox/`, `routing.json`,
@@ -575,8 +621,12 @@ group's events, and a canvas-wide agent never sees another canvas's.
   library *(missing)*. An agent's runs and its chat get exactly its skills,
   copied into its `plugin/` (plugin `canvas-agent-<slug>`): a second
   `--plugin-dir` for Copilot CLI and Claude Code, another `skills.paths`
-  folder for OpenCode ([docs/AGENTS.md](docs/AGENTS.md#canvas-wide-agents-and-their-skills));
-  the run prompt names them too.
+  folder for OpenCode ([docs/AGENT-PROVIDERS.md](docs/AGENT-PROVIDERS.md#canvas-wide-agents-and-their-skills));
+  the run prompt names them too. Ordinary sessions and group passive
+  sessions get group skill folders instead (*Skill folders…*, the same
+  plugin mechanism); the ✦ Skills view lists every skill a session can get,
+  the library's included (see *Skills view* and *Group skill folders* in the
+  feature list).
 - **Events and messages**: a canvas-wide agent gets every event of its canvas
   that matches its subscriptions (exact names, `pr.*`, `*`; a text filter;
   *Groups…* limits it to some groups), whichever group (or no group) sent it:
@@ -806,6 +856,15 @@ copilot-canvas report list [--unread] [--limit N]
   (as text), and ◂ Older / Newer ▸ through a thread are buttons. Links inside a
   report open in your browser only after you confirm the address; the PR and
   link buttons open it at once.
+- **Filed as notes**: a Markdown or HTML report from a canvas session whose
+  group has a folder is also written to
+  `<group folder>/human-outputs/reports/<yyyy-mm-dd>-<slug>.md` (or `.html`)
+  with its provenance (`audience: human`, `author: ai`, `source_session`,
+  `created`, `report: <id>`, `agent`: the session's agent as its window
+  routes it), so it shows in the
+  Notebook. It never overwrites a file (`-2`, `-3`); a failure is logged and
+  never refuses the report. Short messages and reports from outside the canvas
+  are not filed.
 - **Kept** per canvas home in `~/.copilot-canvas/reports/` (`items/<id>/` with
   `meta.json` and the body; `state.json` with the read state), owned by the
   service, so every window and client (the home GUI over `--remote` too) sees
@@ -820,6 +879,185 @@ copilot-canvas report list [--unread] [--limit N]
   sanitized page in a locked-down web view, a new report gets a toast while
   the app is open and a notification while it is away (with the APNs key),
   and links ask before Safari opens them.
+
+## Notebook
+
+The **Notebook** space (`Ctrl+2`) keeps the canvas's notes: what agents leave
+for each other (plans, research, investigation logs, context), what they
+leave for you (reports, summaries, final documents) and your own notes. Notes
+are ordinary Markdown and HTML files on the service's machine; the canvas
+reads and writes them through the backend, so the Notebook works the same
+over `--remote`.
+
+- **Folders**: the notebook root (`~/.copilot-canvas/notebook` unless
+  *Settings › Notebook folder* names another; the service creates it with
+  `Groups/`, `Inbox/` and `Todos/`), new groups' folders under
+  `<root>/Groups/<group name>` (each with `ai-docs/` and `human-outputs/`),
+  group folders elsewhere and *Notebook mounts…* as roots of their own
+  (mounted, never moved), the canvas-wide agents' folder
+  `<home>/canvas-agents/<canvas id>` and the Reports inbox. Deleting moves a
+  note or folder into its root's `.trash/<ms>-<name>`.
+- **Agents write notes** with `copilot-canvas note`, taught by the
+  `canvas-notes` skill:
+
+  ```text
+  copilot-canvas note path [--audience ai|human]     the folder for this session's notes: its group's ai-docs
+                                                     (the default) or human-outputs; a session in no group with
+                                                     a folder: the notebook's Inbox
+  copilot-canvas note new --title TITLE (--md FILE|- | --html FILE|-) [--audience ai|human]
+                 [--folder REL] [--name FILE]        writes the note with its provenance, prints its path
+  copilot-canvas note list [--audience ai|human] [--format json]
+                                                     the notes of this session's group, newest first
+  ```
+
+  `note new` writes `title`, `audience` (the option, else the note's own,
+  else `ai`), `author: ai`, `agent` (the session's: its
+  `COPILOT_CANVAS_SESSION_AGENT`, else as the routing names it),
+  `source_session` (`COPILOT_CANVAS_SESSION`) and `created`: front matter for
+  Markdown (a body without a `# ` heading gets the title as one), `canvas-`
+  meta tags for HTML. It never overwrites a note (a taken name gets `-2`,
+  `-3`); `--folder` is a relative subfolder of plain names, `--name` a plain
+  file name (default: from the title; no names Windows refuses or reads as
+  others, such as `x.` or `nul.md`); `-` reads standard input; a note is
+  UTF-8 and at most 4 MiB. `note list` shows at most 1,000 notes; `--format
+  json` prints `{"schemaVersion": 1, "kind": "note-list", "group", "folders",
+  "notes": […]}`. The caller's group, its folder and the notebook root come
+  from the routing the windows send (`<home>/bus/routing.json`).
+- **Group instructions**: every session of a group with a folder gets
+  `<folder>/.canvas/canvas-group.instructions.md` (Copilot through
+  `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, OpenCode as an `instructions` file,
+  Claude Code with `--append-system-prompt-file`): notes for other agents go
+  to `ai-docs`, deliverables for you to `human-outputs` (one self-contained
+  HTML file when layout matters), Markdown notes start with front matter
+  (`audience`, `author: ai`, `source_session`; `copilot-canvas note new`
+  writes it), `ai-docs` (`GOALS.md` first) is read before substantial work,
+  and todos change only through `copilot-canvas todo …` (`todo prime` first).
+  The file is rewritten only when its text changes.
+- **The `canvas-notes` skill** adds the rules: no secrets in a note; HTML
+  notes self-contained and offline (inline CSS, pictures as `data:` URIs or
+  files beside the note; no scripts, CDNs, web fonts or remote images);
+  `[[Note name]]` and todo ids such as `DEC-031` become links; what you should
+  notice now goes to the Reports inbox instead (reports are filed in
+  `human-outputs/reports` too, see [Reports](#reports)).
+- **You** read, edit and organise them in the Notebook space (see the
+  [feature reference](#features)): the explorer and its Human | All | AI
+  filter, the reader (Rendered, Source, Live), the info panel, quick capture
+  (Alt+N), conflicts, *Mark reviewed* and *Ask agent to revise…*.
+
+## Todos
+
+The **Tasks** space (`Ctrl+3`) shows the canvas's todo boards; agents work
+with the same boards through `copilot-canvas todo`, taught by the
+`canvas-todos` skill. The service holds the book of the canvas it routes and
+is its only writer: `<home>/canvas-agents/<canvas id>/todos/book.json`
+(atomic writes) and `log.jsonl` (one line per applied or refused change,
+moved to `log.jsonl.old` beyond 5 MB). Windows, the TUI and remote clients
+get the book with the service's bus snapshot.
+
+- **Boards and todos**: a board has a name, an id prefix (2 to 5 letters A-Z;
+  by default from its name, `Decomps` → `DEC`; unique among top-level boards),
+  a place on the todo canvas, a soft WIP limit, linked canvas groups (their
+  chips count it, their sessions' commands default to the first, its events
+  go to the first group), a notes folder and a policy for agents. Sub-boards
+  are swimlanes of a top-level board and share its prefix. Ids are
+  `<PREFIX>-<number, at least 3 digits>` (`DEC-031`), given by the book and
+  never reused (`dec-31` finds `DEC-031`). Statuses in order: proposed,
+  backlog, todo, in progress, in review, done, canceled. Types: bug, feature,
+  improvement, optimization, chore, docs, research. Priorities: urgent, high,
+  medium, low, none. *Blocked* is a reason, or a `blocked by` relation to a
+  todo that is neither done nor canceled; *ready* is status todo, not blocked,
+  not claimed (most urgent first). A todo also has labels, a checklist, a
+  body (at most 64 KB), links (sessions, pull requests, notes, reports, files,
+  web pages), relations and a log.
+- **Who may do what** (the book checks every change, from a command or a
+  window):
+
+  | | You (a window, or the command outside a canvas session) and a bot (`AUTOMATION_NAME`, such as the TODO bot) | Agents (sessions, passive sessions, canvas-wide agents) |
+  |---|---|---|
+  | Add | in any open status | `todo add` into backlog (default) or todo; on a board whose agents' todos are proposals, a proposal |
+  | Propose | — | `todo propose … --why TEXT`: Proposed, waiting for you |
+  | Accept, decline, delete | yes | never |
+  | Claim | for yourself, or for a session (`--session`, *Claim for…*); `--force` takes over a live claim | only for themselves, never a todo another live session claimed |
+  | Work on it | everything | update fields, note, check, link, relate, move between backlog, todo, in progress and in review (not a todo another live session claimed), release their own claim, submit (in review) |
+  | Done, cancel, reopen | yes | only where the board lets agents close todos (never a proposal, a declined one or another live session's claim) |
+  | Boards | add, rename, prefix, WIP, policy, link and unlink groups, move, delete (an empty board, or `--with-todos`), mirror, import | add one, or a swimlane to a board of their group (linked to their own group), link one to their own group |
+
+- A claim moves backlog and todo to in progress; releasing a todo in progress
+  moves it back to todo. A claim of a session that is gone or stopped is
+  stale: anyone may take it over (with a warning). Over a WIP limit a change
+  is made with a warning, never refused.
+- **A merged pull request** (`pr.merged` from the PR monitor or a session's
+  history, never from an inbox file) moves the todos linked to it that are in
+  progress or in review to done, as the bot "pull request merged".
+- **Events**: applied changes send `todo.created`, `todo.proposed`,
+  `todo.accepted`, `todo.status` (`from`, `to`; also releases, cancels,
+  declines and reopens), `todo.claimed`, `todo.submitted` and `todo.done` to
+  the first canvas group linked to the board (else its parent's), never back
+  to the session that made the change. The digests passive runs read gain a
+  `# Todos` section: `group-context.md` the boards linked to the group (counts,
+  rules, up to 20 open todos), `canvas-context.md` every board.
+- **Mirror, import, export**: `todo mirror --set FILE` has the service rewrite
+  FILE (a `.md` path on its machine) after every change in the owner's
+  TODOs.md format (`- [ ]` open, `- [x] … Done DATE.`, `- [-]` canceled,
+  proposals as `- [?]` under `## Proposed`, a "Generated by Copilot Canvas …
+  do not edit this file" header); `--set off` stops it. `todo import FILE`
+  reads that format (ids kept and the prefix's sequence moved past them; the
+  board is created when missing); `todo export --canvas FILE` writes a board
+  (or every board) as JSON Canvas 1.0.
+
+```text
+copilot-canvas todo prime             the boards linked to this session's group, its claims, what is
+                                      ready, the rules and the commands (agents: run it first)
+copilot-canvas todo boards [--tree] [--format json]
+copilot-canvas todo list [--board B] [--status S] [--type T] [--mine] [--all] [--format json]
+                                      open todos of this group's boards (--all: every board, done too)
+copilot-canvas todo show ID [--format json] · todo ready [--board B] [--format json]
+copilot-canvas todo add TITLE --type T [--board B] [--priority P] [--status backlog|todo] [--body FILE|-]
+               [--parent ID] [--label L]… [--check TEXT]…     a todo the user asked for
+copilot-canvas todo propose TITLE --type T --why TEXT [--board B] [--discovered-from ID] [--priority P]
+               [--body FILE|-]                                 your own idea: the user accepts or declines it
+copilot-canvas todo update ID [--title T] [--type T] [--priority P] [--blocked WHY|none] [--blocker yes|no]
+               [--body FILE|-] [--label L|-L]…
+copilot-canvas todo move ID --status S [--board B]
+copilot-canvas todo claim ID [--session NAME|ID] [--force] · todo release ID · todo note ID TEXT
+                                      (--session: you assign it to a session of the canvas)
+copilot-canvas todo check ID N [--undo] · todo check ID --add TEXT
+copilot-canvas todo link ID (--pr URL | --note PATH | --session ID | --url URL | --file PATH)
+copilot-canvas todo relate ID (--blocked-by ID | --related ID | --duplicate-of ID)
+copilot-canvas todo submit ID [--pr URL] [--summary FILE|-]    finished: in review until done
+copilot-canvas todo accept ID · decline ID [--reason TEXT] · done ID · cancel ID [--reason TEXT]
+               · reopen ID · delete ID                         (you; agents never close todos)
+copilot-canvas todo board add NAME [--prefix P] [--parent B] · todo board link B [--group NAME|ID]
+copilot-canvas todo board unlink B --group NAME|ID · todo board delete B [--with-todos]   (you; --with-todos: its todos too)
+copilot-canvas todo import FILE [--board B] [--prefix P]       the TODOs.md format (keeps the ids)
+copilot-canvas todo mirror [--out FILE | --set FILE|off]       that format (--set: rewritten after
+                                      every change) · todo export --canvas FILE [--board B] (JSON Canvas)
+```
+
+- **Reads and writes**: `prime`, `boards`, `list`, `show`, `ready`, `mirror`
+  (without `--set`) and `export` read the routed canvas's stored book
+  directly. Every change is a `canvas.todo` request in the service's bus
+  inbox, applied as the caller (`COPILOT_CANVAS_SESSION`; outside a session
+  you, or the automation `AUTOMATION_NAME` names), and the command waits up
+  to 10 s for the answer: a refusal exits non-zero with the reason; with no
+  service running (or no answer) it says the change was handed over and is
+  applied when the service takes it. `todo accept` also takes `--status
+  backlog|todo|in_progress|in_review`. `--format json` prints `{"schemaVersion":
+  1, "kind": "todo-list" | "todo" | "todo-ready" | "todo-boards" |
+  "todo-change", …}`.
+- **The board a change goes to** without `--board`: for a session, the first
+  board linked to its group; outside a group (you, a canvas-wide agent, an
+  automation), the canvas's board when it has exactly one; otherwise the
+  command asks for `--board` (a board's id, name, `Parent/Child` or prefix).
+- **The `canvas-todos` skill**: run `todo prime` first; `todo ready` →
+  `todo show ID` → `todo claim ID` (never one another session claimed) →
+  `todo note` and `todo check` as you go → `todo submit ID --pr URL`; never
+  `todo done` (Done is the user's or a merged pull request's); `todo add` when
+  the user asked, `todo propose --why` for your own ideas, `--discovered-from
+  ID` for work found while doing another todo; `--blocked "why"` or `relate
+  --blocked-by`; release with a note when stopping; never edit the book's
+  files or a TODOs.md mirror. Passive sessions are told to propose what they
+  find and never close todos.
 
 ## Automations (scheduled tasks from manifests)
 
@@ -919,6 +1157,17 @@ terminal corpus), `canvas-mobile` (the iPhone app's Rust core, UniFFI),
   (position, zoom, panels, tiles). Everything else a window needs from the
   machine (folders, Git, agent configuration, automations, VS Code) goes
   through the backend API. See [docs/BACKEND.md](docs/BACKEND.md).
+- **The notebook's files and the todo book live with the service.** The
+  Notebook reads and writes notes through backend requests (`NotebookInfo`,
+  `NotebookList`, `NoteRead`, `NoteWrite`, `NoteRevs`, `ReadBytes`,
+  `NoteMkdir`, `NoteRename`, `NoteTrash`, `NoteSearch`); a save carries the
+  revision it is based on (the first 8 bytes of the file's SHA-256), so a
+  change made meanwhile comes back as a conflict, never lost. The service is
+  the single writer of each canvas's todo book: windows send operations
+  (`{"action": "todos", "op": …}`), applied at once and answered with the new
+  book in the bus snapshot (`Snapshot::todos`); a refusal goes back to that
+  window as an error with the book as it is. Windows apply their own changes
+  optimistically with the same rules (`canvas_model::todos`).
 - **The service owns all terminals.** Closing or crashing the UI never stops a
   session; reopening shows the same live terminal with its history. It runs
   from a per-build copy in `~/.copilot-canvas/bin`, so rebuilding is never
@@ -1060,6 +1309,46 @@ and `docs/REMOTE.md`.
   the page's own load cancelled, no link previews and a non-persistent data
   store; a tapped link asks before Safari opens it. Report links are
   `http(s)`/`mailto` only.
+- **Notes are data too.** Rendered Markdown goes through the same sanitizer
+  and policy as reports. An HTML note is served to the GUI's view from a
+  virtual origin, `https://notes.canvas.invalid/` (a `.invalid` host never
+  resolves), mapped to the explorer root the note is in (the notebook root, a
+  group folder outside it, a mount) so its relative links resolve as on
+  disk, but only the files in the **note's own folder and the folders below
+  it** are answered (`GET`s, read through the backend, at most 16 MiB; at
+  most 256 waiting at once); everything else gets 403, and every answer
+  carries a Content-Security-Policy that allows no other host, `nosniff` and
+  `no-store`. Keep a note's pictures and styles next to it. The note itself is
+  sanitized like a report (links, pictures, media and style sheets may also
+  point to the notes origin) unless you allowed its scripts: *Scripts: on* is per
+  file and kept in the canvas (`notebook_scripts`); such a note runs in a
+  second view with its own in-private profile under `sandbox allow-scripts`
+  (never `allow-same-origin`: no storage, no cookies), scripts only inline or
+  from the notes origin, `connect-src 'none'`, no frames, plugins or workers,
+  and its page is unloaded whenever it is out of sight. Both views get a
+  proxy that answers nothing (loopback addresses included), no DNS
+  prefetching, WebRTC only through that proxy, no SmartScreen lookups and no
+  file drops, so a note reaches no network. `#note:` / `#todo:` links become
+  app navigations (a note's script gets at most one per click into its
+  page); web links ask before the browser.
+- **Notebook writes stay inside the notebook.** Every write, folder, rename
+  and trash request names its roots and is refused for relative paths, `.` or
+  `..` components, anything inside a `.git` folder and anything outside the
+  roots; renames never overwrite; saves are atomic and refused when the note
+  changed since it was read (you get the conflict instead). Deleting moves to
+  the root's `.trash`.
+- **Todos change only through the service.** The book is written by the
+  service alone; windows and `copilot-canvas todo` send it operations, which
+  it checks against the rules (agents never accept, decline, delete or close
+  todos unless a board lets them close, never take another live session's
+  claim, never set the mirror or import) and logs, applied or refused. A
+  merged pull request finishes todos only on the word of the PR monitor or a
+  session's history, never of a file dropped in the bus inbox. As with
+  `copilot-canvas pr`, a command's request counts as the session it names (none:
+  you): the rules keep agents in their lane, they are no sandbox against a
+  process that writes the inbox itself. A book the service cannot read (or one
+  a newer version wrote) is never written over, and the mirror keeps a copy
+  (`FILE.bak`) of a file it did not write before it first replaces it.
 - **Automations**: the canvas only reads Task Scheduler, launcher logs and
   reports; it changes tasks when you run, enable or disable one, or `apply`
   (preview first, backups kept). The doctor follows each automation's owner
@@ -1084,10 +1373,14 @@ copilot-canvas record … · corpus check|bless|diff|list
 copilot-canvas doctor                 environment checks (each agent CLI and its history, the default
                                       agent, terminal engine, Git, ConPTY, service, VS Code)
 copilot-canvas service status|stop    stop ends the service's sessions (gracefully)
+copilot-canvas note path|new|list …   notes with their provenance in the canvas notebook (Notebook, above)
+copilot-canvas todo prime|boards|list|show|ready|add|propose|update|move|claim|release|note|check|link|
+               relate|submit|accept|decline|done|cancel|reopen|delete|board|import|mirror|export …
+                                      the canvas's todo boards (Todos, above; copilot-canvas --help)
 copilot-canvas bench [--terminals N] [--seconds S] [--json FILE]
 copilot-canvas bench --client gui     the GPU client's latency, frame cost, idle CPU, memory, first paint
 copilot-canvas selftest               end-to-end UI test in a hidden console (demo shells only)
-copilot-canvas selftest --client gui  the same 39 steps against the GPU client (over its test hooks)
+copilot-canvas selftest --client gui  the same 45 steps against the GPU client (over its test hooks)
 copilot-canvas selftest --client gui --parity
                                       one GUI check per row of the parity matrix (docs/PARITY.md)
 copilot-canvas kitty-demo             print a small test image (iTerm2 inline image; the GPU client shows it)
@@ -1106,14 +1399,14 @@ copilot-canvas selftest agent --paste [--agent copilot|opencode|claude]
                                       break) into the real agent's input box through the canvas and
                                       checks it arrived as lines and nothing was sent; erases it again
                                       (OpenCode runs with a free model as every default, Claude Code in a
-                                      throw-away CLAUDE_CONFIG_DIR; docs/AGENTS.md#pasting)
+                                      throw-away CLAUDE_CONFIG_DIR; docs/AGENT-PROVIDERS.md#pasting)
 copilot-canvas selftest agent --agent opencode --prompt [--model ID] [--client tui|gui] [--steps LIST]
                                       OpenCode through the canvas with tiny prompts to a free model only
                                       (ids ending in -free; default opencode/deepseek-v4.1-flash-free):
                                       re-keying, working → done · review → idle, wheel, git push event,
                                       subagent box, question and permission (needs you, rejected), resume,
                                       a headless passive run; deletes every session it created
-                                      (docs/AGENTS.md)
+                                      (docs/AGENT-PROVIDERS.md)
 copilot-canvas selftest --remote loopback|faults|paired
                                       remote mode: the UI test over TCP; drops, cut frames and delay;
                                       pairing, a Dev Tunnel stand-in, revocation (docs/REMOTE.md)
@@ -1164,7 +1457,7 @@ cargo test                            unit tests
   On full-screen views every row is copied as its own line: such programs
   wrap their paragraphs themselves, so a paragraph copied from Copilot or
   OpenCode keeps their line breaks. cmd.exe has no multi-line input: a
-  pasted line break ends its line (docs/AGENTS.md#pasting).
+  pasted line break ends its line (docs/AGENT-PROVIDERS.md#pasting).
 - Stopping a session sends the agent Ctrl+D (twice), then Ctrl+C, and ends its
   process tree after 5 s; a session the canvas stopped always shows as stopped.
   OpenCode 1.19 sometimes quits its screen but leaves its process running (on a
@@ -1174,7 +1467,7 @@ cargo test                            unit tests
   within a few seconds and follows it from then on; a TUI that starts another
   session (`/new`) keeps the box on its first one. OpenCode sessions open in an
   OpenCode the canvas did not start are not shown as open elsewhere. See
-  [docs/AGENTS.md](docs/AGENTS.md#known-limitations).
+  [docs/AGENT-PROVIDERS.md](docs/AGENT-PROVIDERS.md#known-limitations).
 - Automations are read from Copilot's local database; creating or editing
   their prompt/schedule is done in VS Code or the Copilot app.
 - Upgrading: terminal fixes live in the service. When a newer build starts
@@ -1228,6 +1521,17 @@ cargo test                            unit tests
   window). Creating, renaming and deleting groups, and starting, stacking or
   hiding sessions are not undo steps; removals and VS Code syncs are undone
   but not redone.
+- Notebook and Tasks: the todo book is the routed canvas's (the one a window
+  opened last, as for canvas-wide agents), and a canvas opened by a service
+  from before canvas ids has none; `copilot-canvas todo` writes wait for the
+  service. HTML notes are rendered only in the GUI (formatted text in the TUI
+  and without WebView2), scripts there only for files you allowed, never with
+  network access. Go to and `[[` completion know the notes the window has
+  listed or opened and those a walk of the roots finds (every 60 s while the
+  Notebook shows: at most 60 folders and 2,000 notes); a search reads at most
+  20,000 files, 256 MB and 10 s per request. The iPhone app's core has the todos and notebook
+  (see docs/IOS-STATUS.md); its screens for them are not built yet. Undo
+  (Ctrl+Z) covers neither notes (the editor has its own undo) nor todos.
 
 ---
 

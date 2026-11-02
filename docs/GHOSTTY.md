@@ -2,8 +2,9 @@
 
 Copilot Canvas can run every hosted terminal on Ghostty's VT core
 (libghostty-vt) instead of alacritty_terminal. The engine sits behind the
-`Emulator` trait (PLAN.md §4 D1) and is enabled per build with the `ghostty`
-Cargo feature and per service with `COPILOT_CANVAS_ENGINE=ghostty`.
+`Emulator` trait (PLAN.md §4 D1) and is the default engine: the `ghostty` Cargo feature is on by default (`--no-default-features`
+builds with alacritty only), and `COPILOT_CANVAS_ENGINE` or `copilot-canvas config engine`
+(`ghostty`, `alacritty`, `auto`) chooses per service.
 
 | Piece | Where |
 |---|---|
@@ -30,8 +31,8 @@ read it.
 
 ```powershell
 cargo xtask build-ghostty            # once per pin; skipped when up to date
-cargo build --release --features ghostty
-$env:COPILOT_CANVAS_ENGINE = 'ghostty'   # service-wide engine for new terminals
+cargo build --release                # ghostty is the default feature
+$env:COPILOT_CANVAS_ENGINE = 'alacritty' # optional: another engine for new terminals (or: copilot-canvas config engine …)
 ```
 
 `cargo xtask build-ghostty [--force]`:

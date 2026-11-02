@@ -28,6 +28,14 @@ pub enum WebEvent {
     Link(String),
     /// Esc in the view: the report closes.
     Escape,
+    /// A global key pressed in the page, for the canvas.
+    #[allow(dead_code)]
+    Key(canvas_core::input::KeyEvent),
+    /// A `#note:` / `#todo:` link or a link to another file of the note's folder.
+    #[allow(dead_code)]
+    Navigate(canvas_core::spaces::Space, canvas_core::spaces::NavTarget),
+    /// Something to tell the user (printing); `true`: an error.
+    Notice(String, bool),
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -203,7 +211,7 @@ impl ReportWeb {
 
     /// Shows `pane` (an HTML report) over its area, or hides the view; the
     /// helper starts the first time one is shown.
-    pub fn sync(&mut self, _window: isize, pane: Option<&HtmlPane>, cell_w: f32, cell_h: f32) {
+    pub fn sync(&mut self, _window: isize, pane: Option<&HtmlPane>, _backend: &std::sync::Arc<dyn canvas_core::rpc::Backend>, cell_w: f32, cell_h: f32) {
         let Some(pane) = pane else {
             self.visible = false;
             self.focused = false;
@@ -224,12 +232,31 @@ impl ReportWeb {
                 self.rect = Some(rect);
                 self.zoom = zoom;
                 if self.shown.as_deref() != Some(pane.id.as_str()) {
-                    self.send(json!({ "cmd": "load", "html": pane.document.as_str() }));
+                    // HTML notes (served from their folder) come with the Linux notes view.
+                    let page = match &pane.source {
+                        canvas_core::view::HtmlSource::Document(document) => document.as_str().to_owned(),
+                        canvas_core::view::HtmlSource::File { path, .. } => canvas_core::report_html::notes::message_page(&format!("{path}: HTML notes are not shown on Linux yet.")),
+                    };
+                    self.send(json!({ "cmd": "load", "html": page }));
                     self.shown = Some(pane.id.clone());
                 }
                 self.visible = true;
             }
         }
+    }
+
+    /// The keyboard goes back to the canvas (the page's keys stop at once).
+    pub fn blur(&mut self) {
+        self.focused = false;
+    }
+
+    /// Work that waits for the event loop (none here: the helper answers on its socket).
+    pub fn pump(&mut self) {}
+
+    /// *Print / PDF* (not yet on Linux).
+    pub fn print(&mut self) {
+        lock(&self.shared).events.push(WebEvent::Notice("Printing an HTML pane is not available on Linux yet.".into(), true));
+        crate::shell::wake_web();
     }
 
     fn start(&mut self) {

@@ -31,6 +31,8 @@ pub fn draw_activity_bar(app: &mut App, buf: &mut Buffer, area: Rect) {
         }
         // Unread reports: the icon in gold with their count beside it (9+ as "+").
         let unread_here = *view == SideView::Reports && unread > 0;
+        // Slot 1 is the space's own sidebar (sessions, the explorer, the boards).
+        let icon = if *view == SideView::Sessions { app.space.side().0 } else { icon };
         put(buf, area.x as i32 + 1, y, icon, if unread_here { bold(ATTENTION).bg(bg) } else { style }, area);
         if unread_here {
             let count = if unread > 9 { "+".to_owned() } else { unread.to_string() };
@@ -54,7 +56,7 @@ fn hints(view: SideView) -> &'static str {
         SideView::Automations => "Enter details · Space on/off",
         SideView::Plugins => "Space on/off · Del uninstall · A agent",
         SideView::Mcp => "Space on/off · Del remove · A agent",
-        SideView::Skills => "Space on/off · Del remove · A agent",
+        SideView::Skills => "Enter open · A agent",
         SideView::Agents => "Enter details · A agent",
         SideView::VsCode => "Enter run / toggle",
         SideView::Settings => "Enter edit · A agent",
@@ -66,7 +68,7 @@ fn hints(view: SideView) -> &'static str {
 pub fn draw_list(app: &mut App, buf: &mut Buffer, area: Rect) {
     fill(buf, area.x as i32, area.y as i32, area.width as i32, area.height as i32, Style::default().bg(PANEL), area);
     let focused = app.focus == Focus::Sidebar;
-    let busy = app.cli_busy.is_some() || !app.configs_loading.is_empty() || app.automations_loading || app.vs_syncing;
+    let busy = app.cli_busy.is_some() || !app.configs_loading.is_empty() || app.automations_loading || app.vs_syncing || app.skills.loading;
     let title = view_title(app);
     let end = put(buf, area.x as i32 + 1, area.y as i32, &truncate(&title, area.width as usize - 3), bold(if focused { ACCENT } else { GRAY }).bg(PANEL), area);
     if busy {
@@ -1083,7 +1085,115 @@ fn reviews_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>
     actions.push(("Canvas agents".into(), Action::Agents(crate::canvas_wide::AgentAction::Panel)));
 }
 
-pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &RightDetail) {
+/// A skill of the Skills view: which agents load it, where it lives, what
+/// it is for, and other skills of its name the same agents load.
+fn skill_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>, key: &str, id: &str) {
+    use crate::skills::{SkillAction, source_label};
+    use canvas_model::skills::{self as sk, SourceKind};
+    let Some((sources, si, ki)) = app.find_skill(key, id) else { return out.text("This skill is no longer listed; ⟳ Refresh.", fg(MUTED)) };
+    let (source, skill) = (&sources[si], &sources[si].skills[ki]);
+    out.text(format!("✦ {}", skill.name), bold(TEXT));
+    if let Some(enabled) = skill.enabled {
+        out.text(if enabled { "● enabled" } else { "○ disabled" }, fg(if enabled { POSITIVE } else { MUTED }));
+    }
+    out.gap();
+    let agents: Vec<&str> = skill.agents.iter().map(|k| k.label()).collect();
+    out.field("Loaded by", &if agents.is_empty() { "no agent".to_owned() } else { agents.join(", ") });
+    out.field("From", &source_label(&source.kind));
+    if let (SourceKind::Personal { agent }, false) = (&source.kind, skill.managed.is_empty()) {
+        out.field("Managed", &format!("by {} ({})", agent.label(), skill.managed));
+    }
+    if source.kind == SourceKind::Library {
+        let given: Vec<String> = app.canvas_agents().iter().filter(|n| n.passive.as_ref().is_some_and(|p| p.skills.contains(&skill.name))).map(|n| n.name.clone()).collect();
+        out.field("Given to", &if given.is_empty() { "no canvas-wide agent yet".to_owned() } else { given.join(", ") });
+    }
+    out.field_left("Folder", &skill.folder);
+    out.field_left("File", &skill.path);
+    if !skill.problem.is_empty() {
+        out.gap();
+        out.text(format!("⚠ {}", skill.problem), fg(ATTENTION));
+    }
+    out.gap();
+    out.text(if skill.description.is_empty() { "(no description)".to_owned() } else { skill.description.clone() }, fg(TEXT));
+    let others = sk::same_name(&sources, si, ki);
+    if !others.is_empty() {
+        out.gap();
+        out.text("SAME NAME ELSEWHERE", bold(MUTED));
+        for (oi, oj, common) in &others {
+            let other = &sources[*oi].skills[*oj];
+            out.text(format!("≈ {} ({})  {}", source_label(&sources[*oi].kind), sk::tags(common), if other.folder.is_empty() { &other.path } else { &other.folder }), fg(TEXT));
+        }
+        out.text("Claude Code uses a personal skill over a project's; plugin skills (the canvas's, skill folders') keep their plugin's name; OpenCode wants names unique.", fg(MUTED));
+    }
+    if !skill.path.is_empty() {
+        actions.push(("Open SKILL.md".into(), Action::Skills(SkillAction::Open(skill.path.clone()))));
+        if let Some(folder) = std::path::Path::new(&skill.path).parent() {
+            actions.push(("Open folder".into(), Action::Skills(SkillAction::Folder(folder.display().to_string()))));
+        }
+    }
+    if let (SourceKind::Personal { agent }, Some(enabled)) = (&source.kind, skill.enabled) {
+        actions.push((if enabled { "Disable".into() } else { "Enable".into() }, Action::Skills(SkillAction::Toggle(*agent, skill.name.clone(), !enabled))));
+    }
+}
+
+/// A source of the Skills view: what it is, the agents that load it, its folders.
+fn skill_source_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>, key: &str) {
+    use crate::skills::{SkillAction, source_label};
+    use canvas_model::skills::{self as sk, SourceKind};
+    let group = key.strip_prefix("group:").map(|g| Some(g.to_owned()).filter(|g| !g.is_empty()));
+    if let Some(group) = &group {
+        actions.push(("Skill folders…".into(), Action::Skills(SkillAction::EditFolders(group.clone()))));
+    }
+    let sources = app.visible_skill_sources();
+    let Some(source) = sources.iter().find(|s| sk::key(&s.kind) == key) else {
+        out.text("Not listed yet; ⟳ Refresh.", fg(MUTED));
+        if let Some(group) = group {
+            for folder in crate::skill_folders::dirs(app, group.as_deref()) {
+                out.field_left("Folder", &folder);
+            }
+        }
+        return;
+    };
+    out.text(format!("◧ {}", sk::title(&source.kind)), bold(TEXT));
+    out.text(source_label(&source.kind), fg(MUTED));
+    out.gap();
+    let about = match &source.kind {
+        SourceKind::Canvas => "The canvas plugin: every session the canvas starts gets these skills, every agent.".to_owned(),
+        SourceKind::Group { id, .. } if id.is_empty() => "Every session the canvas starts, and every group's passive runs, get these skills (every agent), except names the session's own project already gives its agent.".to_owned(),
+        SourceKind::Group { .. } => "Every session the canvas starts in this group, and its passive runs, get these skills (every agent) besides every session's, except names the session's own project already gives its agent.".to_owned(),
+        SourceKind::Project { .. } => "The agents read these folders themselves in a session of this project (from its folder up to the repository root).".to_owned(),
+        SourceKind::Personal { agent } => format!("{} reads these folders itself in every session; its CLI's own list adds the skills it manages.", agent.label()),
+        SourceKind::Library => "Canvas-wide agents get the skills assigned to them (◎ Agents › an agent › Skills…).".to_owned(),
+    };
+    out.text(about, fg(TEXT));
+    out.gap();
+    let agents = sk::agents_of(&source.skills);
+    out.field("Agents", &agents.iter().map(|k| k.label()).collect::<Vec<_>>().join(", "));
+    out.field("Skills", &source.skills.len().to_string());
+    if !source.folders.is_empty() {
+        out.gap();
+        out.text("FOLDERS", bold(MUTED));
+        for (folder, count) in &source.folders {
+            out.text(format!("{folder} · {count}"), fg(TEXT));
+        }
+    }
+    if !source.problem.is_empty() {
+        out.gap();
+        out.text(format!("⚠ {}", source.problem), fg(ATTENTION));
+    }
+    if !source.path.is_empty() && !matches!(source.kind, SourceKind::Group { .. }) {
+        actions.push(("Open folder".into(), Action::Skills(SkillAction::Folder(source.path.clone()))));
+    }
+}
+
+/// The right pane's details; the text cursor a module's details want shown.
+pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &RightDetail) -> Option<(u16, u16)> {
+    // Notes and todos are drawn by their spaces.
+    match detail {
+        RightDetail::Note(path) => return crate::notebook::draw_detail(app, buf, area, path),
+        RightDetail::Todo(id) => return crate::tasks::draw_detail(app, buf, area, id),
+        _ => {}
+    }
     outline(buf, area.x as i32, area.y as i32, area.width as i32, area.height as i32, &LIGHT, fg(FAINT), area);
     let inner = Rect::new(area.x + 2, area.y + 1, area.width.saturating_sub(4), area.height.saturating_sub(3));
     let mut out = Lines { lines: Vec::new(), width: inner.width as usize, spans: Default::default(), clicks: Vec::new() };
@@ -1144,6 +1254,7 @@ pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &R
         RightDetail::GroupPassives(group) => group_passives_panel(app, &mut out, &mut actions, group),
         RightDetail::Prs => prs_panel(app, &mut out, &mut actions),
         RightDetail::Reviews => reviews_panel(app, &mut out, &mut actions),
+        RightDetail::Note(_) | RightDetail::Todo(_) => {}
         RightDetail::Passive(id) if app.doc.node(id).is_some_and(|n| n.is_canvas_agent()) => {
             let node = app.doc.node(id).cloned().expect("checked");
             canvas_agent_panel(app, &mut out, &mut actions, &node);
@@ -1249,22 +1360,6 @@ pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &R
                 }
                 None => out.text("Server not found; refresh the list.", fg(MUTED)),
             },
-            ItemRef::Skill(name) => match config.skills.iter().find(|s| &s.name == name) {
-                Some(s) => {
-                    out.text(format!("✦ {}", s.name), bold(TEXT));
-                    out.text(if s.enabled { "● enabled" } else { "○ disabled" }, fg(if s.enabled { POSITIVE } else { MUTED }));
-                    out.gap();
-                    out.field("Source", &s.source);
-                    out.field("Path", &s.path);
-                    out.gap();
-                    out.text(s.description.clone(), fg(TEXT));
-                    actions.push((if s.enabled { "Disable".into() } else { "Enable".into() }, Action::ToggleConfig(Kind::Skill, s.name.clone(), !s.enabled)));
-                    if !s.path.is_empty() {
-                        actions.push(("Open folder".into(), Action::OpenPath(s.path.clone())));
-                    }
-                }
-                None => out.text("Skill not found; refresh the list.", fg(MUTED)),
-            },
             ItemRef::Agent(path) => match config.agents.iter().find(|a| &a.path == path) {
                 Some(a) => {
                     out.text(format!("◈ {}", a.name), bold(TEXT));
@@ -1293,6 +1388,8 @@ pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &R
                 }
                 None => out.text("Instruction source not found; refresh the list.", fg(MUTED)),
             },
+            ItemRef::SkillOf(key, id) => skill_detail(app, &mut out, &mut actions, key, id),
+            ItemRef::SkillSource(key) => skill_source_detail(app, &mut out, &mut actions, key),
             _ => out.text("Select an item.", fg(MUTED)),
         },
     }
@@ -1327,4 +1424,5 @@ pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &R
     }
     let clip = Rect::new(area.x, area.y, area.width, area.height);
     buttons(app, buf, inner.x as i32, area.bottom() as i32 - 1 - button_lines, rows, clip, primary);
+    None
 }

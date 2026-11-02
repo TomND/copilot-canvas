@@ -1,6 +1,6 @@
 # grid-pulse (150x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit              ⠋ 1 working   2 sessions
+ ◆ Copilot Canvas   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit   ⠋ 1 working   2 sessions
     SESSIONS                     │▌·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
 ▌▤  / filter…                    │  ╭ Working on it ─────────────╮         ╭ Idle one ──────────────────╮
                                  │  │ ⠋ working · ↗ elsewhere    │         │ ○ idle · ↗ elsewhere       │

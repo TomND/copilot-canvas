@@ -100,6 +100,17 @@ pub fn button(button: winit::event::MouseButton) -> Option<MouseButton> {
     }
 }
 
+/// The mouse's back (`false`) and forward (`true`) buttons (XButton1 and
+/// XButton2): they walk the navigation history (`App::nav_button`); the
+/// core's mouse events have no such buttons.
+pub fn history_button(button: winit::event::MouseButton) -> Option<bool> {
+    match button {
+        winit::event::MouseButton::Back => Some(false),
+        winit::event::MouseButton::Forward => Some(true),
+        _ => None,
+    }
+}
+
 /// A mouse event at a position in fractional cells.
 pub fn mouse(kind: MouseEventKind, (x, y): (f32, f32), mods: ModifiersState) -> InputEvent {
     InputEvent::Mouse(crate::os::KEY_POLICY.mouse(MouseEvent::at(kind, x, y, modifiers(mods))))
@@ -194,6 +205,13 @@ mod tests {
         assert_eq!(key(&Key::Character("ab".into()), ElementState::Pressed, ModifiersState::empty()), Some(InputEvent::Text("ab".into())));
         assert_eq!(key(&Key::Character("a".into()), ElementState::Released, ModifiersState::empty()), None);
         assert_eq!(key(&Key::Named(NamedKey::Space), ElementState::Pressed, ModifiersState::empty()), Some(InputEvent::Key(KeyEvent::new(KeyCode::Char(' '), Modifiers::NONE))));
+    }
+
+    #[test]
+    fn back_and_forward_buttons_are_the_history_not_mouse_events() {
+        use winit::event::MouseButton as W;
+        assert_eq!((history_button(W::Back), history_button(W::Forward), history_button(W::Left)), (Some(false), Some(true), None));
+        assert_eq!((button(W::Back), button(W::Forward), button(W::Other(7))), (None, None, None));
     }
 
     #[test]

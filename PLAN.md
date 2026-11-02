@@ -42,7 +42,7 @@ Validated by the owner on 2026-10-28, on the real setup:
 
 Also verified here: OpenCode end to end through the canvas with a free model
 (`selftest agent --agent opencode --prompt`: re-keying, status, needs-you,
-subagents, wheel, push detection, resume, passive runs; docs/AGENTS.md);
+subagents, wheel, push detection, resume, passive runs; docs/AGENT-PROVIDERS.md);
 Claude Code launched and stopped through the canvas, never prompted.
 
 Still running or time-gated:
@@ -70,6 +70,16 @@ pull request coordination, the Reports inbox, review follow-ups, Ctrl+Z / Ctrl+Y
 for layout changes and area selection of subsessions (parity rows 34 to 45,
 docs/PARITY.md). New items are picked up by the owner's TODO bot (outside this
 repository), which implements, verifies and pushes them.
+
+The Notebook, Tasks and Spaces work was implemented on 2026-10-31: each
+window shows the session canvas, the **Notebook** (Markdown and HTML notes
+on the service's machine with their audience and author, a cell editor with
+a live preview, HTML notes in the GUI's WebView2 view from a sandboxed
+virtual origin, `copilot-canvas note`) or **Tasks** (todo boards kept by the
+service, proposals and claims, `copilot-canvas todo`), with navigation
+history and Go to between them; reports are also filed as notes. The design
+contract, with what the implementation changed, is
+[docs/NOTEBOOK-TASKS.md](docs/NOTEBOOK-TASKS.md).
 
 ## 1. Goals and non-goals
 

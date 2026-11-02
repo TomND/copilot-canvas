@@ -526,6 +526,18 @@ fn vt_events(bytes: &[u8]) -> Vec<serde_json::Value> {
                     out.push(json!({ "cmd": "mouse", "kind": kind, "button": button, "x": px, "y": py, "mods": mods }));
                     continue;
                 }
+                if fin == '_' {
+                    // A win32-input-mode key (`Vk;Sc;Uc;Kd;Cs;Rc _`): its press.
+                    let n: Vec<u32> = params.split(';').map(|p| p.parse().unwrap_or(0)).collect();
+                    let state = n.get(4).copied().unwrap_or(0);
+                    let mods: Vec<&str> = [(0x10, "shift"), (0x3, "alt"), (0xc, "ctrl")].into_iter().filter(|(bits, _)| state & bits != 0).map(|(_, name)| name).collect();
+                    match (n.get(3), n.first(), n.get(2).and_then(|u| char::from_u32(*u))) {
+                        (Some(1), Some(0x1b), _) => out.push(key("Esc", &mods)),
+                        (Some(1), _, Some(c)) if !c.is_control() => out.push(json!({ "char": c.to_string(), "mods": mods })),
+                        _ => {}
+                    }
+                    continue;
+                }
                 let mut parts = params.split(';');
                 let number: u32 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(1);
                 let modifier: u32 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(1).max(1) - 1;
@@ -652,13 +664,7 @@ pub fn doctor(instance: &Instance) -> Result<()> {
         line(false, "Agents", "no agent CLI found: install GitHub Copilot CLI, OpenCode or Claude Code".into());
     }
     let configured = canvas_common::settings::Settings::load(&instance.home).agent;
-    let source = if std::env::var("COPILOT_CANVAS_AGENT").ok().and_then(|v| AgentKind::parse(&v)).is_some() {
-        "COPILOT_CANVAS_AGENT".to_owned()
-    } else if configured.as_deref().and_then(AgentKind::parse).is_some() {
-        "settings.json".to_owned()
-    } else {
-        "auto-detected: first installed".to_owned()
-    };
+    let source = default_agent_source(agents::agent_from_env(), configured.as_deref());
     let default = agents::machine_default(&instance.home);
     line(default.provider().program().is_ok(), "Default agent", format!("{} ({source}; a canvas can choose another in Settings)", default.label()));
     line(true, "Terminal engine", canvas_host::server::configured_engine(instance).name().to_owned());
@@ -732,6 +738,34 @@ pub(crate) fn wait_doc(path: &Path, what: &str, predicate: impl Fn(&Doc) -> bool
         std::thread::sleep(Duration::from_millis(50));
     }
     bail!("canvas never satisfied: {what}\n{}", std::fs::read_to_string(path).unwrap_or_default())
+}
+
+/// Where `doctor` says the machine's default agent comes from, as
+/// `agents::machine_default` decides it: `COPILOT_CANVAS_AGENT` only when it
+/// chooses (`env`; inside a canvas session it names that session's agent and
+/// is no choice), else settings.json, else the first installed agent.
+fn default_agent_source(env: Option<AgentKind>, configured: Option<&str>) -> &'static str {
+    if env.is_some() {
+        "COPILOT_CANVAS_AGENT"
+    } else if configured.and_then(AgentKind::parse).is_some() {
+        "settings.json"
+    } else {
+        "auto-detected: first installed"
+    }
+}
+
+#[cfg(test)]
+mod doctor_tests {
+    use super::*;
+
+    #[test]
+    fn the_default_agents_source_follows_the_lookup() {
+        assert_eq!(default_agent_source(Some(AgentKind::Claude), Some("opencode")), "COPILOT_CANVAS_AGENT");
+        // Inside a canvas session the variable is the session's own agent: settings.json decides.
+        assert_eq!(default_agent_source(None, Some("opencode")), "settings.json");
+        assert_eq!(default_agent_source(None, Some("nonsense")), "auto-detected: first installed");
+        assert_eq!(default_agent_source(None, None), "auto-detected: first installed");
+    }
 }
 
 /// OpenCode's recent-models file (`$XDG_STATE_HOME/opencode/model.json`).
@@ -952,7 +986,9 @@ fn agent_scenario(instance: &Instance, work: &Path, kind: AgentKind, env: &[(&st
     ui.wait("mcp view", Duration::from_secs(30), |t| loaded(t) && t.contains("Add MCP server"))?;
     counts.push(format!("{} MCP servers", rows(&ui)));
     ui.send(b"\x1b5")?;
-    ui.wait("skills view", Duration::from_secs(30), |t| loaded(t) && t.contains("SKILLS") && t.contains("Add skill"))?;
+    // The Skills view shows every agent's skills: its own sources (the canvas plugin's
+    // skills at the top), then the agents' lists; its last rows may be below the first screen.
+    ui.wait("skills view", Duration::from_secs(30), |t| t.contains("Agent: All agents") && !t.contains("Loading the skill sources") && t.contains("SKILLS") && t.contains("canvas-events") && t.contains("PROJECTS"))?;
     counts.push(format!("{} skills", rows(&ui)));
     println!("    {} (first screen of each)", counts.join(", "));
     for warning in ui.text().lines().filter_map(|l| l.split('⚠').nth(1)) {
@@ -1379,6 +1415,9 @@ const CANVAS: (u16, u16) = (34, 95);
 /// Sidebar columns (right of the 3-column activity bar).
 pub(crate) const SIDEBAR: (u16, u16) = (3, 33);
 
+#[path = "selftest_spaces.rs"]
+mod spaces;
+
 pub(crate) fn step(name: &str) {
     println!("  · {name}");
 }
@@ -1402,6 +1441,19 @@ pub(crate) fn command_line_of(pid: u32) -> Result<String> {
         Ok(canvas_sys::process::process_argv(pid).context("cannot read the command line")?.join(" "))
     }
 }
+
+/// Ctrl+digit as a win32-input-mode key press (`CSI Vk;Sc;Uc;Kd;Cs;Rc _`):
+/// legacy VT has no sequence for it; ConPTY hands the TUI the console key
+/// event a keyboard gives, and the GUI driver turns it into the key. Once
+/// ConPTY has seen one, it holds a lone ESC as the start of a sequence: send
+/// [`ESC_KEY`] for Esc from then on.
+pub(crate) fn ctrl_digit(digit: u8) -> Vec<u8> {
+    let (code, scan) = (0x30 + digit as u32, if digit == 0 { 11 } else { digit as u32 + 1 });
+    format!("\x1b[{code};{scan};{code};1;8;1_").into_bytes()
+}
+
+/// Esc as a win32-input-mode key press (see [`ctrl_digit`]).
+pub(crate) const ESC_KEY: &[u8] = b"\x1b[27;1;27;1;0;1_";
 
 /// The copy-and-paste check, in a PowerShell terminal that has keyboard
 /// focus (the self-test's scenario and the GUI parity suite): a drag over a
@@ -1527,8 +1579,9 @@ pub fn run(remote: Option<&str>, client: Client) -> Result<()> {
     result
 }
 
-/// The 28 steps, against any front end (client: its name in the service log;
-/// start: launches it with the given arguments and environment).
+/// The 45 steps (the last four on canvases of their own), against any front
+/// end (client: its name in the service log; start: launches it with the
+/// given arguments and environment).
 fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, client: &str, start: impl Fn(&[String], &[(&str, &Path)]) -> Result<U>) -> Result<()> {
     let canvas = instance.home.join("demo-canvas.json");
     let mut args: Vec<String> = vec![
@@ -1669,8 +1722,9 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     ui.click(zx + 1, zy)?;
     ui.wait("zoomed out", Duration::from_secs(5), |t| t.contains("zoom 50%"))?;
     ui.screenshot("zoom-50")?;
-    let (zx, zy) = ui.locate(" + ", (60, 120))?;
-    ui.click(zx + 1, zy)?;
+    // The zoom-in button follows zoom-out (" + " alone also matches "+ New").
+    let (zx, zy) = ui.locate(" −   + ", (60, 140))?;
+    ui.click(zx + 5, zy)?;
     ui.wait("zoomed in", Duration::from_secs(5), |t| t.contains("zoom 100%"))?;
 
     step("new session dialog: folder prefilled, its model shown (a choice is remembered), Enter creates and launches");
@@ -1723,7 +1777,7 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     let doc = wait_doc(&canvas, "group folder saved", |d| d.groups.iter().any(|g| g.name == "Selftest group" && g.folder.is_some()))?;
     let group = doc.groups.iter().find(|g| g.name == "Selftest group").context("group")?;
     let folder = std::path::PathBuf::from(group.folder.clone().unwrap_or_default());
-    anyhow::ensure!(folder.starts_with(instance.home.join("groups")), "suggested folder under the canvas home: {}", folder.display());
+    anyhow::ensure!(folder.starts_with(instance.home.join("notebook").join("Groups")), "suggested folder in the notebook's Groups: {}", folder.display());
     for sub in ["ai-docs", "human-outputs", ".canvas/canvas-group.instructions.md"] {
         anyhow::ensure!(folder.join(sub).exists(), "{} exists", folder.join(sub).display());
     }
@@ -1980,6 +2034,7 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     report_steps(&mut ui, instance, work)?;
     layout_undo_steps(&mut ui, &canvas)?;
     area_selection_steps(&mut ui, &canvas)?;
+    spaces::steps(&mut ui, instance, &canvas, client)?;
 
     step("stop all and quit");
     ui.send(b"\x1d")?;
@@ -2056,6 +2111,7 @@ fn canvas_agent_steps<U: Ui>(instance: &Instance, work: &Path, args: &[String], 
     anyhow::ensure!(ui.text().contains("◎ Selftest agent"), "its panel stays\n{}", ui.text());
     pr_steps(&mut ui, instance)?;
     review_steps(&mut ui, instance)?;
+    spaces::todo_cli_steps(&mut ui, instance)?;
     ui.send(b"q")?;
     std::thread::sleep(Duration::from_millis(300));
     if ui.text().contains("Detach (keep running)") {

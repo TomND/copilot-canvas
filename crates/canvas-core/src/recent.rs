@@ -81,14 +81,15 @@ impl App {
 
     /// Whether a key walks the recent sessions: `Some(older)`. Ctrl+F6 and
     /// Ctrl+Shift+F6 everywhere (terminals pass every other key to the
-    /// agent); `]` and `[` (AltGr ones too) outside terminals and the filter.
+    /// agent); `]` and `[` (AltGr ones too) outside terminals, the filter and
+    /// the Notebook's and Tasks' own areas (their text).
     pub fn recent_key(&self, key: &KeyEvent) -> Option<bool> {
         let mods = key.modifiers;
         let rest = mods.difference(Modifiers::SHIFT);
         match key.code {
             KeyCode::F(6) if mods.contains(Modifiers::CONTROL) && !mods.contains(Modifiers::ALT) => Some(!mods.contains(Modifiers::SHIFT)),
             KeyCode::Char(c @ (']' | '['))
-                if self.focus != Focus::Terminal && !self.side_filter_active && (rest.is_empty() || rest == Modifiers::CONTROL | Modifiers::ALT) =>
+                if self.focus != Focus::Terminal && !self.side_filter_active && !self.space_has_keys() && (rest.is_empty() || rest == Modifiers::CONTROL | Modifiers::ALT) =>
             {
                 Some(c == ']')
             }
@@ -127,6 +128,10 @@ impl App {
         };
         let place = walk.at.unwrap_or(0) + 1;
         self.recent.walk = Some((walk, Instant::now()));
+        // The session shows on the canvas (from another space too: a jump Alt+← takes back).
+        if self.space != crate::spaces::Space::Canvas {
+            self.switch_space(crate::spaces::Space::Canvas);
+        }
         self.reveal_node(&id);
         self.view_node(&id);
         let running = self.owned_alive(&id) || self.launching.contains_key(&id);

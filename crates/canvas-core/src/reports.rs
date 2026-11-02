@@ -40,6 +40,9 @@ pub enum ReportAction {
     Copy,
     /// Shows another report of the open thread (+1 older, -1 newer).
     Step(i32),
+    /// A link inside a note (the notebook's reader, rendered or HTML): asks
+    /// before opening it, as [`ReportAction::Link`] does for reports.
+    NoteLink(String),
 }
 
 /// How the GUI's HTML view is doing (the core says so in the viewer).
@@ -274,14 +277,8 @@ impl App {
                 self.modals.retain(|m| !matches!(m, Modal::Report(v) if ids.contains(&v.id)));
                 self.notify(if ids.len() == 1 { "Report deleted.".to_owned() } else { format!("{} reports deleted.", ids.len()) }, false);
             }
-            ReportAction::Link(url) => {
-                self.modals.push(Modal::Confirm(Confirm {
-                    title: "Open this link from a report?".into(),
-                    body: vec![crate::paint::truncate(&url, 100), "It opens in your browser on this machine.".into()],
-                    buttons: vec![("Open".into(), Action::Report(ReportAction::OpenUrl(url))), ("Cancel".into(), Action::Nothing)],
-                    sel: 0,
-                }));
-            }
+            ReportAction::Link(url) => self.confirm_link("Open this link from a report?", url),
+            ReportAction::NoteLink(url) => self.confirm_link("Open this link from a note?", url),
             ReportAction::OpenUrl(url) => {
                 if canvas_model::reports::check_url(&url).is_err() {
                     return self.notify("Only http(s) and mailto links open from reports.", true);
@@ -299,6 +296,16 @@ impl App {
             ReportAction::Copy => self.copy_report(),
             ReportAction::Step(delta) => self.step_report(delta),
         }
+    }
+
+    /// Asks before a web link opens (its text may differ from its address).
+    fn confirm_link(&mut self, title: &str, url: String) {
+        self.modals.push(Modal::Confirm(Confirm {
+            title: title.into(),
+            body: vec![crate::paint::truncate(&url, 100), "It opens in your browser on this machine.".into()],
+            buttons: vec![("Open".into(), Action::Report(ReportAction::OpenUrl(url))), ("Cancel".into(), Action::Nothing)],
+            sel: 0,
+        }));
     }
 
     /// Opens the viewer on a report's thread (the newest report on top) and

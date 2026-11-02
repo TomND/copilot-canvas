@@ -1,0 +1,45 @@
+# tasks-space (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   ?   ⏻ Quit                                          3 sessions
+    ☑ TASKS                      │▌                                                   │┌─────────────────────────────────────────────────────────────┐
+▌☑  / filter        all types ▾  │────────────────────────────────────────────────────││ ✚ DEC-031 · feature                                 ≡   ✕   │
+                                 │Todo 1                   │In progress 2            │││ Write the loader spec                                       │
+ ◷  NEEDS YOU 1                  │▌✚ DEC-029               │▌✚ DEC-030               │││                                                             │
+     ◇ DEC-032 Cache t… proposed │▌Name the loader         │▌Parse the tables        │││ Status   In progress ▾                                      │
+ ⧉                               │▌                        │▌                        │││ Priority none ▾                                             │
+    READY 1                      │▌                        │▌                        │││ Type     ✚ feature ▾                                        │
+ ⌁   ✚ DEC-029 Name the loader   │                         │                         │││ Board    Decomps                                            │
+                                 │                         │▌✚ DEC-031               │││ Claimed  Write the spec · 2026-10-26 07:00                  │
+ ✦  CLAIMED BY SESSIONS 1        │                         │▌Write the loader spec   │││ Blocked  no  set…                                           │
+     ◫ Write the spec            │                         │▌                        │││ Blocker  no  mark                                           │
+ ◈     ✚ DEC-031 Wr… In progress │                         │▌                        │││ Created  you · 2026-10-26 07:00                             │
+                                 │                         │                         │││                                                             │
+ ⇄  BOARDS 1                     │                         │                         │││  Start a session on this…   Open spec note   Claim for…     │
+     ▦ Decomps · DEC           4 │                         │                         │││  Release   Done   Cancel                                    │
+ ≡   + New board                 │                         │                         │││                                                             │
+                                 │                         │                         │││ CHECKLIST 0/0   + add                                       │
+ ✉                               │                         │                         │││                                                             │
+                                 │                         │                         │││ BODY   edit                                                 │
+                                 │                         │                         │││ (empty)                                                     │
+                                 │                         │                         │││                                                             │
+                                 │                         │                         │││ LOG                                                         │
+                                 │                         │                         │││ 10-26 07:00 Write the spec: Todo → In progress              │
+                                 │                         │                         │││ 10-26 07:00 Write the spec: claimed by Write the spec       │
+                                 │                         │                         │││ 10-26 07:00 you: created in Todo                            │
+                                 │                         │                         │││                                                             │
+                                 │                         │                         │││                                                             │
+                                 │                         │                         │││                                                             │
+                                 │                         │                         │││                                                             │
+                                 │                         │                         │││                                                             │
+                                 │                         │                         │││                                                             │
+                                 │                         │                         │││                                                             │
+                                 │                         │                         │││                                                             │
+                                 │                         │                         │││                                                             │
+                                 │                         │                         │││                                                             │
+                                 │                         │                         │││                                                             │
+                                 │                         │                         │││                                                             │
+                                 │                         │     −   100%   +   Fit  ││└─────────────────────────────────────────────────────────────┘
+ Ctrl+1 Canvas · Ctrl+2 Notebook · Ctrl+3 Tasks · Alt+, back · Alt+. forward · Ctrl+P go to · F6 focus · Alt+1…9 views · ? help
+## gpu view model
+view cursor=none modal=none banner=None
+canvas none

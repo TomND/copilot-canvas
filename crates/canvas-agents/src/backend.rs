@@ -222,7 +222,27 @@ fn run(ctx: &Ctx, request: Request) -> Result<Response> {
         Request::CreateCanvasSkill { canvas, name, description } => text(&create_canvas_skill(&ctx.home, &canvas, &name, &description)?),
         Request::Reports => Response::Reports(Box::new(crate::reports::read_snapshot(&ctx.home))),
         Request::ReportContent { id } => Response::Report(Box::new(crate::reports::content(&ctx.home, &id)?)),
+        Request::NotebookInfo { root, canvas } => crate::notebook::info(&ctx.home, root.as_deref(), canvas.as_deref())?,
+        Request::NotebookList { dir, root } => crate::notebook::list(&ctx.home, &dir, root.as_deref())?,
+        Request::NoteRead { path } => crate::notebook::read(&path)?,
+        Request::NoteWrite { path, text, base, roots } => crate::notebook::write(&path, &text, base.as_deref(), &roots)?,
+        Request::NoteRevs { paths } => crate::notebook::revs(&paths)?,
+        Request::ReadBytes { path, max_bytes } => crate::notebook::read_bytes(&path, max_bytes)?,
+        Request::NoteMkdir { path, roots } => crate::notebook::mkdir(&path, &roots)?,
+        Request::NoteRename { from, to, roots } => crate::notebook::rename(&from, &to, &roots)?,
+        Request::NoteTrash { path, root } => crate::notebook::trash(&path, &root)?,
+        Request::NoteSearch { roots, query, limit } => crate::notebook::search(&roots, &query, limit)?,
+        Request::SkillSources { dirs, canvas, folders } => Response::SkillSources(skill_sources(ctx, &dirs, canvas.as_deref(), &folders)),
     })
+}
+
+/// Where the skills of a canvas's sessions come from, as this machine has
+/// them: its agents' personal folders (`CLAUDE_CONFIG_DIR`, `COPILOT_HOME`
+/// honoured) and the agents installed here. Folders are only read.
+fn skill_sources(ctx: &Ctx, dirs: &[String], canvas: Option<&str>, folders: &[canvas_model::skills::FolderSet]) -> Vec<canvas_model::skills::SkillSource> {
+    let homes = canvas_model::skills::Homes { user: agents::home(), claude: agents::claude_history::claude_dir(), copilot: copilot_cfg::copilot_home() };
+    let env = canvas_model::skills::Env { home: ctx.home.clone(), homes, installed: agents::installed() };
+    canvas_model::skills::list(&env, dirs, canvas, folders)
 }
 
 /// The folder of a canvas's canvas-wide agents under the backend's own data
@@ -507,6 +527,23 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&paths.rules).unwrap(), "# Rules\n");
         assert!(std::fs::read_to_string(&paths.goals).unwrap().starts_with("# Goals of Team"));
         assert!(bus::catalog_path(&dir).is_file() && dir.join("ai-docs").is_dir());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn ensuring_a_groups_catalog_adds_the_todo_events_to_an_old_one() {
+        let dir = temp("catalog");
+        let ctx = Ctx { home: dir.clone(), sessions_dir: dir.join("sessions") };
+        let path = bus::catalog_path(&dir);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let old = "# Ours.\nevents:\n  - name: deploy.done\n    when: Deployed.\neffects:\n  deploy.done: fireworks\n";
+        std::fs::write(&path, old).unwrap();
+        let answer = handle(&ctx, Request::EnsureCatalog { folder: dir.display().to_string() });
+        assert!(matches!(&answer, Response::Text(p) if Path::new(p) == path), "{answer:?}");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let names: Vec<String> = bus::parse_catalog(&text).into_iter().map(|e| e.name).collect();
+        assert_eq!(names.first().map(String::as_str), Some("deploy.done"));
+        assert!(names.iter().filter(|n| n.starts_with("todo.")).count() == 7 && text.ends_with("effects:\n  deploy.done: fireworks\n"), "{text}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -22,6 +22,7 @@ mod shell;
 mod text;
 mod theme;
 mod tiles;
+mod webpane;
 
 use std::io::Write;
 use std::path::PathBuf;

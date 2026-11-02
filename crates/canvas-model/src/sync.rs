@@ -63,10 +63,10 @@ macro_rules! shared_fields {
     };
 }
 
-shared_fields!(recent_folders, defaults, vscode, idle_stop_minutes, idle_stop_v2, mcp, automations_dir, doctor_created, default_agent, dust_after_days, subagents_shown);
+shared_fields!(recent_folders, defaults, vscode, idle_stop_minutes, idle_stop_v2, mcp, automations_dir, doctor_created, default_agent, dust_after_days, subagents_shown, notebook_root, notebook_mounts, notebook_scripts);
 
 /// Shared fields whose overwrite by another window is worth telling about.
-const NOTICED_FIELDS: [(&str, &str); 8] = [
+const NOTICED_FIELDS: [(&str, &str); 10] = [
     ("defaults", "the new-session defaults"),
     ("vscode", "the VS Code settings"),
     ("idle_stop_minutes", "the idle-stop setting"),
@@ -75,6 +75,8 @@ const NOTICED_FIELDS: [(&str, &str); 8] = [
     ("default_agent", "the default agent"),
     ("dust_after_days", "the dust setting"),
     ("subagents_shown", "the subagents setting"),
+    ("notebook_root", "the notebook folder"),
+    ("notebook_mounts", "the notebook mounts"),
 ];
 
 /// Box fields that are bookkeeping, not edits anyone made (no notice).
@@ -362,6 +364,9 @@ pub struct ClientPrefs {
     pub tiles: Vec<String>,
     #[serde(default)]
     pub selected: Option<String>,
+    /// The space the window shows (`notebook`, `tasks`; none: the canvas).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
 }
 
 impl Default for ClientPrefs {
@@ -373,7 +378,7 @@ impl Default for ClientPrefs {
 impl ClientPrefs {
     /// The per-client fields of a document (the seed for a new client).
     pub fn of(doc: &Doc) -> Self {
-        Self { view: doc.view.clone(), ui: doc.ui.clone(), tiles: doc.tiles.clone(), selected: doc.selected.clone() }
+        Self { view: doc.view.clone(), ui: doc.ui.clone(), tiles: doc.tiles.clone(), selected: doc.selected.clone(), space: None }
     }
 
     pub fn apply(&self, doc: &mut Doc) {

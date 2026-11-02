@@ -18,6 +18,8 @@ pub mod git;
 pub mod index;
 pub mod launcher;
 pub mod migrate;
+pub mod notebook;
+pub mod notes_cli;
 pub mod prs_cli;
 pub mod remote;
 pub mod reports;
@@ -28,5 +30,6 @@ pub mod service;
 pub mod scheduler;
 #[cfg(windows)]
 pub mod taskschd;
+pub mod todos_cli;
 pub mod tunnel_access;
 pub mod vscode;

@@ -9,6 +9,7 @@ use crate::dialogs::{GitState, Hit, Modal, NsField, TextInput};
 use crate::paint::{ACCENT, BLUE, DOUBLE, GRAY, POSITIVE, MODAL, MUTED, PANEL_HI, PURPLE, NEGATIVE, ROUND, SELECT, TEXT, ATTENTION, bold, fg, fill, outline, put, truncate, truncate_left};
 use crate::paths::{format_age, now_ms};
 
+/// The help of the session canvas (`?`); the Notebook and Tasks show theirs ([`help_rows`]).
 const HELP: &[(&str, &str)] = &[
     ("Canvas (mouse)", ""),
     ("Click a box or sidebar row", "select and view it (never starts it)"),
@@ -22,9 +23,10 @@ const HELP: &[(&str, &str)] = &[
     ("Drag a group title / ◢ corner", "move / resize the group"),
     ("Click a group's background / border", "select it (arrows move, Del deletes)"),
     ("Ctrl+Z · Ctrl+Y or Ctrl+Shift+Z", "undo · redo moves, resizes, removals"),
-    ("Double-click empty space", "new session there"),
-    ("Right-click", "context menu"),
-    ("Keys", ""),
+    ("Double-click empty · right-click", "new session there · context menu"),
+    ("Keys   (? in the Notebook or Tasks shows their keys)", ""),
+    ("Ctrl+1/2/3 · Ctrl+P · Alt+N", "spaces · Go to · quick note"),
+    ("Alt+←/→ or Alt+, / Alt+.", "back / forward · mouse back / forward"),
     ("N / S", "new session / subsession of the selection"),
     ("G", "group the selection (box drawn around it)"),
     ("I / V", "import agent sessions / sync VS Code agent sessions"),
@@ -66,13 +68,71 @@ const TRACKPAD_HELP: &[(&str, &str)] = &[
     ("Left ⌥ (Option)", "Alt; right ⌥ types characters"),
 ];
 
-fn centered(screen: Rect, w: u16, h: u16) -> Rect {
+/// The Notebook's keys and clicks.
+const NOTEBOOK_HELP: &[(&str, &str)] = &[
+    ("Notebook: the explorer", ""),
+    ("Click · Enter · ← →", "open a note · fold / unfold a folder"),
+    ("Ctrl+N · F2 · Del", "new note · rename · move to the trash"),
+    ("Right-click a note or folder", "its menu (move, copy path, reviewed…)"),
+    ("/ · Alt+H", "filter names · Human | All | AI notes"),
+    ("Notebook: the open note", ""),
+    ("Ctrl+E · Rendered | Source | Live", "rendered ⇄ source · modes (header)"),
+    ("Ctrl+S", "save now (it saves 1 s after typing)"),
+    ("Ctrl+F · F3 / Shift+F3", "find · next / previous match"),
+    ("Ctrl+Tab · Ctrl+PgDn/PgUp · Ctrl+W", "next / previous tab · close the tab"),
+    ("[[ · Ctrl+click", "complete a note name · follow the link"),
+    ("Click a link (rendered)", "notes and todos open; web links ask"),
+];
+
+/// The Tasks space's keys and clicks.
+const TASKS_HELP: &[(&str, &str)] = &[
+    ("Tasks: the todo canvas", ""),
+    ("Click a card · arrows", "select (details on the right) · move"),
+    ("Enter · Space", "details · a quick look (peek)"),
+    ("N", "new todo in the selected column"),
+    ("A / D", "accept / decline a proposal"),
+    ("E · R · Del", "edit the body · rename · cancel (asks)"),
+    ("Drag a card", "change its status, board or order"),
+    ("Drag a title / ◢ / background", "move / resize a board · pan"),
+    ("+ / - · Alt+wheel · F", "zoom (100 · 50 · 25 %) · show all"),
+    ("Wheel · Ctrl+arrows", "pan"),
+    ("Right-click a card or board", "its menu (claim for…, policy, export…)"),
+    ("Tasks: the sidebar", ""),
+    ("↑ ↓ · Enter", "move · open the row"),
+    ("/ · t", "filter · next type filter"),
+    ("A / D · Del", "accept / decline · cancel the todo"),
+];
+
+/// Every space's: moving between spaces and places, and the window.
+const SPACES_HELP: &[(&str, &str)] = &[
+    ("Spaces and places", ""),
+    ("Ctrl+1/2/3 · Ctrl+P · Alt+N", "spaces · Go to · quick note"),
+    ("Alt+←/→ or Alt+, / Alt+.", "back / forward · mouse back / forward"),
+    ("Alt+1…9 or activity bar", "side views (Alt+1: this space's)"),
+    ("F6 · Ctrl+]", "cycle focus · leave a terminal"),
+    ("? · Ctrl+Q", "this help · quit"),
+];
+
+/// The help dialog's rows in `space` (never more than the canvas's):
+/// `(keys, what)`, a heading when `what` is empty. Alt+, / Alt+. are there
+/// because Windows Terminal keeps Alt+← / Alt+→ for its panes.
+pub fn help_rows(space: crate::spaces::Space) -> Vec<(&'static str, &'static str)> {
+    match space {
+        crate::spaces::Space::Canvas => HELP.to_vec(),
+        crate::spaces::Space::Notebook => [NOTEBOOK_HELP, SPACES_HELP].concat(),
+        crate::spaces::Space::Tasks => [TASKS_HELP, SPACES_HELP].concat(),
+    }
+}
+
+/// A dialog `w` × `h` cells in the middle of the screen.
+pub fn centered(screen: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(screen.width.saturating_sub(2));
     let h = h.min(screen.height.saturating_sub(2));
     Rect::new(screen.x + (screen.width - w) / 2, screen.y + (screen.height - h) / 2, w, h)
 }
 
-fn panel(buf: &mut Buffer, rect: Rect, title: &str) {
+/// A dialog's background, frame and title.
+pub fn panel(buf: &mut Buffer, rect: Rect, title: &str) {
     fill(buf, rect.x as i32, rect.y as i32, rect.width as i32, rect.height as i32, Style::default().bg(MODAL), rect);
     outline(buf, rect.x as i32, rect.y as i32, rect.width as i32, rect.height as i32, &ROUND, fg(ACCENT).bg(MODAL), rect);
     if !title.is_empty() {
@@ -80,13 +140,16 @@ fn panel(buf: &mut Buffer, rect: Rect, title: &str) {
     }
 }
 
-struct Ctx<'a> {
+/// What a dialog's drawing registers its click targets with: only the
+/// top-most dialog's count.
+pub struct Ctx<'a> {
     hits: &'a mut Vec<(Rect, Hit)>,
-    top: bool,
+    /// This dialog is the top-most one.
+    pub top: bool,
 }
 
 impl Ctx<'_> {
-    fn hit(&mut self, rect: Rect, hit: Hit) {
+    pub fn hit(&mut self, rect: Rect, hit: Hit) {
         if self.top {
             self.hits.push((rect, hit));
         }
@@ -103,8 +166,9 @@ fn draw_button(buf: &mut Buffer, x: i32, y: i32, label: &str, focused: bool, pri
     put(buf, x, y, &format!(" {label} "), style, clip)
 }
 
+/// A dialog button registered as `Hit::Button(index)`; returns where the next one goes.
 #[allow(clippy::too_many_arguments)]
-fn button(buf: &mut Buffer, ctx: &mut Ctx, x: i32, y: i32, label: &str, focused: bool, primary: bool, index: usize, clip: Rect) -> i32 {
+pub fn button(buf: &mut Buffer, ctx: &mut Ctx, x: i32, y: i32, label: &str, focused: bool, primary: bool, index: usize, clip: Rect) -> i32 {
     let end = draw_button(buf, x, y, label, focused, primary, clip);
     ctx.hit(Rect::new(x as u16, y as u16, (end - x) as u16, 1), Hit::Button(index));
     end + 2
@@ -118,8 +182,9 @@ fn field_button(buf: &mut Buffer, ctx: &mut Ctx, x: i32, y: i32, label: &str, fi
     end + 2
 }
 
+/// A one-line text field; the cursor's cell when it is focused.
 #[allow(clippy::too_many_arguments)]
-fn field(buf: &mut Buffer, x: i32, y: i32, width: i32, input: &TextInput, focused: bool, placeholder: &str, clip: Rect) -> Option<(u16, u16)> {
+pub fn field(buf: &mut Buffer, x: i32, y: i32, width: i32, input: &TextInput, focused: bool, placeholder: &str, clip: Rect) -> Option<(u16, u16)> {
     let style = if focused { Style::default().fg(TEXT).bg(PANEL_HI).add_modifier(Modifier::UNDERLINED) } else { Style::default().fg(TEXT).bg(PANEL_HI) };
     fill(buf, x, y, width, 1, style, clip);
     if input.text.is_empty() && !focused {
@@ -156,9 +221,14 @@ pub fn draw_modals(app: &mut App, buf: &mut Buffer, screen: Rect) -> Option<(u16
 fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx: &mut Ctx) -> (Rect, Option<(u16, u16)>) {
     match modal {
         Modal::Help => {
+            let rows = help_rows(app.space);
             let trackpad = app.pointer_policy == crate::input::PointerPolicy::Precise;
-            let rect = centered(screen, if trackpad { 136 } else { 78 }, HELP.len() as u16 + 4);
-            panel(buf, rect, "Copilot Canvas — help");
+            let rect = centered(screen, if trackpad { 136 } else { 78 }, rows.len().max(TRACKPAD_HELP.len()) as u16 + 4);
+            let title = match app.space {
+                crate::spaces::Space::Canvas => "Copilot Canvas — help".to_owned(),
+                space => format!("Copilot Canvas — help · {}", space.name()),
+            };
+            panel(buf, rect, &title);
             if trackpad {
                 for (i, (key, text)) in TRACKPAD_HELP.iter().enumerate() {
                     let y = rect.y as i32 + 2 + i as i32;
@@ -170,7 +240,7 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
                     }
                 }
             }
-            for (i, (key, text)) in HELP.iter().enumerate() {
+            for (i, (key, text)) in rows.iter().enumerate() {
                 let y = rect.y as i32 + 2 + i as i32;
                 if text.is_empty() {
                     put(buf, rect.x as i32 + 2, y, key, bold(ACCENT).bg(MODAL), rect);
@@ -232,6 +302,10 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
         Modal::Viewer(viewer) => draw_viewer(app, buf, screen, viewer, ctx),
         Modal::Inspector(inspector) => draw_inspector(app, buf, screen, inspector, ctx),
         Modal::Report(viewer) => draw_report(app, buf, screen, viewer, ctx),
+        Modal::GoTo(goto) => draw_goto(buf, screen, goto, ctx),
+        Modal::Notebook(dialog) => crate::notebook::draw_dialog(app, buf, screen, dialog, ctx),
+        Modal::Tasks(dialog) => crate::tasks::draw_dialog(app, buf, screen, dialog, ctx),
+        Modal::SkillFolders(dialog) => crate::skill_folders::draw(app, buf, screen, dialog, ctx),
         Modal::Folder(browser) => {
             let rect = centered(screen, 76, screen.height.saturating_sub(6).min(28));
             panel(buf, rect, "Choose a folder");
@@ -412,6 +486,59 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
             (rect, None)
         }
     }
+}
+
+/// Go to: the query, the matches (their matched letters lit, where they are
+/// dimmed on the right) and the keys.
+fn draw_goto(buf: &mut Buffer, screen: Rect, goto: &crate::spaces::GoTo, ctx: &mut Ctx) -> (Rect, Option<(u16, u16)>) {
+    let rect = centered(screen, 90, screen.height.saturating_sub(6).min(26));
+    panel(buf, rect, "Go to");
+    let (x, width) = (rect.x as i32 + 2, rect.width as i32 - 4);
+    let cursor = field(buf, x, rect.y as i32 + 1, width, &goto.input, true, "", rect);
+    if goto.input.text.is_empty() {
+        put(buf, x, rect.y as i32 + 1, &truncate("Search groups, sessions, notes and todos…", width as usize), fg(MUTED).bg(PANEL_HI), rect);
+    }
+    let rows = rect.height.saturating_sub(5) as usize;
+    let sel = goto.sel.min(goto.results.len().saturating_sub(1));
+    let scroll = sel.saturating_sub(rows.saturating_sub(1));
+    for (row, (index, matched)) in goto.results.iter().enumerate().skip(scroll).take(rows) {
+        let Some(item) = goto.items.get(*index) else { continue };
+        let y = rect.y as i32 + 3 + (row - scroll) as i32;
+        let selected = row == sel;
+        let bg = if selected { PANEL_HI } else { MODAL };
+        fill(buf, rect.x as i32 + 1, y, rect.width as i32 - 2, 1, Style::default().bg(bg), rect);
+        let mut cx = put(buf, x, y, item.glyph, fg(if selected { SELECT } else { GRAY }).bg(bg), rect) + 1;
+        // The label wins; the detail (its space and where it is) gets what is
+        // left, at least a third of the row.
+        let space = format!("{} {}", item.space.glyph(), item.detail);
+        let avail = rect.right() as i32 - 2 - cx;
+        let label_w = crate::paint::text_width(&item.label) as i32;
+        let detail_w = (crate::paint::text_width(&space) as i32).min((avail - label_w - 2).max(avail / 3)).max(0);
+        let label_room = if detail_w > 0 { avail - detail_w - 2 } else { avail };
+        let plain = if selected { bold(SELECT).bg(bg) } else { fg(TEXT).bg(bg) };
+        let lit = bold(ACCENT).bg(bg);
+        let mut used = 0;
+        for (i, c) in item.label.chars().enumerate() {
+            let w = crate::paint::text_width(&c.to_string()) as i32;
+            if label_w > label_room && used + w + 1 > label_room {
+                put(buf, cx, y, "…", plain, rect);
+                break;
+            }
+            cx = put(buf, cx, y, &c.to_string(), if matched.contains(&i) { lit } else { plain }, rect);
+            used += w;
+        }
+        if detail_w > 0 {
+            put(buf, rect.right() as i32 - 2 - detail_w, y, &truncate(&space, detail_w as usize), fg(MUTED).bg(bg), rect);
+        }
+        ctx.hit(Rect::new(rect.x + 1, y as u16, rect.width - 2, 1), Hit::ListRow(row));
+    }
+    if goto.results.is_empty() {
+        let text = if goto.items.is_empty() { "Nothing to go to yet." } else { "No matches." };
+        put(buf, x, rect.y as i32 + 3, text, fg(MUTED).bg(MODAL), rect);
+    }
+    let footer = format!("{} of {} · ↑↓ move · Enter go (never starts a session) · Esc close", goto.results.len(), goto.items.len());
+    put(buf, x, rect.bottom() as i32 - 2, &truncate(&footer, width as usize), fg(MUTED).bg(MODAL), rect);
+    (rect, cursor)
 }
 
 /// The read-only viewer: path, a status line, numbered lines, buttons.
@@ -644,7 +771,7 @@ fn draw_report(app: &mut App, buf: &mut Buffer, screen: Rect, viewer: &crate::re
         && ctx.top
         && let Some(document) = document
     {
-        app.layout.html_pane = Some((content, viewer.id.clone(), document));
+        app.layout.html_pane = Some(crate::view::HtmlPane { rect: content, id: viewer.id.clone(), source: crate::view::HtmlSource::Document(document), origin: crate::view::HtmlOrigin::Report });
     }
     let mut bx = x;
     let y = rect.bottom() as i32 - 2;

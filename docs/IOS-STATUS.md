@@ -1,6 +1,7 @@
 # iPhone app: status, next steps, leftover work
 
-Status on 2026-10-30, `main` at b29b566. This file describes where the
+Status on 2026-10-30, `main` at b29b566; the core's todo boards and
+notebook (§1.1) were added on 2026-10-31. This file describes where the
 app is today. The design and the phase history are in
 [IOS-PLAN.md](IOS-PLAN.md); how to build, run and use the app is in
 [../ios/README.md](../ios/README.md).
@@ -28,13 +29,58 @@ built with UniFFI). The interface is SwiftUI (`ios/`).
 | Notifications | Local notifications while the app is open or just backgrounded. APNs pushes from the service while the app is away: a session needs you or finished, a new report arrived, and silent renewal of the tunnel token. An expired token shows *Pair again* |
 | Service side | WebSocket link, terminal sizes per client (tmux "latest"), tunnel token rotation, `remote pair --qr`, `remote push-key`, `remote push-test`. Paired clients cannot shut the service down. A push for each new report (at most 3 at once) |
 | Mac stand-in | `canvas-mock` with `ios/cloud-mac.sh` stands in for the Cloud PC behind a real private tunnel, with real agent CLIs and a demo reports inbox. `ios/cloud-mac.sh report FILE` publishes a report |
+| Todos and notebook (core only, 2026-10-31) | The Rust core exposes the canvas's todo boards and notebook (§1.1); the SwiftUI app has no screens for them yet |
+
+### 1.1 Todos and notebook in the core
+
+The desktop's Tasks and Notebook spaces (docs/NOTEBOOK-TASKS.md) are in
+`canvas-mobile` as data for the app; nothing in `ios/` uses them yet.
+
+- **Todos** (`todos.rs`, `Client`): `todos()` gives a `TodosOverview` (the
+  book the service sends in its bus snapshot, as records: boards with their
+  columns, swimlanes and cells, every todo as a `TodoItem`, what waits for
+  you as `TodoNeedItem`s: proposals, todos in review, claims of sessions that
+  are gone or stopped; each group's counts); `todo(id)` a `TodoDetail` (body,
+  checklist, links, relations, log). Changes: `accept_todo(id, status)`,
+  `decline_todo(id, reason)`, `move_todo(id, status)`, `done_todo(id)`,
+  `check_todo(id, index, done)`, `add_todo(TodoDraft)`; each is applied to
+  the phone's copy at once (as you, under the same rules as the desktop) and
+  sent as the window's bus action (`{"action": "todos", "op": …}`), answers
+  a `TodoChange` (the id and what happened, with warnings) and emits
+  `CoreEvent::Overview`; the service's next book confirms or undoes it.
+  Offline, or before the first book, a change is refused.
+- **Notebook** (`notes.rs`, `Client`; read only but for *Mark reviewed*):
+  `notebook()` resolves the root (`Request::NotebookInfo`) and gives a
+  `NotebookOverview` (root, canvas-wide folder, the explorer's roots);
+  `list_notes(folder, filter, show_internal)` a `NoteListing` (folders first,
+  each entry with its `NoteProvenance`: audience, author, inferred, agent,
+  session and its box's name, created, reviewed); `read_note(path)` a `NotePage`: one sanitized page for
+  the web view (Markdown rendered with `[[Note]]` and todo ids as `#note:` /
+  `#todo:` links, HTML sanitized like reports, other text as a block,
+  pictures from its root inlined as `data:` URLs: at most 16 pictures, 4 MiB
+  each, 12 MiB in all; a picture note at most 8 MiB), so the web view loads
+  nothing; `note_revisions(paths)`, `search_notes(query, limit)`,
+  `resolve_note(name)` (a `[[Name]]` link's note), `mark_note_reviewed(path)`
+  (written on the note's revision; a note changed meanwhile fails), and the
+  free function `note_link_target(href)` (what a tapped link opens).
+- **The mock** (`canvas-mock`): a demo notebook in `<state>/notebook`
+  (`Welcome.md`, an Inbox idea, a Payments group with `ai-docs/GOALS.md`, an
+  investigation log, a release plan for you, an HTML dashboard whose script
+  and network picture must never run or load, a picture, the group's
+  instructions file), seeded at every start (missing files only) and
+  answered like the service's notebook requests (writes only inside it; the
+  canvas's notebook setting is not followed). The demo todo book
+  (`todos::demo_book`, "Canvas App" linked to the Payments group, claims by
+  the mock's sessions) is in every bus snapshot, in memory; window todo
+  actions are applied as you and broadcast, a refusal comes back as an error
+  with the book.
 
 ## 2. How it is verified
 
 | Check | Covers |
 |---|---|
-| Rust unit tests (`canvas-mobile`, `canvas-common`, `canvas-model`, `canvas-push`) | State machine, statuses, launches, forks, passive sessions, the reports inbox and its pages, push payloads, JWT signing, sealed tokens |
-| `crates/canvas-mobile/tests/end_to_end.rs` | The core against the mock over a real WebSocket: pairing, a shell typed into, reconnecting, the reports inbox across two phones |
+| Rust unit tests (`canvas-mobile`, `canvas-common`, `canvas-model`, `canvas-push`) | State machine, statuses, launches, forks, passive sessions, the reports inbox and its pages, the todo boards (the book from the bus snapshot, changes applied here and sent as the window's action, refusals, offline) and the notebook's pages, push payloads, JWT signing, sealed tokens |
+| `crates/canvas-mobile/tests/end_to_end.rs` | The core against the mock over a real WebSocket: pairing, a shell typed into, reconnecting, the reports inbox across two phones, the todo boards and the notebook (boards from the snapshot, a change reaching the other phone, the notebook's root, folders with provenance, notes as safe pages, *Mark reviewed* on the note's revision) |
 | XCTest (11 tests) | Core bridge, terminal helpers, and the report view's lock-down against a local network listener |
 | XCUITest (7 tests, against two mocks) | Session list, canvas, typing into a shell, new session form and keyboard, two machines, subsessions, passive pause/resume, opening an HTML report |
 | CI (`.github/workflows/ci.yml`) | All of the above on macOS. Windows: clippy, the service's tests, the GUI self-tests and the parity suite |
@@ -84,6 +130,17 @@ built with UniFFI). The interface is SwiftUI (`ios/`).
 6. **Inline images in terminals** (Kitty graphics). The core already keeps
    the service's `Image` and `Placements` messages; the Core Text renderer
    does not draw them yet.
+7. **Todos and notes in the app** (Swift; the core is done, §1.1). A Tasks
+   screen: NEEDS YOU first (accept, decline with a reason), the boards as
+   columns or lists, a todo's details with its checklist, *Done*, moves and
+   a new-todo form (`TodoDraft`); refresh on `CoreEvent::Overview`. A
+   Notebook screen: the roots and folders with the Human | All | AI filter
+   and the internal-files switch, a note in the same locked-down
+   `WKWebView` as reports (`NotePage`), tapped `#note:` / `#todo:` links
+   through `note_link_target` and `resolve_note`, web links asking before
+   Safari, *Mark reviewed*, and `note_revisions` to reload an open note.
+   UniFFI bindings regenerated with `ios/build-core.sh`; XCUITests against
+   the mock's demo book and notebook.
 
 ## 5. Leftover work and known gaps
 
@@ -97,7 +154,8 @@ built with UniFFI). The interface is SwiftUI (`ios/`).
 | QR code in the GUI's remote sheet | Today the QR code comes from `remote pair --qr` in a terminal on the Cloud PC |
 | Repeated report alerts | A report that arrived while the app was away gets a push, then a toast when the app reconnects. This is minor; the core could drop toasts for reports older than the last disconnect |
 | Older services | A service without reports never sends the inbox, and the inbox screen says so. The protocol indices changed during the merge, so services built before 7ad6e71 cannot talk to this app |
-| The mock is not the service | The mock ignores bus actions other than reports. Pausing works through the canvas field. UI tests run against the mock, so the real service's bus behaviour is covered only by the Windows tests |
+| The mock is not the service | The mock ignores bus actions other than reports and todos. Pausing works through the canvas field. Its notebook is always its demo folder and its todo book lives in memory (every start begins with the demo book; no `copilot-canvas todo` requests, no events). UI tests run against the mock, so the real service's bus behaviour is covered only by the Windows tests |
+| Todos and notes on the phone | The core reads and changes them (§1.1); the app shows neither yet. The phone edits no notes (only *Mark reviewed*) and makes only some todo changes (accept, decline, move, done, check, add) |
 | Accessibility, localisation | English only. VoiceOver labels exist for controls and the terminal's text value; there is no full VoiceOver pass |
 | Test gaps | No automated test of toasts, local notifications or APNs delivery, and no on-device automation |
 

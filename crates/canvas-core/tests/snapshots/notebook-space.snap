@@ -1,0 +1,45 @@
+# notebook-space (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   ?   ⏻ Quit                                          3 sessions
+    ✎ EXPLORER                   │▌                                                   │┌─────────────────────────────────────────────────────────────┐
+▌✎  + Capture  + Note  ⟳         │  ✎ Notebook                                        ││ NOTE INFO                                                   │
+     Human │ All │ AI            │                                                    ││                                                             │
+ ◷  / filter names               │  No note is open.                                  ││ No note is open.                                            │
+    ▾ ◫ Docs ☑                   │                                                    ││                                                             │
+ ⧉    Loading…                   │  Enter in the explorer opens a note.               ││                                                             │
+    ▸ Reports (0)                │  Ctrl+P finds one · Alt+N quick note               ││                                                             │
+ ⌁                               │  Ctrl+E Rendered ⇄ Source · Ctrl+S saves           ││                                                             │
+                                 │                                                    ││                                                             │
+ ✦                               │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+ ◈                               │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+ ⇄                               │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+ ≡                               │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+ ✉                               │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+    [ ] Show internal files      │                                                    │└─────────────────────────────────────────────────────────────┘
+ Ctrl+1 Canvas · Ctrl+2 Notebook · Ctrl+3 Tasks · Alt+, back · Alt+. forward · Ctrl+P go to · F6 focus · Alt+1…9 views · ? help
+## gpu view model
+view cursor=none modal=none banner=None
+canvas none

@@ -624,6 +624,19 @@ touchpad rows apply.
 
 ## Log
 
+- 2026-11-01 (macOS): **main merged at a640512** (Notebook, Tasks and Spaces;
+  the ✦ Skills view; the repository's agent docs; row 47 → 51) into
+  `macos`. Conflicts kept main's behaviour with the port's platform code:
+  the help is per space with the trackpad column where scrolling is
+  precise; main's UIA client (tabs, selection) moved into `src/uia.rs` and
+  the accessibility check's tab steps go through the per-OS dispatch; the
+  web view's new interface (`sync` with the backend, `blur`, `pump`,
+  `print`, `Key`/`Navigate`/`Notice` events) is implemented on macOS and
+  Linux, where HTML notes show a placeholder until their views are ported
+  (macOS: next; Linux: the Linux lead's). Two of main's tests assumed a
+  case-sensitive file system and distinct milliseconds per spooled report:
+  fixed for macOS (shared).
+
 - 2026-11-01: owner report: the macOS app opened from Finder did not see OpenCode (in `~/.opencode/bin`, put on PATH by `~/.zshrc` only). The app's in-process backend decides which agents are installed with the app's own PATH, which Finder and the Dock leave bare; only the service read the login environment. Fixed: the GUI reads the login environment too when it has no terminal (`TERM` unset), and every agent CLI is also looked for in the usual install folders after PATH (`~/.local/bin`, `~/.opencode/bin`, `~/.bun/bin`, `~/.npm-global/bin`, `~/.volta/bin`, Homebrew; none on Windows). `doctor` with a bare PATH now finds OpenCode.
 - 2026-11-01 (macOS): merged origin/linux (row 47's margin and diagnostics,
   the accessibility check's client name) and with it main's WI-023 (row
