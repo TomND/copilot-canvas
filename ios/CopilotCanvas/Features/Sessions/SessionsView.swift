@@ -101,6 +101,7 @@ struct SessionsView: View {
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .scrollDismissesKeyboard(.immediately)
+        .accessibilityIdentifier("sessionsList")
         .searchable(text: $filter, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Filter sessions")
         .refreshable { connection.reconnectNow() }
     }

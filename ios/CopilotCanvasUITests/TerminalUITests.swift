@@ -150,10 +150,13 @@ final class TerminalUITests: XCTestCase {
         let terminal = app.descendants(matching: .any).matching(identifier: "terminal").firstMatch
         XCTAssertTrue(terminal.waitForExistence(timeout: 45), "the subsession's terminal opened")
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        // Rows are built as they scroll in: scroll to it.
+        // Rows are built as they scroll in: scroll to it (the session list
+        // itself: iOS 18's tab bar has a collection view of its own).
         let row = app.staticTexts[title]
+        let named = app.collectionViews["sessionsList"]
+        let list = named.waitForExistence(timeout: 10) ? named : app.collectionViews.firstMatch
         for _ in 0..<8 where !row.exists {
-            app.collectionViews.firstMatch.swipeUp()
+            list.swipeUp()
         }
         XCTAssertTrue(row.waitForExistence(timeout: 10), "listed")
         XCTAssertTrue(app.staticTexts["↳"].waitForExistence(timeout: 10), "shown as a subsession")
