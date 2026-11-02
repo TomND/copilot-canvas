@@ -1008,6 +1008,23 @@ mod tests {
     }
 
     #[test]
+    fn a_macs_status_bar_names_its_keys_in_every_space() {
+        let (mut app, _) = app(doc());
+        app.key_policy = crate::input::KeyPolicy::CommandApp;
+        app.render_mode = crate::view::RenderMode::Gpu;
+        for space in [Space::Canvas, Space::Notebook, Space::Tasks] {
+            app.switch_space(space);
+            app.notice = None;
+            let buf = render(&mut app, 240);
+            let status = text(&buf, ratatui::layout::Rect::new(0, 39, 240, 1));
+            assert!(!status.contains("Alt+") && !status.contains("Ctrl+1") && !status.contains("Ctrl+P"), "{space:?}: {status}");
+            if space != Space::Canvas {
+                assert!(status.contains("⌘1 Canvas · ⌘2 Notebook · ⌘3 Tasks · ⌘[ back · ⌘] forward · ⌘P go to"), "{space:?}: {status}");
+            }
+        }
+    }
+
+    #[test]
     fn the_toolbar_has_space_tabs_full_when_there_is_room() {
         use crate::dialogs::{Action, Hit};
         let (mut app, sent) = app(doc());

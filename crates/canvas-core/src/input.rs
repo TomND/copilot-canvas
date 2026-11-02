@@ -272,6 +272,9 @@ impl KeyPolicy {
         // the same keys on a Mac (Control stays Control there).
         for (from, to) in [
             ("Ctrl+1/2/3 · Ctrl+P · Alt+N", "⌘1/2/3 · ⌘P · ⌃⌘N"),
+            ("Ctrl+1 Canvas · Ctrl+2 Notebook · Ctrl+3 Tasks", "⌘1 Canvas · ⌘2 Notebook · ⌘3 Tasks"),
+            ("Alt+← back · Alt+→ forward", "⌘[ back · ⌘] forward"),
+            ("Alt+, back · Alt+. forward", "⌘[ back · ⌘] forward"),
             ("Alt+←/→ or Alt+, / Alt+.", "⌘[ / ⌘]"),
             ("Alt+→ goes forward", "⌘] goes forward"),
             ("Alt+← goes back", "⌘[ goes back"),
