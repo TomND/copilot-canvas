@@ -117,7 +117,7 @@ pub(super) fn request(shared: &Shared, routing: &Routing, state: &mut BusState, 
     let mut out = Vec::new();
     let mut notes = Vec::new();
     let op = event.data["op"].as_str().unwrap_or_default().to_owned();
-    let answer = handle(shared, routing, state, event, now, &mut out, &mut notes).unwrap_or_else(|why| Answer { ok: false, message: why, state: String::new() });
+    let answer = handle(shared, routing, state, event, now, &mut out, &mut notes).unwrap_or_else(|why| Answer { ok: false, message: why, state: String::new(), data: None });
     log(&shared.instance, &format!("review {op} from {}: {}{}", who(routing, &event.source), if answer.ok { "" } else { "refused: " }, answer.message));
     write_answer(&shared.instance.home, event.data["request"].as_str().unwrap_or_default(), &answer);
     for note in notes {
@@ -181,7 +181,7 @@ fn handle(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Even
                 let (id, new) = book.handoff(handoff, now)?;
                 let review = book.review(&id).cloned().expect("recorded");
                 if !new {
-                    Answer { ok: true, message: format!("Review {id} of {} was handed off already; nothing new.", pr.short()), state: "duplicate".into() }
+                    Answer { ok: true, message: format!("Review {id} of {} was handed off already; nothing new.", pr.short()), state: "duplicate".into(), data: None }
                 } else {
                     reviewed = Some((pr.clone(), reviewer.clone()));
                     let missing = match followed {
@@ -192,14 +192,14 @@ fn handle(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Even
                         Some(why) => {
                             book.problem(&id, &why, true, now)?;
                             notes.push(Note { kind: "alert", title: format!("Review of PR {}: no message to {} — {why}", review.short, review.author), body: format!("The review is recorded ({id}); nothing sends it to the author until this is fixed.\n{}", review.url), pr: review.pr.clone(), url: review.url.clone(), session: reviewer.clone() });
-                            Answer { ok: true, message: format!("Review {id} of {} recorded; it is not sent to {}: {why}.", pr.short(), review.author), state: "needs-you".into() }
+                            Answer { ok: true, message: format!("Review {id} of {} recorded; it is not sent to {}: {why}.", pr.short(), review.author), state: "needs-you".into(), data: None }
                         }
                         None => {
                             // Nothing is missing: there is an agent with a channel.
                             let (spec, settings) = followed.expect("an agent");
                             out.push(completed_event(routing, &review, settings, event.hop));
                             let approval = if settings.approval { " (you approve it before it is sent)" } else { "" };
-                            Answer { ok: true, message: format!("Review {id} of {} recorded for {}: {} drafts the message to the author{approval}.", pr.short(), review.author, spec.name), state: "recorded".into() }
+                            Answer { ok: true, message: format!("Review {id} of {} recorded for {}: {} drafts the message to the author{approval}.", pr.short(), review.author, spec.name), state: "recorded".into(), data: None }
                         }
                     }
                 }
@@ -219,9 +219,9 @@ fn handle(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Even
                         url: review.url.clone(),
                         session: review.reviewer.clone(),
                     });
-                    Answer { ok: true, message: format!("Draft recorded for {}: awaiting the user's approval (◎ Agents › Review follow-ups); you get review.message.approved when it is approved. Do not send it before.", review.short), state: "awaiting-approval".into() }
+                    Answer { ok: true, message: format!("Draft recorded for {}: awaiting the user's approval (◎ Agents › Review follow-ups); you get review.message.approved when it is approved. Do not send it before.", review.short), state: "awaiting-approval".into(), data: None }
                 } else {
-                    Answer { ok: true, message: format!("Draft recorded for {}: approved (no approval needed); send it now, then record it with --sent.", review.short), state: "approved".into() }
+                    Answer { ok: true, message: format!("Draft recorded for {}: approved (no approval needed); send it now, then record it with --sent.", review.short), state: "approved".into(), data: None }
                 }
             }
             "approve" => {
@@ -243,7 +243,7 @@ fn handle(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Even
                     }),
                     ..Default::default()
                 });
-                Answer { ok: true, message: format!("Approved: the message to {} is sent by the review follow-up agent.", review.author), state: "approved".into() }
+                Answer { ok: true, message: format!("Approved: the message to {} is sent by the review follow-up agent.", review.author), state: "approved".into(), data: None }
             }
             "sent" => {
                 let spec = agent_or_you()?;
@@ -260,7 +260,7 @@ fn handle(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Even
                     session: review.reviewer.clone(),
                 });
                 let every = followed.map(|(_, s)| interval_ms(s)).unwrap_or(60 * 60_000);
-                Answer { ok: true, message: format!("Recorded as sent to {}; the canvas asks for a check of {} every {} min.", review.message.recipient, review.message.conversation, (every / 60_000).max(1)), state: "sent".into() }
+                Answer { ok: true, message: format!("Recorded as sent to {}; the canvas asks for a check of {} every {} min.", review.message.recipient, review.message.conversation, (every / 60_000).max(1)), state: "sent".into(), data: None }
             }
             "needs-you" | "failed" => {
                 agent_or_you()?;
@@ -275,7 +275,7 @@ fn handle(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Even
                     url: review.url.clone(),
                     session: review.reviewer.clone(),
                 });
-                Answer { ok: true, message: format!("Recorded: the user sees “{}”.", review.message.reason), state: op.into() }
+                Answer { ok: true, message: format!("Recorded: the user sees “{}”.", review.message.reason), state: op.into(), data: None }
             }
             "dismiss-message" => {
                 if !source.is_empty() {
@@ -288,7 +288,7 @@ fn handle(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Even
                 }
                 review.message.state = MessageState::Dismissed;
                 review.message.updated_ms = now;
-                Answer { ok: true, message: "Dismissed: nothing is sent.".into(), state: "dismissed".into() }
+                Answer { ok: true, message: "Dismissed: nothing is sent.".into(), state: "dismissed".into(), data: None }
             }
             "checked" => {
                 agent_or_you()?;
@@ -299,13 +299,13 @@ fn handle(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Even
                 if !failed.is_empty() && matches!(book.checks.failures, 1 | 3) {
                     notes.push(Note { kind: "warn", title: "Review follow-ups: checking the conversations failed".into(), body: format!("{failed}\n\nThe next check is still asked for on schedule."), pr: String::new(), url: String::new(), session: String::new() });
                 }
-                Answer { ok: true, message: if failed.is_empty() { "Check recorded.".into() } else { format!("Failure recorded ({} in a row).", book.checks.failures) }, state: "checked".into() }
+                Answer { ok: true, message: if failed.is_empty() { "Check recorded.".into() } else { format!("Failure recorded ({} in a row).", book.checks.failures) }, state: "checked".into(), data: None }
             }
             "request" => {
                 agent_or_you()?;
                 let pr = Some(text("url")).filter(|u| !u.is_empty()).map(|u| PrRef::parse(&u)).transpose()?;
                 match book.request(&text("conversation"), &text("message_id"), &text("kind"), data["text"].as_str().unwrap_or_default(), pr.as_ref(), now)? {
-                    Requested::Duplicate(id, st) => Answer { ok: true, message: format!("This message was recorded before ({id}, {}); nothing new.", st.word()), state: "duplicate".into() },
+                    Requested::Duplicate(id, st) => Answer { ok: true, message: format!("This message was recorded before ({id}, {}); nothing new.", st.word()), state: "duplicate".into(), data: None },
                     Requested::New(id, st) => {
                         let q = book.requests.iter().find(|q| q.id == id).cloned().expect("recorded");
                         if st == RequestState::Ambiguous {
@@ -316,7 +316,7 @@ fn handle(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Even
                             RequestState::Waiting => format!("Request {id} for {} recorded; it waits for the request in progress for the same pull request.", q.short),
                             _ => format!("Request {id} for {} recorded; it goes to “{}” when that session is idle.", q.short, q.to_name),
                         };
-                        Answer { ok: true, message, state: st.word().into() }
+                        Answer { ok: true, message, state: st.word().into(), data: None }
                     }
                 }
             }
@@ -328,14 +328,14 @@ fn handle(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Even
                 }
                 state.mailbox.retain(|m| m.id != id);
                 book.finish(&id, op == "dismiss", now)?;
-                Answer { ok: true, message: format!("Request {id} {}.", if op == "dismiss" { "dismissed" } else { "done" }), state: op.into() }
+                Answer { ok: true, message: format!("Request {id} {}.", if op == "dismiss" { "dismissed" } else { "done" }), state: op.into(), data: None }
             }
             "assign" => {
                 if !wide(routing, source) {
                     return Err("only you and canvas-wide agents clarify a request".into());
                 }
                 book.assign(&text("request"), &text("review"), now)?;
-                Answer { ok: true, message: "Assigned: it goes to that review's session when it is idle.".into(), state: "assigned".into() }
+                Answer { ok: true, message: "Assigned: it goes to that review's session when it is idle.".into(), state: "assigned".into(), data: None }
             }
             "unwatch" => {
                 if !wide(routing, source) {
@@ -344,14 +344,14 @@ fn handle(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Even
                 let id = text("conversation");
                 let c = book.conversations.iter_mut().find(|c| c.id == id).ok_or_else(|| format!("no conversation {id:?}"))?;
                 c.watching = false;
-                Answer { ok: true, message: format!("No longer watching {id}."), state: "unwatched".into() }
+                Answer { ok: true, message: format!("No longer watching {id}."), state: "unwatched".into(), data: None }
             }
             "check-now" => {
                 if !wide(routing, source) {
                     return Err("only you and canvas-wide agents ask for a check".into());
                 }
                 book.checks.next_ms = now;
-                Answer { ok: true, message: "A check is asked for now.".into(), state: "check".into() }
+                Answer { ok: true, message: "A check is asked for now.".into(), state: "check".into(), data: None }
             }
             other => return Err(format!("unknown review request {other:?}")),
         };

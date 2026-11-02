@@ -550,6 +550,10 @@ in the canvas in any remote mode (that is how the tests check them).
 | Bell, OSC 777, taskbar progress, window title | this machine | the home PC (they are computed from terminal state the service sends) |
 | Reports (`copilot-canvas report publish` on the service's machine) | the inbox from the local service | the same inbox and read state, pushed by the service (`ServiceMsg::Reports`) and opened through `Request::ReportContent`; HTML is shown by the home GUI's own WebView2 view; links inside a report open in the home browser after you confirm them. The iPhone app gets the same inbox (`CAP_REPORTS`) and shows each report as a sanitized page in a locked-down web view; links open in the phone's Safari after you confirm them; a phone that is away gets a notification per new report (at most 3 at once) |
 | Crash log | `<home>\crash.log` of the client | each side keeps its own: the client's in its data folder at home; the service logs to `service-<instance>.log` on the Cloud PC |
+| The Notebook (explorer, reading, saving, change polling, search, quick capture, trash) | the notebook's files on this machine, through the in-process backend | the same files on the Cloud PC (the notebook root is resolved there: `<service home>\notebook` unless the canvas names another), every read and write a backend request over the connection (`NotebookList`, `NoteRead`, `NoteWrite`, `NoteRevs`, `NoteSearch`, …); saves are based on the note's revision, so an agent's change on the Cloud PC comes back as a conflict, never lost. Nothing of the notebook is copied to the home PC |
+| Rendered and HTML notes in the GUI | the home GUI's WebView2 view, files read through the backend | the same: the view serves an HTML note from `https://notes.canvas.invalid/` and fetches every file it loads (the note, its pictures, styles, fonts) with `Request::ReadBytes` from the Cloud PC (at most 16 MiB each), so relative links work remotely; scripts a note may run still reach no network |
+| *Open externally* in the Notebook, *Copy path* | the file's own program, Explorer for a folder; this clipboard | VS Code through the tunnel, else the folder browser or the text viewer (as other folders and files); the Cloud PC path on the home clipboard |
+| Todo boards (Tasks, chips, badges, `copilot-canvas todo`) | the service's book | the same book: it arrives with the bus snapshot (`ServiceMsg::Bus`, `todos`), changes go back as window actions (`ClientMsg::Bus` `{"action": "todos", …}`); the commands run on the Cloud PC in its sessions. Spec notes and JSON Canvas exports are written on the Cloud PC |
 
 The folder browser is the same modal for a folder: its subfolders (▸) and
 files, ↑↓ pick one, Enter or a click opens it (a subfolder in place, a file
@@ -656,7 +660,7 @@ Checklist (over a day):
   tables; input dedupe and takeover; heartbeats keeping a connection and
   silence ending it with short timeouts (`canvas-core::conn`); offline input,
   reconnect resync and the lost-keystroke report (`canvas-core::app`).
-- `copilot-canvas selftest --remote loopback`: the 39-step UI self-test with
+- `copilot-canvas selftest --remote loopback`: the 45-step UI self-test with
   the client on TCP.
 - `copilot-canvas selftest --remote faults` (or, after `cargo build --release`,
   `cargo test --release fault_injection -- --ignored --nocapture`): a TCP proxy

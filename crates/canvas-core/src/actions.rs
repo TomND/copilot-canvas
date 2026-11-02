@@ -131,15 +131,20 @@ impl App {
             return self.frame_menu(id);
         }
         let name = self.doc.group(id).map(|g| g.name.clone()).unwrap_or_default();
+        let boards = crate::tasks::group_counts(self, id).is_some();
         (
             name,
             vec![
                 item("Show running terminals", "Enter", Action::OpenGroup(id.to_owned()), true),
                 item("New session in group", "", Action::NewSession { at: self.group_slot(id), parent: None }, true),
+                item("Open notes", "", Action::Notebook(crate::notebook::Action::OpenGroup(id.to_owned())), true),
+                item("Open todo board", "", Action::Tasks(crate::tasks::Action::OpenGroup(id.to_owned())), boards),
+                item("Link notes folder…", "", Action::Notebook(crate::notebook::Action::LinkFolder(id.to_owned())), true),
+                item("Link todo boards…", "", Action::Tasks(crate::tasks::Action::LinkBoards(id.to_owned())), true),
                 item("Open AI docs folder", "", Action::OpenGroupFolder(id.to_owned(), false), true),
                 item("Open human outputs folder", "", Action::OpenGroupFolder(id.to_owned(), true), true),
-                item("Change group folder…", "", Action::SetGroupFolder(id.to_owned()), true),
                 item("Session defaults for group…", "", Action::GroupDefaults(id.to_owned()), true),
+                item("Skill folders…", "", Action::Skills(crate::skills::SkillAction::EditFolders(Some(id.to_owned()))), true),
                 item("Passive sessions of this group…", "", Action::Visual(crate::visual::VisualAction::GroupPassives(id.to_owned())), !self.demo),
                 item("New passive session…", "", Action::NewPassive(id.to_owned()), !self.demo),
                 item("Send event…", "", Action::SendEvent(id.to_owned()), !self.demo),
@@ -592,6 +597,10 @@ impl App {
         self.needs_draw = true;
         match action {
             Action::Open(id) => {
+                // From the Notebook or Tasks, a jump back to the canvas.
+                if self.space != crate::spaces::Space::Canvas {
+                    return self.navigate(crate::spaces::Space::Canvas, crate::spaces::NavTarget::Node(id));
+                }
                 self.reveal_node(&id);
                 self.view_node(&id);
             }
@@ -848,6 +857,10 @@ impl App {
             Action::Report(action) => self.report_action(action),
             Action::Prs(action) => self.run_prs(action),
             Action::Reviews(action) => self.run_reviews(action),
+            Action::Space(space) => self.switch_space(space),
+            Action::Notebook(action) => crate::notebook::run(self, action),
+            Action::Tasks(action) => crate::tasks::run(self, action),
+            Action::Skills(action) => self.run_skills(action),
             Action::OpenOtherClient => {
                 let args = self.other_client_args();
                 match self.platform.open_other_client(&args) {

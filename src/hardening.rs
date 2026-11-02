@@ -516,11 +516,24 @@ fn uia_tree_inner() -> Result<String> {
     wait_tree(&ui, &format!("the dialog opened through {CLIENT}"), 10, |t| t["modals"].as_u64().unwrap_or(0) > 0)?;
     let dialog = access_snapshot(&ui, hwnd)?;
     let dialog_seen = dialog["nodes"].as_array().is_some_and(|n| n.iter().any(|n| n["type"] == "dialog" || n["type"].as_str().is_some_and(|t| t.contains("dialog"))));
+    // The toolbar's three space tabs (the canvas's selected); a client switches to the Notebook.
+    let tab = |snap: &Value, name: &str| snap["nodes"].as_array().and_then(|n| n.iter().find(|n| n["type"] == "TabItem" && n["name"] == name).cloned());
+    let spaces: Vec<Value> = ["Canvas", "Notebook", "Tasks"].iter().filter_map(|n| tab(&snap, n)).collect();
+    anyhow::ensure!(spaces.len() == 3 && spaces[0]["selected"] == true && spaces[1]["selected"] != true, "three space tabs, the canvas's selected: {spaces:?}");
+    ui.request(json!({ "cmd": "key", "key": "Esc", "mods": [] }))?;
+    wait_tree(&ui, "the dialog closed", 10, |t| t["modals"].as_u64() == Some(0))?;
+    access_press(&ui, hwnd, "Notebook")?;
+    ui.wait(&format!("the Notebook through {CLIENT}"), Duration::from_secs(10), |t| t.contains("✎ EXPLORER"))?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while tab(&access_snapshot(&ui, hwnd)?, "Notebook").is_none_or(|t| t["selected"] != true) {
+        anyhow::ensure!(Instant::now() < deadline, "the Notebook tab is not selected in the {CLIENT} tree");
+        std::thread::sleep(Duration::from_millis(300));
+    }
     let _ = ui.request(json!({ "cmd": "quit" }));
     let _ = ui.wait_exit(Duration::from_secs(10));
     let status = boxed["description"].as_str().unwrap_or("").to_owned();
     Ok(format!(
-        "{} {CLIENT} elements in window {:?}: Button \"+ New\", TreeItem and Button \"Build session canvas\" ({status}), Document {:?} with {} chars of text; \"+ New\" invoked through {CLIENT} opened the dialog{}",
+        "{} {CLIENT} elements in window {:?}: Button \"+ New\", TreeItem and Button \"Build session canvas\" ({status}), Document {:?} with {} chars of text; \"+ New\" invoked through {CLIENT} opened the dialog{}; TabItems Canvas (selected), Notebook, Tasks; the Notebook tab pressed through {CLIENT} switched the space",
         snap["count"],
         snap["window"].as_str().unwrap_or(""),
         tile["name"].as_str().unwrap_or(""),

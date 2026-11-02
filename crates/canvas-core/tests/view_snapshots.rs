@@ -141,8 +141,14 @@ const BOTH: Sections = Sections { cells: true, painted: false };
 /// Renders `app` in both modes and compares the text with snapshot `name`.
 #[track_caller]
 fn check(name: &str, app: &mut App, sections: Sections) {
-    let area = Rect::new(0, 0, SCREEN.0, SCREEN.1);
-    let mut out = vec![format!("# {name} ({}x{} cells)", SCREEN.0, SCREEN.1)];
+    check_sized(name, app, sections, SCREEN);
+}
+
+/// As `check`, on a screen of `size` cells.
+#[track_caller]
+fn check_sized(name: &str, app: &mut App, sections: Sections, size: (u16, u16)) {
+    let area = Rect::new(0, 0, size.0, size.1);
+    let mut out = vec![format!("# {name} ({}x{} cells)", size.0, size.1)];
     if sections.cells {
         app.render_mode = RenderMode::Cells;
         let mut buf = Buffer::empty(area);
@@ -413,6 +419,145 @@ fn group_with_folder_chips() {
     app.selection.clear();
     app.selected_group = Some("g-docs".into());
     check("group-folder-chips", &mut app, BOTH);
+}
+
+/// The todo book of the spaces snapshots: Docs's board (DEC) with 4 open
+/// todos (2 in progress) and a proposal; "Write the spec" (a) claimed DEC-031.
+fn spaces_book() -> canvas_model::todos::TodoBook {
+    use canvas_model::todos::{Actor, Ctx, NewTodo, Status, TodoBook, TodoOp, TodoType};
+    let mut book = TodoBook::default();
+    let (you, spec) = (Actor::human(), Actor::agent("a", "Write the spec"));
+    let ctx = Ctx::at(1_792_998_000_000);
+    let add = |title: &str, status: Status, propose: bool| TodoOp::Add(Box::new(NewTodo { board: "Decomps".into(), title: title.into(), kind: TodoType::Feature, status: (!propose).then_some(status), propose, why: propose.then(|| "Faster runs.".into()), ..Default::default() }));
+    book.apply(TodoOp::AddBoard { name: "Decomps".into(), prefix: Some("DEC".into()), parent: None, groups: vec!["g-docs".into()], x: None, y: None }, &you, &ctx).unwrap();
+    book.seq.insert("DEC".into(), 27);
+    for (title, status) in [("Map the structs", Status::Backlog), ("Name the loader", Status::Todo), ("Parse the tables", Status::InProgress), ("Write the loader spec", Status::Todo)] {
+        book.apply(add(title, status, false), &you, &ctx).unwrap();
+    }
+    book.apply(TodoOp::Claim { id: "DEC-031".into(), force: false, session: None }, &spec, &ctx).unwrap();
+    book.apply(add("Cache the output", Status::Proposed, true), &spec, &ctx).unwrap();
+    book
+}
+
+/// Two groups for the spaces snapshots: Docs (a folder, a linked board with
+/// a proposal waiting) and Ideas (neither); "Write the spec" claimed DEC-031.
+fn spaces_app() -> App {
+    let mut doc = Doc::default();
+    doc.nodes.push(node("a", "Write the spec", 2, 2));
+    doc.nodes.push(node("b", "Draft the docs", 2, 7));
+    doc.nodes.push(node("c", "Unfiled idea", 2, 18));
+    doc.groups.push(Group { id: "g-docs".into(), name: "Docs".into(), x: 0, y: 0, w: 64, h: 13, color: 1, folder: Some(r"C:\work\docs".into()), source: None, defaults: None });
+    doc.groups.push(Group { id: "g-ideas".into(), name: "Ideas".into(), x: 0, y: 16, w: 44, h: 8, color: 3, folder: None, source: None, defaults: None });
+    doc.view.x = -1;
+    doc.view.y = -1;
+    let mut app = app(doc, false);
+    app.bus.todos = Some(spaces_book());
+    app.selection.clear();
+    app
+}
+
+/// The spaces foundation on the session canvas, wide enough for the full
+/// tabs: Docs's chips (✎ Notes; ☑ 4 · 2▸ · 1◇ in gold: a proposal waits),
+/// Ideas's (✎ Set folder…, ☑ +), the session's ☑ DEC-031 badge, and the
+/// selected group's NOTES and TODOS.
+#[test]
+fn canvas_with_space_tabs_todo_chips_and_a_claimed_session() {
+    let mut app = spaces_app();
+    app.selected_group = Some("g-docs".into());
+    check_sized("canvas-spaces-chips", &mut app, Sections { cells: true, painted: true }, (180, 40));
+}
+
+/// The Notebook space opened from a group's ✎ Notes chip with no backend:
+/// compact tabs, the ✎ EXPLORER with the group's folder as a root (listing
+/// on its way), the reader without a note and the info panel, drawn from
+/// cells in both clients (no canvas model).
+#[test]
+fn notebook_space_from_a_group_chip() {
+    let mut app = spaces_app();
+    app.run(Action::Notebook(canvas_core::notebook::Action::OpenGroup("g-docs".into())));
+    assert_eq!(app.space, canvas_core::spaces::Space::Notebook);
+    check("notebook-space", &mut app, BOTH);
+}
+
+/// The Tasks space reached by a click on a session's ☑ DEC-031 badge: the
+/// todo selected on its board, its details in the right pane.
+#[test]
+fn tasks_space_from_a_session_badge() {
+    let mut app = spaces_app();
+    let area = Rect::new(0, 0, SCREEN.0, SCREEN.1);
+    canvas_core::ui::render(&mut app, &mut Buffer::empty(area), area, None);
+    let open = Action::Tasks(canvas_core::tasks::Action::OpenTodo("DEC-031".into()));
+    let (rect, _) = app.layout.hits.iter().find(|(_, hit)| *hit == canvas_core::dialogs::Hit::Toolbar(open.clone())).cloned().expect("the badge is clickable");
+    let at = |kind| canvas_core::input::MouseEvent::at_cell(kind, rect.x + 1, rect.y, canvas_core::input::Modifiers::NONE);
+    app.on_mouse(at(canvas_core::input::MouseEventKind::Down(canvas_core::input::MouseButton::Left)));
+    app.on_mouse(at(canvas_core::input::MouseEventKind::Up(canvas_core::input::MouseButton::Left)));
+    assert_eq!(app.space, canvas_core::spaces::Space::Tasks);
+    assert_eq!(app.right_detail, Some(canvas_core::side::RightDetail::Todo("DEC-031".into())));
+    assert_eq!(app.tasks.selected.as_deref(), Some("DEC-031"));
+    assert!(app.launching.is_empty(), "a badge never starts its session");
+    check("tasks-space", &mut app, BOTH);
+}
+
+/// The demo canvas's Tasks space (its demo book) at a zoom level: two
+/// boards, Decomps with its Parser swimlane; 100 % full cards, 50 % one
+/// row a card, 25 % a summary a board.
+fn tasks_demo(zoom: u8) -> App {
+    let mut app = demo_at(0, 1.0);
+    app.switch_space(canvas_core::spaces::Space::Tasks);
+    app.tasks.zoom = zoom;
+    app.tasks.pan = [(-2, -1), (-4, -2), (-8, -4)][zoom as usize];
+    app.notice = None;
+    app
+}
+
+#[test]
+fn tasks_demo_boards_at_100_percent() {
+    check("tasks-demo-100", &mut tasks_demo(0), BOTH);
+}
+
+#[test]
+fn tasks_demo_boards_at_50_percent() {
+    check("tasks-demo-50", &mut tasks_demo(1), BOTH);
+}
+
+#[test]
+fn tasks_demo_boards_at_25_percent() {
+    check("tasks-demo-25", &mut tasks_demo(2), BOTH);
+}
+
+/// A selected card (WI-002: a checklist, its session's claim, a note in
+/// its log) in view, with its details in the right pane.
+#[test]
+fn tasks_selected_card_with_details() {
+    let mut app = tasks_demo(0);
+    app.run(Action::Tasks(canvas_core::tasks::Action::Select("WI-002".into())));
+    app.notice = None;
+    assert_eq!(app.right_detail, Some(canvas_core::side::RightDetail::Todo("WI-002".into())));
+    check("tasks-details", &mut app, BOTH);
+}
+
+/// A group without a board: its ☑ + chip offers the boards to link and a
+/// new board for the group.
+#[test]
+fn tasks_link_boards_dialog() {
+    let mut app = spaces_app();
+    app.bus.todos.as_mut().unwrap().apply(canvas_model::todos::TodoOp::AddBoard { name: "Release".into(), prefix: None, parent: None, groups: Vec::new(), x: None, y: None }, &canvas_model::todos::Actor::human(), &canvas_model::todos::Ctx::at(1)).unwrap();
+    app.run(Action::Tasks(canvas_core::tasks::Action::OpenGroup("g-ideas".into())));
+    assert!(matches!(app.modals.last(), Some(canvas_core::dialogs::Modal::Tasks(_))));
+    check("tasks-link-boards", &mut app, BOTH);
+}
+
+/// Go to (Ctrl+P) on the demo canvas with a query: the matches best first,
+/// their matched letters lit, where they are on the right.
+#[test]
+fn go_to_dialog_with_results() {
+    let mut app = demo_at(0, 1.0);
+    app.doc.groups.push(Group { id: "g-review".into(), name: "Reviews".into(), x: 0, y: 40, w: 40, h: 8, color: 2, folder: None, source: None, defaults: None });
+    app.open_goto();
+    for c in "rev".chars() {
+        app.on_input(vec![canvas_core::input::InputEvent::Key(canvas_core::input::KeyEvent::new(canvas_core::input::KeyCode::Char(c), canvas_core::input::Modifiers::NONE))]);
+    }
+    check("goto-dialog", &mut app, BOTH);
 }
 
 /// A canvas with a group (a session and its group passive session) and the
@@ -949,6 +1094,59 @@ fn reports_inbox() {
     check("reports-inbox", &mut app, BOTH);
 }
 
+/// The ✦ Skills view (every agent): the canvas plugin's skills, a group's
+/// skill folder, the project of the canvas's sessions (each skill with the
+/// agents that read its folder; `≈` where one also has a skill of its name),
+/// two agents' personal folders and the canvas library; the project's
+/// `review` is selected, its details on the right.
+#[test]
+fn skills_view_with_every_source() {
+    use canvas_core::agents::AgentKind::{Claude, Copilot, OpenCode};
+    use canvas_model::skills::{SkillSource, SourceKind, SourceSkill};
+    let mut doc = Doc { canvas_id: Some("canvas-1".into()), ..Default::default() };
+    doc.nodes.push(node("s-fix", "Fix flaky test", 2, 2));
+    let defaults = canvas_core::doc::LaunchDefaults { skill_dirs: vec![r"C:\team\skills".into()], ..Default::default() };
+    doc.groups.push(Group { id: "g1".into(), name: "Payments".into(), x: 0, y: 0, w: 40, h: 10, folder: Some(r"C:\notes\Payments".into()), defaults: Some(defaults), ..Default::default() });
+    let mut app = app(doc, false);
+    app.set_view(canvas_core::side::SideView::Skills);
+    // The listing as the backend answers it (no background work in a snapshot).
+    app.skills.loading = false;
+    app.configs_loading.clear();
+    let skill = |name: &str, folder: &str, agents: &[canvas_core::agents::AgentKind], about: &str| SourceSkill {
+        name: name.into(),
+        description: about.into(),
+        path: format!(r"{folder}\{name}\SKILL.md"),
+        agents: agents.to_vec(),
+        folder: folder.into(),
+        ..Default::default()
+    };
+    let all = [Copilot, OpenCode, Claude];
+    let source = |kind: SourceKind, path: &str, skills: Vec<SourceSkill>| SkillSource { agents: canvas_model::skills::agents_of(&skills), kind, path: path.into(), folders: vec![(path.into(), skills.len())], skills, problem: String::new() };
+    let plugin = r"C:\data\plugin\skills";
+    let project = r"C:\work\canvas";
+    app.skills.sources = Some(Ok(vec![
+        source(SourceKind::Canvas, plugin, vec![skill("canvas-events", plugin, &all, "Send and react to canvas events."), skill("canvas-notes", plugin, &all, "Write notes for agents and people.")]),
+        source(SourceKind::Group { id: "g1".into(), name: "Payments".into() }, r"C:\team\skills", vec![skill("payments-review", r"C:\team\skills", &all, "How payments changes are reviewed.")]),
+        source(
+            SourceKind::Project { root: project.into() },
+            project,
+            vec![
+                skill("review", &format!(r"{project}\.claude\skills"), &all, "Review a change against the project's conventions before it is pushed."),
+                skill("release", &format!(r"{project}\.agents\skills"), &[Copilot, OpenCode], "Cut a release."),
+                skill("ci", &format!(r"{project}\.github\skills"), &[Copilot], "Fix the CI."),
+            ],
+        ),
+        source(SourceKind::Personal { agent: Copilot }, r"C:\Users\me\.copilot\skills", vec![skill("standup", r"C:\Users\me\.copilot\skills", &[Copilot], "Write a standup.")]),
+        source(SourceKind::Personal { agent: OpenCode }, r"C:\Users\me\.config\opencode\skills", vec![skill("review", r"C:\Users\me\.claude\skills", &[OpenCode, Claude], "My own review checklist.")]),
+        source(SourceKind::Library, r"C:\data\canvas-agents\canvas-1\skills", vec![skill("pr-etiquette", r"C:\data\canvas-agents\canvas-1\skills", &all, "Route PR feedback.")]),
+    ]));
+    let rows = app.build_list();
+    let at = rows.iter().position(|r| r.label == "review" && matches!(&r.item, canvas_core::side::ItemRef::SkillOf(key, _) if key.starts_with("project:"))).expect("the project's review");
+    app.list_sel = at;
+    app.right_detail = Some(canvas_core::side::RightDetail::Item(rows[at].item.clone()));
+    check("skills-view", &mut app, BOTH);
+}
+
 /// The viewer on the morning brief: who and when, the session it came from
 /// (viewed, never started), its pull request and links, the Markdown
 /// formatted (headings, emphasis, a list, a table, code, a quote, a link).
@@ -987,4 +1185,221 @@ fn snapshot_diff_marks_changed_lines() {
     assert!(diff.contains("-    6      │ f") && diff.contains("+         6 │ F") && diff.contains("+        11 │ k"), "{diff}");
     assert!(!diff.contains("│ a"), "context is limited to three lines: {diff}");
     assert_eq!(snapshot::normalize("x  \r\ny\r\n\r\n"), "x\ny\n");
+}
+
+// ---------- the Notebook with a service ----------
+
+/// The service's machine for the Notebook snapshots: notes in memory.
+#[derive(Default)]
+struct Notes {
+    files: std::sync::Mutex<std::collections::BTreeMap<String, String>>,
+}
+
+const NB_ROOT: &str = r"C:\nb";
+const NB_CANVAS: &str = r"C:\home\canvas-agents\c1";
+
+impl Notes {
+    fn put(&self, path: &str, text: &str) {
+        self.files.lock().unwrap().insert(path.to_owned(), text.to_owned());
+    }
+
+    fn text(&self, path: &str) -> Option<String> {
+        self.files.lock().unwrap().get(path).cloned()
+    }
+
+    /// A folder's entries: its subfolders (from the files' paths), then its files.
+    fn list(&self, dir: &str, root: &str) -> Vec<canvas_model::notebook::Entry> {
+        use canvas_model::notebook::{self as nb, Entry, Kind, Meta, Place};
+        let place = if dir.starts_with(NB_CANVAS) { Place::CanvasWide } else { Place::Notes };
+        let rel = |path: &str| path.get(root.len() + 1..).unwrap_or_default().replace('\\', "/");
+        let prefix = format!("{dir}\\");
+        let files = self.files.lock().unwrap();
+        let mut dirs: Vec<String> = Vec::new();
+        let mut out = Vec::new();
+        for (path, text) in files.iter().filter(|(p, _)| p.starts_with(&prefix)) {
+            let rest = &path[prefix.len()..];
+            match rest.split_once('\\') {
+                Some((sub, _)) => {
+                    let sub = format!("{prefix}{sub}");
+                    if !dirs.contains(&sub) {
+                        dirs.push(sub);
+                    }
+                }
+                None => {
+                    let kind = Kind::of(rest);
+                    let meta = nb::note_meta(kind, text);
+                    out.push(Entry { name: rest.into(), path: path.clone(), rel: rel(path), kind, size: text.len() as u64, modified_ms: 0, provenance: nb::classify(&rel(path), &meta, place), title: nb::title(kind, text, &meta, rest) });
+                }
+            }
+        }
+        let folders = dirs.iter().map(|d| {
+            let name = d.rsplit('\\').next().unwrap_or_default().to_owned();
+            let rel = format!("{}/", rel(d));
+            Entry { name: name.clone(), path: d.clone(), rel: rel.clone(), kind: Kind::Folder, provenance: nb::classify(&rel, &Meta::default(), place), title: name, ..Entry::default() }
+        });
+        folders.chain(out).collect()
+    }
+}
+
+impl canvas_core::rpc::Backend for Notes {
+    fn call(&self, request: canvas_core::rpc::Request) -> anyhow::Result<canvas_core::rpc::Response> {
+        use canvas_core::rpc::{Request, Response};
+        use canvas_model::notebook::{Hit, Info, NoteText, rev_of};
+        let rev = |text: &str| rev_of(text.as_bytes());
+        Ok(match request {
+            Request::NotebookInfo { .. } => Response::NotebookInfo(Info { root: NB_ROOT.into(), canvas_dir: Some(NB_CANVAS.into()), home: r"C:\home".into() }),
+            Request::NotebookList { dir, root } => Response::NoteEntries(self.list(&dir, &root.unwrap_or_else(|| dir.clone()))),
+            Request::NoteRead { path } => match self.text(&path) {
+                Some(text) => Response::Note(NoteText { rev: rev(&text), text }),
+                None => Response::Error("not found".into()),
+            },
+            Request::NoteWrite { path, text, base, .. } => match self.text(&path) {
+                Some(now) if base.as_deref() != Some(rev(&now).as_str()) => Response::NoteConflict(NoteText { rev: rev(&now), text: now }),
+                // As the service: a write based on a revision needs the file.
+                None if base.is_some() => Response::Error(format!("{path} was moved or deleted; save it as a new note")),
+                _ => {
+                    self.put(&path, &text);
+                    Response::NoteSaved { rev: rev(&text) }
+                }
+            },
+            Request::NoteRevs { paths } => Response::NoteRevs(paths.iter().map(|p| self.text(p).map(|t| rev(&t))).collect()),
+            Request::NoteSearch { query, .. } => {
+                let query = query.to_lowercase();
+                let files = self.files.lock().unwrap();
+                let hits = files.iter().flat_map(|(path, text)| text.lines().enumerate().filter(|(_, l)| l.to_lowercase().contains(&query)).map(|(i, l)| Hit { path: path.clone(), line: i as u32 + 1, text: l.to_owned() }).collect::<Vec<_>>()).collect();
+                Response::NoteHits(hits)
+            }
+            other => Response::Error(format!("not here: {}", other.name())),
+        })
+    }
+}
+
+/// [`spaces_app`]'s canvas (the Docs group's folder is `C:\work\docs`)
+/// with a notebook: a note for you with headings, a todo id and a link; an
+/// agent's plan written by "Write the spec"; notes linking back.
+fn notebook_app() -> (App, crossbeam_channel::Receiver<canvas_core::app::AppEvent>, Arc<Notes>) {
+    let notes = Arc::new(Notes::default());
+    notes.put(r"C:\nb\Overview.md", "# Overview\n\nThe plan is in [[plan]]; fix DEC-031 first.\n\n## Steps\n\n- Read the **plan**\n- Write the `spec`\n\n## Open questions\n\n> Who reviews it?\n");
+    notes.put(r"C:\nb\Inbox\2026-10-31 0905.md", "---\naudience: human\nauthor: human\n---\nCall the printer people.\n");
+    notes.put(r"C:\work\docs\ai-docs\plan.md", "---\naudience: ai\nauthor: ai\nagent: opencode\nsource_session: a\n---\n# Plan\n\nSee [[Overview]].\n\n1. Draft\n2. Review\n");
+    notes.put(r"C:\work\docs\ai-docs\log.md", "# Log\n\nStarted.\n");
+    notes.put(r"C:\work\docs\human-outputs\summary.md", "# Summary\n\nBack to [[Overview]].\n");
+    let mut base = spaces_app();
+    let (tx, _rx) = crossbeam_channel::bounded(64);
+    let (_service, service_rx) = crossbeam_channel::bounded(1);
+    let (app_tx, events) = crossbeam_channel::unbounded();
+    let conn = canvas_core::conn::Conn::detached(tx, service_rx);
+    let doc = std::mem::take(&mut base.doc);
+    let mut app = App::new(conn, notes.clone(), canvas_core::sync::Opened::detached(doc), false, CWD.into(), app_tx, None);
+    app.pan_quiet_until = None;
+    app.tick = 0;
+    app.visual.motion = Some(canvas_core::view::Motion::On);
+    app.installed_agents = vec![AgentKind::Copilot, AgentKind::OpenCode];
+    app.detected_agent = AgentKind::Copilot;
+    app.tasks = std::mem::take(&mut base.tasks);
+    app.bus.todos = base.bus.todos.take();
+    app.selection.clear();
+    (app, events, notes)
+}
+
+/// Runs the notebook's background answers until `done`.
+fn settle(app: &mut App, events: &crossbeam_channel::Receiver<canvas_core::app::AppEvent>, done: impl Fn(&App) -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !done(app) {
+        assert!(std::time::Instant::now() < deadline, "the notebook's background work did not finish");
+        if let Ok(event) = events.recv_timeout(std::time::Duration::from_millis(20)) {
+            app.on_app_event(event);
+        }
+    }
+}
+
+/// Opens a note and waits until it, its folders and its backlinks are there.
+fn open_note(app: &mut App, events: &crossbeam_channel::Receiver<canvas_core::app::AppEvent>, path: &str) {
+    app.navigate(canvas_core::spaces::Space::Notebook, canvas_core::spaces::NavTarget::Note(path.into()));
+    let area = Rect::new(0, 0, SCREEN.0, SCREEN.1);
+    let path = path.to_owned();
+    let ready = |app: &App| {
+        let nb = &app.notebook;
+        nb.info.is_some() && nb.tab().is_some_and(|t| t.loaded && t.path == path) && nb.folders.values().all(|f| f.at.is_some() && !f.loading) && nb.backlinks.values().all(|b| !b.loading && b.at.is_some())
+    };
+    for _ in 0..4 {
+        canvas_core::ui::render(app, &mut Buffer::empty(area), area, None);
+        settle(app, events, ready);
+    }
+    app.notice = None;
+}
+
+fn key(app: &mut App, code: canvas_core::input::KeyCode, modifiers: canvas_core::input::Modifiers) {
+    app.on_input(vec![canvas_core::input::InputEvent::Key(canvas_core::input::KeyEvent::new(code, modifiers))]);
+}
+
+/// A note for you in the reader, Rendered (TUI cells; the GUI gets the
+/// page as an HTML pane): breadcrumb, view switch, provenance pill
+/// (inferred), buttons; the explorer with the notebook root, the Docs
+/// group's folder (◫ ☑) and the canvas-wide folder; the info panel with
+/// outline, links (todo, note), backlinks and provenance.
+#[test]
+fn notebook_reader_rendered_with_explorer_and_info() {
+    let (mut app, events, _notes) = notebook_app();
+    open_note(&mut app, &events, r"C:\nb\Overview.md");
+    check("notebook-reader", &mut app, BOTH);
+}
+
+/// An agent's plan in Source mode (the editor has the keyboard): the pill
+/// says who it is for, who wrote it and in which session, with View
+/// session and Mark reviewed.
+#[test]
+fn notebook_source_mode_on_an_agents_note() {
+    let (mut app, events, _notes) = notebook_app();
+    open_note(&mut app, &events, r"C:\work\docs\ai-docs\plan.md");
+    key(&mut app, canvas_core::input::KeyCode::Char('e'), canvas_core::input::Modifiers::CONTROL);
+    app.focus = Focus::Canvas;
+    check("notebook-source", &mut app, BOTH);
+}
+
+/// The Human filter: the agents' folder (only notes for agents) disappears
+/// and the explorer says how many notes it hides.
+#[test]
+fn notebook_human_filter_hides_agents_notes() {
+    let (mut app, events, _notes) = notebook_app();
+    open_note(&mut app, &events, r"C:\work\docs\human-outputs\summary.md");
+    open_note(&mut app, &events, r"C:\work\docs\ai-docs\log.md");
+    app.focus = Focus::Sidebar;
+    key(&mut app, canvas_core::input::KeyCode::Char('h'), canvas_core::input::Modifiers::ALT);
+    key(&mut app, canvas_core::input::KeyCode::Char('h'), canvas_core::input::Modifiers::ALT);
+    assert_eq!(app.notebook.filter, canvas_core::notebook::Filter::Human);
+    check("notebook-human-filter", &mut app, BOTH);
+}
+
+/// Typed into a note that then changed on disk: the conflict banner with
+/// Compare, Keep mine and Take theirs.
+#[test]
+fn notebook_conflict_banner() {
+    let (mut app, events, notes) = notebook_app();
+    open_note(&mut app, &events, r"C:\nb\Overview.md");
+    app.focus = Focus::Canvas;
+    key(&mut app, canvas_core::input::KeyCode::Char('e'), canvas_core::input::Modifiers::CONTROL);
+    key(&mut app, canvas_core::input::KeyCode::Char('!'), canvas_core::input::Modifiers::NONE);
+    notes.put(r"C:\nb\Overview.md", "# Overview\n\nChanged elsewhere.\n");
+    canvas_core::notebook::tick(&mut app);
+    settle(&mut app, &events, |app| app.notebook.tab().is_some_and(|t| t.conflict.is_some()));
+    check("notebook-conflict", &mut app, BOTH);
+}
+
+/// Typed into a note whose file then went (moved or deleted elsewhere):
+/// the banner says so, and that saving writes it again (it does: the write
+/// asks for a new file).
+#[test]
+fn notebook_missing_file_banner() {
+    let (mut app, events, notes) = notebook_app();
+    open_note(&mut app, &events, r"C:\nb\Overview.md");
+    app.focus = Focus::Canvas;
+    key(&mut app, canvas_core::input::KeyCode::Char('e'), canvas_core::input::Modifiers::CONTROL);
+    key(&mut app, canvas_core::input::KeyCode::Char('!'), canvas_core::input::Modifiers::NONE);
+    notes.files.lock().unwrap().remove(r"C:\nb\Overview.md");
+    canvas_core::notebook::tick(&mut app);
+    settle(&mut app, &events, |app| app.notebook.tab().is_some_and(|t| t.missing) && app.notebook.folders.values().all(|f| !f.loading));
+    check("notebook-missing", &mut app, BOTH);
+    canvas_core::notebook::flush(&mut app);
+    assert!(notes.text(r"C:\nb\Overview.md").is_some_and(|t| t.starts_with("!# Overview")), "written again");
 }

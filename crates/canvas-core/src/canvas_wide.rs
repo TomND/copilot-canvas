@@ -680,7 +680,7 @@ impl App {
 
     /// The frame's chips: its agents (or + agent) and the skills.
     pub fn frame_chips(&self, compact: bool) -> Vec<crate::folders::Chip> {
-        let chip = |label: String, action: Action, lit: bool| crate::folders::Chip { label, action, lit };
+        let chip = |label: String, action: Action, lit: bool| crate::folders::Chip { label, action, lit, attention: false };
         let count = self.canvas_agents().len();
         let mut chips = vec![match count {
             0 => chip(if compact { format!(" {MARK}+ ") } else { format!(" {MARK} + agent ") }, Action::Agents(AgentAction::New), false),

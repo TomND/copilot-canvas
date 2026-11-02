@@ -75,6 +75,14 @@ pub enum WebEvent {
     Link(String),
     /// Esc in the view: the report closes.
     Escape,
+    /// A global key pressed in the page, for the canvas.
+    #[allow(dead_code)]
+    Key(canvas_core::input::KeyEvent),
+    /// A `#note:` / `#todo:` link or a link to another file of the note's folder.
+    #[allow(dead_code)]
+    Navigate(canvas_core::spaces::Space, canvas_core::spaces::NavTarget),
+    /// Something to tell the user (printing); `true`: an error.
+    Notice(String, bool),
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -392,7 +400,7 @@ impl ReportWeb {
 
     /// Shows `pane` (an HTML report) over its area, or hides the view. The
     /// view is created the first time one is shown.
-    pub fn sync(&mut self, parent: isize, pane: Option<&HtmlPane>, cell_w: f32, cell_h: f32) {
+    pub fn sync(&mut self, parent: isize, pane: Option<&HtmlPane>, _backend: &std::sync::Arc<dyn canvas_core::rpc::Backend>, cell_w: f32, cell_h: f32) {
         self.parent = parent;
         let Some(pane) = pane else { return self.hide() };
         let phase = self.state.borrow().phase.clone();
@@ -418,7 +426,11 @@ impl ReportWeb {
                     self.bounds = Some(bounds);
                 }
                 if self.shown.as_deref() != Some(pane.id.as_str()) {
-                    self.load(&view, &pane.document);
+                    let page = match &pane.source {
+                        canvas_core::view::HtmlSource::Document(document) => document.as_str().to_owned(),
+                        canvas_core::view::HtmlSource::File { path, .. } => canvas_core::report_html::notes::message_page(&format!("{path}: HTML notes are not shown on macOS yet.")),
+                    };
+                    self.load(&view, &page);
                     self.shown = Some(pane.id.clone());
                 }
                 if !self.visible {
@@ -427,6 +439,33 @@ impl ReportWeb {
                 }
             }
         }
+    }
+
+    /// Gives the keyboard back to the canvas if the view has it.
+    pub fn blur(&self) {
+        let Some(view) = self.view() else { return };
+        if let Some(window) = view.window() {
+            let focused = window.firstResponder();
+            // SAFETY: plain AppKit queries on this thread's views.
+            let inside = focused.is_some_and(|r| unsafe {
+                let is_view: bool = msg_send![&*r, isKindOfClass: NSView::class()];
+                is_view && msg_send![&*(Retained::as_ptr(&r) as *const NSView), isDescendantOf: &**view]
+            });
+            if inside && self.parent != 0 {
+                // SAFETY: the canvas window's live content view.
+                let parent = unsafe { &*(self.parent as *const NSResponder) };
+                window.makeFirstResponder(Some(parent));
+            }
+        }
+    }
+
+    /// Work that waits for the event loop (none yet).
+    pub fn pump(&mut self) {}
+
+    /// *Print / PDF* (not yet on macOS).
+    pub fn print(&mut self) {
+        self.state.borrow_mut().events.push(WebEvent::Notice("Printing an HTML pane is not available on macOS yet.".into(), true));
+        wake();
     }
 
     fn load(&self, view: &ReportView, html: &str) {

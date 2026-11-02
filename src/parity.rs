@@ -1178,9 +1178,9 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         Ok("pan, flick glide, Ctrl+wheel zoom, fit, box drag, right-click menu, double-click".into())
     });
 
-    check(rows, "9", "Groups: select, G, move by title, resize ◢, nested, membership, folder chips, defaults", "group_move_resize_chips", || {
+    check(rows, "9", "Groups: select, G, move by title, resize ◢, nested, membership, ✎ notes and ☑ todos chips, defaults", "group_move_resize_chips", || {
         gui.canvas_focus()?;
-        gui.wait("folder chips", 5, |t| t.contains("◧ AI") && t.contains("◨ Out"))?;
+        gui.wait("notes and todos chips", 5, |t| t.contains("✎ Notes") && t.contains("☑ +"))?;
         let group = sb.doc()?.groups.iter().find(|g| g.id == "g-parity").cloned().context("group")?;
         let tree = gui.tree()?;
         let g = tree["canvas"]["groups"].as_array().and_then(|g| g.iter().find(|g| g["id"] == "g-parity").cloned()).context("group in the view")?;
@@ -1858,7 +1858,7 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         let corner = (g[0] + g[2] - 0.5, g[1] + g[3] - 0.5);
         gui.drag("left", corner, (corner.0 + 2.0, corner.1 + 1.0), &[])?;
         wait_doc(&sb.canvas, "resized by ◢", |d| d.groups.iter().any(|x| x.id == "g-parity" && (x.w, x.h) != (group.w, group.h)))?;
-        anyhow::ensure!(gui.tree()?["hits"].as_array().is_some_and(|h| h.iter().any(|h| h["hit"].as_str().is_some_and(|s| s.contains("OpenGroupFolder")))), "folder chips are clickable");
+        anyhow::ensure!(gui.tree()?["hits"].as_array().is_some_and(|h| h.iter().any(|h| h["hit"].as_str().is_some_and(|s| s.contains("Notebook(OpenGroup")))), "the notes chips are clickable");
         // A double-click on the background still creates a session there.
         let tree = gui.tree()?;
         let g = rect(&tree, "groups", "g-parity").context("group")?;
@@ -1983,7 +1983,8 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
         anyhow::ensure!(windows["windows"].as_array().is_some_and(|w| w.len() == 1), "the second window closed alone: {windows}");
         Ok(format!("rename synced; {}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()))
     });
-
+    spaces::rows(sb, gui, rows);
+    skills::rows(sb, gui, rows);
 }
 
 /// The new-session dialog (opened with `n` unless `opened`) with `name`
@@ -2052,10 +2053,24 @@ fn group_menu(gui: &mut Gui, item: &str) -> Result<()> {
     let g = tree["canvas"]["groups"].as_array().and_then(|g| g.iter().find(|g| g["id"] == "g-parity").cloned()).context("group")?;
     let r: Vec<f64> = g["rect"].as_array().map(|a| a.iter().filter_map(|v| v.as_f64()).collect()).unwrap_or_default();
     anyhow::ensure!(r.len() == 4, "group rect");
-    let title = (r[0] + 3.5, r[1] + 0.5);
+    // A free cell of the title row: earlier rows can leave a box (or a chip)
+    // over its start, and a right-click there opens that box's menu.
+    let rects = |key: &str, of: &Value| -> Vec<Vec<f64>> {
+        of[key].as_array().map(|a| a.iter().map(|b| b["rect"].as_array().map(|r| r.iter().filter_map(|v| v.as_f64()).collect()).unwrap_or_default()).collect()).unwrap_or_default()
+    };
+    let mut covers = rects("boxes", &tree["canvas"]);
+    covers.extend(rects("chips", &g));
+    let free = |x: f64| !covers.iter().any(|c| c.len() == 4 && x >= c[0] && x < c[0] + c[2] && r[1] + 0.5 >= c[1] && r[1] + 0.5 < c[1] + c[3]);
+    let x = (0..(r[2] as i32 - 2).max(1)).map(|dx| r[0] + 1.5 + dx as f64).find(|x| free(*x)).unwrap_or(r[0] + 3.5);
+    let title = (x, r[1] + 0.5);
     gui.mouse("down", "right", title, &[])?;
     gui.mouse("up", "right", title, &[])?;
-    gui.wait("group menu", 5, |t| t.contains(item))?;
+    if let Err(error) = gui.wait("group menu", 5, |t| t.contains(item)) {
+        // Say what the press opened instead (a box's menu, nothing), for the log.
+        let screen = gui.screen();
+        let lines: Vec<&str> = screen.lines().filter(|l| !l.trim().is_empty()).take(60).collect();
+        anyhow::bail!("{error:#} (right-click at {title:?} on the group at {r:?}); screen:\n{}", lines.join("\n"));
+    }
     let at = gui.find(item).context("menu item")?;
     gui.click(at, &[])
 }
@@ -2181,6 +2196,7 @@ fn late_rows(sb: &Sandbox, rows: &mut Vec<Row>) {
     });
 
     reports::late_rows(sb, rows);
+    spaces::late_rows(sb, rows);
     visual::rows(sb, rows);
     layout::rows(sb, rows);
     subagents::rows(sb, rows);
@@ -2205,6 +2221,10 @@ mod agents;
 mod prs;
 #[path = "parity_reports.rs"]
 pub(crate) mod reports;
+#[path = "parity_spaces.rs"]
+mod spaces;
+#[path = "parity_skills.rs"]
+mod skills;
 
 fn walk(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();

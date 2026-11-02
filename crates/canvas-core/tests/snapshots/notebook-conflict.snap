@@ -1,0 +1,45 @@
+# notebook-conflict (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   ?   ⏻ Quit                                          3 sessions
+    ✎ EXPLORER                   │▌ ● Overview.md* ×                                  │┌─────────────────────────────────────────────────────────────┐
+▌✎  + Capture  + Note  ⟳         │ Notebook › Overview.md   Rendered │ Source │ Live  ││ NOTE INFO                                                   │
+     Human │ All │ AI            │ ● For you · written by you (inferred)              ││                                                             │
+ ◷  / filter names               │  Open externally   Ask agent to revise…            ││ ✎ Overview                                                  │
+    ▾ Notebook                   │  ⚠ This note changed on disk while you edited it.  ││ Overview.md                                                 │
+ ⧉    ▸ Inbox                    │   Compare   Keep mine   Take theirs                ││                                                             │
+      ● Overview.md              │ ────────────────────────────────────────────────── ││ OUTLINE                                                     │
+ ⌁  ▸ ◫ Docs ☑                   │  !# Overview                                       ││   Steps                                                     │
+    ▸ Canvas (canvas-wide)       │                                                    ││   Open questions                                            │
+ ✦  ▸ Reports (0)                │  The plan is in [[plan]]; fix DEC-031 first.       ││                                                             │
+                                 │                                                    ││ LINKED                                                      │
+ ◈                               │  ## Steps                                          ││ ☑ DEC-031 Write the loader spec                             │
+                                 │                                                    ││ ✎ plan                                                      │
+ ⇄                               │  - Read the **plan**                               ││                                                             │
+                                 │  - Write the `spec`                                ││ BACKLINKS                                                   │
+ ≡                               │                                                    ││ ✎ plan.md:9                                                 │
+                                 │  ## Open questions                                 ││   See [[Overview]].                                         │
+ ✉                               │                                                    ││ ✎ summary.md:3                                              │
+                                 │  > Who reviews it?                                 ││   Back to [[Overview]].                                     │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││ PROVENANCE                                                  │
+                                 │                                                    ││ ● For you, by default (inferred)                            │
+                                 │                                                    ││ written by you                                              │
+                                 │                                                    ││ not reviewed                                                │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+    [ ] Show internal files      │                                                    │└─────────────────────────────────────────────────────────────┘
+ Ctrl+1 Canvas · Ctrl+2 Notebook · Ctrl+3 Tasks · Alt+, back · Alt+. forward · Ctrl+P go to · F6 focus · Alt+1…9 views · ? help
+## gpu view model
+view cursor=37,8 modal=none banner=None
+canvas none

@@ -1,8 +1,8 @@
 # canvas-agent-detail (150x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents 3 · ⚠ 1   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit    ◆ 1 needs you   5 sessions
+ ◆ Copilot Canvas   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents 3 · ⚠ 1   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit      ◆ 1 needs you
     SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
-▌▤  / filter…                    │ ┌╌ ▣ Payments · 2 ╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ 1 passive ╌ ◧ AI d││ ◎ PR coordinator                                            │
+▌▤  / filter…                    │ ┌╌ ▣ Payments · 2 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ 1 passive ││ ◎ PR coordinator                                            │
                                  │ ╎                                                  ││ ● canvas-wide agent · monitoring                            │
  ◷  ▾ RECENT 1     Ctrl+F6 · [ ] │ ╎ ╭ Fix flaky test ────────────╮    ┌ ⟲ Drift guard││ Last report: ok 2 PRs tracked                               │
     ○ PR coordinator copilot now │ ╎ │ ■ stopped                  │    ╎ ○ waiting    ││                                                             │
@@ -47,9 +47,9 @@ group g-agents "Canvas agents" icon=◎ members=3 rect=0,10 104x8 color=#cc79a7 
   chip " ◎ 3 · manage " action=Agents(Panel) rect=76,10 14x1 fixed=false lit=true
   chip " ✦ Skills " action=Agents(Library) rect=91,10 10x1 fixed=false lit=true
 group g-pay "Payments" icon=▣ members=2 rect=0,0 70x8 color=#56b4e9 style=[fg #56b4e9 +DIM] selected=false drop_target=false automations=false folder=true
-  chip " ⟲ 1 passive " action=Visual(GroupPassives("g-pay")) rect=30,0 13x1 fixed=false lit=true
-  chip " ◧ AI docs " action=OpenGroupFolder("g-pay", false) rect=44,0 11x1 fixed=false lit=true
-  chip " ◨ Outputs " action=OpenGroupFolder("g-pay", true) rect=56,0 11x1 fixed=false lit=true
+  chip " ⟲ 1 passive " action=Visual(GroupPassives("g-pay")) rect=38,0 13x1 fixed=false lit=true
+  chip " ✎ Notes " action=Notebook(OpenGroup("g-pay")) rect=52,0 9x1 fixed=false lit=true
+  chip " ☑ + " action=Tasks(LinkBoards("g-pay")) rect=62,0 5x1 fixed=false lit=false
 box s-fix Session rect=2,2 30x4 prefix="" name="Fix flaky test"
   status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
   border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]

@@ -146,7 +146,7 @@ pub(super) fn ended(shared: &Shared, routing: &Routing) -> Vec<String> {
 pub(super) fn request(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Event, now: u64) -> Vec<Event> {
     let mut out = Vec::new();
     let op = event.data["op"].as_str().unwrap_or_default().to_owned();
-    let answer = handle(shared, routing, state, event, now, &mut out).unwrap_or_else(|why| Answer { ok: false, message: why, state: String::new() });
+    let answer = handle(shared, routing, state, event, now, &mut out).unwrap_or_else(|why| Answer { ok: false, message: why, state: String::new(), data: None });
     log(&shared.instance, &format!("pr {op} from {}: {}{}", who(routing, &event.source), if answer.ok { "" } else { "refused: " }, answer.message));
     write_answer(&shared.instance.home, event.data["request"].as_str().unwrap_or_default(), &answer);
     out
@@ -204,7 +204,7 @@ fn handle(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Even
             } else {
                 "nothing monitors it until a canvas-wide agent has PR coordination (◎ Agents › + New canvas agent › PR coordinator)".to_owned()
             };
-            Answer { ok: true, message: format!("{what} {} for “{owner_name}”: {monitor}.", pr.short()), state: "tracked".into() }
+            Answer { ok: true, message: format!("{what} {} for “{owner_name}”: {monitor}.", pr.short()), state: "tracked".into(), data: None }
         }
         "untrack" => {
             let pr = pr_of(true)?.expect("required");
@@ -216,7 +216,7 @@ fn handle(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Even
             let removed = hub.registry.untrack(&key).expect("present");
             let ids: Vec<&str> = removed.dispatches.iter().map(|d| d.id.as_str()).collect();
             state.mailbox.retain(|m| !ids.contains(&m.id.as_str()));
-            Answer { ok: true, message: format!("Stopped tracking {}; its queued follow-ups were withdrawn.", pr.short()), state: "untracked".into() }
+            Answer { ok: true, message: format!("Stopped tracking {}; its queued follow-ups were withdrawn.", pr.short()), state: "untracked".into(), data: None }
         }
         "check" => {
             let keys: Vec<String> = match pr_of(false)? {
@@ -232,7 +232,7 @@ fn handle(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Even
                 }
             }
             let note = if monitored { "" } else { " (nothing monitors them until a canvas-wide agent has PR coordination)" };
-            Answer { ok: true, message: format!("Checking {} pull request(s) now{note}.", keys.len()), state: "check".into() }
+            Answer { ok: true, message: format!("Checking {} pull request(s) now{note}.", keys.len()), state: "check".into(), data: None }
         }
         "dispatch" => {
             let agent = routing.passive_by_session(source).filter(|p| p.canvas_wide && p.prs.is_some());
@@ -242,7 +242,7 @@ fn handle(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Even
             let pr = pr_of(true)?.expect("required");
             let request = DispatchRequest { key: text("key"), event: text("event"), text: data["text"].as_str().unwrap_or_default().to_owned(), from: who(routing, source), from_key: agent.map(|a| a.key.clone()).unwrap_or_default() };
             match hub.registry.dispatch(&pr.key(), request, now)? {
-                Dispatched::Duplicate(id, st) => Answer { ok: true, message: format!("Already dispatched for this key ({id}, {}); nothing new was sent.", st.word()), state: st.word().into() },
+                Dispatched::Duplicate(id, st) => Answer { ok: true, message: format!("Already dispatched for this key ({id}, {}); nothing new was sent.", st.word()), state: st.word().into(), data: None },
                 Dispatched::New(id) => {
                     let changed = route(shared, routing, state, &mut hub, now);
                     report_changes(shared, routing, &changed, now);
@@ -253,7 +253,7 @@ fn handle(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Even
                         DispatchState::Blocked => format!("Follow-up {id} blocked: {} (◎ Agents › Pull requests).", d.reason),
                         other => format!("Follow-up {id} {}.", other.word()),
                     };
-                    Answer { ok: true, message, state: d.state.word().into() }
+                    Answer { ok: true, message, state: d.state.word().into(), data: None }
                 }
             }
         }
@@ -286,7 +286,7 @@ fn handle(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Even
             let message = format!("Follow-up {id} {}.", if op == "dismiss" { "dismissed" } else { "on its way again" });
             let changed = route(shared, routing, state, &mut hub, now);
             report_changes(shared, routing, &changed, now);
-            Answer { ok: true, message, state: op.into() }
+            Answer { ok: true, message, state: op.into(), data: None }
         }
         other => return Err(format!("unknown pr request {other:?}")),
     };

@@ -1,0 +1,45 @@
+# tasks-demo-50 (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   ◫  ✎  ☑   DEMO · native shells   + New   ▢ Single   ?   ⏻ Quit                                                      3 sessions
+    ☑ TASKS                      │▌                                                   │┌─────────────────────────────────────────────────────────────┐
+▌☑  / filter        all types ▾  │  ┌─ Canvas App · WI ─ ◫ Canvas project ─ ✎ + ──────││ ▦ Canvas App · WI   ≡                                       │
+                                 │  │ Proposed 1  │Backlog 1   │Todo 2      │In progre││ 1 of 6 done · ⚑ 1 blocked                                   │
+ ◷  NEEDS YOU 3                  │  │ ▌▲ WI-006   │▌¶ WI-007   │▌¶ WI-004   │▌✚ WI-002││ Groups   Canvas project                                     │
+     ◇ WI-006 Show tod… proposed │  │ ▌Show todo… │▌Keyboard … │▌Docs for … │▌Gentle m││ Agents   add todos directly, never close them               │
+ ⧉   ◇ DEC-007 Cache d… proposed │  │             │            │            │         ││ Proposed 1                                                  │
+     ◎ WI-003 Todo bo… in review │  │             │            │▌✱ WI-005   │         ││ Backlog  1                                                  │
+ ⌁                               │  │             │            │▌Flaky rec… │         ││ Todo     2                                                  │
+    READY 3                      │  │             │            │            │         ││ In prog… 1/2                                                │
+ ✦   ✱ DEC-003 Crash when a… !!! │  │             │            │            │         ││ In revi… 1                                                  │
+     ✚ DEC-005 Parse the com… !! │  │             │            │            │         ││ Done     1                                                  │
+ ◈   ¶ WI-004 Docs for the Ta… ! │  │             │            │            │         ││  + New todo   + New board                                   │
+                                 │  │             │            │            │         ││                                                             │
+ ⇄  CLAIMED BY SESSIONS 2        │  │             │            │            │         ││ KEYS                                                        │
+     ◫ Build session canvas      │  │             │            │            │         ││ Click · arrows      select a card (details here)            │
+ ≡     ✚ WI-002 Gen… In progress │  │             │            │            │         ││ Enter · Space       details · peek                          │
+     ◫ Review implementation     │  │             │            │            │         ││ Drag a card         another column, lane, board, place      │
+ ✉     ✚ WI-003 Todo … In review │  │             │            │            │         ││ N · A · D · Del     new · accept · decline · cancel         │
+                                 │  │             │            │            │         ││ E · R               edit body · rename                      │
+    BOARDS 2                     │  │             │            │            │         ││ Drag title · ◢      move · resize a board                   │
+     ▦ Canvas App · WI         5 │  └─────────────────────────────────────────────────││ Wheel · Ctrl+arrows pan (Shift+wheel: sideways)             │
+     ▦ Decomps · DEC           3 │                                                    ││ + - · Alt+wheel · F zoom · fit all boards                   │
+       └ Parser                2 │                                                    ││ / · right-click     filter · menus                          │
+     + New board                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                −   50%   +   Fit   │└─────────────────────────────────────────────────────────────┘
+ Ctrl+1 Canvas · Ctrl+2 Notebook · Ctrl+3 Tasks · Alt+, back · Alt+. forward · Ctrl+P go to · F6 focus · Alt+1…9 views · ? help
+## gpu view model
+view cursor=none modal=none banner=None
+canvas none

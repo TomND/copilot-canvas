@@ -1,0 +1,96 @@
+# goto-dialog (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   ◫  ✎  ☑   DEMO · native shells   + New   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit                             3 sessions
+    SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
+▌▤  / filter…                    │  ┌╌ ▣ Canvas project · 4 ╌╌╌╌╌╌╌╌╌╌╌╌ ✎ Set folder…││ Build session canvas                                        │
+                                 │  ╎                                                 ││ ■ stopped                                                   │
+ ◷  ▾ ▣ Canvas project         3 │  ╎ ┏ Build session canvas ━━━━━━┓    ╭ Review imple││                                                             │
+      ◧ Set folder…              │  ╎ ┃ ■ stopped                  ┃    │ ■ stopped   ││ Agent      none (runs its command)                          │
+ ⧉    ■ Build session canvas     │  ╎ ┃ canvas                     ┃    │ canvas      ││ Folder     C:\work\canvas                                   │
+        ◇ ✓ Explore terminal A╭─ Go to ────────────────────────────────────────────────────────────────────────────────╮                             │
+ ⌁    ■ Review implementation │ rev                                                                                    │ canvas terminal.            │
+        ↳ ■ Write tests       │                                                                                        │nter to start it.            │
+ ✦  ▾ ▣ Reviews               │ ▣ Reviews                                                                  ◫ group · 0 │up · X stop                  │
+      ◧ Set folder…           │ ■ Review implementation                    ◫ stopped · Canvas project · C:\work\canvas │                             │
+ ◈                            │ ☑ DEC-004 Rename the recovered functions                           ☑ Decomps · Backlog │them)                        │
+                              │ ☑ WI-003 Todo boards in the Tasks space                       ☑ Canvas App · In review │finished                     │
+ ⇄                            │                                                                                        │                             │
+                              │                                                                                        │                             │
+ ≡                            │                                                                                        │                             │
+                              │                                                                                        │                             │
+ ✉                            │                                                                                        │                             │
+                              │                                                                                        │                             │
+                              │                                                                                        │                             │
+                              │                                                                                        │                             │
+                              │                                                                                        │                             │
+                              │                                                                                        │                             │
+                              │                                                                                        │                             │
+                              │                                                                                        │                             │
+                              │                                                                                        │                             │
+                              │                                                                                        │                             │
+                              │                                                                                        │                             │
+                              │                                                                                        │                             │
+                              │                                                                                        │                             │
+                              │ 4 of 23 · ↑↓ move · Enter go (never starts a session) · Esc close                      │                             │
+                              ╰────────────────────────────────────────────────────────────────────────────────────────╯                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │  ·     ·     ·     ·     ·     ·     ·     ·     · ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││  ▸ Start    Remove    Close                                 │
+                                 │  ·     ·     ·     ·     ·     ·     ·     ·     · │└─────────────────────────────────────────────────────────────┘
+ click view · double-click/Enter start · ] [ or Ctrl+F6 recent · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom ·…
+## gpu view model
+view cursor=35,8 modal=30,7 90x26 banner=None
+canvas area=34,1 52x38 origin=-2,-1 scale=1 grid=true tick=0 empty=false
+group g-demo "Canvas project" icon=▣ members=4 rect=0,0 70x15 color=#56b4e9 style=[fg #56b4e9 +DIM] selected=false drop_target=false automations=false folder=false
+  chip " ✎ Set folder… " action=Notebook(LinkFolder("g-demo")) rect=36,0 15x1 fixed=false lit=false
+  chip " ☑ 5 · 1▸ · 1◇ " action=Tasks(OpenGroup("g-demo")) rect=52,0 15x1 fixed=false lit=true attention=true
+edge Subsession color=#58a6ff from=36,2 30x4 to=36,9 30x4 path=(38.5,6) (38.5,7.5) (38.5,7.5) (38.5,9)
+edge Subagent color=#6e7681 from=2,2 30x4 to=6,7 24x3 path=(4.5,6) (4.5,6.5) (8.5,6.5) (8.5,7)
+box demo-review Session rect=36,2 30x4 prefix="" name="Review implementation"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]
+  selected=false focused_term=false active=false
+  badge=WI-003
+box demo-sub Session rect=36,9 30x4 prefix="↳ " name="Write tests"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]
+  selected=false focused_term=false active=false
+box demo-main:explore Agent rect=6,7 24x3 prefix="◇ " name="1 subagent"
+  status=JustFinished icon="✓" label="just finished" line="✓ just finished" subtitle="double-click to show them" elsewhere=false every=None mailbox=0
+  border=Light border_style=[fg #6e7681] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #648fff]
+  selected=false focused_term=false active=false
+  deck root=demo-main count=1 back=0 agents=1
+box demo-main Session rect=2,2 30x4 prefix="" name="Build session canvas"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Heavy border_style=[fg #f0f6fc +BOLD] fill=#161b22 attention=none name_style=[fg #f0f6fc +BOLD] line_style=[fg #585e66]
+  selected=true focused_term=false active=false
+  badge=WI-002
+## gpu overlay at 30,7
+╭─ Go to ────────────────────────────────────────────────────────────────────────────────╮
+│ rev                                                                                    │
+│                                                                                        │
+│ ▣ Reviews                                                                  ◫ group · 0 │
+│ ■ Review implementation                    ◫ stopped · Canvas project · C:\work\canvas │
+│ ☑ DEC-004 Rename the recovered functions                           ☑ Decomps · Backlog │
+│ ☑ WI-003 Todo boards in the Tasks space                       ☑ Canvas App · In review │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│ 4 of 23 · ↑↓ move · Enter go (never starts a session) · Esc close                      │
+╰────────────────────────────────────────────────────────────────────────────────────────╯

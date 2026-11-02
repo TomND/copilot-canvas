@@ -110,9 +110,16 @@ pub fn items(app: &App, view: &View, chrome: &Buffer, overlay: &Buffer, grid: &G
         if r.y != layout.toolbar.y || !matches!(hit, Hit::Toolbar(_)) {
             continue;
         }
-        let name = text_in(chrome, *r);
-        let i = b.add(toolbar_id, &format!("toolbar/{name}/{}", r.x), Role::Button, name, b.cells(*r));
+        let (name, role) = match hit {
+            // A space tab is named by its space (compact tabs show only a glyph).
+            Hit::Toolbar(UiAction::Space(space)) => (space.name().to_owned(), Role::Tab),
+            _ => (text_in(chrome, *r), Role::Button),
+        };
+        let i = b.add(toolbar_id, &format!("toolbar/{name}/{}", r.x), role, name, b.cells(*r));
         b.clickable(i, *r);
+        if let Hit::Toolbar(UiAction::Space(space)) = hit {
+            b.items[i].selected = Some(*space == app.space);
+        }
         if !matches!(hit, Hit::Toolbar(UiAction::ShowAutomations)) {
             last_button = last_button.max(r.right());
         }
@@ -129,17 +136,22 @@ pub fn items(app: &App, view: &View, chrome: &Buffer, overlay: &Buffer, grid: &G
     let tabs_id = b.items[tabs].id;
     for (r, hit) in &layout.hits {
         if let Hit::Toolbar(UiAction::View(v)) = hit {
-            let name = canvas_core::side::VIEWS.iter().find(|(view, _, _)| view == v).map(|(_, _, t)| t.to_string()).unwrap_or_default();
+            // Slot 1 is the space's own sidebar.
+            let name = match v {
+                canvas_core::side::SideView::Sessions => app.space.side().1.to_owned(),
+                _ => canvas_core::side::VIEWS.iter().find(|(view, _, _)| view == v).map(|(_, _, t)| t.to_string()).unwrap_or_default(),
+            };
             let i = b.add(tabs_id, &format!("activity/{name}"), Role::Tab, name, b.cells(*r));
             b.items[i].selected = Some(app.side_view == *v && app.doc.ui.sidebar_visible);
             b.clickable(i, *r);
         }
     }
 
-    // Sidebar: the session tree, or the lines of another view.
+    // Sidebar: the session tree, or the lines of another view (or of the space's own sidebar).
     if layout.sidebar.width > 0 {
-        let sessions = app.side_view == canvas_core::side::SideView::Sessions;
-        let title = canvas_core::side::VIEWS.iter().find(|(v, _, _)| *v == app.side_view).map(|(_, _, t)| t.to_string()).unwrap_or_default();
+        let slot1 = app.side_view == canvas_core::side::SideView::Sessions;
+        let sessions = slot1 && app.space == canvas_core::spaces::Space::Canvas;
+        let title = if slot1 { app.space.side().1.to_owned() } else { canvas_core::side::VIEWS.iter().find(|(v, _, _)| *v == app.side_view).map(|(_, _, t)| t.to_string()).unwrap_or_default() };
         let side = b.add(ROOT, "sidebar", if sessions { Role::Tree } else { Role::List }, title, b.cells(layout.sidebar));
         let side_id = b.items[side].id;
         if sessions {
@@ -186,20 +198,23 @@ pub fn items(app: &App, view: &View, chrome: &Buffer, overlay: &Buffer, grid: &G
         }
         for bx in &model.boxes {
             let i = b.add(canvas_id, &format!("box/{}", bx.id), Role::Button, format!("{}{}", bx.prefix.trim(), bx.name).trim().to_owned(), px(bx.rect));
-            let mut description = bx.status.label().to_owned();
-            let line = bx.line.trim();
-            if !line.is_empty() && !line.ends_with(bx.status.label()) {
-                description = format!("{description} · {line}");
-            } else if !line.is_empty() {
-                description = line.trim_start_matches(|c: char| !c.is_alphanumeric()).trim().to_owned();
-            }
-            if bx.elsewhere {
-                description.push_str(" · open elsewhere");
-            }
-            b.items[i].description = Some(description);
+            b.items[i].description = Some(box_description(bx));
             b.items[i].selected = Some(bx.selected);
             let s = model.rect_to_screen(bx.rect);
             b.items[i].click = Some((s.x + (s.w / 2.0).min(3.0), s.y + s.h / 2.0));
+        }
+    } else if app.space != canvas_core::spaces::Space::Canvas {
+        // The Notebook's or Tasks' main area: its lines (it is drawn from cells).
+        let area = layout.canvas;
+        let main = b.add(ROOT, "space", Role::Group, app.space.name().to_owned(), b.cells(area));
+        let main_id = b.items[main].id;
+        for y in area.y..area.bottom() {
+            let r = Rect::new(area.x, y, area.width, 1);
+            let text = text_in(chrome, r);
+            if !text.is_empty() {
+                let i = b.add(main_id, &format!("space/line/{y}/{text}"), Role::ListItem, text, b.cells(r));
+                b.clickable(i, r);
+            }
         }
     }
 
@@ -262,6 +277,25 @@ pub fn items(app: &App, view: &View, chrome: &Buffer, overlay: &Buffer, grid: &G
         .filter(|id| b.items.iter().any(|i| i.id == *id))
         .unwrap_or(ROOT);
     (b.items, focus)
+}
+
+/// A box's description: its status and line, where it runs, and the todo
+/// its session claimed (the `☑ DEC-031` badge; a click on it opens the card).
+fn box_description(bx: &canvas_core::view::BoxModel) -> String {
+    let mut description = bx.status.label().to_owned();
+    let line = bx.line.trim();
+    if !line.is_empty() && !line.ends_with(bx.status.label()) {
+        description = format!("{description} · {line}");
+    } else if !line.is_empty() {
+        description = line.trim_start_matches(|c: char| !c.is_alphanumeric()).trim().to_owned();
+    }
+    if bx.elsewhere {
+        description.push_str(" · open elsewhere");
+    }
+    if let Some(todo) = &bx.badge {
+        description.push_str(&format!(" · working on todo {todo}"));
+    }
+    description
 }
 
 /// The nodes as an AccessKit update (a full tree).
@@ -373,6 +407,9 @@ pub fn json(items: &[Item], focus: u64) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use canvas_core::view::{Border, BoxKind, BoxModel, WRect};
+    use ratatui::style::{Color, Style};
+
 
     #[test]
     fn text_runs_are_rows_with_their_line_breaks() {
@@ -391,5 +428,44 @@ mod tests {
         let mut none = Vec::new();
         text_runs(7, "", [0.0; 4], &mut none);
         assert!(none.is_empty());
+    }
+
+
+    #[test]
+    fn a_boxs_description_names_the_todo_its_session_claimed() {
+        let mut bx = BoxModel {
+            id: "s".into(),
+            kind: BoxKind::Session,
+            rect: WRect::new(0.0, 0.0, 30.0, 4.0),
+            prefix: "",
+            name: "Fix flaky test".into(),
+            status: canvas_core::status::Status::Idle,
+            icon: "",
+            label: "",
+            line: String::new(),
+            line_style: Style::default(),
+            name_style: Style::default(),
+            elsewhere: false,
+            subtitle: String::new(),
+            border: Border::Round,
+            border_style: Style::default(),
+            fill: Color::Reset,
+            attention: None,
+            selected: false,
+            focused_term: false,
+            active: false,
+            every: None,
+            mailbox: 0,
+            dust: 0,
+            alpha: 1.0,
+            deck: None,
+            hidden: None,
+            badge: None,
+        };
+        let idle = canvas_core::status::Status::Idle.label().to_owned();
+        assert_eq!(super::box_description(&bx), idle);
+        bx.badge = Some("DEC-031".into());
+        bx.elsewhere = true;
+        assert_eq!(super::box_description(&bx), format!("{idle} · open elsewhere · working on todo DEC-031"));
     }
 }

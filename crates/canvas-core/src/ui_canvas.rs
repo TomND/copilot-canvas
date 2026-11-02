@@ -104,6 +104,59 @@ pub fn group_icon(group: &crate::doc::Group) -> &'static str {
     }
 }
 
+/// A title chip's look: gold while something waits for you, the group's
+/// colour when set up, else muted.
+pub fn chip_style(lit: bool, attention: bool, color: Color) -> Style {
+    match (attention, lit) {
+        (true, _) => crate::paint::bold(crate::paint::ATTENTION).bg(PANEL),
+        (false, true) => Style::default().fg(color).bg(PANEL),
+        (false, false) => fg(MUTED).bg(PANEL),
+    }
+}
+
+/// A session's todo badge as characters: where (screen cells) and its text
+/// (`☑ DEC-031`), on the bottom border at full zoom, at the end of the last
+/// row when compact, none on one-line boxes; always clear of the box's
+/// `⋯ N hidden` badge on the same row (it gives way when there is no room).
+pub fn badge_cells(b: &BoxModel, (x, y, w, h): (i32, i32, i32, i32), zoom: u8) -> Option<(i32, i32, String)> {
+    let todo = b.badge.as_deref()?;
+    // Where the hidden badge starts (`paint_box` puts it at the right end).
+    let hidden = b.hidden.map(|hidden| x + w - 2 - paint::text_width(&format!(" {} ", hidden.text())) as i32);
+    match zoom {
+        0 if h >= 3 && w >= 10 => {
+            let end = hidden.map_or(x + w - 2, |at| at - 1);
+            let room = end - (x + 2);
+            (room >= 6).then(|| (x + 2, y + h - 1, truncate(&format!(" ☑ {todo} "), room as usize)))
+        }
+        1 if h >= 2 && w >= 8 => {
+            let end = hidden.map_or(x + w, |at| at - 1);
+            let room = ((w / 2).max(4)).min(end - x);
+            if room < 4 {
+                return None;
+            }
+            let text = truncate(&format!("☑ {todo}"), room as usize);
+            Some((end - paint::text_width(&text) as i32, y + h - 1, text))
+        }
+        _ => None,
+    }
+}
+
+/// The click target of a session's todo badge: it opens the card in Tasks.
+fn badge_hit(b: &BoxModel, cells: (i32, i32, i32, i32), zoom: u8, clip: Rect) -> Option<(Rect, crate::dialogs::Hit)> {
+    let (bx, by, text) = badge_cells(b, cells, zoom)?;
+    let w = paint::text_width(&text) as i32;
+    let inside = bx >= clip.x as i32 && bx + w <= clip.right() as i32 && by >= clip.y as i32 && by < clip.bottom() as i32;
+    let todo = b.badge.clone()?;
+    inside.then(|| (Rect::new(bx as u16, by as u16, w as u16, 1), crate::dialogs::Hit::Toolbar(crate::dialogs::Action::Tasks(crate::tasks::Action::OpenTodo(todo)))))
+}
+
+/// The boxes (world rects) effects are drawn on: their bottom-left badge
+/// is where a todo badge goes, so a box's todo badge waits until its
+/// effect is gone (a click on the effect clears it; it must not open Tasks).
+fn effect_boxes(effects: &[crate::view::EffectModel]) -> Vec<WRect> {
+    effects.iter().filter(|e| !e.group).map(|e| e.rect).collect()
+}
+
 /// The status word of a box.
 pub fn box_label(node: &Node, status: Status) -> &'static str {
     match node.kind {
@@ -216,6 +269,7 @@ pub fn box_model(app: &App, node: &Node, rect: WRect, status: Status, selected: 
         alpha: 1.0,
         deck: None,
         hidden: None,
+        badge: crate::tasks::session_badge(app, node),
     }
 }
 
@@ -247,6 +301,8 @@ pub fn deck_model(app: &App, deck: &Deck, rect: WRect, boxes: &Boxes) -> Option<
     }
     b.dust = 0;
     b.alpha = deck.alpha;
+    // A deck shows no todo badge (its sessions show theirs when unfolded).
+    b.badge = None;
     b.mailbox = deck.sessions.iter().map(|s| app.bus.mailbox.get(s).copied().unwrap_or(0)).sum();
     b.active = deck.sessions.iter().any(|s| boxes.active_term.as_deref() == Some(s.as_str()));
     b.deck = Some(DeckInfo { root: deck.root.clone(), count, back: deck.back(), agents: agents as u32 });
@@ -321,8 +377,7 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
         }
         let mut cx = x + w - 2 - chips_w;
         for chip in chips {
-            let style = if chip.lit { Style::default().fg(color).bg(PANEL) } else { fg(MUTED).bg(PANEL) };
-            let end = put(buf, cx, y, &chip.label, style, clip);
+            let end = put(buf, cx, y, &chip.label, chip_style(chip.lit, chip.attention, color), clip);
             if cx >= clip.x as i32 && end <= clip.right() as i32 && y >= clip.y as i32 && y < clip.bottom() as i32 {
                 chip_hits.push((ratatui::layout::Rect::new(cx as u16, y as u16, (end - cx) as u16, 1), crate::dialogs::Hit::Toolbar(chip.action)));
             }
@@ -387,6 +442,9 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
         }
     };
     let first_selected = order.iter().position(|n| app.selection.contains(&n.id));
+    let mut badge_hits: Vec<(Rect, crate::dialogs::Hit)> = Vec::new();
+    let effects = app.effect_models(&frame, &|n: &Node| WRect::from(n.rect()));
+    let effect_on = effect_boxes(&effects);
     for (i, node) in order.into_iter().enumerate() {
         if Some(i) == first_selected {
             paint_decks(buf);
@@ -397,9 +455,14 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
         }
         let status = app.node_status(node);
         let selected = app.selection.contains(&node.id) || boxes.flashing(&node.id);
-        let mut b = box_model(app, node, WRect::from(node.rect()), status, selected, &boxes);
+        let rect = WRect::from(node.rect());
+        let mut b = box_model(app, node, rect, status, selected, &boxes);
         b.hidden = hidden_badge(&frame, &node.id);
+        if effect_on.contains(&rect) {
+            b.badge = None;
+        }
         paint_box(buf, &b, (x, y, w, h), zoom, clip);
+        badge_hits.extend(badge_hit(&b, (x, y, w, h), zoom, clip));
     }
     if first_selected.is_none() {
         paint_decks(buf);
@@ -445,7 +508,6 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
     }
 
     // Effects: a badge on the box (or the stack that holds it), or the group.
-    let effects = app.effect_models(&frame, &|n: &Node| WRect::from(n.rect()));
     for effect in &effects {
         let (x, y) = app.to_screen(effect.rect.x as i32, effect.rect.y as i32);
         let (w, h) = app.scaled(effect.rect.w as i32, effect.rect.h as i32, 4, 1);
@@ -461,6 +523,11 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
         let set = if typing { &HEAVY } else { &LIGHT };
         outline(buf, x - 1, y - 1, w + 2, h + 2, set, crate::paint::bold(ACCENT), clip);
     }
+
+    // A todo badge is clicked only where it still shows (a box, deck or
+    // effect drawn after its box may cover it).
+    badge_hits.retain(|(r, _)| (r.x..r.right()).any(|x| buf.cell((x, r.y)).is_some_and(|c| c.symbol() == "☑")));
+    app.layout.hits.extend(badge_hits);
 
     if let Some(Drag::Rubber { start, now, .. }) = &app.drag {
         let (x0, y0) = (start.0.min(now.0) as i32, start.1.min(now.1) as i32);
@@ -524,6 +591,9 @@ pub fn paint_box(buf: &mut Buffer, b: &BoxModel, (x, y, w, h): (i32, i32, i32, i
         }
     }
     if zoom < 2 {
+        if let Some((bx, by, text)) = badge_cells(b, (x, y, w, h), zoom) {
+            put(buf, bx, by, &text, crate::paint::bold(ACCENT).bg(crate::paint::PANEL_HI), clip);
+        }
         if let Some(badge) = b.deck.as_ref().and_then(DeckInfo::badge) {
             let badge = format!(" {badge} ");
             put(buf, x + w - 2 - paint::text_width(&badge) as i32, y, &badge, crate::paint::bold(PANEL).bg(ACCENT), clip);
@@ -656,7 +726,7 @@ fn chip_models(app: &App, group: &crate::doc::Group, rect: WRect, title: &str, s
     let mut out = Vec::new();
     for chip in chips {
         let w = chip.width() as f32 * unit;
-        out.push(ChipModel { rect: WRect::new(cx, rect.y, w, unit), label: chip.label, action: chip.action, fixed, lit: chip.lit });
+        out.push(ChipModel { rect: WRect::new(cx, rect.y, w, unit), label: chip.label, action: chip.action, fixed, lit: chip.lit, attention: chip.attention });
         cx += w + unit;
     }
     out
@@ -800,6 +870,8 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
     let typing = app.focus == crate::app::Focus::Terminal;
     let mut order: Vec<&Node> = app.doc.nodes.iter().filter(|n| !frame.skip(&n.id)).collect();
     order.sort_by_key(|n| app.selection.contains(&n.id));
+    let effects = app.effect_models(&frame, &node_rect);
+    let effect_on = effect_boxes(&effects);
     for node in order {
         let rect = node_rect(node);
         if !shows(rect) {
@@ -809,8 +881,22 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
         let selected = app.selection.contains(&node.id) || boxes.flashing(&node.id);
         let mut b = box_model(app, node, rect, status, selected, &boxes);
         b.hidden = hidden_badge(&frame, &node.id);
+        if effect_on.contains(&rect) {
+            b.badge = None;
+        }
         if let Some((_, alpha)) = frame.moving.get(&node.id) {
             b.alpha = alpha.clamp(0.0, 1.0);
+        }
+        // The todo badge: a pill on the box's bottom edge from 30 % up (the GUI's).
+        if let Some(todo) = b.badge.clone().filter(|_| scale >= 0.3 && b.alpha >= 1.0) {
+            let (sx, sy) = model.to_screen(rect.x + 1.5, rect.bottom());
+            let k = (scale * 0.8).clamp(0.5, 0.9);
+            let w = ((paint::text_width(&format!("☑ {todo}")) as f32 + 1.0) * k).ceil();
+            let cell = Rect::new(sx.max(0.0) as u16, (sy - 0.5).max(0.0) as u16, w as u16, 2);
+            let inside = cell.x >= area.x && cell.right() <= area.right() && cell.y >= area.y && cell.bottom() <= area.bottom();
+            if inside {
+                chip_hits.push((cell, crate::dialogs::Hit::Toolbar(crate::dialogs::Action::Tasks(crate::tasks::Action::OpenTodo(todo)))));
+            }
         }
         if b.alpha >= 1.0 {
             // A looping box's arc (growing in after the loop started), or the
@@ -853,7 +939,7 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
         let (o, p) = (app.drag_origin, app.pointer);
         model.rubber = Some((o.0.min(p.0), o.1.min(p.1), o.0.max(p.0), o.1.max(p.1)));
     }
-    model.effects = app.effect_models(&frame, &node_rect);
+    model.effects = effects;
     app.layout.hits.extend(chip_hits);
     model
 }
@@ -902,9 +988,8 @@ pub fn paint_model(model: &CanvasModel, buf: &mut Buffer) {
             }
         }
         for chip in &group.chips {
-            let style = if chip.lit { Style::default().fg(group.color).bg(PANEL) } else { fg(MUTED).bg(PANEL) };
             let (cx, _) = at(chip.rect.x, chip.rect.y);
-            put(buf, cx, y, &chip.label, style, clip);
+            put(buf, cx, y, &chip.label, chip_style(chip.lit, chip.attention, group.color), clip);
         }
         put_sym(buf, x + w - 1, y + h - 1, "◢", fg(group.color), clip);
     }

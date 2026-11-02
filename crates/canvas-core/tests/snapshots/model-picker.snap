@@ -1,8 +1,8 @@
 # model-picker (150x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas   + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit                            3 sessions
+ ◆ Copilot Canvas   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit                 3 sessions
     SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
-▌▤  / filter…                    │  ┌╌ ▣ Canvas project · 4 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ + passive││ Build session canvas                                        │
+▌▤  / filter…                    │  ┌╌ ▣ Canvas project · 4 ╌╌╌╌╌╌╌╌ ⟲ + passive ╌ ✎ S││ Build session canvas                                        │
                                  │  ╎                                                 ││ ■ stopped                                                   │
  ◷  ▾ ▣ Canvas project         3 │  ╎ ┏ Build session canvas ━━━━━━┓    ╭ Review imple││                                                             │
       ◧ Set folder…              │  ╎ ┃ ■ stopped                  ┃    │ ■ stopped   ││ Agent      none (runs its command)                          │
@@ -44,8 +44,9 @@
 view cursor=none modal=39,8 72x24 banner=None
 canvas area=34,1 52x38 origin=-2,-1 scale=1 grid=true tick=0 empty=false
 group g-demo "Canvas project" icon=▣ members=4 rect=0,0 70x15 color=#56b4e9 style=[fg #56b4e9 +DIM] selected=false drop_target=false automations=false folder=false
-  chip " ⟲ + passive " action=Visual(GroupPassives("g-demo")) rect=38,0 13x1 fixed=false lit=false
-  chip " ◧ Set folder… " action=SetGroupFolder("g-demo") rect=52,0 15x1 fixed=false lit=false
+  chip " ⟲ + passive " action=Visual(GroupPassives("g-demo")) rect=32,0 13x1 fixed=false lit=false
+  chip " ✎ Set folder… " action=Notebook(LinkFolder("g-demo")) rect=46,0 15x1 fixed=false lit=false
+  chip " ☑ + " action=Tasks(LinkBoards("g-demo")) rect=62,0 5x1 fixed=false lit=false
 edge Subsession color=#58a6ff from=36,2 30x4 to=36,9 30x4 path=(38.5,6) (38.5,7.5) (38.5,7.5) (38.5,9)
 edge Subagent color=#6e7681 from=2,2 30x4 to=6,7 24x3 path=(4.5,6) (4.5,6.5) (8.5,6.5) (8.5,7)
 box demo-review Session rect=36,2 30x4 prefix="" name="Review implementation"

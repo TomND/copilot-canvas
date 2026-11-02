@@ -6,7 +6,8 @@
 //! Every format becomes one sanitized HTML page ([`page`]): HTML reports as
 //! the desktop GUI shows them (`canvas_model::report_html`: an allow-list of
 //! formatting, no scripts, no URLs but links and inline pictures, a strict
-//! Content-Security-Policy), Markdown rendered first, messages as
+//! Content-Security-Policy), Markdown rendered first
+//! (`canvas_model::notebook::commonmark_html`), messages as
 //! paragraphs. The app's web view is locked down on top (scripts off, no
 //! network, navigation blocked: `ReportWebView.swift`).
 
@@ -205,20 +206,10 @@ fn without_title(preview: &str, title: &str) -> String {
 pub fn page(content: &Content) -> ReportPage {
     let html = match content.format {
         Format::Html => content.body.clone(),
-        Format::Markdown => markdown_html(&content.body),
+        Format::Markdown => canvas_model::notebook::commonmark_html(&content.body),
         Format::Message => message_html(&content.body),
     };
     ReportPage { id: content.id.clone(), format: content.format.into(), html: report_html::document(&html, &PHONE) }
-}
-
-/// Markdown as HTML (tables, strikethrough, task lists, like the desktop's
-/// viewer); HTML inside it goes through the sanitizer with the rest.
-fn markdown_html(text: &str) -> String {
-    use pulldown_cmark::{Options, Parser};
-    let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
-    let mut out = String::with_capacity(text.len() * 3 / 2);
-    pulldown_cmark::html::push_html(&mut out, Parser::new_ext(text, options));
-    out
 }
 
 fn escape(text: &str) -> String {

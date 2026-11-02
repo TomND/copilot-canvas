@@ -169,6 +169,7 @@ fn write_context(shared: &Shared, routing: &Routing, group: &bus::RouteGroup, st
         let status = s.map(|s| format!("{} {}", s.status, s.headline)).unwrap_or_default();
         text.push_str(&format!("- {} (on {}){}\n", p.name, if p.subscribe.is_empty() { "schedule".into() } else { p.subscribe.join(", ") }, if status.trim().is_empty() { String::new() } else { format!(": {}", status.trim()) }));
     }
+    text.push_str(&super::todos::group_digest(shared, routing, &group.id));
     write_atomic(path, text.as_bytes());
 }
 
@@ -237,6 +238,7 @@ fn write_canvas_context(shared: &Shared, routing: &Routing, state: &BusState, pa
         let status = state.passive.get(&p.key).map(|s| format!("{} {}", s.status, s.headline)).unwrap_or_default();
         text.push_str(&format!("- {} (on {}){}\n", p.name, if p.subscribe.is_empty() { "schedule".into() } else { p.subscribe.join(", ") }, if status.trim().is_empty() { String::new() } else { format!(": {}", status.trim()) }));
     }
+    text.push_str(&super::todos::canvas_digest(shared, routing));
     write_atomic(path, text.as_bytes());
 }
 
@@ -452,6 +454,10 @@ fn start_run(shared: &Shared, routing: &Routing, spec: &PassiveSpec, state: &mut
     };
     let paths = &place.paths;
     ensure_files(paths, spec);
+    if !spec.canvas_wide {
+        // The group's catalog (an old one gains the events added since it was made).
+        let _ = bus::ensure_catalog(&place.allowed);
+    }
     if s.session_id.is_empty() {
         s.session_id = spec.session_id.clone();
     }
@@ -539,13 +545,14 @@ fn start_run(shared: &Shared, routing: &Routing, spec: &PassiveSpec, state: &mut
 
 /// The headless launch of one passive run: a fresh conversation uses the
 /// spec's model (the default of its group), a resumed one the model recorded
-/// for it when there is one.
+/// for it when there is one. A group passive session's runs get its skill
+/// folders (canvas-wide agents get their own skills instead).
 fn passive_launch(kind: AgentKind, spec: &PassiveSpec, native: Option<String>, fresh: bool, folder: &Path, prompt: String, hop: u32) -> AgentLaunch {
     let model = match spec.session_model.as_deref() {
         Some(recorded) if !fresh => recorded,
         _ => spec.model.as_str(),
     };
-    AgentLaunch {
+    let mut launch = AgentLaunch {
         agent: kind.id().to_owned(),
         native_id: native,
         resume: !fresh,
@@ -557,7 +564,11 @@ fn passive_launch(kind: AgentKind, spec: &PassiveSpec, native: Option<String>, f
         headless_prompt: Some(prompt),
         env: vec![("COPILOT_CANVAS_PASSIVE".to_owned(), spec.key.clone()), ("COPILOT_CANVAS_HOP".to_owned(), hop.to_string())],
         ..Default::default()
+    };
+    if !spec.canvas_wide {
+        canvas_model::launch::attach_group_skills(&mut launch, &spec.group, &spec.skill_dirs);
     }
+    launch
 }
 
 /// Finishes runs whose terminal exited.
@@ -636,6 +647,9 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
             events.push(event);
         }
         events.extend(incoming.try_iter());
+        // Events from the service itself and windows (the PR monitor, history
+        // detection) come first; those from inbox files, which any process can write, after.
+        let from_channel = events.len();
         if shared.shutting_down.load(Ordering::Relaxed) {
             return;
         }
@@ -667,7 +681,7 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
         if watch_changed {
             write_atomic(&super::factory_watch::path(&home), serde_json::to_string(&watch).unwrap_or_default().as_bytes());
         }
-        for event in events {
+        for (index, event) in events.into_iter().enumerate() {
             if event.kind == effects::ACK {
                 // A click on an effect: gone for every client.
                 let ids: Vec<&str> = event.data["ids"].as_array().map(|ids| ids.iter().filter_map(|i| i.as_str()).collect()).unwrap_or_default();
@@ -692,10 +706,22 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
                 }
                 continue;
             }
+            // Todo requests (copilot-canvas todo …): the same; windows' are applied when they arrive.
+            if super::todos::is_request(&event) {
+                for follow in super::todos::request(&shared, &routing, &event, now) {
+                    handle_event(&shared, &routing, &mut state, follow, now);
+                }
+                continue;
+            }
+            // A merged pull request finishes its todos (never on an inbox file's word).
+            let finished = if index < from_channel { super::todos::merged(&shared, &routing, &event, now) } else { Vec::new() };
             let tracked = super::prs::observe(&shared, &routing, &event, now);
             handle_event(&shared, &routing, &mut state, event, now);
             if let Some(tracked) = tracked {
                 handle_event(&shared, &routing, &mut state, tracked, now);
+            }
+            for done in finished {
+                handle_event(&shared, &routing, &mut state, done, now);
             }
         }
         state.effects.retain(|e| e.alive(now));
@@ -746,14 +772,18 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
             super::reviews::delivered(&shared, &routing, &mail, delivered_at);
         }
         *lock(&shared.bus) = state.clone();
+        // In turn with windows' todo changes (todos.rs): a snapshot made before a newer one is never sent after it.
+        let turn = lock(&shared.snapshots);
         let mut view = state.snapshot(&routing, now);
         view.prs = super::prs::view(&shared, &routing);
         view.reviews = super::reviews::view(&shared, &routing);
+        view.todos = super::todos::view(&shared, &routing);
         let snapshot = serde_json::to_string(&view).unwrap_or_default();
         if snapshot != last_snapshot {
             shared.broadcast(ServiceMsg::Bus { json: snapshot.clone() });
             last_snapshot = snapshot;
         }
+        drop(turn);
         let saved = serde_json::to_string(&state).unwrap_or_default();
         if saved != last_saved {
             write_atomic(&bus_dir(&home).join("state.json"), saved.as_bytes());
@@ -861,6 +891,7 @@ pub(super) fn snapshot(shared: &Shared) -> String {
     let mut view = lock(&shared.bus).snapshot(&routing, now_ms());
     view.prs = super::prs::view(shared, &routing);
     view.reviews = super::reviews::view(shared, &routing);
+    view.todos = super::todos::view(shared, &routing);
     serde_json::to_string(&view).unwrap_or_default()
 }
 
@@ -1015,5 +1046,20 @@ mod tests {
         assert_eq!(rolled.model.as_deref(), Some("opencode/x-free"));
         let own = passive_launch(AgentKind::Claude, &PassiveSpec { session_model: Some(String::new()), ..spec }, None, false, Path::new(r"C:\g"), "check".into(), 1);
         assert_eq!(own.model, None, "recorded as the agent's own default: no model flag");
+    }
+
+    #[test]
+    fn group_passive_runs_get_their_skill_folders_and_canvas_wide_agents_do_not() {
+        let spec = PassiveSpec { key: "k".into(), name: "Watch".into(), group: "g-1".into(), skill_dirs: vec![r"C:\skills".into(), r"D:\more".into()], ..Default::default() };
+        for kind in crate::agents::ALL {
+            let mut launch = passive_launch(kind, &spec, None, true, Path::new(r"C:\g"), "check".into(), 1);
+            let skills = canvas_model::launch::take_group_skills(&mut launch).expect("its group's skill folders");
+            assert_eq!((skills.group.as_str(), skills.dirs.clone()), ("g-1", vec![r"C:\skills".to_owned(), r"D:\more".to_owned()]), "{kind:?}");
+            assert_eq!(launch.env.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["COPILOT_CANVAS_PASSIVE", "COPILOT_CANVAS_HOP"]);
+        }
+        let wide = PassiveSpec { canvas_wide: true, ..spec.clone() };
+        assert_eq!(canvas_model::launch::take_group_skills(&mut passive_launch(AgentKind::Copilot, &wide, None, true, Path::new(r"C:\a"), "check".into(), 1)), None);
+        let none = PassiveSpec { skill_dirs: Vec::new(), ..spec };
+        assert_eq!(passive_launch(AgentKind::Claude, &none, None, false, Path::new(r"C:\g"), "check".into(), 1).env.len(), 2);
     }
 }

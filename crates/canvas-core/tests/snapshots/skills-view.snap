@@ -1,0 +1,53 @@
+# skills-view (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit                 1 sessions
+    SKILLS                       │                                                    │┌─────────────────────────────────────────────────────────────┐
+ ▤  Enter open · A agent         │  ┌╌ ▣ Payments · 1  ⟲+ ╌ ✎ Notes ╌ ☑+ ╌╌┐  ·     · ││ ✦ review                                                    │
+                                 │  ╎                                      ╎          ││                                                             │
+ ◷   ⇄ Agent: All agents       A │  ╎ ╭ Fix flaky test ────────────╮       ╎          ││ Loaded by  GitHub Copilot, OpenCode, Claude Code            │
+    CANVAS                       │  ╎ │ ■ stopped                  │    ·  ╎  ·     · ││ From       PROJECTS › canvas                                │
+ ⧉   ✦ canvas-events         all │  ╎ │ canvas                     │       ╎          ││ Folder     C:\work\canvas\.claude\skills                    │
+     ✦ canvas-notes          all │  ╎ ╰────────────────────────────╯       ╎          ││ File       C:\work\canvas\.claude\skills\review\SKILL.md    │
+ ⌁  GROUP SKILL FOLDERS          │  ╎     ·     ·     ·     ·     ·     ·  ╎  ·     · ││                                                             │
+     ◧ All sessions  none · add… │  ╎                                      ╎          ││ Review a change against the project's conventions before it │
+▌✦   ◧ Payments    1 folder · 1… │  ╎                                      ╎          ││ is pushed.                                                  │
+     ✦ payments-review       all │  └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌◢  ·     · ││                                                             │
+ ◈  PROJECTS                     │                                                    ││ SAME NAME ELSEWHERE                                         │
+     ▸ canvas      C:\work\canv… │                                                    ││ ≈ PERSONAL › OpenCode (OC CC)  C:\Users\me\.claude\skills   │
+ ⇄ ▎ ✦ review              ≈ all │  ·     ·     ·     ·     ·     ·     ·     ·     · ││ Claude Code uses a personal skill over a project's; plugin  │
+     ✦ release             CP OC │                                                    ││ skills (the canvas's, skill folders') keep their plugin's   │
+ ≡   ✦ ci                     CP │                                                    ││ name; OpenCode wants names unique.                          │
+    PERSONAL                     │  ·     ·     ·     ·     ·     ·     ·     ·     · ││                                                             │
+ ✉   ▸ GitHub Copilot    1 skill │                                                    ││                                                             │
+     ✦ standup                CP │                                                    ││                                                             │
+     ▸ OpenCode          1 skill │  ·     ·     ·     ·     ·     ·     ·     ·     · ││                                                             │
+     ✦ review            ≈ OC CC │                                                    ││                                                             │
+    CANVAS LIBRARY               │                                                    ││                                                             │
+     ✦ pr-etiquette    not given │  ·     ·     ·     ·     ·     ·     ·     ·     · ││                                                             │
+     + Add skill (Copilot CLI)…  │                                                    ││                                                             │
+     ⟳ Refresh                   │                                                    ││                                                             │
+                                 │  ·     ·     ·     ·     ·     ·     ·     ·     · ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │  ·     ·     ·     ·     ·     ·     ·     ·     · ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │  ·     ·     ·     ·     ·     ·     ·     ·     · ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │  ·     ·     ·     ·     ·     ·     ·     ·     · ││                                                             │
+                                 │                                                    ││                                                             │
+                                 │                                                    ││  Open SKILL.md    Open folder    Close                      │
+                                 │  ·     ·     ·     ·     ·     ·     ·     ·     · │└─────────────────────────────────────────────────────────────┘
+ ↑↓ move · Enter open/edit · Space enable/disable · Del remove · Esc back · Alt+1…9 views · ? help
+## gpu view model
+view cursor=none modal=none banner=None
+canvas area=34,1 52x38 origin=-2,-1 scale=1 grid=true tick=0 empty=false
+group g1 "Payments" icon=▣ members=1 rect=0,0 40x10 color=#56b4e9 style=[fg #56b4e9 +DIM] selected=false drop_target=false automations=false folder=true
+  chip " ⟲+ " action=Visual(GroupPassives("g1")) rect=18,0 4x1 fixed=false lit=false
+  chip " ✎ Notes " action=Notebook(OpenGroup("g1")) rect=23,0 9x1 fixed=false lit=true
+  chip " ☑+ " action=Tasks(LinkBoards("g1")) rect=33,0 4x1 fixed=false lit=false
+box s-fix Session rect=2,2 30x4 prefix="" name="Fix flaky test"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]
+  selected=false focused_term=false active=false

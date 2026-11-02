@@ -184,22 +184,27 @@ pub fn prepare_plugin(canvas_dir: &Path, paths: &PassivePaths, slug: &str, skill
 }
 
 /// Copies a skill folder (no links, at most 4 levels, [`MAX_SKILL_FILES`]
-/// files and [`MAX_SKILL_BYTES`] in all).
-fn copy_tree(from: &Path, to: &Path, depth: usize, files: &mut usize, bytes: &mut u64) -> std::io::Result<()> {
+/// files and [`MAX_SKILL_BYTES`] in all; each folder's files before its
+/// subfolders, so a big subfolder never crowds out SKILL.md).
+pub(crate) fn copy_tree(from: &Path, to: &Path, depth: usize, files: &mut usize, bytes: &mut u64) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
+    let mut entries = Vec::new();
     for entry in std::fs::read_dir(from)?.flatten() {
         let meta = std::fs::symlink_metadata(entry.path())?;
-        if meta.file_type().is_symlink() {
-            continue;
+        if !meta.file_type().is_symlink() {
+            entries.push((meta.is_dir(), entry.file_name(), meta.len()));
         }
-        if meta.is_dir() {
+    }
+    entries.sort();
+    for (dir, name, len) in entries {
+        if dir {
             if depth < 4 {
-                copy_tree(&entry.path(), &to.join(entry.file_name()), depth + 1, files, bytes)?;
+                copy_tree(&from.join(&name), &to.join(&name), depth + 1, files, bytes)?;
             }
-        } else if *files < MAX_SKILL_FILES && *bytes + meta.len() <= MAX_SKILL_BYTES {
-            std::fs::copy(entry.path(), to.join(entry.file_name()))?;
+        } else if *files < MAX_SKILL_FILES && *bytes + len <= MAX_SKILL_BYTES {
+            std::fs::copy(from.join(&name), to.join(&name))?;
             *files += 1;
-            *bytes += meta.len();
+            *bytes += len;
         }
     }
     Ok(())

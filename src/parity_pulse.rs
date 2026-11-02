@@ -41,7 +41,7 @@ fn canvas(home: &Path, work: &Path, id: &str) -> Result<PathBuf> {
 pub(super) fn rows(sb: &Sandbox, rows: &mut Vec<Row>) {
     check(
         rows,
-        "47",
+        "51",
         "New: the dot grid breathes gently while an agent works (fades in and out; still with reduced motion, effects off or the setting off; no frames when nothing works)",
         "grid_pulse_while_working",
         || pulse(sb),

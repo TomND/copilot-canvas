@@ -11,11 +11,17 @@ use anyhow::{Context, Result, bail};
 use canvas_common::handshake::{self, Refused};
 use canvas_common::protocol::{self, CAP_COMPRESS, CAP_FRAME8, CAP_NOTIFY, CAP_REPORTS, CAP_TUNNEL_ACCESS, ClientInfo, ClientMsg, Input, Key, MAX_FRAME, PRE_AUTH_FRAME, ServiceMsg};
 use canvas_common::wire::{Beat, FrameReader, FrameWriter, Liveness};
+use canvas_model::notebook::{self, Kind, NoteText};
 use canvas_model::rpc::{Request, Response};
+use canvas_model::todos::TodoOp;
 use crossbeam_channel::{RecvTimeoutError, Sender, bounded, unbounded};
 
 use crate::link::{Inbox, InboxReader, Transport, TransportWriter};
-use crate::model::{ConnState, CoreError, CoreEvent, FolderListing, KeyCode, NewSession, Overview, ReportPage, ReportsOverview, Screen};
+use crate::model::{
+    ConnState, CoreError, CoreEvent, FolderListing, KeyCode, NewSession, NoteFilter, NoteHit, NoteListing, NotePage, NotebookOverview, NotebookRoot, Overview, ReportPage, ReportsOverview, Screen, TodoChange,
+    TodoDetail, TodoDraft, TodoStatus, TodosOverview,
+};
+use crate::notes;
 use crate::state::{Effect, State};
 
 /// What the app tells the core about itself and its pairing.
@@ -411,6 +417,148 @@ impl Client {
         self.report_request("delete", ids)
     }
 
+    // ---------- todos ----------
+
+    /// The canvas's todo boards: the book the service sends with its bus
+    /// snapshot (`CoreEvent::Overview` says it may have changed), with this
+    /// phone's changes until the service sends the next one.
+    pub fn todos(&self) -> TodosOverview {
+        lock(&self.shared.state).todos_overview(now_ms())
+    }
+
+    /// One todo's details (`None`: not in the book).
+    pub fn todo(&self, id: String) -> Option<TodoDetail> {
+        lock(&self.shared.state).todo_detail(&id, now_ms())
+    }
+
+    /// Accepts a proposal into the backlog (or `status`).
+    pub fn accept_todo(&self, id: String, status: Option<TodoStatus>) -> Result<TodoChange, CoreError> {
+        self.todo_op(TodoOp::Accept { id, status: status.map(Into::into) })
+    }
+
+    /// Declines a proposal (`reason`: empty for none).
+    pub fn decline_todo(&self, id: String, reason: String) -> Result<TodoChange, CoreError> {
+        let reason = Some(reason.trim().to_owned()).filter(|r| !r.is_empty());
+        self.todo_op(TodoOp::Decline { id, reason })
+    }
+
+    /// Moves a todo to another column (Done and Canceled close it).
+    pub fn move_todo(&self, id: String, status: TodoStatus) -> Result<TodoChange, CoreError> {
+        self.todo_op(TodoOp::Move { id, status: Some(status.into()), board: None, after: None, before: None, rank: None })
+    }
+
+    pub fn done_todo(&self, id: String) -> Result<TodoChange, CoreError> {
+        self.todo_op(TodoOp::Done { id, note: None })
+    }
+
+    /// Ticks (or unticks) checklist item `index` (0-based).
+    pub fn check_todo(&self, id: String, index: u32, done: bool) -> Result<TodoChange, CoreError> {
+        self.todo_op(TodoOp::Check { id, index: index as usize, done })
+    }
+
+    /// Adds a todo as you (the change names its id).
+    pub fn add_todo(&self, draft: TodoDraft) -> Result<TodoChange, CoreError> {
+        self.todo_op(crate::todos::add_op(draft))
+    }
+
+    // ---------- notebook ----------
+
+    /// The notebook's folders (blocking: the service resolves the root and creates it).
+    pub fn notebook(&self) -> Result<NotebookOverview, CoreError> {
+        self.shared.notebook_info()?;
+        lock(&self.shared.state).notebook_overview().ok_or_else(|| CoreError::msg("The notebook is not known."))
+    }
+
+    /// A notebook folder (blocking): folders first; notes for the other
+    /// audience left out by `filter`, the canvas's own files unless `show_internal`.
+    pub fn list_notes(&self, folder: String, filter: NoteFilter, show_internal: bool) -> Result<NoteListing, CoreError> {
+        let roots = self.shared.note_roots();
+        let root = notes::root_of(&roots, &folder).map(|r| r.path.clone());
+        match self.shared.call(Request::NotebookList { dir: folder.clone(), root })? {
+            Response::NoteEntries(entries) => Ok(notes::listing(&folder, &entries, filter, show_internal, &lock(&self.shared.state).doc)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// A note as one sanitized page for the web view (blocking: the note and
+    /// the pictures it shows from its root come from the service). Read only.
+    pub fn read_note(&self, path: String) -> Result<NotePage, CoreError> {
+        let roots = self.shared.note_roots();
+        let name = notes::file_name(&path).to_owned();
+        let kind = Kind::of(&name);
+        let mut pictures = HashMap::new();
+        let note = match kind {
+            Kind::Image => {
+                let bytes = self.shared.read_bytes(&path, notes::MAX_IMAGE)?;
+                pictures.insert(path.clone(), notes::data_url(&name, &bytes));
+                NoteText { text: String::new(), rev: notebook::rev_of(&bytes) }
+            }
+            Kind::Markdown | Kind::Html | Kind::Text => self.shared.note_text(&path)?,
+            Kind::Folder | Kind::Other => NoteText::default(),
+        };
+        if matches!(kind, Kind::Markdown | Kind::Html) {
+            let body = notes::body_html(kind, &name, &note.text);
+            let root = notes::root_of(&roots, &path).map(|r| r.path.clone());
+            let mut budget = notes::MAX_PICTURE_BYTES;
+            for (src, file) in notes::local_pictures(&body, &path, root.as_deref()) {
+                // A picture that cannot be read (missing, too large) is left out.
+                if let Ok(bytes) = self.shared.read_bytes(&file, notes::MAX_PICTURE.min(budget)) {
+                    budget = budget.saturating_sub(bytes.len() as u64);
+                    pictures.insert(src, notes::data_url(notes::file_name(&file), &bytes));
+                }
+                if budget == 0 {
+                    break;
+                }
+            }
+        }
+        Ok(notes::page(&path, &note, &roots, &lock(&self.shared.state).doc, &pictures))
+    }
+
+    /// The notes' revisions (`None`: missing or unreadable): an open note
+    /// whose revision changed is read again.
+    pub fn note_revisions(&self, paths: Vec<String>) -> Result<Vec<Option<String>>, CoreError> {
+        match self.shared.call(Request::NoteRevs { paths })? {
+            Response::NoteRevs(revs) => Ok(revs),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Notes whose names or text contain `query`, in every root (blocking).
+    pub fn search_notes(&self, query: String, limit: u32) -> Result<Vec<NoteHit>, CoreError> {
+        Ok(self.shared.note_search(query, limit)?.into_iter().map(notes::hit).collect())
+    }
+
+    /// The note a `[[Name]]` link names (`None`: none), found by its name.
+    pub fn resolve_note(&self, name: String) -> Result<Option<String>, CoreError> {
+        let wanted = notes::file_name(name.split(['#', '|']).next().unwrap_or_default()).trim().to_owned();
+        if wanted.is_empty() {
+            return Ok(None);
+        }
+        let hits = self.shared.note_search(notebook::stem(&wanted).to_owned(), notebook::MAX_HITS)?;
+        Ok(notes::find_note(&name, &hits))
+    }
+
+    /// Writes `reviewed: true` into a Markdown or HTML note, the phone's only
+    /// change to notes (based on its revision: a note that changed meanwhile
+    /// is left alone and the call fails).
+    pub fn mark_note_reviewed(&self, path: String) -> Result<(), CoreError> {
+        let kind = Kind::of(notes::file_name(&path));
+        if !matches!(kind, Kind::Markdown | Kind::Html) {
+            return Err(CoreError::msg("Only Markdown and HTML notes carry a reviewed mark."));
+        }
+        let roots: Vec<String> = self.shared.note_roots().into_iter().map(|r| r.path).collect();
+        let note = self.shared.note_text(&path)?;
+        let marked = notebook::set_meta(kind, &note.text, &[("reviewed", Some("true"))]);
+        if marked == note.text {
+            return Ok(());
+        }
+        match self.shared.call(Request::NoteWrite { path, text: marked, base: Some(note.rev), roots })? {
+            Response::NoteSaved { .. } => Ok(()),
+            Response::NoteConflict(_) => Err(CoreError::msg("The note changed meanwhile; read it again and retry.")),
+            other => Err(unexpected(other)),
+        }
+    }
+
     // ---------- subsessions ----------
 
     /// Whether a subsession can fork this session's conversation (asks the
@@ -461,6 +609,64 @@ impl Client {
         let effects = lock(&self.shared.state).report_request(op, &ids).map_err(CoreError::msg)?;
         self.shared.run(effects);
         Ok(())
+    }
+
+    fn todo_op(&self, op: TodoOp) -> Result<TodoChange, CoreError> {
+        let (change, effects) = lock(&self.shared.state).todo_op(op, now_ms()).map_err(CoreError::msg)?;
+        self.shared.run(effects);
+        Ok(change)
+    }
+}
+
+fn unexpected(response: Response) -> CoreError {
+    CoreError::msg(format!("unexpected answer: {response:?}"))
+}
+
+impl Shared {
+    /// Asks the service where the notebook is (kept for the explorer's roots).
+    fn notebook_info(&self) -> Result<(), CoreError> {
+        let (root, canvas) = lock(&self.state).notebook_request();
+        match self.call(Request::NotebookInfo { root, canvas })? {
+            Response::NotebookInfo(info) => {
+                lock(&self.state).notebook = Some(info);
+                Ok(())
+            }
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// The explorer's roots (asked for once per connection; none while the service cannot say).
+    fn note_roots(&self) -> Vec<NotebookRoot> {
+        if lock(&self.state).notebook.is_none() {
+            let _ = self.notebook_info();
+        }
+        lock(&self.state).note_roots()
+    }
+
+    fn note_text(&self, path: &str) -> Result<NoteText, CoreError> {
+        match self.call(Request::NoteRead { path: path.to_owned() })? {
+            Response::Note(note) => Ok(note),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    fn read_bytes(&self, path: &str, max_bytes: u64) -> Result<Vec<u8>, CoreError> {
+        match self.call(Request::ReadBytes { path: path.to_owned(), max_bytes })? {
+            Response::Bytes(bytes) => Ok(bytes),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Search hits in every root of the notebook.
+    fn note_search(&self, query: String, limit: u32) -> Result<Vec<notebook::Hit>, CoreError> {
+        let roots: Vec<String> = self.note_roots().into_iter().map(|r| r.path).collect();
+        if roots.is_empty() {
+            return Err(CoreError::msg("The service did not say where the notebook is."));
+        }
+        match self.call(Request::NoteSearch { roots, query, limit: limit.clamp(1, notebook::MAX_HITS) })? {
+            Response::NoteHits(hits) => Ok(hits),
+            other => Err(unexpected(other)),
+        }
     }
 }
 

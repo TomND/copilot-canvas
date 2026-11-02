@@ -13,6 +13,11 @@
 //! by every client, and files dropped into `<state>/publish/` (`.html`,
 //! `.md`, `.txt`) become new reports (`ios/cloud-mac.sh report FILE`).
 //!
+//! The canvas's notebook and todo boards (docs/NOTEBOOK-TASKS.md) too: a
+//! demo notebook in `<state>/notebook` answered like the service's notebook
+//! requests (writes only inside it: `notebook.rs`), and the demo todo book in
+//! every bus snapshot, changed by the clients' todo actions (`todos.rs`).
+//!
 //! With `--tunnel ID` it stands in for the Cloud PC behind a real private Dev
 //! Tunnel (`ios/cloud-mac.sh`): it issues Dev Tunnels connect tokens with this
 //! machine's signed-in `devtunnel` CLI, sends them to phones
@@ -23,7 +28,10 @@
 //! Not a security boundary: it is a development tool. A paired phone gets a
 //! shell on this machine.
 
-use std::collections::HashMap;
+mod notebook;
+mod todos;
+
+use std::collections::{BTreeSet, HashMap};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -161,6 +169,10 @@ struct Mock {
     real: Mutex<std::collections::HashSet<String>>,
     /// The reports inbox.
     inbox: Mutex<Inbox>,
+    /// The demo notebook's folder (`<state>/notebook`).
+    notebook: PathBuf,
+    /// The todo boards (in memory).
+    todos: Mutex<canvas_model::todos::TodoBook>,
 }
 
 pub struct Handle {
@@ -206,7 +218,12 @@ pub fn serve(config: Config) -> Result<Handle> {
         sender: config_apns.and_then(|key| canvas_push::Sender::new(key).ok()).map(Arc::new),
         real: Mutex::new(std::collections::HashSet::new()),
         inbox: Mutex::new(Inbox::demo(now_ms())),
+        notebook: config_state.join("notebook"),
+        todos: Mutex::new(todos::demo()),
     });
+    if let Err(error) = notebook::seed(&mock.notebook) {
+        log(&mock, &format!("cannot write the demo notebook: {error:#}"));
+    }
     let accept = mock.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
@@ -756,7 +773,7 @@ fn serve_client(mock: &Arc<Mock>, stream: TcpStream) -> Result<()> {
     let _ = client.out.send(ServiceMsg::Terminals(terms));
     let sessions: Vec<SessionSummary> = lock(&mock.sessions).values().cloned().collect();
     let _ = client.out.send(ServiceMsg::Sessions { full: true, upsert: sessions, remove: Vec::new() });
-    let _ = client.out.send(ServiceMsg::Bus { json: serde_json::to_string(&canvas_model::bus::Snapshot::default())? });
+    let _ = client.out.send(ServiceMsg::Bus { json: todos::snapshot(&lock(&mock.todos)) });
     if info.caps & CAP_REPORTS != 0 {
         let _ = client.out.send(lock(&mock.inbox).message());
     }
@@ -937,12 +954,32 @@ fn dispatch(mock: &Arc<Mock>, client: &Arc<Client>, message: ClientMsg) -> Resul
             }
         }
         ClientMsg::Bus { json } => {
-            // The reports inbox's requests; the bus's others are the desktop's.
+            // The reports inbox's requests and the todo boards' changes; the bus's others are the desktop's.
             let value: serde_json::Value = serde_json::from_str(&json).unwrap_or_default();
             if value["action"] == "reports" {
                 let ids: Vec<String> = value["ids"].as_array().map(|ids| ids.iter().filter_map(|i| i.as_str().map(str::to_owned)).collect()).unwrap_or_default();
                 if lock(&mock.inbox).apply(value["op"].as_str().unwrap_or_default(), &ids, now_ms()) {
                     broadcast_inbox(mock);
+                }
+            } else if value["action"] == "todos" {
+                let ctx = todo_ctx(mock);
+                let (outcome, snapshot) = {
+                    let mut book = lock(&mock.todos);
+                    let outcome = todos::action(&mut book, &value, &ctx);
+                    (outcome, todos::snapshot(&book))
+                };
+                match outcome {
+                    Some(Ok(message)) => {
+                        log(mock, &format!("todos: {message}"));
+                        broadcast(mock, ServiceMsg::Bus { json: snapshot });
+                    }
+                    // The book as it is goes back too: the window's own change is undone.
+                    Some(Err(notice)) => {
+                        log(mock, &format!("todos: {notice}"));
+                        let _ = client.out.send(ServiceMsg::Error { id: None, message: notice });
+                        let _ = client.out.send(ServiceMsg::Bus { json: snapshot });
+                    }
+                    None => {}
                 }
             }
         }
@@ -951,7 +988,22 @@ fn dispatch(mock: &Arc<Mock>, client: &Arc<Client>, message: ClientMsg) -> Resul
     Ok(())
 }
 
+/// Where a window's todo action runs: now, the canvas's groups, and the
+/// sessions that run (claims by others are stale).
+fn todo_ctx(mock: &Mock) -> canvas_model::todos::Ctx {
+    let doc = lock(&mock.doc);
+    let groups = doc.0.groups.iter().map(|g| (g.id.clone(), g.name.clone())).collect();
+    let sessions = doc.0.nodes.iter().filter(|n| n.kind == canvas_model::doc::NodeKind::Session).map(|n| (n.id.clone(), n.name.clone())).collect();
+    drop(doc);
+    let mut live: BTreeSet<String> = lock(&mock.terms).values().filter(|t| t.info.alive).map(|t| t.info.id.clone()).collect();
+    live.extend(lock(&mock.sessions).values().filter(|s| s.live).map(|s| s.id.clone()));
+    canvas_model::todos::Ctx { now: now_ms(), group: None, groups, live: Some(live), sessions }
+}
+
 fn rpc(mock: &Mock, request: Request) -> Response {
+    if let Some(response) = notebook::answer(&mock.config.state_dir, &mock.notebook, &request) {
+        return response;
+    }
     match request {
         Request::Info => Response::Info(BackendInfo {
             home: mock.config.state_dir.display().to_string(),

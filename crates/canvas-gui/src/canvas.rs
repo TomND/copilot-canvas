@@ -101,7 +101,7 @@ pub fn paint(p: &mut Painter, grid: &Grid, model: &CanvasModel, clock_ms: u64) {
         }
         for chip in &group.chips {
             let c = cx.rect(chip.rect);
-            let chip_color = if chip.lit { color } else { rgb(paint::MUTED) };
+            let chip_color = if chip.attention { rgb(paint::ATTENTION) } else if chip.lit { color } else { rgb(paint::MUTED) };
             let pad = if chip.fixed { 0.1 * grid.cell_h } else { 0.15 * uy };
             p.under(scene::CANVAS_TOP, Quad::rounded(c[0], c[1] + pad, c[2], c[3] - 2.0 * pad, 4.0 * cx.dpi, theme::color(paint::PANEL, 1.0), theme::rgba(chip_color, 0.7), cx.dpi, clip));
             // World chips scale with the zoom; zoomed out they keep a readable size.
@@ -216,6 +216,10 @@ pub fn paint(p: &mut Painter, grid: &Grid, model: &CanvasModel, clock_ms: u64) {
         }
         if b.mailbox > 0 && model.scale >= 0.3 && alpha >= 1.0 {
             badge(p, &cx, r, b.mailbox);
+        }
+        // The todo the session claimed, on its bottom edge (a click opens its card).
+        if let Some(todo) = b.badge.as_deref().filter(|_| model.scale >= 0.3 && alpha >= 1.0) {
+            pill_with(p, &cx, (r[0] + 1.5 * ux, r[1] + r[3]), false, &format!("☑ {todo}"), rgb(paint::PANEL_HI), rgb(paint::ACCENT));
         }
         if model.scale >= 0.2 && alpha >= 1.0 {
             if let Some(badge) = b.deck.as_ref().and_then(|d| d.badge()) {
@@ -804,6 +808,7 @@ mod tests {
             alpha: 1.0,
             deck: None,
             hidden: None,
+            badge: None,
         };
         let boxes = [model("a", 0.0, 0.0), model("b", 10.0, 2.0), model("c", 100.0, 0.0), model("d", 20.0, 3.0), model("e", 25.0, 3.5)];
         assert_eq!(box_levels(&boxes), [0, 1, 0, 2, 2], "capped at the top level");

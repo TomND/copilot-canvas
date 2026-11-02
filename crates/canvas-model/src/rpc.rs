@@ -168,6 +168,60 @@ pub enum Request {
     Reports,
     /// One report's body ([`crate::reports::Content`]). Read only.
     ReportContent { id: String },
+    /// The notebook's root (`root`: the canvas setting; `None`: `<home>/notebook`),
+    /// created with `Groups/`, `Inbox/` and `Todos/`, the canvas-wide folder of
+    /// canvas `canvas` (its id) and the service's home (`Response::NotebookInfo`).
+    NotebookInfo { root: Option<String>, canvas: Option<String> },
+    /// A notebook folder's entries (`Response::NoteEntries`): folders first,
+    /// at most 5,000, with kind, size, modification time, provenance and
+    /// title (metadata from the first 8 KiB). `root`: the explorer root `dir`
+    /// is in (entries are classified by their path relative to it; `None`:
+    /// `dir` itself); a root inside the service's canvas-agents folder is
+    /// the canvas-wide one.
+    NotebookList {
+        dir: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        root: Option<String>,
+    },
+    /// A note's text and revision (`Response::Note`; at most 4 MiB, UTF-8 lossy).
+    /// Like the other notebook reads (`NotebookList`, `NoteRevs`, `ReadBytes`,
+    /// `NoteSearch`) and `ReadText`, any absolute path: only writes are kept
+    /// inside the roots.
+    NoteRead { path: String },
+    /// Writes a note atomically (parent folders created) when its revision is
+    /// still `base` (`None`: the file must not exist); answers
+    /// `Response::NoteSaved` or, when it changed, `Response::NoteConflict`
+    /// with the current text. `path` must be inside one of `roots` (no link
+    /// leading out of them); a file that is not UTF-8 is never replaced.
+    NoteWrite { path: String, text: String, base: Option<String>, roots: Vec<String> },
+    /// The revisions of files (`None`: missing or unreadable), for change polling.
+    NoteRevs { paths: Vec<String> },
+    /// A file's bytes (`Response::Bytes`; at most `max_bytes` and 16 MiB: a
+    /// larger file is an error).
+    ReadBytes { path: String, max_bytes: u64 },
+    /// Creates a folder inside one of `roots` (an existing one is an error).
+    NoteMkdir { path: String, roots: Vec<String> },
+    /// Renames or moves a note or folder inside `roots` (never over another).
+    NoteRename { from: String, to: String, roots: Vec<String> },
+    /// Moves a note or folder into `<root>/.trash/<ms>-<name>`.
+    NoteTrash { path: String, root: String },
+    /// Names and contents of text files under `roots` containing `query`
+    /// (case-insensitive; `.trash`, `.git` and `node_modules` skipped), at
+    /// most `limit` hits (`Response::NoteHits`).
+    NoteSearch { roots: Vec<String>, query: String, limit: u32 },
+    /// Every skill a canvas session can get, by where it comes from
+    /// (`Response::SkillSources`; [`crate::skills::list`]): the canvas plugin,
+    /// the skill folders of every session and of each group (`folders`), the
+    /// projects of the sessions' working folders `dirs` (each up to its
+    /// repository root), the personal folders of the installed agents and
+    /// the library of canvas `canvas` (its id). Read only.
+    SkillSources {
+        dirs: Vec<String>,
+        #[serde(default)]
+        canvas: Option<String>,
+        #[serde(default)]
+        folders: Vec<crate::skills::FolderSet>,
+    },
 }
 
 /// Largest file an upload writes.
@@ -196,6 +250,19 @@ pub enum Response {
     Skills(Vec<crate::canvas_wide::SkillInfo>),
     Reports(Box<crate::reports::Snapshot>),
     Report(Box<crate::reports::Content>),
+    NotebookInfo(crate::notebook::Info),
+    NoteEntries(Vec<crate::notebook::Entry>),
+    Note(crate::notebook::NoteText),
+    /// A note was written; its new revision.
+    NoteSaved { rev: String },
+    /// A note was not written: it changed since the base revision (or exists).
+    NoteConflict(crate::notebook::NoteText),
+    NoteRevs(Vec<Option<String>>),
+    /// Bytes (base64 in JSON).
+    Bytes(#[serde(with = "base64")] Vec<u8>),
+    NoteHits(Vec<crate::notebook::Hit>),
+    /// The sources of skills (`Request::SkillSources`).
+    SkillSources(Vec<crate::skills::SkillSource>),
 }
 
 /// An open pairing code (`Request::PairCode`).
@@ -401,6 +468,17 @@ impl Request {
             Request::CreateCanvasSkill { .. } => "new canvas skill",
             Request::Reports => "reports",
             Request::ReportContent { .. } => "report",
+            Request::NotebookInfo { .. } => "notebook folder",
+            Request::NotebookList { .. } => "notebook listing",
+            Request::NoteRead { .. } => "read note",
+            Request::NoteWrite { .. } => "save note",
+            Request::NoteRevs { .. } => "note revisions",
+            Request::ReadBytes { .. } => "read bytes",
+            Request::NoteMkdir { .. } => "new notebook folder",
+            Request::NoteRename { .. } => "rename note",
+            Request::NoteTrash { .. } => "delete note",
+            Request::NoteSearch { .. } => "notebook search",
+            Request::SkillSources { .. } => "skill sources",
         }
     }
 
@@ -432,6 +510,10 @@ impl Request {
             | Request::SetClipboardImage { .. }
             | Request::Upload { .. }
             | Request::NewestMatches { .. } => 120,
+            // Bounded by its own time budget, but never in the quick lane.
+            Request::NoteSearch { .. } => 60,
+            // Folder scans of up to 40 projects: never in the quick lane.
+            Request::SkillSources { .. } => 60,
             _ => 30,
         };
         Duration::from_secs(secs)
@@ -742,6 +824,86 @@ impl dyn Backend + '_ {
             _ => None,
         })
     }
+
+    /// The notebook's root (created), the canvas-wide folder and the service's
+    /// home (see [`Request::NotebookInfo`]).
+    pub fn notebook_info(&self, root: Option<&str>, canvas: Option<&str>) -> Result<crate::notebook::Info> {
+        self.ask(Request::NotebookInfo { root: root.map(str::to_owned), canvas: canvas.map(str::to_owned) }, |r| match r {
+            Response::NotebookInfo(info) => Some(info),
+            _ => None,
+        })
+    }
+
+    /// A notebook folder's entries (see [`Request::NotebookList`]).
+    pub fn notebook_list(&self, dir: &str, root: Option<&str>) -> Result<Vec<crate::notebook::Entry>> {
+        self.ask(Request::NotebookList { dir: dir.to_owned(), root: root.map(str::to_owned) }, |r| match r {
+            Response::NoteEntries(entries) => Some(entries),
+            _ => None,
+        })
+    }
+
+    /// A note's text and revision (see [`Request::NoteRead`]).
+    pub fn note_read(&self, path: &str) -> Result<crate::notebook::NoteText> {
+        self.ask(Request::NoteRead { path: path.to_owned() }, |r| match r {
+            Response::Note(note) => Some(note),
+            _ => None,
+        })
+    }
+
+    /// Saves a note unless it changed since `base` (`None`: a new note); see [`Request::NoteWrite`].
+    pub fn note_write(&self, path: &str, text: &str, base: Option<&str>, roots: &[String]) -> Result<crate::notebook::Saved> {
+        let request = Request::NoteWrite { path: path.to_owned(), text: text.to_owned(), base: base.map(str::to_owned), roots: roots.to_vec() };
+        self.ask(request, |r| match r {
+            Response::NoteSaved { rev } => Some(crate::notebook::Saved::Written(rev)),
+            Response::NoteConflict(current) => Some(crate::notebook::Saved::Conflict(current)),
+            _ => None,
+        })
+    }
+
+    /// The files' revisions (`None`: missing); see [`Request::NoteRevs`].
+    pub fn note_revs(&self, paths: Vec<String>) -> Result<Vec<Option<String>>> {
+        self.ask(Request::NoteRevs { paths }, |r| match r {
+            Response::NoteRevs(revs) => Some(revs),
+            _ => None,
+        })
+    }
+
+    /// A file's bytes (see [`Request::ReadBytes`]).
+    pub fn read_bytes(&self, path: &str, max_bytes: u64) -> Result<Vec<u8>> {
+        self.ask(Request::ReadBytes { path: path.to_owned(), max_bytes }, |r| match r {
+            Response::Bytes(bytes) => Some(bytes),
+            _ => None,
+        })
+    }
+
+    pub fn note_mkdir(&self, path: &str, roots: &[String]) -> Result<()> {
+        self.done(Request::NoteMkdir { path: path.to_owned(), roots: roots.to_vec() })
+    }
+
+    pub fn note_rename(&self, from: &str, to: &str, roots: &[String]) -> Result<()> {
+        self.done(Request::NoteRename { from: from.to_owned(), to: to.to_owned(), roots: roots.to_vec() })
+    }
+
+    /// Moves a note or folder into its root's `.trash` (see [`Request::NoteTrash`]).
+    pub fn note_trash(&self, path: &str, root: &str) -> Result<()> {
+        self.done(Request::NoteTrash { path: path.to_owned(), root: root.to_owned() })
+    }
+
+    /// Search hits (see [`Request::NoteSearch`]).
+    pub fn note_search(&self, roots: &[String], query: &str, limit: u32) -> Result<Vec<crate::notebook::Hit>> {
+        self.ask(Request::NoteSearch { roots: roots.to_vec(), query: query.to_owned(), limit }, |r| match r {
+            Response::NoteHits(hits) => Some(hits),
+            _ => None,
+        })
+    }
+
+    /// Where the skills of a canvas's sessions come from (see [`Request::SkillSources`]).
+    pub fn skill_sources(&self, dirs: Vec<String>, canvas: Option<String>, folders: Vec<crate::skills::FolderSet>) -> Result<Vec<crate::skills::SkillSource>> {
+        self.ask(Request::SkillSources { dirs, canvas, folders }, |r| match r {
+            Response::SkillSources(sources) => Some(sources),
+            _ => None,
+        })
+    }
 }
 
 /// The answer to a request this build does not know (from a newer client).
@@ -852,5 +1014,95 @@ mod tests {
         assert_eq!(backend.reports().unwrap().unread, 1);
         assert_eq!(backend.report_content("1-a").unwrap().id, "1-a");
         assert_eq!(backend.report_content("2-b").unwrap_err().to_string(), "no such report");
+    }
+
+    #[test]
+    fn notebook_requests_round_trip_and_typed_calls_map_their_answers() {
+        use crate::notebook::{Entry, Hit, Info, NoteText, Saved};
+        let requests = [
+            Request::NotebookInfo { root: None, canvas: Some("c1".into()) },
+            Request::NotebookList { dir: "D:\\n".into(), root: Some("D:\\n".into()) },
+            Request::NoteRead { path: "D:\\n\\a.md".into() },
+            Request::NoteWrite { path: "D:\\n\\a.md".into(), text: "# A\n".into(), base: Some("0123456789abcdef".into()), roots: vec!["D:\\n".into()] },
+            Request::NoteRevs { paths: vec!["D:\\n\\a.md".into()] },
+            Request::ReadBytes { path: "D:\\n\\i.png".into(), max_bytes: 10 },
+            Request::NoteMkdir { path: "D:\\n\\f".into(), roots: vec![] },
+            Request::NoteRename { from: "a".into(), to: "b".into(), roots: vec![] },
+            Request::NoteTrash { path: "a".into(), root: "r".into() },
+            Request::NoteSearch { roots: vec![], query: "q".into(), limit: 5 },
+        ];
+        for request in requests {
+            let json = serde_json::to_string(&request).unwrap();
+            assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), request);
+            assert!(!request.is_remote_admin() && !request.name().is_empty());
+            assert_eq!(request.is_quick(), !matches!(request, Request::NoteSearch { .. }), "{json}");
+            let reply = answer_json(&json.replacen("{\"", "{\"Future", 1), |_| Response::Done);
+            assert!(matches!(serde_json::from_str::<Response>(&reply).unwrap(), Response::Error(_)));
+        }
+        // Optional fields may be left out by older clients; bytes travel as base64.
+        assert_eq!(serde_json::from_str::<Request>(r#"{"NotebookList":{"dir":"x"}}"#).unwrap(), Request::NotebookList { dir: "x".into(), root: None });
+        assert!(matches!(serde_json::from_str::<Request>(r#"{"NoteWrite":{"path":"x","text":"","roots":[]}}"#).unwrap(), Request::NoteWrite { base: None, .. }));
+        let bytes = Response::Bytes(vec![0x89, b'P', b'N', b'G', 0, 255]);
+        assert_eq!(serde_json::to_string(&bytes).unwrap(), r#"{"Bytes":"iVBORwD/"}"#);
+        assert_eq!(serde_json::from_str::<Response>(r#"{"Bytes":"iVBORwD/"}"#).unwrap(), bytes);
+        struct Notes;
+        impl Backend for Notes {
+            fn call(&self, request: Request) -> Result<Response> {
+                Ok(match request {
+                    Request::NotebookInfo { root, .. } => Response::NotebookInfo(Info { root: root.unwrap_or_else(|| "h\\notebook".into()), canvas_dir: None, home: "h".into() }),
+                    Request::NotebookList { .. } => Response::NoteEntries(vec![Entry { name: "a.md".into(), ..Default::default() }]),
+                    Request::NoteRead { .. } => Response::Note(NoteText { text: "x".into(), rev: "r1".into() }),
+                    Request::NoteWrite { base: Some(base), .. } if base == "r1" => Response::NoteSaved { rev: "r2".into() },
+                    Request::NoteWrite { .. } => Response::NoteConflict(NoteText { text: "theirs".into(), rev: "r3".into() }),
+                    Request::NoteRevs { paths } => Response::NoteRevs(paths.iter().map(|p| (p == "a").then(|| "r1".to_owned())).collect()),
+                    Request::ReadBytes { .. } => Response::Bytes(vec![1, 2]),
+                    Request::NoteSearch { .. } => Response::NoteHits(vec![Hit { path: "a".into(), line: 2, text: "q".into() }]),
+                    Request::NoteTrash { .. } => Response::Error("not inside its root".into()),
+                    _ => Response::Done,
+                })
+            }
+        }
+        let backend: &dyn Backend = &Notes;
+        assert_eq!(backend.notebook_info(None, None).unwrap().root, "h\\notebook");
+        assert_eq!(backend.notebook_list("d", None).unwrap()[0].name, "a.md");
+        assert_eq!(backend.note_read("a").unwrap().rev, "r1");
+        assert_eq!(backend.note_write("a", "t", Some("r1"), &[]).unwrap(), Saved::Written("r2".into()));
+        assert_eq!(backend.note_write("a", "t", None, &[]).unwrap(), Saved::Conflict(NoteText { text: "theirs".into(), rev: "r3".into() }));
+        assert_eq!(backend.note_revs(vec!["a".into(), "b".into()]).unwrap(), [Some("r1".to_owned()), None]);
+        assert_eq!(backend.read_bytes("a", 2).unwrap(), [1, 2]);
+        assert_eq!(backend.note_search(&[], "q", 1).unwrap()[0].line, 2);
+        backend.note_mkdir("a", &[]).unwrap();
+        backend.note_rename("a", "b", &[]).unwrap();
+        assert_eq!(backend.note_trash("a", "r").unwrap_err().to_string(), "not inside its root");
+        assert!(Offline.call(Request::NoteRead { path: "a".into() }).is_err());
+    }
+
+    #[test]
+    fn skill_source_requests_round_trip_and_old_services_say_so() {
+        use crate::skills::{FolderSet, SkillSource, SourceKind};
+        let request = Request::SkillSources { dirs: vec![r"C:\repos\app".into()], canvas: Some("c1".into()), folders: vec![FolderSet { group: "g1".into(), name: "Payments".into(), dirs: vec![r"D:\skills".into()] }] };
+        let json = serde_json::to_string(&request).unwrap();
+        assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), request);
+        assert!(!request.is_quick() && !request.is_remote_admin() && request.name() == "skill sources");
+        // Optional fields may be left out.
+        assert_eq!(serde_json::from_str::<Request>(r#"{"SkillSources":{"dirs":[]}}"#).unwrap(), Request::SkillSources { dirs: vec![], canvas: None, folders: vec![] });
+        // A service from before the request answers that it does not support it.
+        let reply = answer_json(&json.replacen("SkillSources", "FutureSkillSources", 1), |_| Response::Done);
+        assert!(matches!(serde_json::from_str::<Response>(&reply).unwrap(), Response::Error(e) if e.contains("does not support")));
+        struct Skills;
+        impl Backend for Skills {
+            fn call(&self, request: Request) -> Result<Response> {
+                Ok(match request {
+                    Request::SkillSources { dirs, .. } => Response::SkillSources(vec![SkillSource { kind: SourceKind::Project { root: dirs[0].clone() }, path: dirs[0].clone(), agents: vec![], skills: vec![], folders: vec![], problem: String::new() }]),
+                    _ => Response::Done,
+                })
+            }
+        }
+        let reply = Skills.call(request).unwrap();
+        assert!(matches!(&reply, Response::SkillSources(s) if s.len() == 1));
+        assert_eq!(serde_json::from_str::<Response>(&serde_json::to_string(&reply).unwrap()).unwrap(), reply);
+        let backend: &dyn Backend = &Skills;
+        assert_eq!(backend.skill_sources(vec!["x".into()], None, vec![]).unwrap()[0].path, "x");
+        assert!((&Offline as &dyn Backend).skill_sources(vec![], None, vec![]).is_err());
     }
 }

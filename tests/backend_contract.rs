@@ -430,3 +430,145 @@ fn two_clients_editing_one_canvas_converge() {
     }
     assert_eq!(refused, (true, true));
 }
+
+/// Paths in an answer as names (their plain and their `{:?}`-escaped forms).
+fn named(text: &str, paths: &[(&Path, &str)]) -> String {
+    let mut text = text.to_owned();
+    for (path, name) in paths {
+        let plain = path.display().to_string();
+        text = text.replace(&plain.replace('\\', "\\\\"), name).replace(&plain, name);
+    }
+    text
+}
+
+/// The notebook requests (docs/NOTEBOOK-TASKS.md §2.3) in a notebook under
+/// `work/<tag>`: the answers, with that folder and the homes named.
+fn notebook_contract(backend: &dyn Backend, ctx: &Ctx, work: &Path, tag: &str) -> Vec<String> {
+    use canvas_model::notebook::Saved;
+    let root = work.join(tag).join("notebook");
+    let names = [(root.as_path(), "<root>"), (work, "<work>"), (ctx.home.as_path(), "<home>")];
+    let name = |text: String| named(&text, &names);
+    let s = |path: &Path| path.display().to_string();
+    let roots = vec![s(&root)];
+    let mut answers = Vec::new();
+
+    // The default root (the service's home) with the canvas-wide folder; a chosen root is created.
+    let info = backend.notebook_info(None, Some("c-contract")).unwrap();
+    assert_eq!(PathBuf::from(&info.root), ctx.home.join("notebook"));
+    assert_eq!(info.canvas_dir.as_deref().map(PathBuf::from), Some(ctx.home.join("canvas-agents").join("c-contract")));
+    answers.push(name(format!("{info:?}")));
+    answers.push(name(format!("{:?}", backend.notebook_info(Some(&s(&root)), None).unwrap())));
+    assert!(["Groups", "Inbox", "Todos"].iter().all(|f| root.join(f).is_dir()));
+    answers.push(name(backend.notebook_info(Some("relative"), None).unwrap_err().to_string()));
+
+    // Writes: a new note, a save on its base, a stale base, a second new note there; refusals.
+    let note = root.join("Inbox").join("plan.md");
+    let text = "---\naudience: ai\nagent: opencode\n---\n# Plan\n\nSee [[Other]] and DEC-031.\n";
+    let Saved::Written(rev) = backend.note_write(&s(&note), text, None, &roots).unwrap() else { panic!("a new note") };
+    answers.push(format!("{:?}", backend.note_write(&s(&note), "x", None, &roots).unwrap()));
+    let saved = backend.note_write(&s(&note), &format!("{text}More.\n"), Some(&rev), &roots).unwrap();
+    let Saved::Written(rev2) = saved.clone() else { panic!("saved on its base") };
+    answers.push(format!("{rev} {saved:?}"));
+    answers.push(format!("{:?}", backend.note_write(&s(&note), "stale", Some(&rev), &roots).unwrap()));
+    for (path, roots) in [(work.join("outside.md"), roots.clone()), (root.join(".git").join("x"), roots.clone()), (PathBuf::from("relative.md"), roots.clone()), (note.clone(), Vec::new())] {
+        answers.push(name(backend.note_write(&s(&path), "x", Some(&rev2), &roots).unwrap_err().to_string()));
+    }
+    assert!(!work.join("outside.md").exists());
+
+    // Reads, revisions, bytes.
+    let read = backend.note_read(&s(&note)).unwrap();
+    assert_eq!(read.rev, rev2);
+    answers.push(format!("{read:?}"));
+    answers.push(name(backend.note_read(&s(&root.join("missing.md"))).unwrap_err().to_string()));
+    answers.push(format!("{:?}", backend.note_revs(vec![s(&note), s(&root.join("missing.md"))]).unwrap()));
+    let png = root.join("Inbox").join("pixel.png");
+    std::fs::write(&png, [0x89, b'P', b'N', b'G', 0, 255]).unwrap();
+    answers.push(format!("{:?}", backend.read_bytes(&s(&png), 1 << 20).unwrap()));
+    answers.push(name(backend.read_bytes(&s(&png), 2).unwrap_err().to_string()));
+
+    // A note that is not UTF-8: read with its bytes replaced, never saved over; names Windows reads as others.
+    let latin = root.join("latin1.md");
+    std::fs::write(&latin, b"caf\xe9\n").unwrap();
+    let lossy = backend.note_read(&s(&latin)).unwrap();
+    answers.push(format!("{lossy:?}"));
+    answers.push(name(backend.note_write(&s(&latin), "cafe\n", Some(&lossy.rev), &roots).unwrap_err().to_string()));
+    assert_eq!(std::fs::read(&latin).unwrap(), b"caf\xe9\n");
+    if cfg!(windows) {
+        for bad in ["nul.md", "x.", "a.md:stream"] {
+            answers.push(name(backend.note_write(&s(&root.join(bad)), "x", None, &roots).unwrap_err().to_string()));
+        }
+    }
+
+    // Folders and the listing (folders first, kinds, titles, provenance).
+    backend.note_mkdir(&s(&root.join("Inbox").join("Sub")), &roots).unwrap();
+    answers.push(name(backend.note_mkdir(&s(&root.join("Inbox").join("Sub")), &roots).unwrap_err().to_string()));
+    let entries = backend.notebook_list(&s(&root.join("Inbox")), Some(&s(&root))).unwrap();
+    assert_eq!(entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["Sub", "pixel.png", "plan.md"]);
+    answers.push(name(format!("{:?}", entries.iter().map(|e| (&e.name, &e.path, &e.rel, e.kind, &e.title, &e.provenance, e.size)).collect::<Vec<_>>())));
+
+    // Search, rename, trash.
+    answers.push(name(format!("{:?}", backend.note_search(&roots, "dec-031", 10).unwrap())));
+    let moved = root.join("Inbox").join("Sub").join("plan.md");
+    backend.note_rename(&s(&note), &s(&moved), &roots).unwrap();
+    answers.push(name(backend.note_rename(&s(&note), &s(&moved), &roots).unwrap_err().to_string()));
+    backend.note_trash(&s(&moved), &s(&root)).unwrap();
+    let trashed: Vec<String> = std::fs::read_dir(root.join(".trash")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().split_once('-').map(|(_, n)| n.to_owned()).unwrap_or_default()).collect();
+    answers.push(format!("{trashed:?}"));
+    answers.push(name(backend.note_trash(&s(&work.join("elsewhere.md")), &s(&root)).unwrap_err().to_string()));
+    answers
+}
+
+#[test]
+fn notebook_requests_answer_the_same_locally_and_remotely() {
+    let service = Service::start("notebook");
+    let work = service.root.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let local = LocalBackend::new(service.ctx());
+    let local_answers = notebook_contract(&local, &service.ctx(), &work, "local");
+    let (_conn, remote) = service.connect();
+    let remote_answers = notebook_contract(&*remote, &service.ctx(), &work, "remote");
+    assert_eq!(local_answers, remote_answers, "both backends give the same answers");
+}
+
+/// `dir/<name>/SKILL.md` with front matter.
+fn skill(dir: &Path, name: &str) {
+    std::fs::create_dir_all(dir.join(name)).unwrap();
+    std::fs::write(dir.join(name).join("SKILL.md"), format!("---\nname: {name}\ndescription: The {name} skill.\n---\n# {name}\n")).unwrap();
+}
+
+#[test]
+fn skill_sources_answer_the_same_locally_and_remotely() {
+    use canvas_model::skills::{FolderSet, SourceKind};
+    let service = Service::start("skills");
+    let work = service.root.join("work");
+    // A repository with project skills, a session folder in it, a group's skill folder.
+    let repo = work.join("repo");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    skill(&repo.join(".claude").join("skills"), "review");
+    skill(&repo.join(".github").join("skills"), "ci");
+    std::fs::create_dir_all(repo.join("app")).unwrap();
+    let team = work.join("team-skills");
+    skill(&team, "payments");
+    let local = LocalBackend::new(service.ctx());
+    let local: &dyn Backend = &local;
+    local.create_canvas_skill("c-contract", "pr-etiquette", "Route PR feedback").unwrap();
+    let ask = |backend: &dyn Backend| {
+        let folders = vec![FolderSet { group: "g1".into(), name: "Payments".into(), dirs: vec![team.display().to_string(), work.join("missing").display().to_string()] }];
+        backend.skill_sources(vec![repo.join("app").display().to_string()], Some("c-contract".into()), folders).unwrap()
+    };
+    let (_conn, remote) = service.connect();
+    let (here, there) = (ask(local), ask(&*remote));
+    assert_eq!(here, there, "both backends give the same answer");
+    let find = |kind: &SourceKind| here.iter().find(|s| &s.kind == kind).unwrap_or_else(|| panic!("{kind:?} in {here:?}"));
+    let names = |kind: &SourceKind| find(kind).skills.iter().map(|s| (s.name.clone(), s.agents.clone())).collect::<Vec<_>>();
+    assert!(find(&SourceKind::Canvas).skills.iter().any(|s| s.name == "canvas-events"), "the canvas plugin the service wrote");
+    let group = SourceKind::Group { id: "g1".into(), name: "Payments".into() };
+    assert_eq!(names(&group), [("payments".to_owned(), canvas_model::agent::ALL.to_vec())]);
+    assert!(find(&group).problem.contains("missing"), "a folder that is not there is named");
+    let project = SourceKind::Project { root: repo.display().to_string() };
+    assert_eq!(names(&project), [("ci".to_owned(), vec![AgentKind::Copilot]), ("review".to_owned(), canvas_model::agent::ALL.to_vec())]);
+    assert_eq!(names(&SourceKind::Library), [("pr-etiquette".to_owned(), canvas_model::agent::ALL.to_vec())]);
+    // An unknown canvas id lists no library; the folders were only read.
+    assert!(!local.skill_sources(vec![], Some("../x".into()), vec![]).unwrap().iter().any(|s| s.kind == SourceKind::Library));
+    assert!(!team.join("plugin.json").exists() && !service.instance.home.join("group-skills").exists());
+}

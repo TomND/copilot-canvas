@@ -244,7 +244,7 @@ pub(super) fn rows(sb: &Sandbox, rows: &mut Vec<Row>) {
         Ok(format!("motion {motion}: {animated} frames in 2 s while animated, {idle} after; acknowledged everywhere, nothing started"))
     });
 
-    check_kind(rows, "V4", "Group chips at any zoom (folders, ⟲ passive), sidebar folder and passive rows open menus and panels", "chips_low_zoom_and_sidebar", gui_only("the TUI draws the same chips and rows (snapshot tests)"), || {
+    check_kind(rows, "V4", "Group chips at any zoom (⟲ passive, ✎ notes, ☑ todos), sidebar folder and passive rows open menus and panels", "chips_low_zoom_and_sidebar", gui_only("the TUI draws the same chips and rows (snapshot tests)"), || {
         gui.canvas_focus()?;
         gui.key("Esc", &[])?;
         gui.wait("the sidebar's folder and passive rows", 10, |t| t.contains("◧ group") && t.lines().any(|l| l.contains("⟲") && l.contains("Watcher")))?;
@@ -254,6 +254,8 @@ pub(super) fn rows(sb: &Sandbox, rows: &mut Vec<Row>) {
         let group = tree["canvas"]["groups"].as_array().and_then(|g| g.first().cloned()).context("group")?;
         let chips = group["chips"].as_array().cloned().unwrap_or_default();
         anyhow::ensure!(chips.len() >= 2 && chips.iter().all(|c| c["fixed"] == true), "compact chips at {}: {chips:?}", tree["canvas"]["scale"]);
+        let labels: Vec<&str> = chips.iter().filter_map(|c| c["label"].as_str()).collect();
+        anyhow::ensure!(labels.iter().any(|l| l.starts_with('✎')), "the notes chip (the group has a folder) stays at 25 %: {labels:?}");
         let passive = chips.iter().find(|c| c["label"] == "⟲ 1").context("the passive chip")?;
         let at = center(rect(&passive["rect"]).context("chip rect")?);
         gui.click((at.0 - 0.0, at.1), &[])?;
@@ -267,7 +269,7 @@ pub(super) fn rows(sb: &Sandbox, rows: &mut Vec<Row>) {
         gui.key("Esc", &[])?;
         gui.send("+")?;
         gui.send("+")?;
-        Ok(format!("{} chips at 25 %, passive chip → the group's passive panel → a session's panel; sidebar rows", chips.len()))
+        Ok(format!("{} chips at 25 % ({}), passive chip → the group's passive panel → a session's panel; sidebar rows", chips.len(), labels.join(" ")))
     });
 
     let _ = gui.req(json!({ "cmd": "quit" }));
@@ -277,10 +279,13 @@ pub(super) fn rows(sb: &Sandbox, rows: &mut Vec<Row>) {
         let mut gui = sb.start(&["--remote", "loopback", "--canvas", &canvas_arg], "gui-visuals-remote.log")?;
         gui.wait("the visuals canvas over TCP", 25, |t| t.contains("Visual group"))?;
         gui.send("f")?;
-        let tree = gui.wait_tree("the chips", 5, |t| t["canvas"]["groups"][0]["chips"].as_array().is_some_and(|c| !c.is_empty()))?;
-        let chips = tree["canvas"]["groups"][0]["chips"].as_array().cloned().unwrap_or_default();
-        let docs = chips.iter().find(|c| c["label"].as_str().is_some_and(|l| l.starts_with("◧"))).context("the AI docs chip")?;
-        gui.click(center(rect(&docs["rect"]).context("chip rect")?), &[])?;
+        // The group's panel (a click on its title selects it) opens its AI docs folder.
+        let tree = gui.wait_tree("the group", 5, |t| t["canvas"]["groups"][0]["rect"].as_array().is_some())?;
+        let group = rect(&tree["canvas"]["groups"][0]["rect"]).context("group rect")?;
+        gui.click((group[0] + 3.5, group[1] + 0.3), &[])?;
+        gui.wait("the group's panel", 10, |t| t.contains("◧ Open AI docs"))?;
+        let (x, y) = gui.find("◧ Open AI docs").context("the panel's AI docs line")?;
+        gui.click((x + 1.0, y), &[])?;
         gui.wait("the folder browser", 10, |t| t.contains("Folder on the service's machine") && t.contains("notes.md") && t.contains("GOALS.md"))?;
         let _ = gui.png(0, "visual-remote-browser");
         let (x, y) = gui.find("notes.md").context("the file entry")?;
@@ -301,7 +306,7 @@ pub(super) fn rows(sb: &Sandbox, rows: &mut Vec<Row>) {
         anyhow::ensure!(!log.contains(" for a client: "), "the service opened Explorer or a program for the remote client");
         let _ = gui.req(json!({ "cmd": "quit" }));
         let _ = gui.driver.wait_exit(Duration::from_secs(10));
-        Ok("AI docs chip → browser (files listed) → notes.md in the viewer; passive rules in the viewer; no Explorer on the service".into())
+        Ok("group panel's AI docs → browser (files listed) → notes.md in the viewer; passive rules in the viewer; no Explorer on the service".into())
     });
 
     check_kind(rows, "V6", "Remote mode: a group's ⟲ Passive sessions row and chip open its labelled passive panel (state, Open / Run now / Pause, canvas-wide agents apart); nothing starts", "remote_group_passive_sessions", gui_only("the TUI draws the same row and panel (snapshot tests)"), || {
