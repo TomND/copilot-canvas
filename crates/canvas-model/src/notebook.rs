@@ -854,6 +854,36 @@ pub fn new_note_text(kind: Kind, body: &str, note: &NewNote) -> String {
     set_frontmatter(&text, &changes)
 }
 
+/// The text of a note you create (the desktop's new notes and quick
+/// capture, the phone's new notes): for you, written by you, `created`
+/// (RFC 3339); Markdown gets `# <title>` (none for an empty title), HTML a
+/// small page with the title. Other kinds start empty.
+pub fn your_new_note(kind: Kind, title: &str, created: &str) -> String {
+    let note = NewNote { title: title.to_owned(), audience: Audience::Human, author: Author::Human, created: created.to_owned(), ..NewNote::default() };
+    match kind {
+        Kind::Markdown => new_note_text(kind, "", &note),
+        Kind::Html => {
+            let escaped = title.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+            let body = format!("<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<title>{escaped}</title>\n</head>\n<body>\n<h1>{escaped}</h1>\n</body>\n</html>\n");
+            new_note_text(kind, &body, &note)
+        }
+        _ => String::new(),
+    }
+}
+
+/// A file or folder name typed by someone: one name (no `/` or `\`, not
+/// `.` or `..`), not empty, made safe with [`safe_name`].
+pub fn typed_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Type a name.".into());
+    }
+    if name.contains(['/', '\\']) || name == "." || name == ".." {
+        return Err("One name, without / or \\.".into());
+    }
+    Ok(safe_name(name, "Untitled"))
+}
+
 // ---------- rendering ----------
 
 fn gfm() -> pulldown_cmark::Options {
@@ -1563,5 +1593,21 @@ mod tests {
         assert_eq!((m.get("audience"), m.get("author"), m.get("agent"), m.get("source_session"), m.get("report")), (Some("ai"), Some("ai"), Some("opencode"), Some("s-1"), Some("0001-x")));
         assert!(html.starts_with("<html><head>\n<meta name=\"canvas-title\" content=\"Investigation: flaky test\">"), "{html}");
         assert!(html.ends_with("<title>Report</title></head><body><p>x</p></body></html>"));
+    }
+
+    #[test]
+    fn notes_you_create_are_yours_and_names_are_one_safe_name() {
+        let md = your_new_note(Kind::Markdown, "Trip <notes>", "2026-11-02T10:00:00Z");
+        assert_eq!(md, "---\ntitle: Trip <notes>\naudience: human\nauthor: human\ncreated: 2026-11-02T10:00:00Z\n---\n# Trip <notes>\n");
+        let html = your_new_note(Kind::Html, "A & B", "t");
+        let m = html_meta(&html);
+        assert_eq!((m.get("audience"), m.get("author"), m.get("created")), (Some("human"), Some("human"), Some("t")));
+        assert!(html.contains("<title>A &amp; B</title>") && html.contains("<h1>A &amp; B</h1>"), "{html}");
+        assert_eq!(your_new_note(Kind::Text, "x", "t"), "");
+        assert_eq!(typed_name("  Plan: v2? "), Ok("Plan- v2".into()));
+        assert_eq!(typed_name("con.md"), Ok("_con.md".into()));
+        for bad in ["", "  ", "a/b", r"a\b", ".", ".."] {
+            assert!(typed_name(bad).is_err(), "{bad:?}");
+        }
     }
 }

@@ -522,7 +522,13 @@ fn uia_tree_inner() -> Result<String> {
     anyhow::ensure!(spaces.len() == 3 && spaces[0]["selected"] == true && spaces[1]["selected"] != true, "three space tabs, the canvas's selected: {spaces:?}");
     ui.request(json!({ "cmd": "key", "key": "Esc", "mods": [] }))?;
     wait_tree(&ui, "the dialog closed", 10, |t| t["modals"].as_u64() == Some(0))?;
-    access_press(&ui, hwnd, "Notebook")?;
+    // The tree follows the screen after a presented frame (AccessKit's
+    // updates): the toolbar's tabs are pressable again a moment after the dialog went.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while let Err(error) = access_press(&ui, hwnd, "Notebook") {
+        anyhow::ensure!(Instant::now() < deadline, "{error:#}");
+        std::thread::sleep(Duration::from_millis(300));
+    }
     ui.wait(&format!("the Notebook through {CLIENT}"), Duration::from_secs(10), |t| t.contains("✎ EXPLORER"))?;
     let deadline = Instant::now() + Duration::from_secs(10);
     while tab(&access_snapshot(&ui, hwnd)?, "Notebook").is_none_or(|t| t["selected"] != true) {

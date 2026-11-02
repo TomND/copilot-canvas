@@ -44,10 +44,21 @@ check differs by OS:
   scripts context), the scheme answered by the GUI through `webpane`;
   *Print / PDF* writes `<Downloads>/<title>.pdf` (under the test hooks
   `<home>/downloads`), which the row reads back as a PDF.
-- **T1, T2**: where scrolling is pixel-precise (macOS; Linux under
+- **T1, T2, T3**: where scrolling is pixel-precise (macOS; Linux under
   Wayland, the pan and the terminal parts; winit 0.30 has no Linux pinch,
   smart zoom or force click). Under X11 every device scrolls in notches
   (rows 1 and 12).
+- **41d**: WKWebView (macOS) or WebKitGTK (Linux) views load the notes from
+  `canvas-notes://notes.canvas.invalid/` (WebKit lets no handler serve
+  `https`); *Print / PDF* saves the page as a PDF in Downloads (the
+  sandbox's folder under the hooks), which the row reads back.
+- **Keys** (macOS): the hooks' `key` command takes the core's (Windows)
+  keys; an Alt shortcut outside a terminal arrives as the app's ⌘ chord
+  (⌃⌘ digit, ⌘[), as a Mac keyboard gives it (MAC-LINUX-PLAN D8), so rows
+  47 and 41d's Alt+← and Alt+N work unchanged.
+- **Accessibility** (hardening, macOS): AccessKit's tabs are radio buttons
+  with the tab-button subrole there; the check reads them as `TabItem`s
+  whose value is their selection and presses one as VoiceOver does.
 - The stand-ins are `copilot`, `opencode`, `gh` and `az` without `.exe`;
   the clipboard is the desktop's (the pasteboard; wl-clipboard or xclip).
 - Goldens are per OS (`tests/golden/gui/macos-1x`, `linux-1x`), and the
@@ -121,6 +132,7 @@ and unit tests that cover the row.
 | 12 | Wheel rules (mouse mode, PgUp/PgDn when mouse off, scrollback, Shift forces scrollback) | `wheel_scrollback_and_shift`: 120 lines, the wheel scrolls back, typing returns to the live screen | canvas-gui `input.rs` wheel notch tests; canvas-host wheel/click encoding tables | ✓ |
 | T1 | **New (macOS, MAC-LINUX-PLAN D15):** the trackpad on the canvas: two-finger scroll pans pixel for pixel with the system's momentum (no glide of the canvas's own), one target per gesture through its momentum, pinch zooms around the pointer and settles on a power of two, smart zoom fits a box and goes back, force click selects a box | `trackpad_canvas` (where scrolling is pixel-precise: macOS; Linux on Wayland runs the pan part, since winit 0.30 has no Linux pinch, double tap or pressure, MAC-LINUX-PLAN §6.1; on X11 every device scrolls in notches, row 1 and row 12's wheel rules), through the `scroll_px`, `pinch`, `smart_zoom` and `force_click` hooks: ten moves of (1.5, 0.75) cells plus a 2-cell momentum that starts over a terminal move the view by exactly (17, 7.5) cells, with no glide; a pinch of ×1.44 keeps the world point under the pointer, and one ending near a power of two settles on it; smart zoom centres the box under the pointer at a larger scale, a second one restores scale and origin; a force click selects the box | canvas-core `gesture` tests (exact pan, no glide, momentum latching and re-latching, pinch anchoring, limits and snapping, text size, smart zoom animated and with reduced motion, force click, Command as Ctrl) | ✓ |
 | T2 | **New (macOS, D15):** the trackpad over terminals: scrollback by fractional lines, a wheel notch per 3 lines for mouse-mode programs, the gesture's momentum stays on the terminal, never past the live screen | `trackpad_terminal` (macOS; Linux on Wayland; X11 scrolls terminals in notches, row 12): 150 numbered lines in Shell A; 21 half-line moves scroll back 10 lines (the half carried); a new gesture's momentum over the canvas adds 3 more and the canvas does not move; a large move down stops at the live screen; 6.5 lines over the stand-in agent (SGR mouse mode) send it 2 wheel notches | canvas-core `gesture` tests (fractional scrollback, notches, Shift, alternate-screen paging) | ✓ |
+| T3 | **New (macOS, D15):** the trackpad in the Notebook and Tasks: a gesture latches to the space's area it began over; a note, the explorer, the info panel, the Tasks sidebar and details scroll row by row; the todo canvas pans cell by cell on both axes and steps its zoom (pinch, Command + scroll); smart zoom fits the boards; the session canvas behind never moves | `trackpad_spaces` (where scrolling is pixel-precise; GUI only: a terminal gives the TUI wheel notches): a 120-line note in Source moves 6 lines down from 6.5 rows of movement (the half carried) and back from 6; on the todo canvas (2.5, 1.5) + (0.5, 0.5) cells of movement pan it by exactly (3, 2) cells; Command + scroll by half a doubling steps the zoom a level, a pinch steps it back; smart zoom gives what F gives; the canvas's view is unchanged throughout | canvas-core `notebook` and `tasks` trackpad tests (row by row with fractions, latching, the board's pan and zoom, smart zoom = fit, nothing reaching the session canvas) | ✓ |
 | 13 | User-message tint (navy background, ▎ bar) | `user_message_tint_png`: the stand-in Copilot's message row is navy (30, 44, 70) in the PNG, the reply row is not | canvas-termview `user_message_rows` test | ✓ |
 | 14 | Copy and paste: drag-select (soft-wrap rejoin), copy on release, Ctrl+C with selection, Ctrl+Shift+C, Ctrl+V, pane menu | `copy_on_release_and_paste`: a drag copies `COPY_PROBE_TEXT` on release; Ctrl+V pastes; a drag over a soft-wrapped line, a hard break, a blank line and indentation copies exactly that text; a two-line paste into PowerShell runs nothing; a four-line paste (blank line, indentation, trailing line break) and IME text with a line break reach the paste probe as one bracketed paste with no Enter | canvas-termview selection tests (engine wrap state, full-screen rows, Copilot's scrollbar), canvas-host paste encoding (both engines, every mode), canvas-core `coalesce` and paste tests; the 28-step self-test runs the same check in the TUI and GUI | ✓ |
 | 15 | Image paste (Alt+V / Ctrl+V): direct Ctrl+V; show the image | `paste_image_preview`: with an image on the clipboard Ctrl+V goes to the agent and a 64 × 40 thumbnail appears (pixel checked) | canvas-gui `clipimage.rs` (DIB decoding), `images.rs` (thumbnails) | ✓ |

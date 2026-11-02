@@ -1506,6 +1506,14 @@ impl Win {
                 tree["access"] = crate::access::json(&items, focus);
                 tree["html"] = json!(self.view.html.as_ref().map(|h| json!({ "id": h.id, "rect": [h.rect.x, h.rect.y, h.rect.width, h.rect.height] })));
                 tree["space"] = json!(self.app.space.key());
+                // Where the Notebook's and Tasks' views stand (trackpad checks).
+                let (notebook, tasks, layout) = (&self.app.notebook, &self.app.tasks, &self.app.layout);
+                let r = |r: Rect| json!([r.x, r.y, r.width, r.height]);
+                tree["spaces"] = json!({
+                    "notebook": { "scroll": notebook.scroll, "info_scroll": notebook.info_scroll, "tab_scroll": notebook.tab().map(|t| t.scroll), "first_line": notebook.tab().map(|t| t.editor.first_visible_line()) },
+                    "tasks": { "pan": [tasks.pan.0, tasks.pan.1], "zoom": tasks.zoom, "side_scroll": tasks.side_scroll, "detail_scroll": tasks.detail_scroll },
+                    "sidebar": r(layout.sidebar), "main": r(layout.canvas), "panel": r(layout.terms),
+                });
                 json!({ "ok": true, "tree": tree })
             }
             "access" => {

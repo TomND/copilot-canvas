@@ -155,6 +155,7 @@ struct PairView: View {
 
 func describe(_ error: Error) -> String {
     if case let CoreError.Failed(message) = error { return message }
+    if case let CoreError.Conflict(message, _, _) = error { return message }
     return error.localizedDescription
 }
 

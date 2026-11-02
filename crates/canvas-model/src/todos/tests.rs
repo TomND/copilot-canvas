@@ -433,6 +433,33 @@ fn notes_checklists_links_and_submissions() {
 }
 
 #[test]
+fn checklist_items_are_reworded_by_anyone_and_removed_by_people() {
+    let mut book = book();
+    add(&mut book, NewTodo { checklist: vec!["one".into(), "two".into(), "three".into()], ..new("Decomps", "Work") }, &you()).unwrap();
+    let s1 = agent("s1");
+    book.apply(TodoOp::Check { id: "DEC-001".into(), index: 1, done: true }, &s1, &ctx()).unwrap();
+    let made = book.apply(TodoOp::EditCheck { id: "dec-1".into(), index: 1, text: "  two,\n reworded ".into() }, &s1, &ctx()).unwrap();
+    assert_eq!(made.message, "Changed checklist item 2 of DEC-001.");
+    let items = |book: &TodoBook| book.todo("DEC-001").unwrap().checklist.iter().map(|c| (c.text.clone(), c.done)).collect::<Vec<_>>();
+    assert_eq!(items(&book)[1], ("two, reworded".to_owned(), true), "one line, the tick kept");
+    assert!(book.apply(TodoOp::EditCheck { id: "DEC-001".into(), index: 1, text: "two, reworded".into() }, &s1, &ctx()).unwrap().message.starts_with("Nothing changed"));
+    assert!(book.apply(TodoOp::EditCheck { id: "DEC-001".into(), index: 3, text: "x".into() }, &s1, &ctx()).unwrap_err().contains("pick 1 to 3"));
+    assert!(book.apply(TodoOp::EditCheck { id: "DEC-001".into(), index: 0, text: " ".into() }, &s1, &ctx()).is_err(), "an empty item");
+    let before = book.clone();
+    assert!(book.apply(TodoOp::RemoveCheck { id: "DEC-001".into(), index: 0 }, &s1, &ctx()).unwrap_err().contains("agents may not"));
+    assert_eq!(book, before);
+    let made = book.apply(TodoOp::RemoveCheck { id: "DEC-001".into(), index: 0 }, &you(), &ctx()).unwrap();
+    assert_eq!((made.message.as_str(), made.changed.as_slice()), ("Removed checklist item 1 from DEC-001.", ["DEC-001".to_owned()].as_slice()));
+    assert_eq!(items(&book), [("two, reworded".to_owned(), true), ("three".to_owned(), false)]);
+    assert!(book.apply(TodoOp::RemoveCheck { id: "DEC-001".into(), index: 2 }, &you(), &ctx()).is_err());
+    let log = &book.todo("DEC-001").unwrap().log;
+    assert!(log.iter().any(|l| l.text == "reworded checklist item “two” as “two, reworded”") && log.iter().any(|l| l.text == "removed checklist item “one”"), "{log:?}");
+    // The window's bus action, as older services cannot read it.
+    assert_eq!(client_action(&TodoOp::RemoveCheck { id: "DEC-001".into(), index: 0 }), serde_json::json!({ "action": "todos", "op": { "op": "remove_check", "id": "DEC-001", "index": 0 } }));
+    assert_eq!(TodoOp::EditCheck { id: "A-1".into(), index: 0, text: "x".into() }.todo_id(), Some("A-1"));
+}
+
+#[test]
 fn updates_check_everything_before_changing_anything() {
     let mut book = book();
     add(&mut book, new("Decomps", "Parent"), &you()).unwrap();

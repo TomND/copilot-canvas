@@ -1,9 +1,10 @@
 # Notebook, Tasks and Spaces: implementation spec
 
-Status: **implemented** on 2026-10-31 (§1 to §6; the iPhone app's Swift
-screens are not, §7). User documentation: README (*Notebook*, *Todos*, the
-feature reference), docs/GUI.md, docs/BACKEND.md, docs/AGENT-PROVIDERS.md,
-docs/REMOTE.md, docs/IOS-STATUS.md.
+Status: **implemented** on 2026-10-31 (§1 to §6); the iPhone app's
+Notebook and Tasks places (viewing and editing) on 2026-11-02 (§7). User
+documentation: README (*Notebook*, *Todos*, the feature reference),
+docs/GUI.md, docs/BACKEND.md, docs/AGENT-PROVIDERS.md, docs/REMOTE.md,
+docs/IOS-STATUS.md, ios/README.md.
 
 Approved by the owner on 2026-10-31 (every recommended option of the
 visual plan, `My Notes/Canvas App/Notebook and Tasks - visual plan.html`).
@@ -76,7 +77,9 @@ General rules for every part:
 | §4 hardening | CSP, 403 | also `nosniff`, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, `X-DNS-Prefetch-Control: off`; browser arguments for a dead proxy (`127.0.0.1:9`, loopback included: `--proxy-bypass-list=<-loopback>`), no DNS prefetching and WebRTC only through the proxy; SmartScreen off; external drops off; `GET` only, documents only the note itself; workers' requests filtered too where the runtime can; at most 256 requests waiting per window (503 beyond), a replaced page's answered at once; the sanitizer writes `<` in kept CSS as `\3C ` (no markup through `<svg><style>`); in the scripts view one app link per click into it |
 | §4 keys | the listed keys | also `Alt+,` / `Alt+.`, `Ctrl+Shift+Tab`, `Ctrl+N`, `Ctrl+S`, `Ctrl+F`, `Alt+N`; Esc gives the keyboard back from a note (closes a report) |
 | §4 print | WebView2's print UI | that (`ShowPrintUI`); a runtime without it saves `<Downloads>\<title>.pdf` (never over a file: the name is claimed by creating it) |
-| §7 mobile | may expose the data | `canvas-mobile` exposes the boards (with changes) and the notebook (read only but for *Mark reviewed*); `canvas-mock` serves a demo notebook and book |
+| §7 mobile | may expose the data | `canvas-mobile` exposes the boards and the notebook with changes (2026-11-02: note sources saved on their revision, new notes and folders, renames, the trash; todo fields, the checklist, reopen, cancel, release); the iPhone app has Notebook and Tasks places (§7); `canvas-mock` serves a demo notebook and book |
+| §3.1 ops | check, add check item | also `edit_check` (rewords an item, its tick kept) and `remove_check` (people only), for the phone's checklist editing; the desktop's details still offer toggle and add |
+| §2.5 new notes | the text in `canvas-core` | `notebook::your_new_note` and `notebook::typed_name` in `canvas-model`, shared by the desktop and the phone |
 
 ## 1. Spaces (canvas-core: `spaces.rs`, app/ui/events wiring)
 
@@ -364,7 +367,8 @@ pub struct Actor { pub kind: ActorKind /* Human | Agent | Bot */, pub session: O
   session a person or bot claims it for; the stored `Claim { by: Actor, ms }`),
   release, note (append to `log`), check/add check item,
   link/unlink, relate/unrelate, submit, done, cancel, reopen, delete, set
-  mirror, import.
+  mirror, import, edit/remove check item (`edit_check`, `remove_check`:
+  people only; appended for the phone).
 - **Policy**: humans (and the TODO bot, which runs without a session) may do
   everything. Agents may add (status Proposed when the board's policy says so,
   else Backlog or the asked Backlog/Todo), propose, update fields, claim (only
@@ -574,10 +578,36 @@ raw text. The caret position is reported for the front end's caret and IME.
   `cargo test --workspace` pass. GUI self-tests, parity rows and goldens are
   run sequentially at the end (they open windows).
 
-## 7. Not covered
+## 7. The iPhone app, and what is not covered
 
-- The iPhone app's Swift UI (cannot be built on Windows); the mobile core
-  exposes the data (`canvas-mobile`: the boards with your changes, the
-  notebook read only but for *Mark reviewed*; docs/IOS-STATUS.md §1.1).
+The iPhone app (2026-11-02; ios/README.md, docs/IOS-STATUS.md §1.1) has
+**Notebook** and **Tasks** places next to Sessions and Canvas in a bottom
+tab bar. It is not parity with the desktop: it shows and edits notes and
+todos.
+
+- **Notebook:** the notebook root's folder with the other roots, folders in
+  a navigation stack, entries with their provenance (notes for agents
+  dimmed), the All / For you / For agents filter, the canvas's own files on
+  request, search, pull to refresh. A note opens as its sanitized page in the
+  locked-down `WKWebView` the reports use (`#note:` links open notes in the
+  app, `#todo:` links todos, web links ask before Safari, pictures inlined
+  by the core). The phone never runs an HTML note's scripts (the desktop
+  can allow them per file). Mark reviewed, copy, share, rename, delete to
+  the trash. *Edit* opens a plain-text source editor (Markdown, HTML, text
+  files): saves on the revision it opened; a note changed elsewhere asks
+  *Reload* (after confirming) or *Keep mine* (after a second confirmation),
+  as in §5; unsaved changes ask before closing. New notes are for you, by
+  you (`notebook::your_new_note`).
+- **Tasks:** Needs you first (accept into a status, decline with a reason,
+  release a gone session's claim), then one board as a list by status
+  (swimlanes as captions inside each status; Done folded). A todo's details:
+  fields, the proposal, the claim, the checklist (tick, add, reword,
+  remove), the body as a page, links, relations, the log; Move, Done,
+  Cancel, Reopen, Release where the desktop offers them; Edit (title, type,
+  priority, labels, blocker, blocked reason, body); New todo.
+- Not covered: the todo canvas's board layout, board editing, claims for a
+  session, starting a session on a todo, Live preview, backlinks and the
+  outline, quick capture (Alt+N), the notebook and mounts settings, scripts
+  in HTML notes.
 - Switching the live TODO bot (outside this repository) to the store; the
   commands it needs exist (`todo import`, `ready`, `claim`, `submit`, `mirror`).

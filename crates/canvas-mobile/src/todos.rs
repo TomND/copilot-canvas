@@ -8,12 +8,12 @@
 use std::collections::{BTreeSet, HashSet};
 
 use canvas_model::doc::{Doc, NodeKind};
-use canvas_model::todos::{self, Actor, AddPolicy, BoardView, Ctx, LogKind, Need, NewTodo, Priority, Status, Todo, TodoBook, TodoOp, TodoType};
+use canvas_model::todos::{self, Actor, AddPolicy, BoardView, Ctx, LogKind, Need, NewTodo, Priority, Status, Todo, TodoBook, TodoOp, TodoType, TodoUpdate};
 use canvas_model::{notebook, report_html};
 
 use crate::model::{
-    TodoBoardItem, TodoCell, TodoCheck, TodoColumn, TodoDetail, TodoDraft, TodoGroupCounts, TodoItem, TodoKind, TodoLane, TodoLink, TodoLogLine, TodoNeed, TodoNeedItem, TodoPriority, TodoRelation,
-    TodoStatus, TodosOverview,
+    TodoActions, TodoBoardItem, TodoCell, TodoCheck, TodoColumn, TodoDetail, TodoDraft, TodoEdit, TodoGroupCounts, TodoItem, TodoKind, TodoLane, TodoLink, TodoLogLine, TodoNeed, TodoNeedItem, TodoPriority,
+    TodoRelation, TodoStatus, TodosOverview,
 };
 
 impl From<Status> for TodoStatus {
@@ -266,7 +266,17 @@ pub fn detail(book: &TodoBook, id: &str, canvas: &Canvas) -> Option<TodoDetail> 
         created_by: canvas.name(&todo.created_by),
         note: todo.note.clone().unwrap_or_default(),
         parent: todo.parent.clone().unwrap_or_default(),
+        blocked_text: todo.blocked.clone().unwrap_or_default(),
+        actions: actions(todo),
     })
+}
+
+/// What you may do with a todo now: the desktop's buttons for it (the book
+/// still checks each change).
+pub fn actions(todo: &Todo) -> TodoActions {
+    let (proposal, closed) = (todo.status == Status::Proposed, todo.status.closed());
+    let moves = if proposal || closed { Vec::new() } else { [Status::Backlog, Status::Todo, Status::InProgress, Status::InReview].into_iter().filter(|s| *s != todo.status).map(Into::into).collect() };
+    TodoActions { accept: proposal, decline: proposal, done: !proposal && !closed, cancel: !closed, reopen: closed, release: todo.claimed_by.is_some(), moves }
 }
 
 /// The operation that adds a drafted todo.
@@ -278,6 +288,23 @@ pub fn add_op(draft: TodoDraft) -> TodoOp {
         priority: Some(draft.priority.into()),
         status: draft.status.map(Into::into),
         body: draft.body,
+        blocker: draft.blocker,
+        ..Default::default()
+    }))
+}
+
+/// The operation that changes a todo's fields.
+pub fn update_op(id: String, edit: TodoEdit) -> TodoOp {
+    TodoOp::Update(Box::new(TodoUpdate {
+        id,
+        title: edit.title,
+        kind: edit.kind.map(Into::into),
+        priority: edit.priority.map(Into::into),
+        // Empty: not blocked any more.
+        blocked: edit.blocked.map(|b| b.trim().to_owned()),
+        blocker: edit.blocker,
+        body: edit.body,
+        labels: edit.labels,
         ..Default::default()
     }))
 }
@@ -372,15 +399,17 @@ mod tests {
 
     #[test]
     fn drafts_and_changes_are_the_windows_bus_actions() {
-        let draft = TodoDraft { board: " Decomps/Parser ".into(), title: "Fuzz the parser".into(), kind: TodoKind::Research, priority: TodoPriority::NoPriority, status: Some(TodoStatus::Todo), body: String::new() };
+        let draft = TodoDraft { board: " Decomps/Parser ".into(), title: "Fuzz the parser".into(), kind: TodoKind::Research, priority: TodoPriority::NoPriority, status: Some(TodoStatus::Todo), body: String::new(), blocker: true };
         let op = add_op(draft);
         let json: serde_json::Value = serde_json::from_str(&action_json(&op)).unwrap();
         assert_eq!(json["action"], "todos");
         assert_eq!((json["op"]["op"].as_str(), json["op"]["board"].as_str(), json["op"]["type"].as_str(), json["op"]["status"].as_str(), json["op"]["priority"].as_str()), (Some("add"), Some("Decomps/Parser"), Some("research"), Some("todo"), Some("none")));
         let mut book = todos::demo_book();
         let doc = doc();
+        assert_eq!(json["op"]["blocker"].as_bool(), Some(true));
         let applied = book.apply(op, &Actor::human(), &canvas(&doc).ctx(1)).unwrap();
         assert_eq!(applied.created.as_deref(), Some("DEC-009"));
+        assert!(book.todo("DEC-009").is_some_and(|t| t.blocker && t.board != book.find_board("Decomps").unwrap().id), "in the swimlane");
         let accept: serde_json::Value = serde_json::from_str(&action_json(&TodoOp::Accept { id: "WI-006".into(), status: Some(TodoStatus::Todo.into()) })).unwrap();
         assert_eq!(accept, serde_json::json!({ "action": "todos", "op": { "op": "accept", "id": "WI-006", "status": "todo" } }));
         // Live sessions: on the canvas and not stopped.
@@ -397,5 +426,32 @@ mod tests {
         for priority in Priority::ALL {
             assert_eq!(Priority::from(TodoPriority::from(priority)), priority);
         }
+    }
+
+    #[test]
+    fn edits_change_only_the_fields_given_and_actions_follow_the_desktops_buttons() {
+        let (mut book, doc) = (todos::demo_book(), doc());
+        let ctx = canvas(&doc).ctx(5);
+        let edit = TodoEdit { title: Some("Momentum on every drag".into()), priority: Some(TodoPriority::Urgent), labels: Some(vec!["UI".into(), "canvas".into()]), blocked: Some("waiting for design".into()), ..Default::default() };
+        let json: serde_json::Value = serde_json::from_str(&action_json(&update_op("WI-002".into(), edit))).unwrap();
+        assert_eq!(json["op"], serde_json::json!({ "op": "update", "id": "WI-002", "title": "Momentum on every drag", "priority": "urgent", "blocked": "waiting for design", "labels": ["UI", "canvas"] }), "unset fields are not sent");
+        let before = book.todo("WI-002").unwrap().clone();
+        book.apply(serde_json::from_value(json["op"].clone()).unwrap(), &Actor::human(), &ctx).unwrap();
+        let after = book.todo("WI-002").unwrap();
+        assert_eq!((after.title.as_str(), after.priority, after.labels.as_slice(), after.blocked.as_deref()), ("Momentum on every drag", Priority::Urgent, ["ui".to_owned(), "canvas".into()].as_slice(), Some("waiting for design")));
+        assert_eq!((after.body.as_str(), after.kind, after.checklist.len()), (before.body.as_str(), before.kind, before.checklist.len()));
+        book.apply(update_op("WI-002".into(), TodoEdit { blocked: Some("  ".into()), kind: Some(TodoKind::Bug), ..Default::default() }), &Actor::human(), &ctx).unwrap();
+        assert!(book.todo("WI-002").is_some_and(|t| t.blocked.is_none() && t.kind == TodoType::Bug), "an empty reason unblocks");
+
+        // The buttons: a proposal is accepted or declined; open todos move, finish or cancel; closed ones reopen.
+        let detail = |book: &TodoBook, id: &str| super::detail(book, id, &canvas(&doc)).unwrap();
+        let proposal = detail(&book, "WI-006");
+        assert_eq!(proposal.actions, TodoActions { accept: true, decline: true, cancel: true, ..Default::default() });
+        let working = detail(&book, "WI-002");
+        assert_eq!(working.actions, TodoActions { done: true, cancel: true, release: true, moves: vec![TodoStatus::Backlog, TodoStatus::Todo, TodoStatus::InReview], ..Default::default() });
+        let canceled = detail(&book, "DEC-008");
+        assert_eq!(canceled.actions, TodoActions { reopen: true, ..Default::default() });
+        assert_eq!(detail(&book, "WI-005").blocked_text, "waiting for the new CI runner image");
+        assert_eq!(detail(&book, "DEC-004").blocked_text, "", "waiting for another todo is not a reason written");
     }
 }

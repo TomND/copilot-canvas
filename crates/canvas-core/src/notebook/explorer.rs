@@ -422,11 +422,15 @@ pub(super) fn text(app: &mut App, text: &str) -> bool {
 
 /// The wheel over the explorer scrolls it.
 pub(super) fn mouse(app: &mut App, mouse: MouseEvent) {
-    let delta: i64 = match mouse.kind {
-        MouseEventKind::ScrollUp => -3,
-        MouseEventKind::ScrollDown => 3,
-        _ => return,
-    };
-    app.notebook.scroll = (app.notebook.scroll as i64 + delta).max(0) as usize;
+    match mouse.kind {
+        MouseEventKind::ScrollUp => scroll(app, -3),
+        MouseEventKind::ScrollDown => scroll(app, 3),
+        _ => {}
+    }
+}
+
+/// Scrolls the explorer by `rows` (positive: down the list).
+pub(super) fn scroll(app: &mut App, rows: i32) {
+    app.notebook.scroll = (app.notebook.scroll as i64 + rows as i64).max(0) as usize;
     app.needs_draw = true;
 }

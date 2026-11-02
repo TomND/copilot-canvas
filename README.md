@@ -205,16 +205,24 @@ app is signed ad hoc and not notarized: open it the first time with
 right-click › Open.
 
 What differs from Windows: **⌘ is the app's modifier** (⌘C / ⌘V copy and
-paste, ⌘Z undo, ⌘1…9 views, ⌘N and ⇧⌘N windows, ⌘-click links), while
-Control always goes to the terminal's program (Ctrl+C included); the left
-Option key is Alt (Meta) for terminals. ⌘Q and the Dock's Quit ask, as
+paste, ⌘Z undo, ⌘1 / ⌘2 / ⌘3 the Canvas, Notebook and Tasks, ⌘P Go to,
+⌘[ / ⌘] back and forward, ⇧⌘[ / ⇧⌘] the note tabs, ⌘N a new note in the
+Notebook and a new window elsewhere, ⇧⌘N a new window, ⌘-click links);
+Windows' Alt shortcuts are ⌃⌘ ones (⌃⌘1…9 views, ⌃⌘N a quick note, ⌃⌘H
+the filter). Control always goes to the terminal's program (Ctrl+C
+included); the left Option key is Alt (Meta) for terminals and composes
+characters elsewhere (⌥E E types é in a note); the note editor moves by
+word with ⌥←/→ and by line with ⌘←/→. ⌘Q and the Dock's Quit ask, as
 closing the last window does on Windows: detach and keep the sessions
 running, or stop them all. A **trackpad** pans pixel for pixel with the
 system's momentum, pinches to zoom around the pointer (over a terminal:
 its text size; ⌘+ ⌘− ⌘0 too), double-taps to fit a box and force-clicks a
-box for its details. The Dock icon shows how many sessions need you and a
-dot while sessions work; notifications come from the app (the first one
-asks for permission). HTML reports open in a locked-down WKWebView.
+box for its details; in the Notebook and Tasks it scrolls notes and lists
+row by row and pans the todo canvas (pinch or ⌘-scroll steps its zoom, a
+double tap fits the boards). The Dock icon shows how many sessions need
+you and a dot while sessions work; notifications come from the app (the
+first one asks for permission). HTML reports and notes open in locked-down
+WKWebViews; a note's *Print / PDF* saves the page as a PDF in Downloads.
 Automations and `copilot-canvas service install` use launchd (LaunchAgents
 in `~/Library/LaunchAgents`). To build from source (Xcode's command line
 tools, Rust, Zig 0.17.0):
@@ -247,8 +255,9 @@ packaging/macos/build.sh --arch arm64    # optional: Copilot Canvas.app and its 
   `copilot-canvas --remote NAME` at home. See [docs/REMOTE.md](docs/REMOTE.md).
 - **iPhone.** The same canvas on your phone over the same Dev Tunnel:
   sessions by what needs you, the canvas, real terminals with a key bar
-  and a prompt composer, and the reports inbox (HTML reports in a locked-down
-  web view). `copilot-canvas remote pair --qr` on the Cloud PC,
+  and a prompt composer, the reports inbox (HTML reports in a locked-down
+  web view), and the Notebook and Tasks to read and edit notes and todos.
+  `copilot-canvas remote pair --qr` on the Cloud PC,
   scan it in the app. See [ios/README.md](ios/README.md) and
   [docs/IOS-PLAN.md](docs/IOS-PLAN.md).
 - **Terminal engine.** Terminals run on libghostty-vt (graphemes, Kitty
@@ -425,7 +434,10 @@ Ctrl+Q and Ctrl+Z). Only **Ctrl+]** and **F6** are reserved, plus **Ctrl+F6** /
 Terminal and the console host pass them on), Ctrl+C while text is selected
 and Ctrl+V (paste), as in Windows Terminal. The space keys (Ctrl+1/2/3,
 Alt+←/→, Alt+, / Alt+., Ctrl+P, Alt+N) reach the agent there too; leave the
-terminal first (the GUI's mouse back and forward buttons work anyway).
+terminal first (the GUI's mouse back and forward buttons work anyway). The
+TUI on macOS and Linux gets Ctrl+1/2/3 from terminals that speak the kitty
+keyboard protocol (Ghostty, kitty, WezTerm, foot, iTerm2), which it asks
+for; elsewhere the toolbar's tabs and Go to switch spaces.
 
 ## VS Code sync
 
@@ -1529,8 +1541,9 @@ cargo test                            unit tests
   network access. Go to and `[[` completion know the notes the window has
   listed or opened and those a walk of the roots finds (every 60 s while the
   Notebook shows: at most 60 folders and 2,000 notes); a search reads at most
-  20,000 files, 256 MB and 10 s per request. The iPhone app's core has the todos and notebook
-  (see docs/IOS-STATUS.md); its screens for them are not built yet. Undo
+  20,000 files, 256 MB and 10 s per request. The iPhone app has Notebook and
+  Tasks places to view and edit notes and todos (not parity: see ios/README.md
+  and docs/NOTEBOOK-TASKS.md §7); it never runs an HTML note's scripts. Undo
   (Ctrl+Z) covers neither notes (the editor has its own undo) nor todos.
 
 ---

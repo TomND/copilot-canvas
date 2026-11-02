@@ -10,6 +10,14 @@
 > goldens block from 055cef3 on); what is left needs the owner (the checklist
 > under "Owner-only items: macOS").
 >
+> **main's spaces on macOS** (2026-11-02): main's Notebook, Tasks and Spaces
+> and the ✦ Skills view (merged at a640512) are ported: HTML notes in two
+> WKWebViews, the spaces' keys on a Mac keyboard (D8), note renames that
+> never replace, the trackpad in the spaces (D15, row T3), the
+> accessibility check's space tabs. Verified locally (the 45-step self-test
+> in the TUI and the GUI, rows 22, 41, 41b, 41d, 47–50, 48b, 52 and T3, the
+> workspace tests); CI's macOS jobs were waiting for GitHub's macOS runners.
+>
 > **Linux: done again with main's Notebook, Tasks and Spaces** (2026-11-02,
 > branch `linux` at 379a9cc: main merged at a640512 through `macos`; CI run
 > 41526309895, every job green, Windows' `test` on its one re-run): Linux
@@ -378,19 +386,19 @@ column is the same run's `macos` job (its parity suite blocks).
 | 41 | Reports inbox, unread count, toast | PASS | PASS |
 | 41b | HTML reports, locked down | PASS | PASS |
 | 41c | Remote reports | PASS | PASS |
-| 41d | HTML notes (the notes origin, scripts per file, app links, Print / PDF) | PASS | PASS (WebKitGTK views, `canvas-notes:` scheme, PDF to Downloads) |
 | 42 | Pull request coordination | PASS | PASS |
 | 43 | Review follow-ups | PASS | PASS |
 | 44 | Undo/redo of layout changes | PASS | PASS |
 | 45 | Area selection of subsessions and subagents | PASS | PASS |
 | 46 | Subagents folded into decks by default | PASS | PASS |
-| 47 | Spaces: tabs, Ctrl+1/2/3, Go to, back and forward | PASS | PASS |
-| 48 | The Notebook: explorer, filter, reader, editor, capture, changes on disk | PASS | PASS |
-| 48b | The Notebook and Tasks in remote mode | PASS | PASS |
-| 49 | Tasks: the todo canvas, details, accept, drag | PASS | PASS |
-| 50 | Chips and badges between the spaces | PASS | PASS |
-| 51 | Dot grid pulse while agents work (WI-023; was row 47) | PASS | PASS |
-| 52 | The ✦ Skills view and group skill folders | PASS | PASS |
+| 41d | HTML notes (two web views, `canvas-notes:`, Print / PDF) | PASS (local) | PASS (WebKitGTK views, `canvas-notes:` scheme, PDF to Downloads) |
+| 47 | Spaces: tabs, Ctrl+1/2/3, Go to, back and forward (main; the old 47 is 51) | PASS (local) | PASS |
+| 48 | Notebook: explorer, reader, editor, quick capture, changes on disk | PASS (local) | PASS |
+| 48b | Notebook and Tasks in remote mode | PASS (local) | PASS |
+| 49 | Tasks: the todo canvas, details, accept, drag | PASS (local) | PASS |
+| 50 | ✎ / ☑ chips and ☑ badges | PASS (local) | PASS |
+| 51 | Dot grid pulse while agents work (WI-023; was 47) | PASS (CI only: presents) | PASS |
+| 52 | ✦ Skills view, group skill folders | PASS (local) | PASS |
 | G1 | Inline images | PASS | PASS |
 | G2 | Taskbar progress, flash, toasts | PASS | PASS |
 | G3 | File drag and drop | PASS | PASS (Wayland drops: unit tests; owner on a desktop) |
@@ -403,6 +411,7 @@ column is the same run's `macos` job (its parity suite blocks).
 | V6 | Remote group passive sessions | PASS | PASS |
 | T1 | Trackpad on the canvas (D15) | PASS | PASS (Wayland; pan part) |
 | T2 | Trackpad over terminals (D15) | PASS | PASS (Wayland) |
+| T3 | Trackpad in the Notebook and Tasks (D15) | PASS (local) | — (Wayland step: the Linux lead's) |
 
 ## Decisions taken during the port
 
@@ -556,7 +565,7 @@ column is the same run's `macos` job (its parity suite blocks).
 - Linux test hooks: posted keys go through the X server (focus, then
   `KeyPress`/`KeyRelease` sent to the window); Wayland lets no client type
   into another's surface, so the latency bench types under X11.
-- HTML notes in WebKit (Linux; proposed for macOS): WebKit lets no handler
+- HTML notes in WebKit (Linux, 75886ec; macOS, 0e5eb40): WebKit lets no handler
   serve `https`, so the views load the notes origin's host through the
   custom scheme **`canvas-notes://notes.canvas.invalid/`** (Linux:
   `webkit_web_context_register_uri_scheme`; macOS: a `WKURLSchemeHandler`
@@ -576,16 +585,45 @@ column is the same run's `macos` job (its parity suite blocks).
   `canvas_sys::fs::rename_no_replace` (`renameat2(RENAME_NOREPLACE)`; where
   the filesystem refuses the flag, `rename_claimed`: a file's new name is
   claimed with a hard link, folders are checked and renamed), wired into
-  the notebook's `move_once` for Linux only (345b52c). **For the macOS
-  lead:** a macOS arm of `rename_no_replace` (`renamex_np(RENAME_EXCL)`,
-  same `AlreadyExists` contract; case-only renames on a case-blind volume
-  need the same-file check `move_once` already has), then one non-Windows
-  `move_once` for both.
+  the notebook's `move_once` for Linux only (345b52c). Merged with the
+  macOS arm (310791d): one `rename_no_replace` (`renamex_np(RENAME_EXCL)`
+  on macOS, `renameat2` on Linux, `rename_claimed` where a file system
+  refuses the flag) behind one non-Windows `move_once`; a case change of
+  one file on a case-blind volume (APFS) renames it, a hard link's other
+  name stays taken. iCloud Drive's dataless files count as cloud-only
+  (`canvas_sys::fs::cloud_only`, `SF_DATALESS`), as OneDrive's
+  placeholders do on Windows.
+- Keys for main's spaces on macOS (D8 as built, the table in the plan):
+  ⌘1/2/3, ⌘P, ⌘[ / ⌘] for back and forward, ⇧⌘[ / ⇧⌘] for note tabs, ⌃⌘
+  for Windows' Alt shortcuts (⌃⌘1…9, ⌃⌘N, ⌃⌘H), ⌘N a note in the Notebook
+  and a window elsewhere; Option composes characters outside terminals.
+  The test hooks keep the core's keys: an Alt shortcut outside a terminal
+  arrives as the app's ⌘ chord, as a Mac keyboard gives it.
+- Print / PDF of an HTML note on macOS: WKWebView's `createPDF` into
+  `<Downloads>/<title>.pdf` (never over a file), as on Linux; under the
+  test hooks the sandbox's folder (`COPILOT_CANVAS_DOWNLOADS`).
+- D15 in the spaces: a gesture latches to the Notebook's or Tasks' area it
+  began over (rows, cells, the board's three zoom levels; smart zoom fits
+  the boards); the hidden session canvas never moves. No two-finger swipe
+  for back and forward: it is the pan gesture; the web views' swipe
+  navigation stays off.
+- The TUI on macOS and Linux asks the terminal for the kitty keyboard
+  protocol's disambiguated keys (pushed at start, popped at exit and in
+  the panic hook), so terminals that speak it report Ctrl+1/2/3; others
+  ignore the request and keep the legacy keys (the spaces' tabs and Go to
+  work there too). The self-tests type Ctrl+digit and Esc as CSI u.
 
 ## Known gaps
 
-- D15: Command+0 does not reset a terminal's text size yet (pinch and
-  Command+plus/minus change it).
+- The notes origin's rewriting (`https://notes.canvas.invalid` ↔
+  `canvas-notes://notes.canvas.invalid` in requests, headers and pages) is
+  written twice, in `os/macos/webview.rs` and `os/linux/webview.rs`; it
+  belongs in `webpane` with one set of tests (a clean-up, no behaviour).
+- Checks that need presented frames (rows 7b, V3, 51; hardening's device
+  loss, placement and damage frames) pass on CI only: a locked Mac
+  presents nothing, and AccessKit's tree is updated after a presented
+  frame, so the accessibility check's last step (the Notebook tab
+  selected) also needs one.
 
 - OpenCode < 1.19 (1.18.35 on the development Mac): rejecting a question or
   a permission with Esc does not end the turn, so `selftest agent --agent
@@ -662,6 +700,27 @@ column is the same run's `macos` job (its parity suite blocks).
 
 ## Log
 
+- 2026-11-02 (macOS): main's spaces ported. The Notebook's note renames
+  never replace (`renamex_np`), iCloud placeholders are cloud-only
+  (7cde6f0); the D8 keys for the spaces and the note editor (c4fbce9);
+  HTML notes in two WKWebViews served from `canvas-notes:`, with Print /
+  PDF to Downloads (0e5eb40). CI run 41513653497 (of 101e496) failed every
+  Linux job at the TUI self-test's Ctrl+3: the self-tests typed it as a
+  win32-input-mode sequence, which only ConPTY reads; now CSI u on Unix
+  and the TUI asks terminals for it (6446f8b; the Linux lead found the same
+  in a9d1e86). Merged origin/linux (310791d: one Unix
+  `rename_no_replace`). Row 48b failed after the other spaces rows: the
+  remote window opens with the details pane, a fitted group's chips
+  overhang the narrowed canvas and a chip partly outside has no click
+  target; the rows now pan it whole into view (934b724). The macOS
+  accessibility check reads AccessKit's tabs (4fcdb2e). The macOS goldens
+  are recorded again on CI (main's toolbar tabs, two new shots). D15 in
+  the Notebook and Tasks with parity row T3 (080b730). Main's other new
+  code has no Windows-only path left (audited: the notebook backend's
+  Windows rules are tests and Windows names). CI's macOS jobs were
+  cancelled twice by GitHub ("not acquired by Runner … capacity
+  constraints"), not by a failure. **For the Linux lead:** T3 could join
+  the Wayland step (rows 48 and 49 first, or its own long note and board).
 - 2026-11-01 (macOS): **main merged at a640512** (Notebook, Tasks and Spaces;
   the ✦ Skills view; the repository's agent docs; row 47 → 51) into
   `macos`. Conflicts kept main's behaviour with the port's platform code:

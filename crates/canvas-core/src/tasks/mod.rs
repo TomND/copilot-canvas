@@ -367,6 +367,37 @@ pub fn on_mouse(app: &mut App, mouse: MouseEvent) {
     canvas::mouse(app, mouse);
 }
 
+/// The todo canvas (not the sidebar or the details) is at `(x, y)`.
+pub(crate) fn board_at(app: &App, x: u16, y: u16) -> bool {
+    let inside = |r| crate::paint::rect_contains(r, x, y);
+    !inside(app.layout.sidebar) && !inside(app.layout.terms) && inside(app.layout.canvas)
+}
+
+/// A trackpad's scroll by whole `rows` (positive: down) of the sidebar or
+/// the details at `(x, y)` (the board pans: [`pan_board`]).
+pub(crate) fn scroll(app: &mut App, x: u16, y: u16, rows: i32) {
+    if crate::paint::rect_contains(app.layout.sidebar, x, y) {
+        side::scroll(app, rows);
+    } else if crate::paint::rect_contains(app.layout.terms, x, y) {
+        detail::scroll(app, rows);
+    }
+}
+
+/// Moves the view over the todo canvas by whole cells (positive: right and down).
+pub(crate) fn pan_board(app: &mut App, dx: i32, dy: i32) {
+    canvas::pan(app, dx, dy);
+}
+
+/// The todo canvas's next zoom level in (`step` > 0) or out.
+pub(crate) fn zoom_board(app: &mut App, step: i32) {
+    canvas::zoom(app, step);
+}
+
+/// Every board in view (the todo canvas's *fit*).
+pub(crate) fn fit_board(app: &mut App) {
+    canvas::fit(app);
+}
+
 /// IME text or a paste while the module has the keyboard; false: not taken.
 pub fn on_text(app: &mut App, text: &str) -> bool {
     if !app.tasks.filter_active || app.focus != Focus::Sidebar {

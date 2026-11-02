@@ -64,12 +64,15 @@ enum ReportLockdown {
     }
 }
 
-/// One report page in a locked-down web view; tapped links go to `onLink`.
+/// One report page in a locked-down web view (also note pages and todo
+/// bodies); tapped links go to `onLink`, links into the app to `onAppLink`.
 @MainActor
 final class ReportWebController: NSObject, WKNavigationDelegate, WKUIDelegate {
     let webView: WKWebView
     /// A link was tapped (an `http(s)` or `mailto` address): ask, then open.
     var onLink: ((URL) -> Void)?
+    /// A link into the app was tapped: `#note:Name` or `#todo:DEC-031` (note pages, todo bodies).
+    var onAppLink: ((NoteLink) -> Void)?
     /// The page finished loading (tests).
     var onFinish: (() -> Void)?
     /// Navigations cancelled (tests).
@@ -77,7 +80,7 @@ final class ReportWebController: NSObject, WKNavigationDelegate, WKUIDelegate {
     /// The page's own load, still to come.
     private var expecting = false
 
-    init(rules: WKContentRuleList) {
+    init(rules: WKContentRuleList, identifier: String = "reportPage") {
         webView = WKWebView(frame: .zero, configuration: ReportLockdown.configuration(rules: rules))
         super.init()
         webView.navigationDelegate = self
@@ -87,18 +90,48 @@ final class ReportWebController: NSObject, WKNavigationDelegate, WKUIDelegate {
         webView.isOpaque = false
         webView.backgroundColor = TerminalColors.ui(TerminalColors.background)
         webView.scrollView.backgroundColor = TerminalColors.ui(TerminalColors.background)
-        webView.accessibilityIdentifier = "reportPage"
+        webView.accessibilityIdentifier = identifier
     }
 
     /// Shows a page (the core's sanitized document; tests also load raw HTML).
     func load(_ html: String) {
         expecting = true
-        webView.loadHTMLString(html, baseURL: nil)
+        webView.loadHTMLString(Self.appLinks(html), baseURL: nil)
+    }
+
+    /// The scheme in-app links get: WebKit never asks about jumps within a
+    /// page (`#note:…`), but it does about another scheme (always cancelled).
+    static let appScheme = "canvas-app"
+
+    /// `href="#note:…"` / `href="#todo:…"` as `canvas-app:note:…` links.
+    static func appLinks(_ html: String) -> String {
+        var out = html
+        for quote in ["\"", "'"] {
+            for kind in ["note", "todo"] {
+                out = out.replacingOccurrences(of: "href=\(quote)#\(kind):", with: "href=\(quote)\(appScheme):\(kind):")
+            }
+        }
+        return out
     }
 
     /// The page's text as shown (Copy, Share).
     func text() async -> String {
         (try? await webView.evaluateJavaScript("document.body ? document.body.innerText : ''") as? String) ?? ""
+    }
+
+    /// The page's height in points (a body shown inside a list).
+    func contentHeight() async -> CGFloat {
+        let height = (try? await webView.evaluateJavaScript("document.documentElement.scrollHeight") as? Double) ?? 0
+        return CGFloat(height)
+    }
+
+    /// What an in-app link opens (`canvas-app:note:…`, `#note:` / `#todo:`; nil: another link).
+    static func appLink(_ address: String) -> NoteLink? {
+        if address.hasPrefix("\(appScheme):") {
+            return noteLinkTarget(href: "#" + address.dropFirst(appScheme.count + 1))
+        }
+        guard let hash = address.firstIndex(of: "#") else { return nil }
+        return noteLinkTarget(href: String(address[hash...]))
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
@@ -108,6 +141,12 @@ final class ReportWebController: NSObject, WKNavigationDelegate, WKUIDelegate {
         if expecting, action.navigationType == .other, address == "about:blank", action.targetFrame?.isMainFrame == true {
             expecting = false
             decisionHandler(.allow)
+            return
+        }
+        // A link into the app (`#note:Name`, `#todo:DEC-031`): never a navigation.
+        if url?.scheme == Self.appScheme || address.hasPrefix("about:blank#"), let target = Self.appLink(address) {
+            decisionHandler(.cancel)
+            if action.navigationType == .linkActivated { onAppLink?(target) }
             return
         }
         // A jump within the page (a table of contents).

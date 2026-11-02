@@ -141,10 +141,15 @@ fn paint(app: &mut App, buf: &mut Buffer, area: Rect, out: Out) {
 
 pub fn wheel(app: &mut App, kind: MouseEventKind) {
     match kind {
-        MouseEventKind::ScrollUp => app.tasks.detail_scroll = app.tasks.detail_scroll.saturating_sub(3),
-        MouseEventKind::ScrollDown => app.tasks.detail_scroll = app.tasks.detail_scroll.saturating_add(3),
+        MouseEventKind::ScrollUp => scroll(app, -3),
+        MouseEventKind::ScrollDown => scroll(app, 3),
         _ => {}
     }
+}
+
+/// Scrolls the details by `rows` (positive: down).
+pub fn scroll(app: &mut App, rows: i32) {
+    app.tasks.detail_scroll = app.tasks.detail_scroll.saturating_add_signed(rows.clamp(i16::MIN as i32, i16::MAX as i32) as i16);
     app.needs_draw = true;
 }
 
