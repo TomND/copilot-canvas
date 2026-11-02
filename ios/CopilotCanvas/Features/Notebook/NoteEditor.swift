@@ -23,9 +23,29 @@ struct NoteEditor: View {
     @State private var saving = false
     /// The note as it is now, after a save found it changed (text, revision).
     @State private var conflict: (text: String, rev: String)?
-    @State private var askReload = false
-    @State private var askOverwrite = false
+    /// Where the conflict's questions are (one dialog at a time).
+    @State private var stage: Stage?
     @State private var askDiscard = false
+
+    private enum Stage {
+        /// Reload theirs, keep mine, or keep editing.
+        case choose
+        /// Reload: your edits go.
+        case reload
+        /// Keep mine: theirs is overwritten.
+        case overwrite
+    }
+
+    /// A dialog's binding: shown while `stage` is `which`; closing it (any
+    /// way) leaves the stage unless a button already moved on.
+    private func shown(_ which: Stage) -> Binding<Bool> {
+        Binding(get: { stage == which }, set: { if !$0 && stage == which { stage = nil } })
+    }
+
+    /// The next question, once the one before has gone.
+    private func ask(_ next: Stage) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { stage = next }
+    }
     /// Bumped when the text is replaced from outside (a reload): the editor takes it.
     @State private var generation = 0
 
@@ -65,28 +85,28 @@ struct NoteEditor: View {
         } message: {
             Text("Your edits to \(name) were not saved.")
         }
-        .alert("This note changed elsewhere", isPresented: Binding(get: { conflict != nil && !askReload && !askOverwrite }, set: { if !$0 && !askReload && !askOverwrite { conflict = nil } })) {
-            Button("Reload theirs…") { askReload = true }
-            Button("Keep mine…") { askOverwrite = true }
-            Button("Keep editing", role: .cancel) { conflict = nil }
+        .alert("This note changed elsewhere", isPresented: shown(.choose)) {
+            Button("Reload theirs…") { ask(.reload) }
+            Button("Keep mine…") { ask(.overwrite) }
+            Button("Keep editing", role: .cancel) {}
         } message: {
             Text("Since you opened it, \(name) was changed on \(connection.server.name) (by an agent, a window or another phone). Nothing was written.")
         }
-        .confirmationDialog("Load the note as it is now?", isPresented: $askReload, titleVisibility: .visible) {
+        .confirmationDialog("Load the note as it is now?", isPresented: shown(.reload), titleVisibility: .visible) {
             Button("Discard my edits and reload", role: .destructive) {
                 if let conflict { take(text: conflict.text, rev: conflict.rev) }
                 conflict = nil
             }
-            Button("Cancel", role: .cancel) { conflict = nil }
+            Button("Cancel", role: .cancel) {}
         } message: {
             Text("Your edits are lost.")
         }
-        .confirmationDialog("Overwrite the other change?", isPresented: $askOverwrite, titleVisibility: .visible) {
+        .confirmationDialog("Overwrite the other change?", isPresented: shown(.overwrite), titleVisibility: .visible) {
             Button("Overwrite with mine", role: .destructive) {
                 if let conflict { save(base: conflict.rev) }
                 conflict = nil
             }
-            Button("Cancel", role: .cancel) { conflict = nil }
+            Button("Cancel", role: .cancel) {}
         } message: {
             Text("What was changed elsewhere is replaced by your text.")
         }
@@ -152,6 +172,7 @@ struct NoteEditor: View {
             } catch let CoreError.Conflict(_, now, rev) {
                 saving = false
                 conflict = (now, rev)
+                stage = .choose
             } catch {
                 saving = false
                 self.error = describe(error)
