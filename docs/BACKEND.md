@@ -82,7 +82,7 @@ the connection dropped while waiting).
 | `WorktreeAdd { root, path, new_branch, base }` | `Done` | new worktree session |
 | `HasHistory { agent, id }` | `Flag` | can a Copilot session be forked |
 | `Fork { parent, child, name, cwd }` | `Done` | forked Copilot subsession |
-| `Transcript { agent, session, parent, agent_key, cwd, limit }` | `Transcript(Transcript)`: `entries` oldest first (prompt, answer, tool call with a few words of arguments and the start of its result or exit code, note), `truncated` (only the newest part was read), `running` (an unfinished turn or open tool call), `note`. `session` is the agent's own id; `agent_key` a subagent inside its history (Copilot `agentId`, Claude Code `Agent` call id); OpenCode children are their own `session` with `parent`. Bounded: the newest 2 MiB of a JSONL history, the newest 150 OpenCode messages by index (refused without OpenCode's indexes) | the transcript inspector, every 1.5 s while the conversation runs, else every 5 s (docs/AGENTS.md) |
+| `Transcript { agent, session, parent, agent_key, cwd, limit }` | `Transcript(Transcript)`: `entries` oldest first (prompt, answer, tool call with a few words of arguments and the start of its result or exit code, note), `truncated` (only the newest part was read), `running` (an unfinished turn or open tool call), `note`. `session` is the agent's own id; `agent_key` a subagent inside its history (Copilot `agentId`, Claude Code `Agent` call id); OpenCode children are their own `session` with `parent`. Bounded: the newest 2 MiB of a JSONL history, the newest 150 OpenCode messages by index (refused without OpenCode's indexes) | the transcript inspector, every 1.5 s while the conversation runs, else every 5 s (docs/AGENT-PROVIDERS.md) |
 | `PrepareGroup { group }` | `Done` | group folder chosen, "Open AI docs / human outputs" |
 | `EnsureCatalog { folder }` | `Text` (path) | "Edit events…" |
 | `DoctorFolder` | `Text` (`<data>\factory`, created) | the automation doctor's group |
@@ -109,7 +109,7 @@ the connection dropped while waiting).
 | `NoteRename { from, to, roots }` | `Done`; never over another file, also one that appears meanwhile (a change of case only is allowed), never a folder into itself | *Rename…*, *Move to…* |
 | `NoteTrash { path, root }` | `Done`: moved to `<root>/.trash/<ms>-<name>` (`<ms>-<n>-<name>` when taken) | *Delete* in the explorer |
 | `NoteSearch { roots, query, limit }` | `NoteHits(Vec<Hit { path, line, text }>)`: case-insensitive matches in file names (`line` 0) and in the lines of text files (Markdown, HTML and known text extensions, at most 2 MiB each; the line shortened to 200 characters around the match); `.trash`, `.git`, `node_modules` and links skipped, and the contents of files only in the cloud (OneDrive placeholders: reading would download them; listings classify them by folder); a root inside another searched once; at most `limit` (1 to 500) hits, 20,000 files, 50,000 names a folder, 256 MiB and 10 s | backlinks, `[[` completion, opening a `[[name]]`, the phone's search |
-| `SkillSources { dirs, canvas, folders }` | `SkillSources(Vec<SkillSource>)`: each source (`kind`: `Canvas`, `Group { id, name }` (`id` empty: every session's), `Project { root }`, `Personal { agent }`, `Library`), its folder, the agents that load it, the folders read with their counts, any problem, and its skills (name, description, SKILL.md, the agents that load it, its folder, any problem). `dirs`: the canvas's working folders (each one's project is the nearest folder holding `.git`, else itself; at most 200 folders, 40 projects); `folders`: `FolderSet { group, name, dirs }` (at most 20 folders each); `canvas`: its id (the library; an invalid id lists none). Personal sources for the agents installed where the service runs. Read only: SKILL.md front matter from the first 8 KB, at most 200 skills a folder, a few levels deep (docs/AGENTS.md, *Where agents find skills*) | the ✦ Skills view (on opening it and ⟳), the skill folders editor (counts, and checking a folder before it is added) |
+| `SkillSources { dirs, canvas, folders }` | `SkillSources(Vec<SkillSource>)`: each source (`kind`: `Canvas`, `Group { id, name }` (`id` empty: every session's), `Project { root }`, `Personal { agent }`, `Library`), its folder, the agents that load it, the folders read with their counts, any problem, and its skills (name, description, SKILL.md, the agents that load it, its folder, any problem). `dirs`: the canvas's working folders (each one's project is the nearest folder holding `.git`, else itself; at most 200 folders, 40 projects); `folders`: `FolderSet { group, name, dirs }` (at most 20 folders each); `canvas`: its id (the library; an invalid id lists none). Personal sources for the agents installed where the service runs. Read only: SKILL.md front matter from the first 8 KB, at most 200 skills a folder, a few levels deep (docs/AGENT-PROVIDERS.md, *Where agents find skills*) | the ✦ Skills view (on opening it and ⟳), the skill folders editor (counts, and checking a folder before it is added) |
 
 Paths are absolute paths on the service's machine. Every notebook request
 refuses relative paths and `.` or `..` components. The reads (`NotebookList`,
@@ -284,7 +284,7 @@ of the canvas. Canvas-wide agents can put effects on any box of the canvas
 ## Skills and skill folders on the wire
 
 The ✦ Skills view asks the backend (`SkillSources`); group skill folders are
-launch defaults (docs/AGENTS.md, *Group skill folders*):
+launch defaults (docs/AGENT-PROVIDERS.md, *Group skill folders*):
 
 | Where | Addition | An older peer |
 |---|---|---|
@@ -310,7 +310,7 @@ reads it for `pr list`). Everything is JSON with defaults:
 | `<home>/bus/answers/<request>.json` | `{ok, message, state}`: the service's answer the command waits for (10 s; removed by the command, stale ones after an hour) | — |
 | `ClientMsg::Bus` | `{"action": "prs", "op": …}` from windows (the panel's buttons), handled as the same request from you | ignores unknown actions |
 | `ServiceMsg::Bus` (`bus::Snapshot`) | `prs`: a `PrsView` (canvas id, the running coordinators, why monitoring is paused, their permissions, the tracked pull requests without watermarks, the last 6 follow-ups each); absent while the canvas tracks nothing and has no coordinator | ignores it |
-| bus events | `pr.tracked`, `pr.comment.new`, `pr.checks.failed`, `pr.approved`, `pr.changes_requested`, `pr.merged`, `pr.closed` from the PR monitor, with the owner as `source` and the canvas id set (see AGENTS.md) | ordinary events |
+| bus events | `pr.tracked`, `pr.comment.new`, `pr.checks.failed`, `pr.approved`, `pr.changes_requested`, `pr.merged`, `pr.closed` from the PR monitor, with the owner as `source` and the canvas id set (see AGENT-PROVIDERS.md) | ordinary events |
 | mailbox | follow-ups are `Mail` with the dispatch's id (`d-…`), so delivery (one per bus pass, idle owners only) confirms them | — |
 | Reports spool | the service spools its own short messages (`reports::notice`): follow-up changes and monitor news in the thread `pr:<key>` | — |
 
@@ -397,7 +397,7 @@ a service whose `TodoOp::Claim` has no `session` field ignores it and claims
 the todo for the requester instead of the session (clients and service come
 from one build). Agents get `COPILOT_CANVAS_AGENT` and
 `COPILOT_CANVAS_SESSION_AGENT` from the service that launches them
-(docs/AGENTS.md).
+(docs/AGENT-PROVIDERS.md).
 
 ## Per-client preferences
 

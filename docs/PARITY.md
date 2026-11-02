@@ -8,7 +8,7 @@ cargo build --release
 target\release\copilot-canvas.exe selftest --client gui --parity
 ```
 
-It takes about 255 s on the development machine (rows 40b, 42 and 43 wait out event debounces, an owner's
+It takes about 270 s on the development machine (rows 40b, 42 and 43 wait out event debounces, an owner's
 20 idle seconds and stand-in agent runs; RTX 3070), prints each check as it runs and ends with the table below;
 `CANVAS_GUI_SCREENS=DIR` keeps the PNG captures the checks inspect.
 `CANVAS_PARITY_ROWS=41,41b` (a comma-separated list of row numbers) runs only

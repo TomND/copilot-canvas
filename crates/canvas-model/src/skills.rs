@@ -1,6 +1,6 @@
 //! Where the skills of a canvas's sessions come from and which agents load
 //! them: the folders each agent CLI reads by itself (from their official
-//! docs; the table and its sources are in docs/AGENTS.md), the projects of
+//! docs; the table and its sources are in docs/AGENT-PROVIDERS.md), the projects of
 //! the canvas's sessions, the canvas plugin, group skill folders, personal
 //! folders and the canvas library. The backend lists them
 //! (`Request::SkillSources`); before a launch the service copies a group's
@@ -137,7 +137,7 @@ pub enum Reach {
 }
 
 /// The project skill folders an agent reads by itself, as its docs say
-/// (docs/AGENTS.md, *Where agents find skills*).
+/// (docs/AGENT-PROVIDERS.md, *Where agents find skills*).
 pub fn project_folders(kind: AgentKind) -> &'static [(&'static str, Reach)] {
     match kind {
         // `.claude/skills` where it starts and in every parent up to the repository root.

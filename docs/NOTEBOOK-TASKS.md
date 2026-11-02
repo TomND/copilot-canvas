@@ -2,7 +2,7 @@
 
 Status: **implemented** on 2026-10-31 (§1 to §6; the iPhone app's Swift
 screens are not, §7). User documentation: README (*Notebook*, *Todos*, the
-feature reference), docs/GUI.md, docs/BACKEND.md, docs/AGENTS.md,
+feature reference), docs/GUI.md, docs/BACKEND.md, docs/AGENT-PROVIDERS.md,
 docs/REMOTE.md, docs/IOS-STATUS.md.
 
 Approved by the owner on 2026-10-31 (every recommended option of the

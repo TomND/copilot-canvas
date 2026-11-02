@@ -1,4 +1,6 @@
-# Agents
+# Agent providers
+
+(How the canvas runs the agent CLIs. Instructions for agents working on this repository are in the root [AGENTS.md](../AGENTS.md).)
 
 The canvas hosts three agent CLIs: **GitHub Copilot CLI**, **OpenCode** and
 **Claude Code**. Each is a `Provider` (`crates/canvas-agents/src/agents/`):

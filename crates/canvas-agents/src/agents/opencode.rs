@@ -338,9 +338,24 @@ fn merge(base: &mut Value, overlay: Value) {
                 }
             }
         }
-        (Value::Array(base), Value::Array(overlay)) => base.extend(overlay),
+        // Each entry once: a service started inside a canvas OpenCode session
+        // inherits the canvas's own config (its skills path) and adds it again.
+        (Value::Array(base), Value::Array(overlay)) => {
+            for value in overlay {
+                if !base.contains(&value) {
+                    base.push(value);
+                }
+            }
+        }
         (base, overlay) => *base = overlay,
     }
+}
+
+/// The service's own value of `name`. Unit tests see none: they must not
+/// depend on the process that runs them (a canvas OpenCode session sets
+/// `OPENCODE_CONFIG_CONTENT` itself).
+fn ambient(name: &str) -> Option<String> {
+    if cfg!(test) { None } else { std::env::var(name).ok() }
 }
 
 /// `overlay` merged into the JSON value of `name` the child would otherwise
@@ -348,7 +363,7 @@ fn merge(base: &mut Value, overlay: Value) {
 /// launch entries; a `-NAME` entry removes it). Malformed or non-object values count as `{}`.
 fn merged_env(name: &str, env: &[(String, String)], overlay: Value) -> String {
     let removed = format!("-{name}");
-    let mut text = std::env::var(name).ok();
+    let mut text = ambient(name);
     for (key, value) in env {
         if *key == name {
             text = Some(value.clone());
@@ -706,6 +721,10 @@ mod tests {
         let env = vec![("OPENCODE_PERMISSION".to_owned(), "{not json".to_owned()), ("-OPENCODE_CONFIG_CONTENT".to_owned(), String::new())];
         assert_eq!(merged_env("OPENCODE_PERMISSION", &env, json!({ "a": 1 })), r#"{"a":1}"#);
         assert_eq!(merged_env("OPENCODE_CONFIG_CONTENT", &env, json!({ "b": 2 })), r#"{"b":2}"#);
+        // A path the inherited config already has is not added twice.
+        let inherited = vec![("OPENCODE_CONFIG_CONTENT".to_owned(), r#"{"skills":{"paths":["C:/h/plugin/skills"]}}"#.to_owned())];
+        let merged: Value = serde_json::from_str(&merged_env("OPENCODE_CONFIG_CONTENT", &inherited, json!({ "skills": { "paths": ["C:/h/plugin/skills", "C:/g/skills"] } }))).unwrap();
+        assert_eq!(merged["skills"]["paths"], json!(["C:/h/plugin/skills", "C:/g/skills"]));
     }
 
     #[test]

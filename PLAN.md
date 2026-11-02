@@ -42,7 +42,7 @@ Validated by the owner on 2026-10-28, on the real setup:
 
 Also verified here: OpenCode end to end through the canvas with a free model
 (`selftest agent --agent opencode --prompt`: re-keying, status, needs-you,
-subagents, wheel, push detection, resume, passive runs; docs/AGENTS.md);
+subagents, wheel, push detection, resume, passive runs; docs/AGENT-PROVIDERS.md);
 Claude Code launched and stopped through the canvas, never prompted.
 
 Still running or time-gated:

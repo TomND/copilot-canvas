@@ -356,7 +356,7 @@ Mouse positions are fractional cells; wheel pixel deltas accumulate into
 notches (three rows each). Ctrl+V and Shift+Insert outside a terminal paste
 the clipboard into the focused field; in a terminal the core pastes (or
 sends Ctrl+V for an image) as in the TUI: one paste without its trailing
-line break (`docs/AGENTS.md#pasting`). The GUI needs no burst detection:
+line break (`docs/AGENT-PROVIDERS.md#pasting`). The GUI needs no burst detection:
 its clipboard paste is one event (the TUI's console delivers a paste as
 key presses, see `canvas_core::input::coalesce`).
 
@@ -729,7 +729,7 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
     through an echo terminal while N sessions burn CPU, once with the
     service's priority manager and once with `COPILOT_CANVAS_NO_PRIORITY=1`.
 - `copilot-canvas selftest --client gui --hardening`: nine checks with a table
-  (about 35 s): the toolbar's counts at 170 columns, overlapping boxes, a
+  (about 32 s): the toolbar's counts at 170 columns, overlapping boxes, a
   simulated and a real (destroyed) device loss with identical PNGs before and
   after, a DPI change and back (identical PNG, centre kept), window placement
   across restarts and a gone monitor, the UIA tree read with the
@@ -740,7 +740,7 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   PLAN §8 plus the GUI-only features, in a sandbox with a stand-in Copilot
   CLI, and prints the table (`docs/PARITY.md`).
 - `copilot-canvas selftest --client gui --golden [--update]`: golden
-  screenshots with a tolerant image diff (about 15 s). The GUI runs at
+  screenshots with a tolerant image diff (about 30 s). The GUI runs at
   170 × 46 cells on scripted states that depend neither on the machine's data
   nor on the clock: the demo canvas (`demo-canvas`), zoomed out to 50 %
   (`demo-zoom-50`), a box's context menu (`demo-context-menu`), the
