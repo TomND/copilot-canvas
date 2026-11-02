@@ -1,7 +1,8 @@
 //! GTK 3, WebKitGTK 4.1 and their libraries loaded at run time (`dlopen`):
 //! the HTML view's helper needs them, the GUI does not, and a machine
 //! without WebKitGTK still runs the GUI (reports then show as formatted
-//! text). Only the few functions the helper calls are declared.
+//! text). Only the few functions the helper calls are declared (WebKitGTK
+//! 2.36 or later: custom URI scheme responses with status and headers).
 
 #![allow(non_camel_case_types)]
 
@@ -55,6 +56,14 @@ library!(Gtk {
         g_bytes_unref: unsafe extern "C" fn(gpointer);
         g_free: unsafe extern "C" fn(gpointer);
         g_error_free: unsafe extern "C" fn(*mut GError);
+        g_filename_to_uri: unsafe extern "C" fn(*const c_char, *const c_char, *mut *mut GError) -> *mut c_char;
+    }
+    gio: ["libgio-2.0.so.0"] {
+        g_memory_input_stream_new_from_bytes: unsafe extern "C" fn(gpointer) -> gpointer;
+    }
+    soup: ["libsoup-3.0.so.0"] {
+        soup_message_headers_new: unsafe extern "C" fn(c_int) -> gpointer;
+        soup_message_headers_append: unsafe extern "C" fn(gpointer, *const c_char, *const c_char);
     }
     gobject: ["libgobject-2.0.so.0"] {
         g_object_new: unsafe extern "C" fn(GType, *const c_char, ...) -> gpointer;
@@ -84,6 +93,13 @@ library!(Gtk {
         gtk_widget_event: unsafe extern "C" fn(gpointer, gpointer) -> gboolean;
         gtk_widget_grab_focus: unsafe extern "C" fn(gpointer);
         gtk_widget_draw: unsafe extern "C" fn(gpointer, gpointer);
+        gtk_print_settings_new: unsafe extern "C" fn() -> gpointer;
+        gtk_print_settings_set: unsafe extern "C" fn(gpointer, *const c_char, *const c_char);
+        gtk_print_settings_set_printer: unsafe extern "C" fn(gpointer, *const c_char);
+        gtk_enumerate_printers: unsafe extern "C" fn(GCallback, gpointer, gpointer, gboolean);
+        gtk_printer_get_name: unsafe extern "C" fn(gpointer) -> *const c_char;
+        gtk_printer_accepts_pdf: unsafe extern "C" fn(gpointer) -> gboolean;
+        gtk_printer_is_virtual: unsafe extern "C" fn(gpointer) -> gboolean;
     }
     cairo: ["libcairo.so.2"] {
         cairo_image_surface_create: unsafe extern "C" fn(c_int, c_int, c_int) -> gpointer;
@@ -132,6 +148,21 @@ library!(Gtk {
         webkit_policy_decision_ignore: unsafe extern "C" fn(gpointer);
         webkit_permission_request_deny: unsafe extern "C" fn(gpointer);
         webkit_download_cancel: unsafe extern "C" fn(gpointer);
+        webkit_web_view_load_uri: unsafe extern "C" fn(gpointer, *const c_char);
+        webkit_web_context_register_uri_scheme: unsafe extern "C" fn(gpointer, *const c_char, GCallback, gpointer, gpointer);
+        webkit_web_context_get_security_manager: unsafe extern "C" fn(gpointer) -> gpointer;
+        webkit_security_manager_register_uri_scheme_as_secure: unsafe extern "C" fn(gpointer, *const c_char);
+        webkit_security_manager_register_uri_scheme_as_cors_enabled: unsafe extern "C" fn(gpointer, *const c_char);
+        webkit_uri_scheme_request_get_uri: unsafe extern "C" fn(gpointer) -> *const c_char;
+        webkit_uri_scheme_request_get_http_method: unsafe extern "C" fn(gpointer) -> *const c_char;
+        webkit_uri_scheme_request_finish_with_response: unsafe extern "C" fn(gpointer, gpointer);
+        webkit_uri_scheme_response_new: unsafe extern "C" fn(gpointer, i64) -> gpointer;
+        webkit_uri_scheme_response_set_status: unsafe extern "C" fn(gpointer, c_uint, *const c_char);
+        webkit_uri_scheme_response_set_content_type: unsafe extern "C" fn(gpointer, *const c_char);
+        webkit_uri_scheme_response_set_http_headers: unsafe extern "C" fn(gpointer, gpointer);
+        webkit_print_operation_new: unsafe extern "C" fn(gpointer) -> gpointer;
+        webkit_print_operation_set_print_settings: unsafe extern "C" fn(gpointer, gpointer);
+        webkit_print_operation_print: unsafe extern "C" fn(gpointer);
     }
 });
 
@@ -225,3 +256,6 @@ pub const WEBKIT_NAVIGATION_TYPE_LINK_CLICKED: c_int = 0;
 pub const WEBKIT_CACHE_MODEL_DOCUMENT_VIEWER: c_int = 0;
 pub const WEBKIT_NETWORK_PROXY_MODE_CUSTOM: c_int = 2;
 pub const WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER: c_int = 2;
+pub const WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION: c_int = 0;
+/// `SOUP_MESSAGE_HEADERS_RESPONSE`.
+pub const SOUP_MESSAGE_HEADERS_RESPONSE: c_int = 1;
