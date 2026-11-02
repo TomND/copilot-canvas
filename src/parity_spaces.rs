@@ -223,6 +223,18 @@ pub(super) fn rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
 }
 
 /// T3: the Notebook's editor and the todo canvas under a trackpad.
+/// Ctrl+`digit` and the space's own view in the sidebar (`seen`): an earlier
+/// row may have left the sidebar on another view (41b leaves Reports), which
+/// Alt+1 (slot 1, the space's view) replaces.
+fn space_with_view(gui: &mut Gui, digit: char, what: &str, seen: fn(&str) -> bool) -> Result<()> {
+    gui.chord(digit, &["ctrl"])?;
+    if gui.wait(what, 3, seen).is_err() {
+        gui.chord('1', &["alt"])?;
+        gui.wait(what, 10, seen)?;
+    }
+    Ok(())
+}
+
 fn trackpad_spaces(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     let dir = sb.group_folder.join("human-outputs");
     std::fs::create_dir_all(&dir)?;
@@ -237,8 +249,7 @@ fn trackpad_spaces(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     let spaces = |gui: &Gui| gui.tree().map(|t| t["spaces"].clone());
     let px = |dx: f64, dy: f64, phase: &str| json!({ "phase": phase, "dx": dx * cw, "dy": dy * ch });
     // The note in Source (the editor; Rendered Markdown is the HTML view, which scrolls itself).
-    gui.chord('2', &["ctrl"])?;
-    gui.wait("the Notebook", 10, notebook)?;
+    space_with_view(gui, '2', "the Notebook", notebook)?;
     let at = hit(gui, "Notebook(Refresh)").context("the explorer's ⟳")?;
     gui.click(at, &[])?;
     if gui.wait("long.md in the explorer", 5, |t| t.contains("long.md")).is_err() {
@@ -262,8 +273,7 @@ fn trackpad_spaces(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     wait_for("the note back at its top", 5, || (first(gui) == Some(start)).then_some(()))?;
     // The todo canvas: whole cells on both axes, the content following the fingers.
     std::thread::sleep(Duration::from_millis(400));
-    gui.chord('3', &["ctrl"])?;
-    gui.wait("Tasks", 10, tasks)?;
+    space_with_view(gui, '3', "Tasks", tasks)?;
     let s = spaces(gui)?;
     let main: Vec<f64> = s["main"].as_array().into_iter().flatten().filter_map(Value::as_f64).collect();
     anyhow::ensure!(main.len() == 4, "the todo canvas's area: {s}");
