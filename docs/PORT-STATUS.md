@@ -10,13 +10,18 @@
 > goldens block from 055cef3 on); what is left needs the owner (the checklist
 > under "Owner-only items: macOS").
 >
-> **main's spaces on macOS** (2026-11-02): main's Notebook, Tasks and Spaces
-> and the ✦ Skills view (merged at a640512) are ported: HTML notes in two
-> WKWebViews, the spaces' keys on a Mac keyboard (D8), note renames that
-> never replace, the trackpad in the spaces (D15, row T3), the
-> accessibility check's space tabs. Verified locally (the 45-step self-test
-> in the TUI and the GUI, rows 22, 41, 41b, 41d, 47–50, 48b, 52 and T3, the
-> workspace tests); CI's macOS jobs were waiting for GitHub's macOS runners.
+> **macOS: done again with main's Notebook, Tasks and Spaces** (2026-11-03,
+> branch `macos` at 51310c1, which holds main at d772866 and `linux` at
+> 9e92250; CI run 41568355120 with all 17 jobs green, `ios` and the arm64
+> `linux` job on their one re-run): `macos` with the TUI and GUI self-tests
+> (local and over loopback), automations on launchd, the parity suite
+> blocking (`PASS: 73 rows in 316.1s`, row T3 new), nine hardening checks
+> (the space tabs through NSAccessibility) and eleven goldens (re-recorded
+> with the space tabs and main's two new shots, each looked at); the
+> packages; Linux on three runners and `linux-gui`; Windows' `test`. Ported:
+> HTML notes in two WKWebViews, the spaces' keys on a Mac keyboard (D8),
+> note renames that never replace, the trackpad in the spaces (D15). What
+> is left needs the owner (the checklist under "Owner-only items: macOS").
 >
 > **Linux: done again with main's Notebook, Tasks and Spaces** (2026-11-02,
 > branch `linux` at 1cb978b: main merged at a640512 through `macos`, and
@@ -333,7 +338,7 @@ work resumes after any interruption: read it first, then `git log`.
 
 State per OS: `—` not started · `wip` in progress · `PASS` · `equiv` (the
 plan §6.1 equivalent, documented). macOS: CI `macos` (visible windows on
-the runner's paravirtual GPU), 65 of 65 on 2026-11-01 (run 41271941822). Linux: CI `linux-gui` (X11, Xvfb, Mesa
+the runner's paravirtual GPU), 73 of 73 on 2026-11-03 (run 41568355120, with main's Notebook, Tasks and Spaces rows and T3). Linux: CI `linux-gui` (X11, Xvfb, Mesa
 lavapipe), 70 of 70 rows on 2026-11-02 (run 41526309895, with main's
 Notebook, Tasks and Spaces rows); 41b, T1 and T2 also under Wayland
 (headless weston), where the touchpad rows apply. The new rows' macOS
@@ -393,14 +398,14 @@ column is the same run's `macos` job (its parity suite blocks).
 | 44 | Undo/redo of layout changes | PASS | PASS |
 | 45 | Area selection of subsessions and subagents | PASS | PASS |
 | 46 | Subagents folded into decks by default | PASS | PASS |
-| 41d | HTML notes (two web views, `canvas-notes:`, Print / PDF) | PASS (local) | PASS (WebKitGTK views, `canvas-notes:` scheme, PDF to Downloads) |
-| 47 | Spaces: tabs, Ctrl+1/2/3, Go to, back and forward (main; the old 47 is 51) | PASS (local) | PASS |
-| 48 | Notebook: explorer, reader, editor, quick capture, changes on disk | PASS (local) | PASS |
-| 48b | Notebook and Tasks in remote mode | PASS (local) | PASS |
-| 49 | Tasks: the todo canvas, details, accept, drag | PASS (local) | PASS |
-| 50 | ✎ / ☑ chips and ☑ badges | PASS (local) | PASS |
-| 51 | Dot grid pulse while agents work (WI-023; was 47) | PASS (CI only: presents) | PASS |
-| 52 | ✦ Skills view, group skill folders | PASS (local) | PASS |
+| 41d | HTML notes (two web views, `canvas-notes:`, Print / PDF) | PASS | PASS (WebKitGTK views, `canvas-notes:` scheme, PDF to Downloads) |
+| 47 | Spaces: tabs, Ctrl+1/2/3, Go to, back and forward (main; the old 47 is 51) | PASS | PASS |
+| 48 | Notebook: explorer, reader, editor, quick capture, changes on disk | PASS | PASS |
+| 48b | Notebook and Tasks in remote mode | PASS | PASS |
+| 49 | Tasks: the todo canvas, details, accept, drag | PASS | PASS |
+| 50 | ✎ / ☑ chips and ☑ badges | PASS | PASS |
+| 51 | Dot grid pulse while agents work (WI-023; was 47) | PASS | PASS |
+| 52 | ✦ Skills view, group skill folders | PASS | PASS |
 | G1 | Inline images | PASS | PASS |
 | G2 | Taskbar progress, flash, toasts | PASS | PASS |
 | G3 | File drag and drop | PASS | PASS (Wayland drops: unit tests; owner on a desktop) |
@@ -413,7 +418,7 @@ column is the same run's `macos` job (its parity suite blocks).
 | V6 | Remote group passive sessions | PASS | PASS |
 | T1 | Trackpad on the canvas (D15) | PASS | PASS (Wayland; pan part) |
 | T2 | Trackpad over terminals (D15) | PASS | PASS (Wayland) |
-| T3 | Trackpad in the Notebook and Tasks (D15) | PASS (local) | PASS (Wayland; Command + scroll is Ctrl + scroll, no pinch) |
+| T3 | Trackpad in the Notebook and Tasks (D15) | PASS | PASS (Wayland; Command + scroll is Ctrl + scroll, no pinch) |
 
 ## Decisions taken during the port
 
@@ -702,6 +707,24 @@ column is the same run's `macos` job (its parity suite blocks).
 
 ## Log
 
+- 2026-11-03 (macOS): **CI run 41568355120 of 51310c1: all 17 jobs green**
+  (`macos`: parity 73 of 73, hardening 9 of 9, goldens 11 of 11). On the
+  way: the spaces' status bar named Windows keys on a Mac (c34a65e; the
+  two goldens that show it re-recorded from run 41541623879's captures,
+  e750727, then matched to the pixel); merged main (d772866: main's
+  `TodoOp::EditCheck` / `RemoveCheck`, appended, and the new-note rules
+  in `canvas-model`, used by `canvas-core` and `canvas-mobile`, build and
+  pass on macOS, Linux and Windows) and `linux` (9e92250: T3 under
+  Wayland). Run 41562484628 failed `macos` on canvas-core's heartbeat test
+  (the client's writer thread starved to 3 heartbeats on a busy runner; it
+  now asks for 2, 51310c1, shared). Two flaky tests of the iPhone worker's,
+  each green on its one re-run: canvas-mobile's
+  `the_phone_pairs_connects_and_works_a_real_shell_through_a_websocket`
+  ("timed out waiting for online again", arm64 Linux; `wait_for` drops
+  the events it does not want, so an early Online may be lost) and the iOS
+  UI tests `testNotesOpenFollowLinksAndAreWrittenRenamedAndDeleted` (the
+  saved text on the page) and `testReportsOpenInALockedDownViewAndLinksAskFirst`
+  (also failing on main's run 41537654220). Left to main.
 - 2026-11-02 (macOS): main's spaces ported. The Notebook's note renames
   never replace (`renamex_np`), iCloud placeholders are cloud-only
   (7cde6f0); the D8 keys for the spaces and the note editor (c4fbce9);

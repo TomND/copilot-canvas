@@ -66,9 +66,10 @@ check differs by OS:
   in-process (macOS) or AT-SPI (Linux); macOS has no software renderer, so
   its fallback check expects the clear error instead.
 - macOS on CI (job `macos`, blocking from 055cef3): visible windows on the
-  runner's paravirtual GPU at 1024×768, scale 1; on the run of 98817b7
-  (41271941822) `PASS: 65 rows in 284.0s` (the 63 rows above with T1 and
-  T2), with the nine hardening checks and macOS's nine goldens.
+  runner's paravirtual GPU at 1024×768, scale 1; last run (2026-11-03,
+  41568355120 of 51310c1) `PASS: 73 rows in 316.1s` (the 70 rows with main's
+  Notebook, Tasks and Spaces rows, T1, T2 and T3), with the nine hardening
+  checks and macOS's eleven goldens (re-recorded with the space tabs).
 - Linux on CI (job `linux-gui`, blocking): X11 under Xvfb at 1920×1080 on
   Mesa's lavapipe with a private `dbus-run-session`; last run (2026-11-02,
   41526309895) `PASS: 70 rows in 272.5s` with main's Notebook, Tasks and
