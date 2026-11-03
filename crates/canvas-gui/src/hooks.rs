@@ -5,7 +5,7 @@
 //! `wheel`, `drop`), read the UI (`screen`, `tree`
 //! with the UI Automation nodes, `access`, `size`, `perf`, `platform`),
 //! render offscreen (`png`), hold animations at one frame (`freeze`), set
-//! this window's effects and dot grid pulse (`motion`, `grid_pulse`), manage
+//! this window's effects and working glow (`motion`, `grid_pulse`), manage
 //! windows (`new_window`, `windows`, `close_window`; others take
 //! `"window": n`), simulate hardware events
 //! (`device-lost`, `dpi`), move windows (`place`, `placement`), set the

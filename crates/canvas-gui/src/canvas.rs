@@ -3,8 +3,8 @@
 //! halo and the rubber band. Labels are shaped once and scaled with the zoom;
 //! below a readable size boxes show one compact line, then shapes only.
 //! Loop arcs have a layer of their own ([`paint_loops`]): while their dots
-//! move, a frame repaints only that layer. So do the background and its dot
-//! grid ([`paint_grid`]), which breathes while a session works.
+//! move, a frame repaints only that layer. So does the working glow's layer
+//! ([`paint_glow`]): the lit dots around working sessions, over the grid.
 
 use canvas_core::loops;
 use canvas_core::paint;
@@ -65,16 +65,18 @@ pub(crate) fn rgb(c: Color) -> [u8; 3] {
     theme::rgb(c, theme::FG)
 }
 
-/// The canvas of a frame; animations (loop dots, the grid's pulse) at `clock_ms`.
-pub fn paint(p: &mut Painter, grid: &Grid, model: &CanvasModel, clock_ms: u64) {
+/// The canvas of a frame; animations (loop dots, the working glow) at
+/// `clock_ms`. Returns the glow layer's fingerprint ([`glow_print`]).
+pub fn paint(p: &mut Painter, grid: &Grid, model: &CanvasModel, clock_ms: u64) -> u64 {
     let area = model.area;
     let clip = [area.x as f32 * grid.cell_w, area.y as f32 * grid.cell_h, area.right() as f32 * grid.cell_w, area.bottom() as f32 * grid.cell_h];
     let cx = Ctx { model, grid, clip, dpi: grid.scale };
     let layer = scene::CANVAS;
-    // The background and the dot grid have a layer of their own: while the
-    // grid breathes (a session works), a frame repaints only that. The grid
-    // stays while panning (cheap here; the TUI hides it).
-    background(p, &cx, clock_ms);
+    // The background and the dot grid stay while panning (cheap here; the
+    // TUI hides them). The working glow's lit dots have a layer of their own
+    // above them: while its rings move, a frame repaints only that.
+    background(p, &cx);
+    let print = glow_layer(p, &cx, clock_ms);
     let (ux, uy) = cx.unit();
     let label_px = grid.font_px * model.scale;
     let readable = label_px >= MIN_LABEL * cx.dpi;
@@ -278,6 +280,7 @@ pub fn paint(p: &mut Painter, grid: &Grid, model: &CanvasModel, clock_ms: u64) {
             p.place(layer, key, x, top + i as f32 * size * 1.5, 1.0, rgb(if i == 0 { paint::TEXT } else { paint::MUTED }), clip);
         }
     }
+    print
 }
 
 /// A box label shaped at the grid size (`rel` times) and drawn at the zoom;
@@ -300,15 +303,20 @@ fn halo_pad(cx: &Ctx) -> f32 {
     (0.4 * cx.unit().0).clamp(3.0 * cx.dpi, 8.0 * cx.dpi)
 }
 
-/// The dot grid's dots in view (px centres, on whole pixels): every 6 × 3
-/// world units, thinned out by powers of two when zoomed out.
-fn dot_points(cx: &Ctx) -> Vec<(f32, f32)> {
+/// The dot grid's step (world units): every 6 × 3, doubled until the dots
+/// are at least 26 px apart (zoomed out).
+fn dot_step(cx: &Ctx) -> (f32, f32) {
     let (ux, uy) = cx.unit();
     let mut k = 1.0;
     while 6.0 * k * ux < 26.0 * cx.dpi || 3.0 * k * uy < 26.0 * cx.dpi {
         k *= 2.0;
     }
-    let (sx, sy) = (6.0 * k, 3.0 * k);
+    (6.0 * k, 3.0 * k)
+}
+
+/// The dot grid's dots in view (px centres, on whole pixels).
+fn dot_points(cx: &Ctx) -> Vec<(f32, f32)> {
+    let (sx, sy) = dot_step(cx);
     let v = cx.model.visible();
     let mut points = Vec::new();
     let mut wy = (v.y / sy).floor() * sy;
@@ -324,62 +332,173 @@ fn dot_points(cx: &Ctx) -> Vec<(f32, f32)> {
     points
 }
 
-/// The grid dots' colour at `clock_ms`: their normal colour, lit a little
-/// while a session works.
-fn dot_color(model: &CanvasModel, clock_ms: u64) -> [f32; 4] {
-    theme::rgba(dot_rgb8(model, clock_ms), 1.0)
+/// The radius of a grid dot (px).
+fn dot_radius(cx: &Ctx) -> f32 {
+    (1.0 * cx.dpi).max(1.0)
 }
 
-/// The grid dots' colour at `clock_ms` in whole 8-bit steps (the grid layer
-/// is repainted only when it changes).
-pub fn dot_rgb8(model: &CanvasModel, clock_ms: u64) -> [u8; 3] {
-    canvas_core::pulse::dot_rgb(model.grid_level(clock_ms)).map(|c| c.round() as u8)
-}
-
-/// The canvas background and the dot grid at `clock_ms`, into the grid layer.
-fn background(p: &mut Painter, cx: &Ctx, clock_ms: u64) {
+/// The canvas background and the dot grid at its normal colour, into the
+/// grid layer.
+fn background(p: &mut Painter, cx: &Ctx) {
     let clip = cx.clip;
     p.under(scene::GRID, Quad::rect(clip[0], clip[1], clip[2] - clip[0], clip[3] - clip[1], theme::rgba(BG, 1.0), clip));
-    let color = dot_color(cx.model, clock_ms);
-    let d = (1.0 * cx.dpi).max(1.0);
+    let color = theme::color(paint::FAINT, 1.0);
+    let d = dot_radius(cx);
     for (x, y) in dot_points(cx) {
         p.under(scene::GRID, Quad::rounded(x - d, y - d, 2.0 * d, 2.0 * d, d, color, [0.0; 4], 0.0, clip));
     }
 }
 
-/// The grid layer alone at `clock_ms` (a frame while the grid breathes).
-pub fn paint_grid(p: &mut Painter, grid: &Grid, model: &CanvasModel, clock_ms: u64) {
-    let area = model.area;
-    let clip = [area.x as f32 * grid.cell_w, area.y as f32 * grid.cell_h, area.right() as f32 * grid.cell_w, area.bottom() as f32 * grid.cell_h];
-    background(p, &Ctx { model, grid, clip, dpi: grid.scale }, clock_ms);
+/// A grid dot lit by the working glow.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LitDot {
+    /// World point.
+    pub world: (f32, f32),
+    /// Centre (px, on whole pixels).
+    pub x: f32,
+    pub y: f32,
+    pub level: f32,
+    pub rgb: [u8; 3],
+    /// Radius (px): up to 1 + `glow::GROW` times a normal dot's.
+    pub radius: f32,
 }
 
-/// The grid's pulse at `clock_ms` as the test hooks report it: its level and
-/// colour, whether work runs and how far it has faded in, and up to `limit`
-/// dots (px centres) clear of groups, boxes and the canvas's edges, where
-/// their colour can be sampled.
-pub fn grid_info(grid: &Grid, model: &CanvasModel, clock_ms: u64, limit: usize) -> serde_json::Value {
+/// The working glow's lit dots at `clock_ms`. Only the grid dots within
+/// reach of a working box (and in view) are computed; those that keep their
+/// normal colour are left out.
+pub(crate) fn lit_dots(cx: &Ctx, clock_ms: u64) -> Vec<LitDot> {
+    let Some(glow) = &cx.model.glow else { return Vec::new() };
+    let (sx, sy) = dot_step(cx);
+    let v = cx.model.visible();
+    let mut cells: Vec<(i64, i64)> = Vec::new();
+    for source in &glow.sources {
+        let r = canvas_core::glow::Glow::reach(source.rect);
+        let (x0, x1, y0, y1) = (r.x.max(v.x), r.right().min(v.right()), r.y.max(v.y), r.bottom().min(v.bottom()));
+        if x0 > x1 || y0 > y1 {
+            continue;
+        }
+        for j in (y0 / sy).floor() as i64..=(y1 / sy).ceil() as i64 {
+            for i in (x0 / sx).floor() as i64..=(x1 / sx).ceil() as i64 {
+                cells.push((i, j));
+            }
+        }
+    }
+    cells.sort_unstable();
+    cells.dedup();
+    let normal = rgb(paint::FAINT);
+    let d = dot_radius(cx);
+    cells
+        .into_iter()
+        .filter_map(|(i, j)| {
+            let world = (i as f32 * sx, j as f32 * sy);
+            let level = glow.level(world.0, world.1, clock_ms);
+            let rgb = canvas_core::glow::dot_rgb(level).map(|c| c.round() as u8);
+            if rgb == normal {
+                return None;
+            }
+            let (x, y) = cx.px(world.0, world.1);
+            let radius = ((d * (1.0 + canvas_core::glow::GROW * level)) * 8.0).round() / 8.0;
+            Some(LitDot { world, x: x.round(), y: y.round(), level, rgb, radius })
+        })
+        .collect()
+}
+
+/// A fingerprint of what the glow layer shows (0: nothing): a glow frame
+/// repaints only when it changes.
+pub fn glow_print(dots: &[LitDot]) -> u64 {
+    dots.iter().fold(if dots.is_empty() { 0 } else { 0xcbf2_9ce4_8422_2325 }, |h, dot| {
+        let parts = [dot.x.to_bits(), dot.y.to_bits(), u32::from_le_bytes([dot.rgb[0], dot.rgb[1], dot.rgb[2], 0]), dot.radius.to_bits()];
+        parts.iter().fold(h, |h, v| (h ^ *v as u64).wrapping_mul(0x0100_0000_01b3))
+    })
+}
+
+/// The working glow at `clock_ms` into the glow layer; returns its
+/// fingerprint ([`glow_print`]).
+fn glow_layer(p: &mut Painter, cx: &Ctx, clock_ms: u64) -> u64 {
+    let dots = lit_dots(cx, clock_ms);
+    for dot in &dots {
+        let r = dot.radius;
+        p.under(scene::GLOW, Quad::rounded(dot.x - r, dot.y - r, 2.0 * r, 2.0 * r, r, theme::rgba(dot.rgb, 1.0), [0.0; 4], 0.0, cx.clip));
+    }
+    glow_print(&dots)
+}
+
+/// The glow layer alone at `clock_ms` (a glow frame); returns its fingerprint.
+pub fn paint_glow(p: &mut Painter, grid: &Grid, model: &CanvasModel, clock_ms: u64) -> u64 {
+    let area = model.area;
+    let clip = [area.x as f32 * grid.cell_w, area.y as f32 * grid.cell_h, area.right() as f32 * grid.cell_w, area.bottom() as f32 * grid.cell_h];
+    glow_layer(p, &Ctx { model, grid, clip, dpi: grid.scale }, clock_ms)
+}
+
+/// What the glow layer shows at `clock_ms` ([`glow_print`]), without painting.
+pub fn glow_print_at(grid: &Grid, model: &CanvasModel, clock_ms: u64) -> u64 {
+    let area = model.area;
+    let clip = [area.x as f32 * grid.cell_w, area.y as f32 * grid.cell_h, area.right() as f32 * grid.cell_w, area.bottom() as f32 * grid.cell_h];
+    glow_print(&lit_dots(&Ctx { model, grid, clip, dpi: grid.scale }, clock_ms))
+}
+
+/// The working glow at `clock_ms` as the test hooks report it: whether it
+/// moves and changes, each source (its box in px, fade, rings: front in
+/// world units and strength), how many dots it lights, and up to `limit` grid
+/// dots clear of groups, boxes and the canvas's edges where colours can be
+/// sampled, nearest a box first, with a few far ones: px centre, distance
+/// from the nearest box's outline (world units), the glow's level and colour
+/// there.
+pub fn glow_info(grid: &Grid, model: &CanvasModel, clock_ms: u64, limit: usize) -> serde_json::Value {
+    use canvas_core::glow;
     let area = model.area;
     let clip = [area.x as f32 * grid.cell_w, area.y as f32 * grid.cell_h, area.right() as f32 * grid.cell_w, area.bottom() as f32 * grid.cell_h];
     let cx = Ctx { model, grid, clip, dpi: grid.scale };
-    let margin = 4.0 * cx.dpi;
-    let covered = |x: f32, y: f32| {
-        let near = |r: [f32; 4], m: f32| x >= r[0] - m && x <= r[0] + r[2] + m && y >= r[1] - m && y <= r[1] + r[3] + m;
-        model.groups.iter().any(|g| near(cx.rect(g.rect), margin)) || model.boxes.iter().any(|b| near(cx.rect(b.rect), margin + 4.0 * cx.unit().0))
-    };
-    let dots: Vec<[f32; 2]> = dot_points(&cx)
-        .into_iter()
-        .filter(|&(x, y)| x > clip[0] + margin && x < clip[2] - margin && y > clip[1] + margin && y < clip[3] - margin && !covered(x, y))
-        .take(limit)
-        .map(|(x, y)| [x, y])
+    let sources: Vec<serde_json::Value> = model
+        .glow
+        .iter()
+        .flat_map(|g| &g.sources)
+        .map(|s| {
+            serde_json::json!({
+                "id": s.id,
+                "rect": cx.rect(s.rect),
+                "on": s.fade.on,
+                "envelope": s.fade.envelope(clock_ms),
+                "offset": s.offset,
+                "rings": s.rings(clock_ms).map(|(front, strength)| [front, strength]).collect::<Vec<_>>(),
+            })
+        })
         .collect();
-    let level = model.grid_level(clock_ms);
+    let mut dots = Vec::new();
+    if limit > 0 {
+        let margin = 4.0 * cx.dpi;
+        let covered = |x: f32, y: f32| {
+            let near = |r: [f32; 4], m: f32| x >= r[0] - m && x <= r[0] + r[2] + m && y >= r[1] - m && y <= r[1] + r[3] + m;
+            model.groups.iter().any(|g| near(cx.rect(g.rect), margin)) || model.boxes.iter().any(|b| near(cx.rect(b.rect), margin))
+        };
+        let (sx, sy) = dot_step(&cx);
+        let v = model.visible();
+        let mut all: Vec<(f32, (f32, f32), (f32, f32))> = Vec::new();
+        for j in (v.y / sy).floor() as i64..=(v.bottom() / sy).ceil() as i64 {
+            for i in (v.x / sx).floor() as i64..=(v.right() / sx).ceil() as i64 {
+                let world = (i as f32 * sx, j as f32 * sy);
+                let (x, y) = cx.px(world.0, world.1);
+                let (x, y) = (x.round(), y.round());
+                if x > clip[0] + margin && x < clip[2] - margin && y > clip[1] + margin && y < clip[3] - margin && !covered(x, y) {
+                    let d = model.boxes.iter().map(|b| glow::distance(b.rect, world.0, world.1)).fold(f32::INFINITY, f32::min);
+                    all.push((d, world, (x, y)));
+                }
+            }
+        }
+        all.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let far = (limit / 4).min(all.len());
+        let near = (limit - far).min(all.len() - far);
+        for (d, world, (x, y)) in all[..near].iter().chain(&all[all.len() - far..]) {
+            let level = model.glow_level(world.0, world.1, clock_ms);
+            dots.push(serde_json::json!({ "x": x, "y": y, "d": if d.is_finite() { Some(*d) } else { None }, "level": level, "rgb": glow::dot_rgb(level).map(|c| c.round() as u8) }));
+        }
+    }
     serde_json::json!({
-        "level": level,
-        "rgb": dot_rgb8(model, clock_ms),
-        "on": model.pulse.map(|f| f.on),
-        "envelope": model.pulse.map(|f| f.envelope(clock_ms)),
-        "busy": model.grid_busy(clock_ms),
+        "active": model.glow.is_some(),
+        "moving": model.glow.as_ref().map(|g| g.moving),
+        "busy": model.glow_busy(clock_ms),
+        "sources": sources,
+        "lit": lit_dots(&cx, clock_ms).len(),
         "dots": dots,
     })
 }
@@ -843,29 +962,86 @@ mod tests {
             motion,
             clock_ms: 0,
             frozen: false,
-            pulse: None,
+            glow: None,
         }
     }
 
     #[test]
-    fn the_grid_dots_breathe_with_the_pulse_and_hold_their_colour_without_it() {
-        use canvas_core::pulse::{AMPLITUDE, Fade, PERIOD_MS};
+    fn the_glow_lights_only_the_dots_near_a_working_box() {
+        use canvas_core::glow::{Fade, GROW, Glow, PERIOD_MS, REACH, Source, distance};
         let grid = Grid::new(0.6, 1.25);
         let mut model = loop_model(Motion::On, 1.0);
-        let still = theme::color(paint::FAINT, 1.0);
-        assert_eq!(dot_color(&model, PERIOD_MS / 2), still, "no pulse: the normal colour, exactly as before");
-        model.pulse = Some(Fade { on: true, since: None });
-        assert_eq!(dot_color(&model, 10 * PERIOD_MS), still, "the start of a breath");
-        let top = dot_color(&model, 10 * PERIOD_MS + PERIOD_MS / 2);
-        assert!(top[2] > still[2] && top[0] > still[0] && top[2] - still[2] > top[0] - still[0], "lighter and a little cooler: {top:?}");
-        let info = grid_info(&grid, &model, 10 * PERIOD_MS + PERIOD_MS / 2, 8);
-        assert!((info["level"].as_f64().unwrap() - AMPLITUDE as f64).abs() < 1e-5 && info["on"] == true);
+        let cx = |model: &CanvasModel| -> (Vec<LitDot>, usize) {
+            let c = Ctx { model, grid: &grid, clip: [0.0, 0.0, 120.0 * grid.cell_w, 40.0 * grid.cell_h], dpi: grid.scale };
+            (lit_dots(&c, 1_000 * PERIOD_MS + 300), dot_points(&c).len())
+        };
+        assert!(cx(&model).0.is_empty() && glow_print(&[]) == 0, "nothing works: nothing lit, exactly as before");
+        let rect = WRect::new(20.0, 12.0, 30.0, 4.0);
+        let source = |id: &str, rect: WRect| Source { id: id.into(), rect, fade: Fade::SETTLED, offset: 0 };
+        model.glow = Some(Glow { sources: vec![source("s", rect)], moving: true });
+        let (lit, all) = cx(&model);
+        assert!(!lit.is_empty() && lit.len() * 4 < all, "{} of {all} dots lit", lit.len());
+        let normal = dot_radius(&Ctx { model: &model, grid: &grid, clip: [0.0; 4], dpi: grid.scale });
+        for dot in &lit {
+            assert!(distance(rect, dot.world.0, dot.world.1) < REACH, "only near the box: {dot:?}");
+            assert!(dot.radius >= normal && dot.radius <= normal * (1.0 + GROW) + 0.125 && dot.x.fract() == 0.0 && dot.y.fract() == 0.0);
+            assert!(dot.rgb[2] > dot.rgb[0] && dot.rgb != rgb(paint::FAINT), "towards the working blue: {dot:?}");
+        }
+        // The rings move: another instant, other dots; the same instant, the same layer.
+        let at = |model: &CanvasModel, t: u64| glow_print_at(&grid, model, 1_000 * PERIOD_MS + t);
+        assert!(at(&model, 300) != at(&model, 900) && at(&model, 300) == at(&model, 300 + PERIOD_MS));
+        // Two boxes: the dots near either.
+        let other = WRect::new(80.0, 30.0, 30.0, 4.0);
+        model.glow = Some(Glow { sources: vec![source("s", rect), source("t", other)], moving: true });
+        let (both, _) = cx(&model);
+        assert!(both.len() > lit.len() && both.iter().any(|d| distance(other, d.world.0, d.world.1) < 4.0));
+        // Reduced motion: lit and still.
+        model.glow = Some(Glow { sources: vec![source("s", rect)], moving: false });
+        assert!(!cx(&model).0.is_empty() && at(&model, 300) == at(&model, 900));
+        // The hooks' samples: whole pixels, nearest first, near lit and far not.
+        model.glow = Some(Glow { sources: vec![source("s", rect)], moving: false });
+        model.boxes.push(box_model("s", rect));
+        let info = glow_info(&grid, &model, 1_000 * PERIOD_MS, 40);
         let dots = info["dots"].as_array().unwrap();
-        assert_eq!(dots.len(), 8);
-        // Sampled dots are on whole pixels (their quads are centred there).
-        for d in dots {
-            let (x, y) = (d[0].as_f64().unwrap() as f32, d[1].as_f64().unwrap() as f32);
+        assert_eq!(dots.len(), 40);
+        assert!(info["active"] == true && info["moving"] == false && info["busy"] == false && info["sources"][0]["id"] == "s");
+        let d = |i: usize| dots[i]["d"].as_f64().unwrap();
+        assert!(d(0) < 6.0 && d(39) > REACH as f64 && dots[0]["level"].as_f64().unwrap() > 0.2 && dots[39]["level"] == 0.0);
+        for dot in dots {
+            let (x, y) = (dot["x"].as_f64().unwrap(), dot["y"].as_f64().unwrap());
             assert!(x.fract() == 0.0 && y.fract() == 0.0, "({x}, {y})");
+        }
+    }
+
+    fn box_model(id: &str, rect: WRect) -> canvas_core::view::BoxModel {
+        canvas_core::view::BoxModel {
+            id: id.into(),
+            kind: BoxKind::Session,
+            rect,
+            prefix: "",
+            name: id.into(),
+            status: canvas_core::status::Status::Working,
+            icon: "",
+            label: "",
+            line: String::new(),
+            line_style: Style::default(),
+            name_style: Style::default(),
+            elsewhere: false,
+            subtitle: String::new(),
+            border: Border::Round,
+            border_style: Style::default(),
+            fill: Color::Reset,
+            attention: None,
+            selected: false,
+            focused_term: false,
+            active: false,
+            every: None,
+            mailbox: 0,
+            dust: 0,
+            alpha: 1.0,
+            deck: None,
+            hidden: None,
+            badge: None,
         }
     }
 

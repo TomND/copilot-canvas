@@ -9,14 +9,16 @@ use crate::text::{Fonts, ShapeCache, Spec};
 
 /// Chrome outside the canvas and the terminal grids.
 pub const BASE: usize = 0;
-/// The canvas background and its dot grid: while the grid breathes (a
-/// session works), a frame repaints this layer alone.
+/// The canvas background and its dot grid (drawn in full frames only).
 pub const GRID: usize = 1;
+/// The working glow's lit dots over the grid: while its rings move, a frame
+/// repaints this layer alone.
+pub const GLOW: usize = 2;
 /// Groups and connectors.
-pub const CANVAS: usize = 2;
+pub const CANVAS: usize = 3;
 /// Boxes with their labels, in [`BOX_LEVELS`] layers: a box that overlaps an
 /// earlier one goes one level up, so its fill covers the labels below it.
-pub const BOXES: usize = 3;
+pub const BOXES: usize = 4;
 pub const BOX_LEVELS: usize = 3;
 /// Loop arcs and their moving dots (above the boxes): while loops move, a
 /// frame repaints this layer alone.
