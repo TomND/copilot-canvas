@@ -180,12 +180,13 @@ fn at_front(gui: &Gui, dir: &Path, name: &str, worker: &str, offset: u64, front:
     bail!("no capture with a ring {front:?} from the box: {}", seen.join(", "))
 }
 
-/// Frames the GUI presented in `secs` seconds: (all, repaints of the glow
-/// layer (in frames of its own or riding on others), full frames).
+/// Frames the GUI presented in `secs` seconds: (all besides those that only
+/// moved loop dots (the sandbox's automations loop on their own), repaints of
+/// the glow layer (in frames of its own or riding on others), full frames).
 fn frames_in(gui: &Gui, secs: f64) -> Result<(u64, u64, u64)> {
     let counts = |p: &Value| {
         let n = |key: &str| p["perf"][key].as_u64().unwrap_or(0);
-        (n("presented"), n("glow_paints"), n("full_frames"))
+        (n("presented").saturating_sub(n("loop_frames")), n("glow_paints"), n("full_frames"))
     };
     let before = counts(&gui.req(json!({ "cmd": "perf" }))?);
     std::thread::sleep(Duration::from_secs_f64(secs));
