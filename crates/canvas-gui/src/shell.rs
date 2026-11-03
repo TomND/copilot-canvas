@@ -529,7 +529,7 @@ impl Shell {
                     // With the loop dots and the glow's dots where this capture drew them.
                     Ok((w, h)) => {
                         let (win, clock) = (&self.wins[at], self.wins[at].scene_clock);
-                        json!({ "ok": true, "path": path, "width": w, "height": h, "clock_ms": clock, "loops": win.loops_json(clock), "glow": win.glow_json(clock, 64) })
+                        json!({ "ok": true, "path": path, "width": w, "height": h, "clock_ms": clock, "loops": win.loops_json(clock), "glow": win.glow_json(clock, 96) })
                     }
                     Err(error) => json!({ "ok": false, "error": format!("{error:#}") }),
                 }

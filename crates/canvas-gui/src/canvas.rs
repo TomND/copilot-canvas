@@ -431,7 +431,8 @@ pub fn paint_glow(p: &mut Painter, grid: &Grid, model: &CanvasModel, clock_ms: u
 }
 
 /// What the glow layer shows at `clock_ms` ([`glow_print`]), without painting.
-pub fn glow_print_at(grid: &Grid, model: &CanvasModel, clock_ms: u64) -> u64 {
+#[cfg(test)]
+fn glow_print_at(grid: &Grid, model: &CanvasModel, clock_ms: u64) -> u64 {
     let area = model.area;
     let clip = [area.x as f32 * grid.cell_w, area.y as f32 * grid.cell_h, area.right() as f32 * grid.cell_w, area.bottom() as f32 * grid.cell_h];
     glow_print(&lit_dots(&Ctx { model, grid, clip, dpi: grid.scale }, clock_ms))
@@ -441,9 +442,9 @@ pub fn glow_print_at(grid: &Grid, model: &CanvasModel, clock_ms: u64) -> u64 {
 /// moves and changes, each source (its box in px, fade, rings: front in
 /// world units and strength), how many dots it lights, and up to `limit` grid
 /// dots clear of groups, boxes and the canvas's edges where colours can be
-/// sampled, nearest a box first, with a few far ones: px centre, distance
-/// from the nearest box's outline (world units), the glow's level and colour
-/// there.
+/// sampled, nearest a box first, with a few far ones: px centre, the nearest
+/// box and the distance from its outline (world units), the glow's level and
+/// colour there.
 pub fn glow_info(grid: &Grid, model: &CanvasModel, clock_ms: u64, limit: usize) -> serde_json::Value {
     use canvas_core::glow;
     let area = model.area;
@@ -473,24 +474,27 @@ pub fn glow_info(grid: &Grid, model: &CanvasModel, clock_ms: u64, limit: usize) 
         };
         let (sx, sy) = dot_step(&cx);
         let v = model.visible();
-        let mut all: Vec<(f32, (f32, f32), (f32, f32))> = Vec::new();
+        // (distance from the nearest box, its id, world point, px centre)
+        type Sample<'a> = (f32, Option<&'a str>, (f32, f32), (f32, f32));
+        let mut all: Vec<Sample> = Vec::new();
         for j in (v.y / sy).floor() as i64..=(v.bottom() / sy).ceil() as i64 {
             for i in (v.x / sx).floor() as i64..=(v.right() / sx).ceil() as i64 {
                 let world = (i as f32 * sx, j as f32 * sy);
                 let (x, y) = cx.px(world.0, world.1);
                 let (x, y) = (x.round(), y.round());
                 if x > clip[0] + margin && x < clip[2] - margin && y > clip[1] + margin && y < clip[3] - margin && !covered(x, y) {
-                    let d = model.boxes.iter().map(|b| glow::distance(b.rect, world.0, world.1)).fold(f32::INFINITY, f32::min);
-                    all.push((d, world, (x, y)));
+                    let nearest = model.boxes.iter().map(|b| (glow::distance(b.rect, world.0, world.1), b.id.as_str())).min_by(|a, b| a.0.total_cmp(&b.0));
+                    all.push((nearest.map_or(f32::INFINITY, |n| n.0), nearest.map(|n| n.1), world, (x, y)));
                 }
             }
         }
         all.sort_by(|a, b| a.0.total_cmp(&b.0));
         let far = (limit / 4).min(all.len());
         let near = (limit - far).min(all.len() - far);
-        for (d, world, (x, y)) in all[..near].iter().chain(&all[all.len() - far..]) {
+        for (d, id, world, (x, y)) in all[..near].iter().chain(&all[all.len() - far..]) {
             let level = model.glow_level(world.0, world.1, clock_ms);
-            dots.push(serde_json::json!({ "x": x, "y": y, "d": if d.is_finite() { Some(*d) } else { None }, "level": level, "rgb": glow::dot_rgb(level).map(|c| c.round() as u8) }));
+            let d = d.is_finite().then_some(*d);
+            dots.push(serde_json::json!({ "x": x, "y": y, "d": d, "box": id, "level": level, "rgb": glow::dot_rgb(level).map(|c| c.round() as u8) }));
         }
     }
     serde_json::json!({
