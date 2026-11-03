@@ -33,9 +33,10 @@ final class NotebookTasksUITests: XCTestCase {
         attach(app, "notebook")
         welcome.tap()
         // The note as its page: rendered Markdown, a [[link]] to another note.
+        // A busy CI simulator's first web content process can take most of a minute.
         let page = app.webViews["notePage"].firstMatch
-        XCTAssertTrue(page.waitForExistence(timeout: 20))
-        XCTAssertTrue(page.staticTexts["Welcome to the notebook"].waitForExistence(timeout: 20), "the note's heading")
+        XCTAssertTrue(page.waitForExistence(timeout: 60))
+        XCTAssertTrue(page.staticTexts["Welcome to the notebook"].waitForExistence(timeout: 60), "the note's heading")
         XCTAssertTrue(app.descendants(matching: .any)["noteProvenance"].waitForExistence(timeout: 10))
         attach(app, "note")
         let wikiLink = page.links["Release plan"]

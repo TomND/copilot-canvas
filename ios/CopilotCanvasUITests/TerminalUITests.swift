@@ -211,9 +211,10 @@ final class TerminalUITests: XCTestCase {
         XCTAssertTrue(brief.waitForExistence(timeout: 20), "the brief in the inbox")
         brief.tap()
         // The HTML report in the web view: its own text and styles, its script never ran.
+        // A busy CI simulator's first web content process can take most of a minute.
         let page = app.webViews["reportPage"]
-        XCTAssertTrue(page.waitForExistence(timeout: 20))
-        XCTAssertTrue(page.staticTexts["All checks passed overnight."].waitForExistence(timeout: 20), "the report's text")
+        XCTAssertTrue(page.waitForExistence(timeout: 60))
+        XCTAssertTrue(page.staticTexts["All checks passed overnight."].waitForExistence(timeout: 60), "the report's text")
         XCTAssertTrue(page.staticTexts["Payments health"].exists, "its heading as written")
         XCTAssertFalse(page.staticTexts["SCRIPT RAN"].exists, "its script did not run")
         attach(app, "report-viewer")
