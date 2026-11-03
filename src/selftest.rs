@@ -2616,7 +2616,7 @@ mod stress_probe {
                 command: None,
                 fresh: false,
                 automation: None,
-                synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+                synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
             });
         }
         for g in 0..n_sessions.div_ceil(10) as i32 {
@@ -2722,7 +2722,7 @@ mod user_message_canvas_probe {
         let mut doc = crate::client::doc::Doc::default();
         doc.nodes.push(crate::client::doc::Node {
             id: id.clone(), kind: crate::client::doc::NodeKind::Session, name: "Probe".into(), x: 2, y: 2,
-            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -2969,7 +2969,7 @@ mod canvas_image_paste_probe {
         let mut doc = crate::client::doc::Doc::default();
         doc.nodes.push(crate::client::doc::Node {
             id: id.clone(), kind: crate::client::doc::NodeKind::Session, name: "Paste probe".into(), x: 2, y: 2,
-            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: true, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: true, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -3141,7 +3141,7 @@ mod fork_canvas_probe {
         let mut doc = crate::client::doc::Doc::default();
         doc.nodes.push(crate::client::doc::Node {
             id: id.clone(), kind: crate::client::doc::NodeKind::Session, name: "Fork parent".into(), x: 2, y: 2,
-            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -3422,7 +3422,7 @@ mod loop_canvas_probe {
             cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None,
             mcp_off: Some(crate::copilot_cfg::snapshot().mcp.into_iter().map(|s| s.name).collect()),
             passive: None,
-            no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+            no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -3552,7 +3552,7 @@ mod passive_probe {
         doc.nodes.push(crate::client::doc::Node {
             id: active.clone(), kind: crate::client::doc::NodeKind::Session, name: "Active probe".into(), x: 2, y: 2,
             cwd: Some(work.display().to_string()), parent: None, agent_key: None, source: None, command: None, fresh: true, automation: None, synced_name: None, reviewed_ms: None,
-            mcp_off: Some(off.clone()), passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+            mcp_off: Some(off.clone()), passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
         });
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
         let instance = crate::paths::Instance::new(Some(format!("psv{}", std::process::id())), Some(home.clone()), Some(sessions.clone())).unwrap();

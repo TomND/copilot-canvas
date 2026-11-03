@@ -266,8 +266,9 @@ impl Lines {
 const SUBAGENT_ROWS: usize = 12;
 
 /// A session's subagent boxes in its details panel: each with its state (a
-/// click on its name views it, Inspect opens its transcript), and whether
-/// they are stacked or shown. Nothing here starts anything.
+/// click on its name views it, Inspect opens its transcript, Hide puts it
+/// into the hidden area and Show back), and whether they are stacked or
+/// shown. Nothing here starts anything.
 fn subagent_rows(app: &App, out: &mut Lines, node: &crate::doc::Node) {
     let agents: Vec<&crate::doc::Node> = app.doc.nodes.iter().filter(|n| n.kind == crate::doc::NodeKind::Agent && n.parent.as_deref() == Some(node.id.as_str())).collect();
     if agents.is_empty() {
@@ -280,9 +281,14 @@ fn subagent_rows(app: &App, out: &mut Lines, node: &crate::doc::Node) {
     // The newest first: they are the likeliest to be running.
     for agent in agents.iter().rev().take(SUBAGENT_ROWS) {
         let status = app.node_status(agent);
-        let text = format!("{} {} · {}", status.icon(app.tick), agent.name, crate::ui_canvas::box_label(agent, status));
+        let mark = if agent.hidden { " · hidden" } else { "" };
+        let text = format!("{} {} · {}{mark}", status.icon(app.tick), agent.name, crate::ui_canvas::box_label(agent, status));
         let inspect = app.transcript_request(&agent.id).map(|_| ("Inspect".to_owned(), Action::Inspect(agent.id.clone())));
-        out.entry(&text, fg(status.color()), Action::Open(agent.id.clone()), inspect.into_iter().collect());
+        let hide = match agent.hidden {
+            true => ("Show".to_owned(), Action::Visual(crate::visual::VisualAction::Show(vec![agent.id.clone()]))),
+            false => ("Hide".to_owned(), Action::Visual(crate::visual::VisualAction::Hide(vec![agent.id.clone()]))),
+        };
+        out.entry(&text, fg(if agent.hidden { MUTED } else { status.color() }), Action::Open(agent.id.clone()), inspect.into_iter().chain([hide]).collect());
     }
     if agents.len() > SUBAGENT_ROWS {
         out.text(format!("… and {} older (the sidebar lists every one)", agents.len() - SUBAGENT_ROWS), fg(MUTED));
@@ -468,6 +474,7 @@ fn session_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)
     }
     out.text(line, fg(status.color()));
     out.gap();
+    let show = hidden_note(app, out, node);
     if node.kind == NodeKind::Agent {
         let parent = node.parent.as_deref().and_then(|p| app.doc.node(p)).cloned();
         let agent = summary.as_ref().and_then(|s| s.agents.iter().find(|a| Some(&a.key) == node.agent_key.as_ref())).cloned();
@@ -510,6 +517,7 @@ fn session_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)
                 plan => actions.push((format!("{} parent", plan.label().unwrap_or("Start")), Action::Start(parent.id.clone()))),
             }
         }
+        actions.extend(show);
         actions.push(("Remove box".into(), Action::RemoveNode(node.id.clone())));
         return inspectable;
     }
@@ -576,8 +584,26 @@ fn session_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)
     if !app.demo && !shell {
         actions.push(("MCP servers…".into(), Action::McpServers(node.id.clone())));
     }
+    actions.extend(show);
     actions.push(("Remove".into(), Action::RemoveNode(node.id.clone())));
     primary
+}
+
+/// A hidden box's details say why and where it counts; one hidden on its
+/// own gets a Show button (returned).
+fn hidden_note(app: &App, out: &mut Lines, node: &crate::doc::Node) -> Option<(String, Action)> {
+    let hidden = app.conceal_maps().1;
+    let top = hidden.get(&node.id)?;
+    let name = app.doc.node(top).map(|n| n.name.clone()).unwrap_or_default();
+    let why = match app.hidden_by_switch(&node.id) {
+        _ if node.hidden => "on its own",
+        Some(true) => "by H (subsessions)",
+        Some(false) => "by J (subagent boxes)",
+        None => "with the box above it",
+    };
+    out.text(format!("Hidden on the canvas {why}: the marker on “{name}” counts it; it keeps running."), fg(MUTED));
+    out.gap();
+    node.hidden.then(|| ("Show on canvas".to_owned(), Action::Visual(crate::visual::VisualAction::Show(vec![node.id.clone()]))))
 }
 
 /// "in 4m" / "3h ago" for a time in ms ("—" for none).

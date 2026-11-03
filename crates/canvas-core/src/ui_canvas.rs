@@ -150,6 +150,21 @@ fn badge_hit(b: &BoxModel, cells: (i32, i32, i32, i32), zoom: u8, clip: Rect) ->
     inside.then(|| (Rect::new(bx as u16, by as u16, w as u16, 1), crate::dialogs::Hit::Toolbar(crate::dialogs::Action::Tasks(crate::tasks::Action::OpenTodo(todo)))))
 }
 
+/// The click target of a box's hidden marker (`⋯ 2 hidden`, as `paint_box`
+/// draws it on the bottom border): it lists the boxes hidden into it.
+fn hidden_hit(b: &BoxModel, (x, y, w, h): (i32, i32, i32, i32), zoom: u8, clip: Rect) -> Option<(Rect, crate::dialogs::Hit)> {
+    let hidden = b.hidden.filter(|_| zoom < 2)?;
+    let width = paint::text_width(&format!(" {} ", hidden.text())) as i32;
+    let (bx, by) = (x + w - 2 - width, y + h - 1);
+    let inside = bx >= clip.x as i32 && bx + width <= clip.right() as i32 && by >= clip.y as i32 && by < clip.bottom() as i32;
+    inside.then(|| (Rect::new(bx as u16, by as u16, width as u16, 1), hidden_list_hit(&b.id)))
+}
+
+/// What a click on a box's hidden marker does.
+fn hidden_list_hit(id: &str) -> crate::dialogs::Hit {
+    crate::dialogs::Hit::Toolbar(crate::dialogs::Action::Visual(crate::visual::VisualAction::HiddenList(Some(id.to_owned()), false)))
+}
+
 /// The boxes (world rects) effects are drawn on: their bottom-left badge
 /// is where a todo badge goes, so a box's todo badge waits until its
 /// effect is gone (a click on the effect clears it; it must not open Tasks).
@@ -463,6 +478,7 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
         }
         paint_box(buf, &b, (x, y, w, h), zoom, clip);
         badge_hits.extend(badge_hit(&b, (x, y, w, h), zoom, clip));
+        badge_hits.extend(hidden_hit(&b, (x, y, w, h), zoom, clip));
     }
     if first_selected.is_none() {
         paint_decks(buf);
@@ -524,9 +540,9 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
         outline(buf, x - 1, y - 1, w + 2, h + 2, set, crate::paint::bold(ACCENT), clip);
     }
 
-    // A todo badge is clicked only where it still shows (a box, deck or
-    // effect drawn after its box may cover it).
-    badge_hits.retain(|(r, _)| (r.x..r.right()).any(|x| buf.cell((x, r.y)).is_some_and(|c| c.symbol() == "☑")));
+    // A todo badge (or a hidden marker) is clicked only where it still shows
+    // (a box, deck or effect drawn after its box may cover it).
+    badge_hits.retain(|(r, _)| (r.x..r.right()).any(|x| buf.cell((x, r.y)).is_some_and(|c| matches!(c.symbol(), "☑" | "⋯" | "◇"))));
     app.layout.hits.extend(badge_hits);
 
     if let Some(Drag::Rubber { start, now, .. }) = &app.drag {
@@ -693,15 +709,12 @@ fn draw_empty_hint(buf: &mut Buffer, area: Rect) {
 }
 
 /// Everything that moves with the current drag (for the Gpu visual offset):
-/// what the document moves (`Doc::nodes_moving_with`, `Doc::group_moving_with`),
-/// each box once.
+/// what the document moves (`Doc::nodes_moving_with`, a group drag's set
+/// decided when it started), each box once.
 fn dragged(app: &App) -> (HashSet<String>, HashSet<String>) {
     match &app.drag {
         Some(Drag::Nodes { ids, .. }) => (app.doc.nodes_moving_with(ids).into_iter().collect(), HashSet::new()),
-        Some(Drag::Group { id, .. }) => {
-            let (nodes, groups) = app.doc.group_moving_with(id);
-            (nodes.into_iter().collect(), groups.into_iter().collect())
-        }
+        Some(Drag::Group { nodes, groups, .. }) => (nodes.iter().cloned().collect(), groups.iter().cloned().collect()),
         _ => (HashSet::new(), HashSet::new()),
     }
 }
@@ -896,6 +909,19 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
             let inside = cell.x >= area.x && cell.right() <= area.right() && cell.y >= area.y && cell.bottom() <= area.bottom();
             if inside {
                 chip_hits.push((cell, crate::dialogs::Hit::Toolbar(crate::dialogs::Action::Tasks(crate::tasks::Action::OpenTodo(todo)))));
+            }
+        }
+        // The hidden marker: a pill ending 1.5 units left of the box's
+        // bottom-right corner (the GUI's), from 20 % up; a click lists them.
+        if let Some(hidden) = b.hidden.filter(|_| scale >= 0.2 && b.alpha >= 1.0) {
+            let (ex, sy) = model.to_screen(rect.right() - 1.5, rect.bottom());
+            let k = (scale * 0.8).clamp(0.5, 0.9);
+            let w = ((paint::text_width(&hidden.text()) as f32 + 2.0) * k).ceil();
+            let left = (ex - w).floor().max(0.0);
+            let cell = Rect::new(left as u16, (sy - 0.5).max(0.0) as u16, (ex.ceil() - left).max(1.0) as u16, 2);
+            let inside = cell.x >= area.x && cell.right() <= area.right() && cell.y >= area.y && cell.bottom() <= area.bottom();
+            if inside {
+                chip_hits.push((cell, hidden_list_hit(&node.id)));
             }
         }
         if b.alpha >= 1.0 {

@@ -66,7 +66,7 @@ fn node(id: &str, name: &str, x: i32, y: i32) -> Node {
         passive: None,
         no_messages: false,
         agent: None,
-        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
     }
 }
 
@@ -1007,6 +1007,34 @@ fn hidden_subsessions() {
     failed.live = false;
     app.sessions.insert("c3a".into(), failed);
     check("hidden-subsessions", &mut app, BOTH);
+}
+
+/// J hides every subagent box, folded ones too (their decks go): each
+/// session counts its own ("◇ 3 hidden", in the colour of a failed one), the
+/// toolbar all of them ("◇ 5 hidden"); subsessions stay (H is off).
+#[test]
+fn hidden_subagents() {
+    let mut app = subagent_decks();
+    app.doc.ui.hide_subagents = true;
+    check("hidden-subagents", &mut app, BOTH);
+}
+
+/// Two subsessions hidden on their own (the canvas's hidden area; one needs
+/// you, so the parent's marker is gold), its nested subsession hidden with
+/// it; the toolbar's ↳ counter and the parent's hidden list open (Show per
+/// box, Show all), the sidebar marking the hidden rows.
+#[test]
+fn hidden_area_list() {
+    let mut doc = family(false);
+    for id in ["c2", "c3"] {
+        doc.node_mut(id).unwrap().hidden = true;
+    }
+    let mut app = app(doc, false);
+    let mut waiting = summary("c3", Activity::Working, true);
+    waiting.pending = 1;
+    app.sessions.insert("c3".into(), waiting);
+    app.run(Action::Visual(canvas_core::visual::VisualAction::HiddenList(Some("p".into()), false)));
+    check("hidden-area-list", &mut app, BOTH);
 }
 
 /// Effects in reduced-motion mode: fireworks on a box, attention on another,

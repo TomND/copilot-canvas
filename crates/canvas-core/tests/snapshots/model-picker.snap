@@ -13,7 +13,7 @@
  ✦      ↳ ■ Write tests          ╔═ New│ github-copilot/gpt-6-sol                                     current │═════╗group · X stop                  │
                                  ║     │ Type a model id…                             any id OpenCode accepts │     ║                                │
  ◈                               ║  Nam│ github-copilot/claude-opus-5.5     Claude Opus 5.5 (initial default) │     ║ws them)                        │
-                                 ║     │ (agent default)                      no model flag: OpenCode decides │     ║known                           │
+                                 ║     │ (agent default)                      no model flag: OpenCode decides │     ║known  Hide                     │
  ⇄                               ║  Fol│ opencode/big-pickle                               listed by OpenCode │     ║                                │
                                  ║     │ openai/gpt-6.1-sol                                listed by OpenCode │     ║                                │
  ≡                               ║     │                                                                      │     ║                                │

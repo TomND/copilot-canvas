@@ -255,6 +255,20 @@ older service would refuse a `SetField` it does not know). A canvas without
 an id (opened by an older service) shows its canvas-wide agents as
 unavailable and does not route them.
 
+### Boxes hidden on their own
+
+A subsession or subagent box hidden from its menu (the canvas's hidden
+area, README *Hidden area*) is `Node::hidden: true`. It is an ordinary node
+field (it travels as `NodeFields(node, ["hidden"])`, no new `Op` or
+`SetField`), so every window and remote client of the canvas sees it. The
+hide switches `H` and `J` are each window's own (`UiPrefs::hide_subsessions`,
+`UiPrefs::hide_subagents` in its preferences file), never the document's.
+
+| Where | Addition | An older peer |
+|---|---|---|
+| `Node` | `hidden` (`#[serde(default, skip_serializing_if = "Not::not")]`: not written while false) | an older client ignores it (the box shows there) and keeps it unless it rewrites the whole node; an older service drops it when it applies the edit and saves the canvas (the box shows again everywhere): hiding one box needs a current service |
+| `ClientPrefs::ui` (the window's preferences file) | `hide_subagents` (not written while false); `hide_subsessions` keeps its meaning (subsessions, now without a top-level session's subagent boxes) | an older client ignores `hide_subagents`; prefs files from before load unchanged |
+
 ## Canvas-wide agents on the wire
 
 All additions are JSON with defaults, so older and newer clients and services

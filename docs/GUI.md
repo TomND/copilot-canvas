@@ -250,12 +250,21 @@ and size.
   their session (and its group drag) and belong to its group
   (`Doc::group_of`, `Doc::groups_by_node`). A click on a subagent deck
   shows its session's details panel with a SUBAGENTS list (state, a click
-  views one, Inspect). *Hidden subsessions and subagent boxes*
-  (`UiPrefs::hide_subsessions`, this window's; decks hide too) are left out
-  and counted on the visible ancestor (`BoxModel::hidden`, `Hidden`: a
-  "⋯ N hidden", "◇ N hidden" or "⋯ N · ◇ M hidden" pill in the colour of
-  the most important hidden status). `App::visual_frame` compares the
-  stacked parents, the folded sessions and the hide toggle with the last
+  views one, Inspect). *Hidden subsessions and subagent boxes* (this
+  window's switches `UiPrefs::hide_subsessions`, `H`: subsessions with what
+  is under them, and `UiPrefs::hide_subagents`, `J`: every subagent box; and
+  boxes hidden on their own, `Node::hidden`, the canvas's hidden area for
+  every window, `visual::hidden_area`; canvas-model `visual::hidden_boxes`,
+  canvas-core `App::conceal_maps`) are
+  left out of decks and drawing and counted on the nearest visible ancestor
+  (`BoxModel::hidden`, `Hidden`: a "⋯ N hidden", "◇ N hidden" or "⋯ N · ◇ M
+  hidden" pill in the colour of the most important hidden status; one
+  hidden into a box held by a deck counts on the deck's session); a deck
+  keeps what is not hidden. A click on the pill (its click target follows
+  the GUI's pill on the bottom edge, from 20 % up) or on a toolbar counter
+  opens the hidden list (`App::hidden_list`, a menu that scrolls when long).
+  `App::visual_frame` compares the
+  stacked parents, the folded sessions and the hidden boxes with the last
   frame, so a change from any window (a document patch) starts a
   *transition*: 300 ms, eased in and out, reversible from wherever it is;
   the boxes fly between their places and the deck (or shrink into their
@@ -661,7 +670,8 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
 | IME | composition drawn at the terminal cursor or field; committed text typed |
 | Close button | as Ctrl+Q: detach or stop all (the last window) |
 | `--perf` | frame time (view, scene, encode), present and acquire, input → present, keystroke → echo → present, service round trip |
-| Decks | Subagent boxes are folded into a slim deck beneath their session by default (*Settings › Subagents*: stacked or shown; a session's own choice wins). `K` (on a session, a box of its, or a box in its deck) unfolds everything the session has folded, else folds its subagent boxes and subsessions into one deck; the session menu offers *Show/Stack subagents*, *Unstack/Stack subsessions* and, with both, *Unfold/Stack all*. A click on a subagent deck lists its subagents in the session's details panel, a click on a stack shows its top card (neither starts anything); a drag moves the session with its deck; a double-click unfolds it; `H` hides or shows every subsession and subagent box |
+| Decks | Subagent boxes are folded into a slim deck beneath their session by default (*Settings › Subagents*: stacked or shown; a session's own choice wins). `K` (on a session, a box of its, or a box in its deck) unfolds everything the session has folded, else folds its subagent boxes and subsessions into one deck; the session menu offers *Show/Stack subagents*, *Unstack/Stack subsessions* and, with both, *Unfold/Stack all*. A click on a subagent deck lists its subagents in the session's details panel, a click on a stack shows its top card (neither starts anything); a drag moves the session with its deck; a double-click unfolds it; `H` hides or shows subsessions (with their subagent boxes), `J` every subagent box (folded ones too), each on its own (toolbar **↳ N hidden** and **◇ N hidden**) |
+| Hidden area | right-click a subsession or subagent box › *Hide* (*Hide N* on a selection; a deck's menu; the SUBAGENTS list's *Hide*); a click on a parent's hidden pill or a toolbar counter lists the hidden boxes with *Show* (per box, per parent, all); the sidebar marks them *hidden* |
 | Effects | a click on an effect or its box clears it (in every window) and only selects the box; *Settings › Effects*: on · reduced motion · off; *Settings › Dot grid pulse*: on · off (the dots breathe while a session works) |
 | Group chips | ⟲ N passive and ⟲ + passive open the group's passive panel (each session's state with Open / Run now / Pause; empty: + Create a passive session); ✎ Notes opens the Notebook at the group's folder (✎ Set folder… asks for one); ☑ 4 · 2▸ · 1◇ opens its first linked board in Tasks, gold while proposals wait (☑ + creates or links one) |
 | Spaces | the toolbar's tabs or Ctrl+1/2/3; Alt+← / Alt+→, Alt+, / Alt+. and the mouse's back / forward buttons walk the history; Ctrl+P opens Go to; Alt+N writes a quick note; each window remembers its space |
@@ -806,9 +816,11 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   dust, stacks (with their transitions' end states), hidden subsessions,
   effects and the group chips; row 46 covers subagent boxes folded by
   default (the deck working while one runs, `K` to their saved places, kept
-  across a restart, `H`), with PNG captures `subagent-deck`,
+  across a restart, `J`), with PNG captures `subagent-deck`,
   `subagent-deck-50`, `subagent-deck-details` and `subagent-deck-unfolded`
-  (`docs/PARITY.md`); row 51 covers the dot grid's pulse (PNG captures
+  (`docs/PARITY.md`); row 53 covers `H` and `J` each on its own (PNG
+  capture `hide-both`), row 54 the hidden area (`hide-area`,
+  `hide-area-list`); row 51 covers the dot grid's pulse (PNG captures
   `pulse-top-*`, `pulse-bottom-*`, `pulse-reduced-*`, `pulse-effects-off`,
   `pulse-setting-off`, `pulse-nothing-works`).
 - `CANVAS_GUI_TRACE=1` prints start-up milestones (and GPU events) on stderr.

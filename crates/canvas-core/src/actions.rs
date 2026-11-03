@@ -70,6 +70,7 @@ impl App {
                 let stack = crate::visual::VisualAction::FoldSubagents(parent, true);
                 items.push(item("Stack subagents", "K", Action::Visual(stack), true));
             }
+            items.extend(self.hide_items(id));
             items.push(item("Rename box", "R", Action::Rename(Target::Node(id.to_owned())), true));
             items.push(self.remove_item(id, "Remove box"));
             return (node.name.clone(), items);
@@ -105,6 +106,7 @@ impl App {
         }
         items.push(item("New subsession", "S", Action::NewSession { at: None, parent: Some(id.to_owned()) }, true));
         items.extend(self.visual_node_items(id));
+        items.extend(self.hide_items(id));
         items.push(item("Rename", "R", Action::Rename(Target::Node(id.to_owned())), true));
         if !self.demo {
             items.push(item("MCP servers…", "", Action::McpServers(id.to_owned()), true));
@@ -1175,7 +1177,7 @@ impl App {
             passive: None,
             no_messages: false,
             agent: (!self.demo).then(|| agent.id().to_owned()),
-            agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+            agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
         };
         // The model shown in the dialog is the one it starts with (and keeps on
         // resume); a choice made there becomes its agent's default.

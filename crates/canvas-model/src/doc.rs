@@ -105,6 +105,12 @@ pub struct Node {
     /// (`Doc::agent_slot_in`) when it is first shown.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unplaced: bool,
+    /// A subsession or subagent box hidden on its own (the canvas's hidden
+    /// area, every window's): not drawn, counted on its nearest visible
+    /// ancestor, moving with it; everything under a hidden subsession hides
+    /// with it. Its place is kept, so showing it puts it back.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
 }
 
 /// Passive session settings (the service keeps its run state).
@@ -234,14 +240,19 @@ pub struct UiPrefs {
     pub tiled: bool,
     #[serde(default)]
     pub collapsed: Vec<String>,
-    /// Subsession boxes are hidden on this client's canvas (shown again in place).
+    /// Subsession boxes (with their subagent boxes) are hidden on this
+    /// client's canvas (`H`; shown again in place).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hide_subsessions: bool,
+    /// Every subagent box is hidden on this client's canvas (`J`), folded
+    /// ones too.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hide_subagents: bool,
 }
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        Self { sidebar_width: 30, sidebar_visible: true, terminal_percent: 55, tiled: false, collapsed: Vec::new(), hide_subsessions: false }
+        Self { sidebar_width: 30, sidebar_visible: true, terminal_percent: 55, tiled: false, collapsed: Vec::new(), hide_subsessions: false, hide_subagents: false }
     }
 }
 
@@ -781,15 +792,20 @@ impl Doc {
     }
 
     /// Smallest group containing the node's center. A subagent box folded
-    /// into its session's deck belongs where its session is.
+    /// into its session's deck belongs where its session is, a box in the
+    /// hidden area where its nearest visible ancestor is.
     pub fn group_of(&self, node: &Node) -> Option<&Group> {
         let (cx, cy) = self.anchor(node, |id| self.node(id)).center();
         self.group_at(cx, cy)
     }
 
-    /// The box a node's group membership is measured from: itself, or the
-    /// session of a folded subagent box (`find` looks parents up).
+    /// The box a node's group membership is measured from: itself, the
+    /// visible ancestor of a box in the hidden area, or the session of a
+    /// folded subagent box (`find` looks boxes up).
     fn anchor<'a>(&self, node: &Node, find: impl Fn(&str) -> Option<&'a Node>) -> Rect {
+        if let Some(top) = crate::visual::hidden_into(node, &find, false, false) {
+            return top.rect();
+        }
         if node.kind == NodeKind::Agent
             && let Some(parent) = node.parent.as_deref().and_then(find)
             && crate::visual::subagents_folded(self, parent)
@@ -851,7 +867,9 @@ impl Doc {
 
     /// What a group drag moves: the boxes whose centre is inside (with the
     /// stacks of stacked ones) and the group with the groups nested in it.
-    /// Each id once.
+    /// Each id once. A drag decides this once, when it starts, and moves
+    /// exactly that ([`Doc::move_set`]): boxes and groups the group passes
+    /// over stay where they are.
     pub fn group_moving_with(&self, group_id: &str) -> (Vec<String>, Vec<String>) {
         if self.group(group_id).is_none() {
             return (Vec::new(), Vec::new());
@@ -869,22 +887,30 @@ impl Doc {
         (all, groups)
     }
 
+    /// Moves a group with what is in it now ([`Doc::group_moving_with`]).
     pub fn move_group(&mut self, group_id: &str, dx: i32, dy: i32) {
         let (nodes, groups) = self.group_moving_with(group_id);
-        let nodes: HashSet<String> = nodes.into_iter().collect();
-        for node in self.nodes.iter_mut().filter(|n| nodes.contains(&n.id)) {
+        self.move_set(&nodes, &groups, dx, dy);
+    }
+
+    /// Moves exactly these boxes and groups.
+    pub fn move_set(&mut self, nodes: &[String], groups: &[String], dx: i32, dy: i32) {
+        let nodes: HashSet<&str> = nodes.iter().map(String::as_str).collect();
+        let groups: HashSet<&str> = groups.iter().map(String::as_str).collect();
+        for node in self.nodes.iter_mut().filter(|n| nodes.contains(n.id.as_str())) {
             node.x += dx;
             node.y += dy;
         }
-        for group in self.groups.iter_mut().filter(|g| groups.contains(&g.id)) {
+        for group in self.groups.iter_mut().filter(|g| groups.contains(g.id.as_str())) {
             group.x += dx;
             group.y += dy;
         }
     }
 
-    /// What moving `ids` moves: those boxes, their subagent boxes and the
-    /// stacks of stacked ones, each id once (a selected child whose parent
-    /// is selected too is not moved twice).
+    /// What moving `ids` moves: those boxes, their subagent boxes, the
+    /// stacks of stacked ones and the boxes hidden into them (the hidden
+    /// area), each id once (a selected child whose parent is selected too is
+    /// not moved twice).
     pub fn nodes_moving_with(&self, ids: &[String]) -> Vec<String> {
         let wanted: HashSet<&str> = ids.iter().map(String::as_str).collect();
         let mut seen: HashSet<String> = HashSet::new();
@@ -897,6 +923,14 @@ impl Doc {
         for node in &self.nodes {
             if node.kind == NodeKind::Agent && node.parent.as_deref().is_some_and(|p| wanted.contains(p)) && seen.insert(node.id.clone()) {
                 out.push(node.id.clone());
+            }
+        }
+        if self.nodes.iter().any(|n| n.hidden) {
+            let hidden = crate::visual::hidden_area(self);
+            for node in &self.nodes {
+                if hidden.get(&node.id).is_some_and(|top| seen.contains(top)) && seen.insert(node.id.clone()) {
+                    out.push(node.id.clone());
+                }
             }
         }
         out
@@ -973,13 +1007,14 @@ impl Doc {
 
     /// What a group around these boxes or fitted to them must hold: each box
     /// drawn on its own (with its shown subagent boxes) and its deck; boxes
-    /// in a deck count as the deck.
+    /// in a deck count as the deck, boxes in the hidden area not at all.
     fn visible_extent(&self, ids: &[String], with_agents: bool) -> Option<Rect> {
         let wanted: HashSet<&str> = ids.iter().map(String::as_str).collect();
         let under = crate::visual::stacked_under(self);
+        let hidden = crate::visual::hidden_area(self);
         let mut rect: Option<Rect> = None;
         let mut add = |r: Rect| rect = Some(rect.map_or(r, |acc: Rect| acc.union(&r)));
-        for node in self.nodes.iter().filter(|n| !under.contains_key(&n.id) && !n.unplaced) {
+        for node in self.nodes.iter().filter(|n| !under.contains_key(&n.id) && !n.unplaced && !hidden.contains_key(&n.id)) {
             let child = with_agents && node.kind == NodeKind::Agent && node.parent.as_deref().is_some_and(|p| wanted.contains(p));
             if wanted.contains(node.id.as_str()) || child {
                 add(node.rect());
@@ -1226,7 +1261,7 @@ pub fn demo_doc(cwd: &str) -> Doc {
         passive: None,
         no_messages: false,
         agent: None,
-        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
     };
     let mut doc = Doc::default();
     doc.nodes.push(session("demo-main", "Build session canvas", 2, 2));
@@ -1281,7 +1316,7 @@ pub fn migrate_v1(path: &Path) -> Option<Doc> {
             command: None,
             fresh: false,
             automation: None,
-            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
         });
     }
     // The prototype stacked boxes 7 rows apart; v2 boxes are 4 tall, so keep positions.
@@ -1295,7 +1330,7 @@ mod tests {
     use super::*;
 
     fn session(id: &str, x: i32, y: i32) -> Node {
-        Node { id: id.into(), kind: NodeKind::Session, name: id.into(), x, y, cwd: None, parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false }
+        Node { id: id.into(), kind: NodeKind::Session, name: id.into(), x, y, cwd: None, parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false }
     }
 
     fn agent(id: &str, parent: &str, x: i32, y: i32) -> Node {

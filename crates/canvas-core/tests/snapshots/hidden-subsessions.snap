@@ -5,10 +5,10 @@
 ▌▤  / filter…                    │  ╭ Orchestrator ──────────────╮
                                  │  │ ■ stopped                  │
  ◷  ■ Orchestrator               │ ·│ canvas                     │     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
-      ↳ ■ First follow-up        │  ╰─────────────── ⋯ 4 hidden ─╯
- ⧉    ↳ ■ Second follow-up       │
-      ↳ ■ Newest follow-up       │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
- ⌁      ↳ ✗ Nested follow-up     │
+      ↳ ■ First follow-up hidden │  ╰─────────────── ⋯ 4 hidden ─╯
+ ⧉    ↳ ■ Second follow-… hidden │
+      ↳ ■ Newest follow-… hidden │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+ ⌁      ↳ ✗ Nested follo… hidden │
                                  │
  ✦                               │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
                                  │

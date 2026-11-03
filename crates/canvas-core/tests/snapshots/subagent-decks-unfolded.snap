@@ -18,8 +18,8 @@
                                  │                                                                     ││ S subsession · R rename · G group · X stop │
  ≡                               │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││                                            │
                                  │                                                                     ││ SUBAGENTS 2 (shown · K stacks them)        │
- ✉                               │                                                                     ││ ○ Patch the config · idle  Inspect         │
-                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││ ⠋ Search the logs · working  Inspect       │
+ ✉                               │                                                                     ││ ○ Patch the config · idle  Inspect   Hide  │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││ ⠋ Search the logs · work…  Inspect   Hide  │
                                  │                                                                     ││                                            │
                                  │                                                                     ││                                            │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││                                            │

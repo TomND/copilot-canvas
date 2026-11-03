@@ -72,7 +72,10 @@ pub struct Notice {
 
 pub enum Drag {
     Nodes { ids: Vec<String>, start: (u16, u16), applied: (i32, i32), moved: bool, click: Option<String> },
-    Group { id: String, start: (u16, u16), applied: (i32, i32), moved: bool },
+    /// A group dragged by its title: what moves (`nodes`, `groups`: the
+    /// group, its nested groups) was decided when the press came, so boxes
+    /// and groups it passes over stay where they are.
+    Group { id: String, nodes: Vec<String>, groups: Vec<String>, start: (u16, u16), applied: (i32, i32), moved: bool },
     Resize { id: String, start: (u16, u16), orig: (i32, i32) },
     /// Panning; `group`: pressed on a group's background or border (a click
     /// without moving selects that group).
@@ -1049,14 +1052,14 @@ impl App {
         }
         self.glide = None;
         self.pan_quiet_until = None;
-        let concealed = self.concealed_now();
-        let nodes = self.doc.nodes.iter().filter(|n| !concealed.contains_key(&n.id)).map(|n| n.rect());
-        let decks = concealed.values().filter_map(|c| match c {
-            crate::visual::Conceal::Stack(root) => self.doc.node(root).map(|n| {
-                let r = self.deck_rect(n);
+        let (under, hidden) = self.conceal_maps();
+        let nodes = self.doc.nodes.iter().filter(|n| !under.contains_key(&n.id) && !hidden.contains_key(&n.id)).map(|n| n.rect());
+        let roots: HashSet<&String> = under.values().collect();
+        let decks = roots.into_iter().filter_map(|root| {
+            self.doc.node(root).map(|n| {
+                let r = self.deck_rect_in(n, &under);
                 crate::doc::Rect { x: r.x as i32, y: r.y as i32, w: r.w as i32 + 2, h: r.h as i32 + 1 }
-            }),
-            _ => None,
+            })
         });
         let bounds = nodes.chain(self.doc.groups.iter().map(|g| g.rect())).chain(decks).reduce(|a, b| a.union(&b));
         let Some(bounds) = bounds else {
@@ -1416,7 +1419,7 @@ impl App {
             automation: None,
             synced_name: None,
             reviewed_ms: None,
-            mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+            mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
         });
         self.mark_dirty();
         self.notify(format!("“{}” started subsession “{name}”.", p.name), false);
@@ -1820,7 +1823,7 @@ impl App {
                     command: None,
                     fresh: false,
                     automation: None,
-                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: folded,
+                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: folded, hidden: false,
                 };
                 let rect = node.rect();
                 self.doc.nodes.push(node);
@@ -1859,11 +1862,13 @@ impl App {
             return false;
         }
         let sessions: HashMap<&str, &Node> = self.doc.nodes.iter().filter(|n| n.kind == NodeKind::Session).map(|n| (n.id.as_str(), n)).collect();
+        // A box in the hidden area gets its slot when it is shown.
+        let hidden = canvas_model::visual::hidden_area(&self.doc);
         let todo: Vec<(String, String)> = self
             .doc
             .nodes
             .iter()
-            .filter(|n| n.kind == NodeKind::Agent && n.unplaced)
+            .filter(|n| n.kind == NodeKind::Agent && n.unplaced && !hidden.contains_key(&n.id))
             .filter_map(|n| n.parent.as_deref().and_then(|p| sessions.get(p)).filter(|p| !canvas_model::visual::subagents_folded(&self.doc, p)).map(|p| (n.id.clone(), p.id.clone())))
             .collect();
         if todo.is_empty() {
@@ -1943,7 +1948,7 @@ impl App {
                     command: None,
                     fresh: false,
                     automation: None,
-                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
                 };
                 first.get_or_insert_with(|| node.id.clone());
                 ids.push(node.id.clone());
