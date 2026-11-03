@@ -2072,14 +2072,16 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     Ok(())
 }
 
-/// Canvas-wide agents, on a canvas of its own (the demo has no agents): the
-/// top bar's ◎ Agents opens their panel; a new Custom agent is one box in the
-/// Canvas agents frame (the sidebar and the panel show the same one), its
-/// files under the canvas's id in this instance's home; viewing it, even a
-/// double-click, starts nothing. A Custom agent has no triggers: nothing runs.
+/// Canvas agents, on a canvas of its own (the demo has no agents): the top
+/// bar's ◎ Agents opens their panel; *+ New canvas agent* opens the dialog;
+/// a blank agent with typed instructions is one box in the Canvas agents
+/// frame (the sidebar and the panel show the same one), its instructions
+/// its rules.md under the canvas's id in this instance's home; it has no
+/// triggers, so nothing runs it; viewing it starts nothing; a double-click
+/// opens its chat (the stand-in agent), which takes typing; Stop run ends it.
 fn canvas_agent_steps<U: Ui>(instance: &Instance, work: &Path, args: &[String], env: &[(&str, &Path)], start: &impl Fn(&[String], &[(&str, &Path)]) -> Result<U>) -> Result<()> {
     use crate::client::doc::{Group, Node};
-    step("canvas-wide agents: ◎ Agents opens their panel; a new agent is one box in the Canvas agents frame with its files under the canvas's id; viewing it starts nothing");
+    step("canvas agents: ◎ Agents → + New canvas agent: a dialog like the new session's makes one box in the Canvas agents frame (its instructions are its rules.md under the canvas's id); viewing starts nothing; a double-click opens its chat");
     let canvas = instance.home.join("agents-canvas.json");
     let mut shell: Node = serde_json::from_value(serde_json::json!({ "id": "agents-shell", "kind": "session", "name": "Team shell", "x": 2, "y": 2 }))?;
     shell.cwd = Some(work.display().to_string());
@@ -2103,30 +2105,48 @@ fn canvas_agent_steps<U: Ui>(instance: &Instance, work: &Path, args: &[String], 
     ui.wait("the canvas agents panel", Duration::from_secs(5), |t| t.contains("Canvas agents · 0") && t.contains("+ New canvas agent"))?;
     let (x, y) = ui.find("+ New canvas agent").context("its New button")?;
     ui.click(x + 1, y)?;
-    ui.wait("the templates", Duration::from_secs(5), |t| t.contains("New canvas-wide agent: template") && t.contains("PR coordinator") && t.contains("Custom"))?;
-    ui.send(b"Custom")?;
-    ui.send(b"\r")?;
-    ui.wait("the name prompt", Duration::from_secs(5), |t| t.contains("Name the Custom canvas-wide agent"))?;
-    ui.send(b"\x15Selftest agent\r")?;
-    ui.wait("its panel", Duration::from_secs(10), |t| t.contains("◎ Selftest agent") && t.contains("canvas-wide agent ·"))?;
+    ui.wait("the new canvas agent dialog", Duration::from_secs(5), |t| t.contains("New canvas agent") && t.contains("Start from") && t.contains("Only when you talk to it"))?;
+    // Its name, then (Tab: Agent, Model, Instructions) its instructions; Create.
+    ui.send(b"Selftest agent")?;
+    ui.send(b"\t\t\t")?;
+    ui.send(b"Answer questions about the canvas.")?;
+    let (x, y) = ui.find("Create    Cancel").context("its Create button")?;
+    ui.click(x + 1, y)?;
+    ui.wait("its panel", Duration::from_secs(10), |t| t.contains("◎ Selftest agent") && t.contains("canvas agent ·") && t.contains("only when you talk to it"))?;
     let doc = wait_doc(&canvas, "the agent in its frame", |d| d.nodes.iter().any(|n| n.name == "Selftest agent" && n.is_canvas_agent()) && d.canvas_frame().is_some())?;
     let node = doc.nodes.iter().find(|n| n.name == "Selftest agent").context("the agent")?.clone();
     let frame = doc.canvas_frame().context("the frame")?;
     let passive = node.passive.clone().context("passive")?;
     anyhow::ensure!(passive.group == frame.id, "the agent belongs to the Canvas agents frame");
+    anyhow::ensure!(!passive.has_triggers(), "a blank agent wakes only when you talk to it: {passive:?}");
     let canvas_id = doc.canvas_id.clone().context("the service gave the canvas an id")?;
     let dir = canvas_agents::canvas_wide::canvas_dir(&instance.home, &canvas_id);
-    anyhow::ensure!(canvas_agents::canvas_wide::agent_paths(&dir, &passive.slug).rules.is_file(), "its rules under {}", dir.display());
-    // The sidebar row and the box are the same agent; a double-click on the box starts nothing.
+    let rules = std::fs::read_to_string(canvas_agents::canvas_wide::agent_paths(&dir, &passive.slug).rules).unwrap_or_default();
+    anyhow::ensure!(rules == "Answer questions about the canvas.\n", "its instructions are its rules.md under {}: {rules:?}", dir.display());
+    // The sidebar row and the box are the same agent; viewing it starts nothing.
     let (sx, sy) = ui.locate("Selftest agent", SIDEBAR)?;
     ui.click(sx, sy)?;
-    ui.wait("its panel from the sidebar", Duration::from_secs(5), |t| t.contains("◎ Selftest agent") && t.contains("Open chat"))?;
+    ui.wait("its panel from the sidebar", Duration::from_secs(5), |t| t.contains("◎ Selftest agent") && t.contains("▸ Chat"))?;
     let (bx, by) = ui.locate("Selftest agent", CANVAS)?;
-    ui.double_click(bx, by)?;
+    ui.click(bx, by)?;
     std::thread::sleep(Duration::from_millis(800));
-    let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
-    anyhow::ensure!(!log.contains(&format!("launched {} ", node.id)), "viewing the agent launched it");
+    let launched = || std::fs::read_to_string(instance.log_path()).unwrap_or_default().contains(&format!("launched {} ", node.id));
+    anyhow::ensure!(!launched(), "viewing the agent launched it");
     anyhow::ensure!(ui.text().contains("◎ Selftest agent"), "its panel stays\n{}", ui.text());
+    // A double-click opens its chat (the stand-in agent), which takes typing; Stop run ends it.
+    ui.double_click(bx, by)?;
+    ui.wait("its chat", Duration::from_secs(25), |t| t.contains("Fake Copilot"))?;
+    anyhow::ensure!(launched(), "the double-click launched its chat");
+    ui.send(b"hello agent")?;
+    ui.wait("typing in its chat", Duration::from_secs(10), |t| t.contains("hello agent"))?;
+    ui.send(b"\x1d")?;
+    ui.wait("canvas focus", Duration::from_secs(5), |t| t.contains("empty-drag pan"))?;
+    let (bx, by) = ui.locate("Selftest agent", CANVAS)?;
+    ui.click(bx, by)?;
+    ui.wait("its panel with Stop run", Duration::from_secs(5), |t| t.contains("◎ Selftest agent") && t.contains("Stop run"))?;
+    let (x, y) = ui.find("Stop run").context("Stop run")?;
+    ui.click(x + 1, y)?;
+    ui.wait("its chat ended", Duration::from_secs(15), |t| t.contains("◎ Selftest agent") && !t.contains("Stop run"))?;
     pr_steps(&mut ui, instance)?;
     review_steps(&mut ui, instance)?;
     spaces::todo_cli_steps(&mut ui, instance)?;
@@ -2164,7 +2184,11 @@ fn pr_steps<U: Ui>(ui: &mut U, instance: &Instance) -> Result<()> {
     let home = &instance.home;
     let fixtures = home.join("fake-prs");
     const URL: &str = "https://github.com/selftest/app/pull/7";
-    let (x, y) = ui.find("PRs…").context("the agent's PRs… button")?;
+    // PR coordination from the agent's settings (under More while it is off).
+    let (x, y) = ui.find("▸ More").context("its settings' More")?;
+    ui.click(x + 1, y)?;
+    ui.wait("its less common settings", Duration::from_secs(5), |t| t.contains("PRs          off"))?;
+    let (x, y) = ui.find("PRs          off").context("its PRs row")?;
     ui.click(x + 1, y)?;
     ui.wait("the PR coordination prompt", Duration::from_secs(5), |t| t.contains("PR coordination"))?;
     ui.send(b"\x15on every 5m manual\r")?;
@@ -2256,8 +2280,9 @@ fn review_steps<U: Ui>(ui: &mut U, instance: &Instance) -> Result<()> {
     ui.send(b"\x1b")?;
     let (bx, by) = ui.locate("Selftest agent", CANVAS)?;
     ui.click(bx, by)?;
-    ui.wait("the agent's panel", Duration::from_secs(5), |t| t.contains("◎ Selftest agent") && t.contains("Follow-ups…"))?;
-    let (x, y) = ui.find("Follow-ups…").context("Follow-ups…")?;
+    // Its Follow-ups row (under More, still open from the PR step; once on it shows above it).
+    ui.wait("the agent's panel", Duration::from_secs(5), |t| t.contains("◎ Selftest agent") && t.contains("Follow-ups   off"))?;
+    let (x, y) = ui.find("Follow-ups   off").context("its Follow-ups row")?;
     ui.click(x + 1, y)?;
     ui.wait("the follow-ups prompt", Duration::from_secs(5), |t| t.contains("Review follow-ups:"))?;
     ui.send(format!("\x15outbox {} approval every 60m\r", outbox.display()).as_bytes())?;
@@ -2761,7 +2786,7 @@ mod stress_probe {
                 command: None,
                 fresh: false,
                 automation: None,
-                synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+                synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
             });
         }
         for g in 0..n_sessions.div_ceil(10) as i32 {
@@ -2867,7 +2892,7 @@ mod user_message_canvas_probe {
         let mut doc = crate::client::doc::Doc::default();
         doc.nodes.push(crate::client::doc::Node {
             id: id.clone(), kind: crate::client::doc::NodeKind::Session, name: "Probe".into(), x: 2, y: 2,
-            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -3114,7 +3139,7 @@ mod canvas_image_paste_probe {
         let mut doc = crate::client::doc::Doc::default();
         doc.nodes.push(crate::client::doc::Node {
             id: id.clone(), kind: crate::client::doc::NodeKind::Session, name: "Paste probe".into(), x: 2, y: 2,
-            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: true, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: true, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -3286,7 +3311,7 @@ mod fork_canvas_probe {
         let mut doc = crate::client::doc::Doc::default();
         doc.nodes.push(crate::client::doc::Node {
             id: id.clone(), kind: crate::client::doc::NodeKind::Session, name: "Fork parent".into(), x: 2, y: 2,
-            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+            cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -3567,7 +3592,7 @@ mod loop_canvas_probe {
             cwd: Some(work.to_string_lossy().into_owned()), parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None,
             mcp_off: Some(crate::copilot_cfg::snapshot().mcp.into_iter().map(|s| s.name).collect()),
             passive: None,
-            no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+            no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
         });
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
@@ -3697,7 +3722,7 @@ mod passive_probe {
         doc.nodes.push(crate::client::doc::Node {
             id: active.clone(), kind: crate::client::doc::NodeKind::Session, name: "Active probe".into(), x: 2, y: 2,
             cwd: Some(work.display().to_string()), parent: None, agent_key: None, source: None, command: None, fresh: true, automation: None, synced_name: None, reviewed_ms: None,
-            mcp_off: Some(off.clone()), passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+            mcp_off: Some(off.clone()), passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
         });
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
         let instance = crate::paths::Instance::new(Some(format!("psv{}", std::process::id())), Some(home.clone()), Some(sessions.clone())).unwrap();

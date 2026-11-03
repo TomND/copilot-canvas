@@ -14,7 +14,7 @@ use ratatui::style::{Color, Modifier, Style};
 use crate::app::{App, Drag};
 use crate::doc::{Node, NodeKind};
 use crate::paint::{
-    self, ACCENT, BoxSet, DASHED, GROUP_COLORS, HEAVY, LIGHT, MUTED, PANEL, ROUND, SELECT, TEXT, fill, fg, outline, put, put_sym,
+    self, ACCENT, BoxSet, DASHED, FAINT, GROUP_COLORS, HEAVY, LIGHT, MUTED, PANEL, ROUND, SELECT, TEXT, fill, fg, outline, put, put_sym,
     truncate,
 };
 use crate::status::{Status, StatusStyle};
@@ -148,6 +148,21 @@ fn badge_hit(b: &BoxModel, cells: (i32, i32, i32, i32), zoom: u8, clip: Rect) ->
     let inside = bx >= clip.x as i32 && bx + w <= clip.right() as i32 && by >= clip.y as i32 && by < clip.bottom() as i32;
     let todo = b.badge.clone()?;
     inside.then(|| (Rect::new(bx as u16, by as u16, w as u16, 1), crate::dialogs::Hit::Toolbar(crate::dialogs::Action::Tasks(crate::tasks::Action::OpenTodo(todo)))))
+}
+
+/// The click target of a box's hidden marker (`⋯ 2 hidden`, as `paint_box`
+/// draws it on the bottom border): it lists the boxes hidden into it.
+fn hidden_hit(b: &BoxModel, (x, y, w, h): (i32, i32, i32, i32), zoom: u8, clip: Rect) -> Option<(Rect, crate::dialogs::Hit)> {
+    let hidden = b.hidden.filter(|_| zoom < 2)?;
+    let width = paint::text_width(&format!(" {} ", hidden.text())) as i32;
+    let (bx, by) = (x + w - 2 - width, y + h - 1);
+    let inside = bx >= clip.x as i32 && bx + width <= clip.right() as i32 && by >= clip.y as i32 && by < clip.bottom() as i32;
+    inside.then(|| (Rect::new(bx as u16, by as u16, width as u16, 1), hidden_list_hit(&b.id)))
+}
+
+/// What a click on a box's hidden marker does.
+fn hidden_list_hit(id: &str) -> crate::dialogs::Hit {
+    crate::dialogs::Hit::Toolbar(crate::dialogs::Action::Visual(crate::visual::VisualAction::HiddenList(Some(id.to_owned()), false)))
 }
 
 /// The boxes (world rects) effects are drawn on: their bottom-left badge
@@ -321,17 +336,30 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
     app.prepare_effects();
     // Dot grid anchored to world coordinates so it moves with panning. It is
     // hidden while panning: shifting it rewrites nearly every cell each frame.
-    // While a session works it steps through a few lighter colours (the
-    // pulse), on the frames the working spinners draw anyway.
+    // Around a working session its dots glow in rings that travel outward
+    // (`crate::glow`), stepping through a few colours on the frames the
+    // working spinners draw anyway.
     let (n, d) = app.scale();
     let step_x = (6 * n / d).max(3);
     let step_y = (3 * n / d).max(2);
     let (ox, oy) = app.to_screen(0, 0);
     let panning = matches!(app.drag, Some(Drag::Pan { moved: true, .. })) || app.pan_quiet_until.is_some() || app.glide.is_some();
     let (clock, _) = app.anim_clock();
-    let pulse = app.grid_pulse(clock).map_or(0.0, |fade| fade.level(clock));
+    let visible = {
+        let (x, y) = app.to_world_f(area.x as f32, area.y as f32);
+        let s = app.scale_f();
+        WRect::new(x, y, area.width as f32 / s, area.height as f32 / s)
+    };
+    let glow = app.working_glow(clock, &frame, &|n: &Node| WRect::from(n.rect()), visible);
     if !panning {
-        draw_grid(buf, area, (ox, oy), (step_x, step_y), crate::pulse::tui_color(pulse));
+        let color = |x: i32, y: i32| match &glow {
+            Some(glow) => {
+                let (wx, wy) = app.to_world_f(x as f32, y as f32);
+                crate::glow::tui_color(glow.level(wx, wy, clock))
+            }
+            None => FAINT,
+        };
+        draw_grid(buf, area, (ox, oy), (step_x, step_y), &color);
     }
 
     let boxes = Boxes::new(app);
@@ -463,6 +491,7 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
         }
         paint_box(buf, &b, (x, y, w, h), zoom, clip);
         badge_hits.extend(badge_hit(&b, (x, y, w, h), zoom, clip));
+        badge_hits.extend(hidden_hit(&b, (x, y, w, h), zoom, clip));
     }
     if first_selected.is_none() {
         paint_decks(buf);
@@ -524,9 +553,9 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
         outline(buf, x - 1, y - 1, w + 2, h + 2, set, crate::paint::bold(ACCENT), clip);
     }
 
-    // A todo badge is clicked only where it still shows (a box, deck or
-    // effect drawn after its box may cover it).
-    badge_hits.retain(|(r, _)| (r.x..r.right()).any(|x| buf.cell((x, r.y)).is_some_and(|c| c.symbol() == "☑")));
+    // A todo badge (or a hidden marker) is clicked only where it still shows
+    // (a box, deck or effect drawn after its box may cover it).
+    badge_hits.retain(|(r, _)| (r.x..r.right()).any(|x| buf.cell((x, r.y)).is_some_and(|c| matches!(c.symbol(), "☑" | "⋯" | "◇"))));
     app.layout.hits.extend(badge_hits);
 
     if let Some(Drag::Rubber { start, now, .. }) = &app.drag {
@@ -616,14 +645,15 @@ pub fn paint_effect(buf: &mut Buffer, effect: &EffectModel, (x, y, w, h): (i32, 
     put(buf, x + 2, y + h.max(1) - 1, &truncate(&text, room), crate::visual::effect_style(effect.kind), clip);
 }
 
-fn draw_grid(buf: &mut Buffer, area: Rect, (ox, oy): (i32, i32), (step_x, step_y): (i32, i32), color: Color) {
+/// The dot grid; `color`: a dot's colour at its cell (the working glow).
+fn draw_grid(buf: &mut Buffer, area: Rect, (ox, oy): (i32, i32), (step_x, step_y): (i32, i32), color: &dyn Fn(i32, i32) -> Color) {
     for y in area.y..area.bottom() {
         if (y as i32 - oy).rem_euclid(step_y) != 0 {
             continue;
         }
         for x in area.x..area.right() {
             if (x as i32 - ox).rem_euclid(step_x) == 0 {
-                put_sym(buf, x as i32, y as i32, "·", fg(color), area);
+                put_sym(buf, x as i32, y as i32, "·", fg(color(x as i32, y as i32)), area);
             }
         }
     }
@@ -693,15 +723,12 @@ fn draw_empty_hint(buf: &mut Buffer, area: Rect) {
 }
 
 /// Everything that moves with the current drag (for the Gpu visual offset):
-/// what the document moves (`Doc::nodes_moving_with`, `Doc::group_moving_with`),
-/// each box once.
+/// what the document moves (`Doc::nodes_moving_with`, a group drag's set
+/// decided when it started), each box once.
 fn dragged(app: &App) -> (HashSet<String>, HashSet<String>) {
     match &app.drag {
         Some(Drag::Nodes { ids, .. }) => (app.doc.nodes_moving_with(ids).into_iter().collect(), HashSet::new()),
-        Some(Drag::Group { id, .. }) => {
-            let (nodes, groups) = app.doc.group_moving_with(id);
-            (nodes.into_iter().collect(), groups.into_iter().collect())
-        }
+        Some(Drag::Group { nodes, groups, .. }) => (nodes.iter().cloned().collect(), groups.iter().cloned().collect()),
         _ => (HashSet::new(), HashSet::new()),
     }
 }
@@ -746,7 +773,6 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
     let (clock_ms, frozen) = app.anim_clock();
     let looping: HashSet<String> = app.doc.nodes.iter().filter(|n| app.node_loop(n).is_some()).map(|n| n.id.clone()).collect();
     app.sync_loops(looping, clock_ms, frozen);
-    let pulse = app.grid_pulse(clock_ms);
     let mut model = CanvasModel {
         area,
         origin,
@@ -765,7 +791,7 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
         motion: app.motion(),
         clock_ms,
         frozen,
-        pulse,
+        glow: None,
     };
     let visible = model.visible();
     // Loop arcs, halos and labels reach a few units past a box.
@@ -784,6 +810,8 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
     // Boxes in a stack or hide transition fly; the rest sit at home.
     let node_rect = |node: &Node| frame.moving.get(&node.id).map(|(r, _)| *r).unwrap_or_else(|| home_rect(node));
     let deck_rect = |deck: &Deck| if moving_nodes.contains(deck.root.as_str()) { deck.rect.offset(offset) } else { deck.rect };
+    // The working glow follows its boxes where they are drawn (dragged, flying).
+    model.glow = app.working_glow(clock_ms, &frame, &node_rect, visible);
 
     let mut member_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     for group in app.doc.groups_by_node().into_values() {
@@ -898,6 +926,19 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
                 chip_hits.push((cell, crate::dialogs::Hit::Toolbar(crate::dialogs::Action::Tasks(crate::tasks::Action::OpenTodo(todo)))));
             }
         }
+        // The hidden marker: a pill ending 1.5 units left of the box's
+        // bottom-right corner (the GUI's), from 20 % up; a click lists them.
+        if let Some(hidden) = b.hidden.filter(|_| scale >= 0.2 && b.alpha >= 1.0) {
+            let (ex, sy) = model.to_screen(rect.right() - 1.5, rect.bottom());
+            let k = (scale * 0.8).clamp(0.5, 0.9);
+            let w = ((paint::text_width(&hidden.text()) as f32 + 2.0) * k).ceil();
+            let left = (ex - w).floor().max(0.0);
+            let cell = Rect::new(left as u16, (sy - 0.5).max(0.0) as u16, (ex.ceil() - left).max(1.0) as u16, 2);
+            let inside = cell.x >= area.x && cell.right() <= area.right() && cell.y >= area.y && cell.bottom() <= area.bottom();
+            if inside {
+                chip_hits.push((cell, hidden_list_hit(&node.id)));
+            }
+        }
         if b.alpha >= 1.0 {
             // A looping box's arc (growing in after the loop started), or the
             // arc of a loop that just stopped, fading out.
@@ -966,8 +1007,14 @@ pub fn paint_model(model: &CanvasModel, buf: &mut Buffer) {
         (x, y, ((r.w * s).round() as i32).max(min_w), ((r.h * s).round() as i32).max(min_h))
     };
     if model.grid {
-        let color = crate::pulse::tui_color(model.grid_level(model.clock_ms));
-        draw_grid(buf, clip, at(0.0, 0.0), (((6.0 * s) as i32).max(3), ((3.0 * s) as i32).max(2)), color);
+        let color = |x: i32, y: i32| match &model.glow {
+            Some(glow) => {
+                let (wx, wy) = model.to_world(x as f32, y as f32);
+                crate::glow::tui_color(glow.level(wx, wy, model.clock_ms))
+            }
+            None => FAINT,
+        };
+        draw_grid(buf, clip, at(0.0, 0.0), (((6.0 * s) as i32).max(3), ((3.0 * s) as i32).max(2)), &color);
     }
     let off = |x: i32, y: i32, w: i32, h: i32| x + w < clip.x as i32 || x > clip.right() as i32 || y + h < clip.y as i32 || y > clip.bottom() as i32;
     for group in &model.groups {

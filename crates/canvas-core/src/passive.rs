@@ -86,6 +86,24 @@ fn slugify(name: &str) -> String {
     if slug.is_empty() { "passive".into() } else { slug.chars().take(40).collect() }
 }
 
+/// What a canvas-wide agent's follow-ups may ask for: `read-only` (none),
+/// or words of [`canvas_model::prs::PERMISSIONS`].
+fn parse_permissions(value: &str) -> Result<Vec<String>, String> {
+    let mut allow = Vec::new();
+    for word in value.split([',', ' ']).map(|w| w.trim().to_ascii_lowercase()).filter(|w| !w.is_empty()) {
+        match word.as_str() {
+            "read-only" | "readonly" | "none" | "allow" => {}
+            w if canvas_model::prs::PERMISSIONS.iter().any(|(p, _)| *p == w) => {
+                if !allow.contains(&word) {
+                    allow.push(word);
+                }
+            }
+            w => return Err(format!("not a permission: {w} (read-only, or push, reply, resolve, vote, merge)")),
+        }
+    }
+    Ok(allow)
+}
+
 impl App {
     /// Groups, members and passive sessions as the service needs them, with
     /// this canvas's id. Canvas-wide agents are routed only when the canvas
@@ -118,9 +136,10 @@ impl App {
                     max_runs_per_day: p.max_runs_per_day,
                     mcp_off: node.mcp_off.clone().unwrap_or_default(),
                     agent: crate::agents::agent_of(node).id().to_owned(),
-                    // Runs use the model new sessions of its agent in its group get;
-                    // runs that resume a conversation with a recorded model keep that one.
-                    model: canvas_model::models::effective(crate::agents::agent_of(node), &self.doc.defaults, self.doc.group(&p.group)).model,
+                    // Runs use the agent's own model (canvas-wide agents), else the one new
+                    // sessions of its agent in its group get; runs that resume a conversation
+                    // with a recorded model keep that one.
+                    model: p.model.clone().filter(|_| node.is_canvas_agent()).unwrap_or_else(|| canvas_model::models::effective(crate::agents::agent_of(node), &self.doc.defaults, self.doc.group(&p.group)).model),
                     session_model: node.model.clone(),
                     canvas_wide: node.is_canvas_agent(),
                     skills: if node.is_canvas_agent() { p.skills.clone() } else { Vec::new() },
@@ -166,12 +185,16 @@ impl App {
         for (old, new) in moves {
             self.rename_node_id(&old, &new);
             if let Some(node) = self.doc.node_mut(&new) {
-                // A fresh conversation: the agent names it anew, and it starts with the current default model.
+                // A fresh conversation: the agent names it anew, and it starts with the
+                // current default model (a canvas-wide agent's own model, when it has one).
                 node.agent_session = None;
-                node.model = None;
+                node.model = node.passive.as_ref().and_then(|p| p.model.clone());
                 if let Some(p) = node.passive.as_mut() {
-                    p.episodes.push(old);
+                    p.episodes.push(old.clone());
                 }
+            }
+            if self.agent_ui.chat_after_run.remove(&old) {
+                self.agent_ui.chat_after_run.insert(new.clone());
             }
         }
         // The agent's own id of the current conversation (OpenCode names it itself).
@@ -202,6 +225,8 @@ impl App {
         }
         self.bus = snapshot;
         self.needs_draw = true;
+        // A chat asked for during a run opens once the run has ended.
+        self.open_waiting_chats();
     }
 
     pub fn on_bus_event(&mut self, json: &str) {
@@ -275,7 +300,11 @@ impl App {
         if !passive.daily_at.is_empty() {
             parts.push(format!("daily {}", passive.daily_at));
         }
-        if parts.is_empty() { "on messages".into() } else { parts.join(" · ") }
+        match parts.is_empty() {
+            true if passive.is_canvas() => "when you talk to it".into(),
+            true => "on messages".into(),
+            false => parts.join(" · "),
+        }
     }
 
     /// Status line of a passive box: state, headline and when it runs next.
@@ -357,7 +386,7 @@ impl App {
             no_messages: false,
             // Passive sessions (the automation doctor too) run the canvas's default agent.
             agent: Some(self.default_agent().id().to_owned()),
-            agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+            agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
         });
         self.mark_dirty();
         self.select_node(&id, false);
@@ -424,6 +453,11 @@ impl App {
                 "CHANNEL [TOOL] approval|no-approval every 60m recipients: RULE · channels: mcp <server> · pr-comment · outbox <folder> · off",
                 passive.reviews.as_ref().map(|s| s.text()).unwrap_or_else(|| "off".into()),
             ),
+            PassiveField::Permissions => (
+                "Permissions: what its pull request follow-ups may ask owners to do",
+                "read-only (the default: fix and test locally) · or any of push, reply, resolve, vote, merge",
+                passive.prs.as_ref().filter(|s| !s.allow.is_empty()).map(|s| s.allow.join(", ")).unwrap_or_else(|| "read-only".into()),
+            ),
         };
         self.modals.push(crate::dialogs::Modal::Prompt(crate::dialogs::Prompt {
             title: title.into(),
@@ -440,11 +474,17 @@ impl App {
         let groups = if field == PassiveField::Groups { self.parse_agent_groups(value)? } else { Vec::new() };
         let prs = if field == PassiveField::Prs { canvas_model::prs::PrSettings::parse(value)? } else { None };
         let reviews = if field == PassiveField::Reviews { canvas_model::reviews::ReviewSettings::parse(value)? } else { None };
+        let allow = if field == PassiveField::Permissions { parse_permissions(value)? } else { Vec::new() };
         let Some(passive) = self.doc.node_mut(id).and_then(|n| n.passive.as_mut()) else { return Err("the passive session no longer exists".into()) };
         match field {
             PassiveField::Groups => passive.groups = groups,
             PassiveField::Prs => passive.prs = prs,
             PassiveField::Reviews => passive.reviews = reviews,
+            PassiveField::Permissions => match passive.prs.as_mut() {
+                Some(settings) => settings.allow = allow,
+                None if allow.is_empty() => {}
+                None => return Err("Its follow-ups come with PR coordination: turn PRs on first (More › PRs).".into()),
+            },
             PassiveField::Events => {
                 passive.subscribe = value.split([',', ' ']).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect();
             }
@@ -492,12 +532,17 @@ impl App {
         Ok(())
     }
 
-    /// A message you type to a passive session.
+    /// A message you type to a passive session or canvas-wide agent: typed
+    /// into its chat when the chat is open and idle (it waits while it
+    /// works), else a run answers it; never mid-turn (the service decides).
     pub fn message_passive(&mut self, id: &str, text: &str) -> Result<(), String> {
-        let node = self.doc.node(id).ok_or("the passive session no longer exists")?;
+        let node = self.doc.node(id).ok_or("the passive session no longer exists")?.clone();
         let group = node.passive.as_ref().map(|p| p.group.clone()).unwrap_or_default();
         if text.trim().is_empty() {
             return Err("type a message".into());
+        }
+        if node.passive.as_ref().is_some_and(|p| p.disabled) {
+            return Err("It is disabled (not routed): enable it to message it, or open its chat.".into());
         }
         let event = bus::Event {
             kind: "message".into(),
@@ -508,7 +553,20 @@ impl App {
             canvas: self.doc.canvas_id.clone().unwrap_or_default(),
             ..Default::default()
         };
+        // The service must know it before the message arrives.
+        self.sync_routing();
         self.bus_action(serde_json::json!({ "action": "emit", "event": event }));
+        if node.is_canvas_agent() {
+            let running = self.passive_view(&node).is_some_and(|v| v.running);
+            let note = if node.passive.as_ref().is_some_and(|p| p.paused) {
+                "it is paused: the message waits until you resume it"
+            } else if self.owned_alive(id) && !running {
+                "typed into its chat when the chat is idle"
+            } else {
+                "a run answers it in a few seconds"
+            };
+            self.notify(format!("Sent to “{}”: {note}.", node.name), false);
+        }
         Ok(())
     }
 

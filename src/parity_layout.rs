@@ -160,14 +160,16 @@ pub(super) fn rows(sb: &Sandbox, rows: &mut Vec<Row>) {
             gui.key("Esc", &[])?;
             detail.push(format!("{:.0} %: parent + subagent, + subsession, each moved once by {d:?}", scale * 100.0));
         }
-        // Hidden subsessions and subagent boxes (H hides both) are out of reach.
+        // Hidden subsessions and subagent boxes (H hides subsessions, J subagent boxes) are out of reach.
         gui.send("h")?;
+        gui.send("j")?;
         let g = group_rect(&gui, "g-layout")?;
         gui.drag("left", (g[0] + 1.5, g[1] + 1.5), (g[0] + g[2] - 1.5, g[1] + g[3] - 1.5), &["shift"])?;
         let hidden = gui.wait_tree("the visible boxes selected", 5, |t| t["selection"].as_array().is_some_and(|s| s.len() >= 3))?;
         let chosen: BTreeSet<String> = hidden["selection"].as_array().map(|s| s.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
         anyhow::ensure!(!chosen.contains("l-child") && !chosen.contains("l-child:x") && !chosen.contains("l-parent:helper") && chosen.contains("l-parent"), "with subsessions and subagent boxes hidden: {chosen:?}");
         gui.send("h")?;
+        gui.send("j")?;
         gui.key("Esc", &[])?;
         anyhow::ensure!(launches(sb) == before_launches, "an area selection started a session");
         Ok(format!("{}; hidden ones left out ({} selected); nothing started", detail.join("; "), chosen.len()))

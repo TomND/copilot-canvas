@@ -158,7 +158,7 @@ pub(super) fn rows(sb: &Sandbox, rows: &mut Vec<Row>) {
         Ok(format!("levels 0/1/2/3 at 0/5/20/90 days, ages shown; selected {selection:?}"))
     });
 
-    check_kind(rows, "V2", "Stacks: K or the menu stacks subsessions (animated), double-click unstacks to the same places; H hides all", "stack_unstack_and_hide", gui_only("the TUI switches without animation (unit tests)"), || {
+    check_kind(rows, "V2", "Stacks: K or the menu stacks subsessions (animated), double-click unstacks to the same places; H hides subsessions", "stack_unstack_and_hide", gui_only("the TUI switches without animation (unit tests)"), || {
         gui.canvas_focus()?;
         let tree = gui.tree()?;
         let b = boxes(&tree);

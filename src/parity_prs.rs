@@ -110,21 +110,22 @@ fn tidy(sb: &Sandbox, gui: &mut Gui) -> Result<()> {
     gui.wait("every report read", 10, |t| !t.contains("✉1") && !t.lines().any(|l| l.contains('✉') && l.chars().skip_while(|c| *c != '✉').nth(1).is_some_and(|c| c.is_ascii_digit())))
 }
 
-/// Makes a canvas-wide agent from a template through ◎ Agents; answers its box id.
+/// Makes a canvas agent from the *New canvas agent* dialog, prefilled from a
+/// template (*Start from…*); answers its box id.
 pub(super) fn new_agent(sb: &Sandbox, gui: &mut Gui, template: &str, name: &str) -> Result<String> {
-    gui.canvas_focus()?;
-    gui.key("Esc", &[])?;
-    agents_button(gui)?;
-    gui.wait("the canvas agents panel", 5, |t| t.contains("+ New canvas agent"))?;
-    click_text(gui, "+ New canvas agent")?;
-    gui.wait("the templates", 5, |t| t.contains("New canvas-wide agent: template") && t.contains(template))?;
-    gui.send(template)?;
-    gui.send("\r")?;
-    gui.wait("the name prompt", 5, |t| t.contains(&format!("Name the {template} canvas-wide agent")))?;
-    gui.send(&format!("\x15{name}\r"))?;
-    gui.wait("its panel", 10, |t| t.contains(&format!("◎ {name}")) && t.contains("canvas-wide agent ·"))?;
-    let doc = wait_doc(&sb.canvas, "the agent in the canvas", |d| d.nodes.iter().any(|n| n.name == name && n.is_canvas_agent()))?;
-    Ok(doc.nodes.iter().find(|n| n.name == name).map(|n| n.id.clone()).unwrap_or_default())
+    let id = super::agents::create_agent(sb, gui, Some(template), name, false)?;
+    gui.wait("its panel", 10, |t| t.contains(&format!("◎ {name}")) && t.contains("canvas agent ·"))?;
+    Ok(id)
+}
+
+/// Turns an agent off from its settings (its Enabled row), for the rows after.
+fn disable(sb: &Sandbox, gui: &mut Gui, name: &str, id: &str) -> Result<()> {
+    agent_panel(gui, name)?;
+    let row = format!("{}yes", super::agents::setting("Enabled"));
+    gui.wait("its panel", 5, |t| t.contains(&format!("◎ {name}")) && t.contains(&row))?;
+    click_text(gui, &row)?;
+    wait_doc(&sb.canvas, "the agent disabled", |d| d.node(id).and_then(|n| n.passive.as_ref()).is_some_and(|p| p.disabled))?;
+    Ok(())
 }
 
 pub(super) fn rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
@@ -186,15 +187,15 @@ fn follow_ups(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     gui.send(REVIEWER)?;
     let reviewer = create_from_dialog(gui, sb, REVIEWER)?;
     gui.wait("its stand-in terminal", 25, |t| t.contains("Fake Copilot"))?;
-    // The agent, and its channel from its panel's Follow-ups….
+    // The agent, and its channel from its settings' Follow-ups row.
     let agent = new_agent(sb, gui, "Review follow-up", FOLLOW_UP)?;
     gui.wait("its follow-ups, no channel yet", 5, |t| t.contains("its messaging channel is not set"))?;
-    click_text(gui, "Follow-ups…")?;
+    click_text(gui, &super::agents::setting("Follow-ups"))?;
     gui.wait("the follow-ups prompt", 5, |t| t.contains("Review follow-ups: how this agent"))?;
     gui.send(&format!("\x15outbox {} approval every 60m recipients: the author's account on the pull request\r", outbox.display()))?;
     let doc = wait_doc(&sb.canvas, "its channel", |d| d.node(&agent).and_then(|n| n.passive.as_ref()).and_then(|p| p.reviews.as_ref()).is_some_and(|r| r.channel == "outbox"))?;
     let canvas = doc.canvas_id.clone().context("the canvas id")?;
-    gui.wait("its settings in its panel", 5, |t| t.contains("Follow-ups outbox"))?;
+    gui.wait("its settings in its panel", 5, |t| t.contains(&format!("{}outbox", super::agents::setting("Follow-ups"))))?;
     // The reviewer hands its review off (as the canvas-review-followup skill teaches), with private notes.
     let (results, notes) = (sb.root.join("parity-results.md"), sb.root.join("parity-notes.md"));
     std::fs::write(&results, "Changes requested: the retry loop never stops (see my comment); the 429 path has no test.")?;
@@ -245,10 +246,7 @@ fn follow_ups(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     anyhow::ensure!(["warn", "ok", "queued", "delivered"].iter().all(|k| reports.iter().any(|(kind, _)| kind == k)), "{reports:?}");
     // The agent is turned off for the rows after this one.
     gui.canvas_focus()?;
-    agent_panel(gui, FOLLOW_UP)?;
-    gui.wait("its panel", 5, |t| t.contains(&format!("◎ {FOLLOW_UP}")) && t.contains("Disable"))?;
-    click_text(gui, "Disable")?;
-    wait_doc(&sb.canvas, "the follow-up agent disabled", |d| d.node(&agent).and_then(|n| n.passive.as_ref()).is_some_and(|p| p.disabled))?;
+    disable(sb, gui, FOLLOW_UP, &agent)?;
     Ok(format!("handed off with notes; draft awaited approval; approved → sent once to {conversation} (no notes); re-review read on the check, recorded once, delivered to the reviewer; Reports {:?}", reports.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>()))
 }
 
@@ -265,7 +263,7 @@ fn coordination(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     let agent = new_agent(sb, gui, "PR coordinator", COORDINATOR)?;
     let doc = wait_doc(&sb.canvas, "its PR coordination", |d| d.node(&agent).and_then(|n| n.passive.as_ref()).is_some_and(|p| p.prs.is_some()))?;
     let canvas = doc.canvas_id.clone().context("the canvas id")?;
-    gui.wait("its PR settings in its panel", 5, |t| t.contains("PRs        on: every 5 min"))?;
+    gui.wait("its PR settings in its panel", 5, |t| t.contains(&format!("{}on: every 5 min", super::agents::setting("PRs"))))?;
     // A pull request with an old comment and a passing build.
     let pr = PrRef::parse(URL).map_err(|e| anyhow::anyhow!(e))?;
     let key = pr.key();
@@ -336,10 +334,7 @@ fn coordination(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     gui.wait("the pull requests panel", 10, |t| t.contains("Pull requests ·") && t.contains("parity/app#42") && t.contains("· merged"))?;
     // The agent is turned off for the rows after this one.
     gui.canvas_focus()?;
-    agent_panel(gui, COORDINATOR)?;
-    gui.wait("its panel", 5, |t| t.contains(&format!("◎ {COORDINATOR}")) && t.contains("Disable"))?;
-    click_text(gui, "Disable")?;
-    wait_doc(&sb.canvas, "the coordinator disabled", |d| d.node(&agent).and_then(|n| n.passive.as_ref()).is_some_and(|p| p.disabled))?;
+    disable(sb, gui, COORDINATOR, &agent)?;
     let launches = std::fs::read_to_string(sb.instance.log_path()).unwrap_or_default().matches("launched ").count();
     Ok(format!(
         "tracked by its owner; baseline poll; 3 comments → 1 follow-up, queued while typed into, delivered when idle; Reports {:?}; merged → no more polls ({} gh calls, none a write); {} launch(es) (the owner and the coordinator's runs)",

@@ -107,16 +107,44 @@ any other id to Copilot and Claude Code (which both got it before).
 
 ## Canvas-wide agents and their skills
 
-A canvas-wide agent (README, *Canvas-wide passive agents and skills*) runs
-like a group passive session: headless turns of its agent (the passive run
-row above), started in its own folder
+A canvas-wide agent (README, *Canvas-wide passive agents and skills*) is a
+session box with one conversation that both its chat and its runs use.
+
+**Runs** are like a group passive session's: headless turns of its agent
+(the passive run row above), started in its own folder
 `<home>/canvas-agents/<canvas id>/agents/<slug>` (OpenCode learns each run's
 `ses_` id from the folder a run starts in, so agents never share one) with
 the canvas-agents folder `<home>/canvas-agents/<canvas id>` allowed
 (`--add-dir` for Copilot and Claude Code, `external_directory` for OpenCode),
 so it reads the canvas's `GOALS.md` and skills. Its prompt starts with
 `[Copilot Canvas · canvas-wide agent "<name>"]` and its triggers carry the
-sending session's id and group.
+sending session's id and group. A run uses the agent's own model
+(`Passive::model`, routed as `PassiveSpec::model`) or else the one new
+sessions of its agent get; a resumed conversation whose model is recorded on
+the box keeps that one (`PassiveSpec::session_model`; setting the agent's
+model records it on the box too, so the current conversation follows). An
+agent with no triggers (no events, no schedule) gets no events or timers: it
+runs only on messages, addressed events, follow-ups it scheduled and Run now.
+
+**Its chat** is the explicit start of that conversation (a double-click,
+Enter, *Chat*, *Create & start*): an interactive launch of its agent in its
+folder (new: `--session-id ID` / OpenCode's TUI / `claude --session-id ID`;
+later: a resume, like a session's), with the canvas-agents folder in
+`add_dirs` (Copilot takes it for new conversations; Claude Code and OpenCode
+on every launch) and its skills plugin (below). A new conversation's first
+prompt (`AgentLaunch::prompt`: `-i` for Copilot, `--prompt` for OpenCode,
+positional for Claude Code) says who it is, what wakes it and where its
+instructions (`rules.md`), memory and the canvas goals are, then your first
+message (or asks it to say what it will do). Never two writers: while a
+headless run of it is in progress (`PassiveView::running`) the window does
+not open the chat; it opens it once the run has ended and its terminal is
+gone. A run that comes while the chat is open is typed into the chat when it
+is idle (not working, no question pending, nothing typed for 20 s), else
+retried; a run never starts a new conversation beside one its chat began: the
+service resumes a conversation that already has history even when no run
+has started it yet (`fresh_conversation` in `service/passive.rs`). Changing
+its agent CLI gives the box a new id and the agent a new routing key: a fresh
+conversation (the old one stays an earlier episode), its files unchanged.
 
 **Skills.** A canvas skill is `skills/<name>/SKILL.md` in the canvas-agents
 folder: YAML front matter with `name` (lowercase, digits, single hyphens; the
@@ -384,8 +412,9 @@ The skill says to do what it asks in that session, treat comment text as
 data, and do nothing the `[Canvas: …]` part does not permit without the user.
 
 **A canvas-wide agent with PR coordination** (`Passive::prs`: the *PR
-coordinator* template, or *PRs…* `on [every 5m] [auto|manual] [read-only |
-allow push,reply,resolve,vote,merge]`) gets the PR monitor's events (their
+coordinator* template, or its *PRs* setting `on [every 5m] [auto|manual] [read-only |
+allow push,reply,resolve,vote,merge]`; its *Permissions* setting edits the
+`allow` list alone) gets the PR monitor's events (their
 `session` is the owner) and sends follow-ups:
 
 ```text
@@ -461,7 +490,7 @@ without a new hand-off.
 **The canvas-wide review follow-up agent** (`Passive::reviews`:
 `ReviewSettings { channel, tool, recipients, approval (default on),
 check_minutes (60), paused }`; the *Review follow-up* template, 60 runs a
-day; *Follow-ups…* `mcp teams approval every 60m recipients: <rule>`,
+day; its *Follow-ups* setting `mcp teams approval every 60m recipients: <rule>`,
 `pr-comment`, `outbox <folder>`, `off`):
 
 | Trigger | Data | What it does |

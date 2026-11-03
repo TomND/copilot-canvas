@@ -444,6 +444,13 @@ fn run_place(home: &Path, routing: &Routing, spec: &PassiveSpec) -> Result<RunPl
     Ok(RunPlace { paths: bus::passive_paths(&folder, &spec.slug), allowed: folder.clone(), cwd: folder })
 }
 
+/// A run starts a new conversation only when none exists yet: one that its
+/// chat began before any run (opened from the canvas) is continued, never
+/// started over beside it. `exists` is asked only when no run has started it.
+fn fresh_conversation(started: bool, exists: impl FnOnce() -> bool) -> bool {
+    !started && !exists()
+}
+
 /// Starts (or types in) one passive run with its pending events.
 fn start_run(shared: &Shared, routing: &Routing, spec: &PassiveSpec, state: &mut BusState, now: u64) {
     let snapshot_state = state.clone();
@@ -461,7 +468,14 @@ fn start_run(shared: &Shared, routing: &Routing, spec: &PassiveSpec, state: &mut
     if s.session_id.is_empty() {
         s.session_id = spec.session_id.clone();
     }
-    let mut fresh = !s.started;
+    let kind = AgentKind::parse(&spec.agent).unwrap_or(AgentKind::Copilot);
+    // Its chat (opened from the canvas) may have begun the conversation before any run: runs continue it.
+    let existing = if s.native_id.is_empty() { s.session_id.clone() } else { s.native_id.clone() };
+    let mut fresh = fresh_conversation(s.started, || kind.provider().has_history(&existing));
+    if !fresh && !s.started {
+        s.started = true;
+        log(&shared.instance, &format!("passive {} continues the conversation its chat began", spec.name));
+    }
     if s.needs_rollover(spec) {
         s.session_id = uuid::Uuid::new_v4().to_string();
         s.native_id.clear();
@@ -510,7 +524,6 @@ fn start_run(shared: &Shared, routing: &Routing, spec: &PassiveSpec, state: &mut
         }
         return;
     }
-    let kind = AgentKind::parse(&spec.agent).unwrap_or(AgentKind::Copilot);
     let native = (!s.native_id.is_empty()).then(|| s.native_id.clone());
     if kind.provider().is_live(native.as_deref().unwrap_or(&session)) {
         // Open in another terminal or VS Code: try later.
@@ -1009,6 +1022,13 @@ mod tests {
         state.passive.insert("old-group".into(), bus::PassiveState { last_run_ms: now, ..Default::default() });
         retain_states(&mut state, &r, now);
         assert_eq!(state.passive.keys().collect::<Vec<_>>(), ["kw", "other"]);
+    }
+
+    #[test]
+    fn a_conversation_its_chat_began_is_continued_by_runs() {
+        assert!(fresh_conversation(false, || false), "nothing yet: a new conversation");
+        assert!(!fresh_conversation(false, || true), "its chat began it: the run resumes it");
+        assert!(!fresh_conversation(true, || panic!("not asked once a run started it")));
     }
 
     #[test]

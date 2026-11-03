@@ -600,7 +600,7 @@ fn node(id: &str, name: &str, x: i32, y: i32, cwd: &Path) -> Node {
         passive: None,
         no_messages: false,
         agent: None,
-        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
     }
 }
 
@@ -2200,6 +2200,7 @@ fn late_rows(sb: &Sandbox, rows: &mut Vec<Row>) {
     visual::rows(sb, rows);
     layout::rows(sb, rows);
     subagents::rows(sb, rows);
+    hide::rows(sb, rows);
     pulse::rows(sb, rows);
 }
 
@@ -2211,6 +2212,9 @@ mod layout;
 
 #[path = "parity_subagents.rs"]
 mod subagents;
+
+#[path = "parity_hide.rs"]
+mod hide;
 
 #[path = "parity_pulse.rs"]
 mod pulse;

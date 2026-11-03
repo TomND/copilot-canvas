@@ -39,10 +39,10 @@ const HELP: &[(&str, &str)] = &[
     ("T · F · + − · C", "tile terminals · fit all · zoom · center"),
     ("/ · B", "filter sidebar · toggle sidebar"),
     ("O", "open this canvas in the other client (GUI / TUI)"),
-    ("K · H", "stack / unstack subsessions · hide / show all subsessions"),
+    ("K · H / J", "stack · hide subsessions / subagents"),
     ("Click a stack · double-click", "view its top card · unstack (back to their places)"),
     ("Click an effect (✦ ◉ ✧ ▲)", "clear it (it never starts the session)"),
-    ("A · ◎ Agents (top bar) · ◎ frame", "canvas-wide agents: every group's events, skills"),
+    ("A · ◎ Agents (top bar) · ◎ frame", "canvas agents: + New, Chat (double-click), settings"),
     ("F6 · Ctrl+]", "cycle focus · leave a terminal"),
     ("Shift+PgUp/PgDn", "terminal history"),
     ("Q / Ctrl+Q", "quit (sessions can keep running)"),
@@ -257,14 +257,18 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
             (rect, None)
         }
         Modal::Menu(menu) => {
-            let width = menu.items.iter().map(|i| crate::paint::text_width(&i.label) + crate::paint::text_width(&i.hint) + 6).max().unwrap_or(20).max(24) as u16;
-            let height = menu.items.len() as u16 + 2;
+            let title_w = (crate::paint::text_width(&menu.title) + 6).min(60);
+            let width = menu.items.iter().map(|i| crate::paint::text_width(&i.label) + crate::paint::text_width(&i.hint) + 6).max().unwrap_or(20).max(24).max(title_w) as u16;
+            // A long menu (a list of hidden boxes) scrolls with its selection.
+            let rows = (menu.items.len() as u16).min(screen.height.saturating_sub(4).max(1));
+            let height = rows + 2;
+            let scroll = menu.sel.saturating_sub(rows.saturating_sub(1) as usize);
             let x = menu.x.min(screen.right().saturating_sub(width));
             let y = menu.y.min(screen.bottom().saturating_sub(height));
             let rect = Rect::new(x, y, width, height);
             panel(buf, rect, &truncate(&menu.title, width as usize - 6));
-            for (i, item) in menu.items.iter().enumerate() {
-                let row_y = rect.y as i32 + 1 + i as i32;
+            for (row, (i, item)) in menu.items.iter().enumerate().skip(scroll).take(rows as usize).enumerate() {
+                let row_y = rect.y as i32 + 1 + row as i32;
                 let selected = i == menu.sel;
                 let bg = if selected { PANEL_HI } else { MODAL };
                 fill(buf, rect.x as i32 + 1, row_y, rect.width as i32 - 2, 1, Style::default().bg(bg), rect);
@@ -273,6 +277,12 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
                 let hint = app.key_policy.label(&item.hint);
                 put(buf, rect.right() as i32 - 2 - crate::paint::text_width(&hint) as i32, row_y, &hint, fg(MUTED).bg(bg), rect);
                 ctx.hit(Rect::new(rect.x + 1, row_y as u16, rect.width - 2, 1), Hit::MenuItem(i));
+            }
+            if scroll + (rows as usize) < menu.items.len() {
+                put(buf, rect.right() as i32 - 10, rect.bottom() as i32 - 1, " ↓ more ", fg(MUTED).bg(MODAL), rect);
+            }
+            if scroll > 0 {
+                put(buf, rect.right() as i32 - 10, rect.y as i32, " ↑ more ", fg(MUTED).bg(MODAL), rect);
             }
             (rect, None)
         }
@@ -312,6 +322,25 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
         Modal::Notebook(dialog) => crate::notebook::draw_dialog(app, buf, screen, dialog, ctx),
         Modal::Tasks(dialog) => crate::tasks::draw_dialog(app, buf, screen, dialog, ctx),
         Modal::SkillFolders(dialog) => crate::skill_folders::draw(app, buf, screen, dialog, ctx),
+        Modal::NewAgent(dialog) => {
+            // Its instructions field keeps where it scrolled and where it was drawn (the mouse maps there).
+            let mut dialog = dialog.clone();
+            let drawn = crate::agent_form::draw(app, buf, screen, &mut dialog, ctx);
+            if let Some(open) = crate::agent_form::dialog_mut(app) {
+                open.instructions = dialog.instructions;
+                open.editor_rect = dialog.editor_rect;
+            }
+            drawn
+        }
+        Modal::AgentRules(rules) => {
+            let mut rules = rules.clone();
+            let drawn = crate::agent_form::draw_rules(buf, screen, &mut rules, ctx);
+            if let Some(Modal::AgentRules(open)) = app.modals.iter_mut().rev().find(|m| matches!(m, Modal::AgentRules(r) if r.id == rules.id)) {
+                open.editor = rules.editor;
+                open.editor_rect = rules.editor_rect;
+            }
+            drawn
+        }
         Modal::Folder(browser) => {
             let rect = centered(screen, 76, screen.height.saturating_sub(6).min(28));
             panel(buf, rect, "Choose a folder");

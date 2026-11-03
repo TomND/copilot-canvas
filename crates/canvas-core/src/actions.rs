@@ -70,8 +70,15 @@ impl App {
                 let stack = crate::visual::VisualAction::FoldSubagents(parent, true);
                 items.push(item("Stack subagents", "K", Action::Visual(stack), true));
             }
+            items.extend(self.hide_items(id));
             items.push(item("Rename box", "R", Action::Rename(Target::Node(id.to_owned())), true));
             items.push(self.remove_item(id, "Remove box"));
+            return (node.name.clone(), items);
+        }
+        if node.is_canvas_agent() {
+            let mut items = self.agent_menu(node);
+            items.push(item("MCP servers…", "", Action::McpServers(id.to_owned()), true));
+            items.push(self.remove_item(id, "Remove from canvas"));
             return (node.name.clone(), items);
         }
         if node.passive.is_some() {
@@ -85,9 +92,6 @@ impl App {
             items.push(item("Open run log", "", Action::PassiveOpen(id.to_owned(), 2), true));
             items.push(item(if alive { "Focus chat" } else { "Open chat" }, "", Action::PassiveChat(id.to_owned()), !external));
             items.push(item("Inspect transcript", "", Action::Inspect(id.to_owned()), self.transcript_request(id).is_some()));
-            if node.is_canvas_agent() {
-                items.extend(self.agent_menu_items(node));
-            }
             items.push(item("MCP servers…", "", Action::McpServers(id.to_owned()), true));
             items.push(item("Rename", "R", Action::Rename(Target::Node(id.to_owned())), true));
             items.push(item("Stop run", "X", Action::Agents(crate::canvas_wide::AgentAction::Stop(id.to_owned())), alive || running));
@@ -105,6 +109,7 @@ impl App {
         }
         items.push(item("New subsession", "S", Action::NewSession { at: None, parent: Some(id.to_owned()) }, true));
         items.extend(self.visual_node_items(id));
+        items.extend(self.hide_items(id));
         items.push(item("Rename", "R", Action::Rename(Target::Node(id.to_owned())), true));
         if !self.demo {
             items.push(item("MCP servers…", "", Action::McpServers(id.to_owned()), true));
@@ -167,6 +172,7 @@ impl App {
         let mut items = vec![
             item("New session here", "N", Action::NewSession { at: Some((wx, wy)), parent: None }, true),
             item("New group here", "", Action::NewGroupAt(wx, wy), true),
+            item("New canvas agent…", "", Action::Agents(crate::canvas_wide::AgentAction::New), !self.demo),
             item("Import sessions…", "I", Action::ImportCopilot, !self.demo),
             item("Sync VS Code sessions", "V", Action::SyncVs, !self.demo),
             item(self.undo_label(), "Ctrl+Z", Action::Undo, self.undo.can_undo()),
@@ -761,6 +767,7 @@ impl App {
                 self.select_node(&id, false);
                 self.right_detail = Some(crate::side::RightDetail::Passive(id));
             }
+            Action::PassiveChat(id) if self.doc.node(&id).is_some_and(|n| n.is_canvas_agent()) => self.open_agent_chat(&id, None),
             Action::PassiveChat(id) => {
                 if self.owned_alive(&id) {
                     self.show_terminal(&id);
@@ -829,7 +836,11 @@ impl App {
             },
             Action::MessagePassive(id) => self.modals.push(Modal::Prompt(crate::dialogs::Prompt {
                 title: format!("Message {}", self.doc.node(&id).map(|n| n.name.clone()).unwrap_or_default()),
-                hint: "It runs with your message (as a \"message\" event).".into(),
+                hint: if self.doc.node(&id).is_some_and(|n| n.is_canvas_agent()) {
+                    "Typed into its chat when the chat is idle (it waits while it works); with no chat open, a run answers it.".into()
+                } else {
+                    "It runs with your message (as a \"message\" event).".into()
+                },
                 input: TextInput::default(),
                 purpose: crate::dialogs::PromptPurpose::MessagePassive(id),
             })),
@@ -1175,7 +1186,7 @@ impl App {
             passive: None,
             no_messages: false,
             agent: (!self.demo).then(|| agent.id().to_owned()),
-            agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+            agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
         };
         // The model shown in the dialog is the one it starts with (and keeps on
         // resume); a choice made there becomes its agent's default.

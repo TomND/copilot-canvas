@@ -102,6 +102,19 @@ impl App {
         }
     }
 
+    /// The model a canvas-wide agent made from the new agent dialog uses, and
+    /// why: its own choice, else the default new sessions of its agent get
+    /// (the Canvas agents frame's, the remembered or the initial one).
+    pub fn new_agent_model(&self, dialog: &crate::agent_form::NewAgent) -> DialogModel {
+        match &dialog.model {
+            Some(model) => DialogModel { model: Some(model.clone()), note: "its own (the default for new sessions stays)".into() },
+            None => {
+                let default = models::effective(dialog.agent, &self.doc.defaults, self.doc.canvas_frame());
+                DialogModel { note: source_label(&default.source, dialog.agent), model: Some(default.model) }
+            }
+        }
+    }
+
     /// Opens the model picker for the new-session dialog (on top) or for a
     /// default in Settings.
     pub fn open_model_picker(&mut self, target: ModelTarget) {
@@ -123,6 +136,19 @@ impl App {
                 };
                 let note = if group.is_some() { "use the canvas default".to_owned() } else { format!("{} (initial default)", models::initial(*kind)) };
                 (*kind, defaults.model(*kind).map(str::to_owned), Some((NOT_SET.to_owned(), note)), format!("{} model for {scope}", kind.label()))
+            }
+            ModelTarget::NewAgent => {
+                let Some(dialog) = crate::agent_form::dialog(self) else { return };
+                let current = self.new_agent_model(dialog).model.unwrap_or_default();
+                (dialog.agent, Some(current), Some((NOT_SET.to_owned(), "the default for new sessions".to_owned())), format!("Model of the new {} canvas agent", dialog.agent.label()))
+            }
+            ModelTarget::Agent(id) => {
+                let Some(node) = self.doc.node(id) else { return };
+                let kind = agent_of(node);
+                let own = node.passive.as_ref().and_then(|p| p.model.clone());
+                let default = models::effective(kind, &self.doc.defaults, self.doc.canvas_frame());
+                let current = own.unwrap_or(default.model);
+                (kind, Some(current), Some((NOT_SET.to_owned(), "the default for new sessions".to_owned())), format!("Model of “{}” ({})", node.name, kind.label()))
             }
         };
         let mut items: Vec<(String, String)> = Vec::new();
@@ -162,6 +188,14 @@ impl App {
                     _ => return Ok(()),
                 },
                 ModelTarget::Default(kind, _) => (*kind, String::new()),
+                ModelTarget::NewAgent => match crate::agent_form::dialog(self) {
+                    Some(dialog) => (dialog.agent, self.new_agent_model(dialog).model.unwrap_or_default()),
+                    None => return Ok(()),
+                },
+                ModelTarget::Agent(id) => match self.doc.node(id) {
+                    Some(node) => (agent_of(node), node.passive.as_ref().and_then(|p| p.model.clone()).unwrap_or_default()),
+                    None => return Ok(()),
+                },
             };
             self.modals.push(Modal::Prompt(Prompt {
                 title: format!("{} model id", kind.label()),
@@ -198,6 +232,20 @@ impl App {
                     None => self.doc.defaults.set_model(kind, model.as_deref()),
                 }
                 self.mark_dirty();
+            }
+            ModelTarget::NewAgent => {
+                let Some(kind) = crate::agent_form::dialog(self).map(|d| d.agent) else { return Ok(()) };
+                // Picking the default again is no choice of its own.
+                let default = models::effective(kind, &self.doc.defaults, self.doc.canvas_frame()).model;
+                let model = model.filter(|m| *m != default);
+                if let Some(dialog) = crate::agent_form::dialog_mut(self) {
+                    dialog.model = model;
+                    dialog.error = None;
+                }
+            }
+            ModelTarget::Agent(id) => {
+                self.set_agent_model(&id, model);
+                self.notify("Its runs use this model from now on; an open chat keeps its model until it restarts.", false);
             }
         }
         self.needs_draw = true;

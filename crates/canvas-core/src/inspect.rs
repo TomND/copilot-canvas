@@ -292,7 +292,7 @@ impl App {
             // A resume is a use.
             last_used_ms: Some(crate::paths::now_ms()),
             accessed_ms: None,
-            stacked: false, model: None, subagents_shown: None, unplaced: false,
+            stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
         });
         self.resumed_children.insert(new_id.clone());
         self.mark_dirty();

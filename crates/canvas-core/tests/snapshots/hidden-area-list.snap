@@ -1,0 +1,61 @@
+# hidden-area-list (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit   ↳ 3 hidden           ◆ 1
+╭─ Hidden in “Orchestrator” ─────────╮   ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+│ Show all (2)                       │Orchestrator ──────────────╮         ╭ ↳ First follow-up ─────────╮
+│ Show ↳ Second follow-up            │■ stopped                  │         │ ■ stopped                  │
+│ Show ↳ Newest follow-up  needs you │canvas                     │┄┄┄┄┄┄┄┄┄│ canvas                     │  ·     ·     ·     ·     ·     ·     ·     ·
+╰────────────────────────────────────╯────────────── ⋯ 3 hidden ─╯         ╰────────────────────────────╯
+ ⧉    ↳ ■ Second follow-… hidden │
+      ↳ ◆ ↗ Newest follo… hidden │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+ ⌁      ↳ ■ Nested follo… hidden │
+                                 │
+ ✦                               │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+ ◈                               │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+ ⇄                               │
+                                 │
+ ≡                               │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+ ✉                               │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+ click view · double-click/Enter start · ] [ or Ctrl+F6 recent · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom ·…
+## gpu view model
+view cursor=none modal=0,1 38x5 banner=None
+canvas area=34,1 116x38 origin=-1,0 scale=1 grid=true tick=0 empty=false
+edge Subsession color=#58a6ff from=1,1 30x4 to=40,1 30x4 path=(31,3) (35.5,3) (35.5,3) (40,3)
+box p Session rect=1,1 30x4 prefix="" name="Orchestrator"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]
+  selected=false focused_term=false active=false
+  hidden=3 color=#ffb000
+box c1 Session rect=40,1 30x4 prefix="↳ " name="First follow-up"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]
+  selected=false focused_term=false active=false
+## gpu overlay at 0,1
+╭─ Hidden in “Orchestrator” ─────────╮
+│ Show all (2)                       │
+│ Show ↳ Second follow-up            │
+│ Show ↳ Newest follow-up  needs you │
+╰────────────────────────────────────╯

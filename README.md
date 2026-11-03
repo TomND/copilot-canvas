@@ -315,18 +315,19 @@ behaviour, shortcuts, and agent-specific details.
 | | |
 |---|---|
 | **Canvas** | Drag boxes (subagents follow their session), drag empty space to pan (released while moving, it glides on briefly and gently slows to a stop, at most a few cells; any key, click or wheel stops it, reduced motion turns it off, box, group and area drags never glide), wheel/Shift+wheel pan, Alt+wheel / Ctrl+wheel / toolbar − + to zoom (100 %, 50 %, 25 %), double-click empty space to create a session there, right-click for context menus |
-| **Undo and redo** | **Ctrl+Z** takes back this window's latest change to the canvas, one gesture at a time: a drag of boxes (their subagent boxes and stacks with them), of a stack or of a group (everything in it, nested groups too), a group's ◢ resize, *Fit to members*, a burst of arrow-key moves (presses less than a second apart are one step), and, as before, a removal or a VS Code sync. Successive presses go further back (100 steps per window, newest first); every item returns exactly where it was (and a group to its size). **Ctrl+Y** or **Ctrl+Shift+Z** redoes undone moves and resizes. An undo is an ordinary canvas edit, so other windows and a remote canvas see it; it never starts, stops or changes a session, never brings back a box that was removed since, and leaves boxes another window moved since where they are (a notice says what it skipped). Stacking or showing subagent boxes and subsessions, hiding them, zoom and pan are not undo steps (`K` and `H` toggle back); a drag carries the boxes folded into a session's deck, and its undo puts them back too. The status bar names each step (*Moved group “Payments” (4 boxes) · Ctrl+Z undo move*), the canvas menu has *Undo move* and *Redo*. While a terminal has the keyboard Ctrl+Z goes to its program, and in text fields it is theirs |
+| **Undo and redo** | **Ctrl+Z** takes back this window's latest change to the canvas, one gesture at a time: a drag of boxes (their subagent boxes and stacks with them), of a stack or of a group (everything in it when the drag began, nested groups too), a group's ◢ resize, *Fit to members*, a burst of arrow-key moves (presses less than a second apart are one step), and, as before, a removal or a VS Code sync. Successive presses go further back (100 steps per window, newest first); every item returns exactly where it was (and a group to its size). **Ctrl+Y** or **Ctrl+Shift+Z** redoes undone moves and resizes. An undo is an ordinary canvas edit, so other windows and a remote canvas see it; it never starts, stops or changes a session, never brings back a box that was removed since, and leaves boxes another window moved since where they are (a notice says what it skipped). Stacking or showing subagent boxes and subsessions, hiding them, zoom and pan are not undo steps (`K`, `H` and `J` toggle back); a drag carries the boxes folded into a session's deck, and its undo puts them back too. The status bar names each step (*Moved group “Payments” (4 boxes) · Ctrl+Z undo move*), the canvas menu has *Undo move* and *Redo*. While a terminal has the keyboard Ctrl+Z goes to its program, and in text fields it is theirs |
 | **Status** | Accurate within a fraction of a second for canvas sessions: Copilot's own progress report (set when a turn starts, cleared when it ends) drives working and done; history events add needs-you, failures and sessions running elsewhere; a session whose subagents are still running stays working. States: working (spinner), needs you (permission / question), **done · review** (finished a turn you haven't looked at yet; stays until you open, click or type in that session), idle, stopped, failed, and **↗ open elsewhere** for sessions running in another terminal or VS Code. Sessions that **need you** get a gold heavy ━ border and sessions that are **done · review** a blue double ═ border with a blue-tinted box (boxes, terminal panes and sidebar names). Pressing Esc in Copilot (abort) doesn't count as done. The session whose terminal is active on the right has a blue halo around its box (heavy while you type in it) |
 | **Colour-blind safe** | The palette avoids red/green: OK is sky blue, failure is vermillion, attention is gold, finished is blue, selection is white, groups use the Okabe-Ito colours; every state also has its own icon and border shape |
 | **Subagents** | Discovered from session history (Copilot's `subagent.*` events, OpenCode task-tool children, Claude Code `Agent` calls) as boxes linked to their session. By default they are **folded into a slim deck** beneath the session, one card for all of them: **◇ 12 subagents** with the most important state of what it holds (failed first; **working · 2 of 12** while any runs; just finished), so they never fill the canvas and folding never hides activity (the session itself stays working while a subagent runs; effects on a folded box show on the deck). A click on the deck lists them in the session's details panel (state, a click on a name views that subagent, **Inspect** opens its transcript; nothing starts). A double-click on the deck, `K` or the session's menu (*Show subagents* / *Stack subagents*) shows them at exactly their saved places; a box found while they were folded gets a slot of its own (and its group grows) the first time it is shown. The choice is per session, kept in the canvas (every window and client sees it, also after a restart); *Settings › Subagents* (**stacked** by default, or shown) applies to sessions without a choice of their own. Folded boxes take no room: new boxes, *Show all nodes*, *Fit to members* and new groups use the deck; they still move with their session and its group, and count as members of their session's group |
 | **Inspect transcript** | Any session or subagent box (menu, details panel): a read-only transcript of its conversation (prompts, answers, tool calls with their result or exit code), newest at the bottom, refreshing every 1.5 s while it runs; nothing starts, nothing is written, it works remotely too. A finished OpenCode child session whose parent is stopped resumes in a terminal of its own as a new linked subsession (**Resume as subsession** or a double-click); Copilot and Claude Code subagents are part of their parent's conversation (see [docs/AGENT-PROVIDERS.md](docs/AGENT-PROVIDERS.md#inspecting-and-resuming-child-conversations)) |
 | **Subsessions** | `S` or menu → a new Copilot session linked to its parent (dotted connector, nested in the sidebar). By default it **forks the parent's conversation** (as Copilot's `/fork` and VS Code do: history and checkpoints are copied, the running parent is untouched); choose *Start fresh* for an empty one. Sessions an agent starts itself from inside a canvas session (`copilot -p …`, `copilot --resume …`) are detected from the process tree and added as linked subsessions automatically |
-| **Stacks and hidden subsessions** | Right-click a session › *Stack subsessions* (or `K`) gathers all its subsessions (recursively, with their subagents) into a deck beneath it: offset cards, the newest on top, a **+N** badge, and the stack's most important status (needs you, failed, done · review, working) on the top card, so stacking never hides activity; effects on a stacked session show on the deck. **One deck per session**: a stacked session's folded subagent boxes are in the same deck. `K` on a session (or on a box in its deck) unfolds everything it has folded (its subagent boxes and its subsessions), else folds both; where a session has both, its menu offers them separately (*Show/Stack subagents*, *Unstack/Stack subsessions*) and together (*Unfold all* / *Stack all*, `K`). A click on a stack shows its top card (it never starts anything); dragging a deck moves the session with it; a double-click, `K` or the deck's menu unfolds it: the boxes go back exactly where they were (their positions stay in the canvas, so this survives restarts and every window sees it). `H`, the canvas menu (*Hide subagents and subsessions*) or the toolbar's **↳ N hidden** hides every subsession and subagent box (each parent shows **⋯ N hidden**, **◇ N hidden** for subagent boxes, or both; the toolbar counts them all) and shows them again in place. The GUI animates both (about 300 ms, eased, reversible mid-way, then idle); the TUI and reduced motion switch at once |
+| **Stacks and hidden subsessions** | Right-click a session › *Stack subsessions* (or `K`) gathers all its subsessions (recursively, with their subagents) into a deck beneath it: offset cards, the newest on top, a **+N** badge, and the stack's most important status (needs you, failed, done · review, working) on the top card, so stacking never hides activity; effects on a stacked session show on the deck. **One deck per session**: a stacked session's folded subagent boxes are in the same deck. `K` on a session (or on a box in its deck) unfolds everything it has folded (its subagent boxes and its subsessions), else folds both; where a session has both, its menu offers them separately (*Show/Stack subagents*, *Unstack/Stack subsessions*) and together (*Unfold all* / *Stack all*, `K`). A click on a stack shows its top card (it never starts anything); dragging a deck moves the session with it; a double-click, `K` or the deck's menu unfolds it: the boxes go back exactly where they were (their positions stay in the canvas, so this survives restarts and every window sees it). `H` (the canvas menu's *Hide/Show subsessions*) hides every subsession box with what is under it (its subagent boxes and subsessions); `J` (*Hide/Show subagents*) hides every subagent box, folded ones too. They are two switches of this window, kept with its view (other windows keep theirs), on their own or together. Each parent shows what is hidden under it by kind (**⋯ N hidden** for subsessions, **◇ N hidden** for subagent boxes, or **⋯ N · ◇ M hidden**), in the colour of the most important hidden state (a hidden box that needs you or fails shows there, so hiding never hides attention), and the toolbar counts each kind (**↳ N hidden**, **◇ N hidden**; a click opens the list of hidden boxes, below). A deck shows what is not hidden: with `H` a deck holding a stack and folded subagent boxes becomes the slim card of those subagent boxes, with `J` a session's deck of folded subagent boxes goes (a stack stays). Hiding moves nothing: boxes come back exactly in place. The GUI animates both (about 300 ms, eased, reversible mid-way, then idle); the TUI and reduced motion switch at once |
+| **Hidden area** | Right-click a subsession or a subagent box › **Hide** (on a box of a multi-selection: **Hide N**, its subsessions and subagent boxes) puts it into the canvas's hidden area: it is kept in the canvas (`Node::hidden`), so every window and remote client sees it, also after a restart; it is no longer drawn, clicked or taken by an area selection, everything under a hidden subsession hides with it, and it moves with the box it is counted on (dragging the parent, or its group, carries it). Its parent's marker counts it by kind (**⋯ N hidden**, **◇ N hidden**) in the colour of the most important hidden state, so a hidden box that needs you or fails still shows. A subagent box folded into a deck hides from the deck's menu (**Hide ◇ name**) or from its session's SUBAGENTS list in the details panel (**Hide** per row). **Showing them again**: a click on a parent's marker (or its menu's **Show hidden (N)…**) lists the boxes hidden into it, with **Show** per box and **Show all**; the toolbar's **↳ N hidden** and **◇ N hidden** list the whole canvas's, grouped by parent, with the `H` / `J` switches at the top. The sidebar still lists hidden boxes (dimmed, marked *hidden*): a click views one (its details, with **Show on canvas**; nothing starts) and its menu offers **Show**. Showing puts a box back exactly where it was. A hidden box keeps running (its terminal and its tile stay); hiding and showing are toggles, not undo steps, and never start or stop anything. Hidden boxes take no room: new boxes, *Show all nodes*, *Fit to members* and new groups leave their places out. An older service keeps the field out of the canvas (the box shows again) |
 | **Looping sessions** | A session that repeats on a schedule gets a loopback arc on its right side with a lit dot running around it (bluish green), `↻ every 15m` in its status line and `↻` in the sidebar. The dot's place comes from the clock, not from frames, so it never jumps or restarts and keeps gliding while you pan, zoom or drag the box. GUI: a comet with a fading tail that leaves the box quickly, eases round the far bend and sends a soft ring through the arrowhead after each lap; a loop that starts grows its arc in, one that stops fades it out; only loops in view move, redrawing their own layer at about 30 frames/s (fewer when zoomed out). TUI: the dot steps cell by cell at one speed with a two-cell trail, redrawn only when it changes cell. With reduced motion (*Settings › Effects*, or Windows' *Show animations* off) the arc, its lit arrowhead and a `↻` badge stand still and loops switch at once. Detected from Copilot's schedule events (`/every`, the `manage_schedule` tool: created → looping, cancelled or session ended → not; the next status update shows it, and the saved schedules are read again then), Copilot's saved session schedules, and enabled repeating automations. Zoomed out, a breathing `↻` |
 | **MCP servers per session** | The new-session dialog has an *MCP servers* row: a checklist of your servers with presets (*All*, *None*, and your own: `Ctrl+S` saves the current choice, `←/→` switches, `Del` deletes). The last choice is the default next time; each session remembers its own choice for every resume (`--disable-mcp-server`). Change it later from the session's menu → *MCP servers…*. Every server is several processes in every session, so trimming them is the biggest saving in memory and CPU |
-| **Groups** | Shift-drag or right-drag to select (from anywhere, on a box too: a Shift-drag never moves a box), then `G` (or menu) draws a group box around them; a click on a group's empty background or its border (a few pixels around the outline in the GUI) selects it (the innermost of nested groups; a drag there still pans); drag the title to move everything inside, drag `◢` to resize; nested groups work; membership is geometric, like Obsidian canvas |
-| **Area selection** | The band takes every box it touches as drawn, at every zoom: sessions, subsessions and subagent boxes alike, so a parent and its children can be selected together (and moved, grouped or removed together: each box moves once, also a child whose selected parent drags it along). Boxes in a deck (stacked subsessions, folded subagent boxes) or hidden with `H` are left out; automation boxes stay with their group. Shift- or Ctrl-click toggles one box; a right-click without dragging opens the menu of what is under it. Nothing is ever started or dragged by a selection |
-| **Sidebar** | On the canvas: groups → their folder row (◧) → sessions → subsessions → subagents (all of a selected session's, the running ones of the others; folded ones too: a click views that subagent's details and flies to its deck without unfolding it) → the group's passive sessions (⟲, a click opens their panel); stacked and hidden subsessions are listed dimmed, unused sessions with their age; `/` filters; click any row to fly the canvas to it, highlight it and view it (its live terminal, or its details); double-click or Enter starts it; group rows tile the group's running terminals (never starting stopped ones) |
+| **Groups** | Shift-drag or right-drag to select (from anywhere, on a box too: a Shift-drag never moves a box), then `G` (or menu) draws a group box around them; a click on a group's empty background or its border (a few pixels around the outline in the GUI) selects it (the innermost of nested groups; a drag there still pans); drag the title to move everything inside (what is inside when the drag starts, with the stacks, folded and hidden boxes of its sessions, and its nested groups; boxes and groups it passes over stay where they are; arrow keys on a selected group move what it held when the burst began), drag `◢` to resize; nested groups work; membership is geometric, like Obsidian canvas: after a drop, a box whose centre ends up inside a group belongs to it (as when you drop a box into a group) |
+| **Area selection** | The band takes every box it touches as drawn, at every zoom: sessions, subsessions and subagent boxes alike, so a parent and its children can be selected together (and moved, grouped or removed together: each box moves once, also a child whose selected parent drags it along). Boxes in a deck (stacked subsessions, folded subagent boxes) or hidden (`H`, `J`, or one by one) are left out; automation boxes stay with their group. Shift- or Ctrl-click toggles one box; a right-click without dragging opens the menu of what is under it. Nothing is ever started or dragged by a selection |
+| **Sidebar** | On the canvas: groups → their folder row (◧) → sessions → subsessions → subagents (all of a selected session's, the running ones of the others; folded ones too: a click views that subagent's details and flies to its deck without unfolding it) → the group's passive sessions (⟲, a click opens their panel); stacked and hidden boxes are listed dimmed (hidden ones marked *hidden*), unused sessions with their age; `/` filters; click any row to fly the canvas to it, highlight it and view it (its live terminal, or its details); double-click or Enter starts it; group rows tile the group's running terminals (never starting stopped ones) |
 | **Recent sessions** | A **RECENT** section tops the Sessions panel: the sessions you used last (viewed, started or typed into), newest first, up to 8 (fewer in a short window), each with its status, agent and how long ago; a click on its header folds it. It is kept in the canvas document, so every window and client of the canvas (the home GUI and the Cloud PC alike) shows the same list, and removed boxes leave it. A click views a row, a double-click or Enter starts it (as elsewhere). **Ctrl+F6** / **Ctrl+Shift+F6** (anywhere, also while a terminal has the keyboard) and **`]`** / **`[`** (on the canvas and in the sidebar) step to the next older or newer recent session and only view it (its live terminal, or its details panel with Start / Resume); repeated presses walk the list without reordering it, and a second after the last one (or at any other key or click) the session you stopped on becomes the most recent, as with Alt+Tab |
 | **View versus start** | A click (canvas or sidebar), Tab, the arrows and the recent-session keys (Ctrl+F6, Ctrl+Shift+F6, `]`, `[`) only select and show: a running session's terminal comes into view with the keyboard, anything else shows a details panel (agent, status, folder and branch, last used, what starting it would do) with one primary button: **Start** (a new conversation or a box's command), **Resume** (its conversation) or **Open terminal**, plus Stop, MCP servers… and Remove. Only a double-click, Enter, that button or a menu item starts a session. Restoring tiles, reconnecting and clicks on exited terminals start nothing; sessions open elsewhere (↗) never get a Start / Resume |
 | **Terminals** | Real Copilot CLI in ConPTY; single view or up to four tiles (`T`); terminals keep running when you close the canvas and reappear when you reopen it |
@@ -354,8 +355,8 @@ behaviour, shortcuts, and agent-specific details.
 | **Todo cards** | Type glyph and coloured edge (✱ bug, ✚ feature, ▲ improvement, » optimization, ∷ chore, ¶ docs, ? research), the id, `‼` for a blocker, priority marks (`!!!` urgent, `!!` high, `!` medium), the title on two lines, then badges: `☑ 2/5` (checklist), `⚑ blocked` (a reason, or an open todo it waits for), `blocks 2`, `◇` (an agent created it), `⟳ <session>` while the claiming session works, `↗ #42 <state>` (a pull request). A click selects it (details on the right), arrows move the selection (on to the next board), Enter shows the details, Space a quick look, `N` a new todo in the selected column (title, type, priority), `A` / `D` accept / decline a proposal, `E` edits the body (the notes' editor; Ctrl+S saves), `R` renames, Del cancels (asks; *Reopen* brings it back). Drag a card to another column, swimlane, board or place in its column. Its menu adds *Decline with a reason…*, *Start a session on this…*, *Open spec note*, *Claim for…*, *Release*, *Done*, type, priority, status and *Add a note…*; a board's menu: new todo, rename, prefix, WIP limit, agents' todos as proposals or added directly, whether agents may close todos, *Link canvas groups…*, *Link notes folder…*, *New swimlane…*, *Mirror file…*, *Export JSON Canvas…*, *Delete board* (empty boards only) |
 | **Todo details** | The right pane: status, priority and type (pickers), board, claim (⟳ working, ⚠ gone or stopped), blocked (a reason, or what it waits for), blocker, who created it, labels, a proposal's reason, the checklist (a click ticks; *+ add*), the body (*edit*), links (a note opens in the Notebook, a session is viewed on the canvas, a pull request or web link asks before the browser), relations (blocked by, related to, discovered from, duplicate of, and what it blocks) and the log. Buttons: *Accept* / *Decline* (proposals), *Start a session on this…* (the new-session dialog in the board's group, named after the todo, with the first prompt "Work on DEC-031 (title). Run `copilot-canvas todo show DEC-031`, then `copilot-canvas todo claim DEC-031`."; the dialog is the explicit start), *Open spec note* (the linked note, else `<notebook>/Todos/<ID> - <title>.md`, created with the body, linked and opened), *Claim for…* (you, or a session of the canvas), *Release*, *Done*, *Cancel*, *Reopen*. Your changes show at once and go to the service (books it sends before it has them keep them); a refusal comes back as a notice with the board as it is. Demo mode has a demo book of its own (no spec notes or exports) |
 | **Proposals and claims** | Agents `todo add` what you asked for and `todo propose` their own ideas (with a reason); a proposal waits under NEEDS YOU and in the Proposed column until you accept it (into Backlog) or decline it, and a board can make every todo an agent adds a proposal. A session claims a todo before it works on it (Backlog and Todo move to In progress), and its box shows the badge; another session's live claim is never taken (you can force it or assign a todo with *Claim for…*), a claim of a session that is gone or stopped can be taken over. Agents submit finished work (In review, with its pull request); Done is yours, or the merged pull request's. See [Todos](#todos) |
-| **Dot grid pulse** | While at least one session of the canvas is working (the toolbar's ⠋ N working; a session whose subagents still run counts), the canvas's background dots breathe: a slow, smooth brightness pulse every 3 s, at its top about 40 % brighter and a touch bluer (towards a light grey-blue), back to their normal colour at the bottom; uniform across the grid and the same at every zoom. It fades in over 0.8 s when work starts and out when the last working session stops, follows the clock (never restarts while you pan, zoom or work moves between sessions) and stays well below boxes, text and status colours. GUI: only the grid's own layer is repainted for it, in frames of its own at most 15 times a second and only when its colour changes (about 1 % of one core); nothing when nothing works. TUI: the dots step through three lighter colours on the frames its spinners draw anyway, and return at once when work stops. Off with reduced motion or effects off (*Settings › Effects*, or Windows' *Show animations* off), or on its own with *Settings › Dot grid pulse: off* (this machine, beside Effects); works the same in remote mode |
-| **Canvas-wide agents** | Passive agents that watch the whole canvas, not one group: the top bar's **◎ Agents** lists them with their state (monitoring, working, paused, needs attention, failing, done, off, unavailable), triggers, skills, next run and last report, and controls (Run now, Pause / Resume, Stop, Disable / Enable, Open); each is also a dashed **◎** box in the **Canvas agents** frame (the same agent). They get events of every group, message any session, and use the canvas skills (SKILL.md) you give them. See [Canvas-wide passive agents and skills](#canvas-wide-passive-agents-and-skills) |
+| **Working glow** | Every session box that is working (a session whose subagents still run counts; a deck beneath a session is covered by its session; not for needs-you or failed, which have their own styling) releases energy into the canvas's dot grid around it: rings of brighter dots leave the box's outline every 1.4 s and travel outward (10 cells a second, measured from the box's rectangle so they read as coming from the box, fading out within about 16 cells), over a soft steady glow on the dots closest to it. A dot at a passing ring near the box gets up to about 2.75 times as bright, toward a light working blue (110, 178, 255), and in the GUI up to 1.5 times as large; several working boxes combine by the brightest, never adding up. Distances are in world units, so it looks the same at every zoom; boxes just off screen still light the visible dots near them. It follows the animation clock (never restarts while you pan or zoom), fades in over 0.7 s when a box starts working and out when it stops (its last ring travels on and fades), and always stays behind boxes, connectors and text. GUI: the lit dots have a layer of their own, the only one repainted for the rings (30 frames a second, only the dots within reach of a working box are computed; about 2 % of one core with one working box, 3–4 % with five); nothing when nothing works or the window is minimized. TUI: the dots near a working box step through three lighter colours in rings on the frames its spinners draw anyway, and return at once when it stops. Reduced motion: a still, soft glow around working boxes, no rings. Off with effects off (*Settings › Effects*, or Windows' *Show animations* off), or on its own with *Settings › Working glow: off* (this machine, beside Effects); works the same in remote mode |
+| **Canvas-wide agents** | Sessions that manage the whole canvas: **+ New canvas agent** (◎ Agents, the *Canvas agents* frame, the canvas menu) opens a dialog like the new-session dialog: name, agent and model, instructions (its rules.md), what wakes it (nothing by default: only when you talk to it; events of any group, an interval, a daily time), the groups it watches, canvas skills, a first message and an optional template (*Start from…*); **Create & start** opens its chat at once. Its dashed **◎** box behaves like a session's: a click shows its details and settings (rows a click edits), a double-click, Enter or **Chat** opens or resumes its conversation (the one its runs continue; never beside a run in progress), **Message…** talks to it without opening it. The top bar's **◎ Agents** lists them with their state, what wakes them, and Chat, Pause / Resume and Settings. See [Canvas-wide passive agents and skills](#canvas-wide-passive-agents-and-skills) |
 | **Pull request coordination** | A session that publishes a pull request hands it to the canvas (`copilot-canvas pr track URL`, taught by the `canvas-prs` skill); the canvas checks it read-only with your own `gh` / `az` for new review comments, failing checks and its end, and the canvas-wide **PR coordinator** turns what is new into one follow-up for the owning session, typed in when that session is idle; queued, delivered, blocked and failed show in ◎ Agents › Pull requests and in Reports. See [Pull request coordination](#pull-request-coordination) |
 | **Review follow-ups** | When a review session finishes reviewing someone's pull request it hands the results off (`copilot-canvas review handoff`, the `canvas-review-followup` skill); the canvas-wide **Review follow-up** agent drafts a message to the author, you approve it, it sends it through the channel you configured (an MCP server such as Teams, a PR comment, or a folder), and every hour it reads only those conversations for requests for another review, which reach the review session that did the review, once. See [Review follow-ups](#review-follow-ups) |
 | **Copilot defaults** | Settings view: permissions (`allow-all` by default, or `ask`), each agent's model for new sessions, reasoning effort, start mode, custom agent, context tier, extra `--add-dir` folders for new sessions, *Skill folders (all sessions)…* (every launch, all agents); any group can override them (group menu → *Launch defaults*; its skill folders add to the canvas's). Also lists `copilot config` settings and edits them through `copilot config` |
@@ -409,10 +410,14 @@ behaviour, shortcuts, and agent-specific details.
 | Quit (sessions keep running) | toolbar **⏻ Quit** | `Q` / Ctrl+Q, even while filtering (asks: detach or stop all) |
 | Show / stack a session's subagent boxes and subsessions (one deck beneath it; subagent boxes are stacked by default) | session menu (*Show/Stack subagents*, *Unstack/Stack subsessions*, *Unfold/Stack all*); a click on a subagent deck lists them (nothing starts), a double-click unfolds it | `K` (unfolds whatever is folded, else folds both) |
 | Subagent boxes stacked or shown by default (a session's own choice wins) | *Settings › Subagents* | Enter on the row |
-| Effects; the dot grid's pulse while agents work | *Settings › Effects* (on · reduced motion · off), *Settings › Dot grid pulse* (on · off) | Enter on the row |
-| Hide / show all subsessions and subagent boxes | canvas menu; toolbar **↳ N hidden** | `H` |
+| Effects; the working glow around working sessions | *Settings › Effects* (on · reduced motion · off), *Settings › Working glow* (on · off; `settings.json` `grid_pulse`, `COPILOT_CANVAS_GRID_PULSE=on\|off` overrides it) | Enter on the row |
+| Hide / show subsessions (with their subagent boxes) | canvas menu *Hide/Show subsessions*; toolbar **↳ N hidden** | `H` |
+| Hide / show every subagent box (folded ones too) | canvas menu *Hide/Show subagents*; toolbar **◇ N hidden** | `J` |
+| Hide one subsession or subagent box (the hidden area) / show it again | right-click it › **Hide** (**Hide N** on a selection; a deck's menu, the SUBAGENTS list); a parent's hidden marker, its menu's **Show hidden (N)…** or the toolbar's counters list them with **Show** | — |
 | Clear an effect | click it (or its box; nothing starts) | — |
 | Canvas-wide agents (their panel) | top bar **◎ Agents**; the *Canvas agents* frame's **◎ N · manage** chip | `A` |
+| New canvas agent | **+ New canvas agent** (◎ Agents, frame chip and menu, canvas menu); in the dialog **Create & start** or **Create** | Tab / ↑↓ move, Enter creates & starts (a new line in the instructions), Ctrl+Enter anywhere, Esc cancels |
+| Talk to a canvas agent (its chat; never beside a run in progress) | double-click its ◎ box or sidebar row; **Chat**; **Message…** | Enter |
 | Select unused (dusty) sessions | canvas menu › *Select unused sessions* | then Del removes them from the canvas |
 | Switch space: canvas, Notebook, Tasks | toolbar tabs **◫ Canvas** · **✎ Notebook** · **☑ Tasks** | **Ctrl+1** · **Ctrl+2** · **Ctrl+3** |
 | Back / forward between places (spaces, notes, todos, boxes) | the mouse's back and forward buttons (GUI) | **Alt+←** / **Alt+→**, or **Alt+,** / **Alt+.** |
@@ -557,60 +562,111 @@ have schedules or pending work.
 
 ## Canvas-wide passive agents and skills
 
-A group's passive sessions (⟲) watch their group. **Canvas-wide agents** (◎)
-watch the whole canvas: the events of every group (`pr.*` from any session),
-their schedules, and messages; they can message any session of the canvas and
-mark any box. Use them for work across groups, such as following the pull
-requests the canvas's sessions publish and passing review comments and build
-failures to the session that owns each (a *PR coordinator*), or a daily digest
-of all groups. Both kinds coexist: a group passive session never sees another
-group's events, and a canvas-wide agent never sees another canvas's.
+A group's passive sessions (⟲) watch their group. **Canvas agents** (◎) are
+sessions that happen to manage the whole canvas: you make one like a session,
+talk to it like a session (its chat is a terminal like any other), give it
+instructions, and, only if you want, let it wake on its own on the events of
+every group (`pr.*` from any session) or a schedule. They can message any
+session of the canvas and mark any box. Use them for work across groups,
+such as following the pull requests the canvas's sessions publish and
+passing review comments and build failures to the session that owns each (a
+*PR coordinator*), a daily digest of all groups, or simply an assistant you
+ask about the canvas. Both kinds coexist: a group passive session never sees
+another group's events, and a canvas agent never sees another canvas's.
 
-- **Where**: the top bar's **◎ Agents** (with **⚠ N** while one needs
-  attention, a spinner while one works) opens the management panel: every
-  agent with its state, what it reacts to, the groups it watches, its skills,
-  its next run and last report, and **Run now**, **Pause / Resume**, **Stop**,
-  **Disable / Enable** and **Open**; then the canvas skills, and the group
-  passive sessions for comparison. Each agent is also a dashed **◎** box in
-  the **Canvas agents** frame (made with the first agent, above the canvas;
-  its chips: **◎ N · manage** and **✦ Skills**; its menu: new agent, skills,
-  *Send event to canvas agents…*, folder), listed under the frame in the
-  sidebar with its state. The panel's row, the box and the sidebar row are the
-  same agent: a click shows its panel (state, triggers, skills, the latest
-  events of every group; Run now, Pause, Stop run, Disable, Events…, Groups…,
-  Schedule…, Filter…, Limits…, Skills…, MCP…, Rules, Memory, Log, Context,
-  Goals, Folder, Message…, Open chat, Remove). Viewing never starts it, a
-  double-click neither: **Open chat** is the explicit start of its
-  conversation and **Run now** of a run.
-- **New**: *+ New canvas agent* (panel, frame chip or menu) and a template:
-  *PR coordinator* (`pr.*`, `build.failed`; PR coordination on: the canvas
-  tracks handed-off pull requests and the agent sends their owners
-  follow-ups, read-only toward the pull requests; see [Pull request
-  coordination](#pull-request-coordination)), *Review follow-up*
-  (`review.*`; messages the authors of pull requests you reviewed and checks
-  their replies hourly; see [Review follow-ups](#review-follow-ups)),
-  *Cross-group digest* (daily at 17:00 and `session.done`) or *Custom*.
-  Templates are only starting rules you edit; *PRs…* and *Follow-ups…* turn
-  either feature on for any canvas-wide agent.
+- **New**: **+ New canvas agent** (at the top of the ◎ Agents panel, the
+  *Canvas agents* frame's **◎ + agent** chip and menu, the canvas menu) opens
+  a dialog like the new-session dialog (same look and keys: Tab / ↑↓ move,
+  Space or ←→ on the Agent row, Enter on a picker row opens it, Esc cancels):
+  - **Name**; **Agent** (Copilot / OpenCode / Claude Code; the canvas's
+    default agent) and **Model** (the model picker of new sessions; the
+    default is the one new sessions of that agent get: remembered, the
+    frame's *Session defaults for its agents…*, or the initial Claude Opus
+    5.5; a model picked here is that agent's own and changes no default);
+  - **Instructions**: a multi-line field (Enter makes a new line) saved as its
+    `rules.md`: what it should do and how;
+  - **Wakes on**: *Only when you talk to it* by default (no triggers: it never
+    runs on its own); the picker ticks events (`pr.*`, `review.*`, `todo.*`,
+    `*`, every event of the catalog, or names you type), *Every …* (an
+    interval) and *Daily at …* (a local time);
+  - **Watches**: every group of the canvas by default, or the groups ticked;
+  - **Skills**: canvas skills from the library (optional);
+  - **First message** (optional) and **Start from…** (optional): a template
+    (*PR coordinator*: `pr.*`, `build.failed`, PR coordination on, see [Pull
+    request coordination](#pull-request-coordination); *Review follow-up*:
+    `review.*`, review follow-ups on, see [Review
+    follow-ups](#review-follow-ups); *Cross-group digest*: daily at 17:00
+    and `session.done`) prefills the instructions, triggers and settings;
+    a name or instructions you changed stay. Templates are a convenience,
+    never required.
+
+  **Create & start** (Enter on a text field, or Ctrl+Enter anywhere) creates
+  it and opens its conversation in a terminal tile right away (an explicit
+  start), with the first message; **Create** only creates it (a first message
+  then goes to it as a message: a run answers it). Its first conversation
+  starts by telling the agent who it is, what wakes it and where its
+  instructions and memory are.
+- **Talk to it**: its box (dashed **◎** in the **Canvas agents** frame, made
+  with the first agent above the canvas) behaves like a session box: a click
+  shows its details and settings (never starts anything); a double-click,
+  Enter or **Chat** opens or resumes its conversation in a terminal tile: the
+  same conversation its runs continue (a run that comes while the chat is
+  open and idle is typed into it; while you type in it, the run waits). Never
+  two writers: Chat while a headless run answers waits for that run and opens
+  the chat when it has ended (*Stop run* ends it now). **Message…** sends a
+  message: typed into its chat when the chat is idle (it waits while it
+  works), and with no chat open a run answers it; a paused agent's message
+  waits until you resume it. **Inspect transcript** shows its conversation
+  read-only, like any session's.
+- **Its details and settings** (a click on the box, its sidebar row or its
+  row in ◎ Agents): its state and next run at the top (*when you talk to it*
+  without triggers), then **▸ Chat**, **Message…**, **Run now**, **Pause /
+  Resume** and **Stop run**, then its settings as rows a click edits: *Name*,
+  *Agent* (another agent CLI starts a fresh conversation; its files stay),
+  *Model* (its own, from now on; *(not set)*: the default), *Instructions*
+  (rules.md in a multi-line editor: Ctrl+S saves, written on the service's
+  machine through the backend and never over a change made meanwhile without
+  a second Save; *rules.md* under Files opens the file itself), *Wakes on*,
+  *Watches*, *Skills*, *Enabled* (off: not routed at all; its chat still
+  opens), *Paused*, and PR coordination and review follow-ups once on;
+  **▸ More** shows *Text filter*, *Permissions* (what its pull request
+  follow-ups may ask owners to do: read-only by default; push, reply,
+  resolve, vote, merge), *Budget* (runs per day, a fresh conversation after N
+  runs), *MCP servers*, and *PRs* / *Follow-ups* while off. Then its files
+  (rules.md, memory, log, context, goals, its folder), the canvas's latest
+  events, and *Inspect transcript*, *All agents*, *Remove*.
+- **◎ Agents** (the top bar, with **⚠ N** while one needs attention, a
+  spinner while one works; `A`): **+ New canvas agent** first, then every
+  agent with its state, what wakes it, the groups it watches, its skills,
+  next run and last report, and **Chat**, **Pause / Resume** and **Settings**;
+  then the tracked pull requests and review follow-ups, the canvas skills,
+  and the group passive sessions for comparison. The frame's chips are **◎ N
+  · manage** and **✦ Skills**; its menu has *New canvas agent…*, skills,
+  *Send event to canvas agents…*, its folder and *Session defaults for its
+  agents…*. The sidebar lists the agents under the frame with their state.
+  The panel's row, the box and the sidebar row are the same agent.
 - **States**: *monitoring* (enabled, waiting for its events or schedule),
-  *waiting for messages* (no triggers), *queued* (events wait for the debounce,
-  or for tomorrow when today's run budget is used), *working* (a run or its
-  open chat is busy), *paused* (no triggers until you resume it; a run in
-  progress finishes), *needs attention* (it reported `alert`), *failing* (its
-  last run failed; it retries after 1, 5 and 30 minutes), *done* (it reported
-  its job complete; schedules stop), *off* (disabled: the service does not
-  route it at all) and *unavailable* (with why: its agent CLI is not installed
-  where the service runs, the service is too old to give the canvas an id, the
-  demo). The box, the sidebar and the top bar use the same state.
+  *only when you talk to it* (no triggers), *queued* (events wait for the
+  debounce, or for tomorrow when today's run budget is used), *working* (a
+  run or its open chat is busy), *paused* (no triggers until you resume it;
+  a run in progress finishes), *needs attention* (it reported `alert`),
+  *failing* (its last run failed; it retries after 1, 5 and 30 minutes),
+  *done* (it reported its job complete; schedules stop), *off* (disabled: the
+  service does not route it at all) and *unavailable* (with why: its agent CLI
+  is not installed where the service runs, the service is too old to give
+  the canvas an id, the demo). The box, the sidebar and the top bar use the
+  same state.
 - **Files** (on the service's machine): `<home>/canvas-agents/<canvas id>/`
   holds `GOALS.md` (the canvas's goals, read on every run), `skills/<name>/SKILL.md`
   (the canvas's skill library) and, per agent, `agents/<slug>/` with
-  `rules.md`, `state.md` (its memory), `log.md`, `canvas-context.md` (a digest
-  of every group's sessions, written before each run) and `plugin/` (its
-  skills, rebuilt before each run). The service gives a canvas its id the
-  first time it opens it (`canvas_id` in the canvas file), so another canvas,
-  another instance (`--instance`, `--home`), a remote service or a self-test
-  sandbox never shares them.
+  `rules.md` (its instructions), `state.md` (its memory), `log.md`,
+  `canvas-context.md` (a digest of every group's sessions, written before each
+  run) and `plugin/` (its skills, rebuilt before each run and chat). The
+  service gives a canvas its id the first time it opens it (`canvas_id` in the
+  canvas file), so another canvas, another instance (`--instance`, `--home`),
+  a remote service or a self-test sandbox never shares them. In remote mode
+  the dialog and every setting work the same: the files are made and written
+  through the backend, the settings are canvas edits.
 - **Skills** are folders with a `SKILL.md`: YAML front matter with `name`
   (lowercase words joined by hyphens, the folder's name) and `description`
   (when it applies: agents decide from it), then the rules, triggers and
@@ -625,41 +681,47 @@ group's events, and a canvas-wide agent never sees another canvas's.
   - On pr.changes_requested: send the owning session one short message with what the reviewer asks.
   ```
 
-  *New skill…* (the panel, or *+ New skill…* in an agent's *Skills…*) creates
-  one and opens its SKILL.md (VS Code; remotely through the tunnel or the
-  viewer); *Skills…* on an agent's panel gives or takes skills (✓ / ○); the
-  panel lists the library with any problem (no front matter, a name other than
-  its folder's, no description) and marks an agent's skills that left the
-  library *(missing)*. An agent's runs and its chat get exactly its skills,
-  copied into its `plugin/` (plugin `canvas-agent-<slug>`): a second
-  `--plugin-dir` for Copilot CLI and Claude Code, another `skills.paths`
-  folder for OpenCode ([docs/AGENT-PROVIDERS.md](docs/AGENT-PROVIDERS.md#canvas-wide-agents-and-their-skills));
+  *New skill…* (the panel, or *+ New skill…* in an agent's Skills picker)
+  creates one and opens its SKILL.md (VS Code; remotely through the tunnel or
+  the viewer); an agent's *Skills* row (and the dialog's) gives or takes
+  skills (✓ / ○); the panel lists the library with any problem (no front
+  matter, a name other than its folder's, no description) and marks an
+  agent's skills that left the library *(missing)*. An agent's runs and its
+  chat get exactly its skills, copied into its `plugin/` (plugin
+  `canvas-agent-<slug>`): a second `--plugin-dir` for Copilot CLI and Claude
+  Code, another `skills.paths` folder for OpenCode ([docs/AGENT-PROVIDERS.md](docs/AGENT-PROVIDERS.md#canvas-wide-agents-and-their-skills));
   the run prompt names them too. Ordinary sessions and group passive
   sessions get group skill folders instead (*Skill folders…*, the same
   plugin mechanism); the ✦ Skills view lists every skill a session can get,
   the library's included (see *Skills view* and *Group skill folders* in the
   feature list).
-- **Events and messages**: a canvas-wide agent gets every event of its canvas
-  that matches its subscriptions (exact names, `pr.*`, `*`; a text filter;
-  *Groups…* limits it to some groups), whichever group (or no group) sent it:
-  events sessions emit, events detected from their history, events you send;
-  never its own and never another canvas's. Its trigger names the sending
-  session's id and group. `copilot-canvas emit TYPE --to "<agent>"` sends an
-  event to one passive session or canvas-wide agent only (whatever it
-  subscribes to), `--to canvas` to the canvas-wide agents only (*Send event to
-  canvas agents…* does it from the canvas). A session or group passive session
-  reaches its own group and every canvas-wide agent; a canvas-wide agent (and
-  you) reaches every session of the canvas with `copilot-canvas send --to
-  "<name or id>"` (idle-only delivery and queueing as above) and can mark any
-  box with `copilot-canvas effect … --on "<name or id>"`. The command checks
-  `--to` before posting; `copilot-canvas events` run by an agent lists every
-  group with its sessions (names and ids) and passive sessions.
-- **Runs** work as for group passive sessions (headless turns of the canvas's
-  default agent, 8 s debounce, at most 2 runs at a time, daily budget,
-  back-off, rollover), started in the agent's own folder with the canvas-agents
-  folder allowed, with the model new sessions of its agent get (the frame's
-  *Session defaults for its agents…* can set one). **Stop run** ends a run in
-  progress without counting it as a failure (its events are dropped).
+- **Events and messages**: a canvas agent gets every event of its canvas
+  that matches what wakes it (exact names, `pr.*`, `*`; a text filter; *Watches*
+  limits it to some groups), whichever group (or no group) sent it: events
+  sessions emit, events detected from their history, events you send; never
+  its own and never another canvas's. One with no triggers gets none: it
+  runs only when you talk to it (its chat, *Message…*, *Run now*), a session
+  messages it (`copilot-canvas send`), an event is addressed to it (`emit
+  --to "<agent>"`) or a follow-up it scheduled itself comes due. Its trigger
+  names the sending session's id and group. `copilot-canvas emit TYPE --to
+  "<agent>"` sends an event to one passive session or canvas agent only
+  (whatever it wakes on), `--to canvas` to the canvas agents only (*Send
+  event to canvas agents…* does it from the canvas). A session or group
+  passive session reaches its own group and every canvas agent; a canvas
+  agent (and you) reaches every session of the canvas with `copilot-canvas
+  send --to "<name or id>"` (idle-only delivery and queueing as above) and
+  can mark any box with `copilot-canvas effect … --on "<name or id>"`. The
+  command checks `--to` before posting; `copilot-canvas events` run by an
+  agent lists every group with its sessions (names and ids) and passive
+  sessions.
+- **Runs** work as for group passive sessions (headless turns of its agent,
+  8 s debounce, at most 2 runs at a time, daily budget, back-off, rollover),
+  started in the agent's own folder with the canvas-agents folder allowed,
+  with its own model or else the one new sessions of its agent get (the
+  frame's *Session defaults for its agents…* can set one). A run continues
+  the conversation its chat began (it never starts a second one beside it).
+  **Stop run** ends a run in progress without counting it as a failure (its
+  events are dropped).
 
 ## Pull request coordination
 
@@ -678,8 +740,8 @@ coordinator's (what to ask the owner to do).
    session's history is tracked the same way when the coordinator tracks
    automatically (its default).
 2. **Monitoring.** While a canvas-wide agent with PR coordination runs (the
-   *PR coordinator* template turns it on; any agent's *PRs…* does), the
-   service checks each active pull request every 5 minutes (*PRs…*: `every
+   *PR coordinator* template turns it on; any agent's *PRs* setting does), the
+   service checks each active pull request every 5 minutes (*PRs*: `every
    10m`) with your own CLIs, read-only: `gh pr view --json …` and `gh api
    …/pulls/N/comments` (GitHub), `az repos pr show`, the threads through `az
    devops invoke` and `az repos pr policy list` (Azure DevOps). The first
@@ -708,8 +770,8 @@ coordinator's (what to ask the owner to do).
    requests, and every follow-up ends with what it permits (`[Canvas:
    tracking grants no permission to push, reply, resolve, vote, merge: fix
    and test locally; ask the user before any of these. Follow-up d-…]`).
-   *PRs…* `allow push,reply` widens that per coordinator; replying,
-   resolving threads, voting and merging are never implied.
+   *Permissions* (its settings, or *PRs* `allow push,reply`) widens that per
+   coordinator; replying, resolving threads, voting and merging are never implied.
 
 **Where**: ◎ Agents shows **PULL REQUESTS · N tracked** and opens the
 **Pull requests** panel: each pull request with its owner, monitor (checked,
@@ -755,7 +817,7 @@ reviewed pull request ended.
    message carries them; they go back only to the review session with a
    request).
 2. **The message.** The canvas-wide **Review follow-up** agent (template;
-   *Follow-ups…* on any agent: `CHANNEL [TOOL] approval|no-approval every
+   the *Follow-ups* setting of any agent: `CHANNEL [TOOL] approval|no-approval every
    60m recipients: RULE`) gets `review.completed` and records a draft
    (`review message <id> --draft FILE`). The canvas refuses a draft without
    the pull request's link, one that quotes the private notes, and one that
@@ -1244,7 +1306,7 @@ UI load tests `cargo test --release stress_probe -- --ignored --nocapture`
 --release perf_probe -- --ignored --nocapture` (panning a real canvas).
 `copilot-canvas --perf` shows the same numbers live in the status bar.
 The GPU client has the same probes (`bench --client gui --stress`,
-`--perf-canvas FILE`, `--burn N`; `--effects`, `--loops` and `--pulse` for
+`--perf-canvas FILE`, `--burn N`; `--effects`, `--loops` and `--pulse` (the working glow) for
 its animations), `selftest --client gui --hardening`, golden
 screenshots with a tolerant image diff (`selftest --client gui --golden`) and a
 long-run remote soak (`selftest --remote soak`); numbers in `docs/GUI.md` §4

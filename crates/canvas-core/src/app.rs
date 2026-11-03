@@ -72,7 +72,10 @@ pub struct Notice {
 
 pub enum Drag {
     Nodes { ids: Vec<String>, start: (u16, u16), applied: (i32, i32), moved: bool, click: Option<String> },
-    Group { id: String, start: (u16, u16), applied: (i32, i32), moved: bool },
+    /// A group dragged by its title: what moves (`nodes`, `groups`: the
+    /// group, its nested groups) was decided when the press came, so boxes
+    /// and groups it passes over stay where they are.
+    Group { id: String, nodes: Vec<String>, groups: Vec<String>, start: (u16, u16), applied: (i32, i32), moved: bool },
     Resize { id: String, start: (u16, u16), orig: (i32, i32) },
     /// Panning; `group`: pressed on a group's background or border (a click
     /// without moving selects that group).
@@ -382,6 +385,8 @@ pub struct App {
     pub notebook: crate::notebook::State,
     /// The Tasks space (`tasks/`).
     pub tasks: crate::tasks::State,
+    /// The canvas-wide agents' window state: chats waiting for a run, open settings sections, rules read.
+    pub agent_ui: crate::canvas_wide::AgentsUi,
 }
 
 impl App {
@@ -535,6 +540,7 @@ impl App {
             nav: Default::default(),
             notebook: Default::default(),
             tasks: Default::default(),
+            agent_ui: Default::default(),
             instance: None,
             new_service_rx: None,
             restarting: None,
@@ -1071,14 +1077,14 @@ impl App {
         }
         self.glide = None;
         self.pan_quiet_until = None;
-        let concealed = self.concealed_now();
-        let nodes = self.doc.nodes.iter().filter(|n| !concealed.contains_key(&n.id)).map(|n| n.rect());
-        let decks = concealed.values().filter_map(|c| match c {
-            crate::visual::Conceal::Stack(root) => self.doc.node(root).map(|n| {
-                let r = self.deck_rect(n);
+        let (under, hidden) = self.conceal_maps();
+        let nodes = self.doc.nodes.iter().filter(|n| !under.contains_key(&n.id) && !hidden.contains_key(&n.id)).map(|n| n.rect());
+        let roots: HashSet<&String> = under.values().collect();
+        let decks = roots.into_iter().filter_map(|root| {
+            self.doc.node(root).map(|n| {
+                let r = self.deck_rect_in(n, &under);
                 crate::doc::Rect { x: r.x as i32, y: r.y as i32, w: r.w as i32 + 2, h: r.h as i32 + 1 }
-            }),
-            _ => None,
+            })
         });
         let bounds = nodes.chain(self.doc.groups.iter().map(|g| g.rect())).chain(decks).reduce(|a, b| a.union(&b));
         let Some(bounds) = bounds else {
@@ -1438,7 +1444,7 @@ impl App {
             automation: None,
             synced_name: None,
             reviewed_ms: None,
-            mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+            mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
         });
         self.mark_dirty();
         self.notify(format!("“{}” started subsession “{name}”.", p.name), false);
@@ -1461,7 +1467,9 @@ impl App {
             NodeKind::Session if node.passive.is_some() => {
                 let passive = node.passive.as_ref()?;
                 let done = self.passive_view(node).is_some_and(|v| v.status == "done");
-                (!passive.paused && !done).then(|| Self::passive_trigger(passive))
+                // A canvas agent with no triggers never runs on its own: no loop.
+                let wakes = passive.has_triggers() || !passive.is_canvas();
+                (!passive.paused && !done && wakes).then(|| Self::passive_trigger(passive))
             }
             NodeKind::Session => {
                 let live = self.owned_alive(&node.id) || self.summary(node).is_some_and(|s| s.live);
@@ -1605,6 +1613,13 @@ impl App {
                 // A native fork starts once from its parent; later launches resume it.
                 let fork_from = self.pending_forks.remove(id).filter(|_| node.fresh);
                 let launch = crate::side::agent_launch(&node, &self.doc.defaults, group.as_ref(), prompt, fork_from, !node.fresh);
+                // A canvas-wide agent's chat may read the canvas's goals and skills, as its runs do.
+                let mut launch = launch;
+                if node.is_canvas_agent()
+                    && let Some(dir) = self.canvas_agents_dir()
+                {
+                    launch.add_dirs.push(dir.display().to_string());
+                }
                 // A new conversation records the model it starts with (resumes keep it).
                 if !launch.resume && launch.fork_from.is_none() && node.model.is_none() {
                     record_model = Some(launch.model.clone().unwrap_or_default());
@@ -1842,7 +1857,7 @@ impl App {
                     command: None,
                     fresh: false,
                     automation: None,
-                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: folded,
+                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: folded, hidden: false,
                 };
                 let rect = node.rect();
                 self.doc.nodes.push(node);
@@ -1881,11 +1896,13 @@ impl App {
             return false;
         }
         let sessions: HashMap<&str, &Node> = self.doc.nodes.iter().filter(|n| n.kind == NodeKind::Session).map(|n| (n.id.as_str(), n)).collect();
+        // A box in the hidden area gets its slot when it is shown.
+        let hidden = canvas_model::visual::hidden_area(&self.doc);
         let todo: Vec<(String, String)> = self
             .doc
             .nodes
             .iter()
-            .filter(|n| n.kind == NodeKind::Agent && n.unplaced)
+            .filter(|n| n.kind == NodeKind::Agent && n.unplaced && !hidden.contains_key(&n.id))
             .filter_map(|n| n.parent.as_deref().and_then(|p| sessions.get(p)).filter(|p| !canvas_model::visual::subagents_folded(&self.doc, p)).map(|p| (n.id.clone(), p.id.clone())))
             .collect();
         if todo.is_empty() {
@@ -1965,7 +1982,7 @@ impl App {
                     command: None,
                     fresh: false,
                     automation: None,
-                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
                 };
                 first.get_or_insert_with(|| node.id.clone());
                 ids.push(node.id.clone());
@@ -2135,6 +2152,8 @@ impl App {
         if self.routing_check_at.elapsed() >= Duration::from_secs(1) {
             self.sync_routing();
         }
+        // A canvas agent's chat asked for during a run: once the run's terminal is gone.
+        self.open_waiting_chats();
         if self.tick_pulses() {
             self.needs_draw = true;
         }
