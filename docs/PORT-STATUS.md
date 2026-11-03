@@ -19,8 +19,10 @@
 > workspace tests); CI's macOS jobs were waiting for GitHub's macOS runners.
 >
 > **Linux: done again with main's Notebook, Tasks and Spaces** (2026-11-02,
-> branch `linux` at 379a9cc: main merged at a640512 through `macos`; CI run
-> 41526309895, every job green, Windows' `test` on its one re-run): Linux
+> branch `linux` at 1cb978b: main merged at a640512 through `macos`, and
+> d772866; CI run 41553945141, every Linux job and Windows' `test` green on
+> the first attempt, iOS on its one re-run, row T3 under Wayland too;
+> before it run 41526309895): Linux
 > on three runners with the TUI self-tests (the spaces steps), automations
 > and the agent paste checks; `linux-gui` with the GUI self-test (X11, X11
 > over loopback, Wayland), the parity suite blocking (`PASS: 70 rows` under
@@ -411,7 +413,7 @@ column is the same run's `macos` job (its parity suite blocks).
 | V6 | Remote group passive sessions | PASS | PASS |
 | T1 | Trackpad on the canvas (D15) | PASS | PASS (Wayland; pan part) |
 | T2 | Trackpad over terminals (D15) | PASS | PASS (Wayland) |
-| T3 | Trackpad in the Notebook and Tasks (D15) | PASS (local) | — (Wayland step: the Linux lead's) |
+| T3 | Trackpad in the Notebook and Tasks (D15) | PASS (local) | PASS (Wayland; Command + scroll is Ctrl + scroll, no pinch) |
 
 ## Decisions taken during the port
 
@@ -942,3 +944,14 @@ view helper (WebKitGTK offscreen); the GUI on Wayland/X11.
   goldens 11/11); Windows' `test` failed once in `opencode_history`'s
   git-push test (`detected 0`; the flake the macOS lead saw; not the
   tracking clock, which has a 5 s margin) and passed on its re-run.
+- 2026-11-02: merged origin/macos (f2452df: the iPhone Notebook and Tasks,
+  D15 in the spaces with row T3) and main's d772866. Row T3 runs under
+  Wayland with 41b, T1 and T2 (5ed19ef); alone it needed each space's own
+  view in the sidebar and the group's folder opened through its ✎ chip
+  (4f41372, 1cb978b, shared). Run 41553945141: every Linux job green
+  (parity 70 rows on X11, 41b, T1, T2, T3 under Wayland, hardening 9/9,
+  goldens 11/11), Windows green, iOS green on its re-run (a Notebook UI
+  test that also failed on main before d772866). **macOS** fails two of
+  its own goldens there (tasks-board, notebook-source: 0.3 % at
+  px 1080,864), identically on `macos`'s run of 46bbd87: they predate
+  c34a65e's Mac status bar in the spaces (the macOS lead's to re-record).
