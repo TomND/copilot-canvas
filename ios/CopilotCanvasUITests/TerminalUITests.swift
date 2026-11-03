@@ -173,7 +173,9 @@ final class TerminalUITests: XCTestCase {
             for _ in 0..<3 {
                 waitGone(pause)
                 waitGone(resume)
-                drift.tap()
+                // The list sorts by state (pausing moves the row): bring it back into view.
+                reveal(drift, in: app)
+                if drift.exists { drift.tap() }
                 if pause.waitForExistence(timeout: 5) || resume.exists { return }
             }
         }
@@ -241,6 +243,22 @@ final class TerminalUITests: XCTestCase {
         app.buttons["Unread"].tap()
         expectation(for: NSPredicate(format: "label CONTAINS %@", "unread"), evaluatedWith: brief)
         waitForExpectations(timeout: 10)
+    }
+
+    /// Scrolls the session list until `element` is built: rows are built as
+    /// they scroll in, and the list re-sorts as states change. Down first, then
+    /// back up (reaching the top, which pulls to refresh, only when it is
+    /// nowhere).
+    private func reveal(_ element: XCUIElement, in app: XCUIApplication) {
+        guard !element.exists else { return }
+        let named = app.collectionViews["sessionsList"]
+        let list = named.exists ? named : app.collectionViews.firstMatch
+        for _ in 0..<6 where !element.exists {
+            list.swipeUp()
+        }
+        for _ in 0..<12 where !element.exists {
+            list.swipeDown()
+        }
     }
 
     private func waitGone(_ element: XCUIElement, timeout: TimeInterval = 5) {
