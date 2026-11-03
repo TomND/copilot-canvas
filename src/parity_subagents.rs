@@ -54,7 +54,7 @@ pub(super) fn rows(sb: &Sandbox, rows: &mut Vec<Row>) {
     check(
         rows,
         "46",
-        "New: subagent boxes fold into a deck beneath their session by default (working while one runs); K shows them at their saved places and the choice survives a restart; H hides them; nothing starts",
+        "New: subagent boxes fold into a deck beneath their session by default (working while one runs); K shows them at their saved places and the choice survives a restart; J hides them; nothing starts",
         "subagents_folded_by_default",
         || folded_by_default(sb),
     );
@@ -112,12 +112,12 @@ fn folded_by_default(sb: &Sandbox) -> Result<String> {
     let mut gui = sb.start(&["--canvas", &arg], "gui-subagents-again.log")?;
     gui.wait("the subagents canvas again", 25, |t| t.contains("Subagent group"))?;
     gui.wait_tree("still shown after a restart", 20, |t| named(t, "Parity explorer").is_some() && named(t, "Older helper").is_some() && deck(t).is_none())?;
-    // H hides them (◇ 2 hidden on their session, counted in the toolbar), H shows them again in place.
+    // J hides them (◇ 2 hidden on their session and in the toolbar's subagent counter), J shows them again in place.
     gui.canvas_focus()?;
-    gui.send("h")?;
+    gui.send("j")?;
     gui.wait_tree("hidden, counted on their session", 5, |t| named(t, "Parity explorer").is_none() && named(t, "Folded parent").is_some_and(|b| b["hidden"] == 2 && b["hidden_agents"] == 2))?;
-    gui.wait("the toolbar's count and the marker", 5, |t| t.contains("↳ 2 hidden") && t.contains("◇ 2 hidden"))?;
-    gui.send("h")?;
+    gui.wait("the toolbar's count and the marker", 5, |t| t.matches("◇ 2 hidden").count() >= 2 && !t.contains("↳ 0 hidden"))?;
+    gui.send("j")?;
     gui.wait_tree("shown again", 5, |t| named(t, "Parity explorer").is_some_and(|b| b["alpha"] == 1.0))?;
     // K on the session stacks them again: the deck is back, their places kept.
     let at = {
@@ -134,6 +134,6 @@ fn folded_by_default(sb: &Sandbox) -> Result<String> {
     anyhow::ensure!(launches() == before, "a fold, unfold, hide or click started a session");
     let _ = gui.req(json!({ "cmd": "quit" }));
     let _ = gui.driver.wait_exit(Duration::from_secs(10));
-    Ok(format!("deck “2 subagents” working; a click listed them; K showed them at their saved places (a transition frame seen: {midway}); still shown after a restart; H hid them (◇ 2 hidden, ↳ 2 hidden) and showed them; K folded them again; nothing started"))
+    Ok(format!("deck “2 subagents” working; a click listed them; K showed them at their saved places (a transition frame seen: {midway}); still shown after a restart; J hid them (◇ 2 hidden on the session and in the toolbar) and showed them; K folded them again; nothing started"))
 }
 

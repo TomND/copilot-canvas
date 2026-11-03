@@ -1,0 +1,55 @@
+# hidden-subagents (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit   ◇ 5 hidden   ⠋ 2 working
+    SESSIONS                     │▌·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+▌▤  / filter…                    │  ╭ Orchestrator ──────────────╮     ╭ Fix the build ─────────────╮
+                                 │  │ ⠋ working · ↗ elsewhere    │     │ ⠋ working · ↗ elsewhere    │
+ ◷  ⠋ ↗ Orchestrator             │ ·│ canvas · main              │     │ canvas · main              │·     ·     ·     ·     ·     ·     ·     ·     ·
+      ◇ ⠋ Explore the API        │  ╰─────────────── ◇ 3 hidden ─╯     ╰─────────────── ◇ 2 hidden ─╯
+ ⧉  ⠋ ↗ Fix the build            │
+      ◇ ⠋ Search the logs        │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+ ⌁                               │
+                                 │
+ ✦                               │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+ ◈                               │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+ ⇄                               │
+                                 │
+ ≡                               │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+ ✉                               │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+ click view · double-click/Enter start · ] [ or Ctrl+F6 recent · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom ·…
+## gpu view model
+view cursor=none modal=none banner=None
+canvas area=34,1 116x38 origin=-1,0 scale=1 grid=true tick=0 empty=false
+box orch Session rect=1,1 30x4 prefix="" name="Orchestrator"
+  status=Working icon="⠋" label="working" line="⠋ working" subtitle="canvas · main" elsewhere=true every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #c9d1d9]
+  selected=false focused_term=false active=false
+  hidden=3 agents=3 color=#e66100
+box fix Session rect=36,1 30x4 prefix="" name="Fix the build"
+  status=Working icon="⠋" label="working" line="⠋ working" subtitle="canvas · main" elsewhere=true every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #c9d1d9]
+  selected=false focused_term=false active=false
+  hidden=2 agents=2 color=none

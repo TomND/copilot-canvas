@@ -234,14 +234,19 @@ pub struct UiPrefs {
     pub tiled: bool,
     #[serde(default)]
     pub collapsed: Vec<String>,
-    /// Subsession boxes are hidden on this client's canvas (shown again in place).
+    /// Subsession boxes (with their subagent boxes) are hidden on this
+    /// client's canvas (`H`; shown again in place).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hide_subsessions: bool,
+    /// Every subagent box is hidden on this client's canvas (`J`), folded
+    /// ones too.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hide_subagents: bool,
 }
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        Self { sidebar_width: 30, sidebar_visible: true, terminal_percent: 55, tiled: false, collapsed: Vec::new(), hide_subsessions: false }
+        Self { sidebar_width: 30, sidebar_visible: true, terminal_percent: 55, tiled: false, collapsed: Vec::new(), hide_subsessions: false, hide_subagents: false }
     }
 }
 

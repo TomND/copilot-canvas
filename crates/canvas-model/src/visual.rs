@@ -1,7 +1,8 @@
 //! Canvas visuals that are part of the document: dust on unused sessions
 //! (`Node::last_used_ms`, `Doc::dust_after_days`) and decks beneath sessions:
 //! stacks of subsessions (`Node::stacked`) and folded subagent boxes
-//! (`Node::subagents_shown`, `Doc::subagents_shown`; folded by default).
+//! (`Node::subagents_shown`, `Doc::subagents_shown`; folded by default); and
+//! which boxes a window's hide switches hide (`hidden_boxes`).
 //! Pure functions shared by the clients and the service.
 
 use std::collections::{HashMap, HashSet};
@@ -275,32 +276,39 @@ pub fn layout_rects(doc: &Doc) -> Vec<Rect> {
     layout(doc).into_iter().map(|(_, r)| r).collect()
 }
 
-/// Nodes hidden by "hide subagents and subsessions" (`H`): subsessions and
-/// every subagent box, each mapped to its visible ancestor at the top of
-/// the parent chain (a subagent box of a top-level session: that session).
-pub fn hidden_subsessions(doc: &Doc) -> HashMap<String, String> {
-    let ids: HashSet<&str> = doc.nodes.iter().map(|n| n.id.as_str()).collect();
-    let mut out = HashMap::new();
-    for node in doc.nodes.iter().filter(|n| is_subsession(&ids, n)) {
-        let mut top = node;
-        for _ in 0..64 {
-            match top.parent.as_deref().and_then(|p| doc.node(p)).filter(|p| is_subsession(&ids, top) && p.id != node.id) {
-                Some(parent) => top = parent,
-                None => break,
-            }
+/// The box a hidden box shows on (its nearest ancestor that is not hidden),
+/// or `None` when `node` is not hidden. `subsessions` hides subsessions
+/// (`H`) and `subagents` every subagent box (`J`); everything under a
+/// hidden subsession hides with it. `find` looks boxes up by id.
+pub fn hidden_into<'a>(node: &Node, find: impl Fn(&str) -> Option<&'a Node>, subsessions: bool, subagents: bool) -> Option<&'a Node> {
+    let hides = |n: &Node| match n.kind {
+        NodeKind::Agent => Some(subagents),
+        NodeKind::Session if n.passive.is_none() => Some(subsessions),
+        _ => None,
+    };
+    let parent_of = |n: &Node| n.parent.as_deref().filter(|p| *p != n.id).and_then(&find);
+    let mut visible = None;
+    let (mut hidden, mut up) = (hides(node), parent_of(node));
+    // The highest hidden box of the parent chain decides (a top-level session never hides).
+    for _ in 0..64 {
+        let (Some(hidden_here), Some(parent)) = (hidden, up) else { break };
+        if hidden_here {
+            visible = Some(parent);
         }
-        if top.id != node.id {
-            out.insert(node.id.clone(), top.id.clone());
-        }
+        hidden = hides(parent);
+        up = parent_of(parent);
     }
-    let agents: Vec<(String, String)> = doc
-        .nodes
-        .iter()
-        .filter(|n| n.kind == NodeKind::Agent)
-        .filter_map(|n| n.parent.as_deref().filter(|p| ids.contains(p)).map(|p| (n.id.clone(), out.get(p).cloned().unwrap_or_else(|| p.to_owned()))))
-        .collect();
-    out.extend(agents);
-    out
+    visible
+}
+
+/// Every hidden box (see [`hidden_into`]), mapped to the box whose marker
+/// counts it.
+pub fn hidden_boxes(doc: &Doc, subsessions: bool, subagents: bool) -> HashMap<String, String> {
+    if !subsessions && !subagents {
+        return HashMap::new();
+    }
+    let by_id: HashMap<&str, &Node> = doc.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    doc.nodes.iter().filter_map(|n| hidden_into(n, |id| by_id.get(id).copied(), subsessions, subagents).map(|top| (n.id.clone(), top.id.clone()))).collect()
 }
 
 #[cfg(test)]
@@ -396,16 +404,28 @@ mod tests {
     }
 
     #[test]
-    fn hiding_subsessions_maps_each_to_its_top_ancestor() {
+    fn hiding_maps_each_box_to_its_nearest_visible_ancestor_by_switch() {
         let doc = family();
-        let hidden = hidden_subsessions(&doc);
-        assert_eq!(hidden.get("a").map(String::as_str), Some("root"));
-        assert_eq!(hidden.get("a1").map(String::as_str), Some("root"));
-        assert_eq!(hidden.get("a1:x").map(String::as_str), Some("root"), "subagents follow their session");
-        assert_eq!(hidden.get("b").map(String::as_str), Some("root"));
-        assert_eq!(hidden.get("root:y").map(String::as_str), Some("root"), "a top-level session's subagent boxes hide into it");
+        let get = |hidden: &HashMap<String, String>, id: &str| hidden.get(id).cloned();
+        let some = |id: &str| Some(id.to_owned());
+        // Both switches: every subsession and subagent box.
+        let hidden = hidden_boxes(&doc, true, true);
+        assert_eq!((get(&hidden, "a"), get(&hidden, "a1"), get(&hidden, "b")), (some("root"), some("root"), some("root")));
+        assert_eq!(get(&hidden, "a1:x"), some("root"), "subagents follow their session");
+        assert_eq!(get(&hidden, "root:y"), some("root"), "a top-level session's subagent boxes hide into it");
         assert!(!hidden.contains_key("root") && !hidden.contains_key("c"));
         assert!(!hidden.contains_key("orphan"), "a parent that is not on the canvas: a plain session");
+        // H: subsessions and what is under them; a top-level session's subagent boxes stay.
+        let h = hidden_boxes(&doc, true, false);
+        assert_eq!((get(&h, "a1"), get(&h, "a1:x"), get(&h, "root:y")), (some("root"), some("root"), None));
+        // J: every subagent box, into its own session; subsessions stay.
+        let j = hidden_boxes(&doc, false, true);
+        assert_eq!((get(&j, "a1:x"), get(&j, "root:y"), get(&j, "a"), get(&j, "a1")), (some("a1"), some("root"), None, None));
+        assert!(hidden_boxes(&doc, false, false).is_empty());
+        // One box at a time, with any lookup.
+        let a1x = doc.node("a1:x").unwrap();
+        assert_eq!(hidden_into(a1x, |id| doc.node(id), false, true).map(|n| n.id.as_str()), Some("a1"));
+        assert_eq!(hidden_into(doc.node("root").unwrap(), |id| doc.node(id), true, true), None);
     }
 
     #[test]

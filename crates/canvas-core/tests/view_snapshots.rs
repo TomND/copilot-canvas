@@ -1009,6 +1009,16 @@ fn hidden_subsessions() {
     check("hidden-subsessions", &mut app, BOTH);
 }
 
+/// J hides every subagent box, folded ones too (their decks go): each
+/// session counts its own ("◇ 3 hidden", in the colour of a failed one), the
+/// toolbar all of them ("◇ 5 hidden"); subsessions stay (H is off).
+#[test]
+fn hidden_subagents() {
+    let mut app = subagent_decks();
+    app.doc.ui.hide_subagents = true;
+    check("hidden-subagents", &mut app, BOTH);
+}
+
 /// Effects in reduced-motion mode: fireworks on a box, attention on another,
 /// an alert on a group (badges in the TUI, still shapes in the GUI).
 #[test]

@@ -1,7 +1,7 @@
 //! Canvas visuals: dust on unused sessions, decks beneath sessions (stacks
-//! of subsessions and folded subagent boxes) and hiding every subsession and
-//! subagent box (with reversible animations in the GPU client), and the
-//! effects collection that passive sessions put on boxes. This module holds
+//! of subsessions and folded subagent boxes) and hiding subsessions (`H`)
+//! and subagent boxes (`J`) (with reversible animations in the GPU client),
+//! and the effects collection that passive sessions put on boxes. This module holds
 //! the client state, the actions, the canvas click hook and what the canvas
 //! renderers need ([`VisualFrame`]).
 
@@ -48,8 +48,10 @@ pub enum VisualAction {
     /// K: unfold the selected session's deck when anything is folded, else
     /// fold its subagent boxes and subsessions.
     ToggleStack,
-    /// H: hide or show every subsession and subagent box.
+    /// H: hide or show subsessions (with their subagent boxes) on this window's canvas.
     ToggleHideSubsessions,
+    /// J: hide or show every subagent box on this window's canvas.
+    ToggleHideSubagents,
     /// Select the dusty session boxes (cleanup: Del removes them from the canvas).
     SelectUnused,
     /// Clears the effects on a box (node id) or a group (`group:<id>`).
@@ -121,8 +123,12 @@ pub struct VisualState {
     /// subagent boxes were folded at the last frame.
     folds: HashMap<String, Transition>,
     known_folds: Option<HashSet<String>>,
-    hide: Option<Transition>,
-    known_hide: Option<bool>,
+    /// Boxes being hidden or shown, each with the box it shrinks into; the
+    /// hidden boxes, the boxes in a deck and every box at the last frame.
+    hides: HashMap<String, (Transition, String)>,
+    known_hidden: Option<HashMap<String, String>>,
+    known_decked: HashSet<String>,
+    known_ids: HashSet<String>,
     /// Effects acknowledged here until the service's snapshot drops them.
     pub acked: HashSet<String>,
     /// When this client first showed each effect (its animation's start).
@@ -145,7 +151,7 @@ pub struct VisualState {
 impl VisualState {
     /// A deck or hide transition is running (the GUI draws every frame).
     pub fn animating(&self) -> bool {
-        !self.stacks.is_empty() || !self.folds.is_empty() || self.hide.is_some()
+        !self.stacks.is_empty() || !self.folds.is_empty() || !self.hides.is_empty()
     }
 
     /// How long ago the session history first arrived.
@@ -159,7 +165,7 @@ impl VisualState {
 pub enum Conceal {
     /// In the deck beneath this session (stacked or folded).
     Stack(String),
-    /// Hidden into this visible ancestor ("hide all").
+    /// Hidden into this visible ancestor (`H`, `J`).
     Hidden(String),
 }
 
@@ -271,9 +277,23 @@ fn item(label: &str, hint: &str, action: VisualAction, enabled: bool) -> MenuIte
     MenuItem { label: label.to_owned(), hint: hint.to_owned(), action: Action::Visual(action), enabled }
 }
 
-/// The H item's label.
-pub fn hide_label(hidden: bool) -> &'static str {
-    if hidden { "Show subagents and subsessions" } else { "Hide subagents and subsessions" }
+/// The `H` item's label (subsessions and what is under them).
+pub fn hide_subsessions_label(hidden: bool) -> &'static str {
+    if hidden { "Show subsessions" } else { "Hide subsessions" }
+}
+
+/// The `J` item's label (every subagent box).
+pub fn hide_subagents_label(hidden: bool) -> &'static str {
+    if hidden { "Show subagents" } else { "Hide subagents" }
+}
+
+/// "2 subsession(s) and 3 subagent box(es)", without a zero part.
+fn kinds_text(sessions: usize, agents: usize) -> String {
+    match (sessions, agents) {
+        (s, 0) => format!("{s} subsession(s)"),
+        (0, a) => format!("{a} subagent box(es)"),
+        (s, a) => format!("{s} subsession(s) and {a} subagent box(es)"),
+    }
 }
 
 /// How much a box's state matters on a deck or a hidden-box badge (0: not
@@ -395,18 +415,42 @@ impl App {
 
     // ---------- decks and hidden boxes ----------
 
-    /// Where a session's deck is drawn as the document stands: a stack of
-    /// subsessions beneath it and its shown subagent boxes, else a slim card
-    /// for its folded subagent boxes (`canvas_model::visual::deck_rect`).
+    /// Where a session's deck is drawn as the document and this window's
+    /// switches stand: a stack of subsessions beneath it and its shown
+    /// subagent boxes, else a slim card for its folded subagent boxes
+    /// (`canvas_model::visual::deck_rect`).
     pub fn deck_rect(&self, root: &Node) -> WRect {
-        let sessions = root.stacked && !vm::descendants(&self.doc, &root.id).is_empty();
+        self.deck_rect_in(root, &self.conceal_maps().0)
+    }
+
+    /// [`App::deck_rect`] with the decks' boxes (`under`, from [`App::conceal_maps`]).
+    pub(crate) fn deck_rect_in(&self, root: &Node, under: &HashMap<String, String>) -> WRect {
+        let sessions = root.stacked && vm::descendants(&self.doc, &root.id).iter().any(|id| under.get(id) == Some(&root.id));
         WRect::from(vm::deck_rect(&self.doc, root, sessions))
     }
 
-    /// Starts transitions for stacks, folded subagent boxes and the hide
-    /// toggle that changed since the last frame (also when another window
-    /// changed them).
-    fn sync_transitions(&mut self) {
+    /// The boxes in a deck (id → the session it lies beneath) and the hidden
+    /// ones (id → the box whose marker counts them), as the document and
+    /// this window's switches (`H`, `J`) stand. A hidden box is never in a
+    /// deck; one hidden into a box held by a deck counts on the deck's session.
+    pub fn conceal_maps(&self) -> (HashMap<String, String>, HashMap<String, String>) {
+        let mut under = vm::stacked_under(&self.doc);
+        let mut hidden = vm::hidden_boxes(&self.doc, self.doc.ui.hide_subsessions, self.doc.ui.hide_subagents);
+        if !hidden.is_empty() {
+            under.retain(|id, _| !hidden.contains_key(id));
+            for top in hidden.values_mut() {
+                if let Some(root) = under.get(top.as_str()) {
+                    *top = root.clone();
+                }
+            }
+        }
+        (under, hidden)
+    }
+
+    /// Starts transitions for stacks, folded subagent boxes and hidden boxes
+    /// that changed since the last frame (also when another window changed
+    /// them); returns [`App::conceal_maps`].
+    fn sync_transitions(&mut self) -> (HashMap<String, String>, HashMap<String, String>) {
         let animate = self.render_mode == RenderMode::Gpu && self.motion() == Motion::On;
         let now = Instant::now();
         let stacked: HashSet<String> = self.doc.nodes.iter().filter(|n| n.stacked).map(|n| n.id.clone()).collect();
@@ -433,73 +477,72 @@ impl App {
         }
         self.visual.known_folds = Some(folded);
         self.visual.folds.retain(|id, t| !t.done_at(now) && self.doc.node(id).is_some());
-        let hide = self.doc.ui.hide_subsessions;
-        if animate && self.visual.known_hide.is_some_and(|known| known != hide) {
-            let from = self.visual.hide.map(|t| t.value_at(now)).unwrap_or(if hide { 0.0 } else { 1.0 });
-            self.visual.hide = Some(Transition { closing: hide, start: now, from });
+        // Hidden boxes shrink into the box that counts them (and grow out of
+        // it); boxes that were or are in a deck, and new ones, switch at once.
+        let (under, hidden) = self.conceal_maps();
+        let changes: Vec<(String, bool, String)> = match &self.visual.known_hidden {
+            Some(known) if animate => {
+                let visual = &self.visual;
+                let hiding = hidden.iter().filter(|(id, _)| !known.contains_key(*id) && !visual.known_decked.contains(*id) && visual.known_ids.contains(*id)).map(|(id, top)| (id.clone(), true, top.clone()));
+                let showing = known.iter().filter(|(id, _)| !hidden.contains_key(*id) && !under.contains_key(*id) && self.doc.node(id).is_some()).map(|(id, top)| (id.clone(), false, top.clone()));
+                hiding.chain(showing).collect()
+            }
+            _ => Vec::new(),
+        };
+        for (id, closing, top) in changes {
+            let from = self.visual.hides.get(&id).map(|(t, _)| t.value_at(now)).unwrap_or(if closing { 0.0 } else { 1.0 });
+            self.visual.hides.insert(id, (Transition { closing, start: now, from }, top));
         }
-        self.visual.known_hide = Some(hide);
-        if self.visual.hide.is_some_and(|t| t.done_at(now)) {
-            self.visual.hide = None;
+        self.visual.known_hidden = Some(hidden.clone());
+        self.visual.known_decked = under.keys().cloned().collect();
+        if animate {
+            self.visual.known_ids = self.doc.nodes.iter().map(|n| n.id.clone()).collect();
         }
+        self.visual.hides.retain(|id, (t, _)| !t.done_at(now) && self.doc.node(id).is_some());
+        (under, hidden)
     }
 
     /// Boxes in a deck or hidden right now (no transitions): clicks and
     /// rubber bands pass them by.
     pub fn concealed_now(&self) -> HashMap<String, Conceal> {
-        let mut out: HashMap<String, Conceal> = vm::stacked_under(&self.doc).into_iter().map(|(id, root)| (id, Conceal::Stack(root))).collect();
-        if self.doc.ui.hide_subsessions {
-            for (id, top) in vm::hidden_subsessions(&self.doc) {
-                out.insert(id, Conceal::Hidden(top));
-            }
-        }
+        let (under, hidden) = self.conceal_maps();
+        let mut out: HashMap<String, Conceal> = under.into_iter().map(|(id, root)| (id, Conceal::Stack(root))).collect();
+        out.extend(hidden.into_iter().map(|(id, top)| (id, Conceal::Hidden(top))));
         out
     }
 
     /// Where a box in a deck or hidden shows: its deck or its visible
     /// ancestor (`None`: it shows itself).
     pub fn shown_center(&self, id: &str) -> Option<(i32, i32)> {
-        match self.concealed_now().get(id)? {
-            Conceal::Stack(root) => {
-                let deck = self.deck_rect(self.doc.node(root)?);
-                Some(((deck.x + deck.w / 2.0) as i32, (deck.y + deck.h / 2.0) as i32))
-            }
-            Conceal::Hidden(top) => Some(self.doc.node(top)?.rect().center()),
+        let (under, hidden) = self.conceal_maps();
+        if let Some(top) = hidden.get(id) {
+            return Some(self.doc.node(top)?.rect().center());
         }
+        let deck = self.deck_rect_in(self.doc.node(under.get(id)?)?, &under);
+        Some(((deck.x + deck.w / 2.0) as i32, (deck.y + deck.h / 2.0) as i32))
     }
 
     /// What the canvas draws differently this frame: concealed boxes, decks,
     /// hidden counts, and (GUI) boxes in a transition.
     pub fn visual_frame(&mut self) -> VisualFrame {
-        self.sync_transitions();
+        let (under, hidden) = self.sync_transitions();
         let mut frame = VisualFrame::default();
-        let under = vm::stacked_under(&self.doc);
         let moving = !self.visual.stacks.is_empty() || !self.visual.folds.is_empty();
-        let hiding = self.doc.ui.hide_subsessions || self.visual.hide.is_some();
-        if under.is_empty() && !moving && !hiding {
+        if under.is_empty() && hidden.is_empty() && !moving && self.visual.hides.is_empty() {
             return frame;
         }
         let now = Instant::now();
         for (id, root) in &under {
             frame.concealed.insert(id.clone(), Conceal::Stack(root.clone()));
         }
-        let hidden = if hiding { vm::hidden_subsessions(&self.doc) } else { HashMap::new() };
-        if self.doc.ui.hide_subsessions {
-            for node in self.doc.nodes.iter().filter(|n| hidden.contains_key(&n.id)) {
-                let top = &hidden[&node.id];
-                frame.concealed.insert(node.id.clone(), Conceal::Hidden(top.clone()));
-                frame.hidden.entry(top.clone()).or_default().push(node.id.clone());
-            }
+        for node in self.doc.nodes.iter().filter(|n| hidden.contains_key(&n.id)) {
+            let top = &hidden[&node.id];
+            frame.concealed.insert(node.id.clone(), Conceal::Hidden(top.clone()));
+            frame.hidden.entry(top.clone()).or_default().push(node.id.clone());
         }
-        // Hiding every subsession and subagent box hides the decks too (their
-        // sessions count what they hold); they fade while it switches.
-        let shown = match self.visual.hide {
-            Some(t) => 1.0 - ease(t.value_at(now)),
-            None if self.doc.ui.hide_subsessions => 0.0,
-            None => 1.0,
-        };
         // Decks: sessions with something folded (and those still folding or
-        // unfolding), unless an outer deck holds them.
+        // unfolding), unless an outer deck holds them or they are hidden. A
+        // deck shows what is not hidden: one whose boxes are all hidden goes.
         let mut roots: Vec<String> = Vec::new();
         let mut seen: HashSet<&str> = HashSet::new();
         for node in &self.doc.nodes {
@@ -514,8 +557,9 @@ impl App {
         }
         let by_id: HashMap<&str, &Node> = self.doc.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
         let mut held: HashMap<String, vm::DeckContents> = vm::decks_of(&self.doc, &under).into_iter().map(|d| (d.root.clone(), d)).collect();
+        let shown = |ids: Vec<String>| -> Vec<String> { ids.into_iter().filter(|id| !hidden.contains_key(id)).collect() };
         for root_id in roots {
-            if under.contains_key(&root_id) {
+            if under.contains_key(&root_id) || hidden.contains_key(&root_id) {
                 continue;
             }
             let Some(root) = by_id.get(root_id.as_str()).copied() else { continue };
@@ -525,15 +569,13 @@ impl App {
                 let Some(c) = held.remove(&root_id) else { continue };
                 let Some(top) = c.sessions.last().or(c.agents.last()).cloned() else { continue };
                 let rect = WRect::from(vm::deck_rect(&self.doc, root, !c.sessions.is_empty()));
-                if shown > 0.0 {
-                    frame.decks.push(Deck { root: root_id, top, sessions: c.sessions, agents: c.agents, members: c.members, status: None, running: 0, rect, alpha: shown });
-                }
+                frame.decks.push(Deck { root: root_id, top, sessions: c.sessions, agents: c.agents, members: c.members, status: None, running: 0, rect, alpha: 1.0 });
                 continue;
             }
             let stacked = self.visual.stacks.get(&root_id).map(|t| t.value_at(now)).unwrap_or(if root.stacked { 1.0 } else { 0.0 });
             let folded = self.visual.folds.get(&root_id).map(|t| t.value_at(now)).unwrap_or(if vm::subagents_folded(&self.doc, root) { 1.0 } else { 0.0 });
-            let sessions = if stacked > 0.0 { vm::descendants(&self.doc, &root_id) } else { Vec::new() };
-            let agents = if folded > 0.0 { vm::subagents_of(&self.doc, &root_id) } else { Vec::new() };
+            let sessions = if stacked > 0.0 { shown(vm::descendants(&self.doc, &root_id)) } else { Vec::new() };
+            let agents = if folded > 0.0 { shown(vm::subagents_of(&self.doc, &root_id)) } else { Vec::new() };
             let Some(top) = sessions.last().or(agents.last()).cloned() else { continue };
             let rect = WRect::from(vm::deck_rect(&self.doc, root, !sessions.is_empty()));
             // Cards fly between their own places and the deck.
@@ -546,7 +588,7 @@ impl App {
                     }
                 }
             };
-            let mut members = if sessions.is_empty() { Vec::new() } else { vm::stack_members(&self.doc, &root_id) };
+            let mut members = if sessions.is_empty() { Vec::new() } else { shown(vm::stack_members(&self.doc, &root_id)) };
             if stacked < 1.0 {
                 fly(&members, stacked);
             }
@@ -555,26 +597,24 @@ impl App {
             }
             members.extend(agents.iter().cloned());
             let value = if sessions.is_empty() { folded } else if agents.is_empty() { stacked } else { stacked.max(folded) };
-            let alpha = ease(value) * shown;
+            let alpha = ease(value);
             if alpha > 0.0 {
                 frame.decks.push(Deck { root: root_id, top, sessions, agents, members, status: None, running: 0, rect, alpha });
             }
         }
         self.deck_and_hidden_states(&mut frame, &hidden);
-        // Hidden boxes shrink into (or grow out of) their visible ancestor.
-        if let Some(t) = self.visual.hide {
-            let value = ease(t.value_at(now));
-            for (id, top) in &hidden {
-                let (Some(node), Some(top)) = (by_id.get(id.as_str()), by_id.get(top.as_str())) else { continue };
-                if under.contains_key(id) {
-                    continue;
-                }
-                let home = WRect::from(node.rect());
-                let anchor = WRect::from(top.rect());
-                let (cx, cy) = (anchor.x + anchor.w / 2.0, anchor.y + anchor.h / 2.0);
-                let small = WRect::new(cx - home.w * 0.2, cy - home.h * 0.2, home.w * 0.4, home.h * 0.4);
-                frame.moving.insert(id.clone(), (lerp(home, small, value), 1.0 - value));
+        // Boxes being hidden shrink into the box that counts them; shown ones grow out of it.
+        for (id, (t, top)) in &self.visual.hides {
+            let (Some(node), Some(top)) = (by_id.get(id.as_str()), by_id.get(top.as_str())) else { continue };
+            if under.contains_key(id) {
+                continue;
             }
+            let value = ease(t.value_at(now));
+            let home = WRect::from(node.rect());
+            let anchor = WRect::from(top.rect());
+            let (cx, cy) = (anchor.x + anchor.w / 2.0, anchor.y + anchor.h / 2.0);
+            let small = WRect::new(cx - home.w * 0.2, cy - home.h * 0.2, home.w * 0.4, home.h * 0.4);
+            frame.moving.insert(id.clone(), (lerp(home, small, value), 1.0 - value));
         }
         frame
     }
@@ -779,26 +819,48 @@ impl App {
         self.needs_draw = true;
     }
 
-    /// The boxes of `ids` a drag or an arrow key moves: those not held in a
-    /// deck (their place follows their session).
+    /// The boxes of `ids` a drag or an arrow key moves: those drawn on their
+    /// own (a box in a deck or hidden follows its session).
     pub(crate) fn movable(&self, ids: &[String]) -> Vec<String> {
-        let under = vm::stacked_under(&self.doc);
-        ids.iter().filter(|id| !under.contains_key(*id)).cloned().collect()
+        let (under, hidden) = self.conceal_maps();
+        ids.iter().filter(|id| !under.contains_key(*id) && !hidden.contains_key(*id)).cloned().collect()
     }
 
+    /// H: hides or shows subsessions (with their subagent boxes) on this window's canvas.
     pub fn toggle_hide_subsessions(&mut self) {
-        self.doc.ui.hide_subsessions = !self.doc.ui.hide_subsessions;
-        let hidden = vm::hidden_subsessions(&self.doc);
-        let agents = hidden.keys().filter(|id| self.doc.node(id).is_some_and(|n| n.kind == NodeKind::Agent)).count();
-        let sessions = hidden.len() - agents;
-        let what = format!("{sessions} subsession(s) and {agents} subagent box(es)");
-        if self.doc.ui.hide_subsessions {
-            // A hidden box leaves the selection (its terminal stays open).
-            self.selection.retain(|id| !hidden.contains_key(id));
-            self.notify(format!("Hid {what}; H shows them again. They still count in the sidebar and the toolbar."), false);
+        let on = !self.doc.ui.hide_subsessions;
+        self.set_hide_switch(true, on);
+    }
+
+    /// J: hides or shows every subagent box (folded ones too) on this window's canvas.
+    pub fn toggle_hide_subagents(&mut self) {
+        let on = !self.doc.ui.hide_subagents;
+        self.set_hide_switch(false, on);
+    }
+
+    /// Sets `H` (`subsessions`) or `J`: a preference of this window, kept with
+    /// its view. Boxes keep their places; hidden ones leave the selection
+    /// (their terminals stay open).
+    fn set_hide_switch(&mut self, subsessions: bool, on: bool) {
+        let before: HashSet<String> = self.conceal_maps().1.into_keys().collect();
+        if subsessions {
+            self.doc.ui.hide_subsessions = on;
         } else {
-            self.notify(format!("Showing {what} again."), false);
+            self.doc.ui.hide_subagents = on;
         }
+        let after = self.conceal_maps().1;
+        let changed: Vec<&String> = if on { after.keys().filter(|id| !before.contains(*id)).collect() } else { before.iter().filter(|id| !after.contains_key(*id)).collect() };
+        let agents = changed.iter().filter(|id| self.doc.node(id).is_some_and(|n| n.kind == NodeKind::Agent)).count();
+        let what = kinds_text(changed.len() - agents, agents);
+        let (key, kind) = if subsessions { ("H", "Subsessions") } else { ("J", "Subagent boxes") };
+        self.selection.retain(|id| !after.contains_key(id));
+        let text = match (on, changed.is_empty()) {
+            (true, false) => format!("Hid {what}; {key} shows them again (the parents' markers and the toolbar count them)."),
+            (true, true) => format!("{kind} are hidden ({key} shows them)."),
+            (false, false) => format!("Showing {what} again."),
+            (false, true) => format!("{kind} are shown ({key} hides them)."),
+        };
+        self.notify(text, false);
         self.mark_dirty();
     }
 
@@ -1002,7 +1064,7 @@ impl App {
     }
 
     /// The deck's menu: unfold it (all, or each part), view or open what it
-    /// holds, hide everything.
+    /// holds, hide the kinds it holds (H, J).
     pub(crate) fn stack_menu(&self, deck: &Deck) -> (String, Vec<MenuItem>) {
         let root = self.doc.node(&deck.root).map(|n| n.name.clone()).unwrap_or_default();
         let (agents, sessions) = (!deck.agents.is_empty(), !deck.sessions.is_empty());
@@ -1020,7 +1082,12 @@ impl App {
         } else {
             items.push(item("List subagents", "click", VisualAction::ViewSubagents(deck.root.clone()), true));
         }
-        items.push(item(hide_label(self.doc.ui.hide_subsessions), "H", VisualAction::ToggleHideSubsessions, true));
+        if sessions {
+            items.push(item(hide_subsessions_label(self.doc.ui.hide_subsessions), "H", VisualAction::ToggleHideSubsessions, true));
+        }
+        if agents {
+            items.push(item(hide_subagents_label(self.doc.ui.hide_subagents), "J", VisualAction::ToggleHideSubagents, true));
+        }
         let title = match (deck.sessions.len(), deck.agents.len()) {
             (0, a) => format!("{a} subagent box(es) of “{root}”"),
             (s, 0) => format!("Stack of {s} under “{root}”"),
@@ -1057,14 +1124,17 @@ impl App {
         items
     }
 
-    /// The canvas menu's items: hide or show subsessions and subagent boxes,
-    /// select unused sessions.
+    /// The canvas menu's items: hide or show subsessions (H) and subagent
+    /// boxes (J), select unused sessions.
     pub fn visual_canvas_items(&self) -> Vec<MenuItem> {
         let ids: HashSet<&str> = self.doc.nodes.iter().map(|n| n.id.as_str()).collect();
-        let any = self.doc.nodes.iter().any(|n| vm::is_subsession(&ids, n) || n.kind == NodeKind::Agent);
+        let subsessions = self.doc.nodes.iter().any(|n| vm::is_subsession(&ids, n));
+        let agents = self.doc.nodes.iter().any(|n| n.kind == NodeKind::Agent);
+        let (h, j) = (self.doc.ui.hide_subsessions, self.doc.ui.hide_subagents);
         let days = self.doc.dust_after_days;
         vec![
-            item(hide_label(self.doc.ui.hide_subsessions), "H", VisualAction::ToggleHideSubsessions, any || self.doc.ui.hide_subsessions),
+            item(hide_subsessions_label(h), "H", VisualAction::ToggleHideSubsessions, subsessions || h),
+            item(hide_subagents_label(j), "J", VisualAction::ToggleHideSubagents, agents || j),
             item(&format!("Select unused sessions (older than {days} d)"), "", VisualAction::SelectUnused, days > 0),
         ]
     }
@@ -1078,6 +1148,7 @@ impl App {
             VisualAction::ViewSubagents(id) => self.view_subagents(&id),
             VisualAction::ToggleStack => self.toggle_fold(),
             VisualAction::ToggleHideSubsessions => self.toggle_hide_subsessions(),
+            VisualAction::ToggleHideSubagents => self.toggle_hide_subagents(),
             VisualAction::SelectUnused => {
                 let ids = self.dusty_sessions();
                 let days = self.doc.dust_after_days;
@@ -1378,7 +1449,7 @@ mod tests {
         let deck = app.visual_frame().deck_of("p").cloned().unwrap();
         let (title, items) = app.stack_menu(&deck);
         assert_eq!(title, "Stack of 1 and 1 subagent box(es) under “p”");
-        assert_eq!(items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(), ["Unfold all", "Show subagents", "Unstack subsessions", "Open “c”", "Hide subagents and subsessions"]);
+        assert_eq!(items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(), ["Unfold all", "Show subagents", "Unstack subsessions", "Open “c”", "Hide subsessions", "Hide subagents"]);
         assert!(app.launching.is_empty(), "folding never starts anything");
     }
 
@@ -1437,8 +1508,14 @@ mod tests {
         assert!(app.notice.is_some() && app.dirty_at.is_some(), "a canvas edit (saved, sent to every window)");
     }
 
+    fn screen(app: &mut App) -> String {
+        let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 160, 45));
+        crate::ui::render(app, &mut buf, ratatui::layout::Rect::new(0, 0, 160, 45), None);
+        (0..45).map(|y| (0..160).map(|x| buf[(x, y)].symbol()).collect::<String>() + "\n").collect()
+    }
+
     #[test]
-    fn hide_all_hides_subagent_boxes_too_and_counts_them_on_their_session() {
+    fn h_hides_subsessions_and_j_subagent_boxes_each_on_its_own() {
         let mut doc = Doc::default();
         doc.nodes.push(session("p", None, 0, 0));
         doc.nodes.push(agent("p:a", "p", 4, 5));
@@ -1448,19 +1525,84 @@ mod tests {
         let mut app = app(doc);
         app.run_visual(VisualAction::FoldSubagents("c".into(), false));
         assert_eq!(app.visual_frame().decks.len(), 1, "p's deck");
+        let places = |app: &App| app.doc.nodes.iter().map(|n| (n.x, n.y)).collect::<Vec<_>>();
+        let before = places(&app);
+        // H: the subsession and its subagent box; p's folded subagent boxes keep their deck.
+        app.selection = vec!["c".into()];
         app.run_visual(VisualAction::ToggleHideSubsessions);
         let frame = app.visual_frame();
-        assert!(frame.decks.is_empty(), "decks hide too");
-        assert_eq!(frame.hidden.get("p").map(Vec::len), Some(4), "both subagent boxes, the subsession and its subagent box");
-        assert!(frame.skip("c:x") && frame.skip("p:a") && !frame.skip("p"));
-        let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 160, 45));
-        crate::ui::render(&mut app, &mut buf, ratatui::layout::Rect::new(0, 0, 160, 45), None);
-        let screen: String = (0..45).map(|y| (0..160).map(|x| buf[(x, y)].symbol()).collect::<String>() + "\n").collect();
-        assert!(screen.contains("⋯ 1 · ◇ 3 hidden"), "on the session: {screen}");
-        assert!(screen.contains("↳ 4 hidden"), "the toolbar counts every hidden box");
-        assert_eq!(app.visual_canvas_items()[0].label, "Show subagents and subsessions");
+        assert_eq!(frame.hidden.get("p").map(Vec::len), Some(2), "the subsession and its subagent box");
+        assert!(frame.skip("c") && frame.skip("c:x") && !frame.skip("p"));
+        assert_eq!(frame.deck_of("p").map(|d| d.agents.len()), Some(2), "p's own subagent boxes stay in their deck");
+        assert!(app.selection.is_empty(), "a hidden box leaves the selection");
+        let text = screen(&mut app);
+        let toolbar = text.lines().next().unwrap_or_default().to_owned();
+        assert!(text.contains("⋯ 1 · ◇ 1 hidden") && toolbar.contains(" ↳ 1 hidden ") && !toolbar.contains('◇'), "{text}");
+        assert_eq!(app.visual_canvas_items().iter().map(|i| i.label.as_str()).take(2).collect::<Vec<_>>(), ["Show subsessions", "Hide subagents"]);
+        // J too: every subagent box, folded ones included (p's deck goes).
+        app.run_visual(VisualAction::ToggleHideSubagents);
+        let frame = app.visual_frame();
+        assert!(frame.decks.is_empty(), "a deck of folded subagent boxes only goes with them");
+        assert_eq!(frame.hidden.get("p").map(Vec::len), Some(4));
+        let text = screen(&mut app);
+        let toolbar = text.lines().next().unwrap_or_default().to_owned();
+        assert!(text.contains("⋯ 1 · ◇ 3 hidden") && toolbar.contains(" ↳ 1 hidden ") && toolbar.contains(" ◇ 3 hidden "), "{text}");
+        // H off: J alone keeps every subagent box hidden, each into its own session.
         app.run_visual(VisualAction::ToggleHideSubsessions);
-        assert!(!app.visual_frame().concealed.contains_key("c:x") && app.visual_frame().deck_of("p").is_some());
+        let frame = app.visual_frame();
+        assert!(!frame.skip("c") && frame.skip("c:x") && frame.skip("p:a"));
+        assert_eq!((frame.hidden.get("p").map(Vec::len), frame.hidden.get("c").map(Vec::len)), (Some(2), Some(1)));
+        let toolbar = screen(&mut app).lines().next().unwrap_or_default().to_owned();
+        assert!(toolbar.contains(" ◇ 3 hidden ") && !toolbar.contains('↳'), "the toolbar counts every hidden subagent box: {toolbar}");
+        assert_eq!(app.visual_canvas_items()[1].label, "Show subagents");
+        // J off: everything back in place, p's deck too; a toggle never moves a box nor starts anything.
+        app.run_visual(VisualAction::ToggleHideSubagents);
+        let frame = app.visual_frame();
+        assert!(frame.hidden.is_empty() && frame.deck_of("p").is_some() && !frame.concealed.contains_key("c:x"));
+        assert_eq!(places(&app), before);
+        assert!(!screen(&mut app).lines().next().unwrap_or_default().contains(" hidden "), "no counters once nothing is hidden");
+        assert!(app.launching.is_empty() && app.undo.is_empty(), "never an undo step");
+    }
+
+    #[test]
+    fn a_deck_hides_what_is_hidden_and_shows_the_rest() {
+        let mut doc = Doc::default();
+        doc.nodes.push(session("p", None, 0, 0));
+        doc.nodes.push(agent("p:a", "p", 4, 5));
+        doc.nodes.push(session("c", Some("p"), 40, 0));
+        let mut app = app(doc);
+        app.run_visual(VisualAction::FoldAll("p".into(), true));
+        let deck = app.visual_frame().deck_of("p").cloned().unwrap();
+        assert_eq!((deck.sessions.len(), deck.agents.len()), (1, 1), "a stack and a folded subagent box in one deck");
+        // H: the stack's subsession hides; the deck shows the folded subagent box as a slim card.
+        app.run_visual(VisualAction::ToggleHideSubsessions);
+        let frame = app.visual_frame();
+        let deck = frame.deck_of("p").cloned().unwrap();
+        assert!(deck.agents_only() && deck.agents == ["p:a"] && frame.skip("c"));
+        assert_eq!(deck.rect, WRect::new(4.0, 5.0, 24.0, 3.0));
+        assert_eq!(frame.hidden_badges.get("p").map(|h| (h.sessions, h.agents)), Some((1, 0)));
+        // J instead: the deck holds the stack alone.
+        app.run_visual(VisualAction::ToggleHideSubsessions);
+        app.run_visual(VisualAction::ToggleHideSubagents);
+        let frame = app.visual_frame();
+        let deck = frame.deck_of("p").cloned().unwrap();
+        assert!(deck.agents.is_empty() && deck.sessions == ["c"] && frame.skip("p:a"));
+        let (title, items) = app.stack_menu(&deck);
+        assert_eq!(title, "Stack of 1 under “p”");
+        assert!(items.iter().any(|i| i.label == "Hide subsessions") && !items.iter().any(|i| i.hint == "J"), "only what the deck holds");
+    }
+
+    #[test]
+    fn hide_switches_are_kept_with_the_windows_view_and_old_prefs_load() {
+        let old: crate::sync::ClientPrefs = serde_json::from_str(r#"{"view":{"x":0,"y":0},"ui":{"sidebar_width":30,"sidebar_visible":true,"terminal_percent":55,"tiled":false,"hide_subsessions":true}}"#).unwrap();
+        assert!(old.ui.hide_subsessions && !old.ui.hide_subagents, "an owner's prefs file: subsessions hidden, subagents not");
+        let mut prefs = old.clone();
+        prefs.ui.hide_subagents = true;
+        let text = serde_json::to_string(&prefs).unwrap();
+        assert!(text.contains("\"hide_subagents\":true"), "{text}");
+        assert_eq!(serde_json::from_str::<crate::sync::ClientPrefs>(&text).unwrap(), prefs);
+        let unset = serde_json::to_string(&crate::sync::ClientPrefs::default()).unwrap();
+        assert!(!unset.contains("hide_subagents") && !unset.contains("hide_subsessions"), "unset switches are not written: {unset}");
     }
 
     #[test]
@@ -1555,6 +1697,36 @@ mod tests {
         std::thread::sleep(Duration::from_millis(320));
         let frame = app.visual_frame();
         assert!(!app.visual.animating() && frame.moving.is_empty() && frame.decks.is_empty(), "idle again: no continuous redraw");
+    }
+
+    #[test]
+    fn hiding_animates_in_the_gpu_both_ways_and_ends_idle() {
+        let mut doc = Doc::default();
+        doc.nodes.push(session("p", None, 0, 0));
+        doc.nodes.push(session("a", Some("p"), 40, 0));
+        doc.nodes.push(agent("p:x", "p", 4, 5));
+        let mut app = app(doc);
+        app.render_mode = RenderMode::Gpu;
+        app.visual_frame();
+        app.run_visual(VisualAction::ToggleHideSubsessions);
+        let frame = app.visual_frame();
+        assert!(app.visual.animating() && frame.moving.contains_key("a") && !frame.skip("a"), "the subsession shrinks into its parent");
+        app.run_visual(VisualAction::ToggleHideSubagents);
+        let frame = app.visual_frame();
+        assert!(frame.skip("p:x") && !frame.moving.contains_key("p:x"), "a box from a deck switches at once");
+        // A box that arrives while its kind is hidden never flies.
+        app.doc.nodes.push(session("b", Some("p"), 40, 8));
+        let frame = app.visual_frame();
+        assert!(frame.skip("b") && !frame.moving.contains_key("b"));
+        std::thread::sleep(Duration::from_millis(320));
+        let frame = app.visual_frame();
+        assert!(!app.visual.animating() && frame.moving.is_empty() && frame.skip("a"));
+        // Shown again: it grows out of its parent, then all is idle.
+        app.run_visual(VisualAction::ToggleHideSubsessions);
+        let frame = app.visual_frame();
+        assert!(frame.moving.get("a").is_some_and(|(_, alpha)| *alpha < 1.0) && !frame.concealed.contains_key("a"));
+        std::thread::sleep(Duration::from_millis(320));
+        assert!(app.visual_frame().moving.is_empty() && !app.visual.animating());
     }
 
     #[test]

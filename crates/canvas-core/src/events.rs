@@ -296,6 +296,7 @@ impl App {
             KeyCode::Char('g') if !ctrl => return self.run(Action::GroupSelection),
             KeyCode::Char('k') if !ctrl => return self.run(Action::Visual(crate::visual::VisualAction::ToggleStack)),
             KeyCode::Char('h') if !ctrl => return self.run(Action::Visual(crate::visual::VisualAction::ToggleHideSubsessions)),
+            KeyCode::Char('j') if !ctrl => return self.run(Action::Visual(crate::visual::VisualAction::ToggleHideSubagents)),
             KeyCode::Char('r') | KeyCode::F(2) if !ctrl => {
                 if let Some(group) = self.selected_group.clone() {
                     return self.run(Action::Rename(Target::Group(group)));
@@ -1243,11 +1244,15 @@ mod selection_tests {
         for gpu in [false, true] {
             let (mut app, _sent) = app(gpu);
             let everything = ((1.5, 1.5), (105.5, 25.5));
-            // H hides every subsession and subagent box.
+            // H hides subsessions (with their subagent boxes), J every subagent box.
             key(&mut app, KeyCode::Char('h'), Modifiers::NONE);
             drag(&mut app, MouseButton::Left, everything.0, everything.1, Modifiers::SHIFT);
-            assert_eq!(selected(&app), set(&["p", "o"]), "hidden subsessions and subagent boxes (gpu {gpu})");
+            assert_eq!(selected(&app), set(&["p", "p:helper", "o"]), "hidden subsessions and their subagent boxes (gpu {gpu})");
+            key(&mut app, KeyCode::Char('j'), Modifiers::NONE);
+            drag(&mut app, MouseButton::Left, everything.0, everything.1, Modifiers::SHIFT);
+            assert_eq!(selected(&app), set(&["p", "o"]), "and hidden subagent boxes (gpu {gpu})");
             key(&mut app, KeyCode::Char('h'), Modifiers::NONE);
+            key(&mut app, KeyCode::Char('j'), Modifiers::NONE);
             app.set_stacked("p", true);
             drag(&mut app, MouseButton::Left, everything.0, everything.1, Modifiers::SHIFT);
             assert_eq!(selected(&app), set(&["p", "p:helper", "o"]), "a stack's boxes (gpu {gpu})");

@@ -121,7 +121,7 @@ pub struct BoxModel {
     pub alpha: f32,
     /// This box is the top card of a deck beneath a session.
     pub deck: Option<DeckInfo>,
-    /// Subsessions and subagent boxes hidden into this box ("hide all").
+    /// Subsessions and subagent boxes hidden into this box.
     pub hidden: Option<Hidden>,
     /// The todo the session claimed (its id, drawn as `☑ DEC-031`; a click
     /// opens its card in Tasks).
@@ -155,7 +155,7 @@ impl DeckInfo {
     }
 }
 
-/// Boxes hidden into a visible box by "hide subagents and subsessions".
+/// Boxes hidden into a visible box (`H`, `J`), by kind.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Hidden {
     pub sessions: u32,

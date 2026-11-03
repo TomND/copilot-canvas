@@ -222,6 +222,13 @@ pub fn compact_tabs(app: &App, width: u16) -> bool {
     19 + full + toolbar_buttons_width(app) + 24 > width as i32
 }
 
+/// Hidden boxes on this window's canvas: (subsessions, subagent boxes).
+pub fn hidden_counts(app: &App) -> (usize, usize) {
+    let hidden = app.conceal_maps().1;
+    let agents = hidden.keys().filter(|id| app.doc.node(id).is_some_and(|n| n.kind == NodeKind::Agent)).count();
+    (hidden.len() - agents, agents)
+}
+
 fn draw_toolbar(app: &mut App, buf: &mut Buffer, area: Rect) {
     fill(buf, area.x as i32, area.y as i32, area.width as i32, 1, Style::default().bg(PANEL), area);
     let mut x = put(buf, 1, area.y as i32, "◆ Copilot Canvas", bold(ACCENT).bg(PANEL), area) + 2;
@@ -263,12 +270,17 @@ fn draw_toolbar(app: &mut App, buf: &mut Buffer, area: Rect) {
         x = toolbar_button(app, buf, x, " ⧉ ", Action::NewWindow, area);
     }
     let mut x = toolbar_button(app, buf, x, " ⏻ Quit ", Action::Quit, area);
-    // Subsessions and subagent boxes are hidden: say how many, and show them with a click.
-    if app.doc.ui.hide_subsessions {
-        let hidden = canvas_model::visual::hidden_subsessions(&app.doc).len();
-        let end = put(buf, x, area.y as i32, &format!(" ↳ {hidden} hidden "), bold(PANEL).bg(GRAY), area);
-        app.layout.hits.push((Rect::new(x as u16, area.y, (end - x).max(0) as u16, 1), Hit::Toolbar(Action::Visual(crate::visual::VisualAction::ToggleHideSubsessions))));
-        x = end + 1;
+    // Hidden subsessions (H) and subagent boxes (J): how many of each; a click shows them.
+    let (subsessions, subagents) = hidden_counts(app);
+    for (count, on, label, action) in [
+        (subsessions, app.doc.ui.hide_subsessions, "↳", crate::visual::VisualAction::ToggleHideSubsessions),
+        (subagents, app.doc.ui.hide_subagents, "◇", crate::visual::VisualAction::ToggleHideSubagents),
+    ] {
+        if on {
+            let end = put(buf, x, area.y as i32, &format!(" {label} {count} hidden "), bold(PANEL).bg(GRAY), area);
+            app.layout.hits.push((Rect::new(x as u16, area.y, (end - x).max(0) as u16, 1), Hit::Toolbar(Action::Visual(action))));
+            x = end + 1;
+        }
     }
     let buttons_end = x;
 

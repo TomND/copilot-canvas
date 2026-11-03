@@ -1049,14 +1049,14 @@ impl App {
         }
         self.glide = None;
         self.pan_quiet_until = None;
-        let concealed = self.concealed_now();
-        let nodes = self.doc.nodes.iter().filter(|n| !concealed.contains_key(&n.id)).map(|n| n.rect());
-        let decks = concealed.values().filter_map(|c| match c {
-            crate::visual::Conceal::Stack(root) => self.doc.node(root).map(|n| {
-                let r = self.deck_rect(n);
+        let (under, hidden) = self.conceal_maps();
+        let nodes = self.doc.nodes.iter().filter(|n| !under.contains_key(&n.id) && !hidden.contains_key(&n.id)).map(|n| n.rect());
+        let roots: HashSet<&String> = under.values().collect();
+        let decks = roots.into_iter().filter_map(|root| {
+            self.doc.node(root).map(|n| {
+                let r = self.deck_rect_in(n, &under);
                 crate::doc::Rect { x: r.x as i32, y: r.y as i32, w: r.w as i32 + 2, h: r.h as i32 + 1 }
-            }),
-            _ => None,
+            })
         });
         let bounds = nodes.chain(self.doc.groups.iter().map(|g| g.rect())).chain(decks).reduce(|a, b| a.union(&b));
         let Some(bounds) = bounds else {

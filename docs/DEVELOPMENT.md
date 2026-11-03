@@ -403,7 +403,7 @@ buttons never start a session except an explicit Start / Resume.
 | 6 | activity bar | Alt+1 … Alt+9 |
 | 7 | the Notebook or Tasks module (`space_has_keys`) | its main area and sidebar |
 | 8 | a list view of the sidebar | arrows, Enter, Space, Del, A, Esc, Tab |
-| 9 | Ctrl+Q, the sidebar filter, then single keys | q, F6, ?, /, b, n, s, i, v, a, Ctrl+Z/Y, t, o, f, g, k, h, r, x, + -, Del, Esc |
+| 9 | Ctrl+Q, the sidebar filter, then single keys | q, F6, ?, /, b, n, s, i, v, a, Ctrl+Z/Y, t, o, f, g, k, h, j, r, x, + -, Del, Esc |
 | 10 | the Sessions sidebar, then the canvas | arrows, Enter (the explicit start), Tab, Home / c |
 
 So a new global key goes in row 9 and never reaches a terminal; a key that

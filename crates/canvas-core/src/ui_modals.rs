@@ -39,7 +39,7 @@ const HELP: &[(&str, &str)] = &[
     ("T · F · + − · C", "tile terminals · fit all · zoom · center"),
     ("/ · B", "filter sidebar · toggle sidebar"),
     ("O", "open this canvas in the other client (GUI / TUI)"),
-    ("K · H", "stack / unstack subsessions · hide / show all subsessions"),
+    ("K · H / J", "stack · hide subsessions / subagents"),
     ("Click a stack · double-click", "view its top card · unstack (back to their places)"),
     ("Click an effect (✦ ◉ ✧ ▲)", "clear it (it never starts the session)"),
     ("A · ◎ Agents (top bar) · ◎ frame", "canvas-wide agents: every group's events, skills"),
