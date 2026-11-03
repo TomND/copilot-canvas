@@ -1,12 +1,12 @@
-# grid-pulse (150x40 cells)
+# working-glow (150x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit   ⠋ 1 working   2 sessions
+ ◆ Copilot Canvas   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit   ⠋ 1 working   3 sessions
     SESSIONS                     │▌·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
-▌▤  / filter…                    │  ╭ Working on it ─────────────╮         ╭ Idle one ──────────────────╮
+▌▤  / filter…                    │  ╭ Working on it ─────────────╮         ╭ Just stopped ──────────────╮
                                  │  │ ⠋ working · ↗ elsewhere    │         │ ○ idle · ↗ elsewhere       │
  ◷  ⠋ ↗ Working on it            │ ·│ canvas · main              │     ·   │ canvas · main              │  ·     ·     ·     ·     ·     ·     ·     ·
-    ○ ↗ Idle one                 │  ╰────────────────────────────╯         ╰────────────────────────────╯
- ⧉                               │
+    ○ ↗ Just stopped             │  ╰────────────────────────────╯         ╰────────────────────────────╯
+ ⧉  ○ ↗ Idle one                 │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
  ⌁                               │
                                  │
@@ -15,10 +15,10 @@
  ◈                               │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
  ⇄                               │
-                                 │
- ≡                               │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
-                                 │
- ✉                               │
+                                 │  ╭ Idle one ──────────────────╮
+ ≡                               │ ·│ ○ idle · ↗ elsewhere       │     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │  │ canvas · main              │
+ ✉                               │  ╰────────────────────────────╯
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
                                  │
                                  │
@@ -43,12 +43,18 @@
 ## gpu view model
 view cursor=none modal=none banner=None
 canvas area=34,1 116x38 origin=-1,0 scale=1 grid=true tick=0 empty=false
-grid pulse on=true envelope=1 level=0.35 color=#48576b
+glow moving=true busy=true
+  source busy rect=1,1 30x4 on=true envelope=1 rings=[9.82@0.383] near=#415267
+  source done rect=40,1 30x4 on=false envelope=0.606 rings=[0.07@1] near=#4f6f95
 box busy Session rect=1,1 30x4 prefix="" name="Working on it"
   status=Working icon="⠋" label="working" line="⠋ working" subtitle="canvas · main" elsewhere=true every=None mailbox=0
   border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #c9d1d9]
   selected=false focused_term=false active=false
-box quiet Session rect=40,1 30x4 prefix="" name="Idle one"
+box done Session rect=40,1 30x4 prefix="" name="Just stopped"
+  status=Idle icon="○" label="idle" line="○ idle" subtitle="canvas · main" elsewhere=true every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #8b949e]
+  selected=false focused_term=false active=false
+box quiet Session rect=1,14 30x4 prefix="" name="Idle one"
   status=Idle icon="○" label="idle" line="○ idle" subtitle="canvas · main" elsewhere=true every=None mailbox=0
   border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #8b949e]
   selected=false focused_term=false active=false

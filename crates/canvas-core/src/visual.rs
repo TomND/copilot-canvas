@@ -73,8 +73,8 @@ pub enum VisualSetting {
     Subagents,
     /// Settings › Effects (this machine).
     Effects,
-    /// Settings › Dot grid pulse while agents work (this machine).
-    GridPulse,
+    /// Settings › Working glow around working sessions (this machine).
+    WorkingGlow,
 }
 
 /// A deck or hide transition: its value runs from `from` towards 1
@@ -136,9 +136,10 @@ pub struct VisualState {
     pub effects_live: bool,
     /// Loops that start or stop (their arcs grow in or fade out).
     pub loops: crate::loops::LoopState,
-    /// The dot grid's pulse while agents work (its fade in and out).
-    pub pulse: crate::pulse::Fade,
-    /// *Settings › Dot grid pulse* on this machine; `None` until loaded.
+    /// The working glow's fades in and out, by box.
+    pub glow: crate::glow::Fades,
+    /// *Settings › Working glow* on this machine (stored as `grid_pulse`);
+    /// `None` until loaded.
     pub grid_pulse: Option<bool>,
 }
 
@@ -1105,7 +1106,7 @@ impl App {
 
     // ---------- settings ----------
 
-    /// The Settings view's dust, subagents, effects and grid pulse rows.
+    /// The Settings view's dust, subagents, effects and working glow rows.
     pub fn visual_setting_rows(&self) -> Vec<crate::side::ListRow> {
         let days = self.doc.dust_after_days;
         let dust = if days == 0 { "off".to_owned() } else { format!("{days} day{}", if days == 1 { "" } else { "s" }) };
@@ -1121,12 +1122,12 @@ impl App {
             color: crate::paint::TEXT,
         };
         let subagents = if self.doc.subagents_shown { "shown" } else { "stacked" };
-        let pulse = if self.grid_pulse_setting() { "on" } else { "off" };
+        let glow = if self.working_glow_setting() { "on" } else { "off" };
         vec![
             row(VisualSetting::Dust, "Dust unused sessions after", dust),
             row(VisualSetting::Subagents, "Subagents", subagents.to_owned()),
             row(VisualSetting::Effects, "Effects", effects),
-            row(VisualSetting::GridPulse, "Dot grid pulse", pulse.to_owned()),
+            row(VisualSetting::WorkingGlow, "Working glow", glow.to_owned()),
         ]
     }
 
@@ -1171,8 +1172,8 @@ impl App {
                 }
                 self.needs_draw = true;
             }
-            VisualSetting::GridPulse => {
-                let on = !self.grid_pulse_setting();
+            VisualSetting::WorkingGlow => {
+                let on = !self.working_glow_setting();
                 self.visual.grid_pulse = Some(on);
                 let saved = self.settings_home().map(|home| {
                     crate::settings::Settings::load_checked(&home).and_then(|mut s| {
@@ -1181,10 +1182,11 @@ impl App {
                     })
                 });
                 match saved {
-                    Some(Err(error)) => self.notify(format!("Cannot save the dot grid pulse setting: {error:#}"), true),
-                    _ if !on => self.notify("Dot grid pulse off: the canvas's dots stay still while agents work.", false),
-                    _ if self.motion() != Motion::On => self.notify(format!("Dot grid pulse on: it shows while Effects are on (now {}).", self.motion().name()), false),
-                    _ => self.notify("Dot grid pulse on: the canvas's dots breathe gently while an agent works.", false),
+                    Some(Err(error)) => self.notify(format!("Cannot save the working glow setting: {error:#}"), true),
+                    _ if !on => self.notify("Working glow off: the canvas's dots stay still around working sessions.", false),
+                    _ if self.motion() == Motion::Off => self.notify("Working glow on: it shows while Effects are on (now off).", false),
+                    _ if self.motion() == Motion::Reduced => self.notify("Working glow on: with reduced motion, a still glow around working sessions.", false),
+                    _ => self.notify("Working glow on: the dots around a working session glow and pulse outwards.", false),
                 }
                 self.needs_draw = true;
             }
