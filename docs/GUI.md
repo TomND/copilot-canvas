@@ -134,7 +134,13 @@ one are drawn. Like loop frames they skip the core's view, the rescans,
 `after_draw` and UI Automation. Nothing working, reduced motion (a static
 glow, drawn in full frames), effects off, the setting off, frozen or
 minimized: none (the working spinners' own full frames are unchanged, about
-4–5 a second).
+4–5 a second). With Windows' software renderer (WARP: no usable GPU, CI's
+runners) every present takes tens of milliseconds, so glow frames keep the
+spinner's redraw pending into the next 40 ms housekeeping tick and the
+spinners redraw at their own 12.5 a second while the glow runs (measured
+with `CANVAS_GUI_TEST_GPU=nohw`: 26 full frames in 2 s with the glow, 11-13
+without; on the RTX 3070 10 and 8); parity row 51 bounds that on software
+rendering.
 
 **Inline images.** The Ghostty engine keeps Kitty graphics (storage limit
 64 MiB per terminal; only inline data: the file, temporary-file and
