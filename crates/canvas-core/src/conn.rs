@@ -784,7 +784,9 @@ mod tests {
         assert_eq!(session.acked(), 9, "heartbeats carry the input ack");
         let (caps, heartbeats) = service.join().unwrap();
         assert_eq!(caps, CAP_FRAME8 | CAP_COMPRESS);
-        assert!(heartbeats >= 4, "the client sent heartbeats ({heartbeats})");
+        // Every 50 ms for about 700 ms; more than one shows they repeat (a busy
+        // CI runner starved the client's writer thread to 3 once).
+        assert!(heartbeats >= 2, "the client sent heartbeats ({heartbeats})");
     }
 
     #[test]
