@@ -158,6 +158,11 @@ pub struct Passive {
     /// hourly checks; `None`: off).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reviews: Option<crate::reviews::ReviewSettings>,
+    /// A canvas-wide agent's own model for its runs and chats (`Some("")`:
+    /// the agent CLI's own default); `None`: the default new sessions of its
+    /// agent get. Kept across rollovers (the box's `model` is per conversation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// Whose events a passive session gets.
@@ -186,6 +191,12 @@ pub const CANVAS_AGENT: &str = "canvas-agent";
 impl Passive {
     pub fn is_canvas(&self) -> bool {
         self.scope == PassiveScope::Canvas
+    }
+
+    /// Anything wakes it on its own (events, a schedule); without, it runs
+    /// only when someone talks to it (messages, Run now).
+    pub fn has_triggers(&self) -> bool {
+        !self.subscribe.is_empty() || self.every_minutes > 0 || !self.daily_at.trim().is_empty()
     }
 }
 
@@ -1380,6 +1391,26 @@ mod tests {
         plain.source = Some(CANVAS_AGENT.into());
         assert!(plain.is_canvas_agent());
         assert!(!valid_canvas_id("") && !valid_canvas_id("a/b") && valid_canvas_id("3f2c-9a"));
+    }
+
+    #[test]
+    fn a_canvas_agents_own_model_is_optional_and_old_agents_load_unchanged() {
+        // A canvas-wide agent as an earlier build wrote it: no model of its own, triggers kept.
+        let text = r#"{"version":2,"canvas_id":"c1","nodes":[{"id":"a","kind":"session","name":"PR coordinator","x":0,"y":0,"source":"canvas-agent","agent":"copilot","passive":{"key":"k","group":"gf","slug":"pr-coordinator","template":"PR coordinator","subscribe":["pr.*"],"scope":"canvas","skills":["pr-etiquette"]}}],"groups":[],"view":{"x":0,"y":0}}"#;
+        let old: Doc = serde_json::from_str(text).unwrap();
+        let passive = old.nodes[0].passive.clone().unwrap();
+        assert_eq!((passive.model.clone(), passive.subscribe.clone(), passive.skills.clone()), (None, vec!["pr.*".to_owned()], vec!["pr-etiquette".to_owned()]));
+        assert!(passive.has_triggers() && old.nodes[0].is_canvas_agent());
+        assert!(!serde_json::to_string(&old).unwrap().contains("\"model\""), "unset: not written");
+        let mut doc = old;
+        let p = doc.nodes[0].passive.as_mut().unwrap();
+        p.model = Some("gpt-6-sol".into());
+        p.subscribe.clear();
+        assert!(!p.has_triggers(), "no events or schedule: only when you talk to it");
+        p.daily_at = "09:00".into();
+        assert!(p.has_triggers());
+        let back: Doc = serde_json::from_str(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(back, doc);
     }
 
     #[test]

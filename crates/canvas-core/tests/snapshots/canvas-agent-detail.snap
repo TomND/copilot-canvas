@@ -3,23 +3,26 @@
  ◆ Copilot Canvas   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents 3 · ⚠ 1   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit      ◆ 1 needs you
     SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
 ▌▤  / filter…                    │ ┌╌ ▣ Payments · 2 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ 1 passive ││ ◎ PR coordinator                                            │
-                                 │ ╎                                                  ││ ● canvas-wide agent · monitoring                            │
- ◷  ▾ RECENT 1     Ctrl+F6 · [ ] │ ╎ ╭ Fix flaky test ────────────╮    ┌ ⟲ Drift guard││ Last report: ok 2 PRs tracked                               │
-    ○ PR coordinator copilot now │ ╎ │ ■ stopped                  │    ╎ ○ waiting    ││                                                             │
- ⧉  ── All sessions (5)          │ ╎ │ canvas                     │    ╎ on pr.pushed ││ Watches    every group of this canvas                       │
-    ▾ ▣ Payments               2 │ ╎ ╰────────────────────────────╯    └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ Reacts to  on pr.*, build.failed                            │
- ⌁    ◧ pay                      │ ╎     ·     ·     ·     ·     ·     ·     ·     ·  ││ Skills     pr-etiquette                                     │
-      ⟲ Passive sessions       1 │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ PRs        on: every 5 min, created ones tracked            │
- ✦      ⟲ ○ ↻ Drift guard        │                                                    ││            automatically · follow-ups read-only · none      │
-      ■ Fix flaky test           │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││            tracked yet                                      │
- ◈  ▾ ◎ Canvas agents          3 │ ┌╌ ◎ Canvas agents · 3 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ Template   PR coordinator                                   │
-      ◎ ● ↻ PR coordinator       │ ╎                                                  ││ Agent      GitHub Copilot · runs with claude-opus-5.5       │
- ⇄    ◎ ‖ Cross-group digest     │ ╎ ┏ ◎ PR coordinator ━━━━━━━━━━┓┄•● ┌ ◎ Cross-group││ Runs today 0 of 24 a day                                    │
-      ◎ ⚠ ↻ Release watch        │ ╎ ┃ ● monitoring · 2 PRs trac… ┃  ┆ ╎ ‖ paused     ││ Fresh chat after 20 runs · conversation 1 (0 earlier)       │
- ≡                               │ ╎ ┃ on pr.*, build.failed      ┃  ┆ ╎ on session.do││ Last run   —                                                │
-                                 │ ╎ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛◂┄╯ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ Next run   when an event arrives                            │
- ✉                               │ ╎                                                  ││ Folder     C:\data\canvas-agents\canvas-1\agents\a-pr       │
-                                 │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││                                                             │
+                                 │ ╎                                                  ││ ● canvas agent · monitoring                                 │
+ ◷  ▾ RECENT 1     Ctrl+F6 · [ ] │ ╎ ╭ Fix flaky test ────────────╮    ┌ ⟲ Drift guard││ Next run   when an event arrives                            │
+    ○ PR coordinator copilot now │ ╎ │ ■ stopped                  │    ╎ ○ waiting    ││ Reported   ok 2 PRs tracked                                 │
+ ⧉  ── All sessions (5)          │ ╎ │ canvas                     │    ╎ on pr.pushed ││  ▸ Chat   Message…   Run now   Pause                        │
+    ▾ ▣ Payments               2 │ ╎ ╰────────────────────────────╯    └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││                                                             │
+ ⌁    ◧ pay                      │ ╎     ·     ·     ·     ·     ·     ·     ·     ·  ││ SETTINGS · a click on a row edits it                        │
+      ⟲ Passive sessions       1 │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ Name         PR coordinator ▸                               │
+ ✦      ⟲ ○ ↻ Drift guard        │                                                    ││ Agent        GitHub Copilot ▸                               │
+      ■ Fix flaky test           │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││ Model        claude-opus-5.5 · initial default (Claude O… ▸ │
+ ◈  ▾ ◎ Canvas agents          3 │ ┌╌ ◎ Canvas agents · 3 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ Instructions rules.md · a click edits them ▸                │
+      ◎ ● ↻ PR coordinator       │ ╎                                                  ││ Wakes on     pr.*, build.failed ▸                           │
+ ⇄    ◎ ‖ Cross-group digest     │ ╎ ┏ ◎ PR coordinator ━━━━━━━━━━┓┄•● ┌ ◎ Cross-group││ Watches      every group of this canvas ▸                   │
+      ◎ ⚠ ↻ Release watch        │ ╎ ┃ ● monitoring · 2 PRs trac… ┃  ┆ ╎ ‖ paused     ││ Skills       pr-etiquette ▸                                 │
+ ≡                               │ ╎ ┃ on pr.*, build.failed      ┃  ┆ ╎ on session.do││ Enabled      yes ▸                                          │
+                                 │ ╎ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛◂┄╯ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ Paused       no ▸                                           │
+ ✉                               │ ╎                                                  ││ PRs          on: every 5 min, created ones tracked · non… ▸ │
+                                 │ └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌││ ▸ More: filter, permissions, budget, MCP servers…           │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
+                                 │                                                    ││ Files        rules.md · memory · log · context · goals      │
+                                 │                                                    ││ Folder       C:\data\canvas-agents\canvas-1\agents\a-pr     │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
                                  │                                                    ││                                                             │
                                  │                                                    ││                                                             │
@@ -33,11 +36,8 @@
                                  │                                                    ││                                                             │
                                  │                                                    ││                                                             │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││                                                             │
-                                 │                                                    ││  Run now    Pause    Disable    Events…    Groups…          │
-                                 │                                                    ││  Schedule…    Filter…    Limits…    Skills…    PRs…         │
-                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·  ││  Pull requests    Follow-ups…    MCP…    Rules    Memory    │
-                                 │                                                    ││  Log    Context    Goals    Folder    Message…              │
-                                 │                                                    ││  Open chat    All agents    Remove    Close                 │
+                                 │                                                    ││  Inspect transcript    Pull requests    All agents          │
+                                 │                                                    ││  Remove    Close                                            │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·  │└─────────────────────────────────────────────────────────────┘
  click view · double-click/Enter start · ] [ or Ctrl+F6 recent · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom ·…
 ## gpu view model

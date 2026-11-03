@@ -1016,11 +1016,9 @@ impl App {
             PromptPurpose::Passive(id, field) => self.apply_passive_setting(&id, field, &value)?,
             PromptPurpose::SendEvent(group) => self.send_event(&group, &value)?,
             PromptPurpose::MessagePassive(id) => self.message_passive(&id, &value)?,
-            PromptPurpose::CanvasAgentName(template) => {
-                self.create_canvas_agent(template, &value)?;
-            }
             PromptPurpose::NewSkill(agent) => self.create_skill(agent, &value)?,
             PromptPurpose::CanvasEvent => self.send_canvas_event(&value)?,
+            purpose @ (PromptPurpose::AgentEvents(_) | PromptPurpose::AgentEvery(_) | PromptPurpose::AgentDaily(_)) => crate::agent_form::apply_prompt(self, purpose, &value)?,
             PromptPurpose::McpPreset(off) => {
                 if value.is_empty() {
                     return Err("enter a preset name".into());

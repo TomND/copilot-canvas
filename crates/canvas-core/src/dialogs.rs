@@ -347,14 +347,28 @@ pub enum PickPurpose {
     Default(DefaultField, Option<String>),
     /// A model (the agent's list, plus a typed id).
     Model(ModelTarget),
-    /// Template of a new canvas-wide agent.
-    CanvasTemplate,
-    /// The skills a canvas-wide agent gets (node id).
-    AgentSkills(String),
+    /// *Start from…* of the new canvas agent dialog: a template that prefills it.
+    AgentTemplate,
+    /// The skills a canvas-wide agent gets.
+    AgentSkills(AgentTarget),
+    /// What wakes a canvas-wide agent: events, a schedule, or nothing.
+    AgentWakes(AgentTarget),
+    /// The groups a canvas-wide agent watches.
+    AgentGroups(AgentTarget),
+    /// The agent CLI a canvas-wide agent runs (node id).
+    AgentCli(String),
     /// The canvas's skill library.
     CanvasSkills,
     /// The session a pull request follow-up goes to (its id).
     PrReassign(String),
+}
+
+/// Whose settings a canvas-wide agent's picker or prompt changes: the new
+/// agent dialog under it, or an agent on the canvas (its box id).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentTarget {
+    Dialog,
+    Node(String),
 }
 
 /// Whose model a model picker sets.
@@ -364,6 +378,10 @@ pub enum ModelTarget {
     Dialog,
     /// A new-session default of an agent: the canvas's (`None`) or a group's.
     Default(AgentKind, Option<String>),
+    /// The new canvas agent dialog below it (that agent only).
+    NewAgent,
+    /// A canvas-wide agent's own model (box id).
+    Agent(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -389,12 +407,16 @@ pub enum PromptPurpose {
     SendEvent(String),
     /// Message typed by you to a passive session (node id).
     MessagePassive(String),
-    /// Name of a new canvas-wide agent (template).
-    CanvasAgentName(usize),
-    /// Name of a new canvas skill (given to this agent).
-    NewSkill(Option<String>),
+    /// Name of a new canvas skill (given to this agent, or to the new agent dialog's).
+    NewSkill(Option<AgentTarget>),
     /// `type [json]` for the canvas-wide agents.
     CanvasEvent,
+    /// Events that wake a canvas-wide agent, typed (comma-separated).
+    AgentEvents(AgentTarget),
+    /// A canvas-wide agent's interval (`30m`, `2h`; empty: none).
+    AgentEvery(AgentTarget),
+    /// A canvas-wide agent's daily time (`HH:MM`; empty: none).
+    AgentDaily(AgentTarget),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -409,6 +431,8 @@ pub enum PassiveField {
     Prs,
     /// A canvas-wide agent's review follow-ups (channel, tool, approval, checks, recipients).
     Reviews,
+    /// What a canvas-wide agent's pull request follow-ups may ask owners to do (read-only by default).
+    Permissions,
 }
 
 /// Whose MCP servers the picker edits.
@@ -524,6 +548,10 @@ pub enum Modal {
     Tasks(Box<crate::tasks::Dialog>),
     /// The skill folders of a group or of every session (`skill_folders.rs`).
     SkillFolders(Box<crate::skill_folders::Dialog>),
+    /// A new canvas-wide agent (`agent_form.rs`).
+    NewAgent(Box<crate::agent_form::NewAgent>),
+    /// A canvas-wide agent's instructions, its rules.md (`agent_form.rs`).
+    AgentRules(Box<crate::agent_form::RulesEditor>),
 }
 
 /// Clickable regions registered while drawing.

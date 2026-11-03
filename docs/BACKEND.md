@@ -94,7 +94,7 @@ the connection dropped while waiting).
 | `RemoteRevoke { client }` | `Text` (what was revoked; its connections are closed) | `remote revoke` (pipe only) |
 | `SetClipboardImage { png }` (base64 in JSON, at most 20 MB) | `Done` (the image is on the service machine's clipboard as `CF_DIB` + `PNG`) | remote image paste (Ctrl+V / Alt+V), see REMOTE.md |
 | `Upload { name, id, offset, data, last }` | `Done`, the last piece `Text` (the file's path) | files dropped on a terminal in remote mode: base64 pieces of at most 4 MiB, files of at most 50 MB, written under `<home>/uploads/<date>/` with a free name |
-| `CreateCanvasAgent { files }` | `Text` (the slug used) | a new canvas-wide agent: `rules.md`, `state.md`, `log.md` in `<home>/canvas-agents/<canvas>/agents/<slug>` (the first free slug), the canvas's `GOALS.md` and `skills/` when missing. `files` names the canvas by its id (letters, digits, `-`), never a folder |
+| `CreateCanvasAgent { files }` | `Text` (the slug used) | a new canvas-wide agent (the *New canvas agent* dialog; `rules` = its Instructions): `rules.md`, `state.md`, `log.md` in `<home>/canvas-agents/<canvas>/agents/<slug>` (the first free slug), the canvas's `GOALS.md` and `skills/` when missing. `files` names the canvas by its id (letters, digits, `-`), never a folder |
 | `CanvasSkills { canvas }` | `Skills(list)`: name, description, SKILL.md path and any problem per skill | the canvas-agents panel, an agent's *Skills…*, the skill library |
 | `CreateCanvasSkill { canvas, name, description }` | `Text` (its SKILL.md) | *New skill…* (never over an existing skill; the name is checked) |
 | `Reports` | `Reports(Snapshot)`: the inbox (newest first, at most 600 rows, with read state and the refused submissions) | the Reports view before the service's first push (normally `ServiceMsg::Reports` brings it) |
@@ -277,11 +277,26 @@ read each other's messages:
 | Where | Addition | An older peer |
 |---|---|---|
 | `Doc` | `canvas_id`; `Passive::scope` (`"canvas"`), `skills`, `groups` (group ids it watches), `disabled`; canvas-wide agents' boxes have `source: "canvas-agent"`, their frame group `source: "canvas-agents"` | ignores them; the box's `source` keeps it a canvas-wide agent for newer clients even if an older one rewrites its passive settings |
+| `Doc` | `Passive::model` (WI-028): a canvas-wide agent's own model (`Some("")`: its CLI's default; absent: the default new sessions of its agent get), not written while unset | an older client ignores it and its agent's runs use the default model; an older service drops it when it saves the canvas (the agent falls back to the default model): an agent's own model needs a current service |
+| `ClientMsg::Routing` (`bus::Routing`) | `PassiveSpec::model` carries the agent's own model when set (the field existed; nothing new on the wire) | — |
 | `ClientMsg::Routing` (`bus::Routing`) | `canvas` (the canvas id); per `PassiveSpec`: `canvas_wide`, `skills`, `groups`; disabled agents are left out | an older service treats canvas-wide agents as passive sessions of their frame (which has no folder: their runs fail visibly) |
 | `bus::Event` | `canvas` (set by windows for the events they send, and by the service for events of the routed canvas); `to` on any event: one passive session or canvas-wide agent (`emit --to NAME`), or `canvas` (the canvas-wide agents only) | ignores `canvas`; reads `to` on messages only |
 | `ClientMsg::Bus` actions | `{"action": "stop", "key": …}`: ends a passive session's headless run in progress; it ends as stopped (no failure, its events dropped). Handled in the bus loop; an inbox file can never ask for it | ignores unknown actions |
 | `ServiceMsg::Bus` (`bus::Snapshot`) | per passive session: `failures`, `retry_at_ms`, `stopped_ms` | ignores them |
 | `Request` | `CreateCanvasAgent`, `CanvasSkills`, `CreateCanvasSkill` (see the table above) | answers "does not support this request (update it)", which the panel shows |
+
+The *New canvas agent* dialog and an agent's settings (WI-028) add no
+request: the dialog's instructions are `CanvasAgentFiles::rules` of
+`CreateCanvasAgent` (unchanged), every other setting is a canvas edit of the
+box (`Passive`, `Node::agent`, `Node::model`), and the instructions editor
+reads and writes `rules.md` with the notebook's `NoteRead` / `NoteWrite`
+(base revision, `roots` = the canvas-agents folder; a change made meanwhile
+answers `NoteConflict`, so a second Save is needed). A service older than the
+notebook requests answers "does not support": the editor then reads the file
+with `ReadText` and says the service must be updated to save it (*rules.md*
+still opens the file). The settings row shows the first lines of `rules.md`,
+read with `ReadText` in the background (at most every 10 s while its details
+show).
 
 The service keeps one routing table: the canvas whose window sent it last.
 Canvas-wide agents get the events of that canvas only (`Routing::from_canvas`:

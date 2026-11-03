@@ -1,0 +1,105 @@
+# new-canvas-agent-dialog (150x40 cells)
+## cells (the TUI screen)
+ ◆ Copilot Canvas   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents 3 · ⚠ 1   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit      ◆ 1 needs you
+    SESSIONS                     │▌
+▌▤  / filter…                    │ ┌╌ ▣ Payments · 2 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ 1 passive ╌ ✎ Notes ╌ ☑ + ╌╌┐  ·     ·     ·     ·     ·     ·     ·     ·
+                                 │ ╎                                                                    ╎
+ ◷  ▾ ▣ Payments               2 │ ╎ ╭ Fix flaky test ────────────╮    ┌ ⟲ Drift guard ╌╌╌╌╌╌╌╌╌╌╌╌╌┐┄┄╮╎
+      ◧ pay                      │ ╎ │ ■ stopped                  │    ╎ ○ waiting                  ╎· •╎  ·     ·     ·     ·     ·     ·     ·     ·
+ ⧉    ⟲ Passive sessions   ╔═ New canvas agent ═══════════════════════════════════════════════════════════════════════════╗
+        ⟲ ○ ↻ Drift guard  ║                                                                                              ║
+ ⌁    ■ Fix flaky test     ║  Start from     Blank  ▾ · optional: a template prefills the fields below                    ║  ·     ·     ·     ·     ·
+    ▾ ◎ Canvas agents      ║                                                                                              ║
+ ✦    ◎ ● ↻ PR coordinator ║  Name                                                                                        ║
+      ◎ ‖ Cross-group diges║                                                                                              ║  ·     ·     ·     ·     ·
+ ◈    ◎ ⚠ ↻ Release watch  ║  Agent          ◉ GitHub Copilot   ○ OpenCode   ○ Claude Code (not installed)                ║e ╌ ✦ Skills ╌╌┐
+                           ║                                                                                              ║               ╎
+ ⇄                         ║  Model          gpt-remembered  ▾ · remembered default for GitHub Copilot                    ║━━━━━━━━━━━┓┄┄╮╎    ·     ·
+                           ║                                                                                              ║n: ring 2… ┃  •╎
+ ≡                         ║  Instructions   What it does and how: what to check, whom to message, what never to do       ║ed         ┃  ●╎
+                           ║  (rules.md)                                                                                  ║━━━━━━━━━━━┛◂┄╯╎    ·     ·
+ ✉                         ║                                                                                              ║               ╎
+                           ║                                                                                              ║╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌◢
+                           ║                                                                                              ║  ·     ·     ·     ·     ·
+                           ║                                                                                              ║
+                           ║                                                                                              ║
+                           ║                                                                                              ║  ·     ·     ·     ·     ·
+                           ║  Wakes on       Only when you talk to it  ▾                                                  ║
+                           ║  Watches        every group of this canvas  ▾                                                ║
+                           ║  Skills         none (from the canvas skill library)  ▾                                      ║  ·     ·     ·     ·     ·
+                           ║                                                                                              ║
+                           ║  First message  optional: what to ask it first (in its chat; with Create, a run answers it)  ║
+                           ║                                                                                              ║  ·     ·     ·     ·     ·
+                           ║  Tab/↑↓ move · Enter: create & start (a new line in the instructions) · Esc: cancel          ║
+                           ║                                                                                              ║
+                           ║   Create & start    Create    Cancel   Create & start opens its chat; Create only adds it    ║  ·     ·     ·     ·     ·
+                           ╚══════════════════════════════════════════════════════════════════════════════════════════════╝
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+ click view · double-click/Enter start · ] [ or Ctrl+F6 recent · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom ·…
+## gpu view model
+view cursor=45,10 modal=27,6 96x28 banner=None
+canvas area=34,1 116x38 origin=-1,-1 scale=1 grid=true tick=0 empty=false
+group g-agents "Canvas agents" icon=◎ members=3 rect=0,10 104x8 color=#cc79a7 style=[fg #cc79a7 +DIM] selected=false drop_target=false automations=false folder=false
+  chip " ◎ 3 · manage " action=Agents(Panel) rect=76,10 14x1 fixed=false lit=true
+  chip " ✦ Skills " action=Agents(Library) rect=91,10 10x1 fixed=false lit=true
+group g-pay "Payments" icon=▣ members=2 rect=0,0 70x8 color=#56b4e9 style=[fg #56b4e9 +DIM] selected=false drop_target=false automations=false folder=true
+  chip " ⟲ 1 passive " action=Visual(GroupPassives("g-pay")) rect=38,0 13x1 fixed=false lit=true
+  chip " ✎ Notes " action=Notebook(OpenGroup("g-pay")) rect=52,0 9x1 fixed=false lit=true
+  chip " ☑ + " action=Tasks(LinkBoards("g-pay")) rect=62,0 5x1 fixed=false lit=false
+box s-fix Session rect=2,2 30x4 prefix="" name="Fix flaky test"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]
+  selected=false focused_term=false active=false
+box p-guard Passive rect=36,2 30x4 prefix="⟲ " name="Drift guard"
+  status=Idle icon="○" label="idle" line="○ waiting" subtitle="on pr.pushed" elsewhere=false every=Some("on pr.pushed") mailbox=0
+  border=Dashed border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #8b949e]
+  selected=false focused_term=false active=false
+box a-pr Passive rect=2,12 30x4 prefix="◎ " name="PR coordinator"
+  status=Idle icon="●" label="idle" line="● monitoring · 2 PRs tracked" subtitle="on pr.*, build.failed" elsewhere=false every=Some("on pr.*, build.failed") mailbox=0
+  border=Dashed border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #56b4e9]
+  selected=false focused_term=false active=false
+box a-digest Passive rect=36,12 30x4 prefix="◎ " name="Cross-group digest"
+  status=Stopped icon="‖" label="stopped" line="‖ paused" subtitle="on session.done" elsewhere=false every=None mailbox=0
+  border=Dashed border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #8b949e]
+  selected=false focused_term=false active=false
+box a-release Passive rect=70,12 30x4 prefix="◎ " name="Release watch"
+  status=Waiting icon="⚠" label="needs you" line="⚠ needs attention: ring 2 is failing" subtitle="on rollout.started" elsewhere=false every=Some("on rollout.started") mailbox=0
+  border=Heavy border_style=[fg #ffb000 +BOLD] fill=#423006 attention=#ffb000/#423006 name_style=[fg #c9d1d9] line_style=[fg #ffb000 +BOLD]
+  selected=false focused_term=false active=false
+loops motion=On frozen=true
+loop p-guard rect=36,2 30x4 halo=false lap=0.623 grow=1 ending=false
+loop a-pr rect=2,12 30x4 halo=false lap=0.153 grow=1 ending=false
+loop a-release rect=70,12 30x4 halo=false lap=0.544 grow=1 ending=false
+## gpu overlay at 27,6
+╔═ New canvas agent ═══════════════════════════════════════════════════════════════════════════╗
+║                                                                                              ║
+║  Start from     Blank  ▾ · optional: a template prefills the fields below                    ║
+║                                                                                              ║
+║  Name                                                                                        ║
+║                                                                                              ║
+║  Agent          ◉ GitHub Copilot   ○ OpenCode   ○ Claude Code (not installed)                ║
+║                                                                                              ║
+║  Model          gpt-remembered  ▾ · remembered default for GitHub Copilot                    ║
+║                                                                                              ║
+║  Instructions   What it does and how: what to check, whom to message, what never to do       ║
+║  (rules.md)                                                                                  ║
+║                                                                                              ║
+║                                                                                              ║
+║                                                                                              ║
+║                                                                                              ║
+║                                                                                              ║
+║                                                                                              ║
+║  Wakes on       Only when you talk to it  ▾                                                  ║
+║  Watches        every group of this canvas  ▾                                                ║
+║  Skills         none (from the canvas skill library)  ▾                                      ║
+║                                                                                              ║
+║  First message  optional: what to ask it first (in its chat; with Create, a run answers it)  ║
+║                                                                                              ║
+║  Tab/↑↓ move · Enter: create & start (a new line in the instructions) · Esc: cancel          ║
+║                                                                                              ║
+║   Create & start    Create    Cancel   Create & start opens its chat; Create only adds it    ║
+╚══════════════════════════════════════════════════════════════════════════════════════════════╝

@@ -273,7 +273,7 @@ behaviour, shortcuts, and agent-specific details.
 | **Todo details** | The right pane: status, priority and type (pickers), board, claim (⟳ working, ⚠ gone or stopped), blocked (a reason, or what it waits for), blocker, who created it, labels, a proposal's reason, the checklist (a click ticks; *+ add*), the body (*edit*), links (a note opens in the Notebook, a session is viewed on the canvas, a pull request or web link asks before the browser), relations (blocked by, related to, discovered from, duplicate of, and what it blocks) and the log. Buttons: *Accept* / *Decline* (proposals), *Start a session on this…* (the new-session dialog in the board's group, named after the todo, with the first prompt "Work on DEC-031 (title). Run `copilot-canvas todo show DEC-031`, then `copilot-canvas todo claim DEC-031`."; the dialog is the explicit start), *Open spec note* (the linked note, else `<notebook>/Todos/<ID> - <title>.md`, created with the body, linked and opened), *Claim for…* (you, or a session of the canvas), *Release*, *Done*, *Cancel*, *Reopen*. Your changes show at once and go to the service (books it sends before it has them keep them); a refusal comes back as a notice with the board as it is. Demo mode has a demo book of its own (no spec notes or exports) |
 | **Proposals and claims** | Agents `todo add` what you asked for and `todo propose` their own ideas (with a reason); a proposal waits under NEEDS YOU and in the Proposed column until you accept it (into Backlog) or decline it, and a board can make every todo an agent adds a proposal. A session claims a todo before it works on it (Backlog and Todo move to In progress), and its box shows the badge; another session's live claim is never taken (you can force it or assign a todo with *Claim for…*), a claim of a session that is gone or stopped can be taken over. Agents submit finished work (In review, with its pull request); Done is yours, or the merged pull request's. See [Todos](#todos) |
 | **Dot grid pulse** | While at least one session of the canvas is working (the toolbar's ⠋ N working; a session whose subagents still run counts), the canvas's background dots breathe: a slow, smooth brightness pulse every 3 s, at its top about 40 % brighter and a touch bluer (towards a light grey-blue), back to their normal colour at the bottom; uniform across the grid and the same at every zoom. It fades in over 0.8 s when work starts and out when the last working session stops, follows the clock (never restarts while you pan, zoom or work moves between sessions) and stays well below boxes, text and status colours. GUI: only the grid's own layer is repainted for it, in frames of its own at most 15 times a second and only when its colour changes (about 1 % of one core); nothing when nothing works. TUI: the dots step through three lighter colours on the frames its spinners draw anyway, and return at once when work stops. Off with reduced motion or effects off (*Settings › Effects*, or Windows' *Show animations* off), or on its own with *Settings › Dot grid pulse: off* (this machine, beside Effects); works the same in remote mode |
-| **Canvas-wide agents** | Passive agents that watch the whole canvas, not one group: the top bar's **◎ Agents** lists them with their state (monitoring, working, paused, needs attention, failing, done, off, unavailable), triggers, skills, next run and last report, and controls (Run now, Pause / Resume, Stop, Disable / Enable, Open); each is also a dashed **◎** box in the **Canvas agents** frame (the same agent). They get events of every group, message any session, and use the canvas skills (SKILL.md) you give them. See [Canvas-wide passive agents and skills](#canvas-wide-passive-agents-and-skills) |
+| **Canvas-wide agents** | Sessions that manage the whole canvas: **+ New canvas agent** (◎ Agents, the *Canvas agents* frame, the canvas menu) opens a dialog like the new-session dialog: name, agent and model, instructions (its rules.md), what wakes it (nothing by default: only when you talk to it; events of any group, an interval, a daily time), the groups it watches, canvas skills, a first message and an optional template (*Start from…*); **Create & start** opens its chat at once. Its dashed **◎** box behaves like a session's: a click shows its details and settings (rows a click edits), a double-click, Enter or **Chat** opens or resumes its conversation (the one its runs continue; never beside a run in progress), **Message…** talks to it without opening it. The top bar's **◎ Agents** lists them with their state, what wakes them, and Chat, Pause / Resume and Settings. See [Canvas-wide passive agents and skills](#canvas-wide-passive-agents-and-skills) |
 | **Pull request coordination** | A session that publishes a pull request hands it to the canvas (`copilot-canvas pr track URL`, taught by the `canvas-prs` skill); the canvas checks it read-only with your own `gh` / `az` for new review comments, failing checks and its end, and the canvas-wide **PR coordinator** turns what is new into one follow-up for the owning session, typed in when that session is idle; queued, delivered, blocked and failed show in ◎ Agents › Pull requests and in Reports. See [Pull request coordination](#pull-request-coordination) |
 | **Review follow-ups** | When a review session finishes reviewing someone's pull request it hands the results off (`copilot-canvas review handoff`, the `canvas-review-followup` skill); the canvas-wide **Review follow-up** agent drafts a message to the author, you approve it, it sends it through the channel you configured (an MCP server such as Teams, a PR comment, or a folder), and every hour it reads only those conversations for requests for another review, which reach the review session that did the review, once. See [Review follow-ups](#review-follow-ups) |
 | **Copilot defaults** | Settings view: permissions (`allow-all` by default, or `ask`), each agent's model for new sessions, reasoning effort, start mode, custom agent, context tier, extra `--add-dir` folders for new sessions, *Skill folders (all sessions)…* (every launch, all agents); any group can override them (group menu → *Launch defaults*; its skill folders add to the canvas's). Also lists `copilot config` settings and edits them through `copilot config` |
@@ -333,6 +333,8 @@ behaviour, shortcuts, and agent-specific details.
 | Hide one subsession or subagent box (the hidden area) / show it again | right-click it › **Hide** (**Hide N** on a selection; a deck's menu, the SUBAGENTS list); a parent's hidden marker, its menu's **Show hidden (N)…** or the toolbar's counters list them with **Show** | — |
 | Clear an effect | click it (or its box; nothing starts) | — |
 | Canvas-wide agents (their panel) | top bar **◎ Agents**; the *Canvas agents* frame's **◎ N · manage** chip | `A` |
+| New canvas agent | **+ New canvas agent** (◎ Agents, frame chip and menu, canvas menu); in the dialog **Create & start** or **Create** | Tab / ↑↓ move, Enter creates & starts (a new line in the instructions), Ctrl+Enter anywhere, Esc cancels |
+| Talk to a canvas agent (its chat; never beside a run in progress) | double-click its ◎ box or sidebar row; **Chat**; **Message…** | Enter |
 | Select unused (dusty) sessions | canvas menu › *Select unused sessions* | then Del removes them from the canvas |
 | Switch space: canvas, Notebook, Tasks | toolbar tabs **◫ Canvas** · **✎ Notebook** · **☑ Tasks** | **Ctrl+1** · **Ctrl+2** · **Ctrl+3** |
 | Back / forward between places (spaces, notes, todos, boxes) | the mouse's back and forward buttons (GUI) | **Alt+←** / **Alt+→**, or **Alt+,** / **Alt+.** |
@@ -474,60 +476,111 @@ have schedules or pending work.
 
 ## Canvas-wide passive agents and skills
 
-A group's passive sessions (⟲) watch their group. **Canvas-wide agents** (◎)
-watch the whole canvas: the events of every group (`pr.*` from any session),
-their schedules, and messages; they can message any session of the canvas and
-mark any box. Use them for work across groups, such as following the pull
-requests the canvas's sessions publish and passing review comments and build
-failures to the session that owns each (a *PR coordinator*), or a daily digest
-of all groups. Both kinds coexist: a group passive session never sees another
-group's events, and a canvas-wide agent never sees another canvas's.
+A group's passive sessions (⟲) watch their group. **Canvas agents** (◎) are
+sessions that happen to manage the whole canvas: you make one like a session,
+talk to it like a session (its chat is a terminal like any other), give it
+instructions, and, only if you want, let it wake on its own on the events of
+every group (`pr.*` from any session) or a schedule. They can message any
+session of the canvas and mark any box. Use them for work across groups,
+such as following the pull requests the canvas's sessions publish and
+passing review comments and build failures to the session that owns each (a
+*PR coordinator*), a daily digest of all groups, or simply an assistant you
+ask about the canvas. Both kinds coexist: a group passive session never sees
+another group's events, and a canvas agent never sees another canvas's.
 
-- **Where**: the top bar's **◎ Agents** (with **⚠ N** while one needs
-  attention, a spinner while one works) opens the management panel: every
-  agent with its state, what it reacts to, the groups it watches, its skills,
-  its next run and last report, and **Run now**, **Pause / Resume**, **Stop**,
-  **Disable / Enable** and **Open**; then the canvas skills, and the group
-  passive sessions for comparison. Each agent is also a dashed **◎** box in
-  the **Canvas agents** frame (made with the first agent, above the canvas;
-  its chips: **◎ N · manage** and **✦ Skills**; its menu: new agent, skills,
-  *Send event to canvas agents…*, folder), listed under the frame in the
-  sidebar with its state. The panel's row, the box and the sidebar row are the
-  same agent: a click shows its panel (state, triggers, skills, the latest
-  events of every group; Run now, Pause, Stop run, Disable, Events…, Groups…,
-  Schedule…, Filter…, Limits…, Skills…, MCP…, Rules, Memory, Log, Context,
-  Goals, Folder, Message…, Open chat, Remove). Viewing never starts it, a
-  double-click neither: **Open chat** is the explicit start of its
-  conversation and **Run now** of a run.
-- **New**: *+ New canvas agent* (panel, frame chip or menu) and a template:
-  *PR coordinator* (`pr.*`, `build.failed`; PR coordination on: the canvas
-  tracks handed-off pull requests and the agent sends their owners
-  follow-ups, read-only toward the pull requests; see [Pull request
-  coordination](#pull-request-coordination)), *Review follow-up*
-  (`review.*`; messages the authors of pull requests you reviewed and checks
-  their replies hourly; see [Review follow-ups](#review-follow-ups)),
-  *Cross-group digest* (daily at 17:00 and `session.done`) or *Custom*.
-  Templates are only starting rules you edit; *PRs…* and *Follow-ups…* turn
-  either feature on for any canvas-wide agent.
+- **New**: **+ New canvas agent** (at the top of the ◎ Agents panel, the
+  *Canvas agents* frame's **◎ + agent** chip and menu, the canvas menu) opens
+  a dialog like the new-session dialog (same look and keys: Tab / ↑↓ move,
+  Space or ←→ on the Agent row, Enter on a picker row opens it, Esc cancels):
+  - **Name**; **Agent** (Copilot / OpenCode / Claude Code; the canvas's
+    default agent) and **Model** (the model picker of new sessions; the
+    default is the one new sessions of that agent get: remembered, the
+    frame's *Session defaults for its agents…*, or the initial Claude Opus
+    5.5; a model picked here is that agent's own and changes no default);
+  - **Instructions**: a multi-line field (Enter makes a new line) saved as its
+    `rules.md`: what it should do and how;
+  - **Wakes on**: *Only when you talk to it* by default (no triggers: it never
+    runs on its own); the picker ticks events (`pr.*`, `review.*`, `todo.*`,
+    `*`, every event of the catalog, or names you type), *Every …* (an
+    interval) and *Daily at …* (a local time);
+  - **Watches**: every group of the canvas by default, or the groups ticked;
+  - **Skills**: canvas skills from the library (optional);
+  - **First message** (optional) and **Start from…** (optional): a template
+    (*PR coordinator*: `pr.*`, `build.failed`, PR coordination on, see [Pull
+    request coordination](#pull-request-coordination); *Review follow-up*:
+    `review.*`, review follow-ups on, see [Review
+    follow-ups](#review-follow-ups); *Cross-group digest*: daily at 17:00
+    and `session.done`) prefills the instructions, triggers and settings;
+    a name or instructions you changed stay. Templates are a convenience,
+    never required.
+
+  **Create & start** (Enter on a text field, or Ctrl+Enter anywhere) creates
+  it and opens its conversation in a terminal tile right away (an explicit
+  start), with the first message; **Create** only creates it (a first message
+  then goes to it as a message: a run answers it). Its first conversation
+  starts by telling the agent who it is, what wakes it and where its
+  instructions and memory are.
+- **Talk to it**: its box (dashed **◎** in the **Canvas agents** frame, made
+  with the first agent above the canvas) behaves like a session box: a click
+  shows its details and settings (never starts anything); a double-click,
+  Enter or **Chat** opens or resumes its conversation in a terminal tile: the
+  same conversation its runs continue (a run that comes while the chat is
+  open and idle is typed into it; while you type in it, the run waits). Never
+  two writers: Chat while a headless run answers waits for that run and opens
+  the chat when it has ended (*Stop run* ends it now). **Message…** sends a
+  message: typed into its chat when the chat is idle (it waits while it
+  works), and with no chat open a run answers it; a paused agent's message
+  waits until you resume it. **Inspect transcript** shows its conversation
+  read-only, like any session's.
+- **Its details and settings** (a click on the box, its sidebar row or its
+  row in ◎ Agents): its state and next run at the top (*when you talk to it*
+  without triggers), then **▸ Chat**, **Message…**, **Run now**, **Pause /
+  Resume** and **Stop run**, then its settings as rows a click edits: *Name*,
+  *Agent* (another agent CLI starts a fresh conversation; its files stay),
+  *Model* (its own, from now on; *(not set)*: the default), *Instructions*
+  (rules.md in a multi-line editor: Ctrl+S saves, written on the service's
+  machine through the backend and never over a change made meanwhile without
+  a second Save; *rules.md* under Files opens the file itself), *Wakes on*,
+  *Watches*, *Skills*, *Enabled* (off: not routed at all; its chat still
+  opens), *Paused*, and PR coordination and review follow-ups once on;
+  **▸ More** shows *Text filter*, *Permissions* (what its pull request
+  follow-ups may ask owners to do: read-only by default; push, reply,
+  resolve, vote, merge), *Budget* (runs per day, a fresh conversation after N
+  runs), *MCP servers*, and *PRs* / *Follow-ups* while off. Then its files
+  (rules.md, memory, log, context, goals, its folder), the canvas's latest
+  events, and *Inspect transcript*, *All agents*, *Remove*.
+- **◎ Agents** (the top bar, with **⚠ N** while one needs attention, a
+  spinner while one works; `A`): **+ New canvas agent** first, then every
+  agent with its state, what wakes it, the groups it watches, its skills,
+  next run and last report, and **Chat**, **Pause / Resume** and **Settings**;
+  then the tracked pull requests and review follow-ups, the canvas skills,
+  and the group passive sessions for comparison. The frame's chips are **◎ N
+  · manage** and **✦ Skills**; its menu has *New canvas agent…*, skills,
+  *Send event to canvas agents…*, its folder and *Session defaults for its
+  agents…*. The sidebar lists the agents under the frame with their state.
+  The panel's row, the box and the sidebar row are the same agent.
 - **States**: *monitoring* (enabled, waiting for its events or schedule),
-  *waiting for messages* (no triggers), *queued* (events wait for the debounce,
-  or for tomorrow when today's run budget is used), *working* (a run or its
-  open chat is busy), *paused* (no triggers until you resume it; a run in
-  progress finishes), *needs attention* (it reported `alert`), *failing* (its
-  last run failed; it retries after 1, 5 and 30 minutes), *done* (it reported
-  its job complete; schedules stop), *off* (disabled: the service does not
-  route it at all) and *unavailable* (with why: its agent CLI is not installed
-  where the service runs, the service is too old to give the canvas an id, the
-  demo). The box, the sidebar and the top bar use the same state.
+  *only when you talk to it* (no triggers), *queued* (events wait for the
+  debounce, or for tomorrow when today's run budget is used), *working* (a
+  run or its open chat is busy), *paused* (no triggers until you resume it;
+  a run in progress finishes), *needs attention* (it reported `alert`),
+  *failing* (its last run failed; it retries after 1, 5 and 30 minutes),
+  *done* (it reported its job complete; schedules stop), *off* (disabled: the
+  service does not route it at all) and *unavailable* (with why: its agent CLI
+  is not installed where the service runs, the service is too old to give
+  the canvas an id, the demo). The box, the sidebar and the top bar use the
+  same state.
 - **Files** (on the service's machine): `<home>/canvas-agents/<canvas id>/`
   holds `GOALS.md` (the canvas's goals, read on every run), `skills/<name>/SKILL.md`
   (the canvas's skill library) and, per agent, `agents/<slug>/` with
-  `rules.md`, `state.md` (its memory), `log.md`, `canvas-context.md` (a digest
-  of every group's sessions, written before each run) and `plugin/` (its
-  skills, rebuilt before each run). The service gives a canvas its id the
-  first time it opens it (`canvas_id` in the canvas file), so another canvas,
-  another instance (`--instance`, `--home`), a remote service or a self-test
-  sandbox never shares them.
+  `rules.md` (its instructions), `state.md` (its memory), `log.md`,
+  `canvas-context.md` (a digest of every group's sessions, written before each
+  run) and `plugin/` (its skills, rebuilt before each run and chat). The
+  service gives a canvas its id the first time it opens it (`canvas_id` in the
+  canvas file), so another canvas, another instance (`--instance`, `--home`),
+  a remote service or a self-test sandbox never shares them. In remote mode
+  the dialog and every setting work the same: the files are made and written
+  through the backend, the settings are canvas edits.
 - **Skills** are folders with a `SKILL.md`: YAML front matter with `name`
   (lowercase words joined by hyphens, the folder's name) and `description`
   (when it applies: agents decide from it), then the rules, triggers and
@@ -542,41 +595,47 @@ group's events, and a canvas-wide agent never sees another canvas's.
   - On pr.changes_requested: send the owning session one short message with what the reviewer asks.
   ```
 
-  *New skill…* (the panel, or *+ New skill…* in an agent's *Skills…*) creates
-  one and opens its SKILL.md (VS Code; remotely through the tunnel or the
-  viewer); *Skills…* on an agent's panel gives or takes skills (✓ / ○); the
-  panel lists the library with any problem (no front matter, a name other than
-  its folder's, no description) and marks an agent's skills that left the
-  library *(missing)*. An agent's runs and its chat get exactly its skills,
-  copied into its `plugin/` (plugin `canvas-agent-<slug>`): a second
-  `--plugin-dir` for Copilot CLI and Claude Code, another `skills.paths`
-  folder for OpenCode ([docs/AGENT-PROVIDERS.md](docs/AGENT-PROVIDERS.md#canvas-wide-agents-and-their-skills));
+  *New skill…* (the panel, or *+ New skill…* in an agent's Skills picker)
+  creates one and opens its SKILL.md (VS Code; remotely through the tunnel or
+  the viewer); an agent's *Skills* row (and the dialog's) gives or takes
+  skills (✓ / ○); the panel lists the library with any problem (no front
+  matter, a name other than its folder's, no description) and marks an
+  agent's skills that left the library *(missing)*. An agent's runs and its
+  chat get exactly its skills, copied into its `plugin/` (plugin
+  `canvas-agent-<slug>`): a second `--plugin-dir` for Copilot CLI and Claude
+  Code, another `skills.paths` folder for OpenCode ([docs/AGENT-PROVIDERS.md](docs/AGENT-PROVIDERS.md#canvas-wide-agents-and-their-skills));
   the run prompt names them too. Ordinary sessions and group passive
   sessions get group skill folders instead (*Skill folders…*, the same
   plugin mechanism); the ✦ Skills view lists every skill a session can get,
   the library's included (see *Skills view* and *Group skill folders* in the
   feature list).
-- **Events and messages**: a canvas-wide agent gets every event of its canvas
-  that matches its subscriptions (exact names, `pr.*`, `*`; a text filter;
-  *Groups…* limits it to some groups), whichever group (or no group) sent it:
-  events sessions emit, events detected from their history, events you send;
-  never its own and never another canvas's. Its trigger names the sending
-  session's id and group. `copilot-canvas emit TYPE --to "<agent>"` sends an
-  event to one passive session or canvas-wide agent only (whatever it
-  subscribes to), `--to canvas` to the canvas-wide agents only (*Send event to
-  canvas agents…* does it from the canvas). A session or group passive session
-  reaches its own group and every canvas-wide agent; a canvas-wide agent (and
-  you) reaches every session of the canvas with `copilot-canvas send --to
-  "<name or id>"` (idle-only delivery and queueing as above) and can mark any
-  box with `copilot-canvas effect … --on "<name or id>"`. The command checks
-  `--to` before posting; `copilot-canvas events` run by an agent lists every
-  group with its sessions (names and ids) and passive sessions.
-- **Runs** work as for group passive sessions (headless turns of the canvas's
-  default agent, 8 s debounce, at most 2 runs at a time, daily budget,
-  back-off, rollover), started in the agent's own folder with the canvas-agents
-  folder allowed, with the model new sessions of its agent get (the frame's
-  *Session defaults for its agents…* can set one). **Stop run** ends a run in
-  progress without counting it as a failure (its events are dropped).
+- **Events and messages**: a canvas agent gets every event of its canvas
+  that matches what wakes it (exact names, `pr.*`, `*`; a text filter; *Watches*
+  limits it to some groups), whichever group (or no group) sent it: events
+  sessions emit, events detected from their history, events you send; never
+  its own and never another canvas's. One with no triggers gets none: it
+  runs only when you talk to it (its chat, *Message…*, *Run now*), a session
+  messages it (`copilot-canvas send`), an event is addressed to it (`emit
+  --to "<agent>"`) or a follow-up it scheduled itself comes due. Its trigger
+  names the sending session's id and group. `copilot-canvas emit TYPE --to
+  "<agent>"` sends an event to one passive session or canvas agent only
+  (whatever it wakes on), `--to canvas` to the canvas agents only (*Send
+  event to canvas agents…* does it from the canvas). A session or group
+  passive session reaches its own group and every canvas agent; a canvas
+  agent (and you) reaches every session of the canvas with `copilot-canvas
+  send --to "<name or id>"` (idle-only delivery and queueing as above) and
+  can mark any box with `copilot-canvas effect … --on "<name or id>"`. The
+  command checks `--to` before posting; `copilot-canvas events` run by an
+  agent lists every group with its sessions (names and ids) and passive
+  sessions.
+- **Runs** work as for group passive sessions (headless turns of its agent,
+  8 s debounce, at most 2 runs at a time, daily budget, back-off, rollover),
+  started in the agent's own folder with the canvas-agents folder allowed,
+  with its own model or else the one new sessions of its agent get (the
+  frame's *Session defaults for its agents…* can set one). A run continues
+  the conversation its chat began (it never starts a second one beside it).
+  **Stop run** ends a run in progress without counting it as a failure (its
+  events are dropped).
 
 ## Pull request coordination
 
@@ -595,8 +654,8 @@ coordinator's (what to ask the owner to do).
    session's history is tracked the same way when the coordinator tracks
    automatically (its default).
 2. **Monitoring.** While a canvas-wide agent with PR coordination runs (the
-   *PR coordinator* template turns it on; any agent's *PRs…* does), the
-   service checks each active pull request every 5 minutes (*PRs…*: `every
+   *PR coordinator* template turns it on; any agent's *PRs* setting does), the
+   service checks each active pull request every 5 minutes (*PRs*: `every
    10m`) with your own CLIs, read-only: `gh pr view --json …` and `gh api
    …/pulls/N/comments` (GitHub), `az repos pr show`, the threads through `az
    devops invoke` and `az repos pr policy list` (Azure DevOps). The first
@@ -625,8 +684,8 @@ coordinator's (what to ask the owner to do).
    requests, and every follow-up ends with what it permits (`[Canvas:
    tracking grants no permission to push, reply, resolve, vote, merge: fix
    and test locally; ask the user before any of these. Follow-up d-…]`).
-   *PRs…* `allow push,reply` widens that per coordinator; replying,
-   resolving threads, voting and merging are never implied.
+   *Permissions* (its settings, or *PRs* `allow push,reply`) widens that per
+   coordinator; replying, resolving threads, voting and merging are never implied.
 
 **Where**: ◎ Agents shows **PULL REQUESTS · N tracked** and opens the
 **Pull requests** panel: each pull request with its owner, monitor (checked,
@@ -672,7 +731,7 @@ reviewed pull request ended.
    message carries them; they go back only to the review session with a
    request).
 2. **The message.** The canvas-wide **Review follow-up** agent (template;
-   *Follow-ups…* on any agent: `CHANNEL [TOOL] approval|no-approval every
+   the *Follow-ups* setting of any agent: `CHANNEL [TOOL] approval|no-approval every
    60m recipients: RULE`) gets `review.completed` and records a draft
    (`review message <id> --draft FILE`). The canvas refuses a draft without
    the pull request's link, one that quotes the private notes, and one that

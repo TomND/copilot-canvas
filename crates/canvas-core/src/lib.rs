@@ -10,6 +10,7 @@ pub use canvas_model::report_html;
 pub use canvas_model::reports as reports_model;
 
 pub mod actions;
+pub mod agent_form;
 pub mod app;
 pub mod canvas_wide;
 pub mod clipboard;

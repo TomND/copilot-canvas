@@ -42,7 +42,7 @@ const HELP: &[(&str, &str)] = &[
     ("K · H / J", "stack · hide subsessions / subagents"),
     ("Click a stack · double-click", "view its top card · unstack (back to their places)"),
     ("Click an effect (✦ ◉ ✧ ▲)", "clear it (it never starts the session)"),
-    ("A · ◎ Agents (top bar) · ◎ frame", "canvas-wide agents: every group's events, skills"),
+    ("A · ◎ Agents (top bar) · ◎ frame", "canvas agents: + New, Chat (double-click), settings"),
     ("F6 · Ctrl+]", "cycle focus · leave a terminal"),
     ("Shift+PgUp/PgDn", "terminal history"),
     ("Q / Ctrl+Q", "quit (sessions can keep running)"),
@@ -284,6 +284,25 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
         Modal::Notebook(dialog) => crate::notebook::draw_dialog(app, buf, screen, dialog, ctx),
         Modal::Tasks(dialog) => crate::tasks::draw_dialog(app, buf, screen, dialog, ctx),
         Modal::SkillFolders(dialog) => crate::skill_folders::draw(app, buf, screen, dialog, ctx),
+        Modal::NewAgent(dialog) => {
+            // Its instructions field keeps where it scrolled and where it was drawn (the mouse maps there).
+            let mut dialog = dialog.clone();
+            let drawn = crate::agent_form::draw(app, buf, screen, &mut dialog, ctx);
+            if let Some(open) = crate::agent_form::dialog_mut(app) {
+                open.instructions = dialog.instructions;
+                open.editor_rect = dialog.editor_rect;
+            }
+            drawn
+        }
+        Modal::AgentRules(rules) => {
+            let mut rules = rules.clone();
+            let drawn = crate::agent_form::draw_rules(buf, screen, &mut rules, ctx);
+            if let Some(Modal::AgentRules(open)) = app.modals.iter_mut().rev().find(|m| matches!(m, Modal::AgentRules(r) if r.id == rules.id)) {
+                open.editor = rules.editor;
+                open.editor_rect = rules.editor_rect;
+            }
+            drawn
+        }
         Modal::Folder(browser) => {
             let rect = centered(screen, 76, screen.height.saturating_sub(6).min(28));
             panel(buf, rect, "Choose a folder");

@@ -49,10 +49,19 @@ impl App {
         let Some(session) = self.start_target(node) else {
             return StartPlan::Blocked(if node.kind == NodeKind::Automation { "Automations run from their details panel (Run now).".into() } else { "Its parent session is not on the canvas.".into() });
         };
+        // A canvas-wide agent's chat: its conversation, never beside a run in progress.
+        if session.is_canvas_agent() {
+            if let Some(why) = self.agent_unavailable(&session) {
+                return StartPlan::Blocked(format!("Its chat cannot open here: {why}"));
+            }
+            if self.passive_view(&session).is_some_and(|v| v.running) {
+                return StartPlan::Blocked("It is answering in a run right now: its chat opens when the run ends.".into());
+            }
+        }
         if self.owned_alive(&session.id) || self.launching.contains_key(&session.id) {
             return StartPlan::Focus;
         }
-        if session.passive.is_some() {
+        if session.passive.is_some() && !session.is_canvas_agent() {
             return StartPlan::Blocked("A passive session runs from its panel (Run now, Open chat).".into());
         }
         if self.preparing.contains(&session.id) {
@@ -106,6 +115,10 @@ impl App {
             return self.resume_child(id);
         }
         self.select_node(id, false);
+        // A canvas-wide agent: its chat (opened, resumed, or after the run in progress).
+        if node.is_canvas_agent() {
+            return self.open_agent_chat(id, None);
+        }
         let Some(session) = self.start_target(&node) else { return self.notify("Its parent session is not on the canvas.", true) };
         let session = session.id;
         if self.owned_alive(&session) {
