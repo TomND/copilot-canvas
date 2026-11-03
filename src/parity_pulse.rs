@@ -24,6 +24,8 @@ use crate::client::glow::{BAND, PERIOD_MS, REACH, SPEED};
 use crate::selftest::Ui;
 
 const NAME: &str = "Glow worker";
+/// The canvas background behind the dots (the GUI's theme BG).
+const BACKGROUND: [u8; 3] = [13, 17, 23];
 const IDLE: &str = "Glow idle";
 
 /// The glow canvas: the worker at 24,12 and the idle box at 24,30 (out of
@@ -120,11 +122,21 @@ impl Capture {
         if weight > 0.0 { sum / weight } else { 0.0 }
     }
 
-    /// Every sampled dot is drawn in the colour the model gives it.
-    fn as_modelled(&self) -> Result<()> {
+    /// Every sampled dot is drawn in the colour the model gives it: no brighter, and no
+    /// dimmer than that colour over the background at the capture's dot `coverage`
+    /// (1.0 where a dot covers its centre pixel; lit dots are larger, so they may cover more).
+    fn as_modelled(&self, coverage: f64) -> Result<()> {
         for dot in &self.dots {
             let px = self.pixel(dot);
-            ensure!((0..3).all(|i| (px[i] as i32 - dot.model[i] as i32).abs() <= 6), "{}: the dot at ({}, {}) is {px:?}, the model says {:?}", self.name, dot.x, dot.y, dot.model);
+            let low = |i: usize| BACKGROUND[i] as f64 + coverage * (dot.model[i] as f64 - BACKGROUND[i] as f64);
+            ensure!(
+                (0..3).all(|i| px[i] as i32 <= dot.model[i] as i32 + 6 && px[i] as f64 >= low(i) - 6.0),
+                "{}: the dot at ({}, {}) is {px:?}, the model says {:?} (coverage {coverage:.2})",
+                self.name,
+                dot.x,
+                dot.y,
+                dot.model
+            );
         }
         Ok(())
     }
@@ -239,6 +251,9 @@ fn glow(sb: &Sandbox) -> Result<String> {
 
 fn steps(sb: &Sandbox, gui: &mut Gui, id: &str, dir: &Path) -> Result<String> {
     gui.wait("the glow canvas", 25, |t| t.contains(NAME) && t.contains(IDLE))?;
+    // At 100 % scale, as on CI's display, wherever it runs: the dots are smallest there.
+    gui.req(json!({ "cmd": "dpi", "scale": 1.0 }))?;
+    gui.send("f")?;
     let tree = gui.wait_tree("the worker working, its glow faded in", 25, |t| status(t, NAME).as_deref() == Some("working") && status(t, IDLE).as_deref() == Some("idle") && glowing(t))?;
     let offset = glow_state(&tree)["sources"][0]["offset"].as_u64().context("the ring offset")?;
     ensure!(offset == crate::client::glow::offset(id), "the rings' offset is the box's");
@@ -251,7 +266,12 @@ fn steps(sb: &Sandbox, gui: &mut Gui, id: &str, dir: &Path) -> Result<String> {
     ensure!(near >= 6 && far >= 6, "{near} dots within 6 of the worker and {far} far from every box sampled ({} in all)", off.dots.len());
     let normal = off.pixel(off.dots.last().context("a far dot")?);
     let faint = crate::client::glow::dot_rgb(0.0).map(|c| c as u8);
-    ensure!((0..3).all(|i| (normal[i] as i32 - faint[i] as i32).abs() <= 6), "the normal dot is {normal:?}, not {faint:?}");
+    // A small dot covers its centre pixels only partly at some scales (on CI's 100 % display
+    // [47, 53, 62] for [56, 62, 72]): the capture's own normal dot is the reference, and it must
+    // lie between the background and the model's colour.
+    let bg = luma(BACKGROUND);
+    ensure!(luma(normal) > bg + 8.0 && (0..3).all(|i| normal[i] as i32 <= faint[i] as i32 + 6), "the normal dot is {normal:?}, not a dot of {faint:?} over the background {BACKGROUND:?}");
+    let coverage = ((luma(normal) - bg) / (luma(faint) - bg)).clamp(0.0, 1.0);
     off.normal(normal, "effects off")?;
     let base = luma(normal);
     // Motion on: rings leave the box. A capture as one passes the nearest dots and one as it is
@@ -262,15 +282,15 @@ fn steps(sb: &Sandbox, gui: &mut Gui, id: &str, dir: &Path) -> Result<String> {
     let fa = a.front().unwrap_or_default();
     let b = at_front(gui, dir, "glow-ring-far", id, offset, (fa + 3.0).max(7.0)..=10.5)?;
     for c in [&a, &b] {
-        c.as_modelled()?;
+        c.as_modelled(coverage)?;
     }
     let (a_near, a_far) = (a.lift(0.0..=6.0, base), a.far_lift(base));
-    ensure!(a_near >= 25.0 && a_far.abs() <= 2.0, "near the box the dots are not clearly brighter than far away: +{a_near:.1} vs {a_far:+.1}");
+    ensure!(a_near >= 25.0 * coverage && a_far.abs() <= 2.0, "near the box the dots are not clearly brighter than far away: +{a_near:.1} vs {a_far:+.1}");
     let peak = a.worker(0.0..=6.0).map(|d| luma(a.pixel(d)) / base).fold(0.0, f64::max);
     let (ca, cb) = (a.centre(base), b.centre(base));
     let (a_inner, b_inner, a_outer, b_outer) = (a.lift(0.0..=5.0, base), b.lift(0.0..=5.0, base), a.lift(7.0..=11.0, base), b.lift(7.0..=11.0, base));
     ensure!(
-        cb > ca + 1.0 && b_outer > a_outer + 10.0 && b_inner < a_inner - 20.0,
+        cb > ca + 1.0 && b_outer > a_outer + 10.0 * coverage && b_inner < a_inner - 20.0 * coverage,
         "the bright ring did not move out: centred {ca:.1} then {cb:.1} from the box ({} ms apart, fronts {fa:.1} and {:.1}; 7-11 out +{a_outer:.1} then +{b_outer:.1}; within 5 +{a_inner:.1} then +{b_inner:.1})",
         b.clock.abs_diff(a.clock),
         b.front().unwrap_or_default()
@@ -296,10 +316,10 @@ fn steps(sb: &Sandbox, gui: &mut Gui, id: &str, dir: &Path) -> Result<String> {
     let r1 = capture(gui, dir, "glow-reduced-0", id)?;
     let (_, glow_reduced, _) = frames_in(gui, 0.7)?;
     let r2 = capture(gui, dir, "glow-reduced-1", id)?;
-    r1.as_modelled()?;
+    r1.as_modelled(coverage)?;
     ensure!(r1.dots.iter().zip(&r2.dots).all(|(x, y)| (x.x, x.y) == (y.x, y.y) && r1.pixel(x) == r2.pixel(y)), "the reduced-motion glow changed in {} ms", r2.clock - r1.clock);
     let (r_near, r_far) = (r1.lift(0.0..=6.0, base), r1.far_lift(base));
-    ensure!(r_near >= 15.0 && r_far.abs() <= 2.0 && glow_reduced == 0, "reduced motion: +{r_near:.1} near, {r_far:+.1} far, {glow_reduced} glow repaints");
+    ensure!(r_near >= 15.0 * coverage && r_far.abs() <= 2.0 && glow_reduced == 0, "reduced motion: +{r_near:.1} near, {r_far:+.1} far, {glow_reduced} glow repaints");
     gui.req(json!({ "cmd": "motion", "value": "on" }))?;
     gui.wait_tree("motion on again", 5, glowing)?;
     // Settings › Working glow off (saved on this machine): normal dots; on again.
