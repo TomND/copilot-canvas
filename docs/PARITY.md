@@ -37,6 +37,13 @@ check differs by OS:
 - **41b**: a WKWebView child view (macOS) or WebKitGTK offscreen (Linux);
   WebKit drops `<script>` elements while parsing (0 kept); macOS's window
   capture is the GUI's frame with the view's snapshot at the view's frame.
+- **41d**: WebKit (macOS and Linux) lets no handler serve `https`, so the
+  views load the notes origin's host through `canvas-notes://
+  notes.canvas.invalid/` and the row accepts either origin; Linux's views
+  are WebKitGTK offscreen in the helper (the plain one and an ephemeral
+  scripts context), the scheme answered by the GUI through `webpane`;
+  *Print / PDF* writes `<Downloads>/<title>.pdf` (under the test hooks
+  `<home>/downloads`), which the row reads back as a PDF.
 - **T1, T2, T3**: where scrolling is pixel-precise (macOS; Linux under
   Wayland, the pan and the terminal parts; winit 0.30 has no Linux pinch,
   smart zoom or force click). Under X11 every device scrolls in notches
@@ -63,9 +70,10 @@ check differs by OS:
   (41271941822) `PASS: 65 rows in 284.0s` (the 63 rows above with T1 and
   T2), with the nine hardening checks and macOS's nine goldens.
 - Linux on CI (job `linux-gui`, blocking): X11 under Xvfb at 1920×1080 on
-  Mesa's lavapipe with a private `dbus-run-session`; last run (2026-11-01,
-  dadd6b9) `PASS: 63 rows in 248.3s`, and 41b, T1, T2 under headless weston.
-- **47** counts full frames against grid repaints; on a software renderer a
+  Mesa's lavapipe with a private `dbus-run-session`; last run (2026-11-02,
+  41526309895) `PASS: 70 rows in 272.5s` with main's Notebook, Tasks and
+  Spaces rows, and 41b, T1, T2 under headless weston.
+- **51** counts full frames against grid repaints; on a software renderer a
   grid repaint delays the core's tick, so the spinner draws a few more.
 
 ## How the suite works

@@ -18,15 +18,18 @@
 > in the TUI and the GUI, rows 22, 41, 41b, 41d, 47–50, 48b, 52 and T3, the
 > workspace tests); CI's macOS jobs were waiting for GitHub's macOS runners.
 >
-> **Linux: done** (2026-11-01, branch `linux` at b8e9824, which holds
-> `macos` done and main's WI-023; CI run 41293367152 with all 17 jobs green
-> on the first attempt: Linux on three runners with the TUI self-tests,
-> automations and the agent paste checks, `linux-gui` with the parity suite
-> blocking (`PASS: 63 rows` under X11, 41b, T1, T2 under Wayland), nine
-> goldens and nine hardening checks, the packages built and installed,
-> macOS, Windows and iOS): every phase's exit criteria that a machine can
-> check pass on CI, blocking where the plan asks; what is left needs the
-> owner (the checklist under "Owner-only items: Linux").
+> **Linux: done again with main's Notebook, Tasks and Spaces** (2026-11-02,
+> branch `linux` at 1cb978b: main merged at a640512 through `macos`, and
+> d772866; CI run 41553945141, every Linux job and Windows' `test` green on
+> the first attempt, iOS on its one re-run, row T3 under Wayland too;
+> before it run 41526309895): Linux
+> on three runners with the TUI self-tests (the spaces steps), automations
+> and the agent paste checks; `linux-gui` with the GUI self-test (X11, X11
+> over loopback, Wayland), the parity suite blocking (`PASS: 70 rows` under
+> X11, 41b, T1, T2 under Wayland), eleven goldens re-recorded and reviewed,
+> nine hardening checks (the space tabs through AT-SPI); the packages built
+> and installed; macOS and iOS green. What is left needs the owner (the
+> checklist under "Owner-only items: Linux").
 
 The working log of the port described in [MAC-LINUX-PLAN.md](MAC-LINUX-PLAN.md)
 (approved 2026-10-30, every recommended option of its §11). This file is how
@@ -331,9 +334,10 @@ work resumes after any interruption: read it first, then `git log`.
 State per OS: `—` not started · `wip` in progress · `PASS` · `equiv` (the
 plan §6.1 equivalent, documented). macOS: CI `macos` (visible windows on
 the runner's paravirtual GPU), 65 of 65 on 2026-11-01 (run 41271941822). Linux: CI `linux-gui` (X11, Xvfb, Mesa
-lavapipe), 63 of 63 rows on 2026-11-01 (run of dadd6b9, with main's row
-47); 41b, T1 and T2 also under Wayland (headless weston), where the
-touchpad rows apply.
+lavapipe), 70 of 70 rows on 2026-11-02 (run 41526309895, with main's
+Notebook, Tasks and Spaces rows); 41b, T1 and T2 also under Wayland
+(headless weston), where the touchpad rows apply. The new rows' macOS
+column is the same run's `macos` job (its parity suite blocks).
 
 | # | Feature | macOS | Linux |
 |---|---|---|---|
@@ -389,14 +393,14 @@ touchpad rows apply.
 | 44 | Undo/redo of layout changes | PASS | PASS |
 | 45 | Area selection of subsessions and subagents | PASS | PASS |
 | 46 | Subagents folded into decks by default | PASS | PASS |
-| 41d | HTML notes (two web views, `canvas-notes:`, Print / PDF) | PASS (local) | wip |
-| 47 | Spaces: tabs, Ctrl+1/2/3, Go to, back and forward (main; the old 47 is 51) | PASS (local) | wip |
-| 48 | Notebook: explorer, reader, editor, quick capture, changes on disk | PASS (local) | wip |
-| 48b | Notebook and Tasks in remote mode | PASS (local) | wip |
-| 49 | Tasks: the todo canvas, details, accept, drag | PASS (local) | wip |
-| 50 | ✎ / ☑ chips and ☑ badges | PASS (local) | wip |
+| 41d | HTML notes (two web views, `canvas-notes:`, Print / PDF) | PASS (local) | PASS (WebKitGTK views, `canvas-notes:` scheme, PDF to Downloads) |
+| 47 | Spaces: tabs, Ctrl+1/2/3, Go to, back and forward (main; the old 47 is 51) | PASS (local) | PASS |
+| 48 | Notebook: explorer, reader, editor, quick capture, changes on disk | PASS (local) | PASS |
+| 48b | Notebook and Tasks in remote mode | PASS (local) | PASS |
+| 49 | Tasks: the todo canvas, details, accept, drag | PASS (local) | PASS |
+| 50 | ✎ / ☑ chips and ☑ badges | PASS (local) | PASS |
 | 51 | Dot grid pulse while agents work (WI-023; was 47) | PASS (CI only: presents) | PASS |
-| 52 | ✦ Skills view, group skill folders | PASS (local) | wip |
+| 52 | ✦ Skills view, group skill folders | PASS (local) | PASS |
 | G1 | Inline images | PASS | PASS |
 | G2 | Taskbar progress, flash, toasts | PASS | PASS |
 | G3 | File drag and drop | PASS | PASS (Wayland drops: unit tests; owner on a desktop) |
@@ -409,7 +413,7 @@ touchpad rows apply.
 | V6 | Remote group passive sessions | PASS | PASS |
 | T1 | Trackpad on the canvas (D15) | PASS | PASS (Wayland; pan part) |
 | T2 | Trackpad over terminals (D15) | PASS | PASS (Wayland) |
-| T3 | Trackpad in the Notebook and Tasks (D15) | PASS (local) | — (Wayland step: the Linux lead's) |
+| T3 | Trackpad in the Notebook and Tasks (D15) | PASS (local) | PASS (Wayland; Command + scroll is Ctrl + scroll, no pinch) |
 
 ## Decisions taken during the port
 
@@ -928,3 +932,26 @@ view helper (WebKitGTK offscreen); the GUI on Wayland/X11.
   records them again with the space tabs and main's two new shots), the
   AT-SPI client's tabs (5ae4e36), row 41d's origin and PDF check (1b01ea2,
   shared).
+- 2026-11-02: merged origin/macos again (379a9cc: HTML notes on macOS with
+  the same `canvas-notes:` scheme, the one Unix rename built on 345b52c,
+  the TUI asking kitty-protocol terminals for unambiguous keys). Linux
+  goldens re-recorded with the space tabs and the two new shots and
+  reviewed (957834d). The self-tests send Ctrl+digit to a Unix TUI as
+  CSI-u (a9d1e86, shared; the win32-input-mode form only means something
+  to ConPTY). The AT-SPI client waits for the tree to settle after a dialog
+  closes before pressing a tab (bfad6cf). Run 41526309895: every Linux job
+  green on the first attempt (parity 70 rows on X11, hardening 9/9,
+  goldens 11/11); Windows' `test` failed once in `opencode_history`'s
+  git-push test (`detected 0`; the flake the macOS lead saw; not the
+  tracking clock, which has a 5 s margin) and passed on its re-run.
+- 2026-11-02: merged origin/macos (f2452df: the iPhone Notebook and Tasks,
+  D15 in the spaces with row T3) and main's d772866. Row T3 runs under
+  Wayland with 41b, T1 and T2 (5ed19ef); alone it needed each space's own
+  view in the sidebar and the group's folder opened through its ✎ chip
+  (4f41372, 1cb978b, shared). Run 41553945141: every Linux job green
+  (parity 70 rows on X11, 41b, T1, T2, T3 under Wayland, hardening 9/9,
+  goldens 11/11), Windows green, iOS green on its re-run (a Notebook UI
+  test that also failed on main before d772866). **macOS** fails two of
+  its own goldens there (tasks-board, notebook-source: 0.3 % at
+  px 1080,864), identically on `macos`'s run of 46bbd87: they predate
+  c34a65e's Mac status bar in the spaces (the macOS lead's to re-record).
