@@ -154,6 +154,12 @@ fixed-size chips) have these checks, on a separate canvas of the sandbox
 
 ## Last run
 
+WI-024 to WI-028 together (2026-11-02, after merging): `PASS: 74 rows in
+298.7s`; the 45-step self-test passed in the TUI (145.7 s), over loopback
+(146.7 s), in the GUI (143.0 s) and in the GUI over loopback (142.6 s);
+`--remote faults` and `--remote paired` passed; the 11 golden screenshots
+matched; nine hardening checks passed; `corpus check`: 26 checked, 0 failed.
+
 WI-027 replaces the dot grid's uniform breathing (WI-023) with the working
 glow: rings of brighter dots that leave every working session box and travel
 outward over a soft steady glow near it. Row 51 keeps its number and is
@@ -439,7 +445,7 @@ V3   | Effects: copilot-canvas effect on a box, animated ≤ 15 fps wh… | effe
 V4   | Group chips at any zoom (⟲ passive, ✎ notes, ☑ todos), sideba… | chips_low_zoom_and_sidebar (the TUI draws t… | ✓
 V5   | Remote mode: group folders in the canvas's browser, passive f… | remote_group_files_in_canvas (the TUI uses … | ✓
 V6   | Remote mode: a group's ⟲ Passive sessions row and chip open i… | remote_group_passive_sessions (the TUI draw… | ✓
-PASS: 74 rows (integration run below)
+PASS: 74 rows in 298.7s
 ```
 
 Rows 42 and 43 in the WI-020 run: `tracked by its owner; baseline poll; 3 comments
