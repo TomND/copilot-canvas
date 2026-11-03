@@ -229,6 +229,13 @@ pub fn hidden_counts(app: &App) -> (usize, usize) {
     (hidden.len() - agents, agents)
 }
 
+/// Boxes hidden on their own (the canvas's hidden area): (subsessions, subagent boxes).
+fn hidden_area_counts(app: &App) -> (usize, usize) {
+    let own: Vec<&Node> = app.doc.nodes.iter().filter(|n| n.hidden && canvas_model::visual::can_hide(&app.doc, n)).collect();
+    let agents = own.iter().filter(|n| n.kind == NodeKind::Agent).count();
+    (own.len() - agents, agents)
+}
+
 fn draw_toolbar(app: &mut App, buf: &mut Buffer, area: Rect) {
     fill(buf, area.x as i32, area.y as i32, area.width as i32, 1, Style::default().bg(PANEL), area);
     let mut x = put(buf, 1, area.y as i32, "◆ Copilot Canvas", bold(ACCENT).bg(PANEL), area) + 2;
@@ -270,15 +277,17 @@ fn draw_toolbar(app: &mut App, buf: &mut Buffer, area: Rect) {
         x = toolbar_button(app, buf, x, " ⧉ ", Action::NewWindow, area);
     }
     let mut x = toolbar_button(app, buf, x, " ⏻ Quit ", Action::Quit, area);
-    // Hidden subsessions (H) and subagent boxes (J): how many of each; a click shows them.
+    // Hidden subsessions and subagent boxes (H, J, or hidden one by one): how
+    // many of each; a click opens the list of hidden boxes.
     let (subsessions, subagents) = hidden_counts(app);
-    for (count, on, label, action) in [
-        (subsessions, app.doc.ui.hide_subsessions, "↳", crate::visual::VisualAction::ToggleHideSubsessions),
-        (subagents, app.doc.ui.hide_subagents, "◇", crate::visual::VisualAction::ToggleHideSubagents),
+    let (own_sessions, own_agents) = hidden_area_counts(app);
+    for (count, shown, label, agents) in [
+        (subsessions, app.doc.ui.hide_subsessions || own_sessions > 0, "↳", false),
+        (subagents, app.doc.ui.hide_subagents || own_agents > 0, "◇", true),
     ] {
-        if on {
+        if shown {
             let end = put(buf, x, area.y as i32, &format!(" {label} {count} hidden "), bold(PANEL).bg(GRAY), area);
-            app.layout.hits.push((Rect::new(x as u16, area.y, (end - x).max(0) as u16, 1), Hit::Toolbar(Action::Visual(action))));
+            app.layout.hits.push((Rect::new(x as u16, area.y, (end - x).max(0) as u16, 1), Hit::Toolbar(Action::Visual(crate::visual::VisualAction::HiddenList(None, agents)))));
             x = end + 1;
         }
     }
@@ -805,8 +814,9 @@ fn draw_sidebar(app: &mut App, buf: &mut Buffer, area: Rect) {
                 {
                     end = put(buf, end, y, "↗", fg(crate::paint::PURPLE).bg(bg), area) + 1;
                 }
-                // An unused session shows how long ago it was used.
-                let age = node.and_then(|n| app.dust_of(n, status)).map(|(_, last)| format!(" {}", crate::paths::format_age(last, app.visual_now())));
+                // An unused session shows how long ago it was used; a hidden box says so.
+                let hidden = matches!(concealed.get(id.as_str()), Some(crate::visual::Conceal::Hidden(_)));
+                let age = if hidden { Some(" hidden".to_owned()) } else { node.and_then(|n| app.dust_of(n, status)).map(|(_, last)| format!(" {}", crate::paths::format_age(last, app.visual_now()))) };
                 let style = match status.attention() {
                     _ if is_selected => bold(SELECT).bg(bg),
                     Some((color, _)) if !agent => bold(color).bg(bg),

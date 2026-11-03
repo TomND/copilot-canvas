@@ -220,14 +220,18 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
             (rect, None)
         }
         Modal::Menu(menu) => {
-            let width = menu.items.iter().map(|i| crate::paint::text_width(&i.label) + crate::paint::text_width(&i.hint) + 6).max().unwrap_or(20).max(24) as u16;
-            let height = menu.items.len() as u16 + 2;
+            let title_w = (crate::paint::text_width(&menu.title) + 6).min(60);
+            let width = menu.items.iter().map(|i| crate::paint::text_width(&i.label) + crate::paint::text_width(&i.hint) + 6).max().unwrap_or(20).max(24).max(title_w) as u16;
+            // A long menu (a list of hidden boxes) scrolls with its selection.
+            let rows = (menu.items.len() as u16).min(screen.height.saturating_sub(4).max(1));
+            let height = rows + 2;
+            let scroll = menu.sel.saturating_sub(rows.saturating_sub(1) as usize);
             let x = menu.x.min(screen.right().saturating_sub(width));
             let y = menu.y.min(screen.bottom().saturating_sub(height));
             let rect = Rect::new(x, y, width, height);
             panel(buf, rect, &truncate(&menu.title, width as usize - 6));
-            for (i, item) in menu.items.iter().enumerate() {
-                let row_y = rect.y as i32 + 1 + i as i32;
+            for (row, (i, item)) in menu.items.iter().enumerate().skip(scroll).take(rows as usize).enumerate() {
+                let row_y = rect.y as i32 + 1 + row as i32;
                 let selected = i == menu.sel;
                 let bg = if selected { PANEL_HI } else { MODAL };
                 fill(buf, rect.x as i32 + 1, row_y, rect.width as i32 - 2, 1, Style::default().bg(bg), rect);
@@ -235,6 +239,12 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
                 put(buf, rect.x as i32 + 2, row_y, &item.label, style, rect);
                 put(buf, rect.right() as i32 - 2 - crate::paint::text_width(&item.hint) as i32, row_y, &item.hint, fg(MUTED).bg(bg), rect);
                 ctx.hit(Rect::new(rect.x + 1, row_y as u16, rect.width - 2, 1), Hit::MenuItem(i));
+            }
+            if scroll + (rows as usize) < menu.items.len() {
+                put(buf, rect.right() as i32 - 10, rect.bottom() as i32 - 1, " ↓ more ", fg(MUTED).bg(MODAL), rect);
+            }
+            if scroll > 0 {
+                put(buf, rect.right() as i32 - 10, rect.y as i32, " ↑ more ", fg(MUTED).bg(MODAL), rect);
             }
             (rect, None)
         }

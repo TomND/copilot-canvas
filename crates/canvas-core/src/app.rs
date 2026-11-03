@@ -1416,7 +1416,7 @@ impl App {
             automation: None,
             synced_name: None,
             reviewed_ms: None,
-            mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+            mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
         });
         self.mark_dirty();
         self.notify(format!("“{}” started subsession “{name}”.", p.name), false);
@@ -1820,7 +1820,7 @@ impl App {
                     command: None,
                     fresh: false,
                     automation: None,
-                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: folded,
+                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: folded, hidden: false,
                 };
                 let rect = node.rect();
                 self.doc.nodes.push(node);
@@ -1859,11 +1859,13 @@ impl App {
             return false;
         }
         let sessions: HashMap<&str, &Node> = self.doc.nodes.iter().filter(|n| n.kind == NodeKind::Session).map(|n| (n.id.as_str(), n)).collect();
+        // A box in the hidden area gets its slot when it is shown.
+        let hidden = canvas_model::visual::hidden_area(&self.doc);
         let todo: Vec<(String, String)> = self
             .doc
             .nodes
             .iter()
-            .filter(|n| n.kind == NodeKind::Agent && n.unplaced)
+            .filter(|n| n.kind == NodeKind::Agent && n.unplaced && !hidden.contains_key(&n.id))
             .filter_map(|n| n.parent.as_deref().and_then(|p| sessions.get(p)).filter(|p| !canvas_model::visual::subagents_folded(&self.doc, p)).map(|p| (n.id.clone(), p.id.clone())))
             .collect();
         if todo.is_empty() {
@@ -1943,7 +1945,7 @@ impl App {
                     command: None,
                     fresh: false,
                     automation: None,
-                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false,
+                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
                 };
                 first.get_or_insert_with(|| node.id.clone());
                 ids.push(node.id.clone());

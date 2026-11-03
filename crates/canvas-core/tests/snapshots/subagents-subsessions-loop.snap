@@ -18,9 +18,9 @@
                                  │        │                                                            ││ S subsession · R rename · G group · X stop │
  ≡                               │ ·    ┌ ◇ Lint the tree ─────┐ ·     ╭ Nightly check ─────────────╮┄┄││                                            │
                                  │      │ ✗ failed             │       │ ○ idle · ↻ every 15m · ↗ … │  ││ SUBAGENTS 3 (shown · K stacks them)        │
- ✉                               │      └──────────────────────┘       │ canvas · main              │  ││ ✗ Lint the tree · failed  Inspect          │
-                                 │ ·     ·     ·     ·     ·     ·     ╰────────────────────────────╯◂┄││ ○ Review the diff · idle  Inspect          │
-                                 │                                                                     ││ ⠋ Explore the API · working  Inspect       │
+ ✉                               │      └──────────────────────┘       │ canvas · main              │  ││ ✗ Lint the tree · failed  Inspect   Hide   │
+                                 │ ·     ·     ·     ·     ·     ·     ╰────────────────────────────╯◂┄││ ○ Review the diff · idle  Inspect   Hide   │
+                                 │                                                                     ││ ⠋ Explore the API · work…  Inspect   Hide  │
                                  │                                                                     ││                                            │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││                                            │
                                  │                                                                     ││                                            │

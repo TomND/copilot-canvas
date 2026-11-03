@@ -128,7 +128,7 @@ pub fn stack_members(doc: &Doc, root: &str) -> Vec<String> {
 /// Stacks hold a stacked session's subsessions with their subagent boxes
 /// (the stacked ancestor highest up the parent chain wins); a session's
 /// folded subagent boxes go into its own deck, or into the stack that holds
-/// the session.
+/// the session. Boxes in the hidden area ([`hidden_area`]) are in no deck.
 pub fn stacked_under(doc: &Doc) -> HashMap<String, String> {
     let mut out = HashMap::new();
     let mut roots: Vec<&Node> = doc.nodes.iter().filter(|n| n.stacked && n.kind == NodeKind::Session).collect();
@@ -164,6 +164,10 @@ pub fn stacked_under(doc: &Doc) -> HashMap<String, String> {
             let root = out.get(&parent.id).cloned().unwrap_or_else(|| parent.id.clone());
             out.insert(agent.id.clone(), root);
         }
+    }
+    if doc.nodes.iter().any(|n| n.hidden) {
+        let hidden = hidden_area(doc);
+        out.retain(|id, _| !hidden.contains_key(id));
     }
     out
 }
@@ -232,7 +236,7 @@ pub fn deck_rect(doc: &Doc, root: &Node, sessions: bool) -> Rect {
     }
     let mut bottom = root.y + SESSION_H;
     if !subagents_folded(doc, root) {
-        for agent in doc.nodes.iter().filter(|n| n.kind == NodeKind::Agent && !n.unplaced && n.parent.as_deref() == Some(root.id.as_str())) {
+        for agent in doc.nodes.iter().filter(|n| n.kind == NodeKind::Agent && !n.unplaced && !n.hidden && n.parent.as_deref() == Some(root.id.as_str())) {
             let below = agent.y >= root.y && agent.x < root.x + SESSION_W && agent.x + AGENT_W > root.x;
             if below {
                 bottom = bottom.max(agent.y + AGENT_H);
@@ -257,11 +261,13 @@ pub fn deck_bounds(doc: &Doc, deck: &DeckContents) -> Option<Rect> {
 
 /// The rectangles the canvas's layout takes, each with the box (or the
 /// session of the deck) it belongs to: boxes drawn on their own and decks
-/// with their back cards. Folded, stacked and unplaced boxes take none.
+/// with their back cards. Folded, stacked, unplaced and hidden-area boxes
+/// take none.
 pub fn layout(doc: &Doc) -> Vec<(&str, Rect)> {
     let under = stacked_under(doc);
+    let hidden = hidden_area(doc);
     let by_id: HashMap<&str, &Node> = doc.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
-    let mut out: Vec<(&str, Rect)> = doc.nodes.iter().filter(|n| !under.contains_key(&n.id) && !n.unplaced).map(|n| (n.id.as_str(), n.rect())).collect();
+    let mut out: Vec<(&str, Rect)> = doc.nodes.iter().filter(|n| !under.contains_key(&n.id) && !n.unplaced && !hidden.contains_key(&n.id)).map(|n| (n.id.as_str(), n.rect())).collect();
     for deck in decks_of(doc, &under) {
         let Some(root) = by_id.get(deck.root.as_str()) else { continue };
         let r = deck_rect(doc, root, !deck.sessions.is_empty());
@@ -277,13 +283,14 @@ pub fn layout_rects(doc: &Doc) -> Vec<Rect> {
 }
 
 /// The box a hidden box shows on (its nearest ancestor that is not hidden),
-/// or `None` when `node` is not hidden. `subsessions` hides subsessions
-/// (`H`) and `subagents` every subagent box (`J`); everything under a
-/// hidden subsession hides with it. `find` looks boxes up by id.
+/// or `None` when `node` is not hidden. A subsession or subagent box hides
+/// on its own (`Node::hidden`, the hidden area), `subsessions` hides every
+/// subsession (`H`) and `subagents` every subagent box (`J`); everything
+/// under a hidden subsession hides with it. `find` looks boxes up by id.
 pub fn hidden_into<'a>(node: &Node, find: impl Fn(&str) -> Option<&'a Node>, subsessions: bool, subagents: bool) -> Option<&'a Node> {
     let hides = |n: &Node| match n.kind {
-        NodeKind::Agent => Some(subagents),
-        NodeKind::Session if n.passive.is_none() => Some(subsessions),
+        NodeKind::Agent => Some(n.hidden || subagents),
+        NodeKind::Session if n.passive.is_none() => Some(n.hidden || subsessions),
         _ => None,
     };
     let parent_of = |n: &Node| n.parent.as_deref().filter(|p| *p != n.id).and_then(&find);
@@ -304,11 +311,28 @@ pub fn hidden_into<'a>(node: &Node, find: impl Fn(&str) -> Option<&'a Node>, sub
 /// Every hidden box (see [`hidden_into`]), mapped to the box whose marker
 /// counts it.
 pub fn hidden_boxes(doc: &Doc, subsessions: bool, subagents: bool) -> HashMap<String, String> {
-    if !subsessions && !subagents {
+    if !subsessions && !subagents && !doc.nodes.iter().any(|n| n.hidden) {
         return HashMap::new();
     }
     let by_id: HashMap<&str, &Node> = doc.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
     doc.nodes.iter().filter_map(|n| hidden_into(n, |id| by_id.get(id).copied(), subsessions, subagents).map(|top| (n.id.clone(), top.id.clone()))).collect()
+}
+
+/// The canvas's hidden area: boxes hidden on their own and everything under
+/// them (the same for every window), mapped as [`hidden_boxes`] does.
+pub fn hidden_area(doc: &Doc) -> HashMap<String, String> {
+    hidden_boxes(doc, false, false)
+}
+
+/// A box that can be hidden on its own: a subsession or a subagent box
+/// (with its parent on the canvas).
+pub fn can_hide(doc: &Doc, node: &Node) -> bool {
+    let parent = node.parent.as_deref().filter(|p| *p != node.id).and_then(|p| doc.node(p));
+    match node.kind {
+        NodeKind::Agent => parent.is_some(),
+        NodeKind::Session => node.passive.is_none() && parent.is_some(),
+        NodeKind::Automation => false,
+    }
 }
 
 #[cfg(test)]
@@ -426,6 +450,54 @@ mod tests {
         let a1x = doc.node("a1:x").unwrap();
         assert_eq!(hidden_into(a1x, |id| doc.node(id), false, true).map(|n| n.id.as_str()), Some("a1"));
         assert_eq!(hidden_into(doc.node("root").unwrap(), |id| doc.node(id), true, true), None);
+    }
+
+    #[test]
+    fn boxes_hidden_on_their_own_take_their_subtree_and_move_with_their_parent() {
+        let mut doc = family();
+        let at = |doc: &Doc, id: &str| (doc.node(id).unwrap().x, doc.node(id).unwrap().y);
+        // Only subsessions and subagent boxes can hide on their own.
+        assert!(can_hide(&doc, doc.node("a").unwrap()) && can_hide(&doc, doc.node("root:y").unwrap()));
+        assert!(!can_hide(&doc, doc.node("root").unwrap()) && !can_hide(&doc, doc.node("orphan").unwrap()));
+        doc.node_mut("root").unwrap().hidden = true;
+        assert!(hidden_area(&doc).is_empty(), "a top-level session never hides");
+        doc.node_mut("root").unwrap().hidden = false;
+        // A hidden subsession takes what is under it; each counts on the nearest visible box.
+        doc.node_mut("a").unwrap().hidden = true;
+        doc.node_mut("root:y").unwrap().hidden = true;
+        let area = hidden_area(&doc);
+        let top = |id: &str| area.get(id).map(String::as_str);
+        assert_eq!((top("a"), top("a1"), top("a1:x"), top("root:y")), (Some("root"), Some("root"), Some("root"), Some("root")));
+        assert_eq!((top("b"), top("c"), top("root")), (None, None, None));
+        assert_eq!(hidden_boxes(&doc, false, false), area, "the same for every window");
+        // They take no room, and they move with the box they count on.
+        assert!(!layout(&doc).iter().any(|(id, _)| ["a", "a1", "a1:x", "root:y"].contains(id)));
+        doc.move_nodes(&["root".into()], 2, 1);
+        assert_eq!((at(&doc, "a"), at(&doc, "a1"), at(&doc, "b"), at(&doc, "c")), ((42, 1), (82, 1), (40, 10), (0, 30)), "the hidden ones follow, a shown subsession stays");
+        // They belong to the parent's group wherever their own place is.
+        doc.node_mut("a1").unwrap().x = 500;
+        let group = doc.group_around(&["root".into()], "G").unwrap();
+        assert_eq!(doc.group_of(doc.node("a1").unwrap()).map(|g| g.id.clone()), Some(group.clone()));
+        let g = doc.group(&group).unwrap().clone();
+        assert!(g.w < 60, "a group around the parent leaves hidden boxes out: {g:?}");
+        let before = at(&doc, "a1");
+        doc.move_group(&group, 1, 1);
+        assert_eq!(at(&doc, "a1"), (before.0 + 1, before.1 + 1), "a group drag carries them too");
+        // A folded subagent box hidden on its own leaves its deck; the last one takes the deck along.
+        let mut doc = family();
+        doc.subagents_shown = false;
+        doc.nodes.push(agent("root:z", "root"));
+        assert_eq!(decks(&doc).iter().find(|d| d.root == "root").map(|d| d.agents.len()), Some(2));
+        doc.node_mut("root:y").unwrap().hidden = true;
+        assert_eq!(decks(&doc).iter().find(|d| d.root == "root").map(|d| d.agents.clone()), Some(vec!["root:z".to_owned()]));
+        doc.node_mut("root:z").unwrap().hidden = true;
+        assert!(!decks(&doc).iter().any(|d| d.root == "root") && !stacked_under(&doc).contains_key("root:y"));
+        // The document keeps the choice; canvases from before have none, and an unset one is not written.
+        let back: Doc = serde_json::from_str(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert!(back.node("root:y").unwrap().hidden && !back.node("root").unwrap().hidden);
+        let old: Node = serde_json::from_value(serde_json::json!({ "id": "x", "kind": "agent", "name": "X", "x": 0, "y": 0, "parent": "root" })).unwrap();
+        assert!(!old.hidden && !serde_json::to_string(&old).unwrap().contains("hidden"));
+        assert!(serde_json::to_string(back.node("root:y").unwrap()).unwrap().contains("\"hidden\":true"));
     }
 
     #[test]
