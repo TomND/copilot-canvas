@@ -305,9 +305,15 @@ fn steps(sb: &Sandbox, gui: &mut Gui, id: &str, dir: &Path) -> Result<String> {
     std::thread::sleep(Duration::from_millis(200));
     let (_, glow_off, full_off) = frames_in(gui, 2.0)?;
     gui.req(json!({ "cmd": "grid_pulse", "value": "on" }))?;
+    // With Windows' software renderer (WARP, CI's runners) every present takes tens of ms; the
+    // glow's frames then keep the spinner's redraw pending into the next 40 ms housekeeping tick,
+    // so the spinner redraws at its own 12.5 a second rather than the idle rate: bounded by that.
+    let software = gui.req(json!({ "cmd": "size" }))?["software"] == true;
+    let full_ok = if software { full_on <= 2 * 13 + 4 } else { full_on <= full_off + 3 };
     ensure!(
-        (10..=100).contains(&glow_on) && glow_off == 0 && full_on <= full_off + 3,
-        "in 2 s while the worker works: {glow_on} glow repaints and {full_on} full frames with the glow on, {glow_off} and {full_off} with it off"
+        (10..=100).contains(&glow_on) && glow_off == 0 && full_ok,
+        "in 2 s while the worker works: {glow_on} glow repaints and {full_on} full frames with the glow on, {glow_off} and {full_off} with it off{}",
+        if software { " (software renderer)" } else { "" }
     );
     // Reduced motion: a static glow, the same a moment later, near brighter than far, no frames for it.
     gui.req(json!({ "cmd": "motion", "value": "reduced" }))?;
