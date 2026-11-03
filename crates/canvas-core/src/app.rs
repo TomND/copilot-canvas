@@ -367,6 +367,8 @@ pub struct App {
     pub notebook: crate::notebook::State,
     /// The Tasks space (`tasks/`).
     pub tasks: crate::tasks::State,
+    /// The canvas-wide agents' window state: chats waiting for a run, open settings sections, rules read.
+    pub agent_ui: crate::canvas_wide::AgentsUi,
 }
 
 impl App {
@@ -513,6 +515,7 @@ impl App {
             nav: Default::default(),
             notebook: Default::default(),
             tasks: Default::default(),
+            agent_ui: Default::default(),
             instance: None,
             new_service_rx: None,
             restarting: None,
@@ -1439,7 +1442,9 @@ impl App {
             NodeKind::Session if node.passive.is_some() => {
                 let passive = node.passive.as_ref()?;
                 let done = self.passive_view(node).is_some_and(|v| v.status == "done");
-                (!passive.paused && !done).then(|| Self::passive_trigger(passive))
+                // A canvas agent with no triggers never runs on its own: no loop.
+                let wakes = passive.has_triggers() || !passive.is_canvas();
+                (!passive.paused && !done && wakes).then(|| Self::passive_trigger(passive))
             }
             NodeKind::Session => {
                 let live = self.owned_alive(&node.id) || self.summary(node).is_some_and(|s| s.live);
@@ -1583,6 +1588,13 @@ impl App {
                 // A native fork starts once from its parent; later launches resume it.
                 let fork_from = self.pending_forks.remove(id).filter(|_| node.fresh);
                 let launch = crate::side::agent_launch(&node, &self.doc.defaults, group.as_ref(), prompt, fork_from, !node.fresh);
+                // A canvas-wide agent's chat may read the canvas's goals and skills, as its runs do.
+                let mut launch = launch;
+                if node.is_canvas_agent()
+                    && let Some(dir) = self.canvas_agents_dir()
+                {
+                    launch.add_dirs.push(dir.display().to_string());
+                }
                 // A new conversation records the model it starts with (resumes keep it).
                 if !launch.resume && launch.fork_from.is_none() && node.model.is_none() {
                     record_model = Some(launch.model.clone().unwrap_or_default());
@@ -2113,6 +2125,8 @@ impl App {
         if self.routing_check_at.elapsed() >= Duration::from_secs(1) {
             self.sync_routing();
         }
+        // A canvas agent's chat asked for during a run: once the run's terminal is gone.
+        self.open_waiting_chats();
         if self.tick_pulses() {
             self.needs_draw = true;
         }

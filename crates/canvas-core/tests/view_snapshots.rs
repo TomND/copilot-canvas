@@ -661,6 +661,45 @@ fn canvas_wide_agent_detail() {
     check("canvas-agent-detail", &mut app, BOTH);
 }
 
+/// An agent's settings with *More* open, its instructions read, and a chat
+/// asked for while a run answers (it opens when the run ends).
+#[test]
+fn canvas_wide_agent_settings_with_more() {
+    let mut app = canvas_agents_app();
+    app.agent_ui.more.insert("a-release".into());
+    app.agent_ui.rules.insert("a-release".into(), ("# Release watch\n\nFollow ring 2 of the release; alert when it fails.\n".into(), std::time::Instant::now()));
+    app.agent_ui.chat_after_run.insert("a-release".into());
+    app.bus.passive.insert("k-a-release".into(), canvas_core::bus::PassiveView { running: true, pending: 1, ..Default::default() });
+    app.select_node("a-release", false);
+    check("canvas-agent-settings", &mut app, BOTH);
+}
+
+/// The *New canvas agent* dialog as it opens: no template, the default
+/// agent and its remembered model, no triggers (only when you talk to it),
+/// every group, no skills.
+#[test]
+fn new_canvas_agent_dialog() {
+    let mut app = canvas_agents_app();
+    app.doc.defaults.set_model(AgentKind::Copilot, Some("gpt-remembered"));
+    app.run(Action::Agents(canvas_core::canvas_wide::AgentAction::New));
+    check("new-canvas-agent-dialog", &mut app, BOTH);
+}
+
+/// The dialog prefilled from a template (*Start from… PR coordinator*), a
+/// name of your own and a first message.
+#[test]
+fn new_canvas_agent_dialog_from_a_template() {
+    let mut app = canvas_agents_app();
+    app.run(Action::Agents(canvas_core::canvas_wide::AgentAction::New));
+    app.apply_agent_pick(canvas_core::dialogs::PickPurpose::AgentTemplate, "PR coordinator");
+    if let Some(dialog) = canvas_core::agent_form::dialog_mut(&mut app) {
+        dialog.name.set("Team PRs");
+        dialog.message.set("Which pull requests are open?");
+        dialog.focus = canvas_core::agent_form::Field::Instructions;
+    }
+    check("new-canvas-agent-template", &mut app, BOTH);
+}
+
 /// The tracked pull requests (◎ Agents › Pull requests) at a fixed clock: a
 /// follow-up blocked because its owner is stopped (Resume owner, Reassign,
 /// Dismiss), a monitor that cannot sign in, one with three new comments and

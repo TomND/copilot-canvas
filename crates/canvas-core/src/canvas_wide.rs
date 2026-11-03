@@ -1,12 +1,24 @@
-//! Canvas-wide agents on the canvas: passive sessions that watch every group
-//! of this canvas (not one group), with skills from the canvas's library.
+//! Canvas-wide agents on the canvas: sessions that happen to manage the
+//! canvas. Each is a session box (dashed, marked ◎, in the *Canvas agents*
+//! frame) with a conversation you talk to like any session's, rules you
+//! write, and optional triggers: events of every group of this canvas, a
+//! schedule, or nothing at all (it runs only when you talk to it).
 //!
-//! - **Where they are**: boxes (dashed, marked ◎) in the *Canvas agents*
-//!   frame, a group with source [`crate::doc::CANVAS_AGENTS`]; the top bar's
-//!   **◎ Agents** entry and the frame's chips open the management panel
-//!   ([`crate::side::RightDetail::CanvasAgents`]); the sidebar lists them under
-//!   the frame. Every entry point shows the same box (`Passive::scope` =
-//!   canvas); none of them starts it: *Open chat* is the explicit start.
+//! - **Where they are**: the frame (a group with source
+//!   [`crate::doc::CANVAS_AGENTS`]); the top bar's **◎ Agents** entry and the
+//!   frame's chips open the management panel
+//!   ([`crate::side::RightDetail::CanvasAgents`]); the sidebar lists them
+//!   under the frame. Every entry point shows the same box (`Passive::scope`
+//!   = canvas).
+//! - **Making one**: the *New canvas agent* dialog (`agent_form.rs`), like
+//!   the new-session dialog; templates only prefill it.
+//! - **Talking to one**: a click views its details and settings (never
+//!   starts it); a double-click, Enter or *Chat* opens its conversation in a
+//!   terminal, the same one its runs continue. Never two writers: while a
+//!   headless run answers, the chat waits for it ([`AgentsUi::chat_after_run`]);
+//!   a run that comes while the chat is open and idle is typed into it (the
+//!   service). *Message…* sends a message: typed into the chat when it is
+//!   idle, else a run answers it.
 //! - **What they do**: the service routes them every event of this canvas
 //!   (`Routing::canvas`), keeps their schedules and runs them like group
 //!   passive sessions, with their files in `<home>/canvas-agents/<canvas id>`
@@ -14,12 +26,16 @@
 //! - **State** ([`AgentState`]): off, unavailable, working, paused, needs
 //!   attention, failing (retrying), done, queued, monitoring, waiting.
 
+use std::collections::{HashMap, HashSet};
+use std::time::Instant;
+
 use ratatui::style::Color;
 
+use crate::agent_form::{AgentSpec, Wakes};
 use crate::app::App;
 use crate::bus::PassiveView;
 use canvas_model::canvas_wide as wide;
-use crate::dialogs::{Action, MenuItem, Modal, PassiveField, Pick, PickPurpose, Prompt, PromptPurpose, TextInput};
+use crate::dialogs::{Action, AgentTarget, MenuItem, Modal, Pick, PickPurpose, Prompt, PromptPurpose, TextInput};
 use crate::doc::{GRID_X, GRID_Y, Group, Node, NodeKind, Passive, PassiveScope};
 use crate::paint::{ACCENT, ATTENTION, DARK, FINISHED, GRAY, NEGATIVE, POSITIVE, SPINNER};
 use crate::passive::Template;
@@ -34,9 +50,10 @@ pub const FRAME_COLOR: u8 = 3;
 /// The colour of the ◎ marker.
 pub const COLOR: Color = crate::paint::GROUP_COLORS[FRAME_COLOR as usize];
 
-/// Templates of a new canvas-wide agent. PR management is one example, not
-/// a built-in workflow: its rules are plain text you edit.
-pub const TEMPLATES: [Template; 4] = [
+/// Templates a new canvas-wide agent can start from (*Start from…*): they
+/// only prefill the dialog. PR management is one example, not a built-in
+/// workflow: its rules are plain text you edit.
+pub const TEMPLATES: [Template; 3] = [
     Template {
         name: "PR coordinator",
         about: "pull requests from every group: tracks each one and its owning session, routes review comments and build failures to it",
@@ -86,16 +103,6 @@ On session.done (from any group): note the session, its group and its summary in
 Report: `ok` with the day's headline (\"3 groups moved, 1 waits on you\"); `alert` only when something has waited on Thomas for more than a day.\n\
 Never message sessions; this agent only reports.\n",
     },
-    Template {
-        name: "Custom",
-        about: "your own canvas-wide rules, events and schedule",
-        subscribe: &[],
-        every_minutes: 0,
-        daily_at: "",
-        rules: "# Rules\n\n\
-Describe the canvas-wide job: which events from which groups matter (see `copilot-canvas events`; `pr.*` from any group), what to check, \
-what counts as ok, warn or alert, which sessions to message (`copilot-canvas send --to \"<name or id>\"`), and what never to do.\n",
-    },
 ];
 
 /// What the canvas-agents controls ask for.
@@ -103,20 +110,29 @@ what counts as ok, warn or alert, which sessions to message (`copilot-canvas sen
 pub enum AgentAction {
     /// The management panel (top bar, frame chip, menus).
     Panel,
-    /// A new canvas-wide agent: a template, then its name.
+    /// The *New canvas agent* dialog.
     New,
-    /// An agent's panel, its box selected and in view (never starts it).
+    /// An agent's details and settings, its box selected and in view (never starts it).
     Show(String),
+    /// Its conversation in a terminal: opened or resumed (the explicit start),
+    /// after the run in progress when one is.
+    Chat(String),
     /// Enable or disable an agent.
     Toggle(String),
     /// Stop the run in progress.
     Stop(String),
-    /// Which canvas skills an agent gets.
-    Skills(String),
+    /// One of the agent pickers (template, wakes, groups, skills, agent CLI).
+    Pick(PickPurpose),
+    /// The model picker of an agent (`None`: the new agent dialog's).
+    Model(Option<String>),
+    /// Its instructions (rules.md) in the editor.
+    Instructions(String),
+    /// Shows or hides the less common rows of its settings.
+    More(String),
     /// The canvas's skill library.
     Library,
-    /// A new skill in the library (and assigned to this agent).
-    NewSkill(Option<String>),
+    /// A new skill in the library (and given to this agent or the new one).
+    NewSkill(Option<AgentTarget>),
     /// A skill's SKILL.md (the editor locally; VS Code or the viewer remotely).
     OpenSkill(String),
     /// The canvas-agents folder.
@@ -125,6 +141,19 @@ pub enum AgentAction {
     SendEvent,
     /// The frame in view.
     Reveal,
+}
+
+/// Window state of the canvas-wide agents' UI (never on the wire).
+#[derive(Debug, Default)]
+pub struct AgentsUi {
+    /// Chats asked for while a headless run answered: each opens when its run
+    /// has ended (never a second writer beside the run).
+    pub chat_after_run: HashSet<String>,
+    /// Agents whose settings show the less common rows (*More*).
+    pub more: HashSet<String>,
+    /// Each agent's rules.md as last read (box id → text, when), for its settings row.
+    pub rules: HashMap<String, (String, Instant)>,
+    pub rules_loading: HashSet<String>,
 }
 
 /// Where a canvas-wide agent stands, for its box, the sidebar, the panels and the top bar.
@@ -148,7 +177,8 @@ pub enum AgentState {
     Queued(u32, bool),
     /// Enabled and watching its events and schedule.
     Monitoring,
-    /// No events or schedule: it runs on messages and Run now only.
+    /// No events or schedule: it runs only when you talk to it (its chat,
+    /// messages, Run now).
     Waiting,
 }
 
@@ -166,7 +196,7 @@ impl AgentState {
             AgentState::Queued(n, true) => format!("{n} event(s) wait: today's run budget is used"),
             AgentState::Queued(n, false) => format!("queued · {n} event(s)"),
             AgentState::Monitoring => "monitoring".into(),
-            AgentState::Waiting => "waiting for messages".into(),
+            AgentState::Waiting => "only when you talk to it".into(),
         }
     }
 
@@ -248,7 +278,7 @@ pub fn agent_state(passive: &Passive, view: Option<&PassiveView>, chat_working: 
         let used = passive.max_runs_per_day > 0 && view.runs_today >= passive.max_runs_per_day;
         return AgentState::Queued(view.pending, used);
     }
-    if passive.subscribe.is_empty() && passive.every_minutes == 0 && passive.daily_at.is_empty() {
+    if !passive.has_triggers() {
         return AgentState::Waiting;
     }
     AgentState::Monitoring
@@ -352,19 +382,21 @@ impl App {
         id
     }
 
-    /// A new canvas-wide agent from a template: its files on the service's
-    /// machine, its box in the frame, its panel open (nothing starts).
-    pub fn create_canvas_agent(&mut self, template: usize, name: &str) -> Result<String, String> {
+    /// A new canvas-wide agent: its files on the service's machine (its
+    /// instructions as rules.md), its box in the frame, its details shown.
+    /// Nothing starts: *Create & start* opens its chat afterwards.
+    pub fn create_canvas_agent(&mut self, spec: AgentSpec) -> Result<String, String> {
         if let Some(why) = self.canvas_agents_unavailable() {
             return Err(format!("Canvas-wide agents are unavailable: {why}"));
         }
         let canvas = self.doc.canvas_id.clone().unwrap_or_default();
-        let template = TEMPLATES.get(template).ok_or("unknown template")?;
-        let name = if name.trim().is_empty() { template.name.to_owned() } else { name.trim().chars().take(80).collect() };
+        let name: String = spec.name.trim().chars().take(80).collect();
+        if name.is_empty() {
+            return Err("Give it a name.".into());
+        }
         let taken = self.canvas_agents().iter().filter_map(|n| n.passive.as_ref().map(|p| p.slug.clone())).collect();
-        let rules = if template.name == "Custom" { template.rules.replacen("# Rules", &format!("# Rules for {name}"), 1) } else { template.rules.to_owned() };
         let canvas_name = self.replica_name();
-        let files = crate::rpc::CanvasAgentFiles { canvas: canvas.clone(), canvas_name, base_slug: slugify(&name), taken, name: name.clone(), rules };
+        let files = crate::rpc::CanvasAgentFiles { canvas: canvas.clone(), canvas_name, base_slug: slugify(&name), taken, name: name.clone(), rules: AgentSpec { name: name.clone(), ..spec.clone() }.rules_text() };
         let slug = self.backend.create_canvas_agent(files).map_err(|e| format!("{e:#}"))?;
         let dir = self.canvas_agents_dir().map(|d| wide::agent_paths(&d, &slug).dir.display().to_string());
         let frame = self.ensure_canvas_frame();
@@ -376,32 +408,192 @@ impl App {
         node.source = Some(crate::doc::CANVAS_AGENT.into());
         node.fresh = true;
         node.mcp_off = Some(self.doc.mcp.last_off.clone());
-        node.agent = Some(self.default_agent().id().to_owned());
-        node.passive = Some(Passive {
+        node.agent = Some(spec.agent.id().to_owned());
+        // Its first conversation starts with its own model (recorded like a new session's).
+        node.model = spec.model.clone().filter(|_| !self.demo);
+        let mut passive = Passive {
             key: uuid::Uuid::new_v4().to_string(),
             group: frame,
             slug,
-            template: template.name.to_owned(),
-            subscribe: template.subscribe.iter().map(|s| s.to_string()).collect(),
-            every_minutes: template.every_minutes,
-            daily_at: template.daily_at.to_owned(),
+            template: spec.template.clone(),
             rollover_runs: 20,
-            // An hourly check plus the messages: more runs than the usual 24 a day.
-            max_runs_per_day: if template.name == "Review follow-up" { 60 } else { 24 },
+            max_runs_per_day: spec.max_runs_per_day,
             scope: PassiveScope::Canvas,
-            // The PR coordinator monitors handed-off pull requests (read-only follow-ups).
-            prs: (template.name == "PR coordinator").then(canvas_model::prs::PrSettings::default),
-            // The review follow-up's channel is yours to set (Follow-ups…); approval is on.
-            reviews: (template.name == "Review follow-up").then(canvas_model::reviews::ReviewSettings::default),
+            groups: spec.groups.clone(),
+            skills: spec.skills.clone(),
+            prs: spec.prs.clone(),
+            reviews: spec.reviews.clone(),
+            model: spec.model.clone(),
             ..Default::default()
-        });
+        };
+        spec.wakes.set(&mut passive);
+        node.passive = Some(passive);
         self.doc.nodes.push(node);
         self.mark_dirty();
         self.reveal_node(&id);
         self.select_node(&id, false);
         self.right_detail = Some(RightDetail::Passive(id.clone()));
+        self.agent_ui.rules.insert(id.clone(), (AgentSpec { name, ..spec }.rules_text(), Instant::now()));
         self.sync_routing();
         Ok(id)
+    }
+
+    /// Opens (or resumes) an agent's conversation in a terminal: the explicit
+    /// start (Chat, a double-click, Enter, *Create & start*). A new
+    /// conversation starts with who it is and where its files are, then
+    /// `message`. Never beside a run in progress: then the chat opens once
+    /// the run has ended.
+    pub fn open_agent_chat(&mut self, id: &str, message: Option<&str>) {
+        let Some(node) = self.doc.node(id).cloned() else { return };
+        let message = message.map(str::trim).filter(|m| !m.is_empty());
+        if let Some(why) = self.agent_unavailable(&node) {
+            return self.notify(format!("Its chat cannot open here: {why}"), true);
+        }
+        if self.passive_view(&node).is_some_and(|v| v.running) {
+            self.agent_ui.chat_after_run.insert(id.to_owned());
+            if let Some(text) = message
+                && let Err(error) = self.message_passive(id, text)
+            {
+                self.notify(error, true);
+            }
+            return self.notify(format!("“{}” is answering in a run right now: its chat opens when the run ends (Stop run ends it now).", node.name), false);
+        }
+        if self.owned_alive(id) {
+            self.agent_ui.chat_after_run.remove(id);
+            if let Some(text) = message
+                && let Err(error) = self.message_passive(id, text)
+            {
+                self.notify(error, true);
+            }
+            self.show_terminal(id);
+            self.set_focus(crate::app::Focus::Terminal);
+            return;
+        }
+        if self.summary(&node).is_some_and(|s| s.live) {
+            return self.notify("Its conversation is open in another terminal right now; Copilot Canvas never starts a second copy.", true);
+        }
+        self.agent_ui.chat_after_run.remove(id);
+        if node.fresh {
+            self.pending_prompts.insert(id.to_owned(), self.chat_preface(&node, message));
+        } else if let Some(text) = message {
+            self.pending_prompts.insert(id.to_owned(), text.to_owned());
+        }
+        self.launch(id);
+    }
+
+    /// The first prompt of an agent's new conversation: who it is, what
+    /// wakes it, where its instructions and memory are, then your message
+    /// (or a request to say what it will do).
+    pub fn chat_preface(&self, node: &Node, message: Option<&str>) -> String {
+        let passive = node.passive.clone().unwrap_or_default();
+        let watched = if passive.groups.is_empty() { "every group of this canvas".to_owned() } else { format!("the groups {} of this canvas", self.agent_groups_text(&passive)) };
+        let wakes = Wakes::of(&passive);
+        let when = if wakes.is_empty() { "only when the user talks to you (here, or with a message)".to_owned() } else { format!("on {} and when the user talks to you", wakes.text()) };
+        let files = match self.passive_paths(node) {
+            Some(paths) => format!(
+                "Read first: your instructions {}; your memory {} (keep it up to date: it is your memory between runs); the canvas goals {}.",
+                paths.rules.display(),
+                paths.state.display(),
+                paths.goals.display()
+            ),
+            None => "Your instructions and memory are rules.md and state.md in this folder.".to_owned(),
+        };
+        let ask = message.map(str::to_owned).unwrap_or_else(|| "Read them now, then tell the user in a line or two what you will do.".to_owned());
+        format!(
+            "[Copilot Canvas · canvas-wide agent \"{name}\"] This is your chat with the user: the same conversation your runs continue. \
+             You watch {watched} and run {when}. {files} \
+             The copilot-canvas command reaches the canvas: copilot-canvas events (every group, session and agent), \
+             copilot-canvas send --to \"<session name or id>\" \"<message>\", copilot-canvas status <ok|warn|alert|done> \"<headline>\".\n\n{ask}",
+            name = node.name
+        )
+    }
+
+    /// Opens the chats asked for during a run once that run has ended and
+    /// its terminal is gone (called with each bus snapshot and tick).
+    pub fn open_waiting_chats(&mut self) {
+        if self.agent_ui.chat_after_run.is_empty() {
+            return;
+        }
+        for id in self.agent_ui.chat_after_run.clone() {
+            let Some(node) = self.doc.node(&id).cloned() else {
+                self.agent_ui.chat_after_run.remove(&id);
+                continue;
+            };
+            let running = self.passive_view(&node).is_some_and(|v| v.running);
+            if !running && !self.owned_alive(&id) && !self.launching.contains_key(&id) {
+                self.agent_ui.chat_after_run.remove(&id);
+                self.open_agent_chat(&id, None);
+            }
+        }
+    }
+
+    /// Another agent CLI for an agent: a fresh conversation (its box gets a
+    /// new id, the old one is kept as an earlier episode; a new routing key,
+    /// so the service starts its state over); its files stay.
+    pub fn set_agent_cli(&mut self, id: &str, kind: crate::agents::AgentKind) -> Result<(), String> {
+        let node = self.doc.node(id).cloned().ok_or("it was removed")?;
+        if crate::agents::agent_of(&node) == kind {
+            return Ok(());
+        }
+        if self.owned_alive(id) {
+            return Err("Its chat is open: stop it first (its agent CLI changes for the next conversation).".into());
+        }
+        if self.passive_view(&node).is_some_and(|v| v.running) {
+            return Err("A run is in progress: wait for it, or Stop run.".into());
+        }
+        let new = uuid::Uuid::new_v4().to_string();
+        self.rename_node_id(id, &new);
+        if let Some(node) = self.doc.node_mut(&new) {
+            node.agent = Some(kind.id().to_owned());
+            node.agent_session = None;
+            node.fresh = true;
+            if let Some(p) = node.passive.as_mut() {
+                p.episodes.push(id.to_owned());
+                p.key = uuid::Uuid::new_v4().to_string();
+                // Model ids are each agent's own.
+                p.model = None;
+            }
+            node.model = None;
+        }
+        if let Some(rules) = self.agent_ui.rules.remove(id) {
+            self.agent_ui.rules.insert(new.clone(), rules);
+        }
+        if self.right_detail == Some(RightDetail::Passive(id.to_owned())) {
+            self.right_detail = Some(RightDetail::Passive(new.clone()));
+        }
+        self.mark_dirty();
+        self.sync_routing();
+        if !self.agent_configs.contains_key(&kind) {
+            self.refresh_config_for(kind);
+        }
+        self.notify(format!("It runs {} now, in a fresh conversation (its instructions and memory stay).", kind.label()), false);
+        Ok(())
+    }
+
+    /// A canvas-wide agent's own model: its runs and chats use it from now
+    /// on (its current conversation too); `None`: the default for new
+    /// sessions of its agent.
+    pub fn set_agent_model(&mut self, id: &str, model: Option<String>) {
+        let Some(node) = self.doc.node_mut(id) else { return };
+        if let Some(p) = node.passive.as_mut() {
+            p.model = model.clone();
+        }
+        node.model = model;
+        self.mark_dirty();
+        self.sync_routing();
+    }
+
+    /// The model an agent's runs use, and why.
+    pub fn agent_model_text(&self, node: &Node) -> String {
+        let kind = crate::agents::agent_of(node);
+        let own = node.passive.as_ref().and_then(|p| p.model.clone());
+        match own {
+            Some(model) => format!("{} · its own", crate::models::shown(&model)),
+            None => {
+                let default = canvas_model::models::effective(kind, &self.doc.defaults, self.doc.canvas_frame());
+                format!("{} · {}", crate::models::shown(&default.model), crate::models::source_label(&default.source, kind))
+            }
+        }
     }
 
     /// The canvas's name for its GOALS.md: the canvas file's name.
@@ -434,13 +626,7 @@ impl App {
                 self.load_canvas_skills();
                 self.right_detail = Some(RightDetail::CanvasAgents);
             }
-            AgentAction::New => {
-                if let Some(why) = self.canvas_agents_unavailable() {
-                    return self.notify(format!("Canvas-wide agents are unavailable: {why}"), true);
-                }
-                let items = TEMPLATES.iter().map(|t| (t.name.to_owned(), t.about.to_owned())).collect();
-                self.modals.push(Modal::Pick(Pick { purpose: PickPurpose::CanvasTemplate, title: "New canvas-wide agent: template".into(), items, filter: String::new(), sel: 0, scroll: 0 }));
-            }
+            AgentAction::New => crate::agent_form::open(self),
             AgentAction::Show(id) => {
                 if self.doc.node(&id).is_some() {
                     self.reveal_node(&id);
@@ -448,6 +634,7 @@ impl App {
                     self.right_detail = Some(RightDetail::Passive(id));
                 }
             }
+            AgentAction::Chat(id) => self.open_agent_chat(&id, None),
             AgentAction::Toggle(id) => {
                 let changed = self.doc.node_mut(&id).and_then(|n| n.passive.as_mut()).map(|p| {
                     p.disabled = !p.disabled;
@@ -456,11 +643,28 @@ impl App {
                 if let Some(disabled) = changed {
                     self.mark_dirty();
                     self.sync_routing();
-                    self.notify(if disabled { "Disabled: it gets no events, schedules or messages until you enable it." } else { "Enabled: it watches its events and schedule again." }, false);
+                    self.notify(if disabled { "Disabled: it gets no events, schedules or messages until you enable it (its chat still opens)." } else { "Enabled: it watches its events and schedule again." }, false);
                 }
             }
             AgentAction::Stop(id) => self.stop_passive_run(&id),
-            AgentAction::Skills(id) => self.pick_agent_skills(&id, 0),
+            AgentAction::Pick(purpose) => match purpose {
+                PickPurpose::AgentTemplate => crate::agent_form::pick_template(self),
+                PickPurpose::AgentWakes(target) => crate::agent_form::pick_wakes(self, target, 0),
+                PickPurpose::AgentGroups(target) => crate::agent_form::pick_groups(self, target, 0),
+                PickPurpose::AgentSkills(target) => self.pick_agent_skills(target, 0),
+                PickPurpose::AgentCli(id) => crate::agent_form::pick_cli(self, &id),
+                _ => {}
+            },
+            AgentAction::Model(id) => self.open_model_picker(match id {
+                Some(id) => crate::dialogs::ModelTarget::Agent(id),
+                None => crate::dialogs::ModelTarget::NewAgent,
+            }),
+            AgentAction::Instructions(id) => crate::agent_form::open_rules(self, &id),
+            AgentAction::More(id) => {
+                if !self.agent_ui.more.remove(&id) {
+                    self.agent_ui.more.insert(id);
+                }
+            }
             AgentAction::Library => self.pick_library(),
             AgentAction::NewSkill(agent) => self.modals.push(Modal::Prompt(Prompt {
                 title: "New canvas skill: its name".into(),
@@ -515,9 +719,10 @@ impl App {
         }
     }
 
-    /// The skills picker of an agent: ✓ assigned, ○ not; Enter toggles one.
-    pub fn pick_agent_skills(&mut self, id: &str, sel: usize) {
-        let Some(passive) = self.doc.node(id).and_then(|n| n.passive.clone()) else { return };
+    /// The skills picker of an agent (or of the new agent dialog): ✓ given,
+    /// ○ not; Enter gives or takes one.
+    pub fn pick_agent_skills(&mut self, target: AgentTarget, sel: usize) {
+        let Some(given) = crate::agent_form::skills_of(self, &target) else { return };
         self.load_canvas_skills();
         if let Some(Err(why)) = &self.canvas_skills {
             return self.notify(format!("Cannot read the canvas skills: {why}"), true);
@@ -525,16 +730,19 @@ impl App {
         let library = self.skill_list();
         let mut items: Vec<(String, String)> = library
             .iter()
-            .map(|s| (format!("{} {}", if passive.skills.contains(&s.name) { "✓" } else { "○" }, s.name), if s.problem.is_empty() { s.description.clone() } else { format!("⚠ {}", s.problem) }))
+            .map(|s| (format!("{} {}", if given.contains(&s.name) { "✓" } else { "○" }, s.name), if s.problem.is_empty() { s.description.clone() } else { format!("⚠ {}", s.problem) }))
             .collect();
-        // Assigned skills the library no longer has stay visible (they would be missing in runs).
-        for missing in passive.skills.iter().filter(|s| !library.iter().any(|l| &l.name == *s)) {
+        // Given skills the library no longer has stay visible (they would be missing in runs).
+        for missing in given.iter().filter(|s| !library.iter().any(|l| &l.name == *s)) {
             items.push((format!("✓ {missing}"), "⚠ not in the canvas library (removed?)".into()));
         }
         items.push((NEW_SKILL.into(), "a new skill in the canvas library, given to this agent".into()));
         items.push((OPEN_LIBRARY.into(), "the canvas skills folder".into()));
-        let name = self.doc.node(id).map(|n| n.name.clone()).unwrap_or_default();
-        self.modals.push(Modal::Pick(Pick { purpose: PickPurpose::AgentSkills(id.to_owned()), title: format!("Skills of “{name}” (Enter: give / take)"), sel: sel.min(items.len() - 1), items, filter: String::new(), scroll: 0 }));
+        let name = match &target {
+            AgentTarget::Node(id) => self.doc.node(id).map(|n| n.name.clone()).unwrap_or_default(),
+            AgentTarget::Dialog => crate::agent_form::dialog(self).map(|d| d.name.text.trim().to_owned()).filter(|n| !n.is_empty()).unwrap_or_else(|| "the new agent".into()),
+        };
+        self.modals.push(Modal::Pick(Pick { purpose: PickPurpose::AgentSkills(target), title: format!("Skills of “{name}” (Enter: give / take)"), sel: sel.min(items.len() - 1), items, filter: String::new(), scroll: 0 }));
     }
 
     /// The canvas's skill library: Enter opens a skill's SKILL.md.
@@ -558,42 +766,32 @@ impl App {
         self.modals.push(Modal::Pick(Pick { purpose: PickPurpose::CanvasSkills, title: "Canvas skills (Enter: open its SKILL.md)".into(), items, filter: String::new(), sel: 0, scroll: 0 }));
     }
 
-    /// A choice in one of this module's pickers.
+    /// A choice in one of the agent pickers.
     pub fn apply_agent_pick(&mut self, purpose: PickPurpose, value: &str) {
         match purpose {
-            PickPurpose::CanvasTemplate => {
-                let template = TEMPLATES.iter().position(|t| t.name == value).unwrap_or(TEMPLATES.len() - 1);
-                self.modals.push(Modal::Prompt(Prompt {
-                    title: format!("Name the {} canvas-wide agent", TEMPLATES[template].name),
-                    hint: "Enter keeps the template's name".into(),
-                    input: TextInput::new(TEMPLATES[template].name),
-                    purpose: PromptPurpose::CanvasAgentName(template),
-                }));
-            }
-            PickPurpose::AgentSkills(id) if value == NEW_SKILL => self.run_agents(AgentAction::NewSkill(Some(id))),
+            PickPurpose::AgentSkills(target) if value == NEW_SKILL => self.run_agents(AgentAction::NewSkill(Some(target))),
             PickPurpose::AgentSkills(_) | PickPurpose::CanvasSkills if value == OPEN_LIBRARY => self.open_library_folder(),
-            PickPurpose::AgentSkills(id) => {
+            PickPurpose::AgentSkills(target) => {
                 let skill = value.trim_start_matches(['✓', '○']).trim().to_owned();
-                let index = self.toggle_agent_skill(&id, &skill);
-                self.pick_agent_skills(&id, index);
+                let index = self.toggle_agent_skill(&target, &skill);
+                self.pick_agent_skills(target, index);
             }
             PickPurpose::CanvasSkills if value == NEW_SKILL => self.run_agents(AgentAction::NewSkill(None)),
             PickPurpose::CanvasSkills => self.run_agents(AgentAction::OpenSkill(value.trim_start_matches('✦').trim().to_owned())),
-            _ => {}
+            purpose => crate::agent_form::apply_pick(self, purpose, value),
         }
     }
 
     /// Gives or takes a skill; answers the skill's row in the picker.
-    fn toggle_agent_skill(&mut self, id: &str, skill: &str) -> usize {
+    fn toggle_agent_skill(&mut self, target: &AgentTarget, skill: &str) -> usize {
         let library = self.skill_list();
-        if let Some(passive) = self.doc.node_mut(id).and_then(|n| n.passive.as_mut()) {
-            if let Some(at) = passive.skills.iter().position(|s| s == skill) {
-                passive.skills.remove(at);
+        if let Some(mut skills) = crate::agent_form::skills_of(self, target) {
+            if let Some(at) = skills.iter().position(|s| s == skill) {
+                skills.remove(at);
             } else if wide::valid_skill_name(skill) {
-                passive.skills.push(skill.to_owned());
+                skills.push(skill.to_owned());
             }
-            self.mark_dirty();
-            self.sync_routing();
+            crate::agent_form::set_skills(self, target, skills);
         }
         library.iter().position(|s| s.name == skill).unwrap_or(0)
     }
@@ -607,8 +805,9 @@ impl App {
     }
 
     /// A new skill typed in a prompt: created in the library, given to
-    /// `agent`, its SKILL.md opened to write its rules.
-    pub fn create_skill(&mut self, agent: Option<String>, value: &str) -> Result<(), String> {
+    /// `agent` (an agent, or the new agent dialog's), its SKILL.md opened to
+    /// write its rules.
+    pub fn create_skill(&mut self, agent: Option<AgentTarget>, value: &str) -> Result<(), String> {
         if let Some(why) = self.canvas_agents_unavailable() {
             return Err(format!("Canvas skills are unavailable: {why}"));
         }
@@ -618,13 +817,12 @@ impl App {
         }
         let canvas = self.doc.canvas_id.clone().unwrap_or_default();
         let path = self.backend.create_canvas_skill(&canvas, &name, "").map_err(|e| format!("{e:#}"))?;
-        if let Some(id) = agent
-            && let Some(passive) = self.doc.node_mut(&id).and_then(|n| n.passive.as_mut())
-            && !passive.skills.contains(&name)
+        if let Some(target) = agent
+            && let Some(mut skills) = crate::agent_form::skills_of(self, &target)
+            && !skills.contains(&name)
         {
-            passive.skills.push(name.clone());
-            self.mark_dirty();
-            self.sync_routing();
+            skills.push(name.clone());
+            crate::agent_form::set_skills(self, &target, skills);
         }
         self.load_canvas_skills();
         self.notify(format!("Created the skill {name}: write its rules in its SKILL.md (its description says when it applies)."), false);
@@ -692,7 +890,7 @@ impl App {
             name,
             vec![
                 item("Manage canvas agents", "", Action::Agents(AgentAction::Panel), true),
-                item("New canvas-wide agent…", "", Action::Agents(AgentAction::New), available),
+                item("New canvas agent…", "", Action::Agents(AgentAction::New), available),
                 item("Canvas skills…", "", Action::Agents(AgentAction::Library), available),
                 item("Send event to canvas agents…", "", Action::Agents(AgentAction::SendEvent), available),
                 item("Open canvas-agents folder", "", Action::Agents(AgentAction::Folder), available),
@@ -705,15 +903,26 @@ impl App {
         )
     }
 
-    /// The menu items a canvas-wide agent's box adds.
-    pub fn agent_menu_items(&self, node: &Node) -> Vec<MenuItem> {
-        let item = |label: &str, action: Action, enabled: bool| MenuItem { label: label.to_owned(), hint: String::new(), action, enabled };
-        let disabled = node.passive.as_ref().is_some_and(|p| p.disabled);
+    /// A canvas-wide agent's box menu: talk to it, run or pause it, its settings.
+    pub fn agent_menu(&self, node: &Node) -> Vec<MenuItem> {
+        let id = node.id.clone();
+        let item = |label: &str, hint: &str, action: Action, enabled: bool| MenuItem { label: label.to_owned(), hint: hint.to_owned(), action, enabled };
+        let passive = node.passive.clone().unwrap_or_default();
+        let alive = self.owned_alive(&id);
+        let running = self.passive_view(node).is_some_and(|v| v.running);
+        let external = self.summary(node).is_some_and(|s| s.live) && !alive;
         vec![
-            item(if disabled { "Enable" } else { "Disable" }, Action::Agents(AgentAction::Toggle(node.id.clone())), true),
-            item("Skills…", Action::Agents(AgentAction::Skills(node.id.clone())), self.canvas_agents_unavailable().is_none()),
-            item("Groups it watches…", Action::PassiveEdit(node.id.clone(), PassiveField::Groups), true),
-            item("All canvas agents", Action::Agents(AgentAction::Panel), true),
+            item(if alive && !running { "Focus chat" } else { "Chat" }, "Enter", Action::Agents(AgentAction::Chat(id.clone())), !external),
+            item("Message…", "", Action::MessagePassive(id.clone()), !passive.disabled),
+            item("Settings", "", Action::Agents(AgentAction::Show(id.clone())), true),
+            item("Run now", "", Action::PassiveRun(id.clone()), !external && !passive.disabled),
+            item(if passive.paused { "Resume" } else { "Pause" }, "", Action::PassivePause(id.clone()), !passive.disabled),
+            item(if passive.disabled { "Enable" } else { "Disable" }, "", Action::Agents(AgentAction::Toggle(id.clone())), true),
+            item("Instructions…", "", Action::Agents(AgentAction::Instructions(id.clone())), true),
+            item("Inspect transcript", "", Action::Inspect(id.clone()), self.transcript_request(&id).is_some()),
+            item("Rename", "R", Action::Rename(crate::dialogs::Target::Node(id.clone())), true),
+            item("Stop run", "X", Action::Agents(AgentAction::Stop(id.clone())), alive || running),
+            item("All canvas agents", "", Action::Agents(AgentAction::Panel), true),
         ]
     }
 }
@@ -752,7 +961,7 @@ mod tests {
         };
         let state = |p: &Passive, v: &PassiveView| agent_state(p, Some(v), false, None);
         assert_eq!(state(&base, &view(&|_| {})), AgentState::Monitoring);
-        assert_eq!(agent_state(&Passive { subscribe: vec![], ..base.clone() }, None, false, None), AgentState::Waiting, "no triggers: messages and Run now only");
+        assert_eq!(agent_state(&Passive { subscribe: vec![], ..base.clone() }, None, false, None), AgentState::Waiting, "no triggers: only when you talk to it");
         assert_eq!(state(&Passive { disabled: true, ..base.clone() }, &view(&|v| v.running = true)), AgentState::Off, "off wins");
         assert_eq!(agent_state(&base, None, false, Some("x".into())), AgentState::Unavailable("x".into()));
         assert_eq!(state(&Passive { paused: true, ..base.clone() }, &view(&|v| v.running = true)), AgentState::Working(1), "a run in progress finishes first");
@@ -812,8 +1021,10 @@ mod tests {
                 let prefix = pattern.strip_suffix(".*");
                 assert!(catalog.iter().any(|c| c == pattern || prefix.is_some_and(|p| c.starts_with(&format!("{p}.")))), "{} subscribes to unknown {pattern}", template.name);
             }
+            assert!(!template.rules.trim().is_empty() && !template.about.is_empty(), "{} prefills real instructions", template.name);
         }
-        assert!(TEMPLATES.iter().any(|t| t.name == "Custom" && t.subscribe.is_empty()));
+        // No template is needed: the dialog starts blank (no triggers), Start from… only prefills.
+        assert!(!TEMPLATES.iter().any(|t| t.name == "Custom" || t.name == crate::agent_form::BLANK));
         assert_eq!(slugify("PR coordinator (canvas)"), "pr-coordinator-canvas");
     }
 
@@ -859,8 +1070,15 @@ mod tests {
         // Viewing it (panel row, box, sidebar) selects the same box and launches nothing.
         app.run(Action::Agents(AgentAction::Show("w".into())));
         assert_eq!((app.selection.clone(), app.right_detail.clone()), (vec!["w".to_owned()], Some(RightDetail::Passive("w".into()))));
+        app.view_node("w");
+        app.select_node("w", false);
+        assert!(!sent.try_iter().any(|m| matches!(m, ClientMsg::Launch { .. })), "viewing never launches");
+        // The explicit start (a double-click, Enter, Chat) opens its conversation, not beside its run.
         app.start_node("w");
-        assert!(!sent.try_iter().any(|m| matches!(m, ClientMsg::Launch { .. })), "inspecting never launches");
+        assert!(!sent.try_iter().any(|m| matches!(m, ClientMsg::Launch { .. })), "a run is in progress: its chat waits");
+        app.bus.passive.insert("k-w".into(), crate::bus::PassiveView::default());
+        app.start_node("w");
+        assert!(sent.try_iter().any(|m| matches!(m, ClientMsg::Launch { ref id, .. } if id == "w")), "its chat");
         // A on the canvas opens the management panel (the top bar's ◎ Agents does the same).
         app.right_detail = None;
         app.set_focus(crate::app::Focus::Canvas);
