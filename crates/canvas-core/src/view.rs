@@ -345,9 +345,9 @@ pub struct CanvasModel {
     pub clock_ms: u64,
     /// Animations stand still at `clock_ms` (the `freeze` hook, tests).
     pub frozen: bool,
-    /// The dot grid's pulse while a session works (`crate::pulse`); `None`:
-    /// the dots keep their normal colour.
-    pub pulse: Option<crate::pulse::Fade>,
+    /// The working glow around working session boxes (`crate::glow`);
+    /// `None`: the dots keep their normal colour.
+    pub glow: Option<crate::glow::Glow>,
 }
 
 impl CanvasModel {
@@ -356,16 +356,16 @@ impl CanvasModel {
         if self.frozen { self.clock_ms } else { crate::paths::now_ms() }
     }
 
-    /// How far the grid's dots are lit at `clock_ms` (0: their normal
-    /// colour … `crate::pulse::AMPLITUDE`).
-    pub fn grid_level(&self, clock_ms: u64) -> f32 {
-        self.pulse.map_or(0.0, |fade| fade.level(clock_ms))
+    /// The working glow on the dot at world point (`x`, `y`) at `clock_ms`
+    /// (0: its normal colour … 1).
+    pub fn glow_level(&self, x: f32, y: f32, clock_ms: u64) -> f32 {
+        self.glow.as_ref().map_or(0.0, |g| g.level(x, y, clock_ms))
     }
 
-    /// The grid breathes at `clock_ms` (work runs, or the pulse fades out):
-    /// the GPU client repaints its grid layer at its own pace meanwhile.
-    pub fn grid_busy(&self, clock_ms: u64) -> bool {
-        self.pulse.is_some_and(|fade| fade.on || fade.changing(clock_ms))
+    /// The glow's dots change at `clock_ms` (rings move, a box fades in or
+    /// out): the GPU client repaints its glow layer at its own pace meanwhile.
+    pub fn glow_busy(&self, clock_ms: u64) -> bool {
+        self.glow.as_ref().is_some_and(|g| g.busy(clock_ms))
     }
 
     /// Loop dots move on their own (motion on, a running clock): the front
@@ -381,6 +381,11 @@ impl CanvasModel {
     /// World → screen (fractional cells).
     pub fn to_screen(&self, wx: f32, wy: f32) -> (f32, f32) {
         (self.area.x as f32 + (wx - self.origin.0) * self.scale, self.area.y as f32 + (wy - self.origin.1) * self.scale)
+    }
+
+    /// Screen (fractional cells) → world.
+    pub fn to_world(&self, sx: f32, sy: f32) -> (f32, f32) {
+        (self.origin.0 + (sx - self.area.x as f32) / self.scale, self.origin.1 + (sy - self.area.y as f32) / self.scale)
     }
 
     /// A world rectangle on screen (fractional cells).
@@ -551,16 +556,22 @@ impl CanvasModel {
             self.tick,
             self.empty
         )];
-        // The grid's pulse on a fixed clock, while it shows (else it is the time of the run).
-        if let Some(fade) = self.pulse.filter(|_| self.frozen && self.grid_level(self.clock_ms) > 0.0) {
-            let level = self.grid_level(self.clock_ms);
-            out.push(format!(
-                "grid pulse on={} envelope={} level={} color={}",
-                fade.on,
-                num(fade.envelope(self.clock_ms)),
-                num(level),
-                color_name(crate::pulse::dot_color(level))
-            ));
+        // The working glow on a fixed clock, while it shows (else it is the time of the run).
+        let shows = |s: &crate::glow::Source| s.fade.envelope(self.clock_ms) > 0.0 || s.rings(self.clock_ms).any(|(_, strength)| strength > 0.0);
+        if let Some(glow) = self.glow.as_ref().filter(|g| self.frozen && g.sources.iter().any(shows)) {
+            out.push(format!("glow moving={} busy={}", glow.moving, glow.busy(self.clock_ms)));
+            for s in &glow.sources {
+                let rings: Vec<String> = s.rings(self.clock_ms).map(|(front, strength)| format!("{}@{}", num(front), num(strength))).collect();
+                out.push(format!(
+                    "  source {} rect={} on={} envelope={} rings=[{}] near={}",
+                    s.id,
+                    wrect(s.rect),
+                    s.fade.on,
+                    num(s.fade.envelope(self.clock_ms)),
+                    rings.join(" "),
+                    color_name(crate::glow::dot_color(s.level_at(2.0, self.clock_ms, glow.moving)))
+                ));
+            }
         }
         for g in &self.groups {
             out.push(format!(

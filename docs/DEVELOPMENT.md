@@ -420,9 +420,9 @@ canvas it branches on `app.render_mode`:
 - `RenderMode::Cells` (the TUI): `ui_canvas.rs:draw_canvas` draws characters.
 - `RenderMode::Gpu` (the GUI): `ui_canvas.rs:canvas_model` returns a
   `view::CanvasModel` in world units (boxes, decks, edges, groups with chips,
-  loops, effects, the grid pulse, the halo), which
+  loops, effects, the working glow, the halo), which
   `canvas-gui/src/canvas.rs:paint` draws at any scale (with its own layers:
-  `paint_grid`, `paint_loops`).
+  `paint_glow`, `paint_loops`).
 
 Both build the same `view::BoxModel` per box (`ui_canvas.rs:box_model`,
 `deck_model`), and `paint_box` / `paint_model` turn a model into characters
@@ -473,7 +473,7 @@ behaviour: docs/NOTEBOOK-TASKS.md.
 | File | What it does |
 |---|---|
 | `canvas-gui/src/main.rs` | arguments (`--test-hooks`, `--size COLSxROWS`, …), connecting, the older-service questions |
-| `shell.rs` | the windows and the event loop: each window has its own `App`; frames only when something changed; damage frames that repaint only the tiles; the loop and grid layers; `gui_key`; the hooks (`Shell::on_hook` for process-wide commands, the window's `hook` for the rest) |
+| `shell.rs` | the windows and the event loop: each window has its own `App`; frames only when something changed; damage frames that repaint only the tiles; the loop and glow layers; `gui_key`; the hooks (`Shell::on_hook` for process-wide commands, the window's `hook` for the rest) |
 | `chrome.rs` | the core's cell buffer (toolbar, sidebar, panels, dialogs) as quads, crisp box drawing and text runs |
 | `canvas.rs`, `effects.rs`, `tiles.rs`, `images.rs` | the canvas model, effects, terminal tiles, image textures |
 | `webview.rs`, `webpane.rs` | the WebView2 view for HTML reports and notes; `webpane.rs` holds its decisions as plain functions with tests (`webpane/tests.rs`), `webview.rs` wires them to WebView2 |

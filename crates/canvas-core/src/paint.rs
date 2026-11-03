@@ -28,9 +28,9 @@ pub const ACCENT: Color = Color::Rgb(88, 166, 255);
 pub const SELECT: Color = Color::Rgb(240, 246, 252);
 pub const MUTED: Color = Color::Rgb(110, 118, 129);
 pub const FAINT: Color = Color::Rgb(56, 62, 72);
-/// The tone the dot grid breathes towards while agents work (`crate::pulse`):
-/// a light, cool grey-blue, `MUTED` a third of the way to `ACCENT`.
-pub const GRID_LIT: Color = Color::Rgb(103, 134, 171);
+/// The dot grid's colour at the top of the working glow (`crate::glow`): the
+/// working accent a little lighter, about 2.75 times as bright as `FAINT`.
+pub const GLOW_LIT: Color = Color::Rgb(110, 178, 255);
 pub const TEXT: Color = Color::Rgb(201, 209, 217);
 pub const PANEL: Color = Color::Rgb(22, 27, 34);
 pub const PANEL_HI: Color = Color::Rgb(33, 38, 45);

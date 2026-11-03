@@ -87,8 +87,8 @@ notices, drags, unsaved changes, a paste preview, a stack transition), every 80 
 otherwise. A frame is drawn only when the app needs one: at once after input
 (and for the echo of a keystroke in the focused terminal), otherwise paced to
 the display's refresh rate. Moving loop dots ask the core for nothing: the
-window draws them itself in *loop frames* (below), and the breathing dot
-grid in *grid frames*. Presentation uses Mailbox (Immediate, then Fifo,
+window draws them itself in *loop frames* (below), and the working glow's
+rings in *glow frames*. Presentation uses Mailbox (Immediate, then Fifo,
 as fallbacks) and never blocks the UI thread. `after_draw` sends
 subscriptions, tile sizes and tracking exactly as in the TUI.
 
@@ -116,18 +116,25 @@ which is about 30 frames/s at 100 % zoom and down to 20 when zoomed out),
 never faster than the display; with no moving loop in view (scrolled away,
 reduced motion, frozen, minimized) there are none.
 
-**Grid frames.** The canvas background and its dot grid have a layer of
-their own too (`scene::GRID`, under the groups). While the grid breathes (a
-session works, or the pulse fades out: `CanvasModel::grid_busy`) the window
-repaints that layer alone at the time of drawing, at most every 66 ms (15
-frames/s) and only when the dots' colour in whole 8-bit steps changed
-(`canvas::dot_rgb8`), so near the top and the bottom of a breath, where it
-barely changes, fewer; a loop or terminal frame drawn anyway takes the grid
-along when it is due within 20 ms. Like loop frames they skip the core's
-view, the rescans, `after_draw` and UI Automation. Nothing working, reduced
-motion, effects off, the setting off, frozen or minimized: none (the
-working spinners' own frames are unchanged; with nothing else busy they
-come at about 2–5 a second, too few to carry the pulse).
+**Glow frames.** The working glow's lit dots have a layer of their own
+(`scene::GLOW`, over the background and its dot grid, `scene::GRID`, which is
+drawn in full frames only, and under the groups, connectors and boxes).
+While its rings move or a box's glow fades in or out
+(`CanvasModel::glow_busy`) the window repaints that layer alone at the time
+of drawing, at most every 33 ms (30 frames/s: a ring's band takes about
+350 ms to pass a dot, so a dot brightens over about ten frames), and
+uploads it only when its lit dots changed (`canvas::glow_print`, a
+fingerprint of their places, 8-bit colours and sizes); a loop or terminal
+frame drawn anyway takes the glow along when it is due within 12 ms. Only
+the grid dots within reach of a working box (and in view) are computed
+(`canvas::lit_dots`: each source's reach rectangle, `glow::REACH` around its
+box, is cut to the view and its grid points enumerated; the rest of the grid
+is never looked at), and only those whose colour differs from the normal
+one are drawn. Like loop frames they skip the core's view, the rescans,
+`after_draw` and UI Automation. Nothing working, reduced motion (a static
+glow, drawn in full frames), effects off, the setting off, frozen or
+minimized: none (the working spinners' own full frames are unchanged, about
+4–5 a second).
 
 **Inline images.** The Ghostty engine keeps Kitty graphics (storage limit
 64 MiB per terminal; only inline data: the file, temporary-file and
@@ -178,7 +185,8 @@ removed) and the remote paths are pasted. A folder dropped on the canvas opens
 the new-session dialog in it (local mode).
 
 **Drawing (`scene.rs`, `quads.rs`, `chrome.rs`, `canvas.rs`, `tiles.rs`).** A
-frame is 12 layers (base chrome · canvas: background and dot grid, groups and
+frame is 13 layers (base chrome · canvas: background and dot grid · the
+working glow's lit dots · groups and
 connectors · three box levels · loop arcs · canvas top · terminals · chrome over content · dialogs ·
 HUD), each drawn as quads, then text, then overlay quads.
 Quads come from one instanced SDF pipeline (rounded rectangles with solid or
@@ -323,33 +331,49 @@ and size.
   stand still, and loops switch at once. The `freeze` hook holds the clock
   at tick × 80 ms with no offsets per box (golden screenshots show every
   comet at the same place mid-lap, whatever the boxes' ids).
-- *Grid pulse* (`CanvasModel::pulse`, `grid_level`, `grid_busy`;
-  canvas-core `pulse.rs`, canvas-gui `canvas.rs`): while at least one
-  session of the canvas is working (the toolbar's "⠋ N working": session
-  boxes whose status is working, which includes a session whose subagents
-  still run) the background dots breathe. The level is a pure function of
-  the animation clock: a raised cosine with a 3 s period (`pulse::breath`:
-  the normal colour at the start of every period, the top halfway), times
-  an envelope that fades in when work starts and out when the last working
-  session stops (800 ms, eased in and out; a change mid-way turns it around
-  where it is: `pulse::Fade`), times the amplitude 0.35: at the top the
-  dots are 35 % of the way from their colour `FAINT` (56, 62, 72) to
-  `GRID_LIT` (103, 134, 171), a light, cool grey-blue (`MUTED` a third of
-  the way to `ACCENT`): (72, 87, 107), about 40 % brighter and a touch
-  bluer, still well below the muted secondary text. Uniform across the grid
-  (no wave), the same at every zoom (the grid only thins out), and
-  continuous across frames, pans, zooms and work moving from one session to
-  another (a switch between working sessions changes nothing). App state:
-  `VisualState::pulse` (the fade), turned when a model is built
-  (`App::grid_pulse`); *reduced motion*, *effects off*, *Settings › Dot grid
-  pulse* off (`settings.json` `grid_pulse`, this machine, next to Effects;
-  `COPILOT_CANVAS_GRID_PULSE=on|off` overrides it) and the `freeze` hook
-  (the dots hold their normal colour, so golden screenshots are unchanged)
-  give no pulse at once, without a fade. The TUI draws the same level in
-  four steps (`pulse::tui_color`: the normal colour and three lighter ones)
-  on the frames its working spinners draw anyway (every 80 ms), and returns
-  to the normal colour at once when work stops (it has no frames for a
-  fade-out); its colours are 24-bit like the rest of its palette.
+- *Working glow* (`CanvasModel::glow`, `glow_level`, `glow_busy`;
+  canvas-core `glow.rs`, canvas-gui `canvas.rs`; WI-027, replacing WI-023's
+  uniform breathing of the whole grid): every session box whose status is
+  working (a session whose subagents still run counts; boxes in a deck or
+  hidden have none, a deck's session covers it; needs-you and failed have
+  their own styling and no glow) releases energy into the dots around it.
+  Each box is a `glow::Source` (its id, the rect it is drawn at, with the
+  drag offset, and its fade); the level of a dot (0: its normal colour
+  `FAINT` (56, 62, 72); 1: `GLOW_LIT` (110, 178, 255), the working accent a
+  little lighter, about 2.75 times as bright) is a pure function of its
+  distance from the box's outline and the animation clock. The distance is
+  measured from the rectangle, not the centre (`glow::distance`, a row
+  counting two cells so the rings are round on screen), in world units, so
+  the glow looks the same at every zoom. *Rings:* a new one leaves the box
+  every 1.4 s (`PERIOD_MS`, offset per box from its id so neighbours do not
+  march in step), born just inside the outline (its front at −3.5 so its
+  band grows out of the box without a jump) and travelling at 10 world units
+  a second (`SPEED`) for 1.6 s (`LIFE_MS`): its outer edge reaches 16 units
+  (`REACH`), its front 12.5; its band is a raised cosine 3.5 units each side
+  of the front (`BAND`), and its strength falls from 1 as it leaves the box
+  to 0 at the end (`1 − (front / 12.5)²`): a dot 2 to 6 units out reaches
+  0.75–0.95 as a ring passes, 10 units out about 0.35. *Steady glow:* 0.3 at
+  the outline, falling quadratically to 0 at 8 units (`NEAR`). One box
+  combines its rings and steady glow by maximum, several boxes too (never a
+  sum, so nothing blows out). In the GUI a lit dot is also larger: radius ×
+  (1 + 0.5 level). *Fades:* per box over 0.7 s (`FADE_MS`, eased in and
+  out; `glow::Fade`, turned when a model is built, `VisualState::glow`); a
+  working box's rings and steady glow follow the envelope now, a stopped
+  box's rings keep the strength they left with, so its last ring travels on
+  and fades as it goes (the glow ends 0.7 + 1.6 s after the stop:
+  `Fade::over_at`), a change mid-way turns around where it is. Boxes off
+  screen whose reach overlaps the view still light the dots near them
+  (`App::working_glow` culls the rest). *Reduced motion:* no rings and no
+  fades, a still, soft glow: 0.6 at the outline falling to 0 at 14 units
+  (`STILL`), drawn in full frames only. *Effects off*, *Settings › Working
+  glow* off (`settings.json` `grid_pulse`, this machine, next to Effects;
+  `COPILOT_CANVAS_GRID_PULSE=on|off` overrides it; both named after the
+  pulse it replaced) and the `freeze` hook (golden screenshots unchanged):
+  none, at once. The TUI draws the dots near working boxes in four steps
+  (`glow::tui_color`: the normal colour and three lighter ones), rings
+  included, on the frames its working spinners draw anyway (every 80 ms), no
+  fades (it has no frames for them: the dots return at once when a box
+  stops); its colours are 24-bit like the rest of its palette.
 
 **Fonts (`text.rs`).** Only the needed font files are loaded (Cascadia Mono,
 Consolas, Segoe UI and Symbol, Segoe UI Emoji, Microsoft YaHei, Yu Gothic,
@@ -672,7 +696,7 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
 | `--perf` | frame time (view, scene, encode), present and acquire, input → present, keystroke → echo → present, service round trip |
 | Decks | Subagent boxes are folded into a slim deck beneath their session by default (*Settings › Subagents*: stacked or shown; a session's own choice wins). `K` (on a session, a box of its, or a box in its deck) unfolds everything the session has folded, else folds its subagent boxes and subsessions into one deck; the session menu offers *Show/Stack subagents*, *Unstack/Stack subsessions* and, with both, *Unfold/Stack all*. A click on a subagent deck lists its subagents in the session's details panel, a click on a stack shows its top card (neither starts anything); a drag moves the session with its deck; a double-click unfolds it; `H` hides or shows subsessions (with their subagent boxes), `J` every subagent box (folded ones too), each on its own (toolbar **↳ N hidden** and **◇ N hidden**) |
 | Hidden area | right-click a subsession or subagent box › *Hide* (*Hide N* on a selection; a deck's menu; the SUBAGENTS list's *Hide*); a click on a parent's hidden pill or a toolbar counter lists the hidden boxes with *Show* (per box, per parent, all); the sidebar marks them *hidden* |
-| Effects | a click on an effect or its box clears it (in every window) and only selects the box; *Settings › Effects*: on · reduced motion · off; *Settings › Dot grid pulse*: on · off (the dots breathe while a session works) |
+| Effects | a click on an effect or its box clears it (in every window) and only selects the box; *Settings › Effects*: on · reduced motion · off; *Settings › Working glow*: on · off (the dots around a working session glow in rings) |
 | Group chips | ⟲ N passive and ⟲ + passive open the group's passive panel (each session's state with Open / Run now / Pause; empty: + Create a passive session); ✎ Notes opens the Notebook at the group's folder (✎ Set folder… asks for one); ☑ 4 · 2▸ · 1◇ opens its first linked board in Tasks, gold while proposals wait (☑ + creates or links one) |
 | Spaces | the toolbar's tabs or Ctrl+1/2/3; Alt+← / Alt+→, Alt+, / Alt+. and the mouse's back / forward buttons walk the history; Ctrl+P opens Go to; Alt+N writes a quick note; each window remembers its space |
 | Notebook pane | a rendered note, HTML note or picture shows in the HTML view; a click into it gives it the keyboard (scrolling, selecting, Ctrl+C stay in the page; the canvas's keys above, Ctrl+E/W/S/F/N, Ctrl+Tab and F6 reach the canvas; Esc gives the keyboard back); a web link asks first, `[[links]]` and todo ids open in the app; *Print / PDF* opens the print dialog; *Scripts: off/on* (HTML notes) switches a note's own scripts |
@@ -797,21 +821,30 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   ViewModel snapshots `looping-sessions` and
   `looping-sessions-reduced-motion` pin both renderings; parity row 7b
   checks PNG captures against the clock.
-- `copilot-canvas bench --client gui --pulse [--seconds S]`: four sessions
-  from synthetic histories in view; nothing working, then one working with
-  the grid pulse on, off (the frames as before the pulse) and with reduced
-  motion, its fade-out after the session stops, and idle again: CPU (% of
-  one core and of the machine), frames per second by kind (grid frames,
-  full frames, grid repaints), frame times (§4). Unit tests (canvas-core
-  `pulse`) check the level (bounded, periodic, the normal colour at the
-  bottom of a breath, continuous at any frame rate, the fades turning
-  around mid-way, a switch between working sessions changing nothing),
-  that the model carries it while a session (or its subagent) works and
-  not with reduced motion, effects off, the setting off or the `freeze`
-  hook, the TUI's steps and its return at once, the grid frames' window
-  and the Settings row; canvas-gui checks the dots' colour; the snapshot
-  `grid-pulse` pins the model at the top of a breath; parity row 51
-  checks PNG captures against the clock.
+- `copilot-canvas bench --client gui --pulse [--seconds S]`: six sessions
+  from synthetic histories in view; nothing working, then one and five
+  working with the working glow on and off (the frames as before the glow),
+  five with reduced motion (the static glow), the fade-out after they stop,
+  and idle again: CPU (% of one core and of the machine), frames per second
+  by kind (glow frames, full frames, glow repaints), frame times, sources
+  and lit dots (§4). Unit tests (canvas-core `glow`) check that a ring
+  leaves the outline and travels outward fading as it goes, a new one every
+  period; that the glow is bounded, zero beyond its reach and when nothing
+  works, brighter near the box than far, and the same on every side
+  (measured from the rectangle); several boxes combining by maximum; the
+  same levels at any frame rate and no jumps between frames; the fades (in
+  from nothing, the last ring travelling on, nothing new after the fade-out,
+  turning around mid-way); reduced motion's static glow; the TUI's steps;
+  that the model carries a source per working box in reach (off-screen
+  boxes within reach, a subagent running, not needs-you), fades a stopped
+  box out and then forgets it, none with effects off, the setting off or
+  the `freeze` hook; that the TUI lights only dots near the box, in rings,
+  and returns at once; and the Settings row. canvas-gui checks that only
+  dots near a working box are lit (and larger, toward the working blue),
+  that moving rings change the layer and a static glow does not, and the
+  hooks' samples; the snapshot `working-glow` pins the model on a fixed
+  clock (a working box, one fading out, an idle one); parity row 51 checks
+  PNG captures against the clock.
 - The parity suite's rows V1–V6 and the `visuals` golden screenshot cover
   dust, stacks (with their transitions' end states), hidden subsessions,
   effects and the group chips; row 46 covers subagent boxes folded by
@@ -820,9 +853,9 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   `subagent-deck-50`, `subagent-deck-details` and `subagent-deck-unfolded`
   (`docs/PARITY.md`); row 53 covers `H` and `J` each on its own (PNG
   capture `hide-both`), row 54 the hidden area (`hide-area`,
-  `hide-area-list`); row 51 covers the dot grid's pulse (PNG captures
-  `pulse-top-*`, `pulse-bottom-*`, `pulse-reduced-*`, `pulse-effects-off`,
-  `pulse-setting-off`, `pulse-nothing-works`).
+  `hide-area-list`); row 51 covers the working glow (PNG captures
+  `glow-effects-off`, `glow-ring-near-*`, `glow-ring-far-*`,
+  `glow-reduced-*`, `glow-setting-off`, `glow-nothing-works`).
 - `CANVAS_GUI_TRACE=1` prints start-up milestones (and GPU events) on stderr.
 
 **Test hooks.** With `--test-hooks` the GUI prints a pipe name
@@ -840,13 +873,13 @@ one (`"window": n`, the creation index):
 | `{"cmd":"wheel","dir":"up\|down\|left\|right","x":…,"y":…,"mods":["ctrl"]}` | one wheel notch |
 | `{"cmd":"drop","paths":["…"],"x":…,"y":…}` | files dropped at a cell |
 | `{"cmd":"screen"}` | `lines`: the screen as text (chrome, canvas as TUI characters, terminal text, dialogs) |
-| `{"cmd":"tree"}` | automation tree: click targets with their text, canvas boxes (status, border, prefix, loop, drawing `level`, `dust`, `deck`, `hidden`, `alpha`, the todo `badge`), `loop_arcs` (box, lap, grow, ending, moving, the dot now), `grid_pulse` (level, colour, on, envelope, busy, now), effects (kind, badge, rect) and groups (with their chips: label, rect, `fixed`, `attention`, action) with screen rects, tiles (tint, image placements as cell rects), links, terminal selection, notice, focus, modal, paste preview, `html` (the published pane's id and rect), `space` (`canvas`, `notebook`, `tasks`), and `access`: the UI Automation nodes |
+| `{"cmd":"tree"}` | automation tree: click targets with their text, canvas boxes (status, border, prefix, loop, drawing `level`, `dust`, `deck`, `hidden`, `alpha`, the todo `badge`), `loop_arcs` (box, lap, grow, ending, moving, the dot now), `glow` (active, moving, busy, its sources with their box, fade and rings, how many dots it lights, now), effects (kind, badge, rect) and groups (with their chips: label, rect, `fixed`, `attention`, action) with screen rects, tiles (tint, image placements as cell rects), links, terminal selection, notice, focus, modal, paste preview, `html` (the published pane's id and rect), `space` (`canvas`, `notebook`, `tasks`), and `access`: the UI Automation nodes |
 | `{"cmd":"access"}` | the UI Automation nodes (role, name, description, value, rect, children, focus) and whether a UIA client listens |
-| `{"cmd":"png","path":"…"}` | renders the current frame offscreen to a PNG (works on a locked workstation); `clock_ms`: the animation clock it was drawn at; `loops`: each loop arc's dot (px and cells), lap and bounds at that instant; `grid`: the dot grid's level and colour then, and up to 24 dots (px centres) clear of groups and boxes where it can be sampled |
-| `{"cmd":"freeze","tick":0}`, `{"cmd":"freeze"}` | animations (spinners, loop dots, pulsing borders, effects mid-burst) hold frame `tick` (the loop clock at tick × 80 ms) and the dot grid its normal colour; without it they run again |
+| `{"cmd":"png","path":"…"}` | renders the current frame offscreen to a PNG (works on a locked workstation); `clock_ms`: the animation clock it was drawn at; `loops`: each loop arc's dot (px and cells), lap and bounds at that instant; `glow`: the working glow then (sources, rings, lit dots) and up to 96 grid dots clear of groups and boxes where colours can be sampled, nearest a box first plus a quarter far ones, each with its px centre, nearest box, distance from its outline (world units) and the level and colour the model gives it |
+| `{"cmd":"freeze","tick":0}`, `{"cmd":"freeze"}` | animations (spinners, loop dots, pulsing borders, effects mid-burst) hold frame `tick` (the loop clock at tick × 80 ms) and there is no working glow; without it they run again |
 | `{"cmd":"motion","value":"on\|reduced\|off"}` | *Settings › Effects* for this window (not saved) |
-| `{"cmd":"grid_pulse","value":"on\|off"}` | *Settings › Dot grid pulse* for this window (not saved) |
-| `{"cmd":"size"}`, `{"cmd":"perf","reset":true}` | cells, cell size, DPI, adapter (and details, `software`), present mode; frame statistics (all, full, damage, loop and grid frames, with counts, and `grid_paints`: grid layer repaints in any frame), round trips, CPU, memory, first paint, textures, GPU rebuilds |
+| `{"cmd":"grid_pulse","value":"on\|off"}` (also `"cmd":"glow"`) | *Settings › Working glow* for this window (not saved) |
+| `{"cmd":"size"}`, `{"cmd":"perf","reset":true}` | cells, cell size, DPI, adapter (and details, `software`), present mode; frame statistics (all, full, damage, loop and glow frames, with counts, and `glow_paints`: glow layer repaints in any frame), round trips, CPU, memory, first paint, textures, GPU rebuilds |
 | `{"cmd":"device-lost"}`, `{"cmd":"device-lost","destroy":true}` | rebuilds the GPU objects as after a lost device (`destroy`: the device is really destroyed first); answers the time taken |
 | `{"cmd":"dpi","scale":1.5}` | a DPI change to `scale` (without: the window's own) |
 | `{"cmd":"place","x":…,"y":…,"width":…,"height":…,"maximized":bool}`, `{"cmd":"placement"}` | moves, sizes or maximizes the window; its position, size, monitor, the tracked and saved placement, the monitors' work areas |
@@ -927,27 +960,37 @@ runs above §9's 15 frames/s for animations because a loop frame repaints
 one small layer (under half the cost of a full frame) and the dot moves
 about 2 px a frame; the CPU stays within §9's 2 %.
 
-**Grid pulse** (`bench --client gui --pulse --seconds 20`, two runs shown as
-run 1 · run 2, release, RTX 3070, 125 % DPI, 170 × 46 cells, 12 logical
-CPUs, the machine in use meanwhile, 2026-10-31; four sessions from
-synthetic histories fitted in view, one of them made to work). "Pulse off"
-is the same window with *Settings › Dot grid pulse* off: the frames as
-before the pulse existed, the working spinner's full frames alone:
+**Working glow** (`bench --client gui --pulse --seconds 10`, two runs shown
+as run 1 · run 2, release, RTX 3070, 125 % DPI, 170 × 46 cells (1700 × 1012 px), 12
+logical CPUs, the machine in use meanwhile, 2026-11-02; six sessions from
+synthetic histories fitted in view, one and then five made to work). "Glow
+off" is the same window with *Settings › Working glow* off: the frames as
+before any glow, the working spinners' full frames alone:
 
-| Phase | Frames/s (grid · full) | Grid frame p50 / p95 | CPU (% of one core · of the machine) | |
+| Phase | Frames/s (glow · full) | Glow frame p50 / p95 | CPU (% of one core · of the machine) | |
 |---|---|---|---|---|
-| Nothing working | 0.5 · 0.5 (0 · 0.5) | — | 0.23 · 0.00 (0.02 · 0.00) | ✓ no extra frames |
-| One session working, pulse on | **15.6 · 15.7** (11.1 · 11.3 grid, 4.5 · 4.4 full) | 0.79 / 0.91 · 0.64 / 0.81 ms | **1.64 · 1.56** (0.14 · 0.13 of the machine) | ✓ ≤ 15 frames/s for it, ≤ 2 % |
-| One session working, pulse off (before) | 4.5 · 4.6 (0 grid) | — | 0.62 · 0.54 (0.05 · 0.05) | |
-| One session working, reduced motion | 4.5 · 4.4 (0 grid) | — | 0.31 · 0.70 | ✓ no pulse |
-| Fade-out, the 1.5 s after the stop was seen | 8.0 · 8.0 (6.7 grid) | 0.75 / 0.88 · 0.67 / 0.80 ms | (too short to measure) | ✓ |
-| Nothing working again | 0.4 · 0.4 (0 grid) | — | 0.31 · 0.23 | ✓ none |
+| Nothing working | 0.5 · 0.5 (0 glow) | — | 0.47 · 0.00 (0.04 · 0.00) | ✓ no extra frames |
+| One working, glow on (51 · 28 lit dots) | **31.2 · 31.2** (26.9 · 26.9 glow, 4.3 · 4.3 full) | 0.66 / 0.87 · 0.63 / 0.79 ms | **2.19 · 2.19** (0.18 · 0.18 of the machine) | ✓ ≤ 2 % of the machine |
+| One working, glow off (before) | 4.7 · 4.7 (0 glow) | — | 0.47 · 0.31 (0.04 · 0.03) | |
+| Five working, glow on (182 · 177 lit dots) | **31.3 · 31.2** (26.9 · 27.0 glow, 4.4 · 4.2 full) | 0.69 / 1.06 · 0.70 / 0.92 ms | **3.90 · 3.12** (0.33 · 0.26 of the machine) | ✓ ≤ 2 % of the machine |
+| Five working, glow off (before) | 4.4 · 4.5 (0 glow) | — | 0.78 · 0.63 (0.07 · 0.05) | |
+| Five working, reduced motion (static glow, 204 lit dots) | 4.5 · 4.6 (0 glow) | — | 0.31 · 0.63 | ✓ no frames for it |
+| Fade-out, the 2.5 s after the stop was seen | 22.8 · 26.4 (22.0 · 25.6 glow) | 0.62 / 0.76 · 0.64 / 0.85 ms | 1.88 · 1.24 | ✓ then none |
+| Nothing working again | 0.4 · 0.4 (0 glow) | — | 0.47 · 0.16 | ✓ none |
 
-The pulse costs about one percent of one core (a twelfth of a percent of
-the machine) on top of the working spinner's frames: grid frames repaint
-one layer of a few hundred dots (under 1 ms, most of it submit and present),
-about 11 times a second (15 at most; fewer near the top and the bottom of a
-breath, where the colour holds). With nothing working there is none.
+The glow costs about 1.7 % of one core with one working box and 2.5–3 %
+with five (a quarter to a third of a percent of the machine) on top of the
+working spinners' frames: glow frames repaint one small layer of the lit
+dots only (under 1 ms, most of it submit and present), 27 times a second
+(30 at most; the rest ride on the spinners' full frames), and only the
+dots within reach of a working box are computed. With nothing working, with
+reduced motion and minimized there are none. Before (WI-023's uniform
+breathing of the whole grid, 2026-10-31): one working session, 15.6 frames/s
+(11.1 grid frames), 1.64 · 1.56 % of one core; the glow runs twice as many
+frames (its rings move) at about a third more CPU. Like loop frames, glow
+frames run above §9's 15 frames/s for animations: each repaints one small
+layer (under half a full frame's cost), a dot needs about ten frames to
+brighten smoothly as a ring passes, and the CPU stays within §9's 2 %.
 
 The burn probe's priority manager matters less here than in the TUI's
 measurement (README: p99 1.26 s → 14 ms with 40 burners on a busy 16-core
@@ -1053,7 +1096,7 @@ view over the viewer) with `CANVAS_GUI_SCREENS`.
 - **Box levels:** three; a fourth box stacked on three overlapping ones
   shares the top level, so its labels can still mix with the third's.
 - **Damage frames** cover terminal output, moving loop dots and the
-  breathing dot grid; the rest of
+  working glow's rings; the rest of
   the canvas and the chrome are still rebuilt whole (a spinner step on the
   canvas is a full frame, 2–5 ms). No scissored partial presents: on WARP
   every frame still rasterizes the whole window.

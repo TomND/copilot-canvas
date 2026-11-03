@@ -384,23 +384,29 @@ fn looping_sessions_in_reduced_motion() {
     check("looping-sessions-reduced-motion", &mut looping(canvas_core::view::Motion::Reduced), BOTH);
 }
 
-/// A session at work: the GPU model's dot grid at the top of a breath (the
-/// pulse faded in a while ago; a fixed clock). The TUI's dots take the
-/// pulse's top colour (these snapshots hold characters, not colours: the
-/// `pulse` unit tests pin those).
+/// The working glow on a fixed clock: one session at work (faded in a while
+/// ago: its ring and steady glow), one that stopped 300 ms ago (its glow
+/// fading out, its last ring travelling on) and an idle one (none). The TUI's
+/// dots near them take lit colours (these snapshots hold characters, not
+/// colours: the `glow` unit tests pin those).
 #[test]
-fn grid_pulse_while_a_session_works() {
+fn working_glow_around_working_sessions() {
+    use canvas_core::glow::Fade;
     let mut doc = Doc::default();
     doc.nodes.push(node("busy", "Working on it", 1, 1));
-    doc.nodes.push(node("quiet", "Idle one", 40, 1));
+    doc.nodes.push(node("done", "Just stopped", 40, 1));
+    doc.nodes.push(node("quiet", "Idle one", 1, 14));
     doc.view.x = -1;
     doc.view.y = 0;
     let mut app = app(doc, false);
     app.sessions.insert("busy".into(), summary("busy", Activity::Working, true));
+    app.sessions.insert("done".into(), summary("done", Activity::Idle, true));
     app.sessions.insert("quiet".into(), summary("quiet", Activity::Idle, true));
-    app.visual.pulse = canvas_core::pulse::Fade { on: true, since: Some((NOW - 10_000, 0.0)) };
-    app.visual.clock_ms = Some(NOW + canvas_core::pulse::PERIOD_MS / 2);
-    check("grid-pulse", &mut app, BOTH);
+    let clock = NOW + 700;
+    app.visual.glow.insert("busy".into(), Fade { on: true, since: Some((NOW - 10_000, 0.0)) });
+    app.visual.glow.insert("done".into(), Fade { on: false, since: Some((clock - 300, 1.0)) });
+    app.visual.clock_ms = Some(clock);
+    check("working-glow", &mut app, BOTH);
 }
 
 /// Two groups: one with a folder (chips lit), one without (dim chips); the

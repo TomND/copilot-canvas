@@ -22,7 +22,8 @@ pub struct Settings {
     /// "off" (unset: reduced when Windows' animations are off, else on).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effects: Option<String>,
-    /// The canvas's dot grid pulses while agents work (unset: on).
+    /// *Settings › Working glow*: the dots around working sessions glow
+    /// (unset: on). Named after the dot grid pulse it replaced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grid_pulse: Option<bool>,
 }
@@ -111,7 +112,7 @@ impl Settings {
         matches!(value.as_str(), "on" | "reduced" | "off").then_some(value)
     }
 
-    /// The dot grid's pulse while agents work: `COPILOT_CANVAS_GRID_PULSE`
+    /// The working glow around working sessions: `COPILOT_CANVAS_GRID_PULSE`
     /// ("on"/"off"), else the setting, else on.
     pub fn grid_pulse(&self) -> bool {
         let env = std::env::var("COPILOT_CANVAS_GRID_PULSE").ok().map(|v| v.trim().to_ascii_lowercase());

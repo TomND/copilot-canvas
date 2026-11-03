@@ -40,9 +40,9 @@ pub enum Probe {
     /// CPU and frames with looping sessions in view (their dots moving),
     /// while panning, out of view, and with reduced motion.
     Loops,
-    /// CPU and frames of the dot grid's pulse: nothing working, one session
-    /// working with the pulse on, off (as before it existed) and with reduced
-    /// motion, its fade-out, and idle again.
+    /// CPU and frames of the working glow: nothing working, one and five
+    /// sessions working with the glow on and off (as before it existed),
+    /// reduced motion, the fade-out, and idle again.
     Pulse,
 }
 
@@ -882,31 +882,32 @@ fn loops(instance: &Instance, root: &Path, options: &Options) -> Result<Value> {
     }))
 }
 
-/// `--pulse`: the dot grid's pulse. A group of four sessions from synthetic
-/// histories (this process holds their in-use locks), fitted in view: CPU
-/// (% of one core and of the machine), frames per second and frame times with
-/// nothing working; with one session working and the pulse on, off (the
-/// frames as before it existed: the spinners') and with reduced motion; the
-/// frames of its fade-out after the session stops; idle again.
+/// `--pulse`: the working glow. Six sessions from synthetic histories (this
+/// process holds their in-use locks), fitted in view: CPU (% of one core and
+/// of the machine), frames per second and frame times with nothing working;
+/// with one and with five sessions working, the glow on and off (the frames as
+/// before it existed: the spinners'); five with reduced motion (a static
+/// glow); the fade-out after they stop; idle again.
 fn pulse(instance: &Instance, root: &Path, options: &Options) -> Result<Value> {
+    const SESSIONS: usize = 6;
     let pid = std::process::id();
     let work = root.join("work").to_string_lossy().into_owned();
     let line = |kind: &str, at: u64| json!({ "type": kind, "timestamp": crate::paths::format_rfc3339_ms(at), "data": {} }).to_string() + "\n";
     let now = crate::paths::now_ms();
-    let ids: Vec<String> = (0..4).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+    let ids: Vec<String> = (0..SESSIONS).map(|_| uuid::Uuid::new_v4().to_string()).collect();
     let mut doc = Doc::default();
     for (i, id) in ids.iter().enumerate() {
         let dir = instance.sessions_dir.join(id);
         std::fs::create_dir_all(&dir)?;
-        std::fs::write(dir.join("workspace.yaml"), format!("id: {id}\nname: \"Pulse {i}\"\ncwd: C:\\\\pulse\n"))?;
+        std::fs::write(dir.join("workspace.yaml"), format!("id: {id}\nname: \"Glow {i}\"\ncwd: C:\\\\glow\n"))?;
         std::fs::write(dir.join("events.jsonl"), line("session.start", now - 9000) + &line("user.message", now - 8000) + &line("session.idle", now - 7000))?;
         std::fs::write(dir.join(format!("inuse.{pid}.lock")), "")?;
-        let mut n = bare_node(id, &format!("Pulse {i}"), 2 + (i as i32 % 2) * (GRID_X + 4), 2 + (i as i32 / 2) * (GRID_Y + 2), &work);
+        // Three columns, two rows, room for the glow between them.
+        let mut n = bare_node(id, &format!("Glow {i}"), 2 + (i as i32 % 3) * (GRID_X + 10), 2 + (i as i32 / 3) * (GRID_Y + 6), &work);
         n.reviewed_ms = Some(now);
         doc.nodes.push(n);
     }
-    doc.groups.push(Group { id: "g-pulse".into(), name: "Pulse".into(), x: 0, y: 0, w: 2 * (GRID_X + 4), h: 2 * (GRID_Y + 2) + 2, color: 0, folder: None, source: None, defaults: None });
-    let canvas = instance.home.join("pulse.json");
+    let canvas = instance.home.join("glow.json");
     std::fs::create_dir_all(&instance.home)?;
     std::fs::write(&canvas, serde_json::to_string_pretty(&doc)?)?;
     let on = PathBuf::from("on");
@@ -914,8 +915,8 @@ fn pulse(instance: &Instance, root: &Path, options: &Options) -> Result<Value> {
     if options.remote {
         extra.extend(["--remote", "loopback"]);
     }
-    let ui = GuiDriver::start(&args(instance, root, &extra), &[("COPILOT_CANVAS_EFFECTS", &on)], (170, 46), &root.join("gui-pulse.log"))?;
-    ui.wait("the pulse canvas", Duration::from_secs(30), |t| t.contains("Pulse 3"))?;
+    let ui = GuiDriver::start(&args(instance, root, &extra), &[("COPILOT_CANVAS_EFFECTS", &on)], (170, 46), &root.join("gui-glow.log"))?;
+    ui.wait("the glow canvas", Duration::from_secs(30), |t| t.contains(&format!("Glow {}", SESSIONS - 1)))?;
     let mut ui = ui;
     ui.send(b"f")?;
     std::thread::sleep(Duration::from_secs(3));
@@ -931,80 +932,104 @@ fn pulse(instance: &Instance, root: &Path, options: &Options) -> Result<Value> {
         let frames = count(&after, "presented").saturating_sub(count(&before, "presented"));
         let per_second = |n: u64| (n as f64 / elapsed.as_secs_f64() * 10.0).round() / 10.0;
         let fps = per_second(frames);
-        let grid_fps = per_second(count(&after, "grid_frames").saturating_sub(count(&before, "grid_frames")));
-        let grid_paints = per_second(count(&after, "grid_paints").saturating_sub(count(&before, "grid_paints")));
+        let glow_fps = per_second(count(&after, "glow_frames").saturating_sub(count(&before, "glow_frames")));
+        let glow_paints = per_second(count(&after, "glow_paints").saturating_sub(count(&before, "glow_paints")));
         let full_fps = per_second(count(&after, "full_frames").saturating_sub(count(&before, "full_frames")));
         let cpu = cpu_percent(&before, &after, elapsed);
-        let level = ui.request(json!({ "cmd": "tree" }))?["tree"]["canvas"]["grid_pulse"]["level"].clone();
-        eprintln!("{label}: {fps} frames/s ({grid_fps} of the grid layer alone, {full_fps} full; grid repainted {grid_paints}/s), {cpu:.2} % of one core ({:.3} % of the machine)", cpu / cpus as f64);
+        let glow = ui.request(json!({ "cmd": "tree" }))?["tree"]["canvas"]["glow"].clone();
+        let (sources, lit) = (glow["sources"].as_array().map_or(0, Vec::len), glow["lit"].as_u64().unwrap_or(0));
+        eprintln!(
+            "{label}: {fps} frames/s ({glow_fps} of the glow layer alone, {full_fps} full; glow repainted {glow_paints}/s; {sources} source(s), {lit} lit dots now), {cpu:.2} % of one core ({:.3} % of the machine)",
+            cpu / cpus as f64
+        );
         Ok(json!({
             "frames": frames,
             "fps": fps,
-            "grid_fps": grid_fps,
-            "grid_paints_per_second": grid_paints,
+            "glow_fps": glow_fps,
+            "glow_paints_per_second": glow_paints,
             "full_fps": full_fps,
             "cpu_percent_of_one_core": cpu,
             "cpu_percent_of_machine": (cpu / cpus as f64 * 1000.0).round() / 1000.0,
-            "grid_frame_ms": ms(&after["perf"]["grid_ms"]),
+            "glow_frame_ms": ms(&after["perf"]["glow_ms"]),
             "full_frame_ms": ms(&after["perf"]["full_ms"]),
             "frame_ms": ms(&after["perf"]["frame_ms"]),
-            "grid_level_now": level,
+            "sources_now": sources,
+            "lit_dots_now": lit,
         }))
     };
-    let status = |ui: &GuiDriver| -> Result<(String, Value)> {
+    let state = |ui: &GuiDriver| -> Result<(usize, Value)> {
         let tree = ui.request(json!({ "cmd": "tree" }))?;
         let canvas = &tree["tree"]["canvas"];
-        let status = canvas["boxes"].as_array().and_then(|b| b.iter().find(|b| b["name"] == "Pulse 0")).and_then(|b| b["status"].as_str()).unwrap_or_default().to_owned();
-        Ok((status, canvas["grid_pulse"].clone()))
+        let working = canvas["boxes"].as_array().map_or(0, |b| b.iter().filter(|b| b["name"].as_str().is_some_and(|n| n.starts_with("Glow ")) && b["status"] == "working").count());
+        Ok((working, canvas["glow"].clone()))
     };
-    let wait = |ui: &GuiDriver, what: &str, ok: &dyn Fn(&str, &Value) -> bool| -> Result<()> {
+    let wait = |ui: &GuiDriver, what: &str, ok: &dyn Fn(usize, &Value) -> bool| -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
-            let (s, pulse) = status(ui)?;
-            if ok(&s, &pulse) {
+            let (working, glow) = state(ui)?;
+            if ok(working, &glow) {
                 return Ok(());
             }
             if Instant::now() > deadline {
-                bail!("timed out waiting for {what} (status {s:?}, pulse {pulse})");
+                bail!("timed out waiting for {what} ({working} working, glow {glow})");
             }
             std::thread::sleep(Duration::from_millis(50));
         }
     };
-    let append = |text: String| -> Result<()> {
-        let mut f = std::fs::OpenOptions::new().append(true).open(instance.sessions_dir.join(&ids[0]).join("events.jsonl"))?;
+    // Every source in, fully faded in.
+    let faded_in = |n: usize| move |working: usize, glow: &Value| working == n && glow["sources"].as_array().is_some_and(|s| s.len() == n && s.iter().all(|s| s["envelope"].as_f64().is_some_and(|e| e >= 0.999)));
+    let append = |i: usize, text: String| -> Result<()> {
+        let mut f = std::fs::OpenOptions::new().append(true).open(instance.sessions_dir.join(&ids[i]).join("events.jsonl"))?;
         f.write_all(text.as_bytes())?;
         Ok(())
     };
+    let start = |i: usize| -> Result<()> {
+        let at = crate::paths::now_ms();
+        append(i, line("user.message", at) + &line("assistant.turn_start", at + 1) + &line("tool.execution_start", at + 2))
+    };
     let idle = measure(&ui, "nothing working", seconds as f64)?;
-    let at = crate::paths::now_ms();
-    append(line("user.message", at) + &line("assistant.turn_start", at + 1) + &line("tool.execution_start", at + 2))?;
-    wait(&ui, "a session working, the pulse faded in", &|s, p| s == "working" && p["envelope"].as_f64().is_some_and(|e| e >= 0.999))?;
-    let _ = ui.screenshot("bench-pulse");
-    let working_on = measure(&ui, "one session working, pulse on", seconds as f64)?;
+    start(0)?;
+    wait(&ui, "one session working, its glow faded in", &faded_in(1))?;
+    let _ = ui.screenshot("bench-glow-1");
+    let one_on = measure(&ui, "one session working, glow on", seconds as f64)?;
     ui.request(json!({ "cmd": "grid_pulse", "value": "off" }))?;
     std::thread::sleep(Duration::from_millis(500));
-    let working_off = measure(&ui, "one session working, pulse off (as before)", seconds as f64)?;
+    let one_off = measure(&ui, "one session working, glow off (as before)", seconds as f64)?;
+    ui.request(json!({ "cmd": "grid_pulse", "value": "on" }))?;
+    for i in 1..5 {
+        start(i)?;
+    }
+    wait(&ui, "five sessions working, their glow faded in", &faded_in(5))?;
+    let _ = ui.screenshot("bench-glow-5");
+    let five_on = measure(&ui, "five sessions working, glow on", seconds as f64)?;
+    ui.request(json!({ "cmd": "grid_pulse", "value": "off" }))?;
+    std::thread::sleep(Duration::from_millis(500));
+    let five_off = measure(&ui, "five sessions working, glow off (as before)", seconds as f64)?;
     ui.request(json!({ "cmd": "grid_pulse", "value": "on" }))?;
     ui.request(json!({ "cmd": "motion", "value": "reduced" }))?;
     std::thread::sleep(Duration::from_millis(500));
-    let reduced = measure(&ui, "one session working, reduced motion", seconds as f64)?;
+    let reduced = measure(&ui, "five sessions working, reduced motion (static glow)", seconds as f64)?;
     ui.request(json!({ "cmd": "motion", "value": "on" }))?;
-    wait(&ui, "the pulse faded in again", &|_, p| p["envelope"].as_f64().is_some_and(|e| e >= 0.999))?;
-    // It stops: frames for the fade-out, then none.
-    append(line("abort", crate::paths::now_ms()))?;
-    wait(&ui, "the session idle", &|s, _| s == "idle")?;
-    let fade_out = measure(&ui, "the fade-out (1.5 s after the stop was seen)", 1.5)?;
+    wait(&ui, "the glow faded in again", &faded_in(5))?;
+    // They stop: frames for the fade-out and the last rings, then none.
+    for i in 0..5 {
+        append(i, line("abort", crate::paths::now_ms()))?;
+    }
+    wait(&ui, "the sessions idle", &|working, _| working == 0)?;
+    let fade_out = measure(&ui, "the fade-out (2.5 s after the stop was seen)", 2.5)?;
     let idle_again = measure(&ui, "nothing working again", seconds as f64)?;
     let _ = ui.request(json!({ "cmd": "quit" }));
     let _ = ui.wait_exit(Duration::from_secs(10));
     Ok(json!({
-        "probe": "pulse",
+        "probe": "glow",
         "seconds_per_phase": seconds,
         "logical_cpus": cpus,
         "nothing_working": idle,
-        "working_pulse_on": working_on,
-        "working_pulse_off": working_off,
-        "working_reduced_motion": reduced,
+        "one_working_glow_on": one_on,
+        "one_working_glow_off": one_off,
+        "five_working_glow_on": five_on,
+        "five_working_glow_off": five_off,
+        "five_working_reduced_motion": reduced,
         "fade_out": fade_out,
         "nothing_working_again": idle_again,
     }))
