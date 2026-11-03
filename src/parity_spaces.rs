@@ -253,7 +253,15 @@ fn trackpad_spaces(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     let at = hit(gui, "Notebook(Refresh)").context("the explorer's ⟳")?;
     gui.click(at, &[])?;
     if gui.wait("long.md in the explorer", 5, |t| t.contains("long.md")).is_err() {
-        click_side(gui, "human-outputs")?;
+        if click_side(gui, "human-outputs").is_err() {
+            // Run without row 48 before it, the group's folder is still closed: its ✎ Notes chip opens it.
+            gui.chord('1', &["ctrl"])?;
+            gui.wait_tree("the canvas", 10, |t| !t["canvas"].is_null())?;
+            let (_, _, at) = visible_chip(gui, "g-parity", "✎", |_, _| true)?;
+            gui.click(at, &[])?;
+            gui.wait("the group's folder in the explorer", 10, |t| notebook(t) && t.contains("human-outputs"))?;
+            click_side(gui, "human-outputs")?;
+        }
         gui.wait("long.md in the explorer", 15, |t| t.contains("long.md"))?;
     }
     click_side(gui, "long.md")?;
