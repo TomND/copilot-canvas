@@ -150,7 +150,23 @@ fixed-size chips) have these checks, on a separate canvas of the sandbox
 
 ## Last run
 
-Row 52 (the ✦ Skills view and group skill folders, `parity_skills.rs`) is
+WI-027 replaces the dot grid's uniform breathing (WI-023) with the working
+glow: rings of brighter dots that leave every working session box and travel
+outward over a soft steady glow near it. Row 51 keeps its number and is
+rewritten (above); the suite still has 70 rows. Verified 2026-11-02:
+`PASS: 70 rows in 274.5s` (row 51 in 15.9 s: `96 dots sampled; a ring 4.0
+out: +61 near the worker (up to 2.57x the normal dot), +0 far; 452 ms later
+8.6 out: centred 4.8 then 8.1 from the box; as modelled; idle box unlit; in
+2 s while working: 54 glow repaints, 8 full frames (0 and 9 with the glow
+off); reduced motion: still, +26 near; normal with effects off and the
+setting off (saved); fade-out seen: true, then 2 frames in 2 s`); the
+45-step self-test passed in the TUI (146.3 s) and in the GUI (143.9 s); the
+11 golden screenshots matched pixel for pixel without re-blessing (the
+`freeze` hook draws no glow); nine hardening checks passed; `corpus check`:
+26 checked, 0 failed. No view snapshot changed besides `working-glow`,
+which replaces `grid-pulse`.
+
+The run before: row 52 (the ✦ Skills view and group skill folders, `parity_skills.rs`) is
 new; the suite has 70 rows with it. Verified 2026-11-01: `PASS: 70 rows in
 267.8s` (row 52 in 1.7 s: `pa-grp (group menu › Skill folders…, a missing
 folder refused) and pa-proj (.claude/skills where the sessions run) listed

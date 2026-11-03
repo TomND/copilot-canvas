@@ -949,7 +949,7 @@ one small layer (under half the cost of a full frame) and the dot moves
 about 2 px a frame; the CPU stays within §9's 2 %.
 
 **Working glow** (`bench --client gui --pulse --seconds 10`, two runs shown
-as run 1 · run 2, release, RTX 3070, 170 × 46 cells (1700 × 1012 px), 12
+as run 1 · run 2, release, RTX 3070, 125 % DPI, 170 × 46 cells (1700 × 1012 px), 12
 logical CPUs, the machine in use meanwhile, 2026-11-02; six sessions from
 synthetic histories fitted in view, one and then five made to work). "Glow
 off" is the same window with *Settings › Working glow* off: the frames as
