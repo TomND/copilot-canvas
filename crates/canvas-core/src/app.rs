@@ -72,7 +72,10 @@ pub struct Notice {
 
 pub enum Drag {
     Nodes { ids: Vec<String>, start: (u16, u16), applied: (i32, i32), moved: bool, click: Option<String> },
-    Group { id: String, start: (u16, u16), applied: (i32, i32), moved: bool },
+    /// A group dragged by its title: what moves (`nodes`, `groups`: the
+    /// group, its nested groups) was decided when the press came, so boxes
+    /// and groups it passes over stay where they are.
+    Group { id: String, nodes: Vec<String>, groups: Vec<String>, start: (u16, u16), applied: (i32, i32), moved: bool },
     Resize { id: String, start: (u16, u16), orig: (i32, i32) },
     /// Panning; `group`: pressed on a group's background or border (a click
     /// without moving selects that group).

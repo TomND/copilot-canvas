@@ -709,15 +709,12 @@ fn draw_empty_hint(buf: &mut Buffer, area: Rect) {
 }
 
 /// Everything that moves with the current drag (for the Gpu visual offset):
-/// what the document moves (`Doc::nodes_moving_with`, `Doc::group_moving_with`),
-/// each box once.
+/// what the document moves (`Doc::nodes_moving_with`, a group drag's set
+/// decided when it started), each box once.
 fn dragged(app: &App) -> (HashSet<String>, HashSet<String>) {
     match &app.drag {
         Some(Drag::Nodes { ids, .. }) => (app.doc.nodes_moving_with(ids).into_iter().collect(), HashSet::new()),
-        Some(Drag::Group { id, .. }) => {
-            let (nodes, groups) = app.doc.group_moving_with(id);
-            (nodes.into_iter().collect(), groups.into_iter().collect())
-        }
+        Some(Drag::Group { nodes, groups, .. }) => (nodes.iter().cloned().collect(), groups.iter().cloned().collect()),
         _ => (HashSet::new(), HashSet::new()),
     }
 }

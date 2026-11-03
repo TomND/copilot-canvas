@@ -4,7 +4,8 @@
 //!
 //! - **layout steps**: one completed gesture each: a drag of boxes (with
 //!   their subagent boxes and stacks), of a stack or of a group (with
-//!   everything that moved with it, nested groups too), a group's ◢ resize,
+//!   everything it held when the drag began, nested groups too: what it
+//!   passes over stays), a group's ◢ resize,
 //!   *Fit to members*, and a burst of arrow-key moves of one selection or
 //!   group (presses less than [`BURST`] apart). A step keeps the exact
 //!   place (and a group's size) of every item it changed, before and after;
@@ -100,13 +101,15 @@ pub enum Source {
     Keys(String),
 }
 
-/// A gesture in progress: the first-seen place of everything it touched.
+/// A gesture in progress: the first-seen place of everything it touched,
+/// and (a group's arrow-key burst) what it moves.
 struct Gesture {
     kind: LayoutKind,
     source: Source,
     last: Instant,
     nodes: HashMap<String, (i32, i32)>,
     groups: HashMap<String, Frame>,
+    moving: Option<(Vec<String>, Vec<String>)>,
 }
 
 /// This window's history.
@@ -174,13 +177,18 @@ impl App {
         self.undo.push(step);
     }
 
+    /// The gesture in progress is `kind` from `source` (a key burst only
+    /// while its presses come within [`BURST`]).
+    fn continues(&self, kind: LayoutKind, source: &Source) -> bool {
+        self.undo.gesture.as_ref().is_some_and(|g| g.kind == kind && g.source == *source && (!matches!(source, Source::Keys(_)) || g.last.elapsed() < BURST))
+    }
+
     /// The gesture `kind` from `source`: the one in progress when it is the
     /// same (a key burst within [`BURST`]), else a new one.
     fn gesture(&mut self, kind: LayoutKind, source: Source) -> &mut Gesture {
-        let same = self.undo.gesture.as_ref().is_some_and(|g| g.kind == kind && g.source == source && (!matches!(source, Source::Keys(_)) || g.last.elapsed() < BURST));
-        if !same {
+        if !self.continues(kind, &source) {
             self.commit_layout();
-            self.undo.gesture = Some(Gesture { kind, source, last: Instant::now(), nodes: HashMap::new(), groups: HashMap::new() });
+            self.undo.gesture = Some(Gesture { kind, source, last: Instant::now(), nodes: HashMap::new(), groups: HashMap::new(), moving: None });
         }
         let gesture = self.undo.gesture.as_mut().expect("just set");
         gesture.last = Instant::now();
@@ -212,14 +220,30 @@ impl App {
         self.doc.move_nodes(ids, dx, dy);
     }
 
-    /// Moves a group with everything in it as part of a gesture.
+    /// Moves a group with everything in it as part of a gesture (a burst of
+    /// arrow keys): what moves is decided at the gesture's first move and
+    /// kept to its end, so boxes and groups the group passes over stay where
+    /// they are (once it ends, membership is geometric again).
     pub fn move_group_recorded(&mut self, id: &str, dx: i32, dy: i32, source: Source) {
         if dx == 0 && dy == 0 {
             return;
         }
-        let (nodes, groups) = self.doc.group_moving_with(id);
-        self.note_layout(LayoutKind::Move, source, &nodes, &groups);
-        self.doc.move_group(id, dx, dy);
+        let kept = self.undo.gesture.as_ref().and_then(|g| g.moving.clone()).filter(|_| self.continues(LayoutKind::Move, &source));
+        let (nodes, groups) = kept.unwrap_or_else(|| self.doc.group_moving_with(id));
+        self.move_set_recorded(&nodes, &groups, dx, dy, source);
+        if let Some(gesture) = self.undo.gesture.as_mut() {
+            gesture.moving = Some((nodes, groups));
+        }
+    }
+
+    /// Moves exactly these boxes and groups as part of a gesture (a group
+    /// drag moves what it decided to move when it started).
+    pub fn move_set_recorded(&mut self, nodes: &[String], groups: &[String], dx: i32, dy: i32, source: Source) {
+        if dx == 0 && dy == 0 {
+            return;
+        }
+        self.note_layout(LayoutKind::Move, source, nodes, groups);
+        self.doc.move_set(nodes, groups, dx, dy);
     }
 
     /// Sizes a group (its ◢ corner) as part of a gesture.
@@ -760,6 +784,61 @@ mod tests {
         ctrl(&mut app, 'z');
         assert_eq!((at(&app, "p"), at(&app, "c"), at(&app, "c:x")), ((2, 2), (40, 2), (44, 8)));
         assert_eq!(app.doc.nodes.iter().filter(|n| n.kind == NodeKind::Session).count(), 4);
+    }
+
+    #[test]
+    fn a_group_dragged_across_a_box_and_a_smaller_group_outside_it_leaves_them_where_they_are() {
+        for gpu in [false, true] {
+            let mut doc = doc();
+            // A small group outside "g" with a box of its own, in the path of the drag.
+            doc.groups.push(crate::doc::Group { id: "f".into(), name: "Far".into(), x: 125, y: 20, w: 30, h: 8, ..Default::default() });
+            doc.nodes.push(node("fz", NodeKind::Session, None, 126, 22));
+            let (mut app, sent) = app_on(doc, gpu);
+            let before = layout(&app);
+            let place = |l: &Layout, id: &str| l.0.iter().find(|n| n.0 == id).map(|n| (n.1, n.2)).unwrap();
+            // The title by +60, in four steps: "g" passes over z's centre and covers "f" on the way.
+            drag(&mut app, MouseButton::Left, (10.5, 0.5), (70.5, 0.5), NONE);
+            assert_eq!(frame(&app, "g"), (60, 0, 110, 30), "gpu {gpu}");
+            for id in ["p", "p:helper", "c", "c:x", "o"] {
+                let (x, y) = place(&before, id);
+                assert_eq!(at(&app, id), (x + 60, y), "{id} moved with its group (gpu {gpu})");
+            }
+            assert_eq!(frame(&app, "g-in"), (98, 1, 34, 13), "the nested group too");
+            assert_eq!((at(&app, "z"), at(&app, "fz"), frame(&app, "f")), ((130, 2), (126, 22), (125, 20, 30, 8)), "what it passed over stays (gpu {gpu})");
+            assert!(notice(&app).starts_with("Moved group “Team” (5 boxes)"), "{}", notice(&app));
+            // Dropped there, z's centre is in the group's rectangle: it belongs to it now (geometric).
+            assert_eq!(app.doc.group_of(app.doc.node("z").unwrap()).map(|g| g.id.as_str()), Some("g"));
+            // One undo puts back exactly what moved; redo moves exactly that again.
+            ctrl(&mut app, 'z');
+            assert_eq!(layout(&app), before, "gpu {gpu}");
+            ctrl(&mut app, 'y');
+            assert_eq!((frame(&app, "g"), at(&app, "z"), frame(&app, "f")), ((60, 0, 110, 30), (130, 2), (125, 20, 30, 8)), "gpu {gpu}");
+            ctrl(&mut app, 'z');
+            assert_eq!(layout(&app), before);
+            assert_eq!(starts_or_stops(&sent), 0);
+        }
+    }
+
+    #[test]
+    fn a_burst_of_arrow_keys_moves_what_the_group_held_when_it_began() {
+        let (mut app, _sent) = app(false);
+        let before = layout(&app);
+        app.select_group("g");
+        // 2 units a press: after 20 the group covers z's centre; z stays all the burst long.
+        for _ in 0..20 {
+            key(&mut app, KeyCode::Right, NONE);
+        }
+        assert_eq!((frame(&app, "g").0, at(&app, "p"), at(&app, "z")), (40, (42, 2), (130, 2)));
+        assert!(app.undo.recording() && app.undo.is_empty(), "one burst");
+        // The burst ends (another key, a click or a second): z is in the group now and moves with it.
+        app.commit_layout();
+        key(&mut app, KeyCode::Right, NONE);
+        assert_eq!(at(&app, "z"), (132, 2), "membership is geometric once a gesture ends");
+        app.commit_layout();
+        ctrl(&mut app, 'z');
+        assert_eq!((frame(&app, "g").0, at(&app, "z")), (40, (130, 2)));
+        ctrl(&mut app, 'z');
+        assert_eq!(layout(&app), before, "the burst undone at once, exactly");
     }
 
     #[test]

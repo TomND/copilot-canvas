@@ -254,6 +254,39 @@ pub(super) fn rows(sb: &Sandbox, rows: &mut Vec<Row>) {
         Ok("the subsession (with its subagent box) and the parent's subagent box hidden from their menus (the canvas file); ⋯ 1 · ◇ 2 hidden on the parent, ↳ 1 and ◇ 2 in the toolbar, the sidebar marks them; the marker's list showed the subsession at its place, the toolbar's ◇ list the subagent box; nothing started".into())
     });
 
+    check(rows, "55", "New (WI-026): a group dragged by its title across a box outside it, to the far side, moves what it held when the drag began: the box it passes over stays; Ctrl+Z restores exactly", "group_drag_leaves_what_it_passes", || {
+        gui.canvas_focus()?;
+        gui.key("Esc", &[])?;
+        let before = load(&path)?;
+        let group = |d: &Doc, id: &str| d.group(id).map(|g| (g.x, g.y, g.w, g.h)).unwrap_or_default();
+        let place = |d: &Doc, id: &str| d.node(id).map(|n| (n.x, n.y)).unwrap_or_default();
+        let tree = gui.tree()?;
+        let g = tree["canvas"]["groups"].as_array().and_then(|g| g.iter().find(|g| g["id"] == "g-drag")).and_then(|g| rect(&g["rect"])).context("the drag group in view")?;
+        let scale = tree["canvas"]["scale"].as_f64().unwrap_or(1.0);
+        anyhow::ensure!((scale - 1.0).abs() < 0.01, "the canvas at 100 % (now {scale})");
+        // Its title 60 cells right in 2-cell steps, one batch of mouse events (no
+        // timing between pipe requests): its rectangle passes over Bystander's centre.
+        let from = (g[0] + 3.5, g[1] + 0.4);
+        let mut events = vec![json!({ "kind": "down", "button": "left", "x": from.0, "y": from.1 })];
+        for step in 1..=30 {
+            events.push(json!({ "kind": "drag", "button": "left", "x": from.0 + 2.0 * step as f64, "y": from.1 }));
+        }
+        events.push(json!({ "kind": "up", "button": "left", "x": from.0 + 60.0, "y": from.1 }));
+        gui.req(json!({ "cmd": "mice", "events": events }))?;
+        let moved = wait_doc(&path, "the group and Mover moved by 60", |d| group(d, "g-drag").0 == group(&before, "g-drag").0 + 60 && place(d, "m-mover").0 == place(&before, "m-mover").0 + 60)?;
+        anyhow::ensure!(place(&moved, "m-by") == place(&before, "m-by"), "Bystander was carried along: {:?} → {:?}", place(&before, "m-by"), place(&moved, "m-by"));
+        for node in before.nodes.iter().filter(|n| n.id != "m-mover") {
+            anyhow::ensure!(place(&moved, &node.id) == (node.x, node.y), "{} moved", node.id);
+        }
+        gui.wait_tree("Bystander drawn where it was", 5, |t| named(t, "Bystander").and_then(|b| rect(&b["rect"])).is_some_and(|b| (b[0] - g[0] - 30.0).abs() < 0.01))?;
+        gui.wait("the undo hint", 5, |t| t.contains("Ctrl+Z undo move"))?;
+        // Ctrl+Z: back exactly (Bystander never moved).
+        gui.chord('z', &["ctrl"])?;
+        let back = wait_doc(&path, "Ctrl+Z put the group back", |d| group(d, "g-drag") == group(&before, "g-drag"))?;
+        anyhow::ensure!(back.nodes.iter().all(|n| before.node(&n.id).is_none_or(|b| (b.x, b.y) == (n.x, n.y))), "Ctrl+Z restored every box exactly");
+        Ok(format!("“Drag group” and Mover moved by (60, 0) across Bystander, which stayed at {:?}; Ctrl+Z restored exactly", place(&before, "m-by")))
+    });
+
     let _ = gui.req(json!({ "cmd": "quit" }));
     let _ = gui.driver.wait_exit(Duration::from_secs(10));
 }
@@ -271,6 +304,11 @@ mod tests {
         assert!(canvas_model::visual::is_subsession(&ids, doc.node("h-child").unwrap()));
         assert!(canvas_model::visual::stacked_under(&doc).is_empty(), "every subagent box is shown on its own");
         assert_eq!(doc.group_of(doc.node("h-child:x").unwrap()).map(|g| g.id.as_str()), Some("g-hide"));
+        // Row 55: Mover in the drag group, Bystander outside it, in the path of a drag 60 cells right.
+        assert_eq!(doc.group_of(doc.node("m-mover").unwrap()).map(|g| g.id.as_str()), Some("g-drag"));
+        assert_eq!(doc.group_of(doc.node("m-by").unwrap()), None);
+        let (by, g) = (doc.node("m-by").unwrap().rect().center(), doc.group("g-drag").unwrap().rect());
+        assert!(by.0 >= g.x + g.w && by.0 < g.x + 60 + g.w && by.0 < g.x + 60, "it passes over Bystander's centre and ends past it");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -723,7 +723,9 @@ impl App {
                     return self.run(Action::Rename(Target::Group(id)));
                 }
                 self.select_group(&id);
-                self.drag = Some(Drag::Group { id, start: (x, y), applied: (0, 0), moved: false });
+                // What moves is decided now, once: boxes and groups the group passes over stay.
+                let (nodes, groups) = self.doc.group_moving_with(&id);
+                self.drag = Some(Drag::Group { id, nodes, groups, start: (x, y), applied: (0, 0), moved: false });
             }
             (MouseButton::Left, _) if double => {
                 let (wx, wy) = self.to_world(x as i32, y as i32);
@@ -825,14 +827,14 @@ impl App {
                 }
                 Drag::Nodes { moved: moved || wx != 0 || wy != 0, ids, start, applied: (wx, wy), click }
             }
-            Drag::Group { id, start, applied, moved } => {
+            Drag::Group { id, nodes, groups, start, applied, moved } => {
                 let (wx, wy) = world(x as i32 - start.0 as i32, y as i32 - start.1 as i32);
                 let (ddx, ddy) = (wx - applied.0, wy - applied.1);
                 if ddx != 0 || ddy != 0 {
-                    self.move_group_recorded(&id, ddx, ddy, Source::Mouse);
+                    self.move_set_recorded(&nodes, &groups, ddx, ddy, Source::Mouse);
                     self.mark_dirty();
                 }
-                Drag::Group { moved: moved || wx != 0 || wy != 0, id, start, applied: (wx, wy) }
+                Drag::Group { moved: moved || wx != 0 || wy != 0, id, nodes, groups, start, applied: (wx, wy) }
             }
             Drag::Resize { id, start, orig } => {
                 let (wx, wy) = world(x as i32 - start.0 as i32, y as i32 - start.1 as i32);
@@ -899,12 +901,12 @@ impl App {
                 self.mark_dirty();
                 Drag::Nodes { moved: moved || (rx, ry) != (0, 0), ids, start, applied: (rx, ry), click }
             }
-            Some(Drag::Group { id, start, applied, moved }) => {
+            Some(Drag::Group { id, nodes, groups, start, applied, moved }) => {
                 if (rx, ry) != applied {
-                    self.move_group_recorded(&id, rx - applied.0, ry - applied.1, Source::Mouse);
+                    self.move_set_recorded(&nodes, &groups, rx - applied.0, ry - applied.1, Source::Mouse);
                 }
                 self.mark_dirty();
-                Drag::Group { moved: moved || (rx, ry) != (0, 0), id, start, applied: (rx, ry) }
+                Drag::Group { moved: moved || (rx, ry) != (0, 0), id, nodes, groups, start, applied: (rx, ry) }
             }
             Some(Drag::Resize { id, start, orig }) => {
                 self.resize_group_recorded(&id, orig.0 + rx, orig.1 + ry);

@@ -867,7 +867,9 @@ impl Doc {
 
     /// What a group drag moves: the boxes whose centre is inside (with the
     /// stacks of stacked ones) and the group with the groups nested in it.
-    /// Each id once.
+    /// Each id once. A drag decides this once, when it starts, and moves
+    /// exactly that ([`Doc::move_set`]): boxes and groups the group passes
+    /// over stay where they are.
     pub fn group_moving_with(&self, group_id: &str) -> (Vec<String>, Vec<String>) {
         if self.group(group_id).is_none() {
             return (Vec::new(), Vec::new());
@@ -885,14 +887,21 @@ impl Doc {
         (all, groups)
     }
 
+    /// Moves a group with what is in it now ([`Doc::group_moving_with`]).
     pub fn move_group(&mut self, group_id: &str, dx: i32, dy: i32) {
         let (nodes, groups) = self.group_moving_with(group_id);
-        let nodes: HashSet<String> = nodes.into_iter().collect();
-        for node in self.nodes.iter_mut().filter(|n| nodes.contains(&n.id)) {
+        self.move_set(&nodes, &groups, dx, dy);
+    }
+
+    /// Moves exactly these boxes and groups.
+    pub fn move_set(&mut self, nodes: &[String], groups: &[String], dx: i32, dy: i32) {
+        let nodes: HashSet<&str> = nodes.iter().map(String::as_str).collect();
+        let groups: HashSet<&str> = groups.iter().map(String::as_str).collect();
+        for node in self.nodes.iter_mut().filter(|n| nodes.contains(n.id.as_str())) {
             node.x += dx;
             node.y += dy;
         }
-        for group in self.groups.iter_mut().filter(|g| groups.contains(&g.id)) {
+        for group in self.groups.iter_mut().filter(|g| groups.contains(g.id.as_str())) {
             group.x += dx;
             group.y += dy;
         }
