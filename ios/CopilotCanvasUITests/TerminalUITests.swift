@@ -135,6 +135,8 @@ final class TerminalUITests: XCTestCase {
         let app = launch()
         let scratch = app.staticTexts["Scratch"].firstMatch
         XCTAssertTrue(scratch.waitForExistence(timeout: firstConnection))
+        // The last rows can be built under the tab bar (or below the screen).
+        bringIntoView(scratch, in: app)
         scratch.press(forDuration: 1.0)
         let item = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'New subsession'")).firstMatch
         XCTAssertTrue(item.waitForExistence(timeout: 10))
@@ -174,7 +176,7 @@ final class TerminalUITests: XCTestCase {
                 waitGone(pause)
                 waitGone(resume)
                 // The list sorts by state (pausing moves the row): bring it back into view.
-                reveal(drift, in: app)
+                bringIntoView(drift, in: app)
                 if drift.exists { drift.tap() }
                 if pause.waitForExistence(timeout: 5) || resume.exists { return }
             }
@@ -258,6 +260,21 @@ final class TerminalUITests: XCTestCase {
         }
         for _ in 0..<12 where !element.exists {
             list.swipeDown()
+        }
+    }
+
+    /// `reveal`, then drags the list until `element` is clear of the tab
+    /// bar: a row can be built (it exists) under the bar or below the screen,
+    /// where a tap or a press lands on something else.
+    private func bringIntoView(_ element: XCUIElement, in app: XCUIApplication) {
+        reveal(element, in: app)
+        let named = app.collectionViews["sessionsList"]
+        let list = named.exists ? named : app.collectionViews.firstMatch
+        let bar = app.tabBars.firstMatch
+        let limit = (bar.exists ? bar.frame.minY : app.frame.maxY) - 24
+        for _ in 0..<5 where element.exists && element.frame.maxY > limit {
+            let from = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6))
+            from.press(forDuration: 0.05, thenDragTo: list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)))
         }
     }
 
