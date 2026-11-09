@@ -23,11 +23,15 @@ cask "atelier" do
   # upgrade keeps the sessions running (the new build takes the service over
   # and resumes them). `atelier service uninstall` removes the login
   # agent; `brew uninstall --zap` removes it and every canvas.
-  zap launchctl: "com.thomashorga.atelier.service",
+  # (and what the app left under its names before the rename to Atelier)
+  zap launchctl: ["com.thomashorga.atelier.service", "com.copilot-canvas.service"], # rename:keep
       trash:     [
         "~/.atelier",
+        "~/.copilot-canvas", # rename:keep
         "~/Library/Application Support/BackgroundAutomations",
         "~/Library/LaunchAgents/com.thomashorga.atelier.service.plist",
-        "~/Library/Saved Application State/io.github.tomnd.Atelier.savedState",
+        "~/Library/LaunchAgents/com.copilot-canvas.service.plist", # rename:keep
+        "~/Library/Saved Application State/com.thomashorga.atelier.savedState",
+        "~/Library/Saved Application State/io.github.tomnd.CopilotCanvas.savedState", # rename:keep
       ]
 end

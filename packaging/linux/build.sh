@@ -53,6 +53,9 @@ cp -r "$stage/usr/bin" "$stage/usr/share" "$work/$name/"
 install -m755 "$here/install.sh" "$work/$name/install.sh"
 tar -C "$work" -czf "$out/$name.tar.gz" "$name"
 
+# The package's name before the rename: installing atelier replaces it.
+old_name=copilot-canvas # rename:keep
+
 # .deb (Ubuntu 22.04+, Debian 12+). The GUI loads Wayland, X11, Vulkan/GL
 # and WebKitGTK at run time, so they are recommended, not required.
 deb="$work/deb"
@@ -68,6 +71,8 @@ Installed-Size: $size_kb
 Depends: libc6 (>= 2.35), libgcc-s1
 Recommends: libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-cursor0, libwayland-egl1, libx11-6, libx11-xcb1, libxcursor1, libxi6, libxrandr2, libvulkan1, mesa-vulkan-drivers, libegl1, libgl1, libwebkit2gtk-4.1-0, xdg-utils, fontconfig, fonts-noto-color-emoji, fonts-noto-core, gnome-keyring | kwalletmanager | keepassxc, bubblewrap, xdg-dbus-proxy, wl-clipboard | xclip
 Suggests: git, gh
+Replaces: $old_name
+Conflicts: $old_name
 Section: devel
 Priority: optional
 Homepage: https://github.com/TomND/copilot-canvas
@@ -91,6 +96,7 @@ Summary: Infinite canvas of AI coding-agent sessions in real terminals
 License: LicenseRef-proprietary
 URL: https://github.com/TomND/copilot-canvas
 Requires: glibc >= 2.35
+Obsoletes: $old_name < 0.4
 Recommends: libxkbcommon, libxkbcommon-x11, libwayland-client, libwayland-cursor, libwayland-egl, libX11, libX11-xcb, libXcursor, libXi, libXrandr, vulkan-loader, mesa-vulkan-drivers, mesa-libEGL, mesa-libGL, webkit2gtk4.1, xdg-utils, fontconfig, google-noto-color-emoji-fonts, bubblewrap, xdg-dbus-proxy
 AutoReqProv: no
 %global debug_package %{nil}
