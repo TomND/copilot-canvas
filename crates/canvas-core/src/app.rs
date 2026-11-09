@@ -1616,9 +1616,9 @@ impl App {
                 // A canvas-wide agent's chat may read the canvas's goals and skills, as its runs do.
                 let mut launch = launch;
                 if node.is_canvas_agent()
-                    && let Some(dir) = self.canvas_agents_dir()
+                    && let Some(dir) = self.canvas_agents_path()
                 {
-                    launch.add_dirs.push(dir.display().to_string());
+                    launch.add_dirs.push(dir);
                 }
                 // A new conversation records the model it starts with (resumes keep it).
                 if !launch.resume && launch.fork_from.is_none() && node.model.is_none() {

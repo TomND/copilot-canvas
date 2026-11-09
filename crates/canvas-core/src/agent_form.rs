@@ -902,7 +902,7 @@ fn rules_editor_mut<'a>(app: &'a mut App, id: &str) -> Option<&'a mut RulesEdito
 /// Opens an agent's instructions in the editor (read through the backend).
 pub fn open_rules(app: &mut App, id: &str) {
     let Some(node) = app.doc.node(id).cloned() else { return };
-    let (Some(paths), Some(root)) = (app.passive_paths(&node), app.canvas_agents_dir()) else {
+    let (Some(paths), Some(root)) = (app.passive_paths(&node), app.canvas_agents_path()) else {
         return app.notify(format!("Its files are unavailable: {}", app.canvas_agents_unavailable().unwrap_or_else(|| "it has no folder".into())), true);
     };
     let mut editor = Editor::new("");
@@ -912,7 +912,7 @@ pub fn open_rules(app: &mut App, id: &str) {
         id: id.to_owned(),
         name: node.name.clone(),
         path: path.clone(),
-        root: root.display().to_string(),
+        root,
         editor,
         rev: None,
         loading: true,

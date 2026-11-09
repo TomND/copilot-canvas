@@ -296,16 +296,22 @@ impl App {
         self.doc.nodes.iter().filter(|n| n.is_canvas_agent()).collect()
     }
 
-    /// The canvas's canvas-agents folder on the service's machine.
     /// A path of the service's machine built with `Path::join` here, in the
     /// service's separators (MAC-LINUX-PLAN D10).
     pub fn service_path(&self, path: &std::path::Path) -> String {
         self.info.path_style().normalize(path)
     }
 
+    /// The canvas's canvas-agents folder on the service's machine, joined
+    /// here: show or send it through `service_path` (or `canvas_agents_path`).
     pub fn canvas_agents_dir(&self) -> Option<std::path::PathBuf> {
         let id = self.doc.canvas_id.as_deref().filter(|id| crate::doc::valid_canvas_id(id))?;
         (!self.info.home.is_empty()).then(|| wide::canvas_dir(std::path::Path::new(&self.info.home), id))
+    }
+
+    /// The canvas-agents folder as the service names it (its separators).
+    pub fn canvas_agents_path(&self) -> Option<String> {
+        self.canvas_agents_dir().map(|dir| self.service_path(&dir))
     }
 
     /// Why this canvas cannot have canvas-wide agents here (`None`: it can).

@@ -1093,11 +1093,11 @@ impl App {
     // ---------- group folders ----------
 
     /// `<notebook root>\Groups\<group name>` (the root: the canvas's notebook
-    /// folder, else `<backend home>\notebook`).
+    /// folder, else `<backend home>\notebook`), in the service's separators.
     pub fn suggested_group_folder(&self, group_id: &str) -> String {
         let name = self.doc.group(group_id).map(|g| g.name.clone()).unwrap_or_else(|| "group".into());
         let root = canvas_model::notebook::root_of(self.doc.notebook_root.as_deref(), std::path::Path::new(&self.info.home));
-        canvas_model::notebook::group_folder(&root, &name).display().to_string()
+        self.service_path(&canvas_model::notebook::group_folder(&root, &name))
     }
 
     pub fn set_group_folder(&mut self, group_id: &str, path: &str) -> Result<(), String> {

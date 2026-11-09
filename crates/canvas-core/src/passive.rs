@@ -639,6 +639,7 @@ mod tests {
         let mut app = App::new(crate::conn::Conn::detached(tx, service_rx), std::sync::Arc::new(crate::rpc::Offline), crate::sync::Opened::detached(doc), false, ".".into(), app_tx, None);
         let home = std::env::temp_dir().join("cc-home");
         app.info.home = home.display().to_string();
+        app.info.platform = if cfg!(windows) { "windows" } else { "linux" }.into();
         assert_eq!(app.build_routing().notebook_root, None, "the default: <home>/notebook");
         assert_eq!(std::path::PathBuf::from(app.suggested_group_folder("g1")), home.join("notebook").join("Groups").join("Release- v2"));
         let custom = std::env::temp_dir().join("My Notes");
