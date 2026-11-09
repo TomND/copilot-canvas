@@ -496,10 +496,12 @@ impl App {
     pub fn confirm_update_service(&mut self) {
         let alive: Vec<&String> = self.terms.iter().filter(|(_, t)| t.alive).map(|(id, _)| id).collect();
         let working = alive.iter().filter(|id| self.doc.node(id).is_some_and(|n| self.node_status(n) == crate::status::Status::Working)).count();
-        let mut body = vec![
-            "Gets the new build's terminal fixes (smooth wheel scrolling, keyboard priority).".to_owned(),
-            format!("{} running session(s) stop and resume automatically right after.", alive.len()),
-        ];
+        let first = if self.conn.legacy {
+            format!("The running service is from {}, the build before the rename to Atelier.", canvas_common::legacy::PRODUCT)
+        } else {
+            "Gets the new build's terminal fixes (smooth wheel scrolling, keyboard priority).".to_owned()
+        };
+        let mut body = vec![first, format!("{} running session(s) stop and resume automatically right after.", alive.len())];
         if working > 0 {
             body.push(format!("{working} of them are working right now; their current turn is interrupted."));
         }
@@ -548,7 +550,7 @@ impl App {
                 return;
             }
         };
-        self.build_mismatch = conn.service_build != crate::paths::build_id();
+        self.build_mismatch = conn.outdated();
         self.routing_sent.clear();
         self.new_service_rx = Some(conn.rx.clone());
         self.conn = conn;

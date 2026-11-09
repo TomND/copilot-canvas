@@ -549,7 +549,7 @@ pub struct Identity {
 
 impl Identity {
     pub fn from_env() -> Self {
-        let env = |name: &str| std::env::var(name).map(|v| v.trim().to_owned()).unwrap_or_default();
+        let env = |name: &str| canvas_common::env::var(name).map(|v| v.trim().to_owned()).unwrap_or_default();
         Identity { session: env("ATELIER_SESSION"), passive: env("ATELIER_PASSIVE"), automation: env("AUTOMATION_NAME") }
     }
 }

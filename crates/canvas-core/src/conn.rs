@@ -199,6 +199,17 @@ pub struct Conn {
     pub session: Arc<ClientSession>,
     /// Bytes and frames on the wire.
     pub wire: Arc<WireStats>,
+    /// The service answered on the endpoint of the build before the rename
+    /// ([`canvas_common::legacy::PRODUCT`], `Instance::legacy_pipe_name`): an older service that
+    /// clients replace like any service of another build.
+    pub legacy: bool,
+}
+
+impl Conn {
+    /// A service of another build than this client's (local clients replace it).
+    pub fn outdated(&self) -> bool {
+        !self.remote && (self.legacy || self.service_build != build_id())
+    }
 }
 
 impl Conn {
@@ -213,6 +224,7 @@ impl Conn {
             remote: false,
             session: ClientSession::new(),
             wire: Arc::default(),
+            legacy: false,
         }
     }
 }
@@ -361,17 +373,36 @@ fn pipe_halves(pipe: pipe::Pipe) -> Result<Halves> {
     Ok((Box::new(reader), Box::new(writer), Closer::new(move || closer.close())))
 }
 
+/// Connects to the instance's service: on its endpoint, else on the one a
+/// service of the build before the rename serves (`true`: that one).
+fn connect_endpoint(instance: &Instance, timeout: Duration) -> Result<(pipe::Pipe, bool)> {
+    match pipe::connect(&instance.pipe_name(), timeout) {
+        Ok(pipe) => Ok((pipe, false)),
+        Err(error) => match instance.legacy_pipe_name().and_then(|old| pipe::connect(&old, timeout).ok()) {
+            Some(pipe) => Ok((pipe, true)),
+            None => Err(error).context("service is not running"),
+        },
+    }
+}
+
+/// A service answers for this instance and home (also one of the build
+/// before the rename), without a handshake.
+pub fn service_answers(instance: &Instance) -> bool {
+    connect_endpoint(instance, Duration::from_millis(300)).is_ok()
+}
+
 fn open_pipe(instance: &Instance, options: &ConnOptions, session: &Arc<ClientSession>) -> Result<Conn> {
-    let pipe = pipe::connect(&instance.pipe_name(), Duration::from_secs(2)).context("service is not running")?;
+    let (pipe, legacy) = connect_endpoint(instance, Duration::from_secs(2))?;
     let token = canvas_sys::token::read_token(&instance.token_path())?;
-    match establish(pipe_halves(pipe)?, &token, None, options, session, false, true) {
+    let conn = match establish(pipe_halves(pipe)?, &token, None, options, session, false, true) {
         // A service older than protocol 8 cannot read `Hello8`: say `Hello`.
         Err(error) if error.is::<NoChallenge>() => {
-            let pipe = pipe::connect(&instance.pipe_name(), Duration::from_secs(2)).context("service is not running")?;
+            let (pipe, _) = connect_endpoint(instance, Duration::from_secs(2))?;
             establish(pipe_halves(pipe)?, &token, None, options, session, false, false)
         }
         other => other,
-    }
+    };
+    conn.map(|conn| Conn { legacy, ..conn })
 }
 
 fn open_local(instance: &Instance, options: &ConnOptions, session: &Arc<ClientSession>) -> Result<Conn> {
@@ -418,7 +449,7 @@ fn open_loopback(instance: &Instance, options: &ConnOptions, session: &Arc<Clien
         Err(_) => {}
     }
     // A service is running: give a starting one a moment to publish its port.
-    if pipe::connect(&instance.pipe_name(), Duration::from_millis(300)).is_ok() {
+    if service_answers(instance) {
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(100));
@@ -606,6 +637,7 @@ fn establish(
         remote,
         session: session.clone(),
         wire: stats,
+        legacy: false,
     })
 }
 
@@ -644,7 +676,8 @@ fn service_executable(instance: &Instance) -> Result<std::path::PathBuf> {
     // Old builds that are no longer running can be removed; in-use files are skipped.
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.filter_map(|e| e.ok()) {
-            if entry.path() != target && entry.file_name().to_string_lossy().starts_with("atelier-service-") {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if entry.path() != target && (name.starts_with("atelier-service-") || name.starts_with(canvas_common::legacy::SERVICE_COPY_PREFIX)) {
                 let _ = std::fs::remove_file(entry.path());
             }
         }

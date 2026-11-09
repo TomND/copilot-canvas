@@ -370,13 +370,32 @@ pub fn try_spawn<F: FnOnce() + Send + 'static>(name: &str, body: F) -> std::io::
 /// backend, then serves clients until shutdown.
 pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn HostApp>) -> Result<()> {
     canvas_sys::process::raise_priority();
-    let mut server = match PipeServer::bind(&instance.pipe_name()) {
+    // Self-tests stand in for a service of the build before the rename by
+    // serving its endpoint (`ATELIER_SELFTEST=1` and `ATELIER_TEST_LEGACY_ENDPOINT=1`).
+    let simulated_legacy = canvas_common::env::var("ATELIER_SELFTEST").is_ok_and(|v| v.trim() == "1")
+        && canvas_common::env::var("ATELIER_TEST_LEGACY_ENDPOINT").is_ok_and(|v| v.trim() == "1")
+        && instance.legacy_pipe_name().is_some();
+    let endpoint = if simulated_legacy { instance.legacy_pipe_name().unwrap_or_default() } else { instance.pipe_name() };
+    let mut server = match PipeServer::bind(&endpoint) {
         Ok(server) => server,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             bail!("a service for this canvas is already running")
         }
         Err(error) => return Err(error).context("cannot create the service pipe"),
     };
+    // A service of the build before the rename serves another endpoint for
+    // the same home and instance: never a second service beside it.
+    if !simulated_legacy
+        && let Some(old) = instance.legacy_pipe_name()
+        && canvas_sys::ipc::connect(&old, std::time::Duration::from_millis(500)).is_ok()
+    {
+        drop(server);
+        bail!(
+            "a service of {} (the build before the rename) is running for this canvas; stop it first (`{} service stop`, or update it from a client)",
+            canvas_common::legacy::PRODUCT,
+            canvas_common::legacy::CLI
+        )
+    }
     if let Err(error) = canvas_sys::process::contain_descendants() {
         log(&instance, &format!("job containment unavailable: {error}"));
     }

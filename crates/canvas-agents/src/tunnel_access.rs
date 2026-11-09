@@ -36,9 +36,10 @@ impl Access {
     }
 }
 
-/// The tunnel and port in `settings.json` (defaults: `atelier`, 47600).
+/// The tunnel and port in `settings.json` (defaults: the tunnel of installs
+/// set up before the rename, `remote::tunnel_of`, and 47600).
 pub fn tunnel_and_port(settings: &Settings) -> (String, u16) {
-    let tunnel = settings.remote.tunnel.clone().unwrap_or_else(|| remote::DEFAULT_TUNNEL.into());
+    let tunnel = remote::tunnel_of(settings.remote.tunnel.as_deref());
     let port = settings.remote.listen.as_deref().and_then(|a| a.rsplit_once(':').and_then(|(_, p)| p.parse().ok())).filter(|p| *p != 0).unwrap_or(remote::DEFAULT_PORT);
     (tunnel, port)
 }
@@ -125,7 +126,7 @@ mod tests {
     #[test]
     fn the_tunnel_and_port_come_from_the_settings() {
         let mut settings = Settings::default();
-        assert_eq!(tunnel_and_port(&settings), ("atelier".to_owned(), 47600));
+        assert_eq!(tunnel_and_port(&settings), (canvas_common::legacy::DEFAULT_TUNNEL.to_owned(), 47600), "an install set up before the rename hosts its tunnel");
         settings.remote.tunnel = Some("my-tunnel".into());
         settings.remote.listen = Some("127.0.0.1:47700".into());
         assert_eq!(tunnel_and_port(&settings), ("my-tunnel".to_owned(), 47700));

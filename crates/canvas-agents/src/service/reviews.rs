@@ -61,7 +61,7 @@ fn agent(routing: &Routing) -> Option<(&PassiveSpec, &ReviewSettings)> {
 }
 
 fn interval_ms(settings: &ReviewSettings) -> u64 {
-    if let Some(secs) = std::env::var(CHECK_SECS_ENV).ok().and_then(|s| s.parse::<u64>().ok()).filter(|s| *s > 0) {
+    if let Some(secs) = canvas_common::env::var(CHECK_SECS_ENV).ok().and_then(|s| s.parse::<u64>().ok()).filter(|s| *s > 0) {
         return secs * 1_000;
     }
     settings.check_minutes.max(1) as u64 * 60_000

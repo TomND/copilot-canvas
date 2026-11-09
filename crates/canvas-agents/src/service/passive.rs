@@ -575,7 +575,7 @@ fn passive_launch(kind: AgentKind, spec: &PassiveSpec, native: Option<String>, f
         mcp_off: spec.mcp_off.clone(),
         group_folder: Some(folder.display().to_string()),
         headless_prompt: Some(prompt),
-        env: vec![("ATELIER_PASSIVE".to_owned(), spec.key.clone()), ("ATELIER_HOP".to_owned(), hop.to_string())],
+        env: [canvas_common::env::both("ATELIER_PASSIVE", &spec.key), canvas_common::env::both("ATELIER_HOP", &hop.to_string())].concat(),
         ..Default::default()
     };
     if !spec.canvas_wide {
@@ -1075,7 +1075,7 @@ mod tests {
             let mut launch = passive_launch(kind, &spec, None, true, Path::new(r"C:\g"), "check".into(), 1);
             let skills = canvas_model::launch::take_group_skills(&mut launch).expect("its group's skill folders");
             assert_eq!((skills.group.as_str(), skills.dirs.clone()), ("g-1", vec![r"C:\skills".to_owned(), r"D:\more".to_owned()]), "{kind:?}");
-            assert_eq!(launch.env.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["ATELIER_PASSIVE", "ATELIER_HOP"]);
+            assert_eq!(launch.env.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["ATELIER_PASSIVE", "COPILOT_CANVAS_PASSIVE", "ATELIER_HOP", "COPILOT_CANVAS_HOP"]); // rename:keep
         }
         let wide = PassiveSpec { canvas_wide: true, ..spec.clone() };
         assert_eq!(canvas_model::launch::take_group_skills(&mut passive_launch(AgentKind::Copilot, &wide, None, true, Path::new(r"C:\a"), "check".into(), 1)), None);

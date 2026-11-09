@@ -112,14 +112,14 @@ fn take_exited_plugin(plugins: &mut HashMap<String, (PathBuf, u64)>, id: &str, s
 
 /// The environment entry that removes the skill folders' variable from
 /// what an agent inherits ("-NAME" with an empty value: `Terminal::spawn`).
-fn no_group_skills_env() -> (String, String) {
-    (format!("-{}", canvas_model::launch::GROUP_SKILLS_ENV), String::new())
+fn no_group_skills_env() -> Vec<(String, String)> {
+    canvas_model::launch::GROUP_SKILLS_NAMES.iter().map(|name| (format!("-{name}"), String::new())).collect()
 }
 
 /// A plain Copilot launch's environment without the skill folders'
 /// variable (in any case): it travels only in agent launches.
 fn without_group_skills(mut env: Vec<(String, String)>) -> Vec<(String, String)> {
-    env.retain(|(k, _)| !k.eq_ignore_ascii_case(canvas_model::launch::GROUP_SKILLS_ENV));
+    env.retain(|(k, _)| !canvas_model::launch::is_group_skills(k));
     env
 }
 
@@ -287,11 +287,9 @@ impl Agents {
         let plugin = home.join("plugin");
         Integration {
             plugin_dir: plugin.is_dir().then_some(plugin),
-            env: vec![
-                ("ATELIER_HOME".to_owned(), home.display().to_string()),
-                ("ATELIER_SESSION".to_owned(), id.to_owned()),
-                ("PATH".to_owned(), path_with(&home.join("cli"))),
-            ],
+            // Under the names before the rename too (deprecated): the old
+            // CLI name's alias and instructions written before the rename read them.
+            env: [canvas_common::env::both("ATELIER_HOME", &home.display().to_string()), canvas_common::env::both("ATELIER_SESSION", id), vec![("PATH".to_owned(), path_with(&home.join("cli")))]].concat(),
             skill_plugins: Vec::new(),
         }
     }
@@ -338,7 +336,7 @@ impl Agents {
         // Structured launches carry no free-form arguments; the environment
         // must not impersonate another session.
         anyhow::ensure!(
-            !launch.env.iter().any(|(k, _)| k.trim_start_matches('-').eq_ignore_ascii_case("ATELIER_SESSION")),
+            !launch.env.iter().any(|(k, _)| canvas_common::env::is(k.trim_start_matches('-'), "ATELIER_SESSION")),
             "launch options may not select a different session"
         );
         // A conversation that never got its first prompt has nothing to resume:
@@ -351,7 +349,7 @@ impl Agents {
         integration.env.extend(crate::agents::session_agent_env(kind));
         // The skill folders' variable never reaches the agent, also one this service
         // inherited (started inside an older service's session).
-        integration.env.push(no_group_skills_env());
+        integration.env.extend(no_group_skills_env());
         integration.skill_plugins.extend(self.skill_plugin(id));
         let skills = if integration.skill_plugins.is_empty() { "" } else { ", with its canvas skills" };
         // The previous launch's copy: that terminal has exited (a live one is never launched again).
@@ -1264,7 +1262,7 @@ mod tests {
                 let plugin = plugin.expect("a plugin");
                 assert!(line.contains("skill folders of group g-1 (1 folder(s)): team-review; skipped shared (the session's project already has it)"), "{line}");
                 assert!(plugin.join("skills").join("team-review").join("SKILL.md").is_file() && !plugin.join("skills").join("shared").exists());
-                let integration = Integration { skill_plugins: vec![plugin.clone()], env: vec![no_group_skills_env()], ..Default::default() };
+                let integration = Integration { skill_plugins: vec![plugin.clone()], env: no_group_skills_env(), ..Default::default() };
                 let command = match kind {
                     AgentKind::OpenCode => crate::agents::opencode::OpenCode.command_with(id, &launch, &integration, false).unwrap(),
                     _ => kind.provider().command(id, &launch, &integration).unwrap(),
@@ -1277,9 +1275,9 @@ mod tests {
                     }
                     _ => assert!(command.args.windows(2).any(|w| w[0] == "--plugin-dir" && w[1] == plugin.display().to_string()), "{kind:?} {:?}", command.args),
                 }
-                assert!(!command.env.iter().any(|(k, _)| k.eq_ignore_ascii_case(canvas_model::launch::GROUP_SKILLS_ENV)), "never in the agent's environment");
-                // An inherited one is removed when the terminal starts ("-NAME").
-                assert!(command.env.contains(&no_group_skills_env()), "{kind:?} {:?}", command.env);
+                assert!(!command.env.iter().any(|(k, _)| canvas_model::launch::is_group_skills(k)), "never in the agent's environment");
+                // An inherited one is removed when the terminal starts ("-NAME"), under either name.
+                assert!(no_group_skills_env().iter().all(|entry| command.env.contains(entry)), "{kind:?} {:?}", command.env);
             }
         }
         // A session outside the repository gets every skill; nothing to give: no plugin.
@@ -1311,8 +1309,8 @@ mod tests {
 
     #[test]
     fn plain_copilot_launches_never_pass_the_skill_folders_on() {
-        let env = vec![("copilot_canvas_group_skills".to_owned(), r#"{"dirs":["C:\\s"]}"#.to_owned()), ("KEEP".to_owned(), "1".to_owned())];
+        let env = vec![("copilot_canvas_group_skills".to_owned(), r#"{"dirs":["C:\\s"]}"#.to_owned()), ("Atelier_Group_Skills".to_owned(), "x".to_owned()), ("KEEP".to_owned(), "1".to_owned())];
         assert_eq!(without_group_skills(env), [("KEEP".to_owned(), "1".to_owned())]);
-        assert_eq!(no_group_skills_env(), ("-ATELIER_GROUP_SKILLS".to_owned(), String::new()));
+        assert_eq!(no_group_skills_env(), [("-COPILOT_CANVAS_GROUP_SKILLS".to_owned(), String::new()), ("-ATELIER_GROUP_SKILLS".to_owned(), String::new())]); // rename:keep
     }
 }

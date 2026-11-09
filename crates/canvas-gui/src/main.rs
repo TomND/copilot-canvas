@@ -254,7 +254,7 @@ fn real_main() -> Result<i32> {
     let conn_options = launch.conn_options(remote_backend);
     let session = conn::ClientSession::new();
     let mut conn = conn::open(&target, &conn_options, &session)?;
-    let outdated = !target.is_remote() && conn.service_build != paths::build_id();
+    let outdated = !target.is_remote() && conn.outdated();
     // Terminals of a replaced service (resumed), or the question to ask.
     let mut resume = Vec::new();
     let mut ask: Option<(u32, bool)> = None;
@@ -278,7 +278,7 @@ fn real_main() -> Result<i32> {
     // Replaced an older service: undo the `mouse: false` it forced on Copilot (when installed).
     let mouse_restored = outdated
         && !args.demo
-        && conn.service_build == paths::build_id()
+        && !conn.outdated()
         && backend.info().is_ok_and(|info| info.installed.contains(&canvas_core::agents::AgentKind::Copilot))
         && backend.restore_mouse().unwrap_or(false);
     crashlog::install(home.join("crash.log"));

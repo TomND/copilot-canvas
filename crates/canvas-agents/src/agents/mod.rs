@@ -65,8 +65,10 @@ const SESSION_AGENT: &str = "ATELIER_SESSION_AGENT";
 /// runs; `atelier note` records it as a note's `agent`):
 /// `ATELIER_AGENT`, marked as the session's own so that a canvas
 /// started inside the session does not take it as a choice for new sessions.
-pub fn session_agent_env(kind: AgentKind) -> [(String, String); 2] {
-    [("ATELIER_AGENT".to_owned(), kind.id().to_owned()), (SESSION_AGENT.to_owned(), kind.id().to_owned())]
+pub fn session_agent_env(kind: AgentKind) -> Vec<(String, String)> {
+    let mut env = canvas_common::env::both("ATELIER_AGENT", kind.id());
+    env.extend(canvas_common::env::both(SESSION_AGENT, kind.id()));
+    env
 }
 
 /// `ATELIER_AGENT` as a choice for new sessions: not when it names
@@ -80,14 +82,14 @@ fn env_choice(value: Option<&str>, session: Option<&str>) -> Option<AgentKind> {
 /// `ATELIER_AGENT` when it chooses the agent for new sessions (not
 /// when it only names the canvas session this process runs in).
 pub fn agent_from_env() -> Option<AgentKind> {
-    env_choice(canvas_common::env::var("ATELIER_AGENT").ok().as_deref(), std::env::var(SESSION_AGENT).ok().as_deref())
+    env_choice(canvas_common::env::var("ATELIER_AGENT").ok().as_deref(), canvas_common::env::var(SESSION_AGENT).ok().as_deref())
 }
 
 /// The agent of the canvas session this process runs in (its marker,
 /// `ATELIER_SESSION_AGENT`; `None` outside one, or from a service
 /// before it): never `ATELIER_AGENT` alone, which may be your choice.
 pub fn session_agent() -> Option<AgentKind> {
-    std::env::var(SESSION_AGENT).ok().as_deref().and_then(AgentKind::parse)
+    canvas_common::env::var(SESSION_AGENT).ok().as_deref().and_then(AgentKind::parse)
 }
 
 /// Agents whose CLI is installed.
@@ -185,7 +187,7 @@ pub trait Provider: Send + Sync {
 
 /// `program` from `env` or the first of `names` on PATH.
 pub fn find_program(env: &str, names: &[&str]) -> Result<String> {
-    if let Some(custom) = std::env::var_os(env) {
+    if let Some(custom) = canvas_common::env::var_os(env) {
         let custom = custom.to_string_lossy().into_owned();
         ensure_not_batch(Path::new(&custom), env)?;
         return Ok(custom);
@@ -320,6 +322,9 @@ mod tests {
     fn a_sessions_own_agent_is_named_but_chooses_nothing() {
         let env = session_agent_env(AgentKind::OpenCode);
         assert_eq!(env[0], ("ATELIER_AGENT".to_owned(), "opencode".to_owned()));
+        // Under the names before the rename too (programs and instructions of the previous build).
+        let names: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(names, ["ATELIER_AGENT", "COPILOT_CANVAS_AGENT", "ATELIER_SESSION_AGENT", "COPILOT_CANVAS_SESSION_AGENT"]); // rename:keep
         // Inside a canvas session the variable names that session's agent.
         assert_eq!(env_choice(Some(&env[0].1), Some(&env[1].1)), None);
         // Set by you (also inside a session, to another agent): a choice.

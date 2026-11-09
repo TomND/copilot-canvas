@@ -469,6 +469,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "atelier"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "canvas-agents",
+ "canvas-common",
+ "canvas-core",
+ "canvas-corpus",
+ "canvas-host",
+ "canvas-model",
+ "canvas-push",
+ "canvas-sys",
+ "canvas-tui",
+ "crossbeam-channel",
+ "dirs",
+ "embed-resource",
+ "png",
+ "portable-pty",
+ "postcard",
+ "qrcode",
+ "ratatui",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "uuid",
+ "windows",
+ "windows-sys 0.61.2",
+ "zbus",
+]
+
+[[package]]
 name = "atomic"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1184,38 +1216,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "633458d4ef8c78b72454de2d54fd6ab2e60f9e02be22f3c6104cdc8a4e0fceb9"
 dependencies = [
  "unicode-segmentation",
-]
-
-[[package]]
-name = "atelier"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "canvas-agents",
- "canvas-common",
- "canvas-core",
- "canvas-corpus",
- "canvas-host",
- "canvas-model",
- "canvas-push",
- "canvas-sys",
- "canvas-tui",
- "crossbeam-channel",
- "dirs",
- "embed-resource",
- "png",
- "portable-pty",
- "postcard",
- "qrcode",
- "ratatui",
- "rusqlite",
- "serde",
- "serde_json",
- "uuid",
- "windows",
- "windows-sys 0.61.2",
- "zbus",
 ]
 
 [[package]]

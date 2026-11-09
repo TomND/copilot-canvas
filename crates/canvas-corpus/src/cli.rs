@@ -323,7 +323,7 @@ pub fn record(home: &Path, words: &[&str], options: Options, cwd: Option<&Path>)
 fn session(home: &Path, id: &str, options: Options) -> Result<()> {
     let dir = match option(options, "dir") {
         Some(dir) => PathBuf::from(dir),
-        None => std::env::var_os(RECORD_ENV).filter(|d| !d.is_empty()).map(PathBuf::from).unwrap_or_else(|| home.join("recordings")),
+        None => canvas_common::env::var_os(RECORD_ENV).filter(|d| !d.is_empty()).map(PathBuf::from).unwrap_or_else(|| home.join("recordings")),
     };
     let exact = canvas_host::term::recording_path(&dir, id);
     let path = if exact.is_file() {

@@ -127,7 +127,7 @@ pub struct Caller {
 
 impl Caller {
     pub fn from_env() -> Self {
-        let env = |name: &str| std::env::var(name).map(|v| v.trim().to_owned()).unwrap_or_default();
+        let env = |name: &str| canvas_common::env::var(name).map(|v| v.trim().to_owned()).unwrap_or_default();
         Caller { session: env("ATELIER_SESSION"), bot: env("AUTOMATION_NAME") }
     }
 

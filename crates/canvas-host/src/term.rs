@@ -932,7 +932,7 @@ struct Tap {
 impl Tap {
     /// The tap's channel when `RECORD_ENV` names a directory.
     fn start(terminal: &Terminal) -> Option<Sender<TapChunk>> {
-        let dir = PathBuf::from(std::env::var_os(RECORD_ENV).filter(|dir| !dir.is_empty())?);
+        let dir = PathBuf::from(canvas_common::env::var_os(RECORD_ENV).filter(|dir| !dir.is_empty())?);
         let tap = Tap::new(&dir, &terminal.id, terminal.started_ms, RECORD_LIMIT);
         let (tx, rx) = bounded::<TapChunk>(OUTPUT_QUEUE);
         std::thread::Builder::new().name("pty-tap".into()).spawn(move || tap.run(rx)).ok()?;

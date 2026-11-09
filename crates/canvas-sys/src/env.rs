@@ -24,14 +24,14 @@ pub struct Resolved {
 }
 
 /// The variables a login environment adds to `current`: every variable
-/// `current` lacks (the service's own win; `ATELIER_*` are never
-/// taken, so a canvas behaves the same however it was started), `PATH` as the
+/// `current` lacks (the service's own win; `ATELIER_*`, and the deprecated
+/// names before the rename, are never taken, so a canvas behaves the same however it was started), `PATH` as the
 /// login shell's entries followed by the current ones it lacks, and a UTF-8
 /// `LANG` when neither has one.
 pub fn merge(current: &BTreeMap<String, String>, login: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     for (key, value) in login {
-        if key == "PATH" || SKIP.contains(&key.as_str()) || key.starts_with("ATELIER_") || current.contains_key(key) {
+        if key == "PATH" || SKIP.contains(&key.as_str()) || canvas_common::env::is_ours(key) || current.contains_key(key) {
             continue;
         }
         out.insert(key.clone(), value.clone());
@@ -81,6 +81,7 @@ pub fn login_environment(timeout: Duration) -> Result<BTreeMap<String, String>, 
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .env_remove("ATELIER_SELFTEST")
+        .env_remove(canvas_common::env::legacy_name("ATELIER_SELFTEST").unwrap_or_default())
         .spawn()
         .map_err(|e| format!("cannot run {shell}: {e}"))?;
     let mut stdout = child.stdout.take().expect("piped");
@@ -112,7 +113,7 @@ pub fn login_environment(timeout: Duration) -> Result<BTreeMap<String, String>, 
 /// which keep their environment as given.
 pub fn adopt_login_environment() -> Resolved {
     let current: BTreeMap<String, String> = std::env::vars().collect();
-    let skipped = |key: &str, off: &str| current.get(key).is_some_and(|v| v.trim() == off);
+    let skipped = |key: &str, off: &str| current.get(key).or_else(|| canvas_common::env::legacy_name(key).and_then(|old| current.get(&old))).is_some_and(|v| v.trim() == off);
     if cfg!(windows) || skipped("ATELIER_LOGIN_ENV", "0") || skipped("ATELIER_SELFTEST", "1") {
         return Resolved { path: current.get("PATH").cloned().unwrap_or_default(), ..Default::default() };
     }
@@ -145,12 +146,13 @@ mod tests {
             ("NVM_DIR", "/Users/me/.nvm"),
             ("SHLVL", "2"),
             ("ATELIER_HOME", "/tmp/x"),
+            ("COPILOT_CANVAS_SESSION", "s1"), // rename:keep
             ("LC_CTYPE", "UTF-8"),
         ]);
         let added = merge(&current, &login);
         assert_eq!(added.get("PATH").map(String::as_str), Some("/opt/homebrew/bin:/Users/me/.local/bin:/usr/bin:/bin"));
         assert_eq!(added.get("NVM_DIR").map(String::as_str), Some("/Users/me/.nvm"));
-        assert!(!added.contains_key("HOME") && !added.contains_key("SHLVL") && !added.contains_key("ATELIER_HOME"));
+        assert!(!added.contains_key("HOME") && !added.contains_key("SHLVL") && !added.contains_key("ATELIER_HOME") && added.keys().all(|k| !canvas_common::env::is_ours(k)));
         assert!(!added.contains_key("LANG"), "LC_CTYPE came from the login shell");
         assert_eq!(merge(&map(&[("PATH", "/bin")]), &BTreeMap::new()).get("LANG").map(String::as_str), Some("en_US.UTF-8"));
     }

@@ -50,7 +50,7 @@ pub fn pair(instance: &Instance, name: Option<String>, qr: bool, url: Option<Str
     let backend: &dyn Backend = &*backend;
     let code = backend.pair_code(name.clone())?;
     let settings = Settings::load(&instance.home);
-    let tunnel = settings.remote.tunnel.clone().unwrap_or_else(|| remote::DEFAULT_TUNNEL.into());
+    let tunnel = remote::tunnel_of(settings.remote.tunnel.as_deref());
     let port = code.listen.rsplit_once(':').map(|(_, p)| p.to_owned()).unwrap_or_default();
     let minutes = pairing::CODE_TTL_MS / 60_000;
     println!("Pairing code: {}   (one use, valid for {minutes} minutes)", code.code);

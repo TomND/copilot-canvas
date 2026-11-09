@@ -402,7 +402,7 @@ impl App {
         prefs: Option<std::path::PathBuf>,
     ) -> Self {
         // Remote clients never restart or upgrade the service.
-        let build_mismatch = !conn.remote && conn.service_build != crate::paths::build_id();
+        let build_mismatch = conn.outdated();
         let replica = Replica::new(&opened);
         let mut doc = opened.doc;
         let mut prefs = prefs.map(PrefsFile::new);
@@ -814,7 +814,7 @@ impl App {
             return;
         }
         let lost = conn.session.settle();
-        self.build_mismatch = !conn.remote && conn.service_build != crate::paths::build_id();
+        self.build_mismatch = conn.outdated();
         self.new_service_rx = Some(conn.rx.clone());
         self.conn = conn;
         self.connected = true;

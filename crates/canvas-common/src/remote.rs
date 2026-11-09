@@ -11,6 +11,13 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_PORT: u16 = 47600;
 /// The persistent Dev Tunnel `remote tunnel-setup` suggests.
 pub const DEFAULT_TUNNEL: &str = "atelier";
+
+/// The Dev Tunnel this machine hosts: `remote.tunnel`, else the default of
+/// installs set up before the rename (Dev Tunnel ids are the user's: they
+/// are never renamed), [`crate::legacy::DEFAULT_TUNNEL`].
+pub fn tunnel_of(setting: Option<&str>) -> String {
+    setting.map(str::trim).filter(|t| !t.is_empty()).unwrap_or(crate::legacy::DEFAULT_TUNNEL).to_owned()
+}
 /// The automation that hosts the tunnel on the service's machine.
 pub const TUNNEL_TASK: &str = "Atelier-Tunnel";
 /// Overrides the Dev Tunnels CLI: a program, optionally followed by `|` and
@@ -147,7 +154,7 @@ pub struct DevTunnelCli {
 
 /// The Dev Tunnels CLI: `ATELIER_DEVTUNNEL`, else [`find_devtunnel_exe`].
 pub fn devtunnel() -> Option<DevTunnelCli> {
-    if let Some(value) = std::env::var(DEVTUNNEL_ENV).ok().filter(|v| !v.trim().is_empty()) {
+    if let Some(value) = crate::env::var(DEVTUNNEL_ENV).ok().filter(|v| !v.trim().is_empty()) {
         let mut parts = value.split('|').map(str::trim);
         let program = PathBuf::from(parts.next().unwrap_or_default());
         return Some(DevTunnelCli { program, prefix: parts.filter(|p| !p.is_empty()).map(str::to_owned).collect() });

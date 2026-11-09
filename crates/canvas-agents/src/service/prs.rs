@@ -63,7 +63,7 @@ pub(super) fn coordinators(routing: &Routing) -> Vec<&PassiveSpec> {
 
 /// Milliseconds between polls of one pull request.
 fn interval_ms(routing: &Routing) -> u64 {
-    if let Some(secs) = std::env::var(POLL_SECS_ENV).ok().and_then(|s| s.parse::<u64>().ok()).filter(|s| *s > 0) {
+    if let Some(secs) = canvas_common::env::var(POLL_SECS_ENV).ok().and_then(|s| s.parse::<u64>().ok()).filter(|s| *s > 0) {
         return secs * 1_000;
     }
     coordinators(routing).iter().filter_map(|p| p.prs.as_ref().map(|s| s.poll_minutes.max(1))).min().unwrap_or(prs::DEFAULT_POLL_MINUTES) as u64 * 60_000
@@ -517,7 +517,7 @@ pub(super) enum PollError {
 
 /// A CLI: `env` names it, else the first of `names` on PATH.
 fn program(env: &str, names: &[&str]) -> Option<PathBuf> {
-    std::env::var_os(env).map(PathBuf::from).filter(|p| p.is_file()).or_else(|| names.iter().find_map(|n| super::find_on_path(n)))
+    canvas_common::env::var_os(env).map(PathBuf::from).filter(|p| p.is_file()).or_else(|| names.iter().find_map(|n| super::find_on_path(n)))
 }
 
 /// Sorts a CLI failure: signing in and missing extensions make it unavailable.
