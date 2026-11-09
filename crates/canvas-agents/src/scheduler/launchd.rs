@@ -37,6 +37,9 @@ const NAME: &str = "atelier-name: ";
 const MANIFEST: &str = "atelier-manifest: ";
 const SCHEDULE: &str = "atelier-schedule: ";
 const LAUNCHCTL: &str = "/bin/launchctl";
+/// The label prefix of tasks installed before the rename; they are the same
+/// automations: read, run and removed as such, replaced by `apply`.
+const LEGACY_PREFIX: &str = canvas_common::legacy::LAUNCHD_TASK_PREFIX;
 const DISABLED: &str = "\t<key>Disabled</key>\n\t<true/>\n";
 
 pub struct Launchd {
@@ -57,6 +60,32 @@ impl Launchd {
     fn path(&self, name: &str) -> PathBuf {
         self.dir.join(format!("{}.plist", label(name)))
     }
+
+    /// The plist of a task installed before the rename.
+    fn legacy_path(&self, name: &str) -> PathBuf {
+        self.dir.join(format!("{}.plist", legacy_label(name)))
+    }
+
+    /// Where a task is installed and its label: its own plist, else the one
+    /// installed before the rename (until `apply` replaces it).
+    fn located(&self, name: &str) -> (PathBuf, String) {
+        let path = self.path(name);
+        let old = self.legacy_path(name);
+        if !path.exists() && old.exists() { (old, legacy_label(name)) } else { (path, label(name)) }
+    }
+
+    /// Unloads and removes the plist a task had before the rename.
+    fn remove_legacy(&self, name: &str) -> Result<()> {
+        let old = legacy_label(name);
+        if loaded(&old).is_some() {
+            bootout(&old);
+        }
+        let path = self.legacy_path(name);
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
+        Ok(())
+    }
 }
 
 /// `~/Library/LaunchAgents`, or `ATELIER_LAUNCHD_DIR`.
@@ -71,7 +100,16 @@ fn agents_dir() -> PathBuf {
 /// `com.thomashorga.atelier.task.<name>`: letters, digits, `.`, `-` and `_` kept,
 /// any other byte as `%XX`.
 pub fn label(name: &str) -> String {
-    let mut out = String::from(PREFIX);
+    label_with(PREFIX, name)
+}
+
+/// The label a task had before the rename.
+fn legacy_label(name: &str) -> String {
+    label_with(LEGACY_PREFIX, name)
+}
+
+fn label_with(prefix: &str, name: &str) -> String {
+    let mut out = String::from(prefix);
     for byte in name.bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_') {
             out.push(byte as char);
@@ -84,7 +122,7 @@ pub fn label(name: &str) -> String {
 
 /// The name a label stands for (a plist without its name comment).
 fn unlabel(label: &str) -> Option<String> {
-    let rest = label.strip_prefix(PREFIX)?.as_bytes();
+    let rest = label.strip_prefix(PREFIX).or_else(|| label.strip_prefix(LEGACY_PREFIX))?.as_bytes();
     let mut bytes = Vec::new();
     let mut i = 0;
     while i < rest.len() {
@@ -329,7 +367,9 @@ struct Installed {
 
 fn installed(text: &str) -> Installed {
     let notes = comments(text);
-    let note = |prefix: &str| notes.iter().filter_map(|c| c.strip_prefix(prefix)).map(from_comment).collect::<Vec<_>>();
+    // Plists written before the rename name their comments the old way.
+    let legacy = |prefix: &str| format!("{}{}", canvas_common::legacy::LAUNCHD_COMMENT_PREFIX, prefix.strip_prefix("atelier-").unwrap_or(prefix));
+    let note = |prefix: &str| notes.iter().filter_map(|c| c.strip_prefix(prefix).or_else(|| c.strip_prefix(legacy(prefix).as_str()))).map(from_comment).collect::<Vec<_>>();
     let dict = parse(text).unwrap_or_default();
     let get = |key: &str| dict.iter().find(|(k, _)| k == key).map(|(_, v)| v);
     Installed {
@@ -479,15 +519,16 @@ impl Scheduler for Launchd {
         let mut out = BTreeMap::new();
         let Ok(entries) = std::fs::read_dir(&self.dir) else { return Ok(out) };
         let mut files: Vec<PathBuf> =
-            entries.flatten().map(|e| e.path()).filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(PREFIX) && n.ends_with(".plist"))).collect();
-        files.sort();
+            entries.flatten().map(|e| e.path()).filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| (n.starts_with(PREFIX) || n.starts_with(LEGACY_PREFIX)) && n.ends_with(".plist"))).collect();
+        // Plists from before the rename first, so a task's own one wins.
+        files.sort_by_key(|p| (!p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(LEGACY_PREFIX)), p.clone()));
         let (now, offset) = (canvas_common::paths::now_ms(), canvas_sys::host::local_offset_minutes());
         for path in files {
             let Ok(text) = std::fs::read_to_string(&path) else { continue };
             let plist = installed(&text);
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
             let Some(name) = plist.name.clone().or_else(|| unlabel(stem)) else { continue };
-            let job = loaded(&label(&name));
+            let job = loaded(if plist.label.is_empty() { stem } else { &plist.label });
             let task_file = plist.argv.last().filter(|w| w.ends_with(".json")).map(PathBuf::from);
             let launched = task_file.as_deref().and_then(super::state_of).is_some_and(|state| crate::launcher::running(state, &name));
             let last = task_file
@@ -524,17 +565,17 @@ impl Scheduler for Launchd {
     }
 
     fn definition(&self, name: &str) -> Result<Option<String>> {
-        Ok(std::fs::read_to_string(self.path(name)).ok())
+        Ok(std::fs::read_to_string(self.located(name).0).ok())
     }
 
     /// Kicks the loaded job; a disabled one runs the launcher directly, detached.
     fn run(&self, name: &str) -> Result<()> {
-        let label = label(name);
+        let (path, label) = self.located(name);
         if loaded(&label).is_some() {
             launchctl(&["kickstart", &format!("{}/{label}", domain())])?;
             return Ok(());
         }
-        let text = std::fs::read_to_string(self.path(name)).with_context(|| format!("{name} is not installed (run apply)"))?;
+        let text = std::fs::read_to_string(path).with_context(|| format!("{name} is not installed (run apply)"))?;
         let argv = installed(&text).argv;
         let (program, args) = argv.split_first().context("the task has no command")?;
         use canvas_sys::spawn::CommandExt;
@@ -543,10 +584,9 @@ impl Scheduler for Launchd {
     }
 
     fn set_enabled(&self, name: &str, enabled: bool) -> Result<()> {
-        let path = self.path(name);
+        let (path, label) = self.located(name);
         let text = std::fs::read_to_string(&path).with_context(|| format!("{name} is not installed (run apply)"))?;
         write_atomic(&path, &switched(&text, enabled))?;
-        let label = label(name);
         match (enabled, loaded(&label).is_some()) {
             (true, false) => bootstrap(&path)?,
             (false, true) => bootout(&label),
@@ -564,6 +604,8 @@ impl Scheduler for Launchd {
         if loaded(&label).is_some() {
             bootout(&label);
         }
+        // The same task under its label from before the rename goes.
+        self.remove_legacy(name)?;
         if plist.enabled {
             bootstrap(&path)?;
         }
@@ -579,7 +621,7 @@ impl Scheduler for Launchd {
         if path.exists() {
             std::fs::remove_file(&path)?;
         }
-        Ok(())
+        self.remove_legacy(name)
     }
 
     fn render(&self, m: &Manifest, d: &Defaults, _existing: Option<&TaskInfo>) -> String {
@@ -619,6 +661,10 @@ impl Scheduler for Launchd {
 
     fn drift(&self, m: &Manifest, d: &Defaults, task: &TaskInfo) -> Vec<String> {
         let mut out = Vec::new();
+        let label = installed(&task.xml).label;
+        if label.starts_with(LEGACY_PREFIX) {
+            out.push(format!("installed as {label}, its name before the rename (apply replaces it with {})", self::label(&m.name)));
+        }
         if task.enabled != m.enabled {
             out.push(format!("enabled: {} → {}", task.enabled, m.enabled));
         }
@@ -688,10 +734,32 @@ pub mod service_agent {
         out
     }
 
+    /// The job's label before the rename.
+    pub fn legacy_label(instance: &str) -> String {
+        let old = canvas_common::legacy::LAUNCHD_SERVICE_LABEL;
+        if instance == "default" { old.into() } else { format!("{old}.{}", super::label(instance).trim_start_matches(super::PREFIX)) }
+    }
+
+    /// Unloads and removes the agent installed before the rename (`install`
+    /// replaces it; a running service keeps running).
+    pub fn remove_legacy(instance: &str) -> Result<Option<PathBuf>> {
+        let old = legacy_label(instance);
+        if loaded(&old).is_some() {
+            bootout(&old);
+        }
+        let path = super::agents_dir().join(format!("{old}.plist"));
+        if !path.exists() {
+            return Ok(None);
+        }
+        std::fs::remove_file(&path)?;
+        Ok(Some(path))
+    }
+
     /// Writes the plist and loads it (which starts the service now unless one
-    /// runs); answers its path.
+    /// runs); answers its path. The agent from before the rename goes.
     pub fn install(exe: &Path, instance: &str, home: &Path, sessions: &Path) -> Result<PathBuf> {
         anyhow::ensure!(super::Launchd::available(), "launchctl is not there");
+        remove_legacy(instance)?;
         let path = path(instance);
         write_atomic(&path, &text(exe, instance, home, sessions))?;
         if loaded(&label(instance)).is_some() {
@@ -701,15 +769,17 @@ pub mod service_agent {
         Ok(path)
     }
 
-    /// Unloads and removes the plist (a running service keeps running).
+    /// Unloads and removes the plist, and the one from before the rename (a
+    /// running service keeps running).
     pub fn uninstall(instance: &str) -> Result<Option<PathBuf>> {
+        let legacy = remove_legacy(instance)?;
         let path = path(instance);
         let was_loaded = loaded(&label(instance)).is_some();
         if was_loaded {
             bootout(&label(instance));
         }
         if !path.exists() {
-            return Ok(was_loaded.then_some(path));
+            return Ok(was_loaded.then_some(path).or(legacy));
         }
         std::fs::remove_file(&path)?;
         Ok(Some(path))
@@ -796,6 +866,44 @@ mod tests {
             }
             let _ = std::fs::remove_dir_all(dir);
         }
+    }
+
+    /// A plist as the build before the rename wrote it.
+    fn legacy_plist(text: &str) -> String {
+        text.replace(PREFIX, LEGACY_PREFIX).replace("<!-- atelier-", &format!("<!-- {}", canvas_common::legacy::LAUNCHD_COMMENT_PREFIX))
+    }
+
+    #[test]
+    fn a_task_installed_before_the_rename_is_the_same_task_and_apply_replaces_it() {
+        let d = defaults();
+        let mut m = manifest();
+        m.enabled = false;
+        let backend = Launchd { dir: d.state.join("agents") };
+        std::fs::create_dir_all(&backend.dir).unwrap();
+        std::fs::create_dir_all(d.state.join("tasks")).unwrap();
+        std::fs::write(d.task_json(&m.name), common::task_json(&m, &d)).unwrap();
+        let old = legacy_plist(&backend.render(&m, &d, None));
+        assert!(old.contains(LEGACY_PREFIX) && !old.contains(PREFIX));
+        std::fs::write(backend.legacy_path(&m.name), &old).unwrap();
+        // Listed under its name, with its schedule; drift says it has its old label.
+        let tasks = backend.list().unwrap();
+        let task = tasks.get(&m.name.to_lowercase()).expect("the old task is listed as the same automation");
+        assert_eq!(installed(&task.xml).schedule.len(), m.schedule.len());
+        let drift = backend.drift(&m, &d, task);
+        assert!(drift.first().is_some_and(|l| l.starts_with(&format!("installed as {}", legacy_label(&m.name)))), "{drift:?}");
+        assert_eq!(backend.definition(&m.name).unwrap().as_deref(), Some(old.as_str()));
+        // Apply: the new plist replaces the old one.
+        backend.register(&m.name, &backend.render(&m, &d, None)).unwrap();
+        assert!(backend.path(&m.name).is_file() && !backend.legacy_path(&m.name).exists());
+        let tasks = backend.list().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert!(backend.drift(&m, &d, &tasks[&m.name.to_lowercase()]).is_empty());
+        // Removing a task removes both.
+        std::fs::write(backend.legacy_path(&m.name), &old).unwrap();
+        backend.delete(&m.name).unwrap();
+        assert!(backend.list().unwrap().is_empty());
+        assert_eq!(service_agent::legacy_label("default"), canvas_common::legacy::LAUNCHD_SERVICE_LABEL);
+        let _ = std::fs::remove_dir_all(&d.state);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! (session history, agent CLIs, the event bus and passive sessions,
 //! automations, VS Code storage). Runs inside the service process.
 
-pub use canvas_common::{paths, protocol};
+pub use canvas_common::{legacy, paths, protocol};
 pub use canvas_sys::ipc as pipe;
 pub use canvas_model::{bus, canvas_wide, doc, effects, prs, reviews};
 

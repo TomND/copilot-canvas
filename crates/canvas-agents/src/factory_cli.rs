@@ -168,6 +168,12 @@ pub fn import(dir: &Path, names: &[String], family: Option<String>, force: bool)
 /// Brings the scheduler (Task Scheduler, systemd, cron) in line with the
 /// manifests. Without `yes` it only shows what would change.
 pub fn apply(dir: &Path, names: &[String], yes: bool) -> Result<()> {
+    // Manifests named before the rename get their new names first.
+    if yes {
+        for (old, new, path) in factory::rename_legacy_manifests(dir)? {
+            println!("renamed {old} to {new} ({})", path.display());
+        }
+    }
     let repo = load(dir)?;
     if !repo.errors.is_empty() {
         for e in &repo.errors {
@@ -180,12 +186,20 @@ pub fn apply(dir: &Path, names: &[String], yes: bool) -> Result<()> {
     let stamp = crate::paths::rfc3339_now().replace([':', '.'], "-");
     let backups = repo.defaults.state.join("backups").join(format!("{stamp}-canvas"));
     let mut pending = 0;
-    for m in repo.manifests.iter().filter(|m| names.is_empty() || names.iter().any(|n| n.eq_ignore_ascii_case(&m.name))) {
-        let existing = tasks.get(&m.name.to_lowercase());
-        let mut changes = match existing {
-            None => vec!["new task".to_owned()],
-            Some(t) => sched.drift(m, &repo.defaults, t),
+    let named = |m: &Manifest| names.is_empty() || names.iter().any(|n| n.eq_ignore_ascii_case(&m.name) || factory::renamed_task(n).is_some_and(|r| r.eq_ignore_ascii_case(&m.name)));
+    for m in repo.manifests.iter().filter(|m| named(m)) {
+        let own = tasks.get(&m.name.to_lowercase());
+        // The same task registered under its name from before the rename: replaced.
+        let legacy = factory::legacy_task_name(&m.name).and_then(|old| tasks.get(&old.to_lowercase()));
+        let existing = own.or(legacy);
+        let mut changes = match (own, legacy) {
+            (None, None) => vec!["new task".to_owned()],
+            (None, Some(t)) => vec![format!("replaces {}, its name before the rename", t.name)],
+            (Some(t), _) => sched.drift(m, &repo.defaults, t),
         };
+        if let Some(new) = factory::renamed_task(&m.name) {
+            changes.insert(0, format!("named before the rename: renamed {new} (manifest and task)"));
+        }
         let json_path = repo.defaults.task_json(&m.name);
         let json = sched.task_json(m, &repo.defaults);
         let uses_launcher = sched.uses_task_json(&repo.defaults);
@@ -215,6 +229,10 @@ pub fn apply(dir: &Path, names: &[String], yes: bool) -> Result<()> {
             std::fs::write(&json_path, &json)?;
         }
         sched.register(&m.name, &sched.render(m, &repo.defaults, existing))?;
+        if let Some(old) = legacy.filter(|_| own.is_none()) {
+            sched.delete(&old.name)?;
+            println!("    removed {}", old.name);
+        }
         let after = sched.task(&m.name)?.context("the task did not register")?;
         let left = sched.drift(m, &repo.defaults, &after);
         if left.is_empty() {
@@ -227,7 +245,7 @@ pub fn apply(dir: &Path, names: &[String], yes: bool) -> Result<()> {
         .values()
         .filter(|t| sched.launched_by(t, &repo.defaults))
         .map(|t| &t.name)
-        .filter(|n| !repo.manifests.iter().any(|m| m.name.eq_ignore_ascii_case(n)))
+        .filter(|n| !repo.manifests.iter().any(|m| m.name.eq_ignore_ascii_case(n) || factory::legacy_task_name(&m.name).is_some_and(|old| old.eq_ignore_ascii_case(n))))
         .collect();
     for name in unmanaged {
         println!("? {name}: uses the launcher but has no manifest (left alone; import it to manage it)");

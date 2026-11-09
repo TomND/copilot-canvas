@@ -440,7 +440,7 @@ fn config(home: &std::path::Path, key: Option<&str>, value: Option<&str>) -> Res
 /// `atelier --gui …`: runs the GPU client next to this program with
 /// the same options, and exits with its exit code.
 /// `atelier migrate [--yes]`: moves the data of an install from before the
-/// rename (`~/.copilot-canvas`) to `~/.atelier`, after stopping the services
+/// rename (`legacy::HOME_DIR`) to `~/.atelier`, after stopping the services
 /// that use it (`--yes` when they run sessions: they stop, and their
 /// conversations stay resumable).
 fn migrate_home(yes: bool) -> Result<()> {
@@ -500,7 +500,7 @@ fn launch_gui() -> Result<()> {
 
 fn real_main() -> Result<()> {
     let args = parse()?;
-    // The first start after the rename moves ~/.copilot-canvas to ~/.atelier
+    // The first start after the rename moves the old data home to ~/.atelier
     // when nothing uses it (canvas_agents::home_move); other commands use
     // whichever exists.
     let opens = matches!(args.command.iter().map(String::as_str).collect::<Vec<_>>().as_slice(), [] | ["service", "start" | "install"]);

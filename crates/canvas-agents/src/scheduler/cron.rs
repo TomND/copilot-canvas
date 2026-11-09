@@ -21,6 +21,9 @@ use crate::factory::{Defaults, Imported, Manifest, Trigger};
 const BEGIN: &str = "# >>> Atelier automations (generated from manifests: edit those, then run `atelier automations apply`) >>>";
 const END: &str = "# <<< Atelier automations <<<";
 const TASK: &str = "# atelier-task: ";
+// Blocks and sections written before the rename are the same tasks; any
+// edit of the crontab writes them back under the new markers.
+use canvas_common::legacy::{CRON_BEGIN as LEGACY_BEGIN, CRON_END as LEGACY_END, CRON_TASK as LEGACY_TASK};
 const OFF: &str = "#off ";
 
 pub struct Cron {
@@ -89,20 +92,21 @@ impl Cron {
     }
 }
 
-/// The crontab around the block, and the block's task sections.
+/// The crontab around the block, and the block's task sections (also of a
+/// block from before the rename, and of both when both are there).
 fn split(text: &str) -> (String, Vec<String>, String) {
     let (mut before, mut after) = (String::new(), String::new());
     let mut sections: Vec<String> = Vec::new();
     let mut place = 0; // 0 before, 1 inside, 2 after
     for line in text.lines() {
         match place {
-            0 if line == BEGIN => place = 1,
+            0 | 2 if line == BEGIN || line == LEGACY_BEGIN => place = 1,
             0 => {
                 before.push_str(line);
                 before.push('\n');
             }
-            1 if line == END => place = 2,
-            1 if line.starts_with(TASK) => sections.push(format!("{line}\n")),
+            1 if line == END || line == LEGACY_END => place = 2,
+            1 if line.starts_with(TASK) || line.starts_with(LEGACY_TASK) => sections.push(format!("{line}\n")),
             1 => {
                 if let Some(last) = sections.last_mut() {
                     last.push_str(line);
@@ -120,7 +124,8 @@ fn split(text: &str) -> (String, Vec<String>, String) {
 
 /// The header's fields: name, enabled, schedule.
 fn header(section: &str) -> Option<(String, bool, String)> {
-    let line = section.lines().next()?.strip_prefix(TASK)?;
+    let first = section.lines().next()?;
+    let line = first.strip_prefix(TASK).or_else(|| first.strip_prefix(LEGACY_TASK))?;
     let mut parts = line.splitn(3, " | ");
     let name = parts.next()?.to_owned();
     let enabled = parts.next().is_none_or(|e| e.trim() == "enabled");
@@ -288,6 +293,9 @@ impl Scheduler for Cron {
 
     fn drift(&self, m: &Manifest, d: &Defaults, task: &TaskInfo) -> Vec<String> {
         let mut out = Vec::new();
+        if task.xml.starts_with(LEGACY_TASK) {
+            out.push("in the crontab block from before the rename (apply rewrites it under the new markers)".to_owned());
+        }
         if task.enabled != m.enabled {
             out.push(format!("enabled: {} → {}", task.enabled, m.enabled));
         }
@@ -388,6 +396,17 @@ mod tests {
         assert_eq!(cron.drift(&m, &d, &cron.list().unwrap()["morning brief"]), vec!["enabled: false → true"]);
         cron.delete(&m.name).unwrap();
         assert_eq!(std::fs::read_to_string(&store).unwrap(), "0 1 * * * backup\n", "only the user's own line is left");
+        // A block written before the rename: the same task; apply rewrites it under the new markers.
+        let rendered = cron.render(&m, &d, None);
+        let old = format!("0 1 * * * backup\n{LEGACY_BEGIN}\n{}{LEGACY_END}\n", rendered.replacen(TASK, LEGACY_TASK, 1));
+        std::fs::write(&store, &old).unwrap();
+        let tasks = cron.list().unwrap();
+        let task = tasks.get("morning brief").expect("the old block's task is listed");
+        assert_eq!(cron.drift(&m, &d, task), vec!["in the crontab block from before the rename (apply rewrites it under the new markers)"]);
+        cron.register(&m.name, &rendered).unwrap();
+        let text = std::fs::read_to_string(&store).unwrap();
+        assert_eq!(text, format!("0 1 * * * backup\n{BEGIN}\n{rendered}{END}\n"), "one block, the new markers");
+        assert!(cron.drift(&m, &d, &cron.list().unwrap()["morning brief"]).is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

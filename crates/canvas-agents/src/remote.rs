@@ -325,6 +325,13 @@ pub fn tunnel_manifest_path(dir: &Path) -> PathBuf {
     dir.join("atelier").join(format!("{}.yaml", remote::TUNNEL_TASK))
 }
 
+/// Where the build before the rename wrote it (`apply` and `tunnel-setup`
+/// move it to [`tunnel_manifest_path`]).
+pub fn legacy_tunnel_manifest_path(dir: &Path) -> PathBuf {
+    let task = crate::factory::legacy_task_name(remote::TUNNEL_TASK).unwrap_or_default();
+    dir.join(crate::legacy::TUNNEL_MANIFEST_DIR).join(format!("{task}.yaml"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

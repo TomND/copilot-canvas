@@ -23,6 +23,9 @@ use super::{Scheduler, TaskInfo};
 use crate::factory::{Defaults, Imported, Manifest, Trigger, hhmm};
 
 const PREFIX: &str = "atelier-task-";
+/// The units of tasks installed before the rename: the same automations,
+/// read, run and removed as such, replaced by `apply`.
+const LEGACY_PREFIX: &str = canvas_common::legacy::SYSTEMD_TASK_PREFIX;
 const ENABLED: &str = "# enabled: ";
 
 pub struct Systemd {
@@ -45,7 +48,16 @@ impl Systemd {
 /// `atelier-task-<name>` with the name escaped as `systemd-escape`
 /// does (`\xNN` for anything but letters, digits, `:`, `_` and `.`).
 pub fn unit_stem(name: &str) -> String {
-    let mut out = String::from(PREFIX);
+    stem_with(PREFIX, name)
+}
+
+/// The unit stem a task had before the rename.
+fn legacy_stem(name: &str) -> String {
+    stem_with(LEGACY_PREFIX, name)
+}
+
+fn stem_with(prefix: &str, name: &str) -> String {
+    let mut out = String::from(prefix);
     for (i, byte) in name.bytes().enumerate() {
         if byte.is_ascii_alphanumeric() || byte == b':' || byte == b'_' || (byte == b'.' && i > 0) {
             out.push(byte as char);
@@ -149,7 +161,7 @@ fn parse_definition(text: &str) -> (bool, Vec<(String, String)>) {
     for line in text.lines() {
         if let Some(flag) = line.strip_prefix(ENABLED) {
             enabled = flag.trim() == "true";
-        } else if let Some(name) = line.strip_prefix("# ").filter(|n| n.starts_with(PREFIX) && (n.ends_with(".service") || n.ends_with(".timer"))) {
+        } else if let Some(name) = line.strip_prefix("# ").filter(|n| (n.starts_with(PREFIX) || n.starts_with(LEGACY_PREFIX)) && (n.ends_with(".service") || n.ends_with(".timer"))) {
             files.push((name.trim().to_owned(), String::new()));
         } else if let Some((_, text)) = files.last_mut() {
             text.push_str(line);
@@ -162,6 +174,13 @@ fn parse_definition(text: &str) -> (bool, Vec<(String, String)>) {
 /// The values of `key=` lines of a unit text.
 fn values<'a>(text: &'a str, key: &str) -> Vec<&'a str> {
     text.lines().filter_map(|l| l.strip_prefix(key).and_then(|r| r.strip_prefix('='))).collect()
+}
+
+/// The values of the task's own `X-Atelier-<key>=` lines, or of the ones
+/// units from before the rename carry.
+fn ours<'a>(text: &'a str, key: &str) -> Vec<&'a str> {
+    let found = values(text, &format!("X-Atelier-{key}"));
+    if found.is_empty() { values(text, &format!("{}{key}", canvas_common::legacy::SYSTEMD_KEY_PREFIX)) } else { found }
 }
 
 /// `Sat 2026-10-31 18:00:00 UTC` (systemctl's time format under `TZ=UTC`) → Unix ms.
@@ -193,6 +212,30 @@ impl Systemd {
             .collect()
     }
 
+    /// Where a task's units are: its own, else the ones from before the
+    /// rename (until `apply` replaces them).
+    fn located(&self, name: &str) -> String {
+        let stem = unit_stem(name);
+        if self.installed(&stem).is_empty() && !self.installed(&legacy_stem(name)).is_empty() { legacy_stem(name) } else { stem }
+    }
+
+    /// Stops, disables and removes the units a task had before the rename.
+    fn remove_legacy(&self, name: &str) -> Result<()> {
+        let stem = legacy_stem(name);
+        let files = self.installed(&stem);
+        if files.is_empty() {
+            return Ok(());
+        }
+        let _ = self.switch(&files, false);
+        let _ = self.systemctl(&["stop", &format!("{stem}.service")]);
+        for (file, _) in &files {
+            std::fs::remove_file(self.dir.join(file))?;
+        }
+        let _ = self.systemctl(&["daemon-reload"]);
+        let _ = self.systemctl(&["reset-failed", &format!("{stem}.service")]);
+        Ok(())
+    }
+
     /// Enables (and starts the timer) or disables (and stops it) a task's units.
     fn switch(&self, files: &[(String, String)], enabled: bool) -> Result<()> {
         for (name, _) in files.iter().filter(|(_, t)| t.contains("[Install]")) {
@@ -219,9 +262,10 @@ impl Scheduler for Systemd {
         let Ok(entries) = std::fs::read_dir(&self.dir) else { return Ok(out) };
         let mut stems: Vec<String> = entries
             .flatten()
-            .filter_map(|e| e.file_name().to_str().and_then(|n| n.strip_suffix(".service")).filter(|n| n.starts_with(PREFIX)).map(str::to_owned))
+            .filter_map(|e| e.file_name().to_str().and_then(|n| n.strip_suffix(".service")).filter(|n| n.starts_with(PREFIX) || n.starts_with(LEGACY_PREFIX)).map(str::to_owned))
             .collect();
-        stems.sort();
+        // Units from before the rename first, so a task's own ones win.
+        stems.sort_by_key(|s| (!s.starts_with(LEGACY_PREFIX), s.clone()));
         if stems.is_empty() {
             return Ok(out);
         }
@@ -240,7 +284,8 @@ impl Scheduler for Systemd {
         for stem in stems {
             let files = self.installed(&stem);
             let service = files.iter().find(|(n, _)| n.ends_with(".service")).map(|(_, t)| t.as_str()).unwrap_or_default();
-            let name = values(service, "X-Atelier-Name").first().map(|n| n.to_string()).unwrap_or_else(|| stem[PREFIX.len()..].to_owned());
+            let prefix = if stem.starts_with(LEGACY_PREFIX) { LEGACY_PREFIX } else { PREFIX };
+            let name = ours(service, "Name").first().map(|n| n.to_string()).unwrap_or_else(|| stem[prefix.len()..].to_owned());
             let empty = BTreeMap::new();
             let svc = props.get(&format!("{stem}.service")).unwrap_or(&empty);
             let timer = props.get(&format!("{stem}.timer"));
@@ -266,12 +311,12 @@ impl Scheduler for Systemd {
     }
 
     fn run(&self, name: &str) -> Result<()> {
-        self.systemctl(&["start", "--no-block", &format!("{}.service", unit_stem(name))])?;
+        self.systemctl(&["start", "--no-block", &format!("{}.service", self.located(name))])?;
         Ok(())
     }
 
     fn set_enabled(&self, name: &str, enabled: bool) -> Result<()> {
-        let files = self.installed(&unit_stem(name));
+        let files = self.installed(&self.located(name));
         anyhow::ensure!(!files.is_empty(), "{name} is not installed (run apply)");
         self.switch(&files, enabled)
     }
@@ -294,11 +339,14 @@ impl Scheduler for Systemd {
             std::fs::write(&temp, text)?;
             std::fs::rename(&temp, &path)?;
         }
+        // The same task's units from before the rename go.
+        self.remove_legacy(name)?;
         self.systemctl(&["daemon-reload"])?;
         self.switch(&files, enabled)
     }
 
     fn delete(&self, name: &str) -> Result<()> {
+        self.remove_legacy(name)?;
         let stem = unit_stem(name);
         let files = self.installed(&stem);
         let _ = self.switch(&files, false);
@@ -323,8 +371,9 @@ impl Scheduler for Systemd {
         let m = &mut out.manifest;
         m.name = task.name.clone();
         m.enabled = enabled;
-        m.description = values(service, "Description").first().map(|d| d.replace("%%", "%")).filter(|d| *d != format!("{} (Atelier automation)", task.name)).unwrap_or_default();
-        for text in values(service, "X-Atelier-Schedule") {
+        let generated = |d: &str| d == format!("{} (Atelier automation)", task.name) || d == format!("{}{}", task.name, canvas_common::legacy::SYSTEMD_DESCRIPTION_SUFFIX);
+        m.description = values(service, "Description").first().map(|d| d.replace("%%", "%")).filter(|d| !generated(d)).unwrap_or_default();
+        for text in ours(service, "Schedule") {
             match Trigger::parse(text) {
                 Ok(trigger) => m.schedule.push(trigger),
                 Err(_) => out.unsupported.push(text.to_owned()),
@@ -356,12 +405,18 @@ impl Scheduler for Systemd {
         let rendered = self.render(m, d, Some(task));
         let strip = |text: &str| text.lines().filter(|l| !l.starts_with(ENABLED) && !l.starts_with("X-Atelier-Schedule=")).collect::<Vec<_>>().join("\n");
         let mut out = Vec::new();
+        let (_, files) = parse_definition(&task.xml);
+        if let Some((file, _)) = files.iter().find(|(n, _)| n.starts_with(LEGACY_PREFIX)) {
+            let stem = file.rsplit_once('.').map(|(s, _)| s).unwrap_or(file);
+            out.push(format!("installed as {stem}, its name before the rename (apply replaces it with {})", unit_stem(&m.name)));
+            return out;
+        }
         if task.enabled != m.enabled {
             out.push(format!("enabled: {} → {}", task.enabled, m.enabled));
         }
         let (_, files) = parse_definition(&task.xml);
         let service = files.iter().find(|(n, _)| n.ends_with(".service")).map(|(_, t)| t.as_str()).unwrap_or_default();
-        let have: Vec<&str> = values(service, "X-Atelier-Schedule");
+        let have: Vec<&str> = ours(service, "Schedule");
         let want: Vec<String> = m.schedule.iter().map(Trigger::text).collect();
         if have.iter().map(|s| s.to_string()).collect::<Vec<_>>() != want {
             out.push(format!("schedule: {} → {}", have.join(" · "), want.join(" · ")));
@@ -407,6 +462,30 @@ mod tests {
 
     fn defaults() -> Defaults {
         Defaults { state: std::env::temp_dir().join(format!("cc-sd-{}", uuid::Uuid::new_v4().simple())), ..Defaults::default() }
+    }
+
+    #[test]
+    fn units_installed_before_the_rename_are_the_same_task_and_go_when_it_is_applied() {
+        let (m, d) = (manifest(), defaults());
+        let systemd = Systemd { dir: d.state.join("units") };
+        std::fs::create_dir_all(&systemd.dir).unwrap();
+        // The units as the build before the rename wrote them.
+        for (file, text) in files(&m, &d) {
+            let old = text.replace("X-Atelier-", canvas_common::legacy::SYSTEMD_KEY_PREFIX).replace(" (Atelier automation)", canvas_common::legacy::SYSTEMD_DESCRIPTION_SUFFIX);
+            std::fs::write(systemd.dir.join(file.replacen(PREFIX, LEGACY_PREFIX, 1)), old).unwrap();
+        }
+        let tasks = systemd.list().unwrap();
+        let task = tasks.get("morning brief").expect("listed under its name");
+        assert_eq!(task.name, "Morning brief");
+        assert_eq!(systemd.located(&m.name), legacy_stem(&m.name));
+        let drift = systemd.drift(&m, &d, task);
+        assert_eq!(drift, vec![format!("installed as {}, its name before the rename (apply replaces it with {})", legacy_stem(&m.name), unit_stem(&m.name))]);
+        let imported = systemd.import(task).manifest;
+        assert_eq!((imported.schedule.len(), imported.description.as_str()), (m.schedule.len(), ""), "its schedule and generated description read back");
+        systemd.remove_legacy(&m.name).unwrap();
+        assert!(systemd.list().unwrap().is_empty() && std::fs::read_dir(&systemd.dir).unwrap().next().is_none());
+        assert_eq!(service_unit::legacy_file_name("default"), format!("{}.service", canvas_common::legacy::SYSTEMD_SERVICE_UNIT));
+        let _ = std::fs::remove_dir_all(&d.state);
     }
 
     #[test]
@@ -496,11 +575,32 @@ pub mod service_unit {
         )
     }
 
-    /// Writes and enables the unit; answers its path.
+    /// The unit's file name before the rename.
+    pub fn legacy_file_name(instance: &str) -> String {
+        let old = canvas_common::legacy::SYSTEMD_SERVICE_UNIT;
+        if instance == "default" { format!("{old}.service") } else { format!("{old}-{instance}.service") }
+    }
+
+    /// Disables and removes the unit installed before the rename (`install`
+    /// replaces it; a running service keeps running).
+    pub fn remove_legacy(systemd: &Systemd, instance: &str) -> Result<Option<PathBuf>> {
+        let path = systemd.dir.join(legacy_file_name(instance));
+        if !path.exists() {
+            return Ok(None);
+        }
+        let _ = systemd.systemctl(&["disable", &legacy_file_name(instance)]);
+        std::fs::remove_file(&path)?;
+        let _ = systemd.systemctl(&["daemon-reload"]);
+        Ok(Some(path))
+    }
+
+    /// Writes and enables the unit (the one from before the rename goes);
+    /// answers its path.
     pub fn install(exe: &Path, instance: &str, home: &Path, sessions: &Path) -> Result<PathBuf> {
         anyhow::ensure!(Systemd::available(), "no user systemd answers (systemctl --user); start the service from a login script instead: atelier service start");
         let systemd = Systemd::user();
         std::fs::create_dir_all(&systemd.dir)?;
+        remove_legacy(&systemd, instance)?;
         let path = systemd.dir.join(file_name(instance));
         std::fs::write(&path, text(exe, instance, home, sessions))?;
         systemd.systemctl(&["daemon-reload"])?;
@@ -508,12 +608,14 @@ pub mod service_unit {
         Ok(path)
     }
 
-    /// Disables and removes the unit (a running service keeps running).
+    /// Disables and removes the unit, and the one from before the rename (a
+    /// running service keeps running).
     pub fn uninstall(instance: &str) -> Result<Option<PathBuf>> {
         let systemd = Systemd::user();
+        let legacy = remove_legacy(&systemd, instance)?;
         let path = systemd.dir.join(file_name(instance));
         if !path.exists() {
-            return Ok(None);
+            return Ok(legacy);
         }
         let _ = systemd.systemctl(&["disable", &file_name(instance)]);
         std::fs::remove_file(&path)?;

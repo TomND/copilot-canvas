@@ -233,7 +233,7 @@ fn real_main() -> Result<i32> {
     os::set_app_id();
     // System fonts load while the service connects and the window comes up.
     let fonts = std::thread::Builder::new().name("fonts".into()).spawn(text::load)?;
-    // The first start after the rename moves ~/.copilot-canvas to ~/.atelier when nothing uses it.
+    // The first start after the rename moves the old data home to ~/.atelier when nothing uses it.
     if args.home.is_none() && args.remote.is_none() {
         let moved = canvas_agents::home_move::move_default_home();
         if let Some(line) = moved.describe().filter(|_| matches!(moved, canvas_agents::home_move::Moved::Moved { .. } | canvas_agents::home_move::Moved::Failed { .. })) {

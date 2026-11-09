@@ -192,7 +192,9 @@ pub fn push_test(instance: &Instance) -> Result<()> {
 /// (the syntax of Dev Tunnels CLI 1.0.2115).
 pub fn tunnel_setup(instance: &Instance, dir: &Path, tunnel: Option<String>, port: Option<u16>) -> Result<()> {
     let mut settings = Settings::load_checked(&instance.home)?;
-    let tunnel = tunnel.or_else(|| settings.remote.tunnel.clone()).unwrap_or_else(|| remote::DEFAULT_TUNNEL.into());
+    // An install set up before the rename (its manifest is there) keeps its tunnel.
+    let set_up_before = canvas_agents::remote::legacy_tunnel_manifest_path(dir).is_file();
+    let tunnel = tunnel.or_else(|| settings.remote.tunnel.clone()).unwrap_or_else(|| if set_up_before { canvas_common::legacy::DEFAULT_TUNNEL.into() } else { remote::DEFAULT_TUNNEL.into() });
     anyhow::ensure!(remote::valid_tunnel_id(&tunnel), "a tunnel id is lower-case letters, digits, '-' and '.', starting with a letter or digit");
     let port = port.unwrap_or_else(|| listen_port(&settings));
     anyhow::ensure!(port != 0, "--port must not be 0");
@@ -200,7 +202,14 @@ pub fn tunnel_setup(instance: &Instance, dir: &Path, tunnel: Option<String>, por
     let program = devtunnel.clone().unwrap_or_else(|| PathBuf::from("devtunnel.exe"));
     let path = canvas_agents::remote::tunnel_manifest_path(dir);
     let text = canvas_agents::remote::tunnel_manifest(&program, &tunnel, port);
-    let existed = path.is_file();
+    // The manifest from before the rename is replaced by this one (`apply`
+    // then replaces its task too).
+    let old = canvas_agents::remote::legacy_tunnel_manifest_path(dir);
+    let existed = path.is_file() || old.is_file();
+    if old.is_file() {
+        std::fs::remove_file(&old)?;
+        let _ = std::fs::remove_dir(old.parent().context("manifest folder")?);
+    }
     std::fs::create_dir_all(path.parent().context("manifest folder")?)?;
     std::fs::write(&path, &text).with_context(|| format!("cannot write {}", path.display()))?;
     settings.remote.listen = Some(format!("127.0.0.1:{port}"));
@@ -384,11 +393,15 @@ pub fn doctor_lines(instance: &Instance, dir: &Path) -> Vec<(Mark, &'static str,
     });
     let manifest = canvas_agents::remote::tunnel_manifest_path(dir);
     lines.push(if manifest.is_file() {
-        let task = canvas_agents::scheduler::get().list().ok().and_then(|tasks| tasks.get(&remote::TUNNEL_TASK.to_lowercase()).map(|t| if t.enabled { t.state.clone() } else { "disabled".into() }));
+        let tasks = canvas_agents::scheduler::get().list().ok();
+        let old = canvas_agents::factory::legacy_task_name(remote::TUNNEL_TASK).unwrap_or_default().to_lowercase();
+        let task = tasks.as_ref().and_then(|tasks| tasks.get(&remote::TUNNEL_TASK.to_lowercase()).or_else(|| tasks.get(&old))).map(|t| if !t.name.eq_ignore_ascii_case(remote::TUNNEL_TASK) { format!("{} (its name before the rename: `atelier automations apply --yes` renames it)", t.name) } else if t.enabled { t.state.clone() } else { "disabled".into() });
         match task {
             Some(state) => (Mark::Ok, "Tunnel automation", format!("{} · task {state}", manifest.display())),
             None => (Mark::Info, "Tunnel automation", format!("{} · not registered (atelier automations apply {} --yes)", manifest.display(), remote::TUNNEL_TASK)),
         }
+    } else if canvas_agents::remote::legacy_tunnel_manifest_path(dir).is_file() {
+        (Mark::Info, "Tunnel automation", format!("{} is from before the rename: `atelier automations apply --yes` renames it", canvas_agents::remote::legacy_tunnel_manifest_path(dir).display()))
     } else {
         (Mark::Info, "Tunnel automation", "no manifest (atelier remote tunnel-setup)".into())
     });
