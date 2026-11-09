@@ -1280,9 +1280,13 @@ mod tests {
         }
         flood.join().unwrap();
         assert_eq!(log.end_syncs.load(Ordering::SeqCst), 1, "the 50 ms hold ended while messages kept coming");
-        // And with nothing else to do, the deadline alone ends a hold.
+        // And with nothing else to do, the deadline alone ends a hold (waited
+        // for: a busy runner may take longer than the 50 ms to get there).
         harness.output.send(b"\x1b[?2026h".to_vec()).unwrap();
-        std::thread::sleep(Duration::from_millis(300));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while log.end_syncs.load(Ordering::SeqCst) < 2 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         assert_eq!(log.end_syncs.load(Ordering::SeqCst), 2);
     }
 
