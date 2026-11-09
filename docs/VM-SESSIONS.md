@@ -48,7 +48,7 @@ Non-goals (first version):
 ```
  HUB (the canvas service's machine: unchanged owner of state)        GUEST (one microVM per branch)
  ┌──────────────────────────────────────────────────┐               ┌──────────────────────────────────────────────┐
- │ copilot-canvas service                            │               │ copilot-canvas satellite (same binary, Linux) │
+ │ atelier service                            │               │ atelier satellite (same binary, Linux) │
  │  L1: Terminal { pty: Local | Remote }   ◀─────────┼── satellite ──┼─▶ PTY owner (agent CLI), generations, ring    │
  │  L3: doc, bus, todos, PRs, notebook, reports      │   link (WSS,  │   headless emulator (gap snapshots)           │
  │  SessionStore: local roots + guest mirrors  ◀─────┼── outbound ───┼─ history shipper                              │
@@ -104,8 +104,8 @@ forwarding. The tunnel access token is injected by egress from a pack-configured
 ### 4.2 `canvas-common`
 - Appended `ClientMsg`/`ServiceMsg` `Sat*` variants (§6), `CAP_SATELLITE`, and a satellite role on stored
   credentials.
-- A launch carrier `COPILOT_CANVAS_PLACEMENT` (an environment JSON the service strips, as with
-  `COPILOT_CANVAS_GROUP_SKILLS`).
+- A launch carrier `ATELIER_PLACEMENT` (an environment JSON the service strips, as with
+  `ATELIER_GROUP_SKILLS`).
 
 ### 4.3 `canvas-host`
 - A `Remote` PTY kind next to the local `portable-pty` one.
@@ -130,11 +130,11 @@ forwarding. The tunnel access token is injected by egress from a pack-configured
   `HasHistory`, `Fork`, `is_live`, subsessions. Guest liveness comes from satellite process reports, never from
   mirrored lock files.
 - **`vm::McpGateway`** (§7).
-- **`copilot-canvas satellite`** (Linux): link, PTY host, generations, ring, headless emulator, history shipper,
+- **`atelier satellite`** (Linux): link, PTY host, generations, ring, headless emulator, history shipper,
   CLI endpoint, file sync, MCP proxy, stats.
 - **CLI**:
-  - `copilot-canvas vm list|pool|images|image build REPO|shell BOX|suspend|resume|delete|budget|pack check`;
-  - in the guest, the existing commands run in `COPILOT_CANVAS_REMOTE=satellite` mode. `note`, `report`, `pr`
+  - `atelier vm list|pool|images|image build REPO|shell BOX|suspend|resume|delete|budget|pack check`;
+  - in the guest, the existing commands run in `ATELIER_REMOTE=satellite` mode. `note`, `report`, `pr`
     and `todo` call the satellite endpoint, which forwards acknowledged hub operations. Each command's file and
     liveness contract is inventoried first.
 
@@ -148,8 +148,8 @@ forwarding. The tunnel access token is injected by egress from a pack-configured
 
 ## 5. The VM pack (configuration outside the repository)
 
-Settings: `vm.pack` (a folder path) or `COPILOT_CANVAS_VM_PACK`. Without a pack, VM features are hidden.
-`copilot-canvas vm pack check` validates it. The schema is versioned (`pack_version: 1`).
+Settings: `vm.pack` (a folder path) or `ATELIER_VM_PACK`. Without a pack, VM features are hidden.
+`atelier vm pack check` validates it. The schema is versioned (`pack_version: 1`).
 
 | File | Holds |
 |---|---|

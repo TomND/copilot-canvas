@@ -1039,9 +1039,9 @@ mod tests {
         assert_eq!(serde_json::from_str::<Vec<Op>>(&json).unwrap(), ops);
         // Keys are made where canvases live: on the Windows service.
         if cfg!(windows) {
-            let key = doc_key(r"C:\Users\Me\.copilot-canvas\canvas.json");
+            let key = doc_key(r"C:\Users\Me\.atelier\canvas.json");
             assert!(key.starts_with("canvas-") && key.len() == "canvas-".len() + 16);
-            assert_eq!(key, doc_key("c:/users/me/.copilot-canvas/CANVAS.json"));
+            assert_eq!(key, doc_key("c:/users/me/.atelier/CANVAS.json"));
             assert_ne!(key, doc_key(r"C:\other\canvas.json"));
         }
         assert_eq!(stable_id("auto", "wf:1"), stable_id("auto", "wf:1"));

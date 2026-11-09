@@ -68,7 +68,7 @@ impl App {
             return StartPlan::Blocked("Its worktree is still being created.".into());
         }
         if self.summary(&session).is_some_and(|s| s.live) {
-            return StartPlan::Blocked("It is open in another terminal (CLI or VS Code); Copilot Canvas never starts a second copy.".into());
+            return StartPlan::Blocked("It is open in another terminal (CLI or VS Code); Atelier never starts a second copy.".into());
         }
         if session.command.is_some() || session.fresh {
             return StartPlan::Start;

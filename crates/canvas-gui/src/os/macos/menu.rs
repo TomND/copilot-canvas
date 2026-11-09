@@ -32,7 +32,7 @@ declare_class!(
     unsafe impl ClassType for MenuTarget {
         type Super = NSObject;
         type Mutability = mutability::MainThreadOnly;
-        const NAME: &'static str = "CopilotCanvasMenuTarget";
+        const NAME: &'static str = "AtelierMenuTarget";
     }
 
     impl DeclaredClass for MenuTarget {
@@ -176,17 +176,17 @@ pub fn install() {
         submenu(
             mtm,
             &bar,
-            "Copilot Canvas",
+            "Atelier",
             vec![
-                item(mtm, "About Copilot Canvas", Some(sel!(orderFrontStandardAboutPanel:)), "", none, None),
+                item(mtm, "About Atelier", Some(sel!(orderFrontStandardAboutPanel:)), "", none, None),
                 sep(),
                 item(mtm, "Settings…", Some(sel!(showSettings:)), ",", cmd, t),
                 sep(),
-                item(mtm, "Hide Copilot Canvas", Some(sel!(hide:)), "h", cmd, None),
+                item(mtm, "Hide Atelier", Some(sel!(hide:)), "h", cmd, None),
                 item(mtm, "Hide Others", Some(sel!(hideOtherApplications:)), "h", cmd_alt, None),
                 item(mtm, "Show All", Some(sel!(unhideAllApplications:)), "", none, None),
                 sep(),
-                item(mtm, "Quit Copilot Canvas…", Some(sel!(quit:)), "q", cmd, t),
+                item(mtm, "Quit Atelier…", Some(sel!(quit:)), "q", cmd, t),
             ],
         );
         submenu(
@@ -216,7 +216,7 @@ pub fn install() {
                 item(mtm, "Bring All to Front", Some(sel!(arrangeInFront:)), "", none, None),
             ],
         );
-        let help = submenu(mtm, &bar, "Help", vec![item(mtm, "Copilot Canvas Help", Some(sel!(showHelp:)), "?", cmd, t)]);
+        let help = submenu(mtm, &bar, "Help", vec![item(mtm, "Atelier Help", Some(sel!(showHelp:)), "?", cmd, t)]);
         let app = NSApplication::sharedApplication(mtm);
         app.setMainMenu(Some(&bar));
         // SAFETY: AppKit's menus and Apple Event handler, on the main thread;

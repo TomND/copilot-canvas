@@ -1,5 +1,5 @@
 //! `--test-hooks`: a local, owner-only named pipe
-//! (`\\.\pipe\copilot-canvas-gui-test-<pid>`) taking one JSON command per
+//! (`\\.\pipe\atelier-gui-test-<pid>`) taking one JSON command per
 //! line and answering one JSON line each. Commands inject input (`key`,
 //! `text`, `paste`, `mouse`, `mice` (several mouse events as one batch),
 //! `wheel`, `drop`), read the UI (`screen`, `tree`
@@ -29,7 +29,7 @@ pub struct Request {
 }
 
 pub fn pipe_name() -> String {
-    canvas_sys::ipc::local_name(&format!("copilot-canvas-gui-test-{}", std::process::id()))
+    canvas_sys::ipc::local_name(&format!("atelier-gui-test-{}", std::process::id()))
 }
 
 /// Serves the pipe on background threads; commands run on the UI thread.

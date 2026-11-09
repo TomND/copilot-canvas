@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/*"]
-# `cargo build` builds both executables: copilot-canvas.exe and copilot-canvas-gui.exe.
+# `cargo build` builds both executables: atelier.exe and atelier-gui.exe.
 default-members = [".", "crates/canvas-gui"]
 resolver = "3"
 
@@ -82,18 +82,18 @@ accesskit = "0.25.2"
 accesskit_winit = "0.34.2"
 # The GUI's HTML view of reports (WebView2; its loader is linked statically).
 webview2-com = "0.39.1"
-# The app icon in the executables (build scripts of copilot-canvas and canvas-gui).
+# The app icon in the executables (build scripts of atelier and canvas-gui).
 embed-resource = "3.0.12"
 
 [package]
-name = "copilot-canvas"
+name = "atelier"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 description = "Spatial session manager for agent CLIs (GitHub Copilot, OpenCode, Claude Code) with a persistent native terminal service"
 
 [[bin]]
-name = "copilot-canvas"
+name = "atelier"
 path = "src/main.rs"
 
 [features]

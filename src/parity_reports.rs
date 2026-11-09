@@ -1,5 +1,5 @@
 //! The parity suite's checks of the Reports inbox (rows 41–41c): a session
-//! publishes a Markdown report and a message through `copilot-canvas report
+//! publishes a Markdown report and a message through `atelier report
 //! publish` (its environment, as an agent would); the activity bar counts
 //! them, a toast is recorded; the inbox lists them and the viewer shows them
 //! formatted and marks them read at the service; viewing the source session
@@ -27,7 +27,7 @@ pub(crate) fn publish(exe: &Path, home: &Path, session: &str, args: &[&str]) -> 
         .args(["report", "publish"])
         .args(args)
         .args(["--home", &home.display().to_string()])
-        .env("COPILOT_CANVAS_SESSION", session)
+        .env("ATELIER_SESSION", session)
         .env_remove("AUTOMATION_NAME")
         .output()?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -95,7 +95,7 @@ fn open_from_inbox(gui: &mut Gui, title: &str) -> Result<()> {
 }
 
 pub(super) fn rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
-    check(rows, "41", "New: Reports inbox: sessions publish reports and messages (copilot-canvas report publish); an unread count on the activity bar, a notice and a toast; the viewer formats Markdown and marks it read at the service; viewing its session starts nothing", "reports_inbox_and_viewer", || {
+    check(rows, "41", "New: Reports inbox: sessions publish reports and messages (atelier report publish); an unread count on the activity bar, a notice and a toast; the viewer formats Markdown and marks it read at the service; viewing its session starts nothing", "reports_inbox_and_viewer", || {
         gui.canvas_focus()?;
         let before = launches(sb);
         let brief = sb.root.join("parity-brief.md");

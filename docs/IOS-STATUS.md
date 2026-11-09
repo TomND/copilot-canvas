@@ -11,7 +11,7 @@ app is today. The design and the phase history are in
 
 The iPhone app is merged into `main`. It started on the `ios-client` branch
 (PR #1, merged as bded559); the reports inbox came after the merge (6deb60c).
-It is a remote client of the Copilot Canvas service. It connects to the
+It is a remote client of the Atelier service. It connects to the
 service over the same private Dev Tunnel as the desktop's remote mode, using
 WebSocket web forwarding, a 24 h tunnel access token and a one-time pairing
 code. Most of the logic is in a shared Rust core (`crates/canvas-mobile`,
@@ -125,14 +125,14 @@ and Tasks places (docs/NOTEBOOK-TASKS.md §7: not parity, viewing and editing).
 1. **The real Windows Cloud PC with the phone.** Update the Cloud PC from
    `main` (the protocol indices changed, so the phone and the service must
    both be current). Then:
-   - run `copilot-canvas remote pair --qr` and scan it;
+   - run `atelier remote pair --qr` and scan it;
    - check terminal sizes while the desk and the phone take turns typing;
    - check Copilot, OpenCode and Claude Code at phone width;
    - start a new session and a fork from the phone;
    - check passive session actions;
    - check reports from real agents.
 2. **APNs delivery.** Create the `.p8` key (developer.apple.com › Keys ›
-   Apple Push Notifications service). Then run `copilot-canvas remote push-key
+   Apple Push Notifications service). Then run `atelier remote push-key
    AuthKey_ID.p8 --team 8Z37ZVMJ4V` and `remote push-test`. Check four
    notifications with the app closed: a session needs you, a session
    finished, a new report, and a silent token renewal. For the Mac
@@ -180,7 +180,7 @@ and Tasks places (docs/NOTEBOOK-TASKS.md §7: not parity, viewing and editing).
 | QR code in the GUI's remote sheet | Today the QR code comes from `remote pair --qr` in a terminal on the Cloud PC |
 | Repeated report alerts | A report that arrived while the app was away gets a push, then a toast when the app reconnects. This is minor; the core could drop toasts for reports older than the last disconnect |
 | Older services | A service without reports never sends the inbox, and the inbox screen says so. The protocol indices changed during the merge, so services built before 7ad6e71 cannot talk to this app |
-| The mock is not the service | The mock ignores bus actions other than reports and todos. Pausing works through the canvas field. Its notebook is always its demo folder and its todo book lives in memory (every start begins with the demo book; no `copilot-canvas todo` requests, no events). UI tests run against the mock, so the real service's bus behaviour is covered only by the Windows tests |
+| The mock is not the service | The mock ignores bus actions other than reports and todos. Pausing works through the canvas field. Its notebook is always its demo folder and its todo book lives in memory (every start begins with the demo book; no `atelier todo` requests, no events). UI tests run against the mock, so the real service's bus behaviour is covered only by the Windows tests |
 | Todos and notes on the phone | Viewing and editing (§1.1), not parity: no todo canvas, board settings, claims for a session or *Start a session on this…*; no Live preview, backlinks, outline or quick capture; HTML notes never run their scripts on the phone (the desktop can allow them per file); text files are editable on the phone, read only on the desktop. The source editor is plain text (no find, no syntax colours) |
 | Accessibility, localisation | English only. VoiceOver labels exist for controls and the terminal's text value; there is no full VoiceOver pass |
 | Test gaps | No automated test of toasts, local notifications or APNs delivery, and no on-device automation |
@@ -192,7 +192,7 @@ ios/build-core.sh && (cd ios && xcodegen generate)      # Rust core + Xcode proj
 cargo test -p canvas-mobile -p canvas-push -p canvas-mock # core, push, mock
 ./target/debug/canvas-mock --listen 127.0.0.1:47600 --cwd "$PWD" &   # UI tests need both mocks
 ./target/debug/canvas-mock --listen 127.0.0.1:47601 --state /tmp/canvas-mock-personal --cwd "$PWD" --name personal &
-(cd ios && xcodebuild -project CopilotCanvas.xcodeproj -scheme CopilotCanvas \
+(cd ios && xcodebuild -project Atelier.xcodeproj -scheme Atelier \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test)
 ios/cloud-mac.sh start | pair | status | stop | logs | report FILE   # this Mac as a stand-in Cloud PC
 ```

@@ -8,7 +8,7 @@
 //! a writer and a closer that wakes a blocked reader.
 
 /// The endpoint for a per-process local name (the GUI's test hooks):
-/// `\\.\pipe\NAME` on Windows, `<runtime or temp>/copilot-canvas-<user>/NAME.sock`
+/// `\\.\pipe\NAME` on Windows, `<runtime or temp>/atelier-<user>/NAME.sock`
 /// elsewhere (a 0700 folder of this user; `/tmp` when the temporary folder's
 /// path is too long for a socket address).
 pub fn local_name(name: &str) -> String {

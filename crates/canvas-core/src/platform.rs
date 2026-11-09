@@ -74,7 +74,7 @@ pub trait Platform: Send + Sync {
     /// same service and canvas with `args` (PLAN Phase 7: the TUI stays one
     /// keystroke away). Returns a status line.
     fn open_other_client(&self, args: &[String]) -> Result<String> {
-        let gui = build_sibling(&canvas_sys::host::exe_name("copilot-canvas-gui"))?;
+        let gui = build_sibling(&canvas_sys::host::exe_name("atelier-gui"))?;
         spawn_client(&gui, args, false)?;
         Ok("Opened the GPU client on this canvas.".into())
     }
@@ -91,13 +91,13 @@ pub fn build_sibling(name: &str) -> Result<std::path::PathBuf> {
     Ok(fallback)
 }
 
-/// `COPILOT_CANVAS_OTHER_CLIENT_DRYRUN=FILE`: where a test wants the command
+/// `ATELIER_OTHER_CLIENT_DRYRUN=FILE`: where a test wants the command
 /// line of a client this one would start. Only honoured together with
-/// `COPILOT_CANVAS_SELFTEST=1` (the self-tests set both), so a stray
+/// `ATELIER_SELFTEST=1` (the self-tests set both), so a stray
 /// variable never stops a real client from starting.
 pub fn other_client_dryrun() -> Option<std::ffi::OsString> {
-    let selftest = std::env::var("COPILOT_CANVAS_SELFTEST").is_ok_and(|v| v.trim() == "1");
-    std::env::var_os("COPILOT_CANVAS_OTHER_CLIENT_DRYRUN").filter(|file| selftest && !file.is_empty())
+    let selftest = canvas_common::env::var("ATELIER_SELFTEST").is_ok_and(|v| v.trim() == "1");
+    canvas_common::env::var_os("ATELIER_OTHER_CLIENT_DRYRUN").filter(|file| selftest && !file.is_empty())
 }
 
 /// Starts a front end detached from this one (`console`: in a new console

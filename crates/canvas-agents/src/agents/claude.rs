@@ -31,18 +31,18 @@ fn is_desktop_app(path: &Path) -> bool {
     ["\\windowsapps\\", "\\anthropicclaude\\", "\\programs\\claude\\", "\\claude desktop\\"].iter().any(|p| lower.contains(p))
 }
 
-/// The Claude Code CLI: `COPILOT_CANVAS_CLAUDE`, else `claude.exe` on PATH (not
+/// The Claude Code CLI: `ATELIER_CLAUDE`, else `claude.exe` on PATH (not
 /// the desktop app), an npm install's native binary, then `~/.local/bin`.
 /// Batch scripts (`claude.cmd`) are never started (see [`super::ensure_not_batch`]).
 pub fn find_cli() -> Result<String> {
-    find_cli_in(std::env::var_os("COPILOT_CANVAS_CLAUDE"), std::env::var_os("PATH").unwrap_or_default(), &super::home())
+    find_cli_in(canvas_common::env::var_os("ATELIER_CLAUDE"), std::env::var_os("PATH").unwrap_or_default(), &super::home())
         .or_else(|error| super::find_installed(&canvas_sys::host::exe_name("claude")).filter(|p| !is_desktop_app(p)).map(|p| p.display().to_string()).ok_or(error))
 }
 
 fn find_cli_in(custom: Option<std::ffi::OsString>, path: std::ffi::OsString, home: &Path) -> Result<String> {
     if let Some(custom) = custom {
         let custom = custom.to_string_lossy().into_owned();
-        super::ensure_not_batch(Path::new(&custom), "COPILOT_CANVAS_CLAUDE")?;
+        super::ensure_not_batch(Path::new(&custom), "ATELIER_CLAUDE")?;
         return Ok(custom);
     }
     for dir in std::env::split_paths(&path) {
@@ -62,7 +62,7 @@ fn find_cli_in(custom: Option<std::ffi::OsString>, path: std::ffi::OsString, hom
     if local.is_file() {
         return Ok(local.display().to_string());
     }
-    anyhow::bail!("Claude Code ({}) was not found on PATH (set COPILOT_CANVAS_CLAUDE to override)", canvas_sys::host::exe_name("claude"))
+    anyhow::bail!("Claude Code ({}) was not found on PATH (set ATELIER_CLAUDE to override)", canvas_sys::host::exe_name("claude"))
 }
 
 /// `--mcp-config` content: the user's MCP servers (`.claude.json`) minus `off`.
@@ -91,11 +91,11 @@ fn mcp_dir(home: &Path) -> PathBuf {
     home.join("mcp")
 }
 
-/// The canvas home: the plugin folder's parent, else `COPILOT_CANVAS_HOME`
+/// The canvas home: the plugin folder's parent, else `ATELIER_HOME`
 /// from the integration environment.
 fn canvas_home(integration: &Integration) -> Option<PathBuf> {
     integration.plugin_dir.as_ref().and_then(|p| p.parent()).map(Path::to_path_buf).or_else(|| {
-        integration.env.iter().rev().find(|(k, v)| k == "COPILOT_CANVAS_HOME" && !v.is_empty()).map(|(_, v)| PathBuf::from(v))
+        integration.env.iter().rev().find(|(k, v)| k == "ATELIER_HOME" && !v.is_empty()).map(|(_, v)| PathBuf::from(v))
     })
 }
 
@@ -303,9 +303,9 @@ mod tests {
         )
         .unwrap();
         let home = ClaudeHome { dir: root.join(".claude"), user_config: config };
-        let integration = Integration { plugin_dir: Some(root.join("home").join("plugin")), env: vec![("COPILOT_CANVAS_SESSION".into(), ID.into())], ..Default::default() };
+        let integration = Integration { plugin_dir: Some(root.join("home").join("plugin")), env: vec![("ATELIER_SESSION".into(), ID.into())], ..Default::default() };
         // SAFETY: tests in this crate only read this variable.
-        unsafe { std::env::set_var("COPILOT_CANVAS_CLAUDE", r"C:\bin\claude.exe") };
+        unsafe { std::env::set_var("ATELIER_CLAUDE", r"C:\bin\claude.exe") };
         (home, integration, root)
     }
 
@@ -318,7 +318,7 @@ mod tests {
         assert_eq!(cmd.program, r"C:\bin\claude.exe");
         assert_eq!(cmd.args, ["--session-id", ID, "-n", "Fix it", "hello", "--model", "opus", "--effort", "high", "--plugin-dir", &plugin]);
         assert!(cmd.env.contains(&("-WT_SESSION".into(), String::new())) && cmd.env.contains(&("ConEmuANSI".into(), "ON".into())));
-        assert_eq!(cmd.env[0], ("COPILOT_CANVAS_SESSION".into(), ID.into()));
+        assert_eq!(cmd.env[0], ("ATELIER_SESSION".into(), ID.into()));
         let dashed = AgentLaunch { prompt: Some("-v please".into()), ..new.clone() };
         assert_eq!(Claude.command_in(&home, ID, &dashed, &integration).unwrap().args[4], " -v please", "never parsed as an option");
 
@@ -384,9 +384,9 @@ mod tests {
         let homeless = Integration::default();
         let args = Claude.command_in(&home, ID, &launch, &homeless).unwrap().args;
         assert!(!args.iter().any(|a| a.contains("mcp")), "no canvas home: the selection is refused, not written to %TEMP%");
-        // COPILOT_CANVAS_HOME names the home when the plugin folder is missing.
+        // ATELIER_HOME names the home when the plugin folder is missing.
         let canvas = root.join("canvas");
-        let env_only = Integration { env: vec![("COPILOT_CANVAS_HOME".into(), canvas.display().to_string())], ..Default::default() };
+        let env_only = Integration { env: vec![("ATELIER_HOME".into(), canvas.display().to_string())], ..Default::default() };
         let args = Claude.command_in(&home, ID, &launch, &env_only).unwrap().args;
         let file = canvas.join("mcp").join(format!("claude-{ID}.json"));
         assert_eq!(args.last().unwrap(), &file.display().to_string());
@@ -430,14 +430,14 @@ mod tests {
         std::fs::write(bin.join("claude.cmd"), "@echo off").unwrap();
         let path = std::env::join_paths([&bin]).unwrap();
         let error = find_cli_in(None, path.clone(), &root).unwrap_err().to_string();
-        assert!(error.contains("COPILOT_CANVAS_CLAUDE"), "{error}");
+        assert!(error.contains("ATELIER_CLAUDE"), "{error}");
         let native = bin.join("node_modules").join("@anthropic-ai").join("claude-code").join("bin");
         std::fs::create_dir_all(&native).unwrap();
         std::fs::write(native.join("claude.exe"), "").unwrap();
         assert_eq!(find_cli_in(None, path.clone(), &root).unwrap(), native.join("claude.exe").display().to_string());
         for script in [r"C:\x\claude.cmd", r"C:\x\CLAUDE.BAT"] {
             let error = find_cli_in(Some(script.into()), path.clone(), &root).unwrap_err().to_string();
-            assert!(error.contains("batch script") && error.contains("COPILOT_CANVAS_CLAUDE"), "{error}");
+            assert!(error.contains("batch script") && error.contains("ATELIER_CLAUDE"), "{error}");
         }
         assert_eq!(find_cli_in(Some(r"C:\x\claude.exe".into()), path, &root).unwrap(), r"C:\x\claude.exe");
         std::fs::remove_dir_all(root).unwrap();

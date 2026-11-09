@@ -33,7 +33,7 @@ impl Provider for Copilot {
     }
 
     fn program(&self) -> Result<String> {
-        super::find_program("COPILOT_CANVAS_COPILOT", &[&canvas_sys::host::exe_name("copilot")])
+        super::find_program("ATELIER_COPILOT", &[&canvas_sys::host::exe_name("copilot")])
     }
 
     fn is_session_id(&self, id: &str) -> bool {
@@ -156,9 +156,9 @@ mod tests {
     #[test]
     fn new_resume_and_headless_command_lines_match_copilot_flags() {
         let id = "12345678-1234-1234-1234-123456789abc";
-        let integration = Integration { plugin_dir: Some(PathBuf::from(r"C:\h\plugin")), env: vec![("COPILOT_CANVAS_SESSION".into(), id.into())], ..Default::default() };
+        let integration = Integration { plugin_dir: Some(PathBuf::from(r"C:\h\plugin")), env: vec![("ATELIER_SESSION".into(), id.into())], ..Default::default() };
         // SAFETY: tests in this module are the only readers of this variable.
-        unsafe { std::env::set_var("COPILOT_CANVAS_COPILOT", r"C:\bin\copilot.exe") };
+        unsafe { std::env::set_var("ATELIER_COPILOT", r"C:\bin\copilot.exe") };
         let new = AgentLaunch {
             agent: "copilot".into(),
             name: Some("Fix it".into()),

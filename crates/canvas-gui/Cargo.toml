@@ -6,7 +6,7 @@ publish.workspace = true
 description = "GPU front end of the canvas (wgpu + winit + glyphon)"
 
 [[bin]]
-name = "copilot-canvas-gui"
+name = "atelier-gui"
 path = "src/main.rs"
 
 [dependencies]

@@ -1,5 +1,5 @@
 //! The built-in automations launcher (MAC-LINUX-PLAN D7, §5.5): what a
-//! schedule runs off Windows, `copilot-canvas automations launch
+//! schedule runs off Windows, `atelier automations launch
 //! <state>/tasks/<name>.json`. It does what the Python launcher does on
 //! Windows, so the watcher, `doctor`, the health page and the canvas boxes
 //! read the same things:

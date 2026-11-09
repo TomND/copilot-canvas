@@ -142,7 +142,7 @@ fn replies_carry_the_policy_and_sanitize_the_note_without_scripts() {
     assert!(gone.status == 404 && page.contains("&lt;gone&gt;.html could not be read: not found") && page.contains("script-src 'none'"), "{page}");
     let big = reply(r"C:\n\big.png", false, false, Ok(vec![0; (notebook::MAX_BYTES + 1) as usize]));
     assert_eq!((big.status, big.body.len()), (404, 0), "larger than the notebook reads");
-    assert_eq!(refused(), Reply { status: 403, reason: "Blocked by Copilot Canvas", headers: String::new(), body: Vec::new() });
+    assert_eq!(refused(), Reply { status: 403, reason: "Blocked by Atelier", headers: String::new(), body: Vec::new() });
 }
 
 #[test]

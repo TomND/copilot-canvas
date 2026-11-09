@@ -675,7 +675,7 @@ fn starting_a_session_on_a_todo_opens_the_new_session_dialog_prefilled() {
     rig.app.doc.groups[0].h = 40;
     flows::run(&mut rig.app, Action::StartSession("WI-004".into()));
     let Some(Modal::NewSession(dialog)) = rig.app.modals.last() else { panic!("the new-session dialog") };
-    assert_eq!(dialog.prompt.text, "Work on WI-004 (Docs for the Tasks space). Run `copilot-canvas todo show WI-004`, then `copilot-canvas todo claim WI-004`.");
+    assert_eq!(dialog.prompt.text, "Work on WI-004 (Docs for the Tasks space). Run `atelier todo show WI-004`, then `atelier todo claim WI-004`.");
     assert_eq!(dialog.name.text, "WI-004 Docs for the Tasks space");
     assert_eq!(dialog.group.as_deref(), Some("g-demo"), "the board's linked group");
     assert_eq!(dialog.at.map(|(x, y)| rig.app.doc.group_at(x, y).map(|g| g.id.clone())), Some(Some("g-demo".into())));
@@ -845,7 +845,7 @@ fn spec_notes_live_in_the_notebooks_todos_folder() {
     assert_eq!(flows::spec_note_path(r"C:\Users\me\notebook\", "DEC-031", "Fix: the loader?"), r"C:\Users\me\notebook\Todos\DEC-031 - Fix- the loader.md");
     assert_eq!(flows::spec_note_path("/home/me/notebook", "WI-002", "Glide"), "/home/me/notebook/Todos/WI-002 - Glide.md");
     assert_eq!(flows::join(r"D:\Notes", &["Todos", "Backlog.md"]), r"D:\Notes\Todos\Backlog.md");
-    assert_eq!(flows::start_prompt("DEC-031", "Fix it"), "Work on DEC-031 (Fix it). Run `copilot-canvas todo show DEC-031`, then `copilot-canvas todo claim DEC-031`.");
+    assert_eq!(flows::start_prompt("DEC-031", "Fix it"), "Work on DEC-031 (Fix it). Run `atelier todo show DEC-031`, then `atelier todo claim DEC-031`.");
     // A todo with its note opens it; without one, the backend is asked on a thread (here: none).
     let mut rig = served();
     book::apply(&mut rig.app, TodoOp::Update(Box::new(canvas_model::todos::TodoUpdate { id: "WI-004".into(), note: Some(r"C:\n\WI-004.md".into()), ..Default::default() })));

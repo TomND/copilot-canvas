@@ -1,6 +1,6 @@
 ---
 name: canvas-add-feature
-description: Checklist for a Copilot Canvas change a user can see (a new view, panel, dialog, menu item, key, chip, canvas visual, command or skill text) so it works in the TUI and the GUI, locally and in remote mode, stays compatible with older services and clients, starts nothing by viewing, and ships with tests at every layer and updated docs. Use when you plan, build or review a feature or a visible behaviour change in this repository, before you call it done, and before you commit it.
+description: Checklist for an Atelier change a user can see (a new view, panel, dialog, menu item, key, chip, canvas visual, command or skill text) so it works in the TUI and the GUI, locally and in remote mode, stays compatible with older services and clients, starts nothing by viewing, and ships with tests at every layer and updated docs. Use when you plan, build or review a feature or a visible behaviour change in this repository, before you call it done, and before you commit it.
 ---
 
 # Adding a feature a user can see

@@ -3,16 +3,16 @@
 Remote mode runs the service (terminals, history, bus, automations) on the
 Cloud PC and the canvas on the home PC. See PLAN.md §2, §4 (D2, D5), §5
 Phase 1 and §6. This page describes the transport, pairing, the
-`CopilotCanvas-Tunnel` automation, the home client's `devtunnel connect`
+`Atelier-Tunnel` automation, the home client's `devtunnel connect`
 management and what happens where. The canvas document (owned by the service,
 synced with patches) and the backend requests remote clients make are
 described in [BACKEND.md](BACKEND.md).
 
 ```
  HOME PC                                             CLOUD PC
- copilot-canvas --remote cloudpc                     copilot-canvas service
-   └ devtunnel connect copilot-canvas  ══ Dev Tunnel ══ devtunnel host copilot-canvas
-       127.0.0.1:47600 (forwarded)       (TLS, owner     (CopilotCanvas-Tunnel automation)
+ atelier --remote cloudpc                     atelier service
+   └ devtunnel connect atelier  ══ Dev Tunnel ══ devtunnel host atelier
+       127.0.0.1:47600 (forwarded)       (TLS, owner     (Atelier-Tunnel automation)
                                           sign-in)          └ 127.0.0.1:47600 (remote.listen)
    <home>\remote\servers.json                          <home>\remote\clients.json
    (client id + DPAPI secret)                          (client ids + DPAPI secrets)
@@ -25,9 +25,9 @@ described in [BACKEND.md](BACKEND.md).
 The service listens on TCP only when asked:
 
 - `remote.listen` in `<home>/settings.json`, e.g. `"127.0.0.1:47600"`, or
-- `COPILOT_CANVAS_LISTEN` in the service's environment (overrides the setting;
+- `ATELIER_LISTEN` in the service's environment (overrides the setting;
   `127.0.0.1:0` picks a free port), or
-- `copilot-canvas remote pair` (opening a pairing code starts listening in the
+- `atelier remote pair` (opening a pairing code starts listening in the
   running service; without a setting it saves `remote.listen =
   127.0.0.1:47600` first), or `remote tunnel-setup` (saves the setting).
 
@@ -40,21 +40,21 @@ written to `<home>/service-<instance>.port` (an owner-only file: a protected
 DACL that names only this user, whatever the folder allows) and removed when
 the service exits. When binding fails (the port is taken) the service logs
 `NOT LISTENING for remote clients: …` and keeps the reason in
-`<home>/service-<instance>.listen-error`; `copilot-canvas doctor` shows it as
+`<home>/service-<instance>.listen-error`; `atelier doctor` shows it as
 a failure.
 
 Clients:
 
 | Command | Transport | Credential |
 |---|---|---|
-| `copilot-canvas` | named pipe | per-start service token |
-| `copilot-canvas --remote loopback` | TCP to the local service; starts it with `COPILOT_CANVAS_LISTEN=127.0.0.1:0` when it is not running (a running service without listening is reported, not restarted) | service token (same machine, same Windows user only) |
-| `copilot-canvas --remote NAME` | a server paired with `remote add`: through its Dev Tunnel (`devtunnel connect`, managed by the client) or its direct address | the paired client id and secret (DPAPI) |
-| `copilot-canvas --remote HOST:PORT` | TCP, e.g. a forwarded tunnel port | `COPILOT_CANVAS_REMOTE_SECRET` (hex) and `COPILOT_CANVAS_REMOTE_ID` |
+| `atelier` | named pipe | per-start service token |
+| `atelier --remote loopback` | TCP to the local service; starts it with `ATELIER_LISTEN=127.0.0.1:0` when it is not running (a running service without listening is reported, not restarted) | service token (same machine, same Windows user only) |
+| `atelier --remote NAME` | a server paired with `remote add`: through its Dev Tunnel (`devtunnel connect`, managed by the client) or its direct address | the paired client id and secret (DPAPI) |
+| `atelier --remote HOST:PORT` | TCP, e.g. a forwarded tunnel port | `ATELIER_REMOTE_SECRET` (hex) and `ATELIER_REMOTE_ID` |
 
-The GUI takes the same `--remote` values (`copilot-canvas --gui --remote NAME`).
+The GUI takes the same `--remote` values (`atelier --gui --remote NAME`).
 
-`remote.compress` (default on; `COPILOT_CANVAS_COMPRESS=0` turns it off) decides
+`remote.compress` (default on; `ATELIER_COMPRESS=0` turns it off) decides
 whether a client asks for compressed frames and whether the service sends them.
 
 ### Protocol 8 handshake
@@ -205,7 +205,7 @@ as a backstop and Nagle is off.
 Paired clients authenticate with their own long-lived secret (PLAN.md D5
 "App-level authentication"). The flow:
 
-1. On the Cloud PC, `copilot-canvas remote pair [--name NAME]` asks the
+1. On the Cloud PC, `atelier remote pair [--name NAME]` asks the
    running service (over its pipe, `Request::PairCode`; the service is
    started when needed) for a one-time code and prints it with the commands to
    run at home. Codes are 12 characters from `ABCDEFGHJKMNPQRSTUVWXYZ23456789`
@@ -213,10 +213,10 @@ Paired clients authenticate with their own long-lived secret (PLAN.md D5
    in any case, with or without dashes or spaces; valid for 10 minutes, used
    up by one pairing, at most 3 open at once. Opening a code also turns remote
    listening on in the running service. The service log records it
-   prominently: `PAIRING CODE OPENED by a local process (copilot-canvas.exe
+   prominently: `PAIRING CODE OPENED by a local process (atelier.exe
    pid N)` (or "a command in canvas terminal …" when the request came from a
    process inside one of its own terminals).
-2. At home, `copilot-canvas remote add NAME --tunnel TUNNEL_ID [--port PORT]
+2. At home, `atelier remote add NAME --tunnel TUNNEL_ID [--port PORT]
    --code CODE` (or `--addr HOST:PORT` for a direct connection) connects (for
    a tunnel: through a `devtunnel connect` child) and sends `ClientMsg::PairStart
    { name, nonce }` instead of `Hello8`. `name` is the home PC's name
@@ -267,7 +267,7 @@ later attempt gets a refusal only that client can verify ("this client was
 revoked on the service; pair it again"). A client admitted while it was being
 revoked is checked again once it is listed and dropped. When the last active
 client is revoked and no code is open, remote listening is turned off (setting
-and listener) unless `COPILOT_CANVAS_LISTEN` asks for it; `remote pair` turns
+and listener) unless `ATELIER_LISTEN` asks for it; `remote pair` turns
 it on again. At home, `remote servers` lists the paired services and `remote
 forget NAME` removes one (revoke it on the service too). The pairing requests
 are only answered on the service's own pipe, never to TCP clients.
@@ -314,9 +314,9 @@ What is not:
   (`remote clients` shows when each was paired and by which code). Every
   pairing is logged prominently in `service-<instance>.log`.
 - Frames after the handshake are neither authenticated nor encrypted by
-  Copilot Canvas (only the handshake is): between the machines they rely on
+  Atelier (only the handshake is): between the machines they rely on
   the Dev Tunnel's TLS, and on each machine on loopback TCP between
-  `devtunnel` and Copilot Canvas.
+  `devtunnel` and Atelier.
 - Local processes of the same user are trusted (they can read the token and
   the DPAPI secrets anyway).
 - Anyone who can reach the port can slow pairing down (failed attempts back
@@ -339,10 +339,10 @@ The commands below are those of the installed Dev Tunnels CLI (`devtunnel
 | `devtunnel connect [<tunnel-id>]` | options: only `-t, --access-token` and `-v, --verbose`; no local port option |
 | `devtunnel show <tunnel-id>`, `devtunnel list` | the tunnel, its ports and access |
 
-`copilot-canvas remote tunnel-setup [--tunnel ID] [--port PORT]` (defaults:
-`copilot-canvas`, the `remote.listen` port or 47600):
+`atelier remote tunnel-setup [--tunnel ID] [--port PORT]` (defaults:
+`atelier`, the `remote.listen` port or 47600):
 
-- writes the automation manifest `<automations>\copilot-canvas\CopilotCanvas-Tunnel.yaml`
+- writes the automation manifest `<automations>\atelier\Atelier-Tunnel.yaml`
   that runs `<full path of devtunnel.exe> host ID` with schedule `logon` and
   `every 1h` (with `overlap: ignore` an hourly start does nothing while the
   host runs, and starts it again when it is gone), `restart_on_failure: 10
@@ -353,26 +353,26 @@ The commands below are those of the installed Dev Tunnels CLI (`devtunnel
 
 ```powershell
 devtunnel user login -g                     # GitHub (`devtunnel user login` alone: Microsoft/Entra account)
-devtunnel create copilot-canvas             # private: only your account can connect (never add -a)
-devtunnel port create copilot-canvas -p 47600
-devtunnel show copilot-canvas               # check: port 47600, no anonymous access
-copilot-canvas automations apply CopilotCanvas-Tunnel --yes
-copilot-canvas automations run CopilotCanvas-Tunnel
+devtunnel create atelier             # private: only your account can connect (never add -a)
+devtunnel port create atelier -p 47600
+devtunnel show atelier               # check: port 47600, no anonymous access
+atelier automations apply Atelier-Tunnel --yes
+atelier automations run Atelier-Tunnel
 ```
 
 When `devtunnel.exe` is not on `PATH` (WinGet installs it under
 `%LOCALAPPDATA%\Microsoft\WinGet\Packages\Microsoft.devtunnel_*`), the
 printed lines start with `$dt = "<full path>"` and use `& $dt` instead.
 
-`devtunnel host copilot-canvas` prints, once it is up (strings from the
+`devtunnel host atelier` prints, once it is up (strings from the
 binary): `Hosting port: 47600`, `Connect via browser: …`, `Inspect network
-activity: …` and `Ready to accept connections for tunnel: copilot-canvas.REGION.`
+activity: …` and `Ready to accept connections for tunnel: atelier.REGION.`
 (`Warning: Tunnel does not have any ports!` when `port create` was skipped).
 
 The tunnel host is an ordinary manifest automation: it shows on the canvas,
 the automation doctor watches its launcher log, and a failure event for it
 carries a hint (check `devtunnel user show`, sign in again, `devtunnel show
-ID`). `copilot-canvas doctor` reports remote listening (including a port it
+ID`). `atelier doctor` reports remote listening (including a port it
 could not bind), paired clients and servers, whether the Dev Tunnels CLI is
 installed and signed in (the first line of `devtunnel user show`: signed in
 when it starts with `Logged in`; `Not logged in.`, `Login token expired` and
@@ -384,18 +384,18 @@ Scheduler state.
 ```powershell
 winget install Microsoft.devtunnel
 devtunnel user login -g                     # the same account that created the tunnel
-copilot-canvas remote add cloudpc --tunnel copilot-canvas --port 47600 --code ABCD-EFGH-JKMN [--vscode-tunnel NAME]
-copilot-canvas --remote cloudpc             # or: copilot-canvas --gui --remote cloudpc
+atelier remote add cloudpc --tunnel atelier --port 47600 --code ABCD-EFGH-JKMN [--vscode-tunnel NAME]
+atelier --remote cloudpc             # or: atelier --gui --remote cloudpc
 ```
 
-`copilot-canvas --remote NAME` (or the GUI with the same option) resolves
+`atelier --remote NAME` (or the GUI with the same option) resolves
 `NAME` in `servers.json` and connects as the paired client:
 
 - Tunnel records run `devtunnel connect TUNNEL` as a managed child: found on
   `PATH`, in WinGet's links or in WinGet's package folder
   (`%LOCALAPPDATA%\Microsoft\WinGet\Packages\Microsoft.devtunnel_*`);
-  `COPILOT_CANVAS_DEVTUNNEL` overrides it with a program and optional prefix
-  arguments separated by `|` (`C:\…\copilot-canvas.exe|devtunnel-standin`).
+  `ATELIER_DEVTUNNEL` overrides it with a program and optional prefix
+  arguments separated by `|` (`C:\…\atelier.exe|devtunnel-standin`).
   It runs without a console window, inside a kill-on-close job, so it ends
   with the client (also when the client crashes).
 - `devtunnel connect` has no option for the local port: it listens on each of
@@ -406,7 +406,7 @@ copilot-canvas --remote cloudpc             # or: copilot-canvas --gui --remote 
   may carry a prefix such as `SSH: `), e.g.:
 
   ```text
-  Connected to tunnel: copilot-canvas.REGION
+  Connected to tunnel: atelier.REGION
   Forwarding from 127.0.0.1:47600 to host port 47600.
   Forwarding from [::1]:47600 to host port 47600.
   ```
@@ -420,21 +420,21 @@ copilot-canvas --remote cloudpc             # or: copilot-canvas --gui --remote 
   started) listens on it: whatever else answers on `127.0.0.1:47600` is never
   used. After 30 s without either it gives up with the child's last lines.
 - A child that exits first is reported with its last lines and a hint, e.g.
-  "`devtunnel connect copilot-canvas` exited (exit code: 3): Login required.
+  "`devtunnel connect atelier` exited (exit code: 3): Login required.
   Sign in once with `devtunnel user login -g` (GitHub) or `devtunnel user
   login` (Microsoft), as the account that created the tunnel." (`Login
   required.` and exit code 3 are what the CLI does when signed out.)
 - Reconnecting (above) restarts the child when it died or kept failing.
 - `--addr` records connect directly (an SSH forward; the loopback tests).
-- The old `--remote HOST:PORT` with `COPILOT_CANVAS_REMOTE_ID` /
-  `COPILOT_CANVAS_REMOTE_SECRET` still works.
+- The old `--remote HOST:PORT` with `ATELIER_REMOTE_ID` /
+  `ATELIER_REMOTE_SECRET` still works.
 
-For tests without a signed-in CLI, `copilot-canvas devtunnel-standin connect
+For tests without a signed-in CLI, `atelier devtunnel-standin connect
 TUNNEL` (hidden) emulates `devtunnel connect`: it forwards a free local port
-(`COPILOT_CANVAS_STANDIN_PORT` to choose one) to
-`COPILOT_CANVAS_STANDIN_TARGET` (`HOST:PORT`), prints the real CLI's
+(`ATELIER_STANDIN_PORT` to choose one) to
+`ATELIER_STANDIN_TARGET` (`HOST:PORT`), prints the real CLI's
 `Connected to tunnel: …` and `Forwarding from … to host port ….` lines, and
-with `COPILOT_CANVAS_STANDIN_CONTROL=DIR` writes its pid to `DIR\standin.pid`
+with `ATELIER_STANDIN_CONTROL=DIR` writes its pid to `DIR\standin.pid`
 and drops every connection when `DIR\drop` appears.
 
 ## The iPhone (WebSockets through web forwarding)
@@ -457,7 +457,7 @@ identity; the token stands in for it).
 - **Paired clients only.** The service token is refused over a WebSocket,
   even from this user (web forwarding is not loopback from a local process).
   Pairing (`PairStart`) works as over TCP.
-- **Tunnel access tokens.** `copilot-canvas remote pair --qr` issues one
+- **Tunnel access tokens.** `atelier remote pair --qr` issues one
   with this machine's signed-in CLI (`devtunnel token TUNNEL --scopes
   connect`, 24 h) and shows a QR code with the web address, the pairing code
   and the token (`ccanvas://pair?v=1&name=…&url=…&code=…&token=…&exp=…`).
@@ -479,11 +479,11 @@ service tells the phone when a session starts waiting for you or finishes a
 turn, through Apple's push service (`crates/canvas-push`,
 `canvas-agents/src/service/push.rs`).
 
-- **The key.** Once per machine: `copilot-canvas remote push-key
+- **The key.** Once per machine: `atelier remote push-key
   AuthKey_KEYID.p8 --team TEAMID` (developer.apple.com › Certificates, IDs &
   Profiles › Keys › "+" › Apple Push Notifications service; the team id is in
   Membership details). It is kept owner-only in `<home>\remote\apns.json`;
-  the running service picks it up at once. `copilot-canvas remote push-test`
+  the running service picks it up at once. `atelier remote push-test`
   sends a test notification to every registered phone.
 - **Registration.** The app sends `ClientMsg::PushRegister { token,
   environment, bundle, label }` (appended at index 28) on every connection:
@@ -548,12 +548,12 @@ in the canvas in any remote mode (that is how the tests check them).
 | A group's passive sessions (sidebar ⟲ Passive sessions row, ⟲ chip, group menu, group details) | the group's passive panel | the same panel from the synced canvas and the service's bus snapshot (state, Open / Run now / Pause, Create through `CreatePassive`); parity row V6 checks it over `--remote loopback` |
 | Automation outputs, manifests, logs, status reports | their default program | always the text viewer, with "Open in VS Code" when a tunnel is configured |
 | Bell, OSC 777, taskbar progress, window title | this machine | the home PC (they are computed from terminal state the service sends) |
-| Reports (`copilot-canvas report publish` on the service's machine) | the inbox from the local service | the same inbox and read state, pushed by the service (`ServiceMsg::Reports`) and opened through `Request::ReportContent`; HTML is shown by the home GUI's own WebView2 view; links inside a report open in the home browser after you confirm them. The iPhone app gets the same inbox (`CAP_REPORTS`) and shows each report as a sanitized page in a locked-down web view; links open in the phone's Safari after you confirm them; a phone that is away gets a notification per new report (at most 3 at once) |
+| Reports (`atelier report publish` on the service's machine) | the inbox from the local service | the same inbox and read state, pushed by the service (`ServiceMsg::Reports`) and opened through `Request::ReportContent`; HTML is shown by the home GUI's own WebView2 view; links inside a report open in the home browser after you confirm them. The iPhone app gets the same inbox (`CAP_REPORTS`) and shows each report as a sanitized page in a locked-down web view; links open in the phone's Safari after you confirm them; a phone that is away gets a notification per new report (at most 3 at once) |
 | Crash log | `<home>\crash.log` of the client | each side keeps its own: the client's in its data folder at home; the service logs to `service-<instance>.log` on the Cloud PC |
 | The Notebook (explorer, reading, saving, change polling, search, quick capture, trash) | the notebook's files on this machine, through the in-process backend | the same files on the Cloud PC (the notebook root is resolved there: `<service home>\notebook` unless the canvas names another), every read and write a backend request over the connection (`NotebookList`, `NoteRead`, `NoteWrite`, `NoteRevs`, `NoteSearch`, …); saves are based on the note's revision, so an agent's change on the Cloud PC comes back as a conflict, never lost. Nothing of the notebook is copied to the home PC |
 | Rendered and HTML notes in the GUI | the home GUI's WebView2 view, files read through the backend | the same: the view serves an HTML note from `https://notes.canvas.invalid/` and fetches every file it loads (the note, its pictures, styles, fonts) with `Request::ReadBytes` from the Cloud PC (at most 16 MiB each), so relative links work remotely; scripts a note may run still reach no network |
 | *Open externally* in the Notebook, *Copy path* | the file's own program, Explorer for a folder; this clipboard | VS Code through the tunnel, else the folder browser or the text viewer (as other folders and files); the Cloud PC path on the home clipboard |
-| Todo boards (Tasks, chips, badges, `copilot-canvas todo`) | the service's book | the same book: it arrives with the bus snapshot (`ServiceMsg::Bus`, `todos`), changes go back as window actions (`ClientMsg::Bus` `{"action": "todos", …}`); the commands run on the Cloud PC in its sessions. Spec notes and JSON Canvas exports are written on the Cloud PC |
+| Todo boards (Tasks, chips, badges, `atelier todo`) | the service's book | the same book: it arrives with the bus snapshot (`ServiceMsg::Bus`, `todos`), changes go back as window actions (`ClientMsg::Bus` `{"action": "todos", …}`); the commands run on the Cloud PC in its sessions. Spec notes and JSON Canvas exports are written on the Cloud PC |
 
 The folder browser is the same modal for a folder: its subfolders (▸) and
 files, ↑↓ pick one, Enter or a click opens it (a subfolder in place, a file
@@ -578,16 +578,16 @@ stand-in (`selftest --remote paired`). To set it up or check it again:
 On the Cloud PC:
 
 ```powershell
-copilot-canvas remote tunnel-setup                  # manifest + remote.listen; prints the next lines
+atelier remote tunnel-setup                  # manifest + remote.listen; prints the next lines
 devtunnel user login -g                             # once (GitHub)
-devtunnel create copilot-canvas                     # once; private
-devtunnel port create copilot-canvas -p 47600       # once
-devtunnel show copilot-canvas                       # port 47600, no anonymous access
-copilot-canvas automations apply CopilotCanvas-Tunnel --yes
-copilot-canvas automations run CopilotCanvas-Tunnel
-copilot-canvas service start
-copilot-canvas remote pair --name home-pc           # note the code (ABCD-EFGH-JKMN)
-copilot-canvas doctor                               # listening, CLI signed in, task running
+devtunnel create atelier                     # once; private
+devtunnel port create atelier -p 47600       # once
+devtunnel show atelier                       # port 47600, no anonymous access
+atelier automations apply Atelier-Tunnel --yes
+atelier automations run Atelier-Tunnel
+atelier service start
+atelier remote pair --name home-pc           # note the code (ABCD-EFGH-JKMN)
+atelier doctor                               # listening, CLI signed in, task running
 ```
 
 At home:
@@ -595,13 +595,13 @@ At home:
 ```powershell
 winget install Microsoft.devtunnel
 devtunnel user login -g                             # the same GitHub account
-copilot-canvas remote add cloudpc --tunnel copilot-canvas --port 47600 --code ABCD-EFGH-JKMN [--vscode-tunnel NAME]
-copilot-canvas --remote cloudpc                     # or: copilot-canvas --gui --remote cloudpc
+atelier remote add cloudpc --tunnel atelier --port 47600 --code ABCD-EFGH-JKMN [--vscode-tunnel NAME]
+atelier --remote cloudpc                     # or: atelier --gui --remote cloudpc
 ```
 
 Checklist (over a day):
 
-1. The canvas opens; `copilot-canvas remote clients` on the Cloud PC shows
+1. The canvas opens; `atelier remote clients` on the Cloud PC shows
    home-pc connected.
 2. Open a session, type, run a Copilot turn; typing latency feels like RTT.
 3. Copy text from a pane at home, paste it into another; an agent's OSC 52
@@ -616,10 +616,10 @@ Checklist (over a day):
 8. Kill `devtunnel.exe` at home (Task Manager): the canvas reconnects with a
    new child.
 9. Restart the tunnel host on the Cloud PC (`automations run
-   CopilotCanvas-Tunnel` after stopping it; or sign out of Windows and back
+   Atelier-Tunnel` after stopping it; or sign out of Windows and back
    in): the canvas reconnects once it is back.
 10. Leave it overnight; check the next morning (sleep, token expiry).
-11. `copilot-canvas remote revoke home-pc` on the Cloud PC: the canvas drops
+11. `atelier remote revoke home-pc` on the Cloud PC: the canvas drops
     with "this client was revoked on the service"; pair again.
 12. Quit the canvas: no `devtunnel.exe` stays behind.
 
@@ -660,9 +660,9 @@ Checklist (over a day):
   tables; input dedupe and takeover; heartbeats keeping a connection and
   silence ending it with short timeouts (`canvas-core::conn`); offline input,
   reconnect resync and the lost-keystroke report (`canvas-core::app`).
-- `copilot-canvas selftest --remote loopback`: the 45-step UI self-test with
+- `atelier selftest --remote loopback`: the 45-step UI self-test with
   the client on TCP.
-- `copilot-canvas selftest --remote faults` (or, after `cargo build --release`,
+- `atelier selftest --remote faults` (or, after `cargo build --release`,
   `cargo test --release fault_injection -- --ignored --nocapture`): a TCP proxy
   between a protocol-8 client and the service drops the connection while
   keystrokes stream to an `echo` terminal, cuts a frame in half, and adds 300 ms
@@ -671,7 +671,7 @@ Checklist (over a day):
   and that unacknowledged ones are reported, not resent. A last step runs the
   canvas itself through the proxy: banner, offline input blocked, reconnect
   after the network returns, the pane resynced.
-- `copilot-canvas selftest --remote paired`: a real service in a temporary
+- `atelier selftest --remote paired`: a real service in a temporary
   data folder plays the Cloud PC, a second folder the home PC, the stand-in
   plays `devtunnel connect`. It checks that listening is off until a code is
   opened; codes read `XXXX-XXXX-XXXX` and pair when typed in lower case
@@ -690,9 +690,9 @@ Checklist (over a day):
   `CANVAS_PROBE_CLIPBOARD=1` it also puts an image on the service's clipboard
   over the paired connection and reads it back (this replaces your clipboard,
   and needs an unlocked interactive session).
-- `copilot-canvas bench --remote loopback`: keystroke latency and client
+- `atelier bench --remote loopback`: keystroke latency and client
   traffic with the echo tile focused and four busy tiles, compressed and not.
-- `copilot-canvas selftest --remote soak [--minutes N] [--drop-every S]
+- `atelier selftest --remote soak [--minutes N] [--drop-every S]
   [--client tui|gui] [--json FILE]`: the long-run soak below.
 
 Measured on the development Cloud PC (12 logical CPUs, 100 streaming terminals,
@@ -711,7 +711,7 @@ canvas reconnected 0.4 s after the proxy accepted connections again.
 
 ## Long-run soak (Phase 6)
 
-`copilot-canvas selftest --remote soak --minutes N --drop-every S --client
+`atelier selftest --remote soak --minutes N --drop-every S --client
 tui|gui` (`src/soak.rs`) runs a service listening on loopback TCP behind the
 fault-injecting proxy of `--remote faults`, with three terminals streaming 20
 coloured lines a second (`noise`) and two echo terminals. Two clients connect
@@ -794,8 +794,8 @@ itself; its first ~8.7 h were clean apart from one 6.32 s reconnect under
 heavy build load (PLAN §0). Run it on an otherwise idle machine with:
 
 ```powershell
-copilot-canvas selftest --remote soak --minutes 2880 --drop-every 300 --client gui --json soak-gui-48h.json
-copilot-canvas selftest --remote soak --minutes 2880 --drop-every 300 --client tui --json soak-tui-48h.json
+atelier selftest --remote soak --minutes 2880 --drop-every 300 --client gui --json soak-gui-48h.json
+atelier selftest --remote soak --minutes 2880 --drop-every 300 --client tui --json soak-tui-48h.json
 ```
 
 (on an unlocked workstation as well as a locked one; copy the two

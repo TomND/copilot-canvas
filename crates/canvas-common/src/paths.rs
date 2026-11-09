@@ -20,9 +20,9 @@ impl Instance {
             !name.is_empty() && name.len() <= 40 && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
             "instance name must be 1-40 characters of [A-Za-z0-9_-]"
         );
-        let home = match home.or_else(|| std::env::var_os("COPILOT_CANVAS_HOME").map(PathBuf::from)) {
+        let home = match home.or_else(|| crate::env::var_os("ATELIER_HOME").map(PathBuf::from)) {
             Some(path) => path,
-            None => dirs::home_dir().context("cannot determine the home directory")?.join(".copilot-canvas"),
+            None => dirs::home_dir().context("cannot determine the home directory")?.join(".atelier"),
         };
         let sessions_dir = match sessions_dir {
             Some(path) => path,
@@ -45,7 +45,7 @@ impl Instance {
         let mut hash = Sha256::new();
         hash.update(self.home.to_string_lossy().to_lowercase().as_bytes());
         let digest = hash.finalize();
-        format!(r"\\.\pipe\copilot-canvas-{user}-{}-{}", self.name, hex(&digest[..6]))
+        format!(r"\\.\pipe\atelier-{user}-{}-{}", self.name, hex(&digest[..6]))
     }
 
     /// The service's local endpoint on macOS and Linux: a Unix domain socket
@@ -96,7 +96,7 @@ impl Instance {
 pub fn short_socket_path(file: &str) -> String {
     let user: String = std::env::var("USER").unwrap_or_else(|_| "user".into()).chars().filter(|c| c.is_ascii_alphanumeric()).take(32).collect();
     let bases = [std::env::var_os("XDG_RUNTIME_DIR"), std::env::var_os("TMPDIR"), Some("/tmp".into())];
-    let candidates: Vec<PathBuf> = bases.into_iter().flatten().filter(|b| !b.is_empty()).map(|b| PathBuf::from(b).join(format!("copilot-canvas-{user}")).join(file)).collect();
+    let candidates: Vec<PathBuf> = bases.into_iter().flatten().filter(|b| !b.is_empty()).map(|b| PathBuf::from(b).join(format!("atelier-{user}")).join(file)).collect();
     let chosen = candidates.iter().find(|p| p.as_os_str().len() < 100).or(candidates.last()).cloned().unwrap_or_else(|| PathBuf::from(file));
     chosen.to_string_lossy().into_owned()
 }
@@ -131,7 +131,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// Makes `exe` the executable of this build: its content hash is the build id
 /// and the service is started from it. The GUI client, which cannot run the
-/// service itself, sets the `copilot-canvas.exe` next to it; call it before
+/// service itself, sets the `atelier.exe` next to it; call it before
 /// anything reads `build_id`.
 pub fn set_build_exe(exe: PathBuf) {
     let _ = BUILD_EXE.set(exe);
@@ -148,7 +148,7 @@ pub fn build_exe() -> std::io::Result<PathBuf> {
 }
 
 /// This program's file. On macOS and Linux a link to it is followed (Homebrew
-/// links `copilot-canvas` into `PATH`; the GUI and the service copy are next
+/// links `atelier` into `PATH`; the GUI and the service copy are next
 /// to the real file, inside the app bundle).
 pub fn own_exe() -> std::io::Result<PathBuf> {
     let exe = std::env::current_exe()?;

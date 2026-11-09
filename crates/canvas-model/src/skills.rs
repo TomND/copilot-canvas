@@ -554,7 +554,7 @@ pub fn prepare_group_plugin(root: &Path, group: &str, launch: &str, dirs: &[Stri
         let _ = std::fs::remove_dir(&base);
         return Ok(result);
     }
-    let about = "Skill folders Copilot Canvas gives the sessions of a group.";
+    let about = "Skill folders Atelier gives the sessions of a group.";
     let manifest = serde_json::json!({ "name": GROUP_PLUGIN, "description": about, "version": "1.0.0", "skills": "./skills/" });
     let claude = serde_json::json!({ "name": GROUP_PLUGIN, "description": about, "version": "1.0.0" });
     std::fs::create_dir_all(plugin.join(".claude-plugin"))?;

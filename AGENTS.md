@@ -1,6 +1,6 @@
-# Copilot Canvas: instructions for agents
+# Atelier: instructions for agents
 
-You are working on **Copilot Canvas**, a native Windows app that shows agent
+You are working on **Atelier**, a native Windows app that shows agent
 CLI sessions (GitHub Copilot CLI, OpenCode, Claude Code) as boxes on an
 infinite canvas, with real terminals, a notebook, todo boards and passive
 agents. Rust workspace, edition 2024, Windows only for the desktop
@@ -21,7 +21,7 @@ how to work here; the in-depth guide is [docs/DEVELOPMENT.md](docs/DEVELOPMENT.m
 ## The shape of the system
 
 ```
-clients (TUI, GPU GUI, iPhone) ──pipe/TCP──▶ copilot-canvas service (one per user)
+clients (TUI, GPU GUI, iPhone) ──pipe/TCP──▶ atelier service (one per user)
   canvas-core: app state, layout              terminals (ConPTY + libghostty-vt)
   in character cells, shared                  the canvas document (single writer)
   by the TUI and the GUI                      event bus, passive agents, stores
@@ -40,7 +40,7 @@ clients (TUI, GPU GUI, iPhone) ──pipe/TCP──▶ copilot-canvas service (o
 | `canvas-tui` / `canvas-gui` | front ends: the TUI paints the cells in a console; the GUI paints the same cells with wgpu/glyphon plus a GPU canvas model and a WebView2 pane |
 | `canvas-mobile`, `canvas-mock`, `canvas-push` | iPhone core (UniFFI), the macOS stand-in service, APNs |
 | `canvas-corpus`, `ghostty-vt-sys`, `xtask` | golden terminal corpus, Ghostty FFI, `cargo xtask build-ghostty` |
-| `src/` | the `copilot-canvas` binary: CLI dispatch (`main.rs`), `selftest`, `parity*`, `golden`, `hardening`, benches |
+| `src/` | the `atelier` binary: CLI dispatch (`main.rs`), `selftest`, `parity*`, `golden`, `hardening`, benches |
 
 ## Build
 
@@ -48,8 +48,8 @@ clients (TUI, GPU GUI, iPhone) ──pipe/TCP──▶ copilot-canvas service (o
   engine needs Zig 0.17.0: `cargo xtask build-ghostty` once per pinned
   version (docs/GHOSTTY.md). In a new git worktree, copy `target\ghostty`
   from the main checkout instead of rebuilding it.
-- `cargo build --release` builds `copilot-canvas.exe` and
-  `copilot-canvas-gui.exe`; `--no-default-features` uses alacritty (no Zig).
+- `cargo build --release` builds `atelier.exe` and
+  `atelier-gui.exe`; `--no-default-features` uses alacritty (no Zig).
 - A cold build takes about 10 minutes; seeding a new worktree's
   `target\debug` from another checkout saves most of it.
 
@@ -62,12 +62,12 @@ Run in this order and fix every failure (details and timings: the
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo build --release
-target\release\copilot-canvas.exe selftest                      (also --remote loopback, --remote faults, --remote paired)
-target\release\copilot-canvas.exe selftest --client gui         (also --client gui --remote loopback)
-target\release\copilot-canvas.exe selftest --client gui --parity
-target\release\copilot-canvas.exe selftest --client gui --golden
-target\release\copilot-canvas.exe selftest --client gui --hardening
-target\release\copilot-canvas.exe corpus check
+target\release\atelier.exe selftest                      (also --remote loopback, --remote faults, --remote paired)
+target\release\atelier.exe selftest --client gui         (also --client gui --remote loopback)
+target\release\atelier.exe selftest --client gui --parity
+target\release\atelier.exe selftest --client gui --golden
+target\release\atelier.exe selftest --client gui --hardening
+target\release\atelier.exe corpus check
 ```
 
 - Documentation-only changes need none of it; code changes need at least
@@ -113,7 +113,7 @@ target\release\copilot-canvas.exe corpus check
 - **Safety:** agent HTML is sanitized and shown in a locked-down WebView2;
   never send prompts to paid models from tests; never post comments, votes,
   merges or messages to real services in tests; tests use temporary homes,
-  never the real `~/.copilot-canvas` or the owner's repos.
+  never the real `~/.atelier` or the owner's repos.
 
 ## Working conventions
 

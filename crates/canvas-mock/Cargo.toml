@@ -3,7 +3,7 @@ name = "canvas-mock"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
-description = "A stand-in Copilot Canvas service for developing the iPhone client without Windows: real shells in pseudo-terminals, a demo canvas, the real protocol over TCP and WebSockets"
+description = "A stand-in Atelier service for developing the iPhone client without Windows: real shells in pseudo-terminals, a demo canvas, the real protocol over TCP and WebSockets"
 
 [[bin]]
 name = "canvas-mock"

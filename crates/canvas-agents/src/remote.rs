@@ -1,7 +1,7 @@
 //! Remote clients on the service's machine (PLAN.md D5 "App-level
 //! authentication"): one-time pairing codes, the paired clients in
 //! `<home>/remote/clients.json` (secrets DPAPI-protected), revocation, and
-//! the `CopilotCanvas-Tunnel` automation that hosts the Dev Tunnel.
+//! the `Atelier-Tunnel` automation that hosts the Dev Tunnel.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -178,7 +178,7 @@ impl Registry {
         }
         let id = pairing::new_client_id();
         let secret = pairing::new_secret();
-        let sealed = secret::seal(&self.home, &secret, "Copilot Canvas remote client").context("cannot protect the client secret")?;
+        let sealed = secret::seal(&self.home, &secret, "Atelier remote client").context("cannot protect the client secret")?;
         file.clients.push(ClientRecord {
             id: id.clone(),
             name: unique,
@@ -252,13 +252,13 @@ impl Registry {
             file.clients.iter().enumerate().filter(|(_, c)| c.revoked_ms == 0 && (c.id == key || c.name.eq_ignore_ascii_case(key))).map(|(i, _)| i).collect();
         let index = match matches.as_slice() {
             [index] => *index,
-            [] => bail!("no paired client {key:?} (see `copilot-canvas remote clients`)"),
+            [] => bail!("no paired client {key:?} (see `atelier remote clients`)"),
             _ => bail!("several clients are called {key:?}; revoke one by its id"),
         };
         let client = &mut file.clients[index];
         client.revoked_key = secret::open(&self.home, &client.secret)
             .ok()
-            .and_then(|key| secret::seal(&self.home, &pairing::revocation_key(&key), "Copilot Canvas revoked client").ok())
+            .and_then(|key| secret::seal(&self.home, &pairing::revocation_key(&key), "Atelier revoked client").ok())
             .unwrap_or_default();
         client.revoked_ms = now;
         client.secret.clear();
@@ -286,19 +286,19 @@ impl Pairing for Registry {
     }
 }
 
-/// The `CopilotCanvas-Tunnel` manifest: `devtunnel host TUNNEL` (the tunnel
+/// The `Atelier-Tunnel` manifest: `devtunnel host TUNNEL` (the tunnel
 /// and its port `port` exist already: `devtunnel create`, `devtunnel port
 /// create`) at logon and every hour (an hourly start does nothing while it
 /// runs), restarted when it fails.
 pub fn tunnel_manifest(devtunnel: &Path, tunnel: &str, port: u16) -> String {
     let q = |text: &str| format!("'{}'", text.replace('\'', "''"));
     format!(
-        "# Hosts the private Dev Tunnel to the Copilot Canvas service (remote mode).\n\
-         # Written by `copilot-canvas remote tunnel-setup`; register it with\n\
-         # `copilot-canvas automations apply {task} --yes`. The tunnel forwards\n\
+        "# Hosts the private Dev Tunnel to the Atelier service (remote mode).\n\
+         # Written by `atelier remote tunnel-setup`; register it with\n\
+         # `atelier automations apply {task} --yes`. The tunnel forwards\n\
          # port {port} (`devtunnel port create {tunnel} -p {port}`).\n\
          name: {name}\n\
-         family: 'Copilot Canvas'\n\
+         family: 'Atelier'\n\
          description: 'Dev Tunnel host for remote canvases (devtunnel host {tunnel}, port {port})'\n\
          enabled: true\n\
          ai: false\n\
@@ -322,7 +322,7 @@ pub fn tunnel_manifest(devtunnel: &Path, tunnel: &str, port: u16) -> String {
 
 /// Where `remote tunnel-setup` writes the manifest in an automations folder.
 pub fn tunnel_manifest_path(dir: &Path) -> PathBuf {
-    dir.join("copilot-canvas").join(format!("{}.yaml", remote::TUNNEL_TASK))
+    dir.join("atelier").join(format!("{}.yaml", remote::TUNNEL_TASK))
 }
 
 #[cfg(test)]
@@ -425,13 +425,13 @@ mod tests {
     #[test]
     fn the_tunnel_manifest_parses_as_an_automation() {
         let path = std::env::temp_dir().join("x").join(format!("{}.yaml", remote::TUNNEL_TASK));
-        let text = tunnel_manifest(Path::new(r"C:\Users\me\it's\devtunnel.exe"), "copilot-canvas", 47600);
+        let text = tunnel_manifest(Path::new(r"C:\Users\me\it's\devtunnel.exe"), "atelier", 47600);
         let manifest = crate::factory::parse_manifest(&text, &path).unwrap();
         assert_eq!(manifest.name, remote::TUNNEL_TASK);
         assert_eq!(manifest.command, r"C:\Users\me\it's\devtunnel.exe");
         // `devtunnel host ID` hosts the tunnel with the ports it has (`port create`).
-        assert_eq!(manifest.args, "host copilot-canvas");
-        assert!(text.contains("port create copilot-canvas -p 47600"), "the manifest says which port it needs");
+        assert_eq!(manifest.args, "host atelier");
+        assert!(text.contains("port create atelier -p 47600"), "the manifest says which port it needs");
         assert_eq!(manifest.schedule.iter().map(|t| t.text()).collect::<Vec<_>>(), ["logon", "every 1h"]);
         assert_eq!((manifest.restart_count, manifest.time_limit_ms, manifest.overlap.as_str()), (10, 0, "ignore"));
     }

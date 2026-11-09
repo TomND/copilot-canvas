@@ -57,7 +57,7 @@ pub struct Options {
 const ECHO: &str = "bench-echo";
 
 pub fn run(options: Options) -> Result<()> {
-    let root = std::env::temp_dir().join(format!("copilot-canvas-guibench-{}", uuid::Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("atelier-guibench-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(root.join("sessions"))?;
     std::fs::create_dir_all(root.join("work"))?;
     let instance = Instance::new(Some(format!("guibench{}", std::process::id())), Some(root.join("home")), Some(root.join("sessions")))?;
@@ -642,7 +642,7 @@ fn perf_canvas(instance: &Instance, root: &Path, options: &Options, file: &str) 
 
 /// `--burn N`: keystroke → present through the echo terminal while N
 /// background sessions burn CPU, with the service's priority manager and
-/// without it (`COPILOT_CANVAS_NO_PRIORITY=1` for a fresh service).
+/// without it (`ATELIER_NO_PRIORITY=1` for a fresh service).
 fn burn(instance: &Instance, root: &Path, options: &Options, burners: usize) -> Result<Value> {
     anyhow::ensure!((1..=200).contains(&burners), "--burn takes 1-200");
     let exe = std::env::current_exe()?;
@@ -656,7 +656,7 @@ fn burn(instance: &Instance, root: &Path, options: &Options, burners: usize) -> 
     let mut runs = serde_json::Map::new();
     for (label, no_priority) in [("priority_manager_on", false), ("priority_manager_off", true)] {
         stop_service(instance);
-        let env: &[(&str, &str)] = if no_priority { &[("COPILOT_CANVAS_NO_PRIORITY", "1")] } else { &[] };
+        let env: &[(&str, &str)] = if no_priority { &[("ATELIER_NO_PRIORITY", "1")] } else { &[] };
         conn::spawn_service_exe(&exe, instance, env)?;
         let target = if options.remote { ConnTarget::Loopback(instance.clone()) } else { ConnTarget::Local(instance.clone()) };
         let deadline = Instant::now() + Duration::from_secs(20);
@@ -714,7 +714,7 @@ fn effects(instance: &Instance, root: &Path, options: &Options) -> Result<Value>
     if options.remote {
         extra.extend(["--remote", "loopback"]);
     }
-    let ui = GuiDriver::start(&args(instance, root, &extra), &[("COPILOT_CANVAS_EFFECTS", &on)], (170, 46), &root.join("gui-effects.log"))?;
+    let ui = GuiDriver::start(&args(instance, root, &extra), &[("ATELIER_EFFECTS", &on)], (170, 46), &root.join("gui-effects.log"))?;
     ui.wait("the visuals canvas", Duration::from_secs(30), |t| t.contains("Visual group"))?;
     let mut ui = ui;
     ui.send(b"f")?;
@@ -803,7 +803,7 @@ fn loops(instance: &Instance, root: &Path, options: &Options) -> Result<Value> {
     if options.remote {
         extra.extend(["--remote", "loopback"]);
     }
-    let ui = GuiDriver::start(&args(instance, root, &extra), &[("COPILOT_CANVAS_EFFECTS", &on)], (170, 46), &root.join("gui-loops.log"))?;
+    let ui = GuiDriver::start(&args(instance, root, &extra), &[("ATELIER_EFFECTS", &on)], (170, 46), &root.join("gui-loops.log"))?;
     ui.wait("the loops canvas", Duration::from_secs(30), |t| t.contains("Loops") && t.contains("Loop 11"))?;
     let mut ui = ui;
     ui.send(b"f")?;
@@ -915,7 +915,7 @@ fn pulse(instance: &Instance, root: &Path, options: &Options) -> Result<Value> {
     if options.remote {
         extra.extend(["--remote", "loopback"]);
     }
-    let ui = GuiDriver::start(&args(instance, root, &extra), &[("COPILOT_CANVAS_EFFECTS", &on)], (170, 46), &root.join("gui-glow.log"))?;
+    let ui = GuiDriver::start(&args(instance, root, &extra), &[("ATELIER_EFFECTS", &on)], (170, 46), &root.join("gui-glow.log"))?;
     ui.wait("the glow canvas", Duration::from_secs(30), |t| t.contains(&format!("Glow {}", SESSIONS - 1)))?;
     let mut ui = ui;
     ui.send(b"f")?;

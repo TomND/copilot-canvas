@@ -12,7 +12,7 @@ pub mod webview;
 mod x11;
 
 /// The GUI binary runs as the HTML view's helper when started for it
-/// (`COPILOT_CANVAS_HTML_VIEW=1`): answers its exit code.
+/// (`ATELIER_HTML_VIEW=1`): answers its exit code.
 pub fn helper() -> Option<i32> {
     std::env::var_os(html_helper::ENV).filter(|v| v == "1").map(|_| html_helper::main())
 }
@@ -210,7 +210,7 @@ fn wayland() -> bool {
 }
 
 /// The app's identity for docks, launchers and `LauncherEntry`: the Wayland
-/// `app_id` and the X11 `WM_CLASS` are `copilot-canvas` (the `.desktop`
+/// `app_id` and the X11 `WM_CLASS` are `atelier` (the `.desktop`
 /// file's name and `StartupWMClass`); X11 also gets the window icon
 /// (Wayland compositors take the `.desktop` file's).
 pub fn window_attributes(attrs: WindowAttributes) -> WindowAttributes {
@@ -225,10 +225,10 @@ pub fn window_attributes(attrs: WindowAttributes) -> WindowAttributes {
 }
 
 /// The `.desktop` file's name, the Wayland app id and the X11 class.
-pub const APP_ID: &str = "copilot-canvas";
+pub const APP_ID: &str = "atelier";
 
 fn icon() -> Option<winit::window::Icon> {
-    const PNG: &[u8] = include_bytes!("../../../../../assets/icon/copilot-canvas.png");
+    const PNG: &[u8] = include_bytes!("../../../../../assets/icon/atelier.png");
     let (width, height, rgba) = canvas_common::clipimage::decode_png(PNG).ok()?;
     winit::window::Icon::from_rgba(rgba, width, height).ok()
 }

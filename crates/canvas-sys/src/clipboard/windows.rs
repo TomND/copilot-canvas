@@ -156,7 +156,7 @@ mod tests {
             return;
         }
         let previous = super::get_text().ok();
-        let text = "copilot canvas ✓ 中文\r\nline 2";
+        let text = "atelier ✓ 中文\r\nline 2";
         super::set_text(text).unwrap();
         assert_eq!(super::get_text().unwrap(), text);
         if let Some(previous) = previous {

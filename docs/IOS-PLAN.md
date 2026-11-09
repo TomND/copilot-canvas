@@ -27,7 +27,7 @@ Approved decisions: service changes are fine; tmux-style terminal sizing
 ```
  iPhone (SwiftUI)                                         Cloud PC
  ┌──────────────────────────────────────┐               ┌───────────────────────────────────┐
- │ Sessions · Canvas · Terminal         │               │ devtunnel host (CopilotCanvas-    │
+ │ Sessions · Canvas · Terminal         │               │ devtunnel host (Atelier-    │
  │ Terminal renderer (Core Text)        │   wss://      │   Tunnel automation)              │
  │ Keyboard bar · prompt composer       │ devtunnels.ms │   └ 127.0.0.1:47600               │
  │ URLSessionWebSocketTask ─────────────┼──────────────▶│ service                            │
@@ -68,7 +68,7 @@ is signed in as the owner) issues `connect` tokens (`devtunnel token ID
 sends fresh ones to phone clients over the live connection
 (`ServiceMsg::TunnelAccess`, capability `CAP_TUNNEL_ACCESS`). The phone keeps
 the newest in the Keychain. Recovery when the token expired (phone not opened
-for a day): re-scan a QR from the desktop GUI or `copilot-canvas remote pair
+for a day): re-scan a QR from the desktop GUI or `atelier remote pair
 --qr`, or (later) sign in with GitHub on the phone.
 
 ### D4. Terminal size: tmux "latest"
@@ -110,11 +110,11 @@ Metal is a later option.
 
 ## 4. Pairing payload
 
-`copilot-canvas remote pair --qr` (and the GUI's remote sheet) shows a QR code
+`atelier remote pair --qr` (and the GUI's remote sheet) shows a QR code
 with a URL:
 
 ```
-ccanvas://pair?v=1&name=cloudpc&url=wss%3A%2F%2Fcopilot-canvas-47600.usw2.devtunnels.ms&code=ABCDEFGHJKMN&token=<connect token>&exp=<ms>
+ccanvas://pair?v=1&name=cloudpc&url=wss%3A%2F%2Fatelier-47600.usw2.devtunnels.ms&code=ABCDEFGHJKMN&token=<connect token>&exp=<ms>
 ```
 
 `url` is the tunnel port's web-forwarding address (from `devtunnel show`, or
@@ -126,7 +126,7 @@ use); the token is a 24 h tunnel connect token. A plain `ws://HOST:PORT` URL
 
 - A paired phone can do what you can on the Cloud PC: the app locks with Face
   ID / passcode, the client secret and tunnel token are Keychain items
-  available only on this device after first unlock, and `copilot-canvas
+  available only on this device after first unlock, and `atelier
   remote revoke iphone` cuts it off at once.
 - WebSocket connections are paired-only and get the TCP pre-authentication
   limits; `PairCode`/`RemoteClients`/`RemoteRevoke` stay pipe-only; remote
@@ -166,13 +166,13 @@ use); the token is a 24 h tunnel connect token. A plain `ws://HOST:PORT` URL
 
 Still to check on the real setup (needs the Cloud PC and the phone):
 
-1. `copilot-canvas remote pair --qr` finds the web address and issues a
+1. `atelier remote pair --qr` finds the web address and issues a
    token with the signed-in `devtunnel` (else pass `--url`).
 2. The phone pairs and connects through `wss://…devtunnels.ms` with the
    token. If the relay does not forward WebSockets to a port created with
    protocol `auto`, set the port to HTTP: `devtunnel port update
-   copilot-canvas -p 47600 --protocol http` and check that the home PC's
-   `copilot-canvas --remote` still connects (its `devtunnel connect`
+   atelier -p 47600 --protocol http` and check that the home PC's
+   `atelier --remote` still connects (its `devtunnel connect`
    forwards the port over SSH); if not, give the phone its own port.
 3. Sizes: typing on the phone fits a terminal to it; typing at the desk
    gives it back.

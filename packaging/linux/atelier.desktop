@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Atelier
+GenericName=Agent session canvas
+Comment=An infinite canvas of AI coding-agent sessions in real terminals
+Exec=atelier-gui %F
+TryExec=atelier-gui
+Icon=atelier
+Terminal=false
+Categories=Development;IDE;TerminalEmulator;
+Keywords=copilot;opencode;claude;agent;terminal;canvas;
+StartupNotify=true
+StartupWMClass=atelier
+X-GNOME-UsesNotifications=true

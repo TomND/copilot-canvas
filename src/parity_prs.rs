@@ -1,6 +1,6 @@
 //! The parity suite's checks of pull request coordination (row 42, WI-014)
 //! with the stand-in agent and the stand-in `gh`: a session hands a pull
-//! request off (`copilot-canvas pr track`, as the canvas-prs skill teaches),
+//! request off (`atelier pr track`, as the canvas-prs skill teaches),
 //! the canvas polls it (the first poll is the baseline), three new comments
 //! become one `pr.comment.new`, the PR coordinator (the stand-in following
 //! the skill) dispatches one follow-up, which waits (queued) while its owner
@@ -23,17 +23,17 @@ const COORDINATOR: &str = "Parity PRs";
 const OWNER: &str = "PR owner";
 const URL: &str = "https://github.com/parity/app/pull/42";
 
-/// Runs `copilot-canvas ARGS` as the canvas session `session` would (its
+/// Runs `atelier ARGS` as the canvas session `session` would (its
 /// environment); answers its output.
 pub(super) fn cli(sb: &Sandbox, session: &str, args: &[&str]) -> Result<String> {
     let mut command = std::process::Command::new(&sb.exe);
-    command.args(args).args(["--home", &sb.instance.home.display().to_string()]).env_remove("COPILOT_CANVAS_SESSION");
+    command.args(args).args(["--home", &sb.instance.home.display().to_string()]).env_remove("ATELIER_SESSION");
     if !session.is_empty() {
-        command.env("COPILOT_CANVAS_SESSION", session);
+        command.env("ATELIER_SESSION", session);
     }
     let output = command.output()?;
     let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-    anyhow::ensure!(output.status.success(), "copilot-canvas {} failed: {text}", args.join(" "));
+    anyhow::ensure!(output.status.success(), "atelier {} failed: {text}", args.join(" "));
     Ok(text)
 }
 
@@ -236,7 +236,7 @@ fn follow_ups(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     // Its terminal, from its sidebar row (a view, not a start: it runs).
     gui.canvas_focus()?;
     sidebar_click(gui, REVIEWER)?;
-    gui.wait_tile("the request in the review session", 10, |t| t.contains("[From Review follow-ups via Copilot Canvas] Ana Parity asks for a re-review of PR parity/lib#7"))?;
+    gui.wait_tile("the request in the review session", 10, |t| t.contains("[From Review follow-ups via Atelier] Ana Parity asks for a re-review of PR parity/lib#7"))?;
     // A later check adds nothing: each message is processed once.
     let checked = book.checks.last_ms;
     wait_book(sb, &canvas, "another check", 60, |b| b.checks.last_ms > checked)?;
@@ -303,7 +303,7 @@ fn coordination(sb: &Sandbox, gui: &mut Gui) -> Result<String> {
     let registry = wait_registry(sb, &canvas, "the follow-up delivered", 60, |r| r.get(&key).is_some_and(|p| p.dispatches.iter().any(|d| d.state == DispatchState::Delivered)))?;
     let dispatch = registry.get(&key).and_then(|p| p.dispatches.first()).cloned().context("the dispatch")?;
     anyhow::ensure!(dispatch.to == owner && dispatch.event == "pr.comment.new" && dispatch.from == COORDINATOR, "{dispatch:?}");
-    gui.wait_tile("the follow-up in the owner's terminal", 10, |t| t.contains(&format!("[From {COORDINATOR} via Copilot Canvas] PR parity/app#42")))?;
+    gui.wait_tile("the follow-up in the owner's terminal", 10, |t| t.contains(&format!("[From {COORDINATOR} via Atelier] PR parity/app#42")))?;
     let deadline = Instant::now() + Duration::from_secs(10);
     while !thread_reports(sb, &thread).iter().any(|(kind, _)| kind == "delivered") {
         anyhow::ensure!(Instant::now() < deadline, "no delivered report: {:?}", thread_reports(sb, &thread));

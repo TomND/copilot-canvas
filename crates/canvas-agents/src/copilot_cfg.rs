@@ -28,13 +28,13 @@ pub fn restore_mouse() -> Result<bool> {
 }
 
 pub fn copilot_exe() -> Option<PathBuf> {
-    std::env::var_os("COPILOT_CANVAS_COPILOT").map(PathBuf::from).or_else(|| crate::service::find_on_path("copilot.exe"))
+    canvas_common::env::var_os("ATELIER_COPILOT").map(PathBuf::from).or_else(|| crate::service::find_on_path("copilot.exe"))
 }
 
 /// Runs a non-interactive Copilot CLI command and returns stdout.
 pub fn run_cli(args: &[&str], timeout: Duration) -> Result<String> {
     let exe = copilot_exe().context("copilot.exe was not found on PATH")?;
-    let temp = std::env::temp_dir().join(format!("copilot-canvas-cli-{}", uuid::Uuid::new_v4()));
+    let temp = std::env::temp_dir().join(format!("atelier-cli-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&temp)?;
     let out_path = temp.join("out.txt");
     let err_path = temp.join("err.txt");

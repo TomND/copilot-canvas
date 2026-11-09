@@ -1,6 +1,6 @@
 //! The HTML view's helper process (MAC-LINUX-PLAN §5.7, D9; the spike's
-//! decision in PORT-STATUS): `copilot-canvas-gui` started again with
-//! `COPILOT_CANVAS_HTML_VIEW=1` runs WebKitGTK 4.1 in `GtkOffscreenWindow`s
+//! decision in PORT-STATUS): `atelier-gui` started again with
+//! `ATELIER_HTML_VIEW=1` runs WebKitGTK 4.1 in `GtkOffscreenWindow`s
 //! (no surface on screen; its own display connection, X11 or Wayland alike)
 //! and talks to the GUI over its standard streams, both ways in records of a
 //! kind byte and a little-endian length:
@@ -58,9 +58,9 @@ use serde_json::{Value, json};
 use super::gtk::*;
 
 /// The environment variable that makes the GUI binary this helper.
-pub const ENV: &str = "COPILOT_CANVAS_HTML_VIEW";
+pub const ENV: &str = "ATELIER_HTML_VIEW";
 /// The data home (the content rule lists' compiled store lives under it).
-pub const HOME_ENV: &str = "COPILOT_CANVAS_HTML_VIEW_HOME";
+pub const HOME_ENV: &str = "ATELIER_HTML_VIEW_HOME";
 /// The scheme HTML notes are served from.
 pub const SCHEME: &str = "canvas-notes";
 

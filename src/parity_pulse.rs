@@ -235,8 +235,8 @@ fn glow(sb: &Sandbox) -> Result<String> {
     // Effects on whatever this machine says; the setting only from the sandbox.
     // SAFETY: set before the GUI starts; nothing else reads them concurrently.
     unsafe {
-        std::env::set_var("COPILOT_CANVAS_EFFECTS", "on");
-        std::env::remove_var("COPILOT_CANVAS_GRID_PULSE");
+        std::env::set_var("ATELIER_EFFECTS", "on");
+        std::env::remove_var("ATELIER_GRID_PULSE");
     }
     let (id, idle) = (uuid::Uuid::new_v4().to_string(), uuid::Uuid::new_v4().to_string());
     let now = crate::paths::now_ms();

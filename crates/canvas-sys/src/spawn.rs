@@ -124,7 +124,7 @@ impl CommandExt for Command {
 /// environment is this process's plus `env`, handed over in a 0600 file in
 /// `private_dir` (removed again once the unit started). Answers `Ok(false)`
 /// where this does not apply (no user manager, no `systemd-run`, another OS,
-/// `COPILOT_CANVAS_SYSTEMD_RUN=0`); the caller then starts it itself.
+/// `ATELIER_SYSTEMD_RUN=0`); the caller then starts it itself.
 pub fn start_user_unit(unit: &str, program: &std::path::Path, args: &[std::ffi::OsString], cwd: &std::path::Path, env: &[(&str, &str)], private_dir: &std::path::Path) -> std::io::Result<bool> {
     #[cfg(target_os = "linux")]
     {
@@ -145,7 +145,7 @@ mod linux_unit {
 
     /// A user manager answers on its private socket and `systemd-run` exists.
     fn available() -> bool {
-        if std::env::var("COPILOT_CANVAS_SYSTEMD_RUN").is_ok_and(|v| v.trim() == "0") {
+        if canvas_common::env::var("ATELIER_SYSTEMD_RUN").is_ok_and(|v| v.trim() == "0") {
             return false;
         }
         let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from);

@@ -1,4 +1,4 @@
-//! `copilot-canvas kitty-demo` (hidden): prints a small image for the GUI's
+//! `atelier kitty-demo` (hidden): prints a small image for the GUI's
 //! inline-image check. The image is 32 × 16 pixels, magenta on the left half
 //! and green on the right, shown over `DEMO_COLS` × `DEMO_ROWS` cells
 //! between two marker lines. It is sent as an iTerm2 inline image (an OSC,

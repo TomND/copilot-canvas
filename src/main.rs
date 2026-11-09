@@ -1,4 +1,4 @@
-//! Copilot Canvas: a spatial session manager for agent CLIs.
+//! Atelier: a spatial session manager for agent CLIs.
 
 mod agent_prompt;
 mod automations_probe;
@@ -45,77 +45,77 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 const USAGE: &str = "\
-Copilot Canvas — spatial session manager for agent CLIs (GitHub Copilot, OpenCode, Claude Code)
+Atelier — spatial session manager for agent CLIs (GitHub Copilot, OpenCode, Claude Code)
 
 USAGE
-  copilot-canvas [options]              open the canvas (starts the terminal service if needed)
-  copilot-canvas --demo                 safe demo with native PowerShell panes, no Copilot calls
-  copilot-canvas --gui [options]        open the GPU client (copilot-canvas-gui.exe next to this program)
-  copilot-canvas --tui [options]        open the terminal client (whatever the client setting says)
-  copilot-canvas config [client|agent|engine [VALUE]]
+  atelier [options]              open the canvas (starts the terminal service if needed)
+  atelier --demo                 safe demo with native PowerShell panes, no Copilot calls
+  atelier --gui [options]        open the GPU client (atelier-gui.exe next to this program)
+  atelier --tui [options]        open the terminal client (whatever the client setting says)
+  atelier config [client|agent|engine [VALUE]]
                                         machine settings: client tui|gui|auto (which one
-                                        `copilot-canvas` opens), agent copilot|opencode|claude|auto,
+                                        `atelier` opens), agent copilot|opencode|claude|auto,
                                         engine ghostty|alacritty|auto
-  copilot-canvas --remote loopback      open the canvas over TCP to the local service (remote mode
+  atelier --remote loopback      open the canvas over TCP to the local service (remote mode
                                         without a tunnel; starts the service listening on loopback)
-  copilot-canvas --remote NAME          open the canvas on a paired service (see REMOTE; runs
+  atelier --remote NAME          open the canvas on a paired service (see REMOTE; runs
                                         `devtunnel connect` for a tunnel and reconnects through it)
-  copilot-canvas --remote HOST:PORT     open the canvas on a remote service (a forwarded tunnel port;
-                                        credentials: COPILOT_CANVAS_REMOTE_ID, COPILOT_CANVAS_REMOTE_SECRET)
-  copilot-canvas service status|stop    inspect or stop the terminal service (stop ends its sessions)
-  copilot-canvas service start          start it in the background (for a logon task: passive sessions
+  atelier --remote HOST:PORT     open the canvas on a remote service (a forwarded tunnel port;
+                                        credentials: ATELIER_REMOTE_ID, ATELIER_REMOTE_SECRET)
+  atelier service status|stop    inspect or stop the terminal service (stop ends its sessions)
+  atelier service start          start it in the background (for a logon task: passive sessions
                                         and the automation doctor then run without the canvas open)
-  copilot-canvas service install|uninstall
+  atelier service install|uninstall
                                         start the service at login (Linux: a systemd user unit)
-  copilot-canvas doctor                 check Copilot, ConPTY, session history and the service
-  copilot-canvas bench [--terminals N] [--seconds S] [--json FILE] [--remote loopback]
+  atelier doctor                 check Copilot, ConPTY, session history and the service
+  atelier bench [--terminals N] [--seconds S] [--json FILE] [--remote loopback]
                                         measure service/terminal/rendering performance (no Copilot);
                                         --remote loopback: over TCP, with and without compression
-  copilot-canvas bench --client gui [--seconds S] [--json FILE] [--remote loopback]
+  atelier bench --client gui [--seconds S] [--json FILE] [--remote loopback]
                                         the GPU client: first paint, frame cost (full and damage frames),
                                         panning, keystroke to present, idle CPU and memory (over its test hooks)
-  copilot-canvas bench --client gui --stress [--sessions N --agents M]
+  atelier bench --client gui --stress [--sessions N --agents M]
                                         N live sessions from busy synthetic histories (M subagents each)
-  copilot-canvas bench --client gui --perf-canvas FILE|synthetic
+  atelier bench --client gui --perf-canvas FILE|synthetic
                                         panning a copy of a canvas file at 100, 50 and 25 %
-  copilot-canvas bench --client gui --effects   CPU and frame rate with effects in view, out of view, cleared
-  copilot-canvas bench --client gui --loops     CPU and frame rate with looping sessions in view, panning, out of view, reduced motion
-  copilot-canvas bench --client gui --pulse     CPU and frame rate of the working glow: nothing working, one and five sessions
+  atelier bench --client gui --effects   CPU and frame rate with effects in view, out of view, cleared
+  atelier bench --client gui --loops     CPU and frame rate with looping sessions in view, panning, out of view, reduced motion
+  atelier bench --client gui --pulse     CPU and frame rate of the working glow: nothing working, one and five sessions
                                         working (glow on, off), reduced motion, the fade-out, idle again
-  copilot-canvas bench --client gui --burn N
+  atelier bench --client gui --burn N
                                         keystroke to present while N sessions burn CPU, with and
                                         without the priority manager
-  copilot-canvas selftest [--client tui|gui] [--remote loopback]
+  atelier selftest [--client tui|gui] [--remote loopback]
                                         drive the real UI end to end (TUI: in a hidden pseudoconsole;
                                         GUI: over its test hooks)
-  copilot-canvas selftest --client gui --parity
+  atelier selftest --client gui --parity
                                         one GUI check per row of the parity matrix (PLAN §8), with a
                                         table; demo shells and a stand-in Copilot CLI only
-  copilot-canvas selftest --client gui --hardening
+  atelier selftest --client gui --hardening
                                         GPU device loss, DPI change, window placement, the UI Automation
                                         tree, the crash log, software rendering, visual regressions
-  copilot-canvas selftest --client gui --golden [--update]
+  atelier selftest --client gui --golden [--update]
                                         golden screenshots of scripted GUI states compared with
                                         tests/golden/gui/*.png (tolerant image diff); --update rewrites them
-  copilot-canvas selftest --remote faults
+  atelier selftest --remote faults
                                         drop, cut and delay the TCP connection while typing; check
                                         reconnect, resync and that no keystroke is lost or doubled
-  copilot-canvas selftest --remote soak [--minutes N] [--drop-every SECONDS] [--client tui|gui]
+  atelier selftest --remote soak [--minutes N] [--drop-every SECONDS] [--client tui|gui]
                                         a client connected through a fault-injecting proxy for N minutes:
                                         drops, outages, cuts and delays; exactly-once typing, reconnect and
                                         resync times, memory and handle growth, bandwidth; JSON report
-  copilot-canvas selftest automations  apply, run, a scheduled run, report, enable, drift, import and
+  atelier selftest automations  apply, run, a scheduled run, report, enable, drift, import and
                                         remove of a probe task on this machine's scheduler (not Windows)
-  copilot-canvas selftest --remote paired
+  atelier selftest --remote paired
                                         pairing, a Dev Tunnel stand-in, the canvas through it, drops,
                                         a killed tunnel child, revocation, wrong secrets
-  copilot-canvas selftest agent [--agent copilot|opencode|claude]
+  atelier selftest agent [--agent copilot|opencode|claude]
                                         the real agent TUI through the canvas; nothing is submitted
-  copilot-canvas selftest agent --paste [--agent copilot|opencode|claude]
+  atelier selftest agent --paste [--agent copilot|opencode|claude]
                                         a multi-line paste into the real agent's input box arrives as
                                         lines and sends nothing (OpenCode with a free model as every
                                         default; Claude Code in a throw-away configuration)
-  copilot-canvas selftest agent --agent opencode --prompt [--model ID] [--client tui|gui] [--steps LIST]
+  atelier selftest agent --agent opencode --prompt [--model ID] [--client tui|gui] [--steps LIST]
                                         tiny prompts to a free OpenCode model (ids ending in -free;
                                         default opencode/deepseek-v4.1-flash-free) through the canvas:
                                         re-keying, status, wheel, push, subagent, question, resume,
@@ -124,52 +124,52 @@ USAGE
 
 REMOTE (docs/REMOTE.md; agents on the Cloud PC, the canvas at home over a private Dev Tunnel)
   on the Cloud PC:
-  copilot-canvas remote tunnel-setup [--tunnel ID] [--port PORT]
-                                        write the CopilotCanvas-Tunnel automation, set remote.listen,
+  atelier remote tunnel-setup [--tunnel ID] [--port PORT]
+                                        write the Atelier-Tunnel automation, set remote.listen,
                                         print the one-time devtunnel commands
-  copilot-canvas remote pair [--name NAME] [--qr [--url wss://TUNNEL-PORT.REGION.devtunnels.ms]]
+  atelier remote pair [--name NAME] [--qr [--url wss://TUNNEL-PORT.REGION.devtunnels.ms]]
                                         print a one-time pairing code (10 minutes, single use);
                                         --qr: also a QR code for the iPhone app (docs/IOS-PLAN.md)
-  copilot-canvas remote clients         paired clients (last seen, connected, revoked)
-  copilot-canvas remote push-key AuthKey_ID.p8 --team TEAMID [--key-id ID]
+  atelier remote clients         paired clients (last seen, connected, revoked)
+  atelier remote push-key AuthKey_ID.p8 --team TEAMID [--key-id ID]
                                         the APNs key for iPhone notifications (developer.apple.com › Keys)
-  copilot-canvas remote push-test       a test notification to every registered iPhone
-  copilot-canvas remote revoke ID|NAME  revoke a client and drop its connections
+  atelier remote push-test       a test notification to every registered iPhone
+  atelier remote revoke ID|NAME  revoke a client and drop its connections
   at home:
-  copilot-canvas remote add NAME (--tunnel ID [--port PORT] | --addr HOST:PORT) --code CODE
+  atelier remote add NAME (--tunnel ID [--port PORT] | --addr HOST:PORT) --code CODE
                  [--vscode-tunnel NAME] [--client-name NAME]
                                         pair with the service; the secret is stored with DPAPI
-  copilot-canvas remote servers         paired services
-  copilot-canvas remote forget NAME     remove a paired service from this machine
+  atelier remote servers         paired services
+  atelier remote forget NAME     remove a paired service from this machine
 
 GOLDEN CORPUS (recorded terminal output vs. each engine's screen; see corpus/README.md)
-  copilot-canvas record (--out FILE | --entry NAME) [--cols N] [--rows M] [--input SCRIPT] [--seconds S]
+  atelier record (--out FILE | --entry NAME) [--cols N] [--rows M] [--input SCRIPT] [--seconds S]
                  [--env K=V]… -- PROGRAM [ARGS…]
                                         record a program in a pseudoconsole (scripted input optional)
-  copilot-canvas record --session ID (--out FILE | --entry NAME) [--dir DIR]
-                                        copy a live terminal's recording (service run with COPILOT_CANVAS_RECORD)
-  copilot-canvas corpus list|synth|show NAME|diff [NAME…]
-  copilot-canvas corpus check|bless [--engine NAME] [NAME…]
+  atelier record --session ID (--out FILE | --entry NAME) [--dir DIR]
+                                        copy a live terminal's recording (service run with ATELIER_RECORD)
+  atelier corpus list|synth|show NAME|diff [NAME…]
+  atelier corpus check|bless [--engine NAME] [NAME…]
                                         compare every engine with the expected screens, or rewrite them
 
 EVENTS (run by sessions on the canvas; see the canvas-events skill)
-  copilot-canvas events                 this session's group: events, passive sessions, sessions, and the
+  atelier events                 this session's group: events, passive sessions, sessions, and the
                                         canvas-wide agents (a canvas-wide agent: every group of the canvas)
-  copilot-canvas emit TYPE [--data JSON] [--to NAME]
+  atelier emit TYPE [--data JSON] [--to NAME]
                                         --to NAME: that passive session or canvas-wide agent only;
                                         --to canvas: the canvas-wide agents only
-  copilot-canvas send --to NAME TEXT    message a session (typed in when it is idle): your group's
+  atelier send --to NAME TEXT    message a session (typed in when it is idle): your group's
                                         sessions and the canvas-wide agents (they reach every session)
-  copilot-canvas status ok|warn|alert|done HEADLINE      (passive sessions)
-  copilot-canvas followup --in 24h|--at 09:00 NOTE        (passive sessions)
-  copilot-canvas effect fireworks|attention|sparkle|alert --on NAME [--note TEXT]
+  atelier status ok|warn|alert|done HEADLINE      (passive sessions)
+  atelier followup --in 24h|--at 09:00 NOTE        (passive sessions)
+  atelier effect fireworks|attention|sparkle|alert --on NAME [--note TEXT]
                                         an effect on a box of this session's group (or --on group;
                                         canvas-wide agents: any box) until someone clicks it;
                                         effect clear --on NAME takes it off;
                                         effect alone lists the effects collection
 
 REPORTS (the canvas inbox, Reports in the activity bar; see the canvas-reports skill)
-  copilot-canvas report publish (--markdown FILE|- | --html FILE|- | --message TEXT) [--title TITLE]
+  atelier report publish (--markdown FILE|- | --html FILE|- | --message TEXT) [--title TITLE]
                  [--kind info|ok|warn|alert|queued|delivered|failed] [--pr URL] [--link TITLE=URL]…
                  [--session NAME|ID] [--thread KEY] [--source NAME]
                                         publish a report or a short message (at most 2 MiB; links are
@@ -177,105 +177,105 @@ REPORTS (the canvas inbox, Reports in the activity bar; see the canvas-reports s
                                         session; elsewhere name the producer with --source. Prints
                                         whether it was stored or queued (the service is not running);
                                         exits non-zero with the reason when it is refused
-  copilot-canvas report list [--unread] [--limit N]
+  atelier report list [--unread] [--limit N]
                                         stored, queued and refused reports
 
 NOTES (the canvas notebook; see the canvas-notes skill)
-  copilot-canvas note path [--audience ai|human]
+  atelier note path [--audience ai|human]
                                         the folder for this session's notes: its group's ai-docs (for
                                         agents, the default) or human-outputs (for you); a session in no
                                         group with a folder: the notebook's Inbox
-  copilot-canvas note new --title TITLE (--md FILE|- | --html FILE|-) [--audience ai|human]
+  atelier note new --title TITLE (--md FILE|- | --html FILE|-) [--audience ai|human]
                  [--folder REL] [--name FILE]
                                         write a note there with its provenance (author ai, agent, session,
                                         created; audience ai unless the option or the note says human);
                                         never overwrites (adds -2, -3); prints its path
-  copilot-canvas note list [--audience ai|human] [--internal] [--format json]
+  atelier note list [--audience ai|human] [--internal] [--format json]
                                         the notes of this session's group, newest first (--internal: also
                                         internal files, such as dot files and the trash; never .git)
 
 TODOS (the canvas's todo boards, the Tasks space; see the canvas-todos skill)
-  copilot-canvas todo prime             the boards linked to this session's group, its claims, what is
+  atelier todo prime             the boards linked to this session's group, its claims, what is
                                         ready, the rules and the commands (agents: run it first)
-  copilot-canvas todo boards [--tree] [--format json]
-  copilot-canvas todo list [--board B] [--status S] [--type T] [--mine] [--all] [--format json]
+  atelier todo boards [--tree] [--format json]
+  atelier todo list [--board B] [--status S] [--type T] [--mine] [--all] [--format json]
                                         open todos of this group's boards (--all: every board, done too)
-  copilot-canvas todo show ID [--format json] · todo ready [--board B] [--format json]
-  copilot-canvas todo add TITLE --type T [--board B] [--priority P] [--status backlog|todo] [--body FILE|-]
+  atelier todo show ID [--format json] · todo ready [--board B] [--format json]
+  atelier todo add TITLE --type T [--board B] [--priority P] [--status backlog|todo] [--body FILE|-]
                  [--parent ID] [--label L]… [--check TEXT]…     a todo the user asked for
-  copilot-canvas todo propose TITLE --type T --why TEXT [--board B] [--discovered-from ID] [--priority P]
+  atelier todo propose TITLE --type T --why TEXT [--board B] [--discovered-from ID] [--priority P]
                  [--body FILE|-]                                 your own idea: the user accepts or declines it
-  copilot-canvas todo update ID [--title T] [--type T] [--priority P] [--blocked WHY|none] [--blocker yes|no]
+  atelier todo update ID [--title T] [--type T] [--priority P] [--blocked WHY|none] [--blocker yes|no]
                  [--body FILE|-] [--label L|-L]…
-  copilot-canvas todo move ID --status S [--board B]
-  copilot-canvas todo claim ID [--session NAME|ID] [--force] · todo release ID · todo note ID TEXT
+  atelier todo move ID --status S [--board B]
+  atelier todo claim ID [--session NAME|ID] [--force] · todo release ID · todo note ID TEXT
                                         (--session: you assign it to a session of the canvas)
-  copilot-canvas todo check ID N [--undo] · todo check ID --add TEXT
-  copilot-canvas todo link ID (--pr URL | --note PATH | --session ID | --url URL | --file PATH)
-  copilot-canvas todo relate ID (--blocked-by ID | --related ID | --duplicate-of ID)
-  copilot-canvas todo submit ID [--pr URL] [--summary FILE|-]    finished: in review until done
-  copilot-canvas todo accept ID [--status backlog|todo|in_progress|in_review] · decline ID [--reason TEXT]
+  atelier todo check ID N [--undo] · todo check ID --add TEXT
+  atelier todo link ID (--pr URL | --note PATH | --session ID | --url URL | --file PATH)
+  atelier todo relate ID (--blocked-by ID | --related ID | --duplicate-of ID)
+  atelier todo submit ID [--pr URL] [--summary FILE|-]    finished: in review until done
+  atelier todo accept ID [--status backlog|todo|in_progress|in_review] · decline ID [--reason TEXT]
                  · done ID · cancel ID [--reason TEXT] · reopen ID · delete ID   (you; agents never close todos)
-  copilot-canvas todo board add NAME [--prefix P] [--parent B] · todo board link B [--group NAME|ID]
-  copilot-canvas todo board unlink B --group NAME|ID · todo board delete B [--with-todos]
+  atelier todo board add NAME [--prefix P] [--parent B] · todo board link B [--group NAME|ID]
+  atelier todo board unlink B --group NAME|ID · todo board delete B [--with-todos]
                                         (you; a board goes with its swimlanes; one holding todos only with
                                         --with-todos, which deletes them too: their ids are never reused)
-  copilot-canvas todo import FILE [--board B] [--prefix P]       the TODOs.md format (keeps the ids)
-  copilot-canvas todo mirror [--out FILE | --set FILE|off]       that format (--set: rewritten after
+  atelier todo import FILE [--board B] [--prefix P]       the TODOs.md format (keeps the ids)
+  atelier todo mirror [--out FILE | --set FILE|off]       that format (--set: rewritten after
                                         every change) · todo export --canvas FILE [--board B] (JSON Canvas)
                                         Writes go through the service (it waits for its answer); a
                                         refusal exits non-zero with the reason
 
 PULL REQUESTS (a canvas-wide PR coordinator follows them; see the canvas-prs skill)
-  copilot-canvas pr track URL [--session NAME|ID] [--title TEXT]
+  atelier pr track URL [--session NAME|ID] [--title TEXT]
                                         hand a GitHub or Azure DevOps pull request to the canvas: it is
                                         tracked for this session (or --session), checked read-only with
                                         gh / az for new review comments, failing checks and its end
-  copilot-canvas pr untrack URL         stop tracking it (its owner, canvas-wide agents, you)
-  copilot-canvas pr check [URL]         check now (one, or every active one)
-  copilot-canvas pr dispatch URL --key KEY [--event TYPE] TEXT
+  atelier pr untrack URL         stop tracking it (its owner, canvas-wide agents, you)
+  atelier pr check [URL]         check now (one, or every active one)
+  atelier pr dispatch URL --key KEY [--event TYPE] TEXT
                                         a follow-up for its owning session (PR coordinators and you):
                                         one per key, typed in when the session is idle; queued,
                                         delivered, blocked and failed show in Reports
-  copilot-canvas pr list [--format json]
+  atelier pr list [--format json]
                                         tracked pull requests, their monitor and follow-ups
 
 REVIEW FOLLOW-UPS (a canvas-wide agent messages the authors of PRs you reviewed; canvas-review-followup skill)
-  copilot-canvas review handoff --pr URL --author NAME [--author-id ID] --results FILE|- [--notes FILE]
+  atelier review handoff --pr URL --author NAME [--author-id ID] --results FILE|- [--notes FILE]
                  [--outcome approved|changes-requested|commented] [--title T] [--link TITLE=URL]… [--session NAME|ID]
                                         a finished review: the agent drafts the message to its author
                                         (you approve it first by default); --notes stay private
-  copilot-canvas review message REVIEW --draft FILE|- | --sent --conversation ID [--recipient NAME]
+  atelier review message REVIEW --draft FILE|- | --sent --conversation ID [--recipient NAME]
                  | --needs-you WHY | --failed WHY   the agent's message to the author (one per review)
-  copilot-canvas review checked [--conversation ID] [--mark TOKEN] [--failed WHY]
+  atelier review checked [--conversation ID] [--mark TOKEN] [--failed WHY]
                                         the agent's hourly check of the watched conversations
-  copilot-canvas review request --conversation ID --message-id ID --kind re-review|another-review|follow-up
+  atelier review request --conversation ID --message-id ID --kind re-review|another-review|follow-up
                  --text TEXT [--pr URL]   an author's request: recorded once, routed to the review session
-  copilot-canvas review done REQUEST    the review session finished a request without a new hand-off
-  copilot-canvas review list [--format json]
+  atelier review done REQUEST    the review session finished a request without a new hand-off
+  atelier review list [--format json]
                                         reviews, their messages, watched conversations and requests
 
-AUTOMATIONS (scheduled tasks defined by manifests; folder: --dir, COPILOT_CANVAS_AUTOMATIONS,
+AUTOMATIONS (scheduled tasks defined by manifests; folder: --dir, ATELIER_AUTOMATIONS,
              the canvas setting, or <home>/automations)
-  copilot-canvas automations [list]     every automation: task state, last result, report, drift
-  copilot-canvas automations show NAME  schedule, runs, report, logs and docs of one automation
-  copilot-canvas automations import [NAME…] [--family F] [--force]
+  atelier automations [list]     every automation: task state, last result, report, drift
+  atelier automations show NAME  schedule, runs, report, logs and docs of one automation
+  atelier automations import [NAME…] [--family F] [--force]
                                         write manifests for existing tasks (default: launcher tasks)
-  copilot-canvas automations apply [NAME…] [--yes]
+  atelier automations apply [NAME…] [--yes]
                                         show (or with --yes make) the scheduler's changes (Task
                                         Scheduler; Linux: systemd user units, else cron)
-  copilot-canvas automations run|enable|disable NAME
-  copilot-canvas automations remove NAME…
+  atelier automations run|enable|disable NAME
+  atelier automations remove NAME…
                                         take tasks out of the scheduler (their manifests stay)
-  copilot-canvas automations launch TASK.json [--detach]
+  atelier automations launch TASK.json [--detach]
                                         the launcher a schedule runs off Windows (logs, report, limits)
-  copilot-canvas automations report ok|warn|alert|failed HEADLINE [--summary TEXT | --summary-file F]
+  atelier automations report ok|warn|alert|failed HEADLINE [--summary TEXT | --summary-file F]
                  [--link TITLE=URL]… [--metric NAME=VALUE[=STATE]]… [--name NAME]
                                         status report of the running automation (AUTOMATION_STATUS_FILE)
 
 OPTIONS
   --instance NAME      separate service + canvas namespace (default: default)
-  --home DIR           data directory (default: ~/.copilot-canvas, or COPILOT_CANVAS_HOME)
+  --home DIR           data directory (default: ~/.atelier, or ATELIER_HOME)
   --sessions-dir DIR   Copilot session history to index (default: ~/.copilot/session-state)
   --canvas FILE        canvas file (default: <home>/canvas.json; with --remote, a path on the service's machine;
                        `todo export`: the JSON Canvas file it writes)
@@ -325,7 +325,7 @@ fn parse() -> Result<Args> {
                 std::process::exit(0);
             }
             "-V" | "--version" => {
-                println!("copilot-canvas {}", paths::build_id());
+                println!("atelier {}", paths::build_id());
                 std::process::exit(0);
             }
             "--demo" => args.demo = true,
@@ -369,20 +369,20 @@ fn main() {
         });
     }
     if let Err(error) = real_main() {
-        eprintln!("copilot-canvas: {error:#}");
+        eprintln!("atelier: {error:#}");
         std::process::exit(1);
     }
 }
 
-/// Whether `copilot-canvas` (no command) opens the GPU client: the `client`
-/// setting (`COPILOT_CANVAS_CLIENT`, else settings.json): `gui`, `tui`
+/// Whether `atelier` (no command) opens the GPU client: the `client`
+/// setting (`ATELIER_CLIENT`, else settings.json): `gui`, `tui`
 /// (the default until the dogfood week ends, PLAN Phase 7) or `auto` (the GUI
 /// unless this is a remote desktop or SSH session, where the TUI is better,
 /// PLAN D4). The GUI must be next to this program.
 fn wants_gui(home: Option<&std::path::Path>) -> bool {
-    let home = home.map(std::path::Path::to_path_buf).or_else(|| std::env::var_os("COPILOT_CANVAS_HOME").map(PathBuf::from)).or_else(|| dirs::home_dir().map(|h| h.join(".copilot-canvas")));
+    let home = home.map(std::path::Path::to_path_buf).or_else(|| canvas_common::env::var_os("ATELIER_HOME").map(PathBuf::from)).or_else(|| dirs::home_dir().map(|h| h.join(".atelier")));
     let setting = home.map(|h| canvas_common::settings::Settings::load(&h)).unwrap_or_default().client().unwrap_or_default();
-    let gui_present = paths::own_exe().map(|e| e.with_file_name(canvas_sys::host::exe_name("copilot-canvas-gui")).is_file()).unwrap_or(false);
+    let gui_present = paths::own_exe().map(|e| e.with_file_name(canvas_sys::host::exe_name("atelier-gui")).is_file()).unwrap_or(false);
     match setting.trim().to_ascii_lowercase().as_str() {
         "gui" => gui_present,
         "auto" => gui_present && !remote_session(),
@@ -396,7 +396,7 @@ fn remote_session() -> bool {
     canvas_sys::host::remote_session()
 }
 
-/// `copilot-canvas config [KEY [VALUE]]`: machine settings (settings.json).
+/// `atelier config [KEY [VALUE]]`: machine settings (settings.json).
 fn config(home: &std::path::Path, key: Option<&str>, value: Option<&str>) -> Result<()> {
     // A malformed file is reported, never overwritten.
     let mut settings = canvas_common::settings::Settings::load_checked(home)?;
@@ -422,7 +422,7 @@ fn config(home: &std::path::Path, key: Option<&str>, value: Option<&str>) -> Res
         "engine" => {
             anyhow::ensure!(matches!(value.as_str(), "ghostty" | "alacritty" | "auto") || unset(&value), "engine is ghostty, alacritty or auto");
             settings.terminal.engine = (!(value == "auto" || unset(&value))).then_some(value);
-            println!("New terminals use it after the service restarts (copilot-canvas service stop).");
+            println!("New terminals use it after the service restarts (atelier service stop).");
         }
         other => bail!("unknown setting {other:?} (client, agent, engine)"),
     }
@@ -435,10 +435,10 @@ fn config(home: &std::path::Path, key: Option<&str>, value: Option<&str>) -> Res
     Ok(())
 }
 
-/// `copilot-canvas --gui …`: runs the GPU client next to this program with
+/// `atelier --gui …`: runs the GPU client next to this program with
 /// the same options, and exits with its exit code.
 fn launch_gui() -> Result<()> {
-    let exe = paths::own_exe()?.with_file_name(canvas_sys::host::exe_name("copilot-canvas-gui"));
+    let exe = paths::own_exe()?.with_file_name(canvas_sys::host::exe_name("atelier-gui"));
     anyhow::ensure!(exe.is_file(), "the GPU client {} is missing", exe.display());
     let args: Vec<String> = std::env::args().skip(1).filter(|a| a != "--gui" && a != "--tui").collect();
     if canvas_core::platform::other_client_dryrun().is_some() {
@@ -581,7 +581,7 @@ fn real_main() -> Result<()> {
             println!("{}", reports::list(&instance.home, flag("unread"), limit)?);
             Ok(())
         }
-        ["report", ..] => bail!("usage: copilot-canvas report publish (--markdown FILE | --html FILE | --message TEXT) [--title T] [options] · report list (see copilot-canvas --help)"),
+        ["report", ..] => bail!("usage: atelier report publish (--markdown FILE | --html FILE | --message TEXT) [--title T] [options] · report list (see atelier --help)"),
         ["todo", words @ ..] => {
             // The global --canvas FILE is `todo export`'s output; other verbs leave it to the client.
             let options = canvas_agents::todos_cli::options_with_canvas(words, &args.rest, args.canvas.as_deref());
@@ -597,7 +597,7 @@ fn real_main() -> Result<()> {
             println!("{}", prs_cli::list(&instance.home, option("format").is_some_and(|f| f.eq_ignore_ascii_case("json")))?);
             Ok(())
         }
-        ["pr", ..] => bail!("usage: copilot-canvas pr track URL [--session NAME|ID] [--title T] · pr untrack URL · pr check [URL] · pr dispatch URL --key KEY [--event TYPE] TEXT · pr list [--format json] (see copilot-canvas --help)"),
+        ["pr", ..] => bail!("usage: atelier pr track URL [--session NAME|ID] [--title T] · pr untrack URL · pr check [URL] · pr dispatch URL --key KEY [--event TYPE] TEXT · pr list [--format json] (see atelier --help)"),
         ["review", "handoff"] => reviews_cli::handoff(
             &instance.home,
             reviews_cli::HandoffArgs {
@@ -624,7 +624,7 @@ fn real_main() -> Result<()> {
             println!("{}", reviews_cli::list(&instance.home, option("format").is_some_and(|f| f.eq_ignore_ascii_case("json")))?);
             Ok(())
         }
-        ["review", ..] => bail!("usage: copilot-canvas review handoff --pr URL --author NAME --results FILE … · review message REVIEW (--draft FILE | --sent --conversation ID | --needs-you WHY | --failed WHY) · review checked · review request … · review done REQUEST · review list (see copilot-canvas --help)"),
+        ["review", ..] => bail!("usage: atelier review handoff --pr URL --author NAME --results FILE … · review message REVIEW (--draft FILE | --sent --conversation ID | --needs-you WHY | --failed WHY) · review checked · review request … · review done REQUEST · review list (see atelier --help)"),
         ["automations"] | ["automations", "list"] => factory_cli::list(&dir()),
         ["automations", "show", name] => factory_cli::show(&dir(), name),
         ["automations", "import", names @ ..] => factory_cli::import(&dir(), &owned(names), option("family"), flag("force")),
@@ -662,7 +662,7 @@ fn real_main() -> Result<()> {
                 tunnel: option("tunnel"),
                 port: port("port")?,
                 addr: option("addr"),
-                code: option("code").context("--code CODE is required (from `copilot-canvas remote pair` on the service's machine)")?,
+                code: option("code").context("--code CODE is required (from `atelier remote pair` on the service's machine)")?,
                 vscode_tunnel: option("vscode-tunnel"),
                 client_name: option("client-name"),
             },

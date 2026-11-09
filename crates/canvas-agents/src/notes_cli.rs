@@ -1,10 +1,10 @@
-//! `copilot-canvas note …`: agents write notes into the notebook with the
+//! `atelier note …`: agents write notes into the notebook with the
 //! right provenance (docs/NOTEBOOK-TASKS.md §2.6).
 //!
 //! `note path` says where to write, `note new` writes a note (never over
 //! another) and `note list` lists the caller's group's notes. The caller is
-//! the canvas session in `COPILOT_CANVAS_SESSION` (its agent in
-//! `COPILOT_CANVAS_SESSION_AGENT`, else as the routing names it); its group,
+//! the canvas session in `ATELIER_SESSION` (its agent in
+//! `ATELIER_SESSION_AGENT`, else as the routing names it); its group,
 //! the group's folder and the notebook root come from the routing the
 //! windows send (`<home>/bus/routing.json`). Notes for agents go to the
 //! group's `ai-docs`, notes for you to its `human-outputs`; outside a group
@@ -19,10 +19,10 @@ use canvas_model::notebook::{self, Audience, Author, Kind, NewNote, Place};
 /// The `canvas-notes` skill shipped in the canvas plugin.
 pub const SKILL: &str = "---
 name: canvas-notes
-description: Write notes into the Copilot Canvas notebook with the right provenance - plans, research, investigation logs and context for other agents (the group's ai-docs), or deliverables for the user such as reports, summaries and final documents (human-outputs) - and find the notes other sessions of your group left. Use when you write a plan, research, an investigation log, a decision or a hand-off worth keeping, when the user asks for a document, write-up or summary to read later, when you need to know where notes belong, and before substantial work in a canvas group (read its ai-docs, GOALS.md first).
+description: Write notes into the Atelier notebook with the right provenance - plans, research, investigation logs and context for other agents (the group's ai-docs), or deliverables for the user such as reports, summaries and final documents (human-outputs) - and find the notes other sessions of your group left. Use when you write a plan, research, an investigation log, a decision or a hand-off worth keeping, when the user asks for a document, write-up or summary to read later, when you need to know where notes belong, and before substantial work in a canvas group (read its ai-docs, GOALS.md first).
 ---
 
-# The Copilot Canvas notebook
+# The Atelier notebook
 
 The canvas keeps a notebook of Markdown and HTML notes that the user reads and
 edits inside the canvas. Every note says whom it is for (`audience`: `ai` or
@@ -31,8 +31,8 @@ notes for agents dimmed.
 
 ## Where notes go
 
-- `copilot-canvas note path` prints the folder for notes for other agents: your
-  group's `ai-docs`. `copilot-canvas note path --audience human` prints the
+- `atelier note path` prints the folder for notes for other agents: your
+  group's `ai-docs`. `atelier note path --audience human` prints the
   folder for the user: your group's `human-outputs`. A session in no group gets
   the notebook's `Inbox`.
 - For agents (`audience: ai`): plans, research, investigation logs, decisions and
@@ -43,7 +43,7 @@ notes for agents dimmed.
 
 ## Write a note
 
-`copilot-canvas note new --title \"Investigation: flaky upload test\" --md notes.md`
+`atelier note new --title \"Investigation: flaky upload test\" --md notes.md`
 
 - It adds the provenance (`audience`, `author: ai`, `agent`, `source_session`,
   `created`), writes the note into the right folder and prints its path. It never
@@ -58,18 +58,18 @@ notes for agents dimmed.
   title: \"Investigation: flaky upload test\"
   audience: ai
   author: ai
-  source_session: <the value of COPILOT_CANVAS_SESSION>
+  source_session: <the value of ATELIER_SESSION>
   ---
   ```
 
   HTML notes carry the same keys as meta tags:
   `<meta name=\"canvas-audience\" content=\"human\">`.
-- `copilot-canvas note list [--audience ai|human] [--format json]` lists your group's notes.
+- `atelier note list [--audience ai|human] [--format json]` lists your group's notes.
 
 ## Rules
 
 - Before substantial work, read your group's `ai-docs` (`GOALS.md` first): other
-  sessions leave their context there (`copilot-canvas note list --audience ai`).
+  sessions leave their context there (`atelier note list --audience ai`).
 - Never put secrets, tokens, passwords or credentials in a note.
 - HTML notes are self-contained and work offline: inline CSS, pictures as `data:`
   URIs or files next to the note; no scripts, CDNs, web fonts or remote images.
@@ -80,9 +80,9 @@ notes for agents dimmed.
   filed in that group's `human-outputs/reports`.
 ";
 
-const USAGE: &str = "usage: copilot-canvas note path [--audience ai|human]
-       copilot-canvas note new --title TITLE (--md FILE|- | --html FILE|-) [--audience ai|human] [--folder REL] [--name FILE]
-       copilot-canvas note list [--audience ai|human] [--internal] [--format json]";
+const USAGE: &str = "usage: atelier note path [--audience ai|human]
+       atelier note new --title TITLE (--md FILE|- | --html FILE|-) [--audience ai|human] [--folder REL] [--name FILE]
+       atelier note list [--audience ai|human] [--internal] [--format json]";
 
 /// Notes listed at most.
 const MAX_LIST: usize = 1_000;
@@ -91,15 +91,15 @@ const MAX_LIST: usize = 1_000;
 #[derive(Clone, Debug, Default)]
 pub struct Caller {
     pub session: String,
-    /// The session's agent from its marker (`COPILOT_CANVAS_SESSION_AGENT`;
-    /// empty: as the routing names it). `COPILOT_CANVAS_AGENT` alone may be
+    /// The session's agent from its marker (`ATELIER_SESSION_AGENT`;
+    /// empty: as the routing names it). `ATELIER_AGENT` alone may be
     /// your choice of agent for new sessions, not the writer.
     pub agent: String,
 }
 
 impl Caller {
     pub fn from_env() -> Self {
-        let session = std::env::var("COPILOT_CANVAS_SESSION").map(|v| v.trim().to_owned()).unwrap_or_default();
+        let session = canvas_common::env::var("ATELIER_SESSION").map(|v| v.trim().to_owned()).unwrap_or_default();
         Caller { session, agent: crate::agents::session_agent().map(|kind| kind.id().to_owned()).unwrap_or_default() }
     }
 }
@@ -142,7 +142,7 @@ impl NoteDirs {
     }
 }
 
-/// Runs `copilot-canvas note WORDS…`: `options` are the `--name value` pairs,
+/// Runs `atelier note WORDS…`: `options` are the `--name value` pairs,
 /// `flags` the boolean flags (without `--`).
 pub fn run(home: &Path, words: &[&str], options: &[(String, String)], flags: &[String]) -> Result<()> {
     let out = execute(home, words, options, flags, &Caller::from_env(), &mut std::io::stdin().lock())?;
@@ -343,7 +343,7 @@ fn list(home: &Path, caller: &Caller, audience: Option<Audience>, internal: bool
         out.push(format!("  {} {:<5} {:>5} ago  {}  ({}{by}{internal})", n.provenance.audience.glyph(), n.provenance.audience.id(), crate::paths::format_age(n.modified_ms, now), n.title, n.path));
     }
     if notes.is_empty() {
-        out.push("  (none yet: copilot-canvas note new --title T --md FILE)".into());
+        out.push("  (none yet: atelier note new --title T --md FILE)".into());
     }
     Ok(out.join("\n"))
 }
@@ -401,7 +401,7 @@ mod tests {
         assert!(run_as(&home, &session("s1"), &["path"], &[("audience", "robots")], "").unwrap_err().to_string().contains("--audience is ai or human"));
         assert!(run_as(&home, &session("s1"), &["path"], &[("format", "json")], "").unwrap_err().to_string().contains("does not take --format"));
         assert!(execute(&home, &["path"], &[], &["mine".into()], &session("s1"), &mut "".as_bytes()).unwrap_err().to_string().contains("does not take --mine"));
-        assert!(run_as(&home, &session("s1"), &["nope"], &[], "").unwrap_err().to_string().starts_with("usage: copilot-canvas note path"));
+        assert!(run_as(&home, &session("s1"), &["nope"], &[], "").unwrap_err().to_string().starts_with("usage: atelier note path"));
         assert!(run_as(&home, &session("s1"), &[], &[], "").is_err());
         std::fs::remove_dir_all(home).unwrap();
     }

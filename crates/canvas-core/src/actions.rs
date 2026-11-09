@@ -544,7 +544,7 @@ impl App {
             Ok(conn) => conn,
             Err(error) => {
                 self.connected = false;
-                self.notify(format!("The terminal service did not come back: {error}. Restart Copilot Canvas."), true);
+                self.notify(format!("The terminal service did not come back: {error}. Restart Atelier."), true);
                 return;
             }
         };
@@ -585,10 +585,10 @@ impl App {
             return;
         }
         self.modals.push(Modal::Confirm(Confirm {
-            title: "Close Copilot Canvas".into(),
+            title: "Close Atelier".into(),
             body: vec![
                 format!("{alive} session(s) are running in the terminal service."),
-                "Detaching keeps them running; reopen Copilot Canvas to return to them.".into(),
+                "Detaching keeps them running; reopen Atelier to return to them.".into(),
             ],
             buttons: vec![
                 ("Detach (keep running)".into(), Action::Detach),

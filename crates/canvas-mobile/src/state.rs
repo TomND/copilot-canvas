@@ -677,7 +677,7 @@ impl State {
             return Err("Passive sessions run on their own schedule; open them on the desktop.".into());
         }
         if self.summary(&node).is_some_and(|s| s.live) {
-            return Err("This session is open in another terminal (CLI or VS Code); Copilot Canvas never starts a second copy.".into());
+            return Err("This session is open in another terminal (CLI or VS Code); Atelier never starts a second copy.".into());
         }
         let cwd = self.launch_folder(id).ok_or("No folder for this session.")?;
         let kind = match &node.command {
@@ -833,7 +833,7 @@ mod tests {
     use canvas_model::sync::DocReply;
 
     fn doc_message(doc: &Doc, version: u64) -> ServiceMsg {
-        let reply = DocReply { path: r"C:\Users\me\.copilot-canvas\canvas.json".into(), client: 7, doc: Some(doc.clone()), error: None };
+        let reply = DocReply { path: r"C:\Users\me\.atelier\canvas.json".into(), client: 7, doc: Some(doc.clone()), error: None };
         ServiceMsg::Doc { key: "canvas-1".into(), version, json: serde_json::to_string(&reply).unwrap() }
     }
 
@@ -865,7 +865,7 @@ mod tests {
         let effects = state.on_service(doc_message(&doc, 1), 0);
         assert!(sent(&effects).iter().any(|m| matches!(m, ClientMsg::Track { ids } if ids == &["a".to_owned()])));
         assert_eq!(state.overview(0).sessions.len(), 1);
-        assert_eq!(state.overview(0).canvas_path, r"C:\Users\me\.copilot-canvas\canvas.json");
+        assert_eq!(state.overview(0).canvas_path, r"C:\Users\me\.atelier\canvas.json");
     }
 
     #[test]
@@ -1133,7 +1133,7 @@ mod tests {
         state.doc.canvas_id = Some("c-1".into());
         state.doc.notebook_mounts = vec![r"E:\Vault".into()];
         assert_eq!(state.notebook_request(), (Some(r"D:\Notes".to_owned()), Some("c-1".to_owned())));
-        state.notebook = Some(canvas_model::notebook::Info { root: r"D:\Notes".into(), canvas_dir: None, home: r"C:\Users\me\.copilot-canvas".into() });
+        state.notebook = Some(canvas_model::notebook::Info { root: r"D:\Notes".into(), canvas_dir: None, home: r"C:\Users\me\.atelier".into() });
         let overview = state.notebook_overview().unwrap();
         assert_eq!((overview.root.as_str(), overview.canvas_dir.as_str()), (r"D:\Notes", ""));
         assert_eq!(overview.roots.iter().map(|r| r.kind).collect::<Vec<_>>(), [NotebookRootKind::Notebook, NotebookRootKind::Mount]);

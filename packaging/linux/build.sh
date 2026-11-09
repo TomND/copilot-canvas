@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the Linux packages of Copilot Canvas (MAC-LINUX-PLAN §8.2) from
+# Builds the Linux packages of Atelier (MAC-LINUX-PLAN §8.2) from
 # release binaries: a tarball (with install.sh), an AppImage, a .deb and an
 # .rpm, for one architecture.
 #
@@ -34,20 +34,20 @@ trap 'rm -rf "$work"' EXIT
 
 # The installed tree, shared by every format: usr/bin and usr/share.
 stage="$work/stage"
-install -Dm755 "$bin/copilot-canvas" "$stage/usr/bin/copilot-canvas"
-install -Dm755 "$bin/copilot-canvas-gui" "$stage/usr/bin/copilot-canvas-gui"
-strip "$stage/usr/bin/copilot-canvas" "$stage/usr/bin/copilot-canvas-gui" 2>/dev/null || true
-install -Dm644 "$here/copilot-canvas.desktop" "$stage/usr/share/applications/copilot-canvas.desktop"
-install -Dm644 "$here/io.github.tomnd.CopilotCanvas.metainfo.xml" "$stage/usr/share/metainfo/io.github.tomnd.CopilotCanvas.metainfo.xml"
+install -Dm755 "$bin/atelier" "$stage/usr/bin/atelier"
+install -Dm755 "$bin/atelier-gui" "$stage/usr/bin/atelier-gui"
+strip "$stage/usr/bin/atelier" "$stage/usr/bin/atelier-gui" 2>/dev/null || true
+install -Dm644 "$here/atelier.desktop" "$stage/usr/share/applications/atelier.desktop"
+install -Dm644 "$here/io.github.tomnd.Atelier.metainfo.xml" "$stage/usr/share/metainfo/io.github.tomnd.Atelier.metainfo.xml"
 convert_cmd="$(command -v magick || command -v convert)"
 for size in 512 256 128 64 48 32; do
   mkdir -p "$stage/usr/share/icons/hicolor/${size}x${size}/apps"
-  "$convert_cmd" "$root/assets/icon/copilot-canvas.png" -resize "${size}x${size}" "$stage/usr/share/icons/hicolor/${size}x${size}/apps/copilot-canvas.png"
+  "$convert_cmd" "$root/assets/icon/atelier.png" -resize "${size}x${size}" "$stage/usr/share/icons/hicolor/${size}x${size}/apps/atelier.png"
 done
-install -Dm644 "$root/README.md" "$stage/usr/share/doc/copilot-canvas/README.md"
+install -Dm644 "$root/README.md" "$stage/usr/share/doc/atelier/README.md"
 
 # Tarball: bin/ and share/ at the top, with install.sh (into ~/.local).
-name="copilot-canvas-$version-linux-$arch"
+name="atelier-$version-linux-$arch"
 mkdir -p "$work/$name"
 cp -r "$stage/usr/bin" "$stage/usr/share" "$work/$name/"
 install -m755 "$here/install.sh" "$work/$name/install.sh"
@@ -60,10 +60,10 @@ cp -r "$stage" "$deb"
 mkdir -p "$deb/DEBIAN"
 size_kb="$(du -sk "$deb/usr" | cut -f1)"
 cat > "$deb/DEBIAN/control" <<CONTROL
-Package: copilot-canvas
+Package: atelier
 Version: $version
 Architecture: $deb_arch
-Maintainer: Copilot Canvas <noreply@github.com>
+Maintainer: Atelier <noreply@github.com>
 Installed-Size: $size_kb
 Depends: libc6 (>= 2.35), libgcc-s1
 Recommends: libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-cursor0, libwayland-egl1, libx11-6, libx11-xcb1, libxcursor1, libxi6, libxrandr2, libvulkan1, mesa-vulkan-drivers, libegl1, libgl1, libwebkit2gtk-4.1-0, xdg-utils, fontconfig, fonts-noto-color-emoji, fonts-noto-core, gnome-keyring | kwalletmanager | keepassxc, bubblewrap, xdg-dbus-proxy, wl-clipboard | xclip
@@ -72,19 +72,19 @@ Section: devel
 Priority: optional
 Homepage: https://github.com/TomND/copilot-canvas
 Description: Infinite canvas of AI coding-agent sessions in real terminals
- Copilot Canvas lays out GitHub Copilot CLI, OpenCode and Claude Code sessions
+ Atelier lays out GitHub Copilot CLI, OpenCode and Claude Code sessions
  on an infinite canvas, each in a real terminal hosted by a background service.
  It includes a GPU client, a terminal client, passive sessions, automations,
  a reports inbox and remote mode over Dev Tunnels.
 CONTROL
-dpkg-deb --root-owner-group --build "$deb" "$out/copilot-canvas_${version}_${deb_arch}.deb"
+dpkg-deb --root-owner-group --build "$deb" "$out/atelier_${version}_${deb_arch}.deb"
 
 # .rpm (Fedora 39+, RHEL 9+).
 rpmtop="$work/rpm"
 mkdir -p "$rpmtop"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
 files="$(cd "$stage" && find . -type f | sed 's|^\.||' | sort)"
-cat > "$rpmtop/SPECS/copilot-canvas.spec" <<SPEC
-Name: copilot-canvas
+cat > "$rpmtop/SPECS/atelier.spec" <<SPEC
+Name: atelier
 Version: $version
 Release: 1
 Summary: Infinite canvas of AI coding-agent sessions in real terminals
@@ -97,7 +97,7 @@ AutoReqProv: no
 %global __strip /bin/true
 
 %description
-Copilot Canvas lays out GitHub Copilot CLI, OpenCode and Claude Code sessions
+Atelier lays out GitHub Copilot CLI, OpenCode and Claude Code sessions
 on an infinite canvas, each in a real terminal hosted by a background service.
 
 %install
@@ -107,24 +107,24 @@ cp -a $stage/. %{buildroot}/
 %files
 $files
 SPEC
-rpmbuild --define "_topdir $rpmtop" --target "$arch" -bb "$rpmtop/SPECS/copilot-canvas.spec" >/dev/null
+rpmbuild --define "_topdir $rpmtop" --target "$arch" -bb "$rpmtop/SPECS/atelier.spec" >/dev/null
 cp "$rpmtop"/RPMS/*/*.rpm "$out/"
 
 # AppImage: the GUI (AppRun), `AppRun cli …` the command line. The service
-# runs from its per-build copy in ~/.copilot-canvas/bin, never from the mount.
+# runs from its per-build copy in ~/.atelier/bin, never from the mount.
 appdir="$work/AppDir"
 cp -r "$stage" "$appdir"
 install -m755 "$here/AppRun" "$appdir/AppRun"
-cp "$here/copilot-canvas.desktop" "$appdir/copilot-canvas.desktop"
-cp "$stage/usr/share/icons/hicolor/256x256/apps/copilot-canvas.png" "$appdir/copilot-canvas.png"
-ln -s copilot-canvas.png "$appdir/.DirIcon"
+cp "$here/atelier.desktop" "$appdir/atelier.desktop"
+cp "$stage/usr/share/icons/hicolor/256x256/apps/atelier.png" "$appdir/atelier.png"
+ln -s atelier.png "$appdir/.DirIcon"
 tool="$work/appimagetool"
 curl -sSfL -o "$tool" "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-$arch.AppImage"
 echo "$tool_sha  $tool" | sha256sum -c - >/dev/null
 curl -sSfL -o "$work/runtime" "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-$arch"
 echo "$runtime_sha  $work/runtime" | sha256sum -c - >/dev/null
 chmod +x "$tool"
-ARCH="$arch" "$tool" --appimage-extract-and-run --no-appstream --runtime-file "$work/runtime" "$appdir" "$out/Copilot_Canvas-$version-$arch.AppImage" >/dev/null
-chmod +x "$out/Copilot_Canvas-$version-$arch.AppImage"
+ARCH="$arch" "$tool" --appimage-extract-and-run --no-appstream --runtime-file "$work/runtime" "$appdir" "$out/Atelier-$version-$arch.AppImage" >/dev/null
+chmod +x "$out/Atelier-$version-$arch.AppImage"
 
 ls -la "$out"

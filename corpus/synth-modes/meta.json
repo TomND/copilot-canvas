@@ -11,7 +11,7 @@
     "queries"
   ],
   "command": [
-    "copilot-canvas",
+    "atelier",
     "corpus",
     "synth",
     "synth-modes"

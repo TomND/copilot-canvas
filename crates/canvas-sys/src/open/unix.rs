@@ -136,12 +136,12 @@ fn shell_quote(word: &str) -> String {
 
 /// Starts a console program in a terminal window of its own (the TUI from
 /// the GUI). macOS: a `.command` file opened in Terminal (or the terminal
-/// app named by `COPILOT_CANVAS_TERMINAL`); no Apple Events permission is
+/// app named by `ATELIER_TERMINAL`); no Apple Events permission is
 /// needed. Linux: `$TERMINAL`, then the usual terminal emulators.
 pub fn in_terminal(exe: &Path, args: &[String]) -> Result<()> {
     let line = std::iter::once(exe.display().to_string()).chain(args.iter().cloned()).map(|w| shell_quote(&w)).collect::<Vec<_>>().join(" ");
     if macos() {
-        let dir = std::env::temp_dir().join(format!("copilot-canvas-{}", crate::host::user_name()));
+        let dir = std::env::temp_dir().join(format!("atelier-{}", crate::host::user_name()));
         crate::fs::private_dir(&dir)?;
         let script = dir.join(format!("open-{}.command", canvas_common::paths::hex(&canvas_common::protocol::nonce()[..6])));
         {
@@ -150,7 +150,7 @@ pub fn in_terminal(exe: &Path, args: &[String]) -> Result<()> {
             let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o700).open(&script)?;
             writeln!(file, "#!/bin/sh\nrm -f {}\nexec {line}", shell_quote(&script.to_string_lossy()))?;
         }
-        let app = std::env::var("COPILOT_CANVAS_TERMINAL").ok().filter(|a| !a.trim().is_empty()).unwrap_or_else(|| "Terminal".into());
+        let app = canvas_common::env::var("ATELIER_TERMINAL").ok().filter(|a| !a.trim().is_empty()).unwrap_or_else(|| "Terminal".into());
         return spawn("/usr/bin/open", &["-a".as_ref(), app.as_ref(), script.as_os_str()]);
     }
     let shell_line = ["sh", "-c", &line];

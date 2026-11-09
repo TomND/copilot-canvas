@@ -3,7 +3,7 @@
 //! sandbox service keep (49), the canvas's ✎ / ☑ chips and ☑ badges (50),
 //! switching spaces, Go to and the history (47), and HTML notes in the
 //! WebView2 view served from the notes origin (41d). Todos come from
-//! `copilot-canvas todo …` as you and as canvas sessions (an agent's
+//! `atelier todo …` as you and as canvas sessions (an agent's
 //! proposal and claim); nothing starts a session.
 
 use std::path::Path;

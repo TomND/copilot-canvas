@@ -1,8 +1,8 @@
-//! Phase 3 spike: Copilot Canvas GPU client prototype on GPUI.
+//! Phase 3 spike: Atelier GPU client prototype on GPUI.
 //!
 //! A canvas of 30 groups, 300 sessions and 3,000 subagents (pan: drag or
 //! wheel; zoom: Ctrl+wheel around the cursor) next to four live terminal tiles
-//! streamed from a copilot-canvas service instance. F2 toggles the
+//! streamed from a atelier service instance. F2 toggles the
 //! tiles-only layout, F3 moves keyboard focus to the next tile.
 //! `--measure` runs the automated measurement and prints one JSON object.
 //!
@@ -885,7 +885,7 @@ fn main() {
         let cached = !a.uncached;
         let handle = cx
             .open_window(options, move |window, cx| {
-                window.set_window_title("Copilot Canvas — GPUI spike");
+                window.set_window_title("Atelier — GPUI spike");
                 cx.new(|cx| Spike::new(window, cx, &a, driver))
             })
             .expect("open window");

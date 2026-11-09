@@ -9,7 +9,7 @@
     "underline"
   ],
   "command": [
-    "copilot-canvas",
+    "atelier",
     "corpus",
     "synth",
     "synth-sgr"

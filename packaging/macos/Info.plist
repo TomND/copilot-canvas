@@ -1,20 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Copilot Canvas.app (MAC-LINUX-PLAN §8.1); packaging/macos/build.sh fills in @VERSION@. -->
+<!-- Atelier.app (MAC-LINUX-PLAN §8.1); packaging/macos/build.sh fills in @VERSION@. -->
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>Copilot Canvas</string>
+	<string>Atelier</string>
 	<key>CFBundleName</key>
-	<string>Copilot Canvas</string>
+	<string>Atelier</string>
 	<key>CFBundleExecutable</key>
-	<string>copilot-canvas-gui</string>
+	<string>atelier-gui</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
-	<string>io.github.tomnd.CopilotCanvas</string>
+	<string>io.github.tomnd.Atelier</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundlePackageType</key>
@@ -32,17 +32,17 @@
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
-	<string>Copilot Canvas</string>
+	<string>Atelier</string>
 	<!-- Terminals and agents start in the user's folders (MAC-LINUX-PLAN §5.3). -->
 	<key>NSDesktopFolderUsageDescription</key>
-	<string>Copilot Canvas starts terminals and agent sessions in folders you choose, including the Desktop.</string>
+	<string>Atelier starts terminals and agent sessions in folders you choose, including the Desktop.</string>
 	<key>NSDocumentsFolderUsageDescription</key>
-	<string>Copilot Canvas starts terminals and agent sessions in folders you choose, including Documents.</string>
+	<string>Atelier starts terminals and agent sessions in folders you choose, including Documents.</string>
 	<key>NSDownloadsFolderUsageDescription</key>
-	<string>Copilot Canvas starts terminals and agent sessions in folders you choose, including Downloads.</string>
+	<string>Atelier starts terminals and agent sessions in folders you choose, including Downloads.</string>
 	<key>NSRemovableVolumesUsageDescription</key>
-	<string>Copilot Canvas starts terminals and agent sessions in folders you choose, including those on removable drives.</string>
+	<string>Atelier starts terminals and agent sessions in folders you choose, including those on removable drives.</string>
 	<key>NSNetworkVolumesUsageDescription</key>
-	<string>Copilot Canvas starts terminals and agent sessions in folders you choose, including those on network volumes.</string>
+	<string>Atelier starts terminals and agent sessions in folders you choose, including those on network volumes.</string>
 </dict>
 </plist>

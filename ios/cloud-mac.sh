@@ -43,7 +43,7 @@ stop_one() {
 ensure_tunnel() {
   devtunnel user show | grep -q '^Logged in' || { echo "Sign in first: devtunnel user login -g   (GitHub; or without -g: Microsoft)"; exit 1; }
   if ! devtunnel show "$TUNNEL" >/dev/null 2>&1; then
-    devtunnel create "$TUNNEL" -d "Copilot Canvas: this Mac as a stand-in Cloud PC (mock service)" >/dev/null
+    devtunnel create "$TUNNEL" -d "Atelier: this Mac as a stand-in Cloud PC (mock service)" >/dev/null
     echo "Created the private tunnel $TUNNEL (only your account can connect)."
   fi
   if ! devtunnel show "$TUNNEL" | grep -Eq "^ +$PORT "; then

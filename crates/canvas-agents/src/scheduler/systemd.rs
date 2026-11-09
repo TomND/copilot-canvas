@@ -1,6 +1,6 @@
 //! systemd user units (Linux): per task a service that runs the launcher and,
 //! for calendar and interval schedules, a timer; both in
-//! `~/.config/systemd/user/copilot-canvas-task-<name>.{service,timer}`
+//! `~/.config/systemd/user/atelier-task-<name>.{service,timer}`
 //! (MAC-LINUX-PLAN §5.5). A logon trigger is the service's
 //! `WantedBy=default.target` (it runs when the user manager starts).
 //!
@@ -22,7 +22,7 @@ use super::common::{self, Slots};
 use super::{Scheduler, TaskInfo};
 use crate::factory::{Defaults, Imported, Manifest, Trigger, hhmm};
 
-const PREFIX: &str = "copilot-canvas-task-";
+const PREFIX: &str = "atelier-task-";
 const ENABLED: &str = "# enabled: ";
 
 pub struct Systemd {
@@ -42,7 +42,7 @@ impl Systemd {
     }
 }
 
-/// `copilot-canvas-task-<name>` with the name escaped as `systemd-escape`
+/// `atelier-task-<name>` with the name escaped as `systemd-escape`
 /// does (`\xNN` for anything but letters, digits, `:`, `_` and `.`).
 pub fn unit_stem(name: &str) -> String {
     let mut out = String::from(PREFIX);
@@ -98,15 +98,15 @@ fn timer_lines(m: &Manifest) -> Vec<String> {
 /// interval schedules) and whether they are enabled.
 fn files(m: &Manifest, d: &Defaults) -> Vec<(String, String)> {
     let stem = unit_stem(&m.name);
-    let description = if m.description.is_empty() { format!("{} (Copilot Canvas automation)", m.name) } else { m.description.clone() };
+    let description = if m.description.is_empty() { format!("{} (Atelier automation)", m.name) } else { m.description.clone() };
     let detach = !matches!(m.overlap.as_str(), "" | "ignore");
     let mut argv = common::action(m, d);
     if detach && argv.get(1).is_some_and(|w| w == "automations") {
         argv.insert(3, "--detach".into());
     }
-    let mut service = format!("[Unit]\nDescription={}\nX-CopilotCanvas-Name={}\nX-CopilotCanvas-Manifest={}\n", plain(&description), m.name, m.path.display());
+    let mut service = format!("[Unit]\nDescription={}\nX-Atelier-Name={}\nX-Atelier-Manifest={}\n", plain(&description), m.name, m.path.display());
     for trigger in &m.schedule {
-        service.push_str(&format!("X-CopilotCanvas-Schedule={}\n", trigger.text()));
+        service.push_str(&format!("X-Atelier-Schedule={}\n", trigger.text()));
     }
     service.push_str(&format!("\n[Service]\nType=oneshot\nExecStart={}\n", argv.iter().map(|w| quote(w)).collect::<Vec<_>>().join(" ")));
     if detach {
@@ -119,7 +119,7 @@ fn files(m: &Manifest, d: &Defaults) -> Vec<(String, String)> {
     let calendar = timer_lines(m);
     if !calendar.is_empty() {
         let timer = format!(
-            "[Unit]\nDescription=Schedule of {}\nX-CopilotCanvas-Name={}\n\n[Timer]\n{}\nPersistent={}\nAccuracySec=1s\n\n[Install]\nWantedBy=timers.target\n",
+            "[Unit]\nDescription=Schedule of {}\nX-Atelier-Name={}\n\n[Timer]\n{}\nPersistent={}\nAccuracySec=1s\n\n[Install]\nWantedBy=timers.target\n",
             plain(&m.name),
             m.name,
             calendar.join("\n"),
@@ -240,7 +240,7 @@ impl Scheduler for Systemd {
         for stem in stems {
             let files = self.installed(&stem);
             let service = files.iter().find(|(n, _)| n.ends_with(".service")).map(|(_, t)| t.as_str()).unwrap_or_default();
-            let name = values(service, "X-CopilotCanvas-Name").first().map(|n| n.to_string()).unwrap_or_else(|| stem[PREFIX.len()..].to_owned());
+            let name = values(service, "X-Atelier-Name").first().map(|n| n.to_string()).unwrap_or_else(|| stem[PREFIX.len()..].to_owned());
             let empty = BTreeMap::new();
             let svc = props.get(&format!("{stem}.service")).unwrap_or(&empty);
             let timer = props.get(&format!("{stem}.timer"));
@@ -323,8 +323,8 @@ impl Scheduler for Systemd {
         let m = &mut out.manifest;
         m.name = task.name.clone();
         m.enabled = enabled;
-        m.description = values(service, "Description").first().map(|d| d.replace("%%", "%")).filter(|d| *d != format!("{} (Copilot Canvas automation)", task.name)).unwrap_or_default();
-        for text in values(service, "X-CopilotCanvas-Schedule") {
+        m.description = values(service, "Description").first().map(|d| d.replace("%%", "%")).filter(|d| *d != format!("{} (Atelier automation)", task.name)).unwrap_or_default();
+        for text in values(service, "X-Atelier-Schedule") {
             match Trigger::parse(text) {
                 Ok(trigger) => m.schedule.push(trigger),
                 Err(_) => out.unsupported.push(text.to_owned()),
@@ -354,14 +354,14 @@ impl Scheduler for Systemd {
 
     fn drift(&self, m: &Manifest, d: &Defaults, task: &TaskInfo) -> Vec<String> {
         let rendered = self.render(m, d, Some(task));
-        let strip = |text: &str| text.lines().filter(|l| !l.starts_with(ENABLED) && !l.starts_with("X-CopilotCanvas-Schedule=")).collect::<Vec<_>>().join("\n");
+        let strip = |text: &str| text.lines().filter(|l| !l.starts_with(ENABLED) && !l.starts_with("X-Atelier-Schedule=")).collect::<Vec<_>>().join("\n");
         let mut out = Vec::new();
         if task.enabled != m.enabled {
             out.push(format!("enabled: {} → {}", task.enabled, m.enabled));
         }
         let (_, files) = parse_definition(&task.xml);
         let service = files.iter().find(|(n, _)| n.ends_with(".service")).map(|(_, t)| t.as_str()).unwrap_or_default();
-        let have: Vec<&str> = values(service, "X-CopilotCanvas-Schedule");
+        let have: Vec<&str> = values(service, "X-Atelier-Schedule");
         let want: Vec<String> = m.schedule.iter().map(Trigger::text).collect();
         if have.iter().map(|s| s.to_string()).collect::<Vec<_>>() != want {
             out.push(format!("schedule: {} → {}", have.join(" · "), want.join(" · ")));
@@ -411,11 +411,11 @@ mod tests {
 
     #[test]
     fn units_name_schedule_and_launch_a_manifest() {
-        assert_eq!(unit_stem("Morning brief"), "copilot-canvas-task-Morning\\x20brief");
-        assert_eq!(unit_stem(".x-y"), "copilot-canvas-task-\\x2ex\\x2dy");
+        assert_eq!(unit_stem("Morning brief"), "atelier-task-Morning\\x20brief");
+        assert_eq!(unit_stem(".x-y"), "atelier-task-\\x2ex\\x2dy");
         let (m, d) = (manifest(), defaults());
         let files = files(&m, &d);
-        assert_eq!(files.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["copilot-canvas-task-Morning\\x20brief.service", "copilot-canvas-task-Morning\\x20brief.timer"]);
+        assert_eq!(files.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["atelier-task-Morning\\x20brief.service", "atelier-task-Morning\\x20brief.timer"]);
         let (service, timer) = (&files[0].1, &files[1].1);
         assert!(service.contains("Type=oneshot\n") && service.contains("WantedBy=default.target"), "{service}");
         let exec = values(service, "ExecStart")[0];
@@ -469,8 +469,8 @@ mod tests {
     }
 }
 
-/// The service at login (`copilot-canvas service install`, MAC-LINUX-PLAN D5,
-/// §5.3): `~/.config/systemd/user/copilot-canvas[-<instance>].service`,
+/// The service at login (`atelier service install`, MAC-LINUX-PLAN D5,
+/// §5.3): `~/.config/systemd/user/atelier[-<instance>].service`,
 /// wanted by `default.target`. The service still exits after its idle
 /// minutes (`Restart=no`) and clients start it again on demand; when it
 /// stops, systemd ends whatever its terminals left (`KillMode=control-group`).
@@ -483,14 +483,14 @@ pub mod service_unit {
 
     /// The unit's file name for an instance.
     pub fn file_name(instance: &str) -> String {
-        if instance == "default" { "copilot-canvas.service".into() } else { format!("copilot-canvas-{instance}.service") }
+        if instance == "default" { "atelier.service".into() } else { format!("atelier-{instance}.service") }
     }
 
     /// The unit text: `exe service` with the instance's folders.
     pub fn text(exe: &Path, instance: &str, home: &Path, sessions: &Path) -> String {
         let argv = [exe.display().to_string(), "service".into(), "--instance".into(), instance.into(), "--home".into(), home.display().to_string(), "--sessions-dir".into(), sessions.display().to_string()];
         format!(
-            "[Unit]\nDescription=Copilot Canvas service ({instance}): terminals and agents\n\n[Service]\nType=simple\nExecStart={}\nWorkingDirectory={}\nKillMode=control-group\nRestart=no\n\n[Install]\nWantedBy=default.target\n",
+            "[Unit]\nDescription=Atelier service ({instance}): terminals and agents\n\n[Service]\nType=simple\nExecStart={}\nWorkingDirectory={}\nKillMode=control-group\nRestart=no\n\n[Install]\nWantedBy=default.target\n",
             argv.iter().map(|w| quote(w)).collect::<Vec<_>>().join(" "),
             home.display()
         )
@@ -498,7 +498,7 @@ pub mod service_unit {
 
     /// Writes and enables the unit; answers its path.
     pub fn install(exe: &Path, instance: &str, home: &Path, sessions: &Path) -> Result<PathBuf> {
-        anyhow::ensure!(Systemd::available(), "no user systemd answers (systemctl --user); start the service from a login script instead: copilot-canvas service start");
+        anyhow::ensure!(Systemd::available(), "no user systemd answers (systemctl --user); start the service from a login script instead: atelier service start");
         let systemd = Systemd::user();
         std::fs::create_dir_all(&systemd.dir)?;
         let path = systemd.dir.join(file_name(instance));
@@ -525,11 +525,11 @@ pub mod service_unit {
     mod tests {
         #[test]
         fn the_unit_starts_the_instances_service_at_login() {
-            let text = super::text(std::path::Path::new("/opt/Copilot Canvas/copilot-canvas"), "default", std::path::Path::new("/home/ana/.copilot-canvas"), std::path::Path::new("/home/ana/.copilot/session-state"));
-            assert!(text.contains("ExecStart=\"/opt/Copilot Canvas/copilot-canvas\" \"service\" \"--instance\" \"default\" \"--home\" \"/home/ana/.copilot-canvas\""), "{text}");
+            let text = super::text(std::path::Path::new("/opt/Atelier/atelier"), "default", std::path::Path::new("/home/ana/.atelier"), std::path::Path::new("/home/ana/.copilot/session-state"));
+            assert!(text.contains("ExecStart=\"/opt/Atelier/atelier\" \"service\" \"--instance\" \"default\" \"--home\" \"/home/ana/.atelier\""), "{text}");
             assert!(text.contains("WantedBy=default.target") && text.contains("Restart=no"));
-            assert_eq!(super::file_name("default"), "copilot-canvas.service");
-            assert_eq!(super::file_name("work"), "copilot-canvas-work.service");
+            assert_eq!(super::file_name("default"), "atelier.service");
+            assert_eq!(super::file_name("work"), "atelier-work.service");
         }
     }
 }

@@ -1,4 +1,4 @@
-//! `copilot-canvas selftest --remote soak [--minutes N] [--drop-every S] [--client tui|gui]`:
+//! `atelier selftest --remote soak [--minutes N] [--drop-every S] [--client tui|gui]`:
 //! the long-run remote soak (PLAN §5 Phase 6, §10).
 //!
 //! A service with three streaming terminals and two echo terminals listens
@@ -514,7 +514,7 @@ fn round(v: f64) -> f64 {
 
 pub fn run(options: Options) -> Result<()> {
     let exe = std::env::current_exe()?;
-    let root = std::env::temp_dir().join(format!("copilot-canvas-soak-{}", uuid::Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("atelier-soak-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(root.join("sessions"))?;
     std::fs::create_dir_all(root.join("work"))?;
     let instance = Instance::new(Some(format!("soak{}", std::process::id())), Some(root.join("home")), Some(root.join("sessions")))?;
@@ -550,12 +550,12 @@ pub fn run(options: Options) -> Result<()> {
 fn soak(exe: &Path, instance: &Instance, root: &Path, options: &Options) -> Result<Value> {
     let client_name = if options.gui { "gui" } else { "tui" };
     println!(
-        "Copilot Canvas remote soak: {} min, a fault every {} s, the {} client and a protocol client through a fault-injecting proxy",
+        "Atelier remote soak: {} min, a fault every {} s, the {} client and a protocol client through a fault-injecting proxy",
         options.minutes,
         options.drop_every,
         client_name.to_uppercase()
     );
-    conn::spawn_service_exe(exe, instance, &[("COPILOT_CANVAS_LISTEN", "127.0.0.1:0")])?;
+    conn::spawn_service_exe(exe, instance, &[("ATELIER_LISTEN", "127.0.0.1:0")])?;
     let deadline = Instant::now() + Duration::from_secs(15);
     let port = loop {
         if let Some(port) = conn::listening_port(instance) {
@@ -652,9 +652,9 @@ fn soak(exe: &Path, instance: &Instance, root: &Path, options: &Options) -> Resu
     // `O` on the canvas would open the other client: here it only writes this file.
     let other_client = root.join("other-client.txt");
     let env = [
-        ("COPILOT_CANVAS_REMOTE_SECRET", Path::new(&secret)),
-        ("COPILOT_CANVAS_OTHER_CLIENT_DRYRUN", other_client.as_path()),
-        ("COPILOT_CANVAS_SELFTEST", Path::new("1")),
+        ("ATELIER_REMOTE_SECRET", Path::new(&secret)),
+        ("ATELIER_OTHER_CLIENT_DRYRUN", other_client.as_path()),
+        ("ATELIER_SELFTEST", Path::new("1")),
     ];
     let mut client = if options.gui {
         Client::Gui(Box::new(GuiDriver::start(&args, &env, (170, 46), &root.join("gui-stderr.log"))?))

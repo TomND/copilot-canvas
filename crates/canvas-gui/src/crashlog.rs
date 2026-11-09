@@ -81,7 +81,7 @@ pub fn install(path: PathBuf) {
         );
         append(&report);
         previous(info);
-        eprintln!("Copilot Canvas crashed; details saved to {}. Your sessions keep running: start it again to reattach.", path.display());
+        eprintln!("Atelier crashed; details saved to {}. Your sessions keep running: start it again to reattach.", path.display());
         std::process::exit(101);
     }));
 }

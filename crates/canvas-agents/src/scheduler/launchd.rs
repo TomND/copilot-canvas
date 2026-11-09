@@ -1,5 +1,5 @@
 //! launchd (macOS; MAC-LINUX-PLAN §5.5): one LaunchAgent per task,
-//! `~/Library/LaunchAgents/com.copilot-canvas.task.<name>.plist`, loaded into
+//! `~/Library/LaunchAgents/com.thomashorga.atelier.task.<name>.plist`, loaded into
 //! the user's domain (`gui/<uid>` in a login session, else `user/<uid>`).
 //!
 //! The plist runs the launcher. Calendar slots are `StartCalendarInterval`
@@ -17,7 +17,7 @@
 //! definition the trait passes around is the plist's text; the task's name,
 //! manifest and schedule are comments at its top (launchd ignores them).
 //! Replacing a loaded definition reloads the job, which stops a run in
-//! progress. `COPILOT_CANVAS_LAUNCHD_DIR` puts the plists elsewhere (tests:
+//! progress. `ATELIER_LAUNCHD_DIR` puts the plists elsewhere (tests:
 //! a job loads from any folder, only `~/Library/LaunchAgents` loads at login).
 
 use std::collections::BTreeMap;
@@ -32,10 +32,10 @@ use super::common::{self, Slots};
 use super::{Scheduler, TaskInfo};
 use crate::factory::{Defaults, Imported, Manifest, Trigger};
 
-const PREFIX: &str = "com.copilot-canvas.task.";
-const NAME: &str = "copilot-canvas-name: ";
-const MANIFEST: &str = "copilot-canvas-manifest: ";
-const SCHEDULE: &str = "copilot-canvas-schedule: ";
+const PREFIX: &str = "com.thomashorga.atelier.task.";
+const NAME: &str = "atelier-name: ";
+const MANIFEST: &str = "atelier-manifest: ";
+const SCHEDULE: &str = "atelier-schedule: ";
 const LAUNCHCTL: &str = "/bin/launchctl";
 const DISABLED: &str = "\t<key>Disabled</key>\n\t<true/>\n";
 
@@ -59,16 +59,16 @@ impl Launchd {
     }
 }
 
-/// `~/Library/LaunchAgents`, or `COPILOT_CANVAS_LAUNCHD_DIR`.
+/// `~/Library/LaunchAgents`, or `ATELIER_LAUNCHD_DIR`.
 fn agents_dir() -> PathBuf {
-    std::env::var_os("COPILOT_CANVAS_LAUNCHD_DIR")
+    canvas_common::env::var_os("ATELIER_LAUNCHD_DIR")
         .filter(|d| !d.is_empty())
         .map(PathBuf::from)
         .or_else(|| dirs::home_dir().map(|h| h.join("Library").join("LaunchAgents")))
         .unwrap_or_default()
 }
 
-/// `com.copilot-canvas.task.<name>`: letters, digits, `.`, `-` and `_` kept,
+/// `com.thomashorga.atelier.task.<name>`: letters, digits, `.`, `-` and `_` kept,
 /// any other byte as `%XX`.
 pub fn label(name: &str) -> String {
     let mut out = String::from(PREFIX);
@@ -653,9 +653,9 @@ impl Scheduler for Launchd {
     }
 }
 
-/// The service at login (`copilot-canvas service install`, MAC-LINUX-PLAN
-/// D5, §5.3): `~/Library/LaunchAgents/com.copilot-canvas.service[.<instance>].plist`
-/// runs `copilot-canvas service start` when the user logs in. That starts
+/// The service at login (`atelier service install`, MAC-LINUX-PLAN
+/// D5, §5.3): `~/Library/LaunchAgents/com.thomashorga.atelier.service[.<instance>].plist`
+/// runs `atelier service start` when the user logs in. That starts
 /// the service in its own session and exits, so launchd never owns the
 /// service: it still exits after its idle minutes, clients start it again on
 /// demand, and uninstalling never stops it or its terminals.
@@ -668,7 +668,7 @@ pub mod service_agent {
 
     /// The job's label for an instance.
     pub fn label(instance: &str) -> String {
-        if instance == "default" { "com.copilot-canvas.service".into() } else { format!("com.copilot-canvas.service.{}", super::label(instance).trim_start_matches(super::PREFIX)) }
+        if instance == "default" { "com.thomashorga.atelier.service".into() } else { format!("com.thomashorga.atelier.service.{}", super::label(instance).trim_start_matches(super::PREFIX)) }
     }
 
     pub fn path(instance: &str) -> PathBuf {
@@ -679,7 +679,7 @@ pub mod service_agent {
     pub fn text(exe: &Path, instance: &str, home: &Path, sessions: &Path) -> String {
         let argv = [exe.display().to_string(), "service".into(), "start".into(), "--instance".into(), instance.into(), "--home".into(), home.display().to_string(), "--sessions-dir".into(), sessions.display().to_string()];
         let mut out = String::from(PLIST_HEAD);
-        out.push_str(&format!("<!-- Copilot Canvas service ({}): started at login -->\n<plist version=\"1.0\">\n<dict>\n", super::to_comment(instance)));
+        out.push_str(&format!("<!-- Atelier service ({}): started at login -->\n<plist version=\"1.0\">\n<dict>\n", super::to_comment(instance)));
         out.push_str(&format!("\t<key>Label</key>\n\t<string>{}</string>\n", xml(&label(instance))));
         push_argv(&mut out, &argv);
         out.push_str("\t<key>RunAtLoad</key>\n\t<true/>\n\t<key>AbandonProcessGroup</key>\n\t<true/>\n");
@@ -719,13 +719,13 @@ pub mod service_agent {
     mod tests {
         #[test]
         fn the_agent_starts_the_instances_service_at_login() {
-            let text = super::text(std::path::Path::new("/Applications/Copilot Canvas.app/Contents/MacOS/copilot-canvas"), "work", std::path::Path::new("/Users/ana/.copilot-canvas-work"), std::path::Path::new("/Users/ana/.copilot/session-state"));
+            let text = super::text(std::path::Path::new("/Applications/Atelier.app/Contents/MacOS/atelier"), "work", std::path::Path::new("/Users/ana/.atelier-work"), std::path::Path::new("/Users/ana/.copilot/session-state"));
             let plist = super::super::parse(&text).unwrap();
             let args = plist.iter().find(|(k, _)| k == "ProgramArguments").map(|(_, v)| super::super::show(v)).unwrap();
-            assert_eq!(args, "/Applications/Copilot Canvas.app/Contents/MacOS/copilot-canvas, service, start, --instance, work, --home, /Users/ana/.copilot-canvas-work, --sessions-dir, /Users/ana/.copilot/session-state");
+            assert_eq!(args, "/Applications/Atelier.app/Contents/MacOS/atelier, service, start, --instance, work, --home, /Users/ana/.atelier-work, --sessions-dir, /Users/ana/.copilot/session-state");
             assert!(text.contains("<key>RunAtLoad</key>\n\t<true/>") && text.contains("<key>AbandonProcessGroup</key>"), "{text}");
-            assert_eq!(super::label("default"), "com.copilot-canvas.service");
-            assert_eq!(super::label("my work"), "com.copilot-canvas.service.my%20work");
+            assert_eq!(super::label("default"), "com.thomashorga.atelier.service");
+            assert_eq!(super::label("my work"), "com.thomashorga.atelier.service.my%20work");
         }
     }
 }
@@ -748,7 +748,7 @@ mod tests {
 
     #[test]
     fn labels_escape_names_and_read_back() {
-        assert_eq!(label("Morning brief & co"), "com.copilot-canvas.task.Morning%20brief%20%26%20co");
+        assert_eq!(label("Morning brief & co"), "com.thomashorga.atelier.task.Morning%20brief%20%26%20co");
         assert_eq!(unlabel(&label("Morning brief & co")).as_deref(), Some("Morning brief & co"));
         assert_eq!(unlabel(&label("Café-1.x_y")).as_deref(), Some("Café-1.x_y"));
         assert_eq!(unlabel("com.other.task"), None);
@@ -788,7 +788,7 @@ mod tests {
         if cfg!(target_os = "macos") {
             let dir = std::env::temp_dir().join(format!("cc-plist-{}", uuid::Uuid::new_v4().simple()));
             std::fs::create_dir_all(&dir).unwrap();
-            let agent = service_agent::text(Path::new("/x/copilot-canvas"), "default", Path::new("/Users/ana/.copilot-canvas"), Path::new("/Users/ana/s"));
+            let agent = service_agent::text(Path::new("/x/atelier"), "default", Path::new("/Users/ana/.atelier"), Path::new("/Users/ana/s"));
             for (file, text) in [("task.plist", render_plist(&manifest(), &d)), ("agent.plist", agent)] {
                 std::fs::write(dir.join(file), text).unwrap();
                 let out = Command::new("/usr/bin/plutil").arg("-lint").arg(dir.join(file)).output().unwrap();

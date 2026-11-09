@@ -180,7 +180,7 @@ pub fn run(options: Options) -> Result<()> {
             let _ = file.write_all(report.as_bytes());
         }
         previous_hook(info);
-        eprintln!("Copilot Canvas crashed; details saved to {}. Your sessions keep running: start it again to reattach.", crash_log.display());
+        eprintln!("Atelier crashed; details saved to {}. Your sessions keep running: start it again to reattach.", crash_log.display());
         // A panic on a helper thread would leave the UI half-alive with the
         // terminal already restored; exit instead (sessions live in the service).
         std::process::exit(101);
@@ -445,7 +445,7 @@ fn upgrade_service(instance: &Instance, conn: conn::Conn, required: bool) -> Res
     if alive > 0 {
         let why = if required { "speaks an older protocol and must be restarted" } else { "is from an older build; restart it to get this build's terminal fixes" };
         eprintln!(
-            "The Copilot Canvas terminal service running {alive} live session(s) {why}.\n\
+            "The Atelier terminal service running {alive} live session(s) {why}.\n\
              Restarting stops those terminals (Copilot conversations stay resumable).\n\
              Restart it now? [y/N] "
         );
@@ -453,7 +453,7 @@ fn upgrade_service(instance: &Instance, conn: conn::Conn, required: bool) -> Res
         std::io::stdin().read_line(&mut answer)?;
         if !answer.trim().eq_ignore_ascii_case("y") {
             if required {
-                bail!("kept the running service; quit its sessions or run `copilot-canvas service stop`, then reopen");
+                bail!("kept the running service; quit its sessions or run `atelier service stop`, then reopen");
             }
             eprintln!("Kept it. Click ⟳ Update service in the toolbar any time; the sessions resume by themselves.");
             // Fresh connection: the probe above consumed the initial messages.

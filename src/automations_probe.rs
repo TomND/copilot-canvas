@@ -1,4 +1,4 @@
-//! `copilot-canvas selftest automations`: the automations commands end to end
+//! `atelier selftest automations`: the automations commands end to end
 //! on this machine's scheduler (Task Scheduler, systemd, cron, launchd), in a
 //! throw-away folder: apply (preview, then for real), list, run now, a
 //! scheduled run (every minute), the launcher's log and status report,
@@ -26,11 +26,11 @@ struct Probe {
 }
 
 impl Probe {
-    /// `copilot-canvas --home <probe home> ARGS…`: its output, or an error with it.
+    /// `atelier --home <probe home> ARGS…`: its output, or an error with it.
     fn cli(&self, args: &[&str]) -> Result<String> {
         let out = Command::new(&self.exe).arg("--home").arg(&self.home).args(args).output()?;
         let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-        anyhow::ensure!(out.status.success(), "copilot-canvas {} failed:\n{text}", args.join(" "));
+        anyhow::ensure!(out.status.success(), "atelier {} failed:\n{text}", args.join(" "));
         Ok(text)
     }
 
@@ -89,7 +89,7 @@ fn step(text: &str) {
 
 pub fn run() -> Result<()> {
     anyhow::ensure!(canvas_sys::host::platform() != canvas_sys::host::Platform::Windows, "on Windows the Task Scheduler probe is `cargo test factory_probe -- --ignored`");
-    let root = std::env::temp_dir().join(format!("copilot-canvas-automations-{}", uuid::Uuid::new_v4().simple()));
+    let root = std::env::temp_dir().join(format!("atelier-automations-{}", uuid::Uuid::new_v4().simple()));
     let probe = Probe {
         exe: std::env::current_exe()?,
         home: root.join("home"),
@@ -100,7 +100,7 @@ pub fn run() -> Result<()> {
         name: format!("CanvasProbe-{}", std::process::id()),
     };
     let sched = scheduler::get();
-    println!("Copilot Canvas automations self-test on {} (task {}; data in {})", sched.name(), probe.name, probe.root.display());
+    println!("Atelier automations self-test on {} (task {}; data in {})", sched.name(), probe.name, probe.root.display());
     for dir in [&probe.home, &probe.dir, &probe.work] {
         std::fs::create_dir_all(dir)?;
     }

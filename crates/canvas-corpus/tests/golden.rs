@@ -33,7 +33,7 @@ fn every_entry_matches_every_available_engine() {
     }
     assert!(
         failures.is_empty(),
-        "golden corpus differs; review, then `copilot-canvas corpus bless` (corpus/README.md):\n{}",
+        "golden corpus differs; review, then `atelier corpus bless` (corpus/README.md):\n{}",
         failures.join("\n")
     );
 }
@@ -58,9 +58,9 @@ fn entries_are_consistent() {
 fn synthetic_streams_match_the_generator() {
     let corpus = corpus();
     for entry in synth::all() {
-        let stored = corpus.recording(entry.name).unwrap_or_else(|e| panic!("{}: {e:#} (run `copilot-canvas corpus synth`)", entry.name));
+        let stored = corpus.recording(entry.name).unwrap_or_else(|e| panic!("{}: {e:#} (run `atelier corpus synth`)", entry.name));
         let generated = entry.recording();
-        assert!(stored.events == generated.events && stored.header == generated.header, "{}: stored stream is stale; run `copilot-canvas corpus synth {0}` and bless", entry.name);
+        assert!(stored.events == generated.events && stored.header == generated.header, "{}: stored stream is stale; run `atelier corpus synth {0}` and bless", entry.name);
     }
 }
 

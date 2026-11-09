@@ -73,7 +73,7 @@ Both prototypes do the same thing:
   - Pan by left-drag or wheel; continuous zoom with Ctrl+wheel around the cursor.
   - Off-screen items are culled. Labels below 4.5 px are hidden.
   - Labels are shaped once and painted at the zoomed size (sizes quantized to 0.25 px).
-- **Four terminal tiles (right half, 2×2).** Live `TermView`s of 200×60 terminals from a `copilot-canvas` service instance.
+- **Four terminal tiles (right half, 2×2).** Live `TermView`s of 200×60 terminals from a `atelier` service instance.
   - Cascadia Mono, falling back to Consolas; xterm colours; bold, italic, underline, strikethrough, inverse and dim.
   - Wide characters take two cells. Cursor: filled when focused, hollow otherwise.
   - Each tile shows the part of its 200×60 grid that fits, following the cursor.
@@ -91,8 +91,8 @@ Only the windowing and drawing code differ. Scene, terminal model, key mapping, 
 
 ```powershell
 $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
-cargo build --release                                   # root: target\release\copilot-canvas.exe (service, noise, echo)
-target\release\copilot-canvas.exe service start --instance spike
+cargo build --release                                   # root: target\release\atelier.exe (service, noise, echo)
+target\release\atelier.exe service start --instance spike
 cargo build --release --manifest-path spikes\gpui-spike\Cargo.toml
 cargo build --release --manifest-path spikes\wgpu-spike\Cargo.toml
 spikes\gpui-spike\target\release\gpui-spike.exe          # interactive
@@ -102,7 +102,7 @@ spikes\wgpu-spike\target\release\wgpu-spike.exe --measure --out wgpu.json
 spikes\wgpu-spike\target\release\wgpu-spike.exe --measure --warp      # DX12 WARP (force_fallback_adapter)
 powershell -File spikes\gpui-spike\warp\build-warp.ps1                # GPUI with a WARP switch (see below)
 spikes\gpui-spike\target\warp\release\gpui-spike.exe --measure --warp
-target\release\copilot-canvas.exe service stop --instance spike
+target\release\atelier.exe service stop --instance spike
 ```
 
 **Options**
@@ -117,9 +117,9 @@ target\release\copilot-canvas.exe service stop --instance spike
 **How the spikes use the service**
 
 - Each spike launches nine terminals of its own:
-  - four `copilot-canvas noise --rate 20`;
+  - four `atelier noise --rate 20`;
   - four `powershell.exe -NoLogo -NoProfile`;
-  - one `copilot-canvas echo`.
+  - one `atelier echo`.
 - Terminal ids are prefixed with the process id. The spike stops them when it exits normally.
 - Connection is via `try_connect` only. `connect(start=true)` would copy the spike executable as the service.
 
@@ -166,7 +166,7 @@ target\release\copilot-canvas.exe service stop --instance spike
    - **Re-run `--measure` once on an unlocked desktop before Phase 4.**
 2. **`SendInput` cannot reach a locked desktop**, so keys were injected with `PostMessage` (§6).
 3. **Background terminals.** One service instance hosted all runs. Each run's nine terminals were stopped at the end, and the instance was restarted before the final runs. Four `noise` terminals stream throughout every run, as background load.
-4. **TUI baseline on the same machine.** The service-only keystroke → frame time from `copilot-canvas bench --terminals 3`, with no UI, is p50 4.5 ms, p95 5.0 ms, p99 8.7 ms (`tui-bench-3-terminals.json`).
+4. **TUI baseline on the same machine.** The service-only keystroke → frame time from `atelier bench --terminals 3`, with no UI, is p50 4.5 ms, p95 5.0 ms, p99 8.7 ms (`tui-bench-3-terminals.json`).
 
 ## 5. Results
 

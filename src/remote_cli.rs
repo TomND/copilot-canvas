@@ -1,4 +1,4 @@
-//! `copilot-canvas remote …` (PLAN.md D5): on the service's machine `pair`,
+//! `atelier remote …` (PLAN.md D5): on the service's machine `pair`,
 //! `clients`, `revoke` and `tunnel-setup`; on the client's machine `add`,
 //! `servers` and `forget`. Also the doctor's remote checks.
 
@@ -25,7 +25,7 @@ fn service(instance: &Instance) -> Result<(Conn, Arc<RemoteBackend>)> {
     let backend = RemoteBackend::new();
     let options = ConnOptions { start: true, name: "cli".into(), rpc: Some(backend.clone()), ..Default::default() };
     let conn = conn::open(&ConnTarget::Local(instance.clone()), &options, &ClientSession::new()).context("cannot reach the local service")?;
-    anyhow::ensure!(conn.protocol >= 8, "the running service is too old for pairing; restart it (`copilot-canvas service stop`)");
+    anyhow::ensure!(conn.protocol >= 8, "the running service is too old for pairing; restart it (`atelier service stop`)");
     Ok((conn, backend))
 }
 
@@ -61,13 +61,13 @@ pub fn pair(instance: &Instance, name: Option<String>, qr: bool, url: Option<Str
     println!("The service listens for remote clients on {} (behind the Dev Tunnel; never exposed directly).", code.listen);
     println!();
     println!("On the home PC run:");
-    println!("  copilot-canvas remote add cloudpc --tunnel {tunnel} --port {port} --code {}", code.code);
+    println!("  atelier remote add cloudpc --tunnel {tunnel} --port {port} --code {}", code.code);
     println!("Without a tunnel (an address that forwards to this port):");
-    println!("  copilot-canvas remote add cloudpc --addr HOST:PORT --code {}", code.code);
-    println!("Then open the canvas with: copilot-canvas --remote cloudpc");
+    println!("  atelier remote add cloudpc --addr HOST:PORT --code {}", code.code);
+    println!("Then open the canvas with: atelier --remote cloudpc");
     if !canvas_agents::remote::tunnel_manifest_path(&canvas_agents::factory_cli::configured_dir(&instance.home, None)).is_file() {
         println!();
-        println!("No tunnel automation yet: set it up with `copilot-canvas remote tunnel-setup`.");
+        println!("No tunnel automation yet: set it up with `atelier remote tunnel-setup`.");
     }
     if qr {
         println!();
@@ -103,7 +103,7 @@ fn phone_qr(instance: &Instance, code: &str, url: Option<String>) -> Result<()> 
     let qr = qrcode::QrCode::with_error_correction_level(uri.as_bytes(), qrcode::EcLevel::L).context("the pairing link does not fit a QR code")?;
     // Light modules on a dark terminal: inverted so the camera reads it.
     let text = qr.render::<qrcode::render::unicode::Dense1x2>().dark_color(qrcode::render::unicode::Dense1x2::Light).light_color(qrcode::render::unicode::Dense1x2::Dark).quiet_zone(true).build();
-    println!("Scan with the Copilot Canvas iPhone app (Pair → Scan):");
+    println!("Scan with the Atelier iPhone app (Pair → Scan):");
     println!("{text}");
     println!("Address: {}", link.url);
     match &access {
@@ -120,7 +120,7 @@ pub fn clients(instance: &Instance) -> Result<()> {
     let backend: &dyn Backend = &*backend;
     let list = backend.remote_clients()?;
     if list.is_empty() {
-        println!("No paired clients. Pair one with: copilot-canvas remote pair --name NAME");
+        println!("No paired clients. Pair one with: atelier remote pair --name NAME");
         return Ok(());
     }
     let now = now_ms();
@@ -137,7 +137,7 @@ pub fn clients(instance: &Instance) -> Result<()> {
             println!("{:<20} code opened {} by {}", "", date(c.code_opened_ms), c.paired_by);
         }
     }
-    println!("Paired clients can do everything you can on this machine; revoke one with `copilot-canvas remote revoke ID`.");
+    println!("Paired clients can do everything you can on this machine; revoke one with `atelier remote revoke ID`.");
     Ok(())
 }
 
@@ -165,20 +165,20 @@ pub fn push_key(instance: &Instance, file: &Path, key_id: Option<String>, team: 
     }
     canvas_sys::fs::write_private(&path, serde_json::to_string_pretty(&key)?.as_bytes()).with_context(|| format!("cannot write {}", path.display()))?;
     println!("APNs key {} of team {} saved ({}); the running service uses it at once.", key.key_id, key.team_id, path.display());
-    println!("Phones register when they connect; try one with `copilot-canvas remote push-test`.");
+    println!("Phones register when they connect; try one with `atelier remote push-test`.");
     Ok(())
 }
 
 /// `remote push-test`: a test notification to every registered phone.
 pub fn push_test(instance: &Instance) -> Result<()> {
-    let key = canvas_push::ApnsKey::load(&instance.home).context("no APNs key yet: `copilot-canvas remote push-key AuthKey_ID.p8 --team TEAMID`")?;
+    let key = canvas_push::ApnsKey::load(&instance.home).context("no APNs key yet: `atelier remote push-key AuthKey_ID.p8 --team TEAMID`")?;
     let devices = canvas_push::Devices::open(&instance.home).list();
     if devices.is_empty() {
         bail!("no phone registered for notifications yet: open the iPhone app connected to this machine once (and allow notifications)");
     }
     let sender = canvas_push::Sender::new(key)?;
     for device in devices {
-        let event = canvas_push::Event { id: String::new(), name: "Copilot Canvas".into(), status: canvas_model::status::Status::JustFinished };
+        let event = canvas_push::Event { id: String::new(), name: "Atelier".into(), status: canvas_model::status::Status::JustFinished };
         let mut payload = canvas_push::alert_payload(&device, &event);
         payload["aps"]["alert"]["body"] = "Test notification: this machine can reach your phone.".into();
         let outcome = sender.send(&device, &payload, false, None);
@@ -226,10 +226,10 @@ pub fn tunnel_setup(instance: &Instance, dir: &Path, tunnel: Option<String>, por
         println!("  {command:<52} # {note}");
     }
     println!("Then register and start the tunnel host:");
-    println!("  copilot-canvas automations apply {} --yes", remote::TUNNEL_TASK);
-    println!("  copilot-canvas automations run {}", remote::TUNNEL_TASK);
-    println!("Then pair the home PC: copilot-canvas remote pair --name home-pc");
-    println!("Check it any time with: copilot-canvas doctor");
+    println!("  atelier automations apply {} --yes", remote::TUNNEL_TASK);
+    println!("  atelier automations run {}", remote::TUNNEL_TASK);
+    println!("Then pair the home PC: atelier remote pair --name home-pc");
+    println!("Check it any time with: atelier doctor");
     Ok(())
 }
 
@@ -261,7 +261,7 @@ pub struct AddArgs {
 pub fn add(instance: &Instance, args: AddArgs) -> Result<()> {
     anyhow::ensure!(remote::valid_name(&args.name), "a server name is 1-40 characters of letters, digits, '-', '_' and '.'");
     anyhow::ensure!(!RESERVED.iter().any(|r| r.eq_ignore_ascii_case(&args.name)), "{:?} is reserved; choose another name", args.name);
-    let code = pairing::normalize_code(&args.code).context("the code looks like ABCD-EFGH-JKMN: 12 letters and digits from `copilot-canvas remote pair` on the service's machine")?;
+    let code = pairing::normalize_code(&args.code).context("the code looks like ABCD-EFGH-JKMN: 12 letters and digits from `atelier remote pair` on the service's machine")?;
     if args.tunnel.is_some() == args.addr.is_some() {
         bail!("give either --tunnel TUNNEL_ID [--port PORT] or --addr HOST:PORT");
     }
@@ -293,7 +293,7 @@ pub fn add(instance: &Instance, args: AddArgs) -> Result<()> {
     let addr = route.address()?;
     let (client_id, secret) = conn::pair(&addr, &code, &client_name).context("pairing failed")?;
     record.client_id = client_id.clone();
-    record.secret = canvas_sys::secret::seal(&instance.home, &secret, "Copilot Canvas server secret").context("cannot protect the secret")?;
+    record.secret = canvas_sys::secret::seal(&instance.home, &secret, "Atelier server secret").context("cannot protect the secret")?;
     let mut servers = Servers::load(&instance.home)?;
     let previous = servers.find(&record.name).map(|s| s.client_id.clone());
     servers.upsert(record.clone());
@@ -309,10 +309,10 @@ pub fn add(instance: &Instance, args: AddArgs) -> Result<()> {
         conn.service_build
     );
     if let Some(old) = previous.filter(|old| !old.is_empty() && *old != client_id) {
-        println!("The previous pairing ({old}) still works on the service: revoke it there with `copilot-canvas remote revoke {old}`.");
+        println!("The previous pairing ({old}) still works on the service: revoke it there with `atelier remote revoke {old}`.");
     }
     println!("The secret is stored for this Windows user in {}.", Servers::path(&instance.home).display());
-    println!("Open the canvas with: copilot-canvas --remote {}", record.name);
+    println!("Open the canvas with: atelier --remote {}", record.name);
     Ok(())
 }
 
@@ -320,7 +320,7 @@ pub fn add(instance: &Instance, args: AddArgs) -> Result<()> {
 pub fn servers(instance: &Instance) -> Result<()> {
     let servers = Servers::load(&instance.home)?;
     if servers.servers.is_empty() {
-        println!("No paired servers. Add one with: copilot-canvas remote add NAME --tunnel TUNNEL_ID --code CODE");
+        println!("No paired servers. Add one with: atelier remote add NAME --tunnel TUNNEL_ID --code CODE");
         return Ok(());
     }
     println!("{:<16} {:<34} {:<20} {:<16} ADDED", "NAME", "WHERE", "CLIENT ID", "VS CODE TUNNEL");
@@ -335,7 +335,7 @@ pub fn forget(instance: &Instance, name: &str) -> Result<()> {
     let mut servers = Servers::load(&instance.home)?;
     let removed = servers.remove(name).with_context(|| format!("no server named {name:?}"))?;
     servers.save(&instance.home)?;
-    println!("Forgot {} ({}). Revoke it on the service too: copilot-canvas remote revoke {}", removed.name, removed.describe(), removed.client_id);
+    println!("Forgot {} ({}). Revoke it on the service too: atelier remote revoke {}", removed.name, removed.describe(), removed.client_id);
     Ok(())
 }
 
@@ -387,10 +387,10 @@ pub fn doctor_lines(instance: &Instance, dir: &Path) -> Vec<(Mark, &'static str,
         let task = canvas_agents::scheduler::get().list().ok().and_then(|tasks| tasks.get(&remote::TUNNEL_TASK.to_lowercase()).map(|t| if t.enabled { t.state.clone() } else { "disabled".into() }));
         match task {
             Some(state) => (Mark::Ok, "Tunnel automation", format!("{} · task {state}", manifest.display())),
-            None => (Mark::Info, "Tunnel automation", format!("{} · not registered (copilot-canvas automations apply {} --yes)", manifest.display(), remote::TUNNEL_TASK)),
+            None => (Mark::Info, "Tunnel automation", format!("{} · not registered (atelier automations apply {} --yes)", manifest.display(), remote::TUNNEL_TASK)),
         }
     } else {
-        (Mark::Info, "Tunnel automation", "no manifest (copilot-canvas remote tunnel-setup)".into())
+        (Mark::Info, "Tunnel automation", "no manifest (atelier remote tunnel-setup)".into())
     });
     lines
 }
@@ -445,8 +445,8 @@ mod tests {
 
     #[test]
     fn setup_commands_use_the_real_cli_syntax() {
-        let commands: Vec<String> = setup_commands("devtunnel", "copilot-canvas", 47600).into_iter().map(|(c, _)| c).collect();
-        assert_eq!(commands, ["devtunnel user login -g", "devtunnel create copilot-canvas", "devtunnel port create copilot-canvas -p 47600", "devtunnel show copilot-canvas"]);
+        let commands: Vec<String> = setup_commands("devtunnel", "atelier", 47600).into_iter().map(|(c, _)| c).collect();
+        assert_eq!(commands, ["devtunnel user login -g", "devtunnel create atelier", "devtunnel port create atelier -p 47600", "devtunnel show atelier"]);
         assert!(!commands.iter().any(|c| c.contains(" -a") || c.contains("anonymous")), "the tunnel stays private");
     }
 }

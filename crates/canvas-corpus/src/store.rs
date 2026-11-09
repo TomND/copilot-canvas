@@ -64,13 +64,13 @@ pub fn repo_dir() -> PathBuf {
 }
 
 impl Corpus {
-    /// `explicit`, else `COPILOT_CANVAS_CORPUS`, `./corpus`, then the repository's corpus.
+    /// `explicit`, else `ATELIER_CORPUS`, `./corpus`, then the repository's corpus.
     pub fn locate(explicit: Option<&Path>) -> Result<Self> {
         if let Some(dir) = explicit {
             ensure!(dir.is_dir(), "corpus folder {} does not exist", dir.display());
             return Ok(Self { dir: dir.to_path_buf() });
         }
-        let candidates = [std::env::var_os("COPILOT_CANVAS_CORPUS").map(PathBuf::from), Some(PathBuf::from("corpus")), Some(repo_dir())];
+        let candidates = [canvas_common::env::var_os("ATELIER_CORPUS").map(PathBuf::from), Some(PathBuf::from("corpus")), Some(repo_dir())];
         match candidates.into_iter().flatten().find(|dir| dir.join("README.md").is_file()) {
             Some(dir) => Ok(Self { dir: std::path::absolute(&dir).unwrap_or(dir) }),
             None => bail!("no corpus folder found (pass --corpus DIR or run from the repository)"),

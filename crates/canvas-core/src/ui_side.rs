@@ -345,7 +345,7 @@ fn task_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>, 
             ),
             _ => "the last run reported a failure".to_owned(),
         },
-        Status::Stopped if live.task.is_none() => "not registered in Task Scheduler (copilot-canvas automations apply)".to_owned(),
+        Status::Stopped if live.task.is_none() => "not registered in Task Scheduler (atelier automations apply)".to_owned(),
         Status::Stopped => "disabled".to_owned(),
         Status::Waiting => "last run reported a warning".to_owned(),
         _ => match finished {
@@ -401,7 +401,7 @@ fn task_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>, 
         }
         out.gap();
     } else {
-        out.text("No status report yet. Automations write one to AUTOMATION_STATUS_FILE (copilot-canvas automations report).", fg(MUTED));
+        out.text("No status report yet. Automations write one to AUTOMATION_STATUS_FILE (atelier automations report).", fg(MUTED));
         out.gap();
     }
     match &live.task {
@@ -973,7 +973,7 @@ fn prs_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>) {
     use canvas_model::prs::{DispatchState, MonitorStatus, permissions_text};
     let Some(view) = app.prs_view() else {
         out.text(format!("{MARK} Pull requests"), bold(TEXT));
-        out.text("No pull request is tracked on this canvas, and no canvas-wide agent has PR coordination. ◎ Agents › + New canvas agent › PR coordinator turns it on; sessions then hand off what they publish with copilot-canvas pr track <url>.", fg(MUTED));
+        out.text("No pull request is tracked on this canvas, and no canvas-wide agent has PR coordination. ◎ Agents › + New canvas agent › PR coordinator turns it on; sessions then hand off what they publish with atelier pr track <url>.", fg(MUTED));
         actions.push(("Canvas agents".into(), Action::Agents(crate::canvas_wide::AgentAction::Panel)));
         return;
     };
@@ -987,7 +987,7 @@ fn prs_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>) {
     out.text(format!("Follow-ups: {}.", permissions_text(&view.allow)), fg(MUTED));
     if view.prs.is_empty() {
         out.gap();
-        out.text("Nothing tracked yet: a session hands off a pull request it publishes with copilot-canvas pr track <url> (the canvas-prs skill teaches it).", fg(MUTED));
+        out.text("Nothing tracked yet: a session hands off a pull request it publishes with atelier pr track <url> (the canvas-prs skill teaches it).", fg(MUTED));
     }
     for pr in &view.prs {
         out.gap();
@@ -1028,7 +1028,7 @@ fn prs_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>) {
         let mut buttons = vec![("Open PR".to_owned(), Action::Prs(PrAction::Open(pr.url.clone()))), ("View owner".to_owned(), Action::Prs(PrAction::Owner(pr.owner.clone()))), ("Check now".to_owned(), Action::Prs(PrAction::Check(pr.url.clone())))];
         buttons.push(("Untrack".into(), Action::Prs(PrAction::Untrack(pr.url.clone()))));
         out.buttons(2, buttons);
-        // The newest follow-ups (copilot-canvas pr list has them all).
+        // The newest follow-ups (atelier pr list has them all).
         for d in pr.dispatches.iter().rev().take(3) {
             let (glyph, color) = dispatch_look(d.state);
             let when = age_at(app, d.updated_ms.max(d.created_ms));
@@ -1069,7 +1069,7 @@ fn reviews_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>
     use canvas_model::reviews::{MessageState, RequestState};
     let Some(view) = app.reviews_view() else {
         out.text(format!("{MARK} Review follow-ups"), bold(TEXT));
-        out.text("No review was handed off on this canvas, and no canvas-wide agent has review follow-ups. ◎ Agents › + New canvas agent › Review follow-up, then Follow-ups… to set its messaging channel; review sessions hand off finished reviews with copilot-canvas review handoff.", fg(MUTED));
+        out.text("No review was handed off on this canvas, and no canvas-wide agent has review follow-ups. ◎ Agents › + New canvas agent › Review follow-up, then Follow-ups… to set its messaging channel; review sessions hand off finished reviews with atelier review handoff.", fg(MUTED));
         actions.push(("Canvas agents".into(), Action::Agents(crate::canvas_wide::AgentAction::Panel)));
         return;
     };

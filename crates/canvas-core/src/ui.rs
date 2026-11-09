@@ -40,7 +40,7 @@ pub fn render(app: &mut App, buf: &mut Buffer, screen: Rect, overlay: Option<&mu
     app.layout.space_areas.clear();
     app.layout.screen = screen;
     if screen.width < 60 || screen.height < 16 {
-        put(buf, 1, 1, "Copilot Canvas needs at least 60×16 cells. Ctrl+Q quits.", fg(ATTENTION), screen);
+        put(buf, 1, 1, "Atelier needs at least 60×16 cells. Ctrl+Q quits.", fg(ATTENTION), screen);
         return view;
     }
     let space = app.space;
@@ -239,7 +239,7 @@ fn hidden_area_counts(app: &App) -> (usize, usize) {
 
 fn draw_toolbar(app: &mut App, buf: &mut Buffer, area: Rect) {
     fill(buf, area.x as i32, area.y as i32, area.width as i32, 1, Style::default().bg(PANEL), area);
-    let mut x = put(buf, 1, area.y as i32, "◆ Copilot Canvas", bold(ACCENT).bg(PANEL), area) + 2;
+    let mut x = put(buf, 1, area.y as i32, "◆ Atelier", bold(ACCENT).bg(PANEL), area) + 2;
     // The space tabs: the session canvas, the notebook, the todo boards.
     let compact = compact_tabs(app, area.width);
     for space in Space::ALL {

@@ -1,6 +1,6 @@
-//! `copilot-canvas service install|uninstall`: start the service at login
+//! `atelier service install|uninstall`: start the service at login
 //! (MAC-LINUX-PLAN D5). Linux: a systemd user unit. Windows: the
-//! `CopilotCanvas-Service` logon task from an automation manifest (README).
+//! `Atelier-Service` logon task from an automation manifest (README).
 //! macOS: a LaunchAgent that runs `service start` at login.
 
 use anyhow::{Result, bail};
@@ -18,7 +18,7 @@ pub fn install(instance: &Instance) -> Result<()> {
             println!("On a server without a login session: loginctl enable-linger $USER");
             Ok(())
         }
-        Platform::Windows => bail!("on Windows the service starts at logon from a scheduled task: see the CopilotCanvas-Service manifest example in README (copilot-canvas automations apply)"),
+        Platform::Windows => bail!("on Windows the service starts at logon from a scheduled task: see the Atelier-Service manifest example in README (atelier automations apply)"),
         Platform::MacOs => {
             let exe = canvas_agents::scheduler::common::launcher_exe();
             let path = canvas_agents::scheduler::launchd::service_agent::install(&exe, &instance.name, &instance.home, &instance.sessions_dir)?;
@@ -37,7 +37,7 @@ pub fn uninstall(instance: &Instance) -> Result<()> {
             }
             Ok(())
         }
-        Platform::Windows => bail!("on Windows remove the CopilotCanvas-Service task: copilot-canvas automations remove CopilotCanvas-Service"),
+        Platform::Windows => bail!("on Windows remove the Atelier-Service task: atelier automations remove Atelier-Service"),
         Platform::MacOs => {
             match canvas_agents::scheduler::launchd::service_agent::uninstall(&instance.name)? {
                 Some(path) => println!("Removed {} (a running service keeps running until it stops).", path.display()),

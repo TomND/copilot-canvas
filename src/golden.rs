@@ -1,4 +1,4 @@
-//! `copilot-canvas selftest --client gui --golden [--update]`: golden
+//! `atelier selftest --client gui --golden [--update]`: golden
 //! screenshots of the GUI compared with a tolerant image diff (PLAN.md §10,
 //! "GUI": the self-test's steps plus tolerant image diffs).
 //!
@@ -579,7 +579,7 @@ struct DemoSandbox {
 
 impl DemoSandbox {
     fn new() -> Result<Self> {
-        let root = std::env::temp_dir().join(format!("copilot-canvas-golden-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("atelier-golden-{}", uuid::Uuid::new_v4()));
         let work = root.join("work");
         for dir in [&work, &root.join("sessions"), &root.join("copilot-home"), &root.join("xdg-data"), &root.join("claude-home")] {
             std::fs::create_dir_all(dir)?;
@@ -606,7 +606,7 @@ impl DemoSandbox {
         let (copilot, xdg, claude) = (self.root.join("copilot-home"), self.root.join("xdg-data"), self.root.join("claude-home"));
         // The default agent for new sessions, whatever is installed here.
         let agent = PathBuf::from("copilot");
-        let env: [(&str, &Path); 4] = [("COPILOT_HOME", &copilot), ("XDG_DATA_HOME", &xdg), ("CLAUDE_CONFIG_DIR", &claude), ("COPILOT_CANVAS_AGENT", &agent)];
+        let env: [(&str, &Path); 4] = [("COPILOT_HOME", &copilot), ("XDG_DATA_HOME", &xdg), ("CLAUDE_CONFIG_DIR", &claude), ("ATELIER_AGENT", &agent)];
         GuiDriver::start(&args, &env, (COLS, ROWS), &self.root.join("gui-golden.log"))
     }
 }
@@ -779,7 +779,7 @@ fn visual_shots(shots: &mut Shots) -> Result<()> {
     let sb = crate::parity::Sandbox::new()?;
     // Animated effects (held still by `freeze`) whatever this machine's setting.
     // SAFETY: set before the GUI starts; nothing else reads it concurrently.
-    unsafe { std::env::set_var("COPILOT_CANVAS_EFFECTS", "on") };
+    unsafe { std::env::set_var("ATELIER_EFFECTS", "on") };
     let result = (|| -> Result<()> {
         let canvas = crate::parity::visual::canvas(&sb.instance.home, &sb.work, &sb.group_folder, true, true)?;
         let gui = sb.start(&["--canvas", &canvas.display().to_string()], "gui-golden-visuals.log")?;
@@ -815,11 +815,11 @@ fn visual_shots(shots: &mut Shots) -> Result<()> {
 
 pub fn run(update: bool) -> Result<()> {
     let goldens = golden_dir()?;
-    let captures = std::env::temp_dir().join(format!("copilot-canvas-golden-captures-{}", uuid::Uuid::new_v4()));
+    let captures = std::env::temp_dir().join(format!("atelier-golden-captures-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&captures)?;
     let t = TOLERANCE;
     println!(
-        "Copilot Canvas GUI golden screenshots ({COLS}x{ROWS} cells; goldens in {}; {})",
+        "Atelier GUI golden screenshots ({COLS}x{ROWS} cells; goldens in {}; {})",
         goldens.display(),
         if update {
             "updating them".to_owned()

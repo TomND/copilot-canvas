@@ -1,4 +1,4 @@
-{"vtrec":1,"cols":40,"rows":18,"program":"copilot-canvas corpus synth synth-unicode","description":"Emoji (presentation selectors, skin tones, keycaps), ZWJ sequences (woman technologist, family, rainbow flag), regional-indicator flags (FR, JP, US), CJK and fullwidth, combining marks, Hangul jamo, zero-width characters, ambiguous widths, invalid UTF-8, wide characters at the right margin (wrap and leading spacer) and half-overwritten wide characters; reads split inside UTF-8 sequences","source":"synthetic","recorded_at":""}
+{"vtrec":1,"cols":40,"rows":18,"program":"atelier corpus synth synth-unicode","description":"Emoji (presentation selectors, skin tones, keycaps), ZWJ sequences (woman technologist, family, rainbow flag), regional-indicator flags (FR, JP, US), CJK and fullwidth, combining marks, Hangul jamo, zero-width characters, ambiguous widths, invalid UTF-8, wide characters at the right margin (wrap and leading spacer) and half-overwritten wide characters; reads split inside UTF-8 sequences","source":"synthetic","recorded_at":""}
 {"t":1,"s":"Emoji"}
 {"t":1,"x":"3a20f09f98"}
 {"t":1,"x":"8020f09f8e"}

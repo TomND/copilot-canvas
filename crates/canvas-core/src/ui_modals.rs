@@ -228,8 +228,8 @@ fn draw_modal(app: &mut App, buf: &mut Buffer, screen: Rect, modal: &Modal, ctx:
             let trackpad = app.pointer_policy == crate::input::PointerPolicy::Precise;
             let rect = centered(screen, if trackpad { 136 } else { 78 }, rows.len().max(TRACKPAD_HELP.len()) as u16 + 4);
             let title = match app.space {
-                crate::spaces::Space::Canvas => "Copilot Canvas — help".to_owned(),
-                space => format!("Copilot Canvas — help · {}", space.name()),
+                crate::spaces::Space::Canvas => "Atelier — help".to_owned(),
+                space => format!("Atelier — help · {}", space.name()),
             };
             panel(buf, rect, &title);
             if trackpad {

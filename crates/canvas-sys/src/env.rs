@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 /// Delimits the environment in the shell's output (rc files may print).
-const MARK: &str = "__COPILOT_CANVAS_ENV__";
+const MARK: &str = "__ATELIER_ENV__";
 
 /// Variables of the login shell that describe that shell, not the user.
 const SKIP: &[&str] = &["_", "PWD", "OLDPWD", "SHLVL", "PS1", "PS2", "PROMPT", "TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "TERM_SESSION_ID", "TMUX", "COLUMNS", "LINES"];
@@ -24,14 +24,14 @@ pub struct Resolved {
 }
 
 /// The variables a login environment adds to `current`: every variable
-/// `current` lacks (the service's own win; `COPILOT_CANVAS_*` are never
+/// `current` lacks (the service's own win; `ATELIER_*` are never
 /// taken, so a canvas behaves the same however it was started), `PATH` as the
 /// login shell's entries followed by the current ones it lacks, and a UTF-8
 /// `LANG` when neither has one.
 pub fn merge(current: &BTreeMap<String, String>, login: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     for (key, value) in login {
-        if key == "PATH" || SKIP.contains(&key.as_str()) || key.starts_with("COPILOT_CANVAS_") || current.contains_key(key) {
+        if key == "PATH" || SKIP.contains(&key.as_str()) || key.starts_with("ATELIER_") || current.contains_key(key) {
             continue;
         }
         out.insert(key.clone(), value.clone());
@@ -80,7 +80,7 @@ pub fn login_environment(timeout: Duration) -> Result<BTreeMap<String, String>, 
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .env_remove("COPILOT_CANVAS_SELFTEST")
+        .env_remove("ATELIER_SELFTEST")
         .spawn()
         .map_err(|e| format!("cannot run {shell}: {e}"))?;
     let mut stdout = child.stdout.take().expect("piped");
@@ -108,12 +108,12 @@ pub fn login_environment(timeout: Duration) -> Result<BTreeMap<String, String>, 
 
 /// Merges the login environment into this process's (call once, at the
 /// service's start, before it starts threads). Skipped with
-/// `COPILOT_CANVAS_LOGIN_ENV=0` and in self-tests (`COPILOT_CANVAS_SELFTEST=1`),
+/// `ATELIER_LOGIN_ENV=0` and in self-tests (`ATELIER_SELFTEST=1`),
 /// which keep their environment as given.
 pub fn adopt_login_environment() -> Resolved {
     let current: BTreeMap<String, String> = std::env::vars().collect();
     let skipped = |key: &str, off: &str| current.get(key).is_some_and(|v| v.trim() == off);
-    if cfg!(windows) || skipped("COPILOT_CANVAS_LOGIN_ENV", "0") || skipped("COPILOT_CANVAS_SELFTEST", "1") {
+    if cfg!(windows) || skipped("ATELIER_LOGIN_ENV", "0") || skipped("ATELIER_SELFTEST", "1") {
         return Resolved { path: current.get("PATH").cloned().unwrap_or_default(), ..Default::default() };
     }
     let (login, error) = match login_environment(Duration::from_secs(5)) {
@@ -138,19 +138,19 @@ mod tests {
 
     #[test]
     fn the_login_environment_fills_in_and_extends_path() {
-        let current = map(&[("PATH", "/usr/bin:/bin"), ("HOME", "/Users/me"), ("COPILOT_CANVAS_SELFTEST", "1")]);
+        let current = map(&[("PATH", "/usr/bin:/bin"), ("HOME", "/Users/me"), ("ATELIER_SELFTEST", "1")]);
         let login = map(&[
             ("PATH", "/opt/homebrew/bin:/Users/me/.local/bin:/usr/bin"),
             ("HOME", "/elsewhere"),
             ("NVM_DIR", "/Users/me/.nvm"),
             ("SHLVL", "2"),
-            ("COPILOT_CANVAS_HOME", "/tmp/x"),
+            ("ATELIER_HOME", "/tmp/x"),
             ("LC_CTYPE", "UTF-8"),
         ]);
         let added = merge(&current, &login);
         assert_eq!(added.get("PATH").map(String::as_str), Some("/opt/homebrew/bin:/Users/me/.local/bin:/usr/bin:/bin"));
         assert_eq!(added.get("NVM_DIR").map(String::as_str), Some("/Users/me/.nvm"));
-        assert!(!added.contains_key("HOME") && !added.contains_key("SHLVL") && !added.contains_key("COPILOT_CANVAS_HOME"));
+        assert!(!added.contains_key("HOME") && !added.contains_key("SHLVL") && !added.contains_key("ATELIER_HOME"));
         assert!(!added.contains_key("LANG"), "LC_CTYPE came from the login shell");
         assert_eq!(merge(&map(&[("PATH", "/bin")]), &BTreeMap::new()).get("LANG").map(String::as_str), Some("en_US.UTF-8"));
     }

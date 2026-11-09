@@ -1,6 +1,6 @@
 //! PR coordination in the service (WI-014): the registry of the routed
 //! canvas's tracked pull requests (one writer: this service), requests from
-//! `copilot-canvas pr …` and windows, read-only polls with the user's own
+//! `atelier pr …` and windows, read-only polls with the user's own
 //! `gh` / `az`, the events they turn into for the canvas-wide agents, and
 //! the follow-ups (dispatches) for owning sessions: queued while the owner
 //! works, typed in when it is idle (the existing mailbox, never mid-turn),
@@ -18,7 +18,7 @@ use crate::prs_cli::{Answer, REQUEST, write_answer};
 use canvas_model::prs::{self, Dispatch, DispatchRequest, DispatchState, Dispatched, MonitorStatus, Poll, PrRef, PrState, PrsView, Registry, Role, Tracked, TrackedPr};
 
 /// Seconds between polls instead of the coordinators' minutes (tests).
-const POLL_SECS_ENV: &str = "COPILOT_CANVAS_PR_POLL_SECS";
+const POLL_SECS_ENV: &str = "ATELIER_PR_POLL_SECS";
 /// One `gh` / `az` command at most.
 const CLI_TIMEOUT: Duration = Duration::from_secs(60);
 /// Pull requests polled per pass (the rest wait for the next second).
@@ -141,7 +141,7 @@ pub(super) fn ended(shared: &Shared, routing: &Routing) -> Vec<String> {
     hub.registry.prs.iter().filter(|p| p.state.ended()).map(|p| p.key.clone()).collect()
 }
 
-/// Handles a request (`copilot-canvas pr …`, or a window's button); answers
+/// Handles a request (`atelier pr …`, or a window's button); answers
 /// it for a waiting command. Returns events to route (`pr.tracked`).
 pub(super) fn request(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Event, now: u64) -> Vec<Event> {
     let mut out = Vec::new();
@@ -154,11 +154,11 @@ pub(super) fn request(shared: &Shared, routing: &Routing, state: &mut BusState, 
 
 fn handle(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Event, now: u64, out: &mut Vec<Event>) -> Result<Answer, String> {
     if !crate::doc::valid_canvas_id(&routing.canvas) {
-        return Err("no canvas with an id is open in Copilot Canvas (open the canvas with an up-to-date client)".into());
+        return Err("no canvas with an id is open in Atelier (open the canvas with an up-to-date client)".into());
     }
     let source = event.source.as_str();
     if !source.is_empty() && !routing.names.contains_key(source) && routing.passive_by_session(source).is_none() {
-        return Err("this session is not on the canvas Copilot Canvas has open (open its canvas first)".into());
+        return Err("this session is not on the canvas Atelier has open (open its canvas first)".into());
     }
     let home = &shared.instance.home;
     let data = &event.data;
@@ -237,7 +237,7 @@ fn handle(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Even
         "dispatch" => {
             let agent = routing.passive_by_session(source).filter(|p| p.canvas_wide && p.prs.is_some());
             if !source.is_empty() && agent.is_none() {
-                return Err("only a canvas-wide agent with PR coordination (or you) dispatches follow-ups; a session hands its pull request off with copilot-canvas pr track".into());
+                return Err("only a canvas-wide agent with PR coordination (or you) dispatches follow-ups; a session hands its pull request off with atelier pr track".into());
             }
             let pr = pr_of(true)?.expect("required");
             let request = DispatchRequest { key: text("key"), event: text("event"), text: data["text"].as_str().unwrap_or_default().to_owned(), from: who(routing, source), from_key: agent.map(|a| a.key.clone()).unwrap_or_default() };
@@ -322,7 +322,7 @@ pub(super) fn observe(shared: &Shared, routing: &Routing, event: &Event, now: u6
     }
     let url = event.data["url"].as_str().unwrap_or_default();
     let Ok(pr) = PrRef::parse(url) else {
-        log(&shared.instance, &format!("pr.created from {} has no pull request link ({url:?}): the session hands it off with copilot-canvas pr track", who(routing, &event.source)));
+        log(&shared.instance, &format!("pr.created from {} has no pull request link ({url:?}): the session hands it off with atelier pr track", who(routing, &event.source)));
         return None;
     };
     let mut hub = lock(&shared.prs);
@@ -548,7 +548,7 @@ fn run_cli(cli: &str, program: &Path, args: &[&str]) -> Result<String, PollError
 pub(super) fn poll(pr: &PrRef) -> Result<Poll, PollError> {
     match pr.host {
         prs::Host::GitHub => {
-            let gh = program("COPILOT_CANVAS_GH", &["gh.exe"]).ok_or_else(|| PollError::Unavailable("gh (GitHub CLI) is not installed on the service's machine".into()))?;
+            let gh = program("ATELIER_GH", &["gh.exe"]).ok_or_else(|| PollError::Unavailable("gh (GitHub CLI) is not installed on the service's machine".into()))?;
             let url = pr.url();
             let view = run_cli("gh", &gh, &["pr", "view", &url, "--json", "number,url,title,state,isDraft,headRefOid,reviewDecision,author,comments,reviews,statusCheckRollup"])?;
             let path = format!("repos/{}/{}/pulls/{}/comments?per_page=100", pr.owner, pr.repo, pr.number);
@@ -560,7 +560,7 @@ pub(super) fn poll(pr: &PrRef) -> Result<Poll, PollError> {
             prs::parse_github(&view, &inline).map_err(PollError::Failed)
         }
         prs::Host::Ado => {
-            let az = program("COPILOT_CANVAS_AZ", &["az.cmd", "az.exe", "az.bat"]).ok_or_else(|| PollError::Unavailable("az (Azure CLI with the azure-devops extension) is not installed on the service's machine".into()))?;
+            let az = program("ATELIER_AZ", &["az.cmd", "az.exe", "az.bat"]).ok_or_else(|| PollError::Unavailable("az (Azure CLI with the azure-devops extension) is not installed on the service's machine".into()))?;
             let id = pr.number.to_string();
             let common = ["--org", pr.server.as_str(), "--output", "json", "--only-show-errors"];
             let show = run_cli("az", &az, &[&["repos", "pr", "show", "--id", &id][..], &common[..]].concat())?;

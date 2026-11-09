@@ -1,4 +1,4 @@
-{"vtrec":1,"cols":40,"rows":6,"program":"copilot-canvas corpus synth synth-modes","description":"Mode changes with a checkpoint after each: mouse 1000/1002/1003/1006/1005, bracketed paste, focus, application cursor/keypad, cursor visibility, kitty keyboard push/query/set/pop (CSI > 1 u), DECSCUSR shapes 0..6, cursor blink, and query replies (DA1, DA2, DSR, DECRQM, XTVERSION, window size)","source":"synthetic","recorded_at":""}
+{"vtrec":1,"cols":40,"rows":6,"program":"atelier corpus synth synth-modes","description":"Mode changes with a checkpoint after each: mouse 1000/1002/1003/1006/1005, bracketed paste, focus, application cursor/keypad, cursor visibility, kitty keyboard push/query/set/pop (CSI > 1 u), DECSCUSR shapes 0..6, cursor blink, and query replies (DA1, DA2, DSR, DECRQM, XTVERSION, window size)","source":"synthetic","recorded_at":""}
 {"t":1,"s":"modes, cursor shapes, queries\r\n"}
 {"t":1,"s":"\u001b[?1000h"}
 {"t":0,"mark":"mouse-1000"}

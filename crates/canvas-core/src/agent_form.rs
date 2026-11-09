@@ -139,8 +139,8 @@ impl AgentSpec {
         let text = self.rules.trim_end();
         if text.trim().is_empty() {
             return format!(
-                "# Rules for {}\n\nDescribe the job: which events from which groups matter (see `copilot-canvas events`; `pr.*` from any group), what to check, \
-                 what counts as ok, warn or alert, which sessions to message (`copilot-canvas send --to \"<name or id>\"`), and what never to do.\n",
+                "# Rules for {}\n\nDescribe the job: which events from which groups matter (see `atelier events`; `pr.*` from any group), what to check, \
+                 what counts as ok, warn or alert, which sessions to message (`atelier send --to \"<name or id>\"`), and what never to do.\n",
                 self.name
             );
         }
@@ -765,7 +765,7 @@ pub fn apply_pick(app: &mut App, purpose: PickPurpose, value: &str) {
                 return ask(app, PromptPurpose::AgentDaily(target), "Wakes daily at", "a local time HH:MM, for example 09:00 · empty or off: none", "");
             }
             if value == OTHER_EVENTS {
-                return ask(app, PromptPurpose::AgentEvents(target), "Wakes on these events too", "event names, comma-separated (see copilot-canvas events); prefix.* matches a family", "");
+                return ask(app, PromptPurpose::AgentEvents(target), "Wakes on these events too", "event names, comma-separated (see atelier events); prefix.* matches a family", "");
             }
             let Some(mut wakes) = wakes_of(app, &target) else { return };
             match unmarked(value) {
@@ -1338,7 +1338,7 @@ pub(crate) mod tests {
         let (at, launch) = &launched[0];
         let prompt = launch.prompt.clone().unwrap_or_default();
         assert_eq!(at, &id);
-        assert!(prompt.starts_with("[Copilot Canvas · canvas-wide agent \"Digest\"]") && prompt.contains(r"C:\h\canvas-agents\c1\agents\digest\rules.md") && prompt.contains("only when the user talks to you"), "{prompt}");
+        assert!(prompt.starts_with("[Atelier · canvas-wide agent \"Digest\"]") && prompt.contains(r"C:\h\canvas-agents\c1\agents\digest\rules.md") && prompt.contains("only when the user talks to you"), "{prompt}");
         assert!(prompt.ends_with("What happened today?"), "{prompt}");
         assert!(!launch.resume && launch.headless_prompt.is_none() && launch.model.as_deref() == Some("gpt-remembered"));
         assert!(launch.add_dirs.iter().any(|d| d == r"C:\h\canvas-agents\c1"), "the canvas's goals and skills: {:?}", launch.add_dirs);

@@ -889,7 +889,7 @@ pub(crate) mod tests {
             (25, ServiceMsg::Refusal { proof: vec![3; 32] }),
             (26, ServiceMsg::Welcome { build: "0.3.0-abc".into() }),
             (27, ServiceMsg::Reports { json: "{\"version\":1}".into() }),
-            (28, ServiceMsg::TunnelAccess { url: "wss://copilot-canvas-47600.usw2.devtunnels.ms".into(), token: "eyJ.x.y".into(), expires_ms: 9 }),
+            (28, ServiceMsg::TunnelAccess { url: "wss://atelier-47600.usw2.devtunnels.ms".into(), token: "eyJ.x.y".into(), expires_ms: 9 }),
         ];
         for (index, message) in service {
             let bytes = postcard::to_stdvec(&message).unwrap();

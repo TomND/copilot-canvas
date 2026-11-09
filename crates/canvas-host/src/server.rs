@@ -293,7 +293,7 @@ pub struct Host {
     last_activity: Mutex<Instant>,
     started: Instant,
     pub shutting_down: AtomicBool,
-    /// Terminal engine for new terminals (`COPILOT_CANVAS_ENGINE`).
+    /// Terminal engine for new terminals (`ATELIER_ENGINE`).
     pub engine: Engine,
     fallback_logged: AtomicBool,
     /// Compress frames for remote clients that accept it (`remote.compress`).
@@ -345,7 +345,7 @@ pub fn log(instance: &Instance, message: &str) {
     }
 }
 
-/// The engine new terminals use: `COPILOT_CANVAS_ENGINE`, else
+/// The engine new terminals use: `ATELIER_ENGINE`, else
 /// `terminal.engine` in settings.json, else the build's default (Ghostty when
 /// it is compiled in).
 pub fn configured_engine(instance: &Instance) -> Engine {
@@ -523,7 +523,7 @@ impl Host {
         }
         let started = (|| -> Result<(SocketAddr, Arc<AtomicBool>)> {
             let listener = tcp::listen_loopback(addr).with_context(|| {
-                format!("cannot listen on {addr} (another program, or another user's service, may hold the port; pick another with `copilot-canvas remote tunnel-setup --port PORT`)")
+                format!("cannot listen on {addr} (another program, or another user's service, may hold the port; pick another with `atelier remote tunnel-setup --port PORT`)")
             })?;
             let bound = listener.local_addr()?;
             let stop = Arc::new(AtomicBool::new(false));
@@ -1429,13 +1429,13 @@ fn send_images(client: &Client, terminal: &Arc<Terminal>, id: &str, images: &[Sn
 /// process tree (the agent, tools, MCP servers, builds) runs above normal,
 /// sessions shown on screen at normal, all others below normal. Background
 /// sessions still use all spare CPU; they just yield to you. Only processes
-/// inside our own sessions are touched. `COPILOT_CANVAS_NO_PRIORITY=1` turns
+/// inside our own sessions are touched. `ATELIER_NO_PRIORITY=1` turns
 /// it off. Unix forbids raising priorities without privilege, so there the
 /// others are lowered instead (`canvas_sys::process::set_priority`:
 /// `PRIO_DARWIN_BG` on macOS, nice on Linux; MAC-LINUX-PLAN §5.3).
 fn priority_loop(host: Arc<Host>, wake: Receiver<()>) {
     use canvas_sys::process::Class;
-    if std::env::var_os("COPILOT_CANVAS_NO_PRIORITY").is_some() {
+    if canvas_common::env::var_os("ATELIER_NO_PRIORITY").is_some() {
         return;
     }
     let mut applied: HashMap<u32, Class> = HashMap::new();
@@ -1946,7 +1946,7 @@ mod tests {
         let stream = TcpStream::connect(addr).unwrap();
         let mut reader: Box<dyn Read + Send> = Box::new(stream.try_clone().unwrap());
         let mut writer: Box<dyn Write + Send> = Box::new(stream.try_clone().unwrap());
-        ws::connect(&mut reader, &mut writer, "copilot-canvas-47600.usw2.devtunnels.ms", "/", &[("X-Tunnel-Authorization", "tunnel x")]).unwrap();
+        ws::connect(&mut reader, &mut writer, "atelier-47600.usw2.devtunnels.ms", "/", &[("X-Tunnel-Authorization", "tunnel x")]).unwrap();
         let (reader, writer) = ws::split(ws::Role::Client, reader, writer);
         (FrameReader::new(Box::new(reader)), FrameWriter::new(Box::new(writer)), stream)
     }

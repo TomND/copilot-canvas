@@ -1,7 +1,7 @@
 //! The notebook's files on the backend's machine (docs/NOTEBOOK-TASKS.md
 //! §2.3): listings with provenance, reads with revisions, atomic writes that
 //! never overwrite someone else's change, folders, renames, the trash and
-//! search. Also the "never overwrite" file creation `copilot-canvas note new`
+//! search. Also the "never overwrite" file creation `atelier note new`
 //! and report filing use.
 //!
 //! Reads take any absolute path (as `ReadText` does: a client can do what

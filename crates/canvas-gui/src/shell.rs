@@ -312,7 +312,7 @@ impl Shell {
         let saved = crate::placement::load(&placement_path).map(|p| crate::placement::clamp(p, &crate::placement::monitors(event_loop)));
         // Invisible until the accessibility adapter is attached.
         let mut attrs = Window::default_attributes()
-            .with_title(if index == 0 { "Copilot Canvas".to_owned() } else { format!("Copilot Canvas · window {}", index + 1) })
+            .with_title(if index == 0 { "Atelier".to_owned() } else { format!("Atelier · window {}", index + 1) })
             .with_min_inner_size(LogicalSize::new(640.0, 360.0))
             .with_visible(false);
         attrs = match (self.options.size, &saved) {
@@ -641,7 +641,7 @@ impl Shell {
             }
         }
         for win in &mut self.wins {
-            let asking = win.app.modals.iter().any(|m| matches!(m, canvas_core::dialogs::Modal::Confirm(c) if c.title == "Close Copilot Canvas"));
+            let asking = win.app.modals.iter().any(|m| matches!(m, canvas_core::dialogs::Modal::Confirm(c) if c.title == "Close Atelier"));
             if win.quit_app && !win.app.quit && !asking {
                 win.quit_app = false;
             }
@@ -651,7 +651,7 @@ impl Shell {
             if self.wins[index].app.quit {
                 let mut win = self.wins.remove(index);
                 if let Some(error) = win.finish() {
-                    eprintln!("copilot-canvas-gui: the canvas could not be saved: {error}");
+                    eprintln!("atelier-gui: the canvas could not be saved: {error}");
                     self.exit_code = 1;
                 }
             } else {
@@ -1188,7 +1188,7 @@ impl Win {
         if crate::placement::load(&self.placement_path).as_ref() != Some(&self.placement)
             && let Err(error) = crate::placement::save(&self.placement_path, &self.placement)
         {
-            eprintln!("copilot-canvas-gui: cannot save the window placement: {error:#}");
+            eprintln!("atelier-gui: cannot save the window placement: {error:#}");
         }
     }
 
@@ -2072,11 +2072,11 @@ impl ApplicationHandler<UserEvent> for Shell {
                     if gpu {
                         // Neither a GPU nor WARP: the TUI needs neither.
                         eprintln!(
-                            "copilot-canvas-gui: cannot draw: no usable GPU and no software renderer ({error:#}).\n\
-                             Details are in the crash log. The terminal UI shows the same canvas and sessions without a GPU: run `copilot-canvas`."
+                            "atelier-gui: cannot draw: no usable GPU and no software renderer ({error:#}).\n\
+                             Details are in the crash log. The terminal UI shows the same canvas and sessions without a GPU: run `atelier`."
                         );
                     } else {
-                        eprintln!("copilot-canvas-gui: {error:#}");
+                        eprintln!("atelier-gui: {error:#}");
                     }
                     self.exit_code = 1;
                     event_loop.exit();

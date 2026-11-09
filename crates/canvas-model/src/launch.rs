@@ -12,7 +12,7 @@ use crate::doc::{Group, LaunchDefaults, Node};
 /// (no field can be added without breaking older peers), its `env` already
 /// does; the service takes the entry out before the agent starts, and an
 /// older service passes it on to the agent, where it does nothing.
-pub const GROUP_SKILLS_ENV: &str = "COPILOT_CANVAS_GROUP_SKILLS";
+pub const GROUP_SKILLS_ENV: &str = "ATELIER_GROUP_SKILLS";
 
 /// The skill folders a launch gets (`LaunchDefaults::skill_dirs` of the
 /// canvas and the box's group, combined).
@@ -51,7 +51,7 @@ pub fn take_group_skills(launch: &mut AgentLaunch) -> Option<GroupSkills> {
 }
 
 /// What to launch for an agent session box. The service adds the canvas
-/// integration (skills plugin, identity, `copilot-canvas` on PATH) and turns
+/// integration (skills plugin, identity, `atelier` on PATH) and turns
 /// it into the agent's command line.
 ///
 /// Launch defaults (canvas, overridden by the box's group) apply to new
@@ -165,7 +165,7 @@ mod tests {
         let mut cased = AgentLaunch { env: vec![("copilot_canvas_group_skills".into(), r#"{"dirs":["C:\\s"]}"#.into()), ("B".into(), "2".into())], ..Default::default() };
         assert_eq!(take_group_skills(&mut cased).map(|s| s.dirs), Some(vec![r"C:\s".to_owned()]));
         assert_eq!(cased.env, [("B".to_owned(), "2".to_owned())]);
-        let mut twice = AgentLaunch { env: vec![("Copilot_Canvas_Group_Skills".into(), "x".into())], ..Default::default() };
+        let mut twice = AgentLaunch { env: vec![("Atelier_Group_Skills".into(), "x".into())], ..Default::default() };
         attach_group_skills(&mut twice, "g", &[r"C:\s".into()]);
         assert_eq!(twice.env.len(), 1, "replaced, whatever its case");
     }

@@ -218,7 +218,7 @@ pub struct Reply {
 
 /// The answer to everything refused (as reports have always had it).
 pub fn refused() -> Reply {
-    Reply { status: 403, reason: "Blocked by Copilot Canvas", headers: String::new(), body: Vec::new() }
+    Reply { status: 403, reason: "Blocked by Atelier", headers: String::new(), body: Vec::new() }
 }
 
 /// Requests a window's views may wait on at once (their files being read):

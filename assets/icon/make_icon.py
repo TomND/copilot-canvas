@@ -1,4 +1,4 @@
-"""Draws the Copilot Canvas app icon (assets/icon/copilot-canvas.ico and a
+"""Draws the Atelier app icon (assets/icon/atelier.ico and a
 512 px PNG preview): a dark canvas tile with a faint dot grid, three session
 cards joined by connectors (working blue, needs-you gold, done green) and the
 glowing diamond of the toolbar's mark. Sizes up to 32 px get a simpler
@@ -149,9 +149,9 @@ def render(size, simple):
 
 def main():
     images = [render(s, simple=s <= 32) for s in SIZES]
-    images[-1].save(HERE / "copilot-canvas.ico", format="ICO", sizes=[(s, s) for s in SIZES], append_images=images[:-1])
-    render(512, simple=False).save(HERE / "copilot-canvas.png")
-    print("wrote", HERE / "copilot-canvas.ico")
+    images[-1].save(HERE / "atelier.ico", format="ICO", sizes=[(s, s) for s in SIZES], append_images=images[:-1])
+    render(512, simple=False).save(HERE / "atelier.png")
+    print("wrote", HERE / "atelier.ico")
 
 
 if __name__ == "__main__":

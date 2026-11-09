@@ -272,7 +272,7 @@ pub(super) fn todo_cli_steps<U: Ui>(ui: &mut U, instance: &Instance) -> Result<(
     let out = super::canvas_cli(home, &["todo", "add", "Write the selftest", "--type", "chore", "--board", "STB", "--status", "todo"])?;
     anyhow::ensure!(out.contains("STB-001"), "todo add: {out}");
     // The PR owner's session claims it (as an agent would, from its terminal).
-    let claim = std::process::Command::new(std::env::current_exe()?).args(["todo", "claim", "STB-001", "--home", &home.display().to_string()]).env("COPILOT_CANVAS_SESSION", PR_OWNER_ID).output()?;
+    let claim = std::process::Command::new(std::env::current_exe()?).args(["todo", "claim", "STB-001", "--home", &home.display().to_string()]).env("ATELIER_SESSION", PR_OWNER_ID).output()?;
     anyhow::ensure!(claim.status.success(), "todo claim: {}{}", String::from_utf8_lossy(&claim.stdout), String::from_utf8_lossy(&claim.stderr));
     ui.send(&ctrl_digit(1))?;
     ui.wait("the canvas", SECS, on_canvas)?;

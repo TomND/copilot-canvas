@@ -140,7 +140,7 @@ impl GuiPlatform {
 impl Platform for GuiPlatform {
     /// The TUI in a new console window (Windows' default terminal).
     fn open_other_client(&self, args: &[String]) -> anyhow::Result<String> {
-        let tui = canvas_core::platform::build_sibling(&canvas_sys::host::exe_name("copilot-canvas"))?;
+        let tui = canvas_core::platform::build_sibling(&canvas_sys::host::exe_name("atelier"))?;
         let mut all = vec!["--tui".to_owned()];
         all.extend(args.iter().cloned());
         canvas_core::platform::spawn_client(&tui, &all, true)?;
@@ -195,8 +195,8 @@ impl Platform for GuiPlatform {
 
     fn title(&self, attention: usize) {
         let name = match self.index.load(Ordering::Relaxed) {
-            0 => "Copilot Canvas".to_owned(),
-            n => format!("Copilot Canvas · window {}", n + 1),
+            0 => "Atelier".to_owned(),
+            n => format!("Atelier · window {}", n + 1),
         };
         let title = match attention {
             0 => name,
@@ -219,14 +219,14 @@ impl Platform for GuiPlatform {
         if !self.in_front() {
             self.flash();
         }
-        self.toast(format!("“{session}” needs you"), "Waiting for your answer in Copilot Canvas.".into());
+        self.toast(format!("“{session}” needs you"), "Waiting for your answer in Atelier.".into());
     }
 
     fn report_arrived(&self, title: &str, source: &str) {
         if !self.in_front() {
             self.flash();
         }
-        let body = if source.is_empty() { "In Copilot Canvas › Reports.".to_owned() } else { format!("From {source} · Copilot Canvas › Reports") };
+        let body = if source.is_empty() { "In Atelier › Reports.".to_owned() } else { format!("From {source} · Atelier › Reports") };
         self.toast(format!("New report: {title}"), body);
     }
 }
@@ -300,13 +300,13 @@ mod tests {
     fn titles_count_sessions_that_need_you() {
         let platform = GuiPlatform::default();
         platform.title(2);
-        assert_eq!(*platform.title.lock().unwrap(), "(2) Copilot Canvas — 2 need you");
+        assert_eq!(*platform.title.lock().unwrap(), "(2) Atelier — 2 need you");
         assert!(platform.dirty.swap(false, Ordering::AcqRel));
         platform.title(2);
         assert!(!platform.dirty.load(Ordering::Acquire), "unchanged");
         platform.index.store(1, Ordering::Relaxed);
         platform.title(0);
-        assert_eq!(platform.current_title(), "Copilot Canvas · window 2");
+        assert_eq!(platform.current_title(), "Atelier · window 2");
         let mut out = Vec::new();
         platform.progress(4, 100, &mut out);
         platform.bell(&mut out);

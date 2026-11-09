@@ -18,19 +18,19 @@ use super::common::{self, Slots};
 use super::{Scheduler, TaskInfo};
 use crate::factory::{Defaults, Imported, Manifest, Trigger};
 
-const BEGIN: &str = "# >>> Copilot Canvas automations (generated from manifests: edit those, then run `copilot-canvas automations apply`) >>>";
-const END: &str = "# <<< Copilot Canvas automations <<<";
-const TASK: &str = "# copilot-canvas-task: ";
+const BEGIN: &str = "# >>> Atelier automations (generated from manifests: edit those, then run `atelier automations apply`) >>>";
+const END: &str = "# <<< Atelier automations <<<";
+const TASK: &str = "# atelier-task: ";
 const OFF: &str = "#off ";
 
 pub struct Cron {
-    /// The `crontab` program (`COPILOT_CANVAS_CRONTAB` overrides it, for tests).
+    /// The `crontab` program (`ATELIER_CRONTAB` overrides it, for tests).
     pub program: PathBuf,
 }
 
 impl Cron {
     pub fn user() -> Cron {
-        let program = std::env::var_os("COPILOT_CANVAS_CRONTAB").filter(|p| !p.is_empty()).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("crontab"));
+        let program = canvas_common::env::var_os("ATELIER_CRONTAB").filter(|p| !p.is_empty()).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("crontab"));
         Cron { program }
     }
 
@@ -347,7 +347,7 @@ mod tests {
         let d = Defaults { state: PathBuf::from("/home/ana/.local/state/background-automations"), ..Defaults::default() };
         let text = section(&m, &d);
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines[0], "# copilot-canvas-task: Morning brief | enabled | daily 06:45 · weekly mon,sun 16:00 · every 15m from 00:05 · logon");
+        assert_eq!(lines[0], "# atelier-task: Morning brief | enabled | daily 06:45 · weekly mon,sun 16:00 · every 15m from 00:05 · logon");
         let fields: Vec<&str> = lines[1..].iter().map(|l| &l[..l.len() - command_of(l).len()]).map(str::trim).collect();
         assert_eq!(fields, ["45 6 * * *", "0 16 * * 1,0", "5-59/15 * * * *", "@reboot"]);
         assert!(command_of(lines[1]).ends_with("automations launch '/home/ana/.local/state/background-automations/tasks/Morning brief.json'"), "{}", lines[1]);

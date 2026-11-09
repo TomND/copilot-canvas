@@ -1,4 +1,4 @@
-//! `copilot-canvas record …` and `copilot-canvas corpus …`.
+//! `atelier record …` and `atelier corpus …`.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -12,7 +12,7 @@ use crate::store::{Blessed, Corpus, Meta, Outcome};
 use crate::vtrec::Recording;
 use crate::{engines, synth};
 
-/// The service's recording tap writes here (`COPILOT_CANVAS_RECORD`).
+/// The service's recording tap writes here (`ATELIER_RECORD`).
 pub use canvas_host::term::RECORD_ENV;
 
 type Options<'a> = &'a [(String, String)];
@@ -101,7 +101,7 @@ fn check(corpus: &Corpus, names: &[&str], engine: Option<&str>) -> Result<()> {
                 Outcome::Missing => {
                     failed += 1;
                     println!(
-                        "MISS  {:<9} {name}: no expected.{0}.json (review, then `copilot-canvas corpus bless --engine {0} {name}`)",
+                        "MISS  {:<9} {name}: no expected.{0}.json (review, then `atelier corpus bless --engine {0} {name}`)",
                         engine.name()
                     );
                 }
@@ -156,7 +156,7 @@ fn synthesize(corpus: &Corpus, names: &[&str]) -> Result<()> {
         corpus.write_entry(entry.name, &recording, &entry.meta(), None)?;
         println!("wrote {} ({} chunks, {} bytes)", corpus.stream_path(entry.name).display(), recording.chunks(), recording.output_bytes());
     }
-    println!("Next: `copilot-canvas corpus bless` and review the expected files.");
+    println!("Next: `atelier corpus bless` and review the expected files.");
     Ok(())
 }
 
@@ -250,7 +250,7 @@ fn save(recording: &Recording, options: Options, mut meta: Meta, script: Option<
             meta.notes = notes.to_owned();
         }
         corpus.write_entry(name, recording, &meta, script)?;
-        println!("wrote {} (next: review, then `copilot-canvas corpus bless {name}`)", corpus.entry_dir(name).display());
+        println!("wrote {} (next: review, then `atelier corpus bless {name}`)", corpus.entry_dir(name).display());
     }
     let preview = record::preview(recording)?;
     let end = preview.screens.last().expect("the end screen");
@@ -279,7 +279,7 @@ pub fn record(home: &Path, words: &[&str], options: Options, cwd: Option<&Path>)
         ["--", rest @ ..] | rest => rest.iter().map(|s| (*s).to_owned()).collect(),
     };
     let Some((program, args)) = command.split_first() else {
-        bail!("usage: copilot-canvas record --out FILE [--cols N] [--rows M] [--input SCRIPT] [--seconds S] -- PROGRAM [ARGS…]");
+        bail!("usage: atelier record --out FILE [--cols N] [--rows M] [--input SCRIPT] [--seconds S] -- PROGRAM [ARGS…]");
     };
     let script_text = match option(options, "input") {
         Some(path) => Some(std::fs::read_to_string(path).with_context(|| format!("cannot read {path}"))?),
@@ -356,8 +356,8 @@ fn session(home: &Path, id: &str, options: Options) -> Result<()> {
         }
         println!("The service records terminal output only when it starts with {RECORD_ENV} set:");
         println!("  $env:{RECORD_ENV} = \"{}\"", dir.display());
-        println!("  copilot-canvas service stop      # ends the running sessions");
-        println!("  copilot-canvas                   # reopen; the service restarts and records every terminal");
+        println!("  atelier service stop      # ends the running sessions");
+        println!("  atelier                   # reopen; the service restarts and records every terminal");
         println!("Then use the session and run this command again.");
         bail!("nothing recorded for {id:?} yet");
     };
@@ -375,7 +375,7 @@ fn session(home: &Path, id: &str, options: Options) -> Result<()> {
         source: "session".into(),
         cols: recording.header.cols,
         rows: recording.header.rows,
-        command: vec!["copilot-canvas".into(), "record".into(), "--session".into(), id.to_owned()],
+        command: vec!["atelier".into(), "record".into(), "--session".into(), id.to_owned()],
         recorded_on: windows_version(),
         recorded_at: recording.header.recorded_at.clone(),
         ..Meta::default()

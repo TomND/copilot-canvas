@@ -1,5 +1,5 @@
 //! Reports and short messages agents publish to the canvas inbox
-//! (`copilot-canvas report publish`): Markdown or HTML documents and plain
+//! (`atelier report publish`): Markdown or HTML documents and plain
 //! messages, with a small structured part (kind, related pull request and
 //! session, links, thread). The CLI spools a [`Submission`]; the service
 //! checks it again, stores it under `<home>/reports/items/<id>/`, keeps the
@@ -81,7 +81,7 @@ pub struct Link {
     pub url: String,
 }
 
-/// What `copilot-canvas report publish` spools for the service
+/// What `atelier report publish` spools for the service
 /// (`<home>/reports/spool/<id>.json`).
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Submission {
@@ -93,13 +93,13 @@ pub struct Submission {
     pub kind: String,
     pub body: String,
     pub created_ms: u64,
-    /// The publishing canvas session (`COPILOT_CANVAS_SESSION`; empty outside the canvas).
+    /// The publishing canvas session (`ATELIER_SESSION`; empty outside the canvas).
     #[serde(default)]
     pub source: String,
     /// `--source`: who published it when no canvas session did (or a fallback name).
     #[serde(default)]
     pub source_name: String,
-    /// The passive session's key (`COPILOT_CANVAS_PASSIVE`) when a passive run published it.
+    /// The passive session's key (`ATELIER_PASSIVE`) when a passive run published it.
     #[serde(default)]
     pub passive: String,
     /// A related session on the canvas (`--session`: a name or box id).

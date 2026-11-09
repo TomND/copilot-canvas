@@ -1,8 +1,8 @@
-//! Phase 3 spike: Copilot Canvas GPU client prototype on wgpu + winit + glyphon.
+//! Phase 3 spike: Atelier GPU client prototype on wgpu + winit + glyphon.
 //!
 //! Same scene, tiles, input and `--measure` protocol as the GPUI spike:
 //! canvas (pan: drag or wheel; zoom: Ctrl+wheel around the cursor) next to four
-//! live terminal tiles from a copilot-canvas service instance. F2 toggles the
+//! live terminal tiles from a atelier service instance. F2 toggles the
 //! tiles-only layout, F3 moves keyboard focus to the next tile. `--warp` (or
 //! WGPU_FORCE_FALLBACK_ADAPTER=1) renders with the DX12 WARP software adapter.
 
@@ -783,7 +783,7 @@ impl ApplicationHandler<UserEvent> for App {
         if self.gpu.is_some() {
             return;
         }
-        let attrs = Window::default_attributes().with_title("Copilot Canvas — wgpu spike").with_inner_size(LogicalSize::new(1800.0, 1000.0));
+        let attrs = Window::default_attributes().with_title("Atelier — wgpu spike").with_inner_size(LogicalSize::new(1800.0, 1000.0));
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
         window.set_ime_allowed(true);
         use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};

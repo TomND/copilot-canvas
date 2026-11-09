@@ -7,7 +7,7 @@
     "sync"
   ],
   "command": [
-    "copilot-canvas",
+    "atelier",
     "corpus",
     "synth",
     "synth-sync"

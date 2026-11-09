@@ -3,7 +3,7 @@
 //! answers; two clients editing one canvas through the service converge.
 //!
 //! The service is this package's binary, started in a temporary home with
-//! `COPILOT_CANVAS_LISTEN=127.0.0.1:0` (like `selftest --remote loopback`).
+//! `ATELIER_LISTEN=127.0.0.1:0` (like `selftest --remote loopback`).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Once};
@@ -46,8 +46,8 @@ impl Service {
         let root = std::env::temp_dir().join(format!("cc-contract-{name}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("sessions")).unwrap();
         let instance = Instance::new(Some(format!("{name}{}", std::process::id())), Some(root.join("home")), Some(root.join("sessions"))).unwrap();
-        let exe = Path::new(env!("CARGO_BIN_EXE_copilot-canvas"));
-        conn::spawn_service_exe(exe, &instance, &[("COPILOT_CANVAS_LISTEN", "127.0.0.1:0")]).unwrap();
+        let exe = Path::new(env!("CARGO_BIN_EXE_atelier"));
+        conn::spawn_service_exe(exe, &instance, &[("ATELIER_LISTEN", "127.0.0.1:0")]).unwrap();
         let deadline = Instant::now() + Duration::from_secs(30);
         while conn::listening_port(&instance).is_none() {
             assert!(Instant::now() < deadline, "the service did not start listening");

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Signs Copilot Canvas.app with the owner's Developer ID and notarizes it and
+# Signs Atelier.app with the owner's Developer ID and notarizes it and
 # its DMG (MAC-LINUX-PLAN §8.1, §11 item 17). Until the owner adds the
 # secrets it says so and leaves the ad hoc signed build as it is (exit 0).
 #
@@ -15,8 +15,8 @@ set -eu
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 out="${1:-$root/target/macos-package}"
-app="$out/Copilot Canvas.app"
-dmg="$(ls "$out"/CopilotCanvas-*-macos-*.dmg 2>/dev/null | head -1)"
+app="$out/Atelier.app"
+dmg="$(ls "$out"/Atelier-*-macos-*.dmg 2>/dev/null | head -1)"
 
 if [ -z "${MACOS_CERTIFICATE_P12:-}" ] || [ -z "${MACOS_SIGN_IDENTITY:-}" ]; then
     echo "sign.sh: no Developer ID certificate (MACOS_CERTIFICATE_P12, MACOS_SIGN_IDENTITY): the build stays ad hoc signed and is not notarized"
@@ -42,7 +42,7 @@ security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keycha
 security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
 
 # Inner programs first, then the bundle: hardened runtime, secure timestamp.
-for bin in copilot-canvas copilot-canvas-gui; do
+for bin in atelier atelier-gui; do
     codesign --force --sign "$MACOS_SIGN_IDENTITY" --keychain "$keychain" --options runtime --timestamp "$app/Contents/MacOS/$bin"
 done
 codesign --force --sign "$MACOS_SIGN_IDENTITY" --keychain "$keychain" --options runtime --timestamp "$app"
@@ -66,14 +66,14 @@ if [ -n "$dmg" ]; then
     mkdir -p "$stage"
     cp -R "$app" "$stage/"
     ln -s /Applications "$stage/Applications"
-    hdiutil create -quiet -volname "Copilot Canvas" -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$dmg"
+    hdiutil create -quiet -volname "Atelier" -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$dmg"
     codesign --force --sign "$MACOS_SIGN_IDENTITY" --keychain "$keychain" --timestamp "$dmg"
     notary "$dmg"
     xcrun stapler staple "$dmg"
     sha="$(shasum -a 256 "$dmg" | cut -d' ' -f1)"
     echo "$sha  $(basename "$dmg")" > "$dmg.sha256"
-    if [ -f "$out/Casks/copilot-canvas.rb" ]; then
-        sed -i '' "s/^  sha256 .*/  sha256 \"$sha\"/" "$out/Casks/copilot-canvas.rb"
+    if [ -f "$out/Casks/atelier.rb" ]; then
+        sed -i '' "s/^  sha256 .*/  sha256 \"$sha\"/" "$out/Casks/atelier.rb"
     fi
 fi
 spctl --assess --type execute --verbose=2 "$app"

@@ -25,7 +25,7 @@ declare_class!(
         #[inherits(NSResponder, NSObject)]
         type Super = NSView;
         type Mutability = mutability::MainThreadOnly;
-        const NAME: &'static str = "CopilotCanvasDockView";
+        const NAME: &'static str = "AtelierDockView";
     }
 
     impl DeclaredClass for DockView {
@@ -73,7 +73,7 @@ impl DockView {
 }
 
 /// The count of sessions that need you, from the window's title
-/// (`(2) Copilot Canvas — 2 need you`).
+/// (`(2) Atelier — 2 need you`).
 fn attention_count(view: isize) -> Option<u32> {
     // SAFETY: the canvas window's live content view, on the main thread.
     let view = unsafe { (view as *const NSView).as_ref() }?;

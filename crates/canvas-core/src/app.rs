@@ -752,7 +752,7 @@ impl App {
             return;
         }
         let Some(target) = self.target.clone() else {
-            self.notify("The terminal service disconnected. Restart Copilot Canvas to reconnect; your canvas is saved.", true);
+            self.notify("The terminal service disconnected. Restart Atelier to reconnect; your canvas is saved.", true);
             return;
         };
         self.reconnecting = true;
@@ -782,7 +782,7 @@ impl App {
         });
         if spawned.is_err() {
             self.reconnecting = false;
-            self.notify("Cannot reconnect to the terminal service; restart Copilot Canvas.", true);
+            self.notify("Cannot reconnect to the terminal service; restart Atelier.", true);
         }
     }
 

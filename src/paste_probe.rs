@@ -1,4 +1,4 @@
-//! `copilot-canvas paste-probe [--plain] [--kitty] [--keys] [--raw]`
+//! `atelier paste-probe [--plain] [--kitty] [--keys] [--raw]`
 //! (hidden): a program that shows how pasted text reaches it, for the
 //! copy-and-paste checks (`selftest`, `selftest --client gui --parity`,
 //! `selftest agent --paste`).

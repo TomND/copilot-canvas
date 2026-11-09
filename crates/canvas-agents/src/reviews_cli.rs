@@ -1,9 +1,9 @@
-//! `copilot-canvas review handoff|message|checked|request|done|list`
+//! `atelier review handoff|message|checked|request|done|list`
 //! (WI-016): a review session hands a finished review off, the canvas-wide
 //! review follow-up agent records its message to the author (draft, sent,
 //! a problem), its hourly checks and the requests it finds. Each command
 //! checks what it can and posts a request for the service (bus inbox, like
-//! `copilot-canvas pr`), then waits for its answer while the service runs.
+//! `atelier pr`), then waits for its answer while the service runs.
 //! The service owns the records (`<home>/canvas-agents/<canvas id>/reviews/book.json`).
 
 use std::io::Read;
@@ -41,7 +41,7 @@ fn answered(answer: Option<Answer>, pending: &str) -> Result<()> {
             println!("{}", answer.message);
             Ok(())
         }
-        Some(answer) => bail!("Copilot Canvas refused: {}", answer.message),
+        Some(answer) => bail!("Atelier refused: {}", answer.message),
         None => {
             println!("{pending}");
             Ok(())
@@ -68,7 +68,7 @@ pub struct HandoffArgs {
 
 /// `review handoff --pr URL --author NAME (--results FILE|-) …`.
 pub fn handoff(home: &Path, args: HandoffArgs) -> Result<()> {
-    let usage = "usage: copilot-canvas review handoff --pr URL --author NAME [--author-id ID] --results FILE|- [--notes FILE] [--outcome approved|changes-requested|commented] [--link TITLE=URL]… [--session NAME|ID]";
+    let usage = "usage: atelier review handoff --pr URL --author NAME [--author-id ID] --results FILE|- [--notes FILE] [--outcome approved|changes-requested|commented] [--link TITLE=URL]… [--session NAME|ID]";
     let pr = PrRef::parse(args.pr.as_deref().context(usage)?).map_err(|e| anyhow::anyhow!(e))?;
     let author = args.author.filter(|a| !a.trim().is_empty()).context(usage)?;
     let results = read_text(args.results.as_deref().context(usage)?, "results")?;
@@ -81,14 +81,14 @@ pub fn handoff(home: &Path, args: HandoffArgs) -> Result<()> {
         .iter()
         .map(|l| canvas_model::reports::parse_link(l).map(|l| serde_json::json!({ "title": l.title, "url": l.url })))
         .collect::<Result<_>>()?;
-    if std::env::var("COPILOT_CANVAS_SESSION").unwrap_or_default().is_empty() && args.session.as_deref().is_none_or(|s| s.trim().is_empty()) {
-        bail!("this is not a Copilot Canvas session: name the review session with --session \"<name or id>\"");
+    if canvas_common::env::var("ATELIER_SESSION").unwrap_or_default().is_empty() && args.session.as_deref().is_none_or(|s| s.trim().is_empty()) {
+        bail!("this is not an Atelier session: name the review session with --session \"<name or id>\"");
     }
     let data = serde_json::json!({
         "op": "handoff", "url": pr.url(), "author": author, "author_id": args.author_id.unwrap_or_default(), "results": results, "notes": notes,
         "outcome": args.outcome.unwrap_or_default(), "title": args.title.unwrap_or_default(), "links": links, "session": args.session.unwrap_or_default(),
     });
-    answered(ask(home, REQUEST, data)?, &format!("Review of {} handed to Copilot Canvas; the service is not running (or busy): it is recorded when the service takes it.", pr.short()))
+    answered(ask(home, REQUEST, data)?, &format!("Review of {} handed to Atelier; the service is not running (or busy): it is recorded when the service takes it.", pr.short()))
 }
 
 /// `review message` options: exactly one of a draft, sent, a problem.
@@ -107,7 +107,7 @@ pub struct MessageArgs {
 pub fn message(home: &Path, review: &str, args: MessageArgs) -> Result<()> {
     let chosen = [args.draft.is_some(), args.sent, args.needs_you.is_some(), args.failed.is_some()].iter().filter(|b| **b).count();
     if chosen != 1 || review.trim().is_empty() {
-        bail!("usage: copilot-canvas review message REVIEW (--draft FILE|- | --sent --conversation ID [--recipient NAME] | --needs-you \"WHY\" | --failed \"WHY\")");
+        bail!("usage: atelier review message REVIEW (--draft FILE|- | --sent --conversation ID [--recipient NAME] | --needs-you \"WHY\" | --failed \"WHY\")");
     }
     let data = if let Some(file) = &args.draft {
         serde_json::json!({ "op": "draft", "review": review, "text": read_text(file, "draft")? })
@@ -119,18 +119,18 @@ pub fn message(home: &Path, review: &str, args: MessageArgs) -> Result<()> {
     } else {
         serde_json::json!({ "op": "failed", "review": review, "reason": args.failed.unwrap_or_default() })
     };
-    answered(ask(home, REQUEST, data)?, "Handed to Copilot Canvas; the service is not running (or busy): it is recorded when the service takes it.")
+    answered(ask(home, REQUEST, data)?, "Handed to Atelier; the service is not running (or busy): it is recorded when the service takes it.")
 }
 
 /// `review checked [--conversation ID] [--mark TOKEN] [--failed WHY]`.
 pub fn checked(home: &Path, conversation: Option<String>, mark: Option<String>, failed: Option<String>) -> Result<()> {
     let data = serde_json::json!({ "op": "checked", "conversation": conversation.unwrap_or_default(), "mark": mark.unwrap_or_default(), "failed": failed.unwrap_or_default() });
-    answered(ask(home, REQUEST, data)?, "Check handed to Copilot Canvas (the service is not running or busy).")
+    answered(ask(home, REQUEST, data)?, "Check handed to Atelier (the service is not running or busy).")
 }
 
 /// `review request --conversation ID --message-id ID --kind KIND --text TEXT [--pr URL]`.
 pub fn request(home: &Path, conversation: Option<String>, message_id: Option<String>, kind: Option<String>, text: Option<String>, pr: Option<String>) -> Result<()> {
-    let usage = format!("usage: copilot-canvas review request --conversation ID --message-id ID --kind {} --text \"<their words>\" [--pr URL]", KINDS.join("|"));
+    let usage = format!("usage: atelier review request --conversation ID --message-id ID --kind {} --text \"<their words>\" [--pr URL]", KINDS.join("|"));
     let conversation = conversation.filter(|c| !c.trim().is_empty()).context(usage.clone())?;
     let message_id = message_id.filter(|c| !c.trim().is_empty()).context(usage.clone())?;
     let kind = kind.context(usage.clone())?;
@@ -139,12 +139,12 @@ pub fn request(home: &Path, conversation: Option<String>, message_id: Option<Str
     }
     let pr = pr.map(|p| PrRef::parse(&p).map_err(|e| anyhow::anyhow!(e))).transpose()?.map(|p| p.url()).unwrap_or_default();
     let data = serde_json::json!({ "op": "request", "conversation": conversation, "message_id": message_id, "kind": kind, "text": text.unwrap_or_default(), "url": pr });
-    answered(ask(home, REQUEST, data)?, "Request handed to Copilot Canvas; the service is not running (or busy): it is recorded when the service takes it.")
+    answered(ask(home, REQUEST, data)?, "Request handed to Atelier; the service is not running (or busy): it is recorded when the service takes it.")
 }
 
 /// `review done REQUEST`: the review session finished it without a new hand-off.
 pub fn done(home: &Path, request: &str) -> Result<()> {
-    answered(ask(home, REQUEST, serde_json::json!({ "op": "done", "request": request }))?, "Handed to Copilot Canvas (the service is not running or busy).")
+    answered(ask(home, REQUEST, serde_json::json!({ "op": "done", "request": request }))?, "Handed to Atelier (the service is not running or busy).")
 }
 
 pub fn book_path(home: &Path, canvas: &str) -> PathBuf {
@@ -160,7 +160,7 @@ pub fn load(home: &Path, canvas: &str) -> Book {
 pub fn list(home: &Path, json: bool) -> Result<String> {
     let canvas = crate::cli::routing(home).canvas;
     if !crate::doc::valid_canvas_id(&canvas) {
-        bail!("no canvas with an id is open in Copilot Canvas (open it with an up-to-date client)");
+        bail!("no canvas with an id is open in Atelier (open it with an up-to-date client)");
     }
     let mut book = load(home, &canvas);
     for review in &mut book.reviews {
@@ -173,7 +173,7 @@ pub fn list(home: &Path, json: bool) -> Result<String> {
     let age = |ms: u64| if ms == 0 { "never".to_owned() } else if ms <= now { format!("{} ago", crate::paths::format_age(ms, now)) } else { format!("in {}", crate::paths::format_age(now, ms)) };
     let watched = book.watched().len();
     let mut out = vec![format!(
-        "Copilot Canvas review follow-ups of canvas {canvas}: {} review(s), {watched} watched conversation(s) · last check {} · next {}{}",
+        "Atelier review follow-ups of canvas {canvas}: {} review(s), {watched} watched conversation(s) · last check {} · next {}{}",
         book.reviews.len(),
         age(book.checks.last_ms),
         if watched == 0 { "when a message was sent".to_owned() } else { age(book.checks.next_ms) },

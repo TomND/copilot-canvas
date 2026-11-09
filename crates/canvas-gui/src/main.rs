@@ -1,4 +1,4 @@
-//! Copilot Canvas GPU client: the canvas, sidebar and terminals in a native
+//! Atelier GPU client: the canvas, sidebar and terminals in a native
 //! window (wgpu + winit + glyphon), on the same service and app core as the
 //! TUI.
 
@@ -43,10 +43,10 @@ use crossbeam_channel::Receiver;
 use winit::event_loop::EventLoop;
 
 const USAGE: &str = "\
-Copilot Canvas — GPU client
+Atelier — GPU client
 
 USAGE
-  copilot-canvas-gui [options]
+  atelier-gui [options]
 
 OPTIONS
   --demo                safe demo with native PowerShell panes, no agent calls
@@ -54,14 +54,14 @@ OPTIONS
   --cwd DIR             default folder for new sessions (default: current folder)
   --canvas FILE         canvas file (default: <home>/canvas.json)
   --instance NAME       separate service + canvas namespace (default: default)
-  --home DIR            data directory (default: ~/.copilot-canvas, or COPILOT_CANVAS_HOME)
+  --home DIR            data directory (default: ~/.atelier, or ATELIER_HOME)
   --sessions-dir DIR    Copilot session history to index
   --remote TARGET       connect over TCP: `loopback`, a paired server's name, or HOST:PORT
   --size COLSxROWS      initial window size in cells
   --test-hooks          automation pipe (input, screen, tree, PNG); prints its name
   -h, --help · -V, --version
 
-The terminal service is copilot-canvas.exe next to this program.
+The terminal service is atelier.exe next to this program.
 ";
 
 struct Args {
@@ -88,7 +88,7 @@ fn parse() -> Result<Args> {
                 std::process::exit(0);
             }
             "-V" | "--version" => {
-                println!("copilot-canvas-gui {}", paths::build_id());
+                println!("atelier-gui {}", paths::build_id());
                 std::process::exit(0);
             }
             "--demo" => args.demo = true,
@@ -115,17 +115,17 @@ fn main() {
     match real_main() {
         Ok(code) => std::process::exit(code),
         Err(error) => {
-            eprintln!("copilot-canvas-gui: {error:#}");
+            eprintln!("atelier-gui: {error:#}");
             std::process::exit(1);
         }
     }
 }
 
-/// The service runs from `copilot-canvas.exe` next to this program; its
+/// The service runs from `atelier.exe` next to this program; its
 /// content hash is the build both sides compare. False when it is missing.
 fn use_sibling_service() -> bool {
     let Ok(exe) = std::env::current_exe() else { return false };
-    let sibling = exe.with_file_name(canvas_sys::host::exe_name("copilot-canvas"));
+    let sibling = exe.with_file_name(canvas_sys::host::exe_name("atelier"));
     let found = sibling.is_file();
     if found {
         paths::set_build_exe(sibling);
@@ -237,7 +237,7 @@ fn real_main() -> Result<i32> {
     let home = instance.home.clone();
     let cwd = paths::absolute(&args.cwd.clone().map(Ok).unwrap_or_else(std::env::current_dir)?).to_string_lossy().into_owned();
     let target = ConnTarget::parse(args.remote.as_deref(), &instance)?;
-    anyhow::ensure!(service_exe || target.is_other_machine(), "copilot-canvas.exe must be next to this program: it runs the terminal service");
+    anyhow::ensure!(service_exe || target.is_other_machine(), "atelier.exe must be next to this program: it runs the terminal service");
     // The canvas belongs to the service: a local `--canvas` file is named
     // absolutely; a remote one is a path on the service's machine.
     let canvas = args.canvas.as_ref().map(|p| if target.is_remote() { p.clone() } else { paths::absolute(p) }).map(|p| p.display().to_string());

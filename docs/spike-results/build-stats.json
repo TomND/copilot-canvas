@@ -14,7 +14,7 @@
   },
   "clean_release_build_s": { "gpui-spike": 128.7, "wgpu-spike": 74.9, "baseline_canvas_crates_only": 41.0 },
   "incremental_release_build_s_after_touching_main_rs": { "gpui-spike": 23.9, "wgpu-spike": 17.3 },
-  "release_exe_bytes": { "gpui-spike": 11282432, "wgpu-spike": 8453120, "baseline_canvas_crates_only": 476672, "copilot-canvas (root, for reference)": 8348160 },
+  "release_exe_bytes": { "gpui-spike": 11282432, "wgpu-spike": 8453120, "baseline_canvas_crates_only": 476672, "atelier (root, for reference)": 8348160 },
   "dependency_crates_cargo_tree_normal": { "gpui-spike": 444, "wgpu-spike": 268, "baseline_canvas_crates_only": 186 },
   "source_lines": {
     "gpui-spike/src/main.rs": 908,

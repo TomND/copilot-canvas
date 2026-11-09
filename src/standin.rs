@@ -1,13 +1,13 @@
-//! `copilot-canvas devtunnel-standin connect TUNNEL` (hidden): stands in for
+//! `atelier devtunnel-standin connect TUNNEL` (hidden): stands in for
 //! `devtunnel connect` where the Dev Tunnels CLI cannot sign in (tests). It
-//! forwards a local port to `COPILOT_CANVAS_STANDIN_TARGET` (`HOST:PORT`, the
+//! forwards a local port to `ATELIER_STANDIN_TARGET` (`HOST:PORT`, the
 //! service's loopback port) and prints what `devtunnel connect` prints.
-//! `COPILOT_CANVAS_STANDIN_PORT` picks the local port (default: a free one,
+//! `ATELIER_STANDIN_PORT` picks the local port (default: a free one,
 //! like `devtunnel connect` when the tunnel's port is taken). With
-//! `COPILOT_CANVAS_STANDIN_CONTROL=DIR` it writes `DIR\standin.pid` and drops
+//! `ATELIER_STANDIN_CONTROL=DIR` it writes `DIR\standin.pid` and drops
 //! every connection when a `DIR\drop` file appears (and deletes it).
 //!
-//! Clients use it through `COPILOT_CANVAS_DEVTUNNEL="<copilot-canvas.exe>|devtunnel-standin"`.
+//! Clients use it through `ATELIER_DEVTUNNEL="<atelier.exe>|devtunnel-standin"`.
 
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -16,9 +16,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
-pub const TARGET_ENV: &str = "COPILOT_CANVAS_STANDIN_TARGET";
-pub const PORT_ENV: &str = "COPILOT_CANVAS_STANDIN_PORT";
-pub const CONTROL_ENV: &str = "COPILOT_CANVAS_STANDIN_CONTROL";
+pub const TARGET_ENV: &str = "ATELIER_STANDIN_TARGET";
+pub const PORT_ENV: &str = "ATELIER_STANDIN_PORT";
+pub const CONTROL_ENV: &str = "ATELIER_STANDIN_CONTROL";
 
 type Links = Arc<Mutex<Vec<TcpStream>>>;
 
@@ -36,7 +36,7 @@ fn pipe(mut from: TcpStream, mut to: TcpStream) {
 }
 
 pub fn run(args: &[&str]) -> Result<()> {
-    let [command, tunnel, ..] = args else { bail!("usage: copilot-canvas devtunnel-standin connect TUNNEL") };
+    let [command, tunnel, ..] = args else { bail!("usage: atelier devtunnel-standin connect TUNNEL") };
     anyhow::ensure!(*command == "connect", "the stand-in only does `connect`");
     let target = std::env::var(TARGET_ENV).with_context(|| format!("set {TARGET_ENV}=HOST:PORT (where the tunnel's port goes)"))?;
     let host_port: u16 = target.rsplit_once(':').and_then(|(_, p)| p.parse().ok()).context("the target is HOST:PORT")?;

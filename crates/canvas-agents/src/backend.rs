@@ -210,7 +210,7 @@ fn run(ctx: &Ctx, request: Request) -> Result<Response> {
         Request::DocBackups { path } => Response::Texts(doc::list_backups(Path::new(&path))?.iter().map(|p| p.display().to_string()).collect()),
 
         Request::PairCode { .. } | Request::RemoteClients | Request::RemoteRevoke { .. } => {
-            anyhow::bail!("remote clients are managed by the running service (copilot-canvas remote …)")
+            anyhow::bail!("remote clients are managed by the running service (atelier remote …)")
         }
         Request::SetClipboardImage { png } => {
             canvas_sys::clipboard::set_image_png(&png)?;

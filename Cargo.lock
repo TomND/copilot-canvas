@@ -1187,7 +1187,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "copilot-canvas"
+name = "atelier"
 version = "0.3.0"
 dependencies = [
  "anyhow",

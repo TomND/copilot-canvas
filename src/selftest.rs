@@ -306,7 +306,7 @@ impl Ui for Console {
     }
 }
 
-/// The GUI client (`copilot-canvas-gui.exe --test-hooks`) driven over its
+/// The GUI client (`atelier-gui.exe --test-hooks`) driven over its
 /// pipe: terminal input bytes become key and mouse events (mouse at cell
 /// centres), the screen is the GUI's text rendering of its frame.
 pub struct GuiDriver {
@@ -326,7 +326,7 @@ impl GuiDriver {
     /// The same; `None`: the window's own size decides the grid (placements).
     pub fn start_sized(args: &[String], env: &[(&str, &Path)], size: Option<(u16, u16)>, log: &Path) -> Result<Self> {
         use std::io::BufRead;
-        let exe = std::env::current_exe()?.with_file_name(canvas_sys::host::exe_name("copilot-canvas-gui"));
+        let exe = std::env::current_exe()?.with_file_name(canvas_sys::host::exe_name("atelier-gui"));
         anyhow::ensure!(exe.is_file(), "{} is missing (cargo build --release builds it)", exe.display());
         let mut command = std::process::Command::new(&exe);
         command.args(args).arg("--test-hooks");
@@ -335,7 +335,7 @@ impl GuiDriver {
         }
         // A GUI under test saves files it would put in Downloads (Print / PDF) next to its log.
         if let Some(dir) = log.parent() {
-            command.env("COPILOT_CANVAS_DOWNLOADS", dir);
+            command.env("ATELIER_DOWNLOADS", dir);
         }
         for (key, value) in env {
             command.env(key, value);
@@ -757,12 +757,12 @@ pub(crate) fn wait_doc(path: &Path, what: &str, predicate: impl Fn(&Doc) -> bool
 }
 
 /// Where `doctor` says the machine's default agent comes from, as
-/// `agents::machine_default` decides it: `COPILOT_CANVAS_AGENT` only when it
+/// `agents::machine_default` decides it: `ATELIER_AGENT` only when it
 /// chooses (`env`; inside a canvas session it names that session's agent and
 /// is no choice), else settings.json, else the first installed agent.
 fn default_agent_source(env: Option<AgentKind>, configured: Option<&str>) -> &'static str {
     if env.is_some() {
-        "COPILOT_CANVAS_AGENT"
+        "ATELIER_AGENT"
     } else if configured.and_then(AgentKind::parse).is_some() {
         "settings.json"
     } else {
@@ -776,7 +776,7 @@ mod doctor_tests {
 
     #[test]
     fn the_default_agents_source_follows_the_lookup() {
-        assert_eq!(default_agent_source(Some(AgentKind::Claude), Some("opencode")), "COPILOT_CANVAS_AGENT");
+        assert_eq!(default_agent_source(Some(AgentKind::Claude), Some("opencode")), "ATELIER_AGENT");
         // Inside a canvas session the variable is the session's own agent: settings.json decides.
         assert_eq!(default_agent_source(None, Some("opencode")), "settings.json");
         assert_eq!(default_agent_source(None, Some("nonsense")), "auto-detected: first installed");
@@ -818,7 +818,7 @@ pub fn agent(agent: Option<&str>) -> Result<()> {
         None => agents::default_agent(),
     };
     let program = kind.provider().program().with_context(|| format!("{} is not installed on this machine", kind.label()))?;
-    let root = real_temp_dir().join(format!("copilot-canvas-check-{}", uuid::Uuid::new_v4()));
+    let root = real_temp_dir().join(format!("atelier-check-{}", uuid::Uuid::new_v4()));
     let work = root.join("work");
     let home = root.join("home");
     std::fs::create_dir_all(&work)?;
@@ -846,7 +846,7 @@ pub fn agent(agent: Option<&str>) -> Result<()> {
         env.push(("OPENCODE_DISABLE_MODELS_FETCH", std::path::PathBuf::from("1")));
     }
     let instance = Instance::new(Some(format!("check{}", std::process::id())), Some(home.clone()), None)?;
-    println!("Copilot Canvas real-agent check: {} ({program}); no prompt is submitted", kind.label());
+    println!("Atelier real-agent check: {} ({program}); no prompt is submitted", kind.label());
     let started_ms = crate::paths::now_ms();
     // OpenCode may add a model given with -m to its recent models (its default
     // outside the canvas): that list is put back afterwards if it changed.
@@ -949,7 +949,7 @@ fn agent_scenario(instance: &Instance, work: &Path, kind: AgentKind, env: &[(&st
     let label = kind.label();
     let canvas = instance.home.join("canvas.json");
     let mut ui = Console::start_with_env(&exe, &args, env, 170, 46)?;
-    ui.wait("the canvas", Duration::from_secs(30), |t| t.contains("Copilot Canvas"))?;
+    ui.wait("the canvas", Duration::from_secs(30), |t| t.contains("Atelier"))?;
     step(&format!("recent {label} sessions are indexed and placed on a fresh canvas"));
     let throwaway = env.iter().any(|(k, _)| *k == "CLAUDE_CONFIG_DIR");
     let deadline = Instant::now() + Duration::from_secs(if throwaway { 5 } else { 60 });
@@ -1172,7 +1172,7 @@ pub fn agent_paste(agent: Option<&str>) -> Result<()> {
         None => agents::default_agent(),
     };
     let program = kind.provider().program().with_context(|| format!("{} is not installed on this machine", kind.label()))?;
-    let root = real_temp_dir().join(format!("copilot-canvas-paste-{}", uuid::Uuid::new_v4()));
+    let root = real_temp_dir().join(format!("atelier-paste-{}", uuid::Uuid::new_v4()));
     let (work, home) = (root.join("work"), root.join("home"));
     std::fs::create_dir_all(&work)?;
     std::fs::create_dir_all(&home)?;
@@ -1200,7 +1200,7 @@ pub fn agent_paste(agent: Option<&str>) -> Result<()> {
     }
     std::fs::write(home.join("canvas.json"), serde_json::to_string_pretty(&doc)?)?;
     let instance = Instance::new(Some(format!("paste{}", std::process::id())), Some(home.clone()), None)?;
-    println!("Copilot Canvas real-agent paste check: {} ({program}); nothing is submitted", kind.label());
+    println!("Atelier real-agent paste check: {} ({program}); nothing is submitted", kind.label());
     let started_ms = crate::paths::now_ms();
     let env: Vec<(&str, &Path)> = env.iter().map(|(k, v)| (*k, v.as_path())).collect();
     let result = agent_paste_scenario(&instance, &work, kind, &env, model, &claude_config);
@@ -1237,7 +1237,7 @@ fn agent_paste_scenario(instance: &Instance, work: &Path, kind: AgentKind, env: 
     let label = kind.label();
     let canvas = instance.home.join("canvas.json");
     let mut ui = Console::start_with_env(&exe, &args, env, 170, 46)?;
-    ui.wait("the canvas", Duration::from_secs(30), |t| t.contains("Copilot Canvas"))?;
+    ui.wait("the canvas", Duration::from_secs(30), |t| t.contains("Atelier"))?;
     step(&format!("a new {label} session from the dialog (Enter), its input box focused"));
     let id = launch_check_session(&mut ui, kind, &canvas)?;
     if kind == AgentKind::OpenCode {
@@ -1552,14 +1552,14 @@ pub(crate) fn copy_paste_check<U: Ui>(ui: &mut U) -> Result<String> {
 pub enum Client {
     /// The TUI in a hidden pseudoconsole.
     Tui,
-    /// `copilot-canvas-gui.exe` over its test hooks.
+    /// `atelier-gui.exe` over its test hooks.
     Gui,
 }
 
 /// `remote`: `Some("loopback")` runs the same scenario with the client
 /// connected over TCP (`--remote loopback`).
 pub fn run(remote: Option<&str>, client: Client) -> Result<()> {
-    let root = std::env::temp_dir().join(format!("copilot-canvas-selftest-{}", uuid::Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("atelier-selftest-{}", uuid::Uuid::new_v4()));
     let home = root.join("home");
     let sessions = root.join("sessions");
     let work = root.join("work");
@@ -1618,7 +1618,7 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     }
     let over = remote.map(|r| format!(", client over --remote {r}")).unwrap_or_default();
     let of = if client == "tui" { String::new() } else { format!(" of the {client}") };
-    println!("Copilot Canvas self-test{of} (demo shells only; isolated data in {}{over})", instance.home.display());
+    println!("Atelier self-test{of} (demo shells only; isolated data in {}{over})", instance.home.display());
     let copilot_home = instance.home.join("copilot-home");
     std::fs::create_dir_all(&copilot_home)?;
     let automations_db = copilot_home.join("data.db");
@@ -1637,25 +1637,25 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     std::fs::create_dir_all(&fake_prs)?;
     let env = [
         ("COPILOT_HOME", copilot_home.as_path()),
-        ("COPILOT_CANVAS_OTHER_CLIENT_DRYRUN", other_client.as_path()),
+        ("ATELIER_OTHER_CLIENT_DRYRUN", other_client.as_path()),
         // The dry run is only honoured in self-tests.
-        ("COPILOT_CANVAS_SELFTEST", Path::new("1")),
+        ("ATELIER_SELFTEST", Path::new("1")),
         // Loop dots move whatever this machine's animation setting is.
-        ("COPILOT_CANVAS_EFFECTS", Path::new("on")),
-        ("COPILOT_CANVAS_GH", fake_gh.as_path()),
-        ("COPILOT_CANVAS_AZ", fake_az.as_path()),
+        ("ATELIER_EFFECTS", Path::new("on")),
+        ("ATELIER_GH", fake_gh.as_path()),
+        ("ATELIER_AZ", fake_az.as_path()),
         (crate::fake_gh::ENV, fake_prs.as_path()),
         (crate::fake_copilot::ENV, Path::new("1")),
-        ("COPILOT_CANVAS_PR_POLL_SECS", Path::new("1")),
-        ("COPILOT_CANVAS_COPILOT", fake_copilot.as_path()),
-        ("COPILOT_CANVAS_OPENCODE", fake_opencode.as_path()),
-        ("COPILOT_CANVAS_CLAUDE", fake_claude.as_path()),
-        ("COPILOT_CANVAS_FAKE_RUN_MS", Path::new("300")),
+        ("ATELIER_PR_POLL_SECS", Path::new("1")),
+        ("ATELIER_COPILOT", fake_copilot.as_path()),
+        ("ATELIER_OPENCODE", fake_opencode.as_path()),
+        ("ATELIER_CLAUDE", fake_claude.as_path()),
+        ("ATELIER_FAKE_RUN_MS", Path::new("300")),
     ];
     let started = Instant::now();
     let mut ui = start(&args, &env)?;
     step("client starts and auto-starts the terminal service");
-    ui.wait("the canvas", Duration::from_secs(20), |t| t.contains("Copilot Canvas") && t.contains("Build session canvas"))?;
+    ui.wait("the canvas", Duration::from_secs(20), |t| t.contains("Atelier") && t.contains("Build session canvas"))?;
     let startup = started.elapsed();
     if remote.is_some() {
         // The client really talks TCP: the service published its port and logged the connection.
@@ -1668,7 +1668,7 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
         let (hx, hy) = ui.find(" ? ").context("help button")?;
         ui.click(hx + 1, hy)?;
         std::thread::sleep(Duration::from_millis(500));
-        println!("after clicking help: help visible = {}", ui.text().contains("Copilot Canvas — help"));
+        println!("after clicking help: help visible = {}", ui.text().contains("Atelier — help"));
         ui.send(b"\x1b")?;
     }
 
@@ -1705,7 +1705,7 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     };
     let parts: Vec<&str> = line.split('\u{1f}').collect();
     let (exe, rest) = parts.split_first().context("command line")?;
-    let wants = canvas_sys::host::exe_name(if client == "tui" { "copilot-canvas-gui" } else { "copilot-canvas" });
+    let wants = canvas_sys::host::exe_name(if client == "tui" { "atelier-gui" } else { "atelier" });
     anyhow::ensure!(exe.ends_with(&wants), "the {client} opened {exe}, not {wants}");
     anyhow::ensure!(client == "tui" || rest.first() == Some(&"--tui"), "the GUI opens the TUI with --tui: {rest:?}");
     let after = |flag: &str| rest.iter().position(|a| *a == flag).and_then(|i| rest.get(i + 1)).copied();
@@ -2163,11 +2163,11 @@ fn canvas_agent_steps<U: Ui>(instance: &Instance, work: &Path, args: &[String], 
 /// The box that owns the self-test's pull request (never started).
 const PR_OWNER_ID: &str = "5e1f7e57-0000-4000-8000-0000000000a1";
 
-/// `copilot-canvas ARGS` in this instance's home, as you (no canvas session).
+/// `atelier ARGS` in this instance's home, as you (no canvas session).
 fn canvas_cli(home: &Path, args: &[&str]) -> Result<String> {
-    let output = std::process::Command::new(std::env::current_exe()?).args(args).args(["--home", &home.display().to_string()]).env_remove("COPILOT_CANVAS_SESSION").output()?;
+    let output = std::process::Command::new(std::env::current_exe()?).args(args).args(["--home", &home.display().to_string()]).env_remove("ATELIER_SESSION").output()?;
     let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-    anyhow::ensure!(output.status.success(), "copilot-canvas {} failed: {text}", args.join(" "));
+    anyhow::ensure!(output.status.success(), "atelier {} failed: {text}", args.join(" "));
     Ok(text)
 }
 
@@ -2317,7 +2317,7 @@ fn review_steps<U: Ui>(ui: &mut U, instance: &Instance) -> Result<()> {
     // A draft that quotes the private notes is refused; a proper one waits for you.
     let leaking = home.join("draft-leak.md");
     std::fs::write(&leaking, format!("Hi Ana, {URL}: Ben thinks this repeats the March outage."))?;
-    let refused = std::process::Command::new(std::env::current_exe()?).args(["review", "message", &review, "--draft", &leaking.display().to_string(), "--home", &home.display().to_string()]).env_remove("COPILOT_CANVAS_SESSION").output()?;
+    let refused = std::process::Command::new(std::env::current_exe()?).args(["review", "message", &review, "--draft", &leaking.display().to_string(), "--home", &home.display().to_string()]).env_remove("ATELIER_SESSION").output()?;
     anyhow::ensure!(!refused.status.success() && String::from_utf8_lossy(&refused.stderr).contains("private review notes"), "a draft with private notes was taken: {}", String::from_utf8_lossy(&refused.stdout));
     let draft = home.join("draft.md");
     std::fs::write(&draft, format!("Hi Ana, I reviewed {URL}: changes requested. The retry loop never stops; a test for the 429 path is missing."))?;
@@ -2447,12 +2447,12 @@ fn recent_steps<U: Ui>(ui: &mut U, instance: &Instance) -> Result<()> {
 }
 
 /// Reports: a session's terminal publishes a Markdown report and a message
-/// with the `copilot-canvas` command it has on its PATH; the activity bar
+/// with the `atelier` command it has on its PATH; the activity bar
 /// counts two unread; a click opens one formatted and marks it read at the
 /// service; nothing is launched.
 fn report_steps<U: Ui>(ui: &mut U, instance: &Instance, work: &Path) -> Result<()> {
     let launches = || std::fs::read_to_string(instance.log_path()).unwrap_or_default().matches("launched ").count();
-    step("reports: a session publishes a Markdown report and a message (copilot-canvas report publish); ✉2 unread; a click opens one formatted and marks it read; nothing launched");
+    step("reports: a session publishes a Markdown report and a message (atelier report publish); ✉2 unread; a click opens one formatted and marks it read; nothing launched");
     ui.send(b"\x1d")?;
     ui.wait("canvas focus", Duration::from_secs(5), |t| t.contains("empty-drag pan"))?;
     let (rx, ry) = ui.locate("Renamed by selftest", SIDEBAR)?;
@@ -2461,7 +2461,7 @@ fn report_steps<U: Ui>(ui: &mut U, instance: &Instance, work: &Path) -> Result<(
     let brief = work.join("selftest-brief.md");
     std::fs::write(&brief, "# Selftest brief\n\n## Needs you\n\n- **one** pull request\n- build `main` green\n\n| Area | State |\n|---|---|\n| Tests | pass |\n")?;
     let before = launches();
-    let command = format!("copilot-canvas report publish --markdown '{}'; copilot-canvas report publish --message 'Selftest message: build green' --kind ok\r", brief.display());
+    let command = format!("atelier report publish --markdown '{}'; atelier report publish --message 'Selftest message: build green' --kind ok\r", brief.display());
     ui.send(command.as_bytes())?;
     ui.wait("two unread reports on the activity bar", Duration::from_secs(20), |t| t.contains("✉2"))?;
     ui.send(b"\x1d")?;
@@ -2688,7 +2688,7 @@ mod perf_probe {
             std::fs::create_dir_all(d).unwrap();
         }
         let instance = crate::paths::Instance::new(Some(format!("perf{}", std::process::id())), Some(home), Some(sessions)).unwrap();
-        let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\copilot-canvas.exe");
+        let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\atelier.exe");
         let canvas = root.join("canvas.json");
         std::fs::copy(std::env::var("PERF_CANVAS").unwrap(), &canvas).unwrap();
         let args: Vec<String> = vec![
@@ -2699,7 +2699,7 @@ mod perf_probe {
         let (cols, rows) = (200, 55);
         let mut ui = super::Console::start(&exe, &args, cols, rows).unwrap();
         let hud = |ui: &super::Console| ui.text().lines().last().unwrap_or_default().rsplit("  ").find(|s| s.contains("fps")).unwrap_or("").trim().to_owned();
-        ui.wait("canvas", Duration::from_secs(20), |t| t.contains("Copilot Canvas") && t.contains("fps")).unwrap();
+        ui.wait("canvas", Duration::from_secs(20), |t| t.contains("Atelier") && t.contains("fps")).unwrap();
         std::thread::sleep(Duration::from_secs(2));
         for zoom in ["100%", "50%", "25%"] {
             // Continuous middle-button pan, 125 mouse reports per second, as a fast hand would.
@@ -2831,7 +2831,7 @@ mod stress_probe {
         };
 
         let instance = crate::paths::Instance::new(Some(format!("stress{pid}")), Some(home.clone()), Some(sessions.clone())).unwrap();
-        let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\copilot-canvas.exe");
+        let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\atelier.exe");
         let args: Vec<String> = vec![
             "--perf".into(), "--instance".into(), instance.name.clone(), "--home".into(), home.to_string_lossy().into_owned(),
             "--sessions-dir".into(), sessions.to_string_lossy().into_owned(), "--cwd".into(), work.to_string_lossy().into_owned(),
@@ -2897,7 +2897,7 @@ mod user_message_canvas_probe {
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
         let instance = crate::paths::Instance::new(Some(format!("umc{}", std::process::id())), Some(home.clone()), Some(sessions.clone())).unwrap();
-        let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\copilot-canvas.exe");
+        let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\atelier.exe");
         let args: Vec<String> = vec!["--instance".into(), instance.name.clone(), "--home".into(), home.to_string_lossy().into_owned(), "--sessions-dir".into(), sessions.to_string_lossy().into_owned(), "--cwd".into(), work.to_string_lossy().into_owned()];
         let mut ui = super::Console::start_with_env(&exe, &args, &[("COPILOT_HOME", copilot_home.as_path())], 200, 60).unwrap();
         ui.wait("canvas", Duration::from_secs(20), |t| t.contains("Probe")).unwrap();
@@ -2936,14 +2936,14 @@ mod upgrade_probe {
 
 
     /// The old build must speak the same protocol (otherwise the restart is required at startup).
-    /// Manual (after `cargo build --release`): `UPGRADE_OLD_EXE=<older copilot-canvas.exe> cargo test --release upgrade_probe -- --ignored --nocapture`.
+    /// Manual (after `cargo build --release`): `UPGRADE_OLD_EXE=<older atelier.exe> cargo test --release upgrade_probe -- --ignored --nocapture`.
     /// An older build's service keeps a shell running; the new client keeps it at
     /// the startup prompt, then updates it from the toolbar and the shell resumes.
     #[test]
     #[ignore]
     fn upgrade_probe() {
         let old = std::path::PathBuf::from(std::env::var("UPGRADE_OLD_EXE").expect("UPGRADE_OLD_EXE"));
-        let new = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), r"\target\release\copilot-canvas.exe"));
+        let new = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), r"\target\release\atelier.exe"));
         let root = std::env::temp_dir().join(format!("cc-upgrade-{}", uuid::Uuid::new_v4()));
         let (home, sessions, work, copilot_home) = (root.join("home"), root.join("sessions"), root.join("work"), root.join("copilot-home"));
         for d in [&sessions, &work, &copilot_home] {
@@ -3144,7 +3144,7 @@ mod canvas_image_paste_probe {
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
         let instance = crate::paths::Instance::new(Some(format!("cip{}", std::process::id())), Some(home.clone()), Some(sessions.clone())).unwrap();
-        let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\copilot-canvas.exe");
+        let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\atelier.exe");
         let args: Vec<String> = vec!["--instance".into(), instance.name.clone(), "--home".into(), home.to_string_lossy().into_owned(), "--sessions-dir".into(), sessions.to_string_lossy().into_owned(), "--cwd".into(), work.to_string_lossy().into_owned()];
         let mut ui = super::Console::start_with_env(&exe, &args, &[("COPILOT_HOME", copilot_home.as_path())], 200, 50).unwrap();
         let count = |t: &str| t.matches("📷").count();
@@ -3316,7 +3316,7 @@ mod fork_canvas_probe {
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
         let instance = crate::paths::Instance::new(Some(format!("fkc{}", std::process::id())), Some(home.clone()), Some(sessions.clone())).unwrap();
-        let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\copilot-canvas.exe");
+        let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\atelier.exe");
         let args: Vec<String> = vec!["--instance".into(), instance.name.clone(), "--home".into(), home.to_string_lossy().into_owned(), "--sessions-dir".into(), sessions.to_string_lossy().into_owned(), "--cwd".into(), work.to_string_lossy().into_owned()];
         let mut ui = super::Console::start_with_env(&exe, &args, &[("COPILOT_HOME", copilot_home.as_path())], 200, 50).unwrap();
         let result = (|| -> anyhow::Result<()> {
@@ -3374,7 +3374,7 @@ mod mcp_picker_probe {
             let _ = std::fs::copy(real.join(f), copilot_home.join(f));
         }
         let instance = crate::paths::Instance::new(Some(format!("mcp{}", std::process::id())), Some(home.clone()), Some(sessions.clone())).unwrap();
-        let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\copilot-canvas.exe");
+        let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\atelier.exe");
         let args: Vec<String> = vec!["--instance".into(), instance.name.clone(), "--home".into(), home.to_string_lossy().into_owned(), "--sessions-dir".into(), sessions.to_string_lossy().into_owned(), "--cwd".into(), work.to_string_lossy().into_owned()];
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&crate::client::doc::Doc::default()).unwrap()).unwrap();
         let mut ui = super::Console::start_with_env(&exe, &args, &[("COPILOT_HOME", copilot_home.as_path())], 200, 50).unwrap();
@@ -3506,7 +3506,7 @@ mod status_canvas_probe {
         doc.mcp.last_off = crate::copilot_cfg::snapshot().mcp.into_iter().map(|s| s.name).collect();
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
         let instance = crate::paths::Instance::new(Some(format!("stat{}", std::process::id())), Some(home.clone()), Some(sessions.clone())).unwrap();
-        let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\copilot-canvas.exe");
+        let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\atelier.exe");
         let args: Vec<String> = vec!["--instance".into(), instance.name.clone(), "--home".into(), home.to_string_lossy().into_owned(), "--sessions-dir".into(), sessions.to_string_lossy().into_owned(), "--cwd".into(), work.to_string_lossy().into_owned()];
         let mut ui = super::Console::start_with_env(&exe, &args, &[("COPILOT_HOME", copilot_home.as_path())], 200, 50).unwrap();
         let result = (|| -> anyhow::Result<()> {
@@ -3597,7 +3597,7 @@ mod loop_canvas_probe {
         doc.selected = Some(id.clone());
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
         let instance = crate::paths::Instance::new(Some(format!("loop{}", std::process::id())), Some(home.clone()), Some(sessions.clone())).unwrap();
-        let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\copilot-canvas.exe");
+        let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\atelier.exe");
         let args: Vec<String> = vec!["--instance".into(), instance.name.clone(), "--home".into(), home.to_string_lossy().into_owned(), "--sessions-dir".into(), sessions.to_string_lossy().into_owned(), "--cwd".into(), work.to_string_lossy().into_owned()];
         let mut ui = super::Console::start_with_env(&exe, &args, &[("COPILOT_HOME", copilot_home.as_path())], 200, 50).unwrap();
         let events = sessions.join(&id).join("events.jsonl");
@@ -3726,7 +3726,7 @@ mod passive_probe {
         });
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
         let instance = crate::paths::Instance::new(Some(format!("psv{}", std::process::id())), Some(home.clone()), Some(sessions.clone())).unwrap();
-        let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\copilot-canvas.exe");
+        let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\atelier.exe");
         let args: Vec<String> = vec!["--instance".into(), instance.name.clone(), "--home".into(), home.to_string_lossy().into_owned(), "--sessions-dir".into(), sessions.to_string_lossy().into_owned(), "--cwd".into(), work.to_string_lossy().into_owned()];
         let mut ui = super::Console::start_with_env(&exe, &args, &[("COPILOT_HOME", copilot_home.as_path())], 210, 56).unwrap();
         let result = (|| -> anyhow::Result<()> {
@@ -3759,7 +3759,7 @@ mod passive_probe {
             let slug = passive.passive.as_ref().unwrap().slug.clone();
             let rules = folder.join(".canvas").join("passive").join(&slug).join("rules.md");
             anyhow::ensure!(rules.is_file() && folder.join("ai-docs").join("GOALS.md").is_file() && folder.join(".canvas").join("events.yaml").is_file(), "files scaffolded");
-            std::fs::write(&rules, "# Probe watcher\n\nOn probe.ping run exactly these two commands, nothing else, then stop:\n1. copilot-canvas status ok \"pong N\"  (N is the n field of the event data)\n2. copilot-canvas send --to \"Active probe\" \"pong N\"\n")?;
+            std::fs::write(&rules, "# Probe watcher\n\nOn probe.ping run exactly these two commands, nothing else, then stop:\n1. atelier status ok \"pong N\"  (N is the n field of the event data)\n2. atelier send --to \"Active probe\" \"pong N\"\n")?;
 
             println!("2. open the active session (it receives messages when idle)");
             let (ax, ay) = ui.locate("Active probe", super::CANVAS)?;
@@ -3771,14 +3771,14 @@ mod passive_probe {
             println!("3. the active session emits probe.ping (as its skill would)");
             let status = std::process::Command::new(&exe)
                 .args(["emit", "probe.ping", "--data", r#"{"n": 7}"#])
-                .env("COPILOT_CANVAS_HOME", &home)
-                .env("COPILOT_CANVAS_SESSION", &active)
+                .env("ATELIER_HOME", &home)
+                .env("ATELIER_SESSION", &active)
                 .status()?;
             anyhow::ensure!(status.success(), "emit failed");
             let started = std::time::Instant::now();
             ui.wait("passive ran and reported", Duration::from_secs(240), |t| t.contains("pong 7") && t.contains("ok ·"))?;
             println!("   passive reported \"ok · pong 7\" after {:.0}s", started.elapsed().as_secs_f32());
-            ui.wait("message typed into the active session", Duration::from_secs(120), |t| t.contains("[From Probe watcher via Copilot Canvas] pong 7"))?;
+            ui.wait("message typed into the active session", Duration::from_secs(120), |t| t.contains("[From Probe watcher via Atelier] pong 7"))?;
             println!("   message delivered into the active session");
 
             println!("4. a git push in the active session's history becomes pr.pushed");
@@ -3859,7 +3859,7 @@ mod factory_probe {
         let doc = crate::client::doc::Doc { automations_dir: Some(dir), doctor_created: true, ..Default::default() };
         std::fs::write(home.join("canvas.json"), serde_json::to_string(&doc).unwrap()).unwrap();
         let instance = crate::paths::Instance::new(Some(format!("fac{}", std::process::id())), Some(home.clone()), Some(sessions.clone())).unwrap();
-        let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\copilot-canvas.exe");
+        let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\atelier.exe");
         let args: Vec<String> = vec!["--instance".into(), instance.name.clone(), "--home".into(), home.to_string_lossy().into_owned(), "--sessions-dir".into(), sessions.to_string_lossy().into_owned()];
         let mut ui = super::Console::start_with_env(&exe, &args, &[("COPILOT_HOME", copilot_home.as_path())], 230, 64).unwrap();
         let result = (|| -> anyhow::Result<()> {
@@ -3903,7 +3903,7 @@ mod factory_probe {
             format!("name: '{task}'\nfamily: 'Probe family'\ncommand: 'C:\\Windows\\System32\\cmd.exe'\nargs: '/c exit 3'\ncwd: '{}'\nschedule:\n  - 'daily 03:17'\ntime_limit: '5m'\n", root.display()),
         )
         .unwrap();
-        let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\copilot-canvas.exe");
+        let exe = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\atelier.exe");
         let applied = std::process::Command::new(&exe).args(["automations", "apply", "--yes", "--dir"]).arg(&dir).output().unwrap();
         println!("{}", String::from_utf8_lossy(&applied.stdout));
         assert!(applied.status.success(), "{}", String::from_utf8_lossy(&applied.stderr));
@@ -3931,7 +3931,7 @@ mod factory_probe {
             let folder = canvas.group(&passive.group).and_then(|g| g.folder.clone()).context("automations group folder")?;
             let rules = crate::bus::passive_paths(std::path::Path::new(&folder), &passive.slug).rules;
             anyhow::ensure!(std::fs::read_to_string(&rules)?.contains("Automation doctor"), "doctor rules scaffolded");
-            std::fs::write(&rules, "# Probe doctor\n\nOn automation.failed run exactly this command, nothing else, then stop:\ncopilot-canvas status alert \"saw NAME exit EXIT\"  (NAME and EXIT from the event data: name, exit)\n")?;
+            std::fs::write(&rules, "# Probe doctor\n\nOn automation.failed run exactly this command, nothing else, then stop:\natelier status alert \"saw NAME exit EXIT\"  (NAME and EXIT from the event data: name, exit)\n")?;
             std::thread::sleep(Duration::from_secs(3));
 
             println!("2. the task fails: its box pulses and the toolbar counts it");
@@ -3986,7 +3986,7 @@ mod two_clients_probe {
             std::fs::create_dir_all(d).unwrap();
         }
         let instance = crate::paths::Instance::new(Some(format!("two{}", std::process::id())), Some(home), Some(sessions)).unwrap();
-        let exe = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\copilot-canvas.exe");
+        let exe = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(r"target\release\atelier.exe");
         let args = |remote: bool| -> Vec<String> {
             let mut args: Vec<String> = vec![
                 "--demo".into(), "--instance".into(), instance.name.clone(), "--home".into(), instance.home.to_string_lossy().into_owned(),

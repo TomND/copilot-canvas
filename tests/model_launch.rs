@@ -27,9 +27,9 @@ fn node(kind: AgentKind, model: Option<&str>) -> Node {
 fn launched_model(node: &Node, canvas: &LaunchDefaults, resume: bool) -> Option<String> {
     // SAFETY: this test binary only reads these variables.
     unsafe {
-        std::env::set_var("COPILOT_CANVAS_COPILOT", r"C:\bin\copilot.exe");
-        std::env::set_var("COPILOT_CANVAS_OPENCODE", r"C:\bin\opencode.exe");
-        std::env::set_var("COPILOT_CANVAS_CLAUDE", r"C:\bin\claude.exe");
+        std::env::set_var("ATELIER_COPILOT", r"C:\bin\copilot.exe");
+        std::env::set_var("ATELIER_OPENCODE", r"C:\bin\opencode.exe");
+        std::env::set_var("ATELIER_CLAUDE", r"C:\bin\claude.exe");
     }
     let launch = agent_launch(node, canvas, None, None, None, resume);
     let integration = Integration::default();

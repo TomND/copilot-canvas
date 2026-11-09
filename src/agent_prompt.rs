@@ -1,4 +1,4 @@
-//! `copilot-canvas selftest agent --agent opencode --prompt`: OpenCode driven
+//! `atelier selftest agent --agent opencode --prompt`: OpenCode driven
 //! through the canvas with tiny prompts to a free model.
 //!
 //! The canvas creates the sessions (Settings defaults, the new-session
@@ -151,11 +151,11 @@ pub fn run(options: Options) -> Result<()> {
     let listed = agents::config::run(&program, &["models", "opencode"], &cli_env[..2], Duration::from_secs(90))?;
     anyhow::ensure!(listed.lines().any(|l| l.trim() == model), "{model} is not one of OpenCode's models (`opencode models opencode`)");
 
-    let root = crate::selftest::real_temp_dir().join(format!("copilot-canvas-prompt-{}", uuid::Uuid::new_v4()));
+    let root = crate::selftest::real_temp_dir().join(format!("atelier-prompt-{}", uuid::Uuid::new_v4()));
     let paths = Paths { work: root.join("work"), home: root.join("home"), group: root.join("passive-group"), remote: root.join("remote.git"), root };
     prepare(&paths)?;
     let instance = Instance::new(Some(format!("ocprompt{}", std::process::id())), Some(paths.home.clone()), None)?;
-    println!("Copilot Canvas real-agent check with prompts: OpenCode ({program}), model {model} (free); steps: status{}", steps.iter().map(|s| format!(", {s}")).collect::<String>());
+    println!("Atelier real-agent check with prompts: OpenCode ({program}), model {model} (free); steps: status{}", steps.iter().map(|s| format!(", {s}")).collect::<String>());
     let started_ms = now_ms();
     let ui_env: Vec<(&str, PathBuf)> = env.iter().map(|(k, v)| (*k, PathBuf::from(v))).collect();
     let ui_env: Vec<(&str, &Path)> = ui_env.iter().map(|(k, v)| (*k, v.as_path())).collect();
@@ -217,7 +217,7 @@ fn prepare(paths: &Paths) -> Result<()> {
     std::fs::create_dir_all(&rules)?;
     std::fs::write(
         rules.join("rules.md"),
-        format!("# Rules for {PASSIVE}\n\nThis passive session is a self-test. On every run do only this: run `copilot-canvas status ok \"canvas passive ok\"` with the bash tool, then append the line `- self-test run` to your run log. Do not read or change anything else.\n"),
+        format!("# Rules for {PASSIVE}\n\nThis passive session is a self-test. On every run do only this: run `atelier status ok \"canvas passive ok\"` with the bash tool, then append the line `- self-test run` to your run log. Do not read or change anything else.\n"),
     )?;
     let mcp_off: Vec<String> = agents::config::snapshot(AgentKind::OpenCode).map(|s| s.mcp.into_iter().map(|m| m.name).collect()).unwrap_or_default();
     let group = Group { id: "passive-check".into(), name: PASSIVE_GROUP.into(), x: 150, y: 0, w: 36, h: 12, folder: Some(paths.group.display().to_string()), ..Default::default() };
@@ -562,7 +562,7 @@ fn scenario<U: Ui>(instance: &Instance, paths: &Paths, model: &str, steps: &[Str
     ];
     let canvas = instance.home.join("canvas.json");
     let mut ui = start(&args, env)?;
-    ui.wait("the canvas", Duration::from_secs(30), |t| t.contains("Copilot Canvas") && t.contains(PASSIVE))?;
+    ui.wait("the canvas", Duration::from_secs(30), |t| t.contains("Atelier") && t.contains(PASSIVE))?;
 
     step(&format!("Settings → OpenCode model sets {model} for new sessions"));
     set_default(&mut ui, &canvas, "OpenCode model", model)?;
@@ -915,7 +915,7 @@ fn scenario<U: Ui>(instance: &Instance, paths: &Paths, model: &str, steps: &[Str
         let status = (state["status"].as_str().unwrap_or_default().to_owned(), state["headline"].as_str().unwrap_or_default().to_owned());
         if status.0.is_empty() {
             println!("    run started {:.1} s and finished {:.1} s after Run now ({}); session {native:?}; no status was reported", started.as_secs_f64(), finished.as_secs_f64(), exit.trim());
-            bail!("the passive run did not report a status (copilot-canvas status …)");
+            bail!("the passive run did not report a status (atelier status …)");
         }
         ui.wait("the reported status on the canvas", Duration::from_secs(10), |t| t.contains(&format!("{} · {}", status.0, status.1)) || t.contains(&status.1))?;
         println!(

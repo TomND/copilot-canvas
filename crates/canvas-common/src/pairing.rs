@@ -1,7 +1,7 @@
 //! Pairing a remote client with a service (PLAN.md D5 "App-level
 //! authentication").
 //!
-//! `copilot-canvas remote pair` on the service's machine opens a one-time
+//! `atelier remote pair` on the service's machine opens a one-time
 //! code of 12 characters (about 59 bits). Both sides derive keys from it with
 //! PBKDF2-HMAC-SHA256 ([`KDF_ROUNDS`] rounds, salted with both nonces), so
 //! testing guesses against a recorded exchange, or against a service that

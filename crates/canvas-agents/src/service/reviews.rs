@@ -1,6 +1,6 @@
 //! Review follow-ups in the service (WI-016): the routed canvas's records
 //! (`reviews/book.json`, one writer: this service), requests from
-//! `copilot-canvas review …` and windows, the events for the review
+//! `atelier review …` and windows, the events for the review
 //! follow-up agent (`review.completed`, `review.message.approved`, the
 //! hourly `review.check_due`), and the routing of authors' requests to the
 //! review session that did the review: queued while it works, typed in when
@@ -18,7 +18,7 @@ use canvas_model::prs::{PrRef, excerpt};
 use canvas_model::reviews::{self, Book, FollowRequest, Handoff, Link, MessageState, RequestState, Requested, Review, ReviewSettings, ReviewsView};
 
 /// Seconds between checks instead of the agent's minutes (tests).
-const CHECK_SECS_ENV: &str = "COPILOT_CANVAS_REVIEW_CHECK_SECS";
+const CHECK_SECS_ENV: &str = "ATELIER_REVIEW_CHECK_SECS";
 
 /// The routed canvas's records, held by the service, their only writer.
 #[derive(Default)]
@@ -111,7 +111,7 @@ fn report(shared: &Shared, routing: &Routing, note: Note, now: u64) {
     }
 }
 
-/// Handles a request (`copilot-canvas review …`, a window's button); answers
+/// Handles a request (`atelier review …`, a window's button); answers
 /// it for a waiting command. Returns events to route.
 pub(super) fn request(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Event, now: u64) -> Vec<Event> {
     let mut out = Vec::new();
@@ -128,11 +128,11 @@ pub(super) fn request(shared: &Shared, routing: &Routing, state: &mut BusState, 
 
 fn handle(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Event, now: u64, out: &mut Vec<Event>, notes: &mut Vec<Note>) -> Result<Answer, String> {
     if !crate::doc::valid_canvas_id(&routing.canvas) {
-        return Err("no canvas with an id is open in Copilot Canvas (open the canvas with an up-to-date client)".into());
+        return Err("no canvas with an id is open in Atelier (open the canvas with an up-to-date client)".into());
     }
     let source = event.source.as_str();
     if !source.is_empty() && !routing.names.contains_key(source) && routing.passive_by_session(source).is_none() {
-        return Err("this session is not on the canvas Copilot Canvas has open (open its canvas first)".into());
+        return Err("this session is not on the canvas Atelier has open (open its canvas first)".into());
     }
     let data = &event.data;
     let text = |key: &str| data[key].as_str().unwrap_or_default().trim().to_owned();

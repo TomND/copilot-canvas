@@ -1,4 +1,4 @@
-//! `copilot-canvas selftest --client gui --hardening`: the GUI's Phase 6
+//! `atelier selftest --client gui --hardening`: the GUI's Phase 6
 //! checks over its test hooks, each with ✓ or ✗ and its reason:
 //! the toolbar's status counts at 170 columns, overlapping boxes, GPU device
 //! loss, a DPI change, window placement across restarts (and a monitor that
@@ -54,7 +54,7 @@ fn event(kind: &str, at_ms: u64, data: Value) -> String {
 
 impl Sandbox {
     fn new(name: &str) -> Result<Self> {
-        let root = std::env::temp_dir().join(format!("copilot-canvas-hardening-{name}-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("atelier-hardening-{name}-{}", uuid::Uuid::new_v4()));
         let work = root.join("work");
         std::fs::create_dir_all(&work)?;
         std::fs::create_dir_all(root.join("sessions"))?;
@@ -110,7 +110,7 @@ impl Drop for Sandbox {
 }
 
 fn screens_dir() -> PathBuf {
-    std::env::var_os("CANVAS_GUI_SCREENS").map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join("copilot-canvas-hardening-screens"))
+    std::env::var_os("CANVAS_GUI_SCREENS").map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join("atelier-hardening-screens"))
 }
 
 fn png(ui: &GuiDriver, name: &str) -> Result<PathBuf> {
@@ -178,7 +178,7 @@ fn check(checks: &mut Vec<Check>, name: &'static str, body: impl FnOnce() -> Res
 }
 
 pub fn run() -> Result<()> {
-    println!("Copilot Canvas GUI hardening checks (test hooks; PNGs in {})", screens_dir().display());
+    println!("Atelier GUI hardening checks (test hooks; PNGs in {})", screens_dir().display());
     let started = Instant::now();
     let mut checks = Vec::new();
     check(&mut checks, "toolbar_counts_never_cover_buttons_at_170_columns", toolbar_counts);
@@ -581,7 +581,7 @@ fn software_fallback() -> Result<String> {
             let mut ui = sb.start(&["--canvas", &canvas], &[("CANVAS_GUI_TEST_GPU", what)], Some((170, 46)), log)?;
             let code = ui.wait_exit(Duration::from_secs(20))?;
             let stderr = std::fs::read_to_string(sb.root.join(log)).unwrap_or_default();
-            anyhow::ensure!(code == 1 && stderr.contains("terminal UI") && stderr.contains("copilot-canvas"), "{}: exit {code}: {stderr}", what.display());
+            anyhow::ensure!(code == 1 && stderr.contains("terminal UI") && stderr.contains("atelier"), "{}: exit {code}: {stderr}", what.display());
             seen.push(stderr.lines().next().unwrap_or_default().to_owned());
         }
         anyhow::ensure!(sb.crash_log().contains("hardware adapter: refused"), "the hardware failure is logged:\n{}", sb.crash_log());
@@ -601,7 +601,7 @@ fn software_fallback() -> Result<String> {
     let mut ui = sb.start(&["--canvas", &canvas], &[("CANVAS_GUI_TEST_GPU", &none)], Some((170, 46)), "none.log")?;
     let code = ui.wait_exit(Duration::from_secs(20))?;
     let stderr = std::fs::read_to_string(sb.root.join("none.log")).unwrap_or_default();
-    anyhow::ensure!(code == 1 && stderr.contains("terminal UI") && stderr.contains("copilot-canvas"), "exit {code}: {stderr}");
+    anyhow::ensure!(code == 1 && stderr.contains("terminal UI") && stderr.contains("atelier"), "exit {code}: {stderr}");
     Ok(format!("WARP on {}; without any adapter: exit 1 with {:?}", size["adapter"].as_str().unwrap_or("?"), stderr.lines().next().unwrap_or_default()))
 }
 

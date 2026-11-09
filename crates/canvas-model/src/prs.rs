@@ -1,7 +1,7 @@
 //! Pull requests a canvas tracks for its canvas-wide PR coordinator (WI-014).
 //!
 //! Working sessions hand a pull request they published to the canvas
-//! (`copilot-canvas pr track URL`); the service keeps a [`Registry`] per
+//! (`atelier pr track URL`); the service keeps a [`Registry`] per
 //! canvas (`<home>/canvas-agents/<canvas id>/prs/registry.json`, one writer:
 //! the service), polls each active pull request read-only with the user's
 //! own CLIs (`gh`, `az`), turns what changed since its watermarks into events
@@ -365,7 +365,7 @@ impl DispatchState {
     }
 }
 
-/// A follow-up for the owning session (`copilot-canvas pr dispatch`).
+/// A follow-up for the owning session (`atelier pr dispatch`).
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Dispatch {
     /// `d-<ms>-<4 hex>`; also the mailbox message's id.
@@ -574,7 +574,7 @@ impl Registry {
 
     /// Records a follow-up for a pull request's owner; one per key.
     pub fn dispatch(&mut self, key: &str, request: DispatchRequest, now: u64) -> Result<Dispatched, String> {
-        let pr = self.get_mut(key).ok_or_else(|| format!("{key} is not tracked on this canvas (copilot-canvas pr list)"))?;
+        let pr = self.get_mut(key).ok_or_else(|| format!("{key} is not tracked on this canvas (atelier pr list)"))?;
         if pr.role != Role::Owned {
             return Err(format!("{} is a pull request you reviewed: follow-ups go through review follow-ups", pr.pr.short()));
         }
@@ -980,7 +980,7 @@ impl Change {
             "title": pr.title,
             "owner": pr.owner,
             "owner_name": pr.owner_name,
-            "monitor": "copilot-canvas",
+            "monitor": "atelier",
         });
         let kind = match self {
             Change::Comments(list) => {

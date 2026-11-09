@@ -1,4 +1,4 @@
-# Copilot Canvas: repository instructions
+# Atelier: repository instructions
 
 Read the root `AGENTS.md` first: it is the instructions for agents working on
 this repository (the shape of the system, build, the verification order,

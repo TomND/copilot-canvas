@@ -72,28 +72,28 @@ jobs:
       - name: release build
         run: cargo build --release
       - name: golden corpus (both engines)
-        run: target\release\copilot-canvas.exe corpus check
+        run: target\release\atelier.exe corpus check
       - name: TUI self-test
-        run: target\release\copilot-canvas.exe selftest
+        run: target\release\atelier.exe selftest
       - name: TUI self-test over loopback TCP
-        run: target\release\copilot-canvas.exe selftest --remote loopback
+        run: target\release\atelier.exe selftest --remote loopback
       - name: remote fault injection
-        run: target\release\copilot-canvas.exe selftest --remote faults
+        run: target\release\atelier.exe selftest --remote faults
       - name: pairing and the Dev Tunnel stand-in
-        run: target\release\copilot-canvas.exe selftest --remote paired
+        run: target\release\atelier.exe selftest --remote paired
       # The GUI runs on WARP (no GPU on hosted runners); offscreen rendering and
       # the test hooks need no interactive desktop.
       - name: GUI self-test
-        run: target\release\copilot-canvas.exe selftest --client gui
+        run: target\release\atelier.exe selftest --client gui
       - name: GUI parity suite
-        run: target\release\copilot-canvas.exe selftest --client gui --parity
+        run: target\release\atelier.exe selftest --client gui --parity
       # The goldens were captured on the reference machine (RTX 3070, 125 % DPI,
       # its font versions). Hosted runners draw with WARP at 100 % DPI, so the
       # size and anti-aliasing differ and this step may fail there without a
       # regression: it reports, it does not block. The diff images are kept.
       - name: GUI golden screenshots (reference machine only)
         continue-on-error: true
-        run: target\release\copilot-canvas.exe selftest --client gui --golden
+        run: target\release\atelier.exe selftest --client gui --golden
       - name: keep golden diffs
         if: always()
         uses: actions/upload-artifact@v7
@@ -140,7 +140,7 @@ jobs:
     needs: ghostty-macos
     runs-on: macos-15
     env:
-      COPILOT_CANVAS_SECRETS: file
+      ATELIER_SECRETS: file
     steps:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
@@ -160,34 +160,34 @@ jobs:
       - name: build
         run: cargo build
       - name: golden corpus (both engines)
-        run: target/debug/copilot-canvas corpus check
+        run: target/debug/atelier corpus check
       - name: TUI self-test
-        run: target/debug/copilot-canvas selftest
+        run: target/debug/atelier selftest
       - name: TUI self-test over loopback TCP
-        run: target/debug/copilot-canvas selftest --remote loopback
+        run: target/debug/atelier selftest --remote loopback
       - name: remote fault injection
-        run: target/debug/copilot-canvas selftest --remote faults
+        run: target/debug/atelier selftest --remote faults
       - name: pairing and the Dev Tunnel stand-in
-        run: target/debug/copilot-canvas selftest --remote paired
+        run: target/debug/atelier selftest --remote paired
       # The GPU client on Metal (Apple-silicon runners have a paravirtual GPU).
       - name: GUI self-test
-        run: target/debug/copilot-canvas selftest --client gui
+        run: target/debug/atelier selftest --client gui
       - name: GUI self-test over loopback TCP
-        run: target/debug/copilot-canvas selftest --client gui --remote loopback
+        run: target/debug/atelier selftest --client gui --remote loopback
       # Automations on launchd (a probe task with its own label, removed at
       # the end) and the service started at login by a LaunchAgent.
       - name: automations self-test on launchd
-        run: COPILOT_CANVAS_SCHEDULER=launchd target/debug/copilot-canvas selftest automations
+        run: ATELIER_SCHEDULER=launchd target/debug/atelier selftest automations
       - name: service install (LaunchAgent)
         run: |
           home="$(mktemp -d)"
-          target/debug/copilot-canvas --home "$home" service install
-          for i in $(seq 1 60); do target/debug/copilot-canvas --home "$home" service status 2>/dev/null | grep -q '"running": true' && break; sleep 0.5; done
-          target/debug/copilot-canvas --home "$home" service status | grep -q '"running": true'
-          target/debug/copilot-canvas --home "$home" service uninstall
-          target/debug/copilot-canvas --home "$home" service status | grep -q '"running": true'
-          target/debug/copilot-canvas --home "$home" service stop
-          ! launchctl list | grep -q com.copilot-canvas.service
+          target/debug/atelier --home "$home" service install
+          for i in $(seq 1 60); do target/debug/atelier --home "$home" service status 2>/dev/null | grep -q '"running": true' && break; sleep 0.5; done
+          target/debug/atelier --home "$home" service status | grep -q '"running": true'
+          target/debug/atelier --home "$home" service uninstall
+          target/debug/atelier --home "$home" service status | grep -q '"running": true'
+          target/debug/atelier --home "$home" service stop
+          ! launchctl list | grep -q com.thomashorga.atelier.service
       # The GPU client's budgets (PLAN §9) need a screen nobody covers or
       # locks (macOS presents nothing to a covered window): measured here on a
       # release build, advisory (a shared runner's paravirtual GPU).
@@ -195,7 +195,7 @@ jobs:
         run: cargo build --release
       - name: "terminal bench, 100 streaming terminals (advisory)"
         continue-on-error: true
-        run: target/release/copilot-canvas bench --terminals 100 --json bench-terminals-macos.json
+        run: target/release/atelier bench --terminals 100 --json bench-terminals-macos.json
       - name: keep the terminal bench
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
@@ -205,7 +205,7 @@ jobs:
           if-no-files-found: ignore
       - name: GUI bench (advisory)
         continue-on-error: true
-        run: CANVAS_GUI_TEST_VISIBLE=1 target/release/copilot-canvas bench --client gui --json gui-bench-macos.json
+        run: CANVAS_GUI_TEST_VISIBLE=1 target/release/atelier bench --client gui --json gui-bench-macos.json
       # Every PARITY.md row, blocking. Rows that count frames (7b, V3, 47)
       # need presents: the runner has them.
       - name: GUI parity suite
@@ -213,13 +213,13 @@ jobs:
         timeout-minutes: 30
         run: |
           mkdir -p "$RUNNER_TEMP/gui-screens/parity"
-          CANVAS_GUI_SCREENS="$RUNNER_TEMP/gui-screens/parity" CANVAS_GUI_TEST_VISIBLE=1 target/release/copilot-canvas selftest --client gui --parity
+          CANVAS_GUI_SCREENS="$RUNNER_TEMP/gui-screens/parity" CANVAS_GUI_TEST_VISIBLE=1 target/release/atelier selftest --client gui --parity
       - name: GUI hardening checks
         if: ${{ !cancelled() }}
         timeout-minutes: 20
         run: |
           mkdir -p "$RUNNER_TEMP/gui-screens/hardening"
-          CANVAS_GUI_SCREENS="$RUNNER_TEMP/gui-screens/hardening" CANVAS_GUI_TEST_VISIBLE=1 target/release/copilot-canvas selftest --client gui --hardening
+          CANVAS_GUI_SCREENS="$RUNNER_TEMP/gui-screens/hardening" CANVAS_GUI_TEST_VISIBLE=1 target/release/atelier selftest --client gui --hardening
       # macOS's own golden screenshots (scale 1, the runner's paravirtual GPU
       # and Apple's fonts): recorded into tests/golden/gui/macos-1x while the
       # set is missing (an artifact to review and commit), compared from then on.
@@ -229,10 +229,10 @@ jobs:
         run: |
           dir="$PWD/tests/golden/gui/macos-1x"
           if [ -d "$dir" ]; then
-            CANVAS_GOLDEN_DIR="$dir" CANVAS_GUI_TEST_VISIBLE=1 target/release/copilot-canvas selftest --client gui --golden
+            CANVAS_GOLDEN_DIR="$dir" CANVAS_GUI_TEST_VISIBLE=1 target/release/atelier selftest --client gui --golden
           else
             mkdir -p "$dir"
-            CANVAS_GOLDEN_DIR="$dir" CANVAS_GUI_TEST_VISIBLE=1 target/release/copilot-canvas selftest --client gui --golden --update
+            CANVAS_GOLDEN_DIR="$dir" CANVAS_GUI_TEST_VISIBLE=1 target/release/atelier selftest --client gui --golden --update
           fi
       - name: keep the macOS goldens, screenshots and GUI logs
         if: always()
@@ -252,7 +252,7 @@ jobs:
           if-no-files-found: ignore
 
   # The macOS app as users get it (MAC-LINUX-PLAN §8.1): the universal
-  # Copilot Canvas.app and its DMG, signed and notarized once the owner's
+  # Atelier.app and its DMG, signed and notarized once the owner's
   # Developer ID secrets exist (ad hoc signed until then), installed from the
   # DMG and run (the Intel slice under Rosetta too), and the Homebrew cask
   # installed from a local tap.
@@ -260,7 +260,7 @@ jobs:
     needs: ghostty-macos
     runs-on: macos-15
     env:
-      COPILOT_CANVAS_SECRETS: file
+      ATELIER_SECRETS: file
     steps:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
@@ -284,19 +284,19 @@ jobs:
           APPSTORE_API_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
         run: packaging/macos/sign.sh
       - name: install from the DMG and run (TUI and GUI self-tests from the bundle)
-        run: packaging/macos/smoke.sh target/macos-package/CopilotCanvas-*-macos-universal.dmg --gui
+        run: packaging/macos/smoke.sh target/macos-package/Atelier-*-macos-universal.dmg --gui
       - name: the Homebrew cask from a local tap
         run: |
-          dmg="$(ls "$PWD"/target/macos-package/CopilotCanvas-*-macos-universal.dmg)"
+          dmg="$(ls "$PWD"/target/macos-package/Atelier-*-macos-universal.dmg)"
           brew tap-new --no-git local/canvas
           tap="$(brew --repository local/canvas)"
           mkdir -p "$tap/Casks"
-          sed -e "s|^  url .*|  url \"file://$dmg\"|" target/macos-package/Casks/copilot-canvas.rb > "$tap/Casks/copilot-canvas.rb"
-          brew install --cask local/canvas/copilot-canvas
-          copilot-canvas --version
-          copilot-canvas --home "$(mktemp -d)" doctor || true
-          brew uninstall --cask local/canvas/copilot-canvas
-          ! test -e "$(brew --prefix)/bin/copilot-canvas"
+          sed -e "s|^  url .*|  url \"file://$dmg\"|" target/macos-package/Casks/atelier.rb > "$tap/Casks/atelier.rb"
+          brew install --cask local/canvas/atelier
+          atelier --version
+          atelier --home "$(mktemp -d)" doctor || true
+          brew uninstall --cask local/canvas/atelier
+          ! test -e "$(brew --prefix)/bin/atelier"
           brew untap local/canvas
       - name: keep the DMG and the cask
         if: always()
@@ -359,7 +359,7 @@ jobs:
           # app's key bar the first time it shows (the tests close it too).
           xcrun simctl spawn "$UDID" defaults write com.apple.Preferences DidShowContinuousPathIntroduction -bool true || true
           cd ios
-          COPILOT_CANVAS_SKIP_CORE=1 xcodebuild -project CopilotCanvas.xcodeproj -scheme CopilotCanvas \
+          ATELIER_SKIP_CORE=1 xcodebuild -project Atelier.xcodeproj -scheme Atelier \
             -destination "platform=iOS Simulator,id=$UDID" -parallel-testing-enabled NO \
             -resultBundlePath "$logs/tests.xcresult" test
       - name: keep the iOS test results and the mocks' logs
@@ -426,7 +426,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       RUST_BACKTRACE: "1"
-      COPILOT_CANVAS_SECRETS: file
+      ATELIER_SECRETS: file
     steps:
       - uses: actions/checkout@v7
       # The Rust cache first: when it restores a partial match it cleans
@@ -453,7 +453,7 @@ jobs:
       - name: Secret Service backend
         run: |
           dbus-run-session -- sh -c 'printf runner | gnome-keyring-daemon --unlock --components=secrets >/dev/null &&
-            COPILOT_CANVAS_SECRET_SERVICE_TESTS=1 cargo test -p canvas-sys --lib secret -- --nocapture'
+            ATELIER_SECRET_SERVICE_TESTS=1 cargo test -p canvas-sys --lib secret -- --nocapture'
       - name: alacritty-only build (no Zig)
         if: ${{ !cancelled() }}
         run: cargo build --no-default-features
@@ -465,22 +465,22 @@ jobs:
       # the X11 clipboard (xclip) of a virtual display.
       - name: golden corpus (both engines)
         if: ${{ !cancelled() }}
-        run: target/release/copilot-canvas corpus check
+        run: target/release/atelier corpus check
       - name: doctor
         if: ${{ !cancelled() }}
-        run: target/release/copilot-canvas doctor || true
+        run: target/release/atelier doctor || true
       - name: TUI self-test
         if: ${{ !cancelled() }}
-        run: xvfb-run -a target/release/copilot-canvas selftest
+        run: xvfb-run -a target/release/atelier selftest
       - name: TUI self-test over loopback TCP
         if: ${{ !cancelled() }}
-        run: xvfb-run -a target/release/copilot-canvas selftest --remote loopback
+        run: xvfb-run -a target/release/atelier selftest --remote loopback
       - name: remote fault injection
         if: ${{ !cancelled() }}
-        run: xvfb-run -a target/release/copilot-canvas selftest --remote faults
+        run: xvfb-run -a target/release/atelier selftest --remote faults
       - name: pairing and the Dev Tunnel stand-in
         if: ${{ !cancelled() }}
-        run: xvfb-run -a target/release/copilot-canvas selftest --remote paired
+        run: xvfb-run -a target/release/atelier selftest --remote paired
       # Automations on the runner's real schedulers; the probe task is
       # removed at the end of each run (also on failure).
       - name: automations on a user systemd
@@ -489,20 +489,20 @@ jobs:
           sudo loginctl enable-linger "$USER"
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
           for i in $(seq 1 40); do systemctl --user show-environment >/dev/null 2>&1 && break; sleep 0.5; done
-          COPILOT_CANVAS_SCHEDULER=systemd target/release/copilot-canvas selftest automations
+          ATELIER_SCHEDULER=systemd target/release/atelier selftest automations
           # service install: the unit starts the service, which answers; then it goes away.
           home="$RUNNER_TEMP/service-home"
-          target/release/copilot-canvas --home "$home" service install
-          cat "$HOME/.config/systemd/user/copilot-canvas.service"
-          systemctl --user start copilot-canvas.service
-          for i in $(seq 1 60); do target/release/copilot-canvas --home "$home" service status 2>/dev/null | grep -q '"running": true' && break; sleep 0.5; done
-          systemctl --user status copilot-canvas.service --no-pager || true
+          target/release/atelier --home "$home" service install
+          cat "$HOME/.config/systemd/user/atelier.service"
+          systemctl --user start atelier.service
+          for i in $(seq 1 60); do target/release/atelier --home "$home" service status 2>/dev/null | grep -q '"running": true' && break; sleep 0.5; done
+          systemctl --user status atelier.service --no-pager || true
           tail -30 "$home/service-default.log" || true
           ls -la "$home" "$home/run" || true
-          target/release/copilot-canvas --home "$home" service status
-          target/release/copilot-canvas --home "$home" service stop
-          target/release/copilot-canvas --home "$home" service uninstall
-          test ! -e "$HOME/.config/systemd/user/copilot-canvas.service"
+          target/release/atelier --home "$home" service status
+          target/release/atelier --home "$home" service stop
+          target/release/atelier --home "$home" service uninstall
+          test ! -e "$HOME/.config/systemd/user/atelier.service"
       # The service started by the client as a transient systemd user unit
       # (the user manager runs since the step above enabled lingering).
       - name: TUI self-test with the service in a user unit (systemd-run)
@@ -510,22 +510,22 @@ jobs:
         run: |
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
           home="$RUNNER_TEMP/unit-home"
-          target/release/copilot-canvas --home "$home" service start
-          systemctl --user is-active copilot-canvas-default.service
-          target/release/copilot-canvas --home "$home" service stop
-          xvfb-run -a target/release/copilot-canvas selftest
+          target/release/atelier --home "$home" service start
+          systemctl --user is-active atelier-default.service
+          target/release/atelier --home "$home" service stop
+          xvfb-run -a target/release/atelier selftest
       - name: automations on cron
         if: ${{ !cancelled() }}
         run: |
           sudo systemctl start cron || sudo service cron start
-          COPILOT_CANVAS_SCHEDULER=cron target/release/copilot-canvas selftest automations
+          ATELIER_SCHEDULER=cron target/release/atelier selftest automations
       # PLAN §9's service numbers: keystroke → screen through a real PTY
       # while 100 terminals stream, memory per terminal, the service's CPU.
       # Advisory on shared runners; the JSON is kept.
       - name: "terminal bench, 100 streaming terminals (advisory)"
         if: ${{ !cancelled() }}
         continue-on-error: true
-        run: target/release/copilot-canvas bench --terminals 100 --json "$RUNNER_TEMP/bench-terminals.json"
+        run: target/release/atelier bench --terminals 100 --json "$RUNNER_TEMP/bench-terminals.json"
       - name: keep the terminal bench
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
@@ -544,9 +544,9 @@ jobs:
           npm install -g --silent @anthropic-ai/claude-code@2.1.309 || npm install -g --silent @anthropic-ai/claude-code
           opencode --version; claude --version
           status=0
-          target/release/copilot-canvas doctor || status=1
-          xvfb-run -a target/release/copilot-canvas selftest agent --agent opencode --paste || status=1
-          xvfb-run -a target/release/copilot-canvas selftest agent --agent claude --paste || status=1
+          target/release/atelier doctor || status=1
+          xvfb-run -a target/release/atelier selftest agent --agent opencode --paste || status=1
+          xvfb-run -a target/release/atelier selftest agent --agent claude --paste || status=1
           exit $status
       - name: keep logs
         if: failure()
@@ -554,9 +554,9 @@ jobs:
         with:
           name: linux-logs-${{ matrix.runner }}
           path: |
-            /tmp/copilot-canvas-*/**/*.log
-            /tmp/copilot-canvas-*/**/*.json
-            /tmp/copilot-canvas-*/**/*.yaml
+            /tmp/atelier-*/**/*.log
+            /tmp/atelier-*/**/*.json
+            /tmp/atelier-*/**/*.yaml
             ${{ runner.temp }}/**/*.log
           if-no-files-found: ignore
 
@@ -571,7 +571,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       RUST_BACKTRACE: "1"
-      COPILOT_CANVAS_SECRETS: file
+      ATELIER_SECRETS: file
       CANVAS_GUI_SCREENS: ${{ github.workspace }}/gui-screens
     steps:
       - uses: actions/checkout@v7
@@ -601,12 +601,12 @@ jobs:
           mkdir -p "$CANVAS_GUI_SCREENS/x11"
           unset WAYLAND_DISPLAY
           CANVAS_GUI_SCREENS="$CANVAS_GUI_SCREENS/x11" timeout 900 xvfb-run -a -s "-screen 0 1920x1080x24" \
-            dbus-run-session -- target/release/copilot-canvas selftest --client gui
+            dbus-run-session -- target/release/atelier selftest --client gui
       - name: GUI self-test on X11 over loopback TCP
         if: ${{ !cancelled() }}
         run: |
           unset WAYLAND_DISPLAY
-          timeout 900 xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- target/release/copilot-canvas selftest --client gui --remote loopback
+          timeout 900 xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- target/release/atelier selftest --client gui --remote loopback
       - name: GUI self-test on Wayland (headless weston)
         if: ${{ !cancelled() }}
         run: |
@@ -617,14 +617,14 @@ jobs:
           for i in $(seq 1 40); do [ -S "$XDG_RUNTIME_DIR/wl-ci" ] && break; sleep 0.25; done
           unset DISPLAY
           CANVAS_GUI_SCREENS="$CANVAS_GUI_SCREENS/wayland" WAYLAND_DISPLAY=wl-ci timeout 900 \
-            dbus-run-session -- target/release/copilot-canvas selftest --client gui
+            dbus-run-session -- target/release/atelier selftest --client gui
       # The HTML report view (WebKitGTK offscreen in its helper): parity row 41b
       # on X11 and on Wayland; the touchpad rows T1/T2 on Wayland (D15).
       - name: HTML report view on X11 (parity 41b)
         if: ${{ !cancelled() }}
         run: |
           unset WAYLAND_DISPLAY
-          CANVAS_PARITY_ROWS=41b timeout 600 xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- target/release/copilot-canvas selftest --client gui --parity
+          CANVAS_PARITY_ROWS=41b timeout 600 xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- target/release/atelier selftest --client gui --parity
       - name: HTML report view and touchpad rows on Wayland (parity 41b, T1, T2, T3)
         if: ${{ !cancelled() }}
         run: |
@@ -633,7 +633,7 @@ jobs:
           weston --backend=headless --renderer=pixman --socket=wl-41b --idle-time=0 --width=1920 --height=1080 > "$RUNNER_TEMP/weston-41b.log" 2>&1 &
           for i in $(seq 1 40); do [ -S "$XDG_RUNTIME_DIR/wl-41b" ] && break; sleep 0.25; done
           unset DISPLAY
-          CANVAS_PARITY_ROWS=41b,T1,T2,T3 WAYLAND_DISPLAY=wl-41b timeout 600 dbus-run-session -- target/release/copilot-canvas selftest --client gui --parity
+          CANVAS_PARITY_ROWS=41b,T1,T2,T3 WAYLAND_DISPLAY=wl-41b timeout 600 dbus-run-session -- target/release/atelier selftest --client gui --parity
       # Linux's own golden screenshots (X11, scale 1, lavapipe, the runner's
       # fonts): recorded once into tests/golden/gui/linux-1x (kept as an
       # artifact to review and commit), compared from then on.
@@ -643,10 +643,10 @@ jobs:
           dir="$PWD/tests/golden/gui/linux-1x"
           unset WAYLAND_DISPLAY
           if [ -d "$dir" ]; then
-            CANVAS_GOLDEN_DIR="$dir" timeout 900 xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- target/release/copilot-canvas selftest --client gui --golden
+            CANVAS_GOLDEN_DIR="$dir" timeout 900 xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- target/release/atelier selftest --client gui --golden
           else
             mkdir -p "$dir"
-            CANVAS_GOLDEN_DIR="$dir" timeout 900 xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- target/release/copilot-canvas selftest --client gui --golden --update
+            CANVAS_GOLDEN_DIR="$dir" timeout 900 xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- target/release/atelier selftest --client gui --golden --update
           fi
       - name: keep the Linux goldens and their diffs
         if: always()
@@ -665,20 +665,20 @@ jobs:
           mkdir -p "$CANVAS_GUI_SCREENS/hardening"
           unset WAYLAND_DISPLAY
           CANVAS_GUI_SCREENS="$CANVAS_GUI_SCREENS/hardening" timeout 1200 xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- \
-            sh -c 'openbox --sm-disable >/dev/null 2>&1 & sleep 1; tint2 >/dev/null 2>&1 & sleep 1; xprop -root _NET_WORKAREA || true; exec target/release/copilot-canvas selftest --client gui --hardening'
+            sh -c 'openbox --sm-disable >/dev/null 2>&1 & sleep 1; tint2 >/dev/null 2>&1 & sleep 1; xprop -root _NET_WORKAREA || true; exec target/release/atelier selftest --client gui --hardening'
       - name: "GUI bench on X11 (advisory: software rendering on a shared runner)"
         if: ${{ !cancelled() }}
         continue-on-error: true
         run: |
           unset WAYLAND_DISPLAY
-          timeout 900 xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- target/release/copilot-canvas bench --client gui --json "$CANVAS_GUI_SCREENS/bench-gui-x11.json"
+          timeout 900 xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- target/release/atelier bench --client gui --json "$CANVAS_GUI_SCREENS/bench-gui-x11.json"
       - name: GUI parity suite on X11
         if: ${{ !cancelled() }}
         run: |
           mkdir -p "$CANVAS_GUI_SCREENS/parity"
           unset WAYLAND_DISPLAY
           CANVAS_GUI_SCREENS="$CANVAS_GUI_SCREENS/parity" timeout 1800 xvfb-run -a -s "-screen 0 1920x1080x24" \
-            dbus-run-session -- target/release/copilot-canvas selftest --client gui --parity
+            dbus-run-session -- target/release/atelier selftest --client gui --parity
       - name: keep GUI logs and screenshots
         if: always()
         uses: actions/upload-artifact@v7
@@ -686,11 +686,11 @@ jobs:
           name: linux-gui
           path: |
             ${{ github.workspace }}/gui-screens
-            /tmp/copilot-canvas-selftest-*/gui-stderr.log
-            /tmp/copilot-canvas-selftest-*/home/*.log
-            /tmp/copilot-canvas-parity-*/*.log
-            /tmp/copilot-canvas-parity-*/home/*.log
-            /tmp/copilot-canvas-hardening-*/*.log
+            /tmp/atelier-selftest-*/gui-stderr.log
+            /tmp/atelier-selftest-*/home/*.log
+            /tmp/atelier-parity-*/*.log
+            /tmp/atelier-parity-*/home/*.log
+            /tmp/atelier-hardening-*/*.log
             ${{ runner.temp }}/weston.log
           if-no-files-found: ignore
 
@@ -725,8 +725,8 @@ jobs:
         run: packaging/linux/build.sh --arch ${{ matrix.arch }} --bin target/release --out dist
       - name: what the binaries link
         run: |
-          ldd target/release/copilot-canvas target/release/copilot-canvas-gui
-          objdump -T target/release/copilot-canvas-gui | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1
+          ldd target/release/atelier target/release/atelier-gui
+          objdump -T target/release/atelier-gui | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1
       - uses: actions/upload-artifact@v7
         with:
           name: linux-packages-${{ matrix.arch }}
@@ -749,7 +749,7 @@ jobs:
             arch: aarch64
     runs-on: ${{ matrix.runner }}
     env:
-      COPILOT_CANVAS_SECRETS: file
+      ATELIER_SECRETS: file
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -758,32 +758,32 @@ jobs:
       - name: .deb installs and runs
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q ./dist/copilot-canvas_*.deb xvfb xauth xclip
-          copilot-canvas --version
-          copilot-canvas-gui --version
-          copilot-canvas doctor || true
-          xvfb-run -a copilot-canvas selftest
+          sudo apt-get install -y -q ./dist/atelier_*.deb xvfb xauth xclip
+          atelier --version
+          atelier-gui --version
+          atelier doctor || true
+          xvfb-run -a atelier selftest
       - name: the GUI from the .deb
         if: matrix.gui
         run: |
           sudo apt-get install -y -q dbus-x11 mesa-vulkan-drivers fonts-dejavu-core
-          xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- copilot-canvas selftest --client gui || { cat /tmp/copilot-canvas-selftest-*/gui-stderr.log; exit 1; }
-          sudo apt-get remove -y -q copilot-canvas
-          test ! -e /usr/bin/copilot-canvas
+          xvfb-run -a -s "-screen 0 1920x1080x24" dbus-run-session -- atelier selftest --client gui || { cat /tmp/atelier-selftest-*/gui-stderr.log; exit 1; }
+          sudo apt-get remove -y -q atelier
+          test ! -e /usr/bin/atelier
       - name: tarball installs into a prefix
         run: |
-          tar -xzf dist/copilot-canvas-*-linux-${{ matrix.arch }}.tar.gz -C "$RUNNER_TEMP"
-          PREFIX="$RUNNER_TEMP/prefix" "$RUNNER_TEMP"/copilot-canvas-*/install.sh
-          "$RUNNER_TEMP/prefix/bin/copilot-canvas" --version
-          test -f "$RUNNER_TEMP/prefix/share/applications/copilot-canvas.desktop"
-          PREFIX="$RUNNER_TEMP/prefix" "$RUNNER_TEMP"/copilot-canvas-*/install.sh --uninstall
-          test ! -e "$RUNNER_TEMP/prefix/bin/copilot-canvas"
+          tar -xzf dist/atelier-*-linux-${{ matrix.arch }}.tar.gz -C "$RUNNER_TEMP"
+          PREFIX="$RUNNER_TEMP/prefix" "$RUNNER_TEMP"/atelier-*/install.sh
+          "$RUNNER_TEMP/prefix/bin/atelier" --version
+          test -f "$RUNNER_TEMP/prefix/share/applications/atelier.desktop"
+          PREFIX="$RUNNER_TEMP/prefix" "$RUNNER_TEMP"/atelier-*/install.sh --uninstall
+          test ! -e "$RUNNER_TEMP/prefix/bin/atelier"
       - name: AppImage runs (extracted, no FUSE on runners)
         run: |
           chmod +x dist/*.AppImage
-          APPIMAGE_EXTRACT_AND_RUN=1 dist/Copilot_Canvas-*-${{ matrix.arch }}.AppImage cli --version
-          APPIMAGE_EXTRACT_AND_RUN=1 dist/Copilot_Canvas-*-${{ matrix.arch }}.AppImage --version
+          APPIMAGE_EXTRACT_AND_RUN=1 dist/Atelier-*-${{ matrix.arch }}.AppImage cli --version
+          APPIMAGE_EXTRACT_AND_RUN=1 dist/Atelier-*-${{ matrix.arch }}.AppImage --version
       - name: .rpm on Fedora (container)
         if: matrix.arch == 'x86_64'
         run: |
-          docker run --rm -v "$PWD/dist:/dist" fedora:41 sh -c 'dnf install -y -q --setopt=install_weak_deps=False /dist/copilot-canvas-*.x86_64.rpm && copilot-canvas --version && copilot-canvas-gui --version && (copilot-canvas doctor || true) && rpm -e copilot-canvas'
+          docker run --rm -v "$PWD/dist:/dist" fedora:41 sh -c 'dnf install -y -q --setopt=install_weak_deps=False /dist/atelier-*.x86_64.rpm && atelier --version && atelier-gui --version && (atelier doctor || true) && rpm -e atelier'

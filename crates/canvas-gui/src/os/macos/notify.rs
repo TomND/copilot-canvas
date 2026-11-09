@@ -12,10 +12,10 @@ use objc2::runtime::Bool;
 use objc2_foundation::{NSArray, NSBundle, NSError, NSString, NSUUID};
 use objc2_user_notifications::{UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent, UNNotification, UNNotificationRequest, UNNotificationSettings, UNUserNotificationCenter};
 
-const NOT_BUNDLED: &str = "not shown: macOS shows notifications only for the app bundle (Copilot Canvas.app)";
-const TURNED_OFF: &str = "not shown: notifications are off for Copilot Canvas (System Settings › Notifications)";
+const NOT_BUNDLED: &str = "not shown: macOS shows notifications only for the app bundle (Atelier.app)";
+const TURNED_OFF: &str = "not shown: notifications are off for Atelier (System Settings › Notifications)";
 
-/// Running from `Copilot Canvas.app` (a bundle identifier, a `.app` folder).
+/// Running from `Atelier.app` (a bundle identifier, a `.app` folder).
 fn bundled() -> bool {
     let bundle = NSBundle::mainBundle();
     // SAFETY: plain property reads of the main bundle.

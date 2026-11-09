@@ -1,5 +1,5 @@
 //! Review follow-ups (WI-016): after a review session finishes a review, it
-//! hands the results to the canvas (`copilot-canvas review handoff`); a
+//! hands the results to the canvas (`atelier review handoff`); a
 //! canvas-wide agent with review follow-ups drafts a message to the pull
 //! request's author, you approve it (by default), the agent sends it through
 //! the messaging channel you configured and records where; then the canvas
@@ -433,7 +433,7 @@ impl Book {
     }
 
     fn review_mut(&mut self, id: &str) -> Result<&mut Review, String> {
-        self.reviews.iter_mut().find(|r| r.id == id).ok_or_else(|| format!("no review {id:?} on this canvas (copilot-canvas review list)"))
+        self.reviews.iter_mut().find(|r| r.id == id).ok_or_else(|| format!("no review {id:?} on this canvas (atelier review list)"))
     }
 
     pub fn conversation(&self, id: &str) -> Option<&Conversation> {
@@ -779,7 +779,7 @@ pub fn request_text(request: &FollowRequest, review: &Review) -> String {
         _ => "a follow-up on your review",
     };
     format!(
-        "{} asks for {what} of PR {} ({}): \"{}\". Your earlier review ({}): {}.{notes} When you have reviewed it again, hand it off: copilot-canvas review handoff --pr {} --author \"{}\" --results <file>. [Canvas: request {}; the review follow-up agent answers the author, not you.]",
+        "{} asks for {what} of PR {} ({}): \"{}\". Your earlier review ({}): {}.{notes} When you have reviewed it again, hand it off: atelier review handoff --pr {} --author \"{}\" --results <file>. [Canvas: request {}; the review follow-up agent answers the author, not you.]",
         review.author,
         review.short,
         review.url,
