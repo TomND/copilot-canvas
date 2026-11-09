@@ -2195,14 +2195,17 @@ fn legacy_service_steps<U: Ui>(instance: &Instance, work: &Path, env: &[(&str, &
     let old = legacy.legacy_pipe_name().context("an endpoint of the build before the rename")?;
     let exe = std::env::current_exe()?;
     conn::spawn_service_exe(&exe, &legacy, &[("ATELIER_SELFTEST", "1"), ("ATELIER_TEST_LEGACY_ENDPOINT", "1")])?;
+    // It serves its endpoint before it writes its token: wait until a client gets in.
     let deadline = Instant::now() + Duration::from_secs(20);
-    while pipe::connect(&old, Duration::from_millis(200)).is_err() {
-        anyhow::ensure!(Instant::now() < deadline, "the stand-in old service did not serve {old}");
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    let found = loop {
+        match conn::try_connect(&legacy) {
+            Ok(found) => break found,
+            Err(error) if Instant::now() > deadline => return Err(error.context(format!("the stand-in old service did not answer on {old}"))),
+            Err(_) => std::thread::sleep(Duration::from_millis(100)),
+        }
+    };
     let result = (|| -> Result<()> {
-        anyhow::ensure!(pipe::connect(&legacy.pipe_name(), Duration::from_millis(200)).is_err(), "only the old endpoint is served");
-        let found = conn::try_connect(&legacy)?;
+        anyhow::ensure!(pipe::connect(&old, Duration::from_millis(200)).is_ok() && pipe::connect(&legacy.pipe_name(), Duration::from_millis(200)).is_err(), "only the old endpoint is served");
         anyhow::ensure!(found.legacy && found.outdated(), "a client sees the service of the build before the rename");
         drop(found);
         // A new service refuses to start beside it.
