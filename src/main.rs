@@ -370,6 +370,12 @@ fn main() {
             Err(_) => 1,
         });
     }
+    // The CLI's name before the rename is a deprecated alias (sessions keep
+    // it next to `atelier`, canvas_agents::cli::install_cli).
+    let invoked = std::env::args_os().next().map(std::path::PathBuf::from);
+    if invoked.as_deref().and_then(|p| p.file_stem()).is_some_and(|stem| stem.eq_ignore_ascii_case(canvas_common::legacy::CLI)) {
+        eprintln!("note: `{}` is now `atelier`; the old name still works for now but is deprecated.", canvas_common::legacy::CLI);
+    }
     if let Err(error) = real_main() {
         eprintln!("atelier: {error:#}");
         std::process::exit(1);

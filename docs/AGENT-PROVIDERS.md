@@ -16,7 +16,7 @@ todos](#notes-and-todos)) and the `atelier` command on
 `PATH` (events, messages, passive status, reports, pull requests, review
 follow-ups, notes, todos), plus the canvas skills (`canvas-events`,
 `canvas-passive`, `canvas-reports`, `canvas-prs`, `canvas-review-followup`,
-`canvas-todos`, `canvas-notes`; plugin 1.3.0).
+`canvas-todos`, `canvas-notes`; plugin 1.4.0).
 
 ## At a glance
 
@@ -536,7 +536,7 @@ in, and a canvas started inside that session does not take it as a choice;
 set by you (without the marker, or to another agent than the marker's), it
 chooses as before.
 
-**The skills** (plugin 1.3.0, beside the others; `canvas-events` points to
+**The skills** (plugin 1.4.0, beside the others; `canvas-events` points to
 both, `canvas-reports` to the notes, `canvas-passive` to the todos):
 
 | | `canvas-notes` | `canvas-todos` |

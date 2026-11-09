@@ -248,7 +248,7 @@ fn canvas_events(routing: &Routing, me: &str) -> Result<()> {
 pub fn write_plugin(home: &Path) -> Result<std::path::PathBuf> {
     let dir = home.join("plugin");
     let files: [(&str, &str); 9] = [
-        ("plugin.json", r#"{ "name": "atelier", "description": "Atelier events, messages, passive sessions, reports, pull request coordination, review follow-ups, todos and the notebook.", "version": "1.3.0", "skills": "./skills/" }"#),
+        ("plugin.json", r#"{ "name": "atelier", "description": "Atelier events, messages, passive sessions, reports, pull request coordination, review follow-ups, todos and the notebook.", "version": "1.4.0", "skills": "./skills/" }"#),
         (".claude-plugin/plugin.json", CLAUDE_PLUGIN),
         ("skills/canvas-events/SKILL.md", EVENTS_SKILL),
         ("skills/canvas-passive/SKILL.md", PASSIVE_SKILL),
@@ -270,7 +270,8 @@ pub fn write_plugin(home: &Path) -> Result<std::path::PathBuf> {
 
 /// Copies this executable to `<home>/cli/atelier.exe` (`atelier`
 /// off Windows; on the PATH of canvas sessions) unless an identical copy is
-/// there or it is in use.
+/// there or it is in use, with the deprecated alias of its name before the
+/// rename next to it ([`install_alias`]).
 pub fn install_cli(home: &Path) -> Result<std::path::PathBuf> {
     let dir = home.join("cli");
     std::fs::create_dir_all(&dir)?;
@@ -286,14 +287,43 @@ pub fn install_cli(home: &Path) -> Result<std::path::PathBuf> {
             let _ = std::fs::remove_file(&temp);
         }
     }
+    install_alias(&dir, &target);
     Ok(dir)
+}
+
+/// The deprecated alias of the CLI for sessions, under its name before the
+/// rename (`legacy::CLI`): sessions and instructions written for the old
+/// name keep working (the alias says it is deprecated). A link to `atelier`
+/// on macOS and Linux; on Windows a hard link to `atelier.exe`, else a copy
+/// (an alias in use is left as it is).
+pub fn install_alias(dir: &Path, target: &Path) {
+    let alias = dir.join(canvas_sys::host::exe_name(crate::legacy::CLI));
+    #[cfg(unix)]
+    {
+        let wanted = target.file_name().map(std::path::PathBuf::from).unwrap_or_default();
+        if std::fs::read_link(&alias).ok().as_deref() == Some(wanted.as_path()) {
+            return;
+        }
+        let _ = std::fs::remove_file(&alias);
+        let _ = std::os::unix::fs::symlink(&wanted, &alias);
+    }
+    #[cfg(windows)]
+    {
+        let same = std::fs::metadata(&alias).ok().map(|m| m.len()) == std::fs::metadata(target).ok().map(|m| m.len()) && std::fs::read(&alias).ok() == std::fs::read(target).ok();
+        if same || (alias.exists() && std::fs::remove_file(&alias).is_err()) {
+            return;
+        }
+        if std::fs::hard_link(target, &alias).is_err() {
+            let _ = std::fs::copy(target, &alias);
+        }
+    }
 }
 
 /// Claude Code's manifest; it finds `skills/` next to `.claude-plugin/` itself.
 const CLAUDE_PLUGIN: &str = r#"{
   "name": "atelier",
   "description": "Atelier events, messages, passive sessions, reports, pull request coordination, review follow-ups, todos and the notebook.",
-  "version": "1.3.0"
+  "version": "1.4.0"
 }
 "#;
 
@@ -652,6 +682,27 @@ mod tests {
         assert_eq!(events.len(), 2, "refused ones are never posted");
         assert!(events.iter().any(|e| e.to == "canvas") && events.iter().any(|e| e.to == "PR coordinator"));
         let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn sessions_get_the_cli_under_its_old_name_too() {
+        let dir = std::env::temp_dir().join(format!("cc-alias-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join(canvas_sys::host::exe_name("atelier"));
+        let alias = dir.join(canvas_sys::host::exe_name(crate::legacy::CLI));
+        std::fs::write(&target, b"build 1").unwrap();
+        install_alias(&dir, &target);
+        assert_eq!(std::fs::read(&alias).unwrap(), b"build 1", "the alias runs the CLI");
+        #[cfg(unix)]
+        assert_eq!(std::fs::read_link(&alias).unwrap(), std::path::PathBuf::from("atelier"), "a relative link: the folder can move with the home");
+        install_alias(&dir, &target);
+        // A new build replaces the CLI file (as install_cli does): the alias follows.
+        let temp = dir.join("atelier.tmp");
+        std::fs::write(&temp, b"build 2").unwrap();
+        std::fs::rename(&temp, &target).unwrap();
+        install_alias(&dir, &target);
+        assert_eq!(std::fs::read(&alias).unwrap(), b"build 2");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -500,7 +500,7 @@ folder).
 - **Events**: sessions launched from the canvas get the `canvas-events`,
   `canvas-passive`, `canvas-reports`, `canvas-prs`, `canvas-review-followup`,
   `canvas-todos` and `canvas-notes` skills (`--plugin-dir
-  ~/.atelier/plugin`, plugin 1.3.0) and the `atelier` CLI on `PATH` (the
+  ~/.atelier/plugin`, plugin 1.4.0) and the `atelier` CLI on `PATH` (the
   demo's shells get the command too). `git push`, PR creation/update/merge/comments
   (git, `gh`, `az repos`, ADO MCP tools) are also **detected from session
   history** automatically. You can send one by hand from a group's menu
