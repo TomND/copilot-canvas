@@ -111,7 +111,9 @@ a 24 h connect token issued with this Mac's `devtunnel` (renewed while the
 phone is connected), pairing with a random one-time code. Sessions started
 from the phone run the agent CLIs installed on the Mac (OpenCode, Claude
 Code, Copilot; they ask before running tools); the demo sessions are shells.
-The canvas and pairings are kept in `~/.copilot-canvas-mock`. `TUNNEL`,
+The canvas and pairings are kept in `~/.atelier-mock` (in `~/.copilot-canvas-mock`
+while that folder from before the rename exists). The tunnel ids are yours and
+keep their names. `TUNNEL`,
 `PORT`, `STATE` and `WORKDIR` choose another tunnel, port, state folder and
 start folder. The Mac stays awake while it hosts (on power).
 `ios/cloud-mac.sh report FILE` publishes a file to its reports inbox (`.html`,

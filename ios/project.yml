@@ -31,13 +31,13 @@ targets:
     preBuildScripts:
       - name: Build the Rust core
         script: |
-          if [ "${ATELIER_SKIP_CORE:-}" = "1" ]; then exit 0; fi
+          if [ "${ATELIER_SKIP_CORE:-${COPILOT_CANVAS_SKIP_CORE:-}}" = "1" ]; then exit 0; fi # rename:keep (the old name still works)
           "${SRCROOT}/build-core.sh"
         basedOnDependencyAnalysis: false
     info:
       path: Atelier/Info.plist
       properties:
-        CFBundleDisplayName: Canvas
+        CFBundleDisplayName: Atelier
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
@@ -52,13 +52,15 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         UIUserInterfaceStyle: Dark
         NSCameraUsageDescription: Scan the pairing QR code that `atelier remote pair --qr` shows on your Cloud PC.
-        NSFaceIDUsageDescription: Canvas locks with Face ID because a paired phone can run anything on your Cloud PC.
+        NSFaceIDUsageDescription: Atelier locks with Face ID because a paired phone can run anything on your Cloud PC.
         NSLocalNetworkUsageDescription: Connect to an Atelier service (or the mock service) on your local network.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         CFBundleURLTypes:
+          # Pairing links: atelier:// (what services write since the rename)
+          # and ccanvas:// (older services, printed QR codes).
           - CFBundleURLName: com.thomashorga.copilotcanvas.pair
-            CFBundleURLSchemes: [ccanvas]
+            CFBundleURLSchemes: [atelier, ccanvas]
         ITSAppUsesNonExemptEncryption: false
         # Silent notifications bring renewed tunnel tokens while the app is away.
         UIBackgroundModes: [remote-notification]

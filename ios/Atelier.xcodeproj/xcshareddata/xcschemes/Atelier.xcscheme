@@ -15,7 +15,7 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "A408D2567042BBFA4C1B19C3"
+               BlueprintIdentifier = "6E582B3D2B682EBCEBC78454"
                BuildableName = "Atelier.app"
                BlueprintName = "Atelier"
                ReferencedContainer = "container:Atelier.xcodeproj">
@@ -29,7 +29,7 @@
             buildForAnalyzing = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "2729FAB6EC441CCD3430337E"
+               BlueprintIdentifier = "55655B984C8E542B9EA37AB2"
                BuildableName = "AtelierTests.xctest"
                BlueprintName = "AtelierTests"
                ReferencedContainer = "container:Atelier.xcodeproj">
@@ -43,7 +43,7 @@
             buildForAnalyzing = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "F7314B147B7512A3E2813444"
+               BlueprintIdentifier = "9EFA5229B34F189F878A5070"
                BuildableName = "AtelierUITests.xctest"
                BlueprintName = "AtelierUITests"
                ReferencedContainer = "container:Atelier.xcodeproj">
@@ -60,7 +60,7 @@
       <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "A408D2567042BBFA4C1B19C3"
+            BlueprintIdentifier = "6E582B3D2B682EBCEBC78454"
             BuildableName = "Atelier.app"
             BlueprintName = "Atelier"
             ReferencedContainer = "container:Atelier.xcodeproj">
@@ -72,7 +72,7 @@
             parallelizable = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "2729FAB6EC441CCD3430337E"
+               BlueprintIdentifier = "55655B984C8E542B9EA37AB2"
                BuildableName = "AtelierTests.xctest"
                BlueprintName = "AtelierTests"
                ReferencedContainer = "container:Atelier.xcodeproj">
@@ -83,7 +83,7 @@
             parallelizable = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "F7314B147B7512A3E2813444"
+               BlueprintIdentifier = "9EFA5229B34F189F878A5070"
                BuildableName = "AtelierUITests.xctest"
                BlueprintName = "AtelierUITests"
                ReferencedContainer = "container:Atelier.xcodeproj">
@@ -107,7 +107,7 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "A408D2567042BBFA4C1B19C3"
+            BlueprintIdentifier = "6E582B3D2B682EBCEBC78454"
             BuildableName = "Atelier.app"
             BlueprintName = "Atelier"
             ReferencedContainer = "container:Atelier.xcodeproj">
@@ -124,7 +124,7 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "A408D2567042BBFA4C1B19C3"
+            BlueprintIdentifier = "6E582B3D2B682EBCEBC78454"
             BuildableName = "Atelier.app"
             BlueprintName = "Atelier"
             ReferencedContainer = "container:Atelier.xcodeproj">

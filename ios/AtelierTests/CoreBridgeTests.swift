@@ -13,6 +13,20 @@ final class CoreBridgeTests: XCTestCase {
         XCTAssertNil(normalizePairingCode(code: "short"))
     }
 
+    /// Services write `atelier://` links since the rename; `ccanvas://` ones
+    /// (older services, printed QR codes) still pair, scanned or opened.
+    func testPairingLinksOfBothSchemesAreAccepted() throws {
+        let query = "pair?v=1&name=cloudpc&url=wss%3A%2F%2Fatelier-47600.usw2.devtunnels.ms&code=abcd-efgh-jkmn"
+        for scheme in ["atelier://", "ccanvas://"] {
+            let link = try parsePairLink(uri: scheme + query)
+            XCTAssertEqual(link.code, "ABCDEFGHJKMN", scheme)
+            XCTAssertEqual(link.name, "cloudpc", scheme)
+            XCTAssertTrue(isPairLink(scheme + query), scheme)
+        }
+        XCTAssertFalse(isPairLink("https://example.com/pair?code=x"))
+        XCTAssertThrowsError(try parsePairLink(uri: "other://" + query))
+    }
+
     func testProtocolColoursResolveLikeTheDesktop() {
         XCTAssertEqual(TerminalColors.resolve(0, default: 0x123456), 0x123456)
         XCTAssertEqual(TerminalColors.resolve(0x0100_0000 | 0xFF8800, default: 0), 0xFF8800)

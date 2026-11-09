@@ -870,7 +870,7 @@ pub struct PairResult {
     pub secret: Vec<u8>,
 }
 
-/// A scanned `ccanvas://pair?…` link.
+/// A scanned `atelier://pair?…` link (or `ccanvas://pair?…`, from before the rename).
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct PairLinkInfo {
     pub name: String,

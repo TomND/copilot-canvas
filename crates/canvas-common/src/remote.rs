@@ -289,8 +289,10 @@ pub fn open_access(secret: &[u8], nonce_b64: &str, sealed_b64: &str) -> Result<(
     Ok((url.to_owned(), token.to_owned(), value["exp"].as_u64().unwrap_or(0)))
 }
 
-/// What the iPhone needs to pair (`atelier remote pair --qr`), as a
-/// `ccanvas://pair?…` link shown in a QR code.
+/// What the iPhone needs to pair (`atelier remote pair --qr`), as an
+/// `atelier://pair?…` link shown in a QR code. Links of the build before the
+/// rename (`legacy::PAIR_SCHEME`) are read too: the iPhone app accepts both
+/// (docs/REMOTE.md, *Pairing links*).
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct PairLink {
     /// What the phone calls this service (`cloudpc`).
@@ -305,7 +307,7 @@ pub struct PairLink {
 }
 
 impl PairLink {
-    pub const SCHEME: &'static str = "ccanvas://pair";
+    pub const SCHEME: &'static str = "atelier://pair";
 
     pub fn to_uri(&self) -> String {
         use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -320,7 +322,8 @@ impl PairLink {
     /// Reads a link (what the phone's camera scanned).
     pub fn parse(uri: &str) -> Result<Self> {
         use percent_encoding::percent_decode_str;
-        let query = uri.trim().strip_prefix(Self::SCHEME).and_then(|q| q.strip_prefix('?')).context("not an Atelier pairing link")?;
+        let uri = uri.trim();
+        let query = uri.strip_prefix(Self::SCHEME).or_else(|| uri.strip_prefix(crate::legacy::PAIR_SCHEME)).and_then(|q| q.strip_prefix('?')).context("not an Atelier pairing link")?;
         let mut link = PairLink::default();
         for pair in query.split('&') {
             let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
@@ -437,11 +440,18 @@ mod tests {
     fn pairing_links_round_trip() {
         let link = PairLink { name: "cloudpc".into(), url: "wss://atelier-47600.usw2.devtunnels.ms".into(), code: "ABCDEFGHJKMN".into(), token: jwt("{}"), token_expires_ms: 5 };
         let uri = link.to_uri();
-        assert!(uri.starts_with("ccanvas://pair?v=1&"));
+        assert!(uri.starts_with("atelier://pair?v=1&"));
         assert_eq!(PairLink::parse(&uri).unwrap(), link);
-        let typed = PairLink::parse("ccanvas://pair?v=1&url=ws%3A%2F%2F127.0.0.1%3A47600&code=abcd-efgh-jkmn").unwrap();
-        assert_eq!((typed.code.as_str(), typed.name.as_str(), typed.token.as_str()), ("ABCDEFGHJKMN", "cloudpc", ""));
+        // Links of the build before the rename (printed QR codes, older services) still pair.
+        let old = uri.replacen(PairLink::SCHEME, crate::legacy::PAIR_SCHEME, 1);
+        assert!(old.starts_with("ccanvas://pair?v=1&"));
+        assert_eq!(PairLink::parse(&old).unwrap(), link);
+        for scheme in [PairLink::SCHEME, crate::legacy::PAIR_SCHEME] {
+            let typed = PairLink::parse(&format!(" {scheme}?v=1&url=ws%3A%2F%2F127.0.0.1%3A47600&code=abcd-efgh-jkmn")).unwrap();
+            assert_eq!((typed.code.as_str(), typed.name.as_str(), typed.token.as_str()), ("ABCDEFGHJKMN", "cloudpc", ""));
+            assert!(PairLink::parse(&format!("{scheme}?v=1&url=http%3A%2F%2Fx&code=ABCDEFGHJKMN")).is_err(), "WebSocket addresses only");
+        }
         assert!(PairLink::parse("https://example.com").is_err());
-        assert!(PairLink::parse("ccanvas://pair?v=1&url=http%3A%2F%2Fx&code=ABCDEFGHJKMN").is_err(), "WebSocket addresses only");
+        assert!(PairLink::parse("atelierx://pair?v=1&url=ws%3A%2F%2Fx&code=ABCDEFGHJKMN").is_err());
     }
 }

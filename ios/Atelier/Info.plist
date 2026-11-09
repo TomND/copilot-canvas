@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Canvas</string>
+	<string>Atelier</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -25,6 +25,7 @@
 			<string>com.thomashorga.copilotcanvas.pair</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
+				<string>atelier</string>
 				<string>ccanvas</string>
 			</array>
 		</dict>
@@ -41,7 +42,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Scan the pairing QR code that `atelier remote pair --qr` shows on your Cloud PC.</string>
 	<key>NSFaceIDUsageDescription</key>
-	<string>Canvas locks with Face ID because a paired phone can run anything on your Cloud PC.</string>
+	<string>Atelier locks with Face ID because a paired phone can run anything on your Cloud PC.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Connect to an Atelier service (or the mock service) on your local network.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

@@ -134,6 +134,7 @@ final class ReportViewTests: XCTestCase {
         XCTAssertFalse(reportLinkAllowed(url: "javascript:alert(1)"))
         XCTAssertFalse(reportLinkAllowed(url: "file:///etc/hosts"))
         XCTAssertFalse(reportLinkAllowed(url: "ccanvas://pair?code=x"))
+        XCTAssertFalse(reportLinkAllowed(url: "atelier://pair?code=x"))
     }
 
     /// A note page (the same lock-down): `#note:` and `#todo:` links become

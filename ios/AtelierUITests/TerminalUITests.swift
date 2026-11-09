@@ -4,7 +4,8 @@ import XCTest
 /// (`cargo run -p canvas-mock` on 127.0.0.1:47600), lists its sessions,
 /// starts one, types into its shell through the keyboard and sees the echo.
 final class TerminalUITests: XCTestCase {
-    private let link = "ccanvas://pair?v=1&name=mock&url=ws%3A%2F%2F127%2E0%2E0%2E1%3A47600&code=ABCDEFGHJKMN"
+    // Since the rename services write atelier:// links (NotebookTasksUITests pairs with the older ccanvas:// form).
+    private let link = "atelier://pair?v=1&name=mock&url=ws%3A%2F%2F127%2E0%2E0%2E1%3A47600&code=ABCDEFGHJKMN"
 
     /// The first wait of a test: the app's launch, pairing with the mock and
     /// its first data (a simulator's first launch of the app is slow on CI).

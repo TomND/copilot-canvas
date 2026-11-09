@@ -33,7 +33,7 @@ struct PairView: View {
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Or paste the pairing link").font(.subheadline.weight(.semibold))
-                    TextField("ccanvas://pair?…", text: $linkText, axis: .vertical)
+                    TextField("atelier://pair?…", text: $linkText, axis: .vertical)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.system(.footnote, design: .monospaced))
@@ -234,11 +234,17 @@ private struct QRScanner: UIViewControllerRepresentable {
         }
 
         func metadataOutput(_ output: AVCaptureMetadataOutput, didOutput metadataObjects: [AVMetadataObject], from connection: AVCaptureConnection) {
-            guard !done, let code = metadataObjects.compactMap({ $0 as? AVMetadataMachineReadableCodeObject }).first?.stringValue, code.hasPrefix("ccanvas://") else { return }
+            guard !done, let code = metadataObjects.compactMap({ $0 as? AVMetadataMachineReadableCodeObject }).first?.stringValue, isPairLink(code) else { return }
             done = true
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             session.stopRunning()
             found?(code)
         }
     }
+}
+
+/// Whether a scanned code is a pairing link: `atelier://` (what services
+/// write since the rename) or `ccanvas://` (older services, printed codes).
+func isPairLink(_ text: String) -> Bool {
+    text.hasPrefix("atelier://") || text.hasPrefix("ccanvas://")
 }

@@ -34,7 +34,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var currentID: UUID?
     @Published var locked: Bool
     @Published var lockError: String?
-    /// A pairing link opened from outside (the camera app, a `ccanvas://` URL).
+    /// A pairing link opened from outside (the camera app, an `atelier://` or,
+    /// from before the rename, a `ccanvas://` URL).
     @Published var incomingLink: PairLinkInfo?
     /// A session to open, maybe on another machine.
     @Published var pendingOpen: PendingOpen?
