@@ -1,6 +1,6 @@
 # subagent-decks (150x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit   ⠋ 2 working   2 sessions
+ ◆ Atelier   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit          ⠋ 2 working   2 sessions
     SESSIONS                     │▌·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
 ▌▤  / filter…                    │  ╭ Orchestrator ──────────────╮     ╭ Fix the build ─────────────╮
                                  │  │ ⠋ working · ↗ elsewhere    │     │ ⠋ working · ↗ elsewhere    │

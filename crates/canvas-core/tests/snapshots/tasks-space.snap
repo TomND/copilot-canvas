@@ -1,6 +1,6 @@
 # tasks-space (150x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   ?   ⏻ Quit                                          3 sessions
+ ◆ Atelier   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   ?   ⏻ Quit                                                 3 sessions
     ☑ TASKS                      │▌                                                   │┌─────────────────────────────────────────────────────────────┐
 ▌☑  / filter        all types ▾  │────────────────────────────────────────────────────││ ✚ DEC-031 · feature                                 ≡   ✕   │
                                  │Todo 1                   │In progress 2            │││ Write the loader spec                                       │

@@ -1,6 +1,6 @@
 # subagent-decks-unfolded (150x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit   ⠋ 2 working   2 sessions
+ ◆ Atelier   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit          ⠋ 2 working   2 sessions
     SESSIONS                     │▌·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · │┌────────────────────────────────────────────┐
 ▌▤  / filter…                    │  ╭ Orchestrator ──────────────╮     ┏ Fix the build ━━━━━━━━━━━━━┓  ││ Fix the build                              │
                                  │  │ ⠋ working · ↗ elsewhere    │     ┃ ⠋ working · ↗ elsewhere    ┃  ││ ⠋ working · ↗ open elsewhere               │
@@ -13,13 +13,13 @@
  ✦                               │ ·     └──────────────────────┘│     ·     │     ·     ·     ·     · ││ Session    fix                             │
                                  │        └──────────────────────┘         ┌ ◇ Patch the config ──┐    ││                                            │
  ◈                               │                                         │ ○ idle               │    ││ It is open in another terminal (CLI or VS  │
-                                 │ ·     ·     ·     ·     ·     ·     ·   └──────────────────────┘  · ││ Code); Copilot Canvas never starts a       │
- ⇄                               │                                                                     ││ second copy.                               │
-                                 │                                                                     ││ S subsession · R rename · G group · X stop │
- ≡                               │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││                                            │
-                                 │                                                                     ││ SUBAGENTS 2 (shown · K stacks them)        │
- ✉                               │                                                                     ││ ○ Patch the config · idle  Inspect   Hide  │
-                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││ ⠋ Search the logs · work…  Inspect   Hide  │
+                                 │ ·     ·     ·     ·     ·     ·     ·   └──────────────────────┘  · ││ Code); Atelier never starts a second copy. │
+ ⇄                               │                                                                     ││ S subsession · R rename · G group · X stop │
+                                 │                                                                     ││                                            │
+ ≡                               │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││ SUBAGENTS 2 (shown · K stacks them)        │
+                                 │                                                                     ││ ○ Patch the config · idle  Inspect   Hide  │
+ ✉                               │                                                                     ││ ⠋ Search the logs · work…  Inspect   Hide  │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││                                            │
                                  │                                                                     ││                                            │
                                  │                                                                     ││                                            │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││                                            │

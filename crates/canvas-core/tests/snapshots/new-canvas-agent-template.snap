@@ -1,6 +1,6 @@
 # new-canvas-agent-template (150x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents 3 · ⚠ 1   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit      ◆ 1 needs you
+ ◆ Atelier   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents 3 · ⚠ 1   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit             ◆ 1 needs you
     SESSIONS                     │▌
 ▌▤  / filter…                    │ ┌╌ ▣ Payments · 2 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ 1 passive ╌ ✎ Notes ╌ ☑ + ╌╌┐  ·     ·     ·     ·     ·     ·     ·     ·
                                  │ ╎                                                                    ╎
@@ -20,9 +20,9 @@
                            ║  (rules.md)                                                                                  ║━━━━━━━━━━━┛◂┄╯╎    ·     ·
  ✉                         ║                 Job: follow the pull requests that sessions anywhere on this canvas          ║               ╎
                            ║                 publish, and make sure each owning session hears about what needs it. The    ║╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌◢
-                           ║                 canvas tracks them for you (sessions hand them off with `copilot-canvas pr   ║  ·     ·     ·     ·     ·
-                           ║                 track`; detected `pr.created` is tracked too), checks each one read-only     ║
-                           ║                 with gh / az, and sends you their events (the canvas-prs skill has the       ║
+                           ║                 canvas tracks them for you (sessions hand them off with `atelier pr track`;  ║  ·     ·     ·     ·     ·
+                           ║                 detected `pr.created` is tracked too), checks each one read-only with gh /   ║
+                           ║                 az, and sends you their events (the canvas-prs skill has the details).       ║
                            ║                                                                                              ║  ·     ·     ·     ·     ·
                            ║  Wakes on       pr.*, build.failed  ▾                                                        ║
                            ║  Watches        every group of this canvas  ▾                                                ║
@@ -89,9 +89,9 @@ loop a-release rect=70,12 30x4 halo=false lap=0.544 grow=1 ending=false
 ║  (rules.md)                                                                                  ║
 ║                 Job: follow the pull requests that sessions anywhere on this canvas          ║
 ║                 publish, and make sure each owning session hears about what needs it. The    ║
-║                 canvas tracks them for you (sessions hand them off with `copilot-canvas pr   ║
-║                 track`; detected `pr.created` is tracked too), checks each one read-only     ║
-║                 with gh / az, and sends you their events (the canvas-prs skill has the       ║
+║                 canvas tracks them for you (sessions hand them off with `atelier pr track`;  ║
+║                 detected `pr.created` is tracked too), checks each one read-only with gh /   ║
+║                 az, and sends you their events (the canvas-prs skill has the details).       ║
 ║                                                                                              ║
 ║  Wakes on       pr.*, build.failed  ▾                                                        ║
 ║  Watches        every group of this canvas  ▾                                                ║

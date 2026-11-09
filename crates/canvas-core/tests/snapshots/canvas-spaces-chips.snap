@@ -1,6 +1,6 @@
 # canvas-spaces-chips (180x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas   ◫ Canvas  ✎ Notebook  ☑ Tasks    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit                         3 sessions
+ ◆ Atelier   ◫ Canvas  ✎ Notebook  ☑ Tasks    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit                                3 sessions
     SESSIONS                     │▌                                                                │┌──────────────────────────────────────────────────────────────────────────────┐
 ▌▤  / filter…                    │ ┏━ ▣ Docs · 2 ━━━━━━━━ ⟲ + passive ━ ✎ Notes ━ ☑ 4 · 2▸ · 1◇ ━━┓││ ▣ Docs                                                                       │
                                  │ ┃                                                              ┃││ 2 sessions                                                                   │
@@ -65,7 +65,7 @@ box c Session rect=2,18 30x4 prefix="" name="Unfiled idea"
   border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]
   selected=false focused_term=false active=false
 ## gpu screen (chrome and the model painted as text)
- ◆ Copilot Canvas   ◫ Canvas  ✎ Notebook  ☑ Tasks    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⧉   ⏻ Quit                     3 sessions
+ ◆ Atelier   ◫ Canvas  ✎ Notebook  ☑ Tasks    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⧉   ⏻ Quit                            3 sessions
     SESSIONS                     │▌                                                                │┌──────────────────────────────────────────────────────────────────────────────┐
 ▌▤  / filter…                    │ ┏━ ▣ Docs · 2 ━━━━━━━━ ⟲ + passive ━ ✎ Notes ━ ☑ 4 · 2▸ · 1◇ ━━┓││ ▣ Docs                                                                       │
                                  │ ┃                                                              ┃││ 2 sessions                                                                   │

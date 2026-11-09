@@ -1,6 +1,6 @@
 # tasks-details (150x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas   ◫  ✎  ☑   DEMO · native shells   + New   ▢ Single   ?   ⏻ Quit                                                      3 sessions
+ ◆ Atelier   ◫  ✎  ☑   DEMO · native shells   + New   ▢ Single   ?   ⏻ Quit                                                             3 sessions
     ☑ TASKS                      │▌                                                   │┌─────────────────────────────────────────────────────────────┐
 ▌☑  / filter        all types ▾  │────────────────────────────────────────────────────││ ✚ WI-002 · feature                                  ≡   ✕   │
                                  │Todo 2                   │In progress 1/2          │││ Gentle momentum when panning                                │

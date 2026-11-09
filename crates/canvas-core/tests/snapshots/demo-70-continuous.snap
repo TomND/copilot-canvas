@@ -27,7 +27,7 @@ box demo-main Session rect=2,2 30x4 prefix="" name="Build session canvas"
   selected=true focused_term=false active=false
   badge=WI-002
 ## gpu screen (chrome and the model painted as text)
- ◆ Copilot Canvas   ◫  ✎  ☑   DEMO · native shells   + New   ▢ Single   Show all nodes   −   +   ?   ⧉   ⏻ Quit                         3 sessions
+ ◆ Atelier   ◫  ✎  ☑   DEMO · native shells   + New   ▢ Single   Show all nodes   −   +   ?   ⧉   ⏻ Quit                                3 sessions
     SESSIONS                     │▌┌╌ ▣ Canvas pr…╌╌╌╌╌╌╌╌╌╌ ✎ Set folde ☑ 5 · 1▸ · 1◇│┌─────────────────────────────────────────────────────────────┐
 ▌▤  / filter…                    │ ╎                                               ╎  ││ Build session canvas                                        │
                                  │ ╎ ■ Build session canv… ·■ Review implementat…  ╎  ││ ■ stopped                                                   │

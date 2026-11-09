@@ -1,6 +1,6 @@
 # canvas-agent-settings (150x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ⠋ Agents 3   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit              ⠋ 1 working
+ ◆ Atelier   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ⠋ Agents 3   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit        ⠋ 1 working   5 sessions
     SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
 ▌▤  / filter…                    │ ┌╌ ▣ Payments · 2 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ ⟲ 1 passive ││ ◎ Release watch                                             │
                                  │ ╎                                                  ││ ⠋ canvas agent · working · 1 event(s)                       │
