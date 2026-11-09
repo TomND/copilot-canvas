@@ -236,10 +236,14 @@ fn rename_prefs(home: &Path, from: &Path, to: &Path) {
 
 /// `doctor`'s line about the data home (`None`: a plain new install).
 pub fn status(home: &Path) -> Option<String> {
-    let user = dirs::home_dir()?;
+    status_in(&dirs::home_dir()?, home, &service_running)
+}
+
+/// [`status`] for the user's home folder `user`.
+pub fn status_in(user: &Path, home: &Path, in_use: &dyn Fn(&Path) -> Option<String>) -> Option<String> {
     let (old, new) = (user.join(legacy::HOME_DIR), user.join(HOME_DIR));
     if home == old {
-        let why = service_running(&old).unwrap_or_else(|| "it has not been moved yet".into());
+        let why = in_use(&old).unwrap_or_else(|| "it has not been moved yet".into());
         return Some(format!("{} is from before the rename to Atelier and still in use ({why}): run `atelier migrate` to move it to {}", old.display(), new.display()));
     }
     if let Some(from) = moved_from(home) {
@@ -297,6 +301,7 @@ mod tests {
         assert!(new.join("prefs").join(format!("default-{key}.json")).is_file(), "the window's preferences follow its canvas");
         assert_eq!(moved_from(&new), Some(old.clone()));
         assert!(!new.join(MARKER).exists());
+        assert!(status_in(&user, &new, &|_| None).unwrap().starts_with("moved from"), "doctor says where it came from");
         // Again: nothing to do.
         assert_eq!(move_home(&user, &|_| None), Moved::Nothing);
         std::fs::remove_dir_all(user).unwrap();
@@ -319,9 +324,13 @@ mod tests {
     fn a_running_service_keeps_the_old_home_in_use_and_says_why() {
         let user = user();
         let old = old_home(&user);
-        let moved = move_home(&user, &|home| (home == old).then(|| "its terminal service (instance default) is running".to_owned()));
+        let running = |home: &Path| (home == old).then(|| "its terminal service (instance default) is running".to_owned());
+        let moved = move_home(&user, &running);
         assert_eq!(moved, Moved::Deferred { old: old.clone(), why: "its terminal service (instance default) is running".into() });
         assert!(moved.describe().unwrap().contains("atelier migrate"));
+        // doctor says so, and how to finish.
+        let said = status_in(&user, &old, &running).unwrap();
+        assert!(said.contains("still in use (its terminal service (instance default) is running)") && said.contains("run `atelier migrate`"), "{said}");
         assert!(old.join("canvas.json").is_file() && !user.join(HOME_DIR).exists() && !old.join(MARKER).exists());
         assert_eq!(canvas_common::paths::home_in(&user), old, "this start keeps using it");
         std::fs::remove_dir_all(user).unwrap();

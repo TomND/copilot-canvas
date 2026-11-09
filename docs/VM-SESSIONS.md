@@ -105,7 +105,9 @@ forwarding. The tunnel access token is injected by egress from a pack-configured
 - Appended `ClientMsg`/`ServiceMsg` `Sat*` variants (§6), `CAP_SATELLITE`, and a satellite role on stored
   credentials.
 - A launch carrier `ATELIER_PLACEMENT` (an environment JSON the service strips, as with
-  `ATELIER_GROUP_SKILLS`).
+  the skill folders' carrier `canvas_model::launch::GROUP_SKILLS_ENV`, which keeps its wire name
+  from before the rename; a new carrier takes the `ATELIER_` name, and an older service passes
+  it on to the agent, where it does nothing).
 
 ### 4.3 `canvas-host`
 - A `Remote` PTY kind next to the local `portable-pty` one.

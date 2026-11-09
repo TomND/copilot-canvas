@@ -2189,7 +2189,8 @@ fn canvas_agent_steps<U: Ui>(instance: &Instance, work: &Path, args: &[String], 
 fn legacy_service_steps<U: Ui>(instance: &Instance, work: &Path, env: &[(&str, &Path)], start: &impl Fn(&[String], &[(&str, &Path)]) -> Result<U>) -> Result<()> {
     use crate::client::{conn, pipe};
     step("upgrade from the build before the rename: its service, on its old pipe or socket, is found and replaced by this build's, and a new service never starts beside it");
-    let home = instance.home.join(format!("legacy-{}", "x".repeat(80)));
+    // Off Windows the old socket folder is used only when the home's own is too long for a socket.
+    let home = instance.home.join(if cfg!(windows) { "legacy".to_owned() } else { format!("legacy-{}", "x".repeat(80)) });
     let legacy = Instance::new(Some(format!("legacy{}", std::process::id())), Some(home.clone()), Some(instance.sessions_dir.clone()))?;
     let old = legacy.legacy_pipe_name().context("an endpoint of the build before the rename")?;
     let exe = std::env::current_exe()?;
