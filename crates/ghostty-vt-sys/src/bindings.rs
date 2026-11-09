@@ -1,5 +1,5 @@
 //! Hand-written FFI declarations for the part of libghostty-vt that
-//! atelier uses.
+//! copilot-canvas uses.
 //!
 //! Provenance: written for this repository from the vendored headers in
 //! `vendor/include/ghostty` (Ghostty commit pinned in `vendor/CHECKSUMS.sha256`;
@@ -608,7 +608,7 @@ pub const GHOSTTY_MODS_CTRL: GhosttyMods = 1 << 1;
 pub const GHOSTTY_MODS_ALT: GhosttyMods = 1 << 2;
 pub const GHOSTTY_MODS_SUPER: GhosttyMods = 1 << 3;
 
-/// Physical (US-layout) key codes; only the keys atelier maps.
+/// Physical (US-layout) key codes; only the keys copilot-canvas maps.
 pub type GhosttyKey = c_int;
 pub const GHOSTTY_KEY_UNIDENTIFIED: GhosttyKey = 0;
 pub const GHOSTTY_KEY_BACKQUOTE: GhosttyKey = 1;

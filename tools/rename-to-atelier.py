@@ -41,6 +41,9 @@ import sys
 SKIP = {
     "tools/rename-to-atelier.py",
     "crates/canvas-common/src/legacy.rs",
+    # Checksummed with the vendored Ghostty headers (vendor/CHECKSUMS.sha256,
+    # also the CI cache key of the built library): left as written.
+    "crates/ghostty-vt-sys/src/bindings.rs",
 }
 
 # Text kept as it is wherever it appears (longest first is not needed: they
