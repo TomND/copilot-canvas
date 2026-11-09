@@ -452,6 +452,20 @@ fn access_snapshot(ui: &GuiDriver, handle: isize) -> Result<Value> {
     crate::uia::uia_snapshot(handle)
 }
 
+/// [`access_snapshot`], again for up to 5 s when the walk fails: the tree
+/// changes while it is read (an element read a moment ago can be gone, as
+/// AT-SPI's `UnknownObject` says when a spinner or a status repaints).
+fn access_snapshot_settled(ui: &GuiDriver, handle: isize) -> Result<Value> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match access_snapshot(ui, handle) {
+            Ok(snap) => return Ok(snap),
+            Err(error) if Instant::now() > deadline => return Err(error),
+            Err(_) => std::thread::sleep(Duration::from_millis(200)),
+        }
+    }
+}
+
 fn access_press(ui: &GuiDriver, handle: isize, name: &str) -> Result<()> {
     if cfg!(target_os = "macos") {
         anyhow::ensure!(ui.request(json!({ "cmd": "ax", "press": name }))?["ok"] == true, "no button or tab {name:?} pressed through NSAccessibility");
@@ -490,7 +504,7 @@ fn uia_tree_inner() -> Result<String> {
     let status = |n: &Value| n["description"].as_str().is_some_and(|s| !s.is_empty());
     let deadline = Instant::now() + Duration::from_secs(20);
     let snap = loop {
-        let snap = access_snapshot(&ui, hwnd)?;
+        let snap = access_snapshot_settled(&ui, hwnd)?;
         let ready = has(&snap, &|n| ty(n, "Button") && name(n, "+ New"))
             && has(&snap, &|n| ty(n, "TreeItem") && name(n, "Build session canvas"))
             && has(&snap, &|n| ty(n, "Button") && name(n, "Build session canvas") && status(n))
@@ -514,7 +528,7 @@ fn uia_tree_inner() -> Result<String> {
     // The client presses a button: "+ New" opens the new-session dialog.
     access_press(&ui, hwnd, "+ New")?;
     wait_tree(&ui, &format!("the dialog opened through {CLIENT}"), 10, |t| t["modals"].as_u64().unwrap_or(0) > 0)?;
-    let dialog = access_snapshot(&ui, hwnd)?;
+    let dialog = access_snapshot_settled(&ui, hwnd)?;
     let dialog_seen = dialog["nodes"].as_array().is_some_and(|n| n.iter().any(|n| n["type"] == "dialog" || n["type"].as_str().is_some_and(|t| t.contains("dialog"))));
     // The toolbar's three space tabs (the canvas's selected); a client switches to the Notebook.
     let tab = |snap: &Value, name: &str| snap["nodes"].as_array().and_then(|n| n.iter().find(|n| n["type"] == "TabItem" && n["name"] == name).cloned());
@@ -531,7 +545,7 @@ fn uia_tree_inner() -> Result<String> {
     }
     ui.wait(&format!("the Notebook through {CLIENT}"), Duration::from_secs(10), |t| t.contains("✎ EXPLORER"))?;
     let deadline = Instant::now() + Duration::from_secs(10);
-    while tab(&access_snapshot(&ui, hwnd)?, "Notebook").is_none_or(|t| t["selected"] != true) {
+    while tab(&access_snapshot_settled(&ui, hwnd)?, "Notebook").is_none_or(|t| t["selected"] != true) {
         anyhow::ensure!(Instant::now() < deadline, "the Notebook tab is not selected in the {CLIENT} tree");
         std::thread::sleep(Duration::from_millis(300));
     }
