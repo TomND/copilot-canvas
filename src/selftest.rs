@@ -1611,7 +1611,8 @@ pub fn run(remote: Option<&str>, client: Client) -> Result<()> {
     result
 }
 
-/// The 45 steps (the last four on canvases of their own), against any front
+/// The 46 steps (the last five on canvases of their own; the last, the upgrade
+/// from the build before the rename, only without `--remote`), against any front
 /// end (client: its name in the service log; start: launches it with the
 /// given arguments and environment).
 fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, client: &str, start: impl Fn(&[String], &[(&str, &Path)]) -> Result<U>) -> Result<()> {
@@ -2078,6 +2079,9 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     let doc = load(&canvas)?;
     anyhow::ensure!(doc.groups.len() >= 2, "both groups persisted");
     canvas_agent_steps(instance, work, &args, &env, &start)?;
+    if remote.is_none() {
+        legacy_service_steps(instance, work, &env, &start)?;
+    }
     println!(
         "PASS in {:.1}s (first paint incl. service start: {} ms)",
         started.elapsed().as_secs_f64(),
@@ -2172,6 +2176,65 @@ fn canvas_agent_steps<U: Ui>(instance: &Instance, work: &Path, args: &[String], 
     let code = ui.wait_exit(Duration::from_secs(10))?;
     anyhow::ensure!(code == 0, "client exited with {code}");
     Ok(())
+}
+
+/// The upgrade from the build before the rename (`legacy::PRODUCT`), on an
+/// instance of its own whose home is long enough that the old build's
+/// endpoint differs on every OS (Windows: its pipe; elsewhere: its socket
+/// folder). This build stands in for the old service by serving that
+/// endpoint (`ATELIER_TEST_LEGACY_ENDPOINT`, self-tests only): a client finds
+/// it, sees another build, replaces it (it runs no session) and works on this
+/// build's service on the new endpoint; a new service never starts beside
+/// the old one.
+fn legacy_service_steps<U: Ui>(instance: &Instance, work: &Path, env: &[(&str, &Path)], start: &impl Fn(&[String], &[(&str, &Path)]) -> Result<U>) -> Result<()> {
+    use crate::client::{conn, pipe};
+    step("upgrade from the build before the rename: its service, on its old pipe or socket, is found and replaced by this build's, and a new service never starts beside it");
+    let home = instance.home.join(format!("legacy-{}", "x".repeat(80)));
+    let legacy = Instance::new(Some(format!("legacy{}", std::process::id())), Some(home.clone()), Some(instance.sessions_dir.clone()))?;
+    let old = legacy.legacy_pipe_name().context("an endpoint of the build before the rename")?;
+    let exe = std::env::current_exe()?;
+    conn::spawn_service_exe(&exe, &legacy, &[("ATELIER_SELFTEST", "1"), ("ATELIER_TEST_LEGACY_ENDPOINT", "1")])?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while pipe::connect(&old, Duration::from_millis(200)).is_err() {
+        anyhow::ensure!(Instant::now() < deadline, "the stand-in old service did not serve {old}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let result = (|| -> Result<()> {
+        anyhow::ensure!(pipe::connect(&legacy.pipe_name(), Duration::from_millis(200)).is_err(), "only the old endpoint is served");
+        let found = conn::try_connect(&legacy)?;
+        anyhow::ensure!(found.legacy && found.outdated(), "a client sees the service of the build before the rename");
+        drop(found);
+        // A new service refuses to start beside it.
+        let folders = [legacy.home.display().to_string(), legacy.sessions_dir.display().to_string()];
+        let refused = std::process::Command::new(&exe)
+            .args(["service", "--instance", &legacy.name, "--home", &folders[0], "--sessions-dir", &folders[1]])
+            .env("ATELIER_SELFTEST", "1")
+            .stdin(std::process::Stdio::null())
+            .output()?;
+        let said = String::from_utf8_lossy(&refused.stderr).into_owned();
+        anyhow::ensure!(!refused.status.success() && said.contains("the build before the rename"), "a second service started beside the old one: {said}");
+        // A client replaces it (no session runs there) and works on this build's service.
+        let args: Vec<String> = ["--demo", "--instance", &legacy.name, "--home", &folders[0], "--sessions-dir", &folders[1], "--cwd", &work.display().to_string()].iter().map(|a| a.to_string()).collect();
+        let mut ui = start(&args, env)?;
+        ui.wait("the canvas on this build's service", Duration::from_secs(40), |t| t.contains("Build session canvas") && !t.contains("Update service"))?;
+        anyhow::ensure!(pipe::connect(&legacy.pipe_name(), Duration::from_millis(500)).is_ok(), "this build's service serves the new endpoint");
+        anyhow::ensure!(pipe::connect(&old, Duration::from_millis(200)).is_err(), "the old endpoint is gone");
+        let log = std::fs::read_to_string(legacy.log_path()).unwrap_or_default();
+        anyhow::ensure!(log.matches("service started, build").count() == 2, "the old service was replaced:\n{log}");
+        ui.send(b"q")?;
+        std::thread::sleep(Duration::from_millis(300));
+        if ui.text().contains("Detach (keep running)") {
+            ui.send(b"\r")?;
+        }
+        let code = ui.wait_exit(Duration::from_secs(10))?;
+        anyhow::ensure!(code == 0, "client exited with {code}");
+        Ok(())
+    })();
+    if let Ok(conn) = conn::try_connect(&legacy) {
+        let _ = conn.tx.send(crate::protocol::ClientMsg::Shutdown);
+        std::thread::sleep(Duration::from_millis(1500));
+    }
+    result
 }
 
 /// The box that owns the self-test's pull request (never started).

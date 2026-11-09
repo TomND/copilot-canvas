@@ -591,10 +591,13 @@ generic over the `Ui` trait (`send` bytes, `paste`, `clipboard`, `text`,
   `recent_steps`, `group_click_steps`, `report_steps`, `layout_undo_steps`,
   `area_selection_steps`, `selftest_spaces.rs:steps`), quits, and runs the
   steps that need canvases of their own (`canvas_agent_steps`, `pr_steps`,
-  `review_steps`, `todo_cli_steps`). It ends with `PASS in … s`.
+  `review_steps`, `todo_cli_steps`) and, without `--remote`, an instance of
+  its own (`legacy_service_steps`: a stand-in service of the build before
+  the rename on its old endpoint is found and replaced). It ends with `PASS in … s`.
 - **Adding a step**: write it against `U: Ui` only (no hook commands), so it
   runs in the TUI, the GUI and both over loopback; wait for screen text
-  rather than sleeping; then update the step count, now 45, where the docs
+  rather than sleeping; then update the step count, now 46 (45 with
+  `--remote`, which skips the upgrade from the build before the rename), where the docs
   give it (README *Commands*, docs/GUI.md §3, docs/PARITY.md, the comment
   above `scenario`).
 - `CANVAS_GUI_SCREENS=DIR` saves PNGs at some steps (GUI);

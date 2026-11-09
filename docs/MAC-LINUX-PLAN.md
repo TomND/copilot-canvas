@@ -932,7 +932,7 @@ checked), damage frames.
 |---|---|---|
 | Unit and integration tests (`cargo test --workspace`), ViewModel snapshots | portable except tests that start `cmd.exe`/`powershell.exe` (`term.rs` L1357-1430, `win.rs` tests, `opencode.rs:762, 776`, `core/tunnel.rs:408`) or use Windows paths | those tests get Unix twins (`/bin/sh -c`, `sleep`) behind `cfg_aliases`; Windows-path tests stay Windows-only; new tests for `canvas-sys` (peer credentials, private files, process trees with re-parenting, secrets round trip with the file backend) |
 | Golden corpus (`corpus check`) | recordings made through ConPTY | the existing recordings replay on any OS (they are byte streams); new entries recorded through a Unix PTY (`atelier record`, which already uses `portable-pty`) for zsh, bash, vim, the agents |
-| TUI self-test (45 steps) | the TUI in a hidden pseudoconsole (`selftest.rs:20-70`, `portable-pty`) | unchanged driver; demo shells `bash --norc`; stand-ins copied without `.exe` (`EXE_SUFFIX`); `TERM=xterm-256color` set for the child |
+| TUI self-test (46 steps) | the TUI in a hidden pseudoconsole (`selftest.rs:20-70`, `portable-pty`) | unchanged driver; demo shells `bash --norc`; stand-ins copied without `.exe` (`EXE_SUFFIX`); `TERM=xterm-256color` set for the child |
 | `--remote loopback`, `faults`, `paired`, `soak` | TCP + the `devtunnel-standin` | portable; `soak` reads handle counts from `/proc/<pid>/fd` or libproc instead of `GetProcessHandleCount` |
 | Backend contract (`tests/backend_contract.rs`) | real service over TCP | unchanged |
 | GUI self-test, parity suite, goldens, hardening, benches | `--test-hooks` over a named pipe | the same JSON commands over a Unix socket (`<home>/run/gui-test-<pid>.sock`, 0600); `GuiDriver` connects there |

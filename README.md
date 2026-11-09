@@ -1461,7 +1461,7 @@ atelier todo prime|boards|list|show|ready|add|propose|update|move|claim|release|
 atelier bench [--terminals N] [--seconds S] [--json FILE]
 atelier bench --client gui     the GPU client's latency, frame cost, idle CPU, memory, first paint
 atelier selftest               end-to-end UI test in a hidden console (demo shells only)
-atelier selftest --client gui  the same 45 steps against the GPU client (over its test hooks)
+atelier selftest --client gui  the same 46 steps against the GPU client (over its test hooks)
 atelier selftest --client gui --parity
                                       one GUI check per row of the parity matrix (docs/PARITY.md)
 atelier kitty-demo             print a small test image (iTerm2 inline image; the GPU client shows it)
