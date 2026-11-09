@@ -1080,6 +1080,6 @@ mod tests {
         let wide = PassiveSpec { canvas_wide: true, ..spec.clone() };
         assert_eq!(canvas_model::launch::take_group_skills(&mut passive_launch(AgentKind::Copilot, &wide, None, true, Path::new(r"C:\a"), "check".into(), 1)), None);
         let none = PassiveSpec { skill_dirs: Vec::new(), ..spec };
-        assert_eq!(passive_launch(AgentKind::Claude, &none, None, false, Path::new(r"C:\g"), "check".into(), 1).env.len(), 2);
+        assert_eq!(passive_launch(AgentKind::Claude, &none, None, false, Path::new(r"C:\g"), "check".into(), 1).env.len(), 4, "its identity under both names");
     }
 }

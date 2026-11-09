@@ -114,6 +114,14 @@ impl Instance {
 /// The data home's folder in the user's home folder (`~/.atelier`).
 pub const HOME_DIR: &str = ".atelier";
 
+/// In a home moved from before the rename: its old path (first line) and when.
+pub const MOVED_FROM: &str = "moved-from.txt";
+
+/// Where a moved home came from (`doctor`, the Keychain's fallback).
+pub fn moved_from(home: &Path) -> Option<PathBuf> {
+    std::fs::read_to_string(home.join(MOVED_FROM)).ok()?.lines().next().map(str::trim).filter(|l| !l.is_empty()).map(PathBuf::from)
+}
+
 /// The default data home: `~/.atelier`; while an install from before the
 /// rename has not been moved there yet (a service of it was running), its
 /// old folder ([`crate::legacy::HOME_DIR`], `home_in`).

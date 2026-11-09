@@ -15,6 +15,7 @@ pub mod factory;
 pub mod factory_cli;
 pub mod fork;
 pub mod git;
+pub mod home_move;
 pub mod index;
 pub mod launcher;
 pub mod migrate;

@@ -203,14 +203,31 @@ mod keychain {
         PasswordOptions::new_generic_password(service, &account(home))
     }
 
+    fn lookup(service: &str, account: &str) -> io::Result<Option<Vec<u8>>> {
+        match generic_password(PasswordOptions::new_generic_password(service, account)) {
+            Ok(key) if key.len() == 32 => Ok(Some(key)),
+            Ok(_) => Err(io::Error::new(io::ErrorKind::InvalidData, "the Keychain item is not a master key")),
+            Err(error) if error.code() == NOT_FOUND => Ok(None),
+            Err(error) => Err(io::Error::other(format!("cannot read the master key from the Keychain: {error}"))),
+        }
+    }
+
     /// The home's master key, created (and the home marked) on first use.
-    /// `service` is [`SERVICE`] (tests use their own).
+    /// `service` is [`SERVICE`] (tests use their own). A home from before
+    /// the rename finds its key under the old names (`super::legacy_items`)
+    /// and stores it under the new ones.
     pub fn master_key(home: &Path, service: &str) -> io::Result<Vec<u8>> {
-        match generic_password(options(home, service)) {
-            Ok(key) if key.len() == 32 => return Ok(key),
-            Ok(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "the Keychain item is not a master key")),
-            Err(error) if error.code() == NOT_FOUND => {}
-            Err(error) => return Err(io::Error::other(format!("cannot read the master key from the Keychain: {error}"))),
+        if let Some(key) = lookup(service, &account(home))? {
+            return Ok(key);
+        }
+        for (old_service, old_account) in super::legacy_items(home, service, SERVICE, canvas_common::legacy::KEYCHAIN_SERVICE, account) {
+            if let Some(key) = lookup(&old_service, &old_account)? {
+                let mut new = options(home, service);
+                new.set_label("Atelier master key");
+                new.set_comment(&format!("Seals the paired secrets of {}", home.display()));
+                set_generic_password_options(&key, new).map_err(|e| io::Error::other(format!("cannot store the master key in the Keychain: {e}")))?;
+                return Ok(key);
+            }
         }
         let key = canvas_common::protocol::nonce()[..32].to_vec();
         let mut new = options(home, service);
@@ -305,15 +322,31 @@ mod keychain {
 
     /// The home's master key, created (and the home marked) on first use.
     /// `service` is [`SERVICE`] (tests use their own).
+    fn lookup(ss: &SecretService<'_>, service: &str, account: &str) -> io::Result<Option<Vec<u8>>> {
+        let found = ss.search_items(HashMap::from([("application", service), ("home", account)])).map_err(|e| other("cannot look up", e))?;
+        let Some(item) = found.unlocked.first().or(found.locked.first()) else { return Ok(None) };
+        item.ensure_unlocked().map_err(|e| other("the keyring is locked: cannot read", e))?;
+        let key = item.get_secret().map_err(|e| other("cannot read", e))?;
+        if key.len() == 32 { Ok(Some(key)) } else { Err(io::Error::new(io::ErrorKind::InvalidData, "the Secret Service item is not a master key")) }
+    }
+
+    /// The home's master key, created (and the home marked) on first use.
+    /// `service` is [`SERVICE`] (tests use their own). A home from before
+    /// the rename finds its key under the old names (`super::legacy_items`)
+    /// and stores it under the new ones.
     pub fn master_key(home: &Path, service: &str) -> io::Result<Vec<u8>> {
         let ss = connect()?;
         let account = account(home);
         let attributes = HashMap::from([("application", service), ("home", account.as_str())]);
-        let found = ss.search_items(attributes.clone()).map_err(|e| other("cannot look up", e))?;
-        if let Some(item) = found.unlocked.first().or(found.locked.first()) {
-            item.ensure_unlocked().map_err(|e| other("the keyring is locked: cannot read", e))?;
-            let key = item.get_secret().map_err(|e| other("cannot read", e))?;
-            return if key.len() == 32 { Ok(key) } else { Err(io::Error::new(io::ErrorKind::InvalidData, "the Secret Service item is not a master key")) };
+        if let Some(key) = lookup(&ss, service, &account)? {
+            return Ok(key);
+        }
+        for (old_service, old_account) in super::legacy_items(home, service, SERVICE, canvas_common::legacy::SECRET_SERVICE_APPLICATION, self::account) {
+            if let Some(key) = lookup(&ss, &old_service, &old_account)? {
+                let label = format!("Atelier master key ({})", home.display());
+                collection(&ss)?.create_item(&label, attributes, &key, true, "application/octet-stream").map_err(|e| other("cannot store", e))?;
+                return Ok(key);
+            }
         }
         let key = canvas_common::protocol::nonce()[..32].to_vec();
         let label = format!("Atelier master key ({})", home.display());
@@ -339,6 +372,24 @@ mod keychain {
             }
         }
     }
+}
+
+/// Where a home's master key may be from before the rename (Copilot
+/// Canvas), in the order they are tried: the old service name with this
+/// home's account, then, for a home moved from another path (`moved-from.txt`),
+/// the old and the new service name with that path's account. Only for the
+/// real store (`service` is `current`); tests use names of their own.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn legacy_items(home: &std::path::Path, service: &str, current: &str, old_service: &str, account: impl Fn(&std::path::Path) -> String) -> Vec<(String, String)> {
+    if service != current {
+        return Vec::new();
+    }
+    let mut items = vec![(old_service.to_owned(), account(home))];
+    if let Some(old_home) = canvas_common::paths::moved_from(home).filter(|old| old != home) {
+        items.push((old_service.to_owned(), account(&old_home)));
+        items.push((current.to_owned(), account(&old_home)));
+    }
+    items
 }
 
 /// No platform store on other Unixes.
@@ -373,6 +424,23 @@ mod keychain {
 #[cfg(all(test, unix))]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn a_home_from_before_the_rename_finds_its_key_under_the_old_names() {
+        let home = std::env::temp_dir().join(format!("cs-legacy-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&home).unwrap();
+        let account = |h: &std::path::Path| h.display().to_string();
+        let items = super::legacy_items(&home, "new", "new", "old", account);
+        assert_eq!(items, [("old".to_owned(), home.display().to_string())], "the old service name, same home");
+        assert!(super::legacy_items(&home, "test service", "new", "old", account).is_empty(), "tests keep their own names");
+        let old_home = home.with_file_name("old-home");
+        std::fs::write(home.join(canvas_common::paths::MOVED_FROM), format!("{}\n2026-11-09T00:00:00.000Z\n", old_home.display())).unwrap();
+        let items = super::legacy_items(&home, "new", "new", "old", account);
+        let moved = old_home.display().to_string();
+        assert_eq!(items, [("old".to_owned(), home.display().to_string()), ("old".to_owned(), moved.clone()), ("new".to_owned(), moved)], "a moved home: its old path's account too");
+        let _ = std::fs::remove_dir_all(home);
+    }
 
     #[test]
     fn secrets_round_trip_with_the_homes_master_key_only() {

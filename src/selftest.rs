@@ -715,8 +715,14 @@ pub fn doctor(instance: &Instance) -> Result<()> {
     unix_doctor(instance, &mut line);
     match crate::client::conn::try_connect(instance) {
         Ok(conn) => {
-            let same = conn.service_build == crate::paths::build_id();
-            line(true, "Terminal service", format!("running ({})", if same { "same build" } else { "different build; restart when convenient" }));
+            let state = if conn.legacy {
+                format!("{} (the build before the rename): open Atelier to update it, or `atelier migrate`", canvas_common::legacy::PRODUCT)
+            } else if conn.outdated() {
+                "different build; restart when convenient".to_owned()
+            } else {
+                "same build".to_owned()
+            };
+            line(true, "Terminal service", format!("running ({state})"));
         }
         Err(_) => line(true, "Terminal service", "not running (starts automatically)".into()),
     }
@@ -725,6 +731,14 @@ pub fn doctor(instance: &Instance) -> Result<()> {
     let unreadable = if warnings.is_empty() { String::new() } else { format!(", {} unreadable", warnings.len()) };
     line(true, "VS Code agents", format!("{} workspaces, {copilot} Copilot CLI agent entries{unreadable}", workspaces.len()));
     line(true, "Data directory", instance.home.display().to_string());
+    if let Some(moved) = canvas_agents::home_move::status(&instance.home) {
+        let pending = instance.home.ends_with(canvas_common::legacy::HOME_DIR);
+        line(!pending, "Data move", moved);
+    }
+    let legacy = canvas_common::env::legacy_vars();
+    if !legacy.is_empty() {
+        println!("- {:<20} deprecated names set: {} (they still work; their ATELIER_ names replace them)", "Variables", legacy.join(", "));
+    }
     let automations = crate::factory_cli::configured_dir(&instance.home, None);
     for (mark, label, detail) in crate::remote_cli::doctor_lines(instance, &automations) {
         match mark {

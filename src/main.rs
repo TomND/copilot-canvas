@@ -68,6 +68,8 @@ USAGE
   atelier service install|uninstall
                                         start the service at login (Linux: a systemd user unit)
   atelier doctor                 check Copilot, ConPTY, session history and the service
+  atelier migrate [--yes]        move the data of an install from before the rename to ~/.atelier
+                                        (stops its service first; --yes when it runs sessions)
   atelier bench [--terminals N] [--seconds S] [--json FILE] [--remote loopback]
                                         measure service/terminal/rendering performance (no Copilot);
                                         --remote loopback: over TCP, with and without compression
@@ -380,7 +382,7 @@ fn main() {
 /// unless this is a remote desktop or SSH session, where the TUI is better,
 /// PLAN D4). The GUI must be next to this program.
 fn wants_gui(home: Option<&std::path::Path>) -> bool {
-    let home = home.map(std::path::Path::to_path_buf).or_else(|| canvas_common::env::var_os("ATELIER_HOME").map(PathBuf::from)).or_else(|| dirs::home_dir().map(|h| h.join(".atelier")));
+    let home = home.map(std::path::Path::to_path_buf).or_else(|| canvas_common::env::var_os("ATELIER_HOME").map(PathBuf::from)).or_else(|| paths::default_home().ok());
     let setting = home.map(|h| canvas_common::settings::Settings::load(&h)).unwrap_or_default().client().unwrap_or_default();
     let gui_present = paths::own_exe().map(|e| e.with_file_name(canvas_sys::host::exe_name("atelier-gui")).is_file()).unwrap_or(false);
     match setting.trim().to_ascii_lowercase().as_str() {
@@ -437,6 +439,54 @@ fn config(home: &std::path::Path, key: Option<&str>, value: Option<&str>) -> Res
 
 /// `atelier --gui …`: runs the GPU client next to this program with
 /// the same options, and exits with its exit code.
+/// `atelier migrate [--yes]`: moves the data of an install from before the
+/// rename (`~/.copilot-canvas`) to `~/.atelier`, after stopping the services
+/// that use it (`--yes` when they run sessions: they stop, and their
+/// conversations stay resumable).
+fn migrate_home(yes: bool) -> Result<()> {
+    use canvas_agents::home_move::{self, Moved};
+    let user = dirs::home_dir().context("cannot determine the home directory")?;
+    let old = user.join(canvas_common::legacy::HOME_DIR);
+    if old.is_dir() && !user.join(paths::HOME_DIR).exists() {
+        for name in home_move::instances(&old) {
+            let instance = paths::Instance { name, home: old.clone(), sessions_dir: old.clone() };
+            let Ok(conn) = client::conn::try_connect(&instance) else { continue };
+            conn.tx.send(protocol::ClientMsg::Stats)?;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut alive = None;
+            while alive.is_none() && std::time::Instant::now() < deadline {
+                if let Ok(protocol::ServiceMsg::Stats(stats)) = conn.rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                    alive = Some(stats.alive);
+                }
+            }
+            let alive = alive.context("the running terminal service did not answer")?;
+            anyhow::ensure!(
+                alive == 0 || yes,
+                "the terminal service of {} (instance {}) runs {alive} live session(s): quit them, or run `atelier migrate --yes` to stop them (their conversations stay resumable)",
+                old.display(),
+                instance.name
+            );
+            println!("Stopping the terminal service of {} (instance {}, {alive} live session(s))…", old.display(), instance.name);
+            conn.tx.send(protocol::ClientMsg::Shutdown)?;
+            drop(conn);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while std::time::Instant::now() < deadline && client::conn::service_answers(&instance) {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+        }
+    }
+    let moved = home_move::move_home(&user, &home_move::service_running);
+    match &moved {
+        Moved::Deferred { .. } | Moved::Failed { .. } => bail!("{}", moved.describe().unwrap_or_default()),
+        Moved::Nothing => println!("Nothing to move: the data is in {}.", paths::default_home()?.display()),
+        _ => println!("{}", moved.describe().unwrap_or_default()),
+    }
+    if matches!(moved, Moved::Moved { .. }) {
+        println!("Next: `atelier automations apply` gives scheduled automations their new names, and `atelier service install` (if the service starts at login) its new entry.");
+    }
+    Ok(())
+}
+
 fn launch_gui() -> Result<()> {
     let exe = paths::own_exe()?.with_file_name(canvas_sys::host::exe_name("atelier-gui"));
     anyhow::ensure!(exe.is_file(), "the GPU client {} is missing", exe.display());
@@ -450,6 +500,18 @@ fn launch_gui() -> Result<()> {
 
 fn real_main() -> Result<()> {
     let args = parse()?;
+    // The first start after the rename moves ~/.copilot-canvas to ~/.atelier
+    // when nothing uses it (canvas_agents::home_move); other commands use
+    // whichever exists.
+    let opens = matches!(args.command.iter().map(String::as_str).collect::<Vec<_>>().as_slice(), [] | ["service", "start" | "install"]);
+    if args.home.is_none() && opens {
+        let moved = canvas_agents::home_move::move_default_home();
+        if matches!(moved, canvas_agents::home_move::Moved::Moved { .. } | canvas_agents::home_move::Moved::Failed { .. })
+            && let Some(line) = moved.describe()
+        {
+            eprintln!("{line}");
+        }
+    }
     if args.command.is_empty() && !args.tui && (args.gui || wants_gui(args.home.as_deref())) {
         return launch_gui();
     }
@@ -649,6 +711,7 @@ fn real_main() -> Result<()> {
         ["config", key] => config(&instance.home, Some(key), None),
         ["config", key, value] => config(&instance.home, Some(key), Some(value)),
         ["doctor"] => selftest::doctor(&instance),
+        ["migrate"] => migrate_home(flag("yes")),
         ["remote", "pair"] => remote_cli::pair(&instance, option("name"), flag("qr"), option("url")),
         ["remote", "clients"] => remote_cli::clients(&instance),
         ["remote", "push-key", file] => remote_cli::push_key(&instance, Path::new(file), option("key-id"), option("team")),
