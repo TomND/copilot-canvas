@@ -2210,13 +2210,29 @@ fn legacy_service_steps<U: Ui>(instance: &Instance, work: &Path, env: &[(&str, &
         drop(found);
         // A new service refuses to start beside it.
         let folders = [legacy.home.display().to_string(), legacy.sessions_dir.display().to_string()];
-        let refused = std::process::Command::new(&exe)
+        // (Its output goes to a file and it gets 30 s: a service that did start would never end.)
+        let said_path = legacy.home.join("refused.txt");
+        let mut second = std::process::Command::new(&exe)
             .args(["service", "--instance", &legacy.name, "--home", &folders[0], "--sessions-dir", &folders[1]])
             .env("ATELIER_SELFTEST", "1")
             .stdin(std::process::Stdio::null())
-            .output()?;
-        let said = String::from_utf8_lossy(&refused.stderr).into_owned();
-        anyhow::ensure!(!refused.status.success() && said.contains("the build before the rename"), "a second service started beside the old one: {said}");
+            .stdout(std::process::Stdio::null())
+            .stderr(std::fs::File::create(&said_path)?)
+            .spawn()?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let status = loop {
+            if let Some(status) = second.try_wait()? {
+                break Some(status);
+            }
+            if Instant::now() > deadline {
+                let _ = second.kill();
+                let _ = second.wait();
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        let said = std::fs::read_to_string(&said_path).unwrap_or_default();
+        anyhow::ensure!(status.is_some_and(|s| !s.success()) && said.contains("the build before the rename"), "a second service started beside the old one ({status:?}): {said}");
         // A client replaces it (no session runs there) and works on this build's service.
         let args: Vec<String> = ["--demo", "--instance", &legacy.name, "--home", &folders[0], "--sessions-dir", &folders[1], "--cwd", &work.display().to_string()].iter().map(|a| a.to_string()).collect();
         let mut ui = start(&args, env)?;

@@ -387,7 +387,7 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
     // the same home and instance: never a second service beside it.
     if !simulated_legacy
         && let Some(old) = instance.legacy_pipe_name()
-        && canvas_sys::ipc::connect(&old, std::time::Duration::from_millis(500)).is_ok()
+        && canvas_sys::ipc::is_served(&old)
     {
         drop(server);
         bail!(

@@ -17,7 +17,6 @@
 //!   start; running it again changes nothing.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use canvas_common::legacy;
 use canvas_common::paths::{HOME_DIR, Instance};
@@ -133,7 +132,7 @@ pub fn service_running(home: &Path) -> Option<String> {
     for name in instances(home) {
         let instance = Instance { name: name.clone(), home: home.to_path_buf(), sessions_dir: home.to_path_buf() };
         let endpoints = std::iter::once(instance.pipe_name()).chain(instance.legacy_pipe_name());
-        if endpoints.into_iter().any(|e| canvas_sys::ipc::connect(&e, Duration::from_millis(300)).is_ok()) {
+        if endpoints.into_iter().any(|e| canvas_sys::ipc::is_served(&e)) {
             return Some(format!("its terminal service (instance {name}) is running"));
         }
     }

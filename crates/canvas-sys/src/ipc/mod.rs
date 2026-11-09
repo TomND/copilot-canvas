@@ -26,6 +26,20 @@ pub fn is_local_name(name: &str) -> bool {
 #[cfg(windows)]
 pub use canvas_common::pipe::{Pipe, PipeCloser, PipeReader, PipeServer, PipeWriter, connect};
 
+/// Whether a server holds the endpoint `name`, also one too busy to take a
+/// connection now (a pipe whose instances are all connected; a socket whose
+/// server holds its lock): only a missing endpoint, or a socket nobody
+/// serves, is free. For "never two services" checks, where a connection that
+/// fails for a moment must not count as no server.
+#[cfg(windows)]
+pub fn is_served(name: &str) -> bool {
+    match connect(name, std::time::Duration::from_millis(500)) {
+        Ok(_) => true,
+        // ERROR_FILE_NOT_FOUND (2), ERROR_PATH_NOT_FOUND (3): no such pipe.
+        Err(error) => !matches!(error.raw_os_error(), Some(2 | 3)),
+    }
+}
+
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]

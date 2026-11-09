@@ -83,9 +83,12 @@ jobs:
         run: target\release\atelier.exe selftest --remote paired
       # The GUI runs on WARP (no GPU on hosted runners); offscreen rendering and
       # the test hooks need no interactive desktop.
+      # Bounded, so a hang fails with its log instead of holding the runner.
       - name: GUI self-test
+        timeout-minutes: 20
         run: target\release\atelier.exe selftest --client gui
       - name: GUI parity suite
+        timeout-minutes: 30
         run: target\release\atelier.exe selftest --client gui --parity
       # The goldens were captured on the reference machine (RTX 3070, 125 % DPI,
       # its font versions). Hosted runners draw with WARP at 100 % DPI, so the

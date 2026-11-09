@@ -385,10 +385,10 @@ fn connect_endpoint(instance: &Instance, timeout: Duration) -> Result<(pipe::Pip
     }
 }
 
-/// A service answers for this instance and home (also one of the build
-/// before the rename), without a handshake.
+/// A service holds this instance and home's endpoint (also one of the build
+/// before the rename), without a handshake; also a busy or starting one.
 pub fn service_answers(instance: &Instance) -> bool {
-    connect_endpoint(instance, Duration::from_millis(300)).is_ok()
+    std::iter::once(instance.pipe_name()).chain(instance.legacy_pipe_name()).any(|e| pipe::is_served(&e))
 }
 
 fn open_pipe(instance: &Instance, options: &ConnOptions, session: &Arc<ClientSession>) -> Result<Conn> {
