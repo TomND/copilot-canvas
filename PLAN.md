@@ -16,6 +16,13 @@ It supersedes `docs/GPU-CANVAS-PLAN.md`.
 Published at https://github.com/TomND/copilot-canvas (CI: GitHub Actions, a cached
 pinned-Ghostty job and the test matrix).
 
+<!-- rename:keep-begin -->
+2026-11-09: renamed from Copilot Canvas to **Atelier** (it serves every agent
+CLI); old installs, variables, services, scheduled entries and pairing links
+keep working and move over (README *Upgrading from Copilot Canvas*,
+docs/DEVELOPMENT.md §7, `tools/rename-to-atelier.py` for older branches).
+<!-- rename:keep-end -->
+
 All phases are implemented on `main` of the new repository. Besides GitHub
 Copilot CLI, the canvas now also runs **OpenCode** and **Claude Code** sessions
 (agent providers in `canvas-agents/src/agents`); it defaults to the first
