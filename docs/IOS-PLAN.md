@@ -114,10 +114,11 @@ Metal is a later option.
 with a URL:
 
 ```
-ccanvas://pair?v=1&name=cloudpc&url=wss%3A%2F%2Fatelier-47600.usw2.devtunnels.ms&code=ABCDEFGHJKMN&token=<connect token>&exp=<ms>
+atelier://pair?v=1&name=cloudpc&url=wss%3A%2F%2Fatelier-47600.usw2.devtunnels.ms&code=ABCDEFGHJKMN&token=<connect token>&exp=<ms>
 ```
 
-`url` is the tunnel port's web-forwarding address (from `devtunnel show`, or
+(The app also reads the same link with `ccanvas://`, its scheme before the
+rename to Atelier.) `url` is the tunnel port's web-forwarding address (from `devtunnel show`, or
 `--url`). The code is the usual one-time pairing code (10 minutes, single
 use); the token is a 24 h tunnel connect token. A plain `ws://HOST:PORT` URL
 (no token) is used for the mock service and LAN tests.

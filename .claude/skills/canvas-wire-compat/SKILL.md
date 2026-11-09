@@ -95,6 +95,20 @@ someone restarts it. Background: `docs/BACKEND.md` (*Protocol* and the
 - Atomic writes (a temporary file renamed over the old one), one writer: the
   service. The CLI reads the file and sends changes as inbox requests.
 
+## Names from before the rename
+
+<!-- rename:keep-begin -->
+Atelier was Copilot Canvas: older peers, installs and sessions still use the
+old names. Some are wire constants and never change: the pairing and secret
+contexts (`copilot-canvas pairing v2`, …), the skill folders' launch entry
+`COPILOT_CANVAS_GROUP_SKILLS` (clients send it, services take either name).
+Old names live in `canvas_common::legacy` only; variables are read with
+`canvas_common::env::var` (new name, else old); the data home, the service
+endpoint, scheduled entries and pairing links are migrated or accepted
+(docs/DEVELOPMENT.md §7). `python3 tools/rename-to-atelier.py --check` must
+report nothing to change.
+<!-- rename:keep-end -->
+
 ## Before you commit
 
 Run `cargo test --workspace` and the `--remote loopback` self-tests (skill

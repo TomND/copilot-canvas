@@ -5,6 +5,10 @@
   A native, spatial workspace for GitHub Copilot CLI, OpenCode, and Claude Code.
 </p>
 
+<!-- rename:keep-begin -->
+<p align="center"><sub>Formerly <em>Copilot Canvas</em>: the same app, renamed because it works with every agent. Installs from before the rename move over by themselves (<a href="#upgrading-from-copilot-canvas">Upgrading from Copilot Canvas</a>).</sub></p>
+<!-- rename:keep-end -->
+
 <p align="center">
   <a href="https://github.com/TomND/copilot-canvas/releases"><strong>🚀 Grab the preview</strong></a>
   &nbsp;&middot;&nbsp;
@@ -1445,7 +1449,10 @@ atelier config [client|agent|engine [VALUE]]
 atelier record … · corpus check|bless|diff|list
                                       golden terminal corpus (corpus/README.md)
 atelier doctor                 environment checks (each agent CLI and its history, the default
-                                      agent, terminal engine, Git, ConPTY, service, VS Code)
+                                      agent, terminal engine, Git, ConPTY, service, VS Code, the
+                                      data move from before the rename)
+atelier migrate [--yes]        finish moving the data of an install from before the rename to
+                                      ~/.atelier (stops its service first; --yes when it runs sessions)
 atelier service status|stop    stop ends the service's sessions (gracefully)
 atelier note path|new|list …   notes with their provenance in the canvas notebook (Notebook, above)
 atelier todo prime|boards|list|show|ready|add|propose|update|move|claim|release|note|check|link|
@@ -1489,6 +1496,32 @@ atelier remote tunnel-setup|pair|clients|revoke    on the Cloud PC (docs/REMOTE.
 atelier remote add|servers|forget                  at home; then atelier --remote NAME
 cargo test                            unit tests
 ```
+
+<!-- rename:keep-begin -->
+### Upgrading from Copilot Canvas
+
+Atelier was called Copilot Canvas; it works with every agent CLI, so the name
+no longer names one. An install from before the rename upgrades in place, and
+nothing is lost:
+
+| Before | Now | What happens |
+|---|---|---|
+| `copilot-canvas`, `copilot-canvas-gui` | `atelier`, `atelier-gui` | Install the new build. Sessions keep a deprecated `copilot-canvas` alias of the CLI (it says so when run), so instructions and scripts written for it still work. |
+| `~/.copilot-canvas` | `~/.atelier` | The first start of the new build (`atelier`, `atelier-gui`, `service start` or `service install`) moves the folder when nothing uses it, and rewrites the paths into it that its settings, canvases, stores and registries hold. While a service of the old build runs, the data stays where it is: the client offers to restart that service (as for any older build) and `atelier doctor` says what is left; `atelier migrate` stops the service (`--yes` when it runs sessions; their conversations stay resumable) and finishes the move. If both folders exist, `~/.atelier` is used and the old one is left alone. `--home` and `ATELIER_HOME` are never moved. |
+| `COPILOT_CANVAS_*` variables | `ATELIER_*` | Every variable is read under its new name, else its old one (deprecated; `doctor` lists the old names it sees). Sessions get both. |
+| The old service's pipe or socket | the new one | A new client finds a running service of the old build and replaces it the same way it replaces any older build (asking first when it runs sessions); a new service never starts beside one. Remote clients and services of either build still pair and connect to each other. |
+| Scheduled entries: Task Scheduler's `CopilotCanvas-*` tasks (the tunnel's included), LaunchAgents `com.copilot-canvas.*`, systemd units `copilot-canvas-task-*`, the crontab's Copilot Canvas block | `Atelier-*`, `com.thomashorga.atelier.*`, `atelier-task-*`, the Atelier block | They keep running and are listed as the same automations, with drift saying so. The next `atelier automations apply --yes` renames the manifests named `CopilotCanvas-*`, registers the new entries and removes the old ones; `atelier service install` replaces the old service entry. |
+| Keychain item "Copilot Canvas", Secret Service `copilot-canvas` | "Atelier", `atelier` | The master key of paired secrets is found under its old name and copied to the new one on first use. |
+| `ccanvas://pair` links | `atelier://pair` | Services write `atelier://` links; the iPhone app (now called Atelier, same bundle id, so its pairings stay) opens and scans both. |
+| Dev Tunnel `copilot-canvas` | unchanged | Tunnel ids are yours: an install set up before the rename keeps hosting its tunnel; new setups suggest `atelier`. |
+
+On the Windows machine: install the new build, open it once (it moves the
+data, or tells you to quit the old service first), then run `atelier
+automations apply --yes` (renames the `CopilotCanvas-Tunnel` task) and pair
+again only if `doctor` says so. On a Mac: replace *Copilot Canvas.app* with
+*Atelier.app*, open it, then `atelier automations apply --yes` and, if the
+service starts at login, `atelier service install`.
+<!-- rename:keep-end -->
 
 ## Limitations
 

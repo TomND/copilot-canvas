@@ -913,7 +913,62 @@ build is replacing the files: the next client starts the new build's
 service from its own copy, restarts an idle older one, and asks before
 restarting one that runs sessions (README *Limitations*, Upgrading).
 
-## 7. Which docs a change updates
+<!-- rename:keep-begin -->
+## 7. Renaming to Atelier (formerly Copilot Canvas)
+
+The product was renamed from Copilot Canvas to Atelier (the binaries
+`atelier` and `atelier-gui`, the root package `atelier`, `ATELIER_*`
+variables, `~/.atelier`). The workspace crates keep their `canvas-*` names
+and "the canvas" stays the name of the session canvas. What belongs to
+GitHub Copilot the agent keeps its names (`AgentKind::Copilot`,
+`copilot_cfg`, `~/.copilot`, `COPILOT_*` variables, "GitHub Copilot CLI",
+`github-copilot/...` model ids), and so do the iPhone app's bundle id
+`com.thomashorga.copilotcanvas` and the repository URL (until the owner
+renames the repository).
+
+**The script.** `tools/rename-to-atelier.py` is the mechanical part: it
+renames tracked files and folders whose path names the old product (`git
+mv`), then rewrites text (`Copilot Canvas` → `Atelier`, `copilot-canvas` →
+`atelier`, `COPILOT_CANVAS_` → `ATELIER_`, `com.copilot-canvas.` →
+`com.thomashorga.atelier.`, …; in Rust, `std::env::var("ATELIER_…")`
+becomes `canvas_common::env::var`, which falls back to the old name). It is
+idempotent: what must keep an old name is in its `KEEP` list (the repository
+URL, cryptographic context strings old and new builds share, the owner's Dev
+Tunnel ids), in `crates/canvas-common/src/legacy.rs` (never rewritten), or on
+a line holding `rename:keep` (or between `rename:keep-begin` and
+`rename:keep-end`, in Markdown inside `<!-- -->`). View snapshots are not
+rewritten: record them again. A branch made before the rename:
+
+```sh
+git merge origin/main                 # or rebase; take main's side where the rename conflicts
+python3 tools/rename-to-atelier.py    # renames what the branch added
+python3 tools/rename-to-atelier.py --check   # 0 change(s) needed
+UPDATE_SNAPSHOTS=1 cargo test -p canvas-core --test view_snapshots   # then read the diffs
+```
+
+Easier still: run the script on the branch first, commit, then merge main
+(the two sides then mostly agree). New code reads variables through
+`canvas_common::env::var` / `var_os` and names old things only through
+`canvas_common::legacy`.
+
+**Compatibility, and where it lives.**
+
+| Mechanism | Code | Tests |
+|---|---|---|
+| Variables: `ATELIER_X`, else `COPILOT_CANVAS_X`; sessions and passive runs get both names; the skill folders' launch entry keeps its wire name | `canvas-common/src/env.rs`, `service/mod.rs:Agents::integration`, `canvas-model/src/launch.rs` | `env.rs` tests, `launch.rs`, `service/passive.rs` |
+| The data home moves on the first start when no service uses it (paths inside rewritten, preferences renamed, an interrupted move finished); `atelier migrate`; `doctor` | `canvas-agents/src/home_move.rs`, `paths.rs:home_in`, `src/main.rs:migrate_home` | `home_move.rs` tests (temporary homes only) |
+| A service of the old build on its old endpoint (Windows pipe, Unix socket folder) is found and replaced through the update path; a new service refuses to start beside one | `paths.rs:Instance::legacy_pipe_name`, `conn.rs:connect_endpoint`, `canvas-host/src/server.rs:run` | `paths.rs` tests, `home_move.rs` (an old endpoint is found) |
+| Scheduled entries with old names are the same automations, replaced by `apply` / `service install` | `scheduler/launchd.rs`, `systemd.rs`, `cron.rs`, `factory.rs:rename_legacy_manifests`, `factory_cli.rs:apply` | a test per backend and `factory.rs` |
+| The `copilot-canvas` alias of the CLI for sessions (deprecated) | `cli.rs:install_alias`, `src/main.rs:main` | `cli.rs` |
+| Keychain / Secret Service master keys under their old names | `canvas-sys/src/secret.rs:legacy_items` | `secret.rs` |
+| `atelier://` and `ccanvas://` pairing links | `canvas-common/src/remote.rs:PairLink`, `ios/Atelier/Features/Pair/PairView.swift:isPairLink` | `remote.rs`, `CoreBridgeTests` |
+
+**On a development machine** the new binary run without `--home` (or
+`ATELIER_HOME`) moves `~/.copilot-canvas` to `~/.atelier` when no service
+uses it: test with `--home` or a temporary `HOME`.
+<!-- rename:keep-end -->
+
+## 8. Which docs a change updates
 
 | Change | Docs |
 |---|---|

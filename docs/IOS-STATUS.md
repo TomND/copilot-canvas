@@ -19,7 +19,7 @@ built with UniFFI). The interface is SwiftUI (`ios/`).
 
 | Area | State |
 |---|---|
-| Pairing | QR code, `ccanvas://` link, or the code typed by hand. Pairing the same address again replaces it and keeps the machine's name and colour. Credentials are kept in the Keychain. Face ID / passcode lock after a minute away |
+| Pairing | QR code, `atelier://` link (or `ccanvas://`, from before the rename), or the code typed by hand. Pairing the same address again replaces it and keeps the machine's name and colour. Credentials are kept in the Keychain. Face ID / passcode lock after a minute away |
 | Several machines | Every paired machine stays connected while the app is open. A switcher shows each machine's state, what needs you and its new reports. Each machine has a colour, and an attention strip shows sessions that need you on the other machines |
 | Sessions | Grouped by what needs you, then by canvas group. Subagents, subsessions, loops, passive sessions and queued mail are shown. Actions: stop, remove, rename, mark reviewed |
 | Canvas | Groups, boxes, status borders and edges like the desktop. Pan, pinch to zoom, fit; tap a box to open it |

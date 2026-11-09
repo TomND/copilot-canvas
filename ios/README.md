@@ -66,7 +66,8 @@ cargo run -p canvas-mock                       # 127.0.0.1:47600, code ABCD-EFGH
 cargo run -p canvas-mock -- --listen 0.0.0.0:47600   # reachable from a phone on the same Wi-Fi (ws://<mac>:47600)
 ```
 
-In the simulator, paste the printed `ccanvas://pair?…` link, or launch with
+In the simulator, paste the printed `atelier://pair?…` link (the app also
+takes `ccanvas://`, from before the rename), or launch with
 `-pairLink <link>`. Other launch arguments for automated runs:
 `-noNotificationPrompt`, `-noLock`, `-openSession <id>`, `-startMode canvas|notebook|tasks`,
 `-machine <name>` (`-pairLink` may be repeated).

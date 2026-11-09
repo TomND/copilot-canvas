@@ -460,7 +460,12 @@ identity; the token stands in for it).
 - **Tunnel access tokens.** `atelier remote pair --qr` issues one
   with this machine's signed-in CLI (`devtunnel token TUNNEL --scopes
   connect`, 24 h) and shows a QR code with the web address, the pairing code
-  and the token (`ccanvas://pair?v=1&name=…&url=…&code=…&token=…&exp=…`).
+  and the token (`atelier://pair?v=1&name=…&url=…&code=…&token=…&exp=…`).
+  *Pairing links*: services write `atelier://` since the rename; the iPhone
+  app reads both `atelier://` and `ccanvas://` (the scheme of the build before
+  the rename: older services and printed codes keep pairing). Decided with
+  the owner's phone app updated alongside the services; an app from before
+  the rename reads only `ccanvas://`, so update it first.
   Clients that set `CAP_TUNNEL_ACCESS` (the phone) get
   `ServiceMsg::TunnelAccess { url, token, expires_ms }` when they connect
   and whenever the service renews the token (half a day before it expires,

@@ -20,9 +20,10 @@ What stays (on purpose):
 - the names in KEEP below (the repository URL until the repository is
   renamed, cryptographic context strings that old and new builds must share,
   the owner's Dev Tunnel ids and mock state folders, checkout paths);
-- every line holding `rename:keep`, and every line between `rename:keep-begin`
-  and `rename:keep-end` (compatibility code and docs that must name the old
-  names; in Markdown inside `<!-- ... -->`);
+- every line holding `rename:keep`, and every line between a line that is
+  only `rename:keep-begin` and one that is only `rename:keep-end` (in a
+  comment: `// …`, `# …`, `<!-- … -->`), for compatibility code and docs
+  that must name the old names;
 - the files in SKIP (this script, and `canvas-common/src/legacy.rs`, the one
   place the old names live for compatibility).
 
@@ -126,16 +127,27 @@ def unmask(line, saved):
     return line
 
 
+def marker(line):
+    """The block marker a line is (`rename:keep-begin` or `-end` alone in a
+    comment), else None."""
+    bare = line.strip()
+    for token in ("<!--", "-->", "//", "/*", "*/", "#"):
+        bare = bare.replace(token, " ")
+    bare = bare.strip()
+    return bare if bare in ("rename:keep-begin", "rename:keep-end") else None
+
+
 def rename_text(path, text):
     rust = path.endswith(".rs")
     env = "crate::env" if path.startswith("crates/canvas-common/") else "canvas_common::env"
     out = []
     keeping = False
     for line in text.splitlines(keepends=True):
-        if "rename:keep-begin" in line:
+        mark = marker(line)
+        if mark == "rename:keep-begin":
             keeping = True
         if keeping or "rename:keep" in line:
-            if "rename:keep-end" in line:
+            if mark == "rename:keep-end":
                 keeping = False
             out.append(line)
             continue

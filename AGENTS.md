@@ -7,6 +7,13 @@ agents. Rust workspace, edition 2024, Windows only for the desktop
 (an iPhone client and a macOS mock exist). This file is the short version of
 how to work here; the in-depth guide is [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
+<!-- rename:keep-begin -->
+Atelier was called Copilot Canvas. A branch made before the rename runs
+`python3 tools/rename-to-atelier.py` before merging (docs/DEVELOPMENT.md §7);
+old names live only in `canvas_common::legacy` and on `rename:keep` lines;
+read variables with `canvas_common::env::var`.
+<!-- rename:keep-end -->
+
 ## Read first
 
 1. This file.
