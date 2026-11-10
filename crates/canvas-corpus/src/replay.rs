@@ -180,19 +180,23 @@ fn cells(snapshot: &Snapshot) -> Vec<Vec<Run8>> {
 /// The repaint round trip (docs/VM-SESSIONS.md A2c, a VM session's gap
 /// reset): the recording's last screen on `from`, repainted into a fresh `to`
 /// of its size. `None` when they agree (cells, links, cursor and modes on one
-/// engine; text, cursor and modes between two), else what differs.
+/// engine; between two, the text, cursor and modes match the source screen or
+/// how `to` itself draws the recording: engines differ, e.g. on a keycap's
+/// variation selector), else what differs.
 pub fn repaint_round_trip(from: Engine, to: Engine, recording: &Recording) -> Result<Option<String>> {
     let (emu, _) = play(from, recording)?;
     let before = emu.snapshot();
     let mut fresh = new_emulator(to, before.cols, before.rows)?;
     fresh.feed(&emulator::replay::repaint(&before), &mut EventLog::default());
     let after = fresh.snapshot();
+    let native = if from == to { None } else { Some(play(to, recording)?.0.snapshot()) };
     let text = |s: &Snapshot| s.lines.iter().map(|row| row_text(row).trim_end().to_owned()).collect::<Vec<_>>();
-    if text(&after) != text(&before) {
+    let looks = |s: &Snapshot| (s.cursor, s.cursor_shape, s.modes);
+    if text(&after) != text(&before) && native.as_ref().is_none_or(|n| text(&after) != text(n)) {
         let row = text(&before).iter().zip(text(&after)).position(|(a, b)| *a != b).unwrap_or(0);
         return Ok(Some(format!("row {row}: {:?} came back as {:?}", text(&before).get(row).cloned().unwrap_or_default(), text(&after).get(row).cloned().unwrap_or_default())));
     }
-    if (after.cursor, after.cursor_shape, after.modes) != (before.cursor, before.cursor_shape, before.modes) {
+    if looks(&after) != looks(&before) && native.as_ref().is_none_or(|n| looks(&after) != looks(n)) {
         return Ok(Some(format!("cursor and modes {:?} came back as {:?}", (before.cursor, before.cursor_shape, mode_names(before.modes)), (after.cursor, after.cursor_shape, mode_names(after.modes)))));
     }
     if from == to {
