@@ -6,7 +6,8 @@
 //!
 //! This is the interface the lead wires: [`render`] (the profile's format:
 //! [`render`](mod@render)), [`decide`] (the engine: [`rules`]) and [`serve`]
-//! (the forward proxy: module `proxy`).
+//! (the forward proxy: module `proxy`), and the stand-in of a `vm::local`
+//! sandbox ([`standin`], [`Standin`], [`proxy_env`]).
 
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -19,8 +20,10 @@ use super::provider::{EgressDecision, EgressPolicy, HeaderFromSecret, Secret};
 mod proxy;
 pub mod render;
 pub mod rules;
+pub mod standin;
 
 pub use render::hub_host;
+pub use standin::{Standin, proxy_env, standin};
 
 /// What a profile's placeholders are filled with at a claim: `{{box.branch}}`,
 /// `{{box.repo}}` (the pack's repository key), `{{box.id}}`, `{{sandbox}}`,
