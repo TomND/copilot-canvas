@@ -56,6 +56,8 @@ pub fn run(exe: &Path) -> Result<()> {
         shut_down(&pooled);
         result
     });
+    // The owner's `--real` scenario, on local sandboxes (its own instance and lane).
+    let result = result.and_then(|()| crate::vm_real::run(&instance, true, "copilot", None));
     // Whatever happened: no sandbox's process (a satellite, an agent) outlives the probe.
     for folder in ["sandboxes", "pool-sandboxes"] {
         let local = canvas_agents::vm::local::Local::new(root.join(folder));

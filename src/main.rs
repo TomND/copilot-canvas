@@ -22,6 +22,7 @@ mod test_shell;
 mod vm_cli;
 mod vm_lane;
 mod vm_probe;
+mod vm_real;
 #[cfg(windows)]
 mod uia;
 #[cfg(target_os = "linux")]
@@ -357,7 +358,7 @@ fn parse() -> Result<Args> {
             "--canvas" => args.canvas = Some(PathBuf::from(value("--canvas")?)),
             "--cwd" => args.cwd = Some(PathBuf::from(value("--cwd")?)),
             "--remote" => args.remote = Some(value("--remote")?),
-            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--pulse" | "--unread" | "--sent" | "--qr" | "--mine" | "--tree" | "--all" | "--internal" | "--undo" | "--with-todos" | "--detach" | "--lite" | "--self-check" | "--keep" | "--clone" | "--prepare" | "--start" | "--discard" => {
+            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--pulse" | "--unread" | "--sent" | "--qr" | "--mine" | "--tree" | "--all" | "--internal" | "--undo" | "--with-todos" | "--detach" | "--lite" | "--self-check" | "--keep" | "--clone" | "--prepare" | "--start" | "--discard" | "--real" | "--dry-run" => {
                 args.flags.push(arg.trim_start_matches("--").to_owned())
             }
             "--" => {
@@ -905,6 +906,7 @@ fn real_main() -> Result<()> {
             })
         }
         ["selftest", "automations"] => automations_probe::run(),
+        ["selftest", "vm"] if flag("real") => vm_real::run(&instance, flag("dry-run"), option("agent").as_deref().unwrap_or("copilot"), option("json").as_deref().map(Path::new)),
         ["selftest", "vm"] => vm_probe::run(&std::env::current_exe()?),
         ["selftest", "agent"] if flag("paste") => selftest::agent_paste(option("agent").as_deref()),
         ["selftest", "agent"] => selftest::agent(option("agent").as_deref()),
