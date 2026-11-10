@@ -833,7 +833,7 @@ pub fn standin(hook: &str) -> Result<()> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
     let request: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
-    let answer = match standin_answer(hook, &request) {
+    let answer = match standin_local().and_then(|local| standin_answer(&local, hook, &request)) {
         Ok(answer) => answer,
         Err(error) => json!({ "ok": false, "error": format!("{error:#}") }),
     };
@@ -847,8 +847,7 @@ fn standin_local() -> Result<Local> {
     Ok(Local::new(pack.local_root.context("the stand-in needs local.root in vm.yaml")?))
 }
 
-fn standin_answer(hook: &str, request: &Value) -> Result<Value> {
-    let local = standin_local()?;
+fn standin_answer(local: &Local, hook: &str, request: &Value) -> Result<Value> {
     let s = |key: &str| request[key].as_str().unwrap_or_default().to_owned();
     let strings = |value: &Value| -> Vec<String> { value.as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default() };
     Ok(match hook {
@@ -878,11 +877,11 @@ fn standin_answer(hook: &str, request: &Value) -> Result<Value> {
             json!({ "ok": true, "code": code, "stdout": b64.encode(stdout), "stderr": crate::vm::hooks::first_line(&stderr) })
         }
         "suspend" => {
-            Provider::suspend(&local, &s("sandbox"))?;
+            Provider::suspend(local, &s("sandbox"))?;
             json!({ "ok": true })
         }
         "resume" => {
-            Provider::resume(&local, &s("sandbox"))?;
+            Provider::resume(local, &s("sandbox"))?;
             json!({ "ok": true })
         }
         "delete" => {
@@ -1372,6 +1371,40 @@ mod tests {
         assert!(Provider::images(&broken).unwrap_err().to_string().contains("ATELIER_VM_TEST_FAIL"), "a malformed knob fails every call");
         assert_eq!(Faults::parse("", " 25 ").unwrap(), Faults { latency_ms: 25, ..Default::default() });
         assert!(Faults::parse("", "soon").is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_stand_in_answers_the_hooks_with_these_sandboxes() {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let (root, local) = fresh();
+        let claim = standin_answer(&local, "claim", &json!({ "box": "box-1", "repo": "contoso-app", "url": "https://example.com/app.git", "branch": "atelier/x", "base": "main" })).unwrap();
+        let id = claim["sandbox"].as_str().unwrap().to_owned();
+        assert!(claim["ok"] == true && valid_id(&id) && Path::new(claim["cwd"].as_str().unwrap()).is_dir(), "{claim}");
+
+        let shell = standin_answer(&local, "shell-command", &json!({ "sandbox": id, "argv": ["copilot", "--resume"], "env": { "K": "V" } })).unwrap();
+        let argv: Vec<&str> = shell["argv"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(argv[1..], ["vm-hook-standin", "run", "--sandbox", id.as_str(), "--env", "K=V", "--", "copilot", "--resume"]);
+
+        let exec = standin_answer(&local, "exec", &json!({ "sandbox": id, "argv": helper("echo"), "stdin": b64.encode("from the hub") })).unwrap();
+        assert_eq!(exec["code"], 0);
+        assert!(String::from_utf8_lossy(&b64.decode(exec["stdout"].as_str().unwrap()).unwrap()).contains("stdin=from the hub"));
+
+        // The suspend and resume hooks freeze and thaw the sandbox's processes; delete ends them.
+        let (mut child, count) = ticking(&local, &id);
+        let procs = local.processes(&id).unwrap();
+        assert_eq!(standin_answer(&local, "suspend", &json!({ "sandbox": id })).unwrap()["ok"], true);
+        let frozen_at = silent(&count);
+        assert_eq!(standin_answer(&local, "resume", &json!({ "sandbox": id })).unwrap()["ok"], true);
+        wait_for("no output after the resume hook", || count.load(SeqCst) > frozen_at + 2);
+        assert_eq!(standin_answer(&local, "delete", &json!({ "sandbox": id })).unwrap()["ok"], true);
+        child.wait().unwrap();
+        assert!(!procs.iter().any(Proc::alive) && local.list().is_empty());
+        assert!(standin_answer(&local, "delete", &json!({ "sandbox": id })).is_err(), "the hook says when there is no such sandbox");
+        assert!(standin_answer(&local, "suspend", &json!({ "sandbox": "sbx-000000000000" })).is_err());
+        assert_eq!(standin_answer(&local, "image", &json!({ "repo": "contoso-app" })).unwrap()["image"], "local-contoso-app");
+        assert!(standin_answer(&local, "reboot", &json!({})).is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 }
