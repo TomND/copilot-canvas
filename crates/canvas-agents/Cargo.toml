@@ -27,5 +27,14 @@ canvas-sys.workspace = true
 windows.workspace = true
 windows-sys.workspace = true
 
+# `vm::aca` (the sandboxes' REST API), with the TLS canvas-push uses: the
+# system's on macOS and Windows, rustls with ring on Linux (no OpenSSL).
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "http2", "native-tls"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "http2", "rustls-no-provider"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+
 [dev-dependencies]
 portable-pty.workspace = true
