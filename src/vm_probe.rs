@@ -535,10 +535,15 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     step("a VM box leases the warm VM: resumed, its branch prepared, its satellite linked, the agent drawn here");
     let routing = serde_json::json!({ "canvas": CANVAS, "groups": [], "members": {}, "passive": [], "no_messages": [], "names": { BOX: "Pooled box" }, "agents": { BOX: "copilot" } });
     watch.conn.tx.send(ClientMsg::Routing { json: routing.to_string() })?;
+    // The box is in a group with a folder here: its notes and instructions are synced into the guest.
+    let group_dir = root.join("pool-group");
+    std::fs::create_dir_all(group_dir.join("ai-docs"))?;
+    std::fs::write(group_dir.join("ai-docs").join("GOALS.md"), "hub goals\n")?;
+    let group = canvas_model::doc::Group { id: "g-probe".into(), name: "Probe group".into(), folder: Some(group_dir.display().to_string()), ..Default::default() };
     let mut node: canvas_model::doc::Node = serde_json::from_value(serde_json::json!({ "id": BOX, "kind": "session", "name": "Pooled box", "x": 0, "y": 0, "agent": "copilot", "fresh": true }))?;
     node.placement = Some(canvas_model::vm::Placement::Vm(Box::new(canvas_model::vm::VmPlacement { repo: "probe-app".into(), branch: Some("atelier/pool".into()), ..Default::default() })));
     node.cwd = Some(work.display().to_string());
-    let launch = canvas_model::launch::agent_launch(&node, &Default::default(), None, None, None, false);
+    let launch = canvas_model::launch::agent_launch(&node, &Default::default(), Some(&group), None, None, false);
     watch.conn.tx.send(ClientMsg::Subscribe8 { ids: vec![BOX.into()], focused: Some(BOX.into()) })?;
     watch.conn.tx.send(ClientMsg::Launch { id: BOX.into(), kind: LaunchKind::Agent(Box::new(launch)), cwd: work.display().to_string(), cols: 100, rows: 30 })?;
     anyhow::ensure!(
@@ -604,6 +609,27 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
         std::fs::read_dir(&items).is_ok_and(|e| e.flatten().any(|i| std::fs::read_to_string(i.path().join("meta.json")).is_ok_and(|m| m.contains(BOX) && m.contains("Written behind the satellite"))))
     })?;
 
+    step("the canvas's files are in the guest: its plugin, the group's notes, its instructions with the guest's paths; the agent was started with them");
+    let roots = ".atelier/vm/roots";
+    let guest_file = |rel: &str| local.get_file(&member.id, &format!("{roots}/{rel}"), 1 << 20).ok().map(|b| String::from_utf8_lossy(&b).into_owned());
+    wait_file("the canvas's plugin did not reach the guest", 30, || guest_file("plugin/plugin.json").is_some_and(|t| t.contains("atelier")))?;
+    anyhow::ensure!(guest_file("notes/probe-group/ai-docs/GOALS.md").as_deref() == Some("hub goals\n"), "the group's notes in the guest");
+    let instructions = guest_file("instructions/probe-group/canvas-group.instructions.md").unwrap_or_default();
+    anyhow::ensure!(instructions.contains("/vm/roots/notes/probe-group/ai-docs") && !instructions.contains(&group_dir.display().to_string()), "the instructions name guest paths: {instructions}");
+    #[cfg(unix)]
+    {
+        let agent = local.processes(&member.id)?.into_iter().filter_map(|p| canvas_sys::process::process_argv(p.pid)).find(|argv| argv.iter().any(|a| a == "--session-id"));
+        let argv = agent.context("the agent's command line")?;
+        let plugin = argv.windows(2).find(|w| w[0] == "--plugin-dir").map(|w| w[1].clone()).unwrap_or_default();
+        anyhow::ensure!(plugin.ends_with("/vm/roots/plugin") && !plugin.contains("%ROOTS%"), "the agent loads the synced plugin: {argv:?}");
+    }
+
+    step("a note written in the guest's group notes comes back to the group's folder; one changed here reaches the guest");
+    local.put_file(&member.id, &format!("{roots}/notes/probe-group/ai-docs/from-guest.md"), b"written in the guest\n", 0o644)?;
+    wait_file("the guest's note did not reach the group's folder", 20, || std::fs::read_to_string(group_dir.join("ai-docs").join("from-guest.md")).is_ok_and(|t| t == "written in the guest\n"))?;
+    std::fs::write(group_dir.join("ai-docs").join("GOALS.md"), "hub goals, changed here\n")?;
+    wait_file("the changed note did not reach the guest", 20, || guest_file("notes/probe-group/ai-docs/GOALS.md").as_deref() == Some("hub goals, changed here\n"))?;
+
     step("the pool is filled again behind the leased VM");
     wait_file("the pool was not filled again", 60, || pool().iter().any(|m| m.id != member.id))?;
 
@@ -668,7 +694,7 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     }
     wait_file("the stop was not recorded in the launch", 10, || intent_now(instance).is_ok_and(|i| i.terminal == 0))?;
     anyhow::ensure!(local.get(&member.id).is_ok_and(|s| !s.suspended), "the VM stays");
-    let launch = canvas_model::launch::agent_launch(&node, &Default::default(), None, None, None, false);
+    let launch = canvas_model::launch::agent_launch(&node, &Default::default(), Some(&group), None, None, false);
     watch.view = TermView::default();
     watch.conn.tx.send(ClientMsg::Launch { id: BOX.into(), kind: LaunchKind::Agent(Box::new(launch)), cwd: work.display().to_string(), cols: 100, rows: 30 })?;
     anyhow::ensure!(watch.pump(Instant::now() + Duration::from_secs(30), |w| w.screen().contains("Fake Copilot")), "the box did not start again in its VM:\n{}", watch.screen());

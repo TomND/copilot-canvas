@@ -29,6 +29,8 @@ pub mod secrets;
 pub mod session_store;
 pub mod spike;
 pub mod store;
+pub mod sync;
+pub mod target;
 pub mod thin;
 pub mod tls;
 
@@ -198,6 +200,8 @@ pub fn run(home: PathBuf, log: impl Fn(String) + Send + Sync + 'static, wake: im
     let mut last_tick: Option<Instant> = None;
     let mut since_ms = now_ms();
     let building: Arc<Mutex<std::collections::HashSet<String>>> = Arc::default();
+    let syncing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut last_sync: Option<Instant> = None;
     loop {
         std::thread::sleep(Duration::from_millis(500));
         let Some((pack, status)) = loaded(&home) else {
@@ -240,6 +244,30 @@ pub fn run(home: PathBuf, log: impl Fn(String) + Send + Sync + 'static, wake: im
         }
         // The boxes' terminals: their launch's steps, their programs started once their satellites link.
         links.progress();
+        // The canvas's files in the guests of linked VM boxes (one pass at a time, every 3 s).
+        if pack.provider != pack::ProviderKind::Hooks && last_sync.is_none_or(|t| t.elapsed() >= Duration::from_secs(3)) && !syncing.load(std::sync::atomic::Ordering::Acquire) {
+            last_sync = Some(Instant::now());
+            let mut boxes: std::collections::BTreeMap<String, Vec<launch::Intent>> = std::collections::BTreeMap::new();
+            for intent in launch::all(&home).into_iter().filter(|i| i.state == VmState::Running && !i.sandbox.is_empty()) {
+                boxes.entry(intent.sandbox.clone()).or_default().push(intent);
+            }
+            boxes.retain(|sandbox, _| links.linked(sandbox));
+            if !boxes.is_empty() {
+                syncing.store(true, std::sync::atomic::Ordering::Release);
+                let (home, pack, links, log, syncing) = (home.clone(), pack.clone(), links.clone(), log.clone(), syncing.clone());
+                let _ = std::thread::Builder::new().name("vm-sync".into()).spawn(move || {
+                    let user_home = dirs::home_dir().unwrap_or_default();
+                    for (sandbox, intents) in boxes {
+                        let Some(guest) = links.guest_roots(&sandbox) else { continue };
+                        let roots = sync::roots_for(&home, &pack, &user_home, &guest, &intents);
+                        if let Err(error) = links.sync(&sandbox, &roots) {
+                            log(format!("VM {sandbox}: the canvas's files were not synced: {}", hooks::first_line(&format!("{error:#}"))));
+                        }
+                    }
+                    syncing.store(false, std::sync::atomic::Ordering::Release);
+                });
+            }
+        }
         if last_tick.is_none_or(|t| t.elapsed() >= Duration::from_secs(10)) {
             last_tick = Some(Instant::now());
             let now = now_ms();

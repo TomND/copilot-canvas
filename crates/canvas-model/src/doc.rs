@@ -516,13 +516,10 @@ impl Group {
 /// (Copilot through `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, OpenCode as an
 /// instructions file, Claude Code as an appended system prompt). Returns the
 /// instructions directory.
-pub fn prepare_group_folders(group: &Group) -> Result<Option<PathBuf>> {
-    let (Some(folder), Some(docs), Some(outputs)) = (group.folder.as_ref(), group.ai_docs(), group.outputs()) else { return Ok(None) };
-    std::fs::create_dir_all(&docs).with_context(|| format!("cannot create {}", docs.display()))?;
-    std::fs::create_dir_all(&outputs).with_context(|| format!("cannot create {}", outputs.display()))?;
-    let instructions = PathBuf::from(folder).join(".canvas");
-    std::fs::create_dir_all(&instructions)?;
-    let text = format!(
+/// A group's instructions for its sessions, naming its notes folders (paths
+/// of the machine the session runs on: a VM session's are the guest's).
+pub fn group_instructions_text(name: &str, ai_docs: &str, outputs: &str) -> String {
+    format!(
         "---\napplyTo: '**'\n---\n# Canvas group: {name}\n\nYou are working in a session of the \"{name}\" group in Atelier.\n\n\
          ## Notes (the canvas notebook)\n\
          - Notes for other agents (plans, research, investigation logs, context): `{ai_docs}`\n\
@@ -532,10 +529,17 @@ pub fn prepare_group_folders(group: &Group) -> Result<Option<PathBuf>> {
          ## Todos\n\
          - The canvas keeps todo boards. Run `atelier todo prime` to see the boards linked to this group and how to use them; change todos only with `atelier todo …`.\n",
         // One line, whatever the name holds (a line end would start a heading of its own).
-        name = group.name.split_whitespace().collect::<Vec<_>>().join(" ").replace('"', "'"),
-        ai_docs = docs.display(),
-        outputs = outputs.display()
-    );
+        name = name.split_whitespace().collect::<Vec<_>>().join(" ").replace('"', "'"),
+    )
+}
+
+pub fn prepare_group_folders(group: &Group) -> Result<Option<PathBuf>> {
+    let (Some(folder), Some(docs), Some(outputs)) = (group.folder.as_ref(), group.ai_docs(), group.outputs()) else { return Ok(None) };
+    std::fs::create_dir_all(&docs).with_context(|| format!("cannot create {}", docs.display()))?;
+    std::fs::create_dir_all(&outputs).with_context(|| format!("cannot create {}", outputs.display()))?;
+    let instructions = PathBuf::from(folder).join(".canvas");
+    std::fs::create_dir_all(&instructions)?;
+    let text = group_instructions_text(&group.name, &docs.display().to_string(), &outputs.display().to_string());
     let file = instructions.join("canvas-group.instructions.md");
     if std::fs::read_to_string(&file).ok().as_deref() != Some(text.as_str()) {
         std::fs::write(&file, text)?;
