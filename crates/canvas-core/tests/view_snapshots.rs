@@ -542,6 +542,29 @@ fn tasks_selected_card_with_details() {
     check("tasks-details", &mut app, BOTH);
 }
 
+/// With a VM pack: a card's details say where its board's sessions start
+/// (here the board's *Start on VM* policy), and *Start on VM…* opens the
+/// session dialog on a VM with the todo's branch and a first prompt that
+/// ends with a pull request.
+#[test]
+fn tasks_start_on_vm() {
+    let mut app = app(canvas_core::demo::demo_doc(CWD), false);
+    with_vm_pack(&mut app);
+    app.bus.todos = Some(canvas_model::todos::demo_book());
+    app.switch_space(canvas_core::spaces::Space::Tasks);
+    app.tasks.pan = (-2, -1);
+    let book = app.bus.todos.as_mut().unwrap();
+    let board = book.todo("WI-002").map(|t| t.board.clone()).unwrap();
+    let root = book.root(&board).map(|b| b.id.clone()).unwrap();
+    let policy = canvas_model::todos::AgentPolicy { start_on_vm: true, ..book.board(&root).unwrap().policy };
+    book.apply(canvas_model::todos::TodoOp::UpdateBoard { board: root.clone(), name: None, prefix: None, wip: None, color: None, notes: None, policy: Some(policy), statuses: None }, &canvas_model::todos::Actor::human(), &canvas_model::todos::Ctx::at(1)).unwrap();
+    app.tasks.board = Some(root);
+    app.notice = None;
+    check_sized("tasks-board-policy-vm", &mut app, Sections { cells: true, painted: false }, (124, 40));
+    app.run(Action::Tasks(canvas_core::tasks::Action::StartSession("WI-002".into())));
+    check_sized("tasks-start-on-vm", &mut app, Sections { cells: true, painted: false }, (124, 40));
+}
+
 /// A group without a board: its ☑ + chip offers the boards to link and a
 /// new board for the group.
 #[test]

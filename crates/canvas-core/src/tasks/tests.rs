@@ -704,12 +704,35 @@ fn start_on_vm_shows_only_with_a_vm_pack_and_prefills_run_on_vm() {
     assert!(vm.on_vm && vm.repo == "contoso-app");
     assert_eq!(vm.branch.text, "atelier/WI-004-docs-for-the-tasks-space");
     assert_eq!(dialog.name.text, "WI-004 Docs for the Tasks space");
+    assert!(dialog.prompt.text.contains("`atelier todo prime`") && dialog.prompt.text.contains("`atelier todo submit WI-004 --pr URL`"), "{}", dialog.prompt.text);
     assert!(rig.app.launching.is_empty() && !rig.sent.try_iter().any(|m| matches!(m, ClientMsg::Launch { .. })), "nothing starts before the dialog's Create");
     // Start a session on this… stays on this machine.
     rig.app.modals.clear();
     flows::run(&mut rig.app, Action::StartSession("WI-004".into()));
     let Some(Modal::NewSession(dialog)) = rig.app.modals.last() else { panic!("the new-session dialog") };
     assert!(!dialog.on_vm());
+}
+
+#[test]
+fn a_boards_start_on_vm_policy_makes_start_a_session_run_on_a_vm() {
+    let mut rig = served();
+    let repo = canvas_model::vm::RepoSummary { key: "contoso-app".into(), ..Default::default() };
+    let board = book(&rig.app).and_then(|b| b.todo("WI-004").and_then(|t| b.root(&t.board)).map(|b| b.id.clone())).unwrap();
+    flows::board_menu(&mut rig.app, &board, (1, 1));
+    let Some(Modal::Menu(menu)) = rig.app.modals.pop() else { panic!("the board's menu") };
+    assert!(!menu.items.iter().any(|i| i.label.starts_with("Sessions start on")), "no VM pack: nothing about VMs");
+    rig.app.bus.vm = Some(canvas_model::vm::VmView { pack: canvas_model::vm::PackSummary { repos: vec![repo], sizes: vec!["S".into()], ..Default::default() }, ..Default::default() });
+    flows::board_menu(&mut rig.app, &board, (1, 1));
+    let Some(Modal::Menu(menu)) = rig.app.modals.pop() else { panic!("the board's menu") };
+    let switch = menu.items.iter().find(|i| i.label == "Sessions start on: this machine").expect("the policy row").action.clone();
+    rig.app.modals.clear();
+    rig.app.run(switch);
+    assert!(book(&rig.app).and_then(|b| b.board(&board)).is_some_and(|b| b.policy.start_on_vm), "applied at once");
+    assert!(ops(&rig.sent).iter().any(|o| o["op"] == "update_board" && o["policy"]["start_on_vm"] == true), "and sent");
+    flows::run(&mut rig.app, Action::StartSession("WI-004".into()));
+    let Some(Modal::NewSession(dialog)) = rig.app.modals.last() else { panic!("the new-session dialog") };
+    assert!(dialog.on_vm(), "the board's policy");
+    assert!(dialog.prompt.text.contains("atelier todo submit"));
 }
 
 #[test]

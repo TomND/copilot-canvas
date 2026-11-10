@@ -248,7 +248,7 @@ pub fn board_menu(app: &mut App, board: &str, at: (u16, u16)) {
     let policy = b.policy;
     let proposals = policy.agent_adds == AddPolicy::Proposed;
     let set_policy = |p: AgentPolicy| op(TodoOp::UpdateBoard { board: b.id.clone(), name: None, prefix: None, wip: None, color: None, notes: None, policy: Some(p), statuses: None });
-    let items = vec![
+    let mut items = vec![
         item("New todo…", "N", Action::NewTodo { lane: b.id.clone(), status: Status::Backlog }, true),
         item("Rename…", "", Action::Ask(Ask::RenameBoard(b.id.clone())), true),
         item("Prefix…", &b.prefix, Action::Ask(Ask::Prefix(b.id.clone())), top),
@@ -262,6 +262,11 @@ pub fn board_menu(app: &mut App, board: &str, at: (u16, u16)) {
         item("Export JSON Canvas…", "", Action::Export(b.id.clone()), true),
         item("Delete board", if todos > 0 { "empty boards only" } else { "" }, Action::ConfirmDeleteBoard(b.id.clone()), todos == 0),
     ];
+    // Where *Start a session on this…* runs its sessions (only with a VM pack).
+    if app.bus.vm.is_some() {
+        let label = if policy.start_on_vm { format!("Sessions start on: {} VM", crate::vms::VM_GLYPH) } else { "Sessions start on: this machine".to_owned() };
+        items.insert(6, item(&label, "switch", set_policy(AgentPolicy { start_on_vm: !policy.start_on_vm, ..policy }), top));
+    }
     app.tasks.board = Some(book(app).and_then(|bk| bk.root(board)).map_or(b.id.clone(), |r| r.id.clone()));
     app.open_menu(at.0, at.1, (b.name.clone(), items));
 }
@@ -354,6 +359,12 @@ pub fn start_prompt(id: &str, title: &str) -> String {
     format!("Work on {id} ({title}). Run `atelier todo show {id}`, then `atelier todo claim {id}`.")
 }
 
+/// The first prompt of a session started on a todo on a VM: it works on its
+/// own branch there, so it ends with a pull request it submits.
+pub fn vm_start_prompt(id: &str, title: &str) -> String {
+    format!("Work on {id} ({title}). Run `atelier todo prime`, `atelier todo show {id}`, then `atelier todo claim {id}`. When it is done, push this branch, open a pull request and submit it with `atelier todo submit {id} --pr URL`.")
+}
+
 /// A free spot for a new session box in a group.
 fn group_slot(app: &App, group: &str) -> Option<(i32, i32)> {
     let g = app.doc.group(group)?;
@@ -363,8 +374,17 @@ fn group_slot(app: &App, group: &str) -> Option<(i32, i32)> {
 
 /// *Start a session on this…*: the new-session dialog, in the board's
 /// linked group, named after the todo, with a first prompt to show and
-/// claim it. Nothing starts before you confirm the dialog.
+/// claim it; on a VM when the board's policy says so (and there is a VM
+/// pack). Nothing starts before you confirm the dialog.
 pub fn start_session(app: &mut App, id: &str) {
+    let on_vm = app.bus.vm.is_some() && book(app).and_then(|b| b.todo(id).and_then(|t| b.root(&t.board))).is_some_and(|b| b.policy.start_on_vm);
+    if on_vm {
+        return start_on_vm(app, id);
+    }
+    open_session_dialog(app, id);
+}
+
+fn open_session_dialog(app: &mut App, id: &str) {
     let Some((id, title, group)) = book(app).and_then(|b| b.todo(id).map(|t| (t.id.clone(), t.title.clone(), b.event_group(&t.board).map(str::to_owned)))) else {
         return app.notify(format!("There is no todo {id}."), true);
     };
@@ -380,13 +400,14 @@ pub fn start_session(app: &mut App, id: &str) {
     }
 }
 
-/// *Start on VM…*: [`start_session`] with *Run on: VM* and a branch named
-/// after the todo (`atelier/DEC-031-short-title`); only with a VM pack.
+/// *Start on VM…*: the session dialog with *Run on: VM*, a branch named
+/// after the todo (`atelier/DEC-031-short-title`) and a first prompt that
+/// ends with a pull request; only with a VM pack.
 pub fn start_on_vm(app: &mut App, id: &str) {
     let Some(title) = book(app).and_then(|b| b.todo(id).map(|t| t.title.clone())) else {
         return app.notify(format!("There is no todo {id}."), true);
     };
-    start_session(app, id);
+    open_session_dialog(app, id);
     if let Some(Modal::NewSession(dialog)) = app.modals.last_mut()
         && let Some(vm) = dialog.vm.as_mut()
         && !vm.repos.is_empty()
@@ -394,6 +415,7 @@ pub fn start_on_vm(app: &mut App, id: &str) {
         vm.on_vm = true;
         vm.branch = TextInput::new(&canvas_model::vm::branch_for_todo(id, &title));
         vm.branch_edited = true;
+        dialog.prompt = TextInput::new(&vm_start_prompt(id, &title));
     }
 }
 

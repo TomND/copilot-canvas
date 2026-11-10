@@ -1,0 +1,45 @@
+# tasks-board-policy-vm (124x40 cells)
+## cells (the TUI screen)
+ ◆ Atelier   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ☁ VMs   ▢ Single   ?   ⏻ Quit               3 sessions
+    ☑ TASKS                      │▌                                       │┌───────────────────────────────────────────────┐
+▌☑  / filter        all types ▾  │  ╭─ Canvas App · WI ─ ◫ Canvas project ││ ▦ Canvas App · WI   ≡                         │
+                                 │  │ Proposed 1               │Backlog 1 ││ 1 of 6 done · ⚑ 1 blocked                     │
+ ◷  NEEDS YOU 3                  │  │ ▌▲ WI-006                │▌¶ WI-007 ││ Groups   Canvas project                       │
+     ◇ WI-006 Show tod… proposed │  │ ▌Show todo counts on     │▌Keyboard ││ Agents   add todos directly, never close them │
+ ⧉   ◇ DEC-007 Cache d… proposed │  │ ▌group chips             │▌cheat she││ Sessions start on a ☁ VM                      │
+     ◎ WI-003 Todo bo… in review │  │ ▌◇                       │▌         ││ Proposed 1                                    │
+ ⌁                               │  │                          │          ││ Backlog  1                                    │
+    READY 3                      │  │                          │          ││ Todo     2                                    │
+ ✦   ✱ DEC-003 Crash when a… !!! │  │                          │          ││ In prog… 1/2                                  │
+     ✚ DEC-005 Parse the com… !! │  │                          │          ││ In revi… 1                                    │
+ ◈   ¶ WI-004 Docs for the Ta… ! │  │                          │          ││ Done     1                                    │
+                                 │  │                          │          ││  + New todo   + New board                     │
+ ⇄  CLAIMED BY SESSIONS 2        │  │                          │          ││                                               │
+     ◫ Build session canvas      │  │                          │          ││ KEYS                                          │
+ ≡     ✚ WI-002 Gen… In progress │  │                          │          ││ Click · arrows      select a card (details h… │
+     ◫ Review implementation     │  │                          │          ││ Enter · Space       details · peek            │
+ ✉     ✚ WI-003 Todo … In review │  │                          │          ││ Drag a card         another column, lane, bo… │
+                                 │  │                          │          ││ N · A · D · Del     new · accept · decline ·… │
+    BOARDS 2                     │  │                          │          ││ E · R               edit body · rename        │
+     ▦ Canvas App · WI         5 │  │                          │          ││ Drag title · ◢      move · resize a board     │
+     ▦ Decomps · DEC           3 │  │                          │          ││ Wheel · Ctrl+arrows pan (Shift+wheel: sidewa… │
+       └ Parser                2 │  │                          │          ││ + - · Alt+wheel · F zoom · fit all boards     │
+     + New board                 │  │                          │          ││ / · right-click     filter · menus            │
+                                 │  │                          │          ││                                               │
+                                 │  │                          │          ││                                               │
+                                 │  │                          │          ││                                               │
+                                 │  │                          │          ││                                               │
+                                 │  │                          │          ││                                               │
+                                 │  │                          │          ││                                               │
+                                 │  │                          │          ││                                               │
+                                 │  │                          │          ││                                               │
+                                 │  │                          │          ││                                               │
+                                 │  │                          │          ││                                               │
+                                 │  │                          │          ││                                               │
+                                 │  │                          │          ││                                               │
+                                 │  │                          │          ││                                               │
+                                 │  │                −   100%   +   Fit   │└───────────────────────────────────────────────┘
+ Ctrl+1 Canvas · Ctrl+2 Notebook · Ctrl+3 Tasks · Alt+, back · Alt+. forward · Ctrl+P go to · F6 focus · Alt+1…9 views · ?…
+## gpu view model
+view cursor=none modal=none banner=None
+canvas none

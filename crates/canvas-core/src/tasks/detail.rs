@@ -194,6 +194,9 @@ pub fn draw_info(app: &mut App, buf: &mut Buffer, area: Rect) -> Option<(u16, u1
             canvas_model::todos::AddPolicy::Direct => "add todos directly",
             canvas_model::todos::AddPolicy::Proposed => "propose todos",
         }, fg(TEXT)), seg(if board.policy.agents_may_close { ", may close them" } else { ", never close them" }, fg(TEXT))]);
+        if app.bus.vm.is_some() {
+            out.field("Sessions", vec![seg(if board.policy.start_on_vm { format!("start on a {} VM", crate::vms::VM_GLYPH) } else { "start on this machine".to_owned() }, fg(TEXT))]);
+        }
         for column in &bv.columns {
             let count = match column.wip {
                 Some(wip) => format!("{}/{wip}", column.count),

@@ -144,7 +144,11 @@ owner's note that VM sessions are optional and local stays the default.
       completed with *Run new sessions on* in Settings (canvas: this machine / ☁ VM; a group: also the canvas's) and
       a subsession of a VM box defaulting to a VM for its parent's repository and size; snapshot
       `group-defaults-run-on`. Not built: the MCP preset pick (the box's MCP servers go to the guest, VM-38)
-- [ ] VM-44 Tasks · VM-47 client exclusions · VM-48 parity rows 57–62 and the self-test step · VM-49 docs
+- [x] VM-44 Tasks: *Start on VM…* (Phase 1) gains a first prompt that ends with a pull request (`todo prime`, `show`,
+      `claim`, then `todo submit ID --pr URL`); a board's *Sessions start on* policy (`AgentPolicy::start_on_vm`, in
+      its menu and panel, only with a pack) makes *Start a session on this…* open it on a VM; snapshots
+      `tasks-start-on-vm`, `tasks-board-policy-vm`
+- [ ] VM-47 client exclusions · VM-48 parity rows 57–62 and the self-test step · VM-49 docs
 - [ ] Exit: parity rows pass, snapshots read, self-test step in both clients
 
 ### 5: hardening

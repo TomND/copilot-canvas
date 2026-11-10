@@ -1,0 +1,71 @@
+# tasks-start-on-vm (124x40 cells)
+## cells (the TUI screen)
+ ◆ Atelier   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ☁ VMs   ▢ Single   ?   ⏻ Quit               3 sessions
+    ☑ TASKS                      │▌                                       │┌───────────────────────────────────────────────┐
+▌☑  / filter        all types ▾  │  ╭─ Canvas App · WI ─ ◫ Canvas project ││ ▦ Canvas App · WI   ≡                         │
+                                 │  │ Proposed 1               │Backlog 1 ││ 1 of 6 done · ⚑ 1 blocked                     │
+ ◷  NEEDS YOU 3                  │  │ ▌▲ WI-006                │▌¶ WI-007 ││ Groups   Canvas project                       │
+     ◇ WI-006 Show tod… proposed │  │ ▌Show todo counts on     │▌Keyboard ││ Agents   add todos directly, never close them │
+ ⧉   ◇ DEC-007 Cache d… proposed │  │ ▌group chips             │▌cheat she││ Sessions start on a ☁ VM                      │
+     ◎ WI-003 Todo b╔═ New session ════════════════════════════════════════════════════════════════════╗                   │
+ ⌁                  ║                                                                                  ║                   │
+    READY 3         ║  Name           WI-002 Gentle momentum when panning                              ║                   │
+ ✦   ✱ DEC-003 Crash║                                                                                  ║                   │
+     ✚ DEC-005 Parse║  Folder         C:\work\canvas                           Browse…    Recent ▾     ║                   │
+ ◈   ¶ WI-004 Docs f║                                                                                  ║                   │
+                    ║                                                                                  ║                   │
+ ⇄  CLAIMED BY SESSI║  Run on         ○ This machine   ◉ ☁ VM                                          ║                   │
+     ◫ Build session║                                                                                  ║                   │
+ ≡     ✚ WI-002 Gen…║  Repository     contoso-app  ◂▸                                    size S  ◂▸    ║a card (details h… │
+     ◫ Review implem║  Branch         atelier/WI-002-gentle-momentum-when-panning                      ║ · peek            │
+ ✉     ✚ WI-003 Todo║                                                                                  ║ column, lane, bo… │
+                    ║  Agent          ◉ GitHub Copilot   ○ OpenCode   ○ Claude Code (not installed)    ║ccept · decline ·… │
+    BOARDS 2        ║                                                                                  ║dy · rename        │
+     ▦ Canvas App · ║  Model          claude-opus-5.5  ▾ · initial default (Claude Opus 5.5)           ║resize a board     │
+     ▦ Decomps · DEC║                                                                                  ║ift+wheel: sidewa… │
+       └ Parser     ║  MCP servers    loading GitHub Copilot's MCP servers…  ▾ choose                  ║fit all boards     │
+     + New board    ║                                                                                  ║· menus            │
+                    ║  First prompt   uest and submit it with `atelier todo submit WI-002 --pr URL`.   ║                   │
+                    ║                                                                                  ║                   │
+                    ║  Tab/↑↓ move · Space/←→ agent · Enter create · Esc cancel · GitHub Copilot per…  ║                   │
+                    ║                                                                                  ║                   │
+                    ║                                                                                  ║                   │
+                    ║   Create & start    Cancel                                                       ║                   │
+                    ╚══════════════════════════════════════════════════════════════════════════════════╝                   │
+                                 │  │                          │          ││                                               │
+                                 │  │                          │          ││                                               │
+                                 │  │                          │          ││                                               │
+                                 │  │                          │          ││                                               │
+                                 │  │                          │          ││                                               │
+                                 │  │                          │          ││                                               │
+                                 │  │                −   100%   +   Fit   │└───────────────────────────────────────────────┘
+ Ctrl+1 Canvas · Ctrl+2 Notebook · Ctrl+3 Tasks · Alt+, back · Alt+. forward · Ctrl+P go to · F6 focus · Alt+1…9 views · ?…
+## gpu view model
+view cursor=73,9 modal=20,7 84x25 banner=None
+canvas none
+## gpu overlay at 20,7
+╔═ New session ════════════════════════════════════════════════════════════════════╗
+║                                                                                  ║
+║  Name           WI-002 Gentle momentum when panning                              ║
+║                                                                                  ║
+║  Folder         C:\work\canvas                           Browse…    Recent ▾     ║
+║                                                                                  ║
+║                                                                                  ║
+║  Run on         ○ This machine   ◉ ☁ VM                                          ║
+║                                                                                  ║
+║  Repository     contoso-app  ◂▸                                    size S  ◂▸    ║
+║  Branch         atelier/WI-002-gentle-momentum-when-panning                      ║
+║                                                                                  ║
+║  Agent          ◉ GitHub Copilot   ○ OpenCode   ○ Claude Code (not installed)    ║
+║                                                                                  ║
+║  Model          claude-opus-5.5  ▾ · initial default (Claude Opus 5.5)           ║
+║                                                                                  ║
+║  MCP servers    loading GitHub Copilot's MCP servers…  ▾ choose                  ║
+║                                                                                  ║
+║  First prompt   uest and submit it with `atelier todo submit WI-002 --pr URL`.   ║
+║                                                                                  ║
+║  Tab/↑↓ move · Space/←→ agent · Enter create · Esc cancel · GitHub Copilot per…  ║
+║                                                                                  ║
+║                                                                                  ║
+║   Create & start    Cancel                                                       ║
+╚══════════════════════════════════════════════════════════════════════════════════╝
