@@ -43,6 +43,7 @@ const HELP: &[(&str, &str)] = &[
     ("Click a stack · double-click", "view its top card · unstack (back to their places)"),
     ("Click an effect (✦ ◉ ✧ ▲)", "clear it (it never starts the session)"),
     ("A · ◎ Agents (top bar) · ◎ frame", "canvas agents: + New, Chat (double-click), settings"),
+    ("☁ VMs (top bar, with a VM pack)", "VM sessions: budget, boxes, waiting starts, images"),
     ("F6 · Ctrl+]", "cycle focus · leave a terminal"),
     ("Shift+PgUp/PgDn", "terminal history"),
     ("Q / Ctrl+Q", "quit (sessions can keep running)"),

@@ -1,6 +1,6 @@
 # vm-details (124x40 cells)
 ## cells (the TUI screen)
- ◆ Atelier   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit
+ ◆ Atelier   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ☁ VMs 1   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit
     SESSIONS                     │▌·     ·     ·     ·     ·     ·     ·  │┌───────────────────────────────────────────────┐
 ▌▤  / filter…                    │  ┏ ☁ Fix the flaky test ━━━━━━┓        ││ ☁ Fix the flaky test                          │
                                  │  ┃ ○ idle                     ┃        ││ ○ idle                                        │

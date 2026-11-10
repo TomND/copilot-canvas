@@ -136,8 +136,12 @@ owner's note that VM sessions are optional and local stays the default.
       git, link, refusals) with Suspend or Resume, Update from main, Cancel start, Start again on a new VM, Delete VM…
       (asks; the barrier's findings then ask again, *Delete anyway* confirms exactly those); the box menu's *VM
       details…* shows it over a running terminal; snapshot `vm-details`. *Open shell* not built yet
-- [ ] VM-41 *Run on* · VM-44 Tasks · VM-45 ☁ VMs panel · VM-47 client exclusions · VM-48 parity rows 57–62 and the
-      self-test step · VM-49 docs
+- [x] VM-45 the toolbar's ☁ VMs (only with a pack; the VMs running; gold while a start waits, the pack has errors
+      or a VM is lost, failed or offline) opens `RightDetail::Vms`: budget, VM boxes (a click shows one's details),
+      waiting starts with *Cancel*, sandboxes, images with *Build now*, the newest refusals; a help row; snapshot
+      `vms-panel`. Not built: orphans' *Adopt* and the pack's findings (their count shows; `vm pack check` lists them)
+- [ ] VM-41 *Run on* · VM-44 Tasks · VM-47 client exclusions · VM-48 parity rows 57–62 and the self-test step ·
+      VM-49 docs
 - [ ] Exit: parity rows pass, snapshots read, self-test step in both clients
 
 ### 5: hardening

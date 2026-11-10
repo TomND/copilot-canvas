@@ -69,6 +69,17 @@ impl crate::app::App {
         self.needs_draw = true;
     }
 
+    /// Asks the service to build `repo`'s image now (the answer is a notice).
+    pub fn vm_build_image(&mut self, repo: String) {
+        self.in_background(
+            move |backend| backend.vm_image_build(&repo).map_err(|e| format!("{e:#}")),
+            |result| match result {
+                Ok(text) => crate::app::AppEvent::Notice { text, error: false },
+                Err(text) => crate::app::AppEvent::Notice { text, error: true },
+            },
+        );
+    }
+
     /// A VM box's menu items: its VM's details, and Suspend or Resume.
     pub fn vm_menu_items(&self, node: &crate::doc::Node) -> Vec<crate::dialogs::MenuItem> {
         use canvas_model::vm::{VmOp, VmState};
@@ -97,6 +108,17 @@ impl crate::app::App {
         }));
         self.needs_draw = true;
     }
+}
+
+/// The toolbar's ☁ VMs (`None` without a pack): the VMs running, and
+/// whether something wants a look (a queued start, pack errors, a VM lost or
+/// failed, offline).
+pub fn button_label(app: &crate::app::App) -> Option<(String, bool)> {
+    use canvas_model::vm::VmState;
+    let view = app.bus.vm.as_ref()?;
+    let attention = view.pack.errors > 0 || !view.queued.is_empty() || view.boxes.values().any(|b| matches!(b.state, VmState::Lost | VmState::Failed | VmState::IntegrationOffline) || b.offline_ms > 0);
+    let running = view.boxes.values().filter(|b| matches!(b.state, VmState::Running | VmState::IntegrationOffline)).count();
+    Some((if running > 0 { format!(" {VM_GLYPH} VMs {running} ") } else { format!(" {VM_GLYPH} VMs ") }, attention))
 }
 
 /// The agents VM sessions run so far (Copilot CLI; docs/VM-SESSIONS-PLAN.md

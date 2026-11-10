@@ -210,6 +210,10 @@ pub enum Action {
     VmDelete(String),
     /// A VM box's details, its terminal running or not (its box menu).
     VmDetails(String),
+    /// The ☁ VMs panel (the toolbar's ☁ VMs; only with a VM pack).
+    VmPanel,
+    /// Builds a repository's VM image now (the ☁ VMs panel's *Build now*).
+    VmBuildImage(String),
 }
 
 #[derive(Clone, Debug)]

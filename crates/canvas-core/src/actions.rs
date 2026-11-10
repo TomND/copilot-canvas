@@ -771,6 +771,9 @@ impl App {
                 self.select_node(&id, false);
                 self.right_detail = Some(crate::side::RightDetail::Session(id));
             }
+            Action::VmPanel if self.bus.vm.is_some() => self.right_detail = Some(crate::side::RightDetail::Vms),
+            Action::VmPanel => {}
+            Action::VmBuildImage(repo) => self.vm_build_image(repo),
             Action::NewPassive(group) => self.new_passive(&group),
             Action::PassiveDetail(id) => {
                 self.select_node(&id, false);

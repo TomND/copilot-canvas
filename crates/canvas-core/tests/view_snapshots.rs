@@ -997,6 +997,36 @@ fn vm_details() {
     check_sized("vm-details", &mut app, Sections { cells: true, painted: false }, (124, 40));
 }
 
+/// The toolbar's ☁ VMs (only with a pack; gold while a start waits) and its
+/// panel: the budget, the VM boxes, a start waiting with *Cancel*, the
+/// sandboxes, the images with *Build now*, the newest refusals.
+#[test]
+fn vms_panel() {
+    use canvas_model::vm::{BudgetView, ImageRow, QueuedStart, Refusal, SandboxRow, VmInfo, VmState};
+    let now = canvas_core::paths::now_ms();
+    let mut doc = Doc::default();
+    for (i, (id, name)) in [("v1", "Fix the flaky test"), ("v2", "Upgrade the SDK")].iter().enumerate() {
+        let mut n = node(id, name, 1, 1 + i as i32 * 8);
+        n.placement = Some(canvas_model::vm::Placement::Vm(Box::new(canvas_model::vm::VmPlacement { repo: "contoso-app".into(), ..Default::default() })));
+        doc.nodes.push(n);
+    }
+    doc.view.x = -1;
+    doc.view.y = 0;
+    let mut app = app(doc, false);
+    with_vm_pack(&mut app);
+    let view = app.bus.vm.as_mut().unwrap();
+    view.boxes.insert("v1".into(), VmInfo { state: VmState::Running, repo: "contoso-app".into(), sandbox: "sbx-0123456789ab".into(), ..Default::default() });
+    view.boxes.insert("v2".into(), VmInfo { state: VmState::Queued, repo: "contoso-app".into(), note: "1 of 1 VMs are running".into(), ..Default::default() });
+    view.queued.push(QueuedStart { r#box: "v2".into(), since_ms: now - 125_000, why: "1 of 1 VMs are running".into() });
+    view.budget = BudgetView { running: 1, max_running: 1, cores: 2.0, max_cores: 8.0, today_cents: 37, daily_cents: 2_000 };
+    view.sandboxes.push(SandboxRow { id: "sbx-0123456789ab".into(), role: "session".into(), state: VmState::Running, repo: "contoso-app".into(), size: "M".into(), boxes: vec!["v1".into()], created_ms: now - 50 * 60_000 - 1_000 });
+    view.sandboxes.push(SandboxRow { id: "sbx-ba9876543210".into(), role: "pool".into(), state: VmState::Suspended, repo: "contoso-app".into(), size: "M".into(), boxes: Vec::new(), created_ms: now - 3 * 3_600_000 - 1_000 });
+    view.images.push(ImageRow { repo: "contoso-app".into(), id: "img-1".into(), built_ms: now - 26 * 3_600_000, state: "ready".into(), note: String::new() });
+    view.refusals.push(Refusal { ms: now - 600_000, r#box: "v1".into(), kind: "egress".into(), what: "registry.example.com:443".into(), why: "not in the repository's egress profile".into() });
+    app.run(Action::VmPanel);
+    check_sized("vms-panel", &mut app, Sections { cells: true, painted: false }, (130, 40));
+}
+
 /// A new session in a group that sets its own model: the dialog says so.
 #[test]
 fn new_session_dialog_in_a_group_with_its_own_model() {

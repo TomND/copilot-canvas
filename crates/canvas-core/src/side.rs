@@ -225,6 +225,9 @@ pub enum RightDetail {
     Note(String),
     /// A todo's card (its id; `tasks::draw_detail`).
     Todo(String),
+    /// VM sessions (only with a VM pack): budget, the VM boxes, queued
+    /// starts, sandboxes, images, refusals (the toolbar's ☁ VMs).
+    Vms,
 }
 
 fn enabled_icon(enabled: bool) -> (&'static str, Color) {
