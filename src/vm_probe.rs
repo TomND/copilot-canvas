@@ -596,7 +596,9 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     wait_file("the pool was not filled again", 60, || pool().iter().any(|m| m.id != member.id))?;
 
     step("the service restarts: the box's terminal is adopted again and replayed; nothing stopped in the guest");
-    let before: Vec<canvas_agents::vm::local::Proc> = local.processes(&member.id)?;
+    // The long-lived ones (the satellite, the agent, their consoles); the satellite's git runs come and go.
+    let settled = canvas_common::paths::now_ms().saturating_sub(5_000);
+    let before: Vec<canvas_agents::vm::local::Proc> = local.processes(&member.id)?.into_iter().filter(|p| p.start_ms < settled).collect();
     anyhow::ensure!(before.len() >= 2, "the satellite and the agent run in the guest: {before:?}");
     watch.conn.tx.send(ClientMsg::Shutdown)?;
     wait_file("the service did not stop", 20, || conn::try_connect(instance).is_err())?;
