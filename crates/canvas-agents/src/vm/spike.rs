@@ -44,7 +44,7 @@ fn pty_check() -> Result<()> {
     let cwd = std::env::temp_dir().display().to_string();
     let terminal = Terminal::spawn(
         Spawn { id: "self-check", program, args: &args, env: &[], cwd: &cwd, cols: 80, rows: 10, copilot: false, engine: Engine::Alacritty },
-        TermHooks { pump, exited, clipboard, bytes: Default::default(), changed, notify: None },
+        TermHooks { pump, exited, clipboard, bytes: Default::default(), changed, notify: None, raw: None },
     )?;
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {

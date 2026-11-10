@@ -256,6 +256,8 @@ fn start(ctx: &Ctx, intent: &Intent) -> Result<Change> {
         let answer: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
         anyhow::ensure!(out.code == 0 && answer["ok"] == true, "preparing {branch} failed: {}", super::hooks::first_line(&String::from_utf8_lossy(&out.stdout)));
         change.cwd = answer["path"].as_str().map(str::to_owned);
+        // The guest's link to this hub, which runs the box's terminal.
+        ctx.provider.start_satellite(&intent.sandbox)?;
     }
     (ctx.log)(format!("VM launch of {}: ready in {}", intent.r#box, intent.sandbox));
     Ok(change)

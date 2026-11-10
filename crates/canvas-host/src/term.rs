@@ -75,6 +75,8 @@ enum Ctl {
     /// A remote terminal's gap reset: a fresh engine drawn by these bytes
     /// (`emulator::replay::repaint` of the satellite's screen).
     Reset(Vec<u8>),
+    /// The screen with the count of output bytes the engine had taken then.
+    SnapshotAt(Sender<(Snapshot, u64)>),
 }
 
 /// The far end of a remote terminal's PTY (docs/VM-SESSIONS.md A2): a VM
@@ -89,6 +91,9 @@ pub trait RemotePty: Send + Sync {
     fn resize(&self, cols: u16, rows: u16);
     /// Ends the program (`force`: at once; else as a terminal's hang-up).
     fn stop(&self, force: bool);
+    /// The terminal exists at this size: its feed (output, gap resets, the
+    /// exit) for the link.
+    fn started(&self, _feed: RemoteFeed, _cols: u16, _rows: u16) {}
 }
 
 /// Ends a remote terminal's program through its link (`force_kill`).
@@ -279,6 +284,9 @@ pub struct Hooks {
     pub changed: Sender<String>,
     /// Desktop notifications with their text.
     pub notify: Option<Sender<Notice>>,
+    /// Every chunk of the program's raw output, in order and before the
+    /// engine takes it (a VM session's satellite keeps it for replays).
+    pub raw: Option<Sender<Vec<u8>>>,
 }
 
 /// Delivers engine events to the terminal's state and hooks.
@@ -432,11 +440,12 @@ impl Terminal {
                 bridge: InlineImages::default(),
                 replies: true,
                 remake: None,
+                fed: 0,
             },
             move || emulator::create(engine, &config),
         );
         spawn_writer(writer, input_rx);
-        spawn_reader(terminal.clone(), reader, output_tx, hooks.bytes);
+        spawn_reader(terminal.clone(), reader, output_tx, hooks.bytes, hooks.raw);
         spawn_waiter(terminal.clone(), child, hooks.exited, hooks.pump);
         Ok(terminal)
     }
@@ -507,6 +516,7 @@ impl Terminal {
                 notify: hooks.notify.clone(),
                 bridge: InlineImages::default(),
                 replies: false,
+                fed: 0,
                 remake: Some(Box::new(move |cols, rows| emulator::create(engine, &Config { cols, rows, scrollback: 5000, kitty_keyboard: true, pull_scrollback: true }))),
             },
             move || emulator::create(engine, &config),
@@ -528,6 +538,12 @@ impl Terminal {
     /// Its PTY is in a VM session's guest.
     pub fn is_remote(&self) -> bool {
         self.remote.is_some()
+    }
+
+    /// Its size now (columns, rows).
+    pub fn size(&self) -> (u16, u16) {
+        let packed = self.size.load(Ordering::Acquire);
+        ((packed >> 16) as u16, packed as u16)
     }
 
     pub fn info(&self) -> TermInfo {
@@ -556,6 +572,15 @@ impl Terminal {
     /// The current viewport (a round trip to the emulator thread).
     pub fn snapshot(&self) -> Option<Snapshot> {
         request_snapshot(&self.control, &self.pending_snapshot, CONTROL_TIMEOUT, SNAPSHOT_TIMEOUT)
+    }
+
+    /// The screen and the count of the program's output bytes the engine
+    /// had taken when it was drawn (a satellite's gap reset names that
+    /// offset, so the hub asks for the rest from there).
+    pub fn snapshot_at(&self) -> Option<(Snapshot, u64)> {
+        let (tx, rx) = bounded(1);
+        self.control.send_timeout(Ctl::SnapshotAt(tx), CONTROL_TIMEOUT).ok()?;
+        rx.recv_timeout(SNAPSHOT_TIMEOUT).ok()
     }
 
     /// An image as a PNG file, encoded once per generation on an encoder
@@ -851,6 +876,8 @@ struct EmulatorThread {
     replies: bool,
     /// Makes a fresh engine of a size (a remote terminal's gap reset).
     remake: Option<Remake>,
+    /// Output bytes taken so far (before inline images are filtered).
+    fed: u64,
 }
 
 /// Makes a fresh engine of a size.
@@ -887,6 +914,9 @@ impl EmulatorThread {
             Err(panic) => return self.failed(&panic_message(panic.as_ref()), None),
         };
         while let Some(mut msg) = self.next(emu.sync_deadline()) {
+            if let Msg::Output(bytes) = &msg {
+                self.fed += bytes.len() as u64;
+            }
             // A gap reset: a fresh engine of the same size, drawn by the repaint.
             if let Msg::Control(Ctl::Reset(bytes)) = msg {
                 let (cols, rows) = (self.cols, self.rows);
@@ -1026,6 +1056,9 @@ impl EmulatorThread {
             Ctl::Snapshot(reply) => {
                 let _ = reply.send(emu.snapshot());
             }
+            Ctl::SnapshotAt(reply) => {
+                let _ = reply.send((emu.snapshot(), self.fed));
+            }
             Ctl::Image(id, reply) => {
                 let _ = reply.send(emu.image(id));
             }
@@ -1053,8 +1086,14 @@ impl EmulatorThread {
             ..Snapshot::default()
         });
         for ctl in self.control.iter() {
-            if let Ctl::Snapshot(reply) = ctl {
-                let _ = reply.send(screen.clone());
+            match ctl {
+                Ctl::Snapshot(reply) => {
+                    let _ = reply.send(screen.clone());
+                }
+                Ctl::SnapshotAt(reply) => {
+                    let _ = reply.send((screen.clone(), self.fed));
+                }
+                _ => {}
             }
         }
     }
@@ -1073,7 +1112,7 @@ fn spawn_writer(mut writer: Box<dyn Write + Send>, input: Receiver<Vec<u8>>) {
         .expect("spawn pty writer");
 }
 
-fn spawn_reader(terminal: Arc<Terminal>, mut reader: Box<dyn Read + Send>, output: Sender<Vec<u8>>, bytes: Arc<AtomicU64>) {
+fn spawn_reader(terminal: Arc<Terminal>, mut reader: Box<dyn Read + Send>, output: Sender<Vec<u8>>, bytes: Arc<AtomicU64>, mut raw: Option<Sender<Vec<u8>>>) {
     std::thread::Builder::new()
         .name("pty-reader".into())
         .spawn(move || {
@@ -1088,6 +1127,10 @@ fn spawn_reader(terminal: Arc<Terminal>, mut reader: Box<dyn Read + Send>, outpu
                         let now = now_ms();
                         terminal.last_output_ms.store(now, Ordering::Relaxed);
                         let chunk = buffer[..n].to_vec();
+                        // Before the engine: whoever keeps the raw output is never behind it.
+                        if raw.as_ref().is_some_and(|raw| raw.send(chunk.clone()).is_err()) {
+                            raw = None;
+                        }
                         if let Some(sender) = &tap {
                             let size = terminal.size.load(Ordering::Relaxed);
                             if sender.send(TapChunk { ms: now, size, bytes: chunk.clone() }).is_err() {
@@ -1420,6 +1463,7 @@ mod tests {
                 bridge: InlineImages::default(),
                 replies: true,
                 remake: None,
+                fed: 0,
             };
             spawn_emulator(thread, move || Box::new(probe));
             Self { control, output, written, generation, failed, pending: Mutex::new(None), _keep: (clipboard_rx, changed_rx, pump_rx) }
@@ -1558,6 +1602,7 @@ mod tests {
             bridge: InlineImages::default(),
             replies: true,
             remake: None,
+            fed: 0,
         };
         spawn_emulator(thread, || panic!("no engine"));
         assert!(failed.recv_timeout(Duration::from_secs(5)).unwrap().contains("no engine"));
@@ -1612,7 +1657,7 @@ mod tests {
         let (exited, b) = bounded::<String>(16);
         let (clipboard, c) = bounded::<(String, String)>(16);
         let (changed, d) = bounded::<String>(1024);
-        (Hooks { pump, exited, clipboard, bytes: Arc::new(AtomicU64::new(0)), changed, notify: None }, vec![Box::new(a), Box::new(b), Box::new(c), Box::new(d)])
+        (Hooks { pump, exited, clipboard, bytes: Arc::new(AtomicU64::new(0)), changed, notify: None, raw: None }, vec![Box::new(a), Box::new(b), Box::new(c), Box::new(d)])
     }
 
     fn wait_exit(terminal: &Terminal, within: Duration) -> (Option<u32>, Option<u32>) {
@@ -1845,13 +1890,43 @@ mod tests {
     }
 
     #[test]
+    fn the_raw_tap_sees_every_byte_before_the_engine_and_snapshots_say_how_far_it_got() {
+        let (pump, _pump_rx) = bounded(1);
+        let (exited, exited_rx) = bounded(1);
+        let (clipboard, _clip) = bounded(1);
+        let (changed, _changed) = bounded(16);
+        let (raw, raw_rx) = bounded::<Vec<u8>>(64);
+        let hooks = Hooks { pump, exited, clipboard, bytes: Arc::default(), changed, notify: None, raw: Some(raw) };
+        let (program, args): (&str, Vec<String>) = if cfg!(windows) { ("cmd", vec!["/d".into(), "/c".into(), "echo tapped-output".into()]) } else { ("sh", vec!["-c".into(), "printf 'tapped-output\\n'; sleep 1".into()]) };
+        let cwd = std::env::temp_dir().display().to_string();
+        let terminal = Terminal::spawn(Spawn { id: "tapped", program, args: &args, env: &[], cwd: &cwd, cols: 40, rows: 6, copilot: false, engine: Engine::Alacritty }, hooks).unwrap();
+        let mut seen = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !String::from_utf8_lossy(&seen).contains("tapped-output") {
+            assert!(Instant::now() < deadline, "the tap saw {:?}", String::from_utf8_lossy(&seen));
+            if let Ok(chunk) = raw_rx.recv_timeout(Duration::from_millis(100)) {
+                seen.extend(chunk);
+            }
+        }
+        wait_until("the engine took every tapped byte", || terminal.snapshot_at().is_some_and(|(s, fed)| fed >= seen.len() as u64 && s.text().contains("tapped-output")));
+        let (_, fed) = terminal.snapshot_at().unwrap();
+        assert!(fed >= seen.len() as u64);
+        let _ = exited_rx.recv_timeout(Duration::from_secs(10));
+        while let Ok(chunk) = raw_rx.try_recv() {
+            seen.extend(chunk);
+        }
+        let (_, fed) = terminal.snapshot_at().unwrap();
+        assert_eq!(fed, seen.len() as u64, "the engine took exactly what the tap saw");
+    }
+
+    #[test]
     fn a_remote_terminal_draws_here_and_types_there() {
         let (pump, _pump_rx) = bounded(1);
         let (exited, exited_rx) = bounded(1);
         let (clipboard, _clip) = bounded(1);
         let (changed, _changed) = bounded(16);
         let remote = Arc::new(FakeRemote::default());
-        let hooks = Hooks { pump, exited, clipboard, bytes: Arc::default(), changed, notify: None };
+        let hooks = Hooks { pump, exited, clipboard, bytes: Arc::default(), changed, notify: None, raw: None };
         let (terminal, feed) = Terminal::spawn_remote(RemoteSpawn { id: "vm-box", cols: 40, rows: 6, copilot: true, engine: Engine::Alacritty }, hooks, remote.clone());
         assert!(terminal.is_remote() && terminal.pid == 0, "no process here: the process-tree loops skip it");
         // Output (with a query the guest answers itself: nothing goes back from here).

@@ -12,7 +12,9 @@
 //! Then the pool lane, with a second service whose pack's provider is
 //! `vm::local` itself: the repository's image built in a builder sandbox,
 //! a warm VM kept in the pool, leased by a box and prepared on its branch,
-//! the pool filled again, and the VM deleted.
+//! the box's terminal drawn here with its program in the guest behind the
+//! satellite's link (`ws://` on loopback), the pool filled again, and the
+//! VM deleted.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -29,6 +31,9 @@ const BOX: &str = "0b1e5ca1-0000-4000-8000-00000000c10d";
 const PLACED: &str = "0b1e5ca1-0000-4000-8000-0000000b10cc";
 const CANVAS: &str = "c0ffee00-0000-4000-8000-00000000ca5e";
 const SECOND: &str = "0b1e5ca1-0000-4000-8000-00000000c20d";
+
+/// Not a variable of the program: the instance [`cli`] names for hub commands.
+const PROBE_INSTANCE: &str = "ATELIER_PROBE_INSTANCE";
 
 fn step(text: &str) {
     println!("  · {text}");
@@ -48,6 +53,13 @@ pub fn run(exe: &Path) -> Result<()> {
         shut_down(&pooled);
         result
     });
+    // Whatever happened: no sandbox's process (a satellite, an agent) outlives the probe.
+    for folder in ["sandboxes", "pool-sandboxes"] {
+        let local = canvas_agents::vm::local::Local::new(root.join(folder));
+        for sandbox in local.list() {
+            let _ = local.delete(&sandbox.id);
+        }
+    }
     match &result {
         Ok(()) => {
             println!("PASS in {:.1} s", started.elapsed().as_secs_f32());
@@ -166,8 +178,13 @@ impl Watch {
 }
 
 /// Runs this program as a command of the guest (relayed) or of the hub.
+/// A hub command names the probe's own service (`ATELIER_PROBE_INSTANCE`
+/// in `env`, passed as `--instance`), so none starts a service of its own.
 fn cli(exe: &Path, args: &[&str], env: &[(String, String)]) -> Result<(bool, String)> {
     let mut cmd = Command::new(exe);
+    if let Some((_, name)) = env.iter().find(|(k, _)| k == PROBE_INSTANCE) {
+        cmd.args(["--instance", name]);
+    }
     cmd.args(args).stdin(std::process::Stdio::null());
     for key in ["ATELIER_SESSION", "ATELIER_REMOTE", "ATELIER_PASSIVE", "AUTOMATION_NAME"] {
         cmd.env_remove(key);
@@ -198,7 +215,7 @@ fn scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     let work = root.join("work");
     std::fs::create_dir_all(&work)?;
     let home = instance.home.display().to_string();
-    let hub_env: Vec<(String, String)> = vec![("ATELIER_HOME".into(), home.clone()), ("ATELIER_VM_PACK".into(), pack.display().to_string())];
+    let hub_env: Vec<(String, String)> = vec![("ATELIER_HOME".into(), home.clone()), ("ATELIER_VM_PACK".into(), pack.display().to_string()), (PROBE_INSTANCE.into(), instance.name.clone())];
 
     step("atelier vm pack check: the pack is usable");
     let (ok, out) = cli(exe, &["vm", "pack", "check"], &hub_env)?;
@@ -383,15 +400,22 @@ fn intent_now(instance: &Instance) -> Result<canvas_agents::vm::launch::Intent> 
     canvas_agents::vm::launch::load(&instance.home, BOX)?.context("the launch's intent")
 }
 
-/// The pool lane's pack: `provider: local`, one warm VM of the repository.
-fn write_pool_pack(root: &Path, url: &Path) -> Result<PathBuf> {
+/// A free loopback port in 48000–48999 for the pool lane's hub.
+fn free_port() -> Result<u16> {
+    let start = 48000 + (std::process::id() % 1000) as u16;
+    (0..1000u16).map(|i| 48000 + (start - 48000 + i) % 1000).find(|p| std::net::TcpListener::bind(("127.0.0.1", *p)).is_ok()).context("no free port in 48000-48999")
+}
+
+/// The pool lane's pack: `provider: local`, one warm VM of the repository,
+/// the hub at `ws://127.0.0.1:port`.
+fn write_pool_pack(root: &Path, url: &Path, port: u16) -> Result<PathBuf> {
     let pack = root.join("pool-pack");
     std::fs::create_dir_all(pack.join("egress"))?;
     let json = |p: &Path| serde_json::to_string(&p.display().to_string());
     std::fs::write(
         pack.join("vm.yaml"),
         format!(
-            "pack_version: 1\nname: probe-pool\nprovider: local\npolicy_ack: \"2026-11-09\"\npoll_seconds: 1\nbudget:\n  max_running: 1\nsizes:\n  - name: S\n    cpu: 1000m\n    memory: 2048Mi\n    disk: 20Gi\npool:\n  min:\n    probe-app: 1\nimages:\n  keep: 2\nlocal:\n  root: {}\n",
+            "pack_version: 1\nname: probe-pool\nprovider: local\npolicy_ack: \"2026-11-09\"\npoll_seconds: 1\nbudget:\n  max_running: 1\nsizes:\n  - name: S\n    cpu: 1000m\n    memory: 2048Mi\n    disk: 20Gi\npool:\n  min:\n    probe-app: 1\nimages:\n  keep: 2\ntunnel:\n  url: ws://127.0.0.1:{port}\nlocal:\n  root: {}\n",
             json(&root.join("pool-sandboxes"))?
         ),
     )?;
@@ -409,12 +433,13 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
         step("skipped: git is not installed");
         return Ok(());
     }
-    let pack = write_pool_pack(root, &bare)?;
+    let port = free_port()?;
+    let pack = write_pool_pack(root, &bare, port)?;
     let local = canvas_agents::vm::local::Local::new(root.join("pool-sandboxes"));
     let copilot = root.join("fake-cli").join(canvas_sys::host::exe_name("copilot"));
     let work = root.join("work");
     let home = &instance.home;
-    let hub_env: Vec<(String, String)> = vec![("ATELIER_HOME".into(), home.display().to_string()), ("ATELIER_VM_PACK".into(), pack.display().to_string())];
+    let hub_env: Vec<(String, String)> = vec![("ATELIER_HOME".into(), home.display().to_string()), ("ATELIER_VM_PACK".into(), pack.display().to_string()), (PROBE_INSTANCE.into(), instance.name.clone())];
     let (ok, out) = cli(exe, &["vm", "pack", "check"], &hub_env)?;
     anyhow::ensure!(ok && out.contains("The pack is usable."), "pack check: {out}");
 
@@ -435,6 +460,7 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
         (crate::fake_copilot::ENV, "1".into()),
         ("COPILOT_HOME", copilot_home.display().to_string()),
         ("ATELIER_SELFTEST", "1".into()),
+        ("ATELIER_LISTEN", format!("127.0.0.1:{port}")),
     ];
     let env_refs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
     conn::spawn_service_exe(exe, instance, &env_refs)?;
@@ -464,7 +490,7 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     let (ok, out) = cli(exe, &["vm", "images"], &hub_env)?;
     anyhow::ensure!(ok && out.contains("ready") && out.contains(&image.id), "vm images: {out}");
 
-    step("a VM box leases the warm VM: resumed, its branch prepared, the agent in its terminal");
+    step("a VM box leases the warm VM: resumed, its branch prepared, its satellite linked, the agent drawn here");
     let routing = serde_json::json!({ "canvas": CANVAS, "groups": [], "members": {}, "passive": [], "no_messages": [], "names": { BOX: "Pooled box" }, "agents": { BOX: "copilot" } });
     watch.conn.tx.send(ClientMsg::Routing { json: routing.to_string() })?;
     let mut node: canvas_model::doc::Node = serde_json::from_value(serde_json::json!({ "id": BOX, "kind": "session", "name": "Pooled box", "x": 0, "y": 0, "agent": "copilot", "fresh": true }))?;
@@ -488,6 +514,11 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     anyhow::ensure!(String::from_utf8_lossy(&credential).contains(&intent.satellite), "the guest's credential is not this VM's");
     let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
     anyhow::ensure!(log.contains(&format!("leased pool member {}", member.id)), "the service log tells the lease");
+    anyhow::ensure!(log.contains(&format!("VM {}: satellite linked", member.id)) && log.contains(&format!("launched {BOX} on a VM")), "the box's terminal runs behind the satellite");
+
+    step("typing reaches the program in the guest through the link");
+    watch.conn.tx.send(ClientMsg::Input { id: BOX.into(), input: Input::Raw(b"typed-through-the-link".to_vec()) })?;
+    anyhow::ensure!(watch.pump(Instant::now() + Duration::from_secs(15), |w| w.screen().contains("typed-through-the-link")), "the typing did not come back:\n{}", watch.screen());
 
     step("the pool is filled again behind the leased VM");
     wait_file("the pool was not filled again", 60, || pool().iter().any(|m| m.id != member.id))?;

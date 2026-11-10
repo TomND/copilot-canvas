@@ -182,6 +182,14 @@ pub trait Provider: Send + Sync {
     fn images(&self) -> Result<Vec<ImageRef>>;
     /// Sets a group secret's key (for egress injection).
     fn secret_set(&self, name: &str, key: &str, value: &Secret) -> Result<()>;
+    /// Starts the guest's satellite unless it runs (`atelier satellite
+    /// --start`); it links to the hub named in `~/.atelier/satellite.json`.
+    fn start_satellite(&self, id: &str) -> Result<()> {
+        let out = self.exec(id, &["atelier".into(), "satellite".into(), "--start".into()], b"")?;
+        let said = if out.stderr.trim().is_empty() { String::from_utf8_lossy(&out.stdout).into_owned() } else { out.stderr.clone() };
+        anyhow::ensure!(out.code == 0, "the satellite did not start in {id}: {}", said.lines().next().unwrap_or_default());
+        Ok(())
+    }
 }
 
 #[cfg(test)]

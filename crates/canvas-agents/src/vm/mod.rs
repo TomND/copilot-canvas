@@ -14,11 +14,13 @@ pub mod guest;
 pub mod hooks;
 pub mod launch;
 pub mod launcher;
+pub mod link;
 pub mod lite;
 pub mod local;
 pub mod manager;
 pub mod pack;
 pub mod provider;
+pub mod satellite;
 pub mod secrets;
 pub mod spike;
 pub mod store;
@@ -164,8 +166,10 @@ pub fn has_work(home: &Path) -> bool {
 /// refresher every 10 s (images built on threads of their own), drains the
 /// thin lane's guests.
 /// Without a pack it only waits.
-pub fn run(home: PathBuf, log: impl Fn(String) + Send + Sync + 'static, wake: impl Fn() + Send + 'static) {
+pub fn run(home: PathBuf, log: impl Fn(String) + Send + Sync + 'static, wake: impl Fn() + Send + 'static, links: Arc<link::Links>, adopt: impl Fn(&str, Arc<link::Remote>)) {
     let log: Arc<dyn Fn(String) + Send + Sync> = Arc::new(log);
+    // The VM boxes' terminals that ran in guests when this service last stopped.
+    links.adopt(adopt);
     let mut opened: Option<(pack::Pack, Arc<dyn provider::Provider>)> = None;
     let mut refused: Option<String> = None;
     let mut reconciled = false;
@@ -214,6 +218,8 @@ pub fn run(home: PathBuf, log: impl Fn(String) + Send + Sync + 'static, wake: im
                 log(format!("VM launch of {}: {}", intent.r#box, hooks::first_line(&format!("{error:#}"))));
             }
         }
+        // The boxes' terminals: their launch's steps, their programs started once their satellites link.
+        links.progress();
         if last_tick.is_none_or(|t| t.elapsed() >= Duration::from_secs(10)) {
             last_tick = Some(Instant::now());
             let now = now_ms();

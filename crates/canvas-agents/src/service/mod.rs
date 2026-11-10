@@ -175,6 +175,8 @@ pub struct Agents {
     tunnel_wake: Sender<()>,
     /// Phones registered for notifications, the APNs key, what was notified.
     push: push::Push,
+    /// The satellites' links and the VM boxes' terminals.
+    vm_links: Arc<crate::vm::link::Links>,
 }
 
 /// Passive sessions and the factory watch use the backend under this name.
@@ -243,6 +245,10 @@ impl Agents {
             tunnel_access: Mutex::new(None),
             tunnel_wake: tunnel_tx,
             push: push::Push::new(&instance.home),
+            vm_links: crate::vm::link::Links::new(&instance.home, {
+                let instance = instance.clone();
+                Arc::new(move |line: String| log(&instance, &line))
+            }),
         });
         server::spawn_named("push", { let a = agents.clone(); move || push::push_loop(a) });
         server::spawn_named("tunnel-access", { let a = agents.clone(); move || tunnel_access_loop(a, tunnel_rx) });
@@ -269,12 +275,21 @@ impl Agents {
         server::spawn_named("bus", { let a = agents.clone(); move || passive::bus_loop(a, bus_rx) });
         server::spawn_named("reports", { let a = agents.clone(); move || inbox::run(a) });
         server::spawn_named("prs", { let a = agents.clone(); move || prs::run(a) });
-        // VM sessions: launches, the manager and the thin lane (idle without a VM pack).
+        // VM sessions: launches, the manager, the satellites' terminals and the thin lane (idle without a VM pack).
         server::spawn_named("vm", {
             let (home, log_instance, wake) = (instance.home.clone(), instance.clone(), agents.index_wake.clone());
-            move || crate::vm::run(home, move |line| log(&log_instance, &line), move || {
-                let _ = wake.try_send(());
-            })
+            let (links, host) = (agents.vm_links.clone(), agents.host.clone());
+            move || {
+                crate::vm::run(
+                    home,
+                    move |line| log(&log_instance, &line),
+                    move || {
+                        let _ = wake.try_send(());
+                    },
+                    links,
+                    move |id, remote| host.adopt_remote(id, 100, 30, true, remote),
+                )
+            }
         });
         agents
     }
@@ -406,7 +421,7 @@ impl Agents {
             }
             SessionPlan::Terminal => {}
         }
-        Ok(Resolved { program: command.program, args: command.args, env: command.env, agent: true })
+        Ok(Resolved { program: command.program, args: command.args, env: command.env, agent: true, remote: None })
     }
 
     /// A VM box's launch: its intent is recorded and its terminal runs
@@ -453,9 +468,13 @@ impl Agents {
         crate::vm::launch::store(home, &mut intent)?;
         let how = if intent.sandbox.is_empty() { "on a new VM" } else { "in its VM" };
         log(&self.instance, &format!("terminal {id}: {} {} {how} (repository {})", kind.id(), if launch.resume { "resume" } else { "new session" }, intent.placement.repo));
+        if pack.provider != crate::vm::pack::ProviderKind::Hooks {
+            // The satellite's lane: the program runs in the guest; this terminal draws it and shows the launch's steps.
+            return Ok(Resolved { program: String::new(), args: Vec::new(), env: Vec::new(), agent: true, remote: Some(self.vm_links.launch(id)) });
+        }
         let cli = home.join("cli").join(canvas_sys::host::exe_name("atelier"));
         let program = if cli.is_file() { cli } else { std::env::current_exe()? };
-        Ok(Resolved { program: program.display().to_string(), args: vec!["vm".into(), "attach".into(), "--box".into(), id.to_owned()], env: self.integration(id).env, agent: true })
+        Ok(Resolved { program: program.display().to_string(), args: vec!["vm".into(), "attach".into(), "--box".into(), id.to_owned()], env: self.integration(id).env, agent: true, remote: None })
     }
 
     /// Learns the agent session `id` is about to create (see [`agent_session_loop`]).
@@ -545,7 +564,7 @@ impl HostApp for Agents {
             args.extend(["-i".to_owned(), prompt]);
         }
         args.extend(extra);
-        Ok(Resolved { program, args, env, agent: true })
+        Ok(Resolved { program, args, env, agent: true, remote: None })
     }
 
     fn client_connected(&self, client: &Arc<Client>) {
@@ -720,6 +739,10 @@ impl HostApp for Agents {
                 log(&self.instance, &format!("cannot save the canvas {}: {error}", saved.key));
             }
         }
+    }
+
+    fn serve_satellite(&self, link: server::SatelliteLink) -> Result<()> {
+        self.vm_links.serve(link)
     }
 }
 

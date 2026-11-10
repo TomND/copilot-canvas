@@ -50,6 +50,14 @@ pub struct Intent {
     /// Since when it waits (queued) or why (`note`).
     pub queued_ms: u64,
     pub note: String,
+    /// The generation of the box's terminal that runs in the guest behind
+    /// the satellite (0: none); a restarted service adopts it again.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub terminal: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 static INTENTS: std::sync::Mutex<()> = std::sync::Mutex::new(());

@@ -75,6 +75,9 @@ pub struct Resolved {
     pub env: Vec<(String, String)>,
     /// An agent CLI: graceful stop (Ctrl+D), tracked history, idle auto-stop.
     pub agent: bool,
+    /// A VM session's terminal: its program runs in the guest behind this
+    /// link (`program` and `args` are then not run here).
+    pub remote: Option<Arc<dyn crate::term::RemotePty>>,
 }
 
 /// The L3 backend running in the same process (the "agent supervisor").
@@ -662,9 +665,13 @@ impl Host {
             return Ok(());
         }
         let resolved = match kind {
-            LaunchKind::Command { program, args } => Resolved { program, args, env: self.app().command_env(id), agent: false },
+            LaunchKind::Command { program, args } => Resolved { program, args, env: self.app().command_env(id), agent: false, remote: None },
             other => self.app().resolve_launch(id, other, cwd)?,
         };
+        if let Some(pty) = resolved.remote {
+            self.adopt_remote(id, cols, rows, resolved.agent, pty);
+            return Ok(());
+        }
         let terminal = Terminal::spawn(
             Spawn {
                 id,
@@ -684,6 +691,7 @@ impl Host {
                 bytes: self.bytes.clone(),
                 changed: self.changed.clone(),
                 notify: Some(self.notify.clone()),
+                raw: None,
             },
         )?;
         // The pid stays last: `selftest copilot` parses the number after " pid ".
@@ -693,6 +701,29 @@ impl Host {
         self.broadcast(ServiceMsg::Terminals(vec![info]));
         self.app().terminals_changed();
         Ok(())
+    }
+
+    /// A remote terminal (a VM session's: its program in the guest behind
+    /// `pty`), at a launch or again after a restart of this service (its
+    /// program kept running there). `pty` gets the terminal's feed.
+    pub fn adopt_remote(&self, id: &str, cols: u16, rows: u16, agent: bool, pty: Arc<dyn crate::term::RemotePty>) {
+        let hooks = Hooks {
+            pump: self.pump.clone(),
+            exited: self.exited.clone(),
+            clipboard: self.clipboard.clone(),
+            bytes: self.bytes.clone(),
+            changed: self.changed.clone(),
+            notify: Some(self.notify.clone()),
+            raw: None,
+        };
+        let (terminal, feed) = Terminal::spawn_remote(crate::term::RemoteSpawn { id, cols, rows, copilot: agent, engine: self.effective_engine() }, hooks, pty.clone());
+        let (cols, rows) = terminal.size();
+        pty.started(feed, cols, rows);
+        log(&self.instance, &format!("launched {id} on a VM (its program runs in the guest)"));
+        let info = terminal.info();
+        lock(&self.terms).insert(id.to_owned(), terminal);
+        self.broadcast(ServiceMsg::Terminals(vec![info]));
+        self.app().terminals_changed();
     }
 
     pub fn stats(&self) -> ServiceStats {
@@ -716,7 +747,8 @@ impl Host {
             return;
         }
         log(&self.instance, "shutdown requested");
-        let terms: Vec<Arc<Terminal>> = lock(&self.terms).values().cloned().collect();
+        // A VM session's program keeps running in its guest: its terminal is only let go (adopted again at the next start).
+        let terms: Vec<Arc<Terminal>> = lock(&self.terms).values().filter(|t| !t.is_remote()).cloned().collect();
         for terminal in &terms {
             self.app().terminal_stopping(&terminal.id);
             terminal.stop(false);

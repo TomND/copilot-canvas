@@ -106,8 +106,8 @@ impl Proc {
 }
 
 /// The provider calls the failure knob counts.
-const CALLS: [&str; 16] = [
-    "create", "get", "list", "exec", "put_file", "get_file", "suspend", "resume", "delete", "set_egress", "egress_decisions", "image_build", "image_commit", "image_delete", "images", "secret_set",
+const CALLS: [&str; 17] = [
+    "create", "get", "list", "exec", "put_file", "get_file", "suspend", "resume", "delete", "set_egress", "egress_decisions", "image_build", "image_commit", "image_delete", "images", "secret_set", "start_satellite",
 ];
 
 /// Failure injection for tests (`ATELIER_VM_TEST_FAIL`, `ATELIER_VM_TEST_LATENCY_MS`).
@@ -804,6 +804,32 @@ impl Provider for Local {
         }
         out.sort_by(|a, b| (a.created_ms, &a.id).cmp(&(b.created_ms, &b.id)));
         Ok(out)
+    }
+
+    /// This build as the sandbox's satellite: a process of the sandbox
+    /// (suspend freezes it, delete ends it), its output in
+    /// `home/.atelier/satellite.log`; one that runs already is kept.
+    fn start_satellite(&self, id: &str) -> Result<()> {
+        self.before("start_satellite")?;
+        let home = self.dir(id)?.join("home");
+        if super::satellite::running(&home) {
+            return Ok(());
+        }
+        let log = std::fs::OpenOptions::new().create(true).append(true).open(home.join(".atelier").join("satellite.log"))?;
+        let mut cmd = self.command(id, &["atelier".into(), "satellite".into()], None, &[])?;
+        cmd.stdin(std::process::Stdio::null()).stdout(log.try_clone()?).stderr(log);
+        canvas_sys::spawn::CommandExt::no_window(&mut cmd);
+        let mut child = self.spawn(id, &mut cmd)?;
+        std::thread::Builder::new().name("local-satellite".into()).spawn(move || {
+            let _ = child.wait();
+        })?;
+        // Started once it holds its lock (or it ended at once: its log says why).
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !super::satellite::running(&home) {
+            anyhow::ensure!(Instant::now() < deadline, "the satellite of {id} did not start (home/.atelier/satellite.log)");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        Ok(())
     }
 
     /// Stores the key in `<root>/secrets/<name>.json` (owner-only), where
