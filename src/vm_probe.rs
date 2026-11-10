@@ -630,8 +630,9 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     watch.view = TermView::default();
     watch.conn.tx.send(ClientMsg::Launch { id: BOX.into(), kind: LaunchKind::Agent(Box::new(launch)), cwd: work.display().to_string(), cols: 100, rows: 30 })?;
     anyhow::ensure!(watch.pump(Instant::now() + Duration::from_secs(30), |w| w.screen().contains("Fake Copilot")), "the box did not start again in its VM:\n{}", watch.screen());
+    wait_file("the new terminal was not recorded in the launch", 10, || intent_now(instance).is_ok_and(|i| i.terminal != 0))?;
     let again = intent_now(instance)?;
-    anyhow::ensure!(again.sandbox == member.id && again.terminal != 0, "the same VM, a new terminal: {again:?}");
+    anyhow::ensure!(again.sandbox == member.id, "the same VM: {again:?}");
 
     step("deleting the VM: its sandbox and the agent go, its credential is revoked");
     let (ok, out) = cli(exe, &["vm", "delete", BOX, "--yes"], &hub_env)?;

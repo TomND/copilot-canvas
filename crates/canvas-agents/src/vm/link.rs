@@ -258,15 +258,24 @@ impl Links {
                     match self.link(&intent.sandbox) {
                         None => state.note(&format!("Waiting for the VM's satellite ({})…", intent.sandbox)),
                         Some(link) => {
-                            let spawn = SatDown::Spawn { term: remote.term.clone(), generation: state.generation, argv: intent.argv.clone(), env: intent.env.clone(), cwd: intent.cwd.clone(), cols: state.cols, rows: state.rows };
+                            let generation = state.generation;
+                            let spawn = SatDown::Spawn { term: remote.term.clone(), generation, argv: intent.argv.clone(), env: intent.env.clone(), cwd: intent.cwd.clone(), cols: state.cols, rows: state.rows };
                             state.note(&format!("Starting {} in the VM ({})…", intent.agent, intent.sandbox));
+                            // Recorded first: a service that stops right after the Spawn still adopts the program.
+                            if launch::update(&self.home, &remote.term, |i| i.terminal = generation).is_err() {
+                                continue;
+                            }
                             if link.send(true, spawn) {
                                 state.spawned = true;
                                 state.fresh = true;
                                 state.have = 0;
-                                let generation = state.generation;
+                            } else {
                                 drop(state);
-                                let _ = launch::update(&self.home, &remote.term, |i| i.terminal = generation);
+                                let _ = launch::update(&self.home, &remote.term, |i| {
+                                    if i.terminal == generation {
+                                        i.terminal = 0;
+                                    }
+                                });
                             }
                         }
                     }
