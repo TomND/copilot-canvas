@@ -75,6 +75,70 @@ pub fn kill_tree(root: u32) -> io::Result<usize> {
     Ok(killed)
 }
 
+/// Sends `signal` to `pid` only while it still has the start time `started`
+/// (never to a reused pid). `Ok(false)`: gone, or not this process any more.
+fn signal_started(pid: u32, started: u64, signal: i32) -> io::Result<bool> {
+    if !signallable(pid) || process_start_ms(pid) != Some(started) {
+        return Ok(false);
+    }
+    // SAFETY: kill(2) on a checked pid.
+    if unsafe { libc::kill(pid as i32, signal) } == 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) { Ok(false) } else { Err(error) }
+}
+
+/// `root` (when it still has the start time `started`) and its descendants,
+/// breadth first, each with its start time.
+fn started_tree(root: u32, started: u64) -> Vec<(u32, u64)> {
+    if !signallable(root) || process_start_ms(root) != Some(started) {
+        return Vec::new();
+    }
+    tree(root).into_iter().filter_map(|pid| if pid == root { Some((pid, started)) } else { process_start_ms(pid).map(|start| (pid, start)) }).collect()
+}
+
+/// Freezes `root` and every descendant with `SIGSTOP`, deepest first and the
+/// root last, as a memory suspend stops everything in a VM (`vm::local`).
+/// `started_ms` is `root`'s recorded start time: a root without it (gone, or
+/// its pid reused) is left alone. Every pid is checked against its start time
+/// again just before its signal, and children that appeared meanwhile are
+/// frozen by a further pass. Returns how many processes were frozen.
+pub fn suspend_tree(root: u32, started_ms: u64) -> io::Result<usize> {
+    let mut seen = std::collections::HashSet::new();
+    let mut frozen = 0;
+    for _ in 0..4 {
+        let pending: Vec<(u32, u64)> = started_tree(root, started_ms).into_iter().filter(|(pid, _)| !seen.contains(pid)).collect();
+        if pending.is_empty() {
+            break;
+        }
+        for (pid, start) in pending.into_iter().rev() {
+            seen.insert(pid);
+            match signal_started(pid, start, libc::SIGSTOP) {
+                Err(error) if pid == root => return Err(error),
+                Ok(true) => frozen += 1,
+                _ => {}
+            }
+        }
+    }
+    Ok(frozen)
+}
+
+/// Thaws what [`suspend_tree`] froze: `SIGCONT` to `root` first (when it
+/// still has the start time `started_ms`), then its descendants, each checked
+/// against its start time. Returns how many processes were sent it.
+pub fn resume_tree(root: u32, started_ms: u64) -> io::Result<usize> {
+    let mut resumed = 0;
+    for (pid, start) in started_tree(root, started_ms) {
+        match signal_started(pid, start, libc::SIGCONT) {
+            Err(error) if pid == root => return Err(error),
+            Ok(true) => resumed += 1,
+            _ => {}
+        }
+    }
+    Ok(resumed)
+}
+
 /// Descendant process ids of `root` (excluding root).
 pub fn descendants(root: u32) -> Vec<u32> {
     let pairs = process_pairs();

@@ -107,6 +107,63 @@ pub enum SatDown {
     NoteResult { id: String, json: String },
 }
 
+/// `SatUp::Hello`'s JSON: who the satellite is and the terminals it has.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct HelloInfo {
+    /// The sandbox it runs in (as its credential was minted for).
+    pub sandbox: String,
+    /// Its build (`paths::build_id`).
+    pub build: String,
+    /// `linux`, `macos` or `windows` (`vm::local` runs on the hub's OS).
+    pub platform: String,
+    /// The guest user's home (guest paths are built from it).
+    pub home: String,
+    pub terms: Vec<TermHeld>,
+}
+
+/// A terminal the satellite has: its output so far and whether it runs.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct TermHeld {
+    pub term: String,
+    pub generation: u64,
+    /// The output offset after its last byte.
+    pub end: u64,
+    pub alive: bool,
+    /// The last input `seq` handed to its PTY.
+    pub input_acked: u64,
+}
+
+/// `SatDown::Welcome`'s JSON: what the hub has of each terminal it expects
+/// in this sandbox (the satellite replays each from `have`).
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct WelcomeInfo {
+    pub terms: Vec<TermHave>,
+}
+
+/// One terminal the hub expects: its generation and the output it has.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct TermHave {
+    pub term: String,
+    pub generation: u64,
+    pub have: u64,
+}
+
+/// `SatUp::Exit`'s JSON.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ExitInfo {
+    /// Why it did not run, or that the satellite has no such terminal.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub error: String,
+    /// The satellite never had this terminal (or this generation of it).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub unknown: bool,
+}
+
 /// Whether `rel` may name a file inside a synced root: relative, `/`
 /// separated, every component a plain name that no operating system reads
 /// as something else (no `.` or `..`, no drive or stream colon, no

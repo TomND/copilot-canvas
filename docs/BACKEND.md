@@ -491,7 +491,29 @@ VM sessions are optional ([VM-SESSIONS.md](VM-SESSIONS.md)); without a VM pack n
 | `ServiceMsg::Bus` (`bus::Snapshot`) | `vm`: a `VmView` (the pack's names, every VM box's state, sandboxes, images, budget, queued starts, refusals); absent without a pack | ignores it |
 | `Request` / `Response` | `VmList`, `VmPool`, `VmImages`, `VmAction { box, op }`, `VmImageBuild { repo }`, `VmBudget`, `VmPackStatus` / `Vm(VmView)`, `VmPack(PackStatus)` (appended last); answered by the service itself (`Request::is_service_state`; an in-process backend refers to it) | answers "does not support this request (update it)" |
 | `ClientMsg` / `ServiceMsg` | `Sat` (index 29 each), satellites only (below) | never sent to an older peer: satellites authenticate with credentials only a current hub mints |
-| `<home>/vm/` | `launches/<box>.json` (VM launches' intents), `mirrors/<sandbox>/` (the guests' mirrored history and what was taken), `ops/<sandbox>/<id>.json` (each relayed operation's answer, once) | — |
+| `<home>/vm/` | `launches/<box>.json` (VM launches' intents and their steps), `hub.json` (this hub's id, the `atelier.hub` label), `satellites.json` (satellites' credentials, sealed; revoked ones keep only a key to prove the refusal), `sandboxes.json` (role, lease, size, image), `images.json`, `budget.json` (the day's estimated cost), `mirrors/<sandbox>/` (the guests' mirrored history and what was taken), `ops/<sandbox>/<id>.json` (each relayed operation's answer, once), `local/` (`vm::local`'s sandboxes and images when the pack names no `local.root`; tests and CI only); each versioned, written atomically by the service only, never written over when unreadable or newer | — |
+| handshake | a `Hello8` whose `remote_id` is a satellite's (`sat-` and 16 hex digits) authenticates against `satellites.json`; over TCP only | an older service refuses the id (not a paired client) |
+| `launches/<box>.json` | `terminal`: the generation of the box's terminal running in the guest (not written while 0); a restarted service adopts it | an older service ignores it |
+
+**The satellite's link** (`canvas_agents::vm::satellite` in the guest, `vm::link` on the hub; the messages in
+`canvas_common::sat`, versioned on their own: `SAT_PROTOCOL` 1). The guest's `atelier satellite` reads
+`~/.atelier/satellite.json` (`hub`, `id`, `secret`, `sandbox`; optional `ca`, `headers`; written by the launcher at
+a claim, owner-only), dials `wss://`, `ws://` or `tcp://` (through `HTTPS_PROXY`/`HTTP_PROXY`'s `CONNECT` unless
+`NO_PROXY` names the host; `wss://` with rustls, the platform's roots and the pack's CA), runs the handshake with
+`CAP_FRAME8 | CAP_SATELLITE | CAP_COMPRESS`, and sends `SatUp::Hello` (JSON `HelloInfo`: sandbox, build, platform,
+guest home, the terminals it holds with their output end and last input applied). The hub serves it only when the
+credential names that sandbox and `Hello` comes first; then only `Sat` and `Heartbeat` (anything else closes it),
+each terminal checked against the sandbox and its generation. The hub answers `SatDown::Welcome` (JSON
+`WelcomeInfo`: each terminal's generation and the output offset the hub has); the satellite replays from there
+(`SatUp::Output` with `seq` = byte offset) or, when its 4 MiB ring no longer reaches back, sends `SatUp::Snapshot`
+(a VT repaint of its screen at an exact offset) and what followed. The hub takes output in order (a repeat is
+trimmed, a gap asks `SatDown::Resync`), numbers input per generation (`SatDown::Input`, acknowledged by
+`SatUp::InputAck`, sent again after a reconnect, applied once) and starts a box's program with `SatDown::Spawn` once
+its launch runs and the satellite is linked (`+NAME` env entries prepend). Terminal I/O goes ahead of everything else
+on both ends; both send a heartbeat every 2 s and drop a link silent for 6 s. The thin lane's drain (history the hub
+lacks, relayed commands and their answers) travels as `SatDown::Control {"drain": DrainRequest}` /
+`SatUp::ControlResult`. A newer link of a sandbox replaces the older one; a refusal proven by the hub (a revoked
+credential) ends the satellite and its terminals.
 
 ## Protocol
 

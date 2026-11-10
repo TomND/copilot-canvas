@@ -137,6 +137,37 @@ pub fn start_user_unit(unit: &str, program: &std::path::Path, args: &[std::ffi::
     }
 }
 
+/// `command` in a transient systemd user scope of its own (Linux, where a
+/// user manager runs): its processes leave the caller's cgroup, so they
+/// outlive the caller's unit when that stops. `systemd-run --scope` runs the
+/// program in place, so the child's pid is the program's. `None` where this
+/// does not apply (as [`start_user_unit`]).
+pub fn in_own_scope(command: &Command) -> Option<Command> {
+    #[cfg(target_os = "linux")]
+    {
+        if !linux_unit::available() {
+            return None;
+        }
+        let mut scoped = Command::new("systemd-run");
+        scoped.args(["--user", "--scope", "--quiet", "--collect", "--"]).arg(command.get_program()).args(command.get_args());
+        for (key, value) in command.get_envs() {
+            match value {
+                Some(value) => scoped.env(key, value),
+                None => scoped.env_remove(key),
+            };
+        }
+        if let Some(dir) = command.get_current_dir() {
+            scoped.current_dir(dir);
+        }
+        Some(scoped)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = command;
+        None
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod linux_unit {
     use std::io::Write;
@@ -144,7 +175,7 @@ mod linux_unit {
     use std::process::{Command, Stdio};
 
     /// A user manager answers on its private socket and `systemd-run` exists.
-    fn available() -> bool {
+    pub(super) fn available() -> bool {
         if canvas_common::env::var("ATELIER_SYSTEMD_RUN").is_ok_and(|v| v.trim() == "0") {
             return false;
         }

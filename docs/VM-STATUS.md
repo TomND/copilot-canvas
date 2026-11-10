@@ -33,7 +33,7 @@ owner's note that VM sessions are optional and local stays the default.
 - [x] VM-F5 `canvas_agents::vm` (the module; `vm::service_request`)
 - [x] Exit: clippy (macOS), `cargo xwin clippy`, the touched tests (CI runs with Phase M's: F was not merged on its own)
 
-### M: thin lane (code done 2026-11-09; waiting for CI and the merge)
+### M: thin lane (done 2026-11-09; CI run 42742983720 green on every job; merged into main at d35d56e)
 - [x] VM-M1 pack loader, `atelier vm pack check`, example pack (`docs/examples/vm-pack/`)
 - [x] VM-M2 hooks runner and `atelier vm-hook-standin`
 - [x] VM-M3 placement in launches (fail closed)
@@ -43,21 +43,51 @@ owner's note that VM sessions are optional and local stays the default.
 - [x] VM-M7 status from mirrors (liveness overlay)
 - [x] VM-M8 minimal UI (*Run on*, ☁ marker, *Start on VM…*), only with a pack
 - [x] VM-M9 docs
-- [ ] Exit: `selftest vm --lane hooks` on Windows, macOS, Linux; no-pack snapshots and self-test unchanged; merged into main
+- [x] Exit: `selftest vm` (the hooks lane) on Windows, macOS, Linux; no-pack snapshots and self-test unchanged; merged into main
 
 ### 0: spike kits
 - [x] `atelier satellite --self-check` (a PTY with alacritty, the data folder) and `atelier vm spike s2|s3|s4`
-      through the pack's hooks (JSON, no pack values; sandboxes deleted unless `--keep`); run on local sandboxes
-      by `selftest vm` in CI
+      through the pack's provider (hooks, local or aca; JSON, no pack values; sandboxes deleted unless `--keep`;
+      S3 uploads `satellite.path` first); run on local sandboxes through `hooks` and `local` by `selftest vm` in CI
 - [ ] `vm spike s1` (Phase 2: the satellite link), `s5` (Phase 3: the MCP gateway), `s7` (Phase 2/5: faults)
 - [x] S6: `policy_ack` in `vm.yaml` (`pack check` warns while it is empty); the owner's checklist below
 
 ### 1: manager
-- [ ] VM-11 provider trait · VM-12 `vm::aca` (HTTP stand-in) · VM-13 `vm::local` · VM-14 stores · VM-15 manager (images, pool, budgets) · VM-16 launcher · VM-17 claim · VM-18 `VmView`, `Vm*` requests, `atelier vm …` · VM-19 `has_work`, doctor
+- [x] VM-11 provider trait (`vm::provider`); the pack's hooks as a provider (`vm::hooks::HooksProvider`)
+- [x] VM-12 `vm::aca` (P-aca, `vm-aca` 6ceef0d..9d4a8e8) and VM-13 `vm::local` with `canvas_sys::process::
+      {suspend_tree, resume_tree}` (P-local, `vm-local` 6ceef0d..ec3079d): merged into `vm-sessions` 2026-11-10
+- [x] VM-14 stores and satellite credentials (`vm::store`) · VM-15 manager (`vm::manager`: budgets, image schedule
+      and keep-N, pool plan and tick, image builds) · VM-16 launcher (`vm::launcher`: steps, fence, rollback,
+      reconciliation) · VM-17 claim (lease or create, credential in the guest, `satellite --prepare`) · VM-18 the
+      view, `VmAction`, `VmImageBuild`, `atelier vm …` · VM-19 `has_work`, doctor
+- [x] the secrets refresher (`vm::secrets`, in the design's Phase 1; the plan had it in Phase 3): each
+      `secrets.yaml` command's output set on the provider on its interval, never logged or stored
+- [x] wiring: `open_provider(home, pack)` for `local` (`local.root`, else `<home>/vm/local`) and `aca`
+      (`Aca::from_pack`); the provider contract settled (departures below); `selftest vm`'s pool lane on
+      `provider: local` (an image built in a builder, a warm VM leased, its branch prepared, the agent in its
+      terminal, the pool refilled, the VM deleted); `vm spike` through a provider; `rustls` (ring) and
+      `rustls-platform-verifier` in canvas-agents on every OS with `vm::tls` (the satellite's `wss://` config)
 - [ ] Exit: as in the plan §3 Phase 1
 
 ### 2: terminals
-- [ ] VM-21 remote PTY · VM-22 VT repaint · VM-23 satellite · VM-24 hub link · VM-25 launch, shutdown, re-adoption · VM-26 `ExecTarget` · VM-27 `SessionStore` · VM-28 guest subsessions · VM-29 gap and reconnect rules · VM-2A docs
+- [x] VM-21 remote PTY (`Terminal::spawn_remote`, `RemotePty`, `RemoteFeed`; started early, unit-tested)
+- [x] VM-22 VT repaint (`emulator::replay::repaint`; round trip on the alacritty engine; the corpus round trip
+      for both engines comes with the satellite)
+- [x] VM-23 the satellite: `vm::satellite::{dial, terms, ring}` (tcp/ws/wss with rustls, platform roots and the
+      pack's CA, `CONNECT` proxies; PTYs with alacritty, a 4 MiB ring, replay or repaint; generations; input once;
+      reconnect 0.5/1/1.5 s; heartbeats; ends on a proven revocation), `atelier satellite [--start]`; history and
+      relayed commands through the drain as a control (departure below). Still to come: the endpoint for the guest
+      CLI (Phase 3), `proc`, `stats`, a per-sandbox ring cap
+- [x] VM-24 hub link (`vm::link`): one link per sandbox, Hello first and its own terminals only, output in order,
+      input numbered and resent, controls, heartbeats and the 6 s silence rule; flood limits still to come
+- [x] VM-25 launch, shutdown, re-adoption: `Resolved::remote`, `Host::adopt_remote`, `Intent::terminal`, remote
+      terminals let go at shutdown and adopted at start; the launcher starts the satellite (`Provider::start_satellite`)
+- [ ] VM-26 `ExecTarget`: the guest's command line comes from `launch::guest_command` (no hub paths); the guest roots
+      (plugin, skills, instructions, notes, MCP) come with Phase 3's file sync
+- [x] VM-27 `SessionStore` for Copilot (`vm::session_store`): `HasHistory`, `Transcript`, `Fork` refused for mirrors
+- [ ] VM-28 guest subsessions · VM-29 the rest (the probe's drops during output and beyond the ring; input while
+      resuming and the mailbox's wait are done and unit-tested) · VM-2A docs (BACKEND, REMOTE, README, VM-SESSIONS
+      written; AGENT-PROVIDERS and DEVELOPMENT's code map with VM-26)
 - [ ] Exit: `selftest vm` (replay, gap, freeze, restart) on three OSes
 
 ### 3: integration
@@ -89,6 +119,8 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
 - [ ] S6 the data-handling policy for the pack (`policy_ack` in `vm.yaml`)
 - [ ] S7 failure injection on the platform (`vm spike s7`), incl. auto-suspend off while working
 - [ ] the token audience (`auth.audience`: a 401 with the other value answers it)
+- [ ] `vm::aca` against a real group: the answers' shapes (image readiness, egress decisions, raw-file GET), the
+      files API and `/opt/atelier/bin` in the stock image (`vm spike s3` uploads there), token expiry
 - [ ] egress isolation: a guest process that ignores proxy settings is still refused
 - [ ] `atelier selftest vm --real` once per agent (Phase 5)
 
@@ -104,6 +136,34 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   launch defaults).
 - **The new-session dialog's VM rows**: *Run on*, then *Repository* with *size* on one row and *Branch*; a VM
   session gets no worktree and no fork choice. Copilot CLI only until Phase 5.
+- **The provider contract** (settled at the workers' merge): `put_file(id, path, bytes, mode)` (the plan's VM-11 had
+  the mode; the first trait dropped it); guest paths are relative to the guest user's home or absolute (`vm::local`:
+  absolute only inside the sandbox's `home/`); `get_file` over `max` is an error everywhere; `exec` of `atelier`
+  runs the satellite (`aca` puts `/opt/atelier/bin` first on `PATH`). `vm::aca` writes a file as a staging upload
+  plus one `install -D -m MODE` (the files API sets no mode and may not make folders) and asks a sandbox's `$HOME`
+  once for relative reads. `vm::local`'s disk is `home/` only: the workspace moved from `<sandbox>/work` to
+  `<sandbox>/home/work` (where the guest's `~/work/<repo>` is), so images carry the clone.
+- **`vm attach` on `provider: local`** runs the agent in the sandbox directly (`Local::command`, tracked so suspend
+  and delete reach it) until Phase 2's satellite link carries every provider's terminals; `aca` boxes reach
+  *Running* but have no terminal before Phase 2.
+- **The spikes go through `open_provider`** (the plan had them on `vm::aca`; Phase 0 had them on the hooks).
+- **The satellite's TLS uses `rustls-platform-verifier`** (already in the lock through reqwest) for the platform's
+  roots, with the pack's CA as extra roots.
+- **Every provider but `hooks` uses the satellite** for a box's terminal (`hooks` keeps `vm attach` and the hooks'
+  shell); `vm::local`'s boxes too, so the pool lane tests the real path.
+- **History and relayed commands go through the thin lane's drain sent over the link** (`SatDown::Control` /
+  `SatUp::ControlResult`) instead of `SatUp::History` / `SatUp::Op` pushes: the same mirror and execution code,
+  polled every `poll_seconds` without a provider command. Pushing appends as they happen can replace it later.
+- **The satellite is started by the launcher** (`Provider::start_satellite`: `atelier satellite --start` in the
+  guest; `vm::local` starts it as a tracked process outside the service's Windows job) after the branch is
+  prepared, instead of at sandbox creation; `CONNECT` is used through proxies for `ws://` too.
+- **The satellite honours `ATELIER_<AGENT>`** for an agent's program, as the hub does (the self-tests' stand-ins).
+- **The remote listener** binds with `SO_REUSEADDR` on Unix and retries for 15 s at start (found by the restart step).
+- **No note line marks a gap** (VM-29 had one): a guest's ConPTY (Windows) draws by absolute positions, so nothing
+  of the hub's may be drawn into a program's screen once it runs; a gap is logged, and a program's first output
+  starts on a blank screen (the launch's step lines are cleared).
+- **`vm::local` on Linux starts its satellite in a systemd user scope of its own**, out of the service's unit, whose
+  stop ends its cgroup (a VM's satellite is not the hub's process at all).
 
 ## Log
 
@@ -118,3 +178,43 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   VM requests, docs.
 - 2026-11-09: Phase 0 (partial, by design): the spikes S2–S4 kit and `satellite --self-check`, checked by
   `selftest vm` on local sandboxes; S1, S5, S7 land with the phases that make them possible.
+- 2026-11-09: CI green on 93556b4 (run 42742983720: Windows test with `selftest vm`, parity, goldens; macOS;
+  Linux ×3 and linux-gui; iOS; packages). Merged into main (d35d56e, main had not moved). Phase 1 started: the
+  provider trait; worker prompts for `vm::aca` and `vm::local` in docs/VM-WORKERS.md.
+- 2026-11-10: Phase 1 (lead's part): stores, credentials, manager, launcher, hooks provider, guest commands, the
+  view and actions, `atelier vm …`, doctor; `selftest vm` adds the credential in the guest, a budget queue, suspend
+  and resume, delete with the credential revoked (PASS in 20 s on macOS). Waiting for the workers' `vm::aca` and
+  `vm::local` to wire them into `open_provider` and the pool lane's self-test.
+- 2026-11-10: the secrets refresher; Phase 2 started early on files no worker owns: the VT repaint and remote
+  terminals in `canvas-host` (both unit-tested). The satellite (VM-23) waits for the P-aca hand-off: its
+  `wss://` dialer needs `rustls` in `crates/canvas-agents/Cargo.toml`, which that worker owns.
+- 2026-11-10: CI run 42749108451 (2644eaf) failed only in `selftest vm`: arm64 Linux checked the revocation before
+  the launcher had revoked (the probe now waits for it), macOS saw "2 of 1 running" (budgets now count the
+  launches' running VMs, not sandbox records; the probe checks no sandbox leaked). Fixed in 88defa0 (3 local passes);
+  its CI is queued behind the workers' branches. Main's CI for the d35d56e merge is still running.
+- 2026-11-10: the workers handed off. `vm-aca` and `vm-local` merged into `vm-sessions` (one conflict: the module
+  list). The provider contract settled (departures), `open_provider` wired for both, `vm attach` and the spikes
+  through providers, the pool lane in `selftest vm` (both lanes PASS in 34–35 s on macOS, three runs), `vm::tls`
+  with rustls on every OS. 74 `vm::` tests, 289 canvas-agents lib tests, 18 canvas-sys tests; clippy clean on
+  macOS and `cargo xwin` (Windows). Windows CI runs `vm::local`'s Windows suspend for the first time.
+- Owner items added by `vm::aca` (guesses from Appendix A, checked only on real sandboxes): image readiness, the
+  egress-decisions and raw-file GET shapes, whether the files API makes folders (writes go through `install -D`
+  either way), whether `/opt/atelier/bin` is writable by the files API in the stock image (S3), token expiry from
+  `expires_on` or the token's `exp`; no re-fetch on a 401 yet.
+- 2026-11-10: Phase 2's core on `vm-sessions` (not pushed while CI ran for 7433d60): the satellite and the hub link
+  (tcp/ws/wss, rustls with a test CA valid 2019–2099 in `vm/satellite/testdata`), remote terminals launched,
+  adopted after a restart, kept through a frozen VM; drains over the link; `SessionStore` for Copilot. `selftest
+  vm` PASS in 50 s on macOS (both lanes), three runs. Found and fixed: the probe's `vm …` commands started a stray
+  `default` service in the probe's home (with the real Copilot folder as its sessions folder) that ran a second VM
+  manager: they now name the probe's instance; the probe ends every sandbox's processes, pass or fail.
+- 2026-11-10: CI on the Phase 2 work found three things, all fixed: Linux runners stopped the guest's programs at a
+  restart of the service (its systemd unit ended its cgroup: `vm::local` now starts the satellite in a scope of
+  its own); on Windows the guest's ConPTY drew over the launch's step lines (a program now starts on a blank screen
+  and nothing of the hub's is drawn into it); the new repaint round trip in `corpus check` met Ghostty dropping a
+  keycap's VS16 (between engines the hub's own drawing of the recording is accepted). The earlier Windows hang was
+  the probe's stray service holding its output (fixed by naming the probe's instance; every probe command is now
+  bounded, the step has 15 minutes). In-process tests now cover the hub link (Hello, ordering, input, resume
+  buffer, the mailbox's wait, offline stops) and drops end to end (exact replay within the ring, repaint beyond).
+  Pending for Phase 2: VM-26 guest roots (with Phase 3's sync), VM-28 subsessions, the link's flood limits,
+  `proc` and `stats`, DEVELOPMENT and AGENT-PROVIDERS docs.
+

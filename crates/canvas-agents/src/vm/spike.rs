@@ -10,8 +10,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use super::hooks::Hooks;
+use std::path::Path;
+
 use super::pack::Pack;
+use super::provider::{Labels, Provider};
 
 /// `atelier satellite --self-check`: what the guest's Atelier needs works
 /// (a PTY with the alacritty engine, its data folder); one JSON object.
@@ -42,7 +44,7 @@ fn pty_check() -> Result<()> {
     let cwd = std::env::temp_dir().display().to_string();
     let terminal = Terminal::spawn(
         Spawn { id: "self-check", program, args: &args, env: &[], cwd: &cwd, cols: 80, rows: 10, copilot: false, engine: Engine::Alacritty },
-        TermHooks { pump, exited, clipboard, bytes: Default::default(), changed, notify: None },
+        TermHooks { pump, exited, clipboard, bytes: Default::default(), changed, notify: None, raw: None },
     )?;
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -63,51 +65,60 @@ fn p(values: &mut [u64], q: f64) -> u64 {
     values.get(((values.len() as f64 - 1.0) * q).round() as usize).copied().unwrap_or(0)
 }
 
-/// Claims a sandbox for a spike (the pack's first repository), runs `body`
-/// in it, deletes it unless `keep`.
-fn with_sandbox(pack: &Pack, hooks: &Hooks, keep: bool, body: impl FnOnce(&str) -> Result<Value>) -> Result<Value> {
+/// Makes a sandbox for a spike through the pack's provider (the pack's
+/// first repository, its default size; a `hooks` claim clones it on
+/// `atelier/spike`), runs `body` in it, deletes it unless `keep`.
+fn with_sandbox(pack: &Pack, provider: &dyn Provider, keep: bool, body: impl FnOnce(&str) -> Result<Value>) -> Result<Value> {
     let repo = pack.repos.first().context("the pack has no repository")?;
     let size = pack.size(None).context("the pack has no size")?;
+    let mut labels: Labels = [("atelier.role", "spike".to_owned()), ("atelier.box", format!("spike-{}", &uuid::Uuid::new_v4().simple().to_string()[..8])), ("atelier.repo", repo.key.clone())].into_iter().map(|(k, v)| (k.to_owned(), v)).collect();
+    if provider.name() == "hooks" {
+        for (k, v) in [("atelier.url", &repo.url), ("atelier.branch", &"atelier/spike".to_owned()), ("atelier.base", &repo.default_branch), ("atelier.size", &size.name)] {
+            labels.insert(k.into(), v.clone());
+        }
+    }
     let started = Instant::now();
-    let claim = hooks.call(
-        "claim",
-        &json!({ "box": format!("spike-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]), "repo": repo.key, "url": repo.url, "branch": "atelier/spike", "base": repo.default_branch, "size": size.name, "labels": { "atelier.role": "spike" } }),
-    )?;
-    let sandbox = claim["sandbox"].as_str().context("the claim hook named no sandbox")?.to_owned();
+    let sandbox = provider.create(&super::manager::spec(pack, &size.name, None, labels)?)?.id;
     let claim_ms = started.elapsed().as_millis() as u64;
     let result = body(&sandbox);
     if !keep {
-        let _ = hooks.call("delete", &json!({ "sandbox": sandbox }));
+        let _ = provider.delete(&sandbox);
     }
     let mut value = result?;
     value["claim_ms"] = claim_ms.into();
+    value["provider"] = provider.name().into();
     Ok(value)
 }
 
 /// `atelier vm spike NAME [--agent A] [--runs N] [--keep]`: one JSON object.
-pub fn run(pack: &Pack, name: &str, agent: Option<&str>, runs: u32, keep: bool) -> Result<Value> {
-    let hooks = Hooks::of(pack);
-    anyhow::ensure!(hooks.has("claim") && hooks.has("exec") && hooks.has("delete"), "the spikes need the pack's claim, exec and delete hooks");
+pub fn run(home: &Path, pack: &Pack, name: &str, agent: Option<&str>, runs: u32, keep: bool) -> Result<Value> {
+    let provider = super::open_provider(home, pack)?;
+    let provider = provider.as_ref();
+    if provider.name() == "hooks" {
+        let hooks = super::hooks::Hooks::of(pack);
+        anyhow::ensure!(hooks.has("claim") && hooks.has("exec") && hooks.has("delete"), "the spikes need the pack's claim, exec and delete hooks");
+    }
     let exec = |sandbox: &str, argv: &[&str]| -> Result<(i64, String)> {
-        let (code, out) = hooks.exec(sandbox, &argv.iter().map(|s| s.to_string()).collect::<Vec<_>>(), b"")?;
-        Ok((code, String::from_utf8_lossy(&out).into_owned()))
+        let out = provider.exec(sandbox, &argv.iter().map(|s| s.to_string()).collect::<Vec<_>>(), b"")?;
+        Ok((out.code, String::from_utf8_lossy(&out.stdout).into_owned()))
     };
     match name {
         // S2: the agent CLI runs in a guest (its sign-in is checked by starting a VM box).
         "s2" => {
             let agent = agent.unwrap_or("copilot");
             anyhow::ensure!(canvas_model::agent::AgentKind::parse(agent).is_some(), "--agent is copilot, opencode or claude");
-            with_sandbox(pack, &hooks, keep, |sandbox| {
+            with_sandbox(pack, provider, keep, |sandbox| {
                 let started = Instant::now();
                 let (code, out) = exec(sandbox, &[agent, "--version"])?;
                 Ok(json!({ "spike": "s2", "agent": agent, "ok": code == 0, "exit_code": code, "version": super::hooks::first_line(&out), "ms": started.elapsed().as_millis() as u64 }))
             })
         }
-        // S3: this build runs in the stock image.
-        "s3" => with_sandbox(pack, &hooks, keep, |sandbox| {
+        // S3: this build runs in the stock image (the pack's satellite uploaded first).
+        "s3" => with_sandbox(pack, provider, keep, |sandbox| {
+            let uploaded = super::manager::install_satellite(pack, provider, sandbox)?;
             let (code, out) = exec(sandbox, &["atelier", "satellite", "--self-check"])?;
             let check: Value = serde_json::from_str(out.trim()).unwrap_or_else(|_| json!({ "ok": false, "output": super::hooks::first_line(&out) }));
-            Ok(json!({ "spike": "s3", "ok": code == 0 && check["ok"] == true, "exit_code": code, "self_check": check }))
+            Ok(json!({ "spike": "s3", "ok": code == 0 && check["ok"] == true, "exit_code": code, "uploaded": uploaded, "self_check": check }))
         }),
         // S4 (without a model): claim to a command answered in the guest, p50 and p95.
         "s4" => {
@@ -115,7 +126,7 @@ pub fn run(pack: &Pack, name: &str, agent: Option<&str>, runs: u32, keep: bool) 
             let mut times = Vec::new();
             for _ in 0..runs {
                 let started = Instant::now();
-                with_sandbox(pack, &hooks, false, |sandbox| {
+                with_sandbox(pack, provider, false, |sandbox| {
                     let (code, _) = exec(sandbox, &["atelier", "--version"])?;
                     anyhow::ensure!(code == 0, "atelier did not answer in the guest");
                     Ok(json!({}))
@@ -123,7 +134,7 @@ pub fn run(pack: &Pack, name: &str, agent: Option<&str>, runs: u32, keep: bool) 
                 times.push(started.elapsed().as_millis() as u64);
             }
             let (p50, p95) = (p(&mut times.clone(), 0.5), p(&mut times, 0.95));
-            Ok(json!({ "spike": "s4", "ok": true, "runs": runs, "p50_ms": p50, "p95_ms": p95, "target": "first prompt p50 <= 5 s, p95 <= 10 s (this is claim to a guest command; the prompt adds the agent's start)" }))
+            Ok(json!({ "spike": "s4", "ok": true, "provider": provider.name(), "runs": runs, "p50_ms": p50, "p95_ms": p95, "target": "first prompt p50 <= 5 s, p95 <= 10 s (this is claim to a guest command; the prompt adds the agent's start)" }))
         }
         "s1" | "s5" | "s7" => bail!("spike {name} needs the satellite link (later phases; docs/VM-STATUS.md)"),
         other => bail!("unknown spike {other:?} (s2, s3, s4)"),

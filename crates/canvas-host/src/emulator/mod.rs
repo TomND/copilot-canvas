@@ -13,6 +13,7 @@ pub mod alacritty;
 #[cfg(feature = "ghostty")]
 pub mod ghostty;
 pub mod inline;
+pub mod replay;
 
 /// Engine-side happenings, delivered while feeding output.
 pub trait Events {

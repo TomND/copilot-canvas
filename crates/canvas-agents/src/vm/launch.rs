@@ -39,6 +39,43 @@ pub struct Intent {
     pub created_ms: u64,
     pub updated_ms: u64,
     pub error: String,
+    /// Bumped by a cancel or retry: a step started before it never writes its result.
+    pub fence: u64,
+    /// Failed steps in a row (three fail the launch).
+    pub attempts: u32,
+    /// The satellite credential minted for its sandbox (`sat-…`).
+    pub satellite: String,
+    /// An operation asked for and not done yet: `suspend`, `resume` or `delete`.
+    pub pending: String,
+    /// Since when it waits (queued) or why (`note`).
+    pub queued_ms: u64,
+    pub note: String,
+    /// The generation of the box's terminal that runs in the guest behind
+    /// the satellite (0: none); a restarted service adopts it again.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub terminal: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+static INTENTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Changes box `id`'s intent under the intents' lock (read, change, write):
+/// the service's threads never write over each other's changes.
+pub fn update<T>(home: &Path, id: &str, change: impl FnOnce(&mut Intent) -> T) -> Result<Option<T>> {
+    let _turn = INTENTS.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut intent) = load(home, id)? else { return Ok(None) };
+    let out = change(&mut intent);
+    save(home, &mut intent)?;
+    Ok(Some(out))
+}
+
+/// Writes `intent` under the intents' lock.
+pub fn store(home: &Path, intent: &mut Intent) -> Result<()> {
+    let _turn = INTENTS.lock().unwrap_or_else(|e| e.into_inner());
+    save(home, intent)
 }
 
 /// Whether `id` may name a box's files (a terminal id: letters, digits, `-`, `_`).
@@ -110,62 +147,55 @@ pub fn guest_env(id: &str, kind: AgentKind) -> Vec<(String, String)> {
     env
 }
 
-/// `atelier vm attach --box ID`: claims a VM for the box when it has none
-/// (the pack's `claim` hook), then runs the `shell-command` hook's command
-/// in this terminal (the agent in the guest). Its steps are printed.
+/// `atelier vm attach --box ID`: the terminal of a VM box. The service's
+/// launcher claims and prepares its VM (this shows each step); then the
+/// pack's `shell-command` hook's command runs here: the agent in the guest.
+/// With `provider: local` (tests and CI) the agent runs in the sandbox
+/// directly, as one of its processes, until the satellite link (Phase 2)
+/// carries every provider's terminals.
 pub fn attach(home: &Path, id: &str) -> Result<()> {
     use std::io::Write;
     let folder = super::pack::configured(home).context("no VM pack is configured: VM sessions are off")?;
     let (pack, status) = super::pack::load(&folder);
     anyhow::ensure!(status.errors() == 0, "the VM pack has {} error(s): see `atelier vm pack check`", status.errors());
     let hooks = super::hooks::Hooks::of(&pack);
-    let mut intent = load(home, id)?.with_context(|| format!("no VM launch for box {id}"))?;
     let say = |text: &str| {
         let mut out = std::io::stdout();
         let _ = write!(out, "\x1b[2m☁ {text}\x1b[0m\r\n");
         let _ = out.flush();
     };
-    if intent.sandbox.is_empty() {
-        let repo = pack.repo(&intent.placement.repo).with_context(|| format!("the VM pack has no repository {:?}", intent.placement.repo))?;
-        let size = pack.size(intent.placement.size.as_deref()).context("the VM pack has no such size")?;
-        let branch = intent.placement.branch.clone().unwrap_or_else(|| canvas_model::vm::branch_for_session(&intent.r#box));
-        anyhow::ensure!(canvas_model::vm::branch_ok(&branch), "{branch:?} is not a branch name");
-        say(&format!("Claiming a VM for {} on {branch} ({})…", repo.key, size.name));
-        intent.state = VmState::Claiming;
-        save(home, &mut intent)?;
-        let answer = hooks.call(
-            "claim",
-            &serde_json::json!({
-                "box": intent.r#box, "repo": repo.key, "url": repo.url, "branch": branch, "base": repo.default_branch,
-                "size": size.name, "cpu": format!("{}m", size.cpu_milli), "memory": format!("{}Mi", size.memory_mi),
-                "labels": { "atelier.box": intent.r#box, "atelier.repo": repo.key },
-            }),
-        );
-        match answer {
-            Ok(answer) => {
-                intent.sandbox = answer["sandbox"].as_str().unwrap_or_default().to_owned();
-                intent.cwd = answer["cwd"].as_str().unwrap_or_default().to_owned();
-                intent.placement.branch = Some(branch);
-                anyhow::ensure!(!intent.sandbox.is_empty(), "the claim hook named no sandbox");
-            }
-            Err(error) => {
-                intent.state = VmState::Failed;
-                intent.error = format!("{error:#}");
-                save(home, &mut intent)?;
-                return Err(error);
-            }
+    let mut last = String::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30 * 60);
+    let intent = loop {
+        let intent = load(home, id)?.with_context(|| format!("no VM launch for box {id}"))?;
+        let line = match intent.state {
+            VmState::Queued => format!("Waiting to start: {}", intent.note),
+            VmState::Claiming if intent.sandbox.is_empty() => format!("Claiming a VM for {} on {}…", intent.placement.repo, intent.placement.branch.as_deref().unwrap_or("its branch")),
+            VmState::Claiming | VmState::Starting => format!("Preparing the VM ({})…", intent.sandbox),
+            VmState::Resuming | VmState::Suspended | VmState::Suspending => "Resuming the VM…".to_owned(),
+            VmState::Running if !intent.sandbox.is_empty() => break intent,
+            VmState::Failed => bail!("the VM could not be started: {}", intent.error),
+            VmState::Deleted | VmState::Deleting => bail!("this session's VM was deleted"),
+            VmState::Lost => bail!("this session's VM is gone (its work is in its pushed branch)"),
+            other => format!("{}…", other.word()),
+        };
+        if line != last {
+            say(&line);
+            last = line;
         }
+        anyhow::ensure!(std::time::Instant::now() < deadline, "the VM did not start within 30 minutes");
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    };
+    let mut cmd = if pack.provider == super::pack::ProviderKind::Local {
+        say(&format!("Joining the VM ({})…", intent.sandbox));
+        let local = super::local::Local::new(super::local_root(home, &pack));
+        let cmd = local.command(&intent.sandbox, &intent.argv, Some(intent.cwd.as_str()).filter(|c| !c.is_empty()), &intent.env)?;
+        // This process (and so the agent it becomes or starts) is the sandbox's: suspend and delete reach it.
+        local.track(&intent.sandbox, std::process::id())?;
+        cmd
     } else {
-        say(&format!("Joining the VM of this session ({})…", intent.sandbox));
-    }
-    let answer = hooks.call("shell-command", &serde_json::json!({ "sandbox": intent.sandbox, "box": intent.r#box, "argv": intent.argv, "env": intent.env.iter().cloned().collect::<std::collections::BTreeMap<_, _>>(), "cwd": intent.cwd }))?;
-    let argv: Vec<String> = answer["argv"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
-    anyhow::ensure!(!argv.is_empty(), "the shell-command hook gave no command");
-    intent.state = VmState::Running;
-    intent.error.clear();
-    save(home, &mut intent)?;
-    let mut cmd = std::process::Command::new(&argv[0]);
-    cmd.args(&argv[1..]);
+        shell_command(&hooks, &intent, &say)?
+    };
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -177,6 +207,18 @@ pub fn attach(home: &Path, id: &str) -> Result<()> {
         let status = cmd.status().context("cannot start the shell into the VM")?;
         std::process::exit(status.code().unwrap_or(1));
     }
+}
+
+/// The pack's `shell-command` hook's command into the VM of `intent`.
+fn shell_command(hooks: &super::hooks::Hooks, intent: &Intent, say: &dyn Fn(&str)) -> Result<std::process::Command> {
+    anyhow::ensure!(hooks.has("shell-command"), "the VM pack has no shell-command hook: this VM's terminal comes with the satellite link");
+    say(&format!("Joining the VM ({})…", intent.sandbox));
+    let answer = hooks.call("shell-command", &serde_json::json!({ "sandbox": intent.sandbox, "box": intent.r#box, "argv": intent.argv, "env": intent.env.iter().cloned().collect::<std::collections::BTreeMap<_, _>>(), "cwd": intent.cwd }))?;
+    let argv: Vec<String> = answer["argv"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+    anyhow::ensure!(!argv.is_empty(), "the shell-command hook gave no command");
+    let mut cmd = std::process::Command::new(&argv[0]);
+    cmd.args(&argv[1..]);
+    Ok(cmd)
 }
 
 #[cfg(test)]

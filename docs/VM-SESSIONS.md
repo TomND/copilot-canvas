@@ -292,3 +292,39 @@ Phase by phase; the details and the log are in [VM-STATUS.md](VM-STATUS.md).
   and runs each operation as its box with this program. The new-session dialog's *Run on* and Tasks' *Start on VM…*
   appear only with a pack. `atelier selftest vm` runs it all on `vm::local` sandboxes answered by
   `atelier vm-hook-standin`, in CI on Windows, macOS and Linux.
+- **Phase 1 (the manager).** `vm::provider` (the trait: `vm::aca`, `vm::local` and the pack's hooks implement it),
+  the stores under `<home>/vm/` (`hub.json`, `satellites.json`, `sandboxes.json`, `images.json`, `budget.json`,
+  `launches/`), satellites' credentials (`sat-` ids sealed for the home, minted at a claim and written to the
+  guest's `~/.atelier/satellite.json`, revoked when the sandbox goes; the handshake tells them from paired
+  clients), the manager's decisions (budgets queue starts with the reason and never stop running work; images on
+  their schedule (UTC), the newest `keep` kept; the warm pool kept full from the newest image, its members leased
+  once and recycled after `pool.max_age` or a newer image) and the launcher's steps (`queued` → `claiming` →
+  `starting` → `running`, suspend, resume, delete; fenced, rolled back, three failures fail it; reconciliation of
+  lost boxes, orphans and builders at start). The guest-side commands `atelier satellite --write-file`,
+  `--read-file`, `--clone`, `--prepare` keep the hub's steps free of shells. `atelier vm
+  list|pool|images|budget|image build|suspend|resume|delete|cancel|retry` and `doctor`'s VM lines (only with a pack).
+  The providers share one contract: a guest path is relative to the guest user's home or absolute; `put_file`
+  makes the folders and sets the mode (0600 for the credential, 0755 for the satellite, which image builds put at
+  `/opt/atelier/bin/atelier`, first on `PATH` for `aca`'s commands); `get_file` refuses a file larger than asked
+  rather than truncating it. `vm::aca` writes through a staging upload and one `install` command, and learns a
+  sandbox's home once. `vm::local` keeps a sandbox's whole disk in its `home/` (the workspace `~/work/<repo>`),
+  runs this build as the satellite, and runs a box's agent in the sandbox directly until the satellite link
+  (Phase 2). The spikes (`vm spike s2|s3|s4`) run through whichever provider the pack names (S3 uploads the
+  pack's satellite first). `atelier selftest vm` adds the pool lane on `provider: local`: the image built in a
+  builder sandbox, a warm VM leased by a box and prepared on its branch, the pool filled again, the VM deleted.
+- **Phase 2 (terminals; in progress).** The satellite (`atelier satellite`, started in the guest by the launcher:
+  `--start` runs it in the background once; `vm::local` starts this build as a process of the sandbox) dials the
+  hub (`wss://` with rustls, the platform's roots and the pack's CA; `ws://`; `tcp://`; through a `CONNECT` proxy),
+  authenticates with its credential and runs each box's PTY in the guest with the alacritty engine, which answers
+  the program's queries there; its raw output is kept in a 4 MiB ring with byte offsets. On the hub a VM box is a
+  remote terminal (`Terminal::spawn_remote`): it shows the launch's steps as dim lines, starts the program once the
+  launch runs and the satellite is linked, draws the guest's output, sends typing numbered and kept until
+  acknowledged, and refuses typing while the VM is offline. A dropped link is replayed from what the hub has, or
+  repainted from the guest's screen when the ring no longer reaches back; a restart of the service lets the
+  terminal go and adopts it again; a suspended VM's link drops and comes back on resume. History, status and
+  relayed commands use the thin lane's drain, sent over the link instead of a command per poll. `HasHistory`,
+  `Transcript` find a VM session's history in its mirror; forking one is refused. `atelier selftest vm` adds the
+  pool lane on `provider: local`: the warm VM leased, its satellite linked over `ws://` on loopback, typing, status
+  from the guest's history, a restart of the service, a freeze and a resume, a stop and a new launch in the same
+  VM, the VM deleted.
+

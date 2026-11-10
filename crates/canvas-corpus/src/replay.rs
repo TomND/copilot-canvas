@@ -168,6 +168,50 @@ impl Screen {
 /// Feeds the recording into a fresh `engine`, respecting chunk boundaries,
 /// resizes and (for synchronized updates) virtual time.
 pub fn replay(engine: Engine, recording: &Recording) -> Result<Expected> {
+    let (_, expected) = play(engine, recording)?;
+    Ok(expected)
+}
+
+/// Without the soft-wrap markers (a repaint does not restore them).
+fn cells(snapshot: &Snapshot) -> Vec<Vec<Run8>> {
+    snapshot.lines.iter().map(|row| row.iter().filter(|r| !r.is_soft_wrap()).cloned().collect()).collect()
+}
+
+/// The repaint round trip (docs/VM-SESSIONS.md A2c, a VM session's gap
+/// reset): the recording's last screen on `from`, repainted into a fresh `to`
+/// of its size. `None` when they agree (cells, links, cursor and modes on one
+/// engine; between two, the text, cursor and modes match the source screen or
+/// how `to` itself draws the recording: engines differ, e.g. on a keycap's
+/// variation selector), else what differs.
+pub fn repaint_round_trip(from: Engine, to: Engine, recording: &Recording) -> Result<Option<String>> {
+    let (emu, _) = play(from, recording)?;
+    let before = emu.snapshot();
+    let mut fresh = new_emulator(to, before.cols, before.rows)?;
+    fresh.feed(&emulator::replay::repaint(&before), &mut EventLog::default());
+    let after = fresh.snapshot();
+    let native = if from == to { None } else { Some(play(to, recording)?.0.snapshot()) };
+    let text = |s: &Snapshot| s.lines.iter().map(|row| row_text(row).trim_end().to_owned()).collect::<Vec<_>>();
+    let looks = |s: &Snapshot| (s.cursor, s.cursor_shape, s.modes);
+    if text(&after) != text(&before) && native.as_ref().is_none_or(|n| text(&after) != text(n)) {
+        let row = text(&before).iter().zip(text(&after)).position(|(a, b)| *a != b).unwrap_or(0);
+        return Ok(Some(format!("row {row}: {:?} came back as {:?}", text(&before).get(row).cloned().unwrap_or_default(), text(&after).get(row).cloned().unwrap_or_default())));
+    }
+    if looks(&after) != looks(&before) && native.as_ref().is_none_or(|n| looks(&after) != looks(n)) {
+        return Ok(Some(format!("cursor and modes {:?} came back as {:?}", (before.cursor, before.cursor_shape, mode_names(before.modes)), (after.cursor, after.cursor_shape, mode_names(after.modes)))));
+    }
+    if from == to {
+        if let Some(row) = cells(&before).iter().zip(cells(&after)).position(|(a, b)| *a != b) {
+            return Ok(Some(format!("row {row}'s colours or attributes differ")));
+        }
+        if after.links != before.links {
+            return Ok(Some("the links differ".into()));
+        }
+    }
+    Ok(None)
+}
+
+/// [`replay`] with the engine as it is at the end.
+fn play(engine: Engine, recording: &Recording) -> Result<(Box<dyn Emulator>, Expected)> {
     // Recordings built in code skip the parser's clamp.
     let (cols, rows) = clamp_size(recording.header.cols, recording.header.rows);
     let mut emu = new_emulator(engine, cols, rows)?;
@@ -198,7 +242,7 @@ pub fn replay(engine: Engine, recording: &Recording) -> Result<Expected> {
         emu.end_sync(&mut events);
     }
     screens.push(Screen::capture(END, &emu.snapshot()));
-    Ok(Expected { engine: engine.name().to_owned(), events, screens })
+    Ok((emu, Expected { engine: engine.name().to_owned(), events, screens }))
 }
 
 fn json<T: Serialize + ?Sized>(value: &T) -> String {

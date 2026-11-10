@@ -74,6 +74,7 @@ jobs:
       - name: golden corpus (both engines)
         run: target\release\atelier.exe corpus check
       - name: VM sessions self-test (local sandboxes, no cloud)
+        timeout-minutes: 15
         run: target\release\atelier.exe selftest vm
       - name: TUI self-test
         run: target\release\atelier.exe selftest
@@ -167,6 +168,7 @@ jobs:
       - name: golden corpus (both engines)
         run: target/debug/atelier corpus check
       - name: VM sessions self-test (local sandboxes, no cloud)
+        timeout-minutes: 15
         run: target/debug/atelier selftest vm
       - name: TUI self-test
         run: target/debug/atelier selftest
@@ -477,6 +479,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: target/release/atelier doctor || true
       - name: VM sessions self-test (local sandboxes, no cloud)
+        timeout-minutes: 15
         if: ${{ !cancelled() }}
         run: target/release/atelier selftest vm
       - name: TUI self-test

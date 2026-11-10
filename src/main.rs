@@ -19,6 +19,7 @@ mod service_install;
 mod soak;
 mod standin;
 mod test_shell;
+mod vm_cli;
 mod vm_probe;
 #[cfg(windows)]
 mod uia;
@@ -129,6 +130,10 @@ USAGE
 
 VM SESSIONS (docs/VM-SESSIONS.md; optional: without a VM pack sessions run on this machine)
   atelier config vm.pack FOLDER|none    use a VM pack (a folder outside any repository)
+  atelier vm list|pool|images|budget    VM sessions as the service sees them
+  atelier vm image build REPO           a repository's image now
+  atelier vm suspend|resume|cancel|retry BOX · vm delete BOX --yes
+                                        a VM box's VM (delete: its sandbox and credential go)
   atelier vm spike s2|s3|s4 [--agent A] [--runs N] [--keep]
                                         checks only real sandboxes answer (docs/VM-STATUS.md, the owner's):
                                         the agent CLI in a guest, this build in the image, claim latency
@@ -351,7 +356,7 @@ fn parse() -> Result<Args> {
             "--canvas" => args.canvas = Some(PathBuf::from(value("--canvas")?)),
             "--cwd" => args.cwd = Some(PathBuf::from(value("--cwd")?)),
             "--remote" => args.remote = Some(value("--remote")?),
-            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--pulse" | "--unread" | "--sent" | "--qr" | "--mine" | "--tree" | "--all" | "--internal" | "--undo" | "--with-todos" | "--detach" | "--lite" | "--self-check" | "--keep" => {
+            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--pulse" | "--unread" | "--sent" | "--qr" | "--mine" | "--tree" | "--all" | "--internal" | "--undo" | "--with-todos" | "--detach" | "--lite" | "--self-check" | "--keep" | "--clone" | "--prepare" | "--start" => {
                 args.flags.push(arg.trim_start_matches("--").to_owned())
             }
             "--" => {
@@ -781,9 +786,28 @@ fn real_main() -> Result<()> {
             let (pack, status) = canvas_agents::vm::pack::load(&folder);
             anyhow::ensure!(status.errors() == 0, "the VM pack has {} error(s): see `atelier vm pack check`", status.errors());
             let runs = option("runs").map(|r| r.parse::<u32>().context("--runs takes a number")).transpose()?.unwrap_or(5);
-            let result = canvas_agents::vm::spike::run(&pack, name, option("agent").as_deref(), runs, flag("keep"))?;
+            let result = canvas_agents::vm::spike::run(&instance.home, &pack, name, option("agent").as_deref(), runs, flag("keep"))?;
             println!("{result}");
             if result["ok"] != true { std::process::exit(1) }
+            Ok(())
+        }
+        ["satellite"] if option("write-file").is_some() => {
+            println!("{}", canvas_agents::vm::guest::write_file(&option("write-file").unwrap_or_default(), option("mode").as_deref())?);
+            Ok(())
+        }
+        ["satellite"] if option("read-file").is_some() => {
+            use std::io::Write;
+            std::io::stdout().write_all(&canvas_agents::vm::guest::read_file(&option("read-file").unwrap_or_default())?)?;
+            Ok(())
+        }
+        ["satellite"] if flag("clone") || flag("prepare") => {
+            let need = |name: &str| option(name).with_context(|| format!("--{name} is needed"));
+            let answer = if flag("clone") {
+                canvas_agents::vm::guest::clone(&need("repo")?, &need("url")?, &option("branch").unwrap_or_else(|| "main".into()), &option("mode").unwrap_or_else(|| "blobless".into()))?
+            } else {
+                canvas_agents::vm::guest::prepare(&need("repo")?, &need("branch")?, &option("base").unwrap_or_else(|| "main".into()))?
+            };
+            println!("{answer}");
             Ok(())
         }
         ["satellite"] if flag("lite") => {
@@ -795,6 +819,12 @@ fn real_main() -> Result<()> {
             println!("{}", serde_json::to_string(&response)?);
             Ok(())
         }
+        ["satellite"] if flag("start") => {
+            println!("{}", canvas_agents::vm::satellite::start()?);
+            Ok(())
+        }
+        // The guest's link to the hub (`~/.atelier/satellite.json`); runs until the VM's credential is revoked.
+        ["satellite"] => canvas_agents::vm::satellite::run(),
         ["vm", "attach"] => canvas_agents::vm::launch::attach(&instance.home, &option("box").context("vm attach needs --box ID")?),
         ["vm-hook-standin", "run", "--", argv @ ..] => canvas_agents::vm::local::standin_run(&option("sandbox").context("--sandbox ID")?, &options("env"), &owned(argv)),
         ["vm-hook-standin", hook] => canvas_agents::vm::local::standin(hook),
@@ -807,6 +837,7 @@ fn real_main() -> Result<()> {
             if status.errors() > 0 { std::process::exit(1) }
             Ok(())
         }
+        ["vm", rest @ ..] if canvas_agents::vm::pack::configured(&instance.home).is_some() && matches!(rest.first(), Some(&("list" | "pool" | "images" | "image" | "budget" | "suspend" | "resume" | "delete" | "cancel" | "retry"))) => vm_cli::run(&instance, rest, flag("yes")),
         ["vm", ..] if canvas_agents::vm::pack::configured(&instance.home).is_none() => {
             bail!("no VM pack is configured (settings.json vm.pack or ATELIER_VM_PACK): VM sessions are off; `atelier vm pack check` says more")
         }

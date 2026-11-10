@@ -146,6 +146,116 @@ impl Hooks {
     }
 }
 
+/// The pack's hooks as a [`Provider`](super::provider::Provider) (`provider:
+/// hooks`): `claim` makes a sandbox with the repository on its branch (the
+/// labels `atelier.repo`, `atelier.url`, `atelier.branch`, `atelier.base`
+/// say which), `exec` runs commands, files go through `atelier satellite
+/// --write-file / --read-file` in the guest, `suspend`, `resume`, `delete`
+/// and `image` map to their hooks. A hooks pack has no warm pool and lists
+/// nothing (the store knows its sandboxes).
+pub struct HooksProvider {
+    pub hooks: Hooks,
+}
+
+impl super::provider::Provider for HooksProvider {
+    fn name(&self) -> &'static str {
+        "hooks"
+    }
+
+    fn create(&self, spec: &super::provider::SandboxSpec) -> Result<super::provider::Sandbox> {
+        let label = |k: &str| spec.labels.get(k).cloned().unwrap_or_default();
+        let answer = self.call(
+            "claim",
+            &serde_json::json!({
+                "box": label("atelier.box"), "repo": label("atelier.repo"), "url": label("atelier.url"), "branch": label("atelier.branch"), "base": label("atelier.base"),
+                "size": label("atelier.size"), "cpu": format!("{}m", spec.cpu_milli), "memory": format!("{}Mi", spec.memory_mi), "image": spec.image,
+                "labels": spec.labels.iter().filter(|(k, _)| *k != "atelier.url").collect::<std::collections::BTreeMap<_, _>>(),
+            }),
+        )?;
+        let id = answer["sandbox"].as_str().filter(|s| !s.is_empty()).context("the claim hook named no sandbox")?.to_owned();
+        let mut labels = spec.labels.clone();
+        if let Some(cwd) = answer["cwd"].as_str() {
+            labels.insert("atelier.cwd".into(), cwd.to_owned());
+        }
+        Ok(super::provider::Sandbox { id, state: "Running".into(), labels })
+    }
+
+    fn get(&self, id: &str) -> Result<Option<super::provider::Sandbox>> {
+        Ok(Some(super::provider::Sandbox { id: id.to_owned(), state: "Running".into(), labels: Default::default() }))
+    }
+
+    fn list(&self, _labels: &super::provider::Labels) -> Result<Vec<super::provider::Sandbox>> {
+        Ok(Vec::new())
+    }
+
+    fn exec(&self, id: &str, argv: &[String], stdin: &[u8]) -> Result<super::provider::ExecResult> {
+        let (code, stdout) = Hooks::exec(&self.hooks, id, argv, stdin)?;
+        Ok(super::provider::ExecResult { code, stdout, stderr: String::new() })
+    }
+
+    fn put_file(&self, id: &str, path: &str, bytes: &[u8], mode: u32) -> Result<()> {
+        let argv = ["atelier", "satellite", "--write-file", path, "--mode", &format!("{mode:o}")].map(str::to_owned);
+        let (code, _) = Hooks::exec(&self.hooks, id, &argv, bytes)?;
+        anyhow::ensure!(code == 0, "cannot write {path} in the guest (exit code {code})");
+        Ok(())
+    }
+
+    fn get_file(&self, id: &str, path: &str, max: u64) -> Result<Vec<u8>> {
+        let (code, bytes) = Hooks::exec(&self.hooks, id, &["atelier".into(), "satellite".into(), "--read-file".into(), path.to_owned()], b"")?;
+        anyhow::ensure!(code == 0, "cannot read {path} in the guest");
+        anyhow::ensure!(bytes.len() as u64 <= max, "{path} is larger than {max} bytes");
+        Ok(bytes)
+    }
+
+    fn suspend(&self, id: &str) -> Result<()> {
+        self.call("suspend", &serde_json::json!({ "sandbox": id })).map(|_| ())
+    }
+
+    fn resume(&self, id: &str) -> Result<()> {
+        self.call("resume", &serde_json::json!({ "sandbox": id })).map(|_| ())
+    }
+
+    fn delete(&self, id: &str) -> Result<()> {
+        self.call("delete", &serde_json::json!({ "sandbox": id })).map(|_| ())
+    }
+
+    fn set_egress(&self, _id: &str, _policy: &super::provider::EgressPolicy) -> Result<()> {
+        // A hooks pack applies its own egress in its claim hook.
+        Ok(())
+    }
+
+    fn egress_decisions(&self, _id: &str) -> Result<Vec<super::provider::EgressDecision>> {
+        Ok(Vec::new())
+    }
+
+    fn image_build(&self, base: &str, name: &str) -> Result<super::provider::ImageRef> {
+        let answer = self.call("image", &serde_json::json!({ "base": base, "name": name }))?;
+        Ok(super::provider::ImageRef { id: answer["image"].as_str().unwrap_or(name).to_owned(), name: name.to_owned(), created_ms: crate::paths::now_ms() })
+    }
+
+    fn image_commit(&self, _id: &str, _name: &str) -> Result<super::provider::ImageRef> {
+        bail!("a hooks pack builds its images in its image hook")
+    }
+
+    fn image_delete(&self, _image: &super::provider::ImageRef) -> Result<()> {
+        Ok(())
+    }
+
+    fn images(&self) -> Result<Vec<super::provider::ImageRef>> {
+        Ok(Vec::new())
+    }
+
+    fn secret_set(&self, _name: &str, _key: &str, _value: &super::provider::Secret) -> Result<()> {
+        bail!("a hooks pack keeps its secrets itself")
+    }
+}
+
+impl HooksProvider {
+    fn call(&self, name: &str, input: &Value) -> Result<Value> {
+        self.hooks.call(name, input)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
