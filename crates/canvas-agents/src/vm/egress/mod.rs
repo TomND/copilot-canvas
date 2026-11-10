@@ -5,17 +5,18 @@
 //! platform enforces it for `vm::aca`).
 //!
 //! This is the interface the lead wires: [`render`] (the profile's format:
-//! [`render`](mod@render)), [`decide`] (the engine: [`rules`]); until the
-//! rest of the package lands, [`serve`] refuses.
+//! [`render`](mod@render)), [`decide`] (the engine: [`rules`]) and [`serve`]
+//! (the forward proxy: module `proxy`).
 
 use std::net::TcpListener;
 use std::sync::Arc;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 
 use super::pack::Pack;
 use super::provider::{EgressDecision, EgressPolicy, HeaderFromSecret, Secret};
 
+mod proxy;
 pub mod render;
 pub mod rules;
 
@@ -82,8 +83,9 @@ pub trait Recorder: Send + Sync {
 /// every request, so a changed policy applies at once): absolute-form
 /// requests and `Upgrade`s by host, path and method with `Transform`
 /// headers injected; `CONNECT` by host only.
+/// One thread per connection; it returns only when the listener keeps
+/// failing (the module `proxy` says what it relays and how it is bounded).
 pub fn serve(listener: TcpListener, policy: Arc<dyn Fn() -> Option<EgressPolicy> + Send + Sync>, secrets: Arc<dyn Secrets>, recorder: Arc<dyn Recorder>) -> Result<()> {
-    let _ = (listener, policy, secrets, recorder);
-    bail!("the egress stand-in is not available yet (Phase 3)")
+    proxy::serve(listener, policy, secrets, recorder)
 }
 
