@@ -84,12 +84,13 @@ owner's note that VM sessions are optional and local stays the default.
       message kind, pacing, thinned reports, 32 MCP streams)
 - [x] VM-25 launch, shutdown, re-adoption: `Resolved::remote`, `Host::adopt_remote`, `Intent::terminal`, remote
       terminals let go at shutdown and adopted at start; the launcher starts the satellite (`Provider::start_satellite`)
-- [ ] VM-26 `ExecTarget`: the guest's command line comes from `launch::guest_command` (no hub paths); the guest roots
-      (plugin, skills, instructions, notes, MCP) come with Phase 3's file sync
+- [x] VM-26 in Phase 2's scope: the guest's command line from `launch::guest_command` (nothing of this machine, unit
+      test `the_guest_command_carries_nothing_of_this_machine`); the guest roots (plugin, skills, instructions,
+      notes, MCP) and their paths come with Phase 3's file sync (VM-34, VM-38): departure below
 - [x] VM-27 `SessionStore` for Copilot (`vm::session_store`): `HasHistory`, `Transcript`, `Fork` refused for mirrors
 - [x] VM-28 guest subsessions (from `SatUp::Proc`; the mirror's liveness overlay); VM-29 drops end to end, input
       while resuming, the mailbox's wait; the stats reports in the VM view (`git`, `offline_ms`) and `vm list`
-- [ ] VM-2A docs: BACKEND, REMOTE, README, VM-SESSIONS, DEVELOPMENT written; AGENT-PROVIDERS with VM-26
+- [x] VM-2A docs: BACKEND, REMOTE, README, VM-SESSIONS, DEVELOPMENT, AGENT-PROVIDERS (*Inside a VM*)
 - [ ] Exit: `selftest vm` (replay, gap, freeze, restart) on three OSes
 
 ### 3: integration
@@ -163,6 +164,9 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   guest; `vm::local` starts it as a tracked process outside the service's Windows job) after the branch is
   prepared, instead of at sandbox creation; `CONNECT` is used through proxies for `ws://` too.
 - **The satellite honours `ATELIER_<AGENT>`** for an agent's program, as the hub does (the self-tests' stand-ins).
+- **`ExecTarget` is not a type yet** (VM-26): with no guest roots before the file sync, the guest command line is
+  `launch::guest_command` (a launch with this machine's folders removed); the target-aware command builder lands
+  with VM-34/VM-38, when there are guest paths to build.
 - **The remote listener** binds with `SO_REUSEADDR` on Unix and retries for 15 s at start (found by the restart step).
 - **No note line marks a gap** (VM-29 had one): a guest's ConPTY (Windows) draws by absolute positions, so nothing
   of the hub's may be drawn into a program's screen once it runs; a gap is logged, and a program's first output

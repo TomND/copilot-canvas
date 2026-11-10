@@ -677,6 +677,25 @@ receives; `paste-probe --drive TEXT [--program "CMD"] [--ready TEXT]` runs it
 (or CMD) in a hidden pseudoconsole, writes TEXT (`\e`, `\r`, `\n`, `\xNN`)
 and prints the screen.
 
+## Inside a VM (VM sessions)
+
+With a VM pack ([VM-SESSIONS.md](VM-SESSIONS.md)) a box can run its agent on a microVM. Copilot CLI only for
+now (Claude Code and OpenCode come later); everything else here is unchanged on this machine.
+
+- **The command line** (`vm::launch::guest_command`) is the provider's own (`copilot --session-id <box> …`) with
+  nothing of this machine: no group folder, extra folders, plugin folders or headless prompt, none of the canvas's
+  variables (the guest sets `ATELIER_SESSION` and its relay mode itself), the program by its name on the guest's
+  `PATH` (`ATELIER_<AGENT>` is honoured in the guest as here, for the stand-in agents). A VM session cannot be
+  forked yet. The skills, group instructions and MCP configuration the guest needs arrive with the file sync.
+- **The terminal** is drawn here and runs in the guest behind its satellite; status comes from the guest's
+  history, mirrored under `<home>/vm/mirrors/<sandbox>/copilot` and indexed like Copilot's own folder.
+  `Transcript` and `HasHistory` find a VM session there.
+- **Subsessions**: a `copilot` an agent starts inside its terminal in the guest (holding a session's in-use lock)
+  is reported by the satellite and becomes the box's subsession, as locally. Whether a mirrored session is live is
+  what the guest reports (its lock files are not mirrored).
+- **Canvas commands** the agent runs in the guest (`atelier todo`, `report`, `pr`, `emit`, `send`, …) are relayed
+  and run here as the box; commands that act on this machine are refused there.
+
 ## Known limitations
 
 - OpenCode: a TUI that starts a second session (`/new`) keeps the box on its
