@@ -835,12 +835,17 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
 
     step("its conversation resumes on a new VM: the hub's mirror of its history goes into the new guest, where the agent finds it");
     let launch = canvas_model::launch::agent_launch(&node, &Default::default(), Some(&group), None, None, true);
-    watch.view = TermView::default();
     watch.conn.tx.send(ClientMsg::Launch { id: BOX.into(), kind: LaunchKind::Agent(Box::new(launch)), cwd: work.display().to_string(), cols: 100, rows: 30 })?;
-    anyhow::ensure!(watch.pump(Instant::now() + Duration::from_secs(60), |w| w.screen().contains("Resumed with")), "the agent did not find its history in the new VM:\n{}", watch.screen());
+    // A new VM first (the earlier relaunch's screen said "Resumed with" too), then its program's screen.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !intent_now(instance).is_ok_and(|i| i.sandbox != member.id && !i.sandbox.is_empty() && i.state == canvas_model::vm::VmState::Running) {
+        anyhow::ensure!(Instant::now() < deadline, "no new VM: {:?}", intent_now(instance));
+        watch.pump(Instant::now() + Duration::from_millis(200), |_| false);
+    }
     let resumed = intent_now(instance)?;
-    anyhow::ensure!(resumed.sandbox != member.id && resumed.state == canvas_model::vm::VmState::Running, "a new VM: {resumed:?}");
     anyhow::ensure!(std::fs::read_to_string(instance.log_path()).unwrap_or_default().contains("its conversation resumes from the hub's mirror"), "the service log tells the resume");
+    watch.view = TermView::default();
+    anyhow::ensure!(watch.pump(Instant::now() + Duration::from_secs(60), |w| w.screen().contains("Resumed with")), "the agent did not find its history in the new VM:\n{}", watch.screen());
     let (ok, out) = cli(exe, &["vm", "delete", BOX, "--yes", "--discard"], &hub_env)?;
     anyhow::ensure!(ok, "vm delete: {out}");
     wait_file("the new VM was not deleted", 20, || local.get(&resumed.sandbox).is_err())?;
