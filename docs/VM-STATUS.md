@@ -33,7 +33,7 @@ owner's note that VM sessions are optional and local stays the default.
 - [x] VM-F5 `canvas_agents::vm` (the module; `vm::service_request`)
 - [x] Exit: clippy (macOS), `cargo xwin clippy`, the touched tests (CI runs with Phase M's: F was not merged on its own)
 
-### M: thin lane (code done 2026-11-09; waiting for CI and the merge)
+### M: thin lane (done 2026-11-09; CI run 42742983720 green on every job; merged into main at d35d56e)
 - [x] VM-M1 pack loader, `atelier vm pack check`, example pack (`docs/examples/vm-pack/`)
 - [x] VM-M2 hooks runner and `atelier vm-hook-standin`
 - [x] VM-M3 placement in launches (fail closed)
@@ -43,7 +43,7 @@ owner's note that VM sessions are optional and local stays the default.
 - [x] VM-M7 status from mirrors (liveness overlay)
 - [x] VM-M8 minimal UI (*Run on*, ☁ marker, *Start on VM…*), only with a pack
 - [x] VM-M9 docs
-- [ ] Exit: `selftest vm --lane hooks` on Windows, macOS, Linux; no-pack snapshots and self-test unchanged; merged into main
+- [x] Exit: `selftest vm` (the hooks lane) on Windows, macOS, Linux; no-pack snapshots and self-test unchanged; merged into main
 
 ### 0: spike kits
 - [x] `atelier satellite --self-check` (a PTY with alacritty, the data folder) and `atelier vm spike s2|s3|s4`
@@ -53,7 +53,9 @@ owner's note that VM sessions are optional and local stays the default.
 - [x] S6: `policy_ack` in `vm.yaml` (`pack check` warns while it is empty); the owner's checklist below
 
 ### 1: manager
-- [ ] VM-11 provider trait · VM-12 `vm::aca` (HTTP stand-in) · VM-13 `vm::local` · VM-14 stores · VM-15 manager (images, pool, budgets) · VM-16 launcher · VM-17 claim · VM-18 `VmView`, `Vm*` requests, `atelier vm …` · VM-19 `has_work`, doctor
+- [x] VM-11 provider trait (`vm::provider`)
+- [ ] VM-12 and VM-13: prompts for parallel workers in [VM-WORKERS.md](VM-WORKERS.md) (P-aca, P-local)
+- [ ] VM-12 `vm::aca` (HTTP stand-in) · VM-13 `vm::local` · VM-14 stores · VM-15 manager (images, pool, budgets) · VM-16 launcher · VM-17 claim · VM-18 `VmView`, `Vm*` requests, `atelier vm …` · VM-19 `has_work`, doctor
 - [ ] Exit: as in the plan §3 Phase 1
 
 ### 2: terminals
@@ -118,3 +120,6 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   VM requests, docs.
 - 2026-11-09: Phase 0 (partial, by design): the spikes S2–S4 kit and `satellite --self-check`, checked by
   `selftest vm` on local sandboxes; S1, S5, S7 land with the phases that make them possible.
+- 2026-11-09: CI green on 93556b4 (run 42742983720: Windows test with `selftest vm`, parity, goldens; macOS;
+  Linux ×3 and linux-gui; iOS; packages). Merged into main (d35d56e, main had not moved). Phase 1 started: the
+  provider trait; worker prompts for `vm::aca` and `vm::local` in docs/VM-WORKERS.md.
