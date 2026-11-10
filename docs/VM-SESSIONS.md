@@ -351,4 +351,19 @@ Phase by phase; the details and the log are in [VM-STATUS.md](VM-STATUS.md).
   credentials scrubbed from everything sent to the guest; refusals go to `<home>/vm/mcp/refusals.jsonl` and the VM
   view (`vm list`). `selftest vm` checks all of it on `vm::local`: files, notes both ways, commands, an offline
   read and a queued write, an egress refusal, the gateway as a guest's MCP client.
-
+- **Phase 4 (UX).** The client: *Run on* in the new-session dialog (the repository found from the folder), the
+  canvas's and a group's default (*Settings › Run new sessions on*), a subsession of a VM box on a VM of its own for
+  its parent's repository (shared VMs, `with`, are not built); a box's status line says its VM's state unless it
+  simply runs (`vms::state_line`, `BoxModel::vm`, the GUI's `tree` hook); its details' ☁ VM section and operations
+  (Suspend, Resume, *Update from main*, Cancel start, Start again, *Delete VM…*), also from its menu over a running
+  terminal; the top bar's ☁ VMs panel; Tasks' *Start on VM…* with a first prompt that ends in a pull request, and a
+  board's *Sessions start on* policy. Local clients send VM requests over their connection (`remote::Routed`: their
+  in-process backend has no VMs). The hub: an unseen VM box idle for `suspend_after` (no client shows it, not
+  working, no mail) is suspended (`vm_idle_loop`); its link is closed as it freezes, so typing into it resumes it
+  (and the keys arrive), as does a message for it. Deleting is behind a barrier: every terminal's repository (ended
+  ones too) checked now through the satellite (its `git` control; else the last report and its age, and checked
+  just before a suspend), each finding confirmed or all of them (`*`, `vm delete --discard`). *Open shell* waits for
+  shared VMs. The canvas's idle auto-stop leaves VM boxes to the hub, and paths in their terminals are the guest's
+  (*Copy path*, never opened here). Checked: parity rows 57–62 and the self-test's 47th step on a VM lane of local
+  sandboxes (`src/vm_lane.rs`), `selftest vm` (typing resumes a suspended VM; the barrier stops at an untracked
+  file).

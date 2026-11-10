@@ -151,7 +151,13 @@ owner's note that VM sessions are optional and local stays the default.
 - [x] VM-47 client exclusions: idle auto-stop skips VM boxes (the service suspends them); a path link in a VM box's
       terminal is the guest's (Ctrl+click or a force click shows it with *Copy path*, never opens it here); the VM
       details show where it works in the guest (*In the VM*, from its history). The sidebar's folder rows are unchanged
-- [ ] VM-48 parity rows 57–62 and the self-test step · VM-49 docs
+- [x] VM-48 parity rows 57–62 (`src/parity_vm.rs`) and the self-test's 47th step (`src/selftest_vm.rs`), both on a
+      VM lane of local sandboxes (`src/vm_lane.rs`: `provider: local`, a git repository of its own); found and
+      fixed by them: local clients' VM requests went to their in-process backend (now over their connection,
+      `remote::Routed`), and a suspended VM kept its frozen link until its reads timed out (closed at once now)
+- [x] VM-49 docs: README (the VM row, Controls, Commands, the self-test), VM-SESSIONS *As built* Phase 4, PARITY rows
+      57–62 and *Last run*, NOTEBOOK-TASKS (*Start on VM…*, the board policy), GUI (`tree`'s `vm`), BACKEND
+- [ ] *Open shell* (VM-43): a shell box in the same sandbox needs shared VMs (`with`), not built (departure)
 - [ ] Exit: parity rows pass, snapshots read, self-test step in both clients
 
 ### 5: hardening
@@ -239,6 +245,7 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   branch is reported whatever its PR), no drain with acknowledgements before the delete (the outbox and history are
   pushed continuously), and a suspended VM is not resumed for the check (its repositories were checked as it was
   suspended). The idle suspend runs in the service (`vm_idle_loop`), not `vm::manager`; there is no `vm::quiesce`.
+- ***Open shell* is not built** (VM-43): a shell box in a VM box's sandbox is a shared VM (`with`), below.
 - **No shared VMs yet (`VmPlacement::with`)**: the service gives every VM box a sandbox of its own (claiming,
   suspend, delete and the idle loop all assume one box per sandbox); a subsession of a VM box defaults to a VM of its
   own for its parent's repository and size (the plan: its parent's sandbox).
@@ -333,3 +340,6 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   file).
 - 2026-11-10: Phase 3 merged into main at ffb5f20 (CI run 42879098435 green on all 17 jobs; the Windows VM
   self-test passed with the satellite's read timeout). The workers' `vm-egress` and `vm-mcp` are in main.
+- 2026-11-10: Phase 4 done locally: VM-41/44/47 (Run on defaults, Tasks' Start on VM, client exclusions), the
+  parity rows 57–62 (`PASS: 6 rows in 25.5s` on macOS) and the self-test's VM step (TUI, GUI, both over loopback);
+  two bugs found by them and fixed (local clients' VM requests; a suspended VM's frozen link). Waiting for CI.
