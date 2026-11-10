@@ -57,7 +57,7 @@ pub fn read(home: &Path) -> (Vec<Refusal>, HashMap<String, u32>) {
     for line in &lines {
         *counts.entry(line.r#box.clone()).or_default() += 1;
     }
-    lines.sort_by(|a, b| b.ms.cmp(&a.ms));
+    lines.sort_by_key(|l| std::cmp::Reverse(l.ms));
     let refusals = lines
         .into_iter()
         .take(SHOWN)

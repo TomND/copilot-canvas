@@ -788,7 +788,7 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         let log = mcp_log.display().to_string();
-        let serving = || canvas_sys::process::process_entries().into_iter().any(|(pid, _, _)| canvas_sys::process::process_argv(pid).is_some_and(|argv| argv.iter().any(|a| *a == log)));
+        let serving = || canvas_sys::process::process_entries().into_iter().any(|(pid, _, _)| canvas_sys::process::process_argv(pid).is_some_and(|argv| argv.contains(&log)));
         wait_file("the box's MCP server outlived its session", 20, || !serving())?;
     }
     anyhow::ensure!(local.get(&member.id).is_ok_and(|s| !s.suspended), "the VM stays");
