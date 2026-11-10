@@ -290,9 +290,10 @@ impl Inner {
     }
 
     /// Runs the source (`fetching` is already set) and records what came of
-    /// it; `used`: the token goes to a caller now.
+    /// it; `used`: the token goes to a caller now. A source that panics is a
+    /// failed fetch (never a fetch that seems to run forever).
     fn fetch(self: &Arc<Self>, used: bool) -> Result<Arc<Token>> {
-        let result = self.source.fetch();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.source.fetch())).unwrap_or_else(|_| Err(anyhow!("the token source failed")));
         let now = (self.clock)();
         let mut state = self.lock();
         state.fetching = false;
@@ -504,6 +505,9 @@ mod tests {
         let token = Token::new("tok-very-secret", 5);
         assert_eq!(format!("{token:?}"), "Token(… expires at 5)");
         assert!(!format!("{cache:?}").contains("tok"));
+        let panicking = Cache::new(Box::new(|| -> Result<Token> { panic!("source bug") }));
+        assert_eq!(panicking.get().unwrap_err().to_string(), "the token source failed");
+        assert!(!panicking.inner.lock().fetching);
     }
 
     #[test]

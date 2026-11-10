@@ -607,6 +607,7 @@ mod tests {
         let (aca, _) = provider(&standin.url);
         aca.put_file("sbx-1", "/home/agent/a b&c=d.json", b"{\"x\":1}").unwrap();
         assert_eq!(aca.get_file("sbx-1", "/home/agent/notes.md", 10).unwrap(), b"0123456789");
+        assert_eq!(aca.get_file("sbx-1", "/home/agent/notes.md", u64::MAX).unwrap(), b"0123456789");
         assert!(aca.get_file("sbx-1", "/home/agent/notes.md", 9).unwrap_err().to_string().contains("larger than 9 bytes"));
         let requests = standin.requests();
         assert_eq!((requests[0].param("path"), requests[0].body.as_slice()), (Some("/home/agent/a b&c=d.json"), b"{\"x\":1}".as_slice()));
@@ -614,7 +615,7 @@ mod tests {
         for bad in ["relative.txt", "/a/../../etc/passwd"] {
             assert!(aca.put_file("sbx-1", bad, b"x").is_err() && aca.get_file("sbx-1", bad, 10).is_err());
         }
-        assert_eq!(standin.requests().len(), 3);
+        assert_eq!(standin.requests().len(), 4);
     }
 
     #[test]

@@ -357,7 +357,7 @@ impl Rest {
                     let success = (200..300).contains(&status);
                     let max = if success { call.max } else { MAX_ERROR };
                     let mut body = Vec::new();
-                    let read = response.take(max + 1).read_to_end(&mut body);
+                    let read = response.take(max.saturating_add(1)).read_to_end(&mut body);
                     if success {
                         ensure!(read.is_ok(), "{op}: the answer could not be read");
                         ensure!(body.len() as u64 <= max, "{op}: the answer is larger than {max} bytes");
