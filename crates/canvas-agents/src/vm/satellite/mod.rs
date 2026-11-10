@@ -528,5 +528,28 @@ mod tests {
         terms.stop_all();
         let _ = std::fs::remove_dir_all(home);
     }
-}
 
+    #[test]
+    fn a_revoked_satellite_is_cut_off_and_hears_a_proven_refusal() {
+        let home = std::env::temp_dir().join(format!("atelier-sat-revoke-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let minted = crate::vm::store::Satellites::new(&home).mint(SANDBOX).unwrap();
+        let links = crate::vm::link::Links::new(&home, Arc::new(|_| {}));
+        let port = hub(&home, &links);
+        let config = Config { hub: format!("tcp://127.0.0.1:{port}"), id: minted.id, secret: minted.secret, sandbox: SANDBOX.into(), ..Default::default() };
+        let (terms, mcp) = (Arc::new(Terms::default()), McpProxy::start(0).unwrap());
+        let serving = {
+            let (config, terms, mcp) = (config.clone(), terms.clone(), mcp.clone());
+            std::thread::spawn(move || session(&config, &terms, &mcp, 1))
+        };
+        wait_until("linked", 30, || links.linked(SANDBOX));
+        links.close_revoked();
+        assert!(links.linked(SANDBOX), "a valid credential keeps its link");
+        crate::vm::store::Satellites::new(&home).revoke_sandbox(SANDBOX).unwrap();
+        links.close_revoked();
+        wait_until("the link was closed", 10, || serving.is_finished());
+        let error = session(&config, &terms, &mcp, 2).unwrap_err();
+        assert!(error.downcast_ref::<handshake::Refused>().is_some_and(|r| r.verified), "the refusal is proven, so the satellite ends: {error:#}");
+        let _ = std::fs::remove_dir_all(home);
+    }
+}

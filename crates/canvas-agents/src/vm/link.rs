@@ -101,6 +101,8 @@ impl super::mcp::Down for McpDown {
 /// A satellite's live link.
 struct Link {
     sandbox: String,
+    /// Its credential (`sat-…`): revoked, the link is closed.
+    satellite: String,
     epoch: u64,
     io: Sender<ServiceMsg>,
     other: Sender<ServiceMsg>,
@@ -233,6 +235,22 @@ impl Links {
         })
     }
 
+    /// Closes the links whose credential was revoked (their VM was deleted):
+    /// their satellites then hear the refusal, proven, and end.
+    pub fn close_revoked(&self) {
+        let links: Vec<Arc<Link>> = lock(&self.links).values().cloned().collect();
+        if links.is_empty() {
+            return;
+        }
+        let store = super::store::Satellites::new(&self.home);
+        for link in links {
+            if store.sandbox_of(&link.satellite).as_deref() != Some(link.sandbox.as_str()) {
+                (self.log)(format!("VM {}: its satellite's credential was revoked; the link is closed", link.sandbox));
+                link.closer.close();
+            }
+        }
+    }
+
     /// Tells `hook` of each session found inside a box's terminal in a guest.
     pub fn on_subsession(&self, hook: SubsessionHook) {
         *lock(&self.subsession) = Some(hook);
@@ -308,6 +326,7 @@ impl Links {
     /// the launch runs and its satellite is linked, the end of a launch
     /// that failed or whose VM went.
     pub fn progress(&self) {
+        self.close_revoked();
         for remote in self.remotes() {
             let Ok(Some(intent)) = launch::load(&self.home, &remote.term) else { continue };
             let mut state = lock(&remote.state);
@@ -423,7 +442,7 @@ impl Links {
             let (closer, heard) = (closer.clone(), heard.clone());
             std::thread::Builder::new().name("sat-link-writer".into()).spawn(move || write_lanes(writer, io_rx, other_rx, stopped, heard, closer))?
         };
-        let current = Arc::new(Link { sandbox: sandbox.clone(), epoch, io, other, closer: closer.clone(), streams: Mutex::default() });
+        let current = Arc::new(Link { sandbox: sandbox.clone(), satellite: id.clone(), epoch, io, other, closer: closer.clone(), streams: Mutex::default() });
         if let Some(old) = lock(&self.links).insert(sandbox.clone(), current.clone()) {
             old.closer.close();
         }
