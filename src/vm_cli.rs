@@ -34,6 +34,13 @@ pub fn list_text(view: &VmView, now: u64) -> String {
     let mut out = vec![format!("VM sessions ({} pack, provider {}): {} box(es), {} sandbox(es)", if view.pack.name.is_empty() { "the" } else { &view.pack.name }, view.pack.provider, view.boxes.len(), view.sandboxes.len())];
     for (id, vm) in &view.boxes {
         out.push(format!("  {id}  {:<20} {} on {} · {} · {}{}", vm.state.word(), vm.repo, vm.branch, if vm.sandbox.is_empty() { "no VM yet" } else { &vm.sandbox }, vm.size, if vm.note.is_empty() { String::new() } else { format!(" · {}", vm.note) }));
+        if vm.offline_ms > 0 {
+            out.push(format!("      offline for {}", age(now, vm.offline_ms)));
+        }
+        if let Some(git) = &vm.git {
+            let unpushed = if git.unpushed.is_empty() { String::new() } else { format!(" · not pushed: {}", git.unpushed.join(", ")) };
+            out.push(format!("      git {}: ahead {}, behind {}, {} changed, {} untracked, {} stashed{unpushed}", if git.branch.is_empty() { "(detached)" } else { &git.branch }, git.ahead, git.behind, git.dirty, git.untracked, git.stashes));
+        }
     }
     for s in &view.sandboxes {
         out.push(format!("  sandbox {} ({}, {}, {}) up {} · boxes: {}", s.id, s.role, s.repo, s.size, age(now, s.created_ms), if s.boxes.is_empty() { "none".into() } else { s.boxes.join(", ") }));

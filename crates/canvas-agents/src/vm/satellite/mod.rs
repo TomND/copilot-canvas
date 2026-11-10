@@ -9,6 +9,7 @@
 
 pub mod dial;
 pub mod mcp_proxy;
+pub mod reports;
 pub mod ring;
 pub mod terms;
 
@@ -183,11 +184,12 @@ pub fn session(config: &Config, terms: &Arc<Terms>, mcp: &Arc<McpProxy>, epoch: 
     mcp.attach(Some(other_tx.clone()));
 
     let heard = Arc::new(AtomicU64::new(now()));
-    let (stop_tx, stop_rx) = bounded::<()>(1);
+    // Dropped when the link ends: the helper threads stop.
+    let (stop_tx, stop_rx) = bounded::<()>(0);
     {
-        let (heard, closer) = (heard.clone(), closer.clone());
+        let (heard, closer, stop_rx) = (heard.clone(), closer.clone(), stop_rx.clone());
         std::thread::Builder::new().name("sat-heartbeat".into()).spawn(move || {
-            while stop_rx.recv_timeout(HEARTBEAT).is_err() {
+            while matches!(stop_rx.recv_timeout(HEARTBEAT), Err(crossbeam_channel::RecvTimeoutError::Timeout)) {
                 if now().saturating_sub(heard.load(Ordering::Relaxed)) > SILENCE.as_millis() as u64 {
                     closer.close();
                     return;
@@ -196,11 +198,16 @@ pub fn session(config: &Config, terms: &Arc<Terms>, mcp: &Arc<McpProxy>, epoch: 
             }
         })?;
     }
-    let result = read_loop(&mut reader, terms, mcp, &heard, &other_tx);
+    let stats_every = Arc::new(AtomicU64::new(DEFAULT_STATS.as_millis() as u64));
+    {
+        let (terms, other_tx, stats_every) = (terms.clone(), other_tx.clone(), stats_every.clone());
+        std::thread::Builder::new().name("sat-reports".into()).spawn(move || report_loop(&terms, &other_tx, &stats_every, &stop_rx))?;
+    }
+    let result = read_loop(&mut reader, terms, mcp, &heard, &other_tx, &stats_every);
     terms.detach(epoch);
     mcp.attach(None);
     mcp.link_lost();
-    let _ = stop_tx.send(());
+    drop(stop_tx);
     closer.close();
     drop((io_tx, other_tx));
     let _ = writing.join();
@@ -209,6 +216,39 @@ pub fn session(config: &Config, terms: &Arc<Terms>, mcp: &Arc<McpProxy>, epoch: 
 
 fn now() -> u64 {
     canvas_common::paths::now_ms()
+}
+
+/// How often the guest's processes are looked at, and resent unchanged.
+const PROC_EVERY: Duration = Duration::from_secs(2);
+const PROC_AGAIN: Duration = Duration::from_secs(30);
+const DEFAULT_STATS: Duration = Duration::from_secs(30);
+
+/// Until the link ends: the sessions found in the guest when they change
+/// (`SatUp::Proc`), the guest's stats on the hub's interval (`SatUp::Stats`;
+/// the first soon after linking).
+fn report_loop(terms: &Terms, up: &crossbeam_channel::Sender<SatUp>, stats_every: &AtomicU64, stop: &Receiver<()>) {
+    let root = super::lite::copilot_root();
+    let home = super::guest::guest_home();
+    let mut last: Option<(canvas_common::sat::ProcReport, Instant)> = None;
+    let mut next_stats = Instant::now() + PROC_EVERY;
+    while matches!(stop.recv_timeout(PROC_EVERY), Err(crossbeam_channel::RecvTimeoutError::Timeout)) {
+        let running = terms.running();
+        let report = reports::proc_report(&running, &root);
+        if last.as_ref().is_none_or(|(sent, at)| *sent != report || at.elapsed() >= PROC_AGAIN) {
+            let json = serde_json::to_string(&report).unwrap_or_default();
+            if up.send(SatUp::Proc { json }).is_err() {
+                return;
+            }
+            last = Some((report, Instant::now()));
+        }
+        if Instant::now() >= next_stats {
+            let json = serde_json::to_string(&reports::stats_report(&running, &home)).unwrap_or_default();
+            if up.send(SatUp::Stats { json }).is_err() {
+                return;
+            }
+            next_stats = Instant::now() + Duration::from_millis(stats_every.load(Ordering::Relaxed).max(1000));
+        }
+    }
 }
 
 /// Terminal I/O first, then everything else, then the heartbeat.
@@ -243,7 +283,7 @@ fn control(json: &str) -> serde_json::Value {
     }
 }
 
-fn read_loop(reader: &mut FrameReader, terms: &Arc<Terms>, mcp: &McpProxy, heard: &AtomicU64, other: &crossbeam_channel::Sender<SatUp>) -> Result<()> {
+fn read_loop(reader: &mut FrameReader, terms: &Arc<Terms>, mcp: &McpProxy, heard: &AtomicU64, other: &crossbeam_channel::Sender<SatUp>, stats_every: &AtomicU64) -> Result<()> {
     loop {
         let message = match reader.recv::<ServiceMsg>() {
             Ok(Some(message)) => message,
@@ -255,6 +295,9 @@ fn read_loop(reader: &mut FrameReader, terms: &Arc<Terms>, mcp: &McpProxy, heard
         match *down {
             SatDown::Welcome { json } => {
                 let welcome: WelcomeInfo = serde_json::from_str(&json).unwrap_or_default();
+                if welcome.stats_secs > 0 {
+                    stats_every.store(welcome.stats_secs.clamp(2, 3600) * 1000, Ordering::Relaxed);
+                }
                 for term in welcome.terms {
                     terms.resync(&term.term, term.generation, term.have);
                 }

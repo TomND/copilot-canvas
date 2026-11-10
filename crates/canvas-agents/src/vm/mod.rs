@@ -11,6 +11,7 @@ pub mod aca;
 pub mod egress;
 #[cfg(test)]
 mod fake;
+pub mod flood;
 pub mod guest;
 pub mod hooks;
 pub mod launch;
@@ -127,6 +128,21 @@ pub fn open_provider(home: &Path, pack: &pack::Pack) -> anyhow::Result<Arc<dyn p
 /// Where `vm::local` keeps the sandboxes of the service in `home`.
 pub fn local_root(home: &Path, pack: &pack::Pack) -> PathBuf {
     pack.local_root.clone().unwrap_or_else(|| home.join("vm").join("local"))
+}
+
+/// What the box's satellite last said: since when it is away (a running
+/// box whose satellite linked once), and its repository's state.
+fn with_link(mut info: VmInfo, intent: &launch::Intent, record: Option<link::LinkRecord>) -> VmInfo {
+    let Some(record) = record else { return info };
+    if !record.linked && intent.state == VmState::Running {
+        info.offline_ms = record.since_ms;
+    }
+    if record.stats_ms > 0
+        && let Some(repo) = record.stats.repos.iter().find(|r| r.term == intent.r#box).or(record.stats.repos.first())
+    {
+        info.git = Some(canvas_model::vm::GitState { branch: repo.branch.clone(), ahead: repo.ahead, behind: repo.behind, dirty: repo.dirty, untracked: repo.untracked, stashes: repo.stashes, unpushed: repo.unpushed.clone() });
+    }
+    info
 }
 
 /// `atelier doctor`'s VM lines (none without a pack): (passed, label, detail);
@@ -310,6 +326,7 @@ pub fn view(home: &Path) -> Option<VmView> {
             note: if intent.error.is_empty() { intent.note.clone() } else { intent.error.clone() },
             ..Default::default()
         };
+        let info = with_link(info, &intent, link::load_record(home, &intent.sandbox));
         if intent.state == VmState::Queued {
             view.queued.push(QueuedStart { r#box: intent.r#box.clone(), since_ms: minute(intent.queued_ms), why: intent.note.clone() });
         }
@@ -344,6 +361,20 @@ pub fn view(home: &Path) -> Option<VmView> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_boxs_link_says_since_when_it_is_away_and_its_repository() {
+        let intent = launch::Intent { r#box: "b1".into(), sandbox: "sbx-1".into(), state: VmState::Running, ..Default::default() };
+        assert_eq!(with_link(VmInfo::default(), &intent, None), VmInfo::default(), "never linked: nothing to say (the thin lane)");
+        let repo = canvas_common::sat::RepoStats { term: "b1".into(), branch: "atelier/x".into(), ahead: 2, untracked: 1, unpushed: vec!["atelier/x".into()], ..Default::default() };
+        let record = link::LinkRecord { linked: false, since_ms: 1000, stats_ms: 900, stats: canvas_common::sat::StatsReport { repos: vec![repo], ..Default::default() } };
+        let info = with_link(VmInfo::default(), &intent, Some(record.clone()));
+        assert_eq!(info.offline_ms, 1000);
+        let git = info.git.unwrap();
+        assert_eq!((git.branch.as_str(), git.ahead, git.untracked, git.unpushed.len()), ("atelier/x", 2, 1, 1));
+        let suspended = launch::Intent { state: VmState::Suspended, ..intent };
+        assert_eq!(with_link(VmInfo::default(), &suspended, Some(record)).offline_ms, 0, "a suspended VM is not offline");
+    }
 
     #[test]
     fn the_view_and_actions_follow_the_launches() {

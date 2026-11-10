@@ -60,8 +60,18 @@ pub struct Terms {
 struct Term {
     id: String,
     generation: u64,
+    cwd: String,
     terminal: Arc<Terminal>,
     state: Mutex<State>,
+}
+
+/// A running terminal as the reports see it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Running {
+    pub term: String,
+    pub generation: u64,
+    pub pid: u32,
+    pub cwd: String,
 }
 
 struct State {
@@ -130,6 +140,17 @@ impl Terms {
         lock(&self.terms).get(id).filter(|t| t.generation == generation).cloned()
     }
 
+    /// The terminals whose program runs.
+    pub fn running(&self) -> Vec<Running> {
+        let mut out: Vec<Running> = lock(&self.terms)
+            .values()
+            .filter(|t| lock(&t.state).exit.is_none() && t.terminal.pid != 0)
+            .map(|t| Running { term: t.id.clone(), generation: t.generation, pid: t.terminal.pid, cwd: t.cwd.clone() })
+            .collect();
+        out.sort_by(|a, b| a.term.cmp(&b.term));
+        out
+    }
+
     /// The terminals as `HelloInfo` lists them.
     pub fn held(&self) -> Vec<TermHeld> {
         let mut out: Vec<TermHeld> = lock(&self.terms)
@@ -171,7 +192,7 @@ impl Terms {
         let hooks = Hooks { pump, exited, clipboard, bytes: Default::default(), changed, notify: None, raw: Some(raw) };
         let spec = Spawn { id: &request.term, program, args: &request.argv[1..], env: &env, cwd: &request.cwd, cols: request.cols, rows: request.rows, copilot: false, engine: Engine::Alacritty };
         let terminal = Terminal::spawn(spec, hooks)?;
-        let term = Arc::new(Term { id: request.term.clone(), generation: request.generation, terminal, state: Mutex::new(State { ring: Ring::new(if self.ring == 0 { RING } else { self.ring }), sent: None, input_acked: 0, exit: None }) });
+        let term = Arc::new(Term { id: request.term.clone(), generation: request.generation, cwd: request.cwd.clone(), terminal, state: Mutex::new(State { ring: Ring::new(if self.ring == 0 { RING } else { self.ring }), sent: None, input_acked: 0, exit: None }) });
         terms.insert(request.term, term.clone());
         drop(terms);
         let terms = self.clone();

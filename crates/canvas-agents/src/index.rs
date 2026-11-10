@@ -346,7 +346,13 @@ pub struct Index {
     entries: HashMap<String, Entry>,
     last_full_scan: Option<std::time::Instant>,
     pub warnings: Vec<String>,
+    /// Whether a session is live, when this root's lock files cannot say (a
+    /// VM session's mirror: its guest's satellite reports it).
+    liveness: Option<Liveness>,
 }
+
+/// Says whether a session id is live.
+pub type Liveness = std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 fn stamp(path: &Path) -> Option<(Option<SystemTime>, u64)> {
     let metadata = std::fs::metadata(path).ok()?;
@@ -379,7 +385,13 @@ fn parse_meta(text: &str) -> Option<Meta> {
 
 impl Index {
     pub fn new(root: PathBuf) -> Self {
-        Self { root, entries: HashMap::new(), last_full_scan: None, warnings: Vec::new() }
+        Self { root, entries: HashMap::new(), last_full_scan: None, warnings: Vec::new(), liveness: None }
+    }
+
+    /// An index whose sessions' liveness `live` says (a mirror's lock files never count).
+    pub fn with_liveness(mut self, live: Liveness) -> Self {
+        self.liveness = Some(live);
+        self
     }
 
     /// Scans metadata (everything every `full_every`, tracked sessions always)
@@ -481,6 +493,13 @@ impl Index {
     }
 
     fn refresh_live(&mut self, id: &str) {
+        if let Some(live) = &self.liveness {
+            let live = live(id);
+            if let Some(entry) = self.entries.get_mut(id) {
+                entry.live = live;
+            }
+            return;
+        }
         let dir = self.root.join(id);
         let live = std::fs::read_dir(&dir)
             .map(|entries| {
