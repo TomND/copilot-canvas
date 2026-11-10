@@ -10,7 +10,7 @@
     "cursor"
   ],
   "command": [
-    "copilot-canvas",
+    "atelier",
     "corpus",
     "synth",
     "synth-screen"

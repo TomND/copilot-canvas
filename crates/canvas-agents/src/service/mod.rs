@@ -112,14 +112,14 @@ fn take_exited_plugin(plugins: &mut HashMap<String, (PathBuf, u64)>, id: &str, s
 
 /// The environment entry that removes the skill folders' variable from
 /// what an agent inherits ("-NAME" with an empty value: `Terminal::spawn`).
-fn no_group_skills_env() -> (String, String) {
-    (format!("-{}", canvas_model::launch::GROUP_SKILLS_ENV), String::new())
+fn no_group_skills_env() -> Vec<(String, String)> {
+    canvas_model::launch::GROUP_SKILLS_NAMES.iter().map(|name| (format!("-{name}"), String::new())).collect()
 }
 
 /// A plain Copilot launch's environment without the skill folders'
 /// variable (in any case): it travels only in agent launches.
 fn without_group_skills(mut env: Vec<(String, String)>) -> Vec<(String, String)> {
-    env.retain(|(k, _)| !k.eq_ignore_ascii_case(canvas_model::launch::GROUP_SKILLS_ENV));
+    env.retain(|(k, _)| !canvas_model::launch::is_group_skills(k));
     env
 }
 
@@ -256,12 +256,12 @@ impl Agents {
                 server::spawn_named("rpc", move || rpc_worker(ctx, jobs, owner));
             }
         }
-        // The skills and the `copilot-canvas` command that canvas sessions use for events.
+        // The skills and the `atelier` command that canvas sessions use for events.
         if let Err(error) = crate::cli::write_plugin(&instance.home) {
             log(&instance, &format!("cannot write the canvas plugin: {error:#}"));
         }
         if let Err(error) = crate::cli::install_cli(&instance.home) {
-            log(&instance, &format!("cannot install the copilot-canvas command: {error:#}"));
+            log(&instance, &format!("cannot install the atelier command: {error:#}"));
         }
         // This service's copies of group skill folders: none of its terminals runs yet
         // (other instances sharing the home keep theirs).
@@ -281,17 +281,15 @@ fn path_with(dir: &Path) -> String {
 
 impl Agents {
     /// The canvas integration every session gets: the skills plugin, its
-    /// identity and the `copilot-canvas` command on PATH.
+    /// identity and the `atelier` command on PATH.
     pub fn integration(&self, id: &str) -> Integration {
         let home = &self.instance.home;
         let plugin = home.join("plugin");
         Integration {
             plugin_dir: plugin.is_dir().then_some(plugin),
-            env: vec![
-                ("COPILOT_CANVAS_HOME".to_owned(), home.display().to_string()),
-                ("COPILOT_CANVAS_SESSION".to_owned(), id.to_owned()),
-                ("PATH".to_owned(), path_with(&home.join("cli"))),
-            ],
+            // Under the names before the rename too (deprecated): the old
+            // CLI name's alias and instructions written before the rename read them.
+            env: [canvas_common::env::both("ATELIER_HOME", &home.display().to_string()), canvas_common::env::both("ATELIER_SESSION", id), vec![("PATH".to_owned(), path_with(&home.join("cli")))]].concat(),
             skill_plugins: Vec::new(),
         }
     }
@@ -338,7 +336,7 @@ impl Agents {
         // Structured launches carry no free-form arguments; the environment
         // must not impersonate another session.
         anyhow::ensure!(
-            !launch.env.iter().any(|(k, _)| k.trim_start_matches('-').eq_ignore_ascii_case("COPILOT_CANVAS_SESSION")),
+            !launch.env.iter().any(|(k, _)| canvas_common::env::is(k.trim_start_matches('-'), "ATELIER_SESSION")),
             "launch options may not select a different session"
         );
         // A conversation that never got its first prompt has nothing to resume:
@@ -347,11 +345,11 @@ impl Agents {
             launch.resume = false;
         }
         let mut integration = self.integration(id);
-        // Sessions and passive runs know their agent (`COPILOT_CANVAS_AGENT`).
+        // Sessions and passive runs know their agent (`ATELIER_AGENT`).
         integration.env.extend(crate::agents::session_agent_env(kind));
         // The skill folders' variable never reaches the agent, also one this service
         // inherited (started inside an older service's session).
-        integration.env.push(no_group_skills_env());
+        integration.env.extend(no_group_skills_env());
         integration.skill_plugins.extend(self.skill_plugin(id));
         let skills = if integration.skill_plugins.is_empty() { "" } else { ", with its canvas skills" };
         // The previous launch's copy: that terminal has exited (a live one is never launched again).
@@ -449,7 +447,7 @@ fn tunnel_access_loop(agents: Arc<Agents>, wake: Receiver<()>) {
 
 impl HostApp for Agents {
     fn command_env(&self, id: &str) -> Vec<(String, String)> {
-        // Plain shells (the demo's) get the `copilot-canvas` command and their identity too.
+        // Plain shells (the demo's) get the `atelier` command and their identity too.
         self.integration(id).env
     }
 
@@ -645,12 +643,12 @@ impl HostApp for Agents {
 }
 
 impl Agents {
-    /// Pairing codes, the client list and revocation (`copilot-canvas remote
+    /// Pairing codes, the client list and revocation (`atelier remote
     /// pair|clients|revoke`), for clients on the local pipe only.
     fn remote_admin(&self, client: &Arc<Client>, request: canvas_model::rpc::Request) -> canvas_model::rpc::Response {
         use canvas_model::rpc::{PairingCode, RemoteClient, Request, Response};
         if client.remote {
-            return Response::Error("remote access is managed on the service's machine (`copilot-canvas remote …` there)".into());
+            return Response::Error("remote access is managed on the service's machine (`atelier remote …` there)".into());
         }
         let now = now_ms();
         let result = (|| -> Result<Response> {
@@ -795,9 +793,9 @@ impl Agents {
     }
 
     /// Turns remote listening off (setting and listener) once no paired
-    /// client is left and no code is open, unless `COPILOT_CANVAS_LISTEN` asks for it.
+    /// client is left and no code is open, unless `ATELIER_LISTEN` asks for it.
     fn listen_only_while_needed(&self) -> Result<Option<String>> {
-        if self.remote.active_count() > 0 || self.remote.open_codes(now_ms()) > 0 || std::env::var_os("COPILOT_CANVAS_LISTEN").is_some_and(|v| !v.is_empty()) {
+        if self.remote.active_count() > 0 || self.remote.open_codes(now_ms()) > 0 || canvas_common::env::var_os("ATELIER_LISTEN").is_some_and(|v| !v.is_empty()) {
             return Ok(None);
         }
         let home = &self.instance.home;
@@ -807,7 +805,7 @@ impl Agents {
         }
         let stopped = self.host.stop_remote();
         log(&self.instance, "no paired client is left and no pairing code is open: remote listening is off");
-        Ok(stopped.then(|| "No paired client is left: remote listening is off (`copilot-canvas remote pair` turns it on again).".to_owned()))
+        Ok(stopped.then(|| "No paired client is left: remote listening is off (`atelier remote pair` turns it on again).".to_owned()))
     }
 }
 
@@ -879,11 +877,11 @@ pub fn find_on_path(name: &str) -> Option<PathBuf> {
 }
 
 fn copilot_program() -> Result<String> {
-    if let Some(custom) = std::env::var_os("COPILOT_CANVAS_COPILOT") {
+    if let Some(custom) = canvas_common::env::var_os("ATELIER_COPILOT") {
         return Ok(custom.to_string_lossy().into_owned());
     }
     let name = canvas_sys::host::exe_name("copilot");
-    find_on_path(&name).map(|p| p.to_string_lossy().into_owned()).with_context(|| format!("{name} was not found on PATH (set COPILOT_CANVAS_COPILOT to override)"))
+    find_on_path(&name).map(|p| p.to_string_lossy().into_owned()).with_context(|| format!("{name} was not found on PATH (set ATELIER_COPILOT to override)"))
 }
 
 /// Copilot processes inside a terminal's process tree that are a session's
@@ -1195,7 +1193,7 @@ mod tests {
     #[test]
     fn nested_copilots_are_session_processes_not_workers() {
         let procs: HashMap<u32, (u32, String)> = [
-            (1, (0, "copilot-canvas-service.exe")),
+            (1, (0, "atelier-service.exe")),
             (10, (1, "copilot.exe")),  // the terminal's shim
             (11, (10, "copilot.exe")), // its real CLI
             (12, (11, "copilot.exe")), // a worker
@@ -1249,9 +1247,9 @@ mod tests {
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         // SAFETY: as in the providers' own tests, these are only read.
         unsafe {
-            std::env::set_var("COPILOT_CANVAS_COPILOT", r"C:\bin\copilot.exe");
-            std::env::set_var("COPILOT_CANVAS_OPENCODE", r"C:\bin\opencode.exe");
-            std::env::set_var("COPILOT_CANVAS_CLAUDE", r"C:\bin\claude.exe");
+            std::env::set_var("ATELIER_COPILOT", r"C:\bin\copilot.exe");
+            std::env::set_var("ATELIER_OPENCODE", r"C:\bin\opencode.exe");
+            std::env::set_var("ATELIER_CLAUDE", r"C:\bin\claude.exe");
         }
         let id = "12345678-1234-1234-1234-123456789abc";
         for kind in crate::agents::ALL {
@@ -1264,7 +1262,7 @@ mod tests {
                 let plugin = plugin.expect("a plugin");
                 assert!(line.contains("skill folders of group g-1 (1 folder(s)): team-review; skipped shared (the session's project already has it)"), "{line}");
                 assert!(plugin.join("skills").join("team-review").join("SKILL.md").is_file() && !plugin.join("skills").join("shared").exists());
-                let integration = Integration { skill_plugins: vec![plugin.clone()], env: vec![no_group_skills_env()], ..Default::default() };
+                let integration = Integration { skill_plugins: vec![plugin.clone()], env: no_group_skills_env(), ..Default::default() };
                 let command = match kind {
                     AgentKind::OpenCode => crate::agents::opencode::OpenCode.command_with(id, &launch, &integration, false).unwrap(),
                     _ => kind.provider().command(id, &launch, &integration).unwrap(),
@@ -1277,9 +1275,9 @@ mod tests {
                     }
                     _ => assert!(command.args.windows(2).any(|w| w[0] == "--plugin-dir" && w[1] == plugin.display().to_string()), "{kind:?} {:?}", command.args),
                 }
-                assert!(!command.env.iter().any(|(k, _)| k.eq_ignore_ascii_case(canvas_model::launch::GROUP_SKILLS_ENV)), "never in the agent's environment");
-                // An inherited one is removed when the terminal starts ("-NAME").
-                assert!(command.env.contains(&no_group_skills_env()), "{kind:?} {:?}", command.env);
+                assert!(!command.env.iter().any(|(k, _)| canvas_model::launch::is_group_skills(k)), "never in the agent's environment");
+                // An inherited one is removed when the terminal starts ("-NAME"), under either name.
+                assert!(no_group_skills_env().iter().all(|entry| command.env.contains(entry)), "{kind:?} {:?}", command.env);
             }
         }
         // A session outside the repository gets every skill; nothing to give: no plugin.
@@ -1311,8 +1309,8 @@ mod tests {
 
     #[test]
     fn plain_copilot_launches_never_pass_the_skill_folders_on() {
-        let env = vec![("copilot_canvas_group_skills".to_owned(), r#"{"dirs":["C:\\s"]}"#.to_owned()), ("KEEP".to_owned(), "1".to_owned())];
+        let env = vec![("copilot_canvas_group_skills".to_owned(), r#"{"dirs":["C:\\s"]}"#.to_owned()), ("Atelier_Group_Skills".to_owned(), "x".to_owned()), ("KEEP".to_owned(), "1".to_owned())];
         assert_eq!(without_group_skills(env), [("KEEP".to_owned(), "1".to_owned())]);
-        assert_eq!(no_group_skills_env(), ("-COPILOT_CANVAS_GROUP_SKILLS".to_owned(), String::new()));
+        assert_eq!(no_group_skills_env(), [("-COPILOT_CANVAS_GROUP_SKILLS".to_owned(), String::new()), ("-ATELIER_GROUP_SKILLS".to_owned(), String::new())]); // rename:keep
     }
 }

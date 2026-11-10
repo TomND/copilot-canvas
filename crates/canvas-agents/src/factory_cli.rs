@@ -1,4 +1,4 @@
-//! `copilot-canvas automations …`: manage manifest-defined scheduled tasks.
+//! `atelier automations …`: manage manifest-defined scheduled tasks.
 
 use std::path::{Path, PathBuf};
 
@@ -7,13 +7,13 @@ use anyhow::{Context, Result, bail};
 use crate::factory::{self, Manifest, Report};
 use crate::scheduler;
 
-/// Where the manifests live: `--dir`, `COPILOT_CANVAS_AUTOMATIONS`, the
+/// Where the manifests live: `--dir`, `ATELIER_AUTOMATIONS`, the
 /// canvas setting, or `<home>/automations`.
 pub fn configured_dir(home: &Path, explicit: Option<String>) -> PathBuf {
     if let Some(dir) = explicit.filter(|d| !d.trim().is_empty()) {
         return PathBuf::from(dir);
     }
-    if let Some(dir) = std::env::var_os("COPILOT_CANVAS_AUTOMATIONS").filter(|d| !d.is_empty()) {
+    if let Some(dir) = canvas_common::env::var_os("ATELIER_AUTOMATIONS").filter(|d| !d.is_empty()) {
         return PathBuf::from(dir);
     }
     let canvas: Option<serde_json::Value> = std::fs::read(home.join("canvas.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
@@ -25,7 +25,7 @@ pub fn configured_dir(home: &Path, explicit: Option<String>) -> PathBuf {
 
 fn load(dir: &Path) -> Result<factory::Repo> {
     if !dir.is_dir() {
-        bail!("no automations folder at {} (import your tasks first: copilot-canvas automations import)", dir.display());
+        bail!("no automations folder at {} (import your tasks first: atelier automations import)", dir.display());
     }
     Ok(factory::load_repo(dir))
 }
@@ -124,7 +124,7 @@ pub fn import(dir: &Path, names: &[String], family: Option<String>, force: bool)
         names.iter().map(|n| tasks.get(&n.to_lowercase()).with_context(|| format!("no task named {n:?}"))).collect::<Result<_>>()?
     };
     if picked.is_empty() {
-        bail!("no tasks to import (name them: copilot-canvas automations import NAME…)");
+        bail!("no tasks to import (name them: atelier automations import NAME…)");
     }
     std::fs::create_dir_all(dir)?;
     let existing = factory::load_repo(dir);
@@ -142,7 +142,7 @@ pub fn import(dir: &Path, names: &[String], family: Option<String>, force: bool)
         }
         if !defaults_written && let Some(d) = imported.defaults.as_ref().filter(|d| !d.launcher.is_empty() || d.state != factory::default_state()) {
             let text = format!(
-                "# Shared settings for the automations in this folder (Copilot Canvas).\n# launcher: hidden launcher script run with `python` (windowless pythonw.exe)\n# state: launcher folder with tasks/, logs/, status/, backups/\nlauncher: '{}'\npython: '{}'\nstate: '{}'\n",
+                "# Shared settings for the automations in this folder (Atelier).\n# launcher: hidden launcher script run with `python` (windowless pythonw.exe)\n# state: launcher folder with tasks/, logs/, status/, backups/\nlauncher: '{}'\npython: '{}'\nstate: '{}'\n",
                 d.launcher.replace('\'', "''"),
                 d.python.replace('\'', "''"),
                 d.state.display().to_string().replace('\'', "''")
@@ -161,13 +161,19 @@ pub fn import(dir: &Path, names: &[String], family: Option<String>, force: bool)
             println!("    warning: trigger not representable, left out: {u}");
         }
     }
-    println!("{written} manifest(s) written in {}. Review them, then: copilot-canvas automations apply", dir.display());
+    println!("{written} manifest(s) written in {}. Review them, then: atelier automations apply", dir.display());
     Ok(())
 }
 
 /// Brings the scheduler (Task Scheduler, systemd, cron) in line with the
 /// manifests. Without `yes` it only shows what would change.
 pub fn apply(dir: &Path, names: &[String], yes: bool) -> Result<()> {
+    // Manifests named before the rename get their new names first.
+    if yes {
+        for (old, new, path) in factory::rename_legacy_manifests(dir)? {
+            println!("renamed {old} to {new} ({})", path.display());
+        }
+    }
     let repo = load(dir)?;
     if !repo.errors.is_empty() {
         for e in &repo.errors {
@@ -180,12 +186,20 @@ pub fn apply(dir: &Path, names: &[String], yes: bool) -> Result<()> {
     let stamp = crate::paths::rfc3339_now().replace([':', '.'], "-");
     let backups = repo.defaults.state.join("backups").join(format!("{stamp}-canvas"));
     let mut pending = 0;
-    for m in repo.manifests.iter().filter(|m| names.is_empty() || names.iter().any(|n| n.eq_ignore_ascii_case(&m.name))) {
-        let existing = tasks.get(&m.name.to_lowercase());
-        let mut changes = match existing {
-            None => vec!["new task".to_owned()],
-            Some(t) => sched.drift(m, &repo.defaults, t),
+    let named = |m: &Manifest| names.is_empty() || names.iter().any(|n| n.eq_ignore_ascii_case(&m.name) || factory::renamed_task(n).is_some_and(|r| r.eq_ignore_ascii_case(&m.name)));
+    for m in repo.manifests.iter().filter(|m| named(m)) {
+        let own = tasks.get(&m.name.to_lowercase());
+        // The same task registered under its name from before the rename: replaced.
+        let legacy = factory::legacy_task_name(&m.name).and_then(|old| tasks.get(&old.to_lowercase()));
+        let existing = own.or(legacy);
+        let mut changes = match (own, legacy) {
+            (None, None) => vec!["new task".to_owned()],
+            (None, Some(t)) => vec![format!("replaces {}, its name before the rename", t.name)],
+            (Some(t), _) => sched.drift(m, &repo.defaults, t),
         };
+        if let Some(new) = factory::renamed_task(&m.name) {
+            changes.insert(0, format!("named before the rename: renamed {new} (manifest and task)"));
+        }
         let json_path = repo.defaults.task_json(&m.name);
         let json = sched.task_json(m, &repo.defaults);
         let uses_launcher = sched.uses_task_json(&repo.defaults);
@@ -215,6 +229,10 @@ pub fn apply(dir: &Path, names: &[String], yes: bool) -> Result<()> {
             std::fs::write(&json_path, &json)?;
         }
         sched.register(&m.name, &sched.render(m, &repo.defaults, existing))?;
+        if let Some(old) = legacy.filter(|_| own.is_none()) {
+            sched.delete(&old.name)?;
+            println!("    removed {}", old.name);
+        }
         let after = sched.task(&m.name)?.context("the task did not register")?;
         let left = sched.drift(m, &repo.defaults, &after);
         if left.is_empty() {
@@ -227,7 +245,7 @@ pub fn apply(dir: &Path, names: &[String], yes: bool) -> Result<()> {
         .values()
         .filter(|t| sched.launched_by(t, &repo.defaults))
         .map(|t| &t.name)
-        .filter(|n| !repo.manifests.iter().any(|m| m.name.eq_ignore_ascii_case(n)))
+        .filter(|n| !repo.manifests.iter().any(|m| m.name.eq_ignore_ascii_case(n) || factory::legacy_task_name(&m.name).is_some_and(|old| old.eq_ignore_ascii_case(n))))
         .collect();
     for name in unmanaged {
         println!("? {name}: uses the launcher but has no manifest (left alone; import it to manage it)");
@@ -237,7 +255,7 @@ pub fn apply(dir: &Path, names: &[String], yes: bool) -> Result<()> {
             println!("Previous task definitions saved in {}", backups.display());
         }
     } else if pending > 0 {
-        println!("{pending} task(s) would change. Apply with: copilot-canvas automations apply --yes");
+        println!("{pending} task(s) would change. Apply with: atelier automations apply --yes");
     } else {
         println!("{} matches the manifests.", capitalized(sched.name()));
     }
@@ -248,7 +266,7 @@ pub fn run(dir: &Path, name: &str) -> Result<()> {
     let repo = load(dir)?;
     let m = find(&repo, name)?;
     scheduler::get().run(&m.name)?;
-    println!("Started {}. Follow it with: copilot-canvas automations show \"{}\"", m.name, m.name);
+    println!("Started {}. Follow it with: atelier automations show \"{}\"", m.name, m.name);
     Ok(())
 }
 

@@ -10,11 +10,11 @@
 //! - macOS: launchd, a LaunchAgent per task.
 //!
 //! Off Windows every run goes through the built-in launcher
-//! (`copilot-canvas automations launch <state>/tasks/<name>.json`, see
+//! (`atelier automations launch <state>/tasks/<name>.json`, see
 //! [`crate::launcher`]), which writes the Python launcher's log lines and
 //! environment and enforces what a backend cannot (time limit, overlap,
 //! retries, success codes). A folder's `automations.yaml` may still name its
-//! own `launcher` and `python`. `COPILOT_CANVAS_SCHEDULER=launchd|systemd|cron|none`
+//! own `launcher` and `python`. `ATELIER_SCHEDULER=launchd|systemd|cron|none`
 //! picks a backend explicitly.
 
 use std::collections::BTreeMap;
@@ -48,7 +48,7 @@ pub trait Scheduler: Send + Sync {
     fn name(&self) -> &'static str;
 
     /// The installed tasks: Task Scheduler's root folder; elsewhere the tasks
-    /// Copilot Canvas installed.
+    /// Atelier installed.
     fn list(&self) -> Result<BTreeMap<String, TaskInfo>>;
 
     /// One task's installed definition.
@@ -122,7 +122,7 @@ fn choose() -> Box<dyn Scheduler> {
 
 #[cfg(unix)]
 fn choose() -> Box<dyn Scheduler> {
-    match std::env::var("COPILOT_CANVAS_SCHEDULER").ok().as_deref().map(str::trim) {
+    match canvas_common::env::var("ATELIER_SCHEDULER").ok().as_deref().map(str::trim) {
         Some("systemd") => return Box::new(systemd::Systemd::user()),
         Some("cron") => return Box::new(cron::Cron::user()),
         Some("launchd") => return Box::new(launchd::Launchd::user()),

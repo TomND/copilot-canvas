@@ -1,4 +1,4 @@
-//! The reports inbox in the service: stores what `copilot-canvas report
+//! The reports inbox in the service: stores what `atelier report
 //! publish` spooled (looked at every 250 ms), keeps the read state, and
 //! sends the inbox to every client that shows it (`ServiceMsg::Reports`, on
 //! connect and on every change); phones that are away get a notification

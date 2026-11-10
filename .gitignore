@@ -6,8 +6,8 @@
 /tests/golden/gui/*.diff.png
 # iPhone app: the Rust core's build output (ios/build-core.sh makes it).
 /ios/Core/
-/ios/CopilotCanvas.xcodeproj/xcuserdata/
-/ios/CopilotCanvas.xcodeproj/project.xcworkspace/xcuserdata/
+/ios/Atelier.xcodeproj/xcuserdata/
+/ios/Atelier.xcodeproj/project.xcworkspace/xcuserdata/
 spikes/linux-html/out/
 spikes/linux-html/blitz/target/
 /tests/golden/gui/*/*.actual.png

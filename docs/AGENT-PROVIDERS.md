@@ -9,14 +9,14 @@ reads the agent's own history store for status, subagents and git/PR events,
 and lists the agent's configuration. Everything agent-specific goes through
 the provider; the canvas, the service and the event bus are shared.
 
-Every launch also gets the canvas integration: `COPILOT_CANVAS_HOME`,
-`COPILOT_CANVAS_SESSION` (the box id), `COPILOT_CANVAS_AGENT` with
-`COPILOT_CANVAS_SESSION_AGENT` (the session's agent, see [Notes and
-todos](#notes-and-todos)) and the `copilot-canvas` command on
+Every launch also gets the canvas integration: `ATELIER_HOME`,
+`ATELIER_SESSION` (the box id), `ATELIER_AGENT` with
+`ATELIER_SESSION_AGENT` (the session's agent, see [Notes and
+todos](#notes-and-todos)) and the `atelier` command on
 `PATH` (events, messages, passive status, reports, pull requests, review
 follow-ups, notes, todos), plus the canvas skills (`canvas-events`,
 `canvas-passive`, `canvas-reports`, `canvas-prs`, `canvas-review-followup`,
-`canvas-todos`, `canvas-notes`; plugin 1.3.0).
+`canvas-todos`, `canvas-notes`; plugin 1.4.0).
 
 ## At a glance
 
@@ -117,7 +117,7 @@ session box with one conversation that both its chat and its runs use.
 the canvas-agents folder `<home>/canvas-agents/<canvas id>` allowed
 (`--add-dir` for Copilot and Claude Code, `external_directory` for OpenCode),
 so it reads the canvas's `GOALS.md` and skills. Its prompt starts with
-`[Copilot Canvas · canvas-wide agent "<name>"]` and its triggers carry the
+`[Atelier · canvas-wide agent "<name>"]` and its triggers carry the
 sending session's id and group. A run uses the agent's own model
 (`Passive::model`, routed as `PassiveSpec::model`) or else the one new
 sessions of its agent get; a resumed conversation whose model is recorded on
@@ -241,7 +241,7 @@ machine in the background (the window never waits for it) and takes at most
 
 **Carrying them.** `AgentLaunch` travels postcard-encoded, so it gets no new
 field: the client puts the folders and the group's id into its environment as
-`COPILOT_CANVAS_GROUP_SKILLS` (JSON `{"group": …, "dirs": […]}`;
+`ATELIER_GROUP_SKILLS` (JSON `{"group": …, "dirs": […]}`;
 `canvas_model::launch`), and the service takes that entry out (its name in any
 case, as Windows reads it; one that is not valid JSON is dropped and the
 launch goes on without folders) before the agent starts; plain Copilot
@@ -359,21 +359,21 @@ with one command; the `canvas-reports` skill (plugin 1.1.0, next to
 `canvas-events` and `canvas-passive`, which both point to it) teaches it:
 
 ```text
-copilot-canvas report publish (--markdown FILE|- | --html FILE|- | --message TEXT) [--title TITLE]
+atelier report publish (--markdown FILE|- | --html FILE|- | --message TEXT) [--title TITLE]
                [--kind info|ok|warn|alert|queued|delivered|failed] [--pr URL] [--link TITLE=URL]…
                [--session NAME|ID] [--thread KEY] [--source NAME]
-copilot-canvas report list [--unread] [--limit N]
+atelier report list [--unread] [--limit N]
 ```
 
 | | |
 |---|---|
-| Publisher | `COPILOT_CANVAS_SESSION` (the box; passive runs too), else `--source NAME` or `AUTOMATION_NAME`; with none it refuses ("this is not a Copilot Canvas session: name who publishes with --source NAME") |
+| Publisher | `ATELIER_SESSION` (the box; passive runs too), else `--source NAME` or `AUTOMATION_NAME`; with none it refuses ("this is not an Atelier session: name who publishes with --source NAME") |
 | Body | Markdown, HTML (a whole page with its own styles; images inline as `data:` URIs) or a message of at most 4,000 characters; at most 2 MiB, UTF-8, not empty |
 | Title | `--title`, else the first `#` heading, the HTML `<title>`/`<h1>`, the message's first line; one line, 160 characters |
 | Links | `--pr URL`, `--link TITLE=URL` (≤ 20): `http(s)://` or `mailto:` only, ≤ 2,048 characters |
 | Kind | `info` (default), `ok`, `warn`, `alert`, `queued` (asked for), `delivered` (confirmed), `failed` |
 | Thread | `--thread KEY` (`A-Z a-z 0-9 . _ : / # -`, ≤ 120): later updates join one inbox row (e.g. `pr-123`: queued, then delivered) |
-| Answer | `Report stored in the Copilot Canvas inbox: “T” (id).` (exit 0); `Report queued, not stored yet: …` (exit 0, no service running: it is stored when the service starts); `Copilot Canvas refused the report: …` or a check's reason (exit 1) |
+| Answer | `Report stored in the Atelier inbox: “T” (id).` (exit 0); `Report queued, not stored yet: …` (exit 0, no service running: it is stored when the service starts); `Atelier refused the report: …` or a check's reason (exit 1) |
 
 The command checks everything before it writes; then it spools the
 submission (`<home>/reports/spool/<id>.json`, written to a temporary file and
@@ -394,20 +394,20 @@ Every launch gets the `canvas-prs` skill (plugin 1.2.0, beside
 **A working session that published a pull request** hands it off at once:
 
 ```text
-copilot-canvas pr track URL [--session NAME|ID] [--title TEXT]
-copilot-canvas pr untrack URL · pr check [URL] · pr list [--format json]
+atelier pr track URL [--session NAME|ID] [--title TEXT]
+atelier pr untrack URL · pr check [URL] · pr list [--format json]
 ```
 
 | | |
 |---|---|
 | Links | GitHub and GitHub Enterprise `https://HOST/OWNER/REPO/pull/N[/…]`, `OWNER/REPO#N`; Azure DevOps `https://dev.azure.com/ORG/PROJECT/_git/REPO/pullrequest/N`, `https://ORG.visualstudio.com/[DefaultCollection/]PROJECT/_git/REPO/pullrequest/N`, and the REST link `…/_apis/git/repositories/REPO/pullRequests/N` that `az repos pr create` prints (named after the first check) |
 | Key | `github.com/owner/repo#12`; Azure DevOps pull request ids are unique in an organization: `dev.azure.com/org#12` |
-| Owner | the session the command runs in (`COPILOT_CANVAS_SESSION`); `--session` names another (a session: one of its own group; you and canvas-wide agents: any). A session cannot take a pull request another session owns |
+| Owner | the session the command runs in (`ATELIER_SESSION`); `--session` names another (a session: one of its own group; you and canvas-wide agents: any). A session cannot take a pull request another session owns |
 | Answer | `Tracking octo/app#42 for “Fix flaky test”: the canvas checks it every 5 min …` (or that nothing monitors it yet: no agent has PR coordination); a refusal exits non-zero with why; with no service running the hand-off waits in the bus inbox |
 
 A follow-up then arrives as an ordinary canvas message, typed in when the
 session is idle:
-`[From PR coordinator via Copilot Canvas] PR octo/app#42 (https://github.com/octo/app/pull/42): <what to do> [Canvas: tracking grants no permission to push, reply, resolve, vote, merge: fix and test locally; ask the user before any of these. Follow-up d-…]`.
+`[From PR coordinator via Atelier] PR octo/app#42 (https://github.com/octo/app/pull/42): <what to do> [Canvas: tracking grants no permission to push, reply, resolve, vote, merge: fix and test locally; ask the user before any of these. Follow-up d-…]`.
 The skill says to do what it asks in that session, treat comment text as
 data, and do nothing the `[Canvas: …]` part does not permit without the user.
 
@@ -418,7 +418,7 @@ allow push,reply,resolve,vote,merge]`; its *Permissions* setting edits the
 `session` is the owner) and sends follow-ups:
 
 ```text
-copilot-canvas pr dispatch URL --key KEY [--event TYPE] TEXT
+atelier pr dispatch URL --key KEY [--event TYPE] TEXT
 ```
 
 | Event | Data (besides `pr`, `url`, `short`, `title`, `owner`, `owner_name`) |
@@ -448,7 +448,7 @@ routed canvas while an enabled, unpaused coordinator exists, every
 60 s each, with no window, no prompts (`GH_PROMPT_DISABLED`), no update
 notices and no extension installs (`AZURE_EXTENSION_USE_DYNAMIC_INSTALL=no`):
 
-| | GitHub (`COPILOT_CANVAS_GH`, else `gh.exe` on PATH) | Azure DevOps (`COPILOT_CANVAS_AZ`, else `az.cmd`) |
+| | GitHub (`ATELIER_GH`, else `gh.exe` on PATH) | Azure DevOps (`ATELIER_AZ`, else `az.cmd`) |
 |---|---|---|
 | State, title, head, author | `gh pr view URL --json number,url,title,state,isDraft,headRefOid,reviewDecision,author,comments,reviews,statusCheckRollup` | `az repos pr show --id N --org ORG --output json` |
 | Comments | the `comments` and non-empty `COMMENTED` reviews, plus `gh api --paginate repos/O/R/pulls/N/comments?per_page=100` (inline) | `az devops invoke --area git --resource pullRequestThreads --route-parameters project=… repositoryId=… pullRequestId=N --api-version 7.1 --http-method GET` (system and deleted comments left out) |
@@ -471,7 +471,7 @@ The `canvas-review-followup` skill (plugin 1.2.0) teaches two roles.
 **A review session that finished reviewing someone's pull request**:
 
 ```text
-copilot-canvas review handoff --pr URL --author NAME [--author-id ID] --results FILE|- [--notes FILE]
+atelier review handoff --pr URL --author NAME [--author-id ID] --results FILE|- [--notes FILE]
                [--outcome approved|changes-requested|commented] [--title T] [--link TITLE=URL]… [--session NAME|ID]
 ```
 
@@ -480,11 +480,11 @@ copilot-canvas review handoff --pr URL --author NAME [--author-id ID] --results 
 draft, a message or a client's view; `review list` leaves them out). One
 review per (pull request, review session, results); a new hand-off of a pull
 request completes its open requests. A request for another review arrives as
-`[From Review follow-ups via Copilot Canvas] Ana asks for a re-review of PR
+`[From Review follow-ups via Atelier] Ana asks for a re-review of PR
 octo/app#7 (link): "<their words>". Your earlier review (changes-requested):
 <results>. Your private notes: <notes>. When you have reviewed it again,
 hand it off: … [Canvas: request q-…; the review follow-up agent answers the
-author, not you.]`; `copilot-canvas review done REQUEST` finishes one
+author, not you.]`; `atelier review done REQUEST` finishes one
 without a new hand-off.
 
 **The canvas-wide review follow-up agent** (`Passive::reviews`:
@@ -524,29 +524,29 @@ and the group instructions.
 
 **The session's agent.** Every launch and every passive run (ordinary
 sessions, subsessions, passive sessions, canvas-wide agents) gets
-`COPILOT_CANVAS_AGENT` set to its agent (`copilot`, `opencode`, `claude`) and
-`COPILOT_CANVAS_SESSION_AGENT` set to the same value
-(`agents::session_agent_env`). `copilot-canvas note new` records it as the
-note's `agent`. `COPILOT_CANVAS_AGENT` also chooses the agent for new
+`ATELIER_AGENT` set to its agent (`copilot`, `opencode`, `claude`) and
+`ATELIER_SESSION_AGENT` set to the same value
+(`agents::session_agent_env`). `atelier note new` records it as the
+note's `agent`. `ATELIER_AGENT` also chooses the agent for new
 sessions (`default_agent`, `machine_default`: before the machine's
 `settings.json` and the first installed agent), so the marker tells the two
-apart (`agent_from_env`): when `COPILOT_CANVAS_SESSION_AGENT` holds the same
+apart (`agent_from_env`): when `ATELIER_SESSION_AGENT` holds the same
 value (case-insensitive), the variable only names the session a process runs
 in, and a canvas started inside that session does not take it as a choice;
 set by you (without the marker, or to another agent than the marker's), it
 chooses as before.
 
-**The skills** (plugin 1.3.0, beside the others; `canvas-events` points to
+**The skills** (plugin 1.4.0, beside the others; `canvas-events` points to
 both, `canvas-reports` to the notes, `canvas-passive` to the todos):
 
 | | `canvas-notes` | `canvas-todos` |
 |---|---|---|
 | When | writing a plan, research, an investigation log, a decision or a hand-off worth keeping; a document the user asked for; before substantial work in a group (read its `ai-docs`, `GOALS.md` first) | the group has boards, the user mentions todos, a backlog or an id like `DEC-031`, picking up or finishing work, finding work worth doing later |
-| Commands | `copilot-canvas note path [--audience ai\|human]`, `note new --title T (--md FILE\|- \| --html FILE\|-) [--audience ai\|human] [--folder REL] [--name FILE]`, `note list [--audience ai\|human] [--format json]` | `todo prime` first; `todo ready` → `todo show ID` → `todo claim ID` → `todo note` / `todo check` → `todo submit ID --pr URL [--summary FILE]`; `todo add` (asked for) or `todo propose --why` (own idea), `--discovered-from ID`; `todo update --blocked`, `todo relate --blocked-by`, `todo release` |
+| Commands | `atelier note path [--audience ai\|human]`, `note new --title T (--md FILE\|- \| --html FILE\|-) [--audience ai\|human] [--folder REL] [--name FILE]`, `note list [--audience ai\|human] [--format json]` | `todo prime` first; `todo ready` → `todo show ID` → `todo claim ID` → `todo note` / `todo check` → `todo submit ID --pr URL [--summary FILE]`; `todo add` (asked for) or `todo propose --why` (own idea), `--discovered-from ID`; `todo update --blocked`, `todo relate --blocked-by`, `todo release` |
 | Rules | notes for agents in `ai-docs` (`audience: ai`), for the user in `human-outputs` (`audience: human`; one self-contained HTML file when layout matters); no secrets; HTML self-contained and offline (no scripts, CDNs, web fonts or remote images); `[[Note name]]` and todo ids become links; what the user should notice now is a report | never edit the book's files or a `TODOs.md` mirror; never take another session's claim; never run `todo done` (Done is the user's or a merged pull request's); a refusal exits non-zero and says why |
 
-The commands find the caller from `COPILOT_CANVAS_SESSION` (its agent from
-`COPILOT_CANVAS_SESSION_AGENT`, else the routing) and its group, the group's folder and the notebook
+The commands find the caller from `ATELIER_SESSION` (its agent from
+`ATELIER_SESSION_AGENT`, else the routing) and its group, the group's folder and the notebook
 root from the routing the windows send (`<home>/bus/routing.json`). `note`
 writes the files itself (never over another note); `todo` reads the stored
 book and sends every change to the service as a `canvas.todo` request,
@@ -567,16 +567,16 @@ applyTo: '**'
 ---
 # Canvas group: {name}
 
-You are working in a session of the "{name}" group in Copilot Canvas.
+You are working in a session of the "{name}" group in Atelier.
 
 ## Notes (the canvas notebook)
 - Notes for other agents (plans, research, investigation logs, context): `{ai_docs}`
 - Deliverables for the user (reports, summaries, final documents; prefer one self-contained HTML file when layout matters): `{outputs}`
-- Start Markdown notes with front matter (`audience: ai` or `audience: human`, `author: ai`, `source_session: <COPILOT_CANVAS_SESSION>`); `copilot-canvas note new` writes it for you.
+- Start Markdown notes with front matter (`audience: ai` or `audience: human`, `author: ai`, `source_session: <ATELIER_SESSION>`); `atelier note new` writes it for you.
 - Before substantial work, read `{ai_docs}` (GOALS.md first) for context left by other sessions.
 
 ## Todos
-- The canvas keeps todo boards. Run `copilot-canvas todo prime` to see the boards linked to this group and how to use them; change todos only with `copilot-canvas todo …`.
+- The canvas keeps todo boards. Run `atelier todo prime` to see the boards linked to this group and how to use them; change todos only with `atelier todo …`.
 ```
 
 | | Copilot CLI | OpenCode | Claude Code |
@@ -590,7 +590,7 @@ gains a `# Todos` section and `canvas-context.md` a per-board summary.
 
 ## Verified end to end
 
-`copilot-canvas selftest agent [--agent copilot|opencode|claude]` starts the
+`atelier selftest agent [--agent copilot|opencode|claude]` starts the
 real TUI from the canvas without a prompt: imports, configuration views, the
 dialog's model (the initial default), the allow-all flag and the model flag
 on the command line (and the model on the box), typing, a graceful stop. For
@@ -599,7 +599,7 @@ launch changed it. With `--paste` it pastes multi-line
 text into the agent's input box instead and checks that it arrived as lines
 and nothing was sent ([Pasting](#pasting)).
 
-`copilot-canvas selftest agent --agent opencode --prompt [--model ID]
+`atelier selftest agent --agent opencode --prompt [--model ID]
 [--client tui|gui] [--steps LIST]` sends tiny prompts, only to a model whose id
 ends in `-free` (default `opencode/deepseek-v4.1-flash-free`), only into a TUI
 whose command line carries `-m` with that model, and with OpenCode's defaults
@@ -615,7 +615,7 @@ well. Through the canvas it checks:
 | question | the question tool: the box shows *needs you*; Esc (OpenCode's "Reject question") dismisses it and the box settles to idle |
 | resume | X stops the box gracefully; a click only shows its details (Resume), the double-click resumes with `-s ses_…` (no `-m`: OpenCode keeps the session's model) and shows the conversation. Before that, with the parent stopped, the first child resumes as a linked subsession with `-s <child>` (no prompt) and is stopped again |
 | permission | Settings → Permissions: ask; a new box without `--auto`; a bash call with `OPENCODE_PERMISSION` `{"bash":"ask"}` shows *needs you*; Esc ("Reject") rejects it and nothing ran |
-| passive | a passive OpenCode box (Run now) runs `opencode run … -m <free model>` headless, reports `copilot-canvas status ok "…"` through the canvas command on its PATH, and its box follows the run's `ses_` session |
+| passive | a passive OpenCode box (Run now) runs `opencode run … -m <free model>` headless, reports `atelier status ok "…"` through the canvas command on its PATH, and its box follows the run's `ses_` session |
 
 At the end every OpenCode session it created (subagents included) is reported
 with the models it used and its cost, deleted with `opencode session delete`,
@@ -652,7 +652,7 @@ message:
   arrive one per read, or overlap, or end with a key still held: typing and
   its Enter stay keys.
 
-What the programs did with it (2026-10-29; `copilot-canvas selftest agent
+What the programs did with it (2026-10-29; `atelier selftest agent
 --paste --agent opencode|claude`, nothing submitted; the modes are the
 service engine's while the input box was up):
 
@@ -671,7 +671,7 @@ console key events (PSReadLine, the TUI) gets the pasted characters as key
 presses without the markers, ESC CR as Alt+Enter, LF as Ctrl+Enter
 (PSReadLine: insert a line *above*) and `CSI 13;2u` not at all; a Win32
 input-mode Shift+Enter would give PSReadLine a proper new line but reaches VT
-readers as a bare CR, so it is not used. `copilot-canvas paste-probe
+readers as a bare CR, so it is not used. `atelier paste-probe
 [--plain] [--kitty] [--keys] [--raw]` (hidden) prints what a program
 receives; `paste-probe --drive TEXT [--program "CMD"] [--ready TEXT]` runs it
 (or CMD) in a hidden pseudoconsole, writes TEXT (`\e`, `\r`, `\n`, `\xNN`)
@@ -695,7 +695,7 @@ and prints the screen.
   unit tests.
 - No real agent has been asked to publish a report yet: `selftest`, the
   parity rows 41–41c and the backend contract publish through the same
-  `copilot-canvas report publish` from demo shells and tests, and the skill's
+  `atelier report publish` from demo shells and tests, and the skill's
   text is checked by a unit test.
 - Pull request coordination has been driven only by the stand-in agent
   (which follows the `canvas-prs` contract: one `pr dispatch` per

@@ -288,6 +288,70 @@ pub fn load_repo(dir: &Path) -> Repo {
     repo
 }
 
+// ---------- names from before the rename ----------
+
+/// The prefix of the automations the product names itself (`Atelier-Tunnel`).
+pub const TASK_PREFIX: &str = "Atelier-";
+
+/// The name a product automation had before the rename (`Atelier-Tunnel` →
+/// [`crate::legacy::TASK_PREFIX`]`Tunnel`): an installed task of that name is the same one.
+pub fn legacy_task_name(name: &str) -> Option<String> {
+    name.strip_prefix(TASK_PREFIX).map(|rest| format!("{}{rest}", crate::legacy::TASK_PREFIX))
+}
+
+/// The new name of a manifest named before the rename ([`crate::legacy::TASK_PREFIX`]`X` → `Atelier-X`).
+pub fn renamed_task(name: &str) -> Option<String> {
+    let old = crate::legacy::TASK_PREFIX;
+    (name.len() > old.len() && name.is_char_boundary(old.len()) && name[..old.len()].eq_ignore_ascii_case(old)).then(|| format!("{TASK_PREFIX}{}", &name[old.len()..]))
+}
+
+/// Gives the manifests named before the rename ([`crate::legacy::TASK_PREFIX`]`<x>`, the
+/// tunnel's among them) their new names: the `name:` line, a `family:` that
+/// was the product's, the file name when it was the task's, and the tunnel
+/// manifest's folder. Answers (old name, new name, new file).
+pub fn rename_legacy_manifests(dir: &Path) -> Result<Vec<(String, String, PathBuf)>> {
+    let mut done = Vec::new();
+    let manifests = load_repo(dir).manifests;
+    for m in &manifests {
+        let Some(new) = renamed_task(&m.name) else { continue };
+        // Already there under its new name (written again since): left as it is.
+        if manifests.iter().any(|other| other.name.eq_ignore_ascii_case(&new)) {
+            continue;
+        }
+        let text = std::fs::read_to_string(&m.path).with_context(|| format!("cannot read {}", m.path.display()))?;
+        let rewritten: String = text
+            .lines()
+            .map(|line| {
+                if line.starts_with("name:") {
+                    format!("name: '{}'", new.replace('\'', "''"))
+                } else if line.starts_with("family:") && line.contains(crate::legacy::PRODUCT) {
+                    "family: 'Atelier'".to_owned()
+                } else {
+                    line.to_owned()
+                }
+            })
+            .map(|line| line + "\n")
+            .collect();
+        let mut folder = m.path.parent().map(Path::to_path_buf).unwrap_or_else(|| dir.to_path_buf());
+        if folder.file_name().is_some_and(|f| f == crate::legacy::TUNNEL_MANIFEST_DIR) && folder.parent() == Some(dir) {
+            folder = dir.join("atelier");
+        }
+        let stem = m.path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let file = if stem.eq_ignore_ascii_case(&m.name) { format!("{new}.yaml") } else { m.path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default() };
+        let target = folder.join(file);
+        std::fs::create_dir_all(&folder)?;
+        std::fs::write(&target, rewritten).with_context(|| format!("cannot write {}", target.display()))?;
+        if target != m.path {
+            std::fs::remove_file(&m.path)?;
+            if let Some(parent) = m.path.parent() {
+                let _ = std::fs::remove_dir(parent);
+            }
+        }
+        done.push((m.name.clone(), new, target));
+    }
+    Ok(done)
+}
+
 fn collect_yaml(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
@@ -582,9 +646,9 @@ pub fn task_xml(m: &Manifest, d: &Defaults, who: &Principal, offset_minutes: i32
         String::new()
     };
     let (command, args) = action(m, d);
-    let description = if m.description.is_empty() { format!("{} (managed by Copilot Canvas from {})", m.name, m.path.display()) } else { m.description.clone() };
+    let description = if m.description.is_empty() { format!("{} (managed by Atelier from {})", m.name, m.path.display()) } else { m.description.clone() };
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n<Task version=\"1.3\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n  <RegistrationInfo>\n    <Description>{description}</Description>\n    <Source>Copilot Canvas</Source>\n    <URI>\\{name}</URI>\n  </RegistrationInfo>\n  <Principals>\n    <Principal id=\"Author\">\n      <UserId>{user}</UserId>\n      <LogonType>InteractiveToken</LogonType>\n    </Principal>\n  </Principals>\n  <Settings>\n    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n    <ExecutionTimeLimit>{limit}</ExecutionTimeLimit>\n    <MultipleInstancesPolicy>{policy}</MultipleInstancesPolicy>\n{restart}    <StartWhenAvailable>{swa}</StartWhenAvailable>\n    <Enabled>{enabled}</Enabled>\n    <IdleSettings>\n      <StopOnIdleEnd>false</StopOnIdleEnd>\n      <RestartOnIdle>false</RestartOnIdle>\n    </IdleSettings>\n    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>\n  </Settings>\n  <Triggers>\n{triggers}  </Triggers>\n  <Actions Context=\"Author\">\n    <Exec>\n      <Command>{command}</Command>\n      <Arguments>{args}</Arguments>\n{cwd}    </Exec>\n  </Actions>\n</Task>\n",
+        "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n<Task version=\"1.3\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n  <RegistrationInfo>\n    <Description>{description}</Description>\n    <Source>Atelier</Source>\n    <URI>\\{name}</URI>\n  </RegistrationInfo>\n  <Principals>\n    <Principal id=\"Author\">\n      <UserId>{user}</UserId>\n      <LogonType>InteractiveToken</LogonType>\n    </Principal>\n  </Principals>\n  <Settings>\n    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n    <ExecutionTimeLimit>{limit}</ExecutionTimeLimit>\n    <MultipleInstancesPolicy>{policy}</MultipleInstancesPolicy>\n{restart}    <StartWhenAvailable>{swa}</StartWhenAvailable>\n    <Enabled>{enabled}</Enabled>\n    <IdleSettings>\n      <StopOnIdleEnd>false</StopOnIdleEnd>\n      <RestartOnIdle>false</RestartOnIdle>\n    </IdleSettings>\n    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>\n  </Settings>\n  <Triggers>\n{triggers}  </Triggers>\n  <Actions Context=\"Author\">\n    <Exec>\n      <Command>{command}</Command>\n      <Arguments>{args}</Arguments>\n{cwd}    </Exec>\n  </Actions>\n</Task>\n",
         description = xml_escape(&description),
         name = xml_escape(&m.name),
         user = xml_escape(&who.user_id),
@@ -823,7 +887,8 @@ pub fn live(repo: &Repo, tasks: &BTreeMap<String, crate::scheduler::TaskInfo>, s
         .iter()
         .map(|m| {
             let log_path = repo.defaults.log_path(&m.name);
-            let task = tasks.get(&m.name.to_lowercase()).cloned();
+            // Registered under its name from before the rename: the same automation.
+            let task = tasks.get(&m.name.to_lowercase()).or_else(|| legacy_task_name(&m.name).and_then(|old| tasks.get(&old.to_lowercase()))).cloned();
             let mut runs: Vec<LogRun> = parse_runs(&tail(&log_path, 64 * 1024)).into_iter().take(40).collect();
             // A run without an exit line is only running while the task runs.
             if let Some(open) = runs.first_mut().filter(|r| r.ended.is_empty() && r.error.is_empty())
@@ -832,10 +897,14 @@ pub fn live(repo: &Repo, tasks: &BTreeMap<String, crate::scheduler::TaskInfo>, s
                 open.ended = open.started.clone();
                 open.error = "no exit recorded (stopped or the machine went down)".into();
             }
-            let drift = match &task {
+            let mut drift = match &task {
                 None => vec![format!("not registered in {} (run apply)", scheduler.name())],
+                Some(t) if !t.name.eq_ignore_ascii_case(&m.name) => vec![format!("registered as {}, its name before the rename (apply replaces it)", t.name)],
                 Some(t) => scheduler.drift(m, &repo.defaults, t),
             };
+            if let Some(new) = renamed_task(&m.name) {
+                drift.insert(0, format!("named before the rename: apply renames it {new}"));
+            }
             Live {
                 manifest: m.clone(),
                 runs,
@@ -866,6 +935,42 @@ pub fn write_report(path: &Path, report: &Report) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manifests_and_tasks_named_before_the_rename_are_the_same_automations() {
+        assert_eq!(legacy_task_name("Atelier-Tunnel").as_deref(), Some(format!("{}Tunnel", crate::legacy::TASK_PREFIX).as_str()));
+        assert_eq!(legacy_task_name("Morning brief"), None, "the user's own names are theirs");
+        assert_eq!(renamed_task(&format!("{}Service", crate::legacy::TASK_PREFIX)).as_deref(), Some("Atelier-Service"));
+        assert_eq!(renamed_task("Atelier-Service"), None);
+        // The tunnel manifest as the build before the rename wrote it.
+        let dir = std::env::temp_dir().join(format!("cc-rename-{}", uuid::Uuid::new_v4().simple()));
+        let old_path = crate::remote::legacy_tunnel_manifest_path(&dir);
+        std::fs::create_dir_all(old_path.parent().unwrap()).unwrap();
+        let old_name = legacy_task_name(canvas_common::remote::TUNNEL_TASK).unwrap();
+        let text = crate::remote::tunnel_manifest(Path::new("/usr/local/bin/devtunnel"), "my-tunnel", 47600)
+            .replace(&format!("name: '{}'", canvas_common::remote::TUNNEL_TASK), &format!("name: '{old_name}'"))
+            .replace("family: 'Atelier'", &format!("family: '{}'", crate::legacy::PRODUCT));
+        std::fs::write(&old_path, &text).unwrap();
+        let repo = load_repo(&dir);
+        assert_eq!(repo.manifests[0].name, old_name);
+        // Its task, registered under the old name: the same automation, with drift saying so.
+        let task = crate::scheduler::TaskInfo { name: old_name.clone(), enabled: true, ..Default::default() };
+        let tasks = BTreeMap::from([(old_name.to_lowercase(), task.clone())]);
+        let live = live(&repo, &tasks, &crate::scheduler::NoScheduler);
+        assert_eq!(live[0].drift.first().map(String::as_str), Some("named before the rename: apply renames it Atelier-Tunnel"));
+        // Renamed: the new name, family, file and folder; the old file and folder gone.
+        let renamed = rename_legacy_manifests(&dir).unwrap();
+        let new_path = crate::remote::tunnel_manifest_path(&dir);
+        assert_eq!(renamed, [(old_name.clone(), canvas_common::remote::TUNNEL_TASK.to_owned(), new_path.clone())]);
+        assert!(!old_path.exists() && !old_path.parent().unwrap().exists());
+        let m = parse_manifest(&std::fs::read_to_string(&new_path).unwrap(), &new_path).unwrap();
+        assert_eq!((m.name.as_str(), m.family.as_str(), m.args.as_str()), (canvas_common::remote::TUNNEL_TASK, "Atelier", "host my-tunnel"));
+        let live = super::live(&load_repo(&dir), &tasks, &crate::scheduler::NoScheduler);
+        assert_eq!(live[0].task.as_ref().map(|t| t.name.as_str()), Some(old_name.as_str()), "its old task is found");
+        assert_eq!(live[0].drift, vec![format!("registered as {old_name}, its name before the rename (apply replaces it)")]);
+        assert!(rename_legacy_manifests(&dir).unwrap().is_empty(), "nothing more to rename");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     const MANIFEST: &str = "name: 'Morning'\nfamily: 'Pipeline'\nenabled: true\nai: true\ncommand: 'C:\\pwsh.exe'\nargs: '-File \"C:\\run.ps1\" -Kind morning'\ncwd: 'C:\\notes'\nschedule:\n  - daily 06:45\n  - logon\n  - every 2h from 00:10\n  - weekly fri 16:00\ntime_limit: 3h\noverlap: ignore\nrestart_on_failure: 3 every 1m\nstart_when_available: true\nreport: '\"py\" status.py'\nsuccess_codes: [0, 1]\ndocs:\n  - 'C:\\Policy.md'\nlogs: ['C:\\runs\\*_morning_*\\stderr.log']\noutputs:\n  - title: 'Brief'\n    path: 'C:\\brief.md'\n";
 

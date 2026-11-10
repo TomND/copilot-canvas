@@ -1,6 +1,6 @@
 ---
 name: canvas-wire-compat
-description: Rules and proving tests for changing anything Copilot Canvas sends over the wire or keeps on disk, so older services, desktop clients and the iPhone app keep working - ClientMsg and ServiceMsg (postcard), backend Request and Response (JSON), the canvas document (Doc, Node, Group, NodeKind, shared fields and sync ops), bus Routing, PassiveSpec, Snapshot, actions and events, AgentLaunch, and the service's JSON stores. Use when you add or change a protocol message, a backend request, a document or store field, an enum variant, a bus action or event, or a launch parameter, and when you review such a change.
+description: Rules and proving tests for changing anything Atelier sends over the wire or keeps on disk, so older services, desktop clients and the iPhone app keep working - ClientMsg and ServiceMsg (postcard), backend Request and Response (JSON), the canvas document (Doc, Node, Group, NodeKind, shared fields and sync ops), bus Routing, PassiveSpec, Snapshot, actions and events, AgentLaunch, and the service's JSON stores. Use when you add or change a protocol message, a backend request, a document or store field, an enum variant, a bus action or event, or a launch parameter, and when you review such a change.
 ---
 
 # Wire and storage compatibility
@@ -33,7 +33,7 @@ someone restarts it. Background: `docs/BACKEND.md` (*Protocol* and the
   that read it) and filter it in `ServiceMsg::shaped_for`; add it to the
   protocol-7 list in `shaped`.
 - **Extra launch data** never becomes an `AgentLaunch` field: carry it in
-  `AgentLaunch::env` as JSON under a `COPILOT_CANVAS_…` name and take it out
+  `AgentLaunch::env` as JSON under a `ATELIER_…` name and take it out
   in the service before the agent starts (`canvas-model/src/launch.rs`:
   `GROUP_SKILLS_ENV`, `attach_group_skills`, `take_group_skills`). An older
   service passes the variable to the agent, where it does nothing.
@@ -94,6 +94,20 @@ someone restarts it. Background: `docs/BACKEND.md` (*Protocol* and the
   (`service/todos.rs:Hub`, test `a_book_that_cannot_be_read_is_never_overwritten`).
 - Atomic writes (a temporary file renamed over the old one), one writer: the
   service. The CLI reads the file and sends changes as inbox requests.
+
+## Names from before the rename
+
+<!-- rename:keep-begin -->
+Atelier was Copilot Canvas: older peers, installs and sessions still use the
+old names. Some are wire constants and never change: the pairing and secret
+contexts (`copilot-canvas pairing v2`, …), the skill folders' launch entry
+`COPILOT_CANVAS_GROUP_SKILLS` (clients send it, services take either name).
+Old names live in `canvas_common::legacy` only; variables are read with
+`canvas_common::env::var` (new name, else old); the data home, the service
+endpoint, scheduled entries and pairing links are migrated or accepted
+(docs/DEVELOPMENT.md §7). `python3 tools/rename-to-atelier.py --check` must
+report nothing to change.
+<!-- rename:keep-end -->
 
 ## Before you commit
 

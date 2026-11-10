@@ -1,4 +1,4 @@
-//! Remote-mode fault injection (`copilot-canvas selftest --remote faults`).
+//! Remote-mode fault injection (`atelier selftest --remote faults`).
 //!
 //! A TCP proxy sits between a protocol-8 client (`canvas_core::conn`, driven
 //! like the canvas drives it) and a real service. While keystrokes stream to
@@ -400,7 +400,7 @@ fn protocol7_client(instance: &Instance) -> Result<(usize, usize)> {
 }
 
 pub fn faults(exe: &Path) -> Result<()> {
-    let root = std::env::temp_dir().join(format!("copilot-canvas-faults-{}", uuid::Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("atelier-faults-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(root.join("sessions"))?;
     let instance = Instance::new(Some(format!("faults{}", std::process::id())), Some(root.join("home")), Some(root.join("sessions")))?;
     let result = scenario(exe, &instance, &root);
@@ -427,8 +427,8 @@ fn step(text: &str) {
 }
 
 fn scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
-    println!("Copilot Canvas remote fault injection (TCP proxy between a protocol-8 client and the service)");
-    conn::spawn_service_exe(exe, instance, &[("COPILOT_CANVAS_LISTEN", "127.0.0.1:0")])?;
+    println!("Atelier remote fault injection (TCP proxy between a protocol-8 client and the service)");
+    conn::spawn_service_exe(exe, instance, &[("ATELIER_LISTEN", "127.0.0.1:0")])?;
     let deadline = Instant::now() + Duration::from_secs(15);
     let port = loop {
         if let Some(port) = conn::listening_port(instance) {
@@ -582,7 +582,7 @@ fn tui_over_dropped_link(exe: &Path, instance: &Instance, root: &Path, proxy: &P
         proxy.addr.clone(),
     ];
     let secret = crate::paths::hex(&canvas_sys::token::read_token(&instance.token_path())?);
-    let mut ui = crate::selftest::Console::start_with_env(exe, &args, &[("COPILOT_CANVAS_REMOTE_SECRET", Path::new(&secret))], 170, 46)?;
+    let mut ui = crate::selftest::Console::start_with_env(exe, &args, &[("ATELIER_REMOTE_SECRET", Path::new(&secret))], 170, 46)?;
     ui.wait("the canvas", Duration::from_secs(20), |t| t.contains("Build session canvas"))?;
     ui.send(b"\r")?;
     ui.wait("PowerShell prompt", Duration::from_secs(20), |t| t.contains("PS "))?;
@@ -618,7 +618,7 @@ mod tests {
     use std::time::Duration;
 
     fn release_exe() -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").join("release").join(canvas_sys::host::exe_name("copilot-canvas"))
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").join("release").join(canvas_sys::host::exe_name("atelier"))
     }
 
     /// Needs the release build: `cargo build --release`, then

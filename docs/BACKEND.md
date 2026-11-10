@@ -36,7 +36,7 @@ on `canvas-agents`.
 | `canvas_core::remote` | `RemoteBackend`: sends `ClientMsg::Rpc`, waits for the `ServiceMsg::RpcReply` with the same id |
 | `canvas_core::prefs` | the client's own view of a canvas |
 
-The binary wires the backend: `copilot-canvas` passes a `LocalBackend` to the
+The binary wires the backend: `atelier` passes a `LocalBackend` to the
 TUI; with `--remote` the TUI uses a `RemoteBackend` attached to its connection.
 
 ## Backend requests
@@ -89,7 +89,7 @@ the connection dropped while waiting).
 | `CreatePassive { files }` | `Text` (the slug used) | new passive session (rules, memory, run log, `GOALS.md`, event catalog) |
 | `DocBackup { path, label, doc }` | `Text` (backup file) | before a VS Code sync, before its undo |
 | `DocBackups { path }` | `Texts` (oldest first) | backups of a canvas |
-| `PairCode { name }` | `Pairing(PairingCode)`: code, expiry, the remote address (listening starts if it was off) | `copilot-canvas remote pair` (the service's own pipe only) |
+| `PairCode { name }` | `Pairing(PairingCode)`: code, expiry, the remote address (listening starts if it was off) | `atelier remote pair` (the service's own pipe only) |
 | `RemoteClients` | `RemoteClients(list)`: id, name, paired, last seen, revoked, open connections | `remote clients` (pipe only) |
 | `RemoteRevoke { client }` | `Text` (what was revoked; its connections are closed) | `remote revoke` (pipe only) |
 | `SetClipboardImage { png }` (base64 in JSON, at most 20 MB) | `Done` (the image is on the service machine's clipboard as `CF_DIB` + `PNG`) | remote image paste (Ctrl+V / Alt+V), see REMOTE.md |
@@ -318,7 +318,7 @@ launch defaults (docs/AGENT-PROVIDERS.md, *Group skill folders*):
 | Where | Addition | An older peer |
 |---|---|---|
 | `Doc` | `LaunchDefaults::skill_dirs` in `defaults` and a group's `defaults` (not written while empty) | an older client ignores them, but writes `defaults` without them when it changes the canvas's or a group's session defaults (the folders must be set again); an older service drops them when it saves the canvas: skill folders need a current service |
-| `ClientMsg::Launch` (`LaunchKind::Agent(AgentLaunch)`, postcard) | none in its shape: the folders and the group's id travel in `AgentLaunch::env` as `COPILOT_CANVAS_GROUP_SKILLS` (JSON `GroupSkills { group, dirs }`), taken out by the service (any case; malformed: dropped, the launch goes on) before the agent starts | an older service passes the variable to the agent (it does nothing there); an older client sends none |
+| `ClientMsg::Launch` (`LaunchKind::Agent(AgentLaunch)`, postcard) | none in its shape: the folders and the group's id travel in `AgentLaunch::env` as `ATELIER_GROUP_SKILLS` (JSON `GroupSkills { group, dirs }`), taken out by the service (any case; malformed: dropped, the launch goes on) before the agent starts | an older service passes the variable to the agent (it does nothing there); an older client sends none |
 | `ClientMsg::Routing` (`bus::Routing`) | `PassiveSpec::skill_dirs`: a group passive session's folders (the canvas's and its group's) | ignores them: its runs get no skill folders |
 | `Request` / `Response` | `SkillSources` / `SkillSources` (appended last) | answers "does not support this request (update it)": the view says the service is older and lists the agents' own lists only; the editor refuses to add a folder |
 | `HostApp::resolve_launch` (in-process) | gets the terminal's folder (`cwd`), which tells the service which project skills the agent already loads | — |
@@ -335,7 +335,7 @@ reads it for `pr list`). Everything is JSON with defaults:
 | Where | Addition | An older peer |
 |---|---|---|
 | `Doc` / `ClientMsg::Routing` | `Passive::prs` / `PassiveSpec::prs` (`PrSettings`: `poll_minutes`, `auto_track`, `allow`) on canvas-wide agents | ignores it: the agent is routed without PR coordination, nothing is monitored |
-| bus inbox | requests `{"type": "canvas.pr", "source": <session>, "data": {"op": "track" \| "untrack" \| "check" \| "dispatch" \| "dismiss" \| "retry" \| "reassign", "request": <uuid>, "url", "session", "title", "key", "event", "text", "dispatch", "to"}}` (`copilot-canvas pr …`); intercepted by the bus loop, never routed to agents | an older service would route it as an ordinary event nobody subscribes to; the command then says the service did not answer |
+| bus inbox | requests `{"type": "canvas.pr", "source": <session>, "data": {"op": "track" \| "untrack" \| "check" \| "dispatch" \| "dismiss" \| "retry" \| "reassign", "request": <uuid>, "url", "session", "title", "key", "event", "text", "dispatch", "to"}}` (`atelier pr …`); intercepted by the bus loop, never routed to agents | an older service would route it as an ordinary event nobody subscribes to; the command then says the service did not answer |
 | `<home>/bus/answers/<request>.json` | `{ok, message, state}`: the service's answer the command waits for (10 s; removed by the command, stale ones after an hour) | — |
 | `ClientMsg::Bus` | `{"action": "prs", "op": …}` from windows (the panel's buttons), handled as the same request from you | ignores unknown actions |
 | `ServiceMsg::Bus` (`bus::Snapshot`) | `prs`: a `PrsView` (canvas id, the running coordinators, why monitoring is paused, their permissions, the tracked pull requests without watermarks, the last 6 follow-ups each); absent while the canvas tracks nothing and has no coordinator | ignores it |
@@ -355,7 +355,7 @@ The same pattern (`service/reviews.rs`; records in
 | Where | Addition | An older peer |
 |---|---|---|
 | `Doc` / `ClientMsg::Routing` | `Passive::reviews` / `PassiveSpec::reviews` (`ReviewSettings`: `channel`, `tool`, `recipients`, `approval`, `check_minutes`, `paused`); *Pause checks* sets `paused` in the document | ignores it |
-| bus inbox | requests `{"type": "canvas.review", "data": {"op": "handoff" \| "draft" \| "sent" \| "needs-you" \| "failed" \| "checked" \| "request" \| "done", "request": <uuid>, …}}` (`copilot-canvas review …`), answered in `<home>/bus/answers/` | as for `canvas.pr` |
+| bus inbox | requests `{"type": "canvas.review", "data": {"op": "handoff" \| "draft" \| "sent" \| "needs-you" \| "failed" \| "checked" \| "request" \| "done", "request": <uuid>, …}}` (`atelier review …`), answered in `<home>/bus/answers/` | as for `canvas.pr` |
 | `ClientMsg::Bus` | `{"action": "reviews", "op": "approve" \| "dismiss-message" \| "assign" \| "dismiss" \| "unwatch" \| "check-now", …}` (the panel's buttons, as you; only you approve, and only from a window: an `approve` found in the bus inbox, where any process can drop a file, is ignored like `canvas.stop_run`) | ignores unknown actions |
 | `ServiceMsg::Bus` (`bus::Snapshot`) | `reviews`: a `ReviewsView` (the agents, their settings, why checks are off, the check state, the newest 20 reviews **without private notes** and with shortened results, the conversations, the newest 30 requests) | ignores it |
 | bus events | `review.completed` (subscribers), `review.message.approved` and `review.check_due` (addressed to the agent, `to` = its key) | ordinary events |
@@ -371,11 +371,11 @@ defaults:
 | Where | Addition | An older peer |
 |---|---|---|
 | `Doc` | `notebook_root`, `notebook_mounts`, `notebook_scripts` (shared fields, not written until set) | a client ignores them; a service refuses a `SetField` it does not know (the sender gets `Error` and the whole document again), so changing these settings needs a current service |
-| `ClientMsg::Routing` (`bus::Routing`) | `notebook_root` (the canvas setting, trimmed; absent for the default) for `copilot-canvas note` and report filing | ignores it |
+| `ClientMsg::Routing` (`bus::Routing`) | `notebook_root` (the canvas setting, trimmed; absent for the default) for `atelier note` and report filing | ignores it |
 | `ClientPrefs` | `space` (`notebook` or `tasks`; absent: the canvas) | — (the client's own file) |
 | `Request` / `Response` | the ten notebook requests and their answers, appended at the end of the enums; `NotebookList::root` and `NoteWrite::base` may be left out (`None`) | answers "does not support this request (update it)"; the explorer says the notebook is not available |
 | `ClientMsg::Bus` | `{"action": "todos", "op": <TodoOp>}` from windows and phones (`todos::client_action`), applied at once (not on the bus loop's next pass) as you; then every client gets the new book. A refusal goes back to that client only, as `ServiceMsg::Error { id: None, message: "Todo change refused: …" }` followed by the book as it is (its optimistic change is undone); an operation the service cannot read is refused the same way | ignores unknown actions |
-| bus inbox | requests `{"type": "canvas.todo", "source": <session>, "data": {"op": …, "request": <uuid>, "bot": <automation>}}` (`copilot-canvas todo …`), intercepted by the bus loop, never routed to agents, applied as their sender; a session not on the routed canvas is refused | routes it as an ordinary event nobody subscribes to; the command then says the change is handed over |
+| bus inbox | requests `{"type": "canvas.todo", "source": <session>, "data": {"op": …, "request": <uuid>, "bot": <automation>}}` (`atelier todo …`), intercepted by the bus loop, never routed to agents, applied as their sender; a session not on the routed canvas is refused | routes it as an ordinary event nobody subscribes to; the command then says the change is handed over |
 | `<home>/bus/answers/<request>.json` | `{ok, message, state: "applied" \| "refused", data}`; `data` is the `--format json` answer (`{"schemaVersion": 1, "kind": "todo-change", "ok", "message", "warnings", "id", "created", "changed"}` plus the `todo` or `board` it names). `data` is optional: `pr` and `review` answers leave it out | — |
 | `ServiceMsg::Bus` (`bus::Snapshot`) | `todos`: the routed canvas's whole `TodoBook` | absent from older services and while the routed canvas has no id: Tasks shows "Waiting for the todo boards from the service…" |
 | `TodoOp` | `edit_check` (`{id, index, text}`: rewords a checklist item, its tick kept; anyone) and `remove_check` (`{id, index}`: people only), appended at the end, sent by the phone | a service of an older build answers "Todo change not understood by the service … restart the service after updating" with the book as it is: the phone's toast says so and its change is undone |
@@ -425,8 +425,8 @@ sends no `todos` and ignores the windows' todo actions and requests. Within
 the book, unknown-safe defaults apply (`#[serde(default)]` on every struct);
 a service whose `TodoOp::Claim` has no `session` field ignores it and claims
 the todo for the requester instead of the session (clients and service come
-from one build). Agents get `COPILOT_CANVAS_AGENT` and
-`COPILOT_CANVAS_SESSION_AGENT` from the service that launches them
+from one build). Agents get `ATELIER_AGENT` and
+`ATELIER_SESSION_AGENT` from the service that launches them
 (docs/AGENT-PROVIDERS.md).
 
 ## Per-client preferences
@@ -447,7 +447,7 @@ The service owns the inbox (`canvas_agents::reports::Store`, under
 
 | File | Written by | Holds |
 |---|---|---|
-| `spool/<id>.json` | `copilot-canvas report publish` (a `.tmp` file renamed) | a checked `Submission` waiting for the service |
+| `spool/<id>.json` | `atelier report publish` (a `.tmp` file renamed) | a checked `Submission` waiting for the service |
 | `spool/<id>.rejected` | the service | why it refused a submission (the waiting command prints it; removed after) |
 | `items/<id>/meta.json` + `body.md` / `body.html` / `body.txt` | the service (a `.<id>.tmp` folder renamed) | a stored report |
 | `state.json` | the service | the read state and the last 20 refusals |
@@ -529,7 +529,7 @@ most 8 files and 4 MiB in all.
   effects of canvas-wide agents, their run folders, state kept for another
   canvas; `canvas_model::bus`: subscribers across groups and canvases, who
   may address whom.
-- `tests/backend_contract.rs` starts a real service (`COPILOT_CANVAS_LISTEN=
+- `tests/backend_contract.rs` starts a real service (`ATELIER_LISTEN=
   127.0.0.1:0`, temporary home) and runs one contract suite against the
   in-process backend and against the service over loopback TCP (folder
   browsing, paths, text and tails, Git probe and worktree in a temporary

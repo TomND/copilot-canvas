@@ -128,7 +128,7 @@ pub fn run(options: Options) -> Result<()> {
     };
     let session = conn::ClientSession::new();
     let mut conn = conn::open(&target, &conn_options, &session)?;
-    let outdated = !target.is_remote() && conn.service_build != canvas_core::paths::build_id();
+    let outdated = !target.is_remote() && conn.outdated();
     // Terminals that were running in a replaced service; they are resumed.
     let mut resume = Vec::new();
     if target.is_remote() {
@@ -150,7 +150,7 @@ pub fn run(options: Options) -> Result<()> {
     // Replaced an older service: undo the `mouse: false` it forced on Copilot (when installed).
     let mouse_restored = outdated
         && !options.demo
-        && conn.service_build == canvas_core::paths::build_id()
+        && !conn.outdated()
         && backend.info().is_ok_and(|info| info.installed.contains(&AgentKind::Copilot))
         && backend.restore_mouse().unwrap_or(false);
     // The canvas belongs to the service: a local `--canvas` file is named
@@ -180,7 +180,7 @@ pub fn run(options: Options) -> Result<()> {
             let _ = file.write_all(report.as_bytes());
         }
         previous_hook(info);
-        eprintln!("Copilot Canvas crashed; details saved to {}. Your sessions keep running: start it again to reattach.", crash_log.display());
+        eprintln!("Atelier crashed; details saved to {}. Your sessions keep running: start it again to reattach.", crash_log.display());
         // A panic on a helper thread would leave the UI half-alive with the
         // terminal already restored; exit instead (sessions live in the service).
         std::process::exit(101);
@@ -443,9 +443,15 @@ fn upgrade_service(instance: &Instance, conn: conn::Conn, required: bool) -> Res
     }
     let alive = alive.context("the running terminal service did not answer")?;
     if alive > 0 {
-        let why = if required { "speaks an older protocol and must be restarted" } else { "is from an older build; restart it to get this build's terminal fixes" };
+        let why = if required {
+            "speaks an older protocol and must be restarted"
+        } else if conn.legacy {
+            "is from the build before the rename (Copilot Canvas); restart it to run this build's" // rename:keep
+        } else {
+            "is from an older build; restart it to get this build's terminal fixes"
+        };
         eprintln!(
-            "The Copilot Canvas terminal service running {alive} live session(s) {why}.\n\
+            "The Atelier terminal service running {alive} live session(s) {why}.\n\
              Restarting stops those terminals (Copilot conversations stay resumable).\n\
              Restart it now? [y/N] "
         );
@@ -453,7 +459,7 @@ fn upgrade_service(instance: &Instance, conn: conn::Conn, required: bool) -> Res
         std::io::stdin().read_line(&mut answer)?;
         if !answer.trim().eq_ignore_ascii_case("y") {
             if required {
-                bail!("kept the running service; quit its sessions or run `copilot-canvas service stop`, then reopen");
+                bail!("kept the running service; quit its sessions or run `atelier service stop`, then reopen");
             }
             eprintln!("Kept it. Click ⟳ Update service in the toolbar any time; the sessions resume by themselves.");
             // Fresh connection: the probe above consumed the initial messages.

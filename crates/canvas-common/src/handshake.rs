@@ -61,7 +61,7 @@ pub struct Refused {
 impl Refused {
     /// The paired client was revoked (proven by the service).
     pub fn revoked() -> Self {
-        Self { verified: true, message: "this client was revoked on the service; pair it again (`copilot-canvas remote pair` there, then `copilot-canvas remote add` here)".into() }
+        Self { verified: true, message: "this client was revoked on the service; pair it again (`atelier remote pair` there, then `atelier remote add` here)".into() }
     }
 
     /// Refused without proof of who refused.
@@ -326,7 +326,7 @@ pub fn open(reader: &mut FrameReader, writer: &mut FrameWriter, secret: &[u8], b
 }
 
 /// The message a client shows when the service did not prove the code.
-const NOT_PROVEN: &str = "wrong or expired pairing code (or too many recent attempts: wait a minute); open a new one with `copilot-canvas remote pair` on the service's machine";
+const NOT_PROVEN: &str = "wrong or expired pairing code (or too many recent attempts: wait a minute); open a new one with `atelier remote pair` on the service's machine";
 
 /// Client side of pairing with `code` (canonical form): checks that the
 /// service knows the code before proving it, and returns the new (client id,

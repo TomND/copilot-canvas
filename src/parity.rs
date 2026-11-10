@@ -1,8 +1,8 @@
-//! `copilot-canvas selftest --client gui --parity`: one named check per row
+//! `atelier selftest --client gui --parity`: one named check per row
 //! of the parity matrix (PLAN.md §8), run against the GUI over its test hooks.
 //!
 //! It is fast and safe: terminals are PowerShell demo shells, and the agent
-//! is a stand-in Copilot CLI (`copilot-canvas.exe` copied as `copilot.exe`,
+//! is a stand-in Copilot CLI (`atelier.exe` copied as `copilot.exe`,
 //! see `fake_copilot`) in a sandboxed `COPILOT_HOME` with synthetic session
 //! histories (`events.jsonl`) for every status, subagents and a loop, plus
 //! the sample automation database. Nothing reaches a model. Each check
@@ -195,7 +195,7 @@ impl Gui {
     }
 
     fn png(&self, window: usize, name: &str) -> Result<PathBuf> {
-        let dir = std::env::var_os("CANVAS_GUI_SCREENS").map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join("copilot-canvas-parity-screens"));
+        let dir = std::env::var_os("CANVAS_GUI_SCREENS").map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join("atelier-parity-screens"));
         let path = dir.join(format!("{name}.png"));
         self.req(json!({ "cmd": "png", "path": path, "window": window }))?;
         Ok(path)
@@ -392,7 +392,7 @@ fn loop_dot_steps(gui: &mut Gui, id: &str) -> Result<String> {
     gui.req(json!({ "cmd": "motion", "value": "on" }))?;
     let arc = |loops: &Value| loops.as_array().and_then(|l| l.iter().find(|a| a["id"] == id).cloned());
     gui.wait_tree("the loop arc with its dot", 10, |t| arc(&t["canvas"]["loop_arcs"]).is_some_and(|a| !a["dot_px"].is_null()))?;
-    let dir = std::env::temp_dir().join(format!("copilot-canvas-loop-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("atelier-loop-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let capture = |name: &str| -> Result<(Instant, Value, PathBuf)> {
         let path = dir.join(format!("{name}.png"));
@@ -606,7 +606,7 @@ fn node(id: &str, name: &str, x: i32, y: i32, cwd: &Path) -> Node {
 
 impl Sandbox {
     pub(crate) fn new() -> Result<Self> {
-        let root = std::env::temp_dir().join(format!("copilot-canvas-parity-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("atelier-parity-{}", uuid::Uuid::new_v4()));
         let (home, work, copilot_home, group_folder) = (root.join("home"), root.join("work"), root.join("copilot-home"), root.join("group"));
         let sessions_dir = copilot_home.join("session-state");
         for dir in [&home, &work, &sessions_dir, &group_folder] {
@@ -817,18 +817,18 @@ impl Sandbox {
         // Only the sandbox's histories: OpenCode and Claude Code look in empty folders.
         let env: [(&str, &Path); 13] = [
             ("COPILOT_HOME", &self.copilot_home),
-            ("COPILOT_CANVAS_COPILOT", &self.fake),
-            ("COPILOT_CANVAS_OPENCODE", &self.fake_opencode),
-            ("COPILOT_CANVAS_CLAUDE", &self.fake_claude),
+            ("ATELIER_COPILOT", &self.fake),
+            ("ATELIER_OPENCODE", &self.fake_opencode),
+            ("ATELIER_CLAUDE", &self.fake_claude),
             (crate::fake_copilot::ENV, &one),
             ("CLAUDE_CONFIG_DIR", &claude),
             ("XDG_DATA_HOME", &xdg),
-            ("COPILOT_CANVAS_FAKE_RUN_MS", &run_ms),
-            ("COPILOT_CANVAS_GH", &self.fake_gh),
-            ("COPILOT_CANVAS_AZ", &self.fake_az),
+            ("ATELIER_FAKE_RUN_MS", &run_ms),
+            ("ATELIER_GH", &self.fake_gh),
+            ("ATELIER_AZ", &self.fake_az),
             (crate::fake_gh::ENV, &self.prs),
-            ("COPILOT_CANVAS_PR_POLL_SECS", &poll),
-            ("COPILOT_CANVAS_REVIEW_CHECK_SECS", &check),
+            ("ATELIER_PR_POLL_SECS", &poll),
+            ("ATELIER_REVIEW_CHECK_SECS", &check),
         ];
         let driver = GuiDriver::start(&self.args(extra), &env, (COLS, ROWS), &self.root.join(log))?;
         Ok(Gui { driver })
@@ -858,7 +858,7 @@ pub fn run(remote: Option<&str>) -> Result<()> {
     anyhow::ensure!(remote.is_none(), "--parity runs locally (it starts its own loopback client for the remote rows)");
     let sandbox = Sandbox::new()?;
     sandbox.add_opencode()?;
-    println!("Copilot Canvas GUI parity suite (PLAN §8; demo shells and a stand-in Copilot only; sandbox {})", sandbox.root.display());
+    println!("Atelier GUI parity suite (PLAN §8; demo shells and a stand-in Copilot only; sandbox {})", sandbox.root.display());
     let saved_clipboard = crate::client::clipboard::get_text().ok();
     let started = Instant::now();
     let rows = suite(&sandbox);
@@ -1596,7 +1596,7 @@ fn main_rows(sb: &Sandbox, gui: &mut Gui, rows: &mut Vec<Row>) {
     check(rows, "29", "Keyboard map, F6 / Ctrl+] to leave a terminal, Q quit dialog (detach or stop all), ? help", "help_f6_and_quit_dialog", || {
         gui.canvas_focus()?;
         gui.send("?")?;
-        gui.wait("help", 5, |t| t.contains("Copilot Canvas — help"))?;
+        gui.wait("help", 5, |t| t.contains("Atelier — help"))?;
         gui.key("Esc", &[])?;
         gui.open("Shell A", "PS ")?;
         gui.key("F6", &[])?;

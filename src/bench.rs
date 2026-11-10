@@ -135,7 +135,7 @@ fn frame_rows(message: &ServiceMsg, id: &str) -> Option<Vec<String>> {
 
 pub fn run(options: Options) -> Result<()> {
     anyhow::ensure!((1..=300).contains(&options.terminals), "--terminals must be 1-300");
-    let root = std::env::temp_dir().join(format!("copilot-canvas-bench-{}", uuid::Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("atelier-bench-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(root.join("sessions"))?;
     let instance = Instance::new(Some(format!("bench{}", std::process::id())), Some(root.join("home")), Some(root.join("sessions")))?;
     let result = measure(&instance, &root, &options);
@@ -323,7 +323,7 @@ fn measure(instance: &Instance, root: &std::path::Path, options: &Options) -> Re
         "streaming_terminals": terminals,
         "subscribed_tiles": format!("echo (focused) + {} streaming", terminals.min(BUSY_TILES)),
         "cpu_burners": burn,
-        "priority_manager": std::env::var_os("COPILOT_CANVAS_NO_PRIORITY").is_none(),
+        "priority_manager": canvas_common::env::var_os("ATELIER_NO_PRIORITY").is_none(),
         "launch_all_ms": launch_ms,
         "keystroke_to_screen_ms": summary["keystroke_to_screen_ms"],
         "service": {
@@ -351,7 +351,7 @@ fn measure(instance: &Instance, root: &std::path::Path, options: &Options) -> Re
 fn render_bench() -> Result<serde_json::Value> {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    let dir = std::env::temp_dir().join(format!("copilot-canvas-render-{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("atelier-render-{}", uuid::Uuid::new_v4()));
     // Every subagent box drawn on its own (the workload this measures).
     let mut doc = Doc { subagents_shown: true, ..Doc::default() };
     let mut sessions = HashMap::new();

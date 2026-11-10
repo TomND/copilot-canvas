@@ -8,9 +8,11 @@
 #[cfg(windows)]
 pub mod auth;
 pub mod clipimage;
+pub mod env;
 #[cfg(windows)]
 pub mod dpapi;
 pub mod handshake;
+pub mod legacy;
 pub mod pairing;
 pub mod paths;
 #[cfg(windows)]

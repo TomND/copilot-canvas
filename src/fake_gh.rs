@@ -1,6 +1,6 @@
 //! Stand-in `gh` and `az` for the self-test and the parity suite:
-//! `copilot-canvas.exe` copied as `gh.exe` / `az.exe` and run with
-//! `COPILOT_CANVAS_FAKE_COPILOT=1` and `COPILOT_CANVAS_FAKE_PRS=<folder>`.
+//! `atelier.exe` copied as `gh.exe` / `az.exe` and run with
+//! `ATELIER_FAKE_COPILOT=1` and `ATELIER_FAKE_PRS=<folder>`.
 //! Each pull request is a fixture in that folder (`<key>.json`, see
 //! [`Fixture`]) that a test edits (new comments, a failing check, merged);
 //! the stand-in answers the canvas's read-only commands from it in the real
@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use canvas_agents::prs::PrRef;
 
 /// The fixtures' folder.
-pub const ENV: &str = "COPILOT_CANVAS_FAKE_PRS";
+pub const ENV: &str = "ATELIER_FAKE_PRS";
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct FakeComment {
@@ -99,7 +99,7 @@ pub fn active() -> Option<&'static str> {
 }
 
 fn folder() -> Result<PathBuf> {
-    std::env::var_os(ENV).map(PathBuf::from).context("COPILOT_CANVAS_FAKE_PRS is not set")
+    std::env::var_os(ENV).map(PathBuf::from).context("ATELIER_FAKE_PRS is not set")
 }
 
 fn note(dir: &Path, line: &str) {

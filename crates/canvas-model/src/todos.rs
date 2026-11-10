@@ -37,7 +37,7 @@ pub use ops::{Applied, Ctx, NewTodo, TodoEvent, TodoOp, TodoUpdate};
 /// version would drop on its next write (it reads unknown fields as
 /// nothing): the service refuses to change a book of a newer version.
 pub const VERSION: u32 = 1;
-/// `schemaVersion` of `copilot-canvas todo … --format json`.
+/// `schemaVersion` of `atelier todo … --format json`.
 pub const SCHEMA_VERSION: u32 = 1;
 /// Longest title (characters).
 pub const MAX_TITLE: usize = 200;

@@ -1,6 +1,6 @@
 ---
 name: canvas-ui-testing
-description: How to test Copilot Canvas UI changes - ViewModel snapshots of canvas-core states, the GUI's test hooks (and driving a running GUI by hand), GUI parity rows that are robust (waits, exact UI texts, shared helpers, cleanup), golden screenshots (updating and reviewing them) and the hardening checks. Use when you add or change anything drawn in the TUI or the GUI, when a snapshot, self-test step, parity row or golden screenshot fails, when you write a new parity row or self-test step, or when you need to see what the GUI shows during a test.
+description: How to test Atelier UI changes - ViewModel snapshots of canvas-core states, the GUI's test hooks (and driving a running GUI by hand), GUI parity rows that are robust (waits, exact UI texts, shared helpers, cleanup), golden screenshots (updating and reviewing them) and the hardening checks. Use when you add or change anything drawn in the TUI or the GUI, when a snapshot, self-test step, parity row or golden screenshot fails, when you write a new parity row or self-test step, or when you need to see what the GUI shows during a test.
 ---
 
 # Testing the UI
@@ -30,8 +30,8 @@ a time (they open windows on the owner's desktop); procedure in the skill
 
 ## GUI test hooks
 
-`copilot-canvas-gui.exe --test-hooks` prints a pipe name
-(`\\.\pipe\copilot-canvas-gui-test-<pid>`, owner-only) and takes one JSON
+`atelier-gui.exe --test-hooks` prints a pipe name
+(`\\.\pipe\atelier-gui-test-<pid>`, owner-only) and takes one JSON
 command per line, answering one JSON line (`canvas-gui/src/hooks.rs`,
 dispatched in `shell.rs`). The ones you need most:
 
@@ -48,7 +48,7 @@ dispatched in `shell.rs`). The ones you need most:
 Driving a GUI by hand (a sandboxed instance, a PowerShell
 `NamedPipeClientStream` client) is shown in `docs/DEVELOPMENT.md`, *Driving
 a GUI by hand*; stop that instance's service afterwards with
-`copilot-canvas service stop --instance <name> --home <dir>`.
+`atelier service stop --instance <name> --home <dir>`.
 
 Never send keys to a test-hook window on the owner's real canvas before
 checking `tree`'s `focus`: a window that opens with a terminal focused sends

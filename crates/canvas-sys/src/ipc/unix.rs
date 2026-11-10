@@ -169,6 +169,21 @@ fn lock_path(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// Whether a server holds the socket `name`: a process holds its lock, from
+/// before it binds until it ends (also a server that is starting or busy;
+/// servers of every build take it); a socket file left by a server that died
+/// is free. Nothing connects (a server would accept a dead connection).
+pub fn is_served(name: &str) -> bool {
+    let Ok(lock) = std::fs::OpenOptions::new().read(true).write(true).open(lock_path(Path::new(name))) else { return false };
+    // SAFETY: flock on an open file; a lock taken here is released at once.
+    let held = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0;
+    if !held {
+        // SAFETY: as above.
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_UN) };
+    }
+    held
+}
+
 /// Connects to a server's socket. Like a pipe that does not exist, a socket
 /// nobody serves fails at once (`NotFound` or `ConnectionRefused`).
 pub fn connect(name: &str, timeout: Duration) -> io::Result<Pipe> {
@@ -195,7 +210,9 @@ mod tests {
     #[test]
     fn one_server_per_name_and_duplex_halves() {
         let (dir, name) = temp_socket();
+        assert!(!is_served(&name), "nothing there yet");
         let mut server = PipeServer::bind(&name).unwrap();
+        assert!(is_served(&name), "a server holds it");
         assert_eq!(PipeServer::bind(&name).err().map(|e| e.kind()), Some(io::ErrorKind::AlreadyExists));
         let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
@@ -222,6 +239,7 @@ mod tests {
         closer.close();
         assert_eq!(blocked.join().unwrap(), 0);
         drop(server);
+        assert!(!is_served(&name), "the server is gone (its lock file stays)");
         // A stale lock file and no server: binding works again.
         drop(PipeServer::bind(&name).unwrap());
         std::fs::remove_dir_all(dir).unwrap();

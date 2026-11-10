@@ -1,4 +1,4 @@
-//! A service this machine paired with (`copilot-canvas remote add`, then
+//! A service this machine paired with (`atelier remote add`, then
 //! `--remote NAME`): its address and credentials and, for a Dev Tunnel, the
 //! `devtunnel connect` child that forwards the tunnel's port here. The child
 //! is started on the first connection, started again when it died (every
@@ -10,7 +10,7 @@
 //! when that is taken, and says where (Dev Tunnels CLI 1.0.2115):
 //!
 //! ```text
-//! Connected to tunnel: copilot-canvas.usw2
+//! Connected to tunnel: atelier.usw2
 //! Forwarding from 127.0.0.1:47601 to host port 47600.
 //! Forwarding from [::1]:47601 to host port 47600.
 //! ```
@@ -266,7 +266,7 @@ impl Tunnel {
     fn spawn(&self) -> Result<Running> {
         anyhow::ensure!(canvas_common::remote::valid_tunnel_id(&self.id), "{:?} is not a Dev Tunnel id; add the server again", self.id);
         let cli = canvas_common::remote::devtunnel().with_context(|| {
-            format!("devtunnel was not found: install the Dev Tunnels CLI (`{}`) or set COPILOT_CANVAS_DEVTUNNEL", canvas_common::remote::devtunnel_install_hint())
+            format!("devtunnel was not found: install the Dev Tunnels CLI (`{}`) or set ATELIER_DEVTUNNEL", canvas_common::remote::devtunnel_install_hint())
         })?;
         let mut command = Command::new(&cli.program);
         command.args(&cli.prefix).args(["connect", &self.id]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).no_window().die_with_parent();
@@ -346,12 +346,12 @@ mod tests {
         assert_eq!(parse_forward("SSH: Forwarding from [::1]:47600 to host port 47600."), Some(("[::1]".into(), 47600, 47600)));
         assert_eq!(parse_forward("forwarding from localhost:5000 to host port 5000"), Some(("127.0.0.1".into(), 5000, 5000)));
         for other in [
-            "Connected to tunnel: copilot-canvas.usw2",
+            "Connected to tunnel: atelier.usw2",
             "Listening on port 47600 failed: Only one usage of each socket address (protocol/network address/port) is normally permitted.",
             "Incrementing port and trying again",
             "Using local interface address 127.0.0.1 instead of 0.0.0.0.",
             "Connection to port 47600 is E2E encrypted between tunnel client and tunnel host.",
-            "Ready to accept connections for tunnel: copilot-canvas.usw2.",
+            "Ready to accept connections for tunnel: atelier.usw2.",
             "Login required.",
         ] {
             assert_eq!(parse_forward(other), None, "{other}");
@@ -362,7 +362,7 @@ mod tests {
         assert_eq!(pick_forward(&forwards[..2], 9999).as_deref(), Some("127.0.0.1:47601"), "the only forwarded port");
         assert_eq!(pick_forward(&[], 47600), None);
         assert!(exit_hint("Login required.").contains("devtunnel user login -g"));
-        assert!(exit_hint("Tunnel not found: copilot-canvas").contains("devtunnel list"));
+        assert!(exit_hint("Tunnel not found: atelier").contains("devtunnel list"));
         assert_eq!(exit_hint("something else"), "");
     }
 
@@ -394,7 +394,7 @@ mod tests {
         assert!(injected.address().unwrap_err().to_string().contains("not a Dev Tunnel id"), "never passed to devtunnel");
     }
 
-    /// The only test that sets `COPILOT_CANVAS_DEVTUNNEL` (`cmd.exe` plays the
+    /// The only test that sets `ATELIER_DEVTUNNEL` (`cmd.exe` plays the
     /// CLI on Windows, `/bin/sh` elsewhere: `os(windows, unix)` picks the script).
     #[test]
     fn the_tunnel_child_forwards_restarts_and_reports_its_failures() {

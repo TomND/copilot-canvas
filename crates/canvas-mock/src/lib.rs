@@ -1,4 +1,4 @@
-//! A stand-in Copilot Canvas service (docs/IOS-PLAN.md, phase 2): the iPhone
+//! A stand-in Atelier service (docs/IOS-PLAN.md, phase 2): the iPhone
 //! client can be developed and tested on a Mac. It speaks the real protocol
 //! (framing, zstd, the HMAC handshake, pairing) over plain TCP and over
 //! WebSockets on one port, keeps a canvas document with patches, and runs

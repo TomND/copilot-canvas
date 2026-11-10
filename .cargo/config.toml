@@ -3,7 +3,7 @@
 xtask = "run -p xtask --"
 
 # Static C runtime: the programs run on machines without the Visual C++
-# redistributable (the service also runs from a copy in ~/.copilot-canvas/bin,
+# redistributable (the service also runs from a copy in ~/.atelier/bin,
 # where an app-local vcruntime140.dll would not be found).
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]

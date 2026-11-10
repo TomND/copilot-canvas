@@ -26,18 +26,18 @@ pub fn is_session_id(id: &str) -> bool {
     canvas_model::agent::is_opencode_session_id(id)
 }
 
-/// The OpenCode executable: `COPILOT_CANVAS_OPENCODE`, else `opencode.exe` on
+/// The OpenCode executable: `ATELIER_OPENCODE`, else `opencode.exe` on
 /// PATH, else the binary behind npm's `opencode.cmd` shim. Batch scripts are
 /// never started (see [`super::ensure_not_batch`]).
 pub fn find_cli() -> Result<String> {
-    find_cli_in(std::env::var_os("COPILOT_CANVAS_OPENCODE"), std::env::var_os("PATH").unwrap_or_default())
+    find_cli_in(canvas_common::env::var_os("ATELIER_OPENCODE"), std::env::var_os("PATH").unwrap_or_default())
         .or_else(|error| super::find_installed(&canvas_sys::host::exe_name("opencode")).map(|p| p.display().to_string()).ok_or(error))
 }
 
 fn find_cli_in(custom: Option<std::ffi::OsString>, path: std::ffi::OsString) -> Result<String> {
     if let Some(custom) = custom {
         let custom = custom.to_string_lossy().into_owned();
-        super::ensure_not_batch(Path::new(&custom), "COPILOT_CANVAS_OPENCODE")?;
+        super::ensure_not_batch(Path::new(&custom), "ATELIER_OPENCODE")?;
         return Ok(custom);
     }
     for dir in std::env::split_paths(&path) {
@@ -50,13 +50,13 @@ fn find_cli_in(custom: Option<std::ffi::OsString>, path: std::ffi::OsString) -> 
             return match shim_target(&dir, &shim) {
                 Some(native) => Ok(native.display().to_string()),
                 None => anyhow::bail!(
-                    "found only npm's {} (a batch script, which cannot be started safely); set COPILOT_CANVAS_OPENCODE to opencode.exe",
+                    "found only npm's {} (a batch script, which cannot be started safely); set ATELIER_OPENCODE to opencode.exe",
                     shim.display()
                 ),
             };
         }
     }
-    anyhow::bail!("opencode was not found on PATH (set COPILOT_CANVAS_OPENCODE to override)")
+    anyhow::bail!("opencode was not found on PATH (set ATELIER_OPENCODE to override)")
 }
 
 /// The native `opencode.exe` npm's shim in `dir` runs: the package's
@@ -573,7 +573,7 @@ mod tests {
     const PARENT: &str = "ses_0bd2fb5f8ffezRuY9i1WNnJajX";
 
     fn integration() -> Integration {
-        Integration { plugin_dir: Some(PathBuf::from(r"C:\h\plugin")), env: vec![("COPILOT_CANVAS_SESSION".into(), "t1".into())], ..Default::default() }
+        Integration { plugin_dir: Some(PathBuf::from(r"C:\h\plugin")), env: vec![("ATELIER_SESSION".into(), "t1".into())], ..Default::default() }
     }
 
     fn env<'a>(cmd: &'a Command, key: &str) -> Option<&'a str> {
@@ -582,7 +582,7 @@ mod tests {
 
     fn setup() {
         // SAFETY: tests in this crate only read these variables.
-        unsafe { std::env::set_var("COPILOT_CANVAS_OPENCODE", r"C:\bin\opencode.exe") };
+        unsafe { std::env::set_var("ATELIER_OPENCODE", r"C:\bin\opencode.exe") };
     }
 
     #[test]
@@ -595,11 +595,11 @@ mod tests {
         let port: u16 = cmd.args[6].parse().unwrap();
         assert_eq!(env(&cmd, "OPENCODE_SERVER_PASSWORD").unwrap().len(), 32);
         assert!(port > 0);
-        assert!(!cmd.env.iter().any(|(k, _)| k.starts_with("COPILOT_CANVAS_OPENCODE")), "no server credentials for the agent's tools");
+        assert!(!cmd.env.iter().any(|(k, _)| k.starts_with("ATELIER_OPENCODE")), "no server credentials for the agent's tools");
         assert_eq!(env(&cmd, "OPENCODE_DISABLE_AUTOUPDATE"), Some("1"));
         let config: Value = serde_json::from_str(env(&cmd, "OPENCODE_CONFIG_CONTENT").unwrap()).unwrap();
         assert_eq!(config["skills"]["paths"], json!(["C:/h/plugin/skills"]));
-        assert_eq!(cmd.env[0], ("COPILOT_CANVAS_SESSION".into(), "t1".into()));
+        assert_eq!(cmd.env[0], ("ATELIER_SESSION".into(), "t1".into()));
 
         let resume = AgentLaunch { resume: true, native_id: Some(SES.into()), prompt: None, allow_all: false, model: None, ..new.clone() };
         assert_eq!(OpenCode.command_with("t1", &resume, &integration(), false).unwrap().args[..3], ["-s", SES, "--port"]);
@@ -692,7 +692,7 @@ mod tests {
         let registered = server(&terminal).expect("registered");
         assert_eq!(cmd.args[cmd.args.len() - 1], registered.port.to_string());
         assert_eq!(env(&cmd, "OPENCODE_SERVER_PASSWORD"), Some(registered.password.as_str()));
-        assert!(!cmd.env.iter().any(|(k, v)| k.starts_with("COPILOT_CANVAS_OPENCODE") || (k != "OPENCODE_SERVER_PASSWORD" && v.contains(&registered.password))));
+        assert!(!cmd.env.iter().any(|(k, v)| k.starts_with("ATELIER_OPENCODE") || (k != "OPENCODE_SERVER_PASSWORD" && v.contains(&registered.password))));
         unregister_terminal(&terminal);
         assert!(server(&terminal).is_none());
     }
@@ -749,14 +749,14 @@ mod tests {
         std::fs::write(npm.join("opencode.cmd"), "@ECHO off\r\n\"%_prog%\"  \"%dp0%\\node_modules\\opencode-ai\\bin\\opencode\" %*\r\n").unwrap();
         let path = std::env::join_paths([&npm]).unwrap();
         let error = find_cli_in(None, path.clone()).unwrap_err().to_string();
-        assert!(error.contains("COPILOT_CANVAS_OPENCODE") && error.contains("opencode.cmd"), "{error}");
+        assert!(error.contains("ATELIER_OPENCODE") && error.contains("opencode.cmd"), "{error}");
         let bin = npm.join("node_modules").join("opencode-ai").join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::write(bin.join("opencode.exe"), "").unwrap();
         assert_eq!(find_cli_in(None, path.clone()).unwrap(), bin.join("opencode.exe").display().to_string());
         for script in [r"C:\x\opencode.cmd", r"C:\x\opencode.Bat"] {
             let error = find_cli_in(Some(script.into()), path.clone()).unwrap_err().to_string();
-            assert!(error.contains("batch script") && error.contains("COPILOT_CANVAS_OPENCODE"), "{error}");
+            assert!(error.contains("batch script") && error.contains("ATELIER_OPENCODE"), "{error}");
         }
         assert_eq!(find_cli_in(Some(r"C:\x\opencode.exe".into()), path).unwrap(), r"C:\x\opencode.exe");
         // The shim's own target when the package layout differs.

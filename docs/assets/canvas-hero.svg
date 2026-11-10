@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" fill="none" role="img" aria-labelledby="title description">
-  <title id="title">Copilot Canvas: your agents, one canvas</title>
+  <title id="title">Atelier: your agents, one canvas</title>
   <desc id="description">A dark dot-grid workspace with connected session cards: a blue working session, a gold session needing attention, a finished subagent, and a looping watcher. A real terminal is illustrated below the cards.</desc>
   <style>
     .signal { stroke-dasharray: 4 7; animation: signal 2.5s linear infinite; }

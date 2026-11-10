@@ -891,7 +891,7 @@ fn spawn_reader(terminal: Arc<Terminal>, mut reader: Box<dyn Read + Send>, outpu
 }
 
 /// Directory where the service records every terminal's raw output (golden corpus).
-pub const RECORD_ENV: &str = "COPILOT_CANVAS_RECORD";
+pub const RECORD_ENV: &str = "ATELIER_RECORD";
 
 /// The readable part of a recording's file name: the id (at most 64
 /// characters) with anything but ASCII letters, digits, '-' and '_' replaced.
@@ -915,7 +915,7 @@ struct TapChunk {
 }
 
 /// Appends each PTY read to [`recording_path`] (format: corpus/README.md;
-/// chunks as hex, which `copilot-canvas record --session` normalizes). Runs on
+/// chunks as hex, which `atelier record --session` normalizes). Runs on
 /// its own thread with buffered writes, flushed at least every
 /// [`RECORD_FLUSH`]; stops with a final note at [`RECORD_LIMIT`].
 struct Tap {
@@ -932,7 +932,7 @@ struct Tap {
 impl Tap {
     /// The tap's channel when `RECORD_ENV` names a directory.
     fn start(terminal: &Terminal) -> Option<Sender<TapChunk>> {
-        let dir = PathBuf::from(std::env::var_os(RECORD_ENV).filter(|dir| !dir.is_empty())?);
+        let dir = PathBuf::from(canvas_common::env::var_os(RECORD_ENV).filter(|dir| !dir.is_empty())?);
         let tap = Tap::new(&dir, &terminal.id, terminal.started_ms, RECORD_LIMIT);
         let (tx, rx) = bounded::<TapChunk>(OUTPUT_QUEUE);
         std::thread::Builder::new().name("pty-tap".into()).spawn(move || tap.run(rx)).ok()?;

@@ -58,9 +58,9 @@ General rules for every part:
 | §2.4 HTML notes | the reading look | rendered Markdown gets `report_html::NOTEBOOK`; an HTML note that is a whole document (`<html>`, `<head>` or `<body>`) keeps its author's look (only the policy and its title are put first), a fragment gets the reading look (`report_html::notes::page`) |
 | §2.5 filter key | `Ctrl+Shift+H` | `Alt+H` (terminals cannot tell Ctrl+Shift+H apart) |
 | §2.5 quick capture | `Ctrl+Shift+N` | `Alt+N`, in every space outside terminals and dialogs (the GUI keeps Ctrl+Shift+N for a new window) |
-| §2.6 agent env | `COPILOT_CANVAS_AGENT` | plus `COPILOT_CANVAS_SESSION_AGENT` (same value): `COPILOT_CANVAS_AGENT` also chooses the agent for new sessions, and the marker keeps a canvas started inside a session from taking the session's agent as that choice |
+| §2.6 agent env | `ATELIER_AGENT` | plus `ATELIER_SESSION_AGENT` (same value): `ATELIER_AGENT` also chooses the agent for new sessions, and the marker keeps a canvas started inside a session from taking the session's agent as that choice |
 | §2.6 report filing | provenance with the agent | `agent`: the session's agent from the routing (`Routing::agents`, session id → agent, sent by windows of this build; none from older ones), else a passive spec's; `created` is the report's time, `report` its id |
-| §2.6 `note new` agent | from `COPILOT_CANVAS_AGENT` | from `COPILOT_CANVAS_SESSION_AGENT` (set with it for sessions), else the routing: `COPILOT_CANVAS_AGENT` alone may be a choice of agent for new sessions, not the writer |
+| §2.6 `note new` agent | from `ATELIER_AGENT` | from `ATELIER_SESSION_AGENT` (set with it for sessions), else the routing: `ATELIER_AGENT` alone may be a choice of agent for new sessions, not the writer |
 | §2.3 writes | containment in `roots` | also, on Windows, no name below the root that Windows reads as another (trailing dot or space, `:` streams, device names, `GIT~1`), no link or junction leading out of every root, no-replace renames (`MoveFileExW`), retries while another program holds a file, and never a save over a file that is not UTF-8 (read lossily) |
 | §3.1 claims | `claim` for oneself | `TodoOp::Claim { id, force, session }`: people and bots claim for a session of the canvas (`todo claim ID --session NAME\|ID`, *Claim for…*); agents only for themselves |
 | §3.2 refusals | a notice | `ServiceMsg::Error { id: None, message: "Todo change refused: …" }` to that window, then the book as it is (its optimistic change is undone) |
@@ -282,31 +282,31 @@ test (local and remote answer alike).
   ```
   # Canvas group: {name}
 
-  You are working in a session of the "{name}" group in Copilot Canvas.
+  You are working in a session of the "{name}" group in Atelier.
 
   ## Notes (the canvas notebook)
   - Notes for other agents (plans, research, investigation logs, context): `{ai_docs}`
   - Deliverables for the user (reports, summaries, final documents; prefer one self-contained HTML file when layout matters): `{outputs}`
-  - Start Markdown notes with front matter (`audience: ai` or `audience: human`, `author: ai`, `source_session: <COPILOT_CANVAS_SESSION>`); `copilot-canvas note new` writes it for you.
+  - Start Markdown notes with front matter (`audience: ai` or `audience: human`, `author: ai`, `source_session: <ATELIER_SESSION>`); `atelier note new` writes it for you.
   - Before substantial work, read `{ai_docs}` (GOALS.md first) for context left by other sessions.
 
   ## Todos
-  - The canvas keeps todo boards. Run `copilot-canvas todo prime` to see the boards linked to this group and how to use them; change todos only with `copilot-canvas todo …`.
+  - The canvas keeps todo boards. Run `atelier todo prime` to see the boards linked to this group and how to use them; change todos only with `atelier todo …`.
   ```
 
-- `copilot-canvas note path [--audience ai|human]`: where to write (the
+- `atelier note path [--audience ai|human]`: where to write (the
   caller's group: `ai-docs` / `human-outputs`; no group: `<root>/Inbox`).
-- `copilot-canvas note new --title T (--md FILE|- | --html FILE|-) [--audience ai|human] [--folder REL] [--name FILE]`:
+- `atelier note new --title T (--md FILE|- | --html FILE|-) [--audience ai|human] [--folder REL] [--name FILE]`:
   writes the note with provenance (`author: ai`, `source_session`, `agent`
-  from `COPILOT_CANVAS_SESSION_AGENT`, else the routing, `created`) and prints its path. Default
+  from `ATELIER_SESSION_AGENT`, else the routing, `created`) and prints its path. Default
   audience ai. Never overwrites (adds `-2`, `-3`).
-- `copilot-canvas note list [--audience ai|human] [--format json]`: the
+- `atelier note list [--audience ai|human] [--format json]`: the
   caller's group notes.
 - The routing the windows send gains `notebook_root` (the canvas setting;
   absent for the default) so the CLI and the service know it, and `agents`
   (session id → its agent); sessions and
-  passive runs get `COPILOT_CANVAS_AGENT` (copilot, opencode, claude) and
-  `COPILOT_CANVAS_SESSION_AGENT` with the same value: the marker tells
+  passive runs get `ATELIER_AGENT` (copilot, opencode, claude) and
+  `ATELIER_SESSION_AGENT` with the same value: the marker tells
   `agents::agent_from_env` that the variable names the session's agent and is
   no choice of agent for new sessions (a canvas started inside the session
   keeps its own default).
@@ -389,7 +389,7 @@ pub struct Actor { pub kind: ActorKind /* Human | Agent | Bot */, pub session: O
   the ids and advancing the prefix's sequence.
 - Mirror: `mirror_markdown(book)` renders that format (accepted open items
   `- [ ]`, done `- [x] … Done DATE.`, proposals under `## Proposed` as `- [?]`),
-  with a "generated by Copilot Canvas" header.
+  with a "generated by Atelier" header.
 - Export: `json_canvas(book, board)` (JSON Canvas 1.0: a group node per board
   and column, a text node per todo, `file` nodes for todos with a note).
 - Summaries for digests: `group_summary(book, group)`, `canvas_summary(book)`.
@@ -407,7 +407,7 @@ pub struct Actor { pub kind: ActorKind /* Human | Agent | Bot */, pub session: O
   followed by the book as it is (its optimistic change is undone).
 - CLI requests: the `prs_cli::ask` request/answer pattern
   (`canvas.todo` events through `bus/inbox`, answers in `bus/answers`), the
-  caller identified by `COPILOT_CANVAS_SESSION` (no session = you). `Answer`
+  caller identified by `ATELIER_SESSION` (no session = you). `Answer`
   gains an optional `data` (JSON) for `--format json`.
 - Clients get the book as `bus::Snapshot::todos: Option<TodoBook>`.
 - Applied ops emit bus events `todo.created`, `todo.proposed`, `todo.accepted`,
@@ -425,7 +425,7 @@ pub struct Actor { pub kind: ActorKind /* Human | Agent | Bot */, pub session: O
 - Digests: `group-context.md` gains `# Todos` (boards linked to the group:
   counts, up to 20 open todos), `canvas-context.md` gains a per-board summary.
 
-### 3.3 CLI (`copilot-canvas todo …`, `todos_cli.rs`)
+### 3.3 CLI (`atelier todo …`, `todos_cli.rs`)
 
 ```
 todo prime                                   boards linked to my group, statuses, types, rules, commands
@@ -496,8 +496,8 @@ merged PR's).
   relations, log, history. *Accept* / *Decline* for proposals.
   *Start a session on this…* opens the new-session dialog prefilled (group:
   the board's linked group; name: `<ID> <title>`; first prompt: "Work on
-  DEC-031 (title). Run `copilot-canvas todo show DEC-031`, then
-  `copilot-canvas todo claim DEC-031`."): the
+  DEC-031 (title). Run `atelier todo show DEC-031`, then
+  `atelier todo claim DEC-031`."): the
   dialog is the explicit start. *Open spec note* opens the linked note, else
   creates `<root>/Todos/<ID> - <title>.md` with the body, links it, and opens
   it. *Claim for…* (you or a session), *Release*, *Done*, *Cancel*, *Reopen*.
@@ -573,7 +573,7 @@ raw text. The caret position is reported for the front end's caret and IME.
   service handling with temporary homes, backend requests with temporary
   folders), backend contract tests for new requests, view snapshots
   (`crates/canvas-core/tests/view_snapshots.rs`) for the new screens.
-- Never touch the owner's real `~/.copilot-canvas`; tests use temporary homes.
+- Never touch the owner's real `~/.atelier`; tests use temporary homes.
 - `cargo clippy --workspace --all-targets -- -D warnings` and
   `cargo test --workspace` pass. GUI self-tests, parity rows and goldens are
   run sequentially at the end (they open windows).

@@ -22,7 +22,7 @@ impl Synthetic {
                 vtrec: VERSION,
                 cols: self.cols,
                 rows: self.rows,
-                program: format!("copilot-canvas corpus synth {}", self.name),
+                program: format!("atelier corpus synth {}", self.name),
                 description: self.description.to_owned(),
                 source: "synthetic".into(),
                 recorded_at: String::new(),
@@ -38,7 +38,7 @@ impl Synthetic {
             cols: self.cols,
             rows: self.rows,
             tags: self.tags.iter().map(|t| (*t).to_owned()).collect(),
-            command: vec!["copilot-canvas".into(), "corpus".into(), "synth".into(), self.name.into()],
+            command: vec!["atelier".into(), "corpus".into(), "synth".into(), self.name.into()],
             ..Meta::default()
         }
     }

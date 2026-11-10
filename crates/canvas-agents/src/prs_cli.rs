@@ -1,4 +1,4 @@
-//! `copilot-canvas pr track|untrack|check|dispatch|list` (WI-014): working
+//! `atelier pr track|untrack|check|dispatch|list` (WI-014): working
 //! sessions hand the pull requests they publish to the canvas, a canvas-wide
 //! PR coordinator sends their owners follow-ups. Each command checks what it
 //! can, posts a request into the service's bus inbox (so nothing is lost
@@ -29,7 +29,7 @@ pub struct Answer {
     /// A dispatch's state, `tracked`, …
     #[serde(default)]
     pub state: String,
-    /// Details for `--format json` (`copilot-canvas todo …`).
+    /// Details for `--format json` (`atelier todo …`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
 }
@@ -55,11 +55,11 @@ pub fn write_answer(home: &Path, request: &str, answer: &Answer) {
 }
 
 fn session() -> String {
-    std::env::var("COPILOT_CANVAS_SESSION").unwrap_or_default()
+    canvas_common::env::var("ATELIER_SESSION").unwrap_or_default()
 }
 
 fn hop() -> u32 {
-    std::env::var("COPILOT_CANVAS_HOP").ok().and_then(|h| h.parse().ok()).unwrap_or(0)
+    canvas_common::env::var("ATELIER_HOP").ok().and_then(|h| h.parse().ok()).unwrap_or(0)
 }
 
 /// Posts a request for the service (`kind`: [`REQUEST`] or review
@@ -97,7 +97,7 @@ fn answered(answer: Option<Answer>, pending: &str) -> Result<()> {
             println!("{}", answer.message);
             Ok(())
         }
-        Some(answer) => bail!("Copilot Canvas refused: {}", answer.message),
+        Some(answer) => bail!("Atelier refused: {}", answer.message),
         None => {
             println!("{pending}");
             Ok(())
@@ -113,22 +113,22 @@ fn parse(url: &str) -> Result<PrRef> {
 pub fn track(home: &Path, url: &str, owner: Option<String>, title: Option<String>) -> Result<()> {
     let pr = parse(url)?;
     if session().is_empty() && owner.as_deref().is_none_or(|o| o.trim().is_empty()) {
-        bail!("this is not a Copilot Canvas session: name the owning session with --session \"<name or id>\"");
+        bail!("this is not an Atelier session: name the owning session with --session \"<name or id>\"");
     }
     let data = serde_json::json!({ "op": "track", "url": pr.url(), "session": owner.unwrap_or_default(), "title": title.unwrap_or_default() });
-    answered(ask(home, REQUEST, data)?, &format!("Hand-off of {} recorded; the Copilot Canvas service is not running (or busy): it is tracked when the service takes it (check with copilot-canvas pr list).", pr.short()))
+    answered(ask(home, REQUEST, data)?, &format!("Hand-off of {} recorded; the Atelier service is not running (or busy): it is tracked when the service takes it (check with atelier pr list).", pr.short()))
 }
 
 /// `pr untrack URL`.
 pub fn untrack(home: &Path, url: &str) -> Result<()> {
     let pr = parse(url)?;
-    answered(ask(home, REQUEST, serde_json::json!({ "op": "untrack", "url": pr.url() }))?, &format!("Untracking {} was handed to Copilot Canvas (the service is not running or busy).", pr.short()))
+    answered(ask(home, REQUEST, serde_json::json!({ "op": "untrack", "url": pr.url() }))?, &format!("Untracking {} was handed to Atelier (the service is not running or busy).", pr.short()))
 }
 
 /// `pr check [URL]`: poll now (one pull request, or every active one).
 pub fn check(home: &Path, url: Option<&str>) -> Result<()> {
     let url = url.map(parse).transpose()?.map(|p| p.url()).unwrap_or_default();
-    answered(ask(home, REQUEST, serde_json::json!({ "op": "check", "url": url }))?, "Check requested; the Copilot Canvas service is not running (or busy).")
+    answered(ask(home, REQUEST, serde_json::json!({ "op": "check", "url": url }))?, "Check requested; the Atelier service is not running (or busy).")
 }
 
 /// `pr dispatch URL [--key KEY] [--event TYPE] TEXT`: a follow-up for the
@@ -136,12 +136,12 @@ pub fn check(home: &Path, url: Option<&str>) -> Result<()> {
 pub fn dispatch(home: &Path, url: &str, key: Option<String>, event: Option<String>, text: &str) -> Result<()> {
     let pr = parse(url)?;
     if text.trim().is_empty() {
-        bail!("usage: copilot-canvas pr dispatch <PR URL> --key <dispatch_key> \"<what the owning session should do>\"");
+        bail!("usage: atelier pr dispatch <PR URL> --key <dispatch_key> \"<what the owning session should do>\"");
     }
     let data = serde_json::json!({ "op": "dispatch", "url": pr.url(), "key": key.unwrap_or_default(), "event": event.unwrap_or_default(), "text": text });
     answered(
         ask(home, REQUEST, data)?,
-        &format!("Follow-up for {} intended, not queued yet: the Copilot Canvas service is not running (or busy); it is queued for the owning session when the service takes it.", pr.short()),
+        &format!("Follow-up for {} intended, not queued yet: the Atelier service is not running (or busy); it is queued for the owning session when the service takes it.", pr.short()),
     )
 }
 
@@ -163,7 +163,7 @@ pub fn load(home: &Path, canvas: &str) -> Registry {
 pub fn list(home: &Path, json: bool) -> Result<String> {
     let canvas = routed_canvas(home);
     if !crate::doc::valid_canvas_id(&canvas) {
-        bail!("no canvas with an id is open in Copilot Canvas (open it with an up-to-date client)");
+        bail!("no canvas with an id is open in Atelier (open it with an up-to-date client)");
     }
     let registry = load(home, &canvas);
     if json {
@@ -174,7 +174,7 @@ pub fn list(home: &Path, json: bool) -> Result<String> {
     let now = crate::paths::now_ms();
     let active = registry.prs.iter().filter(|p| !p.state.ended()).count();
     let mut out = vec![format!(
-        "Copilot Canvas pull requests of canvas {canvas}: {} tracked, {active} active · {}",
+        "Atelier pull requests of canvas {canvas}: {} tracked, {active} active · {}",
         registry.prs.len(),
         if coordinators.is_empty() { "not monitored: no canvas-wide agent with PR coordination is enabled".to_owned() } else { format!("monitored for {}", coordinators.join(", ")) }
     )];

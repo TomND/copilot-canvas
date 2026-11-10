@@ -1,9 +1,9 @@
 # libghostty-vt engine (Phase 2)
 
-Copilot Canvas can run every hosted terminal on Ghostty's VT core
+Atelier can run every hosted terminal on Ghostty's VT core
 (libghostty-vt) instead of alacritty_terminal. The engine sits behind the
 `Emulator` trait (PLAN.md §4 D1) and is the default engine: the `ghostty` Cargo feature is on by default (`--no-default-features`
-builds with alacritty only), and `COPILOT_CANVAS_ENGINE` or `copilot-canvas config engine`
+builds with alacritty only), and `ATELIER_ENGINE` or `atelier config engine`
 (`ghostty`, `alacritty`, `auto`) chooses per service.
 
 | Piece | Where |
@@ -32,7 +32,7 @@ read it.
 ```powershell
 cargo xtask build-ghostty            # once per pin; skipped when up to date
 cargo build --release                # ghostty is the default feature
-$env:COPILOT_CANVAS_ENGINE = 'alacritty' # optional: another engine for new terminals (or: copilot-canvas config engine …)
+$env:ATELIER_ENGINE = 'alacritty' # optional: another engine for new terminals (or: atelier config engine …)
 ```
 
 `cargo xtask build-ghostty [--force]`:
@@ -195,8 +195,8 @@ Engine updates are one reviewed change together with the golden corpus:
 | `cargo test -p canvas-host --features ghostty` | 40 passed (16 existing + 24 Ghostty) |
 | `cargo test --workspace` | all passed (canvas-agents 45 + 2 ignored, common 8, core 26, host 16, model 19, termview 4, tui 2, ghostty-vt-sys 4, xtask 2; root binary 17 ignored probes) |
 | `cargo clippy --workspace --all-targets [--features ghostty]` | clean |
-| `cargo build --release --features ghostty` | 10.4 MB `copilot-canvas.exe` |
-| `COPILOT_CANVAS_ENGINE=ghostty copilot-canvas selftest` | `PASS in 27.8s (first paint incl. service start: 720 ms)`; service log: every terminal `engine ghostty` |
+| `cargo build --release --features ghostty` | 10.4 MB `atelier.exe` |
+| `ATELIER_ENGINE=ghostty atelier selftest` | `PASS in 27.8s (first paint incl. service start: 720 ms)`; service log: every terminal `engine ghostty` |
 
 ### `bench --terminals 40 --seconds 8`
 

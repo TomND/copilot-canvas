@@ -285,7 +285,7 @@ impl App {
                 "name": route.name, "family": route.family, "request": "Thomas asked for a health check of this automation",
                 "manifest": route.manifest, "command": route.command, "uses_ai": route.ai, "launcher_log": route.log,
                 "status_file": route.status, "workload_logs": logs, "docs": route.docs,
-                "rerun": format!("copilot-canvas automations run \"{}\"", route.name),
+                "rerun": format!("atelier automations run \"{}\"", route.name),
             }
         }}));
         self.notify(format!("Asked the doctor to check {}.", a.name), false);

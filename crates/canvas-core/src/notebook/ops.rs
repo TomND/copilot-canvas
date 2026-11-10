@@ -336,7 +336,7 @@ pub(super) fn mark_reviewed(app: &mut App, path: String) {
 }
 
 /// *Ask agent to revise…*: the note's path (and what to change) as a
-/// message to a session, typed in when it is idle (as `copilot-canvas send`).
+/// message to a session, typed in when it is idle (as `atelier send`).
 pub(super) fn ask_revision(app: &mut App, node: &str, name: &str, path: &str, what: &str) {
     let text = revision_message(path, what);
     let group = app.doc.node(node).and_then(|n| app.doc.group_of(n)).map(|g| g.id.clone()).unwrap_or_default();

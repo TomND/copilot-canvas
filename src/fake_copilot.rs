@@ -1,6 +1,6 @@
-//! A stand-in Copilot CLI for the GUI parity suite: `copilot-canvas.exe`
+//! A stand-in Copilot CLI for the GUI parity suite: `atelier.exe`
 //! copied as `copilot.exe` (or `opencode.exe` for the suite's OpenCode
-//! boxes) and run with `COPILOT_CANVAS_FAKE_COPILOT=1`
+//! boxes) and run with `ATELIER_FAKE_COPILOT=1`
 //! (both are required). It answers the configuration listings the canvas
 //! reads (two MCP servers, no plugins or skills) and, started as a session,
 //! draws a Copilot-like screen (your message, a reply, an input line) that
@@ -11,7 +11,7 @@ use std::io::Write;
 use anyhow::Result;
 
 /// The environment variable that turns a `copilot.exe` copy into the fake.
-pub const ENV: &str = "COPILOT_CANVAS_FAKE_COPILOT";
+pub const ENV: &str = "ATELIER_FAKE_COPILOT";
 /// The MCP servers it lists.
 pub const MCP_SERVERS: [&str; 2] = ["github", "playwright"];
 /// The models its `--help` offers (`opencode models` lists them with a provider).
@@ -164,11 +164,11 @@ fn follow_skills(home: &std::path::Path, prompt: &str) -> Vec<String> {
 /// appends the run to `fake-runs.log` in the folder it runs in. Nothing is
 /// sent anywhere.
 fn headless(args: &[String], prompt: String) -> Result<()> {
-    let wait = std::env::var("COPILOT_CANVAS_FAKE_RUN_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1_500);
+    let wait = canvas_common::env::var("ATELIER_FAKE_RUN_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1_500);
     std::thread::sleep(std::time::Duration::from_millis(wait));
     let kinds: Vec<&str> = prompt.split("\"type\": \"").skip(1).filter_map(|rest| rest.split('"').next()).collect();
     let skills = plugin_skills(args, std::env::var("OPENCODE_CONFIG_CONTENT").ok().as_deref());
-    let home = std::env::var_os("COPILOT_CANVAS_HOME").map(std::path::PathBuf::from);
+    let home = canvas_common::env::var_os("ATELIER_HOME").map(std::path::PathBuf::from);
     let did = home.as_deref().map(|h| follow_skills(h, &prompt)).unwrap_or_default();
     let mut headline = format!("fake run of {} · skills: {}", if kinds.is_empty() { "nothing".to_owned() } else { kinds.join(",") }, if skills.is_empty() { "none".to_owned() } else { skills.join(",") });
     if !did.is_empty() {

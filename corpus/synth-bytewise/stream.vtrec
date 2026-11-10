@@ -1,4 +1,4 @@
-{"vtrec":1,"cols":40,"rows":4,"program":"copilot-canvas corpus synth synth-bytewise","description":"SGR, OSC 8, UTF-8, a combining mark, a ZWJ sequence, a title, DECSCUSR, bracketed paste, progress and OSC 52, fed one byte per read","source":"synthetic","recorded_at":""}
+{"vtrec":1,"cols":40,"rows":4,"program":"atelier corpus synth synth-bytewise","description":"SGR, OSC 8, UTF-8, a combining mark, a ZWJ sequence, a title, DECSCUSR, bracketed paste, progress and OSC 52, fed one byte per read","source":"synthetic","recorded_at":""}
 {"t":1,"s":"\u001b"}
 {"t":1,"s":"["}
 {"t":1,"s":"1"}

@@ -31,7 +31,7 @@ pub use link::{Inbox, InboxReader, Transport, TransportWriter};
 pub use model::*;
 pub use state::{Effect, State};
 
-/// Reads a scanned `ccanvas://pair?…` link.
+/// Reads a scanned `atelier://pair?…` link (or `ccanvas://pair?…`, from before the rename).
 #[uniffi::export]
 pub fn parse_pair_link(uri: String) -> Result<PairLinkInfo, CoreError> {
     let link = canvas_common::remote::PairLink::parse(&uri)?;

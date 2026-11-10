@@ -63,7 +63,7 @@ const DASHBOARD: &str = r##"<!DOCTYPE html>
 </html>
 "##;
 
-const INSTRUCTIONS: &str = "---\napplyTo: '**'\n---\n# Canvas group: Payments\n\nYou are working in a session of the \"Payments\" group in Copilot Canvas.\n";
+const INSTRUCTIONS: &str = "---\napplyTo: '**'\n---\n# Canvas group: Payments\n\nYou are working in a session of the \"Payments\" group in Atelier.\n";
 
 const CHART: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="160" height="40" viewBox="0 0 160 40"><polyline points="0,30 30,24 60,28 90,12 120,16 160,6" fill="none" stroke="#56b4e9" stroke-width="3"/></svg>
 "##;

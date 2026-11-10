@@ -347,7 +347,7 @@ pub fn ask(app: &mut App, what: Ask) {
 
 /// The first prompt of a session started on a todo.
 pub fn start_prompt(id: &str, title: &str) -> String {
-    format!("Work on {id} ({title}). Run `copilot-canvas todo show {id}`, then `copilot-canvas todo claim {id}`.")
+    format!("Work on {id} ({title}). Run `atelier todo show {id}`, then `atelier todo claim {id}`.")
 }
 
 /// A free spot for a new session box in a group.

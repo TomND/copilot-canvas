@@ -12,7 +12,7 @@ use zbus::blocking::Connection;
 use zbus::zvariant::Value;
 
 /// The `.desktop` file the notifications and the launcher entry belong to.
-const DESKTOP: &str = "copilot-canvas";
+const DESKTOP: &str = "atelier";
 
 fn session() -> Result<&'static Connection, String> {
     static BUS: OnceLock<Result<Connection, String>> = OnceLock::new();
@@ -34,7 +34,7 @@ pub fn notify(title: &str, body: &str) -> Result<(), String> {
         "/org/freedesktop/Notifications",
         Some("org.freedesktop.Notifications"),
         "Notify",
-        &("Copilot Canvas", 0u32, DESKTOP, title, body, actions, hints, -1i32),
+        &("Atelier", 0u32, DESKTOP, title, body, actions, hints, -1i32),
     )
     .map_err(|e| format!("the notification service refused: {e}"))?;
     Ok(())
@@ -49,5 +49,5 @@ pub fn launcher(state: u8) {
         ("progress", Value::from(if state == 3 { 1.0f64 } else { 0.0 })),
         ("urgent", Value::from(state == 4)),
     ]);
-    let _ = bus.emit_signal(None::<&str>, "/com/canonical/unity/launcherentry/copilot_canvas", "com.canonical.Unity.LauncherEntry", "Update", &(format!("application://{DESKTOP}.desktop"), props));
+    let _ = bus.emit_signal(None::<&str>, "/com/canonical/unity/launcherentry/atelier", "com.canonical.Unity.LauncherEntry", "Update", &(format!("application://{DESKTOP}.desktop"), props));
 }

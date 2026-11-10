@@ -12,7 +12,7 @@ pub struct Settings {
     pub terminal: TerminalSettings,
     #[serde(default)]
     pub remote: RemoteSettings,
-    /// Front end the `copilot-canvas` command opens: "tui" or "gui".
+    /// Front end the `atelier` command opens: "tui" or "gui".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client: Option<String>,
     /// Agent CLI for new sessions: "copilot", "opencode" or "claude" (unset: auto-detect).
@@ -49,7 +49,7 @@ pub struct RemoteSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnel: Option<String>,
     /// The remote port's Dev Tunnels web-forwarding address for the iPhone
-    /// (`wss://copilot-canvas-47600.usw2.devtunnels.ms`); found with
+    /// (`wss://atelier-47600.usw2.devtunnels.ms`); found with
     /// `devtunnel show` when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_url: Option<String>,
@@ -94,28 +94,28 @@ impl Settings {
         std::fs::rename(&temp, &target)
     }
 
-    /// The terminal engine name: `COPILOT_CANVAS_ENGINE`, else the setting.
+    /// The terminal engine name: `ATELIER_ENGINE`, else the setting.
     pub fn engine(&self) -> Option<String> {
-        std::env::var("COPILOT_CANVAS_ENGINE").ok().filter(|v| !v.trim().is_empty()).or_else(|| self.terminal.engine.clone())
+        crate::env::var("ATELIER_ENGINE").ok().filter(|v| !v.trim().is_empty()).or_else(|| self.terminal.engine.clone())
     }
 
-    /// The front end: `COPILOT_CANVAS_CLIENT`, else the setting.
+    /// The front end: `ATELIER_CLIENT`, else the setting.
     pub fn client(&self) -> Option<String> {
-        std::env::var("COPILOT_CANVAS_CLIENT").ok().filter(|v| !v.trim().is_empty()).or_else(|| self.client.clone())
+        crate::env::var("ATELIER_CLIENT").ok().filter(|v| !v.trim().is_empty()).or_else(|| self.client.clone())
     }
 
-    /// Canvas effects: `COPILOT_CANVAS_EFFECTS`, else the setting ("on",
+    /// Canvas effects: `ATELIER_EFFECTS`, else the setting ("on",
     /// "reduced", "off"; `None`: follow Windows' animation setting).
     pub fn effects(&self) -> Option<String> {
-        let value = std::env::var("COPILOT_CANVAS_EFFECTS").ok().filter(|v| !v.trim().is_empty()).or_else(|| self.effects.clone())?;
+        let value = crate::env::var("ATELIER_EFFECTS").ok().filter(|v| !v.trim().is_empty()).or_else(|| self.effects.clone())?;
         let value = value.trim().to_ascii_lowercase();
         matches!(value.as_str(), "on" | "reduced" | "off").then_some(value)
     }
 
-    /// The working glow around working sessions: `COPILOT_CANVAS_GRID_PULSE`
+    /// The working glow around working sessions: `ATELIER_GRID_PULSE`
     /// ("on"/"off"), else the setting, else on.
     pub fn grid_pulse(&self) -> bool {
-        let env = std::env::var("COPILOT_CANVAS_GRID_PULSE").ok().map(|v| v.trim().to_ascii_lowercase());
+        let env = crate::env::var("ATELIER_GRID_PULSE").ok().map(|v| v.trim().to_ascii_lowercase());
         match env.as_deref() {
             Some("on" | "1" | "true" | "yes") => true,
             Some("off" | "0" | "false" | "no") => false,
@@ -124,14 +124,14 @@ impl Settings {
     }
 
     /// Address the service listens on for remote clients:
-    /// `COPILOT_CANVAS_LISTEN`, else `remote.listen`.
+    /// `ATELIER_LISTEN`, else `remote.listen`.
     pub fn listen(&self) -> Option<String> {
-        std::env::var("COPILOT_CANVAS_LISTEN").ok().filter(|v| !v.trim().is_empty()).or_else(|| self.remote.listen.clone())
+        crate::env::var("ATELIER_LISTEN").ok().filter(|v| !v.trim().is_empty()).or_else(|| self.remote.listen.clone())
     }
 
-    /// Compress remote frames: `COPILOT_CANVAS_COMPRESS` (0/off/false), else `remote.compress`.
+    /// Compress remote frames: `ATELIER_COMPRESS` (0/off/false), else `remote.compress`.
     pub fn compress(&self) -> bool {
-        match std::env::var("COPILOT_CANVAS_COMPRESS") {
+        match crate::env::var("ATELIER_COMPRESS") {
             Ok(value) if !value.trim().is_empty() => !matches!(value.trim().to_ascii_lowercase().as_str(), "0" | "off" | "false" | "no"),
             _ => self.remote.compress,
         }

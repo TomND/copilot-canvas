@@ -1,7 +1,7 @@
 # XcodeGen project (https://github.com/yonaskolb/XcodeGen): `cd ios && xcodegen`
-# writes CopilotCanvas.xcodeproj. The Rust core is built by build-core.sh
+# writes Atelier.xcodeproj. The Rust core is built by build-core.sh
 # (run by the pre-build phase, or by hand once before the first build).
-name: CopilotCanvas
+name: Atelier
 options:
   bundleIdPrefix: com.thomashorga
   deploymentTarget:
@@ -16,11 +16,11 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     ENABLE_USER_SCRIPT_SANDBOXING: NO
 targets:
-  CopilotCanvas:
+  Atelier:
     type: application
     platform: iOS
     sources:
-      - path: CopilotCanvas
+      - path: Atelier
       - path: Core/Swift
     dependencies:
       - framework: Core/CanvasMobileCore.xcframework
@@ -31,13 +31,13 @@ targets:
     preBuildScripts:
       - name: Build the Rust core
         script: |
-          if [ "${COPILOT_CANVAS_SKIP_CORE:-}" = "1" ]; then exit 0; fi
+          if [ "${ATELIER_SKIP_CORE:-${COPILOT_CANVAS_SKIP_CORE:-}}" = "1" ]; then exit 0; fi # rename:keep (the old name still works)
           "${SRCROOT}/build-core.sh"
         basedOnDependencyAnalysis: false
     info:
-      path: CopilotCanvas/Info.plist
+      path: Atelier/Info.plist
       properties:
-        CFBundleDisplayName: Canvas
+        CFBundleDisplayName: Atelier
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
@@ -51,14 +51,16 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         UIUserInterfaceStyle: Dark
-        NSCameraUsageDescription: Scan the pairing QR code that `copilot-canvas remote pair --qr` shows on your Cloud PC.
-        NSFaceIDUsageDescription: Canvas locks with Face ID because a paired phone can run anything on your Cloud PC.
-        NSLocalNetworkUsageDescription: Connect to a Copilot Canvas service (or the mock service) on your local network.
+        NSCameraUsageDescription: Scan the pairing QR code that `atelier remote pair --qr` shows on your Cloud PC.
+        NSFaceIDUsageDescription: Atelier locks with Face ID because a paired phone can run anything on your Cloud PC.
+        NSLocalNetworkUsageDescription: Connect to an Atelier service (or the mock service) on your local network.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         CFBundleURLTypes:
+          # Pairing links: atelier:// (what services write since the rename)
+          # and ccanvas:// (older services, printed QR codes).
           - CFBundleURLName: com.thomashorga.copilotcanvas.pair
-            CFBundleURLSchemes: [ccanvas]
+            CFBundleURLSchemes: [atelier, ccanvas]
         ITSAppUsesNonExemptEncryption: false
         # Silent notifications bring renewed tunnel tokens while the app is away.
         UIBackgroundModes: [remote-notification]
@@ -66,43 +68,43 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.thomashorga.copilotcanvas
-        PRODUCT_NAME: CopilotCanvas
-        CODE_SIGN_ENTITLEMENTS: CopilotCanvas/CopilotCanvas.entitlements
+        PRODUCT_NAME: Atelier
+        CODE_SIGN_ENTITLEMENTS: Atelier/Atelier.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGN_STYLE: Automatic
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         SWIFT_STRICT_CONCURRENCY: minimal
         OTHER_LDFLAGS: ["-lresolv"]
-  CopilotCanvasTests:
+  AtelierTests:
     type: bundle.unit-test
     platform: iOS
-    sources: [CopilotCanvasTests]
+    sources: [AtelierTests]
     dependencies:
-      - target: CopilotCanvas
+      - target: Atelier
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.thomashorga.copilotcanvas.tests
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_STRICT_CONCURRENCY: minimal
   # Needs the mock service: `cargo run -p canvas-mock` (127.0.0.1:47600).
-  CopilotCanvasUITests:
+  AtelierUITests:
     type: bundle.ui-testing
     platform: iOS
-    sources: [CopilotCanvasUITests]
+    sources: [AtelierUITests]
     dependencies:
-      - target: CopilotCanvas
+      - target: Atelier
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.thomashorga.copilotcanvas.uitests
         GENERATE_INFOPLIST_FILE: YES
-        TEST_TARGET_NAME: CopilotCanvas
+        TEST_TARGET_NAME: Atelier
 schemes:
-  CopilotCanvas:
+  Atelier:
     build:
       targets:
-        CopilotCanvas: all
-        CopilotCanvasTests: [test]
-        CopilotCanvasUITests: [test]
+        Atelier: all
+        AtelierTests: [test]
+        AtelierUITests: [test]
     test:
-      targets: [CopilotCanvasTests, CopilotCanvasUITests]
+      targets: [AtelierTests, AtelierUITests]

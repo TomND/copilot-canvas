@@ -44,7 +44,7 @@ use std::time::Duration;
 use winit::window::{Window, WindowAttributes};
 
 /// The app id toasts and the taskbar button use.
-pub const AUMID: &str = "CopilotCanvas.Gui";
+pub const AUMID: &str = "Atelier.Gui";
 
 /// wgpu's backend: DX12 (WARP as the software fallback).
 pub const GPU_BACKENDS: wgpu::Backends = wgpu::Backends::DX12;
@@ -145,7 +145,7 @@ fn show_winrt_toast(title: &str, body: &str) -> windows::core::Result<()> {
         xml_escape(body)
     )))?;
     let toast = ToastNotification::CreateToastNotification(&xml)?;
-    toast.SetGroup(&HSTRING::from("copilot-canvas"))?;
+    toast.SetGroup(&HSTRING::from("atelier"))?;
     ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID))?.Show(&toast)
 }
 
@@ -175,7 +175,7 @@ fn register_aumid() -> Result<(), String> {
     if status != 0 {
         return Err(format!("cannot register the app for toasts (error {status})"));
     }
-    let name = wide("Copilot Canvas");
+    let name = wide("Atelier");
     let value = wide("DisplayName");
     // SAFETY: `name` is a NUL-terminated UTF-16 string of the given byte length.
     let status = unsafe { RegSetValueExW(key, value.as_ptr(), 0, REG_SZ, name.as_ptr().cast(), (name.len() * 2) as u32) };
@@ -193,7 +193,7 @@ pub fn helper() -> Option<i32> {
 
 pub fn set_app_id() {
     // SAFETY: a static NUL-terminated string.
-    let _ = unsafe { windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(windows::core::w!("CopilotCanvas.Gui")) };
+    let _ = unsafe { windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(windows::core::w!("Atelier.Gui")) };
 }
 
 /// The taskbar button's progress indicator.

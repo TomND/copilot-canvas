@@ -203,7 +203,7 @@ enum Running {
     Quiet(Duration, Instant, Instant),
 }
 
-/// Output a recording keeps at most (`copilot-canvas record`).
+/// Output a recording keeps at most (`atelier record`).
 pub const MAX_RECORDED_BYTES: u64 = 64 << 20;
 
 /// `at + by`, or a year later when that does not fit (durations come from

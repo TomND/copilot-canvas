@@ -79,7 +79,7 @@ const RULES: &str = r#"[
   {"trigger": {"url-filter": "^file:"}, "action": {"type": "block"}},
   {"trigger": {"url-filter": "^blob:"}, "action": {"type": "block"}}
 ]"#;
-const RULES_ID: &str = "copilot-canvas-reports-v1";
+const RULES_ID: &str = "atelier-reports-v1";
 
 /// Counts refused loads (in the canvas's own world: the page sees nothing).
 const COUNTER: &str = r#"(() => {
@@ -92,7 +92,7 @@ const COUNTER: &str = r#"(() => {
     }
   }, true);
 })();"#;
-const WORLD: &str = "CopilotCanvasLockdown";
+const WORLD: &str = "AtelierLockdown";
 /// The window's background under the page (the canvas's).
 const BACKGROUND: [f64; 3] = [13.0 / 255.0, 17.0 / 255.0, 23.0 / 255.0];
 /// `kVK_Escape`, `kVK_F6`, `kVK_Tab`, `kVK_LeftArrow`, `kVK_RightArrow`.
@@ -469,7 +469,7 @@ declare_class!(
         #[inherits(NSView, NSResponder, NSObject)]
         type Super = WKWebView;
         type Mutability = mutability::MainThreadOnly;
-        const NAME: &'static str = "CopilotCanvasReportView";
+        const NAME: &'static str = "AtelierReportView";
     }
 
     impl DeclaredClass for ReportView {
@@ -547,7 +547,7 @@ declare_class!(
     unsafe impl ClassType for Delegate {
         type Super = NSObject;
         type Mutability = mutability::MainThreadOnly;
-        const NAME: &'static str = "CopilotCanvasReportDelegate";
+        const NAME: &'static str = "AtelierReportDelegate";
     }
 
     impl DeclaredClass for Delegate {
@@ -707,7 +707,7 @@ declare_class!(
     unsafe impl ClassType for SchemeHandler {
         type Super = NSObject;
         type Mutability = mutability::MainThreadOnly;
-        const NAME: &'static str = "CopilotCanvasNotesScheme";
+        const NAME: &'static str = "AtelierNotesScheme";
     }
 
     impl DeclaredClass for SchemeHandler {
@@ -838,10 +838,10 @@ fn png_of(image: &NSImage) -> Option<Vec<u8>> {
     }
 }
 
-/// Where *Print / PDF* puts the PDF: `COPILOT_CANVAS_DOWNLOADS` (tests), else
+/// Where *Print / PDF* puts the PDF: `ATELIER_DOWNLOADS` (tests), else
 /// `~/Downloads`, else the temporary folder.
 fn downloads() -> std::path::PathBuf {
-    if let Some(dir) = std::env::var_os("COPILOT_CANVAS_DOWNLOADS").filter(|d| !d.is_empty()) {
+    if let Some(dir) = canvas_common::env::var_os("ATELIER_DOWNLOADS").filter(|d| !d.is_empty()) {
         return std::path::PathBuf::from(dir);
     }
     std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join("Downloads")).filter(|dir| dir.is_dir()).unwrap_or_else(std::env::temp_dir)

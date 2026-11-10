@@ -1,13 +1,13 @@
-//! `copilot-canvas todo …`: agents and you read and change the canvas's todo
+//! `atelier todo …`: agents and you read and change the canvas's todo
 //! boards (docs/NOTEBOOK-TASKS.md §3.3).
 //!
 //! Reads (`prime`, `boards`, `list`, `show`, `ready`, `mirror`, `export`)
 //! read the stored book of the routed canvas (`<home>/bus/routing.json` →
 //! `<home>/canvas-agents/<canvas id>/todos/book.json`). Writes post a
 //! `canvas.todo` request into the service's bus inbox and wait for its
-//! answer while the service runs (the `copilot-canvas pr` pattern); the
-//! caller is `COPILOT_CANVAS_SESSION` (no session: you, or the automation
-//! named by `AUTOMATION_NAME`), as for `copilot-canvas pr`: the service
+//! answer while the service runs (the `atelier pr` pattern); the
+//! caller is `ATELIER_SESSION` (no session: you, or the automation
+//! named by `AUTOMATION_NAME`), as for `atelier pr`: the service
 //! trusts what the request says (any process running as you could write it),
 //! so the rules guide agents and are no sandbox. `--format json` prints JSON
 //! with `schemaVersion`.
@@ -31,16 +31,16 @@ pub const REQUEST: &str = "canvas.todo";
 /// The `canvas-todos` skill shipped in the canvas plugin.
 pub const SKILL: &str = "---
 name: canvas-todos
-description: Work with the Copilot Canvas todo boards - find ready todos, claim one, record progress, submit finished work for review with its pull request, add todos the user asks for and propose your own ideas. Use when the canvas or your group has todo boards, when the user mentions todos, tasks, a backlog, a board or an id like DEC-031, when asked to pick up or continue work, when you finish work a todo tracks, and when you find work worth doing later.
+description: Work with the Atelier todo boards - find ready todos, claim one, record progress, submit finished work for review with its pull request, add todos the user asks for and propose your own ideas. Use when the canvas or your group has todo boards, when the user mentions todos, tasks, a backlog, a board or an id like DEC-031, when asked to pick up or continue work, when you finish work a todo tracks, and when you find work worth doing later.
 ---
 
-# Copilot Canvas todos
+# Atelier todos
 
 The canvas keeps todo boards that the user sees in its Tasks space; todos have
-ids like `DEC-031`. Change them only with `copilot-canvas todo …`: never edit
+ids like `DEC-031`. Change them only with `atelier todo …`: never edit
 the book's files or a `TODOs.md` mirror (it is generated and rewritten).
 
-1. Run `copilot-canvas todo prime` first: the boards linked to your group, your
+1. Run `atelier todo prime` first: the boards linked to your group, your
    claims (the user may assign todos to you), what is ready, and these rules with the commands.
 2. Work on a todo: `todo ready` → `todo show ID` → `todo claim ID` (never one
    another session claimed) → `todo note ID \"what you found or decided\"` and
@@ -60,25 +60,25 @@ A refusal exits non-zero and says why: agents never accept, decline, delete,
 cancel or close todos, and never take, move or close a todo another session claimed.
 ";
 
-const USAGE: &str = "usage: copilot-canvas todo prime
-       copilot-canvas todo boards [--tree] [--format json]
-       copilot-canvas todo list [--board B] [--status S] [--type T] [--mine] [--all] [--format json]
-       copilot-canvas todo show ID [--format json]
-       copilot-canvas todo ready [--board B] [--format json]
-       copilot-canvas todo add TITLE --type T [--board B] [--priority P] [--status backlog|todo] [--body FILE|-] [--parent ID] [--label L]… [--check TEXT]…
-       copilot-canvas todo propose TITLE --type T --why TEXT [--board B] [--discovered-from ID] [--priority P] [--body FILE|-]
-       copilot-canvas todo update ID [--title T] [--type T] [--priority P] [--blocked WHY|none] [--blocker yes|no] [--body FILE|-] [--label L|-L]…
-       copilot-canvas todo move ID --status S [--board B]
-       copilot-canvas todo claim ID [--session NAME|ID] [--force] · todo release ID
-       copilot-canvas todo note ID TEXT · todo check ID N [--undo] · todo check ID --add TEXT
-       copilot-canvas todo link ID (--pr URL | --note PATH | --session ID | --url URL | --file PATH)
-       copilot-canvas todo relate ID (--blocked-by ID | --related ID | --duplicate-of ID)
-       copilot-canvas todo submit ID [--pr URL] [--summary FILE|-]
-       copilot-canvas todo accept ID [--status backlog|todo|in_progress|in_review] · todo decline ID [--reason TEXT]
-       copilot-canvas todo done ID · todo cancel ID [--reason TEXT] · todo reopen ID · todo delete ID
-       copilot-canvas todo board add NAME [--prefix P] [--parent B] · todo board link B [--group NAME|ID]
-       copilot-canvas todo board unlink B --group NAME|ID · todo board delete B [--with-todos]
-       copilot-canvas todo import FILE [--board B] [--prefix P] · todo mirror [--out FILE | --set FILE|off] · todo export --canvas FILE [--board B]";
+const USAGE: &str = "usage: atelier todo prime
+       atelier todo boards [--tree] [--format json]
+       atelier todo list [--board B] [--status S] [--type T] [--mine] [--all] [--format json]
+       atelier todo show ID [--format json]
+       atelier todo ready [--board B] [--format json]
+       atelier todo add TITLE --type T [--board B] [--priority P] [--status backlog|todo] [--body FILE|-] [--parent ID] [--label L]… [--check TEXT]…
+       atelier todo propose TITLE --type T --why TEXT [--board B] [--discovered-from ID] [--priority P] [--body FILE|-]
+       atelier todo update ID [--title T] [--type T] [--priority P] [--blocked WHY|none] [--blocker yes|no] [--body FILE|-] [--label L|-L]…
+       atelier todo move ID --status S [--board B]
+       atelier todo claim ID [--session NAME|ID] [--force] · todo release ID
+       atelier todo note ID TEXT · todo check ID N [--undo] · todo check ID --add TEXT
+       atelier todo link ID (--pr URL | --note PATH | --session ID | --url URL | --file PATH)
+       atelier todo relate ID (--blocked-by ID | --related ID | --duplicate-of ID)
+       atelier todo submit ID [--pr URL] [--summary FILE|-]
+       atelier todo accept ID [--status backlog|todo|in_progress|in_review] · todo decline ID [--reason TEXT]
+       atelier todo done ID · todo cancel ID [--reason TEXT] · todo reopen ID · todo delete ID
+       atelier todo board add NAME [--prefix P] [--parent B] · todo board link B [--group NAME|ID]
+       atelier todo board unlink B --group NAME|ID · todo board delete B [--with-todos]
+       atelier todo import FILE [--board B] [--prefix P] · todo mirror [--out FILE | --set FILE|off] · todo export --canvas FILE [--board B]";
 
 /// The usage line of one verb (`board add`, `check`, …).
 fn usage(verb: &str) -> String {
@@ -110,7 +110,7 @@ pub fn load(home: &Path, canvas: &str) -> TodoBook {
 pub fn try_load(home: &Path, canvas: &str) -> std::result::Result<TodoBook, String> {
     let path = book_path(home, canvas);
     match std::fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("the todo book {} cannot be read ({e}): fix or move it (is this copilot-canvas older than the one that wrote it?)", path.display())),
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("the todo book {} cannot be read ({e}): fix or move it (is this atelier older than the one that wrote it?)", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(TodoBook::default()),
         Err(e) => Err(format!("the todo book {} cannot be read: {e}", path.display())),
     }
@@ -119,7 +119,7 @@ pub fn try_load(home: &Path, canvas: &str) -> std::result::Result<TodoBook, Stri
 /// Who runs the command (from the environment the canvas sets).
 #[derive(Clone, Debug, Default)]
 pub struct Caller {
-    /// `COPILOT_CANVAS_SESSION` (empty: you).
+    /// `ATELIER_SESSION` (empty: you).
     pub session: String,
     /// `AUTOMATION_NAME` outside a session: a scheduled task, such as the TODO bot.
     pub bot: String,
@@ -127,8 +127,8 @@ pub struct Caller {
 
 impl Caller {
     pub fn from_env() -> Self {
-        let env = |name: &str| std::env::var(name).map(|v| v.trim().to_owned()).unwrap_or_default();
-        Caller { session: env("COPILOT_CANVAS_SESSION"), bot: env("AUTOMATION_NAME") }
+        let env = |name: &str| canvas_common::env::var(name).map(|v| v.trim().to_owned()).unwrap_or_default();
+        Caller { session: env("ATELIER_SESSION"), bot: env("AUTOMATION_NAME") }
     }
 
     /// The caller as the book records it.
@@ -141,7 +141,7 @@ impl Caller {
     }
 }
 
-/// Runs `copilot-canvas todo WORDS…`: `options` are the `--name value` pairs,
+/// Runs `atelier todo WORDS…`: `options` are the `--name value` pairs,
 /// `flags` the boolean flags (without `--`).
 pub fn run(home: &Path, words: &[&str], options: &[(String, String)], flags: &[String]) -> Result<()> {
     let out = execute(home, words, options, flags, &Caller::from_env(), &mut std::io::stdin().lock())?;
@@ -256,7 +256,7 @@ fn absolute(path: &str) -> Result<String> {
 }
 
 /// A session of the routed canvas named on the command line (its id or
-/// name, as `copilot-canvas send --to` finds it): (its id, its name).
+/// name, as `atelier send --to` finds it): (its id, its name).
 fn session_of(routing: &Routing, text: &str) -> Result<(String, String)> {
     let text = text.trim();
     if text.is_empty() {
@@ -265,7 +265,7 @@ fn session_of(routing: &Routing, text: &str) -> Result<(String, String)> {
     let id = match routing.resolve_from(text, "", "") {
         Ok(crate::bus::Target::Session(id)) => id,
         Ok(crate::bus::Target::Passive(key)) => routing.passive.iter().find(|p| p.key == key).map(|p| p.session_id.clone()).with_context(|| format!("no session {text:?}"))?,
-        Err(why) => bail!("{why} on the canvas Copilot Canvas has open"),
+        Err(why) => bail!("{why} on the canvas Atelier has open"),
     };
     let name = routing.passive_by_session(&id).map(|p| p.name.clone()).or_else(|| routing.names.get(&id).cloned()).unwrap_or_else(|| id.clone());
     Ok((id, name))
@@ -284,7 +284,7 @@ struct Place {
 fn place(home: &Path, caller: &Caller) -> Result<Place> {
     let routing = crate::cli::routing(home);
     if !crate::doc::valid_canvas_id(&routing.canvas) {
-        bail!("no canvas with an id is open in Copilot Canvas (open it with an up-to-date client)");
+        bail!("no canvas with an id is open in Atelier (open it with an up-to-date client)");
     }
     let book = try_load(home, &routing.canvas).map_err(|e| anyhow::anyhow!(e))?;
     let wide = routing.passive_by_session(&caller.session).is_some_and(|p| p.canvas_wide);
@@ -338,7 +338,7 @@ impl Place {
                     Some(_) => "no todo board is linked to your canvas group",
                 };
                 if names.is_empty() {
-                    bail!("the canvas has no todo boards: create one with copilot-canvas todo board add NAME")
+                    bail!("the canvas has no todo boards: create one with atelier todo board add NAME")
                 }
                 bail!("{why}: name one with --board ({})", names.join(", "))
             }
@@ -467,10 +467,10 @@ fn prime(place: &Place, caller: &Caller) -> Result<String> {
     let me = caller.actor(&place.routing);
     let mut out = Vec::new();
     out.push(match (&me.session, place.group.as_deref()) {
-        (Some(_), _) if place.wide => format!("Copilot Canvas todos · you are the canvas-wide agent {:?}: every board of the canvas is yours to read.", me.label()),
-        (Some(_), Some(group)) => format!("Copilot Canvas todos · you are {:?} in the canvas group {:?}.", me.label(), place.group_name(group)),
-        (Some(_), None) => format!("Copilot Canvas todos · you are {:?}, in no canvas group.", me.label()),
-        (None, _) => format!("Copilot Canvas todos · you run outside a canvas session: changes are made as {}.", if caller.bot.is_empty() { "you (the user)".to_owned() } else { format!("the automation {:?}", caller.bot) }),
+        (Some(_), _) if place.wide => format!("Atelier todos · you are the canvas-wide agent {:?}: every board of the canvas is yours to read.", me.label()),
+        (Some(_), Some(group)) => format!("Atelier todos · you are {:?} in the canvas group {:?}.", me.label(), place.group_name(group)),
+        (Some(_), None) => format!("Atelier todos · you are {:?}, in no canvas group.", me.label()),
+        (None, _) => format!("Atelier todos · you run outside a canvas session: changes are made as {}.", if caller.bot.is_empty() { "you (the user)".to_owned() } else { format!("the automation {:?}", caller.bot) }),
     });
     let linked: Vec<&todos::Board> = match place.group.as_deref() {
         _ if place.wide => book.boards.iter().filter(|b| b.parent.is_none()).collect(),
@@ -478,13 +478,13 @@ fn prime(place: &Place, caller: &Caller) -> Result<String> {
         None => Vec::new(),
     };
     if book.boards.is_empty() {
-        out.push("\nThis canvas has no todo boards yet. When the user wants one: copilot-canvas todo board add NAME (it is linked to your group).".into());
+        out.push("\nThis canvas has no todo boards yet. When the user wants one: atelier todo board add NAME (it is linked to your group).".into());
     } else if linked.is_empty() {
         let names: Vec<String> = book.boards.iter().filter(|b| b.parent.is_none()).map(|b| format!("{} ({})", b.name, b.prefix)).collect();
         match place.default_board().filter(|_| place.group.is_none()) {
             Some(board) => out.push(format!("\nBoards on this canvas: {}. Default board for todo add and todo propose: {} (the only one).", names.join(", "), board.name)),
             None if place.group.is_none() => out.push(format!("\nBoards on this canvas: {}. Name one with --board when you add or propose.", names.join(", "))),
-            None => out.push(format!("\nNo board is linked to your group. Boards on this canvas: {}. Name one with --board, or ask the user to link one (copilot-canvas todo board link B).", names.join(", "))),
+            None => out.push(format!("\nNo board is linked to your group. Boards on this canvas: {}. Name one with --board, or ask the user to link one (atelier todo board link B).", names.join(", "))),
         }
     } else {
         out.push(if place.wide { "\nBoards of the canvas:".into() } else { "\nBoards linked to your group:".to_owned() });
@@ -512,7 +512,7 @@ fn prime(place: &Place, caller: &Caller) -> Result<String> {
     }
     let ready = book.ready_for_group(place.group.as_deref());
     if !ready.is_empty() {
-        out.push(format!("\nReady ({} in all; copilot-canvas todo ready lists them):", ready.len()));
+        out.push(format!("\nReady ({} in all; atelier todo ready lists them):", ready.len()));
         out.extend(ready.iter().take(5).map(|t| line(book, t, true)));
     }
     out.push(format!(
@@ -522,13 +522,13 @@ fn prime(place: &Place, caller: &Caller) -> Result<String> {
     ));
     out.push(
         "\nHow to work:
-1. copilot-canvas todo ready → todo show ID → todo claim ID (never one another session claimed).
+1. atelier todo ready → todo show ID → todo claim ID (never one another session claimed).
 2. As you go: todo note ID \"what you found or decided\" · todo check ID N (checklist item N is done).
 3. Finished: todo submit ID --pr URL [--summary FILE] puts it in review. Done is the user's (or a merged pull request's): never run todo done.
 4. New work: todo add \"TITLE\" --type T when the user asked for it; todo propose \"TITLE\" --type T --why \"…\" for your own ideas; --discovered-from ID for work found while doing another todo.
 5. Blocked: todo update ID --blocked \"why\" (--blocked none when it goes on) or todo relate ID --blocked-by OTHER. Stopping: todo note, then todo release ID.
-Never edit TODOs.md mirrors or the book's files: change todos only with copilot-canvas todo.
-Commands: todo boards · todo list [--board B] [--status S] [--mine] · todo show ID · todo ready · todo add · todo propose · todo update · todo move ID --status S · todo claim / release ID · todo note ID TEXT · todo check ID N · todo link ID --pr URL · todo relate ID --blocked-by ID · todo submit ID --pr URL (copilot-canvas --help lists every option)."
+Never edit TODOs.md mirrors or the book's files: change todos only with atelier todo.
+Commands: todo boards · todo list [--board B] [--status S] [--mine] · todo show ID · todo ready · todo add · todo propose · todo update · todo move ID --status S · todo claim / release ID · todo note ID TEXT · todo check ID N · todo link ID --pr URL · todo relate ID --blocked-by ID · todo submit ID --pr URL (atelier --help lists every option)."
             .into(),
     );
     Ok(out.join("\n"))
@@ -553,7 +553,7 @@ fn boards(place: &Place, tree: bool, json: bool) -> Result<String> {
         return pretty(json!({ "schemaVersion": SCHEMA_VERSION, "kind": "todo-boards", "canvas": place.canvas, "boards": boards, "mirror": book.settings.mirror }));
     }
     if book.boards.is_empty() {
-        return Ok("This canvas has no todo boards yet (copilot-canvas todo board add NAME).".into());
+        return Ok("This canvas has no todo boards yet (atelier todo board add NAME).".into());
     }
     let mut out = vec![format!("Todo boards of canvas {}:", place.canvas)];
     for board in book.boards.iter().filter(|b| b.parent.is_none()) {
@@ -632,7 +632,7 @@ fn list(place: &Place, caller: &Caller, args: &Args) -> Result<String> {
 /// `todo show ID`.
 fn show(place: &Place, id: &str, json: bool) -> Result<String> {
     let book = &place.book;
-    let todo = book.todo(id).with_context(|| format!("no todo {id} on this canvas (copilot-canvas todo list --all lists them)"))?;
+    let todo = book.todo(id).with_context(|| format!("no todo {id} on this canvas (atelier todo list --all lists them)"))?;
     let blocking: Vec<&Todo> = book.blocking(&todo.id);
     if json {
         let mut value = json!({ "schemaVersion": SCHEMA_VERSION, "kind": "todo", "todo": todo_json(book, todo) });
@@ -722,9 +722,9 @@ fn ready(place: &Place, board: Option<&str>, json: bool) -> Result<String> {
         return pretty(json!({ "schemaVersion": SCHEMA_VERSION, "kind": "todo-ready", "todos": list.iter().map(|t| todo_json(book, t)).collect::<Vec<_>>() }));
     }
     if list.is_empty() {
-        return Ok(format!("Nothing is ready{what} (ready: status todo, not blocked, not claimed). copilot-canvas todo list shows the rest."));
+        return Ok(format!("Nothing is ready{what} (ready: status todo, not blocked, not claimed). atelier todo list shows the rest."));
     }
-    let mut out = vec![format!("Ready to work on{what}, most urgent first (claim one with copilot-canvas todo claim ID):")];
+    let mut out = vec![format!("Ready to work on{what}, most urgent first (claim one with atelier todo claim ID):")];
     out.extend(list.iter().map(|t| line(book, t, true)));
     Ok(out.join("\n"))
 }
@@ -738,7 +738,7 @@ fn mirror(home: &Path, caller: &Caller, args: &Args) -> Result<String> {
         }
         let off = ["off", "none", ""].contains(&set.trim().to_ascii_lowercase().as_str());
         let path = if off { None } else { Some(absolute(set)?) };
-        let pending = "The mirror setting is handed to Copilot Canvas; the service is not running (or busy): it applies it when it takes the request.";
+        let pending = "The mirror setting is handed to Atelier; the service is not running (or busy): it applies it when it takes the request.";
         return send(home, caller, TodoOp::SetMirror { path }, false, pending);
     }
     let place = place(home, caller)?;
@@ -747,7 +747,7 @@ fn mirror(home: &Path, caller: &Caller, args: &Args) -> Result<String> {
         Some(out) => {
             let path = absolute(out)?;
             crate::paths::write_atomic(Path::new(&path), text.as_bytes()).with_context(|| format!("cannot write {path}"))?;
-            Ok(format!("Wrote the {} todo(s) to {path} (a snapshot: copilot-canvas todo mirror --set FILE keeps a file up to date).", place.book.todos.len()))
+            Ok(format!("Wrote the {} todo(s) to {path} (a snapshot: atelier todo mirror --set FILE keeps a file up to date).", place.book.todos.len()))
         }
         None => Ok(text),
     }
@@ -770,7 +770,7 @@ fn answered(answer: Option<Answer>, json: bool, pending: &str) -> Result<String>
             (true, None) => pretty(json!({ "schemaVersion": SCHEMA_VERSION, "kind": "todo-change", "ok": true, "message": answer.message })),
             (false, _) => Ok(answer.message),
         },
-        Some(answer) => bail!("Copilot Canvas refused: {}", answer.message),
+        Some(answer) => bail!("Atelier refused: {}", answer.message),
         None if json => pretty(json!({ "schemaVersion": SCHEMA_VERSION, "kind": "todo-change", "ok": null, "queued": true, "message": pending })),
         None => Ok(pending.to_owned()),
     }
@@ -811,7 +811,7 @@ fn write(home: &Path, words: &[&str], args: &Args, caller: &Caller, stdin: &mut 
             let status = match args.get("status") {
                 Some(s) => match Status::parse(s) {
                     Some(s @ (Status::Backlog | Status::Todo)) => Some(s),
-                    _ => bail!("--status is backlog or todo, not {s:?} (move it later with copilot-canvas todo move ID --status S)"),
+                    _ => bail!("--status is backlog or todo, not {s:?} (move it later with atelier todo move ID --status S)"),
                 },
                 None => None,
             };
@@ -1050,7 +1050,7 @@ fn write(home: &Path, words: &[&str], args: &Args, caller: &Caller, stdin: &mut 
         _ => bail!("{USAGE}"),
     };
     let json = args.json()?;
-    let pending = format!("{what} is handed to Copilot Canvas; the service is not running (or busy): it is applied when the service takes it (copilot-canvas todo list shows the book).");
+    let pending = format!("{what} is handed to Atelier; the service is not running (or busy): it is applied when the service takes it (atelier todo list shows the book).");
     send(home, caller, op, json, &pending)
 }
 
@@ -1129,7 +1129,7 @@ mod tests {
         assert!(error(&["add"], &[("type", "bug")], &[]).contains("needs a title"));
         assert!(error(&["add", "x"], &[("type", "bugfix")], &[]).contains("--type is one of bug, feature"));
         assert!(error(&["add", "x"], &[("type", "bug"), ("status", "done")], &[]).contains("--status is backlog or todo"));
-        assert!(error(&["add", "x"], &[("type", "bug"), ("why", "y")], &[]).starts_with("todo add does not take --why\nusage: copilot-canvas todo add TITLE"));
+        assert!(error(&["add", "x"], &[("type", "bug"), ("why", "y")], &[]).starts_with("todo add does not take --why\nusage: atelier todo add TITLE"));
         assert!(error(&["add", "x"], &[("type", "bug"), ("type", "feature")], &[]).contains("takes --type once"));
         assert!(error(&["add", "x"], &[("type", "bug"), ("board", "Nope")], &[]).contains("no board \"Nope\" (boards: Decomps)"));
         assert!(error(&["propose", "x"], &[("type", "bug")], &[]).contains("needs --why"));
@@ -1152,23 +1152,23 @@ mod tests {
         assert!(error(&["export"], &[], &[]).contains("needs --canvas FILE"));
         assert!(error(&["mirror"], &[("out", "a.md"), ("set", "b.md")], &[]).contains("--out or --set, not both"));
         assert!(error(&["list"], &[("format", "xml")], &[]).contains("--format is json or text"));
-        assert!(error(&["explode"], &[], &[]).starts_with("usage: copilot-canvas todo prime"));
+        assert!(error(&["explode"], &[], &[]).starts_with("usage: atelier todo prime"));
         assert!(error(&["show", "DEC-099"], &[], &[]).contains("no todo DEC-099"));
         assert!(run(&home, &["board", "link", "Decomps"], &[], &[], &Caller::default()).unwrap_err().to_string().contains("you are in no group"));
         // A session in a group without a board must name one.
         assert!(run(&home, &["add", "x"], &[("type", "docs")], &[], &agent("s2")).unwrap_err().to_string().contains("no todo board is linked to your canvas group: name one with --board (Decomps)"));
         assert!(posted(&home).is_empty(), "refused commands post nothing");
-        assert_eq!(usage("check"), "usage: copilot-canvas todo note ID TEXT · todo check ID N [--undo] · todo check ID --add TEXT");
-        assert_eq!(usage("board link"), "usage: copilot-canvas todo board add NAME [--prefix P] [--parent B] · todo board link B [--group NAME|ID]");
+        assert_eq!(usage("check"), "usage: atelier todo note ID TEXT · todo check ID N [--undo] · todo check ID --add TEXT");
+        assert_eq!(usage("board link"), "usage: atelier todo board add NAME [--prefix P] [--parent B] · todo board link B [--group NAME|ID]");
         assert!(usage("accept").contains("todo accept ID [--status backlog|todo|in_progress|in_review]"), "{}", usage("accept"));
-        assert_eq!(usage("board delete"), "usage: copilot-canvas todo board unlink B --group NAME|ID · todo board delete B [--with-todos]");
+        assert_eq!(usage("board delete"), "usage: atelier todo board unlink B --group NAME|ID · todo board delete B [--with-todos]");
         assert!(usage("delete").contains("todo delete ID") && usage("done").contains("todo done ID"));
         // Boards: unlink names the group; delete takes --with-todos only.
         assert!(error(&["board", "unlink", "Decomps"], &[], &[]).contains("needs --group NAME|ID"));
         assert!(error(&["board", "unlink", "Decomps"], &[("group", "Nope")], &[]).contains("no canvas group \"Nope\" (the board is linked to: Pay)"));
         assert!(error(&["board", "delete", "Decomps"], &[], &["force"]).contains("does not take --force"));
         assert!(error(&["board", "delete", "Nope"], &[], &[]).contains("no board \"Nope\""));
-        assert!(error(&["board", "delete"], &[], &[]).starts_with("usage: copilot-canvas todo prime"));
+        assert!(error(&["board", "delete"], &[], &[]).starts_with("usage: atelier todo prime"));
         assert!(error(&["link", "DEC-1"], &[("session", "Nobody")], &[]).contains("\"Nobody\""), "a session to link is one of the canvas");
         assert!(posted(&home).is_empty(), "refused commands post nothing");
         let _ = std::fs::remove_dir_all(home);
@@ -1181,7 +1181,7 @@ mod tests {
         assert_eq!(options_with_canvas(&["list"], &options, Some(file)), options, "the canvas file a window opens: ignored");
         assert_eq!(options_with_canvas(&["export"], &options, Some(file)), opts(&[("board", "DEC"), ("canvas", r"C:\out\board.canvas")]));
         assert_eq!(options_with_canvas(&["export"], &options, None), options);
-        // So `copilot-canvas --canvas X todo list` lists.
+        // So `atelier --canvas X todo list` lists.
         let home = home();
         let listed = execute(&home, &["list"], &options_with_canvas(&["list"], &[], Some(file)), &[], &Caller::default(), &mut std::io::empty()).unwrap();
         assert!(listed.starts_with("3 todo(s)"), "{listed}");
@@ -1208,7 +1208,7 @@ mod tests {
         let me = agent("s1");
         // No service runs here: each request waits in the inbox and the command says so.
         let out = run(&home, &["add", "Fix", "the", "loader"], &[("type", "bug"), ("priority", "urgent")], &[], &me).unwrap();
-        assert!(out.starts_with("The todo “Fix the loader” is handed to Copilot Canvas; the service is not running"), "{out}");
+        assert!(out.starts_with("The todo “Fix the loader” is handed to Atelier; the service is not running"), "{out}");
         let event = posted(&home).remove(0);
         assert_eq!((event.kind.as_str(), event.source.as_str()), (REQUEST, "s1"));
         let op: TodoOp = serde_json::from_value(event.data.clone()).unwrap();

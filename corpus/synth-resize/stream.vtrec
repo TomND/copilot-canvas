@@ -1,4 +1,4 @@
-{"vtrec":1,"cols":40,"rows":8,"program":"copilot-canvas corpus synth synth-resize","description":"Reflow on resize: wrapped plain and wide text, a coloured line and the cursor across narrower, wider and shorter sizes","source":"synthetic","recorded_at":""}
+{"vtrec":1,"cols":40,"rows":8,"program":"atelier corpus synth synth-resize","description":"Reflow on resize: wrapped plain and wide text, a coloured line and the cursor across narrower, wider and shorter sizes","source":"synthetic","recorded_at":""}
 {"t":1,"s":"short line\r\n"}
 {"t":1,"s":"The quick brown fox jumps over the lazy dog; the lazy dog sleeps through it all.\r\n"}
 {"t":1,"s":"wide: 中文字符中文字符中文字符中文字符中文字符中\r\n"}

@@ -1,4 +1,4 @@
-//! `copilot-canvas selftest --client gui --hardening`: the GUI's Phase 6
+//! `atelier selftest --client gui --hardening`: the GUI's Phase 6
 //! checks over its test hooks, each with ✓ or ✗ and its reason:
 //! the toolbar's status counts at 170 columns, overlapping boxes, GPU device
 //! loss, a DPI change, window placement across restarts (and a monitor that
@@ -54,7 +54,7 @@ fn event(kind: &str, at_ms: u64, data: Value) -> String {
 
 impl Sandbox {
     fn new(name: &str) -> Result<Self> {
-        let root = std::env::temp_dir().join(format!("copilot-canvas-hardening-{name}-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("atelier-hardening-{name}-{}", uuid::Uuid::new_v4()));
         let work = root.join("work");
         std::fs::create_dir_all(&work)?;
         std::fs::create_dir_all(root.join("sessions"))?;
@@ -110,7 +110,7 @@ impl Drop for Sandbox {
 }
 
 fn screens_dir() -> PathBuf {
-    std::env::var_os("CANVAS_GUI_SCREENS").map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join("copilot-canvas-hardening-screens"))
+    std::env::var_os("CANVAS_GUI_SCREENS").map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join("atelier-hardening-screens"))
 }
 
 fn png(ui: &GuiDriver, name: &str) -> Result<PathBuf> {
@@ -178,7 +178,7 @@ fn check(checks: &mut Vec<Check>, name: &'static str, body: impl FnOnce() -> Res
 }
 
 pub fn run() -> Result<()> {
-    println!("Copilot Canvas GUI hardening checks (test hooks; PNGs in {})", screens_dir().display());
+    println!("Atelier GUI hardening checks (test hooks; PNGs in {})", screens_dir().display());
     let started = Instant::now();
     let mut checks = Vec::new();
     check(&mut checks, "toolbar_counts_never_cover_buttons_at_170_columns", toolbar_counts);
@@ -452,6 +452,20 @@ fn access_snapshot(ui: &GuiDriver, handle: isize) -> Result<Value> {
     crate::uia::uia_snapshot(handle)
 }
 
+/// [`access_snapshot`], again for up to 5 s when the walk fails: the tree
+/// changes while it is read (an element read a moment ago can be gone, as
+/// AT-SPI's `UnknownObject` says when a spinner or a status repaints).
+fn access_snapshot_settled(ui: &GuiDriver, handle: isize) -> Result<Value> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match access_snapshot(ui, handle) {
+            Ok(snap) => return Ok(snap),
+            Err(error) if Instant::now() > deadline => return Err(error),
+            Err(_) => std::thread::sleep(Duration::from_millis(200)),
+        }
+    }
+}
+
 fn access_press(ui: &GuiDriver, handle: isize, name: &str) -> Result<()> {
     if cfg!(target_os = "macos") {
         anyhow::ensure!(ui.request(json!({ "cmd": "ax", "press": name }))?["ok"] == true, "no button or tab {name:?} pressed through NSAccessibility");
@@ -490,7 +504,7 @@ fn uia_tree_inner() -> Result<String> {
     let status = |n: &Value| n["description"].as_str().is_some_and(|s| !s.is_empty());
     let deadline = Instant::now() + Duration::from_secs(20);
     let snap = loop {
-        let snap = access_snapshot(&ui, hwnd)?;
+        let snap = access_snapshot_settled(&ui, hwnd)?;
         let ready = has(&snap, &|n| ty(n, "Button") && name(n, "+ New"))
             && has(&snap, &|n| ty(n, "TreeItem") && name(n, "Build session canvas"))
             && has(&snap, &|n| ty(n, "Button") && name(n, "Build session canvas") && status(n))
@@ -514,7 +528,7 @@ fn uia_tree_inner() -> Result<String> {
     // The client presses a button: "+ New" opens the new-session dialog.
     access_press(&ui, hwnd, "+ New")?;
     wait_tree(&ui, &format!("the dialog opened through {CLIENT}"), 10, |t| t["modals"].as_u64().unwrap_or(0) > 0)?;
-    let dialog = access_snapshot(&ui, hwnd)?;
+    let dialog = access_snapshot_settled(&ui, hwnd)?;
     let dialog_seen = dialog["nodes"].as_array().is_some_and(|n| n.iter().any(|n| n["type"] == "dialog" || n["type"].as_str().is_some_and(|t| t.contains("dialog"))));
     // The toolbar's three space tabs (the canvas's selected); a client switches to the Notebook.
     let tab = |snap: &Value, name: &str| snap["nodes"].as_array().and_then(|n| n.iter().find(|n| n["type"] == "TabItem" && n["name"] == name).cloned());
@@ -531,7 +545,7 @@ fn uia_tree_inner() -> Result<String> {
     }
     ui.wait(&format!("the Notebook through {CLIENT}"), Duration::from_secs(10), |t| t.contains("✎ EXPLORER"))?;
     let deadline = Instant::now() + Duration::from_secs(10);
-    while tab(&access_snapshot(&ui, hwnd)?, "Notebook").is_none_or(|t| t["selected"] != true) {
+    while tab(&access_snapshot_settled(&ui, hwnd)?, "Notebook").is_none_or(|t| t["selected"] != true) {
         anyhow::ensure!(Instant::now() < deadline, "the Notebook tab is not selected in the {CLIENT} tree");
         std::thread::sleep(Duration::from_millis(300));
     }
@@ -581,7 +595,7 @@ fn software_fallback() -> Result<String> {
             let mut ui = sb.start(&["--canvas", &canvas], &[("CANVAS_GUI_TEST_GPU", what)], Some((170, 46)), log)?;
             let code = ui.wait_exit(Duration::from_secs(20))?;
             let stderr = std::fs::read_to_string(sb.root.join(log)).unwrap_or_default();
-            anyhow::ensure!(code == 1 && stderr.contains("terminal UI") && stderr.contains("copilot-canvas"), "{}: exit {code}: {stderr}", what.display());
+            anyhow::ensure!(code == 1 && stderr.contains("terminal UI") && stderr.contains("atelier"), "{}: exit {code}: {stderr}", what.display());
             seen.push(stderr.lines().next().unwrap_or_default().to_owned());
         }
         anyhow::ensure!(sb.crash_log().contains("hardware adapter: refused"), "the hardware failure is logged:\n{}", sb.crash_log());
@@ -601,7 +615,7 @@ fn software_fallback() -> Result<String> {
     let mut ui = sb.start(&["--canvas", &canvas], &[("CANVAS_GUI_TEST_GPU", &none)], Some((170, 46)), "none.log")?;
     let code = ui.wait_exit(Duration::from_secs(20))?;
     let stderr = std::fs::read_to_string(sb.root.join("none.log")).unwrap_or_default();
-    anyhow::ensure!(code == 1 && stderr.contains("terminal UI") && stderr.contains("copilot-canvas"), "exit {code}: {stderr}");
+    anyhow::ensure!(code == 1 && stderr.contains("terminal UI") && stderr.contains("atelier"), "exit {code}: {stderr}");
     Ok(format!("WARP on {}; without any adapter: exit 1 with {:?}", size["adapter"].as_str().unwrap_or("?"), stderr.lines().next().unwrap_or_default()))
 }
 

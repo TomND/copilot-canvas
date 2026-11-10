@@ -12,12 +12,12 @@ pub fn launcher_exe() -> PathBuf {
     if let Some(image) = std::env::var_os("APPIMAGE").filter(|p| !p.is_empty()) {
         return PathBuf::from(image);
     }
-    std::env::current_exe().map(|exe| exe.canonicalize().unwrap_or(exe)).unwrap_or_else(|_| PathBuf::from("copilot-canvas"))
+    std::env::current_exe().map(|exe| exe.canonicalize().unwrap_or(exe)).unwrap_or_else(|_| PathBuf::from("atelier"))
 }
 
 /// What a schedule runs for a manifest: the folder's own launcher (`python
 /// launcher task.json`) when `automations.yaml` names one, else the built-in
-/// launcher (`copilot-canvas automations launch task.json`).
+/// launcher (`atelier automations launch task.json`).
 pub fn action(m: &Manifest, d: &Defaults) -> Vec<String> {
     let task = d.task_json(&m.name).display().to_string();
     if !d.launcher.is_empty() && !d.python.is_empty() {

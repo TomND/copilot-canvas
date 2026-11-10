@@ -32,7 +32,7 @@ struct TempDir(PathBuf);
 
 impl TempDir {
     fn new() -> Result<Self> {
-        let path = std::env::temp_dir().join(format!("copilot-canvas-cli-{}", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("atelier-cli-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&path).with_context(|| format!("cannot create {}", path.display()))?;
         Ok(Self(path))
     }

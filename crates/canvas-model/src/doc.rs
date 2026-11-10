@@ -509,14 +509,14 @@ pub fn prepare_group_folders(group: &Group) -> Result<Option<PathBuf>> {
     let instructions = PathBuf::from(folder).join(".canvas");
     std::fs::create_dir_all(&instructions)?;
     let text = format!(
-        "---\napplyTo: '**'\n---\n# Canvas group: {name}\n\nYou are working in a session of the \"{name}\" group in Copilot Canvas.\n\n\
+        "---\napplyTo: '**'\n---\n# Canvas group: {name}\n\nYou are working in a session of the \"{name}\" group in Atelier.\n\n\
          ## Notes (the canvas notebook)\n\
          - Notes for other agents (plans, research, investigation logs, context): `{ai_docs}`\n\
          - Deliverables for the user (reports, summaries, final documents; prefer one self-contained HTML file when layout matters): `{outputs}`\n\
-         - Start Markdown notes with front matter (`audience: ai` or `audience: human`, `author: ai`, `source_session: <COPILOT_CANVAS_SESSION>`); `copilot-canvas note new` writes it for you.\n\
+         - Start Markdown notes with front matter (`audience: ai` or `audience: human`, `author: ai`, `source_session: <ATELIER_SESSION>`); `atelier note new` writes it for you.\n\
          - Before substantial work, read `{ai_docs}` (GOALS.md first) for context left by other sessions.\n\n\
          ## Todos\n\
-         - The canvas keeps todo boards. Run `copilot-canvas todo prime` to see the boards linked to this group and how to use them; change todos only with `copilot-canvas todo …`.\n",
+         - The canvas keeps todo boards. Run `atelier todo prime` to see the boards linked to this group and how to use them; change todos only with `atelier todo …`.\n",
         // One line, whatever the name holds (a line end would start a heading of its own).
         name = group.name.split_whitespace().collect::<Vec<_>>().join(" ").replace('"', "'"),
         ai_docs = docs.display(),
@@ -558,7 +558,7 @@ pub struct Doc {
     pub idle_stop_v2: bool,
     #[serde(default)]
     pub mcp: McpPrefs,
-    /// Folder of automation manifests (empty: COPILOT_CANVAS_AUTOMATIONS or <home>/automations).
+    /// Folder of automation manifests (empty: ATELIER_AUTOMATIONS or <home>/automations).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automations_dir: Option<String>,
     /// The default automation doctor was added once (removing it is respected).
@@ -1158,7 +1158,7 @@ impl Store {
             .open(&lock_path)
             .map_err(|e| {
                 if e.raw_os_error() == Some(32) {
-                    anyhow::anyhow!("this canvas is already open in another Copilot Canvas window")
+                    anyhow::anyhow!("this canvas is already open in another Atelier window")
                 } else {
                     anyhow::Error::new(e).context(format!("cannot lock {}", lock_path.display()))
                 }
@@ -1171,7 +1171,7 @@ impl Store {
             match lock.try_lock() {
                 Ok(()) => break,
                 Err(std::fs::TryLockError::WouldBlock) if attempt < 10 => std::thread::sleep(std::time::Duration::from_millis(30)),
-                Err(std::fs::TryLockError::WouldBlock) => anyhow::bail!("this canvas is already open in another Copilot Canvas window"),
+                Err(std::fs::TryLockError::WouldBlock) => anyhow::bail!("this canvas is already open in another Atelier window"),
                 Err(std::fs::TryLockError::Error(e)) => return Err(anyhow::Error::new(e).context(format!("cannot lock {}", lock_path.display()))),
             }
         }
@@ -1601,10 +1601,10 @@ mod tests {
         let instructions = prepare_group_folders(&group).unwrap().unwrap();
         assert!(dir.join(AI_DOCS).is_dir() && dir.join(HUMAN_OUTPUTS).is_dir());
         let text = std::fs::read_to_string(instructions.join("canvas-group.instructions.md")).unwrap();
-        assert!(text.starts_with("---\napplyTo: '**'\n---\n# Canvas group: Release 'x'\n\nYou are working in a session of the \"Release 'x'\" group in Copilot Canvas.\n"), "{text}");
+        assert!(text.starts_with("---\napplyTo: '**'\n---\n# Canvas group: Release 'x'\n\nYou are working in a session of the \"Release 'x'\" group in Atelier.\n"), "{text}");
         assert!(text.contains(&format!("- Notes for other agents (plans, research, investigation logs, context): `{}`\n", dir.join(AI_DOCS).display())), "{text}");
         assert!(text.contains(&format!("final documents; prefer one self-contained HTML file when layout matters): `{}`\n", dir.join(HUMAN_OUTPUTS).display())), "{text}");
-        for part in ["## Notes (the canvas notebook)", "`copilot-canvas note new` writes it for you", "(GOALS.md first)", "## Todos", "`copilot-canvas todo prime`"] {
+        for part in ["## Notes (the canvas notebook)", "`atelier note new` writes it for you", "(GOALS.md first)", "## Todos", "`atelier todo prime`"] {
             assert!(text.contains(part), "{part:?} in {text}");
         }
         assert!(!text.contains("Copilot session"), "agent-neutral wording");

@@ -62,15 +62,15 @@ pub const TEMPLATES: [Template; 3] = [
         daily_at: "",
         rules: "# PR coordinator\n\n\
 Job: follow the pull requests that sessions anywhere on this canvas publish, and make sure each owning session hears about what needs it. \
-The canvas tracks them for you (sessions hand them off with `copilot-canvas pr track`; detected `pr.created` is tracked too), checks each one read-only with gh / az, \
+The canvas tracks them for you (sessions hand them off with `atelier pr track`; detected `pr.created` is tracked too), checks each one read-only with gh / az, \
 and sends you their events (the canvas-prs skill has the details).\n\n\
 On pr.tracked: note the pull request (link, owning session id and name, group) in your memory.\n\
 On pr.comment.new or pr.checks.failed: send the owning session one short, actionable follow-up with the event's `dispatch_key`: \
-`copilot-canvas pr dispatch <url> --key <dispatch_key> --event <type> \"<what to do, with the links that matter>\"`. \
+`atelier pr dispatch <url> --key <dispatch_key> --event <type> \"<what to do, with the links that matter>\"`. \
 The canvas types it in when that session is idle and reports queued, delivered or blocked in Reports; a repeat of a key is never sent twice. \
-You may mark its box: `copilot-canvas effect attention --on \"<owner session id>\" --note \"PR <number>: <in a few words>\"`.\n\
+You may mark its box: `atelier effect attention --on \"<owner session id>\" --note \"PR <number>: <in a few words>\"`.\n\
 On pr.changes_requested: the same, saying in your own words what the reviewer asks.\n\
-On pr.approved: `copilot-canvas effect fireworks --on \"<owner session id>\" --note \"PR <number> approved\"`. On pr.merged or pr.closed: mark it ended in your memory; send nothing.\n\n\
+On pr.approved: `atelier effect fireworks --on \"<owner session id>\" --note \"PR <number> approved\"`. On pr.merged or pr.closed: mark it ended in your memory; send nothing.\n\n\
 Report: `ok` with the number of active pull requests; `warn` when a follow-up is blocked or a pull request waits on its owner for long; `alert` when something needs Thomas.\n\
 Read-only towards pull requests: never comment, reply, resolve threads, vote, push or merge yourself; follow-ups ask the owner only for what the canvas's PR permissions allow (the `[Canvas: ...]` line of each says which).\n",
     },
@@ -84,9 +84,9 @@ Read-only towards pull requests: never comment, reply, resolve threads, vote, pu
 Job: after Thomas's review sessions finish reviewing someone's pull request, tell its author what the review found, then watch that conversation for requests for another review. \
 The canvas keeps the records and the schedule; you write and send the messages and read the replies through the messaging channel configured for you (Follow-ups…: channel, tool, recipient rule, approval). \
 The canvas-review-followup skill has the commands.\n\n\
-On review.completed: draft a concise message to the author (the pull request link, the outcome exactly as the review states it, the actionable findings with their links; nothing the results do not say) and record it with `copilot-canvas review message <review> --draft <file>`. With approval on (the default), stop there.\n\
-On review.message.approved: resolve the recipient and conversation with your channel and the recipient rule (none, several or no access: `copilot-canvas review message <review> --needs-you \"<why>\"`, never guess), send the approved text unchanged, then `copilot-canvas review message <review> --sent --conversation <id> --recipient \"<name>\"`.\n\
-On review.check_due: read only the listed conversations, only the author's messages after `since`. Record each request for another review, a re-review after fixes or review follow-up with `copilot-canvas review request …`; ignore everything else; then `copilot-canvas review checked --conversation <id> --mark <last message id>` (or `--failed \"<why>\"`).\n\n\
+On review.completed: draft a concise message to the author (the pull request link, the outcome exactly as the review states it, the actionable findings with their links; nothing the results do not say) and record it with `atelier review message <review> --draft <file>`. With approval on (the default), stop there.\n\
+On review.message.approved: resolve the recipient and conversation with your channel and the recipient rule (none, several or no access: `atelier review message <review> --needs-you \"<why>\"`, never guess), send the approved text unchanged, then `atelier review message <review> --sent --conversation <id> --recipient \"<name>\"`.\n\
+On review.check_due: read only the listed conversations, only the author's messages after `since`. Record each request for another review, a re-review after fixes or review follow-up with `atelier review request …`; ignore everything else; then `atelier review checked --conversation <id> --mark <last message id>` (or `--failed \"<why>\"`).\n\n\
 Report: `ok` with what you sent or recorded; `alert` when you need Thomas (no access, an ambiguous recipient).\n\
 Never send what Thomas has not approved, never message anyone but the review's author, never claim an approval or a fix the review did not establish, and never start, resume or do a review yourself.\n",
     },
@@ -482,7 +482,7 @@ impl App {
             return;
         }
         if self.summary(&node).is_some_and(|s| s.live) {
-            return self.notify("Its conversation is open in another terminal right now; Copilot Canvas never starts a second copy.", true);
+            return self.notify("Its conversation is open in another terminal right now; Atelier never starts a second copy.", true);
         }
         self.agent_ui.chat_after_run.remove(id);
         if node.fresh {
@@ -512,10 +512,10 @@ impl App {
         };
         let ask = message.map(str::to_owned).unwrap_or_else(|| "Read them now, then tell the user in a line or two what you will do.".to_owned());
         format!(
-            "[Copilot Canvas · canvas-wide agent \"{name}\"] This is your chat with the user: the same conversation your runs continue. \
+            "[Atelier · canvas-wide agent \"{name}\"] This is your chat with the user: the same conversation your runs continue. \
              You watch {watched} and run {when}. {files} \
-             The copilot-canvas command reaches the canvas: copilot-canvas events (every group, session and agent), \
-             copilot-canvas send --to \"<session name or id>\" \"<message>\", copilot-canvas status <ok|warn|alert|done> \"<headline>\".\n\n{ask}",
+             The atelier command reaches the canvas: atelier events (every group, session and agent), \
+             atelier send --to \"<session name or id>\" \"<message>\", atelier status <ok|warn|alert|done> \"<headline>\".\n\n{ask}",
             name = node.name
         )
     }
@@ -1006,8 +1006,8 @@ mod tests {
         // The service's style: a Windows service's path on every client.
         assert_eq!(app.service_path(&app.canvas_agents_dir().unwrap()), r"C:\h\canvas-agents\c1");
         app.info.platform = "macos".into();
-        app.info.home = "/Users/me/.copilot-canvas".into();
-        assert_eq!(app.service_path(&app.canvas_agents_dir().unwrap()), "/Users/me/.copilot-canvas/canvas-agents/c1");
+        app.info.home = "/Users/me/.atelier".into();
+        assert_eq!(app.service_path(&app.canvas_agents_dir().unwrap()), "/Users/me/.atelier/canvas-agents/c1");
         app.info.platform = String::new();
         app.info.home = r"C:\h".into();
         app.installed_agents = vec![crate::agents::AgentKind::OpenCode];

@@ -1,6 +1,6 @@
 # GPU client (Phase 4 MVP, Phase 5 parity, Phase 6 hardening)
 
-`copilot-canvas-gui.exe` is the native GPU front end of Copilot Canvas: the
+`atelier-gui.exe` is the native GPU front end of Atelier: the
 same canvas, sidebar, dialogs and terminals as the TUI, drawn with wgpu 30,
 winit 0.30.13 and glyphon 0.12 (the stack chosen in `docs/GPU-SPIKE.md`). It
 runs canvas-core's `App` unchanged as its state machine and talks to the same
@@ -14,15 +14,15 @@ saved window placement, a UI Automation tree (AccessKit), crash-log details,
 the GUI load probes and `selftest --client gui --hardening`.
 
 ```powershell
-cargo build --release                       # builds copilot-canvas.exe and copilot-canvas-gui.exe
-target\release\copilot-canvas-gui.exe --demo
-target\release\copilot-canvas.exe --gui     # the same, launched from the main program
+cargo build --release                       # builds atelier.exe and atelier-gui.exe
+target\release\atelier-gui.exe --demo
+target\release\atelier.exe --gui     # the same, launched from the main program
 ```
 
 Options: `--demo`, `--perf`, `--cwd DIR`, `--canvas FILE`, `--instance NAME`,
 `--home DIR`, `--sessions-dir DIR`, `--remote loopback|HOST:PORT`,
 `--test-hooks`, `--size COLSxROWS`. The terminal service is the
-`copilot-canvas.exe` next to the GUI: its content hash is the build both sides
+`atelier.exe` next to the GUI: its content hash is the build both sides
 compare, and the service is started (and upgraded) from it.
 
 ## 1. Architecture
@@ -171,7 +171,7 @@ the least recently drawn textures not used in that frame are freed, and an
 image that still does not fit is skipped. Images wider or taller than the
 device allows (`max_texture_dimension_2d`, at most 8192) are dropped, and a
 texture the GPU refuses (an error scope around its creation) drops only that
-image. `copilot-canvas
+image. `atelier
 kitty-demo` prints a test image (magenta and green halves, 8 × 2 cells);
 `kitty-demo apc` prints the raw Kitty command instead.
 
@@ -373,7 +373,7 @@ and size.
   fades, a still, soft glow: 0.6 at the outline falling to 0 at 14 units
   (`STILL`), drawn in full frames only. *Effects off*, *Settings › Working
   glow* off (`settings.json` `grid_pulse`, this machine, next to Effects;
-  `COPILOT_CANVAS_GRID_PULSE=on|off` overrides it; both named after the
+  `ATELIER_GRID_PULSE=on|off` overrides it; both named after the
   pulse it replaced) and the `freeze` hook (golden screenshots unchanged):
   none, at once. The TUI draws the dots near working boxes in four steps
   (`glow::tui_color`: the normal colour and three lighter ones), rings
@@ -414,7 +414,7 @@ notifications (OSC 777 / OSC 9, with their title and body:
 `ServiceMsg::Notification` to `CAP_NOTIFY` clients) and for sessions that
 start to need you. Toasts use WinRT's `ToastNotificationManager` from a
 background thread. An unpackaged app needs a registered AppUserModelID: the
-GUI registers `CopilotCanvas.Gui` under
+GUI registers `Atelier.Gui` under
 `HKCU\Software\Classes\AppUserModelId` (display name; no Start-menu shortcut)
 and gives the process that id. No toast is shown while the window is in
 front, the same text is shown once (however many windows are open), and a
@@ -462,7 +462,7 @@ moves, resizes and hides it after each frame). Layers:
    (`WebResourceRequested` for `*`; with a runtime that has
    `AddWebResourceRequestedFilterWithRequestSourceKinds`, workers' requests
    too) is answered inside the view: 403
-   (`Blocked by Copilot Canvas`) unless it is a file of the HTML note shown
+   (`Blocked by Atelier`) unless it is a file of the HTML note shown
    (3, below); downloads cancelled, permission requests denied, external URI
    schemes never launched, new windows refused; every navigation but the
    canvas's own load of the page cancelled (a link the user clicks becomes a
@@ -498,7 +498,7 @@ moves, resizes and hides it after each frame). Layers:
    wildcards, control characters, trailing dots or spaces, device names), so
    its relative links resolve as on disk; of that root only the **note's own
    folder and the folders below it** are served (`webpane::classify`):
-   pictures, styles and fonts next to the note (as `copilot-canvas note`
+   pictures, styles and fonts next to the note (as `atelier note`
    tells agents), never a sibling folder's files or the rest of a mount. A
    link to another file under the root still opens it in the app. Only
    `GET`s are served, and a document (the page or a frame) only when it is
@@ -597,14 +597,14 @@ core. A local service of another build is restarted when it runs no
 sessions; otherwise the window opens with a dialog (restart and resume, or
 later / quit when its protocol is older). The toolbar's "⟳ Update service"
 works as in the TUI. The service runs from a per-build copy of the
-`copilot-canvas.exe` next to the GUI (`paths::set_build_exe`).
+`atelier.exe` next to the GUI (`paths::set_build_exe`).
 
-**App icon.** `assets/icon/copilot-canvas.ico` (drawn by `assets/icon/make_icon.py`:
+**App icon.** `assets/icon/atelier.ico` (drawn by `assets/icon/make_icon.py`:
 a canvas tile with three session cards in the status colours and the toolbar's
 diamond; sizes up to 32 px are simplified) is icon resource 1 of both
 executables (`build.rs`, `crates/canvas-gui/build.rs`). The GUI sets it as
 each window's small and taskbar icon. Its windows carry the app id
-`CopilotCanvas.Gui`: a shortcut that should share their taskbar button (a
+`Atelier.Gui`: a shortcut that should share their taskbar button (a
 pinned one) needs the same `System.AppUserModel.ID`.
 
 **Crash log (`crashlog.rs`).** Panics on any thread (the UI thread and
@@ -629,7 +629,7 @@ reconfigured. When no hardware adapter or device works the GUI uses Windows'
 software rasterizer (WARP, `force_fallback_adapter`) and says so in a notice;
 when that fails too it exits with "cannot draw: no usable GPU and no software
 renderer (…). The terminal UI shows the same canvas and sessions without a
-GPU: run `copilot-canvas`." (`CANVAS_GUI_TEST_GPU=nohw|none` refuses adapters
+GPU: run `atelier`." (`CANVAS_GUI_TEST_GPU=nohw|none` refuses adapters
 for the tests.)
 
 **DPI changes.** `ScaleFactorChanged` (a window moved to a monitor with
@@ -746,14 +746,14 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   overlay. A mismatch writes `<state>.snap.new` and fails with a line diff;
   `UPDATE_SNAPSHOTS=1 cargo test -p canvas-core --test view_snapshots`
   accepts the new texts.
-- `copilot-canvas selftest --client gui [--remote loopback]` runs the TUI
-  self-test's 45 steps against the GUI in a 170 × 46 cell window. A `Ui`
+- `atelier selftest --client gui [--remote loopback]` runs the TUI
+  self-test's 46 steps against the GUI in a 170 × 46 cell window. A `Ui`
   trait has two drivers: the TUI's hidden pseudoconsole and `GuiDriver`,
-  which starts `copilot-canvas-gui.exe --test-hooks --size 170x46` and turns
+  which starts `atelier-gui.exe --test-hooks --size 170x46` and turns
   the terminal input the scenario sends (keys, Alt+digits, Ctrl+letters, SGR
   mouse reports) into hook events at cell centres. `CANVAS_GUI_SCREENS=DIR`
   saves PNGs at six steps.
-- `copilot-canvas bench --client gui [--seconds S] [--remote loopback]`
+- `atelier bench --client gui [--seconds S] [--remote loopback]`
   measures §4 below over the hooks (`CANVAS_GUI_SCREENS` also applies). The
   GUI ports of the TUI's load probes:
   - `bench --client gui --stress [--sessions N --agents M]` (default 100 and
@@ -767,8 +767,8 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
     with subagents and subsessions);
   - `bench --client gui --burn N`: keystroke → present (real `WM_KEYDOWN`s)
     through an echo terminal while N sessions burn CPU, once with the
-    service's priority manager and once with `COPILOT_CANVAS_NO_PRIORITY=1`.
-- `copilot-canvas selftest --client gui --hardening`: nine checks with a table
+    service's priority manager and once with `ATELIER_NO_PRIORITY=1`.
+- `atelier selftest --client gui --hardening`: nine checks with a table
   (about 32 s): the toolbar's counts at 170 columns, overlapping boxes, a
   simulated and a real (destroyed) device loss with identical PNGs before and
   after, a DPI change and back (identical PNG, centre kept), window placement
@@ -776,16 +776,16 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   `IUIAutomation` COM API (and "+ New" pressed through UIA's Invoke pattern),
   crash reports from the UI thread and a helper thread, the WARP fallback and
   the no-adapter error, damage frames while four terminals stream.
-- `copilot-canvas selftest --client gui --parity` runs one check per row of
+- `atelier selftest --client gui --parity` runs one check per row of
   PLAN §8 plus the GUI-only features, in a sandbox with a stand-in Copilot
   CLI, and prints the table (`docs/PARITY.md`).
-- `copilot-canvas selftest --client gui --golden [--update]`: golden
+- `atelier selftest --client gui --golden [--update]`: golden
   screenshots with a tolerant image diff (about 30 s). The GUI runs at
   170 × 46 cells on scripted states that depend neither on the machine's data
   nor on the clock: the demo canvas (`demo-canvas`), zoomed out to 50 %
   (`demo-zoom-50`), a box's context menu (`demo-context-menu`), the
   new-session dialog (`demo-new-session-dialog`; the default agent is pinned
-  with `COPILOT_CANVAS_AGENT`), two tiled PowerShell terminals that clear the
+  with `ATELIER_AGENT`), two tiled PowerShell terminals that clear the
   screen, print fixed text (16, 256 and RGB colours, bold, dim, italic,
   inverse, strikethrough, overline, single/double/curly/dotted/dashed and
   coloured underlines, emoji, CJK, box and block characters) and set the
@@ -813,11 +813,11 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   pixel for pixel (0 differing pixels); changing ANSI green in
   `canvas-gui/src/theme.rs` failed `terminals-tiled` with 0.156 % differing
   pixels (under the fraction) and 26 blocks over the luminance limit.
-- `copilot-canvas bench --client gui --effects [--seconds S]`: the visuals
+- `atelier bench --client gui --effects [--seconds S]`: the visuals
   canvas idle, with fireworks in view, attention in view and out of view, and
   after the effects are cleared: CPU, frames per second and frame times of
   each phase (§4).
-- `copilot-canvas bench --client gui --loops [--seconds S]`: eight looping
+- `atelier bench --client gui --loops [--seconds S]`: eight looping
   sessions in view (their dots moving), the same while panning, scrolled
   out of view, and with reduced motion: CPU, loop and full frames per
   second, frame times (§4). Unit tests check the dot's place against the
@@ -827,7 +827,7 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   ViewModel snapshots `looping-sessions` and
   `looping-sessions-reduced-motion` pin both renderings; parity row 7b
   checks PNG captures against the clock.
-- `copilot-canvas bench --client gui --pulse [--seconds S]`: six sessions
+- `atelier bench --client gui --pulse [--seconds S]`: six sessions
   from synthetic histories in view; nothing working, then one and five
   working with the working glow on and off (the frames as before the glow),
   five with reduced motion (the static glow), the fade-out after they stop,
@@ -865,7 +865,7 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
 - `CANVAS_GUI_TRACE=1` prints start-up milestones (and GPU events) on stderr.
 
 **Test hooks.** With `--test-hooks` the GUI prints a pipe name
-(`\\.\pipe\copilot-canvas-gui-test-<pid>`, owner-only, local only) and takes
+(`\\.\pipe\atelier-gui-test-<pid>`, owner-only, local only) and takes
 one JSON command per line. Commands act on the first window unless they name
 one (`"window": n`, the creation index):
 

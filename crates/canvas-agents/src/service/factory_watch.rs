@@ -70,11 +70,11 @@ fn event(route: &AutoRoute, kind: &str, data: serde_json::Value, now: u64) -> Ev
     Event { kind: kind.into(), group: route.group.clone(), source: format!("automation:{}", route.name), source_name: route.name.clone(), data, ms: now, ..Default::default() }
 }
 
-/// What the doctor should check first for automations Copilot Canvas itself installs.
+/// What the doctor should check first for automations Atelier itself installs.
 fn hint(name: &str) -> Option<&'static str> {
     name.eq_ignore_ascii_case(canvas_common::remote::TUNNEL_TASK).then_some(
         "This hosts the Dev Tunnel for remote canvases. Check the sign-in first (`devtunnel user show`; sign in again with `devtunnel user login -g`), \
-         then the tunnel and its port (`devtunnel show copilot-canvas`), then `copilot-canvas doctor` (remote listening). Never make the tunnel anonymous.",
+         then the tunnel and its port (`devtunnel show atelier`), then `atelier doctor` (remote listening). Never make the tunnel anonymous.",
     )
 }
 
@@ -156,7 +156,7 @@ pub fn poll(routing: &Routing, watch: &mut Watch, now: u64) -> (Vec<Event>, bool
                         "status_file": route.status,
                         "workload_logs": logs,
                         "docs": route.docs,
-                        "rerun": format!("copilot-canvas automations run \"{}\"", route.name),
+                        "rerun": format!("atelier automations run \"{}\"", route.name),
                     });
                     if let Some(hint) = hint(&route.name) {
                         data["hint"] = hint.into();

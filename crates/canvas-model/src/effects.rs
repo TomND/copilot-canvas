@@ -1,5 +1,5 @@
 //! The effects collection: named canvas effects a session (usually a group's
-//! passive session) puts on a box or a group with `copilot-canvas effect`,
+//! passive session) puts on a box or a group with `atelier effect`,
 //! e.g. fireworks when a pull request is approved. The service keeps them
 //! (in the bus state) until they are acknowledged with a click or their
 //! kind's time runs out, so every client shows them and they survive client
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bus::Routing;
 
-/// The bus event `copilot-canvas effect` sends (`data`: effect, on, note, kind).
+/// The bus event `atelier effect` sends (`data`: effect, on, note, kind).
 pub const EVENT: &str = "canvas.effect";
 /// The bus event a click sends to acknowledge effects (`data.ids`).
 pub const ACK: &str = "canvas.effect_ack";
@@ -35,7 +35,7 @@ pub struct EffectKind {
     pub about: &'static str,
 }
 
-/// The registry, in the order `copilot-canvas effect` lists them.
+/// The registry, in the order `atelier effect` lists them.
 pub const KINDS: [EffectKind; 4] = [
     EffectKind { name: "fireworks", glyph: "✦", label: "approved", until_ack: true, ttl_ms: WEEK_MS, about: "a celebration (a pull request approved); runs until clicked" },
     EffectKind {

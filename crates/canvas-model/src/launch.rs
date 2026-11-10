@@ -12,7 +12,19 @@ use crate::doc::{Group, LaunchDefaults, Node};
 /// (no field can be added without breaking older peers), its `env` already
 /// does; the service takes the entry out before the agent starts, and an
 /// older service passes it on to the agent, where it does nothing.
-pub const GROUP_SKILLS_ENV: &str = "COPILOT_CANVAS_GROUP_SKILLS";
+///
+/// A wire constant: it keeps its name from before the rename to Atelier
+/// ([`canvas_common::legacy::GROUP_SKILLS_ENV`]), the one services of the previous build
+/// take out; services take either name ([`GROUP_SKILLS_NAMES`]).
+pub const GROUP_SKILLS_ENV: &str = canvas_common::legacy::GROUP_SKILLS_ENV;
+
+/// Both names of the skill folders' entry (the wire's, and the `ATELIER_` one).
+pub const GROUP_SKILLS_NAMES: [&str; 2] = [GROUP_SKILLS_ENV, "ATELIER_GROUP_SKILLS"];
+
+/// Whether an environment entry is the skill folders' (either name, any case).
+pub fn is_group_skills(key: &str) -> bool {
+    GROUP_SKILLS_NAMES.iter().any(|name| key.eq_ignore_ascii_case(name))
+}
 
 /// The skill folders a launch gets (`LaunchDefaults::skill_dirs` of the
 /// canvas and the box's group, combined).
@@ -31,7 +43,7 @@ pub fn attach_group_skills(launch: &mut AgentLaunch, group: &str, dirs: &[String
         return;
     }
     let value = GroupSkills { group: group.to_owned(), dirs };
-    launch.env.retain(|(k, _)| !k.eq_ignore_ascii_case(GROUP_SKILLS_ENV));
+    launch.env.retain(|(k, _)| !is_group_skills(k));
     launch.env.push((GROUP_SKILLS_ENV.to_owned(), serde_json::to_string(&value).unwrap_or_default()));
 }
 
@@ -41,7 +53,7 @@ pub fn attach_group_skills(launch: &mut AgentLaunch, group: &str, dirs: &[String
 pub fn take_group_skills(launch: &mut AgentLaunch) -> Option<GroupSkills> {
     let mut found = None;
     launch.env.retain(|(k, v)| {
-        if !k.eq_ignore_ascii_case(GROUP_SKILLS_ENV) {
+        if !is_group_skills(k) {
             return true;
         }
         found = serde_json::from_str::<GroupSkills>(v).ok().filter(|s| !s.dirs.is_empty());
@@ -51,7 +63,7 @@ pub fn take_group_skills(launch: &mut AgentLaunch) -> Option<GroupSkills> {
 }
 
 /// What to launch for an agent session box. The service adds the canvas
-/// integration (skills plugin, identity, `copilot-canvas` on PATH) and turns
+/// integration (skills plugin, identity, `atelier` on PATH) and turns
 /// it into the agent's command line.
 ///
 /// Launch defaults (canvas, overridden by the box's group) apply to new
@@ -149,6 +161,8 @@ mod tests {
         attach_group_skills(&mut launch, "g", &[r"C:\s".into()]);
         attach_group_skills(&mut launch, "g", &[r"C:\t".into()]);
         assert_eq!(launch.env.iter().filter(|(k, _)| k == GROUP_SKILLS_ENV).count(), 1, "set once");
+        // Under the name services of the previous build take out.
+        assert_eq!(GROUP_SKILLS_ENV, "COPILOT_CANVAS_GROUP_SKILLS"); // rename:keep
         // AgentLaunch travels as postcard inside ClientMsg::Launch: its shape is unchanged.
         let message = canvas_common::protocol::ClientMsg::Launch { id: "t".into(), kind: canvas_common::protocol::LaunchKind::Agent(Box::new(launch.clone())), cwd: r"C:\w".into(), cols: 80, rows: 24 };
         let mut bytes = Vec::new();
@@ -165,8 +179,11 @@ mod tests {
         let mut cased = AgentLaunch { env: vec![("copilot_canvas_group_skills".into(), r#"{"dirs":["C:\\s"]}"#.into()), ("B".into(), "2".into())], ..Default::default() };
         assert_eq!(take_group_skills(&mut cased).map(|s| s.dirs), Some(vec![r"C:\s".to_owned()]));
         assert_eq!(cased.env, [("B".to_owned(), "2".to_owned())]);
-        let mut twice = AgentLaunch { env: vec![("Copilot_Canvas_Group_Skills".into(), "x".into())], ..Default::default() };
+        let mut twice = AgentLaunch { env: vec![("Atelier_Group_Skills".into(), "x".into())], ..Default::default() };
         attach_group_skills(&mut twice, "g", &[r"C:\s".into()]);
         assert_eq!(twice.env.len(), 1, "replaced, whatever its case");
+        // A client that names it ATELIER_GROUP_SKILLS is understood too.
+        let mut renamed = AgentLaunch { env: vec![("ATELIER_GROUP_SKILLS".into(), r#"{"dirs":["C:\\n"]}"#.into())], ..Default::default() };
+        assert_eq!(take_group_skills(&mut renamed).map(|s| s.dirs), Some(vec![r"C:\n".to_owned()]));
     }
 }

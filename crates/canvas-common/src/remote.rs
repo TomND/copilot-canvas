@@ -10,12 +10,19 @@ use serde::{Deserialize, Serialize};
 /// The service's remote port when `remote.listen` is not set.
 pub const DEFAULT_PORT: u16 = 47600;
 /// The persistent Dev Tunnel `remote tunnel-setup` suggests.
-pub const DEFAULT_TUNNEL: &str = "copilot-canvas";
+pub const DEFAULT_TUNNEL: &str = "atelier";
+
+/// The Dev Tunnel this machine hosts: `remote.tunnel`, else the default of
+/// installs set up before the rename (Dev Tunnel ids are the user's: they
+/// are never renamed), [`crate::legacy::DEFAULT_TUNNEL`].
+pub fn tunnel_of(setting: Option<&str>) -> String {
+    setting.map(str::trim).filter(|t| !t.is_empty()).unwrap_or(crate::legacy::DEFAULT_TUNNEL).to_owned()
+}
 /// The automation that hosts the tunnel on the service's machine.
-pub const TUNNEL_TASK: &str = "CopilotCanvas-Tunnel";
+pub const TUNNEL_TASK: &str = "Atelier-Tunnel";
 /// Overrides the Dev Tunnels CLI: a program, optionally followed by `|` and
-/// arguments that go before the command's own (`C:\x\copilot-canvas.exe|devtunnel-standin`).
-pub const DEVTUNNEL_ENV: &str = "COPILOT_CANVAS_DEVTUNNEL";
+/// arguments that go before the command's own (`C:\x\atelier.exe|devtunnel-standin`).
+pub const DEVTUNNEL_ENV: &str = "ATELIER_DEVTUNNEL";
 
 /// `<home>/remote`: paired servers (client side) and paired clients (service side).
 pub fn dir(home: &Path) -> PathBuf {
@@ -28,7 +35,7 @@ pub fn valid_name(name: &str) -> bool {
 }
 
 /// Dev Tunnel ids: 1–70 lower-case letters, digits, '-' and '.' (a cluster
-/// suffix, `copilot-canvas.usw2`), starting with a letter or digit: an id
+/// suffix, `atelier.usw2`), starting with a letter or digit: an id
 /// becomes an argument of `devtunnel`, so it can never read as an option.
 pub fn valid_tunnel_id(id: &str) -> bool {
     id.len() <= 70
@@ -79,7 +86,7 @@ impl ServerRecord {
         anyhow::bail!("the secret of {:?} is DPAPI-protected (Windows only)", self.name)
     }
 
-    /// `tunnel copilot-canvas, port 47600` or the direct address.
+    /// `tunnel atelier, port 47600` or the direct address.
     pub fn describe(&self) -> String {
         match (&self.tunnel, &self.addr) {
             (Some(tunnel), _) => format!("tunnel {tunnel}, port {}", self.port),
@@ -145,9 +152,9 @@ pub struct DevTunnelCli {
     pub prefix: Vec<String>,
 }
 
-/// The Dev Tunnels CLI: `COPILOT_CANVAS_DEVTUNNEL`, else [`find_devtunnel_exe`].
+/// The Dev Tunnels CLI: `ATELIER_DEVTUNNEL`, else [`find_devtunnel_exe`].
 pub fn devtunnel() -> Option<DevTunnelCli> {
-    if let Some(value) = std::env::var(DEVTUNNEL_ENV).ok().filter(|v| !v.trim().is_empty()) {
+    if let Some(value) = crate::env::var(DEVTUNNEL_ENV).ok().filter(|v| !v.trim().is_empty()) {
         let mut parts = value.split('|').map(str::trim);
         let program = PathBuf::from(parts.next().unwrap_or_default());
         return Some(DevTunnelCli { program, prefix: parts.filter(|p| !p.is_empty()).map(str::to_owned).collect() });
@@ -253,7 +260,7 @@ pub fn web_url_from_show(text: &str, port: u16) -> Option<String> {
 }
 
 /// The web-forwarding address for a tunnel id with its cluster
-/// (`copilot-canvas.usw2`) and a port.
+/// (`atelier.usw2`) and a port.
 pub fn web_url_for(id_with_cluster: &str, port: u16) -> Option<String> {
     let (name, cluster) = id_with_cluster.split_once('.')?;
     (valid_tunnel_id(name) && !cluster.is_empty() && cluster.chars().all(|c| c.is_ascii_alphanumeric())).then(|| format!("wss://{name}-{port}.{cluster}.devtunnels.ms"))
@@ -282,8 +289,10 @@ pub fn open_access(secret: &[u8], nonce_b64: &str, sealed_b64: &str) -> Result<(
     Ok((url.to_owned(), token.to_owned(), value["exp"].as_u64().unwrap_or(0)))
 }
 
-/// What the iPhone needs to pair (`copilot-canvas remote pair --qr`), as a
-/// `ccanvas://pair?…` link shown in a QR code.
+/// What the iPhone needs to pair (`atelier remote pair --qr`), as an
+/// `atelier://pair?…` link shown in a QR code. Links of the build before the
+/// rename (`legacy::PAIR_SCHEME`) are read too: the iPhone app accepts both
+/// (docs/REMOTE.md, *Pairing links*).
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct PairLink {
     /// What the phone calls this service (`cloudpc`).
@@ -298,7 +307,7 @@ pub struct PairLink {
 }
 
 impl PairLink {
-    pub const SCHEME: &'static str = "ccanvas://pair";
+    pub const SCHEME: &'static str = "atelier://pair";
 
     pub fn to_uri(&self) -> String {
         use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -313,7 +322,8 @@ impl PairLink {
     /// Reads a link (what the phone's camera scanned).
     pub fn parse(uri: &str) -> Result<Self> {
         use percent_encoding::percent_decode_str;
-        let query = uri.trim().strip_prefix(Self::SCHEME).and_then(|q| q.strip_prefix('?')).context("not a Copilot Canvas pairing link")?;
+        let uri = uri.trim();
+        let query = uri.strip_prefix(Self::SCHEME).or_else(|| uri.strip_prefix(crate::legacy::PAIR_SCHEME)).and_then(|q| q.strip_prefix('?')).context("not an Atelier pairing link")?;
         let mut link = PairLink::default();
         for pair in query.split('&') {
             let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
@@ -348,7 +358,7 @@ mod tests {
         let secret = crate::pairing::new_secret();
         let record = ServerRecord {
             name: "CloudPC".into(),
-            tunnel: Some("copilot-canvas".into()),
+            tunnel: Some("atelier".into()),
             port: 47600,
             client_id: "pc-1".into(),
             secret: crate::dpapi::protect_hex(&secret, "test").unwrap(),
@@ -364,7 +374,7 @@ mod tests {
         assert_eq!(loaded, servers);
         let found = loaded.find("cloudpc").unwrap();
         assert_eq!(found.secret().unwrap(), secret);
-        assert_eq!(found.describe(), "tunnel copilot-canvas, port 47600");
+        assert_eq!(found.describe(), "tunnel atelier, port 47600");
         let mut changed = loaded.clone();
         changed.upsert(ServerRecord { client_id: "pc-2".into(), ..record });
         assert_eq!(changed.servers.len(), 2, "same name replaces");
@@ -382,7 +392,7 @@ mod tests {
 
     #[test]
     fn tunnel_ids_follow_the_setup_rule() {
-        for good in ["copilot-canvas", "a", "x1-2", "copilot-canvas.usw2", &"a".repeat(70)] {
+        for good in ["atelier", "a", "x1-2", "atelier.usw2", &"a".repeat(70)] {
             assert!(valid_tunnel_id(good), "{good}");
         }
         for bad in ["", "-x", "--port", ".x", "Copilot", "a b", "a;b", "a/b", &"a".repeat(71)] {
@@ -393,10 +403,10 @@ mod tests {
     #[test]
     fn the_devtunnel_override_takes_a_program_and_prefix_arguments() {
         // Only this test sets the variable.
-        unsafe { std::env::set_var(DEVTUNNEL_ENV, r"C:\x\copilot-canvas.exe|devtunnel-standin") };
+        unsafe { std::env::set_var(DEVTUNNEL_ENV, r"C:\x\atelier.exe|devtunnel-standin") };
         let cli = devtunnel().unwrap();
         unsafe { std::env::remove_var(DEVTUNNEL_ENV) };
-        assert_eq!(cli, DevTunnelCli { program: PathBuf::from(r"C:\x\copilot-canvas.exe"), prefix: vec!["devtunnel-standin".into()] });
+        assert_eq!(cli, DevTunnelCli { program: PathBuf::from(r"C:\x\atelier.exe"), prefix: vec!["devtunnel-standin".into()] });
     }
 
     fn jwt(claims: &str) -> String {
@@ -407,8 +417,8 @@ mod tests {
 
     #[test]
     fn tunnel_tokens_are_read_from_text_or_json_with_their_expiry() {
-        let token = jwt(r#"{"exp":1800000000,"scp":"connect","clusterId":"usw2","tunnelId":"copilot-canvas"}"#);
-        let text = format!("Token tunnel ID: copilot-canvas.usw2\nToken scope: connect\nToken lifetime: 1.00:00:00\nToken expiration: 2027-01-15 08:00:00 UTC\nToken: {token}\n");
+        let token = jwt(r#"{"exp":1800000000,"scp":"connect","clusterId":"usw2","tunnelId":"atelier"}"#);
+        let text = format!("Token tunnel ID: atelier.usw2\nToken scope: connect\nToken lifetime: 1.00:00:00\nToken expiration: 2027-01-15 08:00:00 UTC\nToken: {token}\n");
         let parsed = parse_token_output(&text).unwrap();
         assert_eq!(parsed, TunnelToken { token: token.clone(), expires_ms: 1_800_000_000_000 });
         assert_eq!(parse_token_output(&format!(r#"{{"token": "{token}", "scope": "connect"}}"#)).unwrap().token, token);
@@ -419,22 +429,29 @@ mod tests {
 
     #[test]
     fn web_addresses_come_from_the_listed_port_or_the_cluster() {
-        let show = "Tunnel ID             : copilot-canvas.usw2\nPorts                 : 1\n  47600  auto  https://copilot-canvas-47600.usw2.devtunnels.ms/\n";
-        assert_eq!(web_url_from_show(show, 47600).as_deref(), Some("wss://copilot-canvas-47600.usw2.devtunnels.ms"));
-        assert_eq!(web_url_from_show("Tunnel ID: copilot-canvas.euw\n", 47600).as_deref(), Some("wss://copilot-canvas-47600.euw.devtunnels.ms"));
+        let show = "Tunnel ID             : atelier.usw2\nPorts                 : 1\n  47600  auto  https://atelier-47600.usw2.devtunnels.ms/\n";
+        assert_eq!(web_url_from_show(show, 47600).as_deref(), Some("wss://atelier-47600.usw2.devtunnels.ms"));
+        assert_eq!(web_url_from_show("Tunnel ID: atelier.euw\n", 47600).as_deref(), Some("wss://atelier-47600.euw.devtunnels.ms"));
         assert_eq!(web_url_from_show("nothing here", 47600), None);
-        assert_eq!(web_url_for("copilot-canvas", 1), None, "no cluster");
+        assert_eq!(web_url_for("atelier", 1), None, "no cluster");
     }
 
     #[test]
     fn pairing_links_round_trip() {
-        let link = PairLink { name: "cloudpc".into(), url: "wss://copilot-canvas-47600.usw2.devtunnels.ms".into(), code: "ABCDEFGHJKMN".into(), token: jwt("{}"), token_expires_ms: 5 };
+        let link = PairLink { name: "cloudpc".into(), url: "wss://atelier-47600.usw2.devtunnels.ms".into(), code: "ABCDEFGHJKMN".into(), token: jwt("{}"), token_expires_ms: 5 };
         let uri = link.to_uri();
-        assert!(uri.starts_with("ccanvas://pair?v=1&"));
+        assert!(uri.starts_with("atelier://pair?v=1&"));
         assert_eq!(PairLink::parse(&uri).unwrap(), link);
-        let typed = PairLink::parse("ccanvas://pair?v=1&url=ws%3A%2F%2F127.0.0.1%3A47600&code=abcd-efgh-jkmn").unwrap();
-        assert_eq!((typed.code.as_str(), typed.name.as_str(), typed.token.as_str()), ("ABCDEFGHJKMN", "cloudpc", ""));
+        // Links of the build before the rename (printed QR codes, older services) still pair.
+        let old = uri.replacen(PairLink::SCHEME, crate::legacy::PAIR_SCHEME, 1);
+        assert!(old.starts_with("ccanvas://pair?v=1&"));
+        assert_eq!(PairLink::parse(&old).unwrap(), link);
+        for scheme in [PairLink::SCHEME, crate::legacy::PAIR_SCHEME] {
+            let typed = PairLink::parse(&format!(" {scheme}?v=1&url=ws%3A%2F%2F127.0.0.1%3A47600&code=abcd-efgh-jkmn")).unwrap();
+            assert_eq!((typed.code.as_str(), typed.name.as_str(), typed.token.as_str()), ("ABCDEFGHJKMN", "cloudpc", ""));
+            assert!(PairLink::parse(&format!("{scheme}?v=1&url=http%3A%2F%2Fx&code=ABCDEFGHJKMN")).is_err(), "WebSocket addresses only");
+        }
         assert!(PairLink::parse("https://example.com").is_err());
-        assert!(PairLink::parse("ccanvas://pair?v=1&url=http%3A%2F%2Fx&code=ABCDEFGHJKMN").is_err(), "WebSocket addresses only");
+        assert!(PairLink::parse("atelierx://pair?v=1&url=ws%3A%2F%2Fx&code=ABCDEFGHJKMN").is_err());
     }
 }

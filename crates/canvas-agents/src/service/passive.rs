@@ -139,7 +139,7 @@ fn digest(events: &Path) -> (String, String) {
 
 /// Writes what the group's sessions are doing for a passive run to read.
 fn write_context(shared: &Shared, routing: &Routing, group: &bus::RouteGroup, state: &BusState, path: &Path) {
-    let mut text = format!("# Sessions in group \"{}\"\n\nWritten by Copilot Canvas at {} (UTC). Open a history file for details.\n", group.name, crate::paths::rfc3339_now());
+    let mut text = format!("# Sessions in group \"{}\"\n\nWritten by Atelier at {} (UTC). Open a history file for details.\n", group.name, crate::paths::rfc3339_now());
     let sessions = lock(&shared.sessions).clone();
     for (id, _) in routing.members.iter().filter(|(_, g)| **g == group.id) {
         let name = routing.names.get(id).cloned().unwrap_or_else(|| id.clone());
@@ -160,7 +160,7 @@ fn write_context(shared: &Shared, routing: &Routing, group: &bus::RouteGroup, st
     }
     let automations = super::factory_watch::context(routing, &group.id, &super::factory_watch::load(&shared.instance.home));
     if !automations.is_empty() {
-        text.push_str("\n# Automations in this group\n\nScheduled tasks managed from manifests (`copilot-canvas automations show <name>` for details).\n");
+        text.push_str("\n# Automations in this group\n\nScheduled tasks managed from manifests (`atelier automations show <name>` for details).\n");
         text.push_str(&automations);
     }
     text.push_str("\n## Passive sessions\n");
@@ -193,7 +193,7 @@ fn ensure_files(paths: &bus::PassivePaths, spec: &PassiveSpec) {
 /// ungrouped sessions, and the passive sessions and canvas-wide agents.
 fn write_canvas_context(shared: &Shared, routing: &Routing, state: &BusState, path: &Path) {
     let mut text = format!(
-        "# The canvas: every group and its sessions\n\nWritten by Copilot Canvas at {} (UTC) for canvas-wide agents. Message a session with `copilot-canvas send --to \"<name or id>\"`.\n",
+        "# The canvas: every group and its sessions\n\nWritten by Atelier at {} (UTC) for canvas-wide agents. Message a session with `atelier send --to \"<name or id>\"`.\n",
         crate::paths::rfc3339_now()
     );
     let sessions = lock(&shared.sessions).clone();
@@ -287,7 +287,7 @@ pub(super) fn handle_event(shared: &Shared, routing: &Routing, state: &mut BusSt
                 }
                 Ok(Target::Session(id)) if !routing.no_messages.contains(&id) => {
                     targets.push(id.clone());
-                    let from = if event.source_name.is_empty() { "Copilot Canvas".to_owned() } else { event.source_name.clone() };
+                    let from = if event.source_name.is_empty() { "Atelier".to_owned() } else { event.source_name.clone() };
                     state.mailbox.push(Mail { id: event.id.clone(), to: id, from, text, ms: now });
                 }
                 Ok(Target::Session(id)) => log(&shared.instance, &format!("message for {id} dropped: it does not accept messages")),
@@ -343,11 +343,11 @@ fn addressed(routing: &Routing, event: &Event) -> Result<String, String> {
     match routing.resolve_from(&event.to, &event.source, &event.group)? {
         Target::Passive(key) if routing.passive.iter().any(|p| p.key == key && p.session_id == event.source) => Err("a session never sends itself events".into()),
         Target::Passive(key) => Ok(key),
-        Target::Session(_) => Err("events go to passive sessions and canvas-wide agents (use copilot-canvas send for a session)".into()),
+        Target::Session(_) => Err("events go to passive sessions and canvas-wide agents (use atelier send for a session)".into()),
     }
 }
 
-/// `copilot-canvas effect …`: puts an effect on a box of the sender's group
+/// `atelier effect …`: puts an effect on a box of the sender's group
 /// (or the group), or clears them. Answers the box a pulse goes to.
 fn apply_effect(shared: &Shared, routing: &Routing, state: &mut BusState, event: &Event, now: u64) -> Option<String> {
     let (target, message) = effect_event(routing, &mut state.effects, event, now);
@@ -389,7 +389,7 @@ fn effect_event(routing: &Routing, list: &mut Vec<effects::Effect>, event: &Even
     let Some(spec) = effects::kind(&name) else {
         return (None, format!("effect {name:?} dropped: not in the effects collection"));
     };
-    let from = if event.source_name.is_empty() { "Copilot Canvas" } else { &event.source_name };
+    let from = if event.source_name.is_empty() { "Atelier" } else { &event.source_name };
     effects::add(list, effects::new_effect(spec, &group, &anchor, event.data["note"].as_str().unwrap_or_default(), from, now));
     // A pulse runs from the sender to the box (none when it marks itself).
     ((!target.is_empty() && target != event.source).then_some(target), format!("effect {name} on {on:?} from {from}"))
@@ -432,7 +432,7 @@ struct RunPlace {
 fn run_place(home: &Path, routing: &Routing, spec: &PassiveSpec) -> Result<RunPlace, String> {
     if spec.canvas_wide {
         if !crate::doc::valid_canvas_id(&routing.canvas) {
-            return Err("this canvas has no id yet (reopen it with an up-to-date Copilot Canvas)".into());
+            return Err("this canvas has no id yet (reopen it with an up-to-date Atelier)".into());
         }
         let dir = crate::canvas_wide::canvas_dir(home, &routing.canvas);
         let paths = crate::canvas_wide::agent_paths(&dir, &spec.slug);
@@ -575,7 +575,7 @@ fn passive_launch(kind: AgentKind, spec: &PassiveSpec, native: Option<String>, f
         mcp_off: spec.mcp_off.clone(),
         group_folder: Some(folder.display().to_string()),
         headless_prompt: Some(prompt),
-        env: vec![("COPILOT_CANVAS_PASSIVE".to_owned(), spec.key.clone()), ("COPILOT_CANVAS_HOP".to_owned(), hop.to_string())],
+        env: [canvas_common::env::both("ATELIER_PASSIVE", &spec.key), canvas_common::env::both("ATELIER_HOP", &hop.to_string())].concat(),
         ..Default::default()
     };
     if !spec.canvas_wide {
@@ -705,21 +705,21 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
                 stop_run(&shared, &mut state, event.data["key"].as_str().unwrap_or_default());
                 continue;
             }
-            // Pull request requests (copilot-canvas pr …, a window's buttons): never routed to agents.
+            // Pull request requests (atelier pr …, a window's buttons): never routed to agents.
             if super::prs::is_request(&event) {
                 for follow in super::prs::request(&shared, &routing, &mut state, &event, now) {
                     handle_event(&shared, &routing, &mut state, follow, now);
                 }
                 continue;
             }
-            // Review follow-up requests (copilot-canvas review …, a window's buttons): the same.
+            // Review follow-up requests (atelier review …, a window's buttons): the same.
             if super::reviews::is_request(&event) {
                 for follow in super::reviews::request(&shared, &routing, &mut state, &event, now) {
                     handle_event(&shared, &routing, &mut state, follow, now);
                 }
                 continue;
             }
-            // Todo requests (copilot-canvas todo …): the same; windows' are applied when they arrive.
+            // Todo requests (atelier todo …): the same; windows' are applied when they arrive.
             if super::todos::is_request(&event) {
                 for follow in super::todos::request(&shared, &routing, &event, now) {
                     handle_event(&shared, &routing, &mut state, follow, now);
@@ -988,7 +988,7 @@ mod tests {
         assert_eq!(addressed(&r, &event("s2", "PR coordinator")), Ok("kw".into()), "any session reaches a canvas-wide agent");
         assert!(addressed(&r, &event("s2", "Rollout")).unwrap_err().contains("another group"), "not another group's passive session");
         assert_eq!(addressed(&r, &event("s1", "Rollout")), Ok("k1".into()));
-        assert!(addressed(&r, &event("w", "Main")).unwrap_err().contains("use copilot-canvas send"), "sessions get messages");
+        assert!(addressed(&r, &event("w", "Main")).unwrap_err().contains("use atelier send"), "sessions get messages");
         assert!(addressed(&r, &event("w", "PR coordinator")).unwrap_err().contains("never sends itself"));
         let deep = Event { hop: bus::MAX_HOP, ..event("s2", "PR coordinator") };
         assert!(addressed(&r, &deep).is_err(), "chains stop");
@@ -1046,7 +1046,7 @@ mod tests {
     #[test]
     fn passive_runs_carry_the_specs_model_into_the_agents_command_line() {
         // SAFETY: tests in this crate only read this variable.
-        unsafe { std::env::set_var("COPILOT_CANVAS_OPENCODE", r"C:\bin\opencode.exe") };
+        unsafe { std::env::set_var("ATELIER_OPENCODE", r"C:\bin\opencode.exe") };
         let spec = PassiveSpec { key: "k".into(), name: "Watch".into(), agent: "opencode".into(), model: "opencode/x-free".into(), ..Default::default() };
         let integration = crate::agents::Integration::default();
         for (fresh, native) in [(true, None), (false, Some("ses_e7fbbd911ffeOynBIm3IrWFsUl".to_owned()))] {
@@ -1075,11 +1075,11 @@ mod tests {
             let mut launch = passive_launch(kind, &spec, None, true, Path::new(r"C:\g"), "check".into(), 1);
             let skills = canvas_model::launch::take_group_skills(&mut launch).expect("its group's skill folders");
             assert_eq!((skills.group.as_str(), skills.dirs.clone()), ("g-1", vec![r"C:\skills".to_owned(), r"D:\more".to_owned()]), "{kind:?}");
-            assert_eq!(launch.env.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["COPILOT_CANVAS_PASSIVE", "COPILOT_CANVAS_HOP"]);
+            assert_eq!(launch.env.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["ATELIER_PASSIVE", "COPILOT_CANVAS_PASSIVE", "ATELIER_HOP", "COPILOT_CANVAS_HOP"]); // rename:keep
         }
         let wide = PassiveSpec { canvas_wide: true, ..spec.clone() };
         assert_eq!(canvas_model::launch::take_group_skills(&mut passive_launch(AgentKind::Copilot, &wide, None, true, Path::new(r"C:\a"), "check".into(), 1)), None);
         let none = PassiveSpec { skill_dirs: Vec::new(), ..spec };
-        assert_eq!(passive_launch(AgentKind::Claude, &none, None, false, Path::new(r"C:\g"), "check".into(), 1).env.len(), 2);
+        assert_eq!(passive_launch(AgentKind::Claude, &none, None, false, Path::new(r"C:\g"), "check".into(), 1).env.len(), 4, "its identity under both names");
     }
 }

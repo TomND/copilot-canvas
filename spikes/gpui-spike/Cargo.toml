@@ -3,7 +3,7 @@ name = "gpui-spike"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Phase 3 spike: Copilot Canvas GPU client prototype on GPUI (Zed's UI framework)"
+description = "Phase 3 spike: Atelier GPU client prototype on GPUI (Zed's UI framework)"
 
 # Standalone: not a member of the root workspace.
 [workspace]

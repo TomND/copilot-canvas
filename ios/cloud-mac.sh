@@ -20,9 +20,17 @@
 set -eu
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
+# The Dev Tunnel id is yours (made by the first start): it keeps its name from before the rename.
 TUNNEL="${TUNNEL:-copilot-canvas-mac}"
 PORT="${PORT:-47700}"
-STATE="${STATE:-$HOME/.copilot-canvas-mock}"
+# The mock's state (its canvas and the phone's pairings): ~/.atelier-mock, or
+# the folder from before the rename while that one exists.
+if [ -z "${STATE:-}" ]; then
+  STATE="$HOME/.atelier-mock"
+  if [ ! -d "$STATE" ] && [ -d "$HOME/.copilot-canvas-mock" ]; then
+    STATE="$HOME/.copilot-canvas-mock"
+  fi
+fi
 # What the phone calls this machine (it can be renamed in the app).
 NAME="${NAME:-$(scutil --get LocalHostName 2>/dev/null | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9-' | cut -c1-40)}"
 NAME="${NAME:-mac}"
@@ -43,7 +51,7 @@ stop_one() {
 ensure_tunnel() {
   devtunnel user show | grep -q '^Logged in' || { echo "Sign in first: devtunnel user login -g   (GitHub; or without -g: Microsoft)"; exit 1; }
   if ! devtunnel show "$TUNNEL" >/dev/null 2>&1; then
-    devtunnel create "$TUNNEL" -d "Copilot Canvas: this Mac as a stand-in Cloud PC (mock service)" >/dev/null
+    devtunnel create "$TUNNEL" -d "Atelier: this Mac as a stand-in Cloud PC (mock service)" >/dev/null
     echo "Created the private tunnel $TUNNEL (only your account can connect)."
   fi
   if ! devtunnel show "$TUNNEL" | grep -Eq "^ +$PORT "; then

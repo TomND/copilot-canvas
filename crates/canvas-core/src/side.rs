@@ -600,7 +600,7 @@ impl App {
         }
         if threads.is_empty() && inbox.rejected.is_empty() {
             rows.push(ListRow::info("Sessions publish reports and"));
-            rows.push(ListRow::info("messages here with `copilot-canvas"));
+            rows.push(ListRow::info("messages here with `atelier"));
             rows.push(ListRow::info("report publish` (canvas-reports"));
             rows.push(ListRow::info("skill). Opening one never starts"));
             rows.push(ListRow::info("its session."));
@@ -753,7 +753,7 @@ impl App {
             }
             ItemRef::AutomationsDir => self.modals.push(Modal::Prompt(Prompt {
                 title: "Automation manifest folder".into(),
-                hint: "one YAML manifest per automation (see copilot-canvas automations import); empty: default".into(),
+                hint: "one YAML manifest per automation (see atelier automations import); empty: default".into(),
                 input: TextInput::new(&self.doc.automations_dir.clone().unwrap_or_else(|| self.automations_folder.clone())),
                 purpose: PromptPurpose::AutomationsDir,
             })),
@@ -886,7 +886,7 @@ impl App {
         let Some(automation) = self.automation(key).cloned() else { return };
         if automation.factory.is_some() {
             if !automation.toggleable {
-                return self.notify("This task is not registered yet: run `copilot-canvas automations apply`.", false);
+                return self.notify("This task is not registered yet: run `atelier automations apply`.", false);
             }
             return self.toggle_task(&automation);
         }

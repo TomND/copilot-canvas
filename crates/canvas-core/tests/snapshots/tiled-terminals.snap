@@ -1,6 +1,6 @@
 # tiled-terminals (150x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas   ◫  ✎  ☑   DEMO · native shells   + New   ▦ Tiled   Show all nodes   −   +   ?   ⏻ Quit                              3 sessions
+ ◆ Atelier   ◫  ✎  ☑   DEMO · native shells   + New   ▦ Tiled   Show all nodes   −   +   ?   ⏻ Quit                                     3 sessions
     SESSIONS                     │                                                    │╭ ● Build session canvas · running · Windows PowerShell ───[×]╮
 ▌▤  / filter…                    │  ┌╌ ▣ Canvas project · 4 ╌╌╌╌╌╌╌╌╌╌╌╌ ✎ Set folder…││PS> Write-Output colours                                     │
                                  │  ╎                                  ┏━━━━━━━━━━━━━━││red green bold                                               │

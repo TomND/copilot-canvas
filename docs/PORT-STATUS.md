@@ -43,7 +43,7 @@ work resumes after any interruption: read it first, then `git log`.
 - Branches: `macos` (shared Unix work lands here first) and `linux` (merges
   `macos` regularly, Linux-only code). Neither is merged into `main`.
 - Worktrees: `../copilot-canvas-macos` (branch `macos`),
-  `../copilot-canvas-linux` (branch `linux`). The main checkout is not touched.
+  `../atelier-linux` (branch `linux`). The main checkout is not touched.
 - Every commit keeps Windows green: `cargo xwin clippy --target
   x86_64-pc-windows-msvc --workspace --exclude ghostty-vt-sys
   --no-default-features --all-targets -- -D warnings` locally, the Windows CI
@@ -127,12 +127,12 @@ work resumes after any interruption: read it first, then `git log`.
 - [x] Linux: `service install` checked on CI (the unit starts a service
       that answers, stop, uninstall) and clients start the service with
       `systemd-run --user` when a user manager runs (CI: `service start` →
-      `copilot-canvas-default.service` active; the TUI self-test passes that
+      `atelier-default.service` active; the TUI self-test passes that
       way), run of 2e92d2e. A real Dev Tunnel hosted by the manifest is an
       owner check (no tunnel account on CI).
 - [x] macOS: launchd backend and `service install` as a LaunchAgent
       (c9f410a): `selftest automations` PASS on launchd in 27 s locally
-      (plists in a temporary folder through `COPILOT_CANVAS_LAUNCHD_DIR`,
+      (plists in a temporary folder through `ATELIER_LAUNCHD_DIR`,
       the probe's job unloaded afterwards); `service install` → the service
       answers within 3 s, `uninstall` leaves it running, nothing stays loaded;
       `doctor` shows `launchd (N task(s) installed)`
@@ -289,13 +289,13 @@ work resumes after any interruption: read it first, then `git log`.
 - macOS (`packaging/macos/`, CI `macos-package`, da0c0f2):
   `packaging/macos/build.sh` builds both slices with their own Ghostty
   archive (Zig cross-compiles x86_64), joins them with `lipo` into the
-  universal `Copilot Canvas.app` (the GUI is the bundle executable,
-  `copilot-canvas` beside it; `Info.plist` with the plan's keys and folder
+  universal `Atelier.app` (the GUI is the bundle executable,
+  `atelier` beside it; `Info.plist` with the plan's keys and folder
   usage texts; `AppIcon.icns` made from the icon's PNG with `sips` and
   `iconutil`; hardened runtime, ad hoc signed, no entitlements), the DMG
-  (`CopilotCanvas-<ver>-macos-universal.dmg`, 41 MB, with an Applications
+  (`Atelier-<ver>-macos-universal.dmg`, 41 MB, with an Applications
   link), its SHA-256 and the Homebrew cask filled in with it
-  (`packaging/homebrew-tap/Casks/copilot-canvas.rb`: `app` plus `binary`;
+  (`packaging/homebrew-tap/Casks/atelier.rb`: `app` plus `binary`;
   nothing stopped on uninstall, since `brew upgrade` uninstalls too).
   `sign.sh` signs with the Developer ID and notarizes the app and the DMG
   once the secrets exist (exits 0 with a note until then). `smoke.sh`
@@ -310,9 +310,9 @@ work resumes after any interruption: read it first, then `git log`.
   the macOS app: owner-blocked (Developer ID).
 - Linux (`packaging/linux/`, CI `linux-package` on the glibc 2.35 floor,
   x86_64 and aarch64): artifacts `linux-packages-<arch>` hold
-  `copilot-canvas_<ver>_<deb arch>.deb`, `copilot-canvas-<ver>.<arch>.rpm`,
-  `Copilot_Canvas-<ver>-<arch>.AppImage` and
-  `copilot-canvas-<ver>-linux-<arch>.tar.gz` (18–23 MB each; binaries need
+  `atelier_<ver>_<deb arch>.deb`, `atelier-<ver>.<arch>.rpm`,
+  `Atelier-<ver>-<arch>.AppImage` and
+  `atelier-<ver>-linux-<arch>.tar.gz` (18–23 MB each; binaries need
   only libc, libm, libgcc_s, highest symbol GLIBC_2.35; GTK, WebKit,
   Vulkan, Wayland and X11 libraries are loaded at run time and recommended
   by the .deb and .rpm). `linux-package-test` installs them on clean
@@ -501,7 +501,7 @@ column is the same run's `macos` job (its parity suite blocks).
   - **bubblewrap sandbox**: works on 22.04; on 24.04 (AppArmor restricts
     unprivileged user namespaces) bwrap fails and WebKit aborts the whole
     process (`g_error`). So the view runs in a **helper process**
-    (`copilot-canvas-gui --html-view`, GTK and WebKit loaded with `dlopen`,
+    (`atelier-gui --html-view`, GTK and WebKit loaded with `dlopen`,
     nothing linked at build time) that talks to the GUI over a socket pair
     (commands one way, BGRA frames the other), and the sandbox is enabled
     only when a `bwrap` probe succeeds. Missing library or a failed helper:
@@ -521,7 +521,7 @@ column is the same run's `macos` job (its parity suite blocks).
   (unsigned development builds would prompt on every rebuild); a home keeps
   the backend it started with (`remote/master.key` or `remote/master.keychain`).
 - The service merges the login shell's environment at start except in
-  self-tests (`COPILOT_CANVAS_SELFTEST=1`) and with `COPILOT_CANVAS_LOGIN_ENV=0`.
+  self-tests (`ATELIER_SELFTEST=1`) and with `ATELIER_LOGIN_ENV=0`.
 - The graceful-stop timeline is measured on the clock (shared code): the
   documented 2 / 3.5 / 5 s and "3 s after the UI quit" now hold on a
   throttled machine too; Windows behaviour is otherwise unchanged.
@@ -536,7 +536,7 @@ column is the same run's `macos` job (its parity suite blocks).
   composition capture without the Screen Recording permission); the
   accessibility check reads NSAccessibility in-process; the core knows the
   key policy for hints (`KeyPolicy::label`; the TUI and Windows keep Ctrl).
-- launchd (D7, §5.5): `~/Library/LaunchAgents/com.copilot-canvas.task.<name>.plist`
+- launchd (D7, §5.5): `~/Library/LaunchAgents/com.thomashorga.atelier.task.<name>.plist`
   (the name `%XX`-escaped in the label), loaded into `gui/<uid>` (else
   `user/<uid>`). The task's name, manifest and schedule are XML comments in
   the plist. A disabled task keeps its plist with `Disabled` and is unloaded;
@@ -547,7 +547,7 @@ column is the same run's `macos` job (its parity suite blocks).
   enabled; `start_when_available: false` cannot be honoured (launchd
   coalesces a missed run on wake). Replacing a loaded definition reloads the
   job and stops a run in progress.
-- `service install` on macOS: the LaunchAgent runs `copilot-canvas service
+- `service install` on macOS: the LaunchAgent runs `atelier service
   start` (`RunAtLoad`, `AbandonProcessGroup`), not the service itself as the
   plan's table had it, so launchd never owns the service: it keeps exiting
   when idle, clients restart it, and uninstalling (`bootout`) cannot stop it
@@ -608,7 +608,7 @@ column is the same run's `macos` job (its parity suite blocks).
   arrives as the app's ⌘ chord, as a Mac keyboard gives it.
 - Print / PDF of an HTML note on macOS: WKWebView's `createPDF` into
   `<Downloads>/<title>.pdf` (never over a file), as on Linux; under the
-  test hooks the sandbox's folder (`COPILOT_CANVAS_DOWNLOADS`).
+  test hooks the sandbox's folder (`ATELIER_DOWNLOADS`).
 - D15 in the spaces: a gesture latches to the Notebook's or Tasks' area it
   began over (rows, cells, the board's three zoom levels; smart zoom fits
   the boards); the hidden session canvas never moves. No two-finger swipe
@@ -661,13 +661,13 @@ column is the same run's `macos` job (its parity suite blocks).
      `APPSTORE_API_ISSUER_ID`); CI's `macos-package` then signs, notarizes
      and staples the app and the DMG (`packaging/macos/sign.sh`).
   2. A tap repository (`homebrew-tap`) holding
-     `packaging/homebrew-tap/Casks/copilot-canvas.rb` with a release's
+     `packaging/homebrew-tap/Casks/atelier.rb` with a release's
      version and SHA-256 (build.sh writes it), and a GitHub release with the
      DMG.
   3. The installed app on a Mac: Gatekeeper opens the signed DMG's app
      without a warning; the first notification asks for permission, later
      ones show and are listed in Notification Center; the Dock badge and
-     dot; ⌘Q and the Dock's Quit ask; `copilot-canvas service install`
+     dot; ⌘Q and the Dock's Quit ask; `atelier service install`
      starts the service at the next login.
   4. Manual input: IME (Japanese, Chinese, Korean) and dead keys in a
      terminal and in the dialogs; VoiceOver reading the toolbar, the boxes
@@ -873,7 +873,7 @@ view helper (WebKitGTK offscreen); the GUI on Wayland/X11.
   `linux-gui` job is blocking now (X11, X11 over loopback TCP, Wayland) and
   runs the parity suite as a report.
 - 2026-10-31: GUI `os/linux` (after the split): fonts from fontconfig
-  (named files, no full scan), app id `copilot-canvas` (Wayland app_id, X11
+  (named files, no full scan), app id `atelier` (Wayland app_id, X11
   WM_CLASS) and the X11 window icon, notifications through
   `org.freedesktop.Notifications`, the launcher entry (`LauncherEntry`:
   progress while sessions work, urgent when one needs you).
@@ -884,7 +884,7 @@ view helper (WebKitGTK offscreen); the GUI on Wayland/X11.
   (winit cannot read an X11 title back: the hooks now report the title set,
   shared); G3, V5 (to look at after the shared fixes).
 - 2026-10-31: **HTML report view on Linux** (542a82a): WebKitGTK 4.1 in a
-  helper process (the GUI binary with `COPILOT_CANVAS_HTML_VIEW=1`, GTK and
+  helper process (the GUI binary with `ATELIER_HTML_VIEW=1`, GTK and
   WebKit `dlopen`ed), offscreen, frames drawn over the report pane through
   the shared hooks `ReportWeb::frame()`/`input()` (5504962, 2424845; no-ops
   on Windows and macOS), wheel (line or pixel deltas with the touchpad

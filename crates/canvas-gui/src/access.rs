@@ -342,7 +342,7 @@ pub fn update(items: &[Item], focus: u64) -> TreeUpdate {
         .collect();
     nodes.append(&mut runs);
     let mut tree = TreeInfo::new(NodeId(ROOT));
-    tree.toolkit_name = Some("Copilot Canvas".into());
+    tree.toolkit_name = Some("Atelier".into());
     tree.toolkit_version = Some(env!("CARGO_PKG_VERSION").into());
     TreeUpdate { nodes, tree: Some(tree), tree_id: TreeId::ROOT, focus: NodeId(focus) }
 }

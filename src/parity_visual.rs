@@ -1,6 +1,6 @@
 //! The parity suite's checks of the canvas visuals (GUI only): dust on unused
 //! sessions, stacks and hidden subsessions with their animations' end
-//! states, effects from `copilot-canvas effect` (acknowledged by a click that
+//! states, effects from `atelier effect` (acknowledged by a click that
 //! starts nothing; animated only while visible), the group chips at low zoom
 //! and the sidebar's folder and passive rows, and group files opened in the
 //! canvas in remote mode (`--remote loopback`: never in Explorer).
@@ -92,7 +92,7 @@ fn frames_in(gui: &Gui, secs: f64) -> Result<u64> {
     Ok(frames(&gui.req(json!({ "cmd": "perf" }))?).saturating_sub(before))
 }
 
-/// Runs `copilot-canvas effect …` as a session of the visual group.
+/// Runs `atelier effect …` as a session of the visual group.
 pub(crate) fn effect(exe: &Path, home: &Path, instance: &str, args: &[&str]) -> Result<()> {
     // The service resolves names with the routing the canvas sent it (once a second).
     let routing = home.join("bus").join("routing.json");
@@ -105,9 +105,9 @@ pub(crate) fn effect(exe: &Path, home: &Path, instance: &str, args: &[&str]) -> 
         .arg("effect")
         .args(args)
         .args(["--instance", instance, "--home", &home.display().to_string()])
-        .env("COPILOT_CANVAS_SESSION", "v-fresh")
+        .env("ATELIER_SESSION", "v-fresh")
         .output()?;
-    anyhow::ensure!(out.status.success(), "copilot-canvas effect: {}", String::from_utf8_lossy(&out.stderr));
+    anyhow::ensure!(out.status.success(), "atelier effect: {}", String::from_utf8_lossy(&out.stderr));
     Ok(())
 }
 
@@ -115,7 +115,7 @@ pub(crate) fn effect(exe: &Path, home: &Path, instance: &str, args: &[&str]) -> 
 pub(super) fn rows(sb: &Sandbox, rows: &mut Vec<Row>) {
     // Animated effects whatever this machine's animation setting (the GUI inherits it).
     // SAFETY: set before the GUI starts; nothing else reads it concurrently.
-    unsafe { std::env::set_var("COPILOT_CANVAS_EFFECTS", "on") };
+    unsafe { std::env::set_var("ATELIER_EFFECTS", "on") };
     let gui_only = |why| Kind::Only(why);
     let canvas = match canvas(&sb.instance.home, &sb.work, &sb.group_folder, false, true) {
         Ok(path) => path,
@@ -218,7 +218,7 @@ pub(super) fn rows(sb: &Sandbox, rows: &mut Vec<Row>) {
         Ok(format!("stacked (a transition frame seen: {midway}), deck beneath with +1, unstacked to the same places, hidden and shown"))
     });
 
-    check_kind(rows, "V3", "Effects: copilot-canvas effect on a box, animated ≤ 15 fps while visible, a click clears it without starting anything", "effect_fireworks_ack", gui_only("the TUI shows a badge (snapshot tests)"), || {
+    check_kind(rows, "V3", "Effects: atelier effect on a box, animated ≤ 15 fps while visible, a click clears it without starting anything", "effect_fireworks_ack", gui_only("the TUI shows a badge (snapshot tests)"), || {
         gui.canvas_focus()?;
         effect(&sb.exe, &sb.instance.home, &sb.instance.name, &["fireworks", "--on", "Fresh one", "--note", "PR !7 approved"])?;
         let tree = gui.wait_tree("the fireworks", 15, |t| t["canvas"]["effects"].as_array().is_some_and(|e| e.iter().any(|e| e["kind"] == "fireworks" && e["badge"] == "✦ PR !7 approved")))?;

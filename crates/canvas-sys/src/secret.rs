@@ -6,7 +6,7 @@
 //! stream-and-tag sealing, stored as `v1u:<nonce hex><sealed hex>`. The
 //! master key lives in the platform store (the macOS login Keychain, the
 //! Linux Secret Service) or, without one and always with
-//! `COPILOT_CANVAS_SECRETS=file` (CI, development builds, headless Linux), in
+//! `ATELIER_SECRETS=file` (CI, development builds, headless Linux), in
 //! a 0600 key file `<home>/remote/master.key` in a 0700 folder.
 
 #[cfg(windows)]
@@ -59,14 +59,14 @@ mod unix {
         Keychain,
     }
 
-    /// The home's store: `COPILOT_CANVAS_SECRETS=file|keychain`; else the one
+    /// The home's store: `ATELIER_SECRETS=file|keychain`; else the one
     /// the home already uses (its key file, or the Keychain marker); else, for
     /// a new home, the Keychain when this program is signed with a Developer
     /// ID (its Keychain access needs no prompt and every signed build shares
     /// it), on Linux the Secret Service when one answers on the session bus;
     /// the key file otherwise (development builds, headless machines).
     pub fn store(home: &Path) -> Store {
-        match std::env::var("COPILOT_CANVAS_SECRETS").ok().as_deref().map(str::trim) {
+        match canvas_common::env::var("ATELIER_SECRETS").ok().as_deref().map(str::trim) {
             Some("file") => return Store::File,
             Some("keychain") if super::keychain::available() => return Store::Keychain,
             _ => {}
@@ -149,7 +149,7 @@ mod unix {
 }
 
 /// The macOS Keychain store of a home's master key (MAC-LINUX-PLAN §5.4):
-/// one generic password (service "Copilot Canvas", account = the home's
+/// one generic password (service "Atelier", account = the home's
 /// hash), so every secret of the home costs at most one access decision.
 #[cfg(target_os = "macos")]
 mod keychain {
@@ -159,7 +159,7 @@ mod keychain {
 
     use security_framework::passwords::{PasswordOptions, delete_generic_password, generic_password, set_generic_password_options};
 
-    pub const SERVICE: &str = "Copilot Canvas";
+    pub const SERVICE: &str = "Atelier";
     /// errSecItemNotFound.
     const NOT_FOUND: i32 = -25300;
 
@@ -203,18 +203,35 @@ mod keychain {
         PasswordOptions::new_generic_password(service, &account(home))
     }
 
+    fn lookup(service: &str, account: &str) -> io::Result<Option<Vec<u8>>> {
+        match generic_password(PasswordOptions::new_generic_password(service, account)) {
+            Ok(key) if key.len() == 32 => Ok(Some(key)),
+            Ok(_) => Err(io::Error::new(io::ErrorKind::InvalidData, "the Keychain item is not a master key")),
+            Err(error) if error.code() == NOT_FOUND => Ok(None),
+            Err(error) => Err(io::Error::other(format!("cannot read the master key from the Keychain: {error}"))),
+        }
+    }
+
     /// The home's master key, created (and the home marked) on first use.
-    /// `service` is [`SERVICE`] (tests use their own).
+    /// `service` is [`SERVICE`] (tests use their own). A home from before
+    /// the rename finds its key under the old names (`super::legacy_items`)
+    /// and stores it under the new ones.
     pub fn master_key(home: &Path, service: &str) -> io::Result<Vec<u8>> {
-        match generic_password(options(home, service)) {
-            Ok(key) if key.len() == 32 => return Ok(key),
-            Ok(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "the Keychain item is not a master key")),
-            Err(error) if error.code() == NOT_FOUND => {}
-            Err(error) => return Err(io::Error::other(format!("cannot read the master key from the Keychain: {error}"))),
+        if let Some(key) = lookup(service, &account(home))? {
+            return Ok(key);
+        }
+        for (old_service, old_account) in super::legacy_items(home, service, SERVICE, canvas_common::legacy::KEYCHAIN_SERVICE, account) {
+            if let Some(key) = lookup(&old_service, &old_account)? {
+                let mut new = options(home, service);
+                new.set_label("Atelier master key");
+                new.set_comment(&format!("Seals the paired secrets of {}", home.display()));
+                set_generic_password_options(&key, new).map_err(|e| io::Error::other(format!("cannot store the master key in the Keychain: {e}")))?;
+                return Ok(key);
+            }
         }
         let key = canvas_common::protocol::nonce()[..32].to_vec();
         let mut new = options(home, service);
-        new.set_label("Copilot Canvas master key");
+        new.set_label("Atelier master key");
         new.set_comment(&format!("Seals the paired secrets of {}", home.display()));
         set_generic_password_options(&key, new).map_err(|e| io::Error::other(format!("cannot store the master key in the Keychain: {e}")))?;
         crate::fs::private_dir(&home.join("remote"))?;
@@ -231,7 +248,7 @@ mod keychain {
 }
 
 /// The Linux Secret Service store of a home's master key (MAC-LINUX-PLAN
-/// §5.4): one item (attributes `application` = "copilot-canvas", `home` = the
+/// §5.4): one item (attributes `application` = "atelier", `home` = the
 /// home's hash) in the default collection of whatever answers
 /// `org.freedesktop.secrets` on the session bus (GNOME Keyring, KWallet,
 /// KeePassXC). A locked collection is unlocked through the desktop's prompt,
@@ -247,7 +264,7 @@ mod keychain {
     use secret_service::EncryptionType;
     use secret_service::blocking::{Collection, SecretService};
 
-    pub const SERVICE: &str = "copilot-canvas";
+    pub const SERVICE: &str = "atelier";
 
     /// The home's account: a hash of its path (the same as the macOS one).
     pub fn account(home: &Path) -> String {
@@ -305,18 +322,34 @@ mod keychain {
 
     /// The home's master key, created (and the home marked) on first use.
     /// `service` is [`SERVICE`] (tests use their own).
+    fn lookup(ss: &SecretService<'_>, service: &str, account: &str) -> io::Result<Option<Vec<u8>>> {
+        let found = ss.search_items(HashMap::from([("application", service), ("home", account)])).map_err(|e| other("cannot look up", e))?;
+        let Some(item) = found.unlocked.first().or(found.locked.first()) else { return Ok(None) };
+        item.ensure_unlocked().map_err(|e| other("the keyring is locked: cannot read", e))?;
+        let key = item.get_secret().map_err(|e| other("cannot read", e))?;
+        if key.len() == 32 { Ok(Some(key)) } else { Err(io::Error::new(io::ErrorKind::InvalidData, "the Secret Service item is not a master key")) }
+    }
+
+    /// The home's master key, created (and the home marked) on first use.
+    /// `service` is [`SERVICE`] (tests use their own). A home from before
+    /// the rename finds its key under the old names (`super::legacy_items`)
+    /// and stores it under the new ones.
     pub fn master_key(home: &Path, service: &str) -> io::Result<Vec<u8>> {
         let ss = connect()?;
         let account = account(home);
         let attributes = HashMap::from([("application", service), ("home", account.as_str())]);
-        let found = ss.search_items(attributes.clone()).map_err(|e| other("cannot look up", e))?;
-        if let Some(item) = found.unlocked.first().or(found.locked.first()) {
-            item.ensure_unlocked().map_err(|e| other("the keyring is locked: cannot read", e))?;
-            let key = item.get_secret().map_err(|e| other("cannot read", e))?;
-            return if key.len() == 32 { Ok(key) } else { Err(io::Error::new(io::ErrorKind::InvalidData, "the Secret Service item is not a master key")) };
+        if let Some(key) = lookup(&ss, service, &account)? {
+            return Ok(key);
+        }
+        for (old_service, old_account) in super::legacy_items(home, service, SERVICE, canvas_common::legacy::SECRET_SERVICE_APPLICATION, self::account) {
+            if let Some(key) = lookup(&ss, &old_service, &old_account)? {
+                let label = format!("Atelier master key ({})", home.display());
+                collection(&ss)?.create_item(&label, attributes, &key, true, "application/octet-stream").map_err(|e| other("cannot store", e))?;
+                return Ok(key);
+            }
         }
         let key = canvas_common::protocol::nonce()[..32].to_vec();
-        let label = format!("Copilot Canvas master key ({})", home.display());
+        let label = format!("Atelier master key ({})", home.display());
         collection(&ss)?.create_item(&label, attributes.clone(), &key, false, "application/octet-stream").map_err(|e| other("cannot store", e))?;
         crate::fs::private_dir(&home.join("remote"))?;
         let _ = std::fs::write(marker(home), b"the master key of this home is in the Secret Service\n");
@@ -339,6 +372,24 @@ mod keychain {
             }
         }
     }
+}
+
+/// Where a home's master key may be from before the rename (Copilot
+/// Canvas), in the order they are tried: the old service name with this
+/// home's account, then, for a home moved from another path (`moved-from.txt`),
+/// the old and the new service name with that path's account. Only for the
+/// real store (`service` is `current`); tests use names of their own.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn legacy_items(home: &std::path::Path, service: &str, current: &str, old_service: &str, account: impl Fn(&std::path::Path) -> String) -> Vec<(String, String)> {
+    if service != current {
+        return Vec::new();
+    }
+    let mut items = vec![(old_service.to_owned(), account(home))];
+    if let Some(old_home) = canvas_common::paths::moved_from(home).filter(|old| old != home) {
+        items.push((old_service.to_owned(), account(&old_home)));
+        items.push((current.to_owned(), account(&old_home)));
+    }
+    items
 }
 
 /// No platform store on other Unixes.
@@ -375,6 +426,23 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn a_home_from_before_the_rename_finds_its_key_under_the_old_names() {
+        let home = std::env::temp_dir().join(format!("cs-legacy-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&home).unwrap();
+        let account = |h: &std::path::Path| h.display().to_string();
+        let items = super::legacy_items(&home, "new", "new", "old", account);
+        assert_eq!(items, [("old".to_owned(), home.display().to_string())], "the old service name, same home");
+        assert!(super::legacy_items(&home, "test service", "new", "old", account).is_empty(), "tests keep their own names");
+        let old_home = home.with_file_name("old-home");
+        std::fs::write(home.join(canvas_common::paths::MOVED_FROM), format!("{}\n2026-11-09T00:00:00.000Z\n", old_home.display())).unwrap();
+        let items = super::legacy_items(&home, "new", "new", "old", account);
+        let moved = old_home.display().to_string();
+        assert_eq!(items, [("old".to_owned(), home.display().to_string()), ("old".to_owned(), moved.clone()), ("new".to_owned(), moved)], "a moved home: its old path's account too");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
     fn secrets_round_trip_with_the_homes_master_key_only() {
         let home = std::env::temp_dir().join(format!("cs-secret-{}", uuid::Uuid::new_v4().simple()));
         let other = std::env::temp_dir().join(format!("cs-secret-{}", uuid::Uuid::new_v4().simple()));
@@ -393,16 +461,16 @@ mod tests {
 
     /// The Keychain store, with a test-only service name and its items
     /// deleted afterwards (safety rule 4); only with
-    /// `COPILOT_CANVAS_KEYCHAIN_TESTS=1` (a runner may have no login Keychain).
+    /// `ATELIER_KEYCHAIN_TESTS=1` (a runner may have no login Keychain).
     #[test]
     #[cfg(target_os = "macos")]
     fn the_keychain_holds_one_master_key_per_home() {
-        if std::env::var_os("COPILOT_CANVAS_KEYCHAIN_TESTS").is_none() {
-            eprintln!("skipped: set COPILOT_CANVAS_KEYCHAIN_TESTS=1 to use the login Keychain");
+        if canvas_common::env::var_os("ATELIER_KEYCHAIN_TESTS").is_none() {
+            eprintln!("skipped: set ATELIER_KEYCHAIN_TESTS=1 to use the login Keychain");
             return;
         }
         use super::unix::{Store, open_in, seal_in};
-        let service = format!("Copilot Canvas test {}", uuid::Uuid::new_v4().simple());
+        let service = format!("Atelier test {}", uuid::Uuid::new_v4().simple());
         let home = std::env::temp_dir().join(format!("cs-keychain-{}", uuid::Uuid::new_v4().simple()));
         let sealed = seal_in(&home, Store::Keychain, &service, b"top secret").unwrap();
         assert!(super::keychain::marker(&home).is_file() && !home.join("remote").join("master.key").exists());
@@ -416,18 +484,18 @@ mod tests {
 
     /// The Secret Service store, with a test-only `application` attribute and
     /// its items deleted afterwards; only with
-    /// `COPILOT_CANVAS_SECRET_SERVICE_TESTS=1` (CI runs it in a private
+    /// `ATELIER_SECRET_SERVICE_TESTS=1` (CI runs it in a private
     /// session bus with an unlocked GNOME Keyring).
     #[test]
     #[cfg(target_os = "linux")]
     fn the_secret_service_holds_one_master_key_per_home() {
-        if std::env::var_os("COPILOT_CANVAS_SECRET_SERVICE_TESTS").is_none() {
-            eprintln!("skipped: set COPILOT_CANVAS_SECRET_SERVICE_TESTS=1 to use the session's Secret Service");
+        if canvas_common::env::var_os("ATELIER_SECRET_SERVICE_TESTS").is_none() {
+            eprintln!("skipped: set ATELIER_SECRET_SERVICE_TESTS=1 to use the session's Secret Service");
             return;
         }
         use super::unix::{Store, open_in, seal_in};
         assert!(super::keychain::available(), "a Secret Service answers");
-        let service = format!("copilot-canvas-test-{}", uuid::Uuid::new_v4().simple());
+        let service = format!("atelier-test-{}", uuid::Uuid::new_v4().simple());
         let home = std::env::temp_dir().join(format!("cs-secretservice-{}", uuid::Uuid::new_v4().simple()));
         let other = std::env::temp_dir().join(format!("cs-secretservice-{}", uuid::Uuid::new_v4().simple()));
         let sealed = seal_in(&home, Store::Keychain, &service, b"top secret").unwrap();

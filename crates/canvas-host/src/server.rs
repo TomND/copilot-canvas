@@ -293,7 +293,7 @@ pub struct Host {
     last_activity: Mutex<Instant>,
     started: Instant,
     pub shutting_down: AtomicBool,
-    /// Terminal engine for new terminals (`COPILOT_CANVAS_ENGINE`).
+    /// Terminal engine for new terminals (`ATELIER_ENGINE`).
     pub engine: Engine,
     fallback_logged: AtomicBool,
     /// Compress frames for remote clients that accept it (`remote.compress`).
@@ -345,7 +345,7 @@ pub fn log(instance: &Instance, message: &str) {
     }
 }
 
-/// The engine new terminals use: `COPILOT_CANVAS_ENGINE`, else
+/// The engine new terminals use: `ATELIER_ENGINE`, else
 /// `terminal.engine` in settings.json, else the build's default (Ghostty when
 /// it is compiled in).
 pub fn configured_engine(instance: &Instance) -> Engine {
@@ -370,13 +370,32 @@ pub fn try_spawn<F: FnOnce() + Send + 'static>(name: &str, body: F) -> std::io::
 /// backend, then serves clients until shutdown.
 pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn HostApp>) -> Result<()> {
     canvas_sys::process::raise_priority();
-    let mut server = match PipeServer::bind(&instance.pipe_name()) {
+    // Self-tests stand in for a service of the build before the rename by
+    // serving its endpoint (`ATELIER_SELFTEST=1` and `ATELIER_TEST_LEGACY_ENDPOINT=1`).
+    let simulated_legacy = canvas_common::env::var("ATELIER_SELFTEST").is_ok_and(|v| v.trim() == "1")
+        && canvas_common::env::var("ATELIER_TEST_LEGACY_ENDPOINT").is_ok_and(|v| v.trim() == "1")
+        && instance.legacy_pipe_name().is_some();
+    let endpoint = if simulated_legacy { instance.legacy_pipe_name().unwrap_or_default() } else { instance.pipe_name() };
+    let mut server = match PipeServer::bind(&endpoint) {
         Ok(server) => server,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             bail!("a service for this canvas is already running")
         }
         Err(error) => return Err(error).context("cannot create the service pipe"),
     };
+    // A service of the build before the rename serves another endpoint for
+    // the same home and instance: never a second service beside it.
+    if !simulated_legacy
+        && let Some(old) = instance.legacy_pipe_name()
+        && canvas_sys::ipc::is_served(&old)
+    {
+        drop(server);
+        bail!(
+            "a service of {} (the build before the rename) is running for this canvas; stop it first (`{} service stop`, or update it from a client)",
+            canvas_common::legacy::PRODUCT,
+            canvas_common::legacy::CLI
+        )
+    }
     if let Err(error) = canvas_sys::process::contain_descendants() {
         log(&instance, &format!("job containment unavailable: {error}"));
     }
@@ -523,7 +542,7 @@ impl Host {
         }
         let started = (|| -> Result<(SocketAddr, Arc<AtomicBool>)> {
             let listener = tcp::listen_loopback(addr).with_context(|| {
-                format!("cannot listen on {addr} (another program, or another user's service, may hold the port; pick another with `copilot-canvas remote tunnel-setup --port PORT`)")
+                format!("cannot listen on {addr} (another program, or another user's service, may hold the port; pick another with `atelier remote tunnel-setup --port PORT`)")
             })?;
             let bound = listener.local_addr()?;
             let stop = Arc::new(AtomicBool::new(false));
@@ -1429,13 +1448,13 @@ fn send_images(client: &Client, terminal: &Arc<Terminal>, id: &str, images: &[Sn
 /// process tree (the agent, tools, MCP servers, builds) runs above normal,
 /// sessions shown on screen at normal, all others below normal. Background
 /// sessions still use all spare CPU; they just yield to you. Only processes
-/// inside our own sessions are touched. `COPILOT_CANVAS_NO_PRIORITY=1` turns
+/// inside our own sessions are touched. `ATELIER_NO_PRIORITY=1` turns
 /// it off. Unix forbids raising priorities without privilege, so there the
 /// others are lowered instead (`canvas_sys::process::set_priority`:
 /// `PRIO_DARWIN_BG` on macOS, nice on Linux; MAC-LINUX-PLAN §5.3).
 fn priority_loop(host: Arc<Host>, wake: Receiver<()>) {
     use canvas_sys::process::Class;
-    if std::env::var_os("COPILOT_CANVAS_NO_PRIORITY").is_some() {
+    if canvas_common::env::var_os("ATELIER_NO_PRIORITY").is_some() {
         return;
     }
     let mut applied: HashMap<u32, Class> = HashMap::new();
@@ -1946,7 +1965,7 @@ mod tests {
         let stream = TcpStream::connect(addr).unwrap();
         let mut reader: Box<dyn Read + Send> = Box::new(stream.try_clone().unwrap());
         let mut writer: Box<dyn Write + Send> = Box::new(stream.try_clone().unwrap());
-        ws::connect(&mut reader, &mut writer, "copilot-canvas-47600.usw2.devtunnels.ms", "/", &[("X-Tunnel-Authorization", "tunnel x")]).unwrap();
+        ws::connect(&mut reader, &mut writer, "atelier-47600.usw2.devtunnels.ms", "/", &[("X-Tunnel-Authorization", "tunnel x")]).unwrap();
         let (reader, writer) = ws::split(ws::Role::Client, reader, writer);
         (FrameReader::new(Box::new(reader)), FrameWriter::new(Box::new(writer)), stream)
     }

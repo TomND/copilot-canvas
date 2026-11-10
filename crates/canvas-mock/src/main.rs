@@ -65,7 +65,7 @@ fn main() {
     }
     let config = canvas_mock::Config { listen, code: code.clone(), state_dir, cwd, verbose, tunnel: tunnel.clone(), web_url, real_agents, apns };
     let handle = canvas_mock::serve(config).unwrap_or_else(|error| fail(&format!("{error:#}")));
-    println!("Copilot Canvas mock service on {} (TCP and WebSocket)", handle.addr);
+    println!("Atelier mock service on {} (TCP and WebSocket)", handle.addr);
     println!("Pairing code: {}", canvas_common::pairing::format_code(&code));
     let mut link = canvas_common::remote::PairLink { name, url: format!("ws://{}", handle.addr), code, ..Default::default() };
     if tunnel.is_some() {

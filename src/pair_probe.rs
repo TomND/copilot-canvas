@@ -1,7 +1,7 @@
-//! `copilot-canvas selftest --remote paired`: pairing and the managed Dev
+//! `atelier selftest --remote paired`: pairing and the managed Dev
 //! Tunnel end to end, without a signed-in Dev Tunnels CLI. A real service
 //! (temporary data folder) plays the Cloud PC, a second data folder the home
-//! PC, and `copilot-canvas devtunnel-standin` plays `devtunnel connect`.
+//! PC, and `atelier devtunnel-standin` plays `devtunnel connect`.
 //!
 //! Checks: remote listening is off until a code is opened; wrong and reused
 //! codes are refused; `remote add` over a direct address and through the
@@ -31,7 +31,7 @@ fn step(text: &str) {
 }
 
 pub fn run(exe: &Path) -> Result<()> {
-    let root = std::env::temp_dir().join(format!("copilot-canvas-paired-{}", uuid::Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("atelier-paired-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(root.join("sessions"))?;
     std::fs::create_dir_all(root.join("work"))?;
     let cloud = Instance::new(Some(format!("paired{}", std::process::id())), Some(root.join("cloud")), Some(root.join("sessions")))?;
@@ -68,12 +68,12 @@ fn cli(exe: &Path, args: &[String], env: &[(&str, String)]) -> Result<Result<Str
 }
 
 fn ok(exe: &Path, args: &[String], env: &[(&str, String)]) -> Result<String> {
-    cli(exe, args, env)?.map_err(|text| anyhow::anyhow!("`copilot-canvas {}` failed:\n{text}", args.join(" ")))
+    cli(exe, args, env)?.map_err(|text| anyhow::anyhow!("`atelier {}` failed:\n{text}", args.join(" ")))
 }
 
 fn fails(exe: &Path, args: &[String], env: &[(&str, String)]) -> Result<String> {
     match cli(exe, args, env)? {
-        Ok(out) => bail!("`copilot-canvas {}` should have failed:\n{out}", args.join(" ")),
+        Ok(out) => bail!("`atelier {}` should have failed:\n{out}", args.join(" ")),
         Err(text) => Ok(text),
     }
 }
@@ -101,7 +101,7 @@ fn read_pid(control: &Path) -> Option<u32> {
 }
 
 fn scenario(exe: &Path, cloud: &Instance, root: &Path) -> Result<()> {
-    println!("Copilot Canvas pairing and tunnel self-test (a stand-in plays `devtunnel connect`; data in {})", root.display());
+    println!("Atelier pairing and tunnel self-test (a stand-in plays `devtunnel connect`; data in {})", root.display());
     let home = root.join("home");
     let cloud_args: Vec<String> = vec![
         "--instance".into(),

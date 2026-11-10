@@ -1,6 +1,6 @@
 //! The reports inbox on disk, per canvas home (`<home>/reports/`):
 //!
-//! - `spool/<id>.json`: reports `copilot-canvas report publish` handed over
+//! - `spool/<id>.json`: reports `atelier report publish` handed over
 //!   (a [`Submission`]); the CLI only ever writes here, atomically, so a report
 //!   is never lost while the service is down or restarting.
 //! - `items/<id>/meta.json` and `body.md|body.html|body.txt`: stored reports.
@@ -255,7 +255,7 @@ impl Store {
             }
             let unread = self.unread();
             if unread >= MAX_UNREAD {
-                let why = format!("the inbox holds {unread} unread reports (at most {MAX_UNREAD}): read or delete some in Copilot Canvas › Reports first");
+                let why = format!("the inbox holds {unread} unread reports (at most {MAX_UNREAD}): read or delete some in Atelier › Reports first");
                 done.rejected.push(self.reject(&submission.id, &reports::clean_title(&submission.title), &why, now));
                 let _ = std::fs::remove_file(&file);
                 continue;
@@ -457,9 +457,9 @@ pub fn file_report(report: &Report, body: &str, routing: &Routing, date: &str) -
     crate::notebook::create_new(&dir, &format!("{date}-{slug}"), ext, text.as_bytes()).map(Some)
 }
 
-// ---------- the CLI: copilot-canvas report publish|list ----------
+// ---------- the CLI: atelier report publish|list ----------
 
-/// `copilot-canvas report publish` options.
+/// `atelier report publish` options.
 #[derive(Clone, Debug, Default)]
 pub struct PublishArgs {
     pub title: Option<String>,
@@ -489,9 +489,9 @@ pub enum Outcome {
 impl Outcome {
     pub fn describe(&self) -> String {
         match self {
-            Outcome::Stored { id, title } => format!("Report stored in the Copilot Canvas inbox: “{title}” ({id}). It shows as unread in Reports."),
+            Outcome::Stored { id, title } => format!("Report stored in the Atelier inbox: “{title}” ({id}). It shows as unread in Reports."),
             Outcome::Queued { id, title, why, file } => format!(
-                "Report queued, not stored yet: “{title}” ({id}). {why}; it is kept in {} and appears in Reports when the service takes it (check with `copilot-canvas report list`).",
+                "Report queued, not stored yet: “{title}” ({id}). {why}; it is kept in {} and appears in Reports when the service takes it (check with `atelier report list`).",
                 file.display()
             ),
         }
@@ -539,9 +539,9 @@ fn title_from(format: Format, body: &str) -> String {
 /// Who publishes: the canvas session the CLI runs in (its environment).
 #[derive(Clone, Debug, Default)]
 pub struct Identity {
-    /// `COPILOT_CANVAS_SESSION`: the box id.
+    /// `ATELIER_SESSION`: the box id.
     pub session: String,
-    /// `COPILOT_CANVAS_PASSIVE`: a passive run's key.
+    /// `ATELIER_PASSIVE`: a passive run's key.
     pub passive: String,
     /// `AUTOMATION_NAME`: a scheduled automation's name (a fallback source name).
     pub automation: String,
@@ -549,8 +549,8 @@ pub struct Identity {
 
 impl Identity {
     pub fn from_env() -> Self {
-        let env = |name: &str| std::env::var(name).map(|v| v.trim().to_owned()).unwrap_or_default();
-        Identity { session: env("COPILOT_CANVAS_SESSION"), passive: env("COPILOT_CANVAS_PASSIVE"), automation: env("AUTOMATION_NAME") }
+        let env = |name: &str| canvas_common::env::var(name).map(|v| v.trim().to_owned()).unwrap_or_default();
+        Identity { session: env("ATELIER_SESSION"), passive: env("ATELIER_PASSIVE"), automation: env("AUTOMATION_NAME") }
     }
 }
 
@@ -580,7 +580,7 @@ pub fn publish(home: &Path, args: PublishArgs, who: &Identity, wait: Duration) -
     let automation = (!who.automation.is_empty()).then(|| who.automation.clone());
     let source_name = args.source.clone().or(automation).unwrap_or_default();
     if source.is_empty() && reports::clean_line(&source_name, 80).is_empty() {
-        bail!("this is not a Copilot Canvas session: name who publishes with --source NAME (for example --source \"Daily triage\")");
+        bail!("this is not an Atelier session: name who publishes with --source NAME (for example --source \"Daily triage\")");
     }
     let kind = args.kind.as_deref().map(|k| k.trim().to_ascii_lowercase()).unwrap_or_else(|| "info".into());
     reports::check_kind(&kind)?;
@@ -606,7 +606,7 @@ pub fn publish(home: &Path, args: PublishArgs, who: &Identity, wait: Duration) -
     let file = spool(home, &submission)?;
     let id = submission.id.clone();
     if !service_alive(home) {
-        return Ok(Outcome::Queued { id, title, why: "The Copilot Canvas service is not running".into(), file });
+        return Ok(Outcome::Queued { id, title, why: "The Atelier service is not running".into(), file });
     }
     let stored = items_dir(home).join(&id).join("meta.json");
     let answer = answer_path(home, &id);
@@ -618,7 +618,7 @@ pub fn publish(home: &Path, args: PublishArgs, who: &Identity, wait: Duration) -
         if let Ok(bytes) = std::fs::read(&answer) {
             let _ = std::fs::remove_file(&answer);
             let reason = serde_json::from_slice::<Rejected>(&bytes).map(|r| r.reason).unwrap_or_else(|_| "no reason given".into());
-            bail!("Copilot Canvas refused the report: {reason}");
+            bail!("Atelier refused the report: {reason}");
         }
         if Instant::now() >= deadline {
             let why = format!("The service did not take it within {} s (it may be busy, or an older build without reports)", wait.as_secs());
@@ -686,7 +686,7 @@ pub fn notice(home: &Path, notice: Notice, now: u64) -> Result<String> {
     Ok(submission.id)
 }
 
-/// `copilot-canvas report list`: stored reports (newest first), reports
+/// `atelier report list`: stored reports (newest first), reports
 /// still queued, and refused ones.
 pub fn list(home: &Path, unread_only: bool, limit: usize) -> Result<String> {
     let (reports, state) = load(home);
@@ -700,7 +700,7 @@ pub fn list(home: &Path, unread_only: bool, limit: usize) -> Result<String> {
         .unwrap_or_default();
     let unread = reports.iter().filter(|r| r.unread()).count();
     let mut out = vec![format!(
-        "Copilot Canvas reports in {}: {} stored ({unread} unread), {} queued, {} refused{}",
+        "Atelier reports in {}: {} stored ({unread} unread), {} queued, {} refused{}",
         dir(home).display(),
         reports.len(),
         queued.len(),
@@ -758,7 +758,7 @@ mod tests {
         let home = home("cli");
         let nobody = Identity::default();
         let fail = |a: PublishArgs| publish(&home, a, &nobody, Duration::ZERO).unwrap_err().to_string();
-        assert!(fail(PublishArgs { message: Some("hi".into()), ..Default::default() }).contains("not a Copilot Canvas session: name who publishes with --source"));
+        assert!(fail(PublishArgs { message: Some("hi".into()), ..Default::default() }).contains("not an Atelier session: name who publishes with --source"));
         assert!(fail(PublishArgs { source: Some("x".into()), ..Default::default() }).contains("exactly one of --markdown FILE"));
         assert!(fail(PublishArgs { message: Some("m".into()), html: Some("x.html".into()), source: Some("x".into()), ..Default::default() }).contains("exactly one"));
         assert!(fail(PublishArgs { markdown: Some(home.join("missing.md").display().to_string()), source: Some("x".into()), ..Default::default() }).contains("cannot read Markdown file"));

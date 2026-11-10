@@ -1,5 +1,5 @@
 #!/bin/sh
-# Installs Copilot Canvas from its DMG and runs it (MAC-LINUX-PLAN §8.1; CI's
+# Installs Atelier from its DMG and runs it (MAC-LINUX-PLAN §8.1; CI's
 # install test): the app copied out of the DMG into a folder, its signature,
 # both slices (the Intel one under Rosetta), the doctor, the TUI self-test,
 # and with --gui the GUI's self-test, all from the installed bundle. Every
@@ -24,23 +24,23 @@ mkdir -p "$into"
 
 mount="$(mktemp -d)"
 hdiutil attach -quiet -nobrowse -readonly -noautoopen -mountpoint "$mount" "$dmg"
-cp -R "$mount/Copilot Canvas.app" "$into/"
+cp -R "$mount/Atelier.app" "$into/"
 [ -L "$mount/Applications" ] || { echo "the DMG has no Applications link" >&2; exit 1; }
 hdiutil detach -quiet "$mount"
-app="$into/Copilot Canvas.app"
-cli="$app/Contents/MacOS/copilot-canvas"
+app="$into/Atelier.app"
+cli="$app/Contents/MacOS/atelier"
 echo "== installed $app"
 
 codesign --verify --strict --verbose=1 "$app"
 plutil -lint "$app/Contents/Info.plist" >/dev/null
-[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")" = copilot-canvas-gui ]
+[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")" = atelier-gui ]
 [ -f "$app/Contents/Resources/AppIcon.icns" ]
 echo "slices: $(lipo -archs "$cli")"
 "$cli" --version
 if lipo -archs "$cli" | grep -q x86_64 && arch -x86_64 /usr/bin/true 2>/dev/null; then
     echo "== the Intel slice under Rosetta"
     arch -x86_64 "$cli" --version
-    arch -x86_64 "$app/Contents/MacOS/copilot-canvas-gui" --version
+    arch -x86_64 "$app/Contents/MacOS/atelier-gui" --version
 fi
 
 home="$(mktemp -d)"

@@ -1,8 +1,8 @@
-# Copilot Canvas roadmap: layers, remote mode, libghostty and a GPU client
+# Atelier roadmap: layers, remote mode, libghostty and a GPU client
 
 Status: approved direction, 2026-10-27. Owner: Thomas. Baseline: `main` at 44fc899.
 
-This plan turns Copilot Canvas into three layers so that:
+This plan turns Atelier into three layers so that:
 
 - agents run on the Cloud PC while the app runs on the home PC (**remote mode**, over Dev Tunnels);
 - terminals use **libghostty-vt**;
@@ -16,6 +16,13 @@ It supersedes `docs/GPU-CANVAS-PLAN.md`.
 Published at https://github.com/TomND/copilot-canvas (CI: GitHub Actions, a cached
 pinned-Ghostty job and the test matrix).
 
+<!-- rename:keep-begin -->
+2026-11-09: renamed from Copilot Canvas to **Atelier** (it serves every agent
+CLI); old installs, variables, services, scheduled entries and pairing links
+keep working and move over (README *Upgrading from Copilot Canvas*,
+docs/DEVELOPMENT.md §7, `tools/rename-to-atelier.py` for older branches).
+<!-- rename:keep-end -->
+
 All phases are implemented on `main` of the new repository. Besides GitHub
 Copilot CLI, the canvas now also runs **OpenCode** and **Claude Code** sessions
 (agent providers in `canvas-agents/src/agents`); it defaults to the first
@@ -24,20 +31,20 @@ installed agent (OpenCode on the development machine, which has no Copilot).
 | Phase | State | Verified by |
 |---|---|---|
 | 0 Layer split | Done: workspace crates (§3), `Emulator` trait, `Backend` RPC trait (local and remote), `InputEvent`, `RenderMode`/`CanvasModel` view model, golden corpus (13 entries, both engines) | `cargo test --workspace`; `corpus check`; `selftest` (TUI, 31 steps) |
-| 1 Remote mode | Done: protocol 8, TCP + zstd, heartbeat, reconnect (backoff capped at 1.5 s, see D5), input acks, offline blocking, per-tile coalescing, backend-owned document with patches, pairing (DPAPI), `CopilotCanvas-Tunnel` manifest, managed `devtunnel connect`, §6 behaviours | `selftest --remote` `loopback`, `faults`, `paired`; backend contract tests; 20-minute soaks (docs/soak) |
+| 1 Remote mode | Done: protocol 8, TCP + zstd, heartbeat, reconnect (backoff capped at 1.5 s, see D5), input acks, offline blocking, per-tile coalescing, backend-owned document with patches, pairing (DPAPI), `Atelier-Tunnel` manifest, managed `devtunnel connect`, §6 behaviours | `selftest --remote` `loopback`, `faults`, `paired`; backend contract tests; 20-minute soaks (docs/soak) |
 | 2 libghostty-vt | Done and default: pinned Ghostty `521cf2c5`, Zig 0.17.0, `cargo xtask build-ghostty`, vendored headers with checksums; corpus differences reviewed (corpus/reviewed-differences.md) | `bench --terminals 100`: equal CPU, about 58 % less memory per terminal, keystroke p50 ~1.1 ms |
 | 3 GPU spike | Done: wgpu 30 + winit + glyphon chosen over GPUI (docs/GPU-SPIKE.md) | measured on the RTX 3070 and WARP |
-| 4 GUI MVP | Done: `copilot-canvas-gui.exe` | `selftest --client gui` (+ `--remote loopback`) |
+| 4 GUI MVP | Done: `atelier-gui.exe` | `selftest --client gui` (+ `--remote loopback`) |
 | 5 Parity | Done: all 33 rows of §8 plus images, taskbar/flash/toasts, drag and drop, several windows (docs/PARITY.md) | `selftest --client gui --parity` (38 checks; 43 with the canvas visuals V1–V5) |
 | 6 Hardening | Done: damage frames, device-lost and DPI recovery, window placement, UI Automation (AccessKit), crash log, GUI stress/perf/burn probes | `selftest --client gui --hardening`; §9 budgets all met (docs/GUI.md) |
-| 7 Rollout | Done except the time-gated step: `client` setting (`tui`, `gui`, `auto`; `copilot-canvas config client …`), `--tui`/`--gui`, **O** opens the same canvas in the other client | `selftest` step "O opens this canvas in the other client" (TUI and GUI) |
+| 7 Rollout | Done except the time-gated step: `client` setting (`tui`, `gui`, `auto`; `atelier config client …`), `--tui`/`--gui`, **O** opens the same canvas in the other client | `selftest` step "O opens this canvas in the other client" (TUI and GUI) |
 
 Validated by the owner on 2026-10-28, on the real setup:
 
 - **Remote mode over a real Dev Tunnel** (Phase 1 exit criterion): the home
   client paired with the Cloud PC and works through the tunnel.
 - **GitHub Copilot CLI** on the Cloud PC (`selftest agent --agent copilot`).
-- **The GUI as the default client** (`copilot-canvas config client gui`): the
+- **The GUI as the default client** (`atelier config client gui`): the
   dogfood week (Phase 7) started on 2026-10-28.
 
 Also verified here: OpenCode end to end through the canvas with a free model
@@ -75,8 +82,8 @@ The Notebook, Tasks and Spaces work was implemented on 2026-10-31: each
 window shows the session canvas, the **Notebook** (Markdown and HTML notes
 on the service's machine with their audience and author, a cell editor with
 a live preview, HTML notes in the GUI's WebView2 view from a sandboxed
-virtual origin, `copilot-canvas note`) or **Tasks** (todo boards kept by the
-service, proposals and claims, `copilot-canvas todo`), with navigation
+virtual origin, `atelier note`) or **Tasks** (todo boards kept by the
+service, proposals and claims, `atelier todo`), with navigation
 history and Go to between them; reports are also filed as notes. The design
 contract, with what the implementation changed, is
 [docs/NOTEBOOK-TASKS.md](docs/NOTEBOOK-TASKS.md).
@@ -86,7 +93,7 @@ contract, with what the implementation changed, is
 ### Goals
 
 1. **Remote mode.** Agents, their terminals, history, automations and passive sessions run on the Cloud PC. The canvas runs on the home PC and survives network drops: it reconnects and resyncs; the agents never notice.
-2. **Clean layers** (§3). A generic terminal host, a terminal view, and the Copilot canvas built on both, with explicit APIs between them.
+2. **Clean layers** (§3). A generic terminal host, a terminal view, and the Atelier canvas built on both, with explicit APIs between them.
 3. **Correct terminals.** Ghostty's VT core for:
    - graphemes and widths;
    - the Kitty keyboard protocol;
@@ -123,7 +130,7 @@ Our design is also less exposed to drops:
 ```
  HOME PC                                         CLOUD PC (agents run here)
 ┌──────────────────────────────┐               ┌───────────────────────────────────────────┐
-│ Canvas UI (L3 front end)     │               │ copilot-canvas service (one process)       │
+│ Canvas UI (L3 front end)     │               │ atelier service (one process)       │
 │  GPU client  or  TUI client  │   Dev Tunnel  │  L1 terminal host                           │
 │  └ Terminal view (L2)        │◀════════════▶ │    ConPTY · Emulator (libghostty-vt)        │
 │ local: clipboard, toasts,    │  TLS + auth   │    sessions survive clients · frames · input│
@@ -148,7 +155,7 @@ Our design is also less exposed to drops:
   - a TUI adapter (today's terminal drawing).
 - No Copilot knowledge either.
 
-### L3: Copilot canvas
+### L3: Atelier canvas
 
 - **Backend** (`canvas-agents`, inside the service process): everything that has to run where the agents are:
   - history index, status and subagents;
@@ -160,7 +167,7 @@ Our design is also less exposed to drops:
 - **Core** (`canvas-core`): the platform-free app state machine (today's `App` minus drawing), actions, dialogs as data, `ViewModel`, `InputEvent`.
 - **Front ends:** `canvas-tui` (ratatui) and `canvas-gui` (GPU), each drawing the `ViewModel` and embedding L2 for terminals.
 
-One repository, one Cargo workspace. Binaries: `copilot-canvas.exe` (service, CLI, TUI) and `copilot-canvas-gui.exe`.
+One repository, one Cargo workspace. Binaries: `atelier.exe` (service, CLI, TUI) and `atelier-gui.exe`.
 
 **Process rule:** L1 and the L3 backend share the service process with an internal API boundary (a Rust trait). They only become separate processes if a real need appears.
 
@@ -240,9 +247,9 @@ Details: `docs/GPU-SPIKE.md`.
 ### D5. Remote transport and security
 
 - **Service:** `remote.listen = 127.0.0.1:<port>`. It is off until you pair a client.
-- **Tunnel:** a persistent, private Dev Tunnel (`devtunnel create copilot-canvas`, plus a port). It is hosted by the automation manifest `CopilotCanvas-Tunnel` (logon and hourly, restart on failure), and only the tunnel owner can connect (Microsoft or GitHub sign-in).
-- **App-level authentication:** `copilot-canvas remote pair` on the Cloud PC prints a one-time pairing code. The home client exchanges it for a long-lived client secret, stored with DPAPI on both sides; the secret can be revoked (`remote clients`, `remote revoke`). Each connection runs an HMAC challenge-response with the secret, the same scheme as the pipe's per-start token.
-- **Home client:** `copilot-canvas --remote <tunnel>` (and the GUI equivalent) manages `devtunnel connect` as a child process, then connects to the forwarded localhost port.
+- **Tunnel:** a persistent, private Dev Tunnel (`devtunnel create atelier`, plus a port). It is hosted by the automation manifest `Atelier-Tunnel` (logon and hourly, restart on failure), and only the tunnel owner can connect (Microsoft or GitHub sign-in).
+- **App-level authentication:** `atelier remote pair` on the Cloud PC prints a one-time pairing code. The home client exchanges it for a long-lived client secret, stored with DPAPI on both sides; the secret can be revoked (`remote clients`, `remote revoke`). Each connection runs an HMAC challenge-response with the secret, the same scheme as the pipe's per-start token.
+- **Home client:** `atelier --remote <tunnel>` (and the GUI equivalent) manages `devtunnel connect` as a child process, then connects to the forwarded localhost port.
 - **Liveness:**
   - heartbeat every 2 s; a connection is dead after 6 s of silence;
   - reconnect with backoff 0.5 s → 1.5 s (Phase 6; was 5 s, see `docs/REMOTE.md`);
@@ -287,7 +294,7 @@ Every phase ends green: unit tests, clippy, the TUI selftest, the real-Copilot p
 ### Phase 1: Remote mode (2–3 weeks)
 
 - TCP transport in the service; framing shared with the pipe; heartbeat, backoff and resync; offline banner and input blocking (D5).
-- Pairing and secrets (`remote pair`, `clients`, `revoke`); the `CopilotCanvas-Tunnel` manifest; `devtunnel connect` management in the client; `copilot-canvas --remote`.
+- Pairing and secrets (`remote pair`, `clients`, `revoke`); the `Atelier-Tunnel` manifest; `devtunnel connect` management in the client; `atelier --remote`.
 - The canvas document moves to the backend: the backend is the single writer and every client applies the patches it broadcasts. Two clients (home and Cloud PC) can be open at once; edits are serialized by the backend.
 - Every client-local read becomes a backend RPC (§6).
 - Local-versus-remote behaviours (§6, "where it happens"): clipboard, image paste, links, folders, notifications.
@@ -402,7 +409,7 @@ GUI) with a fault every 30 s (`docs/REMOTE.md`); the 48 h run is still to do.
 
 Layer: H = terminal host, B = canvas backend, C = core, V = terminal view, G = GPU front end. "Remote" notes behaviour in remote mode.
 
-Status (Phase 5, 2026-10-28): every row ✓ in the GUI, each with a named check in `copilot-canvas selftest --client gui --parity`; the completed matrix and the GUI-only additions are in `docs/PARITY.md`.
+Status (Phase 5, 2026-10-28): every row ✓ in the GUI, each with a named check in `atelier selftest --client gui --parity`; the completed matrix and the GUI-only additions are in `docs/PARITY.md`.
 
 | # | Feature (today) | Layers | GUI work | Remote | Test |
 |---|---|---|---|---|---|
@@ -484,7 +491,7 @@ Status (Phase 5, 2026-10-28): every row ✓ in the GUI, each with a named check 
 
 1. Workspace and crate skeleton; `canvas-core` with `App` state moved; TUI selftest green.
 2. `Backend` trait with the in-process implementation; route the §6 reads through it.
-3. `Emulator` trait with the alacritty adapter; golden-corpus recorder (`copilot-canvas record --session <id>`) and comparer.
+3. `Emulator` trait with the alacritty adapter; golden-corpus recorder (`atelier record --session <id>`) and comparer.
 4. TCP transport behind `--remote loopback`; heartbeat and resync; the selftest passes over loopback.
 5. Document ownership moved to the backend, with patches and broadcast; two clients at once.
-6. Pairing, the `CopilotCanvas-Tunnel` manifest, `devtunnel connect` management; first real home connection.
+6. Pairing, the `Atelier-Tunnel` manifest, `devtunnel connect` management; first real home connection.

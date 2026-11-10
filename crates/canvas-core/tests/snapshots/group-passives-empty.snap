@@ -1,6 +1,6 @@
 # group-passives-empty (150x40 cells)
 ## cells (the TUI screen)
- ◆ Copilot Canvas   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit                 1 sessions
+ ◆ Atelier   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit                        1 sessions
     SESSIONS                     │▌                                                   │┌─────────────────────────────────────────────────────────────┐
 ▌▤  / filter…                    │ ┌╌ ▣ Docs · 1 ╌╌ ⟲ + passive ╌ ✎ Notes ╌ ☑ + ╌╌┐·  ││ ⟲ Passive sessions of “Docs” · 0                            │
                                  │ ╎                                              ╎   ││ They belong to this group: each watches only “Docs”'s       │

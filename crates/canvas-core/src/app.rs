@@ -402,7 +402,7 @@ impl App {
         prefs: Option<std::path::PathBuf>,
     ) -> Self {
         // Remote clients never restart or upgrade the service.
-        let build_mismatch = !conn.remote && conn.service_build != crate::paths::build_id();
+        let build_mismatch = conn.outdated();
         let replica = Replica::new(&opened);
         let mut doc = opened.doc;
         let mut prefs = prefs.map(PrefsFile::new);
@@ -752,7 +752,7 @@ impl App {
             return;
         }
         let Some(target) = self.target.clone() else {
-            self.notify("The terminal service disconnected. Restart Copilot Canvas to reconnect; your canvas is saved.", true);
+            self.notify("The terminal service disconnected. Restart Atelier to reconnect; your canvas is saved.", true);
             return;
         };
         self.reconnecting = true;
@@ -782,7 +782,7 @@ impl App {
         });
         if spawned.is_err() {
             self.reconnecting = false;
-            self.notify("Cannot reconnect to the terminal service; restart Copilot Canvas.", true);
+            self.notify("Cannot reconnect to the terminal service; restart Atelier.", true);
         }
     }
 
@@ -814,7 +814,7 @@ impl App {
             return;
         }
         let lost = conn.session.settle();
-        self.build_mismatch = !conn.remote && conn.service_build != crate::paths::build_id();
+        self.build_mismatch = conn.outdated();
         self.new_service_rx = Some(conn.rx.clone());
         self.conn = conn;
         self.connected = true;

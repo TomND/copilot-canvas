@@ -20,9 +20,9 @@ impl Instance {
             !name.is_empty() && name.len() <= 40 && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
             "instance name must be 1-40 characters of [A-Za-z0-9_-]"
         );
-        let home = match home.or_else(|| std::env::var_os("COPILOT_CANVAS_HOME").map(PathBuf::from)) {
+        let home = match home.or_else(|| crate::env::var_os("ATELIER_HOME").map(PathBuf::from)) {
             Some(path) => path,
-            None => dirs::home_dir().context("cannot determine the home directory")?.join(".copilot-canvas"),
+            None => default_home()?,
         };
         let sessions_dir = match sessions_dir {
             Some(path) => path,
@@ -45,7 +45,29 @@ impl Instance {
         let mut hash = Sha256::new();
         hash.update(self.home.to_string_lossy().to_lowercase().as_bytes());
         let digest = hash.finalize();
-        format!(r"\\.\pipe\copilot-canvas-{user}-{}-{}", self.name, hex(&digest[..6]))
+        format!(r"\\.\pipe\atelier-{user}-{}-{}", self.name, hex(&digest[..6]))
+    }
+
+    /// The endpoint a service of the build before the rename (Copilot
+    /// Canvas) serves for this instance and home, when it differs from
+    /// [`Instance::pipe_name`]: its pipe on Windows; elsewhere its socket in
+    /// the per-user folder, used when `<home>/run` is too long (inside the
+    /// home both builds use the same socket and its lock). A client finds an
+    /// old service there, and a new service never starts beside one.
+    #[cfg(windows)]
+    pub fn legacy_pipe_name(&self) -> Option<String> {
+        let name = self.pipe_name();
+        Some(name.replacen(r"\\.\pipe\atelier-", crate::legacy::PIPE_PREFIX, 1))
+    }
+
+    #[cfg(not(windows))]
+    pub fn legacy_pipe_name(&self) -> Option<String> {
+        let name = self.pipe_name();
+        let path = Path::new(&name);
+        if path.starts_with(&self.home) {
+            return None;
+        }
+        Some(short_socket_path_in(crate::legacy::SOCKET_DIR_PREFIX, &path.file_name()?.to_string_lossy()))
     }
 
     /// The service's local endpoint on macOS and Linux: a Unix domain socket
@@ -89,14 +111,48 @@ impl Instance {
     }
 }
 
+/// The data home's folder in the user's home folder (`~/.atelier`).
+pub const HOME_DIR: &str = ".atelier";
+
+/// In a home moved from before the rename: its old path (first line) and when.
+pub const MOVED_FROM: &str = "moved-from.txt";
+
+/// Where a moved home came from (`doctor`, the Keychain's fallback).
+pub fn moved_from(home: &Path) -> Option<PathBuf> {
+    std::fs::read_to_string(home.join(MOVED_FROM)).ok()?.lines().next().map(str::trim).filter(|l| !l.is_empty()).map(PathBuf::from)
+}
+
+/// The default data home: `~/.atelier`; while an install from before the
+/// rename has not been moved there yet (a service of it was running), its
+/// old folder ([`crate::legacy::HOME_DIR`], `home_in`).
+pub fn default_home() -> Result<PathBuf> {
+    Ok(home_in(&dirs::home_dir().context("cannot determine the home directory")?))
+}
+
+/// The default data home in the user's home folder `user`: `.atelier` when
+/// it exists, else the old folder ([`crate::legacy::HOME_DIR`]) when that exists (not moved
+/// yet: data is never left behind), else `.atelier`.
+pub fn home_in(user: &Path) -> PathBuf {
+    let new = user.join(HOME_DIR);
+    let old = user.join(crate::legacy::HOME_DIR);
+    if !new.exists() && old.is_dir() { old } else { new }
+}
+
 /// A socket path for `file` that fits a socket address (under 100 bytes):
 /// in a per-user folder of `$XDG_RUNTIME_DIR`, `$TMPDIR` (macOS's is long)
 /// or `/tmp`, whichever is first short enough.
 #[cfg(not(windows))]
 pub fn short_socket_path(file: &str) -> String {
+    short_socket_path_in("atelier-", file)
+}
+
+/// [`short_socket_path`] in the per-user folder named `<prefix><user>`
+/// ([`crate::legacy::SOCKET_DIR_PREFIX`] before the rename).
+#[cfg(not(windows))]
+fn short_socket_path_in(prefix: &str, file: &str) -> String {
     let user: String = std::env::var("USER").unwrap_or_else(|_| "user".into()).chars().filter(|c| c.is_ascii_alphanumeric()).take(32).collect();
     let bases = [std::env::var_os("XDG_RUNTIME_DIR"), std::env::var_os("TMPDIR"), Some("/tmp".into())];
-    let candidates: Vec<PathBuf> = bases.into_iter().flatten().filter(|b| !b.is_empty()).map(|b| PathBuf::from(b).join(format!("copilot-canvas-{user}")).join(file)).collect();
+    let candidates: Vec<PathBuf> = bases.into_iter().flatten().filter(|b| !b.is_empty()).map(|b| PathBuf::from(b).join(format!("{prefix}{user}")).join(file)).collect();
     let chosen = candidates.iter().find(|p| p.as_os_str().len() < 100).or(candidates.last()).cloned().unwrap_or_else(|| PathBuf::from(file));
     chosen.to_string_lossy().into_owned()
 }
@@ -131,7 +187,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// Makes `exe` the executable of this build: its content hash is the build id
 /// and the service is started from it. The GUI client, which cannot run the
-/// service itself, sets the `copilot-canvas.exe` next to it; call it before
+/// service itself, sets the `atelier.exe` next to it; call it before
 /// anything reads `build_id`.
 pub fn set_build_exe(exe: PathBuf) {
     let _ = BUILD_EXE.set(exe);
@@ -148,7 +204,7 @@ pub fn build_exe() -> std::io::Result<PathBuf> {
 }
 
 /// This program's file. On macOS and Linux a link to it is followed (Homebrew
-/// links `copilot-canvas` into `PATH`; the GUI and the service copy are next
+/// links `atelier` into `PATH`; the GUI and the service copy are next
 /// to the real file, inside the app bundle).
 pub fn own_exe() -> std::io::Result<PathBuf> {
     let exe = std::env::current_exe()?;
@@ -277,6 +333,41 @@ mod tests {
         let b = Instance::new(Some("t1".into()), Some(temp.join("b")), Some(temp.clone())).unwrap();
         assert_ne!(a.pipe_name(), b.pipe_name());
         assert!(Instance::new(Some("bad name".into()), Some(temp.join("c")), None).is_err());
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn the_default_home_is_the_new_one_unless_only_the_old_one_exists() {
+        let user = std::env::temp_dir().join(format!("cc-user-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&user).unwrap();
+        assert_eq!(home_in(&user), user.join(".atelier"), "a new install");
+        std::fs::create_dir_all(user.join(crate::legacy::HOME_DIR)).unwrap();
+        assert_eq!(home_in(&user), user.join(crate::legacy::HOME_DIR), "not moved yet: the data stays where it is");
+        std::fs::create_dir_all(user.join(".atelier")).unwrap();
+        assert_eq!(home_in(&user), user.join(".atelier"), "both: the new one, the old one untouched");
+        std::fs::remove_dir_all(user).unwrap();
+    }
+
+    #[test]
+    fn an_old_service_has_an_endpoint_of_its_own_only_outside_the_home() {
+        let temp = std::env::temp_dir().join(format!("cc-legacy-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]));
+        let short = Instance::new(Some("t".into()), Some(temp.join("h")), Some(temp.clone())).unwrap();
+        #[cfg(windows)]
+        {
+            let (new, old) = (short.pipe_name(), short.legacy_pipe_name().unwrap());
+            assert!(new.starts_with(r"\\.\pipe\atelier-") && old.starts_with(crate::legacy::PIPE_PREFIX));
+            assert_eq!(new.rsplit('-').next(), old.rsplit('-').next(), "the same home and instance");
+        }
+        #[cfg(not(windows))]
+        {
+            if short.pipe_name().starts_with(&*short.home.to_string_lossy()) {
+                assert_eq!(short.legacy_pipe_name(), None, "inside the home both builds share the socket and its lock");
+            }
+            let long = Instance::new(Some("t".into()), Some(temp.join("a".repeat(90))), Some(temp.clone())).unwrap();
+            let (new, old) = (long.pipe_name(), long.legacy_pipe_name().unwrap());
+            assert!(new.contains("/atelier-") && old.contains(&format!("/{}", crate::legacy::SOCKET_DIR_PREFIX)), "{new} {old}");
+            assert_eq!(Path::new(&new).file_name(), Path::new(&old).file_name());
+        }
         std::fs::remove_dir_all(temp).unwrap();
     }
 }

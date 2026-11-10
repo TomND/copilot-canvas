@@ -1,9 +1,9 @@
 ---
 name: canvas-verify
-description: Verify a Copilot Canvas change before committing it, in the right order and safely on the owner's live machine (clippy, cargo test, the release build, the TUI and GUI self-tests, the GUI parity suite, golden screenshots, hardening, the terminal corpus). Use when you finish a code change, before a commit or a pull request, when asked to run the tests or check that everything still passes, when you want one test, one snapshot or a few parity rows, or when a suite failed and you need its logs and sandbox.
+description: Verify an Atelier change before committing it, in the right order and safely on the owner's live machine (clippy, cargo test, the release build, the TUI and GUI self-tests, the GUI parity suite, golden screenshots, hardening, the terminal corpus). Use when you finish a code change, before a commit or a pull request, when asked to run the tests or check that everything still passes, when you want one test, one snapshot or a few parity rows, or when a suite failed and you need its logs and sandbox.
 ---
 
-# Verifying a Copilot Canvas change
+# Verifying an Atelier change
 
 The depth (what each suite does, how to write tests) is in
 `docs/DEVELOPMENT.md` section 3; this is the procedure.
@@ -35,7 +35,7 @@ cargo test --workspace *> "$env:TEMP\cc-test.log"; "exit $LASTEXITCODE"
 ```
 
 Never stop processes you did not start (the owner's canvas service and
-agent sessions run here), never touch `~/.copilot-canvas`; every suite
+agent sessions run here), never touch `~/.atelier`; every suite
 below works in its own sandbox. Do not rebuild while a suite runs.
 
 ## The order (fix every failure before the next step)
@@ -44,16 +44,16 @@ below works in its own sandbox. Do not rebuild while a suite runs.
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace                                   (about 3 min after a build)
 cargo build --release                                    (cold: about 10 min)
-target\release\copilot-canvas.exe selftest               (about 145 s; so are the loopback and GUI runs)
-target\release\copilot-canvas.exe selftest --remote loopback
-target\release\copilot-canvas.exe selftest --remote faults
-target\release\copilot-canvas.exe selftest --remote paired
-target\release\copilot-canvas.exe selftest --client gui
-target\release\copilot-canvas.exe selftest --client gui --remote loopback
-target\release\copilot-canvas.exe selftest --client gui --parity      (about 270 s)
-target\release\copilot-canvas.exe selftest --client gui --golden      (about 30 s)
-target\release\copilot-canvas.exe selftest --client gui --hardening   (about 32 s)
-target\release\copilot-canvas.exe corpus check
+target\release\atelier.exe selftest               (about 145 s; so are the loopback and GUI runs)
+target\release\atelier.exe selftest --remote loopback
+target\release\atelier.exe selftest --remote faults
+target\release\atelier.exe selftest --remote paired
+target\release\atelier.exe selftest --client gui
+target\release\atelier.exe selftest --client gui --remote loopback
+target\release\atelier.exe selftest --client gui --parity      (about 270 s)
+target\release\atelier.exe selftest --client gui --golden      (about 30 s)
+target\release\atelier.exe selftest --client gui --hardening   (about 32 s)
+target\release\atelier.exe corpus check
 ```
 
 Portable crates (CI builds them on macOS):
@@ -70,7 +70,7 @@ changed PNG (skill `canvas-ui-testing`).
 - One crate or module: `cargo test -p canvas-agents service::todos`,
   `cargo test -p canvas-core --lib undo`.
 - One view snapshot: `cargo test -p canvas-core --test view_snapshots every_status`.
-- One contract test: `cargo test -p copilot-canvas --test backend_contract skill_sources`.
+- One contract test: `cargo test -p atelier --test backend_contract skill_sources`.
 - Some parity rows: `$env:CANVAS_PARITY_ROWS = '41,41b'`, run `--parity`,
   then `Remove-Item Env:CANVAS_PARITY_ROWS`. Rows build on earlier ones
   (39b needs 38): add the rows a row needs. Only the full suite counts.
@@ -80,7 +80,7 @@ changed PNG (skill `canvas-ui-testing`).
 - `cargo test`: the panic text; a snapshot failure names the `.snap.new`
   file next to the snapshot (accept only after reading the diff).
 - Self-test and parity print `artifacts kept in <root>` on failure: the
-  sandbox (`%TEMP%\copilot-canvas-selftest-…` or `…-parity-…`) holds
+  sandbox (`%TEMP%\atelier-selftest-…` or `…-parity-…`) holds
   `gui-stderr.log` / `gui-parity.log` (and other `gui-*.log`), and the
   service log `home\service-<instance>.log`; a GUI panic also writes
   `home\crash.log`. The failing step or row prints what it waited for and the

@@ -1,4 +1,4 @@
-//! Connection to a running copilot-canvas service instance and the spike's
+//! Connection to a running atelier service instance and the spike's
 //! terminals. Reuses `canvas_core::conn::try_connect` (pipe + HMAC handshake,
 //! reader/writer threads); never `connect(start = true)`, which would copy
 //! this executable as the service.
@@ -47,20 +47,20 @@ pub struct Service {
     pub build: String,
 }
 
-/// The copilot-canvas executable providing `noise` and `echo` (CANVAS_EXE, or
-/// `target\release\copilot-canvas.exe` in an ancestor of this executable).
+/// The atelier executable providing `noise` and `echo` (CANVAS_EXE, or
+/// `target\release\atelier.exe` in an ancestor of this executable).
 pub fn canvas_exe() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("CANVAS_EXE") {
         return Ok(PathBuf::from(path));
     }
     let exe = std::env::current_exe()?;
     for dir in exe.ancestors().skip(1) {
-        let candidate = dir.join("target").join("release").join("copilot-canvas.exe");
+        let candidate = dir.join("target").join("release").join("atelier.exe");
         if candidate.is_file() {
             return Ok(candidate);
         }
     }
-    anyhow::bail!("copilot-canvas.exe not found; build the root package in release mode or set CANVAS_EXE")
+    anyhow::bail!("atelier.exe not found; build the root package in release mode or set CANVAS_EXE")
 }
 
 fn powershell() -> String {
@@ -75,7 +75,7 @@ impl Service {
         let name = std::env::var("SPIKE_INSTANCE").unwrap_or_else(|_| "spike".into());
         let instance = Instance::new(Some(name.clone()), None, None)?;
         let conn = canvas_core::conn::try_connect(&instance)
-            .with_context(|| format!("no service instance '{name}'; start it with `copilot-canvas service start --instance {name}`"))?;
+            .with_context(|| format!("no service instance '{name}'; start it with `atelier service start --instance {name}`"))?;
         let rx = conn.rx;
         std::thread::Builder::new().name("spike-service".into()).spawn(move || {
             for message in rx {

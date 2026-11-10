@@ -558,7 +558,7 @@ impl TodoBook {
         self.find_board(text).map(|b| b.id.clone()).ok_or_else(|| {
             let names: Vec<&str> = self.boards.iter().map(|b| b.name.as_str()).collect();
             if names.is_empty() {
-                format!("no board {:?}: this canvas has no todo boards yet (copilot-canvas todo board add NAME)", text.trim())
+                format!("no board {:?}: this canvas has no todo boards yet (atelier todo board add NAME)", text.trim())
             } else {
                 format!("no board {:?} (boards: {})", text.trim(), names.join(", "))
             }
@@ -660,7 +660,7 @@ impl TodoBook {
         }
         if (to.closed() || todo.status.closed()) && !self.policy(&todo.board).agents_may_close {
             return Err(format!(
-                "closing and reopening todos is the user's (or a merged pull request's): when {id} is finished, run copilot-canvas todo submit {id} --pr URL",
+                "closing and reopening todos is the user's (or a merged pull request's): when {id} is finished, run atelier todo submit {id} --pr URL",
                 id = todo.id
             ));
         }
@@ -941,7 +941,7 @@ impl TodoBook {
         }
         let title = clean_title(&new.title)?;
         let board = if new.board.trim().is_empty() {
-            self.default_board(ctx.group.as_deref()).map(|b| b.id.clone()).ok_or("no todo board is linked to your canvas group: name one with --board (copilot-canvas todo boards lists them)")?
+            self.default_board(ctx.group.as_deref()).map(|b| b.id.clone()).ok_or("no todo board is linked to your canvas group: name one with --board (atelier todo boards lists them)")?
         } else {
             self.board_id(&new.board)?
         };
@@ -1242,7 +1242,7 @@ impl TodoBook {
                     let holder = format!("{} (since {})", claim.by.label(), date(claim.ms));
                     if live && actor.is_agent() {
                         let forced = if force { " (only the user can force a claim)" } else { "" };
-                        return Err(format!("{id} is claimed by {holder}{forced}: pick another todo (copilot-canvas todo ready) or ask the user to reassign it"));
+                        return Err(format!("{id} is claimed by {holder}{forced}: pick another todo (atelier todo ready) or ask the user to reassign it"));
                     }
                     if live && !force {
                         return Err(format!("{id} is claimed by {holder}: force the claim to take it over"));
@@ -1435,7 +1435,7 @@ impl TodoBook {
             }
             TodoOp::Done { note, .. } => {
                 if actor.is_agent() && !policy.agents_may_close {
-                    return Err(format!("marking todos done is the user's (or a merged pull request's): when {id} is finished, run copilot-canvas todo submit {id} --pr URL"));
+                    return Err(format!("marking todos done is the user's (or a merged pull request's): when {id} is finished, run atelier todo submit {id} --pr URL"));
                 }
                 if actor.is_agent() && status == Status::Proposed {
                     return Err(format!("{id} is a proposal: the user accepts or declines it"));
@@ -1455,7 +1455,7 @@ impl TodoBook {
             }
             TodoOp::Cancel { reason, resolution, .. } => {
                 if actor.is_agent() && (status == Status::Proposed || !policy.agents_may_close) {
-                    return Err(format!("canceling todos is the user's: say why {id} should go with copilot-canvas todo note {id} \"…\""));
+                    return Err(format!("canceling todos is the user's: say why {id} should go with atelier todo note {id} \"…\""));
                 }
                 if status == Status::Canceled {
                     out.message = format!("{id} is canceled already.");

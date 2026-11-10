@@ -135,7 +135,7 @@ pub fn child_resume_rule(kind: AgentKind, status: Option<AgentStatus>, parent_he
         return Err("Its parent runs in this canvas and may continue it: stop the parent to resume this child on its own.".into());
     }
     if parent_elsewhere || child_elsewhere {
-        return Err("It is open in another terminal; Copilot Canvas never starts a second copy.".into());
+        return Err("It is open in another terminal; Atelier never starts a second copy.".into());
     }
     Ok(())
 }

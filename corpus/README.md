@@ -62,16 +62,16 @@ or at the end of the stream, as the host does.
 ## Commands
 
 ```
-copilot-canvas corpus list                               entries, sizes, marks, expected engines, tags
-copilot-canvas corpus check [--engine NAME] [NAME…]       replay + compare; non-zero exit on any difference
-copilot-canvas corpus bless [--engine NAME] [NAME…]       (re)write expected files; prints what changed
-copilot-canvas corpus synth [NAME…]                      regenerate the synthetic streams (then bless)
-copilot-canvas corpus show NAME [--engine NAME] [--mark M] print the replayed screens and events
-copilot-canvas corpus diff [NAME…] [--engine A] [--against B]
+atelier corpus list                               entries, sizes, marks, expected engines, tags
+atelier corpus check [--engine NAME] [NAME…]       replay + compare; non-zero exit on any difference
+atelier corpus bless [--engine NAME] [NAME…]       (re)write expected files; prints what changed
+atelier corpus synth [NAME…]                      regenerate the synthetic streams (then bless)
+atelier corpus show NAME [--engine NAME] [--mark M] print the replayed screens and events
+atelier corpus diff [NAME…] [--engine A] [--against B]
                                                          compare two engines' expected files (default alacritty vs ghostty)
 ```
 
-The corpus folder is `--corpus DIR`, else `COPILOT_CANVAS_CORPUS`, else `./corpus`, else the repository's.
+The corpus folder is `--corpus DIR`, else `ATELIER_CORPUS`, else `./corpus`, else the repository's.
 `cargo test --workspace` runs the same check for every entry and every engine in the build
 (`crates/canvas-corpus/tests/golden.rs`), plus a deterministic, time-bounded robustness test that feeds
 mutated and re-chunked corpus streams, random resizes, scrolls and input encodings to each engine.
@@ -79,10 +79,10 @@ mutated and re-chunked corpus streams, random resizes, scrolls and input encodin
 ### Recording a program
 
 ```
-copilot-canvas record --entry NAME [--cols 120] [--rows 40] [--input SCRIPT] [--seconds 30]
+atelier record --entry NAME [--cols 120] [--rows 40] [--input SCRIPT] [--seconds 30]
                       [--env NAME=value]… [--cwd DIR] [--description TEXT] [--tags a,b] [--notes TEXT]
                       -- PROGRAM [ARGS…]
-copilot-canvas record --out FILE.vtrec … -- PROGRAM [ARGS…]      (a file outside the corpus)
+atelier record --out FILE.vtrec … -- PROGRAM [ARGS…]      (a file outside the corpus)
 ```
 
 The program runs in a ConPTY of the given size with `TERM=xterm-256color` and `COLORTERM=truecolor`, like
@@ -109,18 +109,18 @@ kill                  end the program now
 
 ### Recording a live session (`record --session`)
 
-The terminal service records nothing by default. With `COPILOT_CANVAS_RECORD=<dir>` in its environment, every
+The terminal service records nothing by default. With `ATELIER_RECORD=<dir>` in its environment, every
 terminal's PTY reader appends its raw reads to `<dir>/<terminal-id>.vtrec` (hex chunks, header on the first
 read, resize events when the size changed; I/O errors silently stop the tap). Then:
 
 ```
-$env:COPILOT_CANVAS_RECORD = "$HOME\.copilot-canvas\recordings"
-copilot-canvas service stop            # ends the running sessions
-copilot-canvas                         # reopen: the service restarts with recording on; use the session
-copilot-canvas record --session ID --entry copilot-NAME --description "…" --tags copilot,…
+$env:ATELIER_RECORD = "$HOME\.atelier\recordings"
+atelier service stop            # ends the running sessions
+atelier                         # reopen: the service restarts with recording on; use the session
+atelier record --session ID --entry copilot-NAME --description "…" --tags copilot,…
 ```
 
-`ID` is the terminal id (a unique prefix is enough). The folder is `--dir`, else `COPILOT_CANVAS_RECORD` of the
+`ID` is the terminal id (a unique prefix is enough). The folder is `--dir`, else `ATELIER_RECORD` of the
 current shell, else `<home>\recordings`. The command keeps the last run of that terminal, re-encodes readable
 chunks as text and prints the final screen. Without a recording it prints these instructions.
 

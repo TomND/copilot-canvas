@@ -1,4 +1,4 @@
-# Copilot Canvas on macOS and Linux: plan
+# Atelier on macOS and Linux: plan
 
 Status: approved 2026-10-30 (owner: Thomas): every recommended option of §11
 (decisions recorded there). Implementation on the branches `macos` and
@@ -101,7 +101,7 @@ the Rust code was checked for real.
 | `canvas-corpus` | 2,333 | golden PTY corpus | uses `canvas_host::term`, `canvas_common::win` | ✗ 4: `canvas_host::term` ×3, `canvas_common::win` ×1 | ✗ |
 | `ghostty-vt-sys` | 1,244 | libghostty-vt FFI | MSVC-only build script and ABI test | ✗ build script panics (MSVC only) | ✗ |
 | `xtask` | 445 | `build-ghostty` | Windows Zig path default | ✓ builds (runtime defaults are Windows paths) | — |
-| root `copilot-canvas` | 15,411 | CLI, service entry, self-tests, parity suite | `windows`, `windows-sys` unconditional | ✗ default features: `ghostty-vt-sys` build script · `--no-default-features`: 16 errors in `windows-future` | ✗ |
+| root `atelier` | 15,411 | CLI, service entry, self-tests, parity suite | `windows`, `windows-sys` unconditional | ✗ default features: `ghostty-vt-sys` build script · `--no-default-features`: 16 errors in `windows-future` | ✗ |
 
 Error counts are first-layer: rustc stops at name resolution, so they count
 missing modules, not every call site. To see past the `windows-future`
@@ -170,7 +170,7 @@ workflow (Windows jobs), and the Windows-only `[dependencies]` in four
 | Process liveness, start time, tree, kill | Toolhelp snapshots, `OpenProcess`, `GetProcessTimes`, `TerminateProcess` | `canvas-common/src/win.rs` L44-125, L233-263, L371-414; callers `term.rs:527`, `service/mod.rs` L662-675, L744-754, L796-840, `index.rs:493`, `claude_history.rs:97`, `reports.rs:80-90`, `agents/opencode.rs:167-172`, `agents/config.rs:89`, `copilot_cfg.rs:59`, `probes.rs:126`, `core/tunnel.rs:224-229` | process groups, `killpg`, process table (§5.2) |
 | Job objects | service in a kill-on-close job; `KillOnClose` for `devtunnel connect` | `win.rs` L128-190; `server.rs:379`; `core/tunnel.rs:33, 266-285` | PTY hangup, Linux subreaper + cgroup, macOS remembered trees, parent-death watch (§5.2, §5.3) |
 | Priority manager | priority classes, re-applied every 2 s | `server.rs` L1420-1465; `win::raise_priority` (`server.rs:371`, `canvas-tui/src/lib.rs:186`, `canvas-gui/src/main.rs:271`) | `PRIO_DARWIN_BG` / cgroup `cpu.weight` / nice (§5.3) |
-| Local IPC, single instance | owner-only named pipe (`D:P(A;;GA;;;<SID>)`), `PIPE_REJECT_REMOTE_CLIENTS`, `FILE_FLAG_FIRST_PIPE_INSTANCE`, identification-only client | `pipe.rs`; `paths.rs:35-47` (`\\.\pipe\copilot-canvas-<USERNAME>-…`); `server.rs:45, 372`; `core/conn.rs:362-374, 424`; GUI test hooks `canvas-gui/src/hooks.rs:29-35`; `src/selftest.rs:305-346` | Unix domain socket, peer credentials, `flock` (§5.3) |
+| Local IPC, single instance | owner-only named pipe (`D:P(A;;GA;;;<SID>)`), `PIPE_REJECT_REMOTE_CLIENTS`, `FILE_FLAG_FIRST_PIPE_INSTANCE`, identification-only client | `pipe.rs`; `paths.rs:35-47` (`\\.\pipe\atelier-<USERNAME>-…`); `server.rs:45, 372`; `core/conn.rs:362-374, 424`; GUI test hooks `canvas-gui/src/hooks.rs:29-35`; `src/selftest.rs:305-346` | Unix domain socket, peer credentials, `flock` (§5.3) |
 | Private files | protected DACL naming only the user's SID | `win.rs:313-358`; token `auth.rs:12`, port and listen-error files `server.rs:528-533`, APNs key `src/remote_cli.rs:166`, Claude MCP config `agents/claude.rs:124-126` | `O_CREAT\|O_EXCL`, mode 0600 in a 0700 folder (§5.3) |
 | Secrets at rest | DPAPI user scope with extra entropy | `dpapi.rs`; `canvas-agents/src/remote.rs:180, 201, 258-260` (`clients.json`); `canvas-common/src/remote.rs:71-80`, `src/remote_cli.rs:296` (`servers.json`) | Keychain / Secret Service / key file (§5.4) |
 | Loopback TCP checks | `GetExtendedTcpTable` (peer process, listeners), token SID check, `SO_EXCLUSIVEADDRUSE`, `WSAPoll` | `tcp.rs` L52-76, L170-253; `server.rs:565-576`; OpenCode listener check `agents/opencode.rs:160-172`; tunnel listener probe `core/tunnel.rs` | `/proc/net/tcp` (uid column) on Linux, libproc on macOS (`netstat2` covers both) (§5.3) |
@@ -183,7 +183,7 @@ workflow (Windows jobs), and the Windows-only `[dependencies]` in four
 | Link detection | drive-letter and UNC paths only; `file://` → backslashes | `core/links.rs:50-94, 166-212` | POSIX paths, the service's path style (§5.9) |
 | Path handling | `/` → `\`, lower-casing for comparisons, `\`-split globbing | `git.rs:51`, `vscode.rs:97, 167-170`, `agents/opencode_history.rs:502, 780`, `factory.rs:369-377`, `service/mod.rs:846-849`, `canvas-model/src/sync.rs:399` | a `PathStyle` module (D10) |
 | System settings | `SPI_GETCLIENTAREAANIMATION` (reduced motion), `SM_REMOTESESSION` (client `auto`), `GetLogicalDrives` (folder browser roots), `COMPUTERNAME`, `USERNAME` | `core/visual.rs:213-220`; `src/main.rs:312-329`; `backend.rs:386-392`; `canvas-common/src/remote.rs:40-42`; `paths.rs:36` | §5.6, §5.9 |
-| Executable names | `copilot.exe`, `opencode.exe` (+ npm `.cmd` shim), `claude.exe` (+ desktop-app exclusion), `gh.exe`, `az.cmd`, `devtunnel.exe` (+ WinGet folders), `copilot-canvas(-gui).exe`, batch-script refusal | `agents/copilot.rs:36`, `opencode.rs:29-65`, `claude.rs:28-64`, `agents/mod.rs:154-181`, `service/mod.rs:756-780` (`nested_copilots` matches `copilot.exe`), `canvas-common/src/remote.rs:158-177`, `cli.rs:269-286`, `core/conn.rs:633-653`, `core/platform.rs:77`, `canvas-gui/src/main.rs:124-134`, `src/main.rs:313-315, 373` | `EXE_SUFFIX`, argv matching, login-shell `PATH` (§5.10) |
+| Executable names | `copilot.exe`, `opencode.exe` (+ npm `.cmd` shim), `claude.exe` (+ desktop-app exclusion), `gh.exe`, `az.cmd`, `devtunnel.exe` (+ WinGet folders), `atelier(-gui).exe`, batch-script refusal | `agents/copilot.rs:36`, `opencode.rs:29-65`, `claude.rs:28-64`, `agents/mod.rs:154-181`, `service/mod.rs:756-780` (`nested_copilots` matches `copilot.exe`), `canvas-common/src/remote.rs:158-177`, `cli.rs:269-286`, `core/conn.rs:633-653`, `core/platform.rs:77`, `canvas-gui/src/main.rs:124-134`, `src/main.rs:313-315, 373` | `EXE_SUFFIX`, argv matching, login-shell `PATH` (§5.10) |
 | Environment | `PATH` joined with `;` | `service/mod.rs:212` | `std::env::join_paths` |
 | Shells | PowerShell demo shells and test shells; `cmd.exe` in tests | `canvas-model/src/doc.rs:1089`, `core/demo.rs:8`, `core/actions.rs:1151`, `term.rs` tests L1357-1430, `src/parity.rs:649`, `src/selftest.rs:1892` | `$SHELL` / `bash --norc` (§5.2, §7) |
 | GUI renderer | wgpu with `dx12` only; WARP fallback | workspace `Cargo.toml:70`; `canvas-gui/src/gpu.rs:123-150` | Metal; Vulkan + GL (§5.6) |
@@ -285,14 +285,14 @@ transport-neutral code that already exists.
 
 Clients start the service on demand exactly as today (a per-build copy in
 `<home>/bin`, upgrade with resume). On Linux the client uses `systemd-run
---user --collect --unit copilot-canvas-<instance>` when a user systemd is
+--user --collect --unit atelier-<instance>` when a user systemd is
 running (the service then lives in its own cgroup, outside the terminal tab
 that started it), else a `setsid` double fork; on macOS a `setsid` spawn.
-`copilot-canvas service install|uninstall` (new, both OSes) adds a launchd
+`atelier service install|uninstall` (new, both OSes) adds a launchd
 LaunchAgent or a systemd user unit to start it at login, the equivalent of
-the `CopilotCanvas-Service` logon task. The data home stays
-**`~/.copilot-canvas`** on every OS (agents' skills, docs, remote paths and
-the other agents' own dot-folders all assume it); `COPILOT_CANVAS_HOME`
+the `Atelier-Service` logon task. The data home stays
+**`~/.atelier`** on every OS (agents' skills, docs, remote paths and
+the other agents' own dot-folders all assume it); `ATELIER_HOME`
 still overrides it.
 
 ### D6. Secrets: envelope sealing with a per-home master key
@@ -316,7 +316,7 @@ is unchanged. `Scheduler` = `list`, `definition`, `run`, `set_enabled`,
 Backends: **TaskScheduler** (today's `taskschd.rs` + factory XML, unchanged),
 **Launchd** (user LaunchAgents), **SystemdUser** (service + timer units),
 **Cron** (fallback when no user systemd). On macOS and Linux runs go
-through a **built-in launcher** (`copilot-canvas automations launch NAME`)
+through a **built-in launcher** (`atelier automations launch NAME`)
 that writes the same log lines and environment as the Python launcher, so the
 watcher, doctor, health page and canvas boxes need no change.
 
@@ -371,7 +371,7 @@ origin's paths from **`canvas-notes://notes.canvas.invalid/`** (a
 `WKURLSchemeHandler` on macOS, a registered URI scheme on Linux); replies
 name that origin in their policy and links, the decisions stay in
 `webpane`. *Print / PDF* saves `<title>.pdf` in Downloads (never over a
-file; `COPILOT_CANVAS_DOWNLOADS` under the test hooks), as an offscreen or
+file; `ATELIER_DOWNLOADS` under the test hooks), as an offscreen or
 headless view has no print dialog to show.
 
 ### D10. Path semantics belong to the service's platform
@@ -395,8 +395,8 @@ pinned (bundled) fonts.
 
 ### D12. Distribution
 
-macOS: a notarized, hardened-runtime **universal** `Copilot Canvas.app` in a
-DMG and a Homebrew cask that also links `copilot-canvas` into `PATH`. Linux:
+macOS: a notarized, hardened-runtime **universal** `Atelier.app` in a
+DMG and a Homebrew cask that also links `atelier` into `PATH`. Linux:
 tarball, **AppImage**, `.deb` and `.rpm` for x86_64 and arm64. No App Store
 (a terminal host cannot be sandboxed), no Flatpak or Snap in the first
 release, no auto-update (the Windows preview has none either).
@@ -476,7 +476,7 @@ off, force-click pressure) is the owner's check on hardware.
 |---|---|---|---|---|
 | `process` | `alive`, `start_ms`, `lock_owner_alive`, `entries` (pid, parent, name, **argv**), `tree`, `kill_tree`, `usage`, `user_of(pid)` | `win.rs` | `sysinfo` (libproc underneath: `proc_pidinfo`, `PROC_PIDTBSDINFO` start time, `KERN_PROCARGS2` argv) | `sysinfo` / `/proc/<pid>/stat` (start time from `btime` + ticks), `/proc/<pid>/cmdline` |
 | `process::priority` | `set(pid, Class::{Focused, Visible, Background})`, `raise_self()` | priority classes (`set_priority_class`, `raise_priority`) | `setpriority(PRIO_DARWIN_PROCESS, pid, PRIO_DARWIN_BG)` for background, cleared otherwise; own threads at QoS user-interactive | cgroup v2 `cpu.weight` per terminal when delegated; else autogroup nice (`/proc/<pid>/autogroup`), one-way (§5.3) |
-| `process::contain` | `contain_descendants()`, `KillOnClose::new(child)` | job objects | parent-death watcher: the helper is spawned through `copilot-canvas reap --parent PID -- CMD…`, which `kqueue`-waits (`EVFILT_PROC`/`NOTE_EXIT`) for the parent and kills its group | `prctl(PR_SET_PDEATHSIG, SIGTERM)` in `pre_exec`; the service is a child subreaper (`PR_SET_CHILD_SUBREAPER`) |
+| `process::contain` | `contain_descendants()`, `KillOnClose::new(child)` | job objects | parent-death watcher: the helper is spawned through `atelier reap --parent PID -- CMD…`, which `kqueue`-waits (`EVFILT_PROC`/`NOTE_EXIT`) for the parent and kills its group | `prctl(PR_SET_PDEATHSIG, SIGTERM)` in `pre_exec`; the service is a child subreaper (`PR_SET_CHILD_SUBREAPER`) |
 | `ipc` | `Listener::bind(name)` (fails with `AlreadyExists`), `accept()`, `connect(name, timeout)`, `split()` → reader, writer, closer; `peer() → {pid, uid}` | `pipe.rs` | `UnixListener`, `getpeereid`, `LOCAL_PEERPID` | `UnixListener`, `SO_PEERCRED` |
 | `fs` | `create_private`, `write_private` (atomic) | DACL with the user's SID | `O_CREAT\|O_EXCL`, 0600, folder 0700 | the same |
 | `secret` | `seal(label, bytes) → String`, `open(String) → bytes`, `backend()` (for `doctor`) | DPAPI hex (unchanged format) | Keychain master key (`security-framework`) | Secret Service master key (`oo7` / `secret-service`) or 0600 key file |
@@ -552,7 +552,7 @@ project first, so the library is expected to build; it was not built here
 
 | Concern | Windows | macOS | Linux |
 |---|---|---|---|
-| Endpoint | `\\.\pipe\copilot-canvas-<user>-<instance>-<hash>` | `<home>/run/<hash>.sock`, else `$TMPDIR/cc-<hash>.sock` (per-user, 0700) | `<home>/run/<hash>.sock`, else `$XDG_RUNTIME_DIR/copilot-canvas/<hash>.sock` |
+| Endpoint | `\\.\pipe\atelier-<user>-<instance>-<hash>` | `<home>/run/<hash>.sock`, else `$TMPDIR/cc-<hash>.sock` (per-user, 0700) | `<home>/run/<hash>.sock`, else `$XDG_RUNTIME_DIR/atelier/<hash>.sock` |
 | Who may connect | DACL: the user's SID; local clients only | 0700 folder, 0600 socket, `getpeereid` uid = ours | 0700 folder, 0600 socket, `SO_PEERCRED` uid = ours |
 | Client process (logs, "a command in canvas terminal …") | `GetNamedPipeClientProcessId` | `LOCAL_PEERPID` | `SO_PEERCRED` pid |
 | Single instance | `FILE_FLAG_FIRST_PIPE_INSTANCE` | `flock(service-<instance>.lock)`, then unlink a stale socket and bind | the same |
@@ -560,9 +560,9 @@ project first, so the library is expected to build; it was not built here
 | Loopback TCP token check (`--remote loopback`) | peer pid via `GetExtendedTcpTable`, its token's SID | peer pid via libproc (`netstat2`), its uid | the socket's uid straight from `/proc/net/tcp` |
 | `SO_EXCLUSIVEADDRUSE` | yes | not needed: no `SO_REUSEADDR`/`SO_REUSEPORT` is set (socket2 sets none), and a wildcard bind does not capture `127.0.0.1` connections | the same (Linux also requires the same uid for `SO_REUSEPORT`) |
 | Start | detached, new process group, breakaway from the job | `posix_spawn` with `POSIX_SPAWN_SETSID`, stdio to `/dev/null` | `systemd-run --user …` when available, else `setsid` double fork |
-| Per-build copy | `<home>/bin/copilot-canvas-service-<build>.exe` | `<home>/bin/copilot-canvas-service-<build>` (code signature preserved; the `com.apple.quarantine` attribute removed from the copy) | the same; required for the AppImage, whose mount disappears with the launching process |
-| Start at login (`service install`) | a Task Scheduler logon task (manifest example) | `~/Library/LaunchAgents/<id>.service.plist` (`RunAtLoad`, `ProcessType=Interactive`, `LimitLoadToSessionType=Aqua`), registered with `launchctl bootstrap gui/$UID`; the bundled app can use `SMAppService.agent` | `~/.config/systemd/user/copilot-canvas.service` (`WantedBy=default.target`, `KillMode=control-group`); `loginctl enable-linger` documented for servers |
-| Logs | `<home>/service-<instance>.log` | the same file; launchd's stdout/stderr to `~/Library/Logs/Copilot Canvas/` | the same file; the journal when run by systemd |
+| Per-build copy | `<home>/bin/atelier-service-<build>.exe` | `<home>/bin/atelier-service-<build>` (code signature preserved; the `com.apple.quarantine` attribute removed from the copy) | the same; required for the AppImage, whose mount disappears with the launching process |
+| Start at login (`service install`) | a Task Scheduler logon task (manifest example) | `~/Library/LaunchAgents/<id>.service.plist` (`RunAtLoad`, `ProcessType=Interactive`, `LimitLoadToSessionType=Aqua`), registered with `launchctl bootstrap gui/$UID`; the bundled app can use `SMAppService.agent` | `~/.config/systemd/user/atelier.service` (`WantedBy=default.target`, `KillMode=control-group`); `loginctl enable-linger` documented for servers |
+| Logs | `<home>/service-<instance>.log` | the same file; launchd's stdout/stderr to `~/Library/Logs/Atelier/` | the same file; the journal when run by systemd |
 | Crash logs | panic hook → `<home>/crash.log` | the same; native crashes in `~/Library/Logs/DiagnosticReports` | the same; native crashes via `systemd-coredump` |
 | Idle exit | 10 minutes, no clients, no terminals | unchanged (a launchd agent without `KeepAlive` is simply not restarted) | unchanged (`Restart=no`) |
 
@@ -582,7 +582,7 @@ does not let an unprivileged process raise a priority, so the policy becomes
   nice 5 and stay there (unprivileged users cannot lower it again), which
   `doctor` explains.
 - `bench --burn 40` decides the defaults per OS in Phase 1;
-  `COPILOT_CANVAS_NO_PRIORITY=1` still turns it off.
+  `ATELIER_NO_PRIORITY=1` still turns it off.
 
 **TCC on macOS.** Agents read and write the user's projects; when those live
 in `~/Documents`, `~/Desktop` or `~/Downloads`, macOS asks once per folder,
@@ -611,10 +611,10 @@ Canvas", account = the data home's hash, `kSecAttrAccessibleAfterFirstUnlock`)
 created with an access list naming both executables of the bundle, so the
 GUI, the TUI and the service read it without prompts once signed with the
 same Developer ID (a per-build copy keeps its signature). Linux: one Secret
-Service item (attributes `application=copilot-canvas`, `home=<hash>`); on a
+Service item (attributes `application=atelier`, `home=<hash>`); on a
 headless machine (no session bus or no keyring) a 0600 key file
 `<home>/remote/master.key`, as SSH keys are protected, reported by `doctor`.
-`COPILOT_CANVAS_SECRETS=file` forces the file (CI, development builds).
+`ATELIER_SECRETS=file` forces the file (CI, development builds).
 Copying `servers.json` to another machine does not copy its secrets, as with
 DPAPI.
 
@@ -635,9 +635,9 @@ DPAPI.
 | Run now | `IRegisteredTask::Run` | `launchctl kickstart gui/$UID/<label>` | `systemctl --user start <unit>.service` | the launcher directly |
 | Enable / disable | `SetEnabled` | `launchctl enable\|disable` + `bootstrap\|bootout` | `systemctl --user enable\|disable --now <unit>.timer` | comment the line out |
 | State, last run, last result, next run | task properties | `launchctl print gui/$UID/<label>` (state, last exit code); last run and next run from the launcher log and the schedule | `systemctl --user show` (`NextElapseUSecRealtime`, `LastTriggerUSec`, `ExecMainStatus`) | the launcher log and the schedule |
-| Where definitions live | Task Scheduler root folder | `~/Library/LaunchAgents/com.copilot-canvas.task.<name>.plist` | `~/.config/systemd/user/copilot-canvas-task-<name>.{service,timer}` | a marked block in `crontab -l` |
+| Where definitions live | Task Scheduler root folder | `~/Library/LaunchAgents/com.thomashorga.atelier.task.<name>.plist` | `~/.config/systemd/user/atelier-task-<name>.{service,timer}` | a marked block in `crontab -l` |
 
-- **Launcher.** `copilot-canvas automations launch <state>/tasks/<name>.json`
+- **Launcher.** `atelier automations launch <state>/tasks/<name>.json`
   does what the Python launcher does: appends `Starting task.` and `Exited
   with code N.` (and launch failures) to `<state>/logs/<name>.log`, sets
   `AUTOMATION_NAME`, `AUTOMATION_RUN_ID`, `AUTOMATION_STATUS_FILE`, runs the
@@ -657,7 +657,7 @@ DPAPI.
   page, log tails, status reports, the doctor and its events (`factory_watch`
   reads the same logs), Copilot's own `data.db` automations
   (`~/.copilot/data.db`, read-only but for the toggle).
-- **Remote:** `remote tunnel-setup` writes the same `CopilotCanvas-Tunnel`
+- **Remote:** `remote tunnel-setup` writes the same `Atelier-Tunnel`
   manifest with the full path of `devtunnel` (Homebrew, `~/bin`,
   `/usr/local/bin`); the service-at-login manifest example becomes
   `service install` (D5).
@@ -757,12 +757,12 @@ least 140 × 40 is still the comfortable size.
   portable today (checked: `canvas-common` and `canvas-mock` build and test
   on macOS; `canvas-mobile/tests/end_to_end.rs` runs against the mock).
 - **Dev Tunnels CLI** exists for macOS (Homebrew cask `devtunnel`) and Linux
-  (install script to `~/bin`). Discovery: `COPILOT_CANVAS_DEVTUNNEL`, `PATH`,
+  (install script to `~/bin`). Discovery: `ATELIER_DEVTUNNEL`, `PATH`,
   then `~/bin`, `/opt/homebrew/bin`, `/usr/local/bin` (replacing the WinGet
   folders in `canvas-common/src/remote.rs:158-177`). The managed
   `devtunnel connect` child is killed with the client by `process::contain`
   (§5.1). Its "is this listener the child's?" check uses `canvas_sys::net`.
-  The tunnel host is the `CopilotCanvas-Tunnel` automation (§5.5).
+  The tunnel host is the `Atelier-Tunnel` automation (§5.5).
 - **Secrets** of pairing on both sides: §5.4. `machine_name` from §5.1.
 - **Mixed OS (D10).** A Mac client on the Windows Cloud PC works once the
   client builds: `remote_path` (`core/links.rs:202-212`) accepts only
@@ -794,7 +794,7 @@ least 140 × 40 is still the comfortable size.
 | | Copilot CLI | OpenCode | Claude Code |
 |---|---|---|---|
 | Install on macOS/Linux | npm `@github/copilot` (a Node script), or GitHub's installer | Homebrew, the install script (`~/.opencode/bin`), npm `opencode-ai`; a native binary | the native installer (`~/.local/bin/claude`), Homebrew cask, npm `@anthropic-ai/claude-code` |
-| Found by | `COPILOT_CANVAS_COPILOT`, else `copilot` on the resolved `PATH` (§5.2) | `COPILOT_CANVAS_OPENCODE`, else `opencode` | `COPILOT_CANVAS_CLAUDE`, else `claude`, `~/.local/bin/claude` |
+| Found by | `ATELIER_COPILOT`, else `copilot` on the resolved `PATH` (§5.2) | `ATELIER_OPENCODE`, else `opencode` | `ATELIER_CLAUDE`, else `claude`, `~/.local/bin/claude` |
 | History | `~/.copilot/session-state/<id>/events.jsonl`, `inuse.<pid>.lock` (to verify: whether `XDG_CONFIG_HOME` moves `~/.copilot` on Linux) | `~/.local/share/opencode/opencode.db` (already `XDG_DATA_HOME`-aware, `opencode_history.rs:29`), `~/.local/state/opencode/model.json` | `~/.claude/projects/<dir>/<id>.jsonl`, `~/.claude/sessions/<pid>.json`, `~/.claude.json` (`CLAUDE_CONFIG_DIR`) |
 | Live checks | lock owner alive with the start-time guard | its HTTP server; the listener-owner check via `canvas_sys::net` | pid file: `procStart` is a Windows FILETIME today (`claude_history.rs:95-101`); its Unix format is unknown, so the existing `startedAt` rule is used until verified |
 | Spawned subsessions (`copilot -p` inside a terminal) | `nested_copilots` matches the process name `copilot.exe`; on Unix the process is `node …/copilot`: match argv (the script's path or package name) | — | — |
@@ -843,7 +843,7 @@ work beyond §5.8.
 | 7 | Loops: arc, `↻ every`, sidebar ↻ | renderer | renderer | — | S / S | L |
 | 7b | Smooth loop dot; reduced motion | renderer; reduced motion from `NSWorkspace` | renderer; settings portal / gsettings | `host::reduced_motion` | S / S | L |
 | 8 | MCP picker with presets | core + agent CLIs | same | — | S / S | L |
-| 9 | Groups, chips, launch defaults | core; folders `~/.copilot-canvas/groups/…`; open in Finder | same; file manager | `canvas_sys::open` | S / S | L |
+| 9 | Groups, chips, launch defaults | core; folders `~/.atelier/groups/…`; open in Finder | same; file manager | `canvas_sys::open` | S / S | L |
 | 10 | Sidebar tree, filter, fly-to, group rows | core | core | — | S / S | L |
 | 11 | Terminals: PTY, single or 4 tiles, survive client exit | `portable-pty` Unix; UDS service | same | `openpty`, `setsid`, UDS | M / M | M |
 | 11b | Detach and reattach | service started with `setsid` | `systemd-run --user` or `setsid` | — | S / S | M |
@@ -931,8 +931,8 @@ checked), damage frames.
 | Suite | Today (Windows) | macOS / Linux |
 |---|---|---|
 | Unit and integration tests (`cargo test --workspace`), ViewModel snapshots | portable except tests that start `cmd.exe`/`powershell.exe` (`term.rs` L1357-1430, `win.rs` tests, `opencode.rs:762, 776`, `core/tunnel.rs:408`) or use Windows paths | those tests get Unix twins (`/bin/sh -c`, `sleep`) behind `cfg_aliases`; Windows-path tests stay Windows-only; new tests for `canvas-sys` (peer credentials, private files, process trees with re-parenting, secrets round trip with the file backend) |
-| Golden corpus (`corpus check`) | recordings made through ConPTY | the existing recordings replay on any OS (they are byte streams); new entries recorded through a Unix PTY (`copilot-canvas record`, which already uses `portable-pty`) for zsh, bash, vim, the agents |
-| TUI self-test (45 steps) | the TUI in a hidden pseudoconsole (`selftest.rs:20-70`, `portable-pty`) | unchanged driver; demo shells `bash --norc`; stand-ins copied without `.exe` (`EXE_SUFFIX`); `TERM=xterm-256color` set for the child |
+| Golden corpus (`corpus check`) | recordings made through ConPTY | the existing recordings replay on any OS (they are byte streams); new entries recorded through a Unix PTY (`atelier record`, which already uses `portable-pty`) for zsh, bash, vim, the agents |
+| TUI self-test (46 steps) | the TUI in a hidden pseudoconsole (`selftest.rs:20-70`, `portable-pty`) | unchanged driver; demo shells `bash --norc`; stand-ins copied without `.exe` (`EXE_SUFFIX`); `TERM=xterm-256color` set for the child |
 | `--remote loopback`, `faults`, `paired`, `soak` | TCP + the `devtunnel-standin` | portable; `soak` reads handle counts from `/proc/<pid>/fd` or libproc instead of `GetProcessHandleCount` |
 | Backend contract (`tests/backend_contract.rs`) | real service over TCP | unchanged |
 | GUI self-test, parity suite, goldens, hardening, benches | `--test-hooks` over a named pipe | the same JSON commands over a Unix socket (`<home>/run/gui-test-<pid>.sock`, 0600); `GuiDriver` connects there |
@@ -946,7 +946,7 @@ checked), damage frames.
 
 **Golden screenshots.** Fonts decide most pixels and glyphs are rasterized
 by swash on the CPU on every OS, so golden runs pin the fonts
-(`COPILOT_CANVAS_FONTS=bundled`: Cascadia Mono plus an OFL UI font) and keep
+(`ATELIER_FONTS=bundled`: Cascadia Mono plus an OFL UI font) and keep
 one golden set per OS and scale: `tests/golden/gui/macos-2x/`,
 `tests/golden/gui/linux-1x/`. The Linux set is captured in the CI container
 with llvmpipe, which is deterministic, so it can **block** there (Windows's
@@ -976,8 +976,8 @@ at-spi2-core` plus the WebKit development package chosen in D9.
 ### 8.1 macOS
 
 - **Bundle** (`cargo xtask bundle-macos`, new): `Copilot
-  Canvas.app/Contents/MacOS/copilot-canvas-gui` (the bundle executable) and
-  `…/MacOS/copilot-canvas` (service, CLI, TUI; the GUI already looks for its
+  Canvas.app/Contents/MacOS/atelier-gui` (the bundle executable) and
+  `…/MacOS/atelier` (service, CLI, TUI; the GUI already looks for its
   sibling), `Resources/AppIcon.icns` (from `assets/icon/make_icon.py`, which
   today writes `.ico`), bundled fonts, `Info.plist` (`CFBundleIdentifier`,
   `LSMinimumSystemVersion` 13.0, `NSHighResolutionCapable`,
@@ -996,7 +996,7 @@ at-spi2-core` plus the WebKit development package chosen in D9.
   (IOS-PLAN) covers it; CI needs the certificate and an App Store Connect API
   key as secrets.
 - **Channels**: a DMG on GitHub Releases and a Homebrew cask (`app` plus
-  `binary` for `copilot-canvas`), first in the owner's tap. Development
+  `binary` for `atelier`), first in the owner's tap. Development
   builds keep working unbundled (`cargo run`), without toasts.
 - **Runtime details**: the per-build service copy keeps its signature and
   loses the quarantine attribute; the `cli` copy for sessions likewise. No
@@ -1014,7 +1014,7 @@ at-spi2-core` plus the WebKit development package chosen in D9.
 Builds: x86_64 and aarch64, glibc 2.35 baseline (Ubuntu 22.04 container),
 Ghostty linked statically, rustls instead of OpenSSL (§5.9), `.desktop`
 file with `StartupWMClass` and the Wayland `app_id` matching
-`copilot-canvas` (needed by `LauncherEntry` and docks).
+`atelier` (needed by `LauncherEntry` and docks).
 
 ## 9. Phases and estimates
 
@@ -1070,7 +1070,7 @@ both platforms take about 25 calendar weeks unassisted, about 12 assisted.
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
 | **Linux HTML view**: no Wayland embedding; WPE packaging and bindings; input forwarding | high | high (row 41b) | a 1-week spike first (§5.7); formatted-text fallback ships meanwhile (Windows already has it); X11 child via XWayland as plan B; Blitz as plan C |
-| **Secret storage UX**: Keychain prompts across GUI, TUI and service binaries and per-build copies; Linux without a keyring | medium | medium | one master-key item with both executables in its access list, same Developer ID; the 0600 file backend with a `doctor` warning; `COPILOT_CANVAS_SECRETS=file` |
+| **Secret storage UX**: Keychain prompts across GUI, TUI and service binaries and per-build copies; Linux without a keyring | medium | medium | one master-key item with both executables in its access list, same Developer ID; the 0600 file backend with a `doctor` warning; `ATELIER_SECRETS=file` |
 | **Process control parity**: no raised priorities, no job objects, no subreaper on macOS | medium | medium (typing latency under load, orphans) | §5.2/§5.3 designs; `bench --burn 40` and an orphan test (MCP servers that `setsid`) as Phase 1 exit checks |
 | **Environment resolution**: agents, `node`, `gh` missing from launchd/systemd `PATH`; no `LANG` | high | high (agents "not installed") | login-shell environment capture; `doctor` shows the resolved `PATH`; *Reload environment*; UTF-8 locale default |
 | **macOS keyboard model**: Cmd/Ctrl/Option conflicts, Ctrl-click, F-keys behind Fn, agents' own keys (image paste) | medium | medium | D8 as one `KeyPolicy`; key-table tests per OS; the owner's dogfood week; a setting for Option as Meta |
@@ -1110,7 +1110,7 @@ done by hand).
 7. **Flatpak/Snap:** none in the first release (recommended)?
 8. **Distribution channels:** Homebrew cask in an own tap first; DMG;
    AppImage + `.deb` + `.rpm` + tarball?
-9. **Data home:** keep `~/.copilot-canvas` on every OS (recommended) or use
+9. **Data home:** keep `~/.atelier` on every OS (recommended) or use
    `~/Library/Application Support` / XDG folders?
 10. **Closing the last window on macOS:** detach silently and stay in the
     Dock (Mac convention) or ask detach / stop all as on Windows?
@@ -1167,7 +1167,7 @@ source ~/.cargo/env
 cargo check -p canvas-common --all-targets          # and each crate, one at a time
 cargo check -p canvas-host --no-default-features --all-targets
 cargo check -p canvas-host --features ghostty       # build script refuses non-MSVC targets
-cargo check -p copilot-canvas [--no-default-features]
+cargo check -p atelier [--no-default-features]
 rustup target add x86_64-unknown-linux-gnu
 CC_x86_64_unknown_linux_gnu=<stub cc> AR_x86_64_unknown_linux_gnu=<stub ar> \
   X86_64_UNKNOWN_LINUX_GNU_OPENSSL_LIB_DIR=<placeholder> \

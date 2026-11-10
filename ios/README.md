@@ -1,4 +1,4 @@
-# Copilot Canvas for iPhone
+# Atelier for iPhone
 
 The canvas of your Cloud PC on your phone: sessions sorted by what needs
 you, the canvas itself, real terminals you can type in, and the canvas's
@@ -6,7 +6,7 @@ notebook and todo boards, over the same private Dev Tunnel the home PC uses. Des
 
 ```
  iPhone app (SwiftUI + UIKit terminal)        Cloud PC
-  Rust core (crates/canvas-mobile, UniFFI) ══ wss://<tunnel>-47600.<region>.devtunnels.ms ══ copilot-canvas service
+  Rust core (crates/canvas-mobile, UniFFI) ══ wss://<tunnel>-47600.<region>.devtunnels.ms ══ atelier service
   protocol 8, pairing, canvas replica,          X-Tunnel-Authorization: tunnel <token>          (same port as `devtunnel connect`)
   terminal screens, session statuses
 ```
@@ -17,11 +17,11 @@ Needs Xcode 26 and Rust (`rustup`; the script adds the iOS targets).
 
 ```sh
 ios/build-core.sh          # once: the Rust core as CanvasMobileCore.xcframework + Swift bindings (ios/Core)
-open ios/CopilotCanvas.xcodeproj
+open ios/Atelier.xcodeproj
 ```
 
 Then pick your iPhone and press Run. Xcode rebuilds the core before every
-build (the "Build the Rust core" phase; `COPILOT_CANVAS_SKIP_CORE=1` skips it).
+build (the "Build the Rust core" phase; `ATELIER_SKIP_CORE=1` skips it).
 
 - **Signing:** the project uses your team (`DEVELOPMENT_TEAM` in
   `project.yml`) with automatic signing. Add your Apple ID once in
@@ -37,17 +37,17 @@ build (the "Build the Rust core" phase; `COPILOT_CANVAS_SKIP_CORE=1` skips it).
 On the Cloud PC (with remote mode set up, docs/REMOTE.md):
 
 ```powershell
-copilot-canvas remote pair --qr --name iphone
+atelier remote pair --qr --name iphone
 ```
 
 It prints a QR code holding the tunnel's web address, a one-time pairing
 code and a Dev Tunnels *connect* token (24 h; the service sends fresh ones
 while the phone is connected). In the app: **Scan the pairing QR code**. If
-the web address cannot be found, pass it: `--url wss://copilot-canvas-47600.usw2.devtunnels.ms`
+the web address cannot be found, pass it: `--url wss://atelier-47600.usw2.devtunnels.ms`
 (the `Connect via browser` address `devtunnel host` prints, with `wss://`).
 
-The phone then appears in `copilot-canvas remote clients`; revoke it with
-`copilot-canvas remote revoke iphone`. The app locks with Face ID (a paired
+The phone then appears in `atelier remote clients`; revoke it with
+`atelier remote revoke iphone`. The app locks with Face ID (a paired
 phone can do what you can on the Cloud PC). The pairing lives in the
 Keychain, on this device only.
 
@@ -66,7 +66,8 @@ cargo run -p canvas-mock                       # 127.0.0.1:47600, code ABCD-EFGH
 cargo run -p canvas-mock -- --listen 0.0.0.0:47600   # reachable from a phone on the same Wi-Fi (ws://<mac>:47600)
 ```
 
-In the simulator, paste the printed `ccanvas://pair?…` link, or launch with
+In the simulator, paste the printed `atelier://pair?…` link (the app also
+takes `ccanvas://`, from before the rename), or launch with
 `-pairLink <link>`. Other launch arguments for automated runs:
 `-noNotificationPrompt`, `-noLock`, `-openSession <id>`, `-startMode canvas|notebook|tasks`,
 `-machine <name>` (`-pairLink` may be repeated).
@@ -78,8 +79,8 @@ Certificates, IDs & Profiles › Keys › "+" › *Apple Push Notifications
 service*; download `AuthKey_KEYID.p8`):
 
 ```powershell
-copilot-canvas remote push-key AuthKey_KEYID.p8 --team 8Z37ZVMJ4V
-copilot-canvas remote push-test        # after the phone connected once
+atelier remote push-key AuthKey_KEYID.p8 --team 8Z37ZVMJ4V
+atelier remote push-test        # after the phone connected once
 ```
 
 The app asks for permission when it first connects and registers with every
@@ -111,7 +112,9 @@ a 24 h connect token issued with this Mac's `devtunnel` (renewed while the
 phone is connected), pairing with a random one-time code. Sessions started
 from the phone run the agent CLIs installed on the Mac (OpenCode, Claude
 Code, Copilot; they ask before running tools); the demo sessions are shells.
-The canvas and pairings are kept in `~/.copilot-canvas-mock`. `TUNNEL`,
+The canvas and pairings are kept in `~/.atelier-mock` (in `~/.copilot-canvas-mock`
+while that folder from before the rename exists). The tunnel ids are yours and
+keep their names. `TUNNEL`,
 `PORT`, `STATE` and `WORKDIR` choose another tunnel, port, state folder and
 start folder. The Mac stays awake while it hosts (on power).
 `ios/cloud-mac.sh report FILE` publishes a file to its reports inbox (`.html`,
@@ -123,7 +126,7 @@ notifies the phone while the app is away.
 ```sh
 cargo test -p canvas-mobile                    # the core, and the phone ↔ mock end to end over a WebSocket
 cargo run -p canvas-mock &                     # then the app's unit and UI tests on a simulator:
-xcodebuild -project ios/CopilotCanvas.xcodeproj -scheme CopilotCanvas \
+xcodebuild -project ios/Atelier.xcodeproj -scheme Atelier \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test
 ```
 
@@ -155,7 +158,7 @@ listener, and that a note page's `#note:` / `#todo:` links reach the app.
 | **Files** | Tap a path in a terminal (`C:\src\app.rs:42`, `/x/y.rs`): a read-only viewer of the machine's file, at that line (copy, share) |
 | **Notebook** | The canvas's notebook on the Cloud PC: the notebook folder, the other roots (group folders outside it, the canvas-wide folder, mounts), folders to drill into, each note with whom it is for (● for you, ◇ for agents, those dimmed) and who wrote it (you, an agent, both; its session, reviewed); **All / For you / For agents**, the canvas's own files on request, search, pull to refresh. A note opens as its page in the same locked-down view as reports: Markdown with tables, task lists and pictures, HTML notes with their own look but never their scripts (the desktop can allow those per file; the phone never runs them); `[[Note]]` links open that note, todo ids open the todo, web links ask before Safari. Its header: for whom, who wrote it, the session (*View* while it runs), *Mark reviewed*; copy, share, rename, delete to the trash. **Edit** opens its source (Markdown, HTML, text files) in a monospaced editor without smart quotes or autocorrection, with a key row (heading, bold, italic, code, list, task, quote, `[[ ]]`, link, undo, redo): *Save* writes on the version you opened; if it changed meanwhile (an agent, the desk) the phone asks: *Reload* (your edits go, after asking) or *Keep mine* (overwrites, after asking again). Closing with unsaved changes asks. **New note** (written as a note for you) and **New folder** in the folder shown |
 | **Tasks** | The canvas's todo boards: **Needs you** first (proposals to accept into a column or decline with a reason, todos in review, claims of sessions that are gone: release), then a board (pick it) as a list by column, swimlanes as captions, Done folded. Rows: type, id, priority (`!!!`), `‼` blocker, title, `⚑` blocked, checklist `☑ 2/4`, `⟳` the session working on it, labels. Swipe to accept, decline, finish or release; long-press to move. A todo's page: its fields, why it was proposed, the claim, the checklist (tap to tick; add, reword, remove), its description as a page, links (notes open here, sessions only while they run), related todos, the log; Move, Done, Cancel, Reopen, Release where the desktop offers them; **Edit** (title, type, priority, labels, blocker, blocked reason, description); **New todo** (title, board or swimlane, type, priority, column, blocker, description). Changes show at once; one the service refuses comes back as a toast with its reason |
-| **Reports** | The tray button (top right; its badge counts unread rows) opens the machine's reports inbox: what agents published with `copilot-canvas report publish`, one row per thread with a gold dot while unread, its kind, who, age and first line; swipe to mark read/unread or delete (every window and phone follows). A report opens as one page: HTML with its own styles, Markdown (tables, code, task lists) and messages, sanitized by the core and shown in a web view that runs no script from the page and loads nothing from the network; links ask before Safari opens them; the header names who published it and offers its running session, pull request and links; ◂ Older / Newer ▸ through a thread; copy or share the text. Opening one marks its thread read. New reports: a toast while the app is open, a notification while it is away (tap opens the report) |
+| **Reports** | The tray button (top right; its badge counts unread rows) opens the machine's reports inbox: what agents published with `atelier report publish`, one row per thread with a gold dot while unread, its kind, who, age and first line; swipe to mark read/unread or delete (every window and phone follows). A report opens as one page: HTML with its own styles, Markdown (tables, code, task lists) and messages, sanitized by the core and shown in a web view that runs no script from the page and loads nothing from the network; links ask before Safari opens them; the header names who published it and offers its running session, pull request and links; ◂ Older / Newer ▸ through a thread; copy or share the text. Opening one marks its thread read. New reports: a toast while the app is open, a notification while it is away (tap opens the report) |
 | **Passive sessions** | Tap one: run now, pause or resume, discard queued messages; its last headline and next run |
 | **Subsessions** | Long-press a session › *New subsession*: linked to it, placed next to it, forking its conversation when the agent can (Copilot's history copied; OpenCode and Claude Code fork it themselves) |
 | **Keyboard** | Closes with a tap outside any field, the button above it, or a swipe down on forms and lists; in terminals the key bar's hide button stays at its right end and a swipe down on the bar closes it. Picking a folder never brings it back |

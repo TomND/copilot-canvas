@@ -2,7 +2,7 @@
 
 Each engine is checked against its own blessed grids (`expected.<engine>.json`).
 This file records the reviewed differences between the two engines' grids
-(`copilot-canvas corpus diff`). Engine updates are one reviewed change together
+(`atelier corpus diff`). Engine updates are one reviewed change together
 with this file and the re-blessed grids.
 
 Reviewed 2026-10-27 against Ghostty `521cf2c5d30b` and alacritty_terminal 0.26.

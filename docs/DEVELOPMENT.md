@@ -1,6 +1,6 @@
 # Developer guide
 
-How to work on Copilot Canvas: how the pieces run, which files a common
+How to work on Atelier: how the pieces run, which files a common
 change touches and in what order, how every test layer works, what CI runs,
 and the pitfalls that have cost time before. The short version is the root
 [AGENTS.md](../AGENTS.md); what the product does is the
@@ -20,7 +20,7 @@ relative to the repository root; `file:function` names a function in a file.
 | L3 backend and service | `canvas-agents` | agent providers (`agents/`), the history index (`index.rs`), the backend handler (`backend.rs`), the service (`service/`: documents, bus loop, passive runs, the PR, review and todo hubs, the reports inbox), the agent-facing CLI pieces (`cli.rs`, `*_cli.rs`, `reports.rs`) |
 | Core | `canvas-core` | the app state machine (`app.rs`), every layout in character cells (`ui*.rs`), dialogs, spaces, notebook, tasks, editor; shared by the TUI and the GUI |
 | Front ends | `canvas-tui`, `canvas-gui` | the TUI paints the cells in a console; the GUI paints the same cells with wgpu/glyphon and draws the canvas from a model |
-| Binary | `src/` | `copilot-canvas.exe`: CLI dispatch (`main.rs`), the self-test, parity, golden, hardening and bench drivers, stand-ins (`fake_copilot.rs`, `fake_gh.rs`, `standin.rs`) |
+| Binary | `src/` | `atelier.exe`: CLI dispatch (`main.rs`), the self-test, parity, golden, hardening and bench drivers, stand-ins (`fake_copilot.rs`, `fake_gh.rs`, `standin.rs`) |
 
 `canvas-core` no longer depends on `canvas-agents`: everything a front end
 needs from the machine goes through the backend (`canvas_model::rpc`), and
@@ -28,19 +28,19 @@ the canvas document goes through the service (docs/BACKEND.md).
 
 ### Processes at run time
 
-- **The client.** `copilot-canvas.exe` with no command runs the TUI
+- **The client.** `atelier.exe` with no command runs the TUI
   (`src/main.rs:real_main` → `canvas_tui::run`). With `--gui`, or when the
   `client` setting says so (`main.rs:wants_gui`), `main.rs:launch_gui` runs
-  `copilot-canvas-gui.exe` from the same folder with the same arguments and
+  `atelier-gui.exe` from the same folder with the same arguments and
   exits with its code. Unless it connects to another machine, the GUI refuses
-  to start without `copilot-canvas.exe` beside it
+  to start without `atelier.exe` beside it
   (`canvas-gui/src/main.rs:use_sibling_service`): that file's hash is the
   build id both sides compare.
 - **The service**, one per instance and home. A client that finds none
   starts it (`canvas-core/src/conn.rs:open_local` → `spawn_service`) as
-  `copilot-canvas service --instance N --home H --sessions-dir S`, detached,
+  `atelier service --instance N --home H --sessions-dir S`, detached,
   from a per-build copy: `conn.rs:service_executable` copies the build's
-  executable to `<home>/bin/copilot-canvas-service-<build id>.exe` (build id:
+  executable to `<home>/bin/atelier-service-<build id>.exe` (build id:
   the package version and the first 8 bytes of the executable's SHA-256,
   `canvas-common/src/paths.rs:build_id`) and removes older copies that are not
   in use. So rebuilding never fights a running service for its file. The
@@ -48,7 +48,7 @@ the canvas document goes through the service (docs/BACKEND.md).
   with no terminals, no clients and no pending work.
 - **At service start** (`canvas-agents/src/service/mod.rs`, where the threads
   are spawned) it writes the canvas plugin with the skills to `<home>/plugin`
-  (`cli.rs:write_plugin`) and copies itself to `<home>/cli/copilot-canvas.exe`
+  (`cli.rs:write_plugin`) and copies itself to `<home>/cli/atelier.exe`
   (`cli.rs:install_cli`), which is on the `PATH` of the sessions it launches.
 - **An older service.** A local client compares the service's build and
   protocol with its own (`canvas-tui/src/lib.rs`, `canvas-gui/src/main.rs:
@@ -68,10 +68,10 @@ lives:
 | Input | Default | Effect |
 |---|---|---|
 | `--instance NAME` | `default` | 1-40 characters of `[A-Za-z0-9_-]`; names the service and its files |
-| `--home DIR` | `COPILOT_CANVAS_HOME`, else `~/.copilot-canvas` | the data folder (created if missing) |
+| `--home DIR` | `ATELIER_HOME`, else `~/.atelier` | the data folder (created if missing) |
 | `--sessions-dir DIR` | `~/.copilot/session-state` | Copilot's history the index reads |
 
-The service's pipe is `\\.\pipe\copilot-canvas-<user>-<instance>-<hash>`,
+The service's pipe is `\\.\pipe\atelier-<user>-<instance>-<hash>`,
 where the hash is taken from the lower-cased home path
 (`Instance::pipe_name`), so two homes never share a service even with the
 same instance name. What a home holds:
@@ -80,7 +80,7 @@ same instance name. What a home holds:
 |---|---|
 | `canvas.json`, `demo-canvas.json` | the canvas document (`--demo` opens the second; `service/docs.rs`) |
 | `service-<instance>.log` / `.token` / `.port` | the service's log, its pipe token, the TCP port while it listens for remote clients |
-| `settings.json` | machine settings (`copilot-canvas config`, `canvas_common::settings`) |
+| `settings.json` | machine settings (`atelier config`, `canvas_common::settings`) |
 | `prefs/<instance>-<document key>.json` | each client's own view of a canvas (`canvas_core::prefs`) |
 | `bin/`, `plugin/`, `cli/` | the per-build service copy, the skills plugin, the CLI for sessions |
 | `bus/` | `inbox/` (event and request files), `answers/`, `routing.json`, `state.json` |
@@ -114,25 +114,25 @@ service (when none runs it starts one listening on `127.0.0.1:0`;
 ### A sandboxed instance by hand
 
 The owner's canvas and service run on the development machine. Never point
-a test at the default instance or `~/.copilot-canvas`. A private instance:
+a test at the default instance or `~/.atelier`. A private instance:
 
 ```powershell
 $sb = Join-Path $env:TEMP 'cc-dev'
 New-Item -ItemType Directory -Force "$sb\home", "$sb\sessions", "$sb\work" | Out-Null
 $common = @('--instance', 'dev', '--home', "$sb\home", '--sessions-dir', "$sb\sessions", '--cwd', "$sb\work")
-target\release\copilot-canvas.exe --gui --demo @common        # or without --gui for the TUI
-target\release\copilot-canvas.exe service status @common      # JSON: running, build, pid, terminals
-target\release\copilot-canvas.exe service stop @common        # when done (else it exits after 10 idle minutes)
+target\release\atelier.exe --gui --demo @common        # or without --gui for the TUI
+target\release\atelier.exe service status @common      # JSON: running, build, pid, terminals
+target\release\atelier.exe service stop @common        # when done (else it exits after 10 idle minutes)
 ```
 
 `--demo` keeps the sessions PowerShell shells. Without it, a session you
 start runs the real agent CLI with your account and allow-all permissions.
 The automated sandboxes go further (`src/selftest.rs:run`,
 `src/parity.rs:Sandbox::new`): `COPILOT_HOME`, `XDG_DATA_HOME` and
-`CLAUDE_CONFIG_DIR` point into the sandbox, and `COPILOT_CANVAS_COPILOT`,
-`COPILOT_CANVAS_OPENCODE` and `COPILOT_CANVAS_CLAUDE` point at copies of
-`copilot-canvas.exe` that act as a stand-in agent while
-`COPILOT_CANVAS_FAKE_COPILOT=1` is set (`src/fake_copilot.rs`). Copy that
+`CLAUDE_CONFIG_DIR` point into the sandbox, and `ATELIER_COPILOT`,
+`ATELIER_OPENCODE` and `ATELIER_CLAUDE` point at copies of
+`atelier.exe` that act as a stand-in agent while
+`ATELIER_FAKE_COPILOT=1` is set (`src/fake_copilot.rs`). Copy that
 environment when a manual check needs agent boxes.
 
 ## 2. Code map by task
@@ -254,7 +254,7 @@ windows act with bus actions and the CLI with inbox requests.
 
 1. Emit it with a `canvas_model::bus::Event` (`kind` such as `todo.created`,
    `group`, `source` = the acting session, `data`, `canvas`): the service's
-   own events go into the bus loop's channel; `copilot-canvas emit`
+   own events go into the bus loop's channel; `atelier emit`
    (`canvas-agents/src/cli.rs:emit`) writes inbox files (`bus::post`).
 2. Describe it in `bus::DEFAULT_CATALOG` (the `events.yaml` a group gets; an
    existing catalog is not rewritten, `bus::upgrade_catalog` only adds the
@@ -267,7 +267,7 @@ windows act with bus actions and the CLI with inbox requests.
    todos) must use events from its own channel (`bus_loop` keeps them apart:
    `from_channel`).
 
-### Add a `copilot-canvas` command
+### Add a `atelier` command
 
 1. `src/main.rs`: a line in `USAGE` (the `--help` text) and an arm in the
    `match` of `real_main` (`["verb", "sub", rest @ ..] => …`). Options are
@@ -283,7 +283,7 @@ windows act with bus actions and the CLI with inbox requests.
    `crates/canvas-agents/src/<name>_cli.rs` (`prs_cli`, `reviews_cli`,
    `todos_cli`, `notes_cli`, `factory_cli`), remote administration in
    `src/remote_cli.rs`. Identity comes from the environment the service gives
-   sessions (`COPILOT_CANVAS_SESSION`, `COPILOT_CANVAS_HOP`).
+   sessions (`ATELIER_SESSION`, `ATELIER_HOP`).
 4. Docs: README *Commands* and the feature's section; the skill that tells
    agents about it. Sessions run the copy in `<home>/cli`, refreshed when the
    service starts.
@@ -303,15 +303,15 @@ OpenCode; docs/AGENT-PROVIDERS.md).
    (`skills/<name>/SKILL.md`; the array's length is in its type).
 3. The plugin version: the same string in `write_plugin`'s `plugin.json` and
    in `CLAUDE_PLUGIN`, and where the docs name it (README *Passive sessions
-   and events*, docs/AGENT-PROVIDERS.md). It went to 1.2.0 with `canvas-prs`
-   and to 1.3.0 with `canvas-todos` and `canvas-notes`.
+   and events*, docs/AGENT-PROVIDERS.md). It went to 1.2.0 with `canvas-prs`,
+   to 1.3.0 with `canvas-todos` and `canvas-notes`, and to 1.4.0 with the rename to Atelier.
 4. Tests: `cli.rs` test `effects_are_checked_and_posted_for_the_service`
    writes the plugin and checks each skill's contract (the commands and rules
    it must mention, and which skills point at which). Add the new skill's
    lines there.
 5. Delivery: the service writes the plugin when it starts. A running service
    of the previous build keeps serving the old texts until it restarts on
-   the new build (`copilot-canvas service stop`, then open the canvas again,
+   the new build (`atelier service stop`, then open the canvas again,
    or the toolbar's *Update service*); sessions get the plugin at launch.
 
 ### Agent providers
@@ -323,9 +323,9 @@ OpenCode; docs/AGENT-PROVIDERS.md).
 picks it. The service turns a `LaunchKind::Agent(AgentLaunch)` into a command
 line in `service/mod.rs` (`HostApp::resolve_launch` → `Provider::command`)
 with an `Integration` (`Agents::integration`: the plugin folder, extra skill
-plugins, and the environment `COPILOT_CANVAS_HOME`, `COPILOT_CANVAS_SESSION`,
+plugins, and the environment `ATELIER_HOME`, `ATELIER_SESSION`,
 `PATH`). Rules every provider follows: the program comes from
-`find_program` (an environment override such as `COPILOT_CANVAS_OPENCODE`,
+`find_program` (an environment override such as `ATELIER_OPENCODE`,
 then `PATH`) and is never a batch script (`ensure_not_batch`); free text goes
 through `positional` and option values through `option_value`, so a prompt
 or a name never becomes an option. History: Copilot `index.rs` (tails
@@ -500,7 +500,7 @@ comment at the top of `hooks.rs` and the table in docs/GUI.md §3.
 | Terminal corpus | `corpus/`, `crates/canvas-corpus` | `corpus check` (and `cargo test`) | no |
 | Benches | `src/bench.rs`, `src/gui_bench.rs`, ignored probes in `src/selftest.rs` | `bench …`, `bench --client gui …` | GUI bench: yes |
 
-The commands are `target\release\copilot-canvas.exe …` after `cargo build
+The commands are `target\release\atelier.exe …` after `cargo build
 --release`. Typical times on the development machine: each self-test about
 145 s, parity about 270 s, golden about 30 s, hardening about 32 s, a cold
 build about 10 minutes. Suites that open windows run on the owner's desktop:
@@ -514,7 +514,7 @@ Next to the code, in every crate. Run a subset with a filter:
 cargo test -p canvas-model sync::                          # one crate, one module
 cargo test -p canvas-agents service::todos
 cargo test -p canvas-core --lib undo                       # canvas-core's unit tests only
-cargo test -p copilot-canvas --bin copilot-canvas golden   # tests inside src/*.rs
+cargo test -p atelier --bin atelier golden   # tests inside src/*.rs
 cargo test -p canvas-model -- --nocapture                  # with the tests' output
 ```
 
@@ -525,7 +525,7 @@ package and `canvas-gui`, `Cargo.toml` `default-members`). Some probes are
 (with `PERF_CANVAS=<copy of a canvas.json>`) and `two_clients_probe`, all in
 `src/selftest.rs`, and `cargo test --test backend_contract -- --ignored` (needs
 an installed agent). Tests use temporary homes (`std::env::temp_dir()` and a
-UUID), never `~/.copilot-canvas`.
+UUID), never `~/.atelier`.
 
 ### View snapshots
 
@@ -553,7 +553,7 @@ have). The facility is `tests/snapshot/mod.rs`; the files are
 ### Backend contract tests
 
 `tests/backend_contract.rs` starts the package's own binary as a service in a
-temporary home with `COPILOT_CANVAS_LISTEN=127.0.0.1:0` (`Service::start`),
+temporary home with `ATELIER_LISTEN=127.0.0.1:0` (`Service::start`),
 connects over loopback TCP (`Service::connect`, a `RemoteBackend`) and runs
 the same function against `LocalBackend::new(service.ctx())` and against the
 service; both lists of answers must be equal
@@ -561,28 +561,28 @@ service; both lists of answers must be equal
 notebook (`notebook_contract`), skill sources, the reports inbox and two
 clients editing one canvas. A new request gets a line in `contract` (or a
 test of its own that compares both answers). Run one:
-`cargo test -p copilot-canvas --test backend_contract skill_sources`.
+`cargo test -p atelier --test backend_contract skill_sources`.
 
 ### The self-test
 
-`copilot-canvas selftest [--client tui|gui] [--remote loopback]` drives the
+`atelier selftest [--client tui|gui] [--remote loopback]` drives the
 real client end to end through one scenario, `src/selftest.rs:scenario`,
 generic over the `Ui` trait (`send` bytes, `paste`, `clipboard`, `text`,
 `wait`, `click`, `double_click`, `drag`, `find`, `locate`, `wait_exit`):
 
-- **TUI**: `Console` runs `copilot-canvas.exe` in a hidden pseudoconsole
+- **TUI**: `Console` runs `atelier.exe` in a hidden pseudoconsole
   (portable-pty) and feeds its output to an alacritty emulator whose screen
   is the text the checks read. Input is what a terminal sends: keys, text,
   SGR mouse reports; `ctrl_digit` and `ESC_KEY` give Ctrl+digit and Esc in
   win32-input-mode.
-- **GUI**: `GuiDriver` starts `copilot-canvas-gui.exe --test-hooks --size
+- **GUI**: `GuiDriver` starts `atelier-gui.exe --test-hooks --size
   170x46`, reads the pipe name the GUI prints, and turns the same input bytes
   into hook commands at cell centres; `text` is the `screen` hook.
-- **The sandbox** (`selftest.rs:run`): `%TEMP%\copilot-canvas-selftest-<uuid>`
+- **The sandbox** (`selftest.rs:run`): `%TEMP%\atelier-selftest-<uuid>`
   with `home`, `sessions` and `work`, instance `selftest<pid>`, the client
   started with `--demo`, a sample `COPILOT_HOME` automation database, and
   stand-in `copilot`, `opencode`, `claude`, `gh` and `az` (copies of
-  `copilot-canvas.exe`, `COPILOT_CANVAS_FAKE_COPILOT=1`). It saves and restores
+  `atelier.exe`, `ATELIER_FAKE_COPILOT=1`). It saves and restores
   your clipboard text, stops its service at the end, deletes the sandbox on
   success and prints `artifacts kept in <root>` on failure (the GUI's stderr
   in `gui-stderr.log`, the service log in `home\service-selftest<pid>.log`).
@@ -591,10 +591,13 @@ generic over the `Ui` trait (`send` bytes, `paste`, `clipboard`, `text`,
   `recent_steps`, `group_click_steps`, `report_steps`, `layout_undo_steps`,
   `area_selection_steps`, `selftest_spaces.rs:steps`), quits, and runs the
   steps that need canvases of their own (`canvas_agent_steps`, `pr_steps`,
-  `review_steps`, `todo_cli_steps`). It ends with `PASS in … s`.
+  `review_steps`, `todo_cli_steps`) and, without `--remote`, an instance of
+  its own (`legacy_service_steps`: a stand-in service of the build before
+  the rename on its old endpoint is found and replaced). It ends with `PASS in … s`.
 - **Adding a step**: write it against `U: Ui` only (no hook commands), so it
   runs in the TUI, the GUI and both over loopback; wait for screen text
-  rather than sleeping; then update the step count, now 45, where the docs
+  rather than sleeping; then update the step count, now 46 (45 with
+  `--remote`, which skips the upgrade from the build before the rename), where the docs
   give it (README *Commands*, docs/GUI.md §3, docs/PARITY.md, the comment
   above `scenario`).
 - `CANVAS_GUI_SCREENS=DIR` saves PNGs at some steps (GUI);
@@ -609,11 +612,11 @@ asked.
 
 ### GUI parity
 
-`copilot-canvas selftest --client gui --parity` runs one named check per row
+`atelier selftest --client gui --parity` runs one named check per row
 of the parity matrix (docs/PARITY.md).
 
 - **The sandbox** (`parity.rs:Sandbox::new`):
-  `%TEMP%\copilot-canvas-parity-<uuid>` with a home, a work folder, a group
+  `%TEMP%\atelier-parity-<uuid>` with a home, a work folder, a group
   folder, a `COPILOT_HOME` with the sample automation database, synthetic
   Copilot histories for every status (working, needs you, done · review,
   idle, stopped, failed, open elsewhere, a loop, a subagent), an OpenCode
@@ -635,7 +638,7 @@ of the parity matrix (docs/PARITY.md).
   table). The run ends `PASS: N rows in T s` or fails with
   `artifacts kept in <root>` (GUI logs `gui-parity.log` and others there,
   the service log in `home\`). PNG captures go to `CANVAS_GUI_SCREENS` or
-  `%TEMP%\copilot-canvas-parity-screens`.
+  `%TEMP%\atelier-parity-screens`.
 - **A subset**: `$env:CANVAS_PARITY_ROWS = '41,41b'` (row ids, any case)
   runs only those rows; the others are neither run nor listed. Rows build
   on earlier ones (39b reads the model row 38 remembered), so add the rows a
@@ -673,7 +676,7 @@ not depend on luck and must leave things as it found them:
 
 ### Golden screenshots
 
-`copilot-canvas selftest --client gui --golden` (`src/golden.rs`) captures
+`atelier selftest --client gui --golden` (`src/golden.rs`) captures
 scripted GUI states at 170 × 46 cells that depend neither on the machine's
 data nor on the clock (the demo canvas at 100 and 50 %, a context menu, the
 new-session dialog, two tiled terminals printing fixed text, the reports
@@ -698,7 +701,7 @@ canvas with every status, the canvas visuals) and compares each with
 
 ### Hardening
 
-`copilot-canvas selftest --client gui --hardening` (`src/hardening.rs:run`)
+`atelier selftest --client gui --hardening` (`src/hardening.rs:run`)
 runs nine checks with a table: the toolbar's counts at 170 columns,
 overlapping boxes, a simulated and a real device loss, a DPI change, window
 placement across restarts, the UI Automation tree as a UIA client sees it,
@@ -710,7 +713,7 @@ own GUIs on purpose, in its own sandbox.
 
 Recorded and synthetic output streams replayed into every engine of the
 build and compared cell by cell (corpus/README.md):
-`copilot-canvas corpus list | check [--engine NAME] [NAME…] | bless … |
+`atelier corpus list | check [--engine NAME] [NAME…] | bless … |
 diff [NAME…] | show NAME | synth`, and `record` to add an entry.
 `cargo test --workspace` runs the same check
 (`crates/canvas-corpus/tests/golden.rs`). An engine update is one reviewed
@@ -718,17 +721,17 @@ change together with the re-blessed expectations.
 
 ### Driving a GUI by hand
 
-`copilot-canvas-gui.exe --test-hooks` serves a local, owner-only pipe
-`\\.\pipe\copilot-canvas-gui-test-<pid>` that takes one JSON command per line
+`atelier-gui.exe --test-hooks` serves a local, owner-only pipe
+`\\.\pipe\atelier-gui-test-<pid>` that takes one JSON command per line
 and answers one JSON line each (`canvas-gui/src/hooks.rs`; every command is
 in docs/GUI.md §3). Useful to see what a failing row saw, in a sandbox:
 
 ```powershell
 $sb = Join-Path $env:TEMP 'cc-hooks'
 New-Item -ItemType Directory -Force "$sb\home", "$sb\sessions" | Out-Null
-$gui = Start-Process .\target\release\copilot-canvas-gui.exe -PassThru -RedirectStandardOutput "$sb\pipe.txt" `
+$gui = Start-Process .\target\release\atelier-gui.exe -PassThru -RedirectStandardOutput "$sb\pipe.txt" `
   -ArgumentList '--test-hooks', '--size', '170x46', '--demo', '--instance', 'hooks', '--home', "$sb\home", '--sessions-dir', "$sb\sessions"
-$pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', "copilot-canvas-gui-test-$($gui.Id)", [System.IO.Pipes.PipeDirection]::InOut)
+$pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', "atelier-gui-test-$($gui.Id)", [System.IO.Pipes.PipeDirection]::InOut)
 $pipe.Connect(30000)                                     # the pipe opens once the canvas is open
 $writer = New-Object System.IO.StreamWriter($pipe); $writer.AutoFlush = $true
 $reader = New-Object System.IO.StreamReader($pipe)
@@ -738,7 +741,7 @@ Hook @{ cmd = 'key'; char = 'f'; mods = @() } | Out-Null # show all nodes
 (Hook @{ cmd = 'tree' }).tree.canvas.boxes | Format-Table name, status, rect
 Hook @{ cmd = 'png'; path = "$sb\shot.png" } | Out-Null  # an offscreen capture
 Hook @{ cmd = 'quit' } | Out-Null                        # saves and exits (detach)
-.\target\release\copilot-canvas.exe service stop --instance hooks --home "$sb\home"
+.\target\release\atelier.exe service stop --instance hooks --home "$sb\home"
 ```
 
 (Windows PowerShell 5.1 does not quote `-ArgumentList` items: keep the
@@ -759,7 +762,7 @@ have to be on the real canvas, and quit the window with `{"cmd":"quit"}`
 
 ### Benches
 
-`copilot-canvas bench [--terminals N] [--seconds S] [--json FILE] [--remote
+`atelier bench [--terminals N] [--seconds S] [--json FILE] [--remote
 loopback]` (`src/bench.rs`: an isolated service, N ConPTY terminals
 streaming, keystroke latency through an echo terminal, UI render cost) and
 `bench --burn N`; `bench --client gui` with `--stress`, `--perf-canvas
@@ -862,8 +865,8 @@ Each with the reason it matters.
   service log.
 - **The owner's machine is live.** Their canvas service, agent sessions and
   the TODO bot run there. Never stop a process you did not start (no
-  `Stop-Process -Name copilot-canvas*`; stop a sandbox's service with
-  `service stop --instance … --home …`), never write to `~/.copilot-canvas`
+  `Stop-Process -Name atelier*`; stop a sandbox's service with
+  `service stop --instance … --home …`), never write to `~/.atelier`
   or the owner's repositories, build at below-normal priority with a limited
   job count, and run one GUI suite at a time (they take the desktop and save
   and restore the clipboard).
@@ -889,7 +892,7 @@ Each with the reason it matters.
   leave its worktree alone.
 - **Tests inherit the environment of the agent that runs them.** An agent
   session the canvas started (OpenCode, Claude Code, Copilot CLI) passes on
-  its environment (`OPENCODE_CONFIG_CONTENT`, `COPILOT_CANVAS_SESSION`, …)
+  its environment (`OPENCODE_CONFIG_CONTENT`, `ATELIER_SESSION`, …)
   and its Ctrl+C handling: processes started under OpenCode ignore Ctrl+C.
   Tests that depend on either fail there and nowhere else (in `canvas-host`
   `agents_the_canvas_stops_are_stopped_whatever_their_exit_code` sees `ping`
@@ -901,7 +904,7 @@ Each with the reason it matters.
 ## 6. Releases and local installs
 
 The README's *Quick start* describes a preview ZIP on the GitHub Releases
-page holding `copilot-canvas.exe` and `copilot-canvas-gui.exe`, which must
+page holding `atelier.exe` and `atelier-gui.exe`, which must
 stay in one folder. The repository has no release workflow
 (`.github/workflows` holds only `ci.yml`); a release build is
 `cargo build --release` (both executables in `target\release`; the C runtime
@@ -913,7 +916,62 @@ build is replacing the files: the next client starts the new build's
 service from its own copy, restarts an idle older one, and asks before
 restarting one that runs sessions (README *Limitations*, Upgrading).
 
-## 7. Which docs a change updates
+<!-- rename:keep-begin -->
+## 7. Renaming to Atelier (formerly Copilot Canvas)
+
+The product was renamed from Copilot Canvas to Atelier (the binaries
+`atelier` and `atelier-gui`, the root package `atelier`, `ATELIER_*`
+variables, `~/.atelier`). The workspace crates keep their `canvas-*` names
+and "the canvas" stays the name of the session canvas. What belongs to
+GitHub Copilot the agent keeps its names (`AgentKind::Copilot`,
+`copilot_cfg`, `~/.copilot`, `COPILOT_*` variables, "GitHub Copilot CLI",
+`github-copilot/...` model ids), and so do the iPhone app's bundle id
+`com.thomashorga.copilotcanvas` and the repository URL (until the owner
+renames the repository).
+
+**The script.** `tools/rename-to-atelier.py` is the mechanical part: it
+renames tracked files and folders whose path names the old product (`git
+mv`), then rewrites text (`Copilot Canvas` → `Atelier`, `copilot-canvas` →
+`atelier`, `COPILOT_CANVAS_` → `ATELIER_`, `com.copilot-canvas.` →
+`com.thomashorga.atelier.`, …; in Rust, `std::env::var("ATELIER_…")`
+becomes `canvas_common::env::var`, which falls back to the old name). It is
+idempotent: what must keep an old name is in its `KEEP` list (the repository
+URL, cryptographic context strings old and new builds share, the owner's Dev
+Tunnel ids), in `crates/canvas-common/src/legacy.rs` (never rewritten), or on
+a line holding `rename:keep` (or between `rename:keep-begin` and
+`rename:keep-end`, in Markdown inside `<!-- -->`). View snapshots are not
+rewritten: record them again. A branch made before the rename:
+
+```sh
+git merge origin/main                 # or rebase; take main's side where the rename conflicts
+python3 tools/rename-to-atelier.py    # renames what the branch added
+python3 tools/rename-to-atelier.py --check   # 0 change(s) needed
+UPDATE_SNAPSHOTS=1 cargo test -p canvas-core --test view_snapshots   # then read the diffs
+```
+
+Easier still: run the script on the branch first, commit, then merge main
+(the two sides then mostly agree). New code reads variables through
+`canvas_common::env::var` / `var_os` and names old things only through
+`canvas_common::legacy`.
+
+**Compatibility, and where it lives.**
+
+| Mechanism | Code | Tests |
+|---|---|---|
+| Variables: `ATELIER_X`, else `COPILOT_CANVAS_X`; sessions and passive runs get both names; the skill folders' launch entry keeps its wire name | `canvas-common/src/env.rs`, `service/mod.rs:Agents::integration`, `canvas-model/src/launch.rs` | `env.rs` tests, `launch.rs`, `service/passive.rs` |
+| The data home moves on the first start when no service uses it (paths inside rewritten, preferences renamed, an interrupted move finished); `atelier migrate`; `doctor` | `canvas-agents/src/home_move.rs`, `paths.rs:home_in`, `src/main.rs:migrate_home` | `home_move.rs` tests (temporary homes only) |
+| A service of the old build on its old endpoint (Windows pipe, Unix socket folder) is found and replaced through the update path; a new service refuses to start beside one | `paths.rs:Instance::legacy_pipe_name`, `conn.rs:connect_endpoint`, `canvas-host/src/server.rs:run` | `paths.rs` tests, `home_move.rs` (an old endpoint is found) |
+| Scheduled entries with old names are the same automations, replaced by `apply` / `service install` | `scheduler/launchd.rs`, `systemd.rs`, `cron.rs`, `factory.rs:rename_legacy_manifests`, `factory_cli.rs:apply` | a test per backend and `factory.rs` |
+| The `copilot-canvas` alias of the CLI for sessions (deprecated) | `cli.rs:install_alias`, `src/main.rs:main` | `cli.rs` |
+| Keychain / Secret Service master keys under their old names | `canvas-sys/src/secret.rs:legacy_items` | `secret.rs` |
+| `atelier://` and `ccanvas://` pairing links | `canvas-common/src/remote.rs:PairLink`, `ios/Atelier/Features/Pair/PairView.swift:isPairLink` | `remote.rs`, `CoreBridgeTests` |
+
+**On a development machine** the new binary run without `--home` (or
+`ATELIER_HOME`) moves `~/.copilot-canvas` to `~/.atelier` when no service
+uses it: test with `--home` or a temporary `HOME`.
+<!-- rename:keep-end -->
+
+## 8. Which docs a change updates
 
 | Change | Docs |
 |---|---|

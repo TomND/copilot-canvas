@@ -193,7 +193,7 @@ pub fn group_summary(book: &TodoBook, group: &str) -> Option<String> {
             out.push('\n');
         }
         if open.len() > shown {
-            out.push_str(&format!("- … and {} more (copilot-canvas todo list --board \"{}\")\n", open.len() - shown, board.name));
+            out.push_str(&format!("- … and {} more (atelier todo list --board \"{}\")\n", open.len() - shown, board.name));
         }
         left -= shown;
     }

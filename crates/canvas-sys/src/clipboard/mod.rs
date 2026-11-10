@@ -26,15 +26,15 @@ pub use linux::{get_image_png, get_text, has_image, has_text, set_image_png, set
 #[cfg(all(test, desktop_unix))]
 mod tests {
     /// Touches the user's real clipboard (restoring its text afterwards), so it
-    /// runs only with `COPILOT_CANVAS_CLIPBOARD_TESTS=1`.
+    /// runs only with `ATELIER_CLIPBOARD_TESTS=1`.
     #[test]
     fn round_trips_text_and_images() {
-        if std::env::var_os("COPILOT_CANVAS_CLIPBOARD_TESTS").is_none() {
-            eprintln!("skipped: set COPILOT_CANVAS_CLIPBOARD_TESTS=1 to use the real clipboard");
+        if canvas_common::env::var_os("ATELIER_CLIPBOARD_TESTS").is_none() {
+            eprintln!("skipped: set ATELIER_CLIPBOARD_TESTS=1 to use the real clipboard");
             return;
         }
         let previous = super::get_text().ok();
-        let text = "copilot canvas ✓ 中文\nline 2";
+        let text = "atelier ✓ 中文\nline 2";
         super::set_text(text).unwrap();
         assert!(super::has_text() && !super::has_image());
         assert_eq!(super::get_text().unwrap(), text);

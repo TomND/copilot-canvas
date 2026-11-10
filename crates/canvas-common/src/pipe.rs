@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn duplex_reads_and_writes_do_not_block_each_other() {
-        let name = format!(r"\\.\pipe\copilot-canvas-test-{}", uuid::Uuid::new_v4());
+        let name = format!(r"\\.\pipe\atelier-test-{}", uuid::Uuid::new_v4());
         let mut server = PipeServer::bind(&name).unwrap();
         assert_eq!(PipeServer::bind(&name).err().map(|e| e.kind()), Some(io::ErrorKind::AlreadyExists));
         let client_name = name.clone();

@@ -4,7 +4,7 @@
 //! waiting for you or finishes a turn and when a report arrives in the inbox,
 //! and sends it renewed tunnel access tokens (sealed with its pairing secret)
 //! so it can still connect after a day away. Needs the team's APNs key
-//! (`copilot-canvas remote push-key`).
+//! (`atelier remote push-key`).
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -74,7 +74,7 @@ pub(super) fn register(agents: &Agents, client: &Arc<Client>, token: &str, envir
     }
     let device = Device::new(client_id, token, environment, bundle, label)?;
     if agents.push.devices.register(device.clone()) {
-        let key = if agents.push.sender(&agents.instance.home).is_some() { "" } else { " (no APNs key yet: `copilot-canvas remote push-key`)" };
+        let key = if agents.push.sender(&agents.instance.home).is_some() { "" } else { " (no APNs key yet: `atelier remote push-key`)" };
         log(&agents.instance, &format!("push: {client_id} registered for notifications ({:?}, as {:?}){key}", device.environment, device.label));
     }
     // A phone that wants notifications also wants tunnel tokens while away.
