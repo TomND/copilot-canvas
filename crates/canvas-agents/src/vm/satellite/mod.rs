@@ -277,3 +277,205 @@ fn read_loop(reader: &mut FrameReader, terms: &Arc<Terms>, heard: &AtomicU64, ot
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! The satellite and the hub's link end to end in one process: a real
+    //! handshake over loopback through a relay the test can cut.
+
+    use super::*;
+    use crate::vm::launch;
+    use canvas_common::handshake::Opening;
+    use canvas_host::emulator::Engine;
+    use canvas_host::server::SatelliteLink;
+    use canvas_host::term::{Hooks, RemoteSpawn, Terminal};
+    use canvas_model::vm::VmState;
+    use std::net::{Shutdown, TcpListener, TcpStream};
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
+
+    const SANDBOX: &str = "sbx-cccccccccccc";
+    const BOX: &str = "0b1e5ca1-0000-4000-8000-0000000d4095";
+    const LINES: u32 = 3000;
+
+    /// The hub: serves every connection as a satellite link of `links`.
+    fn hub(home: &Path, links: &Arc<crate::vm::link::Links>) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (home, links) = (home.to_path_buf(), links.clone());
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let (home, links) = (home.clone(), links.clone());
+                std::thread::spawn(move || {
+                    let closing = stream.try_clone().unwrap();
+                    let mut reader = FrameReader::new(Box::new(stream.try_clone().unwrap()));
+                    let mut writer = FrameWriter::new(Box::new(stream));
+                    let store = crate::vm::store::Satellites::new(&home);
+                    let Ok(Opening::Client(accepted)) = handshake::serve(&mut reader, &mut writer, true, canvas_common::paths::build_id(), |id| store.credential(id.unwrap_or_default()), None) else { return };
+                    assert!(accepted.satellite);
+                    reader.accept_compressed().unwrap();
+                    writer.compress().unwrap();
+                    let closer = wire::Closer::new(move || {
+                        let _ = closing.shutdown(Shutdown::Both);
+                    });
+                    let _ = links.serve(SatelliteLink { reader, writer, closer, info: accepted.client.unwrap_or_default(), websocket: false });
+                });
+            }
+        });
+        port
+    }
+
+    /// A relay to `port` whose connections [`Relay::cut`] ends (it keeps accepting new ones).
+    struct Relay {
+        port: u16,
+        open: Arc<Mutex<Vec<TcpStream>>>,
+        paused: Arc<AtomicBool>,
+    }
+
+    impl Relay {
+        fn start(to: u16) -> Relay {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let open: Arc<Mutex<Vec<TcpStream>>> = Arc::default();
+            let paused = Arc::new(AtomicBool::new(false));
+            let (kept, held) = (open.clone(), paused.clone());
+            std::thread::spawn(move || {
+                for client in listener.incoming().flatten() {
+                    if held.load(Ordering::Acquire) {
+                        let _ = client.shutdown(Shutdown::Both);
+                        continue;
+                    }
+                    let Ok(upstream) = TcpStream::connect(("127.0.0.1", to)) else { continue };
+                    kept.lock().unwrap().extend([client.try_clone().unwrap(), upstream.try_clone().unwrap()]);
+                    for (mut from, mut into) in [(client.try_clone().unwrap(), upstream.try_clone().unwrap()), (upstream, client)] {
+                        std::thread::spawn(move || {
+                            let _ = std::io::copy(&mut from, &mut into);
+                            let _ = into.shutdown(Shutdown::Both);
+                        });
+                    }
+                }
+            });
+            Relay { port, open, paused }
+        }
+
+        /// Drops every connection; new ones are refused while `paused`.
+        fn cut(&self, paused: bool) {
+            self.paused.store(paused, Ordering::Release);
+            for stream in self.open.lock().unwrap().drain(..) {
+                let _ = stream.shutdown(Shutdown::Both);
+            }
+        }
+    }
+
+    fn wait_until(what: &str, secs: u64, mut ok: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        while !ok() {
+            assert!(Instant::now() < deadline, "{what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// A program printing numbered lines: 100, a pause (the test cuts the
+    /// link then), the rest while the hub is away, then waiting.
+    fn printer() -> Vec<String> {
+        if cfg!(windows) {
+            vec!["cmd".into(), "/d".into(), "/c".into(), format!("(for /l %i in (0,1,99) do @echo line-%i) & ping -n 4 127.0.0.1 > nul & (for /l %i in (100,1,{}) do @echo line-%i) & ping -n 60 127.0.0.1 > nul", LINES - 1)]
+        } else {
+            vec!["sh".into(), "-c".into(), format!("i=0; while [ $i -lt 100 ]; do echo line-$i; i=$((i+1)); done; sleep 3; while [ $i -lt {LINES} ]; do echo line-$i; i=$((i+1)); done; sleep 60")]
+        }
+    }
+
+    /// The satellite (its terminal already started) linked through `relay`,
+    /// the hub's terminal adopted, the hub's log.
+    #[allow(clippy::type_complexity)]
+    fn setup(ring: usize) -> (PathBuf, Arc<Terms>, Arc<Terminal>, Relay, Arc<AtomicBool>, Arc<Mutex<Vec<String>>>) {
+        let home = std::env::temp_dir().join(format!("atelier-sat-e2e-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let minted = crate::vm::store::Satellites::new(&home).mint(SANDBOX).unwrap();
+        let log: Arc<Mutex<Vec<String>>> = Arc::default();
+        let links = crate::vm::link::Links::new(&home, {
+            let log = log.clone();
+            Arc::new(move |line| log.lock().unwrap().push(line))
+        });
+        let mut intent = launch::Intent { r#box: BOX.into(), agent: "copilot".into(), sandbox: SANDBOX.into(), state: VmState::Running, terminal: 7, ..Default::default() };
+        launch::save(&home, &mut intent).unwrap();
+        let made = Arc::new(Mutex::new(None));
+        links.adopt(|id, remote| {
+            let (pump, _) = bounded(1);
+            let (exited, _) = crossbeam_channel::unbounded();
+            let (clipboard, _) = bounded(1);
+            let (changed, _) = bounded(16);
+            let hooks = Hooks { pump, exited, clipboard, bytes: Default::default(), changed, notify: None, raw: None };
+            let (terminal, feed) = Terminal::spawn_remote(RemoteSpawn { id, cols: 60, rows: 12, copilot: false, engine: Engine::Alacritty }, hooks, remote.clone());
+            canvas_host::term::RemotePty::started(remote.as_ref(), feed, 60, 12);
+            *made.lock().unwrap() = Some(terminal);
+        });
+        let terminal = made.lock().unwrap().take().unwrap();
+        let terms = Arc::new(Terms::with_ring(ring));
+        let cwd = std::env::temp_dir().display().to_string();
+        terms.spawn(terms::SpawnRequest { term: BOX.into(), generation: 7, argv: printer(), env: Vec::new(), cwd, cols: 60, rows: 12 }).unwrap();
+        let relay = Relay::start(hub(&home, &links));
+        let config = Config { hub: format!("tcp://127.0.0.1:{}", relay.port), id: minted.id, secret: minted.secret, sandbox: SANDBOX.into(), ..Default::default() };
+        let stop = Arc::new(AtomicBool::new(false));
+        {
+            let (terms, stop) = (terms.clone(), stop.clone());
+            std::thread::spawn(move || {
+                let mut epoch = 0;
+                while !stop.load(Ordering::Acquire) {
+                    epoch += 1;
+                    let _ = session(&config, &terms, epoch);
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            });
+        }
+        (home, terms, terminal, relay, stop, log)
+    }
+
+    fn screen(terminal: &Terminal) -> Vec<String> {
+        terminal.snapshot().map(|s| s.lines.iter().map(|row| row.iter().map(|r| r.text.as_str()).collect::<String>().trim_end().to_owned()).collect()).unwrap_or_default()
+    }
+
+    fn last_line() -> String {
+        format!("line-{}", LINES - 1)
+    }
+
+    #[test]
+    fn a_link_dropped_during_output_is_replayed_exactly() {
+        let (home, terms, terminal, relay, stop, log) = setup(0);
+        wait_until("the hub got some output", 30, || screen(&terminal).iter().any(|l| l.starts_with("line-")));
+        relay.cut(true);
+        assert!(!screen(&terminal).iter().any(|l| *l == last_line()), "cut before the end");
+        // The program goes on writing while the hub is away.
+        wait_until("the program finished its output", 30, || terms.held().iter().any(|h| h.end > 0) && { let a = terms.held()[0].end; std::thread::sleep(Duration::from_millis(300)); terms.held()[0].end == a && a > 3 * LINES as u64 });
+        relay.cut(false);
+        wait_until("the replay reached the hub", 30, || screen(&terminal).iter().any(|l| *l == last_line()));
+        let lines = screen(&terminal);
+        let numbers: Vec<u32> = lines.iter().filter_map(|l| l.strip_prefix("line-")?.parse().ok()).collect();
+        assert!(numbers.windows(2).all(|w| w[1] == w[0] + 1), "no line lost or repeated: {lines:?}");
+        assert!(!log.lock().unwrap().iter().any(|l| l.contains("repainted")), "replayed, not repainted");
+        stop.store(true, Ordering::Release);
+        relay.cut(true);
+        terms.stop_all();
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_drop_longer_than_the_ring_repaints_the_guests_screen() {
+        let (home, terms, terminal, relay, stop, log) = setup(4 << 10);
+        wait_until("the hub got some output", 30, || screen(&terminal).iter().any(|l| l.starts_with("line-")));
+        relay.cut(true);
+        assert!(!screen(&terminal).iter().any(|l| *l == last_line()), "cut before the end");
+        wait_until("the program wrote more than the ring holds", 30, || { let a = terms.held()[0].end; std::thread::sleep(Duration::from_millis(300)); terms.held()[0].end == a && a > 3 * LINES as u64 });
+        relay.cut(false);
+        wait_until("the hub shows the guest's screen", 30, || screen(&terminal).iter().any(|l| *l == last_line()));
+        let lines = screen(&terminal);
+        let numbers: Vec<u32> = lines.iter().filter_map(|l| l.strip_prefix("line-")?.parse().ok()).collect();
+        assert!(numbers.windows(2).all(|w| w[1] == w[0] + 1) && numbers.last() == Some(&(LINES - 1)), "the guest's last screen: {lines:?}");
+        assert!(log.lock().unwrap().iter().any(|l| l.contains("repainted")), "beyond the ring: the guest's screen was repainted");
+        stop.store(true, Ordering::Release);
+        relay.cut(true);
+        terms.stop_all();
+        let _ = std::fs::remove_dir_all(home);
+    }
+}
+

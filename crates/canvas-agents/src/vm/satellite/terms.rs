@@ -53,6 +53,8 @@ pub struct SpawnRequest {
 pub struct Terms {
     terms: Mutex<HashMap<String, Arc<Term>>>,
     link: Mutex<Option<Lanes>>,
+    /// Raw output kept per terminal (0: [`RING`]).
+    ring: usize,
 }
 
 struct Term {
@@ -101,6 +103,11 @@ fn exit_message(term: &Term, code: u32, info: &ExitInfo) -> SatUp {
 }
 
 impl Terms {
+    /// Terminals that keep `ring` bytes of output each (tests make it small).
+    pub fn with_ring(ring: usize) -> Self {
+        Terms { ring, ..Default::default() }
+    }
+
     /// A new link: nothing goes out on it until the hub says what it has
     /// (its `Welcome`, a `Resync`).
     pub fn attach(&self, lanes: Lanes) {
@@ -164,7 +171,7 @@ impl Terms {
         let hooks = Hooks { pump, exited, clipboard, bytes: Default::default(), changed, notify: None, raw: Some(raw) };
         let spec = Spawn { id: &request.term, program, args: &request.argv[1..], env: &env, cwd: &request.cwd, cols: request.cols, rows: request.rows, copilot: false, engine: Engine::Alacritty };
         let terminal = Terminal::spawn(spec, hooks)?;
-        let term = Arc::new(Term { id: request.term.clone(), generation: request.generation, terminal, state: Mutex::new(State { ring: Ring::new(RING), sent: None, input_acked: 0, exit: None }) });
+        let term = Arc::new(Term { id: request.term.clone(), generation: request.generation, terminal, state: Mutex::new(State { ring: Ring::new(if self.ring == 0 { RING } else { self.ring }), sent: None, input_acked: 0, exit: None }) });
         terms.insert(request.term, term.clone());
         drop(terms);
         let terms = self.clone();
