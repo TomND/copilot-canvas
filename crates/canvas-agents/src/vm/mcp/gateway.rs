@@ -47,6 +47,8 @@ pub const MAX_QUEUED: usize = 16 << 20;
 const MAX_PAGES: u32 = 50;
 /// How long a server may take to list its tools for the gateway.
 const CATALOGUE_WAIT: Duration = Duration::from_secs(60);
+/// How long a server may take to answer its `initialize`.
+const INIT_WAIT: Duration = Duration::from_secs(60);
 /// The pack is read again after this long.
 const PACK_FRESH: Duration = Duration::from_secs(5);
 
@@ -147,6 +149,7 @@ struct Proc {
     asks: HashMap<String, StreamKey>,
     /// The stream that sent the newest request (where a shared server's requests go).
     latest: Option<StreamKey>,
+    started: Instant,
     last: Instant,
 }
 
@@ -234,8 +237,8 @@ impl Engine {
         }
     }
 
-    /// Ends servers idle too long, streams never initialized, and gives up
-    /// on tool lists that take too long.
+    /// Ends servers idle too long or that never answer their initialize,
+    /// streams never initialized, and gives up on tool lists that take too long.
     fn tick(&mut self) {
         let now = Instant::now();
         // Idle: nothing waiting at the server and nothing either way for a while.
@@ -246,6 +249,15 @@ impl Engine {
         let unused: Vec<StreamKey> = self.streams.iter().filter(|(_, s)| s.proc.is_none() && now.duration_since(s.opened) > self.options.idle).map(|(k, _)| k.clone()).collect();
         for key in unused {
             self.close(key, Some("the MCP session was never initialized"), true);
+        }
+        let mute: Vec<u64> = self.procs.iter().filter(|(_, p)| matches!(p.init, Init::Waiting) && now.duration_since(p.started) > INIT_WAIT).map(|(id, _)| *id).collect();
+        for proc in mute {
+            if let Some(waiting) = self.procs.get_mut(&proc).map(|p| std::mem::take(&mut p.waiting)) {
+                for (key, id) in waiting {
+                    self.answer_error(&key, id, jsonrpc::INTERNAL_ERROR, "the hub's MCP server did not answer its initialize within a minute");
+                }
+            }
+            self.end_proc(proc, Some("the MCP server did not start"));
         }
         let slow: Vec<u64> = self.procs.iter().filter(|(_, p)| p.fetching.is_some_and(|at| now.duration_since(at) > CATALOGUE_WAIT)).map(|(id, _)| *id).collect();
         for proc in slow {
@@ -552,6 +564,7 @@ impl Engine {
             progress: HashMap::new(),
             asks: HashMap::new(),
             latest: None,
+            started: Instant::now(),
             last: Instant::now(),
         };
         let gid = proc.id();
