@@ -689,7 +689,11 @@ now (Claude Code and OpenCode come later); everything else here is unchanged on 
   skills, `profile.yaml`) and the group's skill folders; `--add-dir` for the group's `ai-docs` and
   `human-outputs`; `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` for the group's instructions (with the guest's paths) and the
   generated path map (`paths.yaml`); `ATELIER_NOTES` for `atelier note path`. The program starts once those roots
-  are in the guest. A VM session cannot be forked yet; its MCP configuration comes with the MCP gateway.
+  are in the guest. A VM session cannot be forked yet.
+- **MCP**: the guest's `~/.copilot/mcp-config.json` names the servers of the box's MCP preset (the new-session
+  dialog's choice; the pack's `mcp-policy.yaml`) as `http` servers at the satellite's proxy on the guest's loopback;
+  the calls go to this machine's servers (its own Copilot configuration and credentials), filtered and checked by
+  the pack's rules first. `--disable-mcp-server` (the box's MCP choice) applies as here.
 - **The terminal** is drawn here and runs in the guest behind its satellite; status comes from the guest's
   history, mirrored under `<home>/vm/mirrors/<sandbox>/copilot` and indexed like Copilot's own folder.
   `Transcript` and `HasHistory` find a VM session there.

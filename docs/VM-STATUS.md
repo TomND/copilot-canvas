@@ -111,8 +111,14 @@ owner's note that VM sessions are optional and local stays the default.
 - [x] VM-26 `ExecTarget` (`vm::target`): the guest command line with the synced roots (`%ROOTS%`), started after the
       first full sync
 - [x] VM-39 in part: the skills' VM lines (plugin 1.5.0), AGENT-PROVIDERS *Inside a VM*, NOTEBOOK-TASKS §2.7, BACKEND
-- [ ] VM-36 egress (P-egress) · VM-37 MCP gateway (P-mcp) · VM-38 guest MCP configuration (after P-mcp) · the
-      Phase 3 exit (the probe's integration steps on three OSes, `vm spike s5` for the owner)
+- [x] VM-36 egress (P-egress, `vm-egress` 17a2b9e..52c81c5, merged 2026-11-10): `vm::egress` render, rules, stand-in;
+      wired: a stand-in per `vm::local` sandbox (outside its processes, reused across restarts), the guest's proxy
+      settings, deny until the box's policy is set at its start, `pack check` renders profiles, decisions capped
+- [x] VM-37 MCP gateway (P-mcp, `vm-mcp` 17a2b9e..fd74b36, merged 2026-11-10): `vm::mcp` gateway, policy,
+      JSON-RPC, the hub's Copilot servers, `atelier mcp-standin`, the guest's proxy; wired in `vm::link`
+- [x] VM-38 the guest's Copilot MCP configuration (a synced root at `~/.copilot`); Claude Code and OpenCode in Phase 5
+- [x] refusals (MCP and egress) in the VM view and `vm list`
+- [ ] Exit: the probe's integration steps on three OSes (CI); owner: `vm spike s5` with a real server
 - [ ] VM-36 egress (worker P-egress, `vm-egress`) and VM-37 MCP gateway (worker P-mcp, `vm-mcp`): prompts in
       VM-WORKERS.md; their interfaces landed (`vm/egress/mod.rs` denies everything, `vm/mcp/mod.rs` refuses every
       stream, `vm/satellite/mcp_proxy.rs` serves nothing; the link and the satellite already call them)
@@ -193,6 +199,10 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
 - **A file deleted in a synced root in the guest comes back** (deletions in the guest are not sent to the hub).
 - **`todo` reads are relayed** while the canvas is reachable (the same text) and run on the guest's copy only when
   it is not; `pr list`, `review list`, `report list` are unavailable then.
+- **A VM shared by several boxes (`with`) gets the first box's MCP servers** in its Copilot configuration (one
+  `~/.copilot` per guest); each box's calls still name their own box.
+- **`vm::local` enforces egress through proxy settings** (a guest that ignores them goes around it there; only the
+  platform can stop that, for `aca`); its stand-in cannot add headers over HTTPS (`CONNECT` passes TLS through).
 - **The remote listener** binds with `SO_REUSEADDR` on Unix and retries for 15 s at start (found by the restart step).
 - **No note line marks a gap** (VM-29 had one): a guest's ConPTY (Windows) draws by absolute positions, so nothing
   of the hub's may be drawn into a program's screen once it runs; a gap is logged, and a program's first output
@@ -277,4 +287,9 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   (VM-31), the skills' VM lines (plugin 1.5.0). `selftest vm` adds the synced files, notes both ways, a command
   applied at once, an offline read and a queued write across a restart (PASS in 54 s on macOS). Waiting for P-egress
   and P-mcp (VM-36, VM-37), then VM-38 and the Phase 3 probe steps.
+- 2026-11-10: the Phase 3 workers handed off: `vm-egress` and `vm-mcp` merged into `vm-sessions` (no conflicts).
+  Wired: egress stand-ins and policies, the MCP gateway with this machine's Copilot servers, the guest's MCP
+  configuration, refusals in the view; `atelier egress-standin`, `atelier mcp-standin`. Suggestions taken: the
+  placeholders' doc fixed (`{{repo.path}}` never existed), the decisions log capped at 5 MB, `pack check` renders
+  profiles. `selftest vm` PASS in 66 s on macOS.
 
