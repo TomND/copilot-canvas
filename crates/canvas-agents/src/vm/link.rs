@@ -10,7 +10,8 @@
 //!   the same sandbox replaces the older one.
 //! - Output is taken in order by offset: a repeat is trimmed, a gap asks
 //!   for a `Resync` from what the hub has, a screen (`Snapshot`) replaces
-//!   the terminal's engine and is marked with a note line.
+//!   the terminal's engine (logged; nothing of the hub's is drawn into a
+//!   program's screen once it runs, and its first output starts on a blank one).
 //! - Input is numbered per generation and kept until acknowledged; it is
 //!   sent again after a reconnect (the satellite applies it once). Typing
 //!   while the link is down is refused ("VM offline").
@@ -41,6 +42,8 @@ use crate::paths::now_ms;
 
 /// Input kept until the satellite acknowledges it.
 const UNACKED: usize = 1 << 20;
+/// Clears the screen and its scrollback and homes the cursor.
+const CLEAR: &[u8] = b"\x1b[0m\x1b[H\x1b[2J\x1b[3J";
 /// Typing while a VM resumes is kept (at most this much, this long) and sent
 /// once its satellite links again (D9); otherwise typing offline is refused.
 const RESUME_BUFFER: usize = 4 << 10;
@@ -111,6 +114,10 @@ struct RemoteState {
     have: u64,
     /// A `Resync` was asked for: later output waits for it.
     resyncing: bool,
+    /// The program was just started: its first output begins on a blank
+    /// screen (a guest's ConPTY draws by absolute positions over the
+    /// launch's step lines otherwise).
+    fresh: bool,
     next_seq: u64,
     unacked: VecDeque<(u64, Vec<u8>)>,
     unacked_bytes: usize,
@@ -255,6 +262,7 @@ impl Links {
                             state.note(&format!("Starting {} in the VM ({})…", intent.agent, intent.sandbox));
                             if link.send(true, spawn) {
                                 state.spawned = true;
+                                state.fresh = true;
                                 state.have = 0;
                                 let generation = state.generation;
                                 drop(state);
@@ -435,7 +443,11 @@ impl Links {
                         link.send(true, SatDown::Resync { term, generation, have: state.have });
                     }
                 } else if end > state.have {
-                    let fresh = bytes[(state.have - seq) as usize..].to_vec();
+                    let mut fresh = bytes[(state.have - seq) as usize..].to_vec();
+                    if std::mem::take(&mut state.fresh) && state.have == 0 {
+                        // In the output's own stream, so it lands before the program's first byte.
+                        fresh.splice(0..0, CLEAR.iter().copied());
+                    }
                     if state.feed.as_ref().is_some_and(|f| f.output(fresh)) {
                         state.have = end;
                         state.resyncing = false;
@@ -450,11 +462,13 @@ impl Links {
                 }
             }
             SatUp::Snapshot { seq, vt, .. } => {
+                // Nothing of the hub's own is drawn in: a full-screen program's drawing must find its screen as it left it.
                 if let Some(feed) = &state.feed {
                     feed.reset(vt);
-                    feed.note("Output was skipped while the VM was away: this is its screen now.");
                 }
+                (self.log)(format!("VM box {term}: output was skipped while its VM was away; its screen was repainted"));
                 state.have = seq;
+                state.fresh = false;
                 state.resyncing = false;
             }
             SatUp::Exit { code, json, .. } => {

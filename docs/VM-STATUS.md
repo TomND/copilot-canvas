@@ -85,8 +85,8 @@ owner's note that VM sessions are optional and local stays the default.
 - [ ] VM-26 `ExecTarget`: the guest's command line comes from `launch::guest_command` (no hub paths); the guest roots
       (plugin, skills, instructions, notes, MCP) come with Phase 3's file sync
 - [x] VM-27 `SessionStore` for Copilot (`vm::session_store`): `HasHistory`, `Transcript`, `Fork` refused for mirrors
-- [ ] VM-28 guest subsessions · VM-29 the rest (input buffered 4 KiB / 30 s while resuming, D9; the mailbox typed
-      only after reconciliation; a gap's note line is there) · VM-2A docs (BACKEND, REMOTE, README, VM-SESSIONS
+- [ ] VM-28 guest subsessions · VM-29 the rest (the probe's drops during output and beyond the ring; input while
+      resuming and the mailbox's wait are done and unit-tested) · VM-2A docs (BACKEND, REMOTE, README, VM-SESSIONS
       written; AGENT-PROVIDERS and DEVELOPMENT's code map with VM-26)
 - [ ] Exit: `selftest vm` (replay, gap, freeze, restart) on three OSes
 
@@ -159,6 +159,11 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   prepared, instead of at sandbox creation; `CONNECT` is used through proxies for `ws://` too.
 - **The satellite honours `ATELIER_<AGENT>`** for an agent's program, as the hub does (the self-tests' stand-ins).
 - **The remote listener** binds with `SO_REUSEADDR` on Unix and retries for 15 s at start (found by the restart step).
+- **No note line marks a gap** (VM-29 had one): a guest's ConPTY (Windows) draws by absolute positions, so nothing
+  of the hub's may be drawn into a program's screen once it runs; a gap is logged, and a program's first output
+  starts on a blank screen (the launch's step lines are cleared).
+- **`vm::local` on Linux starts its satellite in a systemd user scope of its own**, out of the service's unit, whose
+  stop ends its cgroup (a VM's satellite is not the hub's process at all).
 
 ## Log
 
