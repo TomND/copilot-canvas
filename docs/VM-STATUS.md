@@ -67,7 +67,10 @@ owner's note that VM sessions are optional and local stays the default.
 - [ ] Exit: as in the plan §3 Phase 1
 
 ### 2: terminals
-- [ ] VM-21 remote PTY · VM-22 VT repaint · VM-23 satellite · VM-24 hub link · VM-25 launch, shutdown, re-adoption · VM-26 `ExecTarget` · VM-27 `SessionStore` · VM-28 guest subsessions · VM-29 gap and reconnect rules · VM-2A docs
+- [x] VM-21 remote PTY (`Terminal::spawn_remote`, `RemotePty`, `RemoteFeed`; started early, unit-tested)
+- [x] VM-22 VT repaint (`emulator::replay::repaint`; round trip on the alacritty engine; the corpus round trip
+      for both engines comes with the satellite)
+- [ ] VM-23 satellite · VM-24 hub link · VM-25 launch, shutdown, re-adoption · VM-26 `ExecTarget` · VM-27 `SessionStore` · VM-28 guest subsessions · VM-29 gap and reconnect rules · VM-2A docs
 - [ ] Exit: `selftest vm` (replay, gap, freeze, restart) on three OSes
 
 ### 3: integration
@@ -135,3 +138,6 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   view and actions, `atelier vm …`, doctor; `selftest vm` adds the credential in the guest, a budget queue, suspend
   and resume, delete with the credential revoked (PASS in 20 s on macOS). Waiting for the workers' `vm::aca` and
   `vm::local` to wire them into `open_provider` and the pool lane's self-test.
+- 2026-11-10: the secrets refresher; Phase 2 started early on files no worker owns: the VT repaint and remote
+  terminals in `canvas-host` (both unit-tested). The satellite (VM-23) waits for the P-aca hand-off: its
+  `wss://` dialer needs `rustls` in `crates/canvas-agents/Cargo.toml`, which that worker owns.
