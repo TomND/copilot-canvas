@@ -248,7 +248,7 @@ fn canvas_events(routing: &Routing, me: &str) -> Result<()> {
 pub fn write_plugin(home: &Path) -> Result<std::path::PathBuf> {
     let dir = home.join("plugin");
     let files: [(&str, &str); 9] = [
-        ("plugin.json", r#"{ "name": "atelier", "description": "Atelier events, messages, passive sessions, reports, pull request coordination, review follow-ups, todos and the notebook.", "version": "1.4.0", "skills": "./skills/" }"#),
+        ("plugin.json", r#"{ "name": "atelier", "description": "Atelier events, messages, passive sessions, reports, pull request coordination, review follow-ups, todos and the notebook.", "version": "1.5.0", "skills": "./skills/" }"#),
         (".claude-plugin/plugin.json", CLAUDE_PLUGIN),
         ("skills/canvas-events/SKILL.md", EVENTS_SKILL),
         ("skills/canvas-passive/SKILL.md", PASSIVE_SKILL),
@@ -323,7 +323,7 @@ pub fn install_alias(dir: &Path, target: &Path) {
 const CLAUDE_PLUGIN: &str = r#"{
   "name": "atelier",
   "description": "Atelier events, messages, passive sessions, reports, pull request coordination, review follow-ups, todos and the notebook.",
-  "version": "1.4.0"
+  "version": "1.5.0"
 }
 "#;
 
@@ -372,6 +372,10 @@ update) goes to the canvas's Reports inbox instead: see the canvas-reports skill
 keep (plans, research, documents) go into the canvas notebook: see the
 canvas-notes skill (`atelier note new`). Work items live on the canvas's
 todo boards: see the canvas-todos skill (`atelier todo prime`).
+
+In a VM session these commands work the same and reach the canvas's machine. A
+write that answers *Queued* reaches it when the canvas is reachable again: do not
+send it twice.
 ";
 
 const PASSIVE_SKILL: &str = "---
@@ -722,6 +726,11 @@ mod tests {
         let clear = events.iter().find(|e| e.data["effect"] == "clear").expect("the clear");
         assert_eq!(clear.data["kind"].as_str(), Some("attention"));
         let plugin = write_plugin(&home).unwrap();
+        // In a VM session: the same commands, and a queued write is not sent twice.
+        for skill in ["canvas-events", "canvas-notes", "canvas-todos"] {
+            let text = std::fs::read_to_string(plugin.join(format!("skills/{skill}/SKILL.md"))).unwrap();
+            assert!(text.contains("In a VM session") && text.contains("Queued"), "{skill} says how commands behave in a VM session");
+        }
         for skill in ["canvas-events", "canvas-passive"] {
             assert!(std::fs::read_to_string(plugin.join(format!("skills/{skill}/SKILL.md"))).unwrap().contains("atelier effect"), "{skill} documents effects");
         }

@@ -453,9 +453,38 @@ impl Agents {
             !launch.env.iter().any(|(k, _)| canvas_common::env::is(k.trim_start_matches('-'), "ATELIER_SESSION")),
             "launch options may not select a different session"
         );
-        // This machine's skill folders are not in the guest.
-        let _ = canvas_model::launch::take_group_skills(&mut launch);
-        let (argv, env) = crate::vm::launch::guest_command(kind, id, &launch)?;
+        // This machine's folders are not in the guest: a satellite gets the
+        // canvas's plugin, the profile bundle, the group's skills, notes and
+        // instructions as synced roots (the hooks lane gets none of them).
+        let group_skills = canvas_model::launch::take_group_skills(&mut launch);
+        let satellite = pack.provider != crate::vm::pack::ProviderKind::Hooks;
+        let group = launch.group_folder.clone().filter(|_| satellite).zip(launch.group_name.clone());
+        // Made here for this box (its project's own skills are in the guest: none are left out for them).
+        let group_plugin = group_skills.filter(|_| satellite).and_then(|skills| {
+            let root = home.join("vm").join("group-skills");
+            match canvas_model::skills::prepare_group_plugin(&root, &skills.group, id, &skills.dirs, &HashSet::new()) {
+                Ok(made) => {
+                    log(&self.instance, &format!("terminal {id}: skill folders for its VM: {}", if made.given.is_empty() { "none".to_owned() } else { made.given.join(", ") }));
+                    made.dir
+                }
+                Err(error) => {
+                    log(&self.instance, &format!("terminal {id}: cannot prepare the skill folders for its VM: {error}"));
+                    None
+                }
+            }
+        });
+        let target = if satellite {
+            crate::vm::target::ExecTarget::Vm(crate::vm::target::GuestRoots {
+                plugin: home.join("plugin").is_dir(),
+                profile: !pack.profile.include.is_empty() || !pack.paths.is_empty(),
+                profile_instructions: !pack.paths.is_empty(),
+                group: group.as_ref().map(|(_, name)| crate::vm::sync::group_slug(name)),
+                group_skills: group_plugin.is_some(),
+            })
+        } else {
+            crate::vm::target::ExecTarget::Local
+        };
+        let (argv, env) = crate::vm::launch::guest_command(kind, id, &launch, &target)?;
         use canvas_model::vm::VmState;
         let mut intent = crate::vm::launch::load(home, id)?.unwrap_or_default();
         intent.r#box = id.to_owned();
@@ -476,6 +505,8 @@ impl Agents {
             intent.pending = "resume".into();
         }
         intent.argv = argv;
+        (intent.group_folder, intent.group_name) = group.unwrap_or_default();
+        intent.group_plugin = group_plugin.map(|p| p.display().to_string()).unwrap_or_default();
         intent.env = crate::vm::launch::guest_env(id, kind).into_iter().chain(env).collect();
         if intent.created_ms == 0 {
             intent.created_ms = now_ms();

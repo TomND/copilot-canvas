@@ -54,6 +54,15 @@ pub struct Intent {
     /// the satellite (0: none); a restarted service adopts it again.
     #[serde(skip_serializing_if = "is_zero")]
     pub terminal: u64,
+    /// The box's group (its name and folder on the hub): its notes and
+    /// instructions are synced into the guest.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub group_name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub group_folder: String,
+    /// The plugin with the group's skill folders, made on the hub for this box.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub group_plugin: String,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -121,20 +130,39 @@ pub fn all(home: &Path) -> Vec<Intent> {
 /// folders of this machine (group folders, extra folders, plugins) do not
 /// exist there, so the launch goes without them; the canvas integration in
 /// the guest comes from the satellite (later phases).
-pub fn guest_command(kind: AgentKind, id: &str, launch: &AgentLaunch) -> Result<crate::agents::ArgsEnv> {
+pub fn guest_command(kind: AgentKind, id: &str, launch: &AgentLaunch, target: &super::target::ExecTarget) -> Result<crate::agents::ArgsEnv> {
     let mut launch = launch.clone();
     launch.group_folder = None;
     launch.group_name = None;
     launch.add_dirs.clear();
     launch.headless_prompt = None;
     anyhow::ensure!(launch.fork_from.is_none(), "forking a session that runs on a VM is not available");
-    let integration = crate::agents::Integration::default();
-    let (args, mut env) = match kind {
+    let roots = match target {
+        super::target::ExecTarget::Vm(roots) => roots.clone(),
+        super::target::ExecTarget::Local => super::target::GuestRoots::default(),
+    };
+    // The synced roots in this machine's places: plugins, the group's notes and instructions.
+    let plugins = roots.plugins(id);
+    let integration = crate::agents::Integration { plugin_dir: None, env: Vec::new(), skill_plugins: plugins.iter().map(std::path::PathBuf::from).collect() };
+    let (mut args, mut env) = match kind {
         AgentKind::Copilot => crate::agents::copilot::args(id, &launch, &integration)?,
         other => bail!("{} sessions cannot run on a VM yet (Copilot CLI can)", other.label()),
     };
+    if !launch.resume {
+        for dir in roots.add_dirs() {
+            args.extend(["--add-dir".to_owned(), dir]);
+        }
+    }
+    let instructions = roots.instructions();
+    if !instructions.is_empty() {
+        env.push(("COPILOT_CUSTOM_INSTRUCTIONS_DIRS".to_owned(), instructions.join(",")));
+    }
     // The canvas's own variables are set by the guest's side.
     env.retain(|(k, _)| !canvas_common::env::is_ours(k));
+    // `atelier note path` in the guest: the group's notes as synced there.
+    if let Some(group) = &roots.group {
+        env.push(("ATELIER_NOTES".to_owned(), super::target::guest(&format!("notes/{group}"))));
+    }
     let mut argv = vec![kind.id().to_owned()];
     argv.extend(args);
     Ok((argv, env))
@@ -253,15 +281,25 @@ mod tests {
             env: vec![("ATELIER_HOME".into(), r"C:\h".into()), ("KEEP".into(), "1".into())],
             ..Default::default()
         };
-        let (argv, env) = guest_command(AgentKind::Copilot, id, &launch).unwrap();
+        let (argv, env) = guest_command(AgentKind::Copilot, id, &launch, &crate::vm::target::ExecTarget::Local).unwrap();
         assert_eq!(argv[..3], ["copilot", "--session-id", id]);
         assert!(argv.windows(2).any(|w| w == ["-i", "go"]) && argv.contains(&"--allow-all".to_owned()));
         let all = format!("{argv:?}{env:?}");
         assert!(!all.contains(r"C:\") && !all.contains("--plugin-dir") && !all.contains("--add-dir") && !all.contains("ATELIER_HOME"), "{all}");
         assert!(env.contains(&("KEEP".into(), "1".into())));
-        assert!(guest_command(AgentKind::Claude, id, &launch).is_err(), "Copilot first");
-        assert!(guest_command(AgentKind::Copilot, id, &AgentLaunch { fork_from: Some("p".into()), ..launch }).is_err(), "no forks of VM sessions");
+        assert!(guest_command(AgentKind::Claude, id, &launch, &crate::vm::target::ExecTarget::Local).is_err(), "Copilot first");
+        assert!(guest_command(AgentKind::Copilot, id, &AgentLaunch { fork_from: Some("p".into()), ..launch.clone() }, &crate::vm::target::ExecTarget::Local).is_err(), "no forks of VM sessions");
         let env = guest_env(id, AgentKind::Copilot);
         assert!(env.contains(&("ATELIER_SESSION".into(), id.into())) && env.contains(&("ATELIER_REMOTE".into(), "satellite-lite".into())));
+        // With a satellite: the synced roots in this machine's places, guest paths only.
+        let roots = crate::vm::target::GuestRoots { plugin: true, profile: true, profile_instructions: false, group: Some("g".into()), group_skills: true };
+        let (argv, env) = guest_command(AgentKind::Copilot, id, &launch, &crate::vm::target::ExecTarget::Vm(roots)).unwrap();
+        let plugins: Vec<&str> = argv.windows(2).filter(|w| w[0] == "--plugin-dir").map(|w| w[1].as_str()).collect();
+        assert_eq!(plugins, ["%ROOTS%/plugin", "%ROOTS%/profile", format!("%ROOTS%/group-skills/{id}").as_str()]);
+        let dirs: Vec<&str> = argv.windows(2).filter(|w| w[0] == "--add-dir").map(|w| w[1].as_str()).collect();
+        assert_eq!(dirs, ["%ROOTS%/notes/g/ai-docs", "%ROOTS%/notes/g/human-outputs"]);
+        assert!(env.contains(&("COPILOT_CUSTOM_INSTRUCTIONS_DIRS".into(), "%ROOTS%/instructions/g".into())));
+        assert!(env.contains(&("ATELIER_NOTES".into(), "%ROOTS%/notes/g".into())));
+        assert!(!format!("{argv:?}{env:?}").contains(r"C:\"), "nothing of this machine");
     }
 }

@@ -8,6 +8,7 @@
 //! only when the hub proves the credential was revoked (the VM is deleted).
 
 pub mod dial;
+pub mod files;
 pub mod mcp_proxy;
 pub mod reports;
 pub mod ring;
@@ -26,6 +27,7 @@ use canvas_common::wire::{self, FrameReader, FrameWriter};
 use crossbeam_channel::{Receiver, bounded, select_biased};
 use serde::{Deserialize, Serialize};
 
+use self::files::Files;
 use self::mcp_proxy::McpProxy;
 use self::terms::{Lanes, SpawnRequest, Terms};
 
@@ -111,13 +113,14 @@ pub fn run() -> Result<()> {
     anyhow::ensure!(lock.try_lock().is_ok(), "a satellite runs for {} already", home.display());
     let terms = Arc::new(Terms::default());
     let mcp = McpProxy::start(0)?;
+    let files = Arc::new(Files::open(crate::paths::Instance::new(None, None, None)?.home.join("vm").join("roots"), super::guest::guest_home()));
     let epochs = AtomicU64::new(0);
     let mut failures = 0u32;
     loop {
         let config = wait_config();
         let epoch = epochs.fetch_add(1, Ordering::Relaxed) + 1;
         let started = Instant::now();
-        match session(&config, &terms, &mcp, epoch) {
+        match session(&config, &terms, &mcp, &files, epoch) {
             Ok(()) => {}
             Err(error) if error.downcast_ref::<handshake::Refused>().is_some_and(|r| r.verified) => {
                 eprintln!("satellite: the hub revoked this VM's credential; ending its terminals");
@@ -137,7 +140,7 @@ pub fn run() -> Result<()> {
 }
 
 /// One link: dial, authenticate, `Hello`, then serve until it drops.
-pub fn session(config: &Config, terms: &Arc<Terms>, mcp: &Arc<McpProxy>, epoch: u64) -> Result<()> {
+pub fn session(config: &Config, terms: &Arc<Terms>, mcp: &Arc<McpProxy>, files: &Arc<Files>, epoch: u64) -> Result<()> {
     let secret = canvas_common::paths::unhex(&config.secret).context("the satellite's secret is not hex")?;
     let roots = if config.ca.is_empty() { Vec::new() } else { super::tls::pem_certificates(&std::fs::read(&config.ca).context("the pack's CA file")?)? };
     let dialed = dial::dial(&config.hub, roots, &config.headers)?;
@@ -175,6 +178,7 @@ pub fn session(config: &Config, terms: &Arc<Terms>, mcp: &Arc<McpProxy>, epoch: 
         home: super::guest::guest_home().display().to_string(),
         terms: terms.held(),
         mcp_port: mcp.port(),
+        roots: files.roots_dir().display().to_string(),
     };
     other_tx.send(SatUp::Hello { version: SAT_PROTOCOL, caps: 0, json: serde_json::to_string(&hello)? })?;
     let (beat_tx, beat_rx) = bounded::<()>(1);
@@ -200,10 +204,24 @@ pub fn session(config: &Config, terms: &Arc<Terms>, mcp: &Arc<McpProxy>, epoch: 
     }
     let stats_every = Arc::new(AtomicU64::new(DEFAULT_STATS.as_millis() as u64));
     {
-        let (terms, other_tx, stats_every) = (terms.clone(), other_tx.clone(), stats_every.clone());
+        let (terms, other_tx, stats_every, stop_rx) = (terms.clone(), other_tx.clone(), stats_every.clone(), stop_rx.clone());
         std::thread::Builder::new().name("sat-reports".into()).spawn(move || report_loop(&terms, &other_tx, &stats_every, &stop_rx))?;
     }
-    let result = read_loop(&mut reader, terms, mcp, &heard, &other_tx, &stats_every);
+    // The canvas commands agents ran here (the guest's outbox) go to the hub as they come.
+    let ops_home = crate::paths::Instance::new(None, None, None)?.home;
+    {
+        let (home, other_tx, stop_rx) = (ops_home.clone(), other_tx.clone(), stop_rx.clone());
+        std::thread::Builder::new().name("sat-ops".into()).spawn(move || op_loop(&home, &other_tx, &stop_rx))?;
+    }
+    // The guest's edits of the hub's writable roots (a group's notes) go back as they come.
+    {
+        let (files, other_tx) = (files.clone(), other_tx.clone());
+        std::thread::Builder::new().name("sat-files".into()).spawn(move || edit_loop(&files, &other_tx, &stop_rx))?;
+    }
+    super::lite::set_link_state(&ops_home, true);
+    let result = read_loop(&mut reader, terms, mcp, files, &heard, &other_tx, &stats_every, &ops_home);
+    super::lite::set_link_state(&ops_home, false);
+    files.link_lost();
     terms.detach(epoch);
     mcp.attach(None);
     mcp.link_lost();
@@ -216,6 +234,50 @@ pub fn session(config: &Config, terms: &Arc<Terms>, mcp: &Arc<McpProxy>, epoch: 
 
 fn now() -> u64 {
     canvas_common::paths::now_ms()
+}
+
+/// Every 2 s until the link ends: the writable roots' edits (`SatUp::Note`).
+fn edit_loop(files: &Files, up: &crossbeam_channel::Sender<SatUp>, stop: &Receiver<()>) {
+    while matches!(stop.recv_timeout(Duration::from_secs(2)), Err(crossbeam_channel::RecvTimeoutError::Timeout)) {
+        for (id, edit) in files.edits() {
+            if up.send(SatUp::Note { id, root: edit.root, name: edit.name, base_rev: edit.base_rev, bytes: edit.bytes }).is_err() {
+                return;
+            }
+        }
+    }
+}
+
+/// How often the outbox is looked at; operations sent and not answered at once; when one is sent again.
+const OP_EVERY: Duration = Duration::from_millis(150);
+const OPS_IN_FLIGHT: usize = 16;
+const OP_AGAIN: Duration = Duration::from_secs(60);
+
+/// Until the link ends: each operation of the outbox goes up once (again
+/// after [`OP_AGAIN`] without an answer); the hub's `OpResult` takes it out.
+fn op_loop(home: &Path, up: &crossbeam_channel::Sender<SatUp>, stop: &Receiver<()>) {
+    let mut sent: std::collections::HashMap<String, Instant> = std::collections::HashMap::new();
+    let mut tidied: Option<Instant> = None;
+    while matches!(stop.recv_timeout(OP_EVERY), Err(crossbeam_channel::RecvTimeoutError::Timeout)) {
+        let queued = super::lite::queued(home, 256);
+        sent.retain(|id, _| queued.iter().any(|q| q.id == *id));
+        for q in queued {
+            if sent.get(&q.id).is_some_and(|at| at.elapsed() < OP_AGAIN) {
+                continue;
+            }
+            if sent.len() >= OPS_IN_FLIGHT {
+                break;
+            }
+            let Ok(json) = serde_json::to_string(&q.op) else { continue };
+            if up.send(SatUp::Op { id: q.id.clone(), term: q.term.clone(), json }).is_err() {
+                return;
+            }
+            sent.insert(q.id, Instant::now());
+        }
+        if tidied.is_none_or(|at| at.elapsed() > Duration::from_secs(3600)) {
+            super::lite::tidy_answers(home);
+            tidied = Some(Instant::now());
+        }
+    }
 }
 
 /// How often the guest's processes are looked at, and resent unchanged.
@@ -270,8 +332,11 @@ fn write_lanes(mut writer: FrameWriter, io: Receiver<SatUp>, other: Receiver<Sat
 /// A control from the hub, answered on the link (`SatUp::ControlResult`):
 /// `{"drain": DrainRequest}` runs the thin lane's drain here (the agents'
 /// history the hub lacks, relayed commands, their answers stored).
-fn control(json: &str) -> serde_json::Value {
+fn control(json: &str, files: &Files) -> serde_json::Value {
     let request: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
+    if request.get("roots_state").is_some() {
+        return serde_json::json!({ "ok": true, "roots_state": files.state() });
+    }
     let answer = (|| -> Result<serde_json::Value> {
         let drain: super::lite::DrainRequest = serde_json::from_value(request.get("drain").cloned().context("an unknown control")?)?;
         let home = crate::paths::Instance::new(None, None, None)?.home;
@@ -283,7 +348,8 @@ fn control(json: &str) -> serde_json::Value {
     }
 }
 
-fn read_loop(reader: &mut FrameReader, terms: &Arc<Terms>, mcp: &McpProxy, heard: &AtomicU64, other: &crossbeam_channel::Sender<SatUp>, stats_every: &AtomicU64) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+fn read_loop(reader: &mut FrameReader, terms: &Arc<Terms>, mcp: &McpProxy, files: &Arc<Files>, heard: &AtomicU64, other: &crossbeam_channel::Sender<SatUp>, stats_every: &AtomicU64, ops_home: &Path) -> Result<()> {
     loop {
         let message = match reader.recv::<ServiceMsg>() {
             Ok(Some(message)) => message,
@@ -317,12 +383,32 @@ fn read_loop(reader: &mut FrameReader, terms: &Arc<Terms>, mcp: &McpProxy, heard
             SatDown::Stop { term, generation, .. } => terms.stop(&term, generation),
             SatDown::Resync { term, generation, have } => terms.resync(&term, generation, have),
             SatDown::Control { id, json } => {
-                let other = other.clone();
+                let (other, files) = (other.clone(), files.clone());
                 std::thread::Builder::new().name("sat-control".into()).spawn(move || {
-                    let _ = other.send(SatUp::ControlResult { id, json: control(&json).to_string() });
+                    let _ = other.send(SatUp::ControlResult { id, json: control(&json, &files).to_string() });
                 })?;
             }
+            SatDown::Manifest { root, json } => {
+                if let Err(error) = serde_json::from_str(&json).map_err(anyhow::Error::from).and_then(|m| files.manifest(&root, m)) {
+                    eprintln!("satellite: root {root}: {error:#}");
+                }
+            }
+            SatDown::File { root, name, rev, offset, last, bytes } => {
+                if let Err(error) = files.file(&root, &name, &rev, offset, last, &bytes) {
+                    eprintln!("satellite: {root}/{name}: {error:#}");
+                }
+            }
+            SatDown::NoteResult { id, json } => {
+                if let Ok(answer) = serde_json::from_str(&json) {
+                    files.note_result(&id, &answer);
+                }
+            }
             SatDown::Mcp { stream, kind, bytes } => mcp.down(stream, kind, bytes),
+            SatDown::OpResult { id, json } => {
+                if let Ok(answer) = serde_json::from_str::<canvas_model::vm::OpAnswer>(&json) {
+                    let _ = super::lite::answered(ops_home, &id, &answer);
+                }
+            }
             // Files and notes come with Phase 3.
             _ => {}
         }
@@ -418,6 +504,12 @@ mod tests {
         }
     }
 
+    /// Roots for a test satellite (its own temporary folder).
+    fn test_files() -> Arc<Files> {
+        let home = std::env::temp_dir().join(format!("atelier-sat-roots-{}", uuid::Uuid::new_v4()));
+        Arc::new(Files::open(home.join("roots"), home))
+    }
+
     fn wait_until(what: &str, secs: u64, mut ok: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(secs);
         while !ok() {
@@ -474,7 +566,7 @@ mod tests {
                 let mut epoch = 0;
                 while !stop.load(Ordering::Acquire) {
                     epoch += 1;
-                    let _ = session(&config, &terms, &mcp, epoch);
+                    let _ = session(&config, &terms, &mcp, &test_files(), epoch);
                     std::thread::sleep(Duration::from_millis(100));
                 }
             });
@@ -540,7 +632,7 @@ mod tests {
         let (terms, mcp) = (Arc::new(Terms::default()), McpProxy::start(0).unwrap());
         let serving = {
             let (config, terms, mcp) = (config.clone(), terms.clone(), mcp.clone());
-            std::thread::spawn(move || session(&config, &terms, &mcp, 1))
+            std::thread::spawn(move || session(&config, &terms, &mcp, &test_files(), 1))
         };
         wait_until("linked", 30, || links.linked(SANDBOX));
         links.close_revoked();
@@ -548,8 +640,53 @@ mod tests {
         crate::vm::store::Satellites::new(&home).revoke_sandbox(SANDBOX).unwrap();
         links.close_revoked();
         wait_until("the link was closed", 10, || serving.is_finished());
-        let error = session(&config, &terms, &mcp, 2).unwrap_err();
+        let error = session(&config, &terms, &mcp, &test_files(), 2).unwrap_err();
         assert!(error.downcast_ref::<handshake::Refused>().is_some_and(|r| r.verified), "the refusal is proven, so the satellite ends: {error:#}");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn the_hubs_roots_reach_the_guest_and_its_edits_come_back() {
+        use crate::vm::sync::{Root, Source, Writes};
+        let home = std::env::temp_dir().join(format!("atelier-sat-sync-{}", uuid::Uuid::new_v4()));
+        let notes = home.join("hub-notes");
+        std::fs::create_dir_all(notes.join("ai-docs")).unwrap();
+        std::fs::write(notes.join("ai-docs/GOALS.md"), b"goals").unwrap();
+        let minted = crate::vm::store::Satellites::new(&home).mint(SANDBOX).unwrap();
+        let links = crate::vm::link::Links::new(&home, Arc::new(|_| {}));
+        let port = hub(&home, &links);
+        let config = Config { hub: format!("tcp://127.0.0.1:{port}"), id: minted.id, secret: minted.secret, sandbox: SANDBOX.into(), ..Default::default() };
+        let guest = home.join("guest");
+        let files = Arc::new(Files::open(guest.join(".atelier/vm/roots"), guest.clone()));
+        let (terms, mcp) = (Arc::new(Terms::default()), McpProxy::start(0).unwrap());
+        {
+            let (config, terms, mcp, files) = (config.clone(), terms.clone(), mcp.clone(), files.clone());
+            std::thread::spawn(move || session(&config, &terms, &mcp, &files, 1));
+        }
+        wait_until("linked", 30, || links.linked(SANDBOX));
+        assert_eq!(links.guest_roots(SANDBOX).as_deref(), Some(files.roots_dir().display().to_string().as_str()));
+        let roots = vec![
+            Root { id: "plugin".into(), files: [("plugin.json".to_owned(), Source::Bytes(b"{}".to_vec())), ("skills/a/SKILL.md".to_owned(), Source::Bytes(vec![b'x'; 3 << 20]))].into(), ..Default::default() },
+            Root { id: "notes/g".into(), files: [("ai-docs/GOALS.md".to_owned(), Source::File(notes.join("ai-docs/GOALS.md")))].into(), writes: Some(Writes { dir: notes.clone(), prefixes: vec!["ai-docs/".into()] }), folders: vec!["ai-docs".into(), "human-outputs".into()], ..Default::default() },
+        ];
+        assert!(!links.synced(SANDBOX));
+        links.sync(SANDBOX, &roots).unwrap();
+        assert!(links.synced(SANDBOX));
+        let in_guest = files.roots_dir().to_path_buf();
+        wait_until("the roots reached the guest", 10, || {
+            std::fs::read(in_guest.join("plugin/skills/a/SKILL.md")).is_ok_and(|b| b.len() == 3 << 20) && in_guest.join("notes/g/human-outputs").is_dir() && std::fs::read(in_guest.join("notes/g/ai-docs/GOALS.md")).is_ok_and(|b| b == b"goals")
+        });
+        // A second pass sends nothing new: the guest says what it holds.
+        links.sync(SANDBOX, &roots).unwrap();
+        // An edit in the guest's notes comes back; one outside the root's names does not.
+        std::fs::write(in_guest.join("notes/g/ai-docs/GOALS.md"), b"goals, from the guest").unwrap();
+        std::fs::write(in_guest.join("notes/g/human-outputs/out.html"), b"<p>").unwrap();
+        wait_until("the guest's edit was written here", 10, || std::fs::read(notes.join("ai-docs/GOALS.md")).is_ok_and(|b| b == b"goals, from the guest"));
+        std::thread::sleep(Duration::from_millis(2500));
+        assert!(!notes.join("human-outputs/out.html").exists(), "this root takes ai-docs/ only");
+        // A root the hub no longer has goes from the guest.
+        links.sync(SANDBOX, &roots[1..]).unwrap();
+        wait_until("the plugin root went", 10, || !in_guest.join("plugin/plugin.json").exists());
         let _ = std::fs::remove_dir_all(home);
     }
 }

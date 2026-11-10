@@ -17,6 +17,10 @@ use rustls::pki_types::{CertificateDer, ServerName};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// The TLS handshake, a proxy's answer and the WebSocket upgrade.
 const SETUP_TIMEOUT: Duration = Duration::from_secs(15);
+/// A read that gets nothing for this long ends the link (the hub sends a
+/// heartbeat every 2 s). Closing a socket does not wake a blocked read on
+/// every OS (Windows, when another process still holds the hub's end).
+pub const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A connection to the hub as two halves and a way to end both.
 pub struct Dialed {
@@ -137,6 +141,7 @@ pub fn dial(url: &str, roots: Vec<CertificateDer<'static>>, headers: &[(String, 
     let proxy = proxy_for(&target, &|name| std::env::var(name).ok());
     let stream = connect(&target, proxy.as_deref())?;
     stream.set_nodelay(true)?;
+    stream.set_read_timeout(Some(READ_TIMEOUT))?;
     let closing = stream.try_clone()?;
     let closer = Closer::new(move || {
         let _ = closing.shutdown(Shutdown::Both);
@@ -188,7 +193,7 @@ fn tls(mut stream: TcpStream, host: &str, roots: Vec<CertificateDer<'static>>) -
     while conn.is_handshaking() {
         conn.complete_io(&mut stream).context("the TLS handshake with the hub failed")?;
     }
-    stream.set_read_timeout(None)?;
+    stream.set_read_timeout(Some(READ_TIMEOUT))?;
     stream.set_write_timeout(None)?;
     let shared = Arc::new(TlsShared { conn: Mutex::new(conn), socket: stream.try_clone()? });
     Ok((TlsReader { shared: shared.clone(), socket: stream, buffer: vec![0; 32 << 10] }, TlsWriter { shared }))

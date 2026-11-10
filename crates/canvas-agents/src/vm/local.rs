@@ -139,7 +139,14 @@ impl Faults {
 pub struct Local {
     pub root: PathBuf,
     faults: Faults,
+    /// Each sandbox gets an egress stand-in (`vm::egress`), and its processes
+    /// its proxy settings, the hosts in this list going direct (the service's
+    /// provider; tests leave it off).
+    egress: Option<String>,
 }
+
+/// The egress stand-in log grows to this size, then becomes `.old`.
+const EGRESS_LOG_MAX: u64 = 5 << 20;
 
 /// A sandbox id: `sbx-` and 12 hex digits.
 pub fn valid_id(id: &str) -> bool {
@@ -247,7 +254,80 @@ impl Local {
     pub fn new(root: PathBuf) -> Self {
         let knob = |name: &str| canvas_common::env::var(name).unwrap_or_default();
         let faults = Faults::parse(&knob("ATELIER_VM_TEST_FAIL"), &knob("ATELIER_VM_TEST_LATENCY_MS")).unwrap_or_else(|error| Faults { malformed: Some(format!("{error:#}")), ..Default::default() });
-        Local { root, faults }
+        Local { root, faults, egress: None }
+    }
+
+    /// A provider whose sandboxes each get an egress stand-in enforcing their
+    /// policy (`atelier egress-standin`, outside their processes, reused
+    /// across restarts of the service); `direct` names the hosts that go
+    /// around it (the hub's own; loopback always does).
+    pub fn with_egress(mut self, direct: &str) -> Self {
+        let mut hosts: Vec<String> = direct.split(',').map(|h| h.trim().to_owned()).filter(|h| !h.is_empty()).collect();
+        for host in ["127.0.0.1", "localhost", "::1"] {
+            if !hosts.iter().any(|h| h == host) {
+                hosts.push(host.to_owned());
+            }
+        }
+        self.egress = Some(hosts.join(","));
+        self
+    }
+
+    fn standin_files(&self, id: &str) -> (PathBuf, PathBuf) {
+        let dir = self.root.join("egress");
+        (dir.join(format!("{id}.port")), dir.join(format!("{id}.log")))
+    }
+
+    /// The port of sandbox `id`'s egress stand-in when it answers.
+    pub fn standin_port(&self, id: &str) -> Option<u16> {
+        let port: u16 = std::fs::read_to_string(self.standin_files(id).0).ok()?.trim().parse().ok()?;
+        std::net::TcpStream::connect_timeout(&std::net::SocketAddr::from(([127, 0, 0, 1], port)), Duration::from_millis(500)).ok().map(|_| port)
+    }
+
+    /// Starts sandbox `id`'s egress stand-in unless one answers (with egress on).
+    fn ensure_standin(&self, id: &str) -> Result<()> {
+        if self.egress.is_none() || self.standin_port(id).is_some() {
+            return Ok(());
+        }
+        let (port_file, log) = self.standin_files(id);
+        std::fs::create_dir_all(self.root.join("egress"))?;
+        let _ = std::fs::remove_file(&port_file);
+        if std::fs::metadata(&log).is_ok_and(|m| m.len() > EGRESS_LOG_MAX) {
+            let _ = std::fs::rename(&log, log.with_extension("log.old"));
+        }
+        let output = std::fs::OpenOptions::new().create(true).append(true).open(&log)?;
+        let mut cmd = Command::new(std::env::current_exe()?);
+        cmd.args(["egress-standin", "--root", &self.root.display().to_string(), "--sandbox", id, "--port-file", &port_file.display().to_string()]);
+        cmd.stdin(std::process::Stdio::null()).stdout(output.try_clone()?).stderr(output);
+        // Not one of the sandbox's processes (suspend never freezes it), and it outlives a restart of the service.
+        let mut child = match canvas_sys::spawn::in_own_scope(&cmd) {
+            Some(mut scoped) => {
+                scoped.stdin(std::process::Stdio::null()).stdout(std::fs::OpenOptions::new().append(true).open(&log)?).stderr(std::fs::OpenOptions::new().append(true).open(&log)?);
+                scoped.spawn()?
+            }
+            None => {
+                canvas_sys::spawn::CommandExt::spawn_flags(&mut cmd, canvas_sys::spawn::DETACHED | canvas_sys::spawn::NO_WINDOW | canvas_sys::spawn::BREAKAWAY);
+                match cmd.spawn() {
+                    Ok(child) => child,
+                    Err(_) => {
+                        canvas_sys::spawn::CommandExt::spawn_flags(&mut cmd, canvas_sys::spawn::DETACHED | canvas_sys::spawn::NO_WINDOW);
+                        cmd.spawn()?
+                    }
+                }
+            }
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.standin_port(id).is_none() {
+            if Instant::now() > deadline || child.try_wait().ok().flatten().is_some() {
+                let _ = child.kill();
+                let _ = child.wait();
+                bail!("the egress stand-in of sandbox {id} did not start ({})", log.display());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        std::thread::Builder::new().name("egress-standin-reaper".into()).spawn(move || {
+            let _ = child.wait();
+        })?;
+        Ok(())
     }
 
     /// A provider whose test knobs are given here instead of by the
@@ -255,7 +335,7 @@ impl Local {
     /// `ATELIER_VM_TEST_LATENCY_MS`.
     pub fn with_faults(root: PathBuf, fail: &str, latency_ms: u64) -> Result<Self> {
         let faults = Faults { latency_ms, ..Faults::parse(fail, "")? };
-        Ok(Local { root, faults })
+        Ok(Local { root, faults, egress: None })
     }
 
     /// Before each provider call: the latency knob, then the failure knob.
@@ -369,6 +449,9 @@ impl Local {
                 std::thread::sleep(Duration::from_millis(20));
             }
         }
+        // Its egress stand-in ends by itself once the sandbox is gone; its files go now.
+        let (port_file, _) = self.standin_files(id);
+        let _ = std::fs::remove_file(port_file);
         // Windows: a process that just ended may hold its folder a moment longer.
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -405,7 +488,17 @@ impl Local {
             ("XDG_CONFIG_HOME".into(), h(".config")),
             ("CLAUDE_CONFIG_DIR".into(), h(".claude")),
             ("PATH".into(), path.to_string_lossy().into_owned()),
-        ])
+        ]
+        .into_iter()
+        .chain(self.proxy_env(id))
+        .collect())
+    }
+
+    /// The egress stand-in's proxy settings for sandbox `id`'s processes (none with egress off).
+    fn proxy_env(&self, id: &str) -> Vec<(String, String)> {
+        let Some(direct) = &self.egress else { return Vec::new() };
+        let port = std::fs::read_to_string(self.standin_files(id).0).ok().and_then(|p| p.trim().parse::<u16>().ok());
+        port.map(|port| super::egress::proxy_env(port, direct)).unwrap_or_default()
     }
 
     /// A command in the sandbox: its program (`atelier` is this program; an
@@ -557,7 +650,12 @@ impl Local {
         use std::io::Write;
         let dir = self.dir(id)?;
         let _lock = lock(&dir.join("lock"))?;
-        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("egress-decisions.jsonl"))?;
+        let path = dir.join("egress-decisions.jsonl");
+        // Bounded: past 5 MB the decisions go on in a new file, the older ones in `.old`.
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() > EGRESS_LOG_MAX) {
+            let _ = std::fs::rename(&path, path.with_extension("jsonl.old"));
+        }
+        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
         writeln!(file, "{}", serde_json::to_string(decision)?)?;
         Ok(())
     }
@@ -640,6 +738,12 @@ impl Provider for Local {
         })();
         if made.is_err() {
             let _ = std::fs::remove_dir_all(&dir);
+            return made;
+        }
+        // Its egress point first: none of its processes may go out around it.
+        if let Err(error) = self.ensure_standin(&id) {
+            let _ = Local::delete(self, &id);
+            return Err(error);
         }
         made
     }
@@ -711,6 +815,7 @@ impl Provider for Local {
     /// Thaws every process of the sandbox; a running sandbox stays as it is.
     fn resume(&self, id: &str) -> Result<()> {
         self.before("resume")?;
+        self.ensure_standin(id)?;
         let dir = self.dir(id)?;
         let _lock = lock(&dir.join("lock"))?;
         let mut sandbox = Local::get(self, id)?;
@@ -811,6 +916,7 @@ impl Provider for Local {
     /// `home/.atelier/satellite.log`; one that runs already is kept.
     fn start_satellite(&self, id: &str) -> Result<()> {
         self.before("start_satellite")?;
+        self.ensure_standin(id)?;
         let home = self.dir(id)?.join("home");
         if super::satellite::running(&home) {
             return Ok(());
@@ -1431,7 +1537,7 @@ mod tests {
             assert!(Local::with_faults(root.clone(), knob, 0).is_err(), "{knob:?}");
         }
         let malformed = Faults::parse("create:x", "").map_err(|e| e.to_string()).unwrap_err();
-        let broken = Local { root: root.clone(), faults: Faults { malformed: Some(malformed), ..Default::default() } };
+        let broken = Local { root: root.clone(), faults: Faults { malformed: Some(malformed), ..Default::default() }, egress: None };
         assert!(Provider::images(&broken).unwrap_err().to_string().contains("ATELIER_VM_TEST_FAIL"), "a malformed knob fails every call");
         assert_eq!(Faults::parse("", " 25 ").unwrap(), Faults { latency_ms: 25, ..Default::default() });
         assert!(Faults::parse("", "soon").is_err());
@@ -1469,6 +1575,26 @@ mod tests {
         assert!(standin_answer(&local, "suspend", &json!({ "sandbox": "sbx-000000000000" })).is_err());
         assert_eq!(standin_answer(&local, "image", &json!({ "repo": "contoso-app" })).unwrap()["image"], "local-contoso-app");
         assert!(standin_answer(&local, "reboot", &json!({})).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn with_egress_a_sandboxs_processes_go_through_its_stand_in_and_the_hub_goes_direct() {
+        let (root, local) = fresh();
+        let sandbox = Provider::create(&local, &SandboxSpec::default()).unwrap();
+        assert!(!local.env(&sandbox.id).unwrap().iter().any(|(k, _)| k == "HTTP_PROXY"), "egress off: no proxy");
+        // (The stand-in itself is this program's `egress-standin`, started by the service; here its port file stands for it.)
+        let local = Local::new(root.clone()).with_egress("hub.example.com");
+        std::fs::create_dir_all(root.join("egress")).unwrap();
+        std::fs::write(local.standin_files(&sandbox.id).0, "48123\n").unwrap();
+        let env = local.env(&sandbox.id).unwrap();
+        let get = |key: &str| env.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone()).unwrap_or_default();
+        assert_eq!(get("HTTP_PROXY"), "http://127.0.0.1:48123");
+        assert_eq!(get("HTTPS_PROXY"), "http://127.0.0.1:48123");
+        assert_eq!(get("NO_PROXY"), "hub.example.com,127.0.0.1,localhost,::1", "the hub and loopback (the guest's MCP proxy) go direct");
+        assert_eq!(local.standin_port(&sandbox.id), None, "a port nobody answers is not a stand-in");
+        Local::delete(&local, &sandbox.id).unwrap();
+        assert!(!local.standin_files(&sandbox.id).0.exists());
         let _ = std::fs::remove_dir_all(root);
     }
 }

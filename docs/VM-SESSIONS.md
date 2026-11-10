@@ -166,7 +166,7 @@ Settings: `vm.pack` (a folder path) or `ATELIER_VM_PACK`. Without a pack, VM fea
 |---|---|
 | `vm.yaml` | provider (`aca`), subscription, resource group, sandbox group, region; sizes; pool minimums and max age; image schedule and keep-count; budgets (max running, max cores, daily soft budget); suspend-after; tunnel secret name; git identity |
 | `repos.yaml` | catalog: key → clone URL, default branch, clone mode (`blobless`, `single_branch`, `sparse` patterns), image base, image disk, egress profile, folder globs that map local folders to this key |
-| `egress/*.yaml` | egress policy templates per profile, with placeholders (`{{repo.path}}`, `{{secret:NAME}}`) filled at claim: deny by default, host/path/method rules, transforms that inject secrets |
+| `egress/*.yaml` | egress policy templates per profile, with placeholders (`{{box.branch}}`, `{{box.repo}}`, `{{box.id}}`, `{{sandbox}}`, `{{hub.host}}` in hosts and paths; `{{secret:NAME}}` only in header values) filled at claim: deny by default, host/path/method rules, transforms that inject secrets |
 | `secrets.yaml` | group secrets and how the hub refreshes them: a command whose stdout becomes the value (never logged or written to disk), a key name, an interval. The canvas pipes stdout to the provider's secret API |
 | `mcp-policy.yaml` | the MCP servers guests may use (by the hub's configured server name), process mode (`per_session` default, `shared` opt-in), and default-deny rules over tool + action + argument constraints (with placeholders such as `{{box.branch}}`, `{{box.repo}}`) |
 | `profile.yaml` | allowlist of personal agent-profile paths to bundle (skills, instructions, agents), keys allowed from agent config, and paths always excluded; no credentials ever |
@@ -312,7 +312,7 @@ Phase by phase; the details and the log are in [VM-STATUS.md](VM-STATUS.md).
   (Phase 2). The spikes (`vm spike s2|s3|s4`) run through whichever provider the pack names (S3 uploads the
   pack's satellite first). `atelier selftest vm` adds the pool lane on `provider: local`: the image built in a
   builder sandbox, a warm VM leased by a box and prepared on its branch, the pool filled again, the VM deleted.
-- **Phase 2 (terminals; in progress).** The satellite (`atelier satellite`, started in the guest by the launcher:
+- **Phase 2 (terminals).** The satellite (`atelier satellite`, started in the guest by the launcher:
   `--start` runs it in the background once; `vm::local` starts this build as a process of the sandbox) dials the
   hub (`wss://` with rustls, the platform's roots and the pack's CA; `ws://`; `tcp://`; through a `CONNECT` proxy),
   authenticates with its credential and runs each box's PTY in the guest with the alacritty engine, which answers
@@ -330,4 +330,25 @@ Phase by phase; the details and the log are in [VM-STATUS.md](VM-STATUS.md).
   pool lane on `provider: local`: the warm VM leased, its satellite linked over `ws://` on loopback, typing, status
   from the guest's history, a restart of the service, a freeze and a resume, a stop and a new launch in the same
   VM, the VM deleted.
+- **Phase 3 (integration).** Canvas commands from the guest reach the hub at once over the link and run there as
+  the box (once; of its own sandbox only; this machine's paths in answers become the guest's and the other way);
+  with the hub away `todo` reads answer from the canvas's last copy in the guest and writes answer *Queued*. The hub
+  keeps roots in sync in each guest (`vm::sync`): the canvas's plugin, the canvas's routing and todo book, the
+  user's profile bundle (`profile.yaml`: skills under `~/`, never anything named like a credential or a skill that
+  requires the host), the box's group skills, the group's instructions with guest paths, the group's notes (written
+  back over the version an edit started from, else kept beside it as a conflict copy), the pack's mapped folders
+  (`paths.yaml`, at their guest paths) and the guest's Copilot MCP configuration; a box's agent starts once its
+  roots are there, with them in its command line (`vm::target`). Egress (`vm::egress`): each repository's profile
+  rendered for its box at the start (`{{box.branch}}`, `{{box.repo}}`, `{{box.id}}`, `{{sandbox}}`,
+  `{{hub.host}}`; header values only from `{{secret:NAME}}`; a sandbox denies everything until then; `pack check`
+  renders every profile); `vm::local` enforces it with a stand-in proxy per sandbox (the platform does for `aca`);
+  refusals are collected for the VM view. MCP (`vm::mcp`): the guest's agent sees the servers of its box's preset
+  (`placement.mcp`, `mcp-policy.yaml`) at the satellite's loopback proxy; the hub starts the server from its own
+  Copilot configuration, one process per guest session and server, ended with the session; policy is default deny,
+  ordered rules (first match wins, `*` globs) over tools with `when` constraints on arguments
+  (`{{box.branch|repo|id}}`; an unknown placeholder never matches), `tools/list` filtered, every call checked
+  before the server sees it, server-to-guest requests refused unless a rule names them (`allow: roots/list`), and
+  credentials scrubbed from everything sent to the guest; refusals go to `<home>/vm/mcp/refusals.jsonl` and the VM
+  view (`vm list`). `selftest vm` checks all of it on `vm::local`: files, notes both ways, commands, an offline
+  read and a queued write, an egress refusal, the gateway as a guest's MCP client.
 

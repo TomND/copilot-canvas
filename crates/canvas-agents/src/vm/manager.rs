@@ -137,7 +137,12 @@ pub fn labels(hub: &str, role: Role, repo: &str) -> Labels {
 /// A sandbox spec of `size` from `image`.
 pub fn spec(pack: &Pack, size: &str, image: Option<String>, labels: Labels) -> Result<SandboxSpec> {
     let size = pack.size(Some(size)).or_else(|| pack.size(None)).context("the pack has no sizes")?;
-    Ok(SandboxSpec { image, cpu_milli: size.cpu_milli, memory_mi: size.memory_mi, disk_gi: size.disk_gi, labels, env: Vec::new(), egress: None })
+    // A session's or pool member's sandbox of a repository with an egress
+    // profile denies everything until its box's policy is set at its start.
+    let repo = labels.get("atelier.repo").and_then(|key| pack.repo(key));
+    let session = labels.get("atelier.role").is_some_and(|r| r == "session" || r == "pool");
+    let egress = repo.filter(|r| session && !r.egress.is_empty()).map(|_| super::provider::EgressPolicy { default_action: "Deny".into(), rules: Vec::new() });
+    Ok(SandboxSpec { image, cpu_milli: size.cpu_milli, memory_mi: size.memory_mi, disk_gi: size.disk_gi, labels, env: Vec::new(), egress })
 }
 
 /// Uploads the pack's satellite (`satellite.path`) to the sandbox's

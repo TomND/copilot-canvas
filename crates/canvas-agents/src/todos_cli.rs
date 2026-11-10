@@ -58,6 +58,10 @@ the book's files or a `TODOs.md` mirror (it is generated and rewritten).
 
 A refusal exits non-zero and says why: agents never accept, decline, delete,
 cancel or close todos, and never take, move or close a todo another session claimed.
+
+In a VM session the same commands work. While the canvas is not reachable, reads
+answer from its last copy (they say so) and writes answer *Queued*: they are applied
+when it is back; do not repeat them.
 ";
 
 const USAGE: &str = "usage: atelier todo prime

@@ -19,7 +19,35 @@ use serde::{Deserialize, Serialize};
 use crate::paths::now_ms;
 
 /// The verbs relayed to the hub (everything else is refused in a VM session).
-pub const RELAYED: [&str; 10] = ["emit", "send", "status", "followup", "effect", "report", "pr", "review", "todo", "note"];
+pub const RELAYED: [&str; 11] = ["events", "emit", "send", "status", "followup", "effect", "report", "pr", "review", "todo", "note"];
+
+/// What a canvas command does in a VM session's guest.
+#[derive(Debug, PartialEq)]
+pub enum Here {
+    /// Relayed to the canvas's machine.
+    Relay,
+    /// Run here as anywhere (static text).
+    Normal,
+    /// Answered here.
+    Print(String),
+}
+
+/// What a command does in the guest: `effect` and `effect list` print their
+/// static text here; `note path` names the group's notes as synced into the
+/// guest (`ATELIER_NOTES`, set for a box in a group); the rest is relayed (or refused there).
+pub fn route(words: &[&str], options: &[(String, String)]) -> Here {
+    match words {
+        ["effect"] | ["effect", "list"] => Here::Normal,
+        ["note", "path"] => match std::env::var("ATELIER_NOTES").ok().filter(|n| !n.is_empty()) {
+            Some(notes) => {
+                let human = options.iter().any(|(k, v)| k == "audience" && v == "human");
+                Here::Print(format!("{notes}/{}", if human { canvas_model::doc::HUMAN_OUTPUTS } else { canvas_model::doc::AI_DOCS }))
+            }
+            None => Here::Relay,
+        },
+        _ => Here::Relay,
+    }
+}
 /// Options whose value is a file the command reads (`-`: standard input).
 pub const FILE_OPTIONS: [&str; 8] = ["body", "summary", "results", "notes", "draft", "markdown", "html", "md"];
 /// Largest file a relayed command may carry.
@@ -68,6 +96,9 @@ pub fn op_of(words: &[&str], options: &[(String, String)], flags: &[String], std
     if words.get(..2) == Some(&["note", "path"]) {
         bail!("`atelier note path` names folders of the canvas's machine; write notes with `atelier note new … --md FILE` (they are filed on the canvas's machine)");
     }
+    if words.get(..2) == Some(&["todo", "mirror"]) && options.iter().any(|(k, _)| k == "set") {
+        bail!("the todo mirror is a file on the canvas's machine: set it from the canvas");
+    }
     let mut inputs = Vec::new();
     let mut read = |name: &str| -> Result<()> {
         if inputs.iter().any(|b: &Blob| b.name == name) {
@@ -102,15 +133,77 @@ pub fn output_options(op: &CliOp) -> Vec<String> {
     op.options.iter().filter(|(k, _)| todo && (k == "canvas" || k == "out")).map(|(_, v)| v.clone()).collect()
 }
 
+/// Whether the guest's satellite is linked to the hub, and since when it is
+/// not (`None`: no satellite here, the hooks lane, which polls).
+pub fn link_state(home: &Path) -> Option<(bool, u64)> {
+    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(home.join("vm").join("link.json")).ok()?).ok()?;
+    Some((value["linked"] == true, value["since_ms"].as_u64().unwrap_or(0)))
+}
+
+/// The satellite says whether it is linked (for the guest's commands).
+pub fn set_link_state(home: &Path, linked: bool) {
+    let _ = crate::paths::write_atomic(&home.join("vm").join("link.json"), serde_json::json!({ "linked": linked, "since_ms": now_ms() }).to_string().as_bytes());
+}
+
+/// Commands that only read the canvas: when the hub is away they read its
+/// last copy in the guest (the `canvas` root) instead.
+pub fn is_read(words: &[&str], options: &[(String, String)]) -> bool {
+    match words {
+        ["todo", "prime" | "boards" | "list" | "show" | "ready" | "export", ..] => true,
+        ["todo", "mirror", ..] => !options.iter().any(|(k, _)| k == "set"),
+        _ => false,
+    }
+}
+
+/// `HH:MM UTC` of a time.
+fn clock(ms: u64) -> String {
+    canvas_common::paths::format_rfc3339_ms(ms).get(11..16).map(|t| format!("{t} UTC")).unwrap_or_default()
+}
+
+/// A read run here on the canvas's last copy (`<home>/vm/roots/canvas`, a
+/// home of its own), said to be one.
+fn read_copy(home: &Path, words: &[&str], options: &[(String, String)], flags: &[String], since: u64) -> Result<String> {
+    let copy = home.join("vm").join("roots").join("canvas");
+    anyhow::ensure!(copy.join("bus").join("routing.json").is_file(), "the canvas is not reachable and its todos have not reached this VM yet");
+    let mut cmd = std::process::Command::new(std::env::current_exe()?);
+    cmd.args(words);
+    for (key, value) in options {
+        cmd.args([format!("--{key}"), value.clone()]);
+    }
+    for flag in flags {
+        cmd.arg(format!("--{flag}"));
+    }
+    cmd.env("ATELIER_HOME", &copy).env_remove("ATELIER_REMOTE").stdin(std::process::Stdio::null());
+    canvas_sys::spawn::CommandExt::no_window(&mut cmd);
+    let out = cmd.output().context("cannot read the canvas's copy")?;
+    let note = if since > 0 { format!("(the canvas is not reachable since {}: this is its last copy)", clock(since)) } else { "(the canvas is not reachable: this is its last copy)".to_owned() };
+    if !out.status.success() {
+        bail!("{}\n{note}", String::from_utf8_lossy(&out.stderr).trim().trim_start_matches("atelier: "));
+    }
+    Ok(format!("{}\n{note}", String::from_utf8_lossy(&out.stdout).trim_end()))
+}
+
 /// Relays a command from the guest: queues it, waits for the hub's answer,
 /// writes the files it produced here; what to print (`Err`: a refusal).
+/// With a satellite that is not linked, a read answers from the canvas's last
+/// copy and a write says at once that it is queued.
 pub fn relay(home: &Path, words: &[&str], options: &[(String, String)], flags: &[String]) -> Result<String> {
+    let offline = link_state(home).filter(|(linked, _)| !linked).map(|(_, since)| since);
+    let read = is_read(words, options);
+    if let Some(since) = offline
+        && read
+    {
+        return read_copy(home, words, options, flags, since);
+    }
     let op = op_of(words, options, flags, &mut std::io::stdin().lock())?;
     let term = canvas_common::env::var("ATELIER_SESSION").unwrap_or_default();
     let id = uuid::Uuid::new_v4().to_string();
     let queued = Queued { id: id.clone(), term, op: op.clone(), ms: now_ms() };
     crate::paths::write_atomic(&outbox_dir(home).join(format!("{id}.json")), &serde_json::to_vec(&queued)?)?;
     let answer_path = answers_dir(home).join(format!("{id}.json"));
+    if let Some(since) = offline {
+        return Ok(format!("Queued (the canvas is not reachable since {}): `atelier {}` is applied when it is back; its answer is not known yet.", clock(since), words.join(" ")));
+    }
     let deadline = Instant::now() + WAIT;
     while Instant::now() < deadline {
         if let Ok(bytes) = std::fs::read(&answer_path) {
@@ -125,6 +218,11 @@ pub fn relay(home: &Path, words: &[&str], options: &[(String, String)], flags: &
             bail!("{}", answer.text.trim_end());
         }
         std::thread::sleep(Duration::from_millis(100));
+    }
+    if read && link_state(home).is_some() {
+        // Asked of a hub that did not answer in time: the copy, said to be one (the request is dropped).
+        let _ = std::fs::remove_file(outbox_dir(home).join(format!("{id}.json")));
+        return read_copy(home, words, options, flags, 0);
     }
     Ok(format!("Queued (not applied yet): the canvas applies `atelier {}` when it next reaches this VM; its answer is not known yet.", words.join(" ")))
 }
@@ -146,6 +244,9 @@ pub struct DrainRequest {
     /// Answers to earlier operations.
     pub answers: Vec<(String, OpAnswer)>,
     pub max_bytes: u64,
+    /// The operations reach the hub another way (the satellite pushes them): history only.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub skip_ops: bool,
 }
 
 /// A piece of a history file.
@@ -204,8 +305,7 @@ fn ident(meta: &std::fs::Metadata) -> u64 {
 pub fn drain(home: &Path, history: &Path, request: &DrainRequest) -> Result<DrainResponse> {
     for (id, answer) in &request.answers {
         if valid_op_id(id) {
-            crate::paths::write_atomic(&answers_dir(home).join(format!("{id}.json")), &serde_json::to_vec(answer)?)?;
-            let _ = std::fs::remove_file(outbox_dir(home).join(format!("{id}.json")));
+            answered(home, id, answer)?;
         }
     }
     let budget = if request.max_bytes == 0 { 4 << 20 } else { request.max_bytes.min(16 << 20) };
@@ -255,13 +355,39 @@ pub fn drain(home: &Path, history: &Path, request: &DrainRequest) -> Result<Drai
             pieces.push(Piece { file, ident, offset: start, whole, bytes });
         }
     }
+    let ops = if request.skip_ops { Vec::new() } else { queued(home, 64) };
+    Ok(DrainResponse { version: 1, history: pieces, ops })
+}
+
+/// The guest's outbox, oldest first (at most `max`).
+pub fn queued(home: &Path, max: usize) -> Vec<Queued> {
     let mut ops: Vec<Queued> = std::fs::read_dir(outbox_dir(home))
         .map(|e| e.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "json")).filter_map(|e| std::fs::read(e.path()).ok()).filter_map(|b| serde_json::from_slice::<Queued>(&b).ok()).collect())
         .unwrap_or_default();
     ops.retain(|q| valid_op_id(&q.id));
     ops.sort_by_key(|q| q.ms);
-    ops.truncate(64);
-    Ok(DrainResponse { version: 1, history: pieces, ops })
+    ops.truncate(max);
+    ops
+}
+
+/// The hub's answer to operation `id`: kept for the command that waits for
+/// it, the operation taken out of the outbox.
+pub fn answered(home: &Path, id: &str, answer: &OpAnswer) -> Result<()> {
+    anyhow::ensure!(valid_op_id(id), "not an operation id");
+    crate::paths::write_atomic(&answers_dir(home).join(format!("{id}.json")), &serde_json::to_vec(answer)?)?;
+    let _ = std::fs::remove_file(outbox_dir(home).join(format!("{id}.json")));
+    Ok(())
+}
+
+/// Answers nobody read (their command stopped waiting), a day after they came.
+pub fn tidy_answers(home: &Path) {
+    let Ok(entries) = std::fs::read_dir(answers_dir(home)) else { return };
+    let day = std::time::SystemTime::now() - Duration::from_secs(86_400);
+    for entry in entries.flatten() {
+        if entry.metadata().and_then(|m| m.modified()).is_ok_and(|t| t < day) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 #[cfg(test)]

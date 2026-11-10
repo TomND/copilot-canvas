@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 use canvas_common::wire::{Closer, FrameReader, FrameWriter};
 use canvas_host::server::SatelliteLink;
 use canvas_host::term::{RemoteFeed, RemotePty};
-use canvas_model::vm::VmState;
+use canvas_model::vm::{OpAnswer, VmState};
 use crossbeam_channel::{Receiver, Sender, bounded, select_biased};
 
 use super::launch;
@@ -81,7 +81,32 @@ pub struct Links {
     reported: Mutex<std::collections::HashSet<String>>,
     /// Per sandbox, the Copilot sessions alive in its guest (its last process report).
     live: Mutex<HashMap<String, std::collections::HashSet<String>>>,
+    /// Relayed commands running: (sandbox, operation id); and per sandbox how many run now.
+    ops: Mutex<RunningOps>,
+    ops_turn: std::sync::Condvar,
+    /// What runs a relayed command (this program).
+    exe: Mutex<PathBuf>,
+    me: Weak<Links>,
+    /// Per sandbox, its writable roots (from the last sync): where the guest's edits go.
+    writes: Mutex<HashMap<String, HashMap<String, super::sync::Writes>>>,
+    /// Per sandbox, the link whose roots were synced in full once (its epoch).
+    synced: Mutex<HashMap<String, u64>>,
+    /// File revisions by (path, size, modified).
+    revs: Mutex<HashMap<PathBuf, (u64, std::time::SystemTime, String)>>,
 }
+
+/// What a terminal's command line names the guest's roots folder by (the hub
+/// puts the satellite's in its place when it starts the program).
+pub const ROOTS: &str = "%ROOTS%";
+/// File bytes one sync pass sends at most (the rest comes with the next).
+const SYNC_BUDGET: u64 = 32 << 20;
+
+/// Relayed commands taken: (sandbox, operation id); and per sandbox how many run now.
+type RunningOps = (std::collections::HashSet<(String, String)>, HashMap<String, usize>);
+
+/// Relayed commands a sandbox may have running at once, and waiting.
+const OPS_RUNNING: usize = 4;
+const OPS_WAITING: usize = 64;
 
 pub type SubsessionHook = Arc<dyn Fn(&str, &str, &str, &str) + Send + Sync>;
 
@@ -103,6 +128,11 @@ struct Link {
     sandbox: String,
     /// Its credential (`sat-…`): revoked, the link is closed.
     satellite: String,
+    /// The guest's roots folder (`HelloInfo::roots`).
+    roots: String,
+    /// The guest user's home and the guest's MCP proxy port (`HelloInfo`).
+    guest_home: String,
+    mcp_port: u16,
     epoch: u64,
     io: Sender<ServiceMsg>,
     other: Sender<ServiceMsg>,
@@ -228,10 +258,18 @@ impl Links {
             controls: Mutex::default(),
             control_ids: AtomicU64::new(0),
             stops: Mutex::default(),
-            mcp: super::mcp::Gateway::new(home, Arc::new(super::mcp::NoServers), Arc::new(McpDown(links.clone()))),
+            // The hub's MCP servers as this machine's Copilot configuration has them (read at each session's start).
+            mcp: super::mcp::Gateway::new(home, Arc::new(super::mcp::CopilotServers::of_this_machine()), Arc::new(McpDown(links.clone()))),
             subsession: Mutex::default(),
             reported: Mutex::default(),
             live: Mutex::default(),
+            ops: Mutex::default(),
+            ops_turn: std::sync::Condvar::new(),
+            exe: Mutex::new(std::env::current_exe().unwrap_or_default()),
+            me: links.clone(),
+            writes: Mutex::default(),
+            synced: Mutex::default(),
+            revs: Mutex::default(),
         })
     }
 
@@ -249,6 +287,108 @@ impl Links {
                 link.closer.close();
             }
         }
+    }
+
+    /// The guest's roots folder of `sandbox` (`None`: not linked, or a satellite without roots).
+    pub fn guest_roots(&self, sandbox: &str) -> Option<String> {
+        self.link(sandbox).map(|l| l.roots.clone()).filter(|r| !r.is_empty())
+    }
+
+    /// What the hub knows of `sandbox`'s guest from its satellite (`None`: not linked, or no roots).
+    pub fn guest(&self, sandbox: &str) -> Option<super::sync::Guest> {
+        let link = self.link(sandbox).filter(|l| !l.roots.is_empty())?;
+        Some(super::sync::Guest { roots: link.roots.clone(), home: link.guest_home.clone(), mcp_port: link.mcp_port })
+    }
+
+    /// The hub's MCP server processes running for guests now.
+    pub fn mcp_running(&self) -> Vec<super::mcp::Running> {
+        self.mcp.running()
+    }
+
+    /// Whether `sandbox`'s roots were synced in full since its satellite linked.
+    pub fn synced(&self, sandbox: &str) -> bool {
+        let Some(link) = self.link(sandbox) else { return false };
+        lock(&self.synced).get(sandbox) == Some(&link.epoch)
+    }
+
+    fn rev(&self, source: &super::sync::Source) -> Option<String> {
+        match source {
+            super::sync::Source::Bytes(bytes) => Some(canvas_common::sat::rev_of(bytes)),
+            super::sync::Source::File(path) => {
+                let meta = std::fs::metadata(path).ok()?;
+                let modified = meta.modified().ok()?;
+                if let Some((len, at, rev)) = lock(&self.revs).get(path)
+                    && *len == meta.len()
+                    && *at == modified
+                {
+                    return Some(rev.clone());
+                }
+                let rev = canvas_common::sat::rev_of(&std::fs::read(path).ok()?);
+                lock(&self.revs).insert(path.clone(), (meta.len(), modified, rev.clone()));
+                Some(rev)
+            }
+        }
+    }
+
+    /// Brings `sandbox`'s guest to `roots`: asks what it holds, sends each
+    /// root's manifest and the files it lacks (at most [`SYNC_BUDGET`] a
+    /// pass), ends the roots it no longer has. Its writable roots take the
+    /// guest's edits from then on.
+    pub fn sync(&self, sandbox: &str, roots: &[super::sync::Root]) -> Result<()> {
+        let link = self.link(sandbox).context("the VM's satellite is not linked")?;
+        let answer = self.control(sandbox, serde_json::json!({ "roots_state": {} }), Duration::from_secs(15))?;
+        let held: canvas_common::sat::RootsState = serde_json::from_value(answer["roots_state"].clone()).unwrap_or_default();
+        let mut budget = SYNC_BUDGET;
+        let mut complete = true;
+        let empty = std::collections::BTreeMap::new();
+        for root in roots {
+            let revs: std::collections::BTreeMap<String, String> = root.files.iter().filter_map(|(name, source)| self.rev(source).map(|rev| (name.clone(), rev))).collect();
+            let manifest = canvas_common::sat::RootManifest { target: root.target.clone(), writable: root.writes.is_some(), files: revs.clone(), folders: root.folders.clone(), gone: false };
+            if !link.send(false, SatDown::Manifest { root: root.id.clone(), json: serde_json::to_string(&manifest)? }) {
+                bail!("the link to {sandbox} dropped");
+            }
+            let has = held.roots.get(&root.id).unwrap_or(&empty);
+            for (name, rev) in &revs {
+                if has.get(name) == Some(rev) {
+                    continue;
+                }
+                let Some(bytes) = root.files.get(name).and_then(|s| s.read()) else { continue };
+                if bytes.len() as u64 > budget {
+                    complete = false;
+                    continue;
+                }
+                budget -= bytes.len() as u64;
+                let rev = canvas_common::sat::rev_of(&bytes);
+                let pieces: Vec<&[u8]> = if bytes.is_empty() { vec![&[]] } else { bytes.chunks(canvas_common::sat::SAT_FILE_CHUNK).collect() };
+                let mut offset = 0u64;
+                for (i, piece) in pieces.iter().enumerate() {
+                    let file = SatDown::File { root: root.id.clone(), name: name.clone(), rev: rev.clone(), offset, last: i + 1 == pieces.len(), bytes: piece.to_vec() };
+                    if !link.send(false, file) {
+                        bail!("the link to {sandbox} dropped");
+                    }
+                    offset += piece.len() as u64;
+                }
+            }
+        }
+        for id in held.roots.keys().filter(|id| !roots.iter().any(|r| r.id == **id)) {
+            let gone = canvas_common::sat::RootManifest { gone: true, ..Default::default() };
+            link.send(false, SatDown::Manifest { root: id.clone(), json: serde_json::to_string(&gone)? });
+        }
+        lock(&self.writes).insert(sandbox.to_owned(), roots.iter().filter_map(|r| r.writes.clone().map(|w| (r.id.clone(), w))).collect());
+        if complete {
+            lock(&self.synced).insert(sandbox.to_owned(), link.epoch);
+        }
+        Ok(())
+    }
+
+    /// Tests run relayed commands with another program.
+    #[cfg(test)]
+    fn set_exe(&self, exe: PathBuf) {
+        *lock(&self.exe) = exe;
+    }
+
+    fn self_ref(&self) -> Option<Arc<Links>> {
+        self.me.upgrade()
     }
 
     /// Tells `hook` of each session found inside a box's terminal in a guest.
@@ -362,9 +502,16 @@ impl Links {
                     state.sandbox = intent.sandbox.clone();
                     match self.link(&intent.sandbox) {
                         None => state.note(&format!("Waiting for the VM's satellite ({})…", intent.sandbox)),
+                        // A program that names the synced roots waits for them.
+                        Some(_) if (intent.argv.iter().any(|a| a.contains(ROOTS)) || intent.env.iter().any(|(_, v)| v.contains(ROOTS))) && !self.synced(&intent.sandbox) => {
+                            state.note(&format!("Bringing the canvas's files to the VM ({})…", intent.sandbox));
+                        }
                         Some(link) => {
                             let generation = state.generation;
-                            let spawn = SatDown::Spawn { term: remote.term.clone(), generation, argv: intent.argv.clone(), env: intent.env.clone(), cwd: intent.cwd.clone(), cols: state.cols, rows: state.rows };
+                            let place = |text: &String| text.replace(ROOTS, &link.roots);
+                            let argv = intent.argv.iter().map(place).collect();
+                            let env = intent.env.iter().map(|(k, v)| (k.clone(), place(v))).collect();
+                            let spawn = SatDown::Spawn { term: remote.term.clone(), generation, argv, env, cwd: intent.cwd.clone(), cols: state.cols, rows: state.rows };
                             state.note(&format!("Starting {} in the VM ({})…", intent.agent, intent.sandbox));
                             // Recorded first: a service that stops right after the Spawn still adopts the program.
                             if launch::update(&self.home, &remote.term, |i| i.terminal = generation).is_err() {
@@ -442,9 +589,11 @@ impl Links {
             let (closer, heard) = (closer.clone(), heard.clone());
             std::thread::Builder::new().name("sat-link-writer".into()).spawn(move || write_lanes(writer, io_rx, other_rx, stopped, heard, closer))?
         };
-        let current = Arc::new(Link { sandbox: sandbox.clone(), satellite: id.clone(), epoch, io, other, closer: closer.clone(), streams: Mutex::default() });
+        let current = Arc::new(Link { sandbox: sandbox.clone(), satellite: id.clone(), roots: hello.roots.clone(), guest_home: hello.home.clone(), mcp_port: hello.mcp_port, epoch, io, other, closer: closer.clone(), streams: Mutex::default() });
         if let Some(old) = lock(&self.links).insert(sandbox.clone(), current.clone()) {
             old.closer.close();
+            // The older link's MCP sessions end with it (the guest's clients start new ones on this link).
+            self.mcp.link_ended(&sandbox);
         }
         update_record(&self.home, &sandbox, |r| (r.linked, r.since_ms) = (true, now_ms()));
         (self.log)(format!("VM {sandbox}: satellite linked ({} on {}, {} terminal(s) there)", hello.build, hello.platform, hello.terms.len()));
@@ -463,6 +612,7 @@ impl Links {
         if !self.linked(&sandbox) {
             self.mcp.link_ended(&sandbox);
             lock(&self.live).remove(&sandbox);
+            lock(&self.writes).remove(&sandbox);
             update_record(&self.home, &sandbox, |r| (r.linked, r.since_ms) = (false, now_ms()));
         }
         (self.log)(format!("VM {sandbox}: satellite link ended{}", result.as_ref().err().map(|e| format!(" ({e:#})")).unwrap_or_default()));
@@ -552,6 +702,23 @@ impl Links {
                 Ok(())
             }
             SatUp::Hello { .. } => bail!("the satellite said Hello twice"),
+            SatUp::Op { id, term, json } => {
+                self.op(link, id, term, json);
+                Ok(())
+            }
+            SatUp::Note { id, root, name, base_rev, bytes } => {
+                // Only a writable root of this sandbox takes the guest's edits.
+                let writes = lock(&self.writes).get(&link.sandbox).and_then(|w| w.get(&root)).cloned();
+                let answer = match writes {
+                    Some(writes) => super::sync::write(&writes, &name, base_rev.as_deref(), &bytes),
+                    None => canvas_common::sat::NoteAnswer { error: "not a root the guest may write".into(), ..Default::default() },
+                };
+                if answer.ok {
+                    (self.log)(format!("VM {}: {root}/{name} written from the guest", link.sandbox));
+                }
+                link.send(false, SatDown::NoteResult { id, json: serde_json::to_string(&answer)? });
+                Ok(())
+            }
             SatUp::Proc { json } => {
                 if flood.proc_due(Instant::now()) {
                     self.processes(link, serde_json::from_str(&json).unwrap_or_default())?;
@@ -567,6 +734,79 @@ impl Links {
             }
             up => self.take_term(link, up),
         }
+    }
+
+    /// A canvas command an agent ran in the guest: run here as its box (once:
+    /// a repeat gets the answer it got), on a thread of its own, at most
+    /// [`OPS_RUNNING`] at a time per sandbox; the answer goes back on the link.
+    fn op(&self, link: &Link, id: String, term: String, json: String) {
+        if !super::lite::valid_op_id(&id) {
+            return;
+        }
+        let answer = |answer: &OpAnswer| link.send(false, SatDown::OpResult { id: id.clone(), json: serde_json::to_string(answer).unwrap_or_default() });
+        if let Some(stored) = super::thin::stored_answer(&self.home, &link.sandbox, &id) {
+            answer(&stored);
+            return;
+        }
+        let refused = |text: &str| OpAnswer { ok: false, state: "refused".into(), text: text.into(), outputs: Vec::new() };
+        let intent = match launch::load(&self.home, &term) {
+            Ok(Some(intent)) if intent.sandbox == link.sandbox && !link.sandbox.is_empty() => intent,
+            _ => {
+                answer(&refused("this command does not come from a session of this VM"));
+                return;
+            }
+        };
+        let agent = intent.agent.clone();
+        let Ok(mut op) = serde_json::from_str::<canvas_model::vm::CliOp>(&json) else {
+            answer(&refused("the command could not be read"));
+            return;
+        };
+        // Paths: the guest's in the command become this machine's, and the other way in its answer.
+        let places = super::paths::Places::of(&self.home, &intent, &link.roots);
+        if let Err(why) = places.command_in(&mut op) {
+            answer(&refused(&why));
+            return;
+        }
+        {
+            let mut ops = lock(&self.ops);
+            if ops.0.contains(&(link.sandbox.clone(), id.clone())) {
+                return;
+            }
+            if ops.0.iter().filter(|(s, _)| *s == link.sandbox).count() >= OPS_RUNNING + OPS_WAITING {
+                drop(ops);
+                answer(&refused("this VM has too many canvas commands waiting; try again in a moment"));
+                return;
+            }
+            ops.0.insert((link.sandbox.clone(), id.clone()));
+        }
+        let Some(links) = self.self_ref() else { return };
+        let sandbox = link.sandbox.clone();
+        let _ = std::thread::Builder::new().name("vm-op".into()).spawn(move || {
+            {
+                let mut ops = lock(&links.ops);
+                while ops.1.get(&sandbox).copied().unwrap_or(0) >= OPS_RUNNING {
+                    ops = links.ops_turn.wait(ops).unwrap_or_else(|e| e.into_inner());
+                }
+                *ops.1.entry(sandbox.clone()).or_default() += 1;
+            }
+            let exe = lock(&links.exe).clone();
+            let mut result = super::thin::execute(&links.home, &exe, &id, &term, &agent, &op);
+            result.text = places.text_out(&result.text);
+            (links.log)(format!("VM {sandbox}: box {term} ran `atelier {}` ({})", op.words.first().cloned().unwrap_or_default(), result.state));
+            let _ = super::thin::store_answer(&links.home, &sandbox, &id, &result);
+            {
+                let mut ops = lock(&links.ops);
+                ops.0.remove(&(sandbox.clone(), id.clone()));
+                if let Some(running) = ops.1.get_mut(&sandbox) {
+                    *running = running.saturating_sub(1);
+                }
+            }
+            links.ops_turn.notify_all();
+            // The satellite resends it after a reconnect and then gets the stored answer.
+            if let Some(link) = links.link(&sandbox) {
+                link.send(false, SatDown::OpResult { id, json: serde_json::to_string(&result).unwrap_or_default() });
+            }
+        });
     }
 
     /// A process report: sessions found inside its sandbox's terminals become
@@ -865,7 +1105,7 @@ mod tests {
         }
 
         fn hello(&mut self, sandbox: &str, terms: Vec<TermHeld>) {
-            let hello = HelloInfo { sandbox: sandbox.into(), build: "test".into(), platform: "linux".into(), home: "/home/agent".into(), terms, mcp_port: 0 };
+            let hello = HelloInfo { sandbox: sandbox.into(), build: "test".into(), platform: "linux".into(), home: "/home/agent".into(), terms, mcp_port: 0, roots: "/home/agent/.atelier/vm/roots".into() };
             self.send(SatUp::Hello { version: SAT_PROTOCOL, caps: 0, json: serde_json::to_string(&hello).unwrap() });
         }
 
@@ -1044,7 +1284,7 @@ mod tests {
     }
 
     #[test]
-    fn until_the_gateway_lands_an_mcp_stream_is_refused_on_the_link() {
+    fn an_mcp_stream_for_a_box_not_of_the_sandbox_is_refused_on_the_link() {
         let home = home();
         let links = links(&home);
         let minted = super::super::store::Satellites::new(&home).mint(A).unwrap();
@@ -1117,6 +1357,46 @@ mod tests {
         assert!(matches!(sat.next(), SatDown::Welcome { .. }));
         sat.hello(A, Vec::new());
         assert!(sat.served.join().unwrap().unwrap_err().to_string().contains("Hello twice"));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_relayed_command_runs_once_as_its_box_and_its_answer_goes_back() {
+        let home = home();
+        let links = links(&home);
+        // A program standing in for this one (on Unix it takes any words and prints them).
+        links.set_exe(if cfg!(windows) { PathBuf::from(r"C:\Windows\System32\whoami.exe") } else { PathBuf::from("/bin/echo") });
+        let minted = super::super::store::Satellites::new(&home).mint(A).unwrap();
+        let _terminal = adopted(&home, &links, A);
+        let mut sat = Sat::connect(&links, &minted.id);
+        sat.hello(A, Vec::new());
+        assert!(matches!(sat.next(), SatDown::Welcome { .. }));
+        let op = canvas_model::vm::CliOp { words: vec!["status".into(), "ok".into(), "from the guest".into()], ..Default::default() };
+        let send = |sat: &mut Sat, id: &str, term: &str| sat.send(SatUp::Op { id: id.into(), term: term.into(), json: serde_json::to_string(&op).unwrap() });
+        send(&mut sat, "op-1", BOX);
+        let answer = |sat: &mut Sat| loop {
+            if let SatDown::OpResult { id, json } = sat.next() {
+                return (id, serde_json::from_str::<OpAnswer>(&json).unwrap());
+            }
+        };
+        let (id, first) = answer(&mut sat);
+        assert_eq!(id, "op-1");
+        // (Windows: whoami takes no words, so it refuses them; the answer still comes back and is kept.)
+        if cfg!(unix) {
+            assert!(first.ok && first.state == "applied", "{first:?}");
+            assert_eq!(first.text.trim(), "status ok from the guest", "the box's command line");
+        }
+        assert!(super::super::thin::stored_answer(&home, A, "op-1").is_some(), "kept");
+        // Sent again (a reconnect): the same answer, from the store.
+        send(&mut sat, "op-1", BOX);
+        assert_eq!(answer(&mut sat), ("op-1".to_owned(), first));
+        // Another sandbox's box, a bad id: refused, nothing run.
+        send(&mut sat, "op-2", "0b1e5ca1-0000-4000-8000-00000000ffff");
+        let (id, refused) = answer(&mut sat);
+        assert!(id == "op-2" && !refused.ok && refused.text.contains("not come from a session of this VM"));
+        send(&mut sat, "../op", BOX);
+        assert!(super::super::thin::stored_answer(&home, A, "op-2").is_none());
+        sat.close().unwrap();
         let _ = std::fs::remove_dir_all(home);
     }
 }

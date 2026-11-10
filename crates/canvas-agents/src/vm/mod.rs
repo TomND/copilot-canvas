@@ -22,12 +22,17 @@ pub mod local;
 pub mod manager;
 pub mod mcp;
 pub mod pack;
+pub mod paths;
+pub mod profile;
 pub mod provider;
+pub mod refusals;
 pub mod satellite;
 pub mod secrets;
 pub mod session_store;
 pub mod spike;
 pub mod store;
+pub mod sync;
+pub mod target;
 pub mod thin;
 pub mod tls;
 
@@ -120,7 +125,8 @@ pub fn request_image(home: &Path, repo: &str) -> anyhow::Result<String> {
 pub fn open_provider(home: &Path, pack: &pack::Pack) -> anyhow::Result<Arc<dyn provider::Provider>> {
     Ok(match pack.provider {
         pack::ProviderKind::Hooks => Arc::new(hooks::HooksProvider { hooks: hooks::Hooks::of(pack) }),
-        pack::ProviderKind::Local => Arc::new(local::Local::new(local_root(home, pack))),
+        // Each local sandbox gets an egress stand-in enforcing its policy; the hub's own host goes direct.
+        pack::ProviderKind::Local => Arc::new(local::Local::new(local_root(home, pack)).with_egress(&egress::hub_host(pack).unwrap_or_default())),
         pack::ProviderKind::Aca => Arc::new(aca::Aca::from_pack(pack)?),
     })
 }
@@ -197,6 +203,8 @@ pub fn run(home: PathBuf, log: impl Fn(String) + Send + Sync + 'static, wake: im
     let mut last_tick: Option<Instant> = None;
     let mut since_ms = now_ms();
     let building: Arc<Mutex<std::collections::HashSet<String>>> = Arc::default();
+    let syncing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut last_sync: Option<Instant> = None;
     loop {
         std::thread::sleep(Duration::from_millis(500));
         let Some((pack, status)) = loaded(&home) else {
@@ -239,6 +247,30 @@ pub fn run(home: PathBuf, log: impl Fn(String) + Send + Sync + 'static, wake: im
         }
         // The boxes' terminals: their launch's steps, their programs started once their satellites link.
         links.progress();
+        // The canvas's files in the guests of linked VM boxes (one pass at a time, every 3 s).
+        if pack.provider != pack::ProviderKind::Hooks && last_sync.is_none_or(|t| t.elapsed() >= Duration::from_secs(3)) && !syncing.load(std::sync::atomic::Ordering::Acquire) {
+            last_sync = Some(Instant::now());
+            let mut boxes: std::collections::BTreeMap<String, Vec<launch::Intent>> = std::collections::BTreeMap::new();
+            for intent in launch::all(&home).into_iter().filter(|i| i.state == VmState::Running && !i.sandbox.is_empty()) {
+                boxes.entry(intent.sandbox.clone()).or_default().push(intent);
+            }
+            boxes.retain(|sandbox, _| links.linked(sandbox));
+            if !boxes.is_empty() {
+                syncing.store(true, std::sync::atomic::Ordering::Release);
+                let (home, pack, links, log, syncing) = (home.clone(), pack.clone(), links.clone(), log.clone(), syncing.clone());
+                let _ = std::thread::Builder::new().name("vm-sync".into()).spawn(move || {
+                    let user_home = dirs::home_dir().unwrap_or_default();
+                    for (sandbox, intents) in boxes {
+                        let Some(guest) = links.guest(&sandbox) else { continue };
+                        let roots = sync::roots_for(&home, &pack, &user_home, &guest, &intents);
+                        if let Err(error) = links.sync(&sandbox, &roots) {
+                            log(format!("VM {sandbox}: the canvas's files were not synced: {}", hooks::first_line(&format!("{error:#}"))));
+                        }
+                    }
+                    syncing.store(false, std::sync::atomic::Ordering::Release);
+                });
+            }
+        }
         if last_tick.is_none_or(|t| t.elapsed() >= Duration::from_secs(10)) {
             last_tick = Some(Instant::now());
             let now = now_ms();
@@ -247,6 +279,11 @@ pub fn run(home: PathBuf, log: impl Fn(String) + Send + Sync + 'static, wake: im
             }
             since_ms = now;
             refresher.run(pack, provider.as_ref(), log.as_ref());
+            // The running boxes' egress refusals, for their details.
+            if pack.provider != pack::ProviderKind::Hooks {
+                let running: Vec<launch::Intent> = launch::all(&home).into_iter().filter(|i| i.state == VmState::Running).collect();
+                refusals::collect_egress(&home, provider.as_ref(), &running);
+            }
             let due = store::load_images(&home).map(|images| manager::images_due(pack, &images, now)).unwrap_or_default();
             for repo in due {
                 if !building.lock().unwrap_or_else(|e| e.into_inner()).insert(repo.clone()) {
@@ -311,6 +348,8 @@ pub fn view(home: &Path) -> Option<VmView> {
     let sandboxes = store::load_sandboxes(home).unwrap_or_default();
     let images = store::load_images(home).unwrap_or_default();
     let budget = store::load_budget(home).unwrap_or_default();
+    let (refusals, refused) = refusals::read(home);
+    view.refusals = refusals;
     let minute = |ms: u64| ms - ms % 60_000;
     for intent in launch::all(home) {
         let record = sandboxes.sandboxes.iter().find(|s| s.id == intent.sandbox);
@@ -326,7 +365,8 @@ pub fn view(home: &Path) -> Option<VmView> {
             note: if intent.error.is_empty() { intent.note.clone() } else { intent.error.clone() },
             ..Default::default()
         };
-        let info = with_link(info, &intent, link::load_record(home, &intent.sandbox));
+        let mut info = with_link(info, &intent, link::load_record(home, &intent.sandbox));
+        info.refusals = refused.get(&intent.r#box).copied().unwrap_or(0);
         if intent.state == VmState::Queued {
             view.queued.push(QueuedStart { r#box: intent.r#box.clone(), since_ms: minute(intent.queued_ms), why: intent.note.clone() });
         }

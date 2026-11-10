@@ -123,6 +123,61 @@ pub struct HelloInfo {
     /// The port of the guest's MCP proxy on its loopback (`/mcp/<term>/<server>`; 0: none).
     #[serde(skip_serializing_if = "is_zero")]
     pub mcp_port: u16,
+    /// Where the hub's synced roots are in the guest (`<roots>/<root id>/…`).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub roots: String,
+}
+
+/// A synced root as the hub sends it (`SatDown::Manifest`'s JSON): where it
+/// is in the guest, whether the guest's edits go back, and every file it holds
+/// with its revision (the satellite removes the others it got from the hub).
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct RootManifest {
+    /// An absolute guest path inside the guest's home (empty: `<roots>/<root id>`).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub target: String,
+    /// The guest's edits go back (`SatUp::Note`): the notes of a group, a `rw-notes` path.
+    pub writable: bool,
+    pub files: std::collections::BTreeMap<String, String>,
+    /// Folders the root always has, files or not (a group's `ai-docs`, `human-outputs`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub folders: Vec<String>,
+    /// The root is no longer the guest's: every file the hub gave is removed.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub gone: bool,
+}
+
+/// What the guest holds of the hub's roots (the `{"roots_state":{}}` control's
+/// answer): per root, each file and the revision the hub gave it.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct RootsState {
+    pub roots: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+}
+
+/// `SatDown::NoteResult`'s JSON: a guest's edit was written on the hub (its
+/// new revision), or the hub's file had changed meanwhile (a conflict: the
+/// guest keeps its version beside it and gets the hub's).
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct NoteAnswer {
+    pub ok: bool,
+    pub rev: String,
+    pub conflict: bool,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub error: String,
+}
+
+/// A file's revision: the first 16 hex digits of its SHA-256.
+pub fn rev_of(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    crate::paths::hex(&sha2::Sha256::digest(bytes)[..8])
+}
+
+/// Whether a root id is one the hub names (`plugin`, `notes/<group>`, …).
+pub fn root_ok(id: &str) -> bool {
+    name_ok(id) && id.split('/').count() <= 3
 }
 
 fn is_zero(port: &u16) -> bool {

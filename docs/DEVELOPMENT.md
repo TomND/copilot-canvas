@@ -304,7 +304,8 @@ OpenCode; docs/AGENT-PROVIDERS.md).
 3. The plugin version: the same string in `write_plugin`'s `plugin.json` and
    in `CLAUDE_PLUGIN`, and where the docs name it (README *Passive sessions
    and events*, docs/AGENT-PROVIDERS.md). It went to 1.2.0 with `canvas-prs`,
-   to 1.3.0 with `canvas-todos` and `canvas-notes`, and to 1.4.0 with the rename to Atelier.
+   to 1.3.0 with `canvas-todos` and `canvas-notes`, to 1.4.0 with the rename to Atelier, and to
+   1.5.0 with the lines on VM sessions.
 4. Tests: `cli.rs` test `effects_are_checked_and_posted_for_the_service`
    writes the plugin and checks each skill's contract (the commands and rules
    it must mention, and which skills point at which). Add the new skill's
