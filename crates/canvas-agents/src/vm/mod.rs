@@ -22,6 +22,7 @@ pub mod pack;
 pub mod provider;
 pub mod satellite;
 pub mod secrets;
+pub mod session_store;
 pub mod spike;
 pub mod store;
 pub mod thin;

@@ -176,16 +176,23 @@ fn run(ctx: &Ctx, request: Request) -> Result<Response> {
         }
 
         Request::HasHistory { agent, id } => Response::Flag(match agent {
-            // The canvas's own history folder (`--sessions-dir`).
-            AgentKind::Copilot => crate::index::is_session_id(&id) && ctx.sessions_dir.join(&id).join("events.jsonl").is_file(),
+            // The canvas's own history folder (`--sessions-dir`), or a VM session's mirror.
+            AgentKind::Copilot => crate::index::is_session_id(&id) && crate::vm::session_store::copilot(&ctx.home, &ctx.sessions_dir, &id).path().join(&id).join("events.jsonl").is_file(),
             other => other.provider().has_history(&id),
         }),
         Request::Fork { parent, child, name, cwd } => {
+            if let crate::vm::session_store::Root::Mirror { .. } = crate::vm::session_store::copilot(&ctx.home, &ctx.sessions_dir, &parent) {
+                anyhow::bail!("forking a VM session is not available yet");
+            }
             fork::fork_session(&ctx.sessions_dir, &parent, &child, &name, cwd.as_deref())?;
             Response::Done
         }
         Request::Transcript { agent, session, parent, agent_key, cwd, limit } => Response::Transcript(Box::new(agents::transcript::read(
-            &ctx.sessions_dir,
+            match agent {
+                AgentKind::Copilot => crate::vm::session_store::copilot(&ctx.home, &ctx.sessions_dir, &session).path().to_path_buf(),
+                _ => ctx.sessions_dir.clone(),
+            }
+            .as_path(),
             agent,
             &session,
             parent.as_deref(),

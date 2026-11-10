@@ -206,6 +206,19 @@ fn contract(backend: &dyn Backend, ctx: &Ctx, work: &Path, tag: &str) -> Vec<Str
     let bad = canvas_model::rpc::Request::Transcript { agent: AgentKind::Copilot, session: "not-a-session".into(), parent: None, agent_key: None, cwd: None, limit: 50 };
     answers.push(backend.transcript(bad).unwrap_err().to_string());
 
+    // A VM session's history, mirrored from its guest (`<home>/vm/mirrors/<sandbox>/copilot`):
+    // found like the canvas's own, read the same, never forked.
+    let vm_session = "44444444-4444-4444-4444-444444444444";
+    let mirror = ctx.home.join("vm").join("mirrors").join("sbx-0123456789ab").join("copilot").join(vm_session);
+    std::fs::create_dir_all(&mirror).unwrap();
+    std::fs::copy(ctx.sessions_dir.join(parent).join("events.jsonl"), mirror.join("events.jsonl")).unwrap();
+    assert!(backend.has_history(AgentKind::Copilot, vm_session).unwrap());
+    let request = canvas_model::rpc::Request::Transcript { agent: AgentKind::Copilot, session: vm_session.into(), parent: None, agent_key: None, cwd: None, limit: 50 };
+    assert_eq!(backend.transcript(request).unwrap().entries.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(), ["hi"]);
+    let refused = backend.fork(vm_session, "55555555-5555-5555-5555-555555555555", "Forked", None).unwrap_err().to_string();
+    assert!(refused.contains("forking a VM session"), "{refused}");
+    answers.push(refused);
+
     // Canvas backups.
     let canvas = mine.join("canvas.json");
     let backup = backend.doc_backup(&canvas.display().to_string(), "before-test", Doc::default()).unwrap();
