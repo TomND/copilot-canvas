@@ -73,7 +73,24 @@ pub fn run(exe: &Path) -> Result<()> {
                 std::thread::sleep(Duration::from_millis(300));
             }
         }
-        Err(_) => eprintln!("artifacts kept in {} (service logs: {}, {})", root.display(), instance.log_path().display(), pooled.log_path().display()),
+        Err(_) => {
+            eprintln!("artifacts kept in {} (service logs: {}, {})", root.display(), instance.log_path().display(), pooled.log_path().display());
+            // What CI cannot fetch afterwards: the logs' last lines.
+            let mut logs = vec![instance.log_path(), pooled.log_path()];
+            for sandboxes in [root.join("sandboxes").join("sandboxes"), root.join("pool-sandboxes").join("sandboxes")] {
+                for entry in std::fs::read_dir(&sandboxes).into_iter().flatten().flatten() {
+                    logs.push(entry.path().join("home").join(".atelier").join("satellite.log"));
+                }
+            }
+            for log in logs {
+                let Ok(text) = std::fs::read_to_string(&log) else { continue };
+                let lines: Vec<&str> = text.lines().collect();
+                eprintln!("--- {} (last {} lines)", log.display(), lines.len().min(40));
+                for line in &lines[lines.len().saturating_sub(40)..] {
+                    eprintln!("{line}");
+                }
+            }
+        }
     }
     result
 }
