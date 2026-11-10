@@ -22,8 +22,11 @@ use crossbeam_channel::{Sender, bounded, unbounded};
 
 use super::ring::Ring;
 
-/// Raw output kept per terminal for replays.
+/// Raw output kept per terminal for replays, and for all of a sandbox's
+/// running terminals together (a new one gets what is left, at least [`RING_MIN`]).
 pub const RING: usize = 4 << 20;
+pub const RINGS: usize = 32 << 20;
+pub const RING_MIN: usize = 256 << 10;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
@@ -176,6 +179,8 @@ impl Terms {
                 bail!("terminal {} runs (generation {}): it is stopped before another starts", request.term, existing.generation);
             }
         }
+        let held: usize = terms.values().map(|t| lock(&t.state)).filter(|s| s.exit.is_none()).map(|s| s.ring.cap()).sum();
+        let ring = (if self.ring == 0 { RING } else { self.ring }).min(RINGS.saturating_sub(held).max(RING_MIN));
         let program = request.argv.first().context("nothing to run")?;
         // An agent's name follows `ATELIER_<AGENT>` when it is set (the self-tests' stand-in agents), as on the hub.
         let named = match program.as_str() {
@@ -192,7 +197,7 @@ impl Terms {
         let hooks = Hooks { pump, exited, clipboard, bytes: Default::default(), changed, notify: None, raw: Some(raw) };
         let spec = Spawn { id: &request.term, program, args: &request.argv[1..], env: &env, cwd: &request.cwd, cols: request.cols, rows: request.rows, copilot: false, engine: Engine::Alacritty };
         let terminal = Terminal::spawn(spec, hooks)?;
-        let term = Arc::new(Term { id: request.term.clone(), generation: request.generation, cwd: request.cwd.clone(), terminal, state: Mutex::new(State { ring: Ring::new(if self.ring == 0 { RING } else { self.ring }), sent: None, input_acked: 0, exit: None }) });
+        let term = Arc::new(Term { id: request.term.clone(), generation: request.generation, cwd: request.cwd.clone(), terminal, state: Mutex::new(State { ring: Ring::new(ring), sent: None, input_acked: 0, exit: None }) });
         terms.insert(request.term, term.clone());
         drop(terms);
         let terms = self.clone();

@@ -25,6 +25,11 @@ impl Ring {
         }
     }
 
+    /// The most it holds.
+    pub fn cap(&self) -> usize {
+        self.cap
+    }
+
     /// The offset after the last byte (all the output so far).
     pub fn end(&self) -> u64 {
         self.start + self.bytes.len() as u64
