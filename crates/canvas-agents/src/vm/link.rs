@@ -271,7 +271,7 @@ impl Links {
             old.closer.close();
         }
         (self.log)(format!("VM {sandbox}: satellite linked ({} on {}, {} terminal(s) there)", hello.build, hello.platform, hello.terms.len()));
-        self.welcome(&current);
+        self.welcome(&current, &hello);
         let result = self.read_loop(&mut reader, &current, &heard);
         {
             let mut links = lock(&self.links);
@@ -289,12 +289,16 @@ impl Links {
 
     /// Tells a new link what the hub has of its sandbox's terminals (the
     /// satellite replays each from there), sends input not acknowledged yet
-    /// and a stop asked for meanwhile.
-    fn welcome(&self, link: &Link) {
+    /// and a stop asked for meanwhile. Input numbering goes on from what the
+    /// satellite applied (a restarted hub numbers anew).
+    fn welcome(&self, link: &Link, hello: &HelloInfo) {
         let mine: Vec<Arc<Remote>> = self.remotes().into_iter().filter(|r| lock(&r.state).sandbox == link.sandbox).collect();
         let mut terms = Vec::new();
         for remote in &mine {
             let mut state = lock(&remote.state);
+            if let Some(held) = hello.terms.iter().find(|h| h.term == remote.term && h.generation == state.generation) {
+                state.next_seq = state.next_seq.max(held.input_acked);
+            }
             if state.spawned && !state.exited {
                 state.resyncing = true;
                 terms.push(TermHave { term: remote.term.clone(), generation: state.generation, have: state.have });

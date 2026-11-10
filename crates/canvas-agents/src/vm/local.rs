@@ -818,7 +818,8 @@ impl Provider for Local {
         let log = std::fs::OpenOptions::new().create(true).append(true).open(home.join(".atelier").join("satellite.log"))?;
         let mut cmd = self.command(id, &["atelier".into(), "satellite".into()], None, &[])?;
         cmd.stdin(std::process::Stdio::null()).stdout(log.try_clone()?).stderr(log);
-        canvas_sys::spawn::CommandExt::no_window(&mut cmd);
+        // Out of the service's job (Windows): a VM's satellite outlives a restart of the hub.
+        canvas_sys::spawn::CommandExt::spawn_flags(&mut cmd, canvas_sys::spawn::NO_WINDOW | canvas_sys::spawn::BREAKAWAY);
         let mut child = self.spawn(id, &mut cmd)?;
         std::thread::Builder::new().name("local-satellite".into()).spawn(move || {
             let _ = child.wait();

@@ -169,7 +169,10 @@ pub fn connect(addr: &str, timeout: Duration) -> io::Result<TcpStream> {
 
 /// Binds a listener on a loopback IP literal (`127.0.0.1:PORT` or
 /// `[::1]:PORT`; names and other addresses are refused) with
-/// `SO_EXCLUSIVEADDRUSE`, so no other process can bind the same port.
+/// `SO_EXCLUSIVEADDRUSE` on Windows, so no other process can bind the same
+/// port; on Unix with `SO_REUSEADDR`, so a restarted service binds the port
+/// while its predecessor's closed connections linger in `TIME_WAIT` (it never
+/// lets a second listener take a port that is listened on).
 pub fn listen_loopback(addr: &str) -> io::Result<TcpListener> {
     let parsed: SocketAddr = addr.trim().parse().map_err(|_| {
         io::Error::new(io::ErrorKind::InvalidInput, format!("{addr:?} is not an IP address and port; use 127.0.0.1:PORT"))
@@ -189,6 +192,8 @@ pub fn listen_loopback(addr: &str) -> io::Result<TcpListener> {
             return Err(io::Error::last_os_error());
         }
     }
+    #[cfg(unix)]
+    socket.set_reuse_address(true)?;
     socket.bind(&parsed.into())?;
     socket.listen(128)?;
     Ok(socket.into())

@@ -488,8 +488,19 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
     spawn_named("remember", { let h = host.clone(); move || remember_loop(h) });
     spawn_named("liveness", { let h = host.clone(); move || liveness_loop(h) });
     if let Some(addr) = settings.listen() {
-        // Failures are logged and recorded for `doctor` by `listen_remote`.
-        let _ = host.listen_remote(&addr);
+        // Failures are logged and recorded for `doctor` by `listen_remote`. A
+        // port still held by a service that is exiting is tried again for a while.
+        if host.listen_remote(&addr).is_err() {
+            let h = host.clone();
+            spawn_named("listen-retry", move || {
+                for _ in 0..30 {
+                    std::thread::sleep(Duration::from_millis(500));
+                    if h.listen_remote(&addr).is_ok() {
+                        return;
+                    }
+                }
+            });
+        }
     }
 
     loop {

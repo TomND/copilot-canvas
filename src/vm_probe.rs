@@ -523,6 +523,54 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     step("the pool is filled again behind the leased VM");
     wait_file("the pool was not filled again", 60, || pool().iter().any(|m| m.id != member.id))?;
 
+    step("the service restarts: the box's terminal is adopted again and replayed; nothing stopped in the guest");
+    let before: Vec<canvas_agents::vm::local::Proc> = local.processes(&member.id)?;
+    anyhow::ensure!(before.len() >= 2, "the satellite and the agent run in the guest: {before:?}");
+    watch.conn.tx.send(ClientMsg::Shutdown)?;
+    wait_file("the service did not stop", 20, || conn::try_connect(instance).is_err())?;
+    anyhow::ensure!(before.iter().all(|p| canvas_sys::process::process_start_ms(p.pid) == Some(p.start_ms)), "a restart of the hub stopped nothing in the guest");
+    conn::spawn_service_exe(exe, instance, &env_refs)?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let conn = loop {
+        match conn::try_connect(instance) {
+            Ok(conn) => break conn,
+            Err(error) if Instant::now() > deadline => bail!("the service did not start again: {error:#}"),
+            Err(_) => std::thread::sleep(Duration::from_millis(200)),
+        }
+    };
+    watch = Watch { conn, view: TermView::default(), second: TermView::default(), activities: Vec::new(), errors: Vec::new(), doc: None };
+    watch.conn.tx.send(ClientMsg::Subscribe8 { ids: vec![BOX.into()], focused: Some(BOX.into()) })?;
+    anyhow::ensure!(
+        watch.pump(Instant::now() + Duration::from_secs(30), |w| w.screen().contains("typed-through-the-link") && w.screen().contains("Fake Copilot")),
+        "the box's screen did not come back after the restart:\n{}",
+        watch.screen()
+    );
+    watch.conn.tx.send(ClientMsg::Input { id: BOX.into(), input: Input::Raw(b"-after-restart".to_vec()) })?;
+    anyhow::ensure!(watch.pump(Instant::now() + Duration::from_secs(15), |w| w.screen().contains("-after-restart")), "typing after the restart:\n{}", watch.screen());
+    let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
+    anyhow::ensure!(log.contains("its terminal is adopted again"), "the restart adopted the terminal");
+
+    step("a frozen VM drops its link and typing is refused as offline; resumed, it links again and replays");
+    let links = |text: &str| text.matches(&format!("VM {}: satellite linked", member.id)).count();
+    let linked = links(&std::fs::read_to_string(instance.log_path()).unwrap_or_default());
+    let (ok, out) = cli(exe, &["vm", "suspend", BOX], &hub_env)?;
+    anyhow::ensure!(ok, "vm suspend: {out}");
+    wait_file("the frozen VM's link was not dropped", 30, || std::fs::read_to_string(instance.log_path()).unwrap_or_default().contains(&format!("VM {}: satellite link ended", member.id)))?;
+    watch.errors.clear();
+    watch.conn.tx.send(ClientMsg::Input { id: BOX.into(), input: Input::Raw(b"x".to_vec()) })?;
+    anyhow::ensure!(watch.pump(Instant::now() + Duration::from_secs(10), |w| w.errors.iter().any(|e| e.contains("VM offline"))), "typing while offline was not refused: {:?}", watch.errors);
+    let (ok, out) = cli(exe, &["vm", "resume", BOX], &hub_env)?;
+    anyhow::ensure!(ok, "vm resume: {out}");
+    wait_file("the satellite did not link again", 30, || links(&std::fs::read_to_string(instance.log_path()).unwrap_or_default()) > linked)?;
+    let resumed = Instant::now() + Duration::from_secs(15);
+    loop {
+        watch.conn.tx.send(ClientMsg::Input { id: BOX.into(), input: Input::Raw(b"-after-resume".to_vec()) })?;
+        if watch.pump(Instant::now() + Duration::from_secs(2), |w| w.screen().contains("-after-resume")) {
+            break;
+        }
+        anyhow::ensure!(Instant::now() < resumed, "typing after the resume:\n{}", watch.screen());
+    }
+
     step("deleting the VM: its sandbox and the agent go, its credential is revoked");
     let (ok, out) = cli(exe, &["vm", "delete", BOX, "--yes"], &hub_env)?;
     anyhow::ensure!(ok, "vm delete: {out}");
