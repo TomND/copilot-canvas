@@ -312,3 +312,19 @@ Phase by phase; the details and the log are in [VM-STATUS.md](VM-STATUS.md).
   (Phase 2). The spikes (`vm spike s2|s3|s4`) run through whichever provider the pack names (S3 uploads the
   pack's satellite first). `atelier selftest vm` adds the pool lane on `provider: local`: the image built in a
   builder sandbox, a warm VM leased by a box and prepared on its branch, the pool filled again, the VM deleted.
+- **Phase 2 (terminals; in progress).** The satellite (`atelier satellite`, started in the guest by the launcher:
+  `--start` runs it in the background once; `vm::local` starts this build as a process of the sandbox) dials the
+  hub (`wss://` with rustls, the platform's roots and the pack's CA; `ws://`; `tcp://`; through a `CONNECT` proxy),
+  authenticates with its credential and runs each box's PTY in the guest with the alacritty engine, which answers
+  the program's queries there; its raw output is kept in a 4 MiB ring with byte offsets. On the hub a VM box is a
+  remote terminal (`Terminal::spawn_remote`): it shows the launch's steps as dim lines, starts the program once the
+  launch runs and the satellite is linked, draws the guest's output, sends typing numbered and kept until
+  acknowledged, and refuses typing while the VM is offline. A dropped link is replayed from what the hub has, or
+  repainted from the guest's screen when the ring no longer reaches back; a restart of the service lets the
+  terminal go and adopts it again; a suspended VM's link drops and comes back on resume. History, status and
+  relayed commands use the thin lane's drain, sent over the link instead of a command per poll. `HasHistory`,
+  `Transcript` find a VM session's history in its mirror; forking one is refused. `atelier selftest vm` adds the
+  pool lane on `provider: local`: the warm VM leased, its satellite linked over `ws://` on loopback, typing, status
+  from the guest's history, a restart of the service, a freeze and a resume, a stop and a new launch in the same
+  VM, the VM deleted.
+

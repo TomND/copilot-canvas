@@ -583,6 +583,24 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
         anyhow::ensure!(Instant::now() < resumed, "typing after the resume:\n{}", watch.screen());
     }
 
+    step("the box stops like any session (its program ends in the guest, the VM stays); a new launch runs again in that VM");
+    let exits = |text: &str| text.matches(&format!("terminal {BOX} exited")).count();
+    let exited = exits(&std::fs::read_to_string(instance.log_path()).unwrap_or_default());
+    watch.conn.tx.send(ClientMsg::Stop { id: BOX.into(), force: false })?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while exits(&std::fs::read_to_string(instance.log_path()).unwrap_or_default()) == exited {
+        anyhow::ensure!(Instant::now() < deadline, "the box did not stop:\n{}", watch.screen());
+        watch.pump(Instant::now() + Duration::from_millis(200), |_| false);
+    }
+    wait_file("the stop was not recorded in the launch", 10, || intent_now(instance).is_ok_and(|i| i.terminal == 0))?;
+    anyhow::ensure!(local.get(&member.id).is_ok_and(|s| !s.suspended), "the VM stays");
+    let launch = canvas_model::launch::agent_launch(&node, &Default::default(), None, None, None, false);
+    watch.view = TermView::default();
+    watch.conn.tx.send(ClientMsg::Launch { id: BOX.into(), kind: LaunchKind::Agent(Box::new(launch)), cwd: work.display().to_string(), cols: 100, rows: 30 })?;
+    anyhow::ensure!(watch.pump(Instant::now() + Duration::from_secs(30), |w| w.screen().contains("Fake Copilot")), "the box did not start again in its VM:\n{}", watch.screen());
+    let again = intent_now(instance)?;
+    anyhow::ensure!(again.sandbox == member.id && again.terminal != 0, "the same VM, a new terminal: {again:?}");
+
     step("deleting the VM: its sandbox and the agent go, its credential is revoked");
     let (ok, out) = cli(exe, &["vm", "delete", BOX, "--yes"], &hub_env)?;
     anyhow::ensure!(ok, "vm delete: {out}");

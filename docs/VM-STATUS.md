@@ -73,7 +73,21 @@ owner's note that VM sessions are optional and local stays the default.
 - [x] VM-21 remote PTY (`Terminal::spawn_remote`, `RemotePty`, `RemoteFeed`; started early, unit-tested)
 - [x] VM-22 VT repaint (`emulator::replay::repaint`; round trip on the alacritty engine; the corpus round trip
       for both engines comes with the satellite)
-- [ ] VM-23 satellite · VM-24 hub link · VM-25 launch, shutdown, re-adoption · VM-26 `ExecTarget` · VM-27 `SessionStore` · VM-28 guest subsessions · VM-29 gap and reconnect rules · VM-2A docs
+- [x] VM-23 the satellite: `vm::satellite::{dial, terms, ring}` (tcp/ws/wss with rustls, platform roots and the
+      pack's CA, `CONNECT` proxies; PTYs with alacritty, a 4 MiB ring, replay or repaint; generations; input once;
+      reconnect 0.5/1/1.5 s; heartbeats; ends on a proven revocation), `atelier satellite [--start]`; history and
+      relayed commands through the drain as a control (departure below). Still to come: the endpoint for the guest
+      CLI (Phase 3), `proc`, `stats`, a per-sandbox ring cap
+- [x] VM-24 hub link (`vm::link`): one link per sandbox, Hello first and its own terminals only, output in order,
+      input numbered and resent, controls, heartbeats and the 6 s silence rule; flood limits still to come
+- [x] VM-25 launch, shutdown, re-adoption: `Resolved::remote`, `Host::adopt_remote`, `Intent::terminal`, remote
+      terminals let go at shutdown and adopted at start; the launcher starts the satellite (`Provider::start_satellite`)
+- [ ] VM-26 `ExecTarget`: the guest's command line comes from `launch::guest_command` (no hub paths); the guest roots
+      (plugin, skills, instructions, notes, MCP) come with Phase 3's file sync
+- [x] VM-27 `SessionStore` for Copilot (`vm::session_store`): `HasHistory`, `Transcript`, `Fork` refused for mirrors
+- [ ] VM-28 guest subsessions · VM-29 the rest (input buffered 4 KiB / 30 s while resuming, D9; the mailbox typed
+      only after reconciliation; a gap's note line is there) · VM-2A docs (BACKEND, REMOTE, README, VM-SESSIONS
+      written; AGENT-PROVIDERS and DEVELOPMENT's code map with VM-26)
 - [ ] Exit: `selftest vm` (replay, gap, freeze, restart) on three OSes
 
 ### 3: integration
@@ -135,6 +149,16 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
 - **The spikes go through `open_provider`** (the plan had them on `vm::aca`; Phase 0 had them on the hooks).
 - **The satellite's TLS uses `rustls-platform-verifier`** (already in the lock through reqwest) for the platform's
   roots, with the pack's CA as extra roots.
+- **Every provider but `hooks` uses the satellite** for a box's terminal (`hooks` keeps `vm attach` and the hooks'
+  shell); `vm::local`'s boxes too, so the pool lane tests the real path.
+- **History and relayed commands go through the thin lane's drain sent over the link** (`SatDown::Control` /
+  `SatUp::ControlResult`) instead of `SatUp::History` / `SatUp::Op` pushes: the same mirror and execution code,
+  polled every `poll_seconds` without a provider command. Pushing appends as they happen can replace it later.
+- **The satellite is started by the launcher** (`Provider::start_satellite`: `atelier satellite --start` in the
+  guest; `vm::local` starts it as a tracked process outside the service's Windows job) after the branch is
+  prepared, instead of at sandbox creation; `CONNECT` is used through proxies for `ws://` too.
+- **The satellite honours `ATELIER_<AGENT>`** for an agent's program, as the hub does (the self-tests' stand-ins).
+- **The remote listener** binds with `SO_REUSEADDR` on Unix and retries for 15 s at start (found by the restart step).
 
 ## Log
 
@@ -172,4 +196,10 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   egress-decisions and raw-file GET shapes, whether the files API makes folders (writes go through `install -D`
   either way), whether `/opt/atelier/bin` is writable by the files API in the stock image (S3), token expiry from
   `expires_on` or the token's `exp`; no re-fetch on a 401 yet.
+- 2026-11-10: Phase 2's core on `vm-sessions` (not pushed while CI ran for 7433d60): the satellite and the hub link
+  (tcp/ws/wss, rustls with a test CA valid 2019–2099 in `vm/satellite/testdata`), remote terminals launched,
+  adopted after a restart, kept through a frozen VM; drains over the link; `SessionStore` for Copilot. `selftest
+  vm` PASS in 50 s on macOS (both lanes), three runs. Found and fixed: the probe's `vm …` commands started a stray
+  `default` service in the probe's home (with the real Copilot folder as its sessions folder) that ran a second VM
+  manager: they now name the probe's instance; the probe ends every sandbox's processes, pass or fail.
 

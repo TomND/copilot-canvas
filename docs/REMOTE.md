@@ -534,6 +534,24 @@ mode sends no size: it draws the desktop's grid scaled down. The desktop
 clients send their size again when they show a terminal again, and forget
 what they sent for terminals they stopped showing.
 
+## Satellites (VM sessions)
+
+A VM session's guest runs `atelier satellite`, which connects to this service like a paired client but with a
+credential of its own ([VM-SESSIONS.md](VM-SESSIONS.md), the wire in [BACKEND.md](BACKEND.md)):
+
+- **Role.** The id (`sat-` and 16 hex digits) is minted by the launcher when it claims a VM, sealed in
+  `<home>/vm/satellites.json`, and written into the guest's `~/.atelier/satellite.json` (owner-only). The handshake
+  tells it from paired clients before anything else is sent: a satellite gets no `Ready8`, terminal list,
+  document or broadcast, only its own link (`ClientMsg::Sat` / `ServiceMsg::Sat`, `CAP_SATELLITE`). Satellites
+  are refused on the pipe.
+- **Address.** The pack's `tunnel.url`: the remote port through the tunnel's web forwarding (`wss://…`), or
+  `ws://127.0.0.1:PORT` in tests. The service must listen (`atelier remote tunnel-setup`, `ATELIER_LISTEN`).
+- **Revocation.** Deleting the VM revokes its credential; the service then proves the refusal, and the satellite
+  ends with its terminals instead of reconnecting.
+- **Restarts.** Restarting this service lets VM boxes' terminals go without stopping them; the restarted service
+  adopts them and the satellites replay what was missed. The remote port is bound with `SO_REUSEADDR` on macOS
+  and Linux and tried again for 15 s at start, so a restart never waits for closed connections in `TIME_WAIT`.
+
 ## Local vs remote behaviours
 
 What happens where (PLAN.md §6). "Remote" means a service on another machine
