@@ -70,7 +70,7 @@ owner's note that VM sessions are optional and local stays the default.
 - [x] Exit: `selftest vm` with the pool lane on three OSes, both providers wired, `vm spike` through a provider;
       the owner's checks on real sandboxes stay below
 
-### 2: terminals (done 2026-11-10; merged into main with the CI run named in the log)
+### 2: terminals (done 2026-11-10; CI run 42824828979 green on every job; merged into main at 3484fd2)
 - [x] VM-21 remote PTY (`Terminal::spawn_remote`, `RemotePty`, `RemoteFeed`; started early, unit-tested)
 - [x] VM-22 VT repaint (`emulator::replay::repaint`; round trip on the alacritty engine; the corpus round trip
       for both engines comes with the satellite)
@@ -245,4 +245,7 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   other's artifacts (cargo names a workspace member's artifacts by its path relative to the workspace, so the same
   crate in two worktrees has the same files); a build then and again uses another worktree's older crate. Touching
   the crate roots before a check works around it; separate target folders avoid it.
+- 2026-11-10: CI run 42824828979 (cf9d93a) green on all 17 jobs after one more Windows flake of the probe's own (the
+  restart step counted a git run of the satellite's stats that ended meanwhile as stopped). Phase 2 merged into
+  main at 3484fd2. Next: Phase 3 (the workers' egress and MCP packages, then VM-31..39).
 
