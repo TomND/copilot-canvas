@@ -8,6 +8,8 @@
 //! only when the hub proves the credential was revoked (the VM is deleted).
 
 pub mod dial;
+pub mod mcp_proxy;
+pub mod reports;
 pub mod ring;
 pub mod terms;
 
@@ -24,6 +26,7 @@ use canvas_common::wire::{self, FrameReader, FrameWriter};
 use crossbeam_channel::{Receiver, bounded, select_biased};
 use serde::{Deserialize, Serialize};
 
+use self::mcp_proxy::McpProxy;
 use self::terms::{Lanes, SpawnRequest, Terms};
 
 /// A link with nothing from the hub for this long is dropped (its heartbeat is every 2 s).
@@ -107,13 +110,14 @@ pub fn run() -> Result<()> {
     let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(lock_path(&home))?;
     anyhow::ensure!(lock.try_lock().is_ok(), "a satellite runs for {} already", home.display());
     let terms = Arc::new(Terms::default());
+    let mcp = McpProxy::start(0)?;
     let epochs = AtomicU64::new(0);
     let mut failures = 0u32;
     loop {
         let config = wait_config();
         let epoch = epochs.fetch_add(1, Ordering::Relaxed) + 1;
         let started = Instant::now();
-        match session(&config, &terms, epoch) {
+        match session(&config, &terms, &mcp, epoch) {
             Ok(()) => {}
             Err(error) if error.downcast_ref::<handshake::Refused>().is_some_and(|r| r.verified) => {
                 eprintln!("satellite: the hub revoked this VM's credential; ending its terminals");
@@ -133,7 +137,7 @@ pub fn run() -> Result<()> {
 }
 
 /// One link: dial, authenticate, `Hello`, then serve until it drops.
-pub fn session(config: &Config, terms: &Arc<Terms>, epoch: u64) -> Result<()> {
+pub fn session(config: &Config, terms: &Arc<Terms>, mcp: &Arc<McpProxy>, epoch: u64) -> Result<()> {
     let secret = canvas_common::paths::unhex(&config.secret).context("the satellite's secret is not hex")?;
     let roots = if config.ca.is_empty() { Vec::new() } else { super::tls::pem_certificates(&std::fs::read(&config.ca).context("the pack's CA file")?)? };
     let dialed = dial::dial(&config.hub, roots, &config.headers)?;
@@ -170,19 +174,22 @@ pub fn session(config: &Config, terms: &Arc<Terms>, epoch: u64) -> Result<()> {
         platform: std::env::consts::OS.to_owned(),
         home: super::guest::guest_home().display().to_string(),
         terms: terms.held(),
+        mcp_port: mcp.port(),
     };
     other_tx.send(SatUp::Hello { version: SAT_PROTOCOL, caps: 0, json: serde_json::to_string(&hello)? })?;
     let (beat_tx, beat_rx) = bounded::<()>(1);
     let writer_closer = closer.clone();
     let writing = std::thread::Builder::new().name("sat-writer".into()).spawn(move || write_lanes(writer, io_rx, other_rx, beat_rx, writer_closer))?;
     terms.attach(Lanes { io: io_tx.clone(), other: other_tx.clone(), epoch });
+    mcp.attach(Some(other_tx.clone()));
 
     let heard = Arc::new(AtomicU64::new(now()));
-    let (stop_tx, stop_rx) = bounded::<()>(1);
+    // Dropped when the link ends: the helper threads stop.
+    let (stop_tx, stop_rx) = bounded::<()>(0);
     {
-        let (heard, closer) = (heard.clone(), closer.clone());
+        let (heard, closer, stop_rx) = (heard.clone(), closer.clone(), stop_rx.clone());
         std::thread::Builder::new().name("sat-heartbeat".into()).spawn(move || {
-            while stop_rx.recv_timeout(HEARTBEAT).is_err() {
+            while matches!(stop_rx.recv_timeout(HEARTBEAT), Err(crossbeam_channel::RecvTimeoutError::Timeout)) {
                 if now().saturating_sub(heard.load(Ordering::Relaxed)) > SILENCE.as_millis() as u64 {
                     closer.close();
                     return;
@@ -191,9 +198,16 @@ pub fn session(config: &Config, terms: &Arc<Terms>, epoch: u64) -> Result<()> {
             }
         })?;
     }
-    let result = read_loop(&mut reader, terms, &heard, &other_tx);
+    let stats_every = Arc::new(AtomicU64::new(DEFAULT_STATS.as_millis() as u64));
+    {
+        let (terms, other_tx, stats_every) = (terms.clone(), other_tx.clone(), stats_every.clone());
+        std::thread::Builder::new().name("sat-reports".into()).spawn(move || report_loop(&terms, &other_tx, &stats_every, &stop_rx))?;
+    }
+    let result = read_loop(&mut reader, terms, mcp, &heard, &other_tx, &stats_every);
     terms.detach(epoch);
-    let _ = stop_tx.send(());
+    mcp.attach(None);
+    mcp.link_lost();
+    drop(stop_tx);
     closer.close();
     drop((io_tx, other_tx));
     let _ = writing.join();
@@ -202,6 +216,39 @@ pub fn session(config: &Config, terms: &Arc<Terms>, epoch: u64) -> Result<()> {
 
 fn now() -> u64 {
     canvas_common::paths::now_ms()
+}
+
+/// How often the guest's processes are looked at, and resent unchanged.
+const PROC_EVERY: Duration = Duration::from_secs(2);
+const PROC_AGAIN: Duration = Duration::from_secs(30);
+const DEFAULT_STATS: Duration = Duration::from_secs(30);
+
+/// Until the link ends: the sessions found in the guest when they change
+/// (`SatUp::Proc`), the guest's stats on the hub's interval (`SatUp::Stats`;
+/// the first soon after linking).
+fn report_loop(terms: &Terms, up: &crossbeam_channel::Sender<SatUp>, stats_every: &AtomicU64, stop: &Receiver<()>) {
+    let root = super::lite::copilot_root();
+    let home = super::guest::guest_home();
+    let mut last: Option<(canvas_common::sat::ProcReport, Instant)> = None;
+    let mut next_stats = Instant::now() + PROC_EVERY;
+    while matches!(stop.recv_timeout(PROC_EVERY), Err(crossbeam_channel::RecvTimeoutError::Timeout)) {
+        let running = terms.running();
+        let report = reports::proc_report(&running, &root);
+        if last.as_ref().is_none_or(|(sent, at)| *sent != report || at.elapsed() >= PROC_AGAIN) {
+            let json = serde_json::to_string(&report).unwrap_or_default();
+            if up.send(SatUp::Proc { json }).is_err() {
+                return;
+            }
+            last = Some((report, Instant::now()));
+        }
+        if Instant::now() >= next_stats {
+            let json = serde_json::to_string(&reports::stats_report(&running, &home)).unwrap_or_default();
+            if up.send(SatUp::Stats { json }).is_err() {
+                return;
+            }
+            next_stats = Instant::now() + Duration::from_millis(stats_every.load(Ordering::Relaxed).max(1000));
+        }
+    }
 }
 
 /// Terminal I/O first, then everything else, then the heartbeat.
@@ -236,7 +283,7 @@ fn control(json: &str) -> serde_json::Value {
     }
 }
 
-fn read_loop(reader: &mut FrameReader, terms: &Arc<Terms>, heard: &AtomicU64, other: &crossbeam_channel::Sender<SatUp>) -> Result<()> {
+fn read_loop(reader: &mut FrameReader, terms: &Arc<Terms>, mcp: &McpProxy, heard: &AtomicU64, other: &crossbeam_channel::Sender<SatUp>, stats_every: &AtomicU64) -> Result<()> {
     loop {
         let message = match reader.recv::<ServiceMsg>() {
             Ok(Some(message)) => message,
@@ -248,6 +295,9 @@ fn read_loop(reader: &mut FrameReader, terms: &Arc<Terms>, heard: &AtomicU64, ot
         match *down {
             SatDown::Welcome { json } => {
                 let welcome: WelcomeInfo = serde_json::from_str(&json).unwrap_or_default();
+                if welcome.stats_secs > 0 {
+                    stats_every.store(welcome.stats_secs.clamp(2, 3600) * 1000, Ordering::Relaxed);
+                }
                 for term in welcome.terms {
                     terms.resync(&term.term, term.generation, term.have);
                 }
@@ -272,7 +322,8 @@ fn read_loop(reader: &mut FrameReader, terms: &Arc<Terms>, heard: &AtomicU64, ot
                     let _ = other.send(SatUp::ControlResult { id, json: control(&json).to_string() });
                 })?;
             }
-            // Files, notes and MCP come with Phase 3.
+            SatDown::Mcp { stream, kind, bytes } => mcp.down(stream, kind, bytes),
+            // Files and notes come with Phase 3.
             _ => {}
         }
     }
@@ -418,12 +469,12 @@ mod tests {
         let config = Config { hub: format!("tcp://127.0.0.1:{}", relay.port), id: minted.id, secret: minted.secret, sandbox: SANDBOX.into(), ..Default::default() };
         let stop = Arc::new(AtomicBool::new(false));
         {
-            let (terms, stop) = (terms.clone(), stop.clone());
+            let (terms, stop, mcp) = (terms.clone(), stop.clone(), McpProxy::start(0).unwrap());
             std::thread::spawn(move || {
                 let mut epoch = 0;
                 while !stop.load(Ordering::Acquire) {
                     epoch += 1;
-                    let _ = session(&config, &terms, epoch);
+                    let _ = session(&config, &terms, &mcp, epoch);
                     std::thread::sleep(Duration::from_millis(100));
                 }
             });
@@ -477,5 +528,28 @@ mod tests {
         terms.stop_all();
         let _ = std::fs::remove_dir_all(home);
     }
-}
 
+    #[test]
+    fn a_revoked_satellite_is_cut_off_and_hears_a_proven_refusal() {
+        let home = std::env::temp_dir().join(format!("atelier-sat-revoke-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let minted = crate::vm::store::Satellites::new(&home).mint(SANDBOX).unwrap();
+        let links = crate::vm::link::Links::new(&home, Arc::new(|_| {}));
+        let port = hub(&home, &links);
+        let config = Config { hub: format!("tcp://127.0.0.1:{port}"), id: minted.id, secret: minted.secret, sandbox: SANDBOX.into(), ..Default::default() };
+        let (terms, mcp) = (Arc::new(Terms::default()), McpProxy::start(0).unwrap());
+        let serving = {
+            let (config, terms, mcp) = (config.clone(), terms.clone(), mcp.clone());
+            std::thread::spawn(move || session(&config, &terms, &mcp, 1))
+        };
+        wait_until("linked", 30, || links.linked(SANDBOX));
+        links.close_revoked();
+        assert!(links.linked(SANDBOX), "a valid credential keeps its link");
+        crate::vm::store::Satellites::new(&home).revoke_sandbox(SANDBOX).unwrap();
+        links.close_revoked();
+        wait_until("the link was closed", 10, || serving.is_finished());
+        let error = session(&config, &terms, &mcp, 2).unwrap_err();
+        assert!(error.downcast_ref::<handshake::Refused>().is_some_and(|r| r.verified), "the refusal is proven, so the satellite ends: {error:#}");
+        let _ = std::fs::remove_dir_all(home);
+    }
+}

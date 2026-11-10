@@ -52,7 +52,7 @@ owner's note that VM sessions are optional and local stays the default.
 - [ ] `vm spike s1` (Phase 2: the satellite link), `s5` (Phase 3: the MCP gateway), `s7` (Phase 2/5: faults)
 - [x] S6: `policy_ack` in `vm.yaml` (`pack check` warns while it is empty); the owner's checklist below
 
-### 1: manager
+### 1: manager (done 2026-11-10; CI run 42771716398 green on every job; merged into main at 36e0bcf with Phase 2's core)
 - [x] VM-11 provider trait (`vm::provider`); the pack's hooks as a provider (`vm::hooks::HooksProvider`)
 - [x] VM-12 `vm::aca` (P-aca, `vm-aca` 6ceef0d..9d4a8e8) and VM-13 `vm::local` with `canvas_sys::process::
       {suspend_tree, resume_tree}` (P-local, `vm-local` 6ceef0d..ec3079d): merged into `vm-sessions` 2026-11-10
@@ -67,31 +67,39 @@ owner's note that VM sessions are optional and local stays the default.
       `provider: local` (an image built in a builder, a warm VM leased, its branch prepared, the agent in its
       terminal, the pool refilled, the VM deleted); `vm spike` through a provider; `rustls` (ring) and
       `rustls-platform-verifier` in canvas-agents on every OS with `vm::tls` (the satellite's `wss://` config)
-- [ ] Exit: as in the plan §3 Phase 1
+- [x] Exit: `selftest vm` with the pool lane on three OSes, both providers wired, `vm spike` through a provider;
+      the owner's checks on real sandboxes stay below
 
-### 2: terminals
+### 2: terminals (done 2026-11-10; merged into main with the CI run named in the log)
 - [x] VM-21 remote PTY (`Terminal::spawn_remote`, `RemotePty`, `RemoteFeed`; started early, unit-tested)
 - [x] VM-22 VT repaint (`emulator::replay::repaint`; round trip on the alacritty engine; the corpus round trip
       for both engines comes with the satellite)
 - [x] VM-23 the satellite: `vm::satellite::{dial, terms, ring}` (tcp/ws/wss with rustls, platform roots and the
       pack's CA, `CONNECT` proxies; PTYs with alacritty, a 4 MiB ring, replay or repaint; generations; input once;
       reconnect 0.5/1/1.5 s; heartbeats; ends on a proven revocation), `atelier satellite [--start]`; history and
-      relayed commands through the drain as a control (departure below). Still to come: the endpoint for the guest
-      CLI (Phase 3), `proc`, `stats`, a per-sandbox ring cap
+      relayed commands through the drain as a control (departure below). `proc` and `stats` reports
+      (`vm::satellite::reports`); 32 MiB of rings per sandbox. The endpoint for the guest CLI is Phase 3 (VM-32)
 - [x] VM-24 hub link (`vm::link`): one link per sandbox, Hello first and its own terminals only, output in order,
-      input numbered and resent, controls, heartbeats and the 6 s silence rule; flood limits still to come
+      input numbered and resent, controls, heartbeats and the 6 s silence rule; limits (`vm::flood`: size caps per
+      message kind, pacing, thinned reports, 32 MCP streams); a revoked credential's link is closed
 - [x] VM-25 launch, shutdown, re-adoption: `Resolved::remote`, `Host::adopt_remote`, `Intent::terminal`, remote
       terminals let go at shutdown and adopted at start; the launcher starts the satellite (`Provider::start_satellite`)
-- [ ] VM-26 `ExecTarget`: the guest's command line comes from `launch::guest_command` (no hub paths); the guest roots
-      (plugin, skills, instructions, notes, MCP) come with Phase 3's file sync
+- [x] VM-26 in Phase 2's scope: the guest's command line from `launch::guest_command` (nothing of this machine, unit
+      test `the_guest_command_carries_nothing_of_this_machine`); the guest roots (plugin, skills, instructions,
+      notes, MCP) and their paths come with Phase 3's file sync (VM-34, VM-38): departure below
 - [x] VM-27 `SessionStore` for Copilot (`vm::session_store`): `HasHistory`, `Transcript`, `Fork` refused for mirrors
-- [ ] VM-28 guest subsessions · VM-29 the rest (the probe's drops during output and beyond the ring; input while
-      resuming and the mailbox's wait are done and unit-tested) · VM-2A docs (BACKEND, REMOTE, README, VM-SESSIONS
-      written; AGENT-PROVIDERS and DEVELOPMENT's code map with VM-26)
-- [ ] Exit: `selftest vm` (replay, gap, freeze, restart) on three OSes
+- [x] VM-28 guest subsessions (from `SatUp::Proc`; the mirror's liveness overlay); VM-29 drops end to end, input
+      while resuming, the mailbox's wait; the stats reports in the VM view (`git`, `offline_ms`) and `vm list`
+- [x] VM-2A docs: BACKEND, REMOTE, README, VM-SESSIONS, DEVELOPMENT, AGENT-PROVIDERS (*Inside a VM*)
+- [x] Exit: `selftest vm` (restart, freeze, subsessions, git state) on three OSes (CI run 42813074706 on 6fab5ff, all
+      17 jobs); replay and gap end to end in `vm::satellite` tests; `corpus check` with the repaint round trip;
+      `selftest` and `--remote loopback` unchanged. Owner: `vm spike s1`, `s4`, `s7` on real sandboxes
 
 ### 3: integration
 - [ ] VM-31 `Io` seam · VM-32 CLI satellite mode · VM-33 op relay · VM-34 file sync · VM-35 profile and path map · VM-36 egress and secrets · VM-37 MCP gateway · VM-38 guest MCP config · VM-39 docs and skills
+- [ ] VM-36 egress (worker P-egress, `vm-egress`) and VM-37 MCP gateway (worker P-mcp, `vm-mcp`): prompts in
+      VM-WORKERS.md; their interfaces landed (`vm/egress/mod.rs` denies everything, `vm/mcp/mod.rs` refuses every
+      stream, `vm/satellite/mcp_proxy.rs` serves nothing; the link and the satellite already call them)
 - [ ] Exit: every row of the CLI inventory tested; offline writes say *queued*
 
 ### 4: UX
@@ -158,6 +166,9 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   guest; `vm::local` starts it as a tracked process outside the service's Windows job) after the branch is
   prepared, instead of at sandbox creation; `CONNECT` is used through proxies for `ws://` too.
 - **The satellite honours `ATELIER_<AGENT>`** for an agent's program, as the hub does (the self-tests' stand-ins).
+- **`ExecTarget` is not a type yet** (VM-26): with no guest roots before the file sync, the guest command line is
+  `launch::guest_command` (a launch with this machine's folders removed); the target-aware command builder lands
+  with VM-34/VM-38, when there are guest paths to build.
 - **The remote listener** binds with `SO_REUSEADDR` on Unix and retries for 15 s at start (found by the restart step).
 - **No note line marks a gap** (VM-29 had one): a guest's ConPTY (Windows) draws by absolute positions, so nothing
   of the hub's may be drawn into a program's screen once it runs; a gap is logged, and a program's first output
@@ -217,4 +228,21 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   buffer, the mailbox's wait, offline stops) and drops end to end (exact replay within the ring, repaint beyond).
   Pending for Phase 2: VM-26 guest roots (with Phase 3's sync), VM-28 subsessions, the link's flood limits,
   `proc` and `stats`, DEVELOPMENT and AGENT-PROVIDERS docs.
+- 2026-11-10: Phase 1 merged into main at 36e0bcf (CI run 42771716398 green on all 17 jobs), together with Phase 2's
+  core (the satellite link; gated by the pack like everything else): the run on the Phase-1-only commit hung on
+  Windows (the probe's stray service), and its fix came with the Phase 2 commits.
+- 2026-11-10: the CI flake of `vm spike s3` on Windows (exit 1, nothing printed) was the probe's stand-in agent: a hard
+  link to this program, and Windows shares a hard-linked image between its names, so `atelier satellite --self-check`
+  started while the stand-in ran took itself for the stand-in. The probe copies it on Windows now (as `selftest`
+  does); hooks keep the guest's error line for the spikes. The raw-tap test raced ConPTY's last writes (fixed).
+  Then VM-28 subsessions, `proc` and `stats` reports, the link's limits: `selftest vm` PASS in 50 s, two runs.
+- 2026-11-10: CI run 42813074706 (6fab5ff) green on every job. One earlier Windows run failed at the start of
+  `selftest --remote loopback` with STATUS_DLL_INIT_FAILED (0xC0000142, a desktop-heap exhaustion of the runner); the
+  process list CI now prints after the VM and TUI self-tests showed nothing left running, so it is counted as the
+  runner's flake. Then: 32 MiB of rings per sandbox, a revoked credential's link closed (tested end to end). Phase 2
+  done.
+- Note for the owner: the target folder shared by this worktree and the workers' makes their builds overwrite each
+  other's artifacts (cargo names a workspace member's artifacts by its path relative to the workspace, so the same
+  crate in two worktrees has the same files); a build then and again uses another worktree's older crate. Touching
+  the crate roots before a check works around it; separate target folders avoid it.
 

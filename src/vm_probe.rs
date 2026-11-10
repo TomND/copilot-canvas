@@ -82,9 +82,13 @@ fn shut_down(instance: &Instance) {
     }
 }
 
-/// A hard link of this program under another name (a copy where links are not possible).
+/// This program under another name: a hard link on Unix, a copy on Windows
+/// (Windows shares a hard-linked program's image between its names, and a
+/// process started through one name may then see the other as its own path:
+/// `atelier` started while the stand-in `copilot` ran took itself for the
+/// stand-in, the CI flake of `vm spike s3`), and a copy where links fail.
 fn alias(exe: &Path, path: &Path) -> Result<()> {
-    if std::fs::hard_link(exe, path).is_err() {
+    if cfg!(windows) || std::fs::hard_link(exe, path).is_err() {
         std::fs::copy(exe, path)?;
     }
     Ok(())
@@ -142,6 +146,8 @@ struct Watch {
     activities: Vec<crate::protocol::Activity>,
     errors: Vec<String>,
     doc: Option<(String, u64)>,
+    /// Subsessions the service told of: (parent, child, name).
+    subsessions: Vec<(String, String, String)>,
 }
 
 impl Watch {
@@ -165,6 +171,7 @@ impl Watch {
                     }
                 }
                 Ok(ServiceMsg::Error { message, .. }) => self.errors.push(message),
+                Ok(ServiceMsg::Subsession { parent, child, name, .. }) => self.subsessions.push((parent, child, name)),
                 Ok(ServiceMsg::Doc { key, version, .. }) => self.doc = Some((key, version)),
                 Ok(ServiceMsg::DocPatch { key, version, .. }) => self.doc = Some((key, version)),
                 _ => {}
@@ -284,7 +291,7 @@ fn scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
             Err(_) => std::thread::sleep(Duration::from_millis(200)),
         }
     };
-    let mut watch = Watch { conn, view: TermView::default(), second: TermView::default(), activities: Vec::new(), errors: Vec::new(), doc: None };
+    let mut watch = Watch { conn, view: TermView::default(), second: TermView::default(), activities: Vec::new(), errors: Vec::new(), doc: None, subsessions: Vec::new() };
     let routing = serde_json::json!({
         "canvas": CANVAS, "groups": [], "members": {}, "passive": [], "no_messages": [],
         "names": { BOX: "VM box", PLACED: "Placed box" }, "agents": { BOX: "copilot", PLACED: "copilot" },
@@ -495,6 +502,7 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
         ("ATELIER_LISTEN", format!("127.0.0.1:{port}")),
         ("ATELIER_FAKE_HISTORY", "1".into()),
         ("ATELIER_FAKE_TURN_MS", "3000".into()),
+        ("ATELIER_VM_STATS_SECS", "2".into()),
     ];
     let env_refs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
     conn::spawn_service_exe(exe, instance, &env_refs)?;
@@ -506,7 +514,7 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
             Err(_) => std::thread::sleep(Duration::from_millis(200)),
         }
     };
-    let mut watch = Watch { conn, view: TermView::default(), second: TermView::default(), activities: Vec::new(), errors: Vec::new(), doc: None };
+    let mut watch = Watch { conn, view: TermView::default(), second: TermView::default(), activities: Vec::new(), errors: Vec::new(), doc: None, subsessions: Vec::new() };
 
     step("the manager builds the repository's image in a builder VM and keeps a warm VM in the pool");
     let ready = || store::load_images(home).map(|f| f.images.into_iter().filter(|i| i.repo == "probe-app" && i.state == "ready").collect::<Vec<_>>()).unwrap_or_default();
@@ -564,11 +572,33 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
     anyhow::ensure!(!log.contains(&format!("VM {}: cannot drain", member.id)), "drained over the link");
 
+    step("a session the agent starts inside its terminal in the guest becomes the box's subsession");
+    watch.conn.tx.send(ClientMsg::Input { id: BOX.into(), input: Input::Raw(b"!nested Probe nested\r".to_vec()) })?;
+    anyhow::ensure!(
+        watch.pump(Instant::now() + Duration::from_secs(30), |w| w.subsessions.iter().any(|(parent, _, name)| parent == BOX && name == "Probe nested")),
+        "no subsession from the guest (seen {:?})",
+        watch.subsessions
+    );
+
+    step("the guest reports its repository: `vm list` shows the box's git state");
+    local.put_file(&member.id, "work/probe-app/probe-untracked.txt", b"new\n", 0o644)?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let (ok, out) = cli(exe, &["vm", "list"], &hub_env)?;
+        if ok && out.contains("git atelier/pool:") && out.contains("1 untracked") {
+            break;
+        }
+        anyhow::ensure!(Instant::now() < deadline, "vm list never showed the guest's repository: {out}");
+        std::thread::sleep(Duration::from_millis(500));
+    }
+
     step("the pool is filled again behind the leased VM");
     wait_file("the pool was not filled again", 60, || pool().iter().any(|m| m.id != member.id))?;
 
     step("the service restarts: the box's terminal is adopted again and replayed; nothing stopped in the guest");
-    let before: Vec<canvas_agents::vm::local::Proc> = local.processes(&member.id)?;
+    // The long-lived ones (the satellite, the agent, their consoles); the satellite's git runs come and go.
+    let settled = canvas_common::paths::now_ms().saturating_sub(5_000);
+    let before: Vec<canvas_agents::vm::local::Proc> = local.processes(&member.id)?.into_iter().filter(|p| p.start_ms < settled).collect();
     anyhow::ensure!(before.len() >= 2, "the satellite and the agent run in the guest: {before:?}");
     watch.conn.tx.send(ClientMsg::Shutdown)?;
     wait_file("the service did not stop", 20, || conn::try_connect(instance).is_err())?;
@@ -582,7 +612,7 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
             Err(_) => std::thread::sleep(Duration::from_millis(200)),
         }
     };
-    watch = Watch { conn, view: TermView::default(), second: TermView::default(), activities: Vec::new(), errors: Vec::new(), doc: None };
+    watch = Watch { conn, view: TermView::default(), second: TermView::default(), activities: Vec::new(), errors: Vec::new(), doc: None, subsessions: Vec::new() };
     watch.conn.tx.send(ClientMsg::Subscribe8 { ids: vec![BOX.into()], focused: Some(BOX.into()) })?;
     anyhow::ensure!(
         watch.pump(Instant::now() + Duration::from_secs(30), |w| w.screen().contains("typed-through-the-link") && w.screen().contains("Fake Copilot")),

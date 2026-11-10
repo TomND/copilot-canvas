@@ -120,6 +120,28 @@ pub struct HelloInfo {
     /// The guest user's home (guest paths are built from it).
     pub home: String,
     pub terms: Vec<TermHeld>,
+    /// The port of the guest's MCP proxy on its loopback (`/mcp/<term>/<server>`; 0: none).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub mcp_port: u16,
+}
+
+fn is_zero(port: &u16) -> bool {
+    *port == 0
+}
+
+/// The JSON of an `MCP_OPEN` (`SatUp::Mcp`): a guest agent's MCP session
+/// with one of the hub's servers. The stream id is the satellite's, unique
+/// on its link; a stream ends with `MCP_CLOSE` from either side, or with the
+/// link. Then `MCP_MESSAGE`s carry one JSON-RPC message each (UTF-8 JSON),
+/// both ways; the hub refuses a stream with `MCP_ERROR` (JSON `{"message"}`)
+/// and `MCP_CLOSE`.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct McpOpen {
+    /// The box's terminal the agent runs in (from the proxy's path).
+    pub term: String,
+    /// The hub's server name (as in the hub's agent configuration and the pack's `mcp-policy.yaml`).
+    pub server: String,
 }
 
 /// A terminal the satellite has: its output so far and whether it runs.
@@ -141,6 +163,75 @@ pub struct TermHeld {
 #[serde(default)]
 pub struct WelcomeInfo {
     pub terms: Vec<TermHave>,
+    /// How often the satellite sends `SatUp::Stats` (seconds; 0: its default, 30).
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    pub stats_secs: u64,
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
+/// `SatUp::Proc`'s JSON (every 2 s when it changed, else every 30 s): agent
+/// sessions found in the guest.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ProcReport {
+    /// Per running terminal, the agent sessions started inside it (a
+    /// `copilot -p` the agent ran): the hub shows them as its subsessions.
+    pub terms: Vec<TermProcs>,
+    /// Copilot sessions whose in-use lock a live process of the guest holds.
+    pub live: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct TermProcs {
+    pub term: String,
+    pub generation: u64,
+    pub nested: Vec<NestedSession>,
+}
+
+/// A session started inside a terminal (its `workspace.yaml`'s name and folder).
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct NestedSession {
+    pub session: String,
+    pub name: String,
+    pub cwd: String,
+}
+
+/// `SatUp::Stats`'s JSON: the guest's load and each terminal's repository.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct StatsReport {
+    /// CPU time and resident memory of the terminals' processes.
+    pub cpu_ms: u64,
+    pub memory_bytes: u64,
+    /// The machine's (0: unknown; Linux guests report them).
+    pub memory_total_bytes: u64,
+    pub memory_available_bytes: u64,
+    pub load_1m: f32,
+    /// The guest home's file system (0: unknown).
+    pub disk_free_bytes: u64,
+    pub disk_total_bytes: u64,
+    pub repos: Vec<RepoStats>,
+}
+
+/// A terminal's working folder as git sees it.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct RepoStats {
+    pub term: String,
+    pub cwd: String,
+    pub branch: String,
+    pub ahead: u32,
+    pub behind: u32,
+    pub dirty: u32,
+    pub untracked: u32,
+    pub stashes: u32,
+    /// Local branches without an upstream, or ahead of it.
+    pub unpushed: Vec<String>,
 }
 
 /// One terminal the hub expects: its generation and the output it has.

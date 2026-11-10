@@ -494,6 +494,7 @@ VM sessions are optional ([VM-SESSIONS.md](VM-SESSIONS.md)); without a VM pack n
 | `<home>/vm/` | `launches/<box>.json` (VM launches' intents and their steps), `hub.json` (this hub's id, the `atelier.hub` label), `satellites.json` (satellites' credentials, sealed; revoked ones keep only a key to prove the refusal), `sandboxes.json` (role, lease, size, image), `images.json`, `budget.json` (the day's estimated cost), `mirrors/<sandbox>/` (the guests' mirrored history and what was taken), `ops/<sandbox>/<id>.json` (each relayed operation's answer, once), `local/` (`vm::local`'s sandboxes and images when the pack names no `local.root`; tests and CI only); each versioned, written atomically by the service only, never written over when unreadable or newer | — |
 | handshake | a `Hello8` whose `remote_id` is a satellite's (`sat-` and 16 hex digits) authenticates against `satellites.json`; over TCP only | an older service refuses the id (not a paired client) |
 | `launches/<box>.json` | `terminal`: the generation of the box's terminal running in the guest (not written while 0); a restarted service adopts it | an older service ignores it |
+| `<home>/vm/links/<sandbox>.json` | the satellite's state as the hub last knew it: linked or not and since when, its last stats (`StatsReport`) | — |
 
 **The satellite's link** (`canvas_agents::vm::satellite` in the guest, `vm::link` on the hub; the messages in
 `canvas_common::sat`, versioned on their own: `SAT_PROTOCOL` 1). The guest's `atelier satellite` reads
@@ -514,6 +515,22 @@ on both ends; both send a heartbeat every 2 s and drop a link silent for 6 s. Th
 lacks, relayed commands and their answers) travels as `SatDown::Control {"drain": DrainRequest}` /
 `SatUp::ControlResult`. A newer link of a sandbox replaces the older one; a refusal proven by the hub (a revoked
 credential) ends the satellite and its terminals.
+
+Reports: every 2 s the satellite looks at its terminals' process trees and sends `SatUp::Proc` (JSON `ProcReport`)
+when it changed (else every 30 s): per terminal the agent sessions started inside it (a Copilot process holding a
+session's in-use lock under the terminal's agent, as `subsession_loop` finds them locally), and the Copilot sessions
+alive in the guest. The hub tells clients of each new one once (`ServiceMsg::Subsession`, the box as its parent) and
+counts a mirrored session live only as the guest reports it (nothing is live while the link is down). On the
+interval `WelcomeInfo::stats_secs` gives (`ATELIER_VM_STATS_SECS`, else 30 s) it sends `SatUp::Stats` (JSON
+`StatsReport`: the terminals' CPU time and memory, the guest's memory, load and disk, and per terminal folder git's
+branch, ahead, behind, changed, untracked, stashed and unpushed branches); the hub keeps it in
+`<home>/vm/links/<sandbox>.json` and the VM view shows it (`VmInfo::git`, `offline_ms`).
+
+Limits (`vm::flood`): each message kind has a size cap (output 36 KiB, a screen 8 MiB, a report 256 KiB, a control's
+answer 30 MiB, …; over it the link is closed), a link's bytes are paced at 32 MiB/s past a 64 MiB burst (the hub
+stops reading and TCP slows the guest), process reports are taken at most every 0.5 s and stats every second
+(extras dropped), a link holds at most 32 MCP streams, and a second `Hello` or a report on another sandbox's
+terminal closes it.
 
 ## Protocol
 

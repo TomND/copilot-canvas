@@ -250,6 +250,21 @@ impl Agents {
                 Arc::new(move |line: String| log(&instance, &line))
             }),
         });
+        // Sessions found inside VM boxes' terminals in their guests: subsessions, as local ones (`subsession_loop`).
+        agents.vm_links.on_subsession({
+            let weak = Arc::downgrade(&agents);
+            Arc::new(move |parent: &str, child: &str, name: &str, cwd: &str| {
+                let Some(shared) = weak.upgrade() else { return };
+                if lock(&shared.subsessions).contains_key(child) {
+                    return;
+                }
+                let message = ServiceMsg::Subsession { parent: parent.to_owned(), child: child.to_owned(), name: name.to_owned(), cwd: cwd.to_owned() };
+                log(&shared.instance, &format!("session {child} started inside {parent} (in its VM)"));
+                lock(&shared.subsessions).insert(child.to_owned(), message.clone());
+                shared.broadcast(message);
+                let _ = shared.index_wake.try_send(());
+            })
+        });
         server::spawn_named("push", { let a = agents.clone(); move || push::push_loop(a) });
         server::spawn_named("tunnel-access", { let a = agents.clone(); move || tunnel_access_loop(a, tunnel_rx) });
         server::spawn_named("index", { let a = agents.clone(); move || index_loop(a, index_rx) });
@@ -1203,7 +1218,10 @@ fn index_loop(shared: Arc<Agents>, wake: Receiver<()>) {
         // VM sessions' history, mirrored from their guests (the thin lane):
         // one more Copilot index per mirror (none without VM sessions).
         for root in crate::vm::thin::copilot_mirrors(&shared.instance.home) {
-            mirrors.entry(root.clone()).or_insert_with(|| crate::index::Index::new(root));
+            // Live as the guest's satellite reports it (`<home>/vm/mirrors/<sandbox>/copilot`).
+            let sandbox = root.parent().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let links = shared.vm_links.clone();
+            mirrors.entry(root.clone()).or_insert_with(|| crate::index::Index::new(root).with_liveness(Arc::new(move |id| links.session_live(&sandbox, id))));
         }
         for index in mirrors.values_mut() {
             let (c, _) = index.poll(&tracked, Duration::from_secs(15));

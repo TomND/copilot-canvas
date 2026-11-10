@@ -230,6 +230,42 @@ pub fn private_dir(dir: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)
 }
 
+/// The file system holding `path`: (bytes free for this user, bytes in all).
+pub fn space(path: &std::path::Path) -> std::io::Result<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "a path with NUL"))?;
+        // SAFETY: a valid C string and a zeroed statvfs the call fills.
+        let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+        if unsafe { libc::statvfs(c.as_ptr(), &mut stat) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let unit = stat.f_frsize as u64;
+        Ok((stat.f_bavail as u64 * unit, stat.f_blocks as u64 * unit))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        let (mut free, mut total) = (0u64, 0u64);
+        // SAFETY: a NUL-terminated wide string and two u64 the call fills.
+        if unsafe { windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, &mut total, std::ptr::null_mut()) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok((free, total))
+    }
+}
+
+#[cfg(test)]
+mod space_tests {
+    #[test]
+    fn the_temp_folder_has_room() {
+        let (free, total) = super::space(&std::env::temp_dir()).unwrap();
+        assert!(total > 0 && free <= total, "{free} of {total}");
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use std::os::unix::fs::PermissionsExt;

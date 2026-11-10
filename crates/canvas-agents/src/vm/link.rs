@@ -25,11 +25,12 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use canvas_common::protocol::{ClientMsg, ServiceMsg};
-use canvas_common::sat::{ExitInfo, HelloInfo, SAT_IO_CHUNK, SAT_PROTOCOL, SAT_PROTOCOL_MIN, SatDown, SatUp, TermHave, WelcomeInfo};
+use canvas_common::sat::{ExitInfo, HelloInfo, ProcReport, SAT_IO_CHUNK, SAT_PROTOCOL, SAT_PROTOCOL_MIN, SatDown, SatUp, StatsReport, TermHave, WelcomeInfo};
+use serde::{Deserialize, Serialize};
 use canvas_common::wire::{Closer, FrameReader, FrameWriter};
 use canvas_host::server::SatelliteLink;
 use canvas_host::term::{RemoteFeed, RemotePty};
@@ -71,15 +72,78 @@ pub struct Links {
     /// Stops asked for while a sandbox's link was down: (sandbox, terminal,
     /// generation), sent when it links again (whatever was launched meanwhile).
     stops: Mutex<Vec<(String, String, u64)>>,
+    /// The MCP gateway: guest agents' sessions with the hub's MCP servers.
+    mcp: Arc<super::mcp::Gateway>,
+    /// Told of each session found inside a box's terminal in a guest:
+    /// (the box, the session, its name, its folder).
+    subsession: Mutex<Option<SubsessionHook>>,
+    /// The sessions told of already.
+    reported: Mutex<std::collections::HashSet<String>>,
+    /// Per sandbox, the Copilot sessions alive in its guest (its last process report).
+    live: Mutex<HashMap<String, std::collections::HashSet<String>>>,
+}
+
+pub type SubsessionHook = Arc<dyn Fn(&str, &str, &str, &str) + Send + Sync>;
+
+/// The gateway's answers go out on the sandbox's link.
+struct McpDown(std::sync::Weak<Links>);
+
+impl super::mcp::Down for McpDown {
+    fn send(&self, sandbox: &str, stream: u64, kind: u8, bytes: Vec<u8>) -> bool {
+        let Some(link) = self.0.upgrade().and_then(|links| links.link(sandbox)) else { return false };
+        if kind == canvas_common::sat::MCP_CLOSE {
+            lock(&link.streams).close(stream);
+        }
+        link.send(false, SatDown::Mcp { stream, kind, bytes })
+    }
 }
 
 /// A satellite's live link.
 struct Link {
     sandbox: String,
+    /// Its credential (`sat-…`): revoked, the link is closed.
+    satellite: String,
     epoch: u64,
     io: Sender<ServiceMsg>,
     other: Sender<ServiceMsg>,
     closer: Closer,
+    /// Its open MCP streams (at most `flood::MCP_STREAMS`).
+    streams: Mutex<super::flood::Streams>,
+}
+
+/// What the hub last knew of a sandbox's satellite (`<home>/vm/links/<sandbox>.json`):
+/// whether it is linked and since when, and its last stats.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct LinkRecord {
+    pub linked: bool,
+    pub since_ms: u64,
+    pub stats_ms: u64,
+    pub stats: StatsReport,
+}
+
+fn record_path(home: &Path, sandbox: &str) -> Option<PathBuf> {
+    let plain = !sandbox.is_empty() && sandbox.len() <= 128 && sandbox.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    plain.then(|| home.join("vm").join("links").join(format!("{sandbox}.json")))
+}
+
+/// A sandbox's link record (`None`: its satellite never linked to this hub).
+pub fn load_record(home: &Path, sandbox: &str) -> Option<LinkRecord> {
+    std::fs::read(record_path(home, sandbox)?).ok().and_then(|b| serde_json::from_slice(&b).ok())
+}
+
+fn update_record(home: &Path, sandbox: &str, change: impl FnOnce(&mut LinkRecord)) {
+    let Some(path) = record_path(home, sandbox) else { return };
+    let mut record = load_record(home, sandbox).unwrap_or_default();
+    change(&mut record);
+    if let Ok(bytes) = serde_json::to_vec(&record) {
+        let _ = crate::paths::write_atomic(&path, &bytes);
+    }
+}
+
+/// How often satellites send their stats (`ATELIER_VM_STATS_SECS`, else 30 s).
+fn stats_secs() -> u64 {
+    canvas_common::env::var("ATELIER_VM_STATS_SECS").ok().and_then(|v| v.trim().parse::<u64>().ok()).map_or(30, |s| s.clamp(2, 3600))
 }
 
 impl Link {
@@ -155,7 +219,47 @@ impl RemoteState {
 
 impl Links {
     pub fn new(home: &Path, log: Log) -> Arc<Self> {
-        Arc::new(Links { home: home.to_path_buf(), log, links: Mutex::default(), remotes: Mutex::default(), epochs: AtomicU64::new(0), controls: Mutex::default(), control_ids: AtomicU64::new(0), stops: Mutex::default() })
+        Arc::new_cyclic(|links| Links {
+            home: home.to_path_buf(),
+            log,
+            links: Mutex::default(),
+            remotes: Mutex::default(),
+            epochs: AtomicU64::new(0),
+            controls: Mutex::default(),
+            control_ids: AtomicU64::new(0),
+            stops: Mutex::default(),
+            mcp: super::mcp::Gateway::new(home, Arc::new(super::mcp::NoServers), Arc::new(McpDown(links.clone()))),
+            subsession: Mutex::default(),
+            reported: Mutex::default(),
+            live: Mutex::default(),
+        })
+    }
+
+    /// Closes the links whose credential was revoked (their VM was deleted):
+    /// their satellites then hear the refusal, proven, and end.
+    pub fn close_revoked(&self) {
+        let links: Vec<Arc<Link>> = lock(&self.links).values().cloned().collect();
+        if links.is_empty() {
+            return;
+        }
+        let store = super::store::Satellites::new(&self.home);
+        for link in links {
+            if store.sandbox_of(&link.satellite).as_deref() != Some(link.sandbox.as_str()) {
+                (self.log)(format!("VM {}: its satellite's credential was revoked; the link is closed", link.sandbox));
+                link.closer.close();
+            }
+        }
+    }
+
+    /// Tells `hook` of each session found inside a box's terminal in a guest.
+    pub fn on_subsession(&self, hook: SubsessionHook) {
+        *lock(&self.subsession) = Some(hook);
+    }
+
+    /// Whether Copilot session `id` is alive in `sandbox`'s guest (as its
+    /// satellite last reported; nothing is alive while it is not linked).
+    pub fn session_live(&self, sandbox: &str, id: &str) -> bool {
+        lock(&self.live).get(sandbox).is_some_and(|live| live.contains(id))
     }
 
     fn link(&self, sandbox: &str) -> Option<Arc<Link>> {
@@ -222,6 +326,7 @@ impl Links {
     /// the launch runs and its satellite is linked, the end of a launch
     /// that failed or whose VM went.
     pub fn progress(&self) {
+        self.close_revoked();
         for remote in self.remotes() {
             let Ok(Some(intent)) = launch::load(&self.home, &remote.term) else { continue };
             let mut state = lock(&remote.state);
@@ -337,10 +442,11 @@ impl Links {
             let (closer, heard) = (closer.clone(), heard.clone());
             std::thread::Builder::new().name("sat-link-writer".into()).spawn(move || write_lanes(writer, io_rx, other_rx, stopped, heard, closer))?
         };
-        let current = Arc::new(Link { sandbox: sandbox.clone(), epoch, io, other, closer: closer.clone() });
+        let current = Arc::new(Link { sandbox: sandbox.clone(), satellite: id.clone(), epoch, io, other, closer: closer.clone(), streams: Mutex::default() });
         if let Some(old) = lock(&self.links).insert(sandbox.clone(), current.clone()) {
             old.closer.close();
         }
+        update_record(&self.home, &sandbox, |r| (r.linked, r.since_ms) = (true, now_ms()));
         (self.log)(format!("VM {sandbox}: satellite linked ({} on {}, {} terminal(s) there)", hello.build, hello.platform, hello.terms.len()));
         self.welcome(&current, &hello);
         let result = self.read_loop(&mut reader, &current, &heard);
@@ -354,6 +460,11 @@ impl Links {
         closer.close();
         drop(current);
         let _ = writing.join();
+        if !self.linked(&sandbox) {
+            self.mcp.link_ended(&sandbox);
+            lock(&self.live).remove(&sandbox);
+            update_record(&self.home, &sandbox, |r| (r.linked, r.since_ms) = (false, now_ms()));
+        }
         (self.log)(format!("VM {sandbox}: satellite link ended{}", result.as_ref().err().map(|e| format!(" ({e:#})")).unwrap_or_default()));
         result
     }
@@ -375,7 +486,7 @@ impl Links {
                 terms.push(TermHave { term: remote.term.clone(), generation: state.generation, have: state.have });
             }
         }
-        let welcome = WelcomeInfo { terms };
+        let welcome = WelcomeInfo { terms, stats_secs: stats_secs() };
         if !link.send(true, SatDown::Welcome { json: serde_json::to_string(&welcome).unwrap_or_default() }) {
             return;
         }
@@ -400,6 +511,7 @@ impl Links {
     }
 
     fn read_loop(&self, reader: &mut FrameReader, link: &Link, heard: &AtomicU64) -> Result<()> {
+        let mut flood = super::flood::Flood::default();
         loop {
             let message = match reader.recv::<ClientMsg>() {
                 Ok(Some(message)) => message,
@@ -409,14 +521,84 @@ impl Links {
             heard.store(now_ms(), Ordering::Relaxed);
             match message {
                 ClientMsg::Heartbeat => {}
-                ClientMsg::Sat(up) => self.take(link, *up)?,
+                ClientMsg::Sat(up) => {
+                    // Past its allowance the hub stops reading a while: TCP slows the guest.
+                    let wait = flood.take(super::flood::size(&up)?, Instant::now());
+                    if !wait.is_zero() {
+                        std::thread::sleep(wait);
+                        heard.store(now_ms(), Ordering::Relaxed);
+                    }
+                    self.take(link, *up, &mut flood)?
+                }
                 _ => bail!("the satellite sent a client's message"),
             }
         }
     }
 
     /// One message from a satellite.
-    fn take(&self, link: &Link, up: SatUp) -> Result<()> {
+    fn take(&self, link: &Link, up: SatUp, flood: &mut super::flood::Flood) -> Result<()> {
+        match up {
+            SatUp::Mcp { stream, kind, bytes } => {
+                if kind == canvas_common::sat::MCP_OPEN && !lock(&link.streams).open(stream) {
+                    let refusal = serde_json::json!({ "message": format!("this VM holds {} MCP sessions already", super::flood::MCP_STREAMS) });
+                    link.send(false, SatDown::Mcp { stream, kind: canvas_common::sat::MCP_ERROR, bytes: refusal.to_string().into_bytes() });
+                    link.send(false, SatDown::Mcp { stream, kind: canvas_common::sat::MCP_CLOSE, bytes: Vec::new() });
+                    return Ok(());
+                }
+                if kind == canvas_common::sat::MCP_CLOSE {
+                    lock(&link.streams).close(stream);
+                }
+                self.mcp.up(&link.sandbox, stream, kind, bytes);
+                Ok(())
+            }
+            SatUp::Hello { .. } => bail!("the satellite said Hello twice"),
+            SatUp::Proc { json } => {
+                if flood.proc_due(Instant::now()) {
+                    self.processes(link, serde_json::from_str(&json).unwrap_or_default())?;
+                }
+                Ok(())
+            }
+            SatUp::Stats { json } => {
+                if flood.stats_due(Instant::now()) {
+                    let stats: StatsReport = serde_json::from_str(&json).unwrap_or_default();
+                    update_record(&self.home, &link.sandbox, |r| (r.stats_ms, r.stats) = (now_ms(), stats));
+                }
+                Ok(())
+            }
+            up => self.take_term(link, up),
+        }
+    }
+
+    /// A process report: sessions found inside its sandbox's terminals become
+    /// their boxes' subsessions (once each), the live sessions its overlay.
+    fn processes(&self, link: &Link, report: ProcReport) -> Result<()> {
+        for term in &report.terms {
+            let Some(remote) = lock(&self.remotes).get(&term.term).cloned() else { continue };
+            let state = lock(&remote.state);
+            if state.sandbox != link.sandbox {
+                bail!("the satellite of {} reported on terminal {}, which is not its sandbox's", link.sandbox, term.term);
+            }
+            if term.generation != state.generation {
+                continue;
+            }
+            drop(state);
+            for nested in &term.nested {
+                if nested.session == term.term || !crate::index::is_session_id(&nested.session) || !lock(&self.reported).insert(nested.session.clone()) {
+                    continue;
+                }
+                (self.log)(format!("VM {}: session {} started inside {}", link.sandbox, nested.session, term.term));
+                if let Some(hook) = lock(&self.subsession).clone() {
+                    hook(&term.term, &nested.session, &nested.name, &nested.cwd);
+                }
+            }
+        }
+        let live = report.live.into_iter().filter(|id| crate::index::is_session_id(id)).take(4096).collect();
+        lock(&self.live).insert(link.sandbox.clone(), live);
+        Ok(())
+    }
+
+    /// A terminal's output, screen, exit or input acknowledgement.
+    fn take_term(&self, link: &Link, up: SatUp) -> Result<()> {
         if let SatUp::ControlResult { id, json } = &up {
             // Only the sandbox a control was sent to answers it.
             let waiting = lock(&self.controls).get(id).filter(|(sandbox, _)| *sandbox == link.sandbox).map(|(_, tx)| tx.clone());
@@ -427,7 +609,7 @@ impl Links {
         }
         let term = match &up {
             SatUp::Output { term, .. } | SatUp::Snapshot { term, .. } | SatUp::Exit { term, .. } | SatUp::InputAck { term, .. } => term.clone(),
-            // History, operations, notes, MCP and stats come with Phase 3; liveness with the mirrors.
+            // History, operations and notes pushed by a satellite come with Phase 3 (they come through drains now).
             _ => return Ok(()),
         };
         let Some(remote) = lock(&self.remotes).get(&term).cloned() else { return Ok(()) };
@@ -485,6 +667,7 @@ impl Links {
                 let error = if info.unknown { Some("the VM no longer runs this session".to_owned()) } else { Some(info.error).filter(|e| !e.is_empty()) };
                 state.exit(code, error);
                 drop(state);
+                self.mcp.session_ended(&term);
                 let _ = launch::update(&self.home, &term, |i| {
                     if i.terminal == generation {
                         i.terminal = 0;
@@ -682,7 +865,7 @@ mod tests {
         }
 
         fn hello(&mut self, sandbox: &str, terms: Vec<TermHeld>) {
-            let hello = HelloInfo { sandbox: sandbox.into(), build: "test".into(), platform: "linux".into(), home: "/home/agent".into(), terms };
+            let hello = HelloInfo { sandbox: sandbox.into(), build: "test".into(), platform: "linux".into(), home: "/home/agent".into(), terms, mcp_port: 0 };
             self.send(SatUp::Hello { version: SAT_PROTOCOL, caps: 0, json: serde_json::to_string(&hello).unwrap() });
         }
 
@@ -857,6 +1040,83 @@ mod tests {
         assert!(matches!(sat.next(), SatDown::Welcome { .. }));
         assert!(matches!(sat.next(), SatDown::Stop { generation: 7, force: true, .. }));
         sat.close().unwrap();
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn until_the_gateway_lands_an_mcp_stream_is_refused_on_the_link() {
+        let home = home();
+        let links = links(&home);
+        let minted = super::super::store::Satellites::new(&home).mint(A).unwrap();
+        let mut sat = Sat::connect(&links, &minted.id);
+        sat.hello(A, Vec::new());
+        assert!(matches!(sat.next(), SatDown::Welcome { .. }));
+        let open = canvas_common::sat::McpOpen { term: BOX.into(), server: "forge".into() };
+        sat.send(SatUp::Mcp { stream: 9, kind: canvas_common::sat::MCP_OPEN, bytes: serde_json::to_vec(&open).unwrap() });
+        assert!(matches!(sat.next(), SatDown::Mcp { stream: 9, kind: canvas_common::sat::MCP_ERROR, .. }));
+        assert!(matches!(sat.next(), SatDown::Mcp { stream: 9, kind: canvas_common::sat::MCP_CLOSE, .. }));
+        sat.close().unwrap();
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn process_reports_become_subsessions_once_and_the_live_overlay_and_stats_are_kept() {
+        use canvas_common::sat::{NestedSession, ProcReport, RepoStats, StatsReport, TermProcs};
+        let home = home();
+        let links = links(&home);
+        let told: Arc<Mutex<Vec<(String, String, String)>>> = Arc::default();
+        links.on_subsession({
+            let told = told.clone();
+            Arc::new(move |parent: &str, child: &str, name: &str, _cwd: &str| told.lock().unwrap().push((parent.into(), child.into(), name.into())))
+        });
+        let minted = super::super::store::Satellites::new(&home).mint(A).unwrap();
+        let _terminal = adopted(&home, &links, A);
+        let mut sat = Sat::connect(&links, &minted.id);
+        sat.hello(A, Vec::new());
+        let SatDown::Welcome { json } = sat.next() else { panic!("Welcome first") };
+        assert_eq!(serde_json::from_str::<WelcomeInfo>(&json).unwrap().stats_secs, 30);
+        let child = "11111111-2222-4333-8444-555555555555";
+        let nested = NestedSession { session: child.into(), name: "Nested".into(), cwd: "/home/agent/work/app".into() };
+        let report = ProcReport { terms: vec![TermProcs { term: BOX.into(), generation: 7, nested: vec![nested] }], live: vec![child.into(), "not a session".into()] };
+        sat.send(SatUp::Proc { json: serde_json::to_string(&report).unwrap() });
+        wait_until("the subsession is told", || told.lock().unwrap().len() == 1);
+        assert_eq!(told.lock().unwrap()[0], (BOX.to_owned(), child.to_owned(), "Nested".to_owned()));
+        assert!(links.session_live(A, child) && !links.session_live(B, child));
+        std::thread::sleep(Duration::from_millis(600));
+        sat.send(SatUp::Proc { json: serde_json::to_string(&report).unwrap() });
+        let repo = RepoStats { term: BOX.into(), branch: "atelier/x".into(), untracked: 2, ..Default::default() };
+        sat.send(SatUp::Stats { json: serde_json::to_string(&StatsReport { repos: vec![repo], ..Default::default() }).unwrap() });
+        wait_until("the stats are kept", || load_record(&home, A).is_some_and(|r| r.linked && r.stats.repos.first().is_some_and(|r| r.untracked == 2)));
+        assert_eq!(told.lock().unwrap().len(), 1, "told once");
+        sat.close().unwrap();
+        assert!(!links.session_live(A, child), "nothing is live while the VM is away");
+        assert!(load_record(&home, A).is_some_and(|r| !r.linked && r.since_ms > 0));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_satellite_over_its_limits_or_reporting_on_another_sandbox_is_closed() {
+        let home = home();
+        let links = links(&home);
+        let store = super::super::store::Satellites::new(&home);
+        let (a, b) = (store.mint(A).unwrap(), store.mint(B).unwrap());
+        let _terminal = adopted(&home, &links, A);
+        let mut sat = Sat::connect(&links, &a.id);
+        sat.hello(A, Vec::new());
+        assert!(matches!(sat.next(), SatDown::Welcome { .. }));
+        sat.send(SatUp::Output { term: BOX.into(), generation: 7, seq: 0, bytes: vec![b'x'; 1 << 20] });
+        assert!(sat.served.join().unwrap().unwrap_err().to_string().contains("output of"));
+        let mut sat = Sat::connect(&links, &b.id);
+        sat.hello(B, Vec::new());
+        assert!(matches!(sat.next(), SatDown::Welcome { .. }));
+        let report = canvas_common::sat::ProcReport { terms: vec![canvas_common::sat::TermProcs { term: BOX.into(), generation: 7, nested: Vec::new() }], live: Vec::new() };
+        sat.send(SatUp::Proc { json: serde_json::to_string(&report).unwrap() });
+        assert!(sat.served.join().unwrap().unwrap_err().to_string().contains("not its sandbox's"));
+        let mut sat = Sat::connect(&links, &a.id);
+        sat.hello(A, Vec::new());
+        assert!(matches!(sat.next(), SatDown::Welcome { .. }));
+        sat.hello(A, Vec::new());
+        assert!(sat.served.join().unwrap().unwrap_err().to_string().contains("Hello twice"));
         let _ = std::fs::remove_dir_all(home);
     }
 }

@@ -45,6 +45,8 @@ pub fn run(args: &[String]) -> Result<()> {
         // A passive run: Copilot and Claude Code `-p PROMPT`, OpenCode `run PROMPT`.
         ["run", ..] => return headless(args, args.get(1).cloned().unwrap_or_default()),
         _ if args.iter().any(|a| a == "-p") => return headless(args, args.windows(2).find(|w| w[0] == "-p").map(|w| w[1].clone()).unwrap_or_default()),
+        // A session started by an agent inside its terminal (`!nested NAME`), held a while.
+        _ if args.iter().any(|a| a == "--hold") => return hold(args),
         _ => return session(args),
     };
     println!("{out}");
@@ -209,6 +211,7 @@ fn session(args: &[String]) -> Result<()> {
     let history = FakeHistory::start(args);
     let mut stdin = std::io::stdin().lock();
     let mut buf = [0u8; 4096];
+    let mut line = String::new();
     loop {
         let n = stdin.read(&mut buf)?;
         if n == 0 {
@@ -226,6 +229,16 @@ fn session(args: &[String]) -> Result<()> {
             }
         } else if !text.starts_with('\x1b') {
             write!(out, "{}", text.replace('\r', "\r\n❯ "))?;
+            line.push_str(&text);
+            if let Some(end) = line.find('\r') {
+                let typed: String = line.drain(..=end).collect();
+                // `!nested NAME`: as an agent running `copilot -p …` in its terminal.
+                if let Some(name) = typed.trim_end_matches('\r').strip_prefix("!nested ")
+                    && history.is_some()
+                {
+                    nested(name);
+                }
+            }
             if text.contains('\r')
                 && let Some(history) = &history
             {
@@ -241,12 +254,42 @@ fn session(args: &[String]) -> Result<()> {
 }
 
 
+/// Starts this program as a session of its own inside this one's terminal
+/// (a child process, as `copilot -p` an agent runs), held two minutes.
+fn nested(name: &str) {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let id = uuid::Uuid::new_v4().to_string();
+    let _ = std::process::Command::new(exe)
+        .args(["--session-id", &id, "--name", name, "--hold", "120"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+/// `--hold SECS`: a session with a history that does nothing for a while.
+fn hold(args: &[String]) -> Result<()> {
+    let secs = args.windows(2).find(|w| w[0] == "--hold").and_then(|w| w[1].parse().ok()).unwrap_or(60);
+    let history = FakeHistory::start(args);
+    std::thread::sleep(std::time::Duration::from_secs(secs));
+    drop(history);
+    Ok(())
+}
+
 /// With `ATELIER_FAKE_HISTORY` set, the fake keeps a Copilot history as the
-/// real CLI does (`$COPILOT_HOME/session-state/<id>/`, `workspace.yaml` and
-/// `events.jsonl`): a turn per line you type (working, then idle), so the
-/// canvas's status follows it (the VM self-test reads it from a guest).
+/// real CLI does (`$COPILOT_HOME/session-state/<id>/`, `workspace.yaml`,
+/// `events.jsonl` and `inuse.<pid>.lock` while it runs): a turn per line you
+/// type (working, then idle), so the canvas's status follows it (the VM
+/// self-test reads it from a guest).
 struct FakeHistory {
     events: std::path::PathBuf,
+    lock: std::path::PathBuf,
+}
+
+impl Drop for FakeHistory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.lock);
+    }
 }
 
 impl FakeHistory {
@@ -260,7 +303,9 @@ impl FakeHistory {
         let cwd = std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default();
         let name = args.windows(2).find(|w| w[0] == "--name").map(|w| w[1].clone()).unwrap_or_else(|| "Fake session".into());
         std::fs::write(dir.join("workspace.yaml"), format!("id: {id}\ncwd: {cwd}\nname: {name}\ncreated_at: {now}\nupdated_at: {now}\n")).ok()?;
-        let history = FakeHistory { events: dir.join("events.jsonl") };
+        let lock = dir.join(format!("inuse.{}.lock", std::process::id()));
+        let _ = std::fs::write(&lock, b"");
+        let history = FakeHistory { events: dir.join("events.jsonl"), lock };
         history.event("session.start");
         Some(history)
     }

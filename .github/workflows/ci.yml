@@ -76,8 +76,15 @@ jobs:
       - name: VM sessions self-test (local sandboxes, no cloud)
         timeout-minutes: 15
         run: target\release\atelier.exe selftest vm
+      # What the self-tests leave running (a leak shows here before it starves later steps).
+      - name: processes after the VM self-test
+        if: ${{ !cancelled() }}
+        run: Get-Process | Sort-Object StartTime -Descending -ErrorAction SilentlyContinue | Select-Object -First 30 Id, ProcessName, StartTime | Format-Table -AutoSize
       - name: TUI self-test
         run: target\release\atelier.exe selftest
+      - name: processes after the TUI self-test
+        if: ${{ !cancelled() }}
+        run: Get-Process | Sort-Object StartTime -Descending -ErrorAction SilentlyContinue | Select-Object -First 30 Id, ProcessName, StartTime | Format-Table -AutoSize
       - name: TUI self-test over loopback TCP
         run: target\release\atelier.exe selftest --remote loopback
       - name: remote fault injection
