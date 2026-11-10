@@ -218,7 +218,9 @@ pub fn session(config: &Config, terms: &Arc<Terms>, mcp: &Arc<McpProxy>, files: 
         let (files, other_tx) = (files.clone(), other_tx.clone());
         std::thread::Builder::new().name("sat-files".into()).spawn(move || edit_loop(&files, &other_tx, &stop_rx))?;
     }
+    super::lite::set_link_state(&ops_home, true);
     let result = read_loop(&mut reader, terms, mcp, files, &heard, &other_tx, &stats_every, &ops_home);
+    super::lite::set_link_state(&ops_home, false);
     files.link_lost();
     terms.detach(epoch);
     mcp.attach(None);

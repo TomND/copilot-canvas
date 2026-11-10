@@ -633,7 +633,7 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     step("the pool is filled again behind the leased VM");
     wait_file("the pool was not filled again", 60, || pool().iter().any(|m| m.id != member.id))?;
 
-    step("the service restarts: the box's terminal is adopted again and replayed; nothing stopped in the guest");
+    step("the service restarts: meanwhile a read in the guest answers from the canvas's last copy and a write is queued (applied once when it is back); the box's terminal is adopted again and replayed; nothing stopped in the guest");
     // The long-lived ones (the satellite, the agent, their consoles); the satellite's git runs come and go.
     let settled = canvas_common::paths::now_ms().saturating_sub(5_000);
     let before: Vec<canvas_agents::vm::local::Proc> = local.processes(&member.id)?.into_iter().filter(|p| p.start_ms < settled).collect();
@@ -641,6 +641,12 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     watch.conn.tx.send(ClientMsg::Shutdown)?;
     wait_file("the service did not stop", 20, || conn::try_connect(instance).is_err())?;
     anyhow::ensure!(before.iter().all(|p| canvas_sys::process::process_start_ms(p.pid) == Some(p.start_ms)), "a restart of the hub stopped nothing in the guest");
+    // While the canvas is away: a read answers from its last copy, a write says it is queued.
+    wait_file("the satellite did not notice the canvas went", 20, || local.get_file(&member.id, ".atelier/vm/link.json", 4096).is_ok_and(|b| String::from_utf8_lossy(&b).contains("\"linked\":false")))?;
+    let (ok, out) = cli(exe, &["todo", "boards"], &guest)?;
+    anyhow::ensure!(ok && out.contains("this is its last copy"), "a read while the canvas is away: {out}");
+    let (ok, out) = cli(exe, &["report", "publish", "--message", "Queued while away"], &guest)?;
+    anyhow::ensure!(ok && out.contains("Queued (the canvas is not reachable since"), "a write while the canvas is away: {out}");
     conn::spawn_service_exe(exe, instance, &env_refs)?;
     let deadline = Instant::now() + Duration::from_secs(20);
     let conn = loop {
@@ -661,6 +667,9 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     anyhow::ensure!(watch.pump(Instant::now() + Duration::from_secs(15), |w| w.screen().contains("-after-restart")), "typing after the restart:\n{}", watch.screen());
     let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
     anyhow::ensure!(log.contains("its terminal is adopted again"), "the restart adopted the terminal");
+    wait_file("the write queued while the canvas was away was not applied once it was back", 30, || {
+        std::fs::read_dir(&items).is_ok_and(|e| e.flatten().filter(|i| std::fs::read_to_string(i.path().join("meta.json")).is_ok_and(|m| m.contains("Queued while away"))).count() == 1)
+    })?;
 
     step("a frozen VM drops its link and typing is refused as offline; resumed, it links again and replays");
     let links = |text: &str| text.matches(&format!("VM {}: satellite linked", member.id)).count();

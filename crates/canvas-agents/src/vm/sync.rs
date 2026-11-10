@@ -4,6 +4,7 @@
 //! | root | from | the guest's edits |
 //! |---|---|---|
 //! | `plugin` | the canvas's plugin (`<home>/plugin`) | — |
+//! | `canvas` | the routing and the todo book, laid out as a home (`bus/routing.json`, `canvas-agents/<canvas>/todos/book.json`): the guest's reads when the hub is away | — |
 //! | `profile` | the pack's profile bundle (`vm::profile`) | — |
 //! | `group-skills/<box>` | the box's group skill plugin | — |
 //! | `instructions/<group>` | the group's instructions, with the guest's paths | — |
@@ -118,6 +119,19 @@ pub fn roots_for(home: &Path, pack: &Pack, user_home: &Path, guest_roots: &str, 
     if !plugin.is_empty() {
         roots.push(Root { id: "plugin".into(), files: plugin, ..Default::default() });
     }
+    // The canvas's routing and todo book, laid out as a home: the guest's reads when the hub is away.
+    let routing = home.join("bus").join("routing.json");
+    if routing.is_file() {
+        let mut files: BTreeMap<String, Source> = [("bus/routing.json".to_owned(), Source::File(routing.clone()))].into();
+        let canvas = std::fs::read(&routing).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()).and_then(|v| v["canvas"].as_str().map(str::to_owned)).filter(|c| canvas_model::doc::valid_canvas_id(c));
+        if let Some(canvas) = canvas {
+            let book = crate::todos_cli::book_path(home, &canvas);
+            if book.is_file() {
+                files.insert(format!("canvas-agents/{canvas}/todos/book.json"), Source::File(book));
+            }
+        }
+        roots.push(Root { id: "canvas".into(), files, ..Default::default() });
+    }
     if !pack.profile.include.is_empty() || !pack.paths.is_empty() {
         let bundle = super::profile::bundle(pack, user_home);
         let files = bundle
@@ -225,6 +239,16 @@ mod tests {
         let roots = roots_for(&home, &pack, &home.join("user"), "/home/agent/.atelier/vm/roots", &[intent.clone(), intent]);
         let ids: Vec<&str> = roots.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids, ["plugin", "profile", "notes/design-docs", "instructions/design-docs", "paths/0"], "one group once; `none` paths are not synced");
+        // With a routed canvas: its routing and todo book as a home.
+        let canvas = "c0ffee00-0000-4000-8000-00000000ca5e";
+        std::fs::create_dir_all(home.join("bus")).unwrap();
+        std::fs::write(home.join("bus/routing.json"), format!("{{\"canvas\": \"{canvas}\"}}")).unwrap();
+        let book = crate::todos_cli::book_path(&home, canvas);
+        std::fs::create_dir_all(book.parent().unwrap()).unwrap();
+        std::fs::write(&book, "{}").unwrap();
+        let routed = roots_for(&home, &Pack::default(), &home.join("user"), "/r", &[]);
+        let names: Vec<&str> = routed[1].files.keys().map(String::as_str).collect();
+        assert_eq!((routed[1].id.as_str(), names), ("canvas", vec!["bus/routing.json", &format!("canvas-agents/{canvas}/todos/book.json")[..]]));
         let notes = &roots[2];
         assert_eq!(notes.files.keys().collect::<Vec<_>>(), ["ai-docs/GOALS.md", "human-outputs/report.html"], "the group's notes only, not its code");
         assert!(notes.writes.is_some() && roots[0].writes.is_none() && roots[4].writes.is_none(), "ro-snapshot is read-only");

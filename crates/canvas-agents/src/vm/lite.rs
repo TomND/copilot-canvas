@@ -102,15 +102,77 @@ pub fn output_options(op: &CliOp) -> Vec<String> {
     op.options.iter().filter(|(k, _)| todo && (k == "canvas" || k == "out")).map(|(_, v)| v.clone()).collect()
 }
 
+/// Whether the guest's satellite is linked to the hub, and since when it is
+/// not (`None`: no satellite here, the hooks lane, which polls).
+pub fn link_state(home: &Path) -> Option<(bool, u64)> {
+    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(home.join("vm").join("link.json")).ok()?).ok()?;
+    Some((value["linked"] == true, value["since_ms"].as_u64().unwrap_or(0)))
+}
+
+/// The satellite says whether it is linked (for the guest's commands).
+pub fn set_link_state(home: &Path, linked: bool) {
+    let _ = crate::paths::write_atomic(&home.join("vm").join("link.json"), serde_json::json!({ "linked": linked, "since_ms": now_ms() }).to_string().as_bytes());
+}
+
+/// Commands that only read the canvas: when the hub is away they read its
+/// last copy in the guest (the `canvas` root) instead.
+pub fn is_read(words: &[&str], options: &[(String, String)]) -> bool {
+    match words {
+        ["todo", "prime" | "boards" | "list" | "show" | "ready" | "export", ..] => true,
+        ["todo", "mirror", ..] => !options.iter().any(|(k, _)| k == "set"),
+        _ => false,
+    }
+}
+
+/// `HH:MM UTC` of a time.
+fn clock(ms: u64) -> String {
+    canvas_common::paths::format_rfc3339_ms(ms).get(11..16).map(|t| format!("{t} UTC")).unwrap_or_default()
+}
+
+/// A read run here on the canvas's last copy (`<home>/vm/roots/canvas`, a
+/// home of its own), said to be one.
+fn read_copy(home: &Path, words: &[&str], options: &[(String, String)], flags: &[String], since: u64) -> Result<String> {
+    let copy = home.join("vm").join("roots").join("canvas");
+    anyhow::ensure!(copy.join("bus").join("routing.json").is_file(), "the canvas is not reachable and its todos have not reached this VM yet");
+    let mut cmd = std::process::Command::new(std::env::current_exe()?);
+    cmd.args(words);
+    for (key, value) in options {
+        cmd.args([format!("--{key}"), value.clone()]);
+    }
+    for flag in flags {
+        cmd.arg(format!("--{flag}"));
+    }
+    cmd.env("ATELIER_HOME", &copy).env_remove("ATELIER_REMOTE").stdin(std::process::Stdio::null());
+    canvas_sys::spawn::CommandExt::no_window(&mut cmd);
+    let out = cmd.output().context("cannot read the canvas's copy")?;
+    let note = if since > 0 { format!("(the canvas is not reachable since {}: this is its last copy)", clock(since)) } else { "(the canvas is not reachable: this is its last copy)".to_owned() };
+    if !out.status.success() {
+        bail!("{}\n{note}", String::from_utf8_lossy(&out.stderr).trim().trim_start_matches("atelier: "));
+    }
+    Ok(format!("{}\n{note}", String::from_utf8_lossy(&out.stdout).trim_end()))
+}
+
 /// Relays a command from the guest: queues it, waits for the hub's answer,
 /// writes the files it produced here; what to print (`Err`: a refusal).
+/// With a satellite that is not linked, a read answers from the canvas's last
+/// copy and a write says at once that it is queued.
 pub fn relay(home: &Path, words: &[&str], options: &[(String, String)], flags: &[String]) -> Result<String> {
+    let offline = link_state(home).filter(|(linked, _)| !linked).map(|(_, since)| since);
+    let read = is_read(words, options);
+    if let Some(since) = offline
+        && read
+    {
+        return read_copy(home, words, options, flags, since);
+    }
     let op = op_of(words, options, flags, &mut std::io::stdin().lock())?;
     let term = canvas_common::env::var("ATELIER_SESSION").unwrap_or_default();
     let id = uuid::Uuid::new_v4().to_string();
     let queued = Queued { id: id.clone(), term, op: op.clone(), ms: now_ms() };
     crate::paths::write_atomic(&outbox_dir(home).join(format!("{id}.json")), &serde_json::to_vec(&queued)?)?;
     let answer_path = answers_dir(home).join(format!("{id}.json"));
+    if let Some(since) = offline {
+        return Ok(format!("Queued (the canvas is not reachable since {}): `atelier {}` is applied when it is back; its answer is not known yet.", clock(since), words.join(" ")));
+    }
     let deadline = Instant::now() + WAIT;
     while Instant::now() < deadline {
         if let Ok(bytes) = std::fs::read(&answer_path) {
@@ -125,6 +187,11 @@ pub fn relay(home: &Path, words: &[&str], options: &[(String, String)], flags: &
             bail!("{}", answer.text.trim_end());
         }
         std::thread::sleep(Duration::from_millis(100));
+    }
+    if read && link_state(home).is_some() {
+        // Asked of a hub that did not answer in time: the copy, said to be one (the request is dropped).
+        let _ = std::fs::remove_file(outbox_dir(home).join(format!("{id}.json")));
+        return read_copy(home, words, options, flags, 0);
     }
     Ok(format!("Queued (not applied yet): the canvas applies `atelier {}` when it next reaches this VM; its answer is not known yet.", words.join(" ")))
 }
