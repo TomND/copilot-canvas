@@ -141,3 +141,9 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
 - 2026-11-10: the secrets refresher; Phase 2 started early on files no worker owns: the VT repaint and remote
   terminals in `canvas-host` (both unit-tested). The satellite (VM-23) waits for the P-aca hand-off: its
   `wss://` dialer needs `rustls` in `crates/canvas-agents/Cargo.toml`, which that worker owns.
+- 2026-11-10: CI run 42749108451 (2644eaf) failed only in `selftest vm`: arm64 Linux checked the revocation before
+  the launcher had revoked (the probe now waits for it), macOS saw "2 of 1 running" (budgets now count the
+  launches' running VMs, not sandbox records; the probe checks no sandbox leaked). Fixed in 88defa0 (3 local passes);
+  its CI is queued behind the workers' branches. Main's CI for the d35d56e merge is still running.
+- Next: the workers' hand-offs (`vm-aca`, `vm-local`) to wire `open_provider` and run the pool lane
+  (`selftest vm` on `provider: local`), then Phase 1's merge.
