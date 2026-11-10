@@ -141,6 +141,11 @@ impl Corpus {
         }
     }
 
+    /// [`crate::replay::repaint_round_trip`] of an entry.
+    pub fn repaint(&self, name: &str, from: Engine, to: Engine) -> Result<Option<String>> {
+        crate::replay::repaint_round_trip(from, to, &self.recording(name)?)
+    }
+
     pub fn check(&self, name: &str, engine: Engine) -> Result<Outcome> {
         let Some(expected) = self.expected(name, engine)? else { return Ok(Outcome::Missing) };
         let actual = replay(engine, &self.recording(name)?)?;

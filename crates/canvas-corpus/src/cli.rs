@@ -112,6 +112,18 @@ fn check(corpus: &Corpus, names: &[&str], engine: Option<&str>) -> Result<()> {
                 println!("skip  {:<9} {name} (engine not in this build)", other.name());
             }
         }
+        // A VM session's gap reset: the guest's screen (alacritty) repainted on the hub's engine.
+        for to in crate::available_engines() {
+            checked += 1;
+            let pair = format!("repaint alacritty→{}", to.name());
+            match corpus.repaint(name, Engine::Alacritty, to)? {
+                None => println!("ok    {pair} {name}"),
+                Some(difference) => {
+                    failed += 1;
+                    println!("FAIL  {pair} {name}: {difference}");
+                }
+            }
+        }
     }
     let engine_names: Vec<&str> = engines.iter().map(|e| e.name()).collect();
     println!("{checked} checked ({}), {failed} failed", engine_names.join(", "));
