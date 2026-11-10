@@ -754,6 +754,9 @@ fn real_main() -> Result<()> {
         ),
         ["remote", "servers"] => remote_cli::servers(&instance),
         ["remote", "forget", name] => remote_cli::forget(&instance, name),
+        ["vm", "attach"] => canvas_agents::vm::launch::attach(&instance.home, &option("box").context("vm attach needs --box ID")?),
+        ["vm-hook-standin", "run", "--", argv @ ..] => canvas_agents::vm::local::standin_run(&option("sandbox").context("--sandbox ID")?, &options("env"), &owned(argv)),
+        ["vm-hook-standin", hook] => canvas_agents::vm::local::standin(hook),
         ["vm", "pack", "check"] => {
             let status = match canvas_agents::vm::pack::configured(&instance.home) {
                 Some(folder) => canvas_agents::vm::pack::load(&folder).1,

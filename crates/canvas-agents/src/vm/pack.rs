@@ -310,10 +310,8 @@ fn bytes_in(text: &str, unit: &str) -> Option<u32> {
     let text = text.trim();
     let (n, factor) = if let Some(n) = text.strip_suffix("Gi") {
         (n, if unit == "Mi" { 1024.0 } else { 1.0 })
-    } else if let Some(n) = text.strip_suffix("Mi") {
-        (n, if unit == "Mi" { 1.0 } else { 1.0 / 1024.0 })
     } else {
-        return None;
+        (text.strip_suffix("Mi")?, if unit == "Mi" { 1.0 } else { 1.0 / 1024.0 })
     };
     n.trim().parse::<f64>().ok().map(|v| (v * factor).ceil() as u32)
 }

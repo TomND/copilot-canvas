@@ -45,76 +45,7 @@ impl Provider for Copilot {
     }
 
     fn command(&self, id: &str, launch: &AgentLaunch, integration: &Integration) -> Result<Command> {
-        let session = launch.native_id.as_deref().unwrap_or(id);
-        anyhow::ensure!(is_session_id(session), "refusing to launch an invalid session id");
-        // No --mouse flag: Copilot saves it to the user's global settings.
-        let mut args = vec!["--session-id".to_owned(), session.to_owned()];
-        if !launch.resume && let Some(name) = launch.name.as_ref().filter(|n| !n.trim().is_empty()) {
-            args.extend(["--name".to_owned(), name.clone()]);
-        }
-        let mut env = Vec::new();
-        if let Some(prompt) = launch.headless_prompt.as_ref() {
-            // Passive run: one turn, never asks.
-            args.extend(["-p".to_owned(), prompt.clone(), "--allow-all".to_owned(), "--no-ask-user".to_owned()]);
-            if let Some(folder) = &launch.group_folder {
-                args.extend(["--add-dir".to_owned(), folder.clone()]);
-            }
-            // Every passive run uses the configured model (resumes too).
-            if let Some(model) = launch.model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
-                args.extend(["--model".to_owned(), super::option_value("--model", model)?.to_owned()]);
-            }
-        } else {
-            // A first prompt also applies to a forked subsession (resumed from its copy).
-            if let Some(prompt) = launch.prompt.as_ref().filter(|p| !p.trim().is_empty()) {
-                args.extend(["-i".to_owned(), prompt.clone()]);
-            }
-            // Permissions apply to every run (they are not saved with the session).
-            if launch.allow_all {
-                args.push("--allow-all".to_owned());
-            }
-            // New sessions only: Copilot keeps a session's model (and the rest)
-            // itself, so a resume never gets the current default.
-            if !launch.resume {
-                let mut flag = |name: &str, value: &Option<String>| {
-                    if let Some(value) = value.as_ref().filter(|v| !v.trim().is_empty()) {
-                        args.push(name.to_owned());
-                        args.push(value.trim().to_owned());
-                    }
-                };
-                flag("--model", &launch.model);
-                flag("--reasoning-effort", &launch.effort);
-                flag("--mode", &launch.mode);
-                flag("--agent", &launch.custom_agent);
-                flag("--context", &launch.context);
-                for dir in launch.add_dirs.iter().filter(|d| !d.trim().is_empty()) {
-                    args.extend(["--add-dir".to_owned(), dir.trim().to_owned()]);
-                }
-            }
-        }
-        // The session's MCP server choice applies to every run (resumes too).
-        args.extend(canvas_model::doc::mcp_off_args(&launch.mcp_off));
-        if let Some(plugin) = &integration.plugin_dir {
-            args.extend(["--plugin-dir".to_owned(), plugin.display().to_string()]);
-        }
-        for plugin in &integration.skill_plugins {
-            args.extend(["--plugin-dir".to_owned(), plugin.display().to_string()]);
-        }
-        env.extend(integration.env.iter().cloned());
-        if launch.headless_prompt.is_none()
-            && let (Some(folder), Some(name)) = (&launch.group_folder, &launch.group_name)
-        {
-            let dirs = super::group_dirs(folder, name)?;
-            for dir in [&dirs.ai_docs, &dirs.outputs] {
-                args.extend(["--add-dir".to_owned(), dir.display().to_string()]);
-            }
-            let mut list = std::env::var("COPILOT_CUSTOM_INSTRUCTIONS_DIRS").unwrap_or_default();
-            if !list.is_empty() {
-                list.push(',');
-            }
-            list.push_str(&dirs.instructions.display().to_string());
-            env.push(("COPILOT_CUSTOM_INSTRUCTIONS_DIRS".to_owned(), list));
-        }
-        env.extend(launch.env.iter().cloned());
+        let (args, env) = args(id, launch, integration)?;
         Ok(Command { program: self.program()?, args, env })
     }
 
@@ -147,6 +78,83 @@ impl History for Index {
     fn take_warnings(&mut self) -> Vec<String> {
         std::mem::take(&mut self.warnings)
     }
+}
+
+/// Copilot's arguments and environment for a launch (the program is
+/// found where the launch runs: [`Provider::command`] on this machine, the
+/// guest's own `copilot` for a VM session).
+pub fn args(id: &str, launch: &AgentLaunch, integration: &Integration) -> Result<super::ArgsEnv> {
+    let session = launch.native_id.as_deref().unwrap_or(id);
+    anyhow::ensure!(is_session_id(session), "refusing to launch an invalid session id");
+    // No --mouse flag: Copilot saves it to the user's global settings.
+    let mut args = vec!["--session-id".to_owned(), session.to_owned()];
+    if !launch.resume && let Some(name) = launch.name.as_ref().filter(|n| !n.trim().is_empty()) {
+        args.extend(["--name".to_owned(), name.clone()]);
+    }
+    let mut env = Vec::new();
+    if let Some(prompt) = launch.headless_prompt.as_ref() {
+        // Passive run: one turn, never asks.
+        args.extend(["-p".to_owned(), prompt.clone(), "--allow-all".to_owned(), "--no-ask-user".to_owned()]);
+        if let Some(folder) = &launch.group_folder {
+            args.extend(["--add-dir".to_owned(), folder.clone()]);
+        }
+        // Every passive run uses the configured model (resumes too).
+        if let Some(model) = launch.model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+            args.extend(["--model".to_owned(), super::option_value("--model", model)?.to_owned()]);
+        }
+    } else {
+        // A first prompt also applies to a forked subsession (resumed from its copy).
+        if let Some(prompt) = launch.prompt.as_ref().filter(|p| !p.trim().is_empty()) {
+            args.extend(["-i".to_owned(), prompt.clone()]);
+        }
+        // Permissions apply to every run (they are not saved with the session).
+        if launch.allow_all {
+            args.push("--allow-all".to_owned());
+        }
+        // New sessions only: Copilot keeps a session's model (and the rest)
+        // itself, so a resume never gets the current default.
+        if !launch.resume {
+            let mut flag = |name: &str, value: &Option<String>| {
+                if let Some(value) = value.as_ref().filter(|v| !v.trim().is_empty()) {
+                    args.push(name.to_owned());
+                    args.push(value.trim().to_owned());
+                }
+            };
+            flag("--model", &launch.model);
+            flag("--reasoning-effort", &launch.effort);
+            flag("--mode", &launch.mode);
+            flag("--agent", &launch.custom_agent);
+            flag("--context", &launch.context);
+            for dir in launch.add_dirs.iter().filter(|d| !d.trim().is_empty()) {
+                args.extend(["--add-dir".to_owned(), dir.trim().to_owned()]);
+            }
+        }
+    }
+    // The session's MCP server choice applies to every run (resumes too).
+    args.extend(canvas_model::doc::mcp_off_args(&launch.mcp_off));
+    if let Some(plugin) = &integration.plugin_dir {
+        args.extend(["--plugin-dir".to_owned(), plugin.display().to_string()]);
+    }
+    for plugin in &integration.skill_plugins {
+        args.extend(["--plugin-dir".to_owned(), plugin.display().to_string()]);
+    }
+    env.extend(integration.env.iter().cloned());
+    if launch.headless_prompt.is_none()
+        && let (Some(folder), Some(name)) = (&launch.group_folder, &launch.group_name)
+    {
+        let dirs = super::group_dirs(folder, name)?;
+        for dir in [&dirs.ai_docs, &dirs.outputs] {
+            args.extend(["--add-dir".to_owned(), dir.display().to_string()]);
+        }
+        let mut list = std::env::var("COPILOT_CUSTOM_INSTRUCTIONS_DIRS").unwrap_or_default();
+        if !list.is_empty() {
+            list.push(',');
+        }
+        list.push_str(&dirs.instructions.display().to_string());
+        env.push(("COPILOT_CUSTOM_INSTRUCTIONS_DIRS".to_owned(), list));
+    }
+    env.extend(launch.env.iter().cloned());
+    Ok((args, env))
 }
 
 #[cfg(test)]

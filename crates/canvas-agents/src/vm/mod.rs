@@ -7,6 +7,9 @@
 //! VM UI shows: the bus snapshot carries no `vm` view and the requests say
 //! that no pack is configured.
 
+pub mod hooks;
+pub mod launch;
+pub mod local;
 pub mod pack;
 
 use std::path::Path;
