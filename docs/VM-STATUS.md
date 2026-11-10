@@ -70,7 +70,7 @@ owner's note that VM sessions are optional and local stays the default.
 - [x] Exit: `selftest vm` with the pool lane on three OSes, both providers wired, `vm spike` through a provider;
       the owner's checks on real sandboxes stay below
 
-### 2: terminals
+### 2: terminals (done 2026-11-10; merged into main with the CI run named in the log)
 - [x] VM-21 remote PTY (`Terminal::spawn_remote`, `RemotePty`, `RemoteFeed`; started early, unit-tested)
 - [x] VM-22 VT repaint (`emulator::replay::repaint`; round trip on the alacritty engine; the corpus round trip
       for both engines comes with the satellite)
@@ -78,10 +78,10 @@ owner's note that VM sessions are optional and local stays the default.
       pack's CA, `CONNECT` proxies; PTYs with alacritty, a 4 MiB ring, replay or repaint; generations; input once;
       reconnect 0.5/1/1.5 s; heartbeats; ends on a proven revocation), `atelier satellite [--start]`; history and
       relayed commands through the drain as a control (departure below). `proc` and `stats` reports
-      (`vm::satellite::reports`). Still to come: the endpoint for the guest CLI (Phase 3), a per-sandbox ring cap
+      (`vm::satellite::reports`); 32 MiB of rings per sandbox. The endpoint for the guest CLI is Phase 3 (VM-32)
 - [x] VM-24 hub link (`vm::link`): one link per sandbox, Hello first and its own terminals only, output in order,
       input numbered and resent, controls, heartbeats and the 6 s silence rule; limits (`vm::flood`: size caps per
-      message kind, pacing, thinned reports, 32 MCP streams)
+      message kind, pacing, thinned reports, 32 MCP streams); a revoked credential's link is closed
 - [x] VM-25 launch, shutdown, re-adoption: `Resolved::remote`, `Host::adopt_remote`, `Intent::terminal`, remote
       terminals let go at shutdown and adopted at start; the launcher starts the satellite (`Provider::start_satellite`)
 - [x] VM-26 in Phase 2's scope: the guest's command line from `launch::guest_command` (nothing of this machine, unit
@@ -91,7 +91,9 @@ owner's note that VM sessions are optional and local stays the default.
 - [x] VM-28 guest subsessions (from `SatUp::Proc`; the mirror's liveness overlay); VM-29 drops end to end, input
       while resuming, the mailbox's wait; the stats reports in the VM view (`git`, `offline_ms`) and `vm list`
 - [x] VM-2A docs: BACKEND, REMOTE, README, VM-SESSIONS, DEVELOPMENT, AGENT-PROVIDERS (*Inside a VM*)
-- [ ] Exit: `selftest vm` (replay, gap, freeze, restart) on three OSes
+- [x] Exit: `selftest vm` (restart, freeze, subsessions, git state) on three OSes (CI run 42813074706 on 6fab5ff, all
+      17 jobs); replay and gap end to end in `vm::satellite` tests; `corpus check` with the repaint round trip;
+      `selftest` and `--remote loopback` unchanged. Owner: `vm spike s1`, `s4`, `s7` on real sandboxes
 
 ### 3: integration
 - [ ] VM-31 `Io` seam · VM-32 CLI satellite mode · VM-33 op relay · VM-34 file sync · VM-35 profile and path map · VM-36 egress and secrets · VM-37 MCP gateway · VM-38 guest MCP config · VM-39 docs and skills
@@ -234,4 +236,13 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   started while the stand-in ran took itself for the stand-in. The probe copies it on Windows now (as `selftest`
   does); hooks keep the guest's error line for the spikes. The raw-tap test raced ConPTY's last writes (fixed).
   Then VM-28 subsessions, `proc` and `stats` reports, the link's limits: `selftest vm` PASS in 50 s, two runs.
+- 2026-11-10: CI run 42813074706 (6fab5ff) green on every job. One earlier Windows run failed at the start of
+  `selftest --remote loopback` with STATUS_DLL_INIT_FAILED (0xC0000142, a desktop-heap exhaustion of the runner); the
+  process list CI now prints after the VM and TUI self-tests showed nothing left running, so it is counted as the
+  runner's flake. Then: 32 MiB of rings per sandbox, a revoked credential's link closed (tested end to end). Phase 2
+  done.
+- Note for the owner: the target folder shared by this worktree and the workers' makes their builds overwrite each
+  other's artifacts (cargo names a workspace member's artifacts by its path relative to the workspace, so the same
+  crate in two worktrees has the same files); a build then and again uses another worktree's older crate. Touching
+  the crate roots before a check works around it; separate target folders avoid it.
 
