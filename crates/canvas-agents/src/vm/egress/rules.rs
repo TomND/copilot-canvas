@@ -174,7 +174,7 @@ fn glob(pattern: &[u8], text: &[u8]) -> bool {
 /// `%XX` of an unreserved character as that character, other escapes upper
 /// case; `None` for an escape that does not parse or hides a `/`, `\`, `;`
 /// or a control character.
-fn decode_unreserved(text: &str) -> Option<String> {
+pub(super) fn decode_unreserved(text: &str) -> Option<String> {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.char_indices();
     while let Some((i, c)) = chars.next() {

@@ -4,9 +4,9 @@
 //! forward proxy that enforces a policy for `vm::local` sandboxes (the
 //! platform enforces it for `vm::aca`).
 //!
-//! This is the interface the lead wires; [`decide`] is the engine
-//! ([`rules`]); until the rest of the package lands, [`render`] and
-//! [`serve`] refuse.
+//! This is the interface the lead wires: [`render`] (the profile's format:
+//! [`render`](mod@render)), [`decide`] (the engine: [`rules`]); until the
+//! rest of the package lands, [`serve`] refuses.
 
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -16,7 +16,10 @@ use anyhow::{Result, bail};
 use super::pack::Pack;
 use super::provider::{EgressDecision, EgressPolicy, HeaderFromSecret, Secret};
 
+pub mod render;
 pub mod rules;
+
+pub use render::hub_host;
 
 /// What a profile's placeholders are filled with at a claim: `{{box.branch}}`,
 /// `{{box.repo}}` (the pack's repository key), `{{box.id}}`, `{{sandbox}}`,
@@ -31,10 +34,12 @@ pub struct Vars {
     pub hub_host: String,
 }
 
-/// Renders profile `name` of the pack for a box.
+/// Renders profile `name` of the pack for a box: its placeholders filled
+/// from `vars` (an empty `hub_host`: [`hub_host`] of the pack), header values
+/// as references to secrets. Errors name the profile, the rule and the
+/// placeholder, never a value.
 pub fn render(pack: &Pack, name: &str, vars: &Vars) -> Result<EgressPolicy> {
-    let _ = (pack, vars);
-    bail!("egress profile {name}: rendering is not available yet (Phase 3)")
+    render::render(pack, name, vars)
 }
 
 /// An outbound request as an egress point sees it.
