@@ -19,6 +19,7 @@ mod service_install;
 mod soak;
 mod standin;
 mod test_shell;
+mod vm_probe;
 #[cfg(windows)]
 mod uia;
 #[cfg(target_os = "linux")]
@@ -106,6 +107,8 @@ USAGE
                                         a client connected through a fault-injecting proxy for N minutes:
                                         drops, outages, cuts and delays; exactly-once typing, reconnect and
                                         resync times, memory and handle growth, bandwidth; JSON report
+  atelier selftest vm                   VM sessions end to end on local sandboxes (the pack's hooks answered by a
+                                        stand-in; no cloud, no model)
   atelier selftest automations  apply, run, a scheduled run, report, enable, drift, import and
                                         remove of a probe task on this machine's scheduler (not Windows)
   atelier selftest --remote paired
@@ -345,7 +348,7 @@ fn parse() -> Result<Args> {
             "--canvas" => args.canvas = Some(PathBuf::from(value("--canvas")?)),
             "--cwd" => args.cwd = Some(PathBuf::from(value("--cwd")?)),
             "--remote" => args.remote = Some(value("--remote")?),
-            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--pulse" | "--unread" | "--sent" | "--qr" | "--mine" | "--tree" | "--all" | "--internal" | "--undo" | "--with-todos" | "--detach" => {
+            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--pulse" | "--unread" | "--sent" | "--qr" | "--mine" | "--tree" | "--all" | "--internal" | "--undo" | "--with-todos" | "--detach" | "--lite" => {
                 args.flags.push(arg.trim_start_matches("--").to_owned())
             }
             "--" => {
@@ -568,6 +571,16 @@ fn real_main() -> Result<()> {
     let dir = || factory_cli::configured_dir(&instance.home, option("dir"));
     let owned = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let port = |name: &str| -> Result<Option<u16>> { option(name).map(|p| p.parse::<u16>().with_context(|| format!("--{name} takes a port number"))).transpose() };
+    // In a VM session's guest the canvas commands are relayed to the canvas's machine (docs/VM-SESSIONS.md).
+    if canvas_agents::vm::lite::mode().is_some()
+        && let Some(verb) = args.command.first()
+        && !matches!(verb.as_str(), "satellite" | "vm-hook-standin")
+    {
+        let words: Vec<&str> = args.command.iter().map(String::as_str).collect();
+        let options = canvas_agents::todos_cli::options_with_canvas(&words, &args.rest, args.canvas.as_deref());
+        println!("{}", canvas_agents::vm::lite::relay(&instance.home, &words, &options, &args.flags)?);
+        return Ok(());
+    }
     match args.command.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         [] => {
             let cwd = args.cwd.clone().map(Ok).unwrap_or_else(std::env::current_dir)?;
@@ -754,6 +767,15 @@ fn real_main() -> Result<()> {
         ),
         ["remote", "servers"] => remote_cli::servers(&instance),
         ["remote", "forget", name] => remote_cli::forget(&instance, name),
+        ["satellite"] if flag("lite") => {
+            use std::io::Read;
+            let mut input = String::new();
+            std::io::stdin().read_to_string(&mut input)?;
+            let request: canvas_agents::vm::lite::DrainRequest = if input.trim().is_empty() { Default::default() } else { serde_json::from_str(&input).context("not a drain request")? };
+            let response = canvas_agents::vm::lite::drain(&instance.home, &canvas_agents::vm::lite::copilot_root(), &request)?;
+            println!("{}", serde_json::to_string(&response)?);
+            Ok(())
+        }
         ["vm", "attach"] => canvas_agents::vm::launch::attach(&instance.home, &option("box").context("vm attach needs --box ID")?),
         ["vm-hook-standin", "run", "--", argv @ ..] => canvas_agents::vm::local::standin_run(&option("sandbox").context("--sandbox ID")?, &options("env"), &owned(argv)),
         ["vm-hook-standin", hook] => canvas_agents::vm::local::standin(hook),
@@ -818,6 +840,7 @@ fn real_main() -> Result<()> {
             })
         }
         ["selftest", "automations"] => automations_probe::run(),
+        ["selftest", "vm"] => vm_probe::run(&std::env::current_exe()?),
         ["selftest", "agent"] if flag("paste") => selftest::agent_paste(option("agent").as_deref()),
         ["selftest", "agent"] => selftest::agent(option("agent").as_deref()),
         ["selftest", "copilot"] => selftest::agent(Some("copilot")),

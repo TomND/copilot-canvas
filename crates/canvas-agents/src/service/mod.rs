@@ -269,6 +269,13 @@ impl Agents {
         server::spawn_named("bus", { let a = agents.clone(); move || passive::bus_loop(a, bus_rx) });
         server::spawn_named("reports", { let a = agents.clone(); move || inbox::run(a) });
         server::spawn_named("prs", { let a = agents.clone(); move || prs::run(a) });
+        // VM sessions' thin lane (idle without a VM pack).
+        server::spawn_named("vm", {
+            let (home, log_instance, wake) = (instance.home.clone(), instance.clone(), agents.index_wake.clone());
+            move || crate::vm::thin::run(home, move |line| log(&log_instance, &line), move || {
+                let _ = wake.try_send(());
+            })
+        });
         agents
     }
 }
@@ -1136,6 +1143,7 @@ fn event_source(agent_sessions: &HashMap<String, String>, session: &str) -> Stri
 
 fn index_loop(shared: Arc<Agents>, wake: Receiver<()>) {
     let mut histories: Vec<(AgentKind, Box<dyn crate::agents::History>)> = crate::agents::ALL.iter().map(|kind| (*kind, kind.provider().history())).collect();
+    let mut mirrors: HashMap<PathBuf, crate::index::Index> = HashMap::new();
     loop {
         let natives: Vec<String> = {
             let terms = lock(&shared.terms);
@@ -1149,6 +1157,15 @@ fn index_loop(shared: Arc<Agents>, wake: Receiver<()>) {
             .chain(natives)
             .collect();
         let (mut changed, mut removed) = (Vec::new(), Vec::new());
+        // VM sessions' history, mirrored from their guests (the thin lane):
+        // one more Copilot index per mirror (none without VM sessions).
+        for root in crate::vm::thin::copilot_mirrors(&shared.instance.home) {
+            mirrors.entry(root.clone()).or_insert_with(|| crate::index::Index::new(root));
+        }
+        for index in mirrors.values_mut() {
+            let (c, _) = index.poll(&tracked, Duration::from_secs(15));
+            changed.extend(c);
+        }
         for (kind, history) in histories.iter_mut() {
             // One agent's broken store must not stop status updates for the others.
             let polled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

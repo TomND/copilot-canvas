@@ -9,8 +9,10 @@
 
 pub mod hooks;
 pub mod launch;
+pub mod lite;
 pub mod local;
 pub mod pack;
+pub mod thin;
 
 use std::path::Path;
 

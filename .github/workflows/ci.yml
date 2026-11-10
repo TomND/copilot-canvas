@@ -73,6 +73,8 @@ jobs:
         run: cargo build --release
       - name: golden corpus (both engines)
         run: target\release\atelier.exe corpus check
+      - name: VM sessions self-test (local sandboxes, no cloud)
+        run: target\release\atelier.exe selftest vm
       - name: TUI self-test
         run: target\release\atelier.exe selftest
       - name: TUI self-test over loopback TCP
@@ -164,6 +166,8 @@ jobs:
         run: cargo build
       - name: golden corpus (both engines)
         run: target/debug/atelier corpus check
+      - name: VM sessions self-test (local sandboxes, no cloud)
+        run: target/debug/atelier selftest vm
       - name: TUI self-test
         run: target/debug/atelier selftest
       - name: TUI self-test over loopback TCP
@@ -472,6 +476,9 @@ jobs:
       - name: doctor
         if: ${{ !cancelled() }}
         run: target/release/atelier doctor || true
+      - name: VM sessions self-test (local sandboxes, no cloud)
+        if: ${{ !cancelled() }}
+        run: target/release/atelier selftest vm
       - name: TUI self-test
         if: ${{ !cancelled() }}
         run: xvfb-run -a target/release/atelier selftest
