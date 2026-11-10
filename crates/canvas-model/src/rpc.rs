@@ -222,6 +222,22 @@ pub enum Request {
         #[serde(default)]
         folders: Vec<crate::skills::FolderSet>,
     },
+    /// VM sessions: every box's VM, the sandboxes, images, budget, queued
+    /// starts and refusals (`Response::Vm`). Answered by the service itself
+    /// (it owns the VMs: [`Request::is_service_state`]).
+    VmList,
+    /// The warm pool (`Response::Vm`, the same view).
+    VmPool,
+    /// The images per repository (`Response::Vm`).
+    VmImages,
+    /// An operation on a box's VM (`Response::Text`: what happened).
+    VmAction { r#box: String, op: crate::vm::VmOp },
+    /// Builds a repository's image now (`Response::Text`; progress in the view).
+    VmImageBuild { repo: String },
+    /// The budget and quota (`Response::Vm`).
+    VmBudget,
+    /// What `atelier vm pack check` finds (`Response::VmPack`; never a pack value).
+    VmPackStatus,
 }
 
 /// Largest file an upload writes.
@@ -263,6 +279,10 @@ pub enum Response {
     NoteHits(Vec<crate::notebook::Hit>),
     /// The sources of skills (`Request::SkillSources`).
     SkillSources(Vec<crate::skills::SkillSource>),
+    /// VM sessions as the service sees them (`Request::VmList` and its kin).
+    Vm(Box<crate::vm::VmView>),
+    /// The pack's check (`Request::VmPackStatus`).
+    VmPack(Box<crate::vm::PackStatus>),
 }
 
 /// An open pairing code (`Request::PairCode`).
@@ -298,7 +318,7 @@ pub struct RemoteClient {
 }
 
 /// `Vec<u8>` as a base64 string in JSON (images in requests).
-mod base64 {
+pub(crate) mod base64 {
     use serde::{Deserialize, Deserializer, Serializer, de::Error};
 
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -479,6 +499,13 @@ impl Request {
             Request::NoteTrash { .. } => "delete note",
             Request::NoteSearch { .. } => "notebook search",
             Request::SkillSources { .. } => "skill sources",
+            Request::VmList => "VM list",
+            Request::VmPool => "VM pool",
+            Request::VmImages => "VM images",
+            Request::VmAction { .. } => "VM action",
+            Request::VmImageBuild { .. } => "VM image build",
+            Request::VmBudget => "VM budget",
+            Request::VmPackStatus => "VM pack check",
         }
     }
 
@@ -486,6 +513,16 @@ impl Request {
     /// service itself, only to clients on its local pipe.
     pub fn is_remote_admin(&self) -> bool {
         matches!(self, Request::PairCode { .. } | Request::RemoteClients | Request::RemoteRevoke { .. })
+    }
+
+    /// Requests about state only the service holds (VM sessions): the
+    /// service answers them itself, for local and remote clients alike; an
+    /// in-process backend refers the caller to the service.
+    pub fn is_service_state(&self) -> bool {
+        matches!(
+            self,
+            Request::VmList | Request::VmPool | Request::VmImages | Request::VmAction { .. } | Request::VmImageBuild { .. } | Request::VmBudget | Request::VmPackStatus
+        )
     }
 
     /// How long a remote caller waits for the answer (CLI runs can be slow).
@@ -509,11 +546,15 @@ impl Request {
             | Request::GitProbe { .. }
             | Request::SetClipboardImage { .. }
             | Request::Upload { .. }
-            | Request::NewestMatches { .. } => 120,
+            | Request::NewestMatches { .. }
+            | Request::VmAction { .. }
+            | Request::VmImageBuild { .. } => 120,
             // Bounded by its own time budget, but never in the quick lane.
             Request::NoteSearch { .. } => 60,
             // Folder scans of up to 40 projects: never in the quick lane.
             Request::SkillSources { .. } => 60,
+            // Runs the pack's checks (and may ask the provider's sign-in).
+            Request::VmPackStatus => 60,
             _ => 30,
         };
         Duration::from_secs(secs)
@@ -904,6 +945,33 @@ impl dyn Backend + '_ {
             _ => None,
         })
     }
+
+    /// VM sessions as the service sees them (`VmList`, `VmPool`, `VmImages`
+    /// and `VmBudget` all answer the whole view).
+    pub fn vm_view(&self, request: Request) -> Result<crate::vm::VmView> {
+        self.ask(request, |r| match r {
+            Response::Vm(view) => Some(*view),
+            _ => None,
+        })
+    }
+
+    /// An operation on a box's VM; what happened.
+    pub fn vm_action(&self, r#box: &str, op: crate::vm::VmOp) -> Result<String> {
+        self.text(Request::VmAction { r#box: r#box.to_owned(), op })
+    }
+
+    /// Builds a repository's image now.
+    pub fn vm_image_build(&self, repo: &str) -> Result<String> {
+        self.text(Request::VmImageBuild { repo: repo.to_owned() })
+    }
+
+    /// The pack's check.
+    pub fn vm_pack_status(&self) -> Result<crate::vm::PackStatus> {
+        self.ask(Request::VmPackStatus, |r| match r {
+            Response::VmPack(status) => Some(*status),
+            _ => None,
+        })
+    }
 }
 
 /// The answer to a request this build does not know (from a newer client).
@@ -1104,5 +1172,46 @@ mod tests {
         let backend: &dyn Backend = &Skills;
         assert_eq!(backend.skill_sources(vec!["x".into()], None, vec![]).unwrap()[0].path, "x");
         assert!((&Offline as &dyn Backend).skill_sources(vec![], None, vec![]).is_err());
+    }
+
+    #[test]
+    fn vm_requests_round_trip_are_the_services_and_old_services_say_so() {
+        let requests = [
+            Request::VmList,
+            Request::VmPool,
+            Request::VmImages,
+            Request::VmAction { r#box: "b-1".into(), op: crate::vm::VmOp::Delete { confirm: vec!["2 unpushed commits".into()] } },
+            Request::VmImageBuild { repo: "contoso-app".into() },
+            Request::VmBudget,
+            Request::VmPackStatus,
+        ];
+        for request in requests {
+            let json = serde_json::to_string(&request).unwrap();
+            assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), request, "{json}");
+            assert!(request.is_service_state() && !request.is_remote_admin(), "{json}");
+            let reply = answer_json(&json.replacen("Vm", "FutureVm", 1), |_| Response::Done);
+            assert!(matches!(serde_json::from_str::<Response>(&reply).unwrap(), Response::Error(e) if e.contains("does not support")), "{json}");
+        }
+        assert!(serde_json::to_string(&Request::VmAction { r#box: "b".into(), op: crate::vm::VmOp::Suspend }).unwrap().contains(r#""box":"b""#));
+        assert!(!Request::Info.is_service_state());
+        assert!(Request::VmList.is_quick() && !Request::VmImageBuild { repo: String::new() }.is_quick());
+        struct Vms;
+        impl Backend for Vms {
+            fn call(&self, request: Request) -> Result<Response> {
+                Ok(match request {
+                    Request::VmList => Response::Vm(Box::default()),
+                    Request::VmPackStatus => Response::VmPack(Box::new(crate::vm::PackStatus { folder: None, findings: vec![] })),
+                    Request::VmAction { .. } => Response::Text("suspended".into()),
+                    _ => Response::Error("no".into()),
+                })
+            }
+        }
+        let backend: &dyn Backend = &Vms;
+        assert_eq!(backend.vm_view(Request::VmList).unwrap(), crate::vm::VmView::default());
+        assert_eq!(backend.vm_pack_status().unwrap().folder, None);
+        assert_eq!(backend.vm_action("b", crate::vm::VmOp::Suspend).unwrap(), "suspended");
+        assert!(backend.vm_image_build("r").is_err());
+        let reply = Response::VmPack(Box::new(crate::vm::PackStatus { folder: Some("/p".into()), findings: vec![crate::vm::Finding { level: crate::vm::Level::Error, file: "vm.yaml".into(), line: 3, text: "x".into() }] }));
+        assert_eq!(serde_json::from_str::<Response>(&serde_json::to_string(&reply).unwrap()).unwrap(), reply);
     }
 }

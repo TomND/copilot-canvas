@@ -418,6 +418,24 @@ impl App {
                 self.open_mcp_picker(crate::dialogs::McpTarget::NewSession);
                 return Outcome::Close;
             }
+            NsField::RunOn if activate || matches!(key.code, KeyCode::Left | KeyCode::Right) => {
+                if let Some(vm) = dialog.vm.as_mut() {
+                    vm.on_vm = !vm.on_vm && !vm.repos.is_empty();
+                    dialog.error = None;
+                }
+                return Outcome::Keep;
+            }
+            NsField::VmRepo | NsField::VmSize if activate || matches!(key.code, KeyCode::Left | KeyCode::Right) => {
+                if let Some(vm) = dialog.vm.as_mut() {
+                    let forward = key.code != KeyCode::Left;
+                    let (list, current) = if dialog.focus == NsField::VmRepo { (&vm.repos, &mut vm.repo) } else { (&vm.sizes, &mut vm.size) };
+                    if !list.is_empty() {
+                        let at = list.iter().position(|r| r == current).unwrap_or(0);
+                        *current = list[if forward { (at + 1) % list.len() } else { (at + list.len() - 1) % list.len() }].clone();
+                    }
+                }
+                return Outcome::Keep;
+            }
             NsField::Cancel if activate => return Outcome::Close,
             _ => {}
         }
@@ -450,6 +468,11 @@ impl App {
                 changed
             }
             NsField::Prompt => dialog.prompt.handle(&key),
+            NsField::VmBranch => dialog.vm.as_mut().is_some_and(|vm| {
+                let changed = vm.branch.handle(&key);
+                vm.branch_edited |= changed;
+                changed
+            }),
             _ => false,
         };
         if changed {
@@ -771,7 +794,7 @@ impl App {
             }
             (Some(Modal::NewSession(dialog)), Hit::Field(field)) => {
                 dialog.focus = field;
-                if matches!(field, NsField::Browse | NsField::Recent | NsField::Mode | NsField::Base | NsField::Agent | NsField::Model | NsField::Context | NsField::Mcp | NsField::Create | NsField::Cancel) {
+                if matches!(field, NsField::Browse | NsField::Recent | NsField::Mode | NsField::Base | NsField::Agent | NsField::Model | NsField::Context | NsField::Mcp | NsField::Create | NsField::Cancel | NsField::RunOn | NsField::VmRepo | NsField::VmSize) {
                     self.modal_key(enter);
                 }
             }
@@ -867,5 +890,5 @@ impl App {
 }
 
 fn is_text(field: NsField) -> bool {
-    matches!(field, NsField::Name | NsField::Folder | NsField::NewBranch | NsField::WtPath | NsField::Prompt)
+    matches!(field, NsField::Name | NsField::Folder | NsField::NewBranch | NsField::WtPath | NsField::Prompt | NsField::VmBranch)
 }

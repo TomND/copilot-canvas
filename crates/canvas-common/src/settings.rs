@@ -26,6 +26,23 @@ pub struct Settings {
     /// (unset: on). Named after the dot grid pulse it replaced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grid_pulse: Option<bool>,
+    /// VM sessions (docs/VM-SESSIONS.md): unset, as on every machine that
+    /// does not use them, nothing about VMs shows.
+    #[serde(default, skip_serializing_if = "VmSettings::is_empty")]
+    pub vm: VmSettings,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct VmSettings {
+    /// The VM pack's folder on this machine (outside any repository).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack: Option<String>,
+}
+
+impl VmSettings {
+    pub fn is_empty(&self) -> bool {
+        self.pack.is_none()
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -129,6 +146,12 @@ impl Settings {
         crate::env::var("ATELIER_LISTEN").ok().filter(|v| !v.trim().is_empty()).or_else(|| self.remote.listen.clone())
     }
 
+    /// The VM pack's folder: `ATELIER_VM_PACK`, else `vm.pack` (`None`: VM
+    /// sessions are off).
+    pub fn vm_pack(&self) -> Option<PathBuf> {
+        std::env::var("ATELIER_VM_PACK").ok().or_else(|| self.vm.pack.clone()).map(|p| p.trim().to_owned()).filter(|p| !p.is_empty()).map(PathBuf::from)
+    }
+
     /// Compress remote frames: `ATELIER_COMPRESS` (0/off/false), else `remote.compress`.
     pub fn compress(&self) -> bool {
         match crate::env::var("ATELIER_COMPRESS") {
@@ -141,6 +164,21 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_vm_pack_is_unset_unless_configured() {
+        let none: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(none.vm, VmSettings::default());
+        assert!(!serde_json::to_string(&none).unwrap().contains("vm"), "never written while unset");
+        let set: Settings = serde_json::from_str(r#"{"vm":{"pack":"/packs/contoso"}}"#).unwrap();
+        assert_eq!(set.vm.pack.as_deref(), Some("/packs/contoso"));
+        assert_eq!(serde_json::from_str::<Settings>(&serde_json::to_string(&set).unwrap()).unwrap(), set);
+        if std::env::var_os("ATELIER_VM_PACK").is_none() {
+            assert_eq!(none.vm_pack(), None);
+            assert_eq!(set.vm_pack(), Some(PathBuf::from("/packs/contoso")));
+            assert_eq!(Settings { vm: VmSettings { pack: Some("  ".into()) }, ..Default::default() }.vm_pack(), None);
+        }
+    }
 
     #[test]
     fn round_trips_and_tolerates_missing_or_partial_files() {

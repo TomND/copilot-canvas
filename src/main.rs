@@ -19,6 +19,7 @@ mod service_install;
 mod soak;
 mod standin;
 mod test_shell;
+mod vm_probe;
 #[cfg(windows)]
 mod uia;
 #[cfg(target_os = "linux")]
@@ -106,6 +107,8 @@ USAGE
                                         a client connected through a fault-injecting proxy for N minutes:
                                         drops, outages, cuts and delays; exactly-once typing, reconnect and
                                         resync times, memory and handle growth, bandwidth; JSON report
+  atelier selftest vm                   VM sessions end to end on local sandboxes (the pack's hooks answered by a
+                                        stand-in; no cloud, no model)
   atelier selftest automations  apply, run, a scheduled run, report, enable, drift, import and
                                         remove of a probe task on this machine's scheduler (not Windows)
   atelier selftest --remote paired
@@ -123,6 +126,14 @@ USAGE
                                         re-keying, status, wheel, push, subagent, question, resume,
                                         permission, passive (LIST: some of them, comma-separated);
                                         deletes every session it created
+
+VM SESSIONS (docs/VM-SESSIONS.md; optional: without a VM pack sessions run on this machine)
+  atelier config vm.pack FOLDER|none    use a VM pack (a folder outside any repository)
+  atelier vm spike s2|s3|s4 [--agent A] [--runs N] [--keep]
+                                        checks only real sandboxes answer (docs/VM-STATUS.md, the owner's):
+                                        the agent CLI in a guest, this build in the image, claim latency
+  atelier vm pack check                 check the VM pack (settings.json vm.pack or ATELIER_VM_PACK):
+                                        its findings, never its values
 
 REMOTE (docs/REMOTE.md; agents on the Cloud PC, the canvas at home over a private Dev Tunnel)
   on the Cloud PC:
@@ -340,7 +351,7 @@ fn parse() -> Result<Args> {
             "--canvas" => args.canvas = Some(PathBuf::from(value("--canvas")?)),
             "--cwd" => args.cwd = Some(PathBuf::from(value("--cwd")?)),
             "--remote" => args.remote = Some(value("--remote")?),
-            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--pulse" | "--unread" | "--sent" | "--qr" | "--mine" | "--tree" | "--all" | "--internal" | "--undo" | "--with-todos" | "--detach" => {
+            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--pulse" | "--unread" | "--sent" | "--qr" | "--mine" | "--tree" | "--all" | "--internal" | "--undo" | "--with-todos" | "--detach" | "--lite" | "--self-check" | "--keep" => {
                 args.flags.push(arg.trim_start_matches("--").to_owned())
             }
             "--" => {
@@ -413,10 +424,21 @@ fn config(home: &std::path::Path, key: Option<&str>, value: Option<&str>) -> Res
         println!("agent   {}", settings.agent.as_deref().unwrap_or("auto (first installed)"));
         println!("engine  {}", settings.terminal.engine.as_deref().unwrap_or("auto (ghostty when built in)"));
         println!("listen  {}", settings.remote.listen.as_deref().unwrap_or("off"));
+        if let Some(pack) = &settings.vm.pack {
+            println!("vm.pack {pack}");
+        }
         println!("({})", canvas_common::settings::path(home).display());
         return Ok(());
     };
     let unset = |v: &str| matches!(v, "default" | "unset" | "none");
+    if key == "vm.pack" {
+        // A folder on this machine, kept as typed (VM sessions: docs/VM-SESSIONS.md).
+        let value = value.context("config vm.pack needs a folder (or none)")?.trim();
+        settings.vm.pack = (!unset(&value.to_ascii_lowercase())).then(|| std::path::absolute(value).map(|p| p.display().to_string()).unwrap_or_else(|_| value.to_owned()));
+        settings.save(home)?;
+        println!("vm.pack = {}", settings.vm.pack.as_deref().unwrap_or("none (VM sessions are off)"));
+        return Ok(());
+    }
     let value = value.with_context(|| format!("config {key} needs a value"))?.trim().to_ascii_lowercase();
     match key {
         "client" => {
@@ -552,6 +574,16 @@ fn real_main() -> Result<()> {
     let dir = || factory_cli::configured_dir(&instance.home, option("dir"));
     let owned = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let port = |name: &str| -> Result<Option<u16>> { option(name).map(|p| p.parse::<u16>().with_context(|| format!("--{name} takes a port number"))).transpose() };
+    // In a VM session's guest the canvas commands are relayed to the canvas's machine (docs/VM-SESSIONS.md).
+    if canvas_agents::vm::lite::mode().is_some()
+        && let Some(verb) = args.command.first()
+        && !matches!(verb.as_str(), "satellite" | "vm-hook-standin")
+    {
+        let words: Vec<&str> = args.command.iter().map(String::as_str).collect();
+        let options = canvas_agents::todos_cli::options_with_canvas(&words, &args.rest, args.canvas.as_deref());
+        println!("{}", canvas_agents::vm::lite::relay(&instance.home, &words, &options, &args.flags)?);
+        return Ok(());
+    }
     match args.command.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         [] => {
             let cwd = args.cwd.clone().map(Ok).unwrap_or_else(std::env::current_dir)?;
@@ -738,6 +770,46 @@ fn real_main() -> Result<()> {
         ),
         ["remote", "servers"] => remote_cli::servers(&instance),
         ["remote", "forget", name] => remote_cli::forget(&instance, name),
+        ["satellite"] if flag("self-check") => {
+            let check = canvas_agents::vm::spike::self_check(&instance.home);
+            println!("{check}");
+            if check["ok"] != true { std::process::exit(1) }
+            Ok(())
+        }
+        ["vm", "spike", name] if canvas_agents::vm::pack::configured(&instance.home).is_some() => {
+            let folder = canvas_agents::vm::pack::configured(&instance.home).context("no VM pack")?;
+            let (pack, status) = canvas_agents::vm::pack::load(&folder);
+            anyhow::ensure!(status.errors() == 0, "the VM pack has {} error(s): see `atelier vm pack check`", status.errors());
+            let runs = option("runs").map(|r| r.parse::<u32>().context("--runs takes a number")).transpose()?.unwrap_or(5);
+            let result = canvas_agents::vm::spike::run(&pack, name, option("agent").as_deref(), runs, flag("keep"))?;
+            println!("{result}");
+            if result["ok"] != true { std::process::exit(1) }
+            Ok(())
+        }
+        ["satellite"] if flag("lite") => {
+            use std::io::Read;
+            let mut input = String::new();
+            std::io::stdin().read_to_string(&mut input)?;
+            let request: canvas_agents::vm::lite::DrainRequest = if input.trim().is_empty() { Default::default() } else { serde_json::from_str(&input).context("not a drain request")? };
+            let response = canvas_agents::vm::lite::drain(&instance.home, &canvas_agents::vm::lite::copilot_root(), &request)?;
+            println!("{}", serde_json::to_string(&response)?);
+            Ok(())
+        }
+        ["vm", "attach"] => canvas_agents::vm::launch::attach(&instance.home, &option("box").context("vm attach needs --box ID")?),
+        ["vm-hook-standin", "run", "--", argv @ ..] => canvas_agents::vm::local::standin_run(&option("sandbox").context("--sandbox ID")?, &options("env"), &owned(argv)),
+        ["vm-hook-standin", hook] => canvas_agents::vm::local::standin(hook),
+        ["vm", "pack", "check"] => {
+            let status = match canvas_agents::vm::pack::configured(&instance.home) {
+                Some(folder) => canvas_agents::vm::pack::load(&folder).1,
+                None => Default::default(),
+            };
+            println!("{}", canvas_agents::vm::pack::report(&status));
+            if status.errors() > 0 { std::process::exit(1) }
+            Ok(())
+        }
+        ["vm", ..] if canvas_agents::vm::pack::configured(&instance.home).is_none() => {
+            bail!("no VM pack is configured (settings.json vm.pack or ATELIER_VM_PACK): VM sessions are off; `atelier vm pack check` says more")
+        }
         ["selftest"] => {
             let client = match option("client").as_deref() {
                 None | Some("tui") => selftest::Client::Tui,
@@ -787,6 +859,7 @@ fn real_main() -> Result<()> {
             })
         }
         ["selftest", "automations"] => automations_probe::run(),
+        ["selftest", "vm"] => vm_probe::run(&std::env::current_exe()?),
         ["selftest", "agent"] if flag("paste") => selftest::agent_paste(option("agent").as_deref()),
         ["selftest", "agent"] => selftest::agent(option("agent").as_deref()),
         ["selftest", "copilot"] => selftest::agent(Some("copilot")),

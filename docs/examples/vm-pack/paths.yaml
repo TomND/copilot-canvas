@@ -1,0 +1,4 @@
+paths:
+  - host: /Users/contoso/notes
+    guest: /home/agent/notes
+    mode: rw-notes

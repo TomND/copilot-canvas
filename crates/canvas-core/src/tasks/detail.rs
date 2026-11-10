@@ -299,6 +299,10 @@ fn todo_lines(app: &App, b: &TodoBook, todo: &Todo, out: &mut Out) {
     }
     if !proposal && !closed {
         buttons.push(("Start a session on this…".into(), act(Action::StartSession(id.clone())), !proposal));
+        // Only with a VM pack: VM sessions are optional.
+        if app.bus.vm.is_some() {
+            buttons.push(("Start on VM…".into(), act(Action::StartOnVm(id.clone())), false));
+        }
     }
     buttons.push(("Open spec note".into(), act(Action::SpecNote(id.clone())), false));
     if !proposal && !closed {

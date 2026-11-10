@@ -688,6 +688,31 @@ fn starting_a_session_on_a_todo_opens_the_new_session_dialog_prefilled() {
 }
 
 #[test]
+fn start_on_vm_shows_only_with_a_vm_pack_and_prefills_run_on_vm() {
+    let mut rig = served();
+    rig.app.doc.groups[0].h = 40;
+    flows::show_todo(&mut rig.app, "WI-004", true);
+    let text = row_text(&render(&mut rig.app, W, 50), rig.app.layout.terms);
+    assert!(!text.contains("Start on VM"), "no VM pack: nothing about VMs\n{text}");
+    let repo = canvas_model::vm::RepoSummary { key: "contoso-app".into(), ..Default::default() };
+    rig.app.bus.vm = Some(canvas_model::vm::VmView { pack: canvas_model::vm::PackSummary { repos: vec![repo], sizes: vec!["S".into()], ..Default::default() }, ..Default::default() });
+    let text = row_text(&render(&mut rig.app, W, 50), rig.app.layout.terms);
+    assert!(text.contains("Start on VM…"), "{text}");
+    flows::run(&mut rig.app, Action::StartOnVm("WI-004".into()));
+    let Some(Modal::NewSession(dialog)) = rig.app.modals.last() else { panic!("the new-session dialog") };
+    let vm = dialog.vm.as_ref().expect("Run on");
+    assert!(vm.on_vm && vm.repo == "contoso-app");
+    assert_eq!(vm.branch.text, "atelier/WI-004-docs-for-the-tasks-space");
+    assert_eq!(dialog.name.text, "WI-004 Docs for the Tasks space");
+    assert!(rig.app.launching.is_empty() && !rig.sent.try_iter().any(|m| matches!(m, ClientMsg::Launch { .. })), "nothing starts before the dialog's Create");
+    // Start a session on this… stays on this machine.
+    rig.app.modals.clear();
+    flows::run(&mut rig.app, Action::StartSession("WI-004".into()));
+    let Some(Modal::NewSession(dialog)) = rig.app.modals.last() else { panic!("the new-session dialog") };
+    assert!(!dialog.on_vm());
+}
+
+#[test]
 fn the_details_show_a_todos_fields_and_their_buttons_act() {
     let mut rig = served();
     flows::show_todo(&mut rig.app, "WI-002", true);

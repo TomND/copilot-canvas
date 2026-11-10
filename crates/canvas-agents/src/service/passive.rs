@@ -791,6 +791,7 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
         view.prs = super::prs::view(&shared, &routing);
         view.reviews = super::reviews::view(&shared, &routing);
         view.todos = super::todos::view(&shared, &routing);
+        view.vm = crate::vm::view(&shared.instance.home);
         let snapshot = serde_json::to_string(&view).unwrap_or_default();
         if snapshot != last_snapshot {
             shared.broadcast(ServiceMsg::Bus { json: snapshot.clone() });
@@ -905,6 +906,7 @@ pub(super) fn snapshot(shared: &Shared) -> String {
     view.prs = super::prs::view(shared, &routing);
     view.reviews = super::reviews::view(shared, &routing);
     view.todos = super::todos::view(shared, &routing);
+    view.vm = crate::vm::view(&shared.instance.home);
     serde_json::to_string(&view).unwrap_or_default()
 }
 

@@ -63,6 +63,7 @@ pub fn run(app: &mut App, action: Action) {
         Action::ConfirmCancel(id) => confirm_cancel(app, &id),
         Action::EditBody(id) => edit_body(app, &id),
         Action::StartSession(id) => start_session(app, &id),
+        Action::StartOnVm(id) => start_on_vm(app, &id),
         Action::SpecNote(id) => spec_note(app, &id),
         Action::ClaimFor(id) => claim_for(app, &id),
         Action::BoardMenu(id) => board_menu(app, &id, pointer(app)),
@@ -180,6 +181,9 @@ pub fn todo_menu(app: &mut App, id: &str, at: (u16, u16)) {
         items.push(item("Accept", "A", op(TodoOp::Accept { id: id.clone(), status: None }), true));
         items.push(item("Decline", "D", op(TodoOp::Decline { id: id.clone(), reason: None }), true));
         items.push(item("Decline with a reason…", "", Action::Ask(Ask::Decline(id.clone())), true));
+    }
+    if app.bus.vm.is_some() {
+        items.push(item("Start on VM…", "", Action::StartOnVm(id.clone()), open));
     }
     items.extend([
         item("Start a session on this…", "", Action::StartSession(id.clone()), open),
@@ -373,6 +377,23 @@ pub fn start_session(app: &mut App, id: &str) {
         if group.is_some() {
             dialog.group = group;
         }
+    }
+}
+
+/// *Start on VM…*: [`start_session`] with *Run on: VM* and a branch named
+/// after the todo (`atelier/DEC-031-short-title`); only with a VM pack.
+pub fn start_on_vm(app: &mut App, id: &str) {
+    let Some(title) = book(app).and_then(|b| b.todo(id).map(|t| t.title.clone())) else {
+        return app.notify(format!("There is no todo {id}."), true);
+    };
+    start_session(app, id);
+    if let Some(Modal::NewSession(dialog)) = app.modals.last_mut()
+        && let Some(vm) = dialog.vm.as_mut()
+        && !vm.repos.is_empty()
+    {
+        vm.on_vm = true;
+        vm.branch = TextInput::new(&canvas_model::vm::branch_for_todo(id, &title));
+        vm.branch_edited = true;
     }
 }
 

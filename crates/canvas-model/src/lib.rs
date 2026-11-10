@@ -30,4 +30,5 @@ pub mod sync;
 pub mod todos;
 pub mod transcript;
 pub mod visual;
+pub mod vm;
 pub mod vscode;

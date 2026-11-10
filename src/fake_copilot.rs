@@ -206,6 +206,7 @@ fn session(args: &[String]) -> Result<()> {
     write!(out, " ● Fake reply: nothing was sent anywhere.\r\n\r\n")?;
     write!(out, "❯ ")?;
     out.flush()?;
+    let history = FakeHistory::start(args);
     let mut stdin = std::io::stdin().lock();
     let mut buf = [0u8; 4096];
     loop {
@@ -225,6 +226,12 @@ fn session(args: &[String]) -> Result<()> {
             }
         } else if !text.starts_with('\x1b') {
             write!(out, "{}", text.replace('\r', "\r\n❯ "))?;
+            if text.contains('\r')
+                && let Some(history) = &history
+            {
+                out.flush()?;
+                history.turn();
+            }
         }
         out.flush()?;
     }
@@ -233,3 +240,44 @@ fn session(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+
+/// With `ATELIER_FAKE_HISTORY` set, the fake keeps a Copilot history as the
+/// real CLI does (`$COPILOT_HOME/session-state/<id>/`, `workspace.yaml` and
+/// `events.jsonl`): a turn per line you type (working, then idle), so the
+/// canvas's status follows it (the VM self-test reads it from a guest).
+struct FakeHistory {
+    events: std::path::PathBuf,
+}
+
+impl FakeHistory {
+    fn start(args: &[String]) -> Option<Self> {
+        std::env::var_os("ATELIER_FAKE_HISTORY")?;
+        let id = args.windows(2).find(|w| w[0] == "--session-id").map(|w| w[1].clone())?;
+        let root = std::env::var_os("COPILOT_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".copilot"));
+        let dir = root.join("session-state").join(&id);
+        std::fs::create_dir_all(&dir).ok()?;
+        let now = canvas_common::paths::rfc3339_now();
+        let cwd = std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default();
+        let name = args.windows(2).find(|w| w[0] == "--name").map(|w| w[1].clone()).unwrap_or_else(|| "Fake session".into());
+        std::fs::write(dir.join("workspace.yaml"), format!("id: {id}\ncwd: {cwd}\nname: {name}\ncreated_at: {now}\nupdated_at: {now}\n")).ok()?;
+        let history = FakeHistory { events: dir.join("events.jsonl") };
+        history.event("session.start");
+        Some(history)
+    }
+
+    fn event(&self, kind: &str) {
+        use std::io::Write;
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&self.events) {
+            let _ = writeln!(file, "{{\"type\":\"{kind}\",\"timestamp\":\"{}\",\"data\":{{}}}}", canvas_common::paths::rfc3339_now());
+        }
+    }
+
+    /// A turn: working for `ATELIER_FAKE_TURN_MS` (default 1.5 s), then idle.
+    fn turn(&self) {
+        self.event("user.message");
+        let ms = std::env::var("ATELIER_FAKE_TURN_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1_500);
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+        self.event("assistant.turn_end");
+        self.event("session.idle");
+    }
+}

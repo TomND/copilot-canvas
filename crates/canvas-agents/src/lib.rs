@@ -33,4 +33,5 @@ pub mod scheduler;
 pub mod taskschd;
 pub mod todos_cli;
 pub mod tunnel_access;
+pub mod vm;
 pub mod vscode;

@@ -1,0 +1,18 @@
+# Deny by default; the forge and the hub's tunnel only.
+default: deny
+rules:
+  - host: example.com
+    path: /contoso/app.git/*
+    methods: [GET, POST]
+    action: allow
+  - host: api.example.com
+    path: /repos/contoso/app/*
+    action: transform
+    headers:
+      - name: Authorization
+        value: "Bearer {{secret:forge-token}}"
+  - host: contoso-hub-48600.example.devtunnels.ms
+    action: transform
+    headers:
+      - name: X-Tunnel-Authorization
+        value: "tunnel {{secret:tunnel-token}}"

@@ -1,0 +1,51 @@
+# VM sessions: the provider and how VMs are used (example values only).
+pack_version: 1
+name: contoso
+provider: aca              # aca | hooks | local
+# The date you checked your data-handling policy allows VM sessions (what
+# leaves this machine: history, notes, skills). Empty: pack check warns.
+policy_ack: ""
+aca:
+  subscription: 00000000-0000-0000-0000-000000000000
+  resource_group: contoso-rg
+  sandbox_group: contoso-sandboxes
+  region: eastus2
+  api_version: 2026-02-01-preview
+auth:
+  audience: https://dynamicsessions.io   # the SDK's; change it if the data plane wants another
+  # command: "example-cli token"          # optional: prints a bearer token instead of the Azure CLI
+sizes:                       # smallest first: the first is the default
+  - name: S
+    cpu: 1000m
+    memory: 2048Mi
+    disk: 20Gi
+    cents_per_hour: 5
+  - name: M
+    cpu: 2000m
+    memory: 4096Mi
+    disk: 40Gi
+    cents_per_hour: 10
+pool:
+  max_age: 12h
+  min:
+    contoso-app: 1
+images:
+  schedule: daily 02:00
+  keep: 3
+budget:
+  max_running: 4
+  max_cores: 8
+  daily_soft: 20.00
+suspend_after: 30m
+poll_seconds: 10
+tunnel:
+  url: wss://contoso-hub-48600.example.devtunnels.ms
+  secret: tunnel-token
+git:
+  name: Atelier agent
+  email: agent@example.com
+satellite:
+  # path: /path/to/atelier-linux-x86_64   # the CI artifact atelier-linux-x86_64
+  # sha256: <its SHA-256>
+link:
+  ring_mb: 4

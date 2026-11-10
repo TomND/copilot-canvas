@@ -4,6 +4,15 @@ Status: design, 2026-11, approved for implementation 2026-11-09 (owner: Thomas),
 the Azure provider built against its documented REST API and tested in CI through the `local` provider; checks
 that need real sandboxes are the owner's (`selftest vm --real`, spikes S1–S7). Targets `main` @ `fac3c4d` or later.
 
+**VM sessions are optional; local stays the default** (owner, 2026-11-09). Without a VM pack nothing changes
+and no VM UI shows (no *Run on* field, no ☁ panel; `atelier vm pack check` only says that no pack is
+configured). With a pack, *Run on* defaults to *This machine* and `Placement` defaults to `Local` everywhere (the
+box, the canvas's and a group's launch defaults, a board's policy): a VM is chosen only explicitly, per session,
+as a launch default, or by a board's *Start on VM*. Old documents and canvases behave exactly as before.
+
+The implementation plan is [VM-SESSIONS-PLAN.md](VM-SESSIONS-PLAN.md) (approved with its ten decisions); progress,
+the owner's checklist and where the implementation departs from the plan are in [VM-STATUS.md](VM-STATUS.md).
+
 This document is generic. It names no organization, subscription, repository, host or credential. Everything
 specific to one user or company lives in a **VM pack**: a folder of configuration outside this repository (§5),
 which the canvas reads at runtime. The repository ships the schema, examples using `example.com`/`contoso`
@@ -264,3 +273,22 @@ Phase M is useful on its own; its measurements re-estimate the rest (about 35–
 | Skills that assume the hub's OS or paths | pack path map; a `requires:` front-matter hint so such skills stay on the hub |
 | Preview API changes | one provider module, version in the pack, `doctor` check |
 | Pack values leaking into the repo or logs | pack outside the repo; redaction; `pack check` warns on a pack inside a git work tree that has a public remote |
+
+## 13. As built
+
+Phase by phase; the details and the log are in [VM-STATUS.md](VM-STATUS.md).
+
+- **Foundations.** The satellite link's messages travel inside `ClientMsg::Sat` / `ServiceMsg::Sat` (index 29,
+  `CAP_SATELLITE = 1 << 6`, their own protocol `canvas_common::sat`); a satellite's credential decides its role in
+  the handshake (TCP only) and the host hands it to `HostApp::serve_satellite` before anything a client gets.
+  `canvas_model::vm` holds `Placement` (absent: local), the VM view of the bus snapshot, the operations and the
+  relayed CLI operations; a VM launch names its agent `vm:<kind>` and carries `ATELIER_PLACEMENT`, so a service
+  without VM sessions refuses it, and the service refuses to start here a box the canvas places on a VM.
+- **Phase M (the thin lane).** `atelier vm pack check` and `atelier config vm.pack`; the pack's hooks (JSON in and
+  out, time limits, output never logged); `atelier vm attach` (the box's terminal: claim, then the hook's shell into
+  the guest); in the guest, canvas commands are relayed through an outbox (`ATELIER_REMOTE=satellite-lite`) and
+  `atelier satellite --lite` drains it with the agent's Copilot history; the service drains each running VM box
+  every `poll_seconds`, mirrors the history under `<home>/vm/mirrors/<sandbox>/` (indexed like Copilot's own folder)
+  and runs each operation as its box with this program. The new-session dialog's *Run on* and Tasks' *Start on VM…*
+  appear only with a pack. `atelier selftest vm` runs it all on `vm::local` sandboxes answered by
+  `atelier vm-hook-standin`, in CI on Windows, macOS and Linux.

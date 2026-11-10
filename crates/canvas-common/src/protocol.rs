@@ -38,6 +38,11 @@ pub const CAP_REPORTS: u32 = 1 << 4;
 /// iPhone client) and wants fresh tunnel access tokens: it gets
 /// `ServiceMsg::TunnelAccess`.
 pub const CAP_TUNNEL_ACCESS: u32 = 1 << 5;
+/// The connection is a VM session's satellite (docs/VM-SESSIONS.md): it
+/// gets `ServiceMsg::Sat` and nothing a client gets. The bit grants nothing:
+/// the role comes from the satellite's credential in the handshake, and a
+/// satellite connection without the bit is closed.
+pub const CAP_SATELLITE: u32 = 1 << 6;
 
 /// `ServiceMsg::Image::format`: raw RGBA rows.
 pub const IMAGE_RGBA: u8 = 0;
@@ -130,6 +135,9 @@ pub enum ClientMsg {
     /// alerts (a session needs you or finished) and renewed tunnel access
     /// tokens to it while it is not connected.
     PushRegister { token: String, environment: String, bundle: String, label: String },
+    /// Protocol 8, satellites only: a message of the satellite link
+    /// (`crate::sat`); the hub refuses it from any other connection.
+    Sat(Box<crate::sat::SatUp>),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -288,6 +296,9 @@ pub enum ServiceMsg {
     /// it is renewed), its expiry, and the tunnel port's web-forwarding
     /// address (`wss://…devtunnels.ms`; empty when unknown).
     TunnelAccess { url: String, token: String, expires_ms: u64 },
+    /// Protocol 8, `CAP_SATELLITE`: a message of the satellite link
+    /// (`crate::sat`), only to the satellite connection it is for.
+    Sat(Box<crate::sat::SatDown>),
 }
 
 /// Where an image is drawn in a terminal's viewport (`ServiceMsg::Placements`).
@@ -341,6 +352,7 @@ impl ServiceMsg {
             | ServiceMsg::Welcome { .. }
             | ServiceMsg::Reports { .. }
             | ServiceMsg::TunnelAccess { .. }
+            | ServiceMsg::Sat(_)
                 if protocol < 8 =>
             {
                 None
@@ -351,14 +363,16 @@ impl ServiceMsg {
 
     /// [`ServiceMsg::shaped`] for a client with `caps` (`CAP_*`): images go
     /// only to clients with `CAP_IMAGES`, notifications only to clients with
-    /// `CAP_NOTIFY`, the reports inbox only to clients with `CAP_REPORTS` (a
-    /// protocol-8 client of an older build cannot decode them).
+    /// `CAP_NOTIFY`, the reports inbox only to clients with `CAP_REPORTS`,
+    /// satellite messages only to satellites (`CAP_SATELLITE`) (a protocol-8
+    /// client of an older build cannot decode them).
     pub fn shaped_for(self, protocol: u32, caps: u32) -> Option<ServiceMsg> {
         match &self {
             ServiceMsg::Image { .. } | ServiceMsg::Placements { .. } if caps & CAP_IMAGES == 0 => None,
             ServiceMsg::Notification { .. } if caps & CAP_NOTIFY == 0 => None,
             ServiceMsg::Reports { .. } if caps & CAP_REPORTS == 0 => None,
             ServiceMsg::TunnelAccess { .. } if caps & CAP_TUNNEL_ACCESS == 0 => None,
+            ServiceMsg::Sat(_) if caps & CAP_SATELLITE == 0 => None,
             _ => self.shaped(protocol, caps & CAP_FRAME8 != 0),
         }
     }
@@ -866,6 +880,7 @@ pub(crate) mod tests {
             (26, ClientMsg::PairProof { proof: vec![5; 32] }),
             (27, ClientMsg::Claim { id: "t".into() }),
             (28, ClientMsg::PushRegister { token: "ab".repeat(32), environment: "sandbox".into(), bundle: "com.x".into(), label: "work".into() }),
+            (29, ClientMsg::Sat(Box::new(crate::sat::SatUp::InputAck { term: "t".into(), generation: 1, seq: 2 }))),
         ];
         for (index, message) in client {
             let bytes = postcard::to_stdvec(&message).unwrap();
@@ -890,6 +905,7 @@ pub(crate) mod tests {
             (26, ServiceMsg::Welcome { build: "0.3.0-abc".into() }),
             (27, ServiceMsg::Reports { json: "{\"version\":1}".into() }),
             (28, ServiceMsg::TunnelAccess { url: "wss://atelier-47600.usw2.devtunnels.ms".into(), token: "eyJ.x.y".into(), expires_ms: 9 }),
+            (29, ServiceMsg::Sat(Box::new(crate::sat::SatDown::Resync { term: "t".into(), generation: 1, have: 42 }))),
         ];
         for (index, message) in service {
             let bytes = postcard::to_stdvec(&message).unwrap();
@@ -923,6 +939,7 @@ pub(crate) mod tests {
             ServiceMsg::Welcome { build: "b".into() },
             ServiceMsg::Reports { json: "{}".into() },
             ServiceMsg::TunnelAccess { url: String::new(), token: "t".into(), expires_ms: 1 },
+            ServiceMsg::Sat(Box::new(crate::sat::SatDown::Welcome { json: "{}".into() })),
         ];
         for message in all.clone() {
             let Some(shaped) = message.shaped(7, true) else { continue };
@@ -1006,6 +1023,18 @@ pub(crate) mod tests {
         // Everything else is shaped as before.
         assert!(matches!(ServiceMsg::Frame8(sample_frame8()).shaped_for(8, 0), Some(ServiceMsg::Frame(_))));
         assert!(matches!(ServiceMsg::Frame8(sample_frame8()).shaped_for(8, CAP_FRAME8), Some(ServiceMsg::Frame8(_))));
+    }
+
+    #[test]
+    fn satellite_messages_only_reach_satellites() {
+        let message = ServiceMsg::Sat(Box::new(crate::sat::SatDown::Welcome { json: "{}".into() }));
+        let client = CAP_FRAME8 | CAP_COMPRESS | CAP_IMAGES | CAP_NOTIFY | CAP_REPORTS | CAP_TUNNEL_ACCESS;
+        assert_eq!(message.clone().shaped_for(8, client), None, "no client ever gets one");
+        assert_eq!(message.clone().shaped_for(7, CAP_SATELLITE), None, "protocol 7");
+        assert_eq!(message.clone().shaped_for(8, CAP_SATELLITE | CAP_COMPRESS).as_ref(), Some(&message));
+        // The bit changes nothing else a connection gets.
+        assert!(matches!(ServiceMsg::Frame8(sample_frame8()).shaped_for(8, CAP_SATELLITE), Some(ServiceMsg::Frame(_))));
+        assert_eq!(ServiceMsg::Reports { json: "{}".into() }.shaped_for(8, CAP_SATELLITE), None);
     }
 
     #[test]

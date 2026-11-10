@@ -88,6 +88,10 @@ pub enum Credential {
     Revoked(Vec<u8>),
     /// Unknown, or not allowed here: refused with a random proof.
     Refused,
+    /// A VM session's satellite (`crate::sat`): authenticated like `Secret`,
+    /// only over TCP or a WebSocket, never on the local pipe; the connection
+    /// is a satellite link, never a client (`Accepted::satellite`).
+    Satellite(Vec<u8>),
 }
 
 /// A client the service authenticated.
@@ -96,6 +100,9 @@ pub struct Accepted {
     /// 7 (`Hello`) or 8 (`Hello8`).
     pub protocol: u32,
     pub client: Option<ClientInfo>,
+    /// It authenticated with a satellite's credential: serve it as a
+    /// satellite link, never as a client.
+    pub satellite: bool,
 }
 
 /// A client the service paired: its id and secret.
@@ -174,8 +181,14 @@ pub fn serve(
         _ => bail!("expected hello"),
     };
     let remote_id = client.as_ref().and_then(|c| c.remote_id.clone());
-    let secret = match credential_for(remote_id.as_deref()) {
-        Credential::Secret(secret) => secret,
+    let (secret, satellite) = match credential_for(remote_id.as_deref()) {
+        Credential::Secret(secret) => (secret, false),
+        // Satellites connect from their guest over TCP (a tunnel's web forwarding), never on the pipe.
+        Credential::Satellite(secret) if remote && protocol == PROTOCOL => (secret, true),
+        Credential::Satellite(_) => {
+            let _ = writer.send(&ServiceMsg::Refusal { proof: protocol::nonce() });
+            bail!("refused satellite {remote_id:?} outside TCP")
+        }
         Credential::Revoked(key) => {
             let _ = writer.send(&ServiceMsg::Refusal { proof: protocol::prove(&key, "revoked", &client_nonce) });
             bail!("refused revoked remote client {remote_id:?}")
@@ -196,7 +209,7 @@ pub fn serve(
     if remote {
         writer.send(&ServiceMsg::Welcome { build: build.to_owned() })?;
     }
-    Ok(Opening::Client(Accepted { protocol, client }))
+    Ok(Opening::Client(Accepted { protocol, client, satellite }))
 }
 
 /// The service's side of [`pairing`]: proves the open codes first, then
@@ -402,6 +415,7 @@ mod tests {
                 None => Credential::Secret(b"token".to_vec()),
                 Some("home") => Credential::Secret(b"paired".to_vec()),
                 Some("gone") => Credential::Revoked(pairing::revocation_key(b"paired")),
+                Some("sat-0123456789abcdef") => Credential::Satellite(b"satellite".to_vec()),
                 Some(_) => Credential::Refused,
             }, None);
             sc.close();
@@ -468,6 +482,26 @@ mod tests {
         let (accepted, greeting) = run(true, b"token", None);
         assert!(accepted.unwrap_err().to_string().contains("protocol 8"));
         assert!(greeting.unwrap_err().is::<NoChallenge>());
+    }
+
+    #[test]
+    fn satellites_are_told_apart_by_their_credential_and_only_over_tcp() {
+        let (accepted, greeting) = run(true, b"satellite", Some(info(Some("sat-0123456789abcdef"))));
+        let Opening::Client(accepted) = accepted.unwrap() else { panic!("a connection") };
+        assert!(accepted.satellite && accepted.protocol == 8, "the role comes from the credential");
+        assert!(greeting.is_ok());
+        // Paired clients and the token are never satellites.
+        for (secret, id) in [(&b"paired"[..], Some("home")), (&b"token"[..], None)] {
+            let (accepted, _) = run(true, secret, Some(info(id)));
+            let Opening::Client(accepted) = accepted.unwrap() else { panic!("a connection") };
+            assert!(!accepted.satellite, "{id:?}");
+        }
+        // Never on the local pipe, and a wrong secret is refused as for clients.
+        let (accepted, greeting) = run(false, b"satellite", Some(info(Some("sat-0123456789abcdef"))));
+        assert!(accepted.unwrap_err().to_string().contains("outside TCP"));
+        assert!(greeting.unwrap_err().downcast_ref::<Refused>().is_some_and(|r| !r.verified));
+        let (accepted, greeting) = run(true, b"guess", Some(info(Some("sat-0123456789abcdef"))));
+        assert!(accepted.is_err() && greeting.unwrap_err().is::<AuthError>());
     }
 
     #[test]

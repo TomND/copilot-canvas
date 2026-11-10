@@ -572,3 +572,30 @@ fn skill_sources_answer_the_same_locally_and_remotely() {
     assert!(!local.skill_sources(vec![], Some("../x".into()), vec![]).unwrap().iter().any(|s| s.kind == SourceKind::Library));
     assert!(!team.join("plugin.json").exists() && !service.instance.home.join("group-skills").exists());
 }
+
+/// VM sessions' requests are the service's own (it holds the VMs): a client
+/// asks them over its connection; the in-process backend refers to the
+/// service. Without a pack they say VM sessions are off; with one they
+/// answer its check and view (names only).
+#[test]
+fn vm_requests_are_answered_by_the_service() {
+    use canvas_model::rpc::Request;
+    let service = Service::start("vm");
+    let (_conn, remote) = service.connect();
+    let backend: &dyn Backend = remote.as_ref();
+    let local = LocalBackend::new(service.ctx());
+    let local: &dyn Backend = &local;
+    assert!(local.vm_pack_status().unwrap_err().to_string().contains("answered by the Atelier service"));
+    if std::env::var_os("ATELIER_VM_PACK").is_none() {
+        assert_eq!(backend.vm_pack_status().unwrap().folder, None, "no pack: VM sessions are off");
+        assert!(backend.vm_view(Request::VmList).unwrap_err().to_string().contains("no VM pack is configured"));
+    }
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs").join("examples").join("vm-pack");
+    let settings = canvas_common::settings::Settings { vm: canvas_common::settings::VmSettings { pack: Some(example.display().to_string()) }, ..Default::default() };
+    settings.save(&service.instance.home).unwrap();
+    let status = backend.vm_pack_status().unwrap();
+    assert!(status.folder.is_some() && status.errors() == 0, "{status:?}");
+    let view = backend.vm_view(Request::VmList).unwrap();
+    assert_eq!(view.pack.repos.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(), ["contoso-app"]);
+    assert!(!serde_json::to_string(&view).unwrap().contains("contoso-rg"), "names, never the pack's values");
+}

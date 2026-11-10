@@ -188,6 +188,14 @@ and unit tests that cover the row.
 No row is TUI-only: every feature of the TUI exists in the GUI. Row 32 is
 not a front-end feature.
 
+**VM sessions** ([VM-SESSIONS.md](VM-SESSIONS.md)) are optional and show
+nothing without a VM pack, so no row above changes. Their *Run on* row, ☁
+marker and *Start on VM…* are checked in both render modes by the view
+snapshots `new-session-run-on-default`, `new-session-run-on-vm` and
+`vm-box-marker`, and end to end by `atelier selftest vm` (local sandboxes,
+no window); their GUI rows (57–62 in VM-SESSIONS-PLAN.md) come with the
+VM UI of Phase 4.
+
 ## New in the GUI (GUI-only)
 
 | | Feature | How it is tested | ✓ |

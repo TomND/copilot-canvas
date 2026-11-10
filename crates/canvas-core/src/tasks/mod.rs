@@ -172,6 +172,9 @@ pub enum Action {
     EditBody(String),
     /// The new-session dialog, prefilled for a todo (the dialog starts it).
     StartSession(String),
+    /// The same on a VM (*Run on: VM*, its branch named after the todo);
+    /// only with a VM pack (docs/VM-SESSIONS.md).
+    StartOnVm(String),
     /// Creates the todo's spec note when missing, links it and opens it.
     SpecNote(String),
     /// Picks who claims a todo.

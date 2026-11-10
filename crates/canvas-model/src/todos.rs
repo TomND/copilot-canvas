@@ -486,6 +486,10 @@ pub struct AgentPolicy {
     pub agent_adds: AddPolicy,
     /// Agents may mark todos done or canceled (and reopen them).
     pub agents_may_close: bool,
+    /// *Start a session on this…* runs the session on a VM (the board's
+    /// *Start on VM* policy; off: this machine, as always before).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub start_on_vm: bool,
 }
 
 /// A board's own names for the statuses (none: the defaults).

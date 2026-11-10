@@ -253,6 +253,10 @@ pub struct Snapshot {
     /// the routed canvas has no id).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub todos: Option<crate::todos::TodoBook>,
+    /// VM sessions (none without a VM pack, and from older services: no VM
+    /// UI shows then).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vm: Option<crate::vm::VmView>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -655,7 +659,7 @@ impl BusState {
         for mail in &self.mailbox {
             *mailbox.entry(mail.to.clone()).or_insert(0) += 1;
         }
-        Snapshot { passive, mailbox, recent: self.recent.iter().cloned().collect(), effects: self.effects.iter().filter(|e| e.alive(now)).cloned().collect(), prs: None, reviews: None, todos: None }
+        Snapshot { passive, mailbox, recent: self.recent.iter().cloned().collect(), effects: self.effects.iter().filter(|e| e.alive(now)).cloned().collect(), prs: None, reviews: None, todos: None, vm: None }
     }
 }
 

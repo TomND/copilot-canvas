@@ -269,6 +269,13 @@ impl Agents {
         server::spawn_named("bus", { let a = agents.clone(); move || passive::bus_loop(a, bus_rx) });
         server::spawn_named("reports", { let a = agents.clone(); move || inbox::run(a) });
         server::spawn_named("prs", { let a = agents.clone(); move || prs::run(a) });
+        // VM sessions' thin lane (idle without a VM pack).
+        server::spawn_named("vm", {
+            let (home, log_instance, wake) = (instance.home.clone(), instance.clone(), agents.index_wake.clone());
+            move || crate::vm::thin::run(home, move |line| log(&log_instance, &line), move || {
+                let _ = wake.try_send(());
+            })
+        });
         agents
     }
 }
@@ -323,6 +330,16 @@ impl Agents {
     }
 
     fn resolve_agent(&self, id: &str, mut launch: AgentLaunch, cwd: &str) -> Result<Resolved> {
+        // Where it runs: a VM launch names its agent `vm:<kind>` and carries
+        // its placement; anything else runs here, unless the canvas places
+        // the box on a VM (an older client's launch: never started here).
+        if let Some(placement) = canvas_model::launch::take_placement(&mut launch).map_err(|e| anyhow::anyhow!(e))? {
+            return self.resolve_vm(id, launch, placement);
+        }
+        anyhow::ensure!(
+            !self.docs.placement_of(id).is_some_and(|p| p.is_vm()),
+            "this session runs on a VM: update this client to start it (nothing was started on this machine)"
+        );
         let kind = AgentKind::parse(&launch.agent).with_context(|| format!("unknown agent {:?}", launch.agent))?;
         let provider = kind.provider();
         let session = launch.native_id.clone().unwrap_or_else(|| id.to_owned());
@@ -390,6 +407,43 @@ impl Agents {
             SessionPlan::Terminal => {}
         }
         Ok(Resolved { program: command.program, args: command.args, env: command.env, agent: true })
+    }
+
+    /// A VM box's launch: its intent is recorded and its terminal runs
+    /// `atelier vm attach`, which claims a VM (the pack's hooks) and joins
+    /// the agent in the guest; nothing is provisioned on the caller's thread.
+    fn resolve_vm(&self, id: &str, mut launch: AgentLaunch, placement: canvas_model::vm::VmPlacement) -> Result<Resolved> {
+        let home = &self.instance.home;
+        let kind = AgentKind::parse(&launch.agent).with_context(|| format!("unknown agent {:?}", launch.agent))?;
+        let folder = crate::vm::pack::configured(home).context("VM sessions are off on this machine (no VM pack is configured); nothing was started")?;
+        let (pack, status) = crate::vm::pack::load(&folder);
+        anyhow::ensure!(status.errors() == 0, "the VM pack has {} error(s) (`atelier vm pack check`); nothing was started", status.errors());
+        anyhow::ensure!(pack.repo(&placement.repo).is_some(), "the VM pack has no repository {:?}; nothing was started", placement.repo);
+        anyhow::ensure!(
+            !launch.env.iter().any(|(k, _)| canvas_common::env::is(k.trim_start_matches('-'), "ATELIER_SESSION")),
+            "launch options may not select a different session"
+        );
+        // This machine's skill folders are not in the guest.
+        let _ = canvas_model::launch::take_group_skills(&mut launch);
+        let (argv, env) = crate::vm::launch::guest_command(kind, id, &launch)?;
+        let mut intent = crate::vm::launch::load(home, id)?.unwrap_or_default();
+        intent.r#box = id.to_owned();
+        intent.agent = kind.id().to_owned();
+        if intent.sandbox.is_empty() {
+            intent.placement = placement;
+            intent.state = canvas_model::vm::VmState::Claiming;
+        }
+        intent.argv = argv;
+        intent.env = crate::vm::launch::guest_env(id, kind).into_iter().chain(env).collect();
+        if intent.created_ms == 0 {
+            intent.created_ms = now_ms();
+        }
+        crate::vm::launch::save(home, &mut intent)?;
+        let how = if intent.sandbox.is_empty() { "on a new VM" } else { "in its VM" };
+        log(&self.instance, &format!("terminal {id}: {} {} {how} (repository {})", kind.id(), if launch.resume { "resume" } else { "new session" }, intent.placement.repo));
+        let cli = home.join("cli").join(canvas_sys::host::exe_name("atelier"));
+        let program = if cli.is_file() { cli } else { std::env::current_exe()? };
+        Ok(Resolved { program: program.display().to_string(), args: vec!["vm".into(), "attach".into(), "--box".into(), id.to_owned()], env: self.integration(id).env, agent: true })
     }
 
     /// Learns the agent session `id` is about to create (see [`agent_session_loop`]).
@@ -556,6 +610,13 @@ impl HostApp for Agents {
                     && request.is_remote_admin()
                 {
                     let response = self.remote_admin(client, request.clone());
+                    client.send(rpc_reply(id, serde_json::to_string(&response).unwrap_or_default()));
+                    return Ok(());
+                }
+                if let Ok(request) = &request
+                    && request.is_service_state()
+                {
+                    let response = crate::vm::service_request(&self.instance.home, request.clone());
                     client.send(rpc_reply(id, serde_json::to_string(&response).unwrap_or_default()));
                     return Ok(());
                 }
@@ -1082,6 +1143,7 @@ fn event_source(agent_sessions: &HashMap<String, String>, session: &str) -> Stri
 
 fn index_loop(shared: Arc<Agents>, wake: Receiver<()>) {
     let mut histories: Vec<(AgentKind, Box<dyn crate::agents::History>)> = crate::agents::ALL.iter().map(|kind| (*kind, kind.provider().history())).collect();
+    let mut mirrors: HashMap<PathBuf, crate::index::Index> = HashMap::new();
     loop {
         let natives: Vec<String> = {
             let terms = lock(&shared.terms);
@@ -1095,6 +1157,15 @@ fn index_loop(shared: Arc<Agents>, wake: Receiver<()>) {
             .chain(natives)
             .collect();
         let (mut changed, mut removed) = (Vec::new(), Vec::new());
+        // VM sessions' history, mirrored from their guests (the thin lane):
+        // one more Copilot index per mirror (none without VM sessions).
+        for root in crate::vm::thin::copilot_mirrors(&shared.instance.home) {
+            mirrors.entry(root.clone()).or_insert_with(|| crate::index::Index::new(root));
+        }
+        for index in mirrors.values_mut() {
+            let (c, _) = index.poll(&tracked, Duration::from_secs(15));
+            changed.extend(c);
+        }
         for (kind, history) in histories.iter_mut() {
             // One agent's broken store must not stop status updates for the others.
             let polled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

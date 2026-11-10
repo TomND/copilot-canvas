@@ -118,6 +118,13 @@ impl Docs {
         }
     }
 
+    /// Where box `id` runs, as the open documents say (`None`: no open
+    /// document has it, or it has no placement: this machine).
+    pub fn placement_of(&self, id: &str) -> Option<canvas_model::vm::Placement> {
+        let open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        open.values().find_map(|d| d.doc.node(id).and_then(|n| n.placement.clone()))
+    }
+
     /// Whether any document is open.
     #[cfg(test)]
     pub fn any_open(&self) -> bool {

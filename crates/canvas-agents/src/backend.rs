@@ -233,6 +233,10 @@ fn run(ctx: &Ctx, request: Request) -> Result<Response> {
         Request::NoteTrash { path, root } => crate::notebook::trash(&path, &root)?,
         Request::NoteSearch { roots, query, limit } => crate::notebook::search(&roots, &query, limit)?,
         Request::SkillSources { dirs, canvas, folders } => Response::SkillSources(skill_sources(ctx, &dirs, canvas.as_deref(), &folders)),
+        // VM sessions are the service's state (`Request::is_service_state`): it answers them itself.
+        request @ (Request::VmList | Request::VmPool | Request::VmImages | Request::VmAction { .. } | Request::VmImageBuild { .. } | Request::VmBudget | Request::VmPackStatus) => {
+            Response::Error(format!("{} is answered by the Atelier service; ask it over its connection", request.name()))
+        }
     })
 }
 

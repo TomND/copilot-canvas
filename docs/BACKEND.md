@@ -479,6 +479,20 @@ older service ignores them). They change `state.json` (or delete the item
 folder) and broadcast the new inbox, so every window and every remote client
 shows the same read state.
 
+## VM sessions on the wire
+
+VM sessions are optional ([VM-SESSIONS.md](VM-SESSIONS.md)); without a VM pack none of this is sent or shown.
+
+| Where | Addition | An older peer |
+|---|---|---|
+| `Doc` | `Node::placement` (`{"on": "vm", "repo", "branch", "size", …}`; absent: this machine), `LaunchDefaults::placement` in `defaults` and a group's `defaults` (not written while unset) | an older client ignores them (a VM box looks local there; its double-click is refused by the service: "this session runs on a VM: update this client"); an older service drops them when it saves the canvas |
+| `ClientMsg::Launch` (`AgentLaunch`, postcard) | none in its shape: a VM launch names its agent `vm:<kind>` and carries `ATELIER_PLACEMENT` (JSON `VmPlacement`) in `AgentLaunch::env`, taken out by the service | an older service refuses the launch ("unknown agent"): a VM session never starts on the hub by mistake |
+| `TodoBook` | `AgentPolicy::start_on_vm` (not written while false) | an older service drops it when it rewrites the book |
+| `ServiceMsg::Bus` (`bus::Snapshot`) | `vm`: a `VmView` (the pack's names, every VM box's state, sandboxes, images, budget, queued starts, refusals); absent without a pack | ignores it |
+| `Request` / `Response` | `VmList`, `VmPool`, `VmImages`, `VmAction { box, op }`, `VmImageBuild { repo }`, `VmBudget`, `VmPackStatus` / `Vm(VmView)`, `VmPack(PackStatus)` (appended last); answered by the service itself (`Request::is_service_state`; an in-process backend refers to it) | answers "does not support this request (update it)" |
+| `ClientMsg` / `ServiceMsg` | `Sat` (index 29 each), satellites only (below) | never sent to an older peer: satellites authenticate with credentials only a current hub mints |
+| `<home>/vm/` | `launches/<box>.json` (VM launches' intents), `mirrors/<sandbox>/` (the guests' mirrored history and what was taken), `ops/<sandbox>/<id>.json` (each relayed operation's answer, once) | — |
+
 ## Protocol
 
 All new messages are protocol 8 and appended at the end of the enums:
@@ -491,6 +505,7 @@ All new messages are protocol 8 and appended at the end of the enums:
 | `Pair { code_proof, name, nonce }` (the first pairing scheme; refused now) | 24 |
 | `PairStart { name, nonce }` (REMOTE.md, Pairing) | 25 |
 | `PairProof { proof }` (REMOTE.md, Pairing) | 26 |
+| `Sat(Box<SatUp>)` (VM sessions' satellites only; [VM-SESSIONS.md](VM-SESSIONS.md); refused from any other connection) | 29 |
 
 | Service → client | Index |
 |---|---|
@@ -503,6 +518,7 @@ All new messages are protocol 8 and appended at the end of the enums:
 | `Refusal { proof }` (REMOTE.md, handshake) | 25 |
 | `Welcome { build }` (REMOTE.md, handshake) | 26 |
 | `Reports { json }` (the reports inbox; only to clients with `CAP_REPORTS`, `1 << 4`, which the TUI and the GUI set) | 27 |
+| `Sat(Box<SatDown>)` (only to a satellite: `CAP_SATELLITE`, `1 << 6`) | 29 |
 
 `ServiceMsg::shaped` never sends them to protocol-7 clients. The connection's
 reader thread routes `RpcReply` to the waiting caller by id; a dropped

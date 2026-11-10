@@ -262,6 +262,11 @@ pub enum NsField {
     Prompt,
     Create,
     Cancel,
+    /// *Run on*: this machine or a VM (only with a VM pack).
+    RunOn,
+    VmRepo,
+    VmSize,
+    VmBranch,
 }
 
 #[derive(Clone, Debug)]
@@ -295,19 +300,41 @@ pub struct NewSession {
     pub model: Option<String>,
     /// The group the new box lands in (its launch defaults apply).
     pub group: Option<String>,
+    /// VM sessions: `None` without a VM pack (no *Run on* row shows).
+    pub vm: Option<VmChoice>,
+}
+
+/// The new-session dialog's *Run on* (docs/VM-SESSIONS.md): this machine by
+/// default; a VM only when chosen here or by the launch defaults.
+#[derive(Clone, Debug, Default)]
+pub struct VmChoice {
+    pub on_vm: bool,
+    /// The pack's repositories and sizes.
+    pub repos: Vec<String>,
+    pub sizes: Vec<String>,
+    pub repo: String,
+    pub size: String,
+    pub branch: TextInput,
+    pub branch_edited: bool,
 }
 
 impl NewSession {
     pub fn fields(&self) -> Vec<NsField> {
         let mut fields = vec![NsField::Name, NsField::Folder, NsField::Browse, NsField::Recent];
-        if matches!(self.git, GitState::Repo(_)) {
+        if let Some(vm) = &self.vm {
+            fields.push(NsField::RunOn);
+            if vm.on_vm {
+                fields.extend([NsField::VmRepo, NsField::VmSize, NsField::VmBranch]);
+            }
+        }
+        if matches!(self.git, GitState::Repo(_)) && !self.on_vm() {
             fields.push(NsField::Mode);
             if self.worktree {
                 fields.extend([NsField::Base, NsField::NewBranch, NsField::WtPath]);
             }
         }
         fields.extend([NsField::Agent, NsField::Model]);
-        if self.can_fork {
+        if self.can_fork && !self.on_vm() {
             fields.push(NsField::Context);
         }
         fields.extend([NsField::Mcp, NsField::Prompt, NsField::Create, NsField::Cancel]);
@@ -316,7 +343,12 @@ impl NewSession {
 
     /// Forks its parent's conversation (and so its model).
     pub fn forks(&self) -> bool {
-        self.fork && self.can_fork
+        self.fork && self.can_fork && !self.on_vm()
+    }
+
+    /// It runs on a VM (chosen in *Run on*).
+    pub fn on_vm(&self) -> bool {
+        self.vm.as_ref().is_some_and(|vm| vm.on_vm)
     }
 
     pub fn cycle(&mut self, forward: bool) {
@@ -629,6 +661,7 @@ mod tests {
             agent: AgentKind::OpenCode,
             model: None,
             group: None,
+            vm: None,
         };
         assert!(!dialog.fields().contains(&NsField::Base));
         assert!(dialog.fields().contains(&NsField::Agent), "every session chooses its agent");

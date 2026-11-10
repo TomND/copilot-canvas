@@ -921,12 +921,27 @@ impl App {
             fork: can_fork,
             agent,
             model: None,
+            vm: self.vm_choice(group.as_deref(), &folder),
             group,
         };
         if !self.agent_configs.contains_key(&agent) {
             self.refresh_config_for(agent);
         }
         self.modals.push(Modal::NewSession(Box::new(dialog)));
+    }
+
+    /// The dialog's *Run on* (`None` without a VM pack): a VM only when the
+    /// group's or the canvas's launch defaults say so; the repository the
+    /// folder belongs to, else the pack's first.
+    pub(crate) fn vm_choice(&self, group: Option<&str>, folder: &str) -> Option<crate::dialogs::VmChoice> {
+        let pack = &self.bus.vm.as_ref()?.pack;
+        let defaults = self.doc.defaults.merged(group.and_then(|g| self.doc.group(g)).and_then(|g| g.defaults.as_ref()));
+        let chosen = canvas_model::vm::Placement::of(defaults.placement.as_ref());
+        let repos: Vec<String> = pack.repos.iter().map(|r| r.key.clone()).collect();
+        let found = canvas_model::vm::repo_for_folder(&pack.repos, folder, self.info.path_style());
+        let repo = chosen.vm().map(|v| v.repo.clone()).filter(|r| repos.contains(r)).or(found).or_else(|| repos.first().cloned()).unwrap_or_default();
+        let size = chosen.vm().and_then(|v| v.size.clone()).filter(|s| pack.sizes.contains(s)).or_else(|| pack.sizes.first().cloned()).unwrap_or_default();
+        Some(crate::dialogs::VmChoice { on_vm: chosen.is_vm() && !repos.is_empty(), repos, sizes: pack.sizes.clone(), repo, size, branch: TextInput::default(), branch_edited: false })
     }
 
     /// Where a new session box goes: next to its parent, at the spot given
@@ -1132,8 +1147,28 @@ impl App {
         if name.is_empty() {
             name = Path::new(&folder).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Session".into());
         }
+        // A VM session: its repository, size and branch (only Copilot CLI so far).
+        let placement = match dialog.vm.as_ref().filter(|vm| vm.on_vm) {
+            Some(vm) => {
+                if vm.repo.is_empty() {
+                    return Err("Choose the VM's repository (the VM pack lists them).".into());
+                }
+                if !crate::vms::runs_on_vm(dialog.agent) {
+                    return Err(format!("{} sessions cannot run on a VM yet; choose Copilot CLI, or run it on this machine.", dialog.agent.label()));
+                }
+                let branch = match vm.branch.text.trim() {
+                    "" => canvas_model::vm::branch_for_session(if dialog.name.text.trim().is_empty() { &name } else { dialog.name.text.trim() }),
+                    typed => typed.to_owned(),
+                };
+                if !canvas_model::vm::branch_ok(&branch) {
+                    return Err(format!("Invalid branch name: {branch}"));
+                }
+                Some(canvas_model::vm::Placement::Vm(Box::new(canvas_model::vm::VmPlacement { repo: vm.repo.clone(), branch: Some(branch), size: Some(vm.size.clone()).filter(|s| !s.is_empty()), mcp: None, with: None })))
+            }
+            None => None,
+        };
         let mut worktree_job = None;
-        let cwd = if dialog.worktree {
+        let cwd = if dialog.worktree && placement.is_none() {
             let GitState::Repo(info) = &dialog.git else { return Err("The folder is not a Git repository.".into()) };
             let new_branch = dialog.new_branch.text.trim().to_owned();
             if !new_branch.is_empty() && !git::valid_branch_name(&new_branch) {
@@ -1188,7 +1223,7 @@ impl App {
             passive: None,
             no_messages: false,
             agent: (!self.demo).then(|| agent.id().to_owned()),
-            agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
+            agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false, placement,
         };
         // The model shown in the dialog is the one it starts with (and keeps on
         // resume); a choice made there becomes its agent's default.

@@ -97,6 +97,9 @@ pub fn installed() -> Vec<AgentKind> {
     ALL.into_iter().filter(|k| k.provider().program().is_ok()).collect()
 }
 
+/// A launch's arguments and environment, without its program.
+pub type ArgsEnv = (Vec<String>, Vec<(String, String)>);
+
 /// The command line for a launch.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Command {

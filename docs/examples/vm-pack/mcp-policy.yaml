@@ -1,0 +1,14 @@
+# The hub's MCP servers guests may use, by the hub's own server name.
+presets:
+  forge-readonly: [forge]
+servers:
+  forge:
+    mode: per_session
+    rules:
+      - allow: list_pull_requests
+      - allow: create_pull_request
+        when:
+          draft: "true"
+          head: "{{box.branch}}"
+      - deny: update_pull_request
+      - deny: vote

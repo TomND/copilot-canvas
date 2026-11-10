@@ -314,6 +314,21 @@ OpenCode; docs/AGENT-PROVIDERS.md).
    the new build (`atelier service stop`, then open the canvas again,
    or the toolbar's *Update service*); sessions get the plugin at launch.
 
+### VM sessions
+
+`crates/canvas-agents/src/vm/` (docs/VM-SESSIONS.md, the plan in
+docs/VM-SESSIONS-PLAN.md, progress in docs/VM-STATUS.md): `pack.rs` (the VM
+pack and `vm pack check`), `hooks.rs` (the pack's hooks), `launch.rs` (VM
+launches' intents, `vm attach`, the agent's command line in the guest),
+`lite.rs` (the guest side of the thin lane: relayed commands, the drain),
+`thin.rs` (the hub side: drains, mirrors, running relayed operations),
+`local.rs` (`vm::local` sandboxes and `vm-hook-standin`). The model is
+`canvas_model::vm`, the satellite link's messages `canvas_common::sat`, the
+client side `canvas-core/src/vms.rs` and the new-session dialog's *Run on*.
+Everything is off without a pack. `atelier selftest vm` (`src/vm_probe.rs`)
+runs it end to end on local sandboxes; never point it, or anything else, at a
+real provider in a test.
+
 ### Agent providers
 
 `crates/canvas-agents/src/agents/mod.rs`: `trait Provider` (`program`,

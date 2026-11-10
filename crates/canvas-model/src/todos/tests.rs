@@ -145,7 +145,7 @@ fn people_add_anywhere_agents_into_backlog_or_todo() {
     assert_eq!((idea.status, idea.proposal.as_ref().unwrap().why.as_str()), (Status::Proposed, "It saves a day per release."));
     assert_eq!(idea.relations, [Relation { kind: RelKind::DiscoveredFrom, id: "DEC-001".into() }]);
     assert_eq!(made.events[0].kind, "todo.proposed");
-    let policy = AgentPolicy { agent_adds: AddPolicy::Proposed, agents_may_close: false };
+    let policy = AgentPolicy { agent_adds: AddPolicy::Proposed, agents_may_close: false, start_on_vm: false };
     book.apply(TodoOp::UpdateBoard { board: "Decomps".into(), name: None, prefix: None, wip: None, color: None, notes: None, policy: Some(policy), statuses: None }, &you(), &ctx()).unwrap();
     add(&mut book, new("Parser", "Asked for"), &agent("s1")).unwrap();
     assert_eq!(status(&book, "DEC-004"), Status::Proposed, "the parent board's policy covers its swimlanes");
@@ -198,7 +198,7 @@ fn agents_never_accept_decline_delete_or_close_unless_the_board_lets_them_close(
         book.apply(op, &bot, &ctx()).unwrap_or_else(|e| panic!("agents may {word}: {e}"));
     }
     // A board that lets agents close.
-    let policy = AgentPolicy { agent_adds: AddPolicy::Direct, agents_may_close: true };
+    let policy = AgentPolicy { agent_adds: AddPolicy::Direct, agents_may_close: true, start_on_vm: false };
     book.apply(TodoOp::UpdateBoard { board: "Decomps".into(), name: None, prefix: None, wip: None, color: None, notes: None, policy: Some(policy), statuses: None }, &you(), &ctx()).unwrap();
     book.apply(TodoOp::Done { id: "DEC-001".into(), note: None }, &bot, &ctx()).unwrap();
     book.apply(TodoOp::Reopen { id: "DEC-001".into() }, &bot, &ctx()).unwrap();
@@ -792,7 +792,7 @@ fn ids_and_places_stay_in_range() {
 #[test]
 fn agents_leave_proposals_declines_and_other_sessions_claims_to_their_owners() {
     let mut book = book();
-    let close = AgentPolicy { agent_adds: AddPolicy::Direct, agents_may_close: true };
+    let close = AgentPolicy { agent_adds: AddPolicy::Direct, agents_may_close: true, start_on_vm: false };
     book.apply(TodoOp::UpdateBoard { board: "Decomps".into(), name: None, prefix: None, wip: None, color: None, notes: None, policy: Some(close), statuses: None }, &you(), &ctx()).unwrap();
     add(&mut book, NewTodo { propose: true, why: Some("w".into()), ..new("Decomps", "Idea") }, &agent("s1")).unwrap();
     add(&mut book, NewTodo { status: Some(Status::Todo), ..new("Decomps", "Work") }, &you()).unwrap();

@@ -111,6 +111,12 @@ pub struct Node {
     /// with it. Its place is kept, so showing it puts it back.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hidden: bool,
+    /// Where the session runs: unset (every box from before VM sessions
+    /// included) is this machine; `Placement::Vm` only when you chose a VM
+    /// for it (docs/VM-SESSIONS.md). Set when the box is made, from the
+    /// new-session dialog; launch defaults never move an existing box.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<crate::vm::Placement>,
 }
 
 /// Passive session settings (the service keeps its run state).
@@ -298,6 +304,10 @@ pub struct LaunchDefaults {
     /// group's lists are combined, never replaced.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub skill_dirs: Vec<String>,
+    /// Where new sessions run (*Run on* in the new-session dialog starts
+    /// there); unset: this machine. A group's overrides the canvas's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<crate::vm::Placement>,
 }
 
 /// [`LaunchDefaults`] as stored, including the single `model` of canvases
@@ -322,6 +332,8 @@ struct RawLaunchDefaults {
     permissions: Option<String>,
     #[serde(default)]
     skill_dirs: Vec<String>,
+    #[serde(default)]
+    placement: Option<crate::vm::Placement>,
 }
 
 impl From<RawLaunchDefaults> for LaunchDefaults {
@@ -343,6 +355,7 @@ impl From<RawLaunchDefaults> for LaunchDefaults {
             add_dirs: raw.add_dirs,
             permissions: raw.permissions,
             skill_dirs: raw.skill_dirs,
+            placement: raw.placement,
         }
     }
 }
@@ -375,6 +388,7 @@ impl LaunchDefaults {
             add_dirs,
             permissions: pick(&self.permissions, &over.permissions),
             skill_dirs: union_dirs(&self.skill_dirs, &over.skill_dirs),
+            placement: over.placement.clone().or_else(|| self.placement.clone()),
         }
     }
 
@@ -430,7 +444,7 @@ impl LaunchDefaults {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.models.is_empty() && self.args().is_empty() && self.permissions.is_none() && self.skill_dirs.is_empty()
+        self.models.is_empty() && self.args().is_empty() && self.permissions.is_none() && self.skill_dirs.is_empty() && self.placement.is_none()
     }
 }
 
@@ -1299,7 +1313,7 @@ pub fn demo_doc(cwd: &str) -> Doc {
         passive: None,
         no_messages: false,
         agent: None,
-        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
+        agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false, placement: None,
     };
     let mut doc = Doc::default();
     doc.nodes.push(session("demo-main", "Build session canvas", 2, 2));
@@ -1354,7 +1368,7 @@ pub fn migrate_v1(path: &Path) -> Option<Doc> {
             command: None,
             fresh: false,
             automation: None,
-            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
+            synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false, placement: None,
         });
     }
     // The prototype stacked boxes 7 rows apart; v2 boxes are 4 tall, so keep positions.
@@ -1368,11 +1382,40 @@ mod tests {
     use super::*;
 
     fn session(id: &str, x: i32, y: i32) -> Node {
-        Node { id: id.into(), kind: NodeKind::Session, name: id.into(), x, y, cwd: None, parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false }
+        Node { id: id.into(), kind: NodeKind::Session, name: id.into(), x, y, cwd: None, parent: None, agent_key: None, source: None, command: None, fresh: false, automation: None, synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false, placement: None }
     }
 
     fn agent(id: &str, parent: &str, x: i32, y: i32) -> Node {
         Node { kind: NodeKind::Agent, parent: Some(parent.into()), ..session(id, x, y) }
+    }
+
+    #[test]
+    fn placements_default_to_this_machine_and_old_canvases_are_unchanged() {
+        use crate::vm::{Placement, VmPlacement};
+        let text = r#"{"version":2,"nodes":[{"id":"a","kind":"session","name":"A","x":0,"y":0}],"groups":[{"id":"g","name":"G","x":0,"y":0,"w":10,"h":5,"defaults":{"models":{"copilot":"m"}}}],"defaults":{"add_dirs":["/x"]},"view":{"x":0,"y":0}}"#;
+        let old: Doc = serde_json::from_str(text).unwrap();
+        assert_eq!(old.nodes[0].placement, None);
+        assert_eq!(Placement::of(old.nodes[0].placement.as_ref()), Placement::Local);
+        assert_eq!(old.defaults.placement, None);
+        assert_eq!(old.groups[0].defaults.as_ref().unwrap().placement, None);
+        assert_eq!(old.defaults.merged(old.groups[0].defaults.as_ref()).placement, None, "nothing set: this machine");
+        let written = serde_json::to_string(&old).unwrap();
+        assert!(!written.contains("placement"), "never written while unset: {written}");
+        // Chosen: kept and round-tripped; a group's choice wins over the canvas's.
+        let vm = Placement::Vm(Box::new(VmPlacement { repo: "contoso-app".into(), ..Default::default() }));
+        let canvas = LaunchDefaults { placement: Some(vm.clone()), ..Default::default() };
+        let group = LaunchDefaults { placement: Some(Placement::Local), ..Default::default() };
+        assert_eq!(canvas.merged(Some(&group)).placement, Some(Placement::Local));
+        assert_eq!(canvas.merged(Some(&LaunchDefaults::default())).placement, Some(vm.clone()));
+        assert!(!canvas.is_empty() && !group.is_empty(), "a placement alone is an override");
+        let mut doc = old;
+        doc.nodes[0].placement = Some(vm.clone());
+        doc.defaults = canvas;
+        let back: Doc = serde_json::from_str(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(back, doc);
+        // A board's policy starts sessions here unless Start on VM is on.
+        assert!(!crate::todos::AgentPolicy::default().start_on_vm);
+        assert!(!serde_json::to_string(&crate::todos::AgentPolicy::default()).unwrap().contains("start_on_vm"));
     }
 
     #[test]
