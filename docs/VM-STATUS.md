@@ -95,7 +95,7 @@ owner's note that VM sessions are optional and local stays the default.
       17 jobs); replay and gap end to end in `vm::satellite` tests; `corpus check` with the repaint round trip;
       `selftest` and `--remote loopback` unchanged. Owner: `vm spike s1`, `s4`, `s7` on real sandboxes
 
-### 3: integration
+### 3: integration (done 2026-11-10; CI run 42879098435 green on every job; merged into main at ffb5f20)
 - [x] VM-31 the CLI inventory (§4) row by row: each relayed command is the same command line here (files carried,
       outputs written back), refusals with why (`every_row_of_the_cli_inventory_relays_as_the_same_command`); the
       `Io` seam is not built (departure: relayed commands run as a subprocess)
@@ -119,7 +119,8 @@ owner's note that VM sessions are optional and local stays the default.
 - [x] VM-38 the guest's Copilot MCP configuration (a synced root at `~/.copilot`); Claude Code and OpenCode in Phase 5
 - [x] refusals (MCP and egress) in the VM view and `vm list`
 - [x] Exit: every row of the CLI inventory tested; offline writes say *queued*
-- [ ] Exit: the probe's integration steps on three OSes (CI); owner: `vm spike s5` with a real server
+- [x] Exit: the probe's integration steps on three OSes (CI run 42879098435; Windows 77 s); owner: `vm spike s5`
+      with a real server (open)
 
 ### 4: UX
 - [x] VM-46 on the hub: idle and unseen for `suspend_after` (no client shows it, not working, no mail, quiet) →
@@ -306,3 +307,5 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   reports the repositories of ended terminals too (found by the probe: a session that ended hid its work from the
   barrier). `selftest vm` PASS in 65 s on macOS (typing resumes a suspended VM; the barrier stops at an untracked
   file).
+- 2026-11-10: Phase 3 merged into main at ffb5f20 (CI run 42879098435 green on all 17 jobs; the Windows VM
+  self-test passed with the satellite's read timeout). The workers' `vm-egress` and `vm-mcp` are in main.
