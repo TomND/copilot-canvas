@@ -1444,7 +1444,7 @@ impl App {
             automation: None,
             synced_name: None,
             reviewed_ms: None,
-            mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
+            mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false, placement: None,
         });
         self.mark_dirty();
         self.notify(format!("“{}” started subsession “{name}”.", p.name), false);
@@ -1797,7 +1797,9 @@ impl App {
             | ServiceMsg::Refusal { .. }
             | ServiceMsg::Welcome { .. }
             // Only for the iPhone client (CAP_TUNNEL_ACCESS).
-            | ServiceMsg::TunnelAccess { .. } => {}
+            | ServiceMsg::TunnelAccess { .. }
+            // Only for VM sessions' satellites (CAP_SATELLITE).
+            | ServiceMsg::Sat(_) => {}
         }
     }
 
@@ -1857,7 +1859,7 @@ impl App {
                     command: None,
                     fresh: false,
                     automation: None,
-                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: folded, hidden: false,
+                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: None, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: folded, hidden: false, placement: None,
                 };
                 let rect = node.rect();
                 self.doc.nodes.push(node);
@@ -1982,7 +1984,7 @@ impl App {
                     command: None,
                     fresh: false,
                     automation: None,
-                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false,
+                    synced_name: None, reviewed_ms: None, mcp_off: None, passive: None, no_messages: false, agent: seed.agent, agent_session: None, last_used_ms: None, accessed_ms: None, stacked: false, model: None, subagents_shown: None, unplaced: false, hidden: false, placement: None,
                 };
                 first.get_or_insert_with(|| node.id.clone());
                 ids.push(node.id.clone());

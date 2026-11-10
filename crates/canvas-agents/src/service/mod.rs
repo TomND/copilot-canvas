@@ -559,6 +559,13 @@ impl HostApp for Agents {
                     client.send(rpc_reply(id, serde_json::to_string(&response).unwrap_or_default()));
                     return Ok(());
                 }
+                if let Ok(request) = &request
+                    && request.is_service_state()
+                {
+                    let response = crate::vm::service_request(&self.instance.home, request.clone());
+                    client.send(rpc_reply(id, serde_json::to_string(&response).unwrap_or_default()));
+                    return Ok(());
+                }
                 let quick = request.as_ref().is_ok_and(|r| r.is_quick());
                 let queue = if quick { &self.rpc.1 } else { &self.rpc.0 };
                 let _ = queue.send(RpcJob { client: client.clone(), id, request });

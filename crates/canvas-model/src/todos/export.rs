@@ -261,7 +261,7 @@ pub fn demo_book() -> TodoBook {
     run(&mut book, board("Canvas App", Some("WI"), None, &["g-demo"], 0), &you);
     run(&mut book, board("Decomps", Some("DEC"), None, &[], BOARD_W + 6), &you);
     run(&mut book, board("Parser", None, Some("Decomps"), &[], 0), &you);
-    let proposals = AgentPolicy { agent_adds: AddPolicy::Proposed, agents_may_close: false };
+    let proposals = AgentPolicy { agent_adds: AddPolicy::Proposed, agents_may_close: false, start_on_vm: false };
     run(&mut book, TodoOp::UpdateBoard { board: "Decomps".into(), name: None, prefix: None, wip: None, color: Some(4), notes: None, policy: Some(proposals), statuses: None }, &you);
     run(&mut book, TodoOp::UpdateBoard { board: "Canvas App".into(), name: None, prefix: None, wip: Some(2), color: Some(5), notes: None, policy: None, statuses: None }, &you);
     let add = |board: &str, title: &str, kind: TodoType, priority: Priority, status: Status| {

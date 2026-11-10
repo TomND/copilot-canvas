@@ -19,6 +19,7 @@ pub mod paths;
 pub mod pipe;
 pub mod protocol;
 pub mod remote;
+pub mod sat;
 pub mod settings;
 pub mod sizing;
 pub mod tcp;

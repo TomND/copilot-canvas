@@ -119,6 +119,26 @@ pub trait HostApp: Send + Sync {
     }
     /// The service is about to exit: persist what must not be lost.
     fn shutdown(&self) {}
+    /// A VM session's satellite authenticated (its credential said so in the
+    /// handshake): serve its link until it ends. It never becomes a client:
+    /// no `Ready8`, terminal list, snapshot or broadcast reaches it. The
+    /// default refuses it (a service without VM sessions).
+    fn serve_satellite(&self, link: SatelliteLink) -> Result<()> {
+        link.closer.close();
+        bail!("this service does not serve satellites")
+    }
+}
+
+/// A satellite's connection, handed to [`HostApp::serve_satellite`] right
+/// after the handshake (compression already negotiated).
+pub struct SatelliteLink {
+    pub reader: FrameReader,
+    pub writer: FrameWriter,
+    pub closer: Closer,
+    /// What it said in `Hello8` (`remote_id` is its `sat-…` credential id).
+    pub info: canvas_common::protocol::ClientInfo,
+    /// It came through a WebSocket (a tunnel's web forwarding).
+    pub websocket: bool,
 }
 
 /// What a client last received of one subscribed terminal.
@@ -948,7 +968,7 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
     reader.set_limit(MAX_FRAME);
     let v8 = accepted.protocol >= 8;
     let info = accepted.client.unwrap_or_default();
-    if let Some(remote_id) = &info.remote_id {
+    if let Some(remote_id) = info.remote_id.as_ref().filter(|_| !accepted.satellite) {
         host.app().remote_seen(remote_id);
     }
     if remote && v8 {
@@ -956,6 +976,15 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
         if host.compress && info.caps & CAP_COMPRESS != 0 {
             writer.compress()?;
         }
+    }
+    // A satellite is decided by its credential, before anything a client gets is sent.
+    if accepted.satellite {
+        if info.caps & protocol::CAP_SATELLITE == 0 {
+            closer.close();
+            bail!("satellite {:?} did not announce CAP_SATELLITE", info.remote_id);
+        }
+        log(&host.instance, &format!("satellite {:?} connected{}", info.remote_id.as_deref().unwrap_or_default(), if websocket { " (WebSocket)" } else { "" }));
+        return host.app().serve_satellite(SatelliteLink { reader, writer, closer, info, websocket });
     }
 
     let (out_tx, out_rx) = bounded::<Outgoing>(CLIENT_QUEUE);
@@ -1203,6 +1232,7 @@ fn dispatch(host: &Arc<Host>, client: &Arc<Client>, message: ClientMsg) -> Resul
             client.send(ServiceMsg::Stats(host.stats()));
         }
         ClientMsg::Hello { .. } | ClientMsg::Hello8 { .. } | ClientMsg::Auth { .. } => bail!("unexpected handshake message"),
+        ClientMsg::Sat(_) => bail!("satellite messages come only from a satellite's own connection"),
         other => host.app().message(client, other)?,
     }
     Ok(())
