@@ -323,7 +323,10 @@ Phase by phase; the details and the log are in [VM-STATUS.md](VM-STATUS.md).
   repainted from the guest's screen when the ring no longer reaches back; a restart of the service lets the
   terminal go and adopts it again; a suspended VM's link drops and comes back on resume. History, status and
   relayed commands use the thin lane's drain, sent over the link instead of a command per poll. `HasHistory`,
-  `Transcript` find a VM session's history in its mirror; forking one is refused. `atelier selftest vm` adds the
+  `Transcript` find a VM session's history in its mirror; forking one is refused. The satellite reports the
+  sessions an agent starts inside its terminal (they become the box's subsessions), which sessions are alive, and
+  every 30 s the guest's load and each repository's git state (`vm list` shows it); the hub holds each link to
+  limits (sizes, a byte rate, report rates, MCP streams). `atelier selftest vm` adds the
   pool lane on `provider: local`: the warm VM leased, its satellite linked over `ws://` on loopback, typing, status
   from the guest's history, a restart of the service, a freeze and a resume, a stop and a new launch in the same
   VM, the VM deleted.

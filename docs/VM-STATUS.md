@@ -77,18 +77,19 @@ owner's note that VM sessions are optional and local stays the default.
 - [x] VM-23 the satellite: `vm::satellite::{dial, terms, ring}` (tcp/ws/wss with rustls, platform roots and the
       pack's CA, `CONNECT` proxies; PTYs with alacritty, a 4 MiB ring, replay or repaint; generations; input once;
       reconnect 0.5/1/1.5 s; heartbeats; ends on a proven revocation), `atelier satellite [--start]`; history and
-      relayed commands through the drain as a control (departure below). Still to come: the endpoint for the guest
-      CLI (Phase 3), `proc`, `stats`, a per-sandbox ring cap
+      relayed commands through the drain as a control (departure below). `proc` and `stats` reports
+      (`vm::satellite::reports`). Still to come: the endpoint for the guest CLI (Phase 3), a per-sandbox ring cap
 - [x] VM-24 hub link (`vm::link`): one link per sandbox, Hello first and its own terminals only, output in order,
-      input numbered and resent, controls, heartbeats and the 6 s silence rule; flood limits still to come
+      input numbered and resent, controls, heartbeats and the 6 s silence rule; limits (`vm::flood`: size caps per
+      message kind, pacing, thinned reports, 32 MCP streams)
 - [x] VM-25 launch, shutdown, re-adoption: `Resolved::remote`, `Host::adopt_remote`, `Intent::terminal`, remote
       terminals let go at shutdown and adopted at start; the launcher starts the satellite (`Provider::start_satellite`)
 - [ ] VM-26 `ExecTarget`: the guest's command line comes from `launch::guest_command` (no hub paths); the guest roots
       (plugin, skills, instructions, notes, MCP) come with Phase 3's file sync
 - [x] VM-27 `SessionStore` for Copilot (`vm::session_store`): `HasHistory`, `Transcript`, `Fork` refused for mirrors
-- [ ] VM-28 guest subsessions · VM-29 the rest (the probe's drops during output and beyond the ring; input while
-      resuming and the mailbox's wait are done and unit-tested) · VM-2A docs (BACKEND, REMOTE, README, VM-SESSIONS
-      written; AGENT-PROVIDERS and DEVELOPMENT's code map with VM-26)
+- [x] VM-28 guest subsessions (from `SatUp::Proc`; the mirror's liveness overlay); VM-29 drops end to end, input
+      while resuming, the mailbox's wait; the stats reports in the VM view (`git`, `offline_ms`) and `vm list`
+- [ ] VM-2A docs: BACKEND, REMOTE, README, VM-SESSIONS, DEVELOPMENT written; AGENT-PROVIDERS with VM-26
 - [ ] Exit: `selftest vm` (replay, gap, freeze, restart) on three OSes
 
 ### 3: integration
@@ -224,4 +225,9 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
 - 2026-11-10: Phase 1 merged into main at 36e0bcf (CI run 42771716398 green on all 17 jobs), together with Phase 2's
   core (the satellite link; gated by the pack like everything else): the run on the Phase-1-only commit hung on
   Windows (the probe's stray service), and its fix came with the Phase 2 commits.
+- 2026-11-10: the CI flake of `vm spike s3` on Windows (exit 1, nothing printed) was the probe's stand-in agent: a hard
+  link to this program, and Windows shares a hard-linked image between its names, so `atelier satellite --self-check`
+  started while the stand-in ran took itself for the stand-in. The probe copies it on Windows now (as `selftest`
+  does); hooks keep the guest's error line for the spikes. The raw-tap test raced ConPTY's last writes (fixed).
+  Then VM-28 subsessions, `proc` and `stats` reports, the link's limits: `selftest vm` PASS in 50 s, two runs.
 
