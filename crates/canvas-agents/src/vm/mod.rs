@@ -323,6 +323,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_view_and_actions_follow_the_launches() {
+        let home = std::env::temp_dir().join(format!("atelier-vm-view-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/examples/vm-pack");
+        canvas_common::settings::Settings { vm: canvas_common::settings::VmSettings { pack: Some(example.display().to_string()) }, ..Default::default() }.save(&home).unwrap();
+        if std::env::var_os("ATELIER_VM_PACK").is_some() {
+            return;
+        }
+        let mut intent = launch::Intent { r#box: "b1".into(), state: VmState::Queued, note: "1 of 1 VMs are running".into(), queued_ms: 123_456_789, ..Default::default() };
+        intent.placement.repo = "contoso-app".into();
+        launch::store(&home, &mut intent).unwrap();
+        let view = view(&home).unwrap();
+        assert_eq!(view.boxes["b1"].state, VmState::Queued);
+        assert_eq!(view.queued[0].since_ms % 60_000, 0, "whole minutes");
+        assert_eq!(view.budget.max_running, 4);
+        assert!(action(&home, "b1", VmOp::Suspend).unwrap_err().to_string().contains("not possible while its VM is queued"));
+        assert_eq!(action(&home, "b1", VmOp::CancelStart).unwrap(), "Start canceled.");
+        assert_eq!(launch::load(&home, "b1").unwrap().unwrap().state, VmState::Deleted, "nothing was claimed: nothing to release");
+        assert!(action(&home, "nope", VmOp::Resume).unwrap_err().to_string().contains("does not run on a VM"));
+        assert!(request_image(&home, "contoso-app").unwrap().contains("built next"));
+        assert!(manager::images_due(&loaded(&home).unwrap().0, &store::load_images(&home).unwrap(), now_ms()).is_empty() || store::load_images(&home).unwrap().images.iter().any(|i| i.state == "requested"));
+        assert!(has_work(&home) == launch::all(&home).iter().any(launcher::wants_work));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
     fn without_a_pack_vm_requests_say_so() {
         let home = std::env::temp_dir().join(format!("atelier-vm-nopack-{}", uuid::Uuid::new_v4()));
         if std::env::var_os("ATELIER_VM_PACK").is_some() {

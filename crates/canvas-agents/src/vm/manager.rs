@@ -312,4 +312,31 @@ mod tests {
         assert!(images_to_delete(&images, 2, &["i0".to_owned()]).is_empty(), "an image in use stays");
         assert_eq!(images_due(&pack, &ImagesFile::default(), now), ["app"], "a pooled repository without an image");
     }
+
+    #[test]
+    fn images_are_built_in_a_builder_then_committed_and_the_pool_filled_from_them() {
+        let home = std::env::temp_dir().join(format!("atelier-images-{}", uuid::Uuid::new_v4()));
+        let provider = super::super::fake::FakeProvider::new("fake");
+        let mut pack = pack();
+        pack.repos[0].url = "https://example.com/app.git".into();
+        pack.repos[0].default_branch = "main".into();
+        let log = |_: String| {};
+        let image = build_image(&home, &pack, &provider, "hub1", "app", &log).unwrap();
+        assert_eq!(image.state, "ready", "{image:?}");
+        let calls = provider.calls();
+        assert!(calls.iter().any(|c| c.contains("--clone") && c.contains("--repo app")), "{calls:?}");
+        assert!(calls.iter().any(|c| c.starts_with("image_commit")) && provider.live().is_empty(), "the builder is deleted");
+        let images = store::load_images(&home).unwrap();
+        assert_eq!(images.newest("app").map(|i| i.id.as_str()), Some(image.id.as_str()));
+        assert!(!image_due(&pack.images.schedule, images.last_build_ms.get("app").copied(), now_ms()), "built: not due again today");
+        // The tick fills the pool from it (two members, suspended) and keeps them under the cores.
+        tick(&home, &pack, &provider, "hub1", now_ms(), now_ms(), &log).unwrap();
+        let file = store::load_sandboxes(&home).unwrap();
+        assert_eq!(file.sandboxes.iter().filter(|s| s.role == Role::Pool && s.suspended && s.image == image.id).count(), 2);
+        // A failed build is recorded with why, never as ready.
+        provider.fail("image_commit", 1);
+        assert_eq!(build_image(&home, &pack, &provider, "hub1", "app", &log).unwrap().state, "failed");
+        assert!(build_image(&home, &pack, &provider, "hub1", "nope", &log).is_err());
+        let _ = std::fs::remove_dir_all(home);
+    }
 }

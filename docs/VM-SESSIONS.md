@@ -292,3 +292,14 @@ Phase by phase; the details and the log are in [VM-STATUS.md](VM-STATUS.md).
   and runs each operation as its box with this program. The new-session dialog's *Run on* and Tasks' *Start on VM…*
   appear only with a pack. `atelier selftest vm` runs it all on `vm::local` sandboxes answered by
   `atelier vm-hook-standin`, in CI on Windows, macOS and Linux.
+- **Phase 1 (the manager).** `vm::provider` (the trait: `vm::aca`, `vm::local` and the pack's hooks implement it),
+  the stores under `<home>/vm/` (`hub.json`, `satellites.json`, `sandboxes.json`, `images.json`, `budget.json`,
+  `launches/`), satellites' credentials (`sat-` ids sealed for the home, minted at a claim and written to the
+  guest's `~/.atelier/satellite.json`, revoked when the sandbox goes; the handshake tells them from paired
+  clients), the manager's decisions (budgets queue starts with the reason and never stop running work; images on
+  their schedule (UTC), the newest `keep` kept; the warm pool kept full from the newest image, its members leased
+  once and recycled after `pool.max_age` or a newer image) and the launcher's steps (`queued` → `claiming` →
+  `starting` → `running`, suspend, resume, delete; fenced, rolled back, three failures fail it; reconciliation of
+  lost boxes, orphans and builders at start). The guest-side commands `atelier satellite --write-file`,
+  `--read-file`, `--clone`, `--prepare` keep the hub's steps free of shells. `atelier vm
+  list|pool|images|budget|image build|suspend|resume|delete|cancel|retry` and `doctor`'s VM lines (only with a pack).

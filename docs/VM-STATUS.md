@@ -53,9 +53,15 @@ owner's note that VM sessions are optional and local stays the default.
 - [x] S6: `policy_ack` in `vm.yaml` (`pack check` warns while it is empty); the owner's checklist below
 
 ### 1: manager
-- [x] VM-11 provider trait (`vm::provider`)
-- [ ] VM-12 and VM-13: prompts for parallel workers in [VM-WORKERS.md](VM-WORKERS.md) (P-aca, P-local)
-- [ ] VM-12 `vm::aca` (HTTP stand-in) · VM-13 `vm::local` · VM-14 stores · VM-15 manager (images, pool, budgets) · VM-16 launcher · VM-17 claim · VM-18 `VmView`, `Vm*` requests, `atelier vm …` · VM-19 `has_work`, doctor
+- [x] VM-11 provider trait (`vm::provider`); the pack's hooks as a provider (`vm::hooks::HooksProvider`)
+- [ ] VM-12 `vm::aca` and VM-13 `vm::local`: workers (VM-WORKERS.md) on `vm-aca` and `vm-local`; `open_provider`
+      answers "not wired in yet" for them until they hand off
+- [x] VM-14 stores and satellite credentials (`vm::store`) · VM-15 manager (`vm::manager`: budgets, image schedule
+      and keep-N, pool plan and tick, image builds) · VM-16 launcher (`vm::launcher`: steps, fence, rollback,
+      reconciliation) · VM-17 claim (lease or create, credential in the guest, `satellite --prepare`) · VM-18 the
+      view, `VmAction`, `VmImageBuild`, `atelier vm …` · VM-19 `has_work`, doctor
+- [ ] wiring after the hand-offs: `open_provider` for `local` and `aca`, `selftest vm --lane local` (the pool lane:
+      an image built, a pool member leased, its branch prepared), `vm spike` through a provider
 - [ ] Exit: as in the plan §3 Phase 1
 
 ### 2: terminals
@@ -123,3 +129,7 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
 - 2026-11-09: CI green on 93556b4 (run 42742983720: Windows test with `selftest vm`, parity, goldens; macOS;
   Linux ×3 and linux-gui; iOS; packages). Merged into main (d35d56e, main had not moved). Phase 1 started: the
   provider trait; worker prompts for `vm::aca` and `vm::local` in docs/VM-WORKERS.md.
+- 2026-11-10: Phase 1 (lead's part): stores, credentials, manager, launcher, hooks provider, guest commands, the
+  view and actions, `atelier vm …`, doctor; `selftest vm` adds the credential in the guest, a budget queue, suspend
+  and resume, delete with the credential revoked (PASS in 20 s on macOS). Waiting for the workers' `vm::aca` and
+  `vm::local` to wire them into `open_provider` and the pool lane's self-test.

@@ -491,7 +491,8 @@ VM sessions are optional ([VM-SESSIONS.md](VM-SESSIONS.md)); without a VM pack n
 | `ServiceMsg::Bus` (`bus::Snapshot`) | `vm`: a `VmView` (the pack's names, every VM box's state, sandboxes, images, budget, queued starts, refusals); absent without a pack | ignores it |
 | `Request` / `Response` | `VmList`, `VmPool`, `VmImages`, `VmAction { box, op }`, `VmImageBuild { repo }`, `VmBudget`, `VmPackStatus` / `Vm(VmView)`, `VmPack(PackStatus)` (appended last); answered by the service itself (`Request::is_service_state`; an in-process backend refers to it) | answers "does not support this request (update it)" |
 | `ClientMsg` / `ServiceMsg` | `Sat` (index 29 each), satellites only (below) | never sent to an older peer: satellites authenticate with credentials only a current hub mints |
-| `<home>/vm/` | `launches/<box>.json` (VM launches' intents), `mirrors/<sandbox>/` (the guests' mirrored history and what was taken), `ops/<sandbox>/<id>.json` (each relayed operation's answer, once) | — |
+| `<home>/vm/` | `launches/<box>.json` (VM launches' intents and their steps), `hub.json` (this hub's id, the `atelier.hub` label), `satellites.json` (satellites' credentials, sealed; revoked ones keep only a key to prove the refusal), `sandboxes.json` (role, lease, size, image), `images.json`, `budget.json` (the day's estimated cost), `mirrors/<sandbox>/` (the guests' mirrored history and what was taken), `ops/<sandbox>/<id>.json` (each relayed operation's answer, once); each versioned, written atomically by the service only, never written over when unreadable or newer | — |
+| handshake | a `Hello8` whose `remote_id` is a satellite's (`sat-` and 16 hex digits) authenticates against `satellites.json`; over TCP only | an older service refuses the id (not a paired client) |
 
 ## Protocol
 
