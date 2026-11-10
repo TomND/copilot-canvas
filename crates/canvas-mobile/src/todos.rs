@@ -2,8 +2,9 @@
 //! cards): the book the service sends in its bus snapshot as records, what
 //! waits for you, and your changes. A change is applied to this phone's copy
 //! of the book at once (as the desktop's windows do) and sent as the
-//! window's bus action (`todos::client_action`); the next book the service
-//! sends confirms it, or undoes it after a refusal notice.
+//! window's bus action (`todos::client_action`); books the service sends
+//! before it has the change get it put back on top ([`InFlight`]) until one
+//! has it, a refusal notice undoes it, or [`PENDING_MS`] pass.
 
 use std::collections::{BTreeSet, HashSet};
 
@@ -312,6 +313,111 @@ pub fn update_op(id: String, edit: TodoEdit) -> TodoOp {
 /// The bus message a change goes to the service as.
 pub fn action_json(op: &TodoOp) -> String {
     todos::client_action(op).to_string()
+}
+
+/// How long a change sent to the service is put back on top of the books it
+/// sends that do not show it yet (the desktop's `tasks::book::PENDING`);
+/// then the service's word stands.
+pub const PENDING_MS: u64 = 5_000;
+
+/// A change applied here and sent to the service.
+#[derive(Clone, Debug)]
+struct Sent {
+    op: TodoOp,
+    /// The book's revision with it applied here. The service applies a
+    /// window's changes in order, one revision each, so its book has this
+    /// change only from this revision on (another window's change may get
+    /// there first: such a book is taken as having it).
+    after: u64,
+    /// When it was sent (ms).
+    at: u64,
+}
+
+/// This phone's todo changes the service has not sent back yet, kept as the
+/// desktop's windows keep theirs (`canvas-core` `tasks::book::receive`): a
+/// book the service sends before it has them (its broadcast after an
+/// earlier change, a bus pass that read the book a moment before) is shown
+/// with them put back on top, in the order they were made, so it never
+/// undoes them for a moment. They go once the service refuses one
+/// ([`InFlight::refused`]) or [`PENDING_MS`] after they were sent.
+#[derive(Debug, Default)]
+pub struct InFlight {
+    sent: Vec<Sent>,
+    /// The service's last book while changes are in flight (what is left when they go).
+    served: Option<TodoBook>,
+}
+
+impl InFlight {
+    pub fn is_empty(&self) -> bool {
+        self.sent.is_empty()
+    }
+
+    /// A change applied to this phone's copy of the book (now at revision
+    /// `after`) and sent at `now`. `before`: that copy before it, when no
+    /// other change was in flight (then it is the service's last book).
+    pub fn sent(&mut self, op: TodoOp, before: Option<TodoBook>, after: u64, now: u64) {
+        if before.is_some() {
+            self.served = before;
+        }
+        self.sent.push(Sent { op, after, at: now });
+    }
+
+    /// A book from the service (`None`: an older service sends none): the
+    /// book to show, with the changes it cannot have yet put back on top.
+    pub fn receive(&mut self, served: Option<TodoBook>, ctx: &Ctx, now: u64) -> Option<TodoBook> {
+        self.expire(now);
+        if self.sent.is_empty() || served.is_none() {
+            self.sent.clear();
+            self.served = None;
+            return served;
+        }
+        self.served = served.clone();
+        let shown = served.map(|book| self.rebase(book, ctx));
+        if self.sent.is_empty() {
+            self.served = None;
+        }
+        shown
+    }
+
+    /// The service refused a change of this phone (its error comes before
+    /// the book as it is): the changes in flight go, and the service's last
+    /// book is shown at once (`None`: nothing to undo).
+    pub fn refused(&mut self) -> Option<TodoBook> {
+        self.sent.clear();
+        self.served.take()
+    }
+
+    /// Changes sent too long ago go (the service never sent them back, or
+    /// its books had them long since): the book to show now, the service's
+    /// last with the rest on top (`None`: nothing changed).
+    pub fn tick(&mut self, ctx: &Ctx, now: u64) -> Option<TodoBook> {
+        if self.sent.is_empty() || !self.expire(now) {
+            return None;
+        }
+        let shown = match self.served.clone() {
+            Some(served) if !self.sent.is_empty() => Some(self.rebase(served, ctx)),
+            served => served,
+        };
+        if self.sent.is_empty() {
+            self.served = None;
+        }
+        shown
+    }
+
+    /// `book` with the changes it does not have put on top (one that no
+    /// longer applies is dropped: the service's book stands).
+    fn rebase(&mut self, mut book: TodoBook, ctx: &Ctx) -> TodoBook {
+        let rev = book.rev;
+        self.sent.retain(|s| s.after <= rev || book.apply(s.op.clone(), &Actor::human(), ctx).is_ok());
+        book
+    }
+
+    /// Drops changes sent [`PENDING_MS`] ago or more; true when some went.
+    fn expire(&mut self, now: u64) -> bool {
+        let before = self.sent.len();
+        self.sent.retain(|s| now.saturating_sub(s.at) < PENDING_MS);
+        self.sent.len() != before
+    }
 }
 
 #[cfg(test)]

@@ -304,7 +304,9 @@ fn todo_boards_and_the_notebook_reach_phones_and_changes_reach_every_phone() {
     let draft = TodoDraft { board: "Decomps".into(), title: "Fuzz the parser".into(), kind: TodoKind::Research, priority: TodoPriority::Low, status: None, body: String::new(), blocker: false };
     assert_eq!(client.add_todo(draft).unwrap().id, "DEC-009");
     client.done_todo("WI-004".into()).unwrap();
-    wait_until("the new and finished todos on the other phone", || other.todo("DEC-009".into()).is_some() && other.todo("WI-004".into()).is_some_and(|t| t.item.status == TodoStatus::Done));
+    let both = |phone: &Client| phone.todo("DEC-009".into()).is_some() && phone.todo("WI-004".into()).is_some_and(|t| t.item.status == TodoStatus::Done);
+    assert!(both(&client) && client.todo("WI-006".into()).is_some_and(|t| t.item.status == TodoStatus::Todo), "here at once, the accepted todo still accepted");
+    wait_until("the new and finished todos on the other phone", || both(&other));
 
     // The notebook: its root, folders with provenance, notes as safe pages.
     let notebook = client.notebook().unwrap();
@@ -403,7 +405,11 @@ fn phones_edit_notes_and_todos_and_a_note_changed_elsewhere_is_never_overwritten
     assert!(std::fs::read_dir(path(&[".trash"])).unwrap().count() == 2);
     assert!(client.delete_note(notebook.root.clone()).is_err() && client.rename_note(notebook.root.clone(), "x".into()).is_err(), "the root stays");
 
-    // Todos: fields, the checklist, cancel and reopen, release; the other phone follows.
+    // Todos: fields, the checklist, cancel and reopen, release. The mock sends
+    // its book after each change, so books from before the later changes
+    // arrive while they are on their way: each change shows here at once and
+    // stays (the next one may name a checklist item by its place), and the
+    // other phone follows.
     wait_until("the todo boards", || client.todos().loaded && other.todos().loaded);
     let edit = canvas_mobile::TodoEdit { title: Some("Glide after a flick".into()), priority: Some(TodoPriority::Urgent), labels: Some(vec!["ui".into()]), blocker: Some(true), ..Default::default() };
     assert!(client.update_todo("WI-002".into(), edit).unwrap().message.starts_with("Updated WI-002"));
@@ -411,19 +417,24 @@ fn phones_edit_notes_and_todos_and_a_note_changed_elsewhere_is_never_overwritten
     client.edit_check("WI-002".into(), 0, "Glide on release".into()).unwrap();
     client.remove_check("WI-002".into(), 1).unwrap();
     client.check_todo("WI-002".into(), 3, true).unwrap();
-    wait_until("the edits on the other phone", || {
-        other.todo("WI-002".into()).is_some_and(|t| {
+    let edited = |phone: &Client| {
+        phone.todo("WI-002".into()).is_some_and(|t| {
             let checks: Vec<(&str, bool)> = t.checklist.iter().map(|c| (c.text.as_str(), c.done)).collect();
             t.item.title == "Glide after a flick" && t.item.blocker && t.item.labels == ["ui"] && checks.len() == 4 && checks[0].0 == "Glide on release" && checks[3] == ("Try it on the phone", true)
         })
-    });
+    };
+    assert!(edited(&client), "every edit here at once");
+    wait_until("the edits on the other phone", || edited(&other));
     client.cancel_todo("WI-004".into(), "Not needed".into()).unwrap();
     assert!(client.todo("WI-004".into()).unwrap().actions.reopen);
     client.reopen_todo("WI-004".into()).unwrap();
     client.release_todo("WI-003".into()).unwrap();
-    wait_until("canceled, reopened and released on the other phone", || {
-        other.todo("WI-004".into()).is_some_and(|t| t.item.status == TodoStatus::Todo && t.log.iter().any(|l| l.text.contains("Not needed"))) && other.todo("WI-003".into()).is_some_and(|t| t.item.claimed_by.is_empty())
-    });
+    let settled = |phone: &Client| {
+        phone.todo("WI-004".into()).is_some_and(|t| t.item.status == TodoStatus::Todo && t.log.iter().any(|l| l.text.contains("Not needed"))) && phone.todo("WI-003".into()).is_some_and(|t| t.item.claimed_by.is_empty())
+    };
+    assert!(settled(&client), "canceled, reopened and released here at once");
+    wait_until("canceled, reopened and released on the other phone", || settled(&other));
+    assert!(settled(&client) && edited(&client), "and here still, the service's books having them all");
     // The service refuses what the book does: a removed item beyond the list.
     assert!(client.remove_check("WI-002".into(), 40).is_err());
     let _ = std::fs::remove_dir_all(state);

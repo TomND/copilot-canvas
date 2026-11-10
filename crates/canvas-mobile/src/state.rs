@@ -56,6 +56,8 @@ pub struct State {
     /// Terminal id → the agent's own session id (OpenCode names its sessions).
     agent_sessions: HashMap<String, String>,
     bus: bus::Snapshot,
+    /// Your todo changes the service has not sent back yet: kept on top of its books.
+    todos_sent: crate::todos::InFlight,
     /// Terminals shown (subscribed); the focused one gets frames fastest.
     pub subs: Vec<String>,
     pub focused: Option<String>,
@@ -165,11 +167,20 @@ impl State {
                     self.launching.remove(&id);
                     self.errors.insert(id, message.clone());
                     overview = true;
+                } else if message.starts_with("Todo change ")
+                    && let Some(served) = self.todos_sent.refused()
+                {
+                    // A todo change of this phone refused (the book as it is follows): undone now.
+                    self.bus.todos = Some(served);
+                    overview = true;
                 }
                 effects.push(Effect::Emit(CoreEvent::Notice { text: message, error: true }));
             }
             ServiceMsg::Bus { json } => {
-                if let Ok(snapshot) = serde_json::from_str::<bus::Snapshot>(&json) {
+                if let Ok(mut snapshot) = serde_json::from_str::<bus::Snapshot>(&json) {
+                    // Your changes the service does not have yet stay on top of its book.
+                    let ctx = self.todo_canvas(now).ctx(now);
+                    snapshot.todos = self.todos_sent.receive(snapshot.todos.take(), &ctx, now);
                     self.bus = snapshot;
                     overview = true;
                 }
@@ -598,7 +609,7 @@ impl State {
         crate::todos::Canvas { doc: &self.doc, stopped, working }
     }
 
-    /// The todo boards (the service's book with this phone's changes until it sends the next one).
+    /// The todo boards (the service's book with this phone's changes it does not have yet on top).
     pub fn todos_overview(&self, now: u64) -> TodosOverview {
         crate::todos::overview(self.bus.todos.as_ref(), &self.todo_canvas(now))
     }
@@ -609,14 +620,18 @@ impl State {
 
     /// Applies a todo operation as you: to this phone's copy of the book at
     /// once, then sent as the window's bus action. Refused here: nothing is
-    /// sent; refused by the service: a notice, and its next book undoes it.
+    /// sent. Books the service sends before it has it keep it on top
+    /// (`todos::InFlight`); refused by the service: a notice, and it is undone.
     pub fn todo_op(&mut self, op: TodoOp, now: u64) -> Result<(TodoChange, Vec<Effect>), String> {
         if self.conn != ConnState::Online {
             return Err("Offline: the todos cannot be changed now.".into());
         }
         let ctx = self.todo_canvas(now).ctx(now);
         let book = self.bus.todos.as_mut().ok_or("The todo boards are not loaded yet (the service has not sent them).")?;
+        // The service's book, kept while changes are in flight.
+        let before = self.todos_sent.is_empty().then(|| book.clone());
         let applied = book.apply(op.clone(), &Actor::human(), &ctx)?;
+        self.todos_sent.sent(op.clone(), before, book.rev, now);
         let mut message = applied.message.clone();
         for warning in &applied.warnings {
             message.push_str(&format!(" ⚠ {warning}."));
@@ -624,6 +639,22 @@ impl State {
         let id = applied.created.or_else(|| op.todo_id().map(str::to_owned)).unwrap_or_default();
         let effects = vec![Effect::Send(ClientMsg::Bus { json: crate::todos::action_json(&op) }), Effect::Emit(CoreEvent::Overview)];
         Ok((TodoChange { id, message }, effects))
+    }
+
+    /// Now and then (every heartbeat): todo changes the service never sent
+    /// back go after `todos::PENDING_MS`, and its last book shows with the rest.
+    pub fn tick(&mut self, now: u64) -> Vec<Effect> {
+        if self.todos_sent.is_empty() {
+            return Vec::new();
+        }
+        let ctx = self.todo_canvas(now).ctx(now);
+        match self.todos_sent.tick(&ctx, now) {
+            Some(book) => {
+                self.bus.todos = Some(book);
+                vec![Effect::Emit(CoreEvent::Overview)]
+            }
+            None => Vec::new(),
+        }
     }
 
     // ---------- notebook ----------
@@ -1117,11 +1148,92 @@ mod tests {
         assert!(matches!(sent(&effects)[0], ClientMsg::Bus { json } if json.contains("\"op\":\"add\"") && json.contains("Todos on the phone")));
         assert_eq!(state.todo_detail("WI-008", 8).map(|d| (d.item.status, d.body)), Some((TodoStatus::Backlog, "From the train.".to_owned())));
         assert!(state.todo_op(TodoOp::Done { id: "NOPE-001".into(), note: None }, 9).is_err());
-        // The service's next book replaces this phone's copy.
-        state.on_service(ServiceMsg::Bus { json: snapshot }, 10);
+        // A book the service sent before it had them keeps them on top; once
+        // they have been out for `PENDING_MS` without coming back, its book stands.
+        state.on_service(ServiceMsg::Bus { json: snapshot.clone() }, 10);
+        assert_eq!((status(&state, &proposal), status(&state, "WI-008")), (Some(TodoStatus::Backlog), Some(TodoStatus::Backlog)));
+        state.on_service(ServiceMsg::Bus { json: snapshot }, 8 + crate::todos::PENDING_MS);
         assert_eq!((status(&state, &proposal), status(&state, "WI-008")), (Some(TodoStatus::Proposed), None));
         state.on_disconnected(ConnState::Offline, String::new());
         assert!(state.todo_op(TodoOp::Done { id: "WI-004".into(), note: None }, 11).unwrap_err().contains("Offline"));
+    }
+
+    /// A bus snapshot from the service with its todo book.
+    fn book_message(book: &canvas_model::todos::TodoBook) -> ServiceMsg {
+        ServiceMsg::Bus { json: serde_json::to_string(&bus::Snapshot { todos: Some(book.clone()), ..Default::default() }).unwrap() }
+    }
+
+    /// The race the end-to-end test met: the service (the mock as the real
+    /// one) applies this phone's changes in order and broadcasts its book
+    /// after each, so the book after the first arrives while the second is
+    /// still on its way. Replacing the phone's copy with it dropped the
+    /// second change, and the next one (a tick of the item the second added,
+    /// by its place) was refused here as out of range.
+    #[test]
+    fn a_book_sent_before_the_service_had_this_phones_changes_never_undoes_them() {
+        use canvas_model::todos::{Ctx, TodoBook, TodoUpdate};
+        let mut state = online();
+        let first = canvas_model::todos::demo_book();
+        state.on_service(book_message(&first), 0);
+        let checks = |state: &State| state.todo_detail("WI-002", 0).unwrap().checklist.into_iter().map(|c| (c.text, c.done)).collect::<Vec<_>>();
+        let title = |state: &State| state.todo_detail("WI-002", 0).unwrap().item.title;
+        let items = checks(&state).len();
+        // Two changes in flight: a new title, then a new checklist item.
+        let rename = TodoOp::Update(Box::new(TodoUpdate { id: "WI-002".into(), title: Some("Glide after a flick".into()), ..Default::default() }));
+        let add = TodoOp::AddCheck { id: "WI-002".into(), text: "Try it on the phone".into() };
+        state.todo_op(rename.clone(), 1).unwrap();
+        state.todo_op(add.clone(), 2).unwrap();
+        // The service's book after the first only: the second stays on top, so its item can be ticked.
+        let (you, ctx) = (Actor::human(), Ctx::at(1));
+        let mut service: TodoBook = first.clone();
+        service.apply(rename, &you, &ctx).unwrap();
+        state.on_service(book_message(&service), 3);
+        assert_eq!((title(&state).as_str(), checks(&state).len()), ("Glide after a flick", items + 1), "both changes shown");
+        let tick = TodoOp::Check { id: "WI-002".into(), index: items, done: true };
+        state.todo_op(tick.clone(), 4).expect("the new item is there to tick");
+        // A bus pass that read the book before all three: none undone, none applied twice.
+        state.on_service(book_message(&first), 5);
+        let all_three = |state: &State, why: &str| {
+            let checks = checks(state);
+            assert_eq!((title(state).as_str(), checks.len(), checks.last().cloned()), ("Glide after a flick", items + 1, Some(("Try it on the phone".to_owned(), true))), "{why}");
+        };
+        all_three(&state, "a book from before all three");
+        // The service's book with all three: shown as it is.
+        service.apply(add, &you, &ctx).unwrap();
+        service.apply(tick, &you, &ctx).unwrap();
+        state.on_service(book_message(&service), 6);
+        assert_eq!(state.bus.todos.as_ref(), Some(&service));
+        // A late book from before all three still undoes none.
+        state.on_service(book_message(&first), 7);
+        all_three(&state, "a late, older book");
+        // Changes never sent back go after `PENDING_MS` (on a heartbeat): the service's last word stands.
+        assert!(state.tick(1 + crate::todos::PENDING_MS - 1).is_empty(), "not yet");
+        assert_eq!(state.tick(4 + crate::todos::PENDING_MS), [Effect::Emit(CoreEvent::Overview)]);
+        assert_eq!(state.bus.todos.as_ref(), Some(&first), "the service's last book");
+        assert!(state.tick(5 + crate::todos::PENDING_MS).is_empty(), "nothing in flight");
+    }
+
+    #[test]
+    fn a_change_the_service_refuses_is_undone_at_its_notice() {
+        use crate::model::TodoStatus;
+        let mut state = online();
+        let first = canvas_model::todos::demo_book();
+        state.on_service(book_message(&first), 0);
+        let status = |state: &State, id: &str| state.todo_detail(id, 0).map(|t| t.item.status);
+        state.todo_op(TodoOp::Done { id: "WI-004".into(), note: None }, 1).unwrap();
+        state.todo_op(TodoOp::Reopen { id: "WI-004".into() }, 2).unwrap();
+        state.todo_op(TodoOp::Done { id: "WI-004".into(), note: None }, 3).unwrap();
+        // Another error leaves the changes alone.
+        state.on_service(ServiceMsg::Error { id: None, message: "The canvas could not be saved".into() }, 4);
+        assert_eq!(status(&state, "WI-004"), Some(TodoStatus::Done));
+        // The service refused one: its notice undoes them all at once, then its book as it is comes.
+        let refused = "Todo change refused: WI-004 is claimed by another session";
+        let effects = state.on_service(ServiceMsg::Error { id: None, message: refused.into() }, 5);
+        assert!(effects.contains(&Effect::Emit(CoreEvent::Notice { text: refused.into(), error: true })) && effects.contains(&Effect::Emit(CoreEvent::Overview)));
+        assert_eq!(state.bus.todos.as_ref(), Some(&first));
+        state.on_service(book_message(&first), 6);
+        assert_eq!(status(&state, "WI-004"), Some(TodoStatus::Todo));
+        assert!(state.tick(6 + crate::todos::PENDING_MS).is_empty(), "nothing left in flight");
     }
 
     #[test]
