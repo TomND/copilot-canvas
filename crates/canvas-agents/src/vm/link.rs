@@ -65,6 +65,9 @@ pub struct Links {
     /// Controls sent and waiting for their answer: id → (sandbox, where it goes).
     controls: Mutex<HashMap<u64, (String, Sender<String>)>>,
     control_ids: AtomicU64,
+    /// Stops asked for while a sandbox's link was down: (sandbox, terminal,
+    /// generation), sent when it links again (whatever was launched meanwhile).
+    stops: Mutex<Vec<(String, String, u64)>>,
 }
 
 /// A satellite's live link.
@@ -116,8 +119,6 @@ struct RemoteState {
     /// The last launch step shown as a note line.
     shown: String,
     exited: bool,
-    /// A stop asked for while the link was down.
-    stop: bool,
     /// Until when typing is kept for a VM that resumes (ms; 0: not resuming).
     resuming_until: u64,
     /// The first input `seq` typed while the VM resumed, and when (dropped after [`RESUME_WAIT_MS`]).
@@ -147,7 +148,7 @@ impl RemoteState {
 
 impl Links {
     pub fn new(home: &Path, log: Log) -> Arc<Self> {
-        Arc::new(Links { home: home.to_path_buf(), log, links: Mutex::default(), remotes: Mutex::default(), epochs: AtomicU64::new(0), controls: Mutex::default(), control_ids: AtomicU64::new(0) })
+        Arc::new(Links { home: home.to_path_buf(), log, links: Mutex::default(), remotes: Mutex::default(), epochs: AtomicU64::new(0), controls: Mutex::default(), control_ids: AtomicU64::new(0), stops: Mutex::default() })
     }
 
     fn link(&self, sandbox: &str) -> Option<Arc<Link>> {
@@ -361,16 +362,22 @@ impl Links {
         if !link.send(true, SatDown::Welcome { json: serde_json::to_string(&welcome).unwrap_or_default() }) {
             return;
         }
+        let stops: Vec<(String, u64)> = {
+            let mut stops = lock(&self.stops);
+            let (mine, others): (Vec<_>, Vec<_>) = stops.drain(..).partition(|(sandbox, _, _)| *sandbox == link.sandbox);
+            *stops = others;
+            mine.into_iter().map(|(_, term, generation)| (term, generation)).collect()
+        };
+        for (term, generation) in stops {
+            link.send(true, SatDown::Stop { term, generation, force: true });
+        }
         for remote in &mine {
-            let mut state = lock(&remote.state);
-            if !state.spawned {
+            let state = lock(&remote.state);
+            if !state.spawned || state.exited {
                 continue;
             }
             for (seq, bytes) in &state.unacked {
                 link.send(true, SatDown::Input { term: remote.term.clone(), generation: state.generation, seq: *seq, bytes: bytes.clone() });
-            }
-            if state.stop && link.send(true, SatDown::Stop { term: remote.term.clone(), generation: state.generation, force: true }) {
-                state.stop = false;
             }
         }
     }
@@ -574,7 +581,9 @@ impl RemotePty for Remote {
             }
             None => {
                 // Sent once the satellite is back; the terminal ends here now.
-                state.stop = true;
+                if let Some(links) = self.links.upgrade() {
+                    lock(&links.stops).push((state.sandbox.clone(), self.term.clone(), state.generation));
+                }
                 state.exit(0, Some("stopped while the VM was offline".into()));
             }
         }
@@ -806,6 +815,24 @@ mod tests {
         assert!(!terminal.remote_settled(), "replaying: the mailbox still waits");
         sat.send(SatUp::Output { term: BOX.into(), generation: 7, seq: 0, bytes: Vec::new() });
         wait_until("caught up", || terminal.remote_settled());
+        sat.close().unwrap();
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_stop_asked_while_offline_reaches_the_guest_even_after_a_new_launch() {
+        let home = home();
+        let links = links(&home);
+        let minted = super::super::store::Satellites::new(&home).mint(A).unwrap();
+        let terminal = adopted(&home, &links, A);
+        terminal.stop(true);
+        wait_until("the terminal ends here at once", || !terminal.alive.load(std::sync::atomic::Ordering::Acquire));
+        // Launched again before the satellite is back: the old program's stop still goes out.
+        let _next = links.launch(BOX);
+        let mut sat = Sat::connect(&links, &minted.id);
+        sat.hello(A, vec![TermHeld { term: BOX.into(), generation: 7, end: 0, alive: true, input_acked: 0 }]);
+        assert!(matches!(sat.next(), SatDown::Welcome { .. }));
+        assert!(matches!(sat.next(), SatDown::Stop { generation: 7, force: true, .. }));
         sat.close().unwrap();
         let _ = std::fs::remove_dir_all(home);
     }
