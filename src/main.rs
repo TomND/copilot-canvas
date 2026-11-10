@@ -19,6 +19,7 @@ mod service_install;
 mod soak;
 mod standin;
 mod test_shell;
+mod vm_cli;
 mod vm_probe;
 #[cfg(windows)]
 mod uia;
@@ -129,6 +130,10 @@ USAGE
 
 VM SESSIONS (docs/VM-SESSIONS.md; optional: without a VM pack sessions run on this machine)
   atelier config vm.pack FOLDER|none    use a VM pack (a folder outside any repository)
+  atelier vm list|pool|images|budget    VM sessions as the service sees them
+  atelier vm image build REPO           a repository's image now
+  atelier vm suspend|resume|cancel|retry BOX · vm delete BOX --yes
+                                        a VM box's VM (delete: its sandbox and credential go)
   atelier vm spike s2|s3|s4 [--agent A] [--runs N] [--keep]
                                         checks only real sandboxes answer (docs/VM-STATUS.md, the owner's):
                                         the agent CLI in a guest, this build in the image, claim latency
@@ -351,7 +356,7 @@ fn parse() -> Result<Args> {
             "--canvas" => args.canvas = Some(PathBuf::from(value("--canvas")?)),
             "--cwd" => args.cwd = Some(PathBuf::from(value("--cwd")?)),
             "--remote" => args.remote = Some(value("--remote")?),
-            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--pulse" | "--unread" | "--sent" | "--qr" | "--mine" | "--tree" | "--all" | "--internal" | "--undo" | "--with-todos" | "--detach" | "--lite" | "--self-check" | "--keep" => {
+            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--pulse" | "--unread" | "--sent" | "--qr" | "--mine" | "--tree" | "--all" | "--internal" | "--undo" | "--with-todos" | "--detach" | "--lite" | "--self-check" | "--keep" | "--clone" | "--prepare" => {
                 args.flags.push(arg.trim_start_matches("--").to_owned())
             }
             "--" => {
@@ -786,6 +791,25 @@ fn real_main() -> Result<()> {
             if result["ok"] != true { std::process::exit(1) }
             Ok(())
         }
+        ["satellite"] if option("write-file").is_some() => {
+            println!("{}", canvas_agents::vm::guest::write_file(&option("write-file").unwrap_or_default())?);
+            Ok(())
+        }
+        ["satellite"] if option("read-file").is_some() => {
+            use std::io::Write;
+            std::io::stdout().write_all(&canvas_agents::vm::guest::read_file(&option("read-file").unwrap_or_default())?)?;
+            Ok(())
+        }
+        ["satellite"] if flag("clone") || flag("prepare") => {
+            let need = |name: &str| option(name).with_context(|| format!("--{name} is needed"));
+            let answer = if flag("clone") {
+                canvas_agents::vm::guest::clone(&need("repo")?, &need("url")?, &option("branch").unwrap_or_else(|| "main".into()), &option("mode").unwrap_or_else(|| "blobless".into()))?
+            } else {
+                canvas_agents::vm::guest::prepare(&need("repo")?, &need("branch")?, &option("base").unwrap_or_else(|| "main".into()))?
+            };
+            println!("{answer}");
+            Ok(())
+        }
         ["satellite"] if flag("lite") => {
             use std::io::Read;
             let mut input = String::new();
@@ -807,6 +831,7 @@ fn real_main() -> Result<()> {
             if status.errors() > 0 { std::process::exit(1) }
             Ok(())
         }
+        ["vm", rest @ ..] if canvas_agents::vm::pack::configured(&instance.home).is_some() && matches!(rest.first(), Some(&("list" | "pool" | "images" | "image" | "budget" | "suspend" | "resume" | "delete" | "cancel" | "retry"))) => vm_cli::run(&instance, rest, flag("yes")),
         ["vm", ..] if canvas_agents::vm::pack::configured(&instance.home).is_none() => {
             bail!("no VM pack is configured (settings.json vm.pack or ATELIER_VM_PACK): VM sessions are off; `atelier vm pack check` says more")
         }

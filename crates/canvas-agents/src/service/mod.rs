@@ -269,10 +269,10 @@ impl Agents {
         server::spawn_named("bus", { let a = agents.clone(); move || passive::bus_loop(a, bus_rx) });
         server::spawn_named("reports", { let a = agents.clone(); move || inbox::run(a) });
         server::spawn_named("prs", { let a = agents.clone(); move || prs::run(a) });
-        // VM sessions' thin lane (idle without a VM pack).
+        // VM sessions: launches, the manager and the thin lane (idle without a VM pack).
         server::spawn_named("vm", {
             let (home, log_instance, wake) = (instance.home.clone(), instance.clone(), agents.index_wake.clone());
-            move || crate::vm::thin::run(home, move |line| log(&log_instance, &line), move || {
+            move || crate::vm::run(home, move |line| log(&log_instance, &line), move || {
                 let _ = wake.try_send(());
             })
         });
@@ -426,19 +426,31 @@ impl Agents {
         // This machine's skill folders are not in the guest.
         let _ = canvas_model::launch::take_group_skills(&mut launch);
         let (argv, env) = crate::vm::launch::guest_command(kind, id, &launch)?;
+        use canvas_model::vm::VmState;
         let mut intent = crate::vm::launch::load(home, id)?.unwrap_or_default();
         intent.r#box = id.to_owned();
         intent.agent = kind.id().to_owned();
-        if intent.sandbox.is_empty() {
+        // A first launch, or one after its VM was deleted, failed or lost: the launcher claims a VM.
+        if intent.sandbox.is_empty() || matches!(intent.state, VmState::Failed | VmState::Deleted | VmState::Lost) {
             intent.placement = placement;
-            intent.state = canvas_model::vm::VmState::Claiming;
+            intent.sandbox.clear();
+            intent.satellite.clear();
+            intent.state = VmState::Claiming;
+            intent.error.clear();
+            intent.note.clear();
+            intent.attempts = 0;
+            intent.pending.clear();
+            intent.fence += 1;
+            intent.queued_ms = now_ms();
+        } else if matches!(intent.state, VmState::Suspended | VmState::Suspending) {
+            intent.pending = "resume".into();
         }
         intent.argv = argv;
         intent.env = crate::vm::launch::guest_env(id, kind).into_iter().chain(env).collect();
         if intent.created_ms == 0 {
             intent.created_ms = now_ms();
         }
-        crate::vm::launch::save(home, &mut intent)?;
+        crate::vm::launch::store(home, &mut intent)?;
         let how = if intent.sandbox.is_empty() { "on a new VM" } else { "in its VM" };
         log(&self.instance, &format!("terminal {id}: {} {} {how} (repository {})", kind.id(), if launch.resume { "resume" } else { "new session" }, intent.placement.repo));
         let cli = home.join("cli").join(canvas_sys::host::exe_name("atelier"));
@@ -671,10 +683,18 @@ impl HostApp for Agents {
     }
 
     fn has_work(&self) -> bool {
-        passive::has_work(self)
+        passive::has_work(self) || crate::vm::has_work(&self.instance.home)
     }
 
     fn remote_credential(&self, id: &str) -> canvas_common::handshake::Credential {
+        // A VM session's satellite (its own store; never a paired client).
+        if crate::vm::store::is_satellite_id(id) {
+            let credential = crate::vm::store::Satellites::new(&self.instance.home).credential(id);
+            if !matches!(credential, canvas_common::handshake::Credential::Satellite(_)) {
+                log(&self.instance, &format!("refused satellite {id:?}: unknown or revoked"));
+            }
+            return credential;
+        }
         let credential = self.remote.credential(id);
         if !matches!(credential, canvas_common::handshake::Credential::Secret(_)) {
             log(&self.instance, &format!("refused remote client {id:?}: {}", self.remote.describe(id)));

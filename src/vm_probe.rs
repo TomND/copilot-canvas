@@ -23,6 +23,7 @@ use crate::protocol::{ClientMsg, Input, LaunchKind, ServiceMsg};
 const BOX: &str = "0b1e5ca1-0000-4000-8000-00000000c10d";
 const PLACED: &str = "0b1e5ca1-0000-4000-8000-0000000b10cc";
 const CANVAS: &str = "c0ffee00-0000-4000-8000-00000000ca5e";
+const SECOND: &str = "0b1e5ca1-0000-4000-8000-00000000c20d";
 
 fn step(text: &str) {
     println!("  · {text}");
@@ -94,7 +95,7 @@ fn write_pack(root: &Path, exe: &Path) -> Result<PathBuf> {
     let local = root.join("sandboxes");
     std::fs::write(
         pack.join("vm.yaml"),
-        format!("pack_version: 1\nname: probe\nprovider: hooks\npolicy_ack: \"2026-11-09\"\npoll_seconds: 1\nsizes:\n  - name: S\n    cpu: 1000m\n    memory: 2048Mi\n    disk: 20Gi\nlocal:\n  root: {}\n", serde_json::to_string(&local.display().to_string())?),
+        format!("pack_version: 1\nname: probe\nprovider: hooks\npolicy_ack: \"2026-11-09\"\npoll_seconds: 1\nbudget:\n  max_running: 1\nsizes:\n  - name: S\n    cpu: 1000m\n    memory: 2048Mi\n    disk: 20Gi\nlocal:\n  root: {}\n", serde_json::to_string(&local.display().to_string())?),
     )?;
     std::fs::write(pack.join("repos.yaml"), format!("repos:\n  probe-app:\n    url: {}\n    default_branch: main\n    egress: probe\n    folders: [\"**/work\"]\n", serde_json::to_string(&url)?))?;
     std::fs::write(pack.join("egress").join("probe.yaml"), "default: deny\nrules:\n  - host: example.com\n    action: allow\n")?;
@@ -108,6 +109,7 @@ fn write_pack(root: &Path, exe: &Path) -> Result<PathBuf> {
 struct Watch {
     conn: Conn,
     view: TermView,
+    second: TermView,
     /// The activities the box's sessions summary went through.
     activities: Vec<crate::protocol::Activity>,
     errors: Vec<String>,
@@ -126,6 +128,7 @@ impl Watch {
             }
             match self.conn.rx.recv_timeout(left.min(Duration::from_millis(100))) {
                 Ok(ServiceMsg::Frame8(frame)) if frame.id == BOX => self.view.apply8(frame),
+                Ok(ServiceMsg::Frame8(frame)) if frame.id == SECOND => self.second.apply8(frame),
                 Ok(ServiceMsg::Sessions { upsert, .. }) => {
                     for s in upsert.into_iter().filter(|s| s.id == BOX) {
                         if self.activities.last() != Some(&s.activity) {
@@ -216,7 +219,7 @@ fn scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
             Err(_) => std::thread::sleep(Duration::from_millis(200)),
         }
     };
-    let mut watch = Watch { conn, view: TermView::default(), activities: Vec::new(), errors: Vec::new(), doc: None };
+    let mut watch = Watch { conn, view: TermView::default(), second: TermView::default(), activities: Vec::new(), errors: Vec::new(), doc: None };
     let routing = serde_json::json!({
         "canvas": CANVAS, "groups": [], "members": {}, "passive": [], "no_messages": [],
         "names": { BOX: "VM box", PLACED: "Placed box" }, "agents": { BOX: "copilot", PLACED: "copilot" },
@@ -293,6 +296,53 @@ fn scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
         std::fs::read_dir(&items).is_ok_and(|e| e.flatten().any(|i| std::fs::read_to_string(i.path().join("meta.json")).is_ok_and(|m| m.contains(BOX) && m.contains("Written in the VM"))))
     })?;
 
+    step("the satellite credential is minted for the VM and written in the guest");
+    let credential = Path::new(&sandbox.cwd).ancestors().nth(2).context("the sandbox folder")?.join("home").join(".atelier").join("satellite.json");
+    let text = std::fs::read_to_string(&credential).with_context(|| format!("no credential at {}", credential.display()))?;
+    anyhow::ensure!(text.contains(&intent_now(instance)?.satellite) && text.contains("\"secret\""), "the guest's credential: {}", credential.display());
+
+    step("a budget of one running VM queues a second VM box and says why; suspending the first starts it");
+    let second = node(SECOND, "Second VM box")?;
+    let launch = canvas_model::launch::agent_launch(&second, &Default::default(), None, None, None, false);
+    watch.conn.tx.send(ClientMsg::Subscribe8 { ids: vec![BOX.into(), SECOND.into()], focused: Some(SECOND.into()) })?;
+    watch.conn.tx.send(ClientMsg::Launch { id: SECOND.into(), kind: LaunchKind::Agent(Box::new(launch)), cwd: work.display().to_string(), cols: 100, rows: 30 })?;
+    let second_screen = |w: &Watch| w.second.lines.iter().map(|row| row.iter().map(|r| r.text.as_str()).collect::<String>()).collect::<Vec<_>>().join("\n");
+    anyhow::ensure!(
+        watch.pump(Instant::now() + Duration::from_secs(20), |w| second_screen(w).contains("Waiting to start: 1 of 1 VMs are running")),
+        "the second box is not queued:\n{}",
+        second_screen(&watch)
+    );
+    let (ok, out) = cli(exe, &["vm", "list"], &hub_env)?;
+    anyhow::ensure!(ok && out.contains(&format!("{SECOND}  queued")), "vm list: {out}");
+    let (ok, out) = cli(exe, &["vm", "suspend", BOX], &hub_env)?;
+    anyhow::ensure!(ok && out.contains("Suspending"), "vm suspend: {out}");
+    anyhow::ensure!(
+        watch.pump(Instant::now() + Duration::from_secs(30), |w| second_screen(w).contains("Fake Copilot")),
+        "the second box did not start once the first was suspended:\n{}",
+        second_screen(&watch)
+    );
+    anyhow::ensure!(local.get(&intent.sandbox)?.suspended, "the stand-in's sandbox is suspended");
+    let (ok, out) = cli(exe, &["vm", "budget"], &hub_env)?;
+    anyhow::ensure!(ok && out.contains("VMs running 1 of 1"), "vm budget: {out}");
+
+    step("deleting a VM: refused without --yes; its sandbox goes and its satellite credential is revoked");
+    let (ok, _) = cli(exe, &["vm", "delete", SECOND], &hub_env)?;
+    anyhow::ensure!(!ok, "a delete without --yes");
+    let second_intent = canvas_agents::vm::launch::load(&instance.home, SECOND)?.context("the second intent")?;
+    let (ok, out) = cli(exe, &["vm", "delete", SECOND, "--yes"], &hub_env)?;
+    anyhow::ensure!(ok, "vm delete: {out}");
+    wait_file("the second VM was not deleted", 20, || local.get(&second_intent.sandbox).is_err())?;
+    anyhow::ensure!(
+        matches!(canvas_agents::vm::store::Satellites::new(&instance.home).credential(&second_intent.satellite), canvas_common::handshake::Credential::Revoked(_)),
+        "the deleted VM's credential is revoked"
+    );
+    watch.conn.tx.send(ClientMsg::Stop { id: SECOND.into(), force: true })?;
+    let (ok, out) = cli(exe, &["vm", "resume", BOX], &hub_env)?;
+    anyhow::ensure!(ok, "vm resume: {out}");
+    wait_file("the first VM did not resume", 20, || local.get(&intent.sandbox).is_ok_and(|s| !s.suspended))?;
+    let (_, out) = cli(exe, &["doctor"], &hub_env)?;
+    anyhow::ensure!(out.contains("VM pack") && out.contains("VM sessions"), "doctor has the VM lines: {out}");
+
     step("commands of this machine are refused in the guest");
     let (ok, out) = cli(exe, &["service", "stop"], &guest)?;
     anyhow::ensure!(!ok && out.contains("not available inside a VM session"), "service stop in the guest: {out}");
@@ -311,4 +361,9 @@ fn scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
         watch.pump(Instant::now() + Duration::from_millis(200), |_| false);
     }
     Ok(())
+}
+
+/// The first box's intent as it is now.
+fn intent_now(instance: &Instance) -> Result<canvas_agents::vm::launch::Intent> {
+    canvas_agents::vm::launch::load(&instance.home, BOX)?.context("the launch's intent")
 }

@@ -190,13 +190,13 @@ fn stored_answer(home: &Path, sandbox: &str, id: &str) -> Option<OpAnswer> {
 
 /// One drain of one sandbox: history into the mirror, operations run as
 /// their box (only boxes of this sandbox), answers queued for the next drain.
-pub fn poll(home: &Path, exe: &Path, hooks: &super::hooks::Hooks, sandbox: &str, boxes: &HashMap<String, String>, log: &dyn Fn(String)) -> Result<()> {
+pub fn poll(home: &Path, exe: &Path, provider: &dyn super::provider::Provider, sandbox: &str, boxes: &HashMap<String, String>, log: &dyn Fn(String)) -> Result<()> {
     let path = state_path(home, sandbox);
     let mut state: MirrorState = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let request = DrainRequest { files: state.files.clone(), answers: state.answers.clone(), max_bytes: 4 << 20 };
-    let (code, stdout) = hooks.exec(sandbox, &["atelier".into(), "satellite".into(), "--lite".into()], &serde_json::to_vec(&request)?)?;
-    anyhow::ensure!(code == 0, "the guest's drain failed (exit code {code})");
-    let response: DrainResponse = serde_json::from_slice(&stdout).context("the guest's drain printed no drain")?;
+    let out = provider.exec(sandbox, &["atelier".into(), "satellite".into(), "--lite".into()], &serde_json::to_vec(&request)?)?;
+    anyhow::ensure!(out.code == 0, "the guest's drain failed (exit code {})", out.code);
+    let response: DrainResponse = serde_json::from_slice(&out.stdout).context("the guest's drain printed no drain")?;
     // Delivered: the guest stored them.
     state.answers.clear();
     apply_history(home, sandbox, &mut state, &response)?;
@@ -225,49 +225,46 @@ pub fn poll(home: &Path, exe: &Path, hooks: &super::hooks::Hooks, sandbox: &str,
     Ok(())
 }
 
-/// The thin lane's loop in the service: drains every running VM box's
-/// sandbox every `poll_seconds` of the pack (nothing without a pack).
-pub fn run(home: PathBuf, log: impl Fn(String) + Send + 'static, wake: impl Fn() + Send + 'static) {
-    let mut last: HashMap<String, Instant> = HashMap::new();
-    let mut failing: HashMap<String, String> = HashMap::new();
-    let exe = std::env::current_exe().unwrap_or_default();
-    loop {
-        std::thread::sleep(Duration::from_millis(500));
-        let Some(folder) = super::pack::configured(&home) else { continue };
-        let intents: Vec<_> = super::launch::all(&home).into_iter().filter(|i| !i.sandbox.is_empty() && i.state == VmState::Running).collect();
-        if intents.is_empty() {
-            continue;
-        }
-        let (pack, status) = super::pack::load(&folder);
-        if status.errors() > 0 || !pack.hooks.contains_key("exec") {
-            continue;
-        }
-        let hooks = super::hooks::Hooks::of(&pack);
+/// The thin lane's drains, run by the service's VM loop: each running VM
+/// box's sandbox every `poll_seconds` of the pack.
+#[derive(Default)]
+pub struct Drains {
+    last: HashMap<String, Instant>,
+    failing: HashMap<String, String>,
+}
+
+impl Drains {
+    /// Drains what is due; true when something was drained (the index wakes).
+    pub fn run(&mut self, home: &Path, pack: &super::pack::Pack, provider: &dyn super::provider::Provider, log: &dyn Fn(String)) -> bool {
+        let exe = std::env::current_exe().unwrap_or_default();
         let mut sandboxes: HashMap<String, HashMap<String, String>> = HashMap::new();
-        for intent in &intents {
+        for intent in super::launch::all(home).into_iter().filter(|i| !i.sandbox.is_empty() && i.state == VmState::Running) {
             sandboxes.entry(intent.sandbox.clone()).or_default().insert(intent.r#box.clone(), intent.agent.clone());
         }
+        self.last.retain(|s, _| sandboxes.contains_key(s));
         let every = Duration::from_secs(pack.poll_seconds);
+        let mut drained = false;
         for (sandbox, boxes) in sandboxes {
-            if last.get(&sandbox).is_some_and(|at| at.elapsed() < every) {
+            if self.last.get(&sandbox).is_some_and(|at| at.elapsed() < every) {
                 continue;
             }
-            last.insert(sandbox.clone(), Instant::now());
-            match poll(&home, &exe, &hooks, &sandbox, &boxes, &log) {
+            self.last.insert(sandbox.clone(), Instant::now());
+            match poll(home, &exe, provider, &sandbox, &boxes, log) {
                 Ok(()) => {
-                    if failing.remove(&sandbox).is_some() {
+                    if self.failing.remove(&sandbox).is_some() {
                         log(format!("VM {sandbox}: reachable again"));
                     }
-                    wake();
+                    drained = true;
                 }
                 Err(error) => {
                     let text = format!("{error:#}");
-                    if failing.insert(sandbox.clone(), text.clone()).as_ref() != Some(&text) {
+                    if self.failing.insert(sandbox.clone(), text.clone()).as_ref() != Some(&text) {
                         log(format!("VM {sandbox}: cannot drain it: {}", super::hooks::first_line(&text)));
                     }
                 }
             }
         }
+        drained
     }
 }
 

@@ -747,6 +747,13 @@ pub fn doctor(instance: &Instance) -> Result<()> {
             crate::remote_cli::Mark::Info => println!("- {label:<20} {detail}"),
         }
     }
+    // VM sessions: only with a pack (they are optional; nothing is said without one).
+    for (good, label, detail) in canvas_agents::vm::doctor_lines(&instance.home) {
+        match good {
+            Some(good) => line(good, label, detail),
+            None => println!("- {label:<20} {detail}"),
+        }
+    }
     if !ok {
         bail!("some checks failed");
     }
