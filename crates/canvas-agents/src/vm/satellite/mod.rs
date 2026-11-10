@@ -200,10 +200,16 @@ pub fn session(config: &Config, terms: &Arc<Terms>, mcp: &Arc<McpProxy>, epoch: 
     }
     let stats_every = Arc::new(AtomicU64::new(DEFAULT_STATS.as_millis() as u64));
     {
-        let (terms, other_tx, stats_every) = (terms.clone(), other_tx.clone(), stats_every.clone());
+        let (terms, other_tx, stats_every, stop_rx) = (terms.clone(), other_tx.clone(), stats_every.clone(), stop_rx.clone());
         std::thread::Builder::new().name("sat-reports".into()).spawn(move || report_loop(&terms, &other_tx, &stats_every, &stop_rx))?;
     }
-    let result = read_loop(&mut reader, terms, mcp, &heard, &other_tx, &stats_every);
+    // The canvas commands agents ran here (the guest's outbox) go to the hub as they come.
+    let ops_home = crate::paths::Instance::new(None, None, None)?.home;
+    {
+        let (home, other_tx) = (ops_home.clone(), other_tx.clone());
+        std::thread::Builder::new().name("sat-ops".into()).spawn(move || op_loop(&home, &other_tx, &stop_rx))?;
+    }
+    let result = read_loop(&mut reader, terms, mcp, &heard, &other_tx, &stats_every, &ops_home);
     terms.detach(epoch);
     mcp.attach(None);
     mcp.link_lost();
@@ -216,6 +222,39 @@ pub fn session(config: &Config, terms: &Arc<Terms>, mcp: &Arc<McpProxy>, epoch: 
 
 fn now() -> u64 {
     canvas_common::paths::now_ms()
+}
+
+/// How often the outbox is looked at; operations sent and not answered at once; when one is sent again.
+const OP_EVERY: Duration = Duration::from_millis(150);
+const OPS_IN_FLIGHT: usize = 16;
+const OP_AGAIN: Duration = Duration::from_secs(60);
+
+/// Until the link ends: each operation of the outbox goes up once (again
+/// after [`OP_AGAIN`] without an answer); the hub's `OpResult` takes it out.
+fn op_loop(home: &Path, up: &crossbeam_channel::Sender<SatUp>, stop: &Receiver<()>) {
+    let mut sent: std::collections::HashMap<String, Instant> = std::collections::HashMap::new();
+    let mut tidied: Option<Instant> = None;
+    while matches!(stop.recv_timeout(OP_EVERY), Err(crossbeam_channel::RecvTimeoutError::Timeout)) {
+        let queued = super::lite::queued(home, 256);
+        sent.retain(|id, _| queued.iter().any(|q| q.id == *id));
+        for q in queued {
+            if sent.get(&q.id).is_some_and(|at| at.elapsed() < OP_AGAIN) {
+                continue;
+            }
+            if sent.len() >= OPS_IN_FLIGHT {
+                break;
+            }
+            let Ok(json) = serde_json::to_string(&q.op) else { continue };
+            if up.send(SatUp::Op { id: q.id.clone(), term: q.term.clone(), json }).is_err() {
+                return;
+            }
+            sent.insert(q.id, Instant::now());
+        }
+        if tidied.is_none_or(|at| at.elapsed() > Duration::from_secs(3600)) {
+            super::lite::tidy_answers(home);
+            tidied = Some(Instant::now());
+        }
+    }
 }
 
 /// How often the guest's processes are looked at, and resent unchanged.
@@ -283,7 +322,8 @@ fn control(json: &str) -> serde_json::Value {
     }
 }
 
-fn read_loop(reader: &mut FrameReader, terms: &Arc<Terms>, mcp: &McpProxy, heard: &AtomicU64, other: &crossbeam_channel::Sender<SatUp>, stats_every: &AtomicU64) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+fn read_loop(reader: &mut FrameReader, terms: &Arc<Terms>, mcp: &McpProxy, heard: &AtomicU64, other: &crossbeam_channel::Sender<SatUp>, stats_every: &AtomicU64, ops_home: &Path) -> Result<()> {
     loop {
         let message = match reader.recv::<ServiceMsg>() {
             Ok(Some(message)) => message,
@@ -323,6 +363,11 @@ fn read_loop(reader: &mut FrameReader, terms: &Arc<Terms>, mcp: &McpProxy, heard
                 })?;
             }
             SatDown::Mcp { stream, kind, bytes } => mcp.down(stream, kind, bytes),
+            SatDown::OpResult { id, json } => {
+                if let Ok(answer) = serde_json::from_str::<canvas_model::vm::OpAnswer>(&json) {
+                    let _ = super::lite::answered(ops_home, &id, &answer);
+                }
+            }
             // Files and notes come with Phase 3.
             _ => {}
         }

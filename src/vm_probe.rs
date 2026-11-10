@@ -592,6 +592,18 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
         std::thread::sleep(Duration::from_millis(500));
     }
 
+    step("a canvas command in the guest is applied here through the link at once (not queued for a poll)");
+    let mut guest = local.env(&member.id)?;
+    guest.extend([("ATELIER_REMOTE".into(), "satellite".into()), ("ATELIER_SESSION".into(), BOX.into())]);
+    let asked = Instant::now();
+    let (ok, out) = cli(exe, &["report", "publish", "--message", "Written behind the satellite"], &guest)?;
+    anyhow::ensure!(ok && !out.contains("Queued"), "report publish from the guest: {out}");
+    anyhow::ensure!(asked.elapsed() < Duration::from_secs(5), "the answer took {:?}", asked.elapsed());
+    let items = home.join("reports").join("items");
+    wait_file("the report did not reach the inbox as the box", 30, || {
+        std::fs::read_dir(&items).is_ok_and(|e| e.flatten().any(|i| std::fs::read_to_string(i.path().join("meta.json")).is_ok_and(|m| m.contains(BOX) && m.contains("Written behind the satellite"))))
+    })?;
+
     step("the pool is filled again behind the leased VM");
     wait_file("the pool was not filled again", 60, || pool().iter().any(|m| m.id != member.id))?;
 

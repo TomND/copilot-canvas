@@ -184,8 +184,14 @@ fn wait_with_timeout(mut child: std::process::Child, limit: Duration) -> Result<
 }
 
 /// The answer an operation already got (a drain may report it twice).
-fn stored_answer(home: &Path, sandbox: &str, id: &str) -> Option<OpAnswer> {
+pub fn stored_answer(home: &Path, sandbox: &str, id: &str) -> Option<OpAnswer> {
     std::fs::read(home.join("vm").join("ops").join(sandbox).join(format!("{id}.json"))).ok().and_then(|b| serde_json::from_slice(&b).ok())
+}
+
+/// Keeps operation `id`'s answer, so it is never run twice.
+pub fn store_answer(home: &Path, sandbox: &str, id: &str, answer: &OpAnswer) -> Result<()> {
+    crate::paths::write_atomic(&home.join("vm").join("ops").join(sandbox).join(format!("{id}.json")), &serde_json::to_vec(answer)?)?;
+    Ok(())
 }
 
 /// A drain through the provider: `atelier satellite --lite` run in the guest.
@@ -201,7 +207,7 @@ pub fn exec_drain(provider: &dyn super::provider::Provider, sandbox: &str, reque
 pub fn poll(home: &Path, exe: &Path, drain: &dyn Fn(&DrainRequest) -> Result<DrainResponse>, sandbox: &str, boxes: &HashMap<String, String>, log: &dyn Fn(String)) -> Result<()> {
     let path = state_path(home, sandbox);
     let mut state: MirrorState = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-    let request = DrainRequest { files: state.files.clone(), answers: state.answers.clone(), max_bytes: 4 << 20 };
+    let request = DrainRequest { files: state.files.clone(), answers: state.answers.clone(), max_bytes: 4 << 20, skip_ops: false };
     let response = drain(&request)?;
     // Delivered: the guest stored them.
     state.answers.clear();
@@ -221,7 +227,7 @@ pub fn poll(home: &Path, exe: &Path, drain: &dyn Fn(&DrainRequest) -> Result<Dra
                     }
                     None => OpAnswer { ok: false, state: "refused".into(), text: "this command does not come from a session of this VM".into(), outputs: Vec::new() },
                 };
-                crate::paths::write_atomic(&home.join("vm").join("ops").join(sandbox).join(format!("{id}.json")), &serde_json::to_vec(&answer)?)?;
+                store_answer(home, sandbox, &id, &answer)?;
                 answer
             }
         };
@@ -262,7 +268,8 @@ impl Drains {
                 continue;
             }
             self.last.insert(sandbox.clone(), Instant::now());
-            let drain = |request: &DrainRequest| if linked { links.drain(&sandbox, request) } else { exec_drain(provider, &sandbox, request) };
+            // Through the link the satellite pushes the operations itself (`SatUp::Op`): history only.
+            let drain = |request: &DrainRequest| if linked { links.drain(&sandbox, &DrainRequest { skip_ops: true, ..request.clone() }) } else { exec_drain(provider, &sandbox, request) };
             match poll(home, &exe, &drain, &sandbox, &boxes, log) {
                 Ok(()) => {
                     if self.failing.remove(&sandbox).is_some() {

@@ -146,6 +146,9 @@ pub struct DrainRequest {
     /// Answers to earlier operations.
     pub answers: Vec<(String, OpAnswer)>,
     pub max_bytes: u64,
+    /// The operations reach the hub another way (the satellite pushes them): history only.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub skip_ops: bool,
 }
 
 /// A piece of a history file.
@@ -204,8 +207,7 @@ fn ident(meta: &std::fs::Metadata) -> u64 {
 pub fn drain(home: &Path, history: &Path, request: &DrainRequest) -> Result<DrainResponse> {
     for (id, answer) in &request.answers {
         if valid_op_id(id) {
-            crate::paths::write_atomic(&answers_dir(home).join(format!("{id}.json")), &serde_json::to_vec(answer)?)?;
-            let _ = std::fs::remove_file(outbox_dir(home).join(format!("{id}.json")));
+            answered(home, id, answer)?;
         }
     }
     let budget = if request.max_bytes == 0 { 4 << 20 } else { request.max_bytes.min(16 << 20) };
@@ -255,13 +257,39 @@ pub fn drain(home: &Path, history: &Path, request: &DrainRequest) -> Result<Drai
             pieces.push(Piece { file, ident, offset: start, whole, bytes });
         }
     }
+    let ops = if request.skip_ops { Vec::new() } else { queued(home, 64) };
+    Ok(DrainResponse { version: 1, history: pieces, ops })
+}
+
+/// The guest's outbox, oldest first (at most `max`).
+pub fn queued(home: &Path, max: usize) -> Vec<Queued> {
     let mut ops: Vec<Queued> = std::fs::read_dir(outbox_dir(home))
         .map(|e| e.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "json")).filter_map(|e| std::fs::read(e.path()).ok()).filter_map(|b| serde_json::from_slice::<Queued>(&b).ok()).collect())
         .unwrap_or_default();
     ops.retain(|q| valid_op_id(&q.id));
     ops.sort_by_key(|q| q.ms);
-    ops.truncate(64);
-    Ok(DrainResponse { version: 1, history: pieces, ops })
+    ops.truncate(max);
+    ops
+}
+
+/// The hub's answer to operation `id`: kept for the command that waits for
+/// it, the operation taken out of the outbox.
+pub fn answered(home: &Path, id: &str, answer: &OpAnswer) -> Result<()> {
+    anyhow::ensure!(valid_op_id(id), "not an operation id");
+    crate::paths::write_atomic(&answers_dir(home).join(format!("{id}.json")), &serde_json::to_vec(answer)?)?;
+    let _ = std::fs::remove_file(outbox_dir(home).join(format!("{id}.json")));
+    Ok(())
+}
+
+/// Answers nobody read (their command stopped waiting), a day after they came.
+pub fn tidy_answers(home: &Path) {
+    let Ok(entries) = std::fs::read_dir(answers_dir(home)) else { return };
+    let day = std::time::SystemTime::now() - Duration::from_secs(86_400);
+    for entry in entries.flatten() {
+        if entry.metadata().and_then(|m| m.modified()).is_ok_and(|t| t < day) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 #[cfg(test)]

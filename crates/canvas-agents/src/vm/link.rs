@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 use canvas_common::wire::{Closer, FrameReader, FrameWriter};
 use canvas_host::server::SatelliteLink;
 use canvas_host::term::{RemoteFeed, RemotePty};
-use canvas_model::vm::VmState;
+use canvas_model::vm::{OpAnswer, VmState};
 use crossbeam_channel::{Receiver, Sender, bounded, select_biased};
 
 use super::launch;
@@ -81,7 +81,20 @@ pub struct Links {
     reported: Mutex<std::collections::HashSet<String>>,
     /// Per sandbox, the Copilot sessions alive in its guest (its last process report).
     live: Mutex<HashMap<String, std::collections::HashSet<String>>>,
+    /// Relayed commands running: (sandbox, operation id); and per sandbox how many run now.
+    ops: Mutex<RunningOps>,
+    ops_turn: std::sync::Condvar,
+    /// What runs a relayed command (this program).
+    exe: Mutex<PathBuf>,
+    me: Weak<Links>,
 }
+
+/// Relayed commands taken: (sandbox, operation id); and per sandbox how many run now.
+type RunningOps = (std::collections::HashSet<(String, String)>, HashMap<String, usize>);
+
+/// Relayed commands a sandbox may have running at once, and waiting.
+const OPS_RUNNING: usize = 4;
+const OPS_WAITING: usize = 64;
 
 pub type SubsessionHook = Arc<dyn Fn(&str, &str, &str, &str) + Send + Sync>;
 
@@ -232,6 +245,10 @@ impl Links {
             subsession: Mutex::default(),
             reported: Mutex::default(),
             live: Mutex::default(),
+            ops: Mutex::default(),
+            ops_turn: std::sync::Condvar::new(),
+            exe: Mutex::new(std::env::current_exe().unwrap_or_default()),
+            me: links.clone(),
         })
     }
 
@@ -249,6 +266,16 @@ impl Links {
                 link.closer.close();
             }
         }
+    }
+
+    /// Tests run relayed commands with another program.
+    #[cfg(test)]
+    fn set_exe(&self, exe: PathBuf) {
+        *lock(&self.exe) = exe;
+    }
+
+    fn self_ref(&self) -> Option<Arc<Links>> {
+        self.me.upgrade()
     }
 
     /// Tells `hook` of each session found inside a box's terminal in a guest.
@@ -552,6 +579,10 @@ impl Links {
                 Ok(())
             }
             SatUp::Hello { .. } => bail!("the satellite said Hello twice"),
+            SatUp::Op { id, term, json } => {
+                self.op(link, id, term, json);
+                Ok(())
+            }
             SatUp::Proc { json } => {
                 if flood.proc_due(Instant::now()) {
                     self.processes(link, serde_json::from_str(&json).unwrap_or_default())?;
@@ -567,6 +598,71 @@ impl Links {
             }
             up => self.take_term(link, up),
         }
+    }
+
+    /// A canvas command an agent ran in the guest: run here as its box (once:
+    /// a repeat gets the answer it got), on a thread of its own, at most
+    /// [`OPS_RUNNING`] at a time per sandbox; the answer goes back on the link.
+    fn op(&self, link: &Link, id: String, term: String, json: String) {
+        if !super::lite::valid_op_id(&id) {
+            return;
+        }
+        let answer = |answer: &OpAnswer| link.send(false, SatDown::OpResult { id: id.clone(), json: serde_json::to_string(answer).unwrap_or_default() });
+        if let Some(stored) = super::thin::stored_answer(&self.home, &link.sandbox, &id) {
+            answer(&stored);
+            return;
+        }
+        let refused = |text: &str| OpAnswer { ok: false, state: "refused".into(), text: text.into(), outputs: Vec::new() };
+        let agent = match launch::load(&self.home, &term) {
+            Ok(Some(intent)) if intent.sandbox == link.sandbox && !link.sandbox.is_empty() => intent.agent,
+            _ => {
+                answer(&refused("this command does not come from a session of this VM"));
+                return;
+            }
+        };
+        let Ok(op) = serde_json::from_str::<canvas_model::vm::CliOp>(&json) else {
+            answer(&refused("the command could not be read"));
+            return;
+        };
+        {
+            let mut ops = lock(&self.ops);
+            if ops.0.contains(&(link.sandbox.clone(), id.clone())) {
+                return;
+            }
+            if ops.0.iter().filter(|(s, _)| *s == link.sandbox).count() >= OPS_RUNNING + OPS_WAITING {
+                drop(ops);
+                answer(&refused("this VM has too many canvas commands waiting; try again in a moment"));
+                return;
+            }
+            ops.0.insert((link.sandbox.clone(), id.clone()));
+        }
+        let Some(links) = self.self_ref() else { return };
+        let sandbox = link.sandbox.clone();
+        let _ = std::thread::Builder::new().name("vm-op".into()).spawn(move || {
+            {
+                let mut ops = lock(&links.ops);
+                while ops.1.get(&sandbox).copied().unwrap_or(0) >= OPS_RUNNING {
+                    ops = links.ops_turn.wait(ops).unwrap_or_else(|e| e.into_inner());
+                }
+                *ops.1.entry(sandbox.clone()).or_default() += 1;
+            }
+            let exe = lock(&links.exe).clone();
+            let result = super::thin::execute(&links.home, &exe, &id, &term, &agent, &op);
+            (links.log)(format!("VM {sandbox}: box {term} ran `atelier {}` ({})", op.words.first().cloned().unwrap_or_default(), result.state));
+            let _ = super::thin::store_answer(&links.home, &sandbox, &id, &result);
+            {
+                let mut ops = lock(&links.ops);
+                ops.0.remove(&(sandbox.clone(), id.clone()));
+                if let Some(running) = ops.1.get_mut(&sandbox) {
+                    *running = running.saturating_sub(1);
+                }
+            }
+            links.ops_turn.notify_all();
+            // The satellite resends it after a reconnect and then gets the stored answer.
+            if let Some(link) = links.link(&sandbox) {
+                link.send(false, SatDown::OpResult { id, json: serde_json::to_string(&result).unwrap_or_default() });
+            }
+        });
     }
 
     /// A process report: sessions found inside its sandbox's terminals become
@@ -1117,6 +1213,45 @@ mod tests {
         assert!(matches!(sat.next(), SatDown::Welcome { .. }));
         sat.hello(A, Vec::new());
         assert!(sat.served.join().unwrap().unwrap_err().to_string().contains("Hello twice"));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_relayed_command_runs_once_as_its_box_and_its_answer_goes_back() {
+        let home = home();
+        let links = links(&home);
+        // A program that takes any words and succeeds, standing in for this one.
+        links.set_exe(if cfg!(windows) { PathBuf::from(r"C:\Windows\System32\whoami.exe") } else { PathBuf::from("/bin/echo") });
+        let minted = super::super::store::Satellites::new(&home).mint(A).unwrap();
+        let _terminal = adopted(&home, &links, A);
+        let mut sat = Sat::connect(&links, &minted.id);
+        sat.hello(A, Vec::new());
+        assert!(matches!(sat.next(), SatDown::Welcome { .. }));
+        let op = canvas_model::vm::CliOp { words: vec!["status".into(), "ok".into(), "from the guest".into()], ..Default::default() };
+        let send = |sat: &mut Sat, id: &str, term: &str| sat.send(SatUp::Op { id: id.into(), term: term.into(), json: serde_json::to_string(&op).unwrap() });
+        send(&mut sat, "op-1", BOX);
+        let answer = |sat: &mut Sat| loop {
+            if let SatDown::OpResult { id, json } = sat.next() {
+                return (id, serde_json::from_str::<OpAnswer>(&json).unwrap());
+            }
+        };
+        let (id, first) = answer(&mut sat);
+        assert_eq!(id, "op-1");
+        assert!(first.ok && first.state == "applied", "{first:?}");
+        if cfg!(unix) {
+            assert_eq!(first.text.trim(), "status ok from the guest", "the box's command line");
+        }
+        assert!(super::super::thin::stored_answer(&home, A, "op-1").is_some(), "kept");
+        // Sent again (a reconnect): the same answer, from the store.
+        send(&mut sat, "op-1", BOX);
+        assert_eq!(answer(&mut sat), ("op-1".to_owned(), first));
+        // Another sandbox's box, a bad id: refused, nothing run.
+        send(&mut sat, "op-2", "0b1e5ca1-0000-4000-8000-00000000ffff");
+        let (id, refused) = answer(&mut sat);
+        assert!(id == "op-2" && !refused.ok && refused.text.contains("not come from a session of this VM"));
+        send(&mut sat, "../op", BOX);
+        assert!(super::super::thin::stored_answer(&home, A, "op-2").is_none());
+        sat.close().unwrap();
         let _ = std::fs::remove_dir_all(home);
     }
 }
