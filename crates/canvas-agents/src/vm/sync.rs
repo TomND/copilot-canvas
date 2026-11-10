@@ -103,6 +103,33 @@ fn walk(dir: &Path, base: &Path, depth: usize, prefixes: &[&str], out: &mut BTre
     }
 }
 
+/// What the hub knows of a guest from its satellite's `Hello`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Guest {
+    /// Where the roots are (`HelloInfo::roots`).
+    pub roots: String,
+    /// The guest user's home.
+    pub home: String,
+    /// The guest's MCP proxy (0: none).
+    pub mcp_port: u16,
+}
+
+/// The guest's Copilot MCP configuration (`mcp-config.json`): each server of
+/// the box's preset that has a policy, at the guest's MCP proxy, for this box
+/// (`None`: no preset, no proxy, or no server).
+pub fn mcp_config(pack: &Pack, intent: &Intent, mcp_port: u16) -> Option<String> {
+    let preset = intent.placement.mcp.as_deref().filter(|p| !p.is_empty())?;
+    let servers: Vec<&String> = pack.mcp.presets.get(preset)?.iter().filter(|s| pack.mcp.servers.contains_key(*s)).collect();
+    if servers.is_empty() || mcp_port == 0 || !super::launch::valid_box(&intent.r#box) {
+        return None;
+    }
+    let entries: serde_json::Map<String, serde_json::Value> = servers
+        .into_iter()
+        .map(|server| (server.clone(), serde_json::json!({ "type": "http", "url": format!("http://127.0.0.1:{mcp_port}/mcp/{}/{server}", intent.r#box), "tools": ["*"] })))
+        .collect();
+    serde_json::to_string_pretty(&serde_json::json!({ "mcpServers": entries })).ok()
+}
+
 /// A group's name as one path component.
 pub fn group_slug(name: &str) -> String {
     let slug: String = name.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
@@ -113,8 +140,17 @@ pub fn group_slug(name: &str) -> String {
 
 /// The roots of a sandbox whose guest keeps them under `guest_roots`, for
 /// the boxes it runs (`intents`), the canvas's `home` and the user's home.
-pub fn roots_for(home: &Path, pack: &Pack, user_home: &Path, guest_roots: &str, intents: &[Intent]) -> Vec<Root> {
+pub fn roots_for(home: &Path, pack: &Pack, user_home: &Path, guest: &Guest, intents: &[Intent]) -> Vec<Root> {
+    let guest_roots = guest.roots.as_str();
     let mut roots = Vec::new();
+    // The guest's Copilot MCP configuration: its home's `.copilot/mcp-config.json` (the VM is the
+    // box's; with boxes sharing it, the first one's servers).
+    if !guest.home.is_empty()
+        && let Some(config) = intents.iter().find_map(|i| mcp_config(pack, i, guest.mcp_port))
+    {
+        let target = format!("{}/.copilot", guest.home.trim_end_matches(['/', '\\']));
+        roots.push(Root { id: "mcp".into(), target, files: [("mcp-config.json".to_owned(), Source::Bytes(config.into_bytes()))].into(), ..Default::default() });
+    }
     let plugin = folder(&home.join("plugin"), &[]);
     if !plugin.is_empty() {
         roots.push(Root { id: "plugin".into(), files: plugin, ..Default::default() });
@@ -236,7 +272,7 @@ mod tests {
             ..Default::default()
         };
         let intent = Intent { r#box: "0b1e5ca1-0000-4000-8000-0000000051c0".into(), group_name: "Design & Docs".into(), group_folder: group.display().to_string(), ..Default::default() };
-        let roots = roots_for(&home, &pack, &home.join("user"), "/home/agent/.atelier/vm/roots", &[intent.clone(), intent]);
+        let roots = roots_for(&home, &pack, &home.join("user"), &Guest { roots: "/home/agent/.atelier/vm/roots".into(), ..Default::default() }, &[intent.clone(), intent]);
         let ids: Vec<&str> = roots.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids, ["plugin", "profile", "notes/design-docs", "instructions/design-docs", "paths/0"], "one group once; `none` paths are not synced");
         // With a routed canvas: its routing and todo book as a home.
@@ -246,7 +282,7 @@ mod tests {
         let book = crate::todos_cli::book_path(&home, canvas);
         std::fs::create_dir_all(book.parent().unwrap()).unwrap();
         std::fs::write(&book, "{}").unwrap();
-        let routed = roots_for(&home, &Pack::default(), &home.join("user"), "/r", &[]);
+        let routed = roots_for(&home, &Pack::default(), &home.join("user"), &Guest { roots: "/r".into(), ..Default::default() }, &[]);
         let names: Vec<&str> = routed[1].files.keys().map(String::as_str).collect();
         assert_eq!((routed[1].id.as_str(), names), ("canvas", vec!["bus/routing.json", &format!("canvas-agents/{canvas}/todos/book.json")[..]]));
         let notes = &roots[2];
@@ -288,5 +324,23 @@ mod tests {
             let _ = std::fs::remove_dir_all(outside);
         }
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_guests_mcp_configuration_names_the_presets_servers_at_its_proxy() {
+        use super::super::pack::{McpPolicy, McpServerPolicy};
+        let pack = Pack {
+            mcp: McpPolicy { presets: [("tools".to_owned(), vec!["forge".to_owned(), "no-policy".to_owned()])].into(), servers: [("forge".to_owned(), McpServerPolicy::default())].into() },
+            ..Default::default()
+        };
+        let mut intent = Intent { r#box: "0b1e5ca1-0000-4000-8000-0000000051c0".into(), ..Default::default() };
+        assert_eq!(mcp_config(&pack, &intent, 48200), None, "no preset: no servers");
+        intent.placement.mcp = Some("tools".into());
+        let config: serde_json::Value = serde_json::from_str(&mcp_config(&pack, &intent, 48200).unwrap()).unwrap();
+        assert_eq!(config["mcpServers"].as_object().unwrap().keys().collect::<Vec<_>>(), ["forge"], "a server without a policy is not offered");
+        assert_eq!(config["mcpServers"]["forge"]["url"], "http://127.0.0.1:48200/mcp/0b1e5ca1-0000-4000-8000-0000000051c0/forge");
+        assert_eq!(mcp_config(&pack, &intent, 0), None, "no proxy in the guest");
+        let roots = roots_for(Path::new("/nowhere"), &pack, Path::new("/nowhere"), &Guest { roots: "/home/agent/.atelier/vm/roots".into(), home: "/home/agent".into(), mcp_port: 48200 }, &[intent]);
+        assert_eq!((roots[0].id.as_str(), roots[0].target.as_str()), ("mcp", "/home/agent/.copilot"));
     }
 }

@@ -32,6 +32,9 @@ const PLACED: &str = "0b1e5ca1-0000-4000-8000-0000000b10cc";
 const CANVAS: &str = "c0ffee00-0000-4000-8000-00000000ca5e";
 const SECOND: &str = "0b1e5ca1-0000-4000-8000-00000000c20d";
 
+/// The hub MCP server's credential: never in the guest.
+const MCP_TOKEN: &str = "probe-mcp-credential-0b1e5ca1";
+
 /// Not a variable of the program: the instance [`cli`] names for hub commands.
 const PROBE_INSTANCE: &str = "ATELIER_PROBE_INSTANCE";
 
@@ -460,7 +463,29 @@ fn write_pool_pack(root: &Path, url: &Path, port: u16) -> Result<PathBuf> {
     )?;
     std::fs::write(pack.join("repos.yaml"), format!("repos:\n  probe-app:\n    url: {}\n    default_branch: main\n    egress: probe\n", json(url)?))?;
     std::fs::write(pack.join("egress").join("probe.yaml"), "default: deny\nrules:\n  - host: example.com\n    action: allow\n")?;
+    // The hub's `forge` MCP server (the stand-in) for boxes of the `probe-tools` preset, as the example pack's.
+    std::fs::write(
+        pack.join("mcp-policy.yaml"),
+        "presets:\n  probe-tools: [forge]\nservers:\n  forge:\n    rules:\n      - allow: list_pull_requests\n      - allow: create_pull_request\n        when:\n          draft: \"true\"\n          head: \"{{box.branch}}\"\n      - deny: vote\n",
+    )?;
     Ok(pack)
+}
+
+/// A JSON-RPC message to the guest's MCP proxy on `port` at `path` (as an
+/// MCP client in the guest sends it): the status, the session id, the body.
+fn mcp_post(port: u16, path: &str, session: Option<&str>, body: &serde_json::Value) -> Result<(u16, String, String)> {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    let body = body.to_string();
+    let session = session.map(|s| format!("Mcp-Session-Id: {s}\r\n")).unwrap_or_default();
+    write!(stream, "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nAccept: application/json\r\n{session}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())?;
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer)?;
+    let (head, body) = answer.split_once("\r\n\r\n").unwrap_or((&answer, ""));
+    let status = head.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let id = head.lines().find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case("mcp-session-id")).map(|(_, v)| v.trim().to_owned())).unwrap_or_default();
+    Ok((status, id, body.to_owned()))
 }
 
 fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
@@ -493,6 +518,10 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
 
     let copilot_home = root.join("pool-hub-copilot");
     std::fs::create_dir_all(&copilot_home)?;
+    // This machine's `forge` MCP server, its credential in its own environment only.
+    let mcp_log = root.join("mcp-standin.log");
+    let hub_mcp = serde_json::json!({ "mcpServers": { "forge": { "type": "local", "command": exe.display().to_string(), "args": ["mcp-standin", "--log", mcp_log.display().to_string()], "env": { "ATELIER_MCP_STANDIN_TOKEN": MCP_TOKEN }, "tools": ["*"] } } });
+    std::fs::write(copilot_home.join("mcp-config.json"), hub_mcp.to_string())?;
     let env = [
         ("ATELIER_VM_PACK", pack.display().to_string()),
         ("ATELIER_COPILOT", copilot.display().to_string()),
@@ -541,7 +570,7 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     std::fs::write(group_dir.join("ai-docs").join("GOALS.md"), "hub goals\n")?;
     let group = canvas_model::doc::Group { id: "g-probe".into(), name: "Probe group".into(), folder: Some(group_dir.display().to_string()), ..Default::default() };
     let mut node: canvas_model::doc::Node = serde_json::from_value(serde_json::json!({ "id": BOX, "kind": "session", "name": "Pooled box", "x": 0, "y": 0, "agent": "copilot", "fresh": true }))?;
-    node.placement = Some(canvas_model::vm::Placement::Vm(Box::new(canvas_model::vm::VmPlacement { repo: "probe-app".into(), branch: Some("atelier/pool".into()), ..Default::default() })));
+    node.placement = Some(canvas_model::vm::Placement::Vm(Box::new(canvas_model::vm::VmPlacement { repo: "probe-app".into(), branch: Some("atelier/pool".into()), mcp: Some("probe-tools".into()), ..Default::default() })));
     node.cwd = Some(work.display().to_string());
     let launch = canvas_model::launch::agent_launch(&node, &Default::default(), Some(&group), None, None, false);
     watch.conn.tx.send(ClientMsg::Subscribe8 { ids: vec![BOX.into()], focused: Some(BOX.into()) })?;
@@ -642,6 +671,47 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     let decisions = canvas_agents::vm::provider::Provider::egress_decisions(&local, &member.id)?;
     anyhow::ensure!(decisions.iter().any(|d| d.host == "forbidden.example.net" && !d.allowed), "the refusal is recorded: {decisions:?}");
 
+    step("the hub's MCP server through the gateway: the guest's configuration points at its proxy, the policy filters tools and refuses a vote, the credential stays here");
+    let config = || -> Option<serde_json::Value> { serde_json::from_slice(&local.get_file(&member.id, ".copilot/mcp-config.json", 1 << 20).ok()?).ok() };
+    wait_file("the guest's MCP configuration did not arrive", 30, || config().is_some())?;
+    let config = config().context("the guest's MCP configuration")?;
+    let url = config["mcpServers"]["forge"]["url"].as_str().unwrap_or_default().to_owned();
+    let (port, path) = url.strip_prefix("http://127.0.0.1:").and_then(|rest| rest.split_once('/')).map(|(p, path)| (p.parse::<u16>().unwrap_or(0), format!("/{path}"))).context("the guest's MCP url")?;
+    anyhow::ensure!(port != 0 && path == format!("/mcp/{BOX}/forge") && !config.to_string().contains(MCP_TOKEN), "the guest's MCP configuration: {config}");
+    let initialize = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "probe", "version": "1" } } });
+    let (status, session, body) = mcp_post(port, &path, None, &initialize)?;
+    anyhow::ensure!(status == 200 && !session.is_empty(), "initialize: {status} {body}");
+    let (status, _, _) = mcp_post(port, &path, Some(&session), &serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))?;
+    anyhow::ensure!(status == 202, "initialized: {status}");
+    let (_, _, listed) = mcp_post(port, &path, Some(&session), &serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))?;
+    let listed: serde_json::Value = serde_json::from_str(&listed)?;
+    let mut tools: Vec<&str> = listed["result"]["tools"].as_array().map(|t| t.iter().filter_map(|t| t["name"].as_str()).collect()).unwrap_or_default();
+    tools.sort();
+    anyhow::ensure!(tools == ["create_pull_request", "list_pull_requests"], "tools/list filtered by the policy: {listed}");
+    let call = |id: u64, tool: &str, args: serde_json::Value| -> Result<serde_json::Value> {
+        let (_, _, body) = mcp_post(port, &path, Some(&session), &serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": { "name": tool, "arguments": args } }))?;
+        Ok(serde_json::from_str(&body)?)
+    };
+    let vote = call(3, "vote", serde_json::json!({ "pr": 1, "vote": 10 }))?;
+    anyhow::ensure!(vote.get("error").is_some(), "a vote is refused: {vote}");
+    let listed = call(4, "list_pull_requests", serde_json::json!({}))?;
+    anyhow::ensure!(listed.get("result").is_some() && !listed.to_string().contains(MCP_TOKEN), "an allowed call: {listed}");
+    let draft = call(5, "create_pull_request", serde_json::json!({ "draft": true, "head": "atelier/pool", "base": "main", "title": "From the VM" }))?;
+    let other = call(6, "create_pull_request", serde_json::json!({ "draft": true, "head": "main", "base": "main", "title": "Elsewhere" }))?;
+    anyhow::ensure!(draft.get("result").is_some() && other.get("error").is_some(), "a pull request only from the box's branch, as a draft: {draft} / {other}");
+    let seen = std::fs::read_to_string(&mcp_log).unwrap_or_default();
+    anyhow::ensure!(!seen.contains("\"vote\"") && !seen.contains("Elsewhere") && seen.matches("\"initialize\"").count() == 1, "the server never saw a refused call, and one process served the session:\n{seen}");
+    // (Egress refusals are collected from the provider every 10 s.)
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let (ok, out) = cli(exe, &["vm", "list"], &hub_env)?;
+        if ok && out.contains("refused (mcp)") && out.contains("forge vote") && out.contains("refused (egress)") && out.contains("forbidden.example.net") {
+            break;
+        }
+        anyhow::ensure!(Instant::now() < deadline, "vm list shows the refusals: {out}");
+        std::thread::sleep(Duration::from_millis(500));
+    }
+
     step("the pool is filled again behind the leased VM");
     wait_file("the pool was not filled again", 60, || pool().iter().any(|m| m.id != member.id))?;
 
@@ -714,6 +784,13 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
         watch.pump(Instant::now() + Duration::from_millis(200), |_| false);
     }
     wait_file("the stop was not recorded in the launch", 10, || intent_now(instance).is_ok_and(|i| i.terminal == 0))?;
+    // The box's MCP server process ended with its session.
+    #[cfg(unix)]
+    {
+        let log = mcp_log.display().to_string();
+        let serving = || canvas_sys::process::process_entries().into_iter().any(|(pid, _, _)| canvas_sys::process::process_argv(pid).is_some_and(|argv| argv.iter().any(|a| *a == log)));
+        wait_file("the box's MCP server outlived its session", 20, || !serving())?;
+    }
     anyhow::ensure!(local.get(&member.id).is_ok_and(|s| !s.suspended), "the VM stays");
     let launch = canvas_model::launch::agent_launch(&node, &Default::default(), Some(&group), None, None, false);
     watch.view = TermView::default();

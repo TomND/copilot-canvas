@@ -25,6 +25,7 @@ pub mod pack;
 pub mod paths;
 pub mod profile;
 pub mod provider;
+pub mod refusals;
 pub mod satellite;
 pub mod secrets;
 pub mod session_store;
@@ -260,7 +261,7 @@ pub fn run(home: PathBuf, log: impl Fn(String) + Send + Sync + 'static, wake: im
                 let _ = std::thread::Builder::new().name("vm-sync".into()).spawn(move || {
                     let user_home = dirs::home_dir().unwrap_or_default();
                     for (sandbox, intents) in boxes {
-                        let Some(guest) = links.guest_roots(&sandbox) else { continue };
+                        let Some(guest) = links.guest(&sandbox) else { continue };
                         let roots = sync::roots_for(&home, &pack, &user_home, &guest, &intents);
                         if let Err(error) = links.sync(&sandbox, &roots) {
                             log(format!("VM {sandbox}: the canvas's files were not synced: {}", hooks::first_line(&format!("{error:#}"))));
@@ -278,6 +279,11 @@ pub fn run(home: PathBuf, log: impl Fn(String) + Send + Sync + 'static, wake: im
             }
             since_ms = now;
             refresher.run(pack, provider.as_ref(), log.as_ref());
+            // The running boxes' egress refusals, for their details.
+            if pack.provider != pack::ProviderKind::Hooks {
+                let running: Vec<launch::Intent> = launch::all(&home).into_iter().filter(|i| i.state == VmState::Running).collect();
+                refusals::collect_egress(&home, provider.as_ref(), &running);
+            }
             let due = store::load_images(&home).map(|images| manager::images_due(pack, &images, now)).unwrap_or_default();
             for repo in due {
                 if !building.lock().unwrap_or_else(|e| e.into_inner()).insert(repo.clone()) {
@@ -342,6 +348,8 @@ pub fn view(home: &Path) -> Option<VmView> {
     let sandboxes = store::load_sandboxes(home).unwrap_or_default();
     let images = store::load_images(home).unwrap_or_default();
     let budget = store::load_budget(home).unwrap_or_default();
+    let (refusals, refused) = refusals::read(home);
+    view.refusals = refusals;
     let minute = |ms: u64| ms - ms % 60_000;
     for intent in launch::all(home) {
         let record = sandboxes.sandboxes.iter().find(|s| s.id == intent.sandbox);
@@ -357,7 +365,8 @@ pub fn view(home: &Path) -> Option<VmView> {
             note: if intent.error.is_empty() { intent.note.clone() } else { intent.error.clone() },
             ..Default::default()
         };
-        let info = with_link(info, &intent, link::load_record(home, &intent.sandbox));
+        let mut info = with_link(info, &intent, link::load_record(home, &intent.sandbox));
+        info.refusals = refused.get(&intent.r#box).copied().unwrap_or(0);
         if intent.state == VmState::Queued {
             view.queued.push(QueuedStart { r#box: intent.r#box.clone(), since_ms: minute(intent.queued_ms), why: intent.note.clone() });
         }

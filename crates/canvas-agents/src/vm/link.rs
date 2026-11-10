@@ -130,6 +130,9 @@ struct Link {
     satellite: String,
     /// The guest's roots folder (`HelloInfo::roots`).
     roots: String,
+    /// The guest user's home and the guest's MCP proxy port (`HelloInfo`).
+    guest_home: String,
+    mcp_port: u16,
     epoch: u64,
     io: Sender<ServiceMsg>,
     other: Sender<ServiceMsg>,
@@ -255,7 +258,8 @@ impl Links {
             controls: Mutex::default(),
             control_ids: AtomicU64::new(0),
             stops: Mutex::default(),
-            mcp: super::mcp::Gateway::new(home, Arc::new(super::mcp::NoServers), Arc::new(McpDown(links.clone()))),
+            // The hub's MCP servers as this machine's Copilot configuration has them (read at each session's start).
+            mcp: super::mcp::Gateway::new(home, Arc::new(super::mcp::CopilotServers::of_this_machine()), Arc::new(McpDown(links.clone()))),
             subsession: Mutex::default(),
             reported: Mutex::default(),
             live: Mutex::default(),
@@ -288,6 +292,17 @@ impl Links {
     /// The guest's roots folder of `sandbox` (`None`: not linked, or a satellite without roots).
     pub fn guest_roots(&self, sandbox: &str) -> Option<String> {
         self.link(sandbox).map(|l| l.roots.clone()).filter(|r| !r.is_empty())
+    }
+
+    /// What the hub knows of `sandbox`'s guest from its satellite (`None`: not linked, or no roots).
+    pub fn guest(&self, sandbox: &str) -> Option<super::sync::Guest> {
+        let link = self.link(sandbox).filter(|l| !l.roots.is_empty())?;
+        Some(super::sync::Guest { roots: link.roots.clone(), home: link.guest_home.clone(), mcp_port: link.mcp_port })
+    }
+
+    /// The hub's MCP server processes running for guests now.
+    pub fn mcp_running(&self) -> Vec<super::mcp::Running> {
+        self.mcp.running()
     }
 
     /// Whether `sandbox`'s roots were synced in full since its satellite linked.
@@ -574,9 +589,11 @@ impl Links {
             let (closer, heard) = (closer.clone(), heard.clone());
             std::thread::Builder::new().name("sat-link-writer".into()).spawn(move || write_lanes(writer, io_rx, other_rx, stopped, heard, closer))?
         };
-        let current = Arc::new(Link { sandbox: sandbox.clone(), satellite: id.clone(), roots: hello.roots.clone(), epoch, io, other, closer: closer.clone(), streams: Mutex::default() });
+        let current = Arc::new(Link { sandbox: sandbox.clone(), satellite: id.clone(), roots: hello.roots.clone(), guest_home: hello.home.clone(), mcp_port: hello.mcp_port, epoch, io, other, closer: closer.clone(), streams: Mutex::default() });
         if let Some(old) = lock(&self.links).insert(sandbox.clone(), current.clone()) {
             old.closer.close();
+            // The older link's MCP sessions end with it (the guest's clients start new ones on this link).
+            self.mcp.link_ended(&sandbox);
         }
         update_record(&self.home, &sandbox, |r| (r.linked, r.since_ms) = (true, now_ms()));
         (self.log)(format!("VM {sandbox}: satellite linked ({} on {}, {} terminal(s) there)", hello.build, hello.platform, hello.terms.len()));
@@ -1267,7 +1284,7 @@ mod tests {
     }
 
     #[test]
-    fn until_the_gateway_lands_an_mcp_stream_is_refused_on_the_link() {
+    fn an_mcp_stream_for_a_box_not_of_the_sandbox_is_refused_on_the_link() {
         let home = home();
         let links = links(&home);
         let minted = super::super::store::Satellites::new(&home).mint(A).unwrap();

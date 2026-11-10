@@ -37,6 +37,9 @@ pub fn list_text(view: &VmView, now: u64) -> String {
         if vm.offline_ms > 0 {
             out.push(format!("      offline for {}", age(now, vm.offline_ms)));
         }
+        if vm.refusals > 0 {
+            out.push(format!("      refused {} time(s) (MCP or egress; newest below)", vm.refusals));
+        }
         if let Some(git) = &vm.git {
             let unpushed = if git.unpushed.is_empty() { String::new() } else { format!(" · not pushed: {}", git.unpushed.join(", ")) };
             out.push(format!("      git {}: ahead {}, behind {}, {} changed, {} untracked, {} stashed{unpushed}", if git.branch.is_empty() { "(detached)" } else { &git.branch }, git.ahead, git.behind, git.dirty, git.untracked, git.stashes));
@@ -44,6 +47,9 @@ pub fn list_text(view: &VmView, now: u64) -> String {
     }
     for s in &view.sandboxes {
         out.push(format!("  sandbox {} ({}, {}, {}) up {} · boxes: {}", s.id, s.role, s.repo, s.size, age(now, s.created_ms), if s.boxes.is_empty() { "none".into() } else { s.boxes.join(", ") }));
+    }
+    for r in view.refusals.iter().take(5) {
+        out.push(format!("  refused ({}) {} ago for {}: {} · {}", r.kind, age(now, r.ms), r.r#box, r.what, r.why));
     }
     out.join("\n")
 }
