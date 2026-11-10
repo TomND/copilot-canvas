@@ -162,7 +162,7 @@ pub fn load_record(home: &Path, sandbox: &str) -> Option<LinkRecord> {
     std::fs::read(record_path(home, sandbox)?).ok().and_then(|b| serde_json::from_slice(&b).ok())
 }
 
-fn update_record(home: &Path, sandbox: &str, change: impl FnOnce(&mut LinkRecord)) {
+pub(crate) fn update_record(home: &Path, sandbox: &str, change: impl FnOnce(&mut LinkRecord)) {
     let Some(path) = record_path(home, sandbox) else { return };
     let mut record = load_record(home, sandbox).unwrap_or_default();
     change(&mut record);
@@ -427,6 +427,19 @@ impl Links {
         let answer: serde_json::Value = serde_json::from_str(&answer.context("the VM's satellite did not answer")?)?;
         anyhow::ensure!(answer["ok"] == true, "the VM's satellite: {}", answer["error"].as_str().unwrap_or("refused"));
         Ok(answer)
+    }
+
+    /// The repositories of `sandbox`'s terminals checked now through its
+    /// satellite (the delete barrier; before a suspend), kept in its link
+    /// record. An older satellite does not know the check: an error.
+    pub fn git_check(&self, sandbox: &str) -> Result<Vec<canvas_common::sat::RepoStats>> {
+        let answer = self.control(sandbox, serde_json::json!({ "git": true }), Duration::from_secs(20))?;
+        let repos: Vec<canvas_common::sat::RepoStats> = serde_json::from_value(answer.get("repos").cloned().context("the VM's satellite does not check repositories")?)?;
+        update_record(&self.home, sandbox, |r| {
+            r.stats.repos = repos.clone();
+            r.stats_ms = now_ms();
+        });
+        Ok(repos)
     }
 
     /// The thin lane's drain of `sandbox` through its satellite's link.
@@ -960,10 +973,27 @@ impl Remote {
 
 impl RemotePty for Remote {
     fn accepting(&self) -> Result<()> {
-        let state = lock(&self.state);
+        let mut state = lock(&self.state);
         anyhow::ensure!(!state.exited, "the program has exited");
         anyhow::ensure!(state.spawned, "the VM is starting: input not sent");
         if self.current_link(&state).is_none() {
+            // Typing into a suspended VM resumes it (the keys wait for it, a little).
+            if now_ms() >= state.resuming_until
+                && let Some(links) = self.links.upgrade()
+                && launch::update(&links.home, &self.term, |i| {
+                    let suspended = matches!(i.state, VmState::Suspended | VmState::Suspending);
+                    if suspended {
+                        i.pending = "resume".into();
+                    }
+                    suspended
+                })
+                .ok()
+                .flatten()
+                .unwrap_or(false)
+            {
+                state.resuming_until = now_ms() + RESUME_WAIT_MS;
+                (links.log)(format!("VM box {}: typing resumes its VM", self.term));
+            }
             anyhow::ensure!(now_ms() < state.resuming_until && state.buffered_bytes < RESUME_BUFFER, "VM offline: input not sent");
         }
         Ok(())
@@ -1242,17 +1272,19 @@ mod tests {
     }
 
     #[test]
-    fn typing_while_a_vm_resumes_is_kept_and_sent_once_it_links_and_the_mailbox_waits_for_the_replay() {
+    fn typing_resumes_a_suspended_vm_and_is_kept_and_sent_once_it_links_and_the_mailbox_waits_for_the_replay() {
         let home = home();
         let links = links(&home);
         let minted = super::super::store::Satellites::new(&home).mint(A).unwrap();
         let terminal = adopted(&home, &links, A);
+        links.progress();
+        assert!(terminal.send_input(&Input::Raw(b"x".to_vec())).unwrap_err().to_string().contains("VM offline"), "a running VM whose link is down refuses typing");
+        assert!(launch::load(&home, BOX).unwrap().unwrap().pending.is_empty(), "and asks nothing of it");
         launch::update(&home, BOX, |i| i.state = VmState::Suspended).unwrap();
         links.progress();
-        assert!(terminal.send_input(&Input::Raw(b"x".to_vec())).unwrap_err().to_string().contains("VM offline"), "a suspended VM refuses typing");
-        launch::update(&home, BOX, |i| i.pending = "resume".into()).unwrap();
-        links.progress();
+        // Typing into a suspended VM resumes it, and the keys wait for it.
         terminal.send_input(&Input::Raw(b"abc".to_vec())).unwrap();
+        assert_eq!(launch::load(&home, BOX).unwrap().unwrap().pending, "resume");
         assert!(!terminal.remote_settled(), "no link: the mailbox waits");
         let mut sat = Sat::connect(&links, &minted.id);
         sat.hello(A, vec![TermHeld { term: BOX.into(), generation: 7, end: 0, alive: true, input_acked: 0 }]);
@@ -1261,6 +1293,35 @@ mod tests {
         assert!(!terminal.remote_settled(), "replaying: the mailbox still waits");
         sat.send(SatUp::Output { term: BOX.into(), generation: 7, seq: 0, bytes: Vec::new() });
         wait_until("caught up", || terminal.remote_settled());
+        sat.close().unwrap();
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_git_check_asks_the_satellite_now_and_keeps_the_answer_in_the_link_record() {
+        let home = home();
+        let links = links(&home);
+        let minted = super::super::store::Satellites::new(&home).mint(A).unwrap();
+        assert!(links.git_check(A).is_err(), "not linked: no check");
+        let mut sat = Sat::connect(&links, &minted.id);
+        sat.hello(A, Vec::new());
+        assert!(matches!(sat.next(), SatDown::Welcome { .. }));
+        let checking = std::thread::spawn({
+            let links = links.clone();
+            move || links.git_check(A)
+        });
+        let id = loop {
+            if let SatDown::Control { id, json } = sat.next()
+                && json.contains("\"git\"")
+            {
+                break id;
+            }
+        };
+        let repo = canvas_common::sat::RepoStats { term: BOX.into(), cwd: "/home/agent/work/app".into(), untracked: 2, ..Default::default() };
+        sat.send(SatUp::ControlResult { id, json: serde_json::json!({ "ok": true, "repos": [repo] }).to_string() });
+        assert_eq!(checking.join().unwrap().unwrap()[0].untracked, 2);
+        let record = load_record(&home, A).unwrap();
+        assert!(record.stats_ms > 0 && record.stats.repos[0].untracked == 2, "kept: {record:?}");
         sat.close().unwrap();
         let _ = std::fs::remove_dir_all(home);
     }

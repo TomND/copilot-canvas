@@ -154,6 +154,14 @@ impl Terms {
         out
     }
 
+    /// Every terminal's folder, its program running or not (term, cwd): a
+    /// repository's work outlives its program (the delete barrier counts it).
+    pub fn places(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = lock(&self.terms).values().map(|t| (t.id.clone(), t.cwd.clone())).collect();
+        out.sort();
+        out
+    }
+
     /// The terminals as `HelloInfo` lists them.
     pub fn held(&self) -> Vec<TermHeld> {
         let mut out: Vec<TermHeld> = lock(&self.terms)

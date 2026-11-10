@@ -1500,6 +1500,10 @@ atelier vm pack check                 the pack's findings, never its values (wit
                                       sessions are off and sessions run on this machine)
 atelier vm list|pool|images|budget   VM sessions as the service sees them (with a pack)
 atelier vm image build REPO · vm suspend|resume|cancel|retry BOX · vm delete BOX --yes
+                                      (a delete stops at what the VM's repositories have not pushed,
+                                      checked now; --discard loses it). An unseen, idle VM box is
+                                      suspended after the pack's suspend_after; typing into it or a
+                                      message for it resumes it
 atelier selftest vm                   VM sessions end to end on local stand-in sandboxes (no cloud,
                                       no model): a VM box, its status from the guest, commands
                                       relayed from the guest, refusals; then the warm pool (an

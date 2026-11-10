@@ -47,8 +47,9 @@ pub fn proc_report(running: &[Running], root: &Path) -> ProcReport {
     report
 }
 
-/// The guest's load and each running terminal's repository.
-pub fn stats_report(running: &[Running], home: &Path) -> StatsReport {
+/// The guest's load (of the running terminals) and the repository of every
+/// terminal it holds, `places` (term, cwd), ended ones too.
+pub fn stats_report(running: &[Running], places: &[(String, String)], home: &Path) -> StatsReport {
     let mut report = StatsReport::default();
     let entries = canvas_sys::process::process_entries();
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
@@ -74,16 +75,23 @@ pub fn stats_report(running: &[Running], home: &Path) -> StatsReport {
     if let Ok(text) = std::fs::read_to_string("/proc/loadavg") {
         report.load_1m = text.split_whitespace().next().and_then(|l| l.parse().ok()).unwrap_or(0.0);
     }
+    report.repos = repos(places);
+    report
+}
+
+/// The repository at each folder of `places` (term, cwd), once per folder.
+pub fn repos(places: &[(String, String)]) -> Vec<RepoStats> {
     let mut seen = HashSet::new();
-    for run in running {
-        if seen.insert(run.cwd.clone())
-            && let Some(mut repo) = repo_stats(Path::new(&run.cwd))
+    let mut out = Vec::new();
+    for (term, cwd) in places {
+        if seen.insert(cwd.clone())
+            && let Some(mut repo) = repo_stats(Path::new(cwd))
         {
-            repo.term = run.term.clone();
-            report.repos.push(repo);
+            repo.term = term.clone();
+            out.push(repo);
         }
     }
-    report
+    out
 }
 
 /// `MemTotal` and `MemAvailable` of `/proc/meminfo`, in bytes.
@@ -175,6 +183,10 @@ mod tests {
         assert_eq!((repo.branch.as_str(), repo.untracked, repo.dirty, repo.stashes), ("main", 1, 0, 0));
         assert_eq!(repo.unpushed, ["main"], "no upstream");
         assert!(repo_stats(&std::env::temp_dir().join("atelier-not-a-repo-at-all")).is_none());
+        // No program runs there any more: its repository is still reported (once per folder).
+        let place = ("b1".to_owned(), dir.display().to_string());
+        let report = stats_report(&[], &[place.clone(), ("b2".into(), place.1.clone())], &dir);
+        assert_eq!(report.repos.iter().map(|r| (r.term.as_str(), r.untracked)).collect::<Vec<_>>(), [("b1", 1)]);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

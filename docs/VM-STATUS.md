@@ -118,14 +118,18 @@ owner's note that VM sessions are optional and local stays the default.
       JSON-RPC, the hub's Copilot servers, `atelier mcp-standin`, the guest's proxy; wired in `vm::link`
 - [x] VM-38 the guest's Copilot MCP configuration (a synced root at `~/.copilot`); Claude Code and OpenCode in Phase 5
 - [x] refusals (MCP and egress) in the VM view and `vm list`
+- [x] Exit: every row of the CLI inventory tested; offline writes say *queued*
 - [ ] Exit: the probe's integration steps on three OSes (CI); owner: `vm spike s5` with a real server
-- [ ] VM-36 egress (worker P-egress, `vm-egress`) and VM-37 MCP gateway (worker P-mcp, `vm-mcp`): prompts in
-      VM-WORKERS.md; their interfaces landed (`vm/egress/mod.rs` denies everything, `vm/mcp/mod.rs` refuses every
-      stream, `vm/satellite/mcp_proxy.rs` serves nothing; the link and the satellite already call them)
-- [ ] Exit: every row of the CLI inventory tested; offline writes say *queued*
 
 ### 4: UX
-- [ ] VM-41 *Run on* · VM-42 box states · VM-43 details · VM-44 Tasks · VM-45 ☁ VMs panel · VM-46 lifecycle and barrier · VM-47 client exclusions · VM-48 parity rows 57–62 and the self-test step · VM-49 docs
+- [x] VM-46 on the hub: idle and unseen for `suspend_after` (no client shows it, not working, no mail, quiet) →
+      suspended (`vm_idle_loop`, `vm_idle_verdict`); typing into a suspended VM and mail waiting for it resume it
+      (`Remote::accepting`); the barrier: every terminal's repository (ended ones too) checked now through the link
+      (`Links::git_check`, the satellite's `git` control), else the last report with its age, and checked just before
+      a suspend; each finding confirmed, or `*` (`vm delete --discard`); *Update from main* is a message to the
+      agent; the view says *integration offline* for a running VM whose link is down
+- [ ] VM-41 *Run on* · VM-42 box states · VM-43 details · VM-44 Tasks · VM-45 ☁ VMs panel · VM-47 client
+      exclusions · VM-48 parity rows 57–62 and the self-test step · VM-49 docs
 - [ ] Exit: parity rows pass, snapshots read, self-test step in both clients
 
 ### 5: hardening
@@ -209,6 +213,11 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   starts on a blank screen (the launch's step lines are cleared).
 - **`vm::local` on Linux starts its satellite in a systemd user scope of its own**, out of the service's unit, whose
   stop ends its cgroup (a VM's satellite is not the hub's process at all).
+- **The delete barrier is git only** (VM-46): no `gh`/`az` re-check of merged or closed pull requests (an unpushed
+  branch is reported whatever its PR), no drain with acknowledgements before the delete (the outbox and history are
+  pushed continuously), and a suspended VM is not resumed for the check (its repositories were checked as it was
+  suspended). The idle suspend runs in the service (`vm_idle_loop`), not `vm::manager`; there is no `vm::quiesce`.
+- **A follow-up does not resume a VM**: follow-ups are passive agents', and passive agents do not run on VMs.
 
 ## Log
 
@@ -292,4 +301,8 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   configuration, refusals in the view; `atelier egress-standin`, `atelier mcp-standin`. Suggestions taken: the
   placeholders' doc fixed (`{{repo.path}}` never existed), the decisions log capped at 5 MB, `pack check` renders
   profiles. `selftest vm` PASS in 66 s on macOS.
-
+- 2026-11-10: Phase 4 on the hub (VM-46): idle suspend, typing and mail resume, the delete barrier (checked now
+  through the link; `vm delete --discard`), *Update from main*, *integration offline* in the view; the satellite
+  reports the repositories of ended terminals too (found by the probe: a session that ended hid its work from the
+  barrier). `selftest vm` PASS in 65 s on macOS (typing resumes a suspended VM; the barrier stops at an untracked
+  file).

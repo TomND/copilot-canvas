@@ -45,14 +45,24 @@ use canvas_model::vm::{BudgetView, ImageRow, PackStatus, QueuedStart, SandboxRow
 
 use crate::paths::now_ms;
 
+/// A check of a sandbox's repositories now (`Links::git_check`; `None`: not
+/// linked, or an older satellite): the delete barrier's.
+pub type GitCheck<'a> = &'a dyn Fn(&str) -> Option<Vec<canvas_common::sat::RepoStats>>;
+
 /// What the service answers a VM request (`Request::is_service_state`).
 pub fn service_request(home: &Path, request: Request) -> Response {
+    service_request_with(home, request, &|_| None)
+}
+
+/// [`service_request`] with the service's links (a delete checks the VM's
+/// repositories now when it is linked).
+pub fn service_request_with(home: &Path, request: Request, git: GitCheck) -> Response {
     let pack = pack::configured(home);
     match (request, pack) {
         (Request::VmPackStatus, None) => Response::VmPack(Box::default()),
         (Request::VmPackStatus, Some(folder)) => Response::VmPack(Box::new(pack::load(&folder).1)),
         (Request::VmList | Request::VmPool | Request::VmImages | Request::VmBudget, Some(_)) => Response::Vm(Box::new(view(home).unwrap_or_default())),
-        (Request::VmAction { r#box, op }, Some(_)) => action(home, &r#box, op).map_or_else(|e| Response::Error(format!("{e:#}")), Response::Text),
+        (Request::VmAction { r#box, op }, Some(_)) => action_with(home, &r#box, op, git).map_or_else(|e| Response::Error(format!("{e:#}")), Response::Text),
         (Request::VmImageBuild { repo }, Some(_)) => request_image(home, &repo).map_or_else(|e| Response::Error(format!("{e:#}")), Response::Text),
         (request, None) => Response::Error(format!("{}: no VM pack is configured (settings.json vm.pack or ATELIER_VM_PACK); VM sessions are off", request.name())),
         (request, Some(_)) => Response::Error(format!("{} is not a VM request", request.name())),
@@ -63,8 +73,34 @@ pub fn service_request(home: &Path, request: Request) -> Response {
 /// `atelier vm suspend|resume|delete|cancel|retry`): recorded on its intent
 /// and done by the service's VM loop.
 pub fn action(home: &Path, id: &str, op: VmOp) -> anyhow::Result<String> {
+    action_with(home, id, op, &|_| None)
+}
+
+/// [`action`] with a check of the VM's repositories now (the delete barrier).
+pub fn action_with(home: &Path, id: &str, op: VmOp, git: GitCheck) -> anyhow::Result<String> {
     let (pack, _) = loaded(home).ok_or_else(|| anyhow::anyhow!("no VM pack is configured"))?;
-    let _ = pack;
+    if op == VmOp::UpdateFromMain {
+        return update_from_main(home, &pack, id);
+    }
+    // The quiescence barrier: what the VM's repositories hold and have not pushed, checked now when it is linked,
+    // else as they last reported (a suspended VM's were checked as it was suspended).
+    if let VmOp::Delete { confirm } = &op
+        && let Some(intent) = launch::load(home, id)?
+        && !intent.sandbox.is_empty()
+    {
+        let (repos, when) = match git(&intent.sandbox) {
+            Some(repos) => (repos, "now".to_owned()),
+            None => match link::load_record(home, &intent.sandbox).filter(|r| r.stats_ms > 0) {
+                Some(r) => (r.stats.repos, format!("as it reported {} ago", canvas_common::paths::format_age(r.stats_ms, now_ms()))),
+                None => (Vec::new(), String::new()),
+            },
+        };
+        let findings = barrier_findings(&repos, repos.len() > 1);
+        let accepted = confirm.iter().any(|c| c == canvas_model::vm::DISCARD_ALL) || findings.iter().all(|f| confirm.contains(f));
+        if !accepted {
+            anyhow::bail!("deleting this VM would lose: {} ({when}). Push what you keep first, or delete anyway to lose it", findings.join("; "));
+        }
+    }
     let done = launch::update(home, id, |intent| -> anyhow::Result<String> {
         let busy = matches!(intent.state, VmState::Deleted | VmState::Deleting);
         Ok(match op {
@@ -99,11 +135,38 @@ pub fn action(home: &Path, id: &str, op: VmOp) -> anyhow::Result<String> {
                 intent.queued_ms = now_ms();
                 "Starting it again on a new VM.".into()
             }
-            VmOp::Shell | VmOp::UpdateFromMain => anyhow::bail!("this comes with the VM details of a later phase (docs/VM-STATUS.md)"),
+            VmOp::Shell => anyhow::bail!("a shell in the VM comes with a later phase (docs/VM-STATUS.md)"),
             other => anyhow::bail!("{} is not possible while its VM is {}", serde_json::to_value(&other).ok().and_then(|v| v["op"].as_str().map(str::to_owned)).unwrap_or_default(), intent.state.word()),
         })
     })?;
     done.ok_or_else(|| anyhow::anyhow!("box {id} does not run on a VM"))?
+}
+
+/// What deleting a VM would lose, over all its repositories (each finding
+/// names its repository's folder when there are several).
+fn barrier_findings(repos: &[canvas_common::sat::RepoStats], name_them: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    for g in repos {
+        let state = canvas_model::vm::GitState { branch: g.branch.clone(), ahead: g.ahead, behind: g.behind, dirty: g.dirty, untracked: g.untracked, stashes: g.stashes, unpushed: g.unpushed.clone() };
+        let folder = g.cwd.rsplit(['/', '\\']).next().unwrap_or_default();
+        out.extend(canvas_model::vm::delete_findings(&state).into_iter().map(|f| if name_them { format!("{folder}: {f}") } else { f }));
+    }
+    out
+}
+
+/// *Update from main*: asks the box's agent (a message typed in when it is
+/// idle) to bring in its repository's default branch, never to push.
+fn update_from_main(home: &Path, pack: &pack::Pack, id: &str) -> anyhow::Result<String> {
+    let intent = launch::load(home, id)?.ok_or_else(|| anyhow::anyhow!("box {id} does not run on a VM"))?;
+    anyhow::ensure!(matches!(intent.state, VmState::Running | VmState::Suspended | VmState::Suspending | VmState::Resuming), "its VM is {}", intent.state.word());
+    let base = pack.repo(&intent.placement.repo).map(|r| r.default_branch.clone()).filter(|b| !b.is_empty()).unwrap_or_else(|| "main".into());
+    let text = format!("Please fetch origin/{base} and bring it into this branch (merge or rebase, as you see fit for this branch); resolve conflicts if any. Do not push without asking me.");
+    let event = canvas_model::bus::Event { kind: "message".into(), to: id.to_owned(), data: serde_json::json!({ "text": text }), ..Default::default() };
+    canvas_model::bus::post(home, &event)?;
+    if matches!(intent.state, VmState::Suspended | VmState::Suspending) {
+        let _ = launch::update(home, id, |i| i.pending = "resume".into());
+    }
+    Ok(format!("Asked the agent to bring in origin/{base} when it is idle (it never pushes without asking)."))
 }
 
 /// Asks for `repo`'s image now (built by the VM loop).
@@ -142,6 +205,7 @@ fn with_link(mut info: VmInfo, intent: &launch::Intent, record: Option<link::Lin
     let Some(record) = record else { return info };
     if !record.linked && intent.state == VmState::Running {
         info.offline_ms = record.since_ms;
+        info.state = VmState::IntegrationOffline;
     }
     if record.stats_ms > 0
         && let Some(repo) = record.stats.repos.iter().find(|r| r.term == intent.r#box).or(record.stats.repos.first())
@@ -241,6 +305,10 @@ pub fn run(home: PathBuf, log: impl Fn(String) + Send + Sync + 'static, wake: im
             }
         }
         for intent in launch::all(&home).into_iter().filter(launcher::wants_work) {
+            // Its repositories checked just before it freezes: the delete barrier of a suspended VM reads them.
+            if intent.pending == "suspend" && intent.state == VmState::Running && links.linked(&intent.sandbox) {
+                let _ = links.git_check(&intent.sandbox);
+            }
             if let Err(error) = launcher::advance(&ctx, &intent.r#box) {
                 log(format!("VM launch of {}: {}", intent.r#box, hooks::first_line(&format!("{error:#}"))));
             }
@@ -409,7 +477,7 @@ mod tests {
         let repo = canvas_common::sat::RepoStats { term: "b1".into(), branch: "atelier/x".into(), ahead: 2, untracked: 1, unpushed: vec!["atelier/x".into()], ..Default::default() };
         let record = link::LinkRecord { linked: false, since_ms: 1000, stats_ms: 900, stats: canvas_common::sat::StatsReport { repos: vec![repo], ..Default::default() } };
         let info = with_link(VmInfo::default(), &intent, Some(record.clone()));
-        assert_eq!(info.offline_ms, 1000);
+        assert_eq!((info.offline_ms, info.state), (1000, VmState::IntegrationOffline));
         let git = info.git.unwrap();
         assert_eq!((git.branch.as_str(), git.ahead, git.untracked, git.unpushed.len()), ("atelier/x", 2, 1, 1));
         let suspended = launch::Intent { state: VmState::Suspended, ..intent };
@@ -439,6 +507,55 @@ mod tests {
         assert!(request_image(&home, "contoso-app").unwrap().contains("built next"));
         assert!(manager::images_due(&loaded(&home).unwrap().0, &store::load_images(&home).unwrap(), now_ms()).is_empty() || store::load_images(&home).unwrap().images.iter().any(|i| i.state == "requested"));
         assert!(has_work(&home) == launch::all(&home).iter().any(launcher::wants_work));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn deleting_stops_at_what_is_not_pushed_and_update_from_main_asks_the_agent() {
+        let home = std::env::temp_dir().join(format!("atelier-vm-barrier-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/examples/vm-pack");
+        canvas_common::settings::Settings { vm: canvas_common::settings::VmSettings { pack: Some(example.display().to_string()) }, ..Default::default() }.save(&home).unwrap();
+        if std::env::var_os("ATELIER_VM_PACK").is_some() {
+            return;
+        }
+        let mut intent = launch::Intent { r#box: "b1".into(), sandbox: "sbx-1".into(), state: VmState::Running, ..Default::default() };
+        intent.placement.repo = "contoso-app".into();
+        launch::store(&home, &mut intent).unwrap();
+        // Never reported: nothing is known to be lost.
+        let repo = canvas_common::sat::RepoStats { term: "b1".into(), branch: "atelier/x".into(), untracked: 1, unpushed: vec!["atelier/x".into()], ..Default::default() };
+        link::update_record(&home, "sbx-1", |r| {
+            r.linked = true;
+            r.stats_ms = now_ms();
+            r.stats.repos = vec![repo];
+        });
+        let refused = action(&home, "b1", VmOp::Delete { confirm: Vec::new() }).unwrap_err().to_string();
+        assert!(refused.contains("would lose: 1 branch not pushed: atelier/x; 1 new file not in git"), "{refused}");
+        assert!(launch::load(&home, "b1").unwrap().unwrap().pending.is_empty(), "nothing was asked");
+        let partly = VmOp::Delete { confirm: vec!["1 new file not in git".into()] };
+        assert!(action(&home, "b1", partly).is_err(), "every finding is confirmed");
+        // Checked now when linked: the fresh answer wins over the last report.
+        let clean = |_: &str| Some(vec![canvas_common::sat::RepoStats { term: "b1".into(), branch: "atelier/x".into(), ..Default::default() }]);
+        assert!(action_with(&home, "b1", VmOp::Delete { confirm: Vec::new() }, &clean).is_ok(), "pushed since: nothing to lose");
+        launch::update(&home, "b1", |i| i.pending.clear()).unwrap();
+        let two = |_: &str| Some(vec![canvas_common::sat::RepoStats { term: "b1".into(), cwd: "/home/agent/work/app".into(), stashes: 1, ..Default::default() }, canvas_common::sat::RepoStats { term: "b3".into(), cwd: "/home/agent/work/lib".into(), dirty: 1, ..Default::default() }]);
+        let refused = action_with(&home, "b1", VmOp::Delete { confirm: Vec::new() }, &two).unwrap_err().to_string();
+        assert!(refused.contains("would lose: app: 1 stash; lib: 1 file with uncommitted changes (now)"), "{refused}");
+        let all = VmOp::Delete { confirm: vec!["1 branch not pushed: atelier/x".into(), "1 new file not in git".into()] };
+        assert!(action(&home, "b1", all).unwrap().starts_with("Deleting its VM"));
+        assert_eq!(launch::load(&home, "b1").unwrap().unwrap().pending, "delete");
+
+        let mut other = launch::Intent { r#box: "b2".into(), sandbox: "sbx-2".into(), state: VmState::Suspended, ..Default::default() };
+        other.placement.repo = "contoso-app".into();
+        launch::store(&home, &mut other).unwrap();
+        assert!(action(&home, "b2", VmOp::Delete { confirm: Vec::new() }).is_ok(), "no report: no barrier");
+        launch::update(&home, "b2", |i| i.pending.clear()).unwrap();
+        assert!(action(&home, "b2", VmOp::UpdateFromMain).unwrap().contains("origin/main"));
+        assert_eq!(launch::load(&home, "b2").unwrap().unwrap().pending, "resume", "a suspended VM is resumed for it");
+        let inbox: Vec<_> = std::fs::read_dir(canvas_model::bus::inbox_dir(&home)).unwrap().flatten().collect();
+        let event: canvas_model::bus::Event = serde_json::from_slice(&std::fs::read(inbox[0].path()).unwrap()).unwrap();
+        assert_eq!((event.kind.as_str(), event.to.as_str()), ("message", "b2"));
+        assert!(event.data["text"].as_str().unwrap().contains("Do not push"));
         let _ = std::fs::remove_dir_all(home);
     }
 

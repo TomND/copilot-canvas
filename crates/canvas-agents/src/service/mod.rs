@@ -265,6 +265,7 @@ impl Agents {
                 let _ = shared.index_wake.try_send(());
             })
         });
+        server::spawn_named("vm-idle", { let a = agents.clone(); move || vm_idle_loop(a) });
         server::spawn_named("push", { let a = agents.clone(); move || push::push_loop(a) });
         server::spawn_named("tunnel-access", { let a = agents.clone(); move || tunnel_access_loop(a, tunnel_rx) });
         server::spawn_named("index", { let a = agents.clone(); move || index_loop(a, index_rx) });
@@ -693,8 +694,13 @@ impl HostApp for Agents {
                 if let Ok(request) = &request
                     && request.is_service_state()
                 {
-                    let response = crate::vm::service_request(&self.instance.home, request.clone());
-                    client.send(rpc_reply(id, serde_json::to_string(&response).unwrap_or_default()));
+                    // On a thread of its own: a delete checks the VM's repositories through its link.
+                    let (home, links, client, request) = (self.instance.home.clone(), self.vm_links.clone(), client.clone(), request.clone());
+                    server::spawn_named("vm-request", move || {
+                        let git = |sandbox: &str| links.git_check(sandbox).ok();
+                        let response = crate::vm::service_request_with(&home, request, &git);
+                        client.send(rpc_reply(id, serde_json::to_string(&response).unwrap_or_default()));
+                    });
                     return Ok(());
                 }
                 let quick = request.as_ref().is_ok_and(|r| r.is_quick());
@@ -1142,6 +1148,67 @@ fn subsession_loop(shared: Arc<Agents>) {
     }
 }
 
+/// VM boxes' lifecycle (docs/VM-SESSIONS.md §8): a running VM box nobody
+/// shows, whose agent is not working, with nothing queued for it, and quiet
+/// for the pack's `suspend_after` is suspended; a suspended one with a
+/// message waiting is resumed (typing and starting it resume it too).
+fn vm_idle_loop(shared: Arc<Agents>) {
+    use canvas_common::protocol::Activity;
+    use canvas_model::vm::{VmOp, VmState};
+    let home = shared.instance.home.clone();
+    loop {
+        std::thread::sleep(Duration::from_secs(15));
+        if shared.shutting_down.load(Ordering::Relaxed) {
+            return;
+        }
+        let Some(folder) = crate::vm::pack::configured(&home) else { continue };
+        let (pack, status) = crate::vm::pack::load(&folder);
+        if status.errors() > 0 || pack.provider == crate::vm::pack::ProviderKind::Hooks {
+            continue;
+        }
+        let intents = crate::vm::launch::all(&home);
+        if intents.is_empty() {
+            continue;
+        }
+        let now = now_ms();
+        let visible = shared.visible();
+        let waiting: HashSet<String> = lock(&shared.bus).mailbox.iter().map(|m| m.to.clone()).collect();
+        for intent in intents {
+            let id = intent.r#box.clone();
+            if !matches!(intent.state, VmState::Running | VmState::Suspended | VmState::Suspending) {
+                continue;
+            }
+            let summary = lock(&shared.sessions).get(&shared.native_of(&id)).cloned();
+            let working = summary.as_ref().is_some_and(|s| s.activity == Activity::Working || s.pending > 0);
+            let output = lock(&shared.terms).get(&id).map(|t| t.last_output_ms.load(Ordering::Relaxed)).unwrap_or(0);
+            let typed = lock(&shared.input_at).get(&id).copied().unwrap_or(0);
+            let last = output.max(typed).max(summary.map(|s| s.updated_ms.max(s.last_event_ms)).unwrap_or(0)).max(intent.updated_ms);
+            let seen = visible.contains(&id);
+            let mail = waiting.contains(&id);
+            let Some(op) = vm_idle_verdict(intent.state, &intent.pending, pack.suspend_after_ms, seen, mail, working, now.saturating_sub(last)) else { continue };
+            let why = if op == VmOp::Suspend { format!("suspended after {} min idle and unseen", pack.suspend_after_ms / 60_000) } else { "resumed for a message waiting for it".into() };
+            if crate::vm::action(&home, &id, op).is_ok() {
+                log(&shared.instance, &format!("VM box {id}: {why}"));
+            }
+        }
+    }
+}
+
+/// The idle loop's decision for one VM box: suspend a running one that is
+/// unseen, has no mail, is not working and has been quiet for
+/// `suspend_after_ms` (0: never); resume a suspended one with mail.
+fn vm_idle_verdict(state: canvas_model::vm::VmState, pending: &str, suspend_after_ms: u64, seen: bool, mail: bool, working: bool, quiet_ms: u64) -> Option<canvas_model::vm::VmOp> {
+    use canvas_model::vm::{VmOp, VmState};
+    if !pending.is_empty() {
+        return None;
+    }
+    match state {
+        VmState::Running if suspend_after_ms > 0 && !seen && !mail && !working && quiet_ms >= suspend_after_ms => Some(VmOp::Suspend),
+        VmState::Suspended | VmState::Suspending if mail => Some(VmOp::Resume),
+        _ => None,
+    }
+}
+
 fn same_dir(a: &str, b: &str) -> bool {
     let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_lowercase();
     norm(a) == norm(b)
@@ -1308,6 +1375,23 @@ fn index_loop(shared: Arc<Agents>, wake: Receiver<()>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unseen_quiet_vm_box_is_suspended_and_mail_resumes_it() {
+        use canvas_model::vm::{VmOp, VmState};
+        let min30 = 30 * 60_000;
+        assert_eq!(vm_idle_verdict(VmState::Running, "", min30, false, false, false, min30), Some(VmOp::Suspend));
+        assert_eq!(vm_idle_verdict(VmState::Running, "", min30, false, false, false, min30 - 1), None, "not quiet long enough");
+        assert_eq!(vm_idle_verdict(VmState::Running, "", min30, true, false, false, min30 * 4), None, "shown in a client");
+        assert_eq!(vm_idle_verdict(VmState::Running, "", min30, false, true, false, min30 * 4), None, "a message waits for it");
+        assert_eq!(vm_idle_verdict(VmState::Running, "", min30, false, false, true, min30 * 4), None, "its agent is working");
+        assert_eq!(vm_idle_verdict(VmState::Running, "", 0, false, false, false, u64::MAX), None, "suspend_after: 0 never suspends");
+        assert_eq!(vm_idle_verdict(VmState::Running, "delete", min30, false, false, false, min30), None, "an operation is pending");
+        assert_eq!(vm_idle_verdict(VmState::IntegrationOffline, "", min30, false, false, false, min30), None);
+        assert_eq!(vm_idle_verdict(VmState::Suspended, "", min30, false, true, false, 0), Some(VmOp::Resume));
+        assert_eq!(vm_idle_verdict(VmState::Suspended, "", min30, true, false, false, 0), None, "seeing it does not resume it (viewing never starts anything)");
+        assert_eq!(vm_idle_verdict(VmState::Suspended, "resume", min30, false, true, false, 0), None);
+    }
 
     #[test]
     fn new_sessions_go_to_the_terminal_that_made_them() {

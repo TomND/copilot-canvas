@@ -356,7 +356,7 @@ fn parse() -> Result<Args> {
             "--canvas" => args.canvas = Some(PathBuf::from(value("--canvas")?)),
             "--cwd" => args.cwd = Some(PathBuf::from(value("--cwd")?)),
             "--remote" => args.remote = Some(value("--remote")?),
-            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--pulse" | "--unread" | "--sent" | "--qr" | "--mine" | "--tree" | "--all" | "--internal" | "--undo" | "--with-todos" | "--detach" | "--lite" | "--self-check" | "--keep" | "--clone" | "--prepare" | "--start" => {
+            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--pulse" | "--unread" | "--sent" | "--qr" | "--mine" | "--tree" | "--all" | "--internal" | "--undo" | "--with-todos" | "--detach" | "--lite" | "--self-check" | "--keep" | "--clone" | "--prepare" | "--start" | "--discard" => {
                 args.flags.push(arg.trim_start_matches("--").to_owned())
             }
             "--" => {
@@ -851,7 +851,7 @@ fn real_main() -> Result<()> {
             if status.errors() > 0 { std::process::exit(1) }
             Ok(())
         }
-        ["vm", rest @ ..] if canvas_agents::vm::pack::configured(&instance.home).is_some() && matches!(rest.first(), Some(&("list" | "pool" | "images" | "image" | "budget" | "suspend" | "resume" | "delete" | "cancel" | "retry"))) => vm_cli::run(&instance, rest, flag("yes")),
+        ["vm", rest @ ..] if canvas_agents::vm::pack::configured(&instance.home).is_some() && matches!(rest.first(), Some(&("list" | "pool" | "images" | "image" | "budget" | "suspend" | "resume" | "delete" | "cancel" | "retry"))) => vm_cli::run(&instance, rest, flag("yes"), flag("discard")),
         ["vm", ..] if canvas_agents::vm::pack::configured(&instance.home).is_none() => {
             bail!("no VM pack is configured (settings.json vm.pack or ATELIER_VM_PACK): VM sessions are off; `atelier vm pack check` says more")
         }

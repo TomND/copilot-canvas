@@ -770,26 +770,19 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
         std::fs::read_dir(&items).is_ok_and(|e| e.flatten().filter(|i| std::fs::read_to_string(i.path().join("meta.json")).is_ok_and(|m| m.contains("Queued while away"))).count() == 1)
     })?;
 
-    step("a frozen VM drops its link and typing is refused as offline; resumed, it links again and replays");
+    step("a suspended VM drops its link; typing into it resumes it, it links again and the keys typed arrive");
     let links = |text: &str| text.matches(&format!("VM {}: satellite linked", member.id)).count();
     let linked = links(&std::fs::read_to_string(instance.log_path()).unwrap_or_default());
     let (ok, out) = cli(exe, &["vm", "suspend", BOX], &hub_env)?;
     anyhow::ensure!(ok, "vm suspend: {out}");
-    wait_file("the frozen VM's link was not dropped", 30, || std::fs::read_to_string(instance.log_path()).unwrap_or_default().contains(&format!("VM {}: satellite link ended", member.id)))?;
+    wait_file("the suspended VM's link was not dropped", 30, || std::fs::read_to_string(instance.log_path()).unwrap_or_default().contains(&format!("VM {}: satellite link ended", member.id)))?;
+    wait_file("the VM was not suspended", 30, || intent_now(instance).is_ok_and(|i| i.state == canvas_model::vm::VmState::Suspended))?;
     watch.errors.clear();
-    watch.conn.tx.send(ClientMsg::Input { id: BOX.into(), input: Input::Raw(b"x".to_vec()) })?;
-    anyhow::ensure!(watch.pump(Instant::now() + Duration::from_secs(10), |w| w.errors.iter().any(|e| e.contains("VM offline"))), "typing while offline was not refused: {:?}", watch.errors);
-    let (ok, out) = cli(exe, &["vm", "resume", BOX], &hub_env)?;
-    anyhow::ensure!(ok, "vm resume: {out}");
-    wait_file("the satellite did not link again", 30, || links(&std::fs::read_to_string(instance.log_path()).unwrap_or_default()) > linked)?;
-    let resumed = Instant::now() + Duration::from_secs(15);
-    loop {
-        watch.conn.tx.send(ClientMsg::Input { id: BOX.into(), input: Input::Raw(b"-after-resume".to_vec()) })?;
-        if watch.pump(Instant::now() + Duration::from_secs(2), |w| w.screen().contains("-after-resume")) {
-            break;
-        }
-        anyhow::ensure!(Instant::now() < resumed, "typing after the resume:\n{}", watch.screen());
-    }
+    watch.conn.tx.send(ClientMsg::Input { id: BOX.into(), input: Input::Raw(b"-typed-to-resume".to_vec()) })?;
+    wait_file("typing did not resume the VM", 30, || links(&std::fs::read_to_string(instance.log_path()).unwrap_or_default()) > linked)?;
+    anyhow::ensure!(std::fs::read_to_string(instance.log_path()).unwrap_or_default().contains("typing resumes its VM"), "the resume came from typing");
+    anyhow::ensure!(watch.pump(Instant::now() + Duration::from_secs(20), |w| w.screen().contains("-typed-to-resume")), "the keys typed to resume it:\n{}", watch.screen());
+    anyhow::ensure!(watch.errors.is_empty(), "typing into a suspended VM was refused: {:?}", watch.errors);
 
     step("the box stops like any session (its program ends in the guest, the VM stays); a new launch runs again in that VM");
     let exits = |text: &str| text.matches(&format!("terminal {BOX} exited")).count();
@@ -817,8 +810,12 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     let again = intent_now(instance)?;
     anyhow::ensure!(again.sandbox == member.id, "the same VM: {again:?}");
 
-    step("deleting the VM: its sandbox and the agent go, its credential is revoked");
+    step("deleting the VM stops at what it would lose (a new file not in git) until that is accepted; then its sandbox and the agent go, its credential is revoked");
+    // The quiescence barrier: the guest's untracked file (the git step's) is named, and only --discard loses it.
     let (ok, out) = cli(exe, &["vm", "delete", BOX, "--yes"], &hub_env)?;
+    anyhow::ensure!(!ok && out.contains("would lose: 1 new file not in git (now)"), "the barrier (checked now through the link): {out}");
+    anyhow::ensure!(local.get(&member.id).is_ok(), "nothing was deleted");
+    let (ok, out) = cli(exe, &["vm", "delete", BOX, "--yes", "--discard"], &hub_env)?;
     anyhow::ensure!(ok, "vm delete: {out}");
     let revoked = || matches!(store::Satellites::new(home).credential(&intent.satellite), canvas_common::handshake::Credential::Revoked(_));
     wait_file("the VM was not deleted and its credential revoked", 20, || local.get(&member.id).is_err() && revoked())?;

@@ -54,7 +54,7 @@ pub fn list_text(view: &VmView, now: u64) -> String {
     out.join("\n")
 }
 
-pub fn run(instance: &Instance, words: &[&str], yes: bool) -> Result<()> {
+pub fn run(instance: &Instance, words: &[&str], yes: bool, discard: bool) -> Result<()> {
     let (_conn, backend) = service(instance)?;
     let backend: &dyn Backend = &*backend;
     let now = crate::paths::now_ms();
@@ -85,13 +85,14 @@ pub fn run(instance: &Instance, words: &[&str], yes: bool) -> Result<()> {
                 "suspend" => VmOp::Suspend,
                 "resume" => VmOp::Resume,
                 "delete" if !yes => bail!("deleting a VM loses what is not pushed: add --yes (`atelier vm list` shows its branch)"),
-                "delete" => VmOp::Delete { confirm: vec!["deleted from the command line".into()] },
+                // --discard: lose whatever the barrier finds not pushed.
+                "delete" => VmOp::Delete { confirm: if discard { vec![canvas_model::vm::DISCARD_ALL.into()] } else { Vec::new() } },
                 "cancel" => VmOp::CancelStart,
                 _ => VmOp::RetryStart,
             };
             println!("{}", backend.vm_action(id, op)?);
         }
-        _ => bail!("usage: atelier vm list|pool|images|budget · vm image build REPO · vm suspend|resume|cancel|retry BOX · vm delete BOX --yes · vm pack check"),
+        _ => bail!("usage: atelier vm list|pool|images|budget · vm image build REPO · vm suspend|resume|cancel|retry BOX · vm delete BOX --yes [--discard] · vm pack check"),
     }
     Ok(())
 }
