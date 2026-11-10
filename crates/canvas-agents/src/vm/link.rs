@@ -289,6 +289,17 @@ impl Links {
         }
     }
 
+    /// Ends `sandbox`'s link now: its VM was suspended, and its frozen
+    /// satellite would hold the link until its reads time out (typing
+    /// meanwhile would go into it instead of resuming the VM).
+    pub fn close(&self, sandbox: &str) {
+        let link = lock(&self.links).remove(sandbox);
+        if let Some(link) = link {
+            (self.log)(format!("VM {sandbox}: suspended; its link is closed"));
+            link.closer.close();
+        }
+    }
+
     /// The guest's roots folder of `sandbox` (`None`: not linked, or a satellite without roots).
     pub fn guest_roots(&self, sandbox: &str) -> Option<String> {
         self.link(sandbox).map(|l| l.roots.clone()).filter(|r| !r.is_empty())
@@ -1294,6 +1305,26 @@ mod tests {
         sat.send(SatUp::Output { term: BOX.into(), generation: 7, seq: 0, bytes: Vec::new() });
         wait_until("caught up", || terminal.remote_settled());
         sat.close().unwrap();
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn closing_a_suspended_vms_link_makes_typing_resume_it_at_once() {
+        let home = home();
+        let links = links(&home);
+        let minted = super::super::store::Satellites::new(&home).mint(A).unwrap();
+        let terminal = adopted(&home, &links, A);
+        let mut sat = Sat::connect(&links, &minted.id);
+        sat.hello(A, vec![TermHeld { term: BOX.into(), generation: 7, end: 0, alive: true, input_acked: 0 }]);
+        assert!(matches!(sat.next(), SatDown::Welcome { .. }));
+        wait_until("linked", || links.linked(A));
+        // Frozen: the satellite says nothing more, and its link goes at once.
+        launch::update(&home, BOX, |i| i.state = VmState::Suspended).unwrap();
+        links.close(A);
+        assert!(!links.linked(A), "no link to type into");
+        terminal.send_input(&Input::Raw(b"k".to_vec())).unwrap();
+        assert_eq!(launch::load(&home, BOX).unwrap().unwrap().pending, "resume", "typing resumes it");
+        let _ = sat.close();
         let _ = std::fs::remove_dir_all(home);
     }
 

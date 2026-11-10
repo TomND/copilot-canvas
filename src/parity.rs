@@ -2202,7 +2202,11 @@ fn late_rows(sb: &Sandbox, rows: &mut Vec<Row>) {
     subagents::rows(sb, rows);
     hide::rows(sb, rows);
     pulse::rows(sb, rows);
+    vm_rows::rows(sb, rows);
 }
+
+#[path = "parity_vm.rs"]
+mod vm_rows;
 
 #[path = "parity_visual.rs"]
 pub(crate) mod visual;

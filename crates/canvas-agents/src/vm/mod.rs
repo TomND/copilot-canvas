@@ -306,11 +306,16 @@ pub fn run(home: PathBuf, log: impl Fn(String) + Send + Sync + 'static, wake: im
         }
         for intent in launch::all(&home).into_iter().filter(launcher::wants_work) {
             // Its repositories checked just before it freezes: the delete barrier of a suspended VM reads them.
-            if intent.pending == "suspend" && intent.state == VmState::Running && links.linked(&intent.sandbox) {
+            let suspending = intent.pending == "suspend" && intent.state == VmState::Running;
+            if suspending && links.linked(&intent.sandbox) {
                 let _ = links.git_check(&intent.sandbox);
             }
             if let Err(error) = launcher::advance(&ctx, &intent.r#box) {
                 log(format!("VM launch of {}: {}", intent.r#box, hooks::first_line(&format!("{error:#}"))));
+            }
+            // Frozen now: its link goes at once (typing into it then resumes it).
+            if suspending && launch::load(&home, &intent.r#box).ok().flatten().is_some_and(|i| i.state == VmState::Suspended) {
+                links.close(&intent.sandbox);
             }
         }
         // The boxes' terminals: their launch's steps, their programs started once their satellites link.
