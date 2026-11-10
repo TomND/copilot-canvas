@@ -52,7 +52,7 @@ owner's note that VM sessions are optional and local stays the default.
 - [ ] `vm spike s1` (Phase 2: the satellite link), `s5` (Phase 3: the MCP gateway), `s7` (Phase 2/5: faults)
 - [x] S6: `policy_ack` in `vm.yaml` (`pack check` warns while it is empty); the owner's checklist below
 
-### 1: manager
+### 1: manager (done 2026-11-10; CI run 42771716398 green on every job; merged into main at 36e0bcf with Phase 2's core)
 - [x] VM-11 provider trait (`vm::provider`); the pack's hooks as a provider (`vm::hooks::HooksProvider`)
 - [x] VM-12 `vm::aca` (P-aca, `vm-aca` 6ceef0d..9d4a8e8) and VM-13 `vm::local` with `canvas_sys::process::
       {suspend_tree, resume_tree}` (P-local, `vm-local` 6ceef0d..ec3079d): merged into `vm-sessions` 2026-11-10
@@ -67,7 +67,8 @@ owner's note that VM sessions are optional and local stays the default.
       `provider: local` (an image built in a builder, a warm VM leased, its branch prepared, the agent in its
       terminal, the pool refilled, the VM deleted); `vm spike` through a provider; `rustls` (ring) and
       `rustls-platform-verifier` in canvas-agents on every OS with `vm::tls` (the satellite's `wss://` config)
-- [ ] Exit: as in the plan §3 Phase 1
+- [x] Exit: `selftest vm` with the pool lane on three OSes, both providers wired, `vm spike` through a provider;
+      the owner's checks on real sandboxes stay below
 
 ### 2: terminals
 - [x] VM-21 remote PTY (`Terminal::spawn_remote`, `RemotePty`, `RemoteFeed`; started early, unit-tested)
@@ -217,4 +218,7 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   buffer, the mailbox's wait, offline stops) and drops end to end (exact replay within the ring, repaint beyond).
   Pending for Phase 2: VM-26 guest roots (with Phase 3's sync), VM-28 subsessions, the link's flood limits,
   `proc` and `stats`, DEVELOPMENT and AGENT-PROVIDERS docs.
+- 2026-11-10: Phase 1 merged into main at 36e0bcf (CI run 42771716398 green on all 17 jobs), together with Phase 2's
+  core (the satellite link; gated by the pack like everything else): the run on the Phase-1-only commit hung on
+  Windows (the probe's stray service), and its fix came with the Phase 2 commits.
 
