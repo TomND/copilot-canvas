@@ -122,7 +122,7 @@ owner's note that VM sessions are optional and local stays the default.
 - [x] Exit: the probe's integration steps on three OSes (CI run 42879098435; Windows 77 s); owner: `vm spike s5`
       with a real server (open)
 
-### 4: UX
+### 4: UX (done 2026-11-10; CI run 42895272083 green on every job; merged into main at 8b09f73)
 - [x] VM-46 on the hub: idle and unseen for `suspend_after` (no client shows it, not working, no mail, quiet) →
       suspended (`vm_idle_loop`, `vm_idle_verdict`); typing into a suspended VM and mail waiting for it resume it
       (`Remote::accepting`); the barrier: every terminal's repository (ended ones too) checked now through the link
@@ -158,7 +158,8 @@ owner's note that VM sessions are optional and local stays the default.
 - [x] VM-49 docs: README (the VM row, Controls, Commands, the self-test), VM-SESSIONS *As built* Phase 4, PARITY rows
       57–62 and *Last run*, NOTEBOOK-TASKS (*Start on VM…*, the board policy), GUI (`tree`'s `vm`), BACKEND
 - [ ] *Open shell* (VM-43): a shell box in the same sandbox needs shared VMs (`with`), not built (departure)
-- [ ] Exit: parity rows pass, snapshots read, self-test step in both clients
+- [x] Exit: parity rows pass (Windows `PASS: 80 rows`, macOS, Linux), snapshots read, the self-test's VM step in both
+      clients and over loopback (CI run 42895272083)
 
 ### 5: hardening
 - [ ] VM-51 `selftest vm --real` · VM-52 soak · VM-53 resume on a new VM · VM-54 Claude Code · VM-55 OpenCode · VM-56 shared MCP · VM-57 docs
@@ -343,3 +344,6 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
 - 2026-11-10: Phase 4 done locally: VM-41/44/47 (Run on defaults, Tasks' Start on VM, client exclusions), the
   parity rows 57–62 (`PASS: 6 rows in 25.5s` on macOS) and the self-test's VM step (TUI, GUI, both over loopback);
   two bugs found by them and fixed (local clients' VM requests; a suspended VM's frozen link). Waiting for CI.
+- 2026-11-10: Phase 4 merged into main at 8b09f73 (CI run 42895272083 green on all 17 jobs; on Windows the VM step
+  ran in the TUI, the GUI and over loopback, and rows 57–62 passed). Phase 5 begun: VM-53 resume on a new VM
+  (d9fec28).
