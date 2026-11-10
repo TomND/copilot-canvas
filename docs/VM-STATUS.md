@@ -96,7 +96,23 @@ owner's note that VM sessions are optional and local stays the default.
       `selftest` and `--remote loopback` unchanged. Owner: `vm spike s1`, `s4`, `s7` on real sandboxes
 
 ### 3: integration
-- [ ] VM-31 `Io` seam · VM-32 CLI satellite mode · VM-33 op relay · VM-34 file sync · VM-35 profile and path map · VM-36 egress and secrets · VM-37 MCP gateway · VM-38 guest MCP config · VM-39 docs and skills
+- [x] VM-31 the CLI inventory (§4) row by row: each relayed command is the same command line here (files carried,
+      outputs written back), refusals with why (`every_row_of_the_cli_inventory_relays_as_the_same_command`); the
+      `Io` seam is not built (departure: relayed commands run as a subprocess)
+- [x] VM-32 the guest CLI over a satellite: the outbox pushed at once; `effect list` here; `note path` from
+      `ATELIER_NOTES`; offline `todo` reads on the canvas's last copy, offline writes *Queued* (`link.json`)
+- [x] VM-33 op relay over the link (`SatUp::Op` / `OpResult`): once, as the box, of its own sandbox only, 4 at a time
+      per sandbox, answers kept; guest events are inbox events (they never finish todos, as a local session's);
+      paths mapped both ways (`vm::paths`)
+- [x] VM-34 file sync (`vm::sync`, `vm::satellite::files`): roots `plugin`, `canvas`, `profile`,
+      `group-skills/<box>`, `instructions/<group>`, `notes/<group>` (writable), `paths/<n>`; revisions, manifests,
+      pieces, conflicts kept aside; containment both sides
+- [x] VM-35 profile bundle and path map (`vm::profile`); `config_keys` (agent configuration keys) not bundled yet
+- [x] VM-26 `ExecTarget` (`vm::target`): the guest command line with the synced roots (`%ROOTS%`), started after the
+      first full sync
+- [x] VM-39 in part: the skills' VM lines (plugin 1.5.0), AGENT-PROVIDERS *Inside a VM*, NOTEBOOK-TASKS §2.7, BACKEND
+- [ ] VM-36 egress (P-egress) · VM-37 MCP gateway (P-mcp) · VM-38 guest MCP configuration (after P-mcp) · the
+      Phase 3 exit (the probe's integration steps on three OSes, `vm spike s5` for the owner)
 - [ ] VM-36 egress (worker P-egress, `vm-egress`) and VM-37 MCP gateway (worker P-mcp, `vm-mcp`): prompts in
       VM-WORKERS.md; their interfaces landed (`vm/egress/mod.rs` denies everything, `vm/mcp/mod.rs` refuses every
       stream, `vm/satellite/mcp_proxy.rs` serves nothing; the link and the satellite already call them)
@@ -169,6 +185,14 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
 - **`ExecTarget` is not a type yet** (VM-26): with no guest roots before the file sync, the guest command line is
   `launch::guest_command` (a launch with this machine's folders removed); the target-aware command builder lands
   with VM-34/VM-38, when there are guest paths to build.
+- **Identity of a relayed command** is its `ATELIER_SESSION` in the guest, checked against the boxes of the
+  sandbox it came from (the plan's endpoint proving the caller's terminal from its process tree is not built: it
+  only tells apart boxes sharing one VM, which `with` allows); the guest's outbox is pushed by the satellite.
+- **`note new` in the guest is relayed** (filed here as for a local session; its answer names the guest's path)
+  rather than written into the guest's notes and synced up; notes written straight into the guest's notes do sync up.
+- **A file deleted in a synced root in the guest comes back** (deletions in the guest are not sent to the hub).
+- **`todo` reads are relayed** while the canvas is reachable (the same text) and run on the guest's copy only when
+  it is not; `pr list`, `review list`, `report list` are unavailable then.
 - **The remote listener** binds with `SO_REUSEADDR` on Unix and retries for 15 s at start (found by the restart step).
 - **No note line marks a gap** (VM-29 had one): a guest's ConPTY (Windows) draws by absolute positions, so nothing
   of the hub's may be drawn into a program's screen once it runs; a gap is logged, and a program's first output
@@ -248,4 +272,9 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
 - 2026-11-10: CI run 42824828979 (cf9d93a) green on all 17 jobs after one more Windows flake of the probe's own (the
   restart step counted a git run of the satellite's stats that ended meanwhile as stopped). Phase 2 merged into
   main at 3484fd2. Next: Phase 3 (the workers' egress and MCP packages, then VM-31..39).
+- 2026-11-10: Phase 3, the lead's parts: commands pushed over the link (VM-33), the profile bundle and path map
+  (VM-35), file sync (VM-34) with `ExecTarget` (VM-26), offline reads and writes (VM-32), the CLI inventory test
+  (VM-31), the skills' VM lines (plugin 1.5.0). `selftest vm` adds the synced files, notes both ways, a command
+  applied at once, an offline read and a queued write across a restart (PASS in 54 s on macOS). Waiting for P-egress
+  and P-mcp (VM-36, VM-37), then VM-38 and the Phase 3 probe steps.
 

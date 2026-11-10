@@ -16,7 +16,7 @@ todos](#notes-and-todos)) and the `atelier` command on
 `PATH` (events, messages, passive status, reports, pull requests, review
 follow-ups, notes, todos), plus the canvas skills (`canvas-events`,
 `canvas-passive`, `canvas-reports`, `canvas-prs`, `canvas-review-followup`,
-`canvas-todos`, `canvas-notes`; plugin 1.4.0).
+`canvas-todos`, `canvas-notes`; plugin 1.5.0).
 
 ## At a glance
 
@@ -536,7 +536,7 @@ in, and a canvas started inside that session does not take it as a choice;
 set by you (without the marker, or to another agent than the marker's), it
 chooses as before.
 
-**The skills** (plugin 1.4.0, beside the others; `canvas-events` points to
+**The skills** (plugin 1.5.0, beside the others; `canvas-events` points to
 both, `canvas-reports` to the notes, `canvas-passive` to the todos):
 
 | | `canvas-notes` | `canvas-todos` |
@@ -682,19 +682,27 @@ and prints the screen.
 With a VM pack ([VM-SESSIONS.md](VM-SESSIONS.md)) a box can run its agent on a microVM. Copilot CLI only for
 now (Claude Code and OpenCode come later); everything else here is unchanged on this machine.
 
-- **The command line** (`vm::launch::guest_command`) is the provider's own (`copilot --session-id <box> …`) with
-  nothing of this machine: no group folder, extra folders, plugin folders or headless prompt, none of the canvas's
-  variables (the guest sets `ATELIER_SESSION` and its relay mode itself), the program by its name on the guest's
-  `PATH` (`ATELIER_<AGENT>` is honoured in the guest as here, for the stand-in agents). A VM session cannot be
-  forked yet. The skills, group instructions and MCP configuration the guest needs arrive with the file sync.
+- **The command line** (`vm::launch::guest_command`, `vm::target`) is the provider's own (`copilot --session-id
+  <box> …`) with nothing of this machine: the program by its name on the guest's `PATH` (`ATELIER_<AGENT>` is
+  honoured in the guest as here, for the stand-in agents), and, with a satellite, the roots the hub syncs into the
+  guest in this machine's places: `--plugin-dir` for the canvas's plugin, the user's profile bundle (their own
+  skills, `profile.yaml`) and the group's skill folders; `--add-dir` for the group's `ai-docs` and
+  `human-outputs`; `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` for the group's instructions (with the guest's paths) and the
+  generated path map (`paths.yaml`); `ATELIER_NOTES` for `atelier note path`. The program starts once those roots
+  are in the guest. A VM session cannot be forked yet; its MCP configuration comes with the MCP gateway.
 - **The terminal** is drawn here and runs in the guest behind its satellite; status comes from the guest's
   history, mirrored under `<home>/vm/mirrors/<sandbox>/copilot` and indexed like Copilot's own folder.
   `Transcript` and `HasHistory` find a VM session there.
 - **Subsessions**: a `copilot` an agent starts inside its terminal in the guest (holding a session's in-use lock)
   is reported by the satellite and becomes the box's subsession, as locally. Whether a mirrored session is live is
   what the guest reports (its lock files are not mirrored).
-- **Canvas commands** the agent runs in the guest (`atelier todo`, `report`, `pr`, `emit`, `send`, …) are relayed
-  and run here as the box; commands that act on this machine are refused there.
+- **Canvas commands** the agent runs in the guest (`atelier todo`, `report`, `pr`, `emit`, `send`, `events`,
+  `note`, …) are relayed and run here as the box, at once over the satellite's link (`effect list` prints there);
+  commands that act on this machine are refused there. While the canvas is not reachable, `todo` reads answer from
+  its last copy in the guest (they say so) and writes answer *Queued* and are applied once when it is back. A guest
+  path in `todo link` is this machine's when it is in the group's notes or a mapped folder; this machine's paths in
+  an answer (`note new`) are the guest's. Notes written straight into the group's `ai-docs` in the guest come back
+  here; if the canvas's copy changed meanwhile, the guest keeps its version beside it (`… (conflict …).md`).
 
 ## Known limitations
 

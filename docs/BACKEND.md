@@ -526,6 +526,26 @@ interval `WelcomeInfo::stats_secs` gives (`ATELIER_VM_STATS_SECS`, else 30 s) it
 branch, ahead, behind, changed, untracked, stashed and unpushed branches); the hub keeps it in
 `<home>/vm/links/<sandbox>.json` and the VM view shows it (`VmInfo::git`, `offline_ms`).
 
+Canvas commands from the guest: the guest CLI (`ATELIER_REMOTE=satellite…`) writes each into
+`~/.atelier/vm/outbox/`; the satellite pushes them (`SatUp::Op { id, term, json: CliOp }`, at most 16 unanswered,
+again after a minute) and the hub runs each once as its box (`atelier <words>` with the box's identity, `vm::thin`;
+4 at a time per sandbox, 64 waiting; the answer kept in `<home>/vm/ops/<sandbox>/<id>.json`) and answers
+`SatDown::OpResult { id, json: OpAnswer }`, which the satellite hands to the waiting command. The satellite keeps
+`~/.atelier/vm/link.json` (`linked`, `since_ms`) for the guest's commands: unlinked, `todo` reads run on the
+canvas's last copy and writes answer *Queued* at once. Drains over the link then carry history only
+(`DrainRequest::skip_ops`).
+
+Roots (`vm::sync`, `vm::satellite::files`): every 3 s per linked sandbox the hub asks `{"roots_state":{}}` (a
+`RootsState`: per root each file and the revision the hub gave it, the first 16 hex digits of its SHA-256), sends
+each root's `SatDown::Manifest { root, json: RootManifest }` (an absolute guest `target` inside the guest's home or
+`<roots>/<id>`, `writable`, every file and its revision, `folders` to keep), then the files the guest lacks as
+`SatDown::File` pieces (1 MiB each; 32 MiB a pass), and `gone` manifests for roots it no longer has. The guest's
+edits of a writable root go up as `SatUp::Note { id, root, name, base_rev, bytes }`; the hub writes one only over
+the file it started from and answers `SatDown::NoteResult` (JSON `NoteAnswer`: `ok` and the new revision, or a
+`conflict`). Roots: `plugin`, `canvas` (routing and the todo book, as a home), `profile`, `group-skills/<box>`,
+`notes/<group>` (writable), `instructions/<group>`, `paths/<n>`. A box's program starts after its sandbox's first
+full pass (`%ROOTS%` in its command line becomes `HelloInfo::roots`).
+
 Limits (`vm::flood`): each message kind has a size cap (output 36 KiB, a screen 8 MiB, a report 256 KiB, a control's
 answer 30 MiB, …; over it the link is closed), a link's bytes are paced at 32 MiB/s past a 64 MiB burst (the hub
 stops reading and TCP slows the guest), process reports are taken at most every 0.5 s and stats every second

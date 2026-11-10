@@ -318,6 +318,15 @@ test (local and remote answer alike).
   the report id; `agent` from the routing). Never overwrites; failures
   are logged and never refuse the report.
 
+### 2.7 Notes from VM sessions
+
+A box that runs on a VM (docs/VM-SESSIONS.md) gets its group's `ai-docs` and `human-outputs` synced into its
+guest (`<guest roots>/notes/<group>`; `atelier note path` names them there). Files the agent writes or edits
+there come back to the group's folder on this machine, written only over the version the edit started from; when
+the canvas's copy changed meanwhile, the guest keeps its version beside it as `<name> (conflict <time>).md`, which
+comes back too: nothing is lost. A file deleted in the guest comes back from here. `atelier note new` in the guest
+is relayed and filed here as for a local session (its answer names the guest's path).
+
 ## 3. Tasks
 
 ### 3.1 Model (`canvas_model::todos`)

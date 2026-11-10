@@ -78,6 +78,9 @@ notes for agents dimmed.
 - Something the user should notice now goes to the Reports inbox (the
   canvas-reports skill); reports from a session in a group with a folder are also
   filed in that group's `human-outputs/reports`.
+- In a VM session `atelier note path` names the group's notes as kept on the VM:
+  what you write there goes back to the canvas's machine. A note that answers
+  *Queued* is filed when the canvas is reachable again.
 ";
 
 const USAGE: &str = "usage: atelier note path [--audience ai|human]
