@@ -1347,7 +1347,7 @@ mod tests {
     fn a_relayed_command_runs_once_as_its_box_and_its_answer_goes_back() {
         let home = home();
         let links = links(&home);
-        // A program that takes any words and succeeds, standing in for this one.
+        // A program standing in for this one (on Unix it takes any words and prints them).
         links.set_exe(if cfg!(windows) { PathBuf::from(r"C:\Windows\System32\whoami.exe") } else { PathBuf::from("/bin/echo") });
         let minted = super::super::store::Satellites::new(&home).mint(A).unwrap();
         let _terminal = adopted(&home, &links, A);
@@ -1364,8 +1364,9 @@ mod tests {
         };
         let (id, first) = answer(&mut sat);
         assert_eq!(id, "op-1");
-        assert!(first.ok && first.state == "applied", "{first:?}");
+        // (Windows: whoami takes no words, so it refuses them; the answer still comes back and is kept.)
         if cfg!(unix) {
+            assert!(first.ok && first.state == "applied", "{first:?}");
             assert_eq!(first.text.trim(), "status ok from the guest", "the box's command line");
         }
         assert!(super::super::thin::stored_answer(&home, A, "op-1").is_some(), "kept");
