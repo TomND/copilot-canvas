@@ -909,6 +909,7 @@ impl App {
             .unwrap_or_else(|| self.default_cwd.clone());
         let (x, y) = self.new_session_slot(parent.as_deref(), at);
         let group = self.doc.group_at(x + crate::doc::SESSION_W / 2, y + crate::doc::SESSION_H / 2).map(|g| g.id.clone());
+        let vm = self.vm_choice(group.as_deref(), &folder, parent.as_deref());
         let dialog = NewSession {
             parent,
             at,
@@ -931,7 +932,7 @@ impl App {
             fork: can_fork,
             agent,
             model: None,
-            vm: self.vm_choice(group.as_deref(), &folder),
+            vm,
             group,
         };
         if !self.agent_configs.contains_key(&agent) {
@@ -941,12 +942,14 @@ impl App {
     }
 
     /// The dialog's *Run on* (`None` without a VM pack): a VM only when the
-    /// group's or the canvas's launch defaults say so; the repository the
-    /// folder belongs to, else the pack's first.
-    pub(crate) fn vm_choice(&self, group: Option<&str>, folder: &str) -> Option<crate::dialogs::VmChoice> {
+    /// group's or the canvas's launch defaults say so, or for a subsession of
+    /// a VM box (a VM of its own for its parent's repository and size); the
+    /// repository the folder belongs to, else the pack's first.
+    pub(crate) fn vm_choice(&self, group: Option<&str>, folder: &str, parent: Option<&str>) -> Option<crate::dialogs::VmChoice> {
         let pack = &self.bus.vm.as_ref()?.pack;
         let defaults = self.doc.defaults.merged(group.and_then(|g| self.doc.group(g)).and_then(|g| g.defaults.as_ref()));
-        let chosen = canvas_model::vm::Placement::of(defaults.placement.as_ref());
+        let parents = parent.and_then(|p| self.doc.node(p)).and_then(|n| n.placement.clone()).filter(|p| p.is_vm());
+        let chosen = parents.unwrap_or_else(|| canvas_model::vm::Placement::of(defaults.placement.as_ref()));
         let repos: Vec<String> = pack.repos.iter().map(|r| r.key.clone()).collect();
         let found = canvas_model::vm::repo_for_folder(&pack.repos, folder, self.info.path_style());
         let repo = chosen.vm().map(|v| v.repo.clone()).filter(|r| repos.contains(r)).or(found).or_else(|| repos.first().cloned()).unwrap_or_default();

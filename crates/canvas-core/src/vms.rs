@@ -182,6 +182,40 @@ mod tests {
     }
 
     #[test]
+    fn run_on_defaults_cycle_and_a_vm_boxs_subsession_defaults_to_a_vm_for_its_repository() {
+        use canvas_model::vm::{PackSummary, Placement, RepoSummary, VmPlacement, VmView};
+        let (tx, _sent) = crossbeam_channel::bounded(64);
+        let (_keep, service_rx) = crossbeam_channel::bounded(1);
+        let (app_tx, _events) = crossbeam_channel::unbounded();
+        let mut doc = crate::demo::demo_doc(".");
+        doc.nodes[0].placement = Some(Placement::Vm(Box::new(VmPlacement { repo: "lib".into(), size: Some("M".into()), ..Default::default() })));
+        let (parent, group) = (doc.nodes[0].id.clone(), doc.groups[0].id.clone());
+        let mut app = crate::app::App::new(crate::conn::Conn::detached(tx, service_rx), Arc::new(Service::default()), crate::sync::Opened::detached(doc), false, ".".into(), app_tx, None);
+        assert!(app.vm_choice(None, ".", None).is_none(), "no pack: no Run on");
+        let repos = ["app", "lib"].map(|key| RepoSummary { key: key.into(), default_branch: "main".into(), folders: Vec::new() }).to_vec();
+        app.bus.vm = Some(VmView { pack: PackSummary { repos, sizes: vec!["S".into(), "M".into()], ..Default::default() }, ..Default::default() });
+        let plain = app.vm_choice(None, ".", None).unwrap();
+        assert!(!plain.on_vm, "this machine unless set");
+        app.cycle_run_on();
+        assert!(app.doc.defaults.placement.as_ref().is_some_and(|p| p.is_vm()));
+        assert!(app.vm_choice(None, ".", None).unwrap().on_vm, "the canvas's default");
+        app.cycle_run_on();
+        assert_eq!(app.doc.defaults.placement, None, "back to this machine (unset)");
+        app.settings_group = Some(group.clone());
+        let placements: Vec<Option<Placement>> = (0..3)
+            .map(|_| {
+                app.cycle_run_on();
+                app.doc.group(&group).and_then(|g| g.defaults.as_ref()).and_then(|d| d.placement.clone())
+            })
+            .collect();
+        assert_eq!(placements[0], Some(Placement::Local));
+        assert!(placements[1].as_ref().is_some_and(|p| p.is_vm()));
+        assert_eq!(placements[2], None, "the canvas's again");
+        let sub = app.vm_choice(None, ".", Some(&parent)).unwrap();
+        assert_eq!((sub.on_vm, sub.repo.as_str(), sub.size.as_str()), (true, "lib", "M"), "a VM of its own for its parent's repository");
+    }
+
+    #[test]
     fn a_vm_box_says_its_vms_state_unless_it_simply_runs() {
         use canvas_model::vm::{VmInfo, VmState};
         let at = |state: VmState| VmInfo { state, ..Default::default() };

@@ -1027,6 +1027,20 @@ fn vms_panel() {
     check_sized("vms-panel", &mut app, Sections { cells: true, painted: false }, (130, 40));
 }
 
+/// A group's session defaults with a VM pack: *Run new sessions on* (here
+/// set to a VM for the group; the canvas's stays this machine).
+#[test]
+fn group_defaults_run_on() {
+    let mut doc = canvas_core::demo::demo_doc(CWD);
+    let group = doc.groups[0].id.clone();
+    let mut app = app(doc, false);
+    with_vm_pack(&mut app);
+    app.run(Action::GroupDefaults(group));
+    app.cycle_run_on();
+    app.cycle_run_on();
+    check_sized("group-defaults-run-on", &mut app, Sections { cells: true, painted: false }, (124, 34));
+}
+
 /// A new session in a group that sets its own model: the dialog says so.
 #[test]
 fn new_session_dialog_in_a_group_with_its_own_model() {

@@ -151,6 +151,9 @@ pub enum ItemRef {
     ConfigAgent,
     /// The canvas's agent for new sessions.
     DefaultAgent,
+    /// Where new sessions run by default (only with a VM pack): this
+    /// machine or a VM; a group's may follow the canvas's.
+    RunOn,
     /// Dust and effects settings.
     Visual(crate::visual::VisualSetting),
     /// The value of the row above on a line of its own (shown by its end when long).
@@ -503,6 +506,15 @@ impl App {
                     };
                     rows.push(ListRow::row(ItemRef::Default(field), "›", TEXT, field.label(), shown));
                 }
+                // Where new sessions run (only with a VM pack; this machine unless set).
+                if self.bus.vm.is_some() {
+                    let shown = match defaults.placement.as_ref() {
+                        None if !global => "(canvas default)".to_owned(),
+                        None | Some(canvas_model::vm::Placement::Local) => "this machine".to_owned(),
+                        Some(canvas_model::vm::Placement::Vm(_)) => format!("{} VM", crate::vms::VM_GLYPH),
+                    };
+                    rows.push(ListRow::row(ItemRef::RunOn, "›", TEXT, "Run new sessions on", shown));
+                }
                 // Skill folders every session (here: of the group) gets; a group's add to the canvas's.
                 let skill_dirs = crate::skill_folders::dirs(self, self.settings_group.as_deref());
                 let shown = if skill_dirs.is_empty() { "(none)".to_owned() } else { crate::skills::folders_summary(skill_dirs.len(), None) };
@@ -748,6 +760,7 @@ impl App {
             }
             ItemRef::VsMigrate => self.start_migration(),
             ItemRef::VsUndo => self.undo_last(),
+            ItemRef::RunOn => self.cycle_run_on(),
             ItemRef::IdleStop => {
                 let choices = crate::doc::IDLE_STOP_CHOICES;
                 let next = choices.iter().position(|m| *m == self.doc.idle_stop_minutes).map(|i| (i + 1) % choices.len()).unwrap_or(2);
@@ -814,7 +827,7 @@ impl App {
             ItemRef::SkillOf(key, id) => self.skills_toggle(&key, &id),
             ItemRef::SkillSource(_) | ItemRef::SkillFolders(_) => self.notify("Space switches a skill its agent's CLI manages (PERSONAL): select one.", false),
             ItemRef::SkillFilter => self.cycle_skill_filter(),
-            ItemRef::VsArchived | ItemRef::VsCliSessions | ItemRef::VsAuto | ItemRef::IdleStop | ItemRef::ConfigAgent | ItemRef::DefaultAgent | ItemRef::Visual(_) => self.list_activate(index),
+            ItemRef::VsArchived | ItemRef::VsCliSessions | ItemRef::VsAuto | ItemRef::IdleStop | ItemRef::ConfigAgent | ItemRef::DefaultAgent | ItemRef::RunOn | ItemRef::Visual(_) => self.list_activate(index),
             _ => {}
         }
     }
@@ -945,6 +958,28 @@ impl App {
                 }));
             }
         }
+    }
+
+    /// *Run new sessions on*: this machine → ☁ VM (→ the canvas's, for a
+    /// group) → …; a VM default names no repository (the dialog finds it from
+    /// the folder).
+    pub fn cycle_run_on(&mut self) {
+        use canvas_model::vm::{Placement, VmPlacement};
+        let vm = || Some(Placement::Vm(Box::default() as Box<VmPlacement>));
+        let group = self.settings_group.clone();
+        match group.as_deref().and_then(|g| self.doc.group_mut(g)) {
+            Some(group) => {
+                let mut defaults = group.defaults.clone().unwrap_or_default();
+                defaults.placement = match defaults.placement {
+                    None => Some(Placement::Local),
+                    Some(Placement::Local) => vm(),
+                    Some(Placement::Vm(_)) => None,
+                };
+                group.defaults = (!defaults.is_empty()).then_some(defaults);
+            }
+            None => self.doc.defaults.placement = if self.doc.defaults.placement.as_ref().is_some_and(|p| p.is_vm()) { None } else { vm() },
+        }
+        self.mark_dirty();
     }
 
     pub fn apply_default(&mut self, field: DefaultField, group: Option<String>, value: &str) {

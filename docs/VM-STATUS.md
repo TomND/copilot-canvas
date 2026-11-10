@@ -140,8 +140,11 @@ owner's note that VM sessions are optional and local stays the default.
       or a VM is lost, failed or offline) opens `RightDetail::Vms`: budget, VM boxes (a click shows one's details),
       waiting starts with *Cancel*, sandboxes, images with *Build now*, the newest refusals; a help row; snapshot
       `vms-panel`. Not built: orphans' *Adopt* and the pack's findings (their count shows; `vm pack check` lists them)
-- [ ] VM-41 *Run on* · VM-44 Tasks · VM-47 client exclusions · VM-48 parity rows 57–62 and the self-test step ·
-      VM-49 docs
+- [x] VM-41 *Run on*: the dialog's row (Phase 1: this machine / ☁ VM, the repository from the folder, branch, size)
+      completed with *Run new sessions on* in Settings (canvas: this machine / ☁ VM; a group: also the canvas's) and
+      a subsession of a VM box defaulting to a VM for its parent's repository and size; snapshot
+      `group-defaults-run-on`. Not built: the MCP preset pick (the box's MCP servers go to the guest, VM-38)
+- [ ] VM-44 Tasks · VM-47 client exclusions · VM-48 parity rows 57–62 and the self-test step · VM-49 docs
 - [ ] Exit: parity rows pass, snapshots read, self-test step in both clients
 
 ### 5: hardening
@@ -229,6 +232,9 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   branch is reported whatever its PR), no drain with acknowledgements before the delete (the outbox and history are
   pushed continuously), and a suspended VM is not resumed for the check (its repositories were checked as it was
   suspended). The idle suspend runs in the service (`vm_idle_loop`), not `vm::manager`; there is no `vm::quiesce`.
+- **No shared VMs yet (`VmPlacement::with`)**: the service gives every VM box a sandbox of its own (claiming,
+  suspend, delete and the idle loop all assume one box per sandbox); a subsession of a VM box defaults to a VM of its
+  own for its parent's repository and size (the plan: its parent's sandbox).
 - **A follow-up does not resume a VM**: follow-ups are passive agents', and passive agents do not run on VMs.
 
 ## Log
