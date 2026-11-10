@@ -165,7 +165,7 @@ owner's note that VM sessions are optional and local stays the default.
 - [x] Exit: parity rows pass (Windows `PASS: 80 rows`, macOS, Linux), snapshots read, the self-test's VM step in both
       clients and over loopback (CI run 42895272083)
 
-### 5: hardening
+### 5: hardening (done 2026-11-10; CI run 42913883263 green on every job; merged into main with this file)
 - [x] VM-53 resume on a new VM: a resumed launch after its VM was lost or deleted, or *Start again on a new VM*, puts
       the hub's mirror of the conversation into the new guest (Copilot's session folder; Claude Code's transcript and
       subagents in the project folder of the new clone) and moves the mirror with it; refused, with why, when nothing
@@ -190,7 +190,7 @@ owner's note that VM sessions are optional and local stays the default.
 - [x] VM-57 docs: README (VM sessions: optional, local stays the default; commands), VM-SESSIONS *As built* Phase 5,
       AGENT-PROVIDERS (*Inside a VM*: Claude Code), PARITY *Last run*, this file (every exit, the owner's checklist)
 - [x] Exit: `selftest vm` (with the resume on a new VM, a Claude Code box, S1, S7 and the `--real` dry run) on three
-      OSes (CI); the 20-minute soak passed (below); Claude Code's probe with the stand-in passes; OpenCode refused with
+      OSes (CI run 42913883263: Windows, macOS 102.1 s, Linux 99.0 s); the 20-minute soak passed (below); Claude Code's probe with the stand-in passes; OpenCode refused with
       why. Owner: `selftest vm --real` once per agent (the checklist)
 
 ## The owner's checklist (real Azure; never in CI)
@@ -410,3 +410,5 @@ Then:
 - 2026-11-10: Phase 5: VM-53 resume on a new VM, VM-54 Claude Code, VM-55 OpenCode refused with why, VM-51
   `selftest vm --real` (and its dry run in `selftest vm`), VM-52 the soak, VM-56 shared MCP tested, `vm spike s1`
   and `s7`, the dialog's *VM MCP*; the owner's checklist rewritten in order (S1 first).
+- 2026-11-10: Phase 5 done: CI run 42913883263 green on all 17 jobs (on 015287a; a Windows race in the probe's
+  resume step fixed before it). Merged into main with this file.

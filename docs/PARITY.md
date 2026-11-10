@@ -233,6 +233,13 @@ fixed-size chips) have these checks, on a separate canvas of the sandbox
 
 ## Last run
 
+VM sessions, Phase 5 (2026-11-10, CI run 42913883263 on `vm-sessions`, all 17 jobs): no row changed (Claude
+Code boxes on VMs, OpenCode refused with why, the dialog's *VM MCP* when the pack has presets; snapshot
+`new-session-vm-mcp`). Windows (WARP) `PASS: 80 rows in 333.4s`, the self-test in the TUI, over loopback and in the
+GUI (155.5–179.6 s), `selftest vm` with its `--real` dry run (`PASS: 11 step(s)`); macOS `PASS: 83 rows in
+367.5s`, four self-tests (203.3–209.0 s), `selftest vm` `PASS in 102.1 s`; Linux (X11) `PASS: 80 rows in
+327.1s`, `selftest vm` `PASS in 99.0 s`.
+
 VM sessions, Phase 4 (2026-11-10, branch `vm-sessions`): rows 57–62 added;
 the self-test gained its 47th step (a box *Run on ☁ VM*; 46 over `--remote`).
 On macOS locally: `CANVAS_PARITY_ROWS=57,58,59,60,61,62` `PASS: 6 rows in
