@@ -202,13 +202,17 @@ fn session(args: &[String]) -> Result<()> {
     let disabled: Vec<&str> = args.windows(2).filter(|w| w[0] == "--disable-mcp-server").map(|w| w[1].as_str()).collect();
     // Mouse reports (SGR), as Copilot asks for them.
     write!(out, "\x1b[?1000h\x1b[?1006h")?;
+    let history = FakeHistory::start(args);
     write!(out, "Fake Copilot (canvas parity)\r\n")?;
+    // A resumed conversation says what it found (a resume on a new VM brings it along).
+    if let Some(earlier) = history.as_ref().map(|h| h.earlier).filter(|n| *n > 0) {
+        write!(out, "Resumed with {earlier} earlier events of history\r\n")?;
+    }
     write!(out, "MCP off: {} · {}\r\n\r\n", if disabled.is_empty() { "none".to_owned() } else { disabled.join(",") }, model_line(args))?;
     write!(out, " ❯ {USER_MESSAGE}\r\n   and its second line\r\n\r\n")?;
     write!(out, " ● Fake reply: nothing was sent anywhere.\r\n\r\n")?;
     write!(out, "❯ ")?;
     out.flush()?;
-    let history = FakeHistory::start(args);
     let mut stdin = std::io::stdin().lock();
     let mut buf = [0u8; 4096];
     let mut line = String::new();
@@ -284,6 +288,8 @@ fn hold(args: &[String]) -> Result<()> {
 struct FakeHistory {
     events: std::path::PathBuf,
     lock: std::path::PathBuf,
+    /// Events it had before this run (a resumed session).
+    earlier: usize,
 }
 
 impl Drop for FakeHistory {
@@ -302,10 +308,14 @@ impl FakeHistory {
         let now = canvas_common::paths::rfc3339_now();
         let cwd = std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default();
         let name = args.windows(2).find(|w| w[0] == "--name").map(|w| w[1].clone()).unwrap_or_else(|| "Fake session".into());
-        std::fs::write(dir.join("workspace.yaml"), format!("id: {id}\ncwd: {cwd}\nname: {name}\ncreated_at: {now}\nupdated_at: {now}\n")).ok()?;
+        // A resumed session keeps its history (as Copilot does).
+        let earlier = std::fs::read_to_string(dir.join("events.jsonl")).map(|t| t.lines().count()).unwrap_or(0);
+        if earlier == 0 {
+            std::fs::write(dir.join("workspace.yaml"), format!("id: {id}\ncwd: {cwd}\nname: {name}\ncreated_at: {now}\nupdated_at: {now}\n")).ok()?;
+        }
         let lock = dir.join(format!("inuse.{}.lock", std::process::id()));
         let _ = std::fs::write(&lock, b"");
-        let history = FakeHistory { events: dir.join("events.jsonl"), lock };
+        let history = FakeHistory { events: dir.join("events.jsonl"), lock, earlier };
         history.event("session.start");
         Some(history)
     }

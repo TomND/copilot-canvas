@@ -492,6 +492,9 @@ impl Agents {
         intent.agent = kind.id().to_owned();
         // A first launch, or one after its VM was deleted, failed or lost: the launcher claims a VM.
         if intent.sandbox.is_empty() || matches!(intent.state, VmState::Failed | VmState::Deleted | VmState::Lost) {
+            // Resuming its conversation there: from the hub's mirror of the VM it ran in.
+            let from = if launch.resume && !intent.sandbox.is_empty() { intent.sandbox.clone() } else { intent.resume_from.clone() };
+            (intent.resume_from, intent.resume_session) = if launch.resume { (from, launch.native_id.clone().unwrap_or_else(|| id.to_owned())) } else { Default::default() };
             intent.placement = placement;
             intent.sandbox.clear();
             intent.satellite.clear();

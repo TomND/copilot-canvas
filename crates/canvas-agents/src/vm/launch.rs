@@ -63,6 +63,12 @@ pub struct Intent {
     /// The plugin with the group's skill folders, made on the hub for this box.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub group_plugin: String,
+    /// Resume on a new VM: the sandbox whose mirrored history holds the
+    /// conversation (`resume_session`), put into the new guest at its start.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub resume_from: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub resume_session: String,
 }
 
 fn is_zero(value: &u64) -> bool {

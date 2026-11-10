@@ -47,6 +47,17 @@ fn state_path(home: &Path, sandbox: &str) -> PathBuf {
     mirror_dir(home, sandbox).join("state.json")
 }
 
+/// Drops a mirror's record of the files under `prefix` (they moved to
+/// another sandbox's mirror: a resume on a new VM).
+pub fn forget_files(home: &Path, sandbox: &str, prefix: &str) {
+    let path = state_path(home, sandbox);
+    let Some(mut state) = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<MirrorState>(&b).ok()) else { return };
+    state.files.retain(|name, _| !name.starts_with(prefix));
+    if let Ok(bytes) = serde_json::to_vec(&state) {
+        let _ = crate::paths::write_atomic(&path, &bytes);
+    }
+}
+
 /// Takes in a drain's history pieces: appends that continue the mirror,
 /// whole files replaced, anything else (a name that is not a session's
 /// file, a gap) left for the next drain to send again.
