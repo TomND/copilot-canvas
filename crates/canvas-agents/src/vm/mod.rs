@@ -124,7 +124,8 @@ pub fn request_image(home: &Path, repo: &str) -> anyhow::Result<String> {
 pub fn open_provider(home: &Path, pack: &pack::Pack) -> anyhow::Result<Arc<dyn provider::Provider>> {
     Ok(match pack.provider {
         pack::ProviderKind::Hooks => Arc::new(hooks::HooksProvider { hooks: hooks::Hooks::of(pack) }),
-        pack::ProviderKind::Local => Arc::new(local::Local::new(local_root(home, pack))),
+        // Each local sandbox gets an egress stand-in enforcing its policy; the hub's own host goes direct.
+        pack::ProviderKind::Local => Arc::new(local::Local::new(local_root(home, pack)).with_egress(&egress::hub_host(pack).unwrap_or_default())),
         pack::ProviderKind::Aca => Arc::new(aca::Aca::from_pack(pack)?),
     })
 }

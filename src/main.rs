@@ -582,7 +582,7 @@ fn real_main() -> Result<()> {
     // In a VM session's guest the canvas commands are relayed to the canvas's machine (docs/VM-SESSIONS.md).
     if canvas_agents::vm::lite::mode().is_some()
         && let Some(verb) = args.command.first()
-        && !matches!(verb.as_str(), "satellite" | "vm-hook-standin")
+        && !matches!(verb.as_str(), "satellite" | "vm-hook-standin" | "egress-standin" | "mcp-standin")
     {
         let words: Vec<&str> = args.command.iter().map(String::as_str).collect();
         let options = canvas_agents::todos_cli::options_with_canvas(&words, &args.rest, args.canvas.as_deref());
@@ -838,6 +838,10 @@ fn real_main() -> Result<()> {
         ["vm", "attach"] => canvas_agents::vm::launch::attach(&instance.home, &option("box").context("vm attach needs --box ID")?),
         ["vm-hook-standin", "run", "--", argv @ ..] => canvas_agents::vm::local::standin_run(&option("sandbox").context("--sandbox ID")?, &options("env"), &owned(argv)),
         ["vm-hook-standin", hook] => canvas_agents::vm::local::standin(hook),
+        // A vm::local sandbox's egress point (tests and CI): serves until the sandbox is deleted.
+        ["egress-standin"] => canvas_agents::vm::egress::standin(Path::new(&option("root").context("--root ROOT")?), &option("sandbox").context("--sandbox ID")?, Path::new(&option("port-file").context("--port-file FILE")?)),
+        // A stand-in MCP server on stdio (the VM self-test's hub server).
+        ["mcp-standin"] => canvas_agents::vm::mcp::standin::run(std::io::stdin().lock(), std::io::stdout().lock(), Path::new(&option("log").context("--log PATH")?)),
         ["vm", "pack", "check"] => {
             let status = match canvas_agents::vm::pack::configured(&instance.home) {
                 Some(folder) => canvas_agents::vm::pack::load(&folder).1,

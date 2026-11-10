@@ -663,6 +663,12 @@ fn checks(pack: &mut Pack, findings: &mut Vec<Finding>) {
     for repo in &pack.repos {
         if !repo.egress.is_empty() && !pack.egress.contains_key(&repo.egress) {
             error(findings, "repos.yaml", format!("{}: egress profile {:?} has no egress/{}.yaml", repo.key, repo.egress, repo.egress));
+        } else if !repo.egress.is_empty() {
+            // Rendered as at a claim (a box's values made up): what a claim would refuse, `pack check` says now.
+            let vars = super::egress::Vars { branch: "atelier/check".into(), repo: repo.key.clone(), r#box: "check".into(), sandbox: "check".into(), hub_host: "hub.example.com".into() };
+            if let Err(why) = super::egress::render(pack, &repo.egress, &vars) {
+                error(findings, &format!("egress/{}.yaml", repo.egress), format!("{why:#}"));
+            }
         }
         if repo.image_disk_gi != 0 && pack.sizes.iter().all(|s| s.disk_gi != 0 && s.disk_gi < repo.image_disk_gi) {
             error(findings, "repos.yaml", format!("{}: its image disk is larger than every size's disk", repo.key));

@@ -631,6 +631,17 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     std::fs::write(group_dir.join("ai-docs").join("GOALS.md"), "hub goals, changed here\n")?;
     wait_file("the changed note did not reach the guest", 20, || guest_file("notes/probe-group/ai-docs/GOALS.md").as_deref() == Some("hub goals, changed here\n"))?;
 
+    step("the VM's egress stand-in enforces the box's policy: a host it does not allow is refused and recorded");
+    let port = local.standin_port(&member.id).context("the VM's egress stand-in")?;
+    let mut proxy = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    proxy.set_read_timeout(Some(Duration::from_secs(10)))?;
+    std::io::Write::write_all(&mut proxy, b"GET http://forbidden.example.net/x HTTP/1.1\r\nHost: forbidden.example.net\r\nConnection: close\r\n\r\n")?;
+    let mut answer = String::new();
+    let _ = std::io::Read::read_to_string(&mut proxy, &mut answer);
+    anyhow::ensure!(answer.starts_with("HTTP/1.1 403"), "the stand-in let it through: {}", answer.lines().next().unwrap_or_default());
+    let decisions = canvas_agents::vm::provider::Provider::egress_decisions(&local, &member.id)?;
+    anyhow::ensure!(decisions.iter().any(|d| d.host == "forbidden.example.net" && !d.allowed), "the refusal is recorded: {decisions:?}");
+
     step("the pool is filled again behind the leased VM");
     wait_file("the pool was not filled again", 60, || pool().iter().any(|m| m.id != member.id))?;
 

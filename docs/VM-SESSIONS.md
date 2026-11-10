@@ -166,7 +166,7 @@ Settings: `vm.pack` (a folder path) or `ATELIER_VM_PACK`. Without a pack, VM fea
 |---|---|
 | `vm.yaml` | provider (`aca`), subscription, resource group, sandbox group, region; sizes; pool minimums and max age; image schedule and keep-count; budgets (max running, max cores, daily soft budget); suspend-after; tunnel secret name; git identity |
 | `repos.yaml` | catalog: key → clone URL, default branch, clone mode (`blobless`, `single_branch`, `sparse` patterns), image base, image disk, egress profile, folder globs that map local folders to this key |
-| `egress/*.yaml` | egress policy templates per profile, with placeholders (`{{repo.path}}`, `{{secret:NAME}}`) filled at claim: deny by default, host/path/method rules, transforms that inject secrets |
+| `egress/*.yaml` | egress policy templates per profile, with placeholders (`{{box.branch}}`, `{{box.repo}}`, `{{box.id}}`, `{{sandbox}}`, `{{hub.host}}` in hosts and paths; `{{secret:NAME}}` only in header values) filled at claim: deny by default, host/path/method rules, transforms that inject secrets |
 | `secrets.yaml` | group secrets and how the hub refreshes them: a command whose stdout becomes the value (never logged or written to disk), a key name, an interval. The canvas pipes stdout to the provider's secret API |
 | `mcp-policy.yaml` | the MCP servers guests may use (by the hub's configured server name), process mode (`per_session` default, `shared` opt-in), and default-deny rules over tool + action + argument constraints (with placeholders such as `{{box.branch}}`, `{{box.repo}}`) |
 | `profile.yaml` | allowlist of personal agent-profile paths to bundle (skills, instructions, agents), keys allowed from agent config, and paths always excluded; no credentials ever |

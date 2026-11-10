@@ -251,6 +251,12 @@ fn start(ctx: &Ctx, intent: &Intent) -> Result<Change> {
     if !hooks {
         let repo = ctx.pack.repo(&intent.placement.repo).context("the VM pack has no such repository")?;
         let branch = intent.placement.branch.clone().unwrap_or_else(|| canvas_model::vm::branch_for_session(&intent.r#box));
+        // The box's egress policy, before anything in the guest goes out (its sandbox denied everything until now).
+        if !repo.egress.is_empty() {
+            let vars = super::egress::Vars { branch: branch.clone(), repo: repo.key.clone(), r#box: intent.r#box.clone(), sandbox: intent.sandbox.clone(), hub_host: String::new() };
+            let policy = super::egress::render(ctx.pack, &repo.egress, &vars)?;
+            ctx.provider.set_egress(&intent.sandbox, &policy)?;
+        }
         let argv: Vec<String> = ["atelier", "satellite", "--prepare", "--repo", &repo.key, "--branch", &branch, "--base", &repo.default_branch].map(str::to_owned).to_vec();
         let out = ctx.provider.exec(&intent.sandbox, &argv, b"")?;
         let answer: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
