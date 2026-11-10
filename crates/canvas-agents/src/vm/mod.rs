@@ -23,6 +23,7 @@ pub mod secrets;
 pub mod spike;
 pub mod store;
 pub mod thin;
+pub mod tls;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -107,13 +108,20 @@ pub fn request_image(home: &Path, repo: &str) -> anyhow::Result<String> {
     Ok(format!("The image of {repo} is built next (the VMs view shows its progress)."))
 }
 
-/// The provider of a pack.
-pub fn open_provider(pack: &pack::Pack) -> anyhow::Result<Arc<dyn provider::Provider>> {
-    match pack.provider {
-        pack::ProviderKind::Hooks => Ok(Arc::new(hooks::HooksProvider { hooks: hooks::Hooks::of(pack) })),
-        pack::ProviderKind::Local => anyhow::bail!("the local provider is not wired in yet (docs/VM-STATUS.md, Phase 1)"),
-        pack::ProviderKind::Aca => anyhow::bail!("the aca provider is not wired in yet (docs/VM-STATUS.md, Phase 1)"),
-    }
+/// The provider of a pack for the service in `home`: `local` keeps its
+/// sandboxes in `local.root`, else `<home>/vm/local`; `aca` gets its tokens
+/// from `auth.command` (else the Azure CLI) when a call first needs one.
+pub fn open_provider(home: &Path, pack: &pack::Pack) -> anyhow::Result<Arc<dyn provider::Provider>> {
+    Ok(match pack.provider {
+        pack::ProviderKind::Hooks => Arc::new(hooks::HooksProvider { hooks: hooks::Hooks::of(pack) }),
+        pack::ProviderKind::Local => Arc::new(local::Local::new(local_root(home, pack))),
+        pack::ProviderKind::Aca => Arc::new(aca::Aca::from_pack(pack)?),
+    })
+}
+
+/// Where `vm::local` keeps the sandboxes of the service in `home`.
+pub fn local_root(home: &Path, pack: &pack::Pack) -> PathBuf {
+    pack.local_root.clone().unwrap_or_else(|| home.join("vm").join("local"))
 }
 
 /// `atelier doctor`'s VM lines (none without a pack): (passed, label, detail);
@@ -127,7 +135,8 @@ pub fn doctor_lines(home: &Path) -> Vec<(Option<bool>, &'static str, String)> {
         pack::ProviderKind::Hooks => "hooks",
         pack::ProviderKind::Local => "local",
     };
-    out.push((Some(open_provider(&pack).is_ok()), "VM provider", format!("{provider}{}", open_provider(&pack).err().map(|e| format!(": {e:#}")).unwrap_or_default())));
+    let opened = open_provider(home, &pack);
+    out.push((Some(opened.is_ok()), "VM provider", format!("{provider}{}", opened.err().map(|e| format!(": {e:#}")).unwrap_or_default())));
     for (name, read) in [("sandboxes", store::load_sandboxes(home).err()), ("images", store::load_images(home).err())] {
         if let Some(error) = read {
             out.push((Some(false), "VM store", format!("{name}: {error:#}")));
@@ -175,7 +184,7 @@ pub fn run(home: PathBuf, log: impl Fn(String) + Send + Sync + 'static, wake: im
             continue;
         }
         if opened.as_ref().is_none_or(|(p, _)| *p != pack) {
-            match open_provider(&pack) {
+            match open_provider(&home, &pack) {
                 Ok(provider) => {
                     opened = Some((pack.clone(), provider));
                     refused = None;

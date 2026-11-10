@@ -193,8 +193,9 @@ impl super::provider::Provider for HooksProvider {
         Ok(super::provider::ExecResult { code, stdout, stderr: String::new() })
     }
 
-    fn put_file(&self, id: &str, path: &str, bytes: &[u8]) -> Result<()> {
-        let (code, _) = Hooks::exec(&self.hooks, id, &["atelier".into(), "satellite".into(), "--write-file".into(), path.to_owned()], bytes)?;
+    fn put_file(&self, id: &str, path: &str, bytes: &[u8], mode: u32) -> Result<()> {
+        let argv = ["atelier", "satellite", "--write-file", path, "--mode", &format!("{mode:o}")].map(str::to_owned);
+        let (code, _) = Hooks::exec(&self.hooks, id, &argv, bytes)?;
         anyhow::ensure!(code == 0, "cannot write {path} in the guest (exit code {code})");
         Ok(())
     }

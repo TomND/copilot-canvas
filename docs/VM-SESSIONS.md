@@ -303,3 +303,12 @@ Phase by phase; the details and the log are in [VM-STATUS.md](VM-STATUS.md).
   lost boxes, orphans and builders at start). The guest-side commands `atelier satellite --write-file`,
   `--read-file`, `--clone`, `--prepare` keep the hub's steps free of shells. `atelier vm
   list|pool|images|budget|image build|suspend|resume|delete|cancel|retry` and `doctor`'s VM lines (only with a pack).
+  The providers share one contract: a guest path is relative to the guest user's home or absolute; `put_file`
+  makes the folders and sets the mode (0600 for the credential, 0755 for the satellite, which image builds put at
+  `/opt/atelier/bin/atelier`, first on `PATH` for `aca`'s commands); `get_file` refuses a file larger than asked
+  rather than truncating it. `vm::aca` writes through a staging upload and one `install` command, and learns a
+  sandbox's home once. `vm::local` keeps a sandbox's whole disk in its `home/` (the workspace `~/work/<repo>`),
+  runs this build as the satellite, and runs a box's agent in the sandbox directly until the satellite link
+  (Phase 2). The spikes (`vm spike s2|s3|s4`) run through whichever provider the pack names (S3 uploads the
+  pack's satellite first). `atelier selftest vm` adds the pool lane on `provider: local`: the image built in a
+  builder sandbox, a warm VM leased by a box and prepared on its branch, the pool filled again, the VM deleted.

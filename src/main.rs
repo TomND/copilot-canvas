@@ -786,13 +786,13 @@ fn real_main() -> Result<()> {
             let (pack, status) = canvas_agents::vm::pack::load(&folder);
             anyhow::ensure!(status.errors() == 0, "the VM pack has {} error(s): see `atelier vm pack check`", status.errors());
             let runs = option("runs").map(|r| r.parse::<u32>().context("--runs takes a number")).transpose()?.unwrap_or(5);
-            let result = canvas_agents::vm::spike::run(&pack, name, option("agent").as_deref(), runs, flag("keep"))?;
+            let result = canvas_agents::vm::spike::run(&instance.home, &pack, name, option("agent").as_deref(), runs, flag("keep"))?;
             println!("{result}");
             if result["ok"] != true { std::process::exit(1) }
             Ok(())
         }
         ["satellite"] if option("write-file").is_some() => {
-            println!("{}", canvas_agents::vm::guest::write_file(&option("write-file").unwrap_or_default())?);
+            println!("{}", canvas_agents::vm::guest::write_file(&option("write-file").unwrap_or_default(), option("mode").as_deref())?);
             Ok(())
         }
         ["satellite"] if option("read-file").is_some() => {

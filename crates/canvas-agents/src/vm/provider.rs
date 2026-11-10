@@ -7,11 +7,26 @@
 //!
 //! Secrets cross this boundary only as [`Secret`] (zeroized when dropped,
 //! never printed), and only to `secret_set`.
+//!
+//! What every provider does the same way:
+//! - **guest paths** (`put_file`, `get_file`): a relative path is from the
+//!   guest user's home (`.atelier/satellite.json`), an absolute one is taken
+//!   as it is; `..` and control characters are refused. `vm::local` refuses
+//!   absolute paths outside the sandbox's folder;
+//! - `put_file` makes the folders on the way and leaves the file with
+//!   `mode` (0600 for credentials, 0755 for programs);
+//! - `get_file` of a file larger than `max` is an error, never a truncated read;
+//! - `exec` with `atelier` as the program runs the guest's satellite:
+//!   [`SATELLITE_BIN`] first, else `atelier` on the guest's `PATH`
+//!   (`vm::local` runs the hub's own build, `vm::hooks` leaves it to the hook).
 
 use std::collections::BTreeMap;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+
+/// Where an image build puts the satellite (the pack's Linux build, plan §5.1).
+pub const SATELLITE_BIN: &str = "/opt/atelier/bin/atelier";
 
 /// Labels on a sandbox (`atelier.hub`, `atelier.box`, `atelier.repo`, `atelier.role`).
 pub type Labels = BTreeMap<String, String>;
@@ -149,7 +164,9 @@ pub trait Provider: Send + Sync {
     fn list(&self, labels: &Labels) -> Result<Vec<Sandbox>>;
     /// Runs a command (`argv`, no shell) to its end.
     fn exec(&self, id: &str, argv: &[String], stdin: &[u8]) -> Result<ExecResult>;
-    fn put_file(&self, id: &str, path: &str, bytes: &[u8]) -> Result<()>;
+    /// Writes a file in the guest (a guest path, see the module), with `mode`.
+    fn put_file(&self, id: &str, path: &str, bytes: &[u8], mode: u32) -> Result<()>;
+    /// Reads a file of the guest; one larger than `max` bytes is an error.
     fn get_file(&self, id: &str, path: &str, max: u64) -> Result<Vec<u8>>;
     /// Suspends with memory (the platform's own idle suspend stays off: §5.9 of the plan).
     fn suspend(&self, id: &str) -> Result<()>;

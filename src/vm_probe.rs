@@ -8,6 +8,11 @@
 //! applied on the hub as that box (a todo claimed, a report), commands of
 //! the hub's machine refused in the guest, and a box placed on a VM never
 //! started here by a launch that does not say so.
+//!
+//! Then the pool lane, with a second service whose pack's provider is
+//! `vm::local` itself: the repository's image built in a builder sandbox,
+//! a warm VM kept in the pool, leased by a box and prepared on its branch,
+//! the pool filled again, and the VM deleted.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -32,13 +37,17 @@ fn step(text: &str) {
 pub fn run(exe: &Path) -> Result<()> {
     let root = std::env::temp_dir().join(format!("atelier-vm-probe-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(root.join("sessions"))?;
+    std::fs::create_dir_all(root.join("pool-sessions"))?;
     let instance = Instance::new(Some(format!("vmprobe{}", std::process::id())), Some(root.join("home")), Some(root.join("sessions")))?;
+    let pooled = Instance::new(Some(format!("vmpool{}", std::process::id())), Some(root.join("pool-home")), Some(root.join("pool-sessions")))?;
     let started = Instant::now();
     let result = scenario(exe, &instance, &root);
-    if let Ok(conn) = conn::try_connect(&instance) {
-        let _ = conn.tx.send(ClientMsg::Shutdown);
-        std::thread::sleep(Duration::from_millis(1500));
-    }
+    shut_down(&instance);
+    let result = result.and_then(|()| {
+        let result = pool_scenario(exe, &pooled, &root);
+        shut_down(&pooled);
+        result
+    });
     match &result {
         Ok(()) => {
             println!("PASS in {:.1} s", started.elapsed().as_secs_f32());
@@ -49,9 +58,16 @@ pub fn run(exe: &Path) -> Result<()> {
                 std::thread::sleep(Duration::from_millis(300));
             }
         }
-        Err(_) => eprintln!("artifacts kept in {} (service log: {})", root.display(), instance.log_path().display()),
+        Err(_) => eprintln!("artifacts kept in {} (service logs: {}, {})", root.display(), instance.log_path().display(), pooled.log_path().display()),
     }
     result
+}
+
+fn shut_down(instance: &Instance) {
+    if let Ok(conn) = conn::try_connect(instance) {
+        let _ = conn.tx.send(ClientMsg::Shutdown);
+        std::thread::sleep(Duration::from_millis(1500));
+    }
 }
 
 /// A hard link of this program under another name (a copy where links are not possible).
@@ -193,7 +209,7 @@ fn scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     for spike in [&["vm", "spike", "s2", "--agent", "copilot"][..], &["vm", "spike", "s3"], &["vm", "spike", "s4", "--runs", "2"]] {
         let (ok, out) = cli(exe, spike, &spike_env)?;
         let value: serde_json::Value = serde_json::from_str(out.trim()).with_context(|| format!("{spike:?} printed no JSON: {out}"))?;
-        anyhow::ensure!(ok && value["ok"] == true, "{spike:?}: {out}");
+        anyhow::ensure!(ok && value["ok"] == true && value["provider"] == "hooks", "{spike:?}: {out}");
         anyhow::ensure!(!out.contains(&pack.display().to_string()), "a spike printed the pack's folder");
     }
     anyhow::ensure!(canvas_agents::vm::local::Local::new(root.join("sandboxes")).list().is_empty(), "the spikes left sandboxes behind");
@@ -297,9 +313,9 @@ fn scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     })?;
 
     step("the satellite credential is minted for the VM and written in the guest");
-    let credential = Path::new(&sandbox.cwd).ancestors().nth(2).context("the sandbox folder")?.join("home").join(".atelier").join("satellite.json");
-    let text = std::fs::read_to_string(&credential).with_context(|| format!("no credential at {}", credential.display()))?;
-    anyhow::ensure!(text.contains(&intent_now(instance)?.satellite) && text.contains("\"secret\""), "the guest's credential: {}", credential.display());
+    let credential = canvas_agents::vm::provider::Provider::get_file(&local, &intent.sandbox, ".atelier/satellite.json", 64 << 10).context("no credential in the guest")?;
+    let text = String::from_utf8_lossy(&credential);
+    anyhow::ensure!(text.contains(&intent_now(instance)?.satellite) && text.contains("\"secret\""), "the guest's credential is not this VM's");
 
     step("a budget of one running VM queues a second VM box and says why; suspending the first starts it");
     let second = node(SECOND, "Second VM box")?;
@@ -365,4 +381,126 @@ fn scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
 /// The first box's intent as it is now.
 fn intent_now(instance: &Instance) -> Result<canvas_agents::vm::launch::Intent> {
     canvas_agents::vm::launch::load(&instance.home, BOX)?.context("the launch's intent")
+}
+
+/// The pool lane's pack: `provider: local`, one warm VM of the repository.
+fn write_pool_pack(root: &Path, url: &Path) -> Result<PathBuf> {
+    let pack = root.join("pool-pack");
+    std::fs::create_dir_all(pack.join("egress"))?;
+    let json = |p: &Path| serde_json::to_string(&p.display().to_string());
+    std::fs::write(
+        pack.join("vm.yaml"),
+        format!(
+            "pack_version: 1\nname: probe-pool\nprovider: local\npolicy_ack: \"2026-11-09\"\npoll_seconds: 1\nbudget:\n  max_running: 1\nsizes:\n  - name: S\n    cpu: 1000m\n    memory: 2048Mi\n    disk: 20Gi\npool:\n  min:\n    probe-app: 1\nimages:\n  keep: 2\nlocal:\n  root: {}\n",
+            json(&root.join("pool-sandboxes"))?
+        ),
+    )?;
+    std::fs::write(pack.join("repos.yaml"), format!("repos:\n  probe-app:\n    url: {}\n    default_branch: main\n    egress: probe\n", json(url)?))?;
+    std::fs::write(pack.join("egress").join("probe.yaml"), "default: deny\nrules:\n  - host: example.com\n    action: allow\n")?;
+    Ok(pack)
+}
+
+fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
+    use canvas_agents::vm::provider::Provider;
+    use canvas_agents::vm::store::{self, Role};
+    println!("The pool lane on vm::local: an image built, a warm VM leased and prepared on the box's branch");
+    let bare = root.join("repo.git");
+    if !bare.is_dir() {
+        step("skipped: git is not installed");
+        return Ok(());
+    }
+    let pack = write_pool_pack(root, &bare)?;
+    let local = canvas_agents::vm::local::Local::new(root.join("pool-sandboxes"));
+    let copilot = root.join("fake-cli").join(canvas_sys::host::exe_name("copilot"));
+    let work = root.join("work");
+    let home = &instance.home;
+    let hub_env: Vec<(String, String)> = vec![("ATELIER_HOME".into(), home.display().to_string()), ("ATELIER_VM_PACK".into(), pack.display().to_string())];
+    let (ok, out) = cli(exe, &["vm", "pack", "check"], &hub_env)?;
+    anyhow::ensure!(ok && out.contains("The pack is usable."), "pack check: {out}");
+
+    step("the spikes through the local provider (s2, s3, s4): sandboxes made, run in and deleted");
+    let spike_env: Vec<(String, String)> = hub_env.iter().cloned().chain([("ATELIER_COPILOT".to_owned(), copilot.display().to_string()), (crate::fake_copilot::ENV.to_owned(), "1".to_owned())]).collect();
+    for spike in [&["vm", "spike", "s2", "--agent", "copilot"][..], &["vm", "spike", "s3"], &["vm", "spike", "s4", "--runs", "2"]] {
+        let (ok, out) = cli(exe, spike, &spike_env)?;
+        let value: serde_json::Value = serde_json::from_str(out.trim()).with_context(|| format!("{spike:?} printed no JSON: {out}"))?;
+        anyhow::ensure!(ok && value["ok"] == true && value["provider"] == "local", "{spike:?}: {out}");
+    }
+    anyhow::ensure!(local.list().is_empty(), "the spikes left sandboxes behind");
+
+    let copilot_home = root.join("pool-hub-copilot");
+    std::fs::create_dir_all(&copilot_home)?;
+    let env = [
+        ("ATELIER_VM_PACK", pack.display().to_string()),
+        ("ATELIER_COPILOT", copilot.display().to_string()),
+        (crate::fake_copilot::ENV, "1".into()),
+        ("COPILOT_HOME", copilot_home.display().to_string()),
+        ("ATELIER_SELFTEST", "1".into()),
+    ];
+    let env_refs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    conn::spawn_service_exe(exe, instance, &env_refs)?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let conn = loop {
+        match conn::try_connect(instance) {
+            Ok(conn) => break conn,
+            Err(error) if Instant::now() > deadline => bail!("the service did not start: {error:#}"),
+            Err(_) => std::thread::sleep(Duration::from_millis(200)),
+        }
+    };
+    let mut watch = Watch { conn, view: TermView::default(), second: TermView::default(), activities: Vec::new(), errors: Vec::new(), doc: None };
+
+    step("the manager builds the repository's image in a builder VM and keeps a warm VM in the pool");
+    let ready = || store::load_images(home).map(|f| f.images.into_iter().filter(|i| i.repo == "probe-app" && i.state == "ready").collect::<Vec<_>>()).unwrap_or_default();
+    let pool = || store::load_sandboxes(home).map(|f| f.sandboxes.into_iter().filter(|s| s.role == Role::Pool).collect::<Vec<_>>()).unwrap_or_default();
+    wait_file("the image was not built", 60, || !ready().is_empty())?;
+    let image = ready().remove(0);
+    let built = root.join("pool-sandboxes").join("images").join(&image.id).join("probe-app");
+    anyhow::ensure!(built.join(".git").exists() && built.join("README.md").is_file(), "the image has no clone of the repository: {}", built.display());
+    wait_file("the pool was not filled", 60, || pool().iter().any(|m| m.suspended && m.image == image.id))?;
+    let member = pool().remove(0);
+    let ids = |l: &canvas_agents::vm::local::Local| l.list().into_iter().map(|s| s.id).collect::<Vec<_>>();
+    anyhow::ensure!(ids(&local) == [member.id.clone()], "the builder is gone and only the warm VM is left: {:?}", ids(&local));
+    let (ok, out) = cli(exe, &["vm", "pool"], &hub_env)?;
+    anyhow::ensure!(ok && out.contains(&member.id), "vm pool: {out}");
+    let (ok, out) = cli(exe, &["vm", "images"], &hub_env)?;
+    anyhow::ensure!(ok && out.contains("ready") && out.contains(&image.id), "vm images: {out}");
+
+    step("a VM box leases the warm VM: resumed, its branch prepared, the agent in its terminal");
+    let routing = serde_json::json!({ "canvas": CANVAS, "groups": [], "members": {}, "passive": [], "no_messages": [], "names": { BOX: "Pooled box" }, "agents": { BOX: "copilot" } });
+    watch.conn.tx.send(ClientMsg::Routing { json: routing.to_string() })?;
+    let mut node: canvas_model::doc::Node = serde_json::from_value(serde_json::json!({ "id": BOX, "kind": "session", "name": "Pooled box", "x": 0, "y": 0, "agent": "copilot", "fresh": true }))?;
+    node.placement = Some(canvas_model::vm::Placement::Vm(Box::new(canvas_model::vm::VmPlacement { repo: "probe-app".into(), branch: Some("atelier/pool".into()), ..Default::default() })));
+    node.cwd = Some(work.display().to_string());
+    let launch = canvas_model::launch::agent_launch(&node, &Default::default(), None, None, None, false);
+    watch.conn.tx.send(ClientMsg::Subscribe8 { ids: vec![BOX.into()], focused: Some(BOX.into()) })?;
+    watch.conn.tx.send(ClientMsg::Launch { id: BOX.into(), kind: LaunchKind::Agent(Box::new(launch)), cwd: work.display().to_string(), cols: 100, rows: 30 })?;
+    anyhow::ensure!(
+        watch.pump(Instant::now() + Duration::from_secs(30), |w| w.screen().contains("Fake Copilot")),
+        "the agent did not start in the leased VM; errors {:?}; screen:\n{}",
+        watch.errors,
+        watch.screen()
+    );
+    let intent = intent_now(instance)?;
+    anyhow::ensure!(intent.sandbox == member.id, "the box leased the warm VM {} (it got {:?})", member.id, intent.sandbox);
+    anyhow::ensure!(!local.get(&member.id)?.suspended, "the leased VM was resumed");
+    let head = Command::new("git").args(["rev-parse", "--abbrev-ref", "HEAD"]).current_dir(&intent.cwd).output()?;
+    anyhow::ensure!(String::from_utf8_lossy(&head.stdout).trim() == "atelier/pool", "the workspace {} is on the box's branch", intent.cwd);
+    let credential = local.get_file(&intent.sandbox, ".atelier/satellite.json", 64 << 10).context("no credential in the guest")?;
+    anyhow::ensure!(String::from_utf8_lossy(&credential).contains(&intent.satellite), "the guest's credential is not this VM's");
+    let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
+    anyhow::ensure!(log.contains(&format!("leased pool member {}", member.id)), "the service log tells the lease");
+
+    step("the pool is filled again behind the leased VM");
+    wait_file("the pool was not filled again", 60, || pool().iter().any(|m| m.id != member.id))?;
+
+    step("deleting the VM: its sandbox and the agent go, its credential is revoked");
+    let (ok, out) = cli(exe, &["vm", "delete", BOX, "--yes"], &hub_env)?;
+    anyhow::ensure!(ok, "vm delete: {out}");
+    let revoked = || matches!(store::Satellites::new(home).credential(&intent.satellite), canvas_common::handshake::Credential::Revoked(_));
+    wait_file("the VM was not deleted and its credential revoked", 20, || local.get(&member.id).is_err() && revoked())?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !std::fs::read_to_string(instance.log_path()).unwrap_or_default().contains(&format!("terminal {BOX} exited")) {
+        anyhow::ensure!(Instant::now() < deadline, "the box's terminal did not end with its VM");
+        watch.pump(Instant::now() + Duration::from_millis(200), |_| false);
+    }
+    Ok(())
 }

@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 use super::provider::*;
 
@@ -123,15 +123,17 @@ impl Provider for FakeProvider {
         Ok(ExecResult { code: 0, stdout, stderr: String::new() })
     }
 
-    fn put_file(&self, id: &str, path: &str, bytes: &[u8]) -> Result<()> {
+    fn put_file(&self, id: &str, path: &str, bytes: &[u8], _mode: u32) -> Result<()> {
         self.call(format!("put_file {id} {path}"))?;
         self.with(id, |s| {
             s.2.insert(path.into(), bytes.to_vec());
         })
     }
 
-    fn get_file(&self, id: &str, path: &str, _max: u64) -> Result<Vec<u8>> {
-        self.with(id, |s| s.2.get(path).cloned().unwrap_or_default())
+    fn get_file(&self, id: &str, path: &str, max: u64) -> Result<Vec<u8>> {
+        let bytes = self.with(id, |s| s.2.get(path).cloned())?.with_context(|| format!("no {path} in {id}"))?;
+        anyhow::ensure!(bytes.len() as u64 <= max, "{path} in {id} is larger than {max} bytes");
+        Ok(bytes)
     }
 
     fn suspend(&self, id: &str) -> Result<()> {

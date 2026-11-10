@@ -142,6 +142,9 @@ pub fn guest_env(id: &str, kind: AgentKind) -> Vec<(String, String)> {
 /// `atelier vm attach --box ID`: the terminal of a VM box. The service's
 /// launcher claims and prepares its VM (this shows each step); then the
 /// pack's `shell-command` hook's command runs here: the agent in the guest.
+/// With `provider: local` (tests and CI) the agent runs in the sandbox
+/// directly, as one of its processes, until the satellite link (Phase 2)
+/// carries every provider's terminals.
 pub fn attach(home: &Path, id: &str) -> Result<()> {
     use std::io::Write;
     let folder = super::pack::configured(home).context("no VM pack is configured: VM sessions are off")?;
@@ -175,13 +178,16 @@ pub fn attach(home: &Path, id: &str) -> Result<()> {
         anyhow::ensure!(std::time::Instant::now() < deadline, "the VM did not start within 30 minutes");
         std::thread::sleep(std::time::Duration::from_millis(250));
     };
-    anyhow::ensure!(hooks.has("shell-command"), "the VM pack has no shell-command hook: this VM's terminal comes with the satellite link");
-    say(&format!("Joining the VM ({})…", intent.sandbox));
-    let answer = hooks.call("shell-command", &serde_json::json!({ "sandbox": intent.sandbox, "box": intent.r#box, "argv": intent.argv, "env": intent.env.iter().cloned().collect::<std::collections::BTreeMap<_, _>>(), "cwd": intent.cwd }))?;
-    let argv: Vec<String> = answer["argv"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
-    anyhow::ensure!(!argv.is_empty(), "the shell-command hook gave no command");
-    let mut cmd = std::process::Command::new(&argv[0]);
-    cmd.args(&argv[1..]);
+    let mut cmd = if pack.provider == super::pack::ProviderKind::Local {
+        say(&format!("Joining the VM ({})…", intent.sandbox));
+        let local = super::local::Local::new(super::local_root(home, &pack));
+        let cmd = local.command(&intent.sandbox, &intent.argv, Some(intent.cwd.as_str()).filter(|c| !c.is_empty()), &intent.env)?;
+        // This process (and so the agent it becomes or starts) is the sandbox's: suspend and delete reach it.
+        local.track(&intent.sandbox, std::process::id())?;
+        cmd
+    } else {
+        shell_command(&hooks, &intent, &say)?
+    };
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -193,6 +199,18 @@ pub fn attach(home: &Path, id: &str) -> Result<()> {
         let status = cmd.status().context("cannot start the shell into the VM")?;
         std::process::exit(status.code().unwrap_or(1));
     }
+}
+
+/// The pack's `shell-command` hook's command into the VM of `intent`.
+fn shell_command(hooks: &super::hooks::Hooks, intent: &Intent, say: &dyn Fn(&str)) -> Result<std::process::Command> {
+    anyhow::ensure!(hooks.has("shell-command"), "the VM pack has no shell-command hook: this VM's terminal comes with the satellite link");
+    say(&format!("Joining the VM ({})…", intent.sandbox));
+    let answer = hooks.call("shell-command", &serde_json::json!({ "sandbox": intent.sandbox, "box": intent.r#box, "argv": intent.argv, "env": intent.env.iter().cloned().collect::<std::collections::BTreeMap<_, _>>(), "cwd": intent.cwd }))?;
+    let argv: Vec<String> = answer["argv"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+    anyhow::ensure!(!argv.is_empty(), "the shell-command hook gave no command");
+    let mut cmd = std::process::Command::new(&argv[0]);
+    cmd.args(&argv[1..]);
+    Ok(cmd)
 }
 
 #[cfg(test)]

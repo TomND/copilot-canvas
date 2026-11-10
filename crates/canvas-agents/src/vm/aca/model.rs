@@ -30,6 +30,30 @@ pub fn guest_path(path: &str) -> Result<&str> {
     Ok(path)
 }
 
+/// A guest path relative to the guest user's home (the provider contract):
+/// not empty, no `..` components, no control characters, not `/…`.
+pub fn relative_path(path: &str) -> Result<&str> {
+    let ok = !path.is_empty() && !path.starts_with('/') && path.len() <= 4096 && !path.split('/').any(|c| c == "..") && path.split('/').any(|c| !c.is_empty() && c != ".") && !path.chars().any(char::is_control);
+    ensure!(ok, "{path:?} is not a guest path (relative to the home or /…, no .. and no control characters)");
+    Ok(path)
+}
+
+/// `path` (a guest path) as shell text: absolute as it is, relative from `$HOME`.
+pub fn shell_path(path: &str) -> Result<String> {
+    Ok(if path.starts_with('/') { quote(guest_path(path)?) } else { format!("\"$HOME\"/{}", quote(relative_path(path)?)) })
+}
+
+/// The shell text that puts the uploaded file `staged` at `dest` with
+/// `mode` (the folders on the way made) and removes the upload either way.
+pub fn install_command(staged: &str, dest: &str, mode: u32) -> Result<String> {
+    ensure!(mode <= 0o7777, "{mode:o} is not a file mode");
+    let staged = quote(guest_path(staged)?);
+    Ok(format!("install -D -m {mode:04o} -- {staged} {}; code=$?; rm -f -- {staged}; exit $code", shell_path(dest)?))
+}
+
+/// The shell text printing the guest user's home.
+pub const HOME_COMMAND: &str = "printf %s \"$HOME\"";
+
 /// Labels on a sandbox or in a filter: keys and values without control
 /// characters, and without `,` and `=` (the filter's separators).
 pub fn check_labels(labels: &Labels) -> Result<()> {
@@ -68,6 +92,13 @@ pub fn shell_command(argv: &[String], stdin: Stdin) -> Result<String> {
     ensure!(!argv.is_empty(), "no command to run");
     ensure!(argv.iter().all(|a| !a.contains('\0')), "a command word contains NUL");
     let words = argv.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ");
+    // `atelier` is the satellite: the one an image build installed first.
+    let words = if argv[0] == "atelier" {
+        let dir = crate::vm::provider::SATELLITE_BIN.rsplit_once('/').map_or("", |(dir, _)| dir);
+        format!("PATH={}:\"$PATH\"; export PATH; {words}", quote(dir))
+    } else {
+        words
+    };
     Ok(match stdin {
         Stdin::None => format!("{words} < /dev/null"),
         Stdin::Inline(bytes) => {
@@ -328,6 +359,37 @@ mod tests {
         assert!(shell_command(&[], Stdin::None).is_err());
         assert!(shell_command(&["a\0b".into()], Stdin::None).is_err());
         assert!(shell_command(&argv, Stdin::File("relative")).is_err());
+        let satellite: Vec<String> = ["atelier", "satellite", "--prepare"].map(String::from).to_vec();
+        assert_eq!(shell_command(&satellite, Stdin::None).unwrap(), "PATH='/opt/atelier/bin':\"$PATH\"; export PATH; 'atelier' 'satellite' '--prepare' < /dev/null");
+    }
+
+    #[test]
+    fn guest_paths_are_absolute_or_from_the_home() {
+        assert_eq!(shell_path("/opt/atelier/bin/atelier").unwrap(), "'/opt/atelier/bin/atelier'");
+        assert_eq!(shell_path(".atelier/satellite.json").unwrap(), "\"$HOME\"/'.atelier/satellite.json'");
+        assert_eq!(shell_path("it's/$(x)").unwrap(), r#""$HOME"/'it'\''s/$(x)'"#);
+        for bad in ["", ".", "./", "../x", "a/../../b", "a\nb", "/a/../b"] {
+            assert!(shell_path(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(install_command("/tmp/up", ".atelier/satellite.json", 0o600).unwrap(), "install -D -m 0600 -- '/tmp/up' \"$HOME\"/'.atelier/satellite.json'; code=$?; rm -f -- '/tmp/up'; exit $code");
+        assert!(install_command("/tmp/up", "x", 0o17777).is_err() && install_command("up", "x", 0o600).is_err());
+        #[cfg(unix)]
+        {
+            // The text works in a real shell: folders made, the mode set, the upload gone.
+            use std::os::unix::fs::PermissionsExt;
+            let home = std::env::temp_dir().join(format!("atelier-aca-install-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&home).unwrap();
+            let staged = home.join("staged");
+            std::fs::write(&staged, b"payload").unwrap();
+            let command = install_command(&staged.display().to_string(), "a b/c.json", 0o640).unwrap();
+            let out = std::process::Command::new("/bin/sh").args(["-c", &command]).env("HOME", &home).output().unwrap();
+            if out.status.success() {
+                assert_eq!(std::fs::read(home.join("a b/c.json")).unwrap(), b"payload");
+                assert_eq!(std::fs::metadata(home.join("a b/c.json")).unwrap().permissions().mode() & 0o777, 0o640);
+                assert!(!staged.exists());
+            }
+            let _ = std::fs::remove_dir_all(home);
+        }
     }
 
     #[test]

@@ -1,8 +1,10 @@
 //! `vm::local`: sandboxes as folders and local processes, for tests and CI
 //! (never a real VM). Each sandbox is `<root>/sandboxes/<id>/` with its own
 //! `home` (`HOME`, `ATELIER_HOME`, `COPILOT_HOME`, … all point inside it, so
-//! nothing reaches the real user's folders) and `work/<repo>` (a clone when
-//! the repository's URL is a local repository, else an empty folder).
+//! nothing reaches the real user's folders), the guest's whole disk, with
+//! the workspace `home/work/<repo>` where the guest clones (`guest::workspace`;
+//! the stand-in's claim clones there when the repository's URL is a local
+//! repository, else makes an empty folder).
 //!
 //! [`Local`] is a complete [`Provider`] on Windows, macOS and Linux:
 //! - `state.json` holds the record: labels, `Running` or `Suspended`;
@@ -13,11 +15,11 @@
 //!   `canvas_sys::process::suspend_tree` (as a memory suspend stops a VM),
 //!   resume thaws them, delete ends them and then removes the folder; a pid
 //!   is checked against its start time before every signal;
-//! - the guest's disk for `put_file`/`get_file` is the sandbox's `home/` and
-//!   `work/` (paths relative to the sandbox folder, or absolute inside it;
-//!   anything else and links leading out are refused);
-//! - images are folders `<root>/images/<id>/` (with `<id>.json` beside),
-//!   copied into `work/` when a sandbox is made from one;
+//! - the guest's disk for `put_file`/`get_file` is the sandbox's `home/`
+//!   (relative paths are from it, as from a guest's home; absolute paths
+//!   must be inside it; anything else and links leading out are refused);
+//! - images are folders `<root>/images/<id>/` (with `<id>.json` beside) of
+//!   a workspace, copied into `home/work/` when a sandbox is made from one;
 //! - the egress policy is `egress.json` and the egress stand-in's decisions
 //!   `egress-decisions.jsonl`, in the sandbox folder but outside its disk;
 //! - secrets are `<root>/secrets/<name>.json` (owner-only), never under a
@@ -180,6 +182,11 @@ fn copy_tree(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The workspace of the sandbox in `dir`: `~/work` of its guest.
+fn workspace(dir: &Path) -> PathBuf {
+    dir.join("home").join("work")
+}
+
 fn read_processes(dir: &Path) -> Vec<Proc> {
     std::fs::read(dir.join("processes.json")).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
 }
@@ -308,10 +315,10 @@ impl Local {
         anyhow::ensure!(canvas_model::vm::sync_name_ok(repo) && !repo.contains('/'), "not a repository key: {repo:?}");
         let id = new_id("sbx");
         let dir = self.root.join("sandboxes").join(&id);
-        for sub in ["home/.atelier", "home/.copilot", "work"] {
+        for sub in ["home/.atelier", "home/.copilot", "home/work"] {
             std::fs::create_dir_all(dir.join(sub))?;
         }
-        let work = dir.join("work").join(repo);
+        let work = workspace(&dir).join(repo);
         let local_repo = !url.contains("://") && Path::new(url).exists();
         if local_repo {
             let git = |args: &[&str], cwd: &Path| -> Result<bool> {
@@ -481,18 +488,18 @@ impl Local {
         Ok((out.status.code().unwrap_or(-1) as i64, out.stdout, String::from_utf8_lossy(&out.stderr).into_owned()))
     }
 
-    /// The file `path` names on the sandbox's disk, its `home/` and `work/`:
-    /// relative to the sandbox folder (`home/.atelier/x`) or absolute inside
-    /// it. `..`, other absolute paths, the sandbox's own files and links
-    /// leading out of `home/` or `work/` are refused. `create` makes the
-    /// missing folders on the way, never through a link.
+    /// The file `path` names on the sandbox's disk, its `home/` (the
+    /// guest's home): relative to it (`.atelier/x`) or absolute inside it.
+    /// `..`, other absolute paths and links leading out of `home/` are
+    /// refused, so the sandbox's own files are out of reach. `create` makes
+    /// the missing folders on the way, never through a link.
     fn guest_file(&self, id: &str, path: &str, create: bool) -> Result<PathBuf> {
-        let dir = self.dir(id)?;
-        let refused = || anyhow!("{path:?} is outside the sandbox's disk (its home/ and work/)");
+        let home = self.dir(id)?.join("home");
+        let refused = || anyhow!("{path:?} is outside the sandbox's disk (its home)");
+        let base = home.canonicalize()?;
         let given = Path::new(path);
         let relative = if given.has_root() || given.is_absolute() {
-            let canonical = dir.canonicalize()?;
-            given.strip_prefix(&dir).or_else(|_| given.strip_prefix(&canonical)).map_err(|_| refused())?
+            given.strip_prefix(&home).or_else(|_| given.strip_prefix(&base)).map_err(|_| refused())?
         } else {
             given
         };
@@ -504,11 +511,7 @@ impl Local {
                 _ => return Err(refused()),
             }
         }
-        if parts.len() < 2 || (parts[0] != "home" && parts[0] != "work") {
-            return Err(refused());
-        }
-        let base = dir.join(parts[0]).canonicalize()?;
-        let (name, folders) = parts[1..].split_last().context("no file name")?;
+        let (name, folders) = parts.split_last().ok_or_else(refused)?;
         let mut at = base.clone();
         for part in folders {
             let next = at.join(part);
@@ -608,10 +611,10 @@ impl Provider for Local {
         let id = new_id("sbx");
         let dir = self.root.join("sandboxes").join(&id);
         let made = (|| -> Result<provider::Sandbox> {
-            for sub in ["home/.atelier", "home/.copilot", "work"] {
+            for sub in ["home/.atelier", "home/.copilot", "home/work"] {
                 std::fs::create_dir_all(dir.join(sub))?;
             }
-            let work = dir.join("work");
+            let work = workspace(&dir);
             if let Some(image) = &image {
                 copy_tree(image, &work)?;
             }
@@ -661,11 +664,12 @@ impl Provider for Local {
         Ok(ExecResult { code, stdout, stderr })
     }
 
-    /// Writes an owner-only file (0600 on Unix) on the sandbox's disk.
-    fn put_file(&self, id: &str, path: &str, bytes: &[u8]) -> Result<()> {
+    /// Writes a file on the sandbox's disk: owner-only from the start, then
+    /// with `mode` (Unix).
+    fn put_file(&self, id: &str, path: &str, bytes: &[u8], mode: u32) -> Result<()> {
         self.before("put_file")?;
         let file = self.guest_file(id, path, true)?;
-        canvas_sys::fs::write_private(&file, bytes).with_context(|| format!("cannot write {path:?} in sandbox {id}"))
+        super::guest::write_with_mode(&file, bytes, mode).with_context(|| format!("cannot write {path:?} in sandbox {id}"))
     }
 
     /// Reads a file of the sandbox's disk; one larger than `max` is an error.
@@ -761,10 +765,10 @@ impl Provider for Local {
         self.new_image(name, (folder.is_absolute() && folder.is_dir()).then_some(folder))
     }
 
-    /// An image of the sandbox's `work/`.
+    /// An image of the sandbox's workspace (`home/work/`).
     fn image_commit(&self, id: &str, name: &str) -> Result<ImageRef> {
         self.before("image_commit")?;
-        let work = self.dir(id)?.join("work");
+        let work = workspace(&self.dir(id)?);
         self.new_image(name, Some(&work))
     }
 
@@ -1112,7 +1116,7 @@ mod tests {
         assert!(text.contains("env:GREETING=hello"), "the sandbox's plain environment: {text}");
         let dir = root.join("sandboxes").join(&sandbox.id).canonicalize().unwrap();
         let line = |prefix: &str| text.lines().find_map(|l| l.strip_prefix(prefix)).map(|v| PathBuf::from(v.trim_end()).canonicalize().unwrap()).unwrap();
-        assert_eq!(line("cwd="), dir.join("work"));
+        assert_eq!(line("cwd="), dir.join("home").join("work"));
         assert_eq!(line("env:HOME="), dir.join("home"), "the sandbox's home wins over its plain environment");
         assert!(local.processes(&sandbox.id).unwrap().is_empty(), "a command run to its end leaves nothing running");
         let none = provider.exec(&sandbox.id, &["atelier-no-such-program".to_owned()], b"");
@@ -1209,45 +1213,51 @@ mod tests {
         let sandbox = provider.create(&SandboxSpec::default()).unwrap();
         let id = sandbox.id.as_str();
         let dir = root.join("sandboxes").join(id);
-        provider.put_file(id, "home/.atelier/satellite.json", b"{}").unwrap();
-        assert_eq!(provider.get_file(id, "home/.atelier/satellite.json", 2).unwrap(), b"{}");
+        let home = dir.join("home");
+        // Relative paths are from the guest's home; files are owner-only unless asked.
+        provider.put_file(id, ".atelier/satellite.json", b"{}", 0o600).unwrap();
+        assert_eq!(provider.get_file(id, ".atelier/satellite.json", 2).unwrap(), b"{}");
+        provider.put_file(id, ".local/bin/tool", b"#!/bin/sh\n", 0o755).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(std::fs::metadata(dir.join("home/.atelier/satellite.json")).unwrap().permissions().mode() & 0o777, 0o600, "owner-only");
+            let mode = |p: &str| std::fs::metadata(home.join(p)).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(".atelier/satellite.json"), 0o600, "owner-only");
+            assert_eq!(mode(".local/bin/tool"), 0o755, "a program");
         }
-        provider.put_file(id, "work/a/b/c.txt", b"deep").unwrap();
-        let inside = dir.join("work").join("a").join("b").join("c.txt");
+        provider.put_file(id, "work/a/b/c.txt", b"deep", 0o600).unwrap();
+        let inside = home.join("work").join("a").join("b").join("c.txt");
         assert_eq!(std::fs::read(&inside).unwrap(), b"deep", "the folders on the way are made");
-        assert_eq!(provider.get_file(id, &inside.display().to_string(), 100).unwrap(), b"deep", "an absolute path inside the sandbox");
+        assert_eq!(provider.get_file(id, &inside.display().to_string(), 100).unwrap(), b"deep", "an absolute path inside the sandbox's home");
         assert!(provider.get_file(id, "work/a/b/c.txt", 3).unwrap_err().to_string().contains("larger than 3 bytes"));
         assert!(provider.get_file(id, "work/missing.txt", 100).is_err());
 
         let outside = root.join("outside");
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("host.txt"), b"host").unwrap();
-        let absolute_outside = outside.join("x.txt").display().to_string();
-        for path in ["../x.txt", "home/../../x.txt", "work/../../../outside/x.txt", "state.json", "processes.json", "egress.json", "x.txt", "home", "", absolute_outside.as_str()] {
-            assert!(provider.put_file(id, path, b"x").is_err(), "put {path:?}");
+        let absolute = |p: &Path| p.display().to_string();
+        let refused = [absolute(&outside.join("x.txt")), absolute(&dir.join("state.json")), absolute(&dir.join("egress.json")), absolute(&home), absolute(&dir.join("x.txt"))];
+        for path in ["../x.txt", "work/../../x.txt", "work/../../../outside/x.txt", "", "."].into_iter().chain(refused.iter().map(String::as_str)) {
+            assert!(provider.put_file(id, path, b"x", 0o600).is_err(), "put {path:?}");
             assert!(provider.get_file(id, path, 100).is_err(), "get {path:?}");
         }
         assert!(provider.get_file(id, &outside.join("host.txt").display().to_string(), 100).is_err());
-        assert!(!outside.join("x.txt").exists() && !root.join("x.txt").exists() && !root.join("sandboxes").join("x.txt").exists());
+        assert!(!outside.join("x.txt").exists() && !root.join("x.txt").exists() && !dir.join("x.txt").exists());
 
         // Links leading out are refused, as folders on the way and as the file itself.
-        if link(&outside, &dir.join("work").join("out")) {
-            assert!(provider.put_file(id, "work/out/x.txt", b"x").is_err());
-            assert!(provider.put_file(id, "work/out/new/x.txt", b"x").is_err());
+        if link(&outside, &home.join("work").join("out")) {
+            assert!(provider.put_file(id, "work/out/x.txt", b"x", 0o600).is_err());
+            assert!(provider.put_file(id, "work/out/new/x.txt", b"x", 0o600).is_err());
             assert!(provider.get_file(id, "work/out/host.txt", 100).is_err());
-            assert!(link(&outside.join("host.txt"), &dir.join("work").join("leak.txt")));
+            assert!(link(&outside.join("host.txt"), &home.join("work").join("leak.txt")));
             assert!(provider.get_file(id, "work/leak.txt", 100).is_err());
-            assert!(provider.put_file(id, "work/leak.txt", b"overwritten").is_err());
+            assert!(provider.put_file(id, "work/leak.txt", b"overwritten", 0o600).is_err());
             assert!(!outside.join("x.txt").exists() && !outside.join("new").exists());
             assert_eq!(std::fs::read(outside.join("host.txt")).unwrap(), b"host");
             // A link that stays inside is followed.
-            assert!(link(&dir.join("work").join("a"), &dir.join("work").join("inner")));
-            provider.put_file(id, "work/inner/b/d.txt", b"inside").unwrap();
-            assert_eq!(std::fs::read(dir.join("work/a/b/d.txt")).unwrap(), b"inside");
+            assert!(link(&home.join("work").join("a"), &home.join("work").join("inner")));
+            provider.put_file(id, "work/inner/b/d.txt", b"inside", 0o600).unwrap();
+            assert_eq!(std::fs::read(home.join("work/a/b/d.txt")).unwrap(), b"inside");
         }
         provider.delete(id).unwrap();
         assert!(outside.join("host.txt").is_file(), "delete stays in the sandbox");
@@ -1300,7 +1310,8 @@ mod tests {
         let open = EgressPolicy { default_action: "Allow".into(), rules: Vec::new() };
         provider.set_egress(&sandbox.id, &open).unwrap();
         assert_eq!(local.egress(&sandbox.id).unwrap(), Some(open));
-        assert!(provider.put_file(&sandbox.id, "egress.json", b"{}").is_err(), "the guest cannot change its policy");
+        let policy_file = root.join("sandboxes").join(&sandbox.id).join("egress.json");
+        assert!(provider.put_file(&sandbox.id, &policy_file.display().to_string(), b"{}", 0o600).is_err(), "the guest cannot change its policy");
         assert!(provider.egress_decisions(&sandbox.id).unwrap().is_empty());
         let refused = EgressDecision { ms: 1, host: "contoso.com".into(), method: "POST".into(), path: "/x".into(), allowed: false };
         let allowed = EgressDecision { ms: 2, host: "example.com".into(), method: "GET".into(), path: "/".into(), allowed: true };
@@ -1316,9 +1327,9 @@ mod tests {
         let stock = provider.image_build("ubuntu:24.04", "stock").unwrap();
         assert!(seeded.id.starts_with("img-") && seeded.name == "seeded" && seeded.created_ms > 0);
         let made = provider.create(&SandboxSpec { image: Some(seeded.id.clone()), ..Default::default() }).unwrap();
-        let work = root.join("sandboxes").join(&made.id).join("work");
-        assert_eq!(std::fs::read(work.join("docs").join("README.md")).unwrap(), b"seeded", "an image is copied into work/");
-        provider.put_file(&made.id, "work/NOTES.md", b"notes").unwrap();
+        let work = root.join("sandboxes").join(&made.id).join("home").join("work");
+        assert_eq!(std::fs::read(work.join("docs").join("README.md")).unwrap(), b"seeded", "an image is copied into the workspace (~/work)");
+        provider.put_file(&made.id, "work/NOTES.md", b"notes", 0o644).unwrap();
         let committed = provider.image_commit(&made.id, "after").unwrap();
         let folder = root.join("images").join(&committed.id);
         assert!(folder.join("docs").join("README.md").is_file() && std::fs::read(folder.join("NOTES.md")).unwrap() == b"notes");

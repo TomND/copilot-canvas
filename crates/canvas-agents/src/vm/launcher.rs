@@ -240,7 +240,7 @@ fn start(ctx: &Ctx, intent: &Intent) -> Result<Change> {
     if intent.satellite.is_empty() {
         let minted = Satellites::new(ctx.home).mint(&intent.sandbox)?;
         let body = serde_json::json!({ "hub": ctx.pack.tunnel.url, "id": minted.id, "secret": minted.secret, "sandbox": intent.sandbox });
-        match ctx.provider.put_file(&intent.sandbox, ".atelier/satellite.json", serde_json::to_string(&body)?.as_bytes()) {
+        match ctx.provider.put_file(&intent.sandbox, ".atelier/satellite.json", serde_json::to_string(&body)?.as_bytes(), 0o600) {
             Ok(()) => {}
             // The thin lane does not need it: its guest may have no Atelier yet.
             Err(error) if hooks => (ctx.log)(format!("VM launch of {}: no satellite credential in the guest ({})", intent.r#box, super::hooks::first_line(&format!("{error:#}")))),

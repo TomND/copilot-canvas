@@ -140,6 +140,18 @@ pub fn spec(pack: &Pack, size: &str, image: Option<String>, labels: Labels) -> R
     Ok(SandboxSpec { image, cpu_milli: size.cpu_milli, memory_mi: size.memory_mi, disk_gi: size.disk_gi, labels, env: Vec::new(), egress: None })
 }
 
+/// Uploads the pack's satellite (`satellite.path`) to the sandbox's
+/// [`SATELLITE_BIN`](super::provider::SATELLITE_BIN); `false` when there is
+/// nothing to upload: no `satellite.path` (the image has its own), or
+/// `vm::local` (it runs the hub's own build, plan D5) and `vm::hooks` (the
+/// hooks' guest has its Atelier).
+pub fn install_satellite(pack: &Pack, provider: &dyn Provider, sandbox: &str) -> Result<bool> {
+    let Some(path) = pack.satellite.path.as_ref().filter(|_| !matches!(provider.name(), "local" | "hooks")) else { return Ok(false) };
+    let bytes = std::fs::read(path).context("cannot read the satellite binary (satellite.path)")?;
+    provider.put_file(sandbox, super::provider::SATELLITE_BIN, &bytes, 0o755)?;
+    Ok(true)
+}
+
 /// Builds `repo`'s image: a builder sandbox from the repository's base, the
 /// satellite (the pack's Linux build) and the clone at the default branch,
 /// committed, the builder deleted. Records it in `images.json`.
@@ -159,10 +171,7 @@ pub fn build_image(home: &Path, pack: &Pack, provider: &dyn Provider, hub: &str,
         let smallest = pack.sizes.iter().min_by_key(|s| s.disk_gi).map(|s| s.name.clone()).unwrap_or_default();
         let builder = provider.create(&spec(pack, &smallest, Some(base.id.clone()), labels(hub, Role::Builder, &repo.key))?)?;
         let built = (|| -> Result<super::provider::ImageRef> {
-            if let Some(path) = &pack.satellite.path {
-                let bytes = std::fs::read(path).context("cannot read the satellite binary (satellite.path)")?;
-                provider.put_file(&builder.id, "/usr/local/bin/atelier", &bytes)?;
-            }
+            install_satellite(pack, provider, &builder.id)?;
             let argv: Vec<String> = ["atelier", "satellite", "--clone", "--repo", &repo.key, "--url", &repo.url, "--branch", &repo.default_branch, "--mode", &repo.clone_mode].map(str::to_owned).to_vec();
             let out = provider.exec(&builder.id, &argv, b"")?;
             anyhow::ensure!(out.code == 0, "cloning {} failed in the builder: {}", repo.key, super::hooks::first_line(&String::from_utf8_lossy(&out.stdout)));

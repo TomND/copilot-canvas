@@ -47,23 +47,26 @@ owner's note that VM sessions are optional and local stays the default.
 
 ### 0: spike kits
 - [x] `atelier satellite --self-check` (a PTY with alacritty, the data folder) and `atelier vm spike s2|s3|s4`
-      through the pack's hooks (JSON, no pack values; sandboxes deleted unless `--keep`); run on local sandboxes
-      by `selftest vm` in CI
+      through the pack's provider (hooks, local or aca; JSON, no pack values; sandboxes deleted unless `--keep`;
+      S3 uploads `satellite.path` first); run on local sandboxes through `hooks` and `local` by `selftest vm` in CI
 - [ ] `vm spike s1` (Phase 2: the satellite link), `s5` (Phase 3: the MCP gateway), `s7` (Phase 2/5: faults)
 - [x] S6: `policy_ack` in `vm.yaml` (`pack check` warns while it is empty); the owner's checklist below
 
 ### 1: manager
 - [x] VM-11 provider trait (`vm::provider`); the pack's hooks as a provider (`vm::hooks::HooksProvider`)
-- [ ] VM-12 `vm::aca` and VM-13 `vm::local`: workers (VM-WORKERS.md) on `vm-aca` and `vm-local`; `open_provider`
-      answers "not wired in yet" for them until they hand off
+- [x] VM-12 `vm::aca` (P-aca, `vm-aca` 6ceef0d..9d4a8e8) and VM-13 `vm::local` with `canvas_sys::process::
+      {suspend_tree, resume_tree}` (P-local, `vm-local` 6ceef0d..ec3079d): merged into `vm-sessions` 2026-11-10
 - [x] VM-14 stores and satellite credentials (`vm::store`) · VM-15 manager (`vm::manager`: budgets, image schedule
       and keep-N, pool plan and tick, image builds) · VM-16 launcher (`vm::launcher`: steps, fence, rollback,
       reconciliation) · VM-17 claim (lease or create, credential in the guest, `satellite --prepare`) · VM-18 the
       view, `VmAction`, `VmImageBuild`, `atelier vm …` · VM-19 `has_work`, doctor
 - [x] the secrets refresher (`vm::secrets`, in the design's Phase 1; the plan had it in Phase 3): each
       `secrets.yaml` command's output set on the provider on its interval, never logged or stored
-- [ ] wiring after the hand-offs: `open_provider` for `local` and `aca`, `selftest vm --lane local` (the pool lane:
-      an image built, a pool member leased, its branch prepared), `vm spike` through a provider
+- [x] wiring: `open_provider(home, pack)` for `local` (`local.root`, else `<home>/vm/local`) and `aca`
+      (`Aca::from_pack`); the provider contract settled (departures below); `selftest vm`'s pool lane on
+      `provider: local` (an image built in a builder, a warm VM leased, its branch prepared, the agent in its
+      terminal, the pool refilled, the VM deleted); `vm spike` through a provider; `rustls` (ring) and
+      `rustls-platform-verifier` in canvas-agents on every OS with `vm::tls` (the satellite's `wss://` config)
 - [ ] Exit: as in the plan §3 Phase 1
 
 ### 2: terminals
@@ -102,6 +105,8 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
 - [ ] S6 the data-handling policy for the pack (`policy_ack` in `vm.yaml`)
 - [ ] S7 failure injection on the platform (`vm spike s7`), incl. auto-suspend off while working
 - [ ] the token audience (`auth.audience`: a 401 with the other value answers it)
+- [ ] `vm::aca` against a real group: the answers' shapes (image readiness, egress decisions, raw-file GET), the
+      files API and `/opt/atelier/bin` in the stock image (`vm spike s3` uploads there), token expiry
 - [ ] egress isolation: a guest process that ignores proxy settings is still refused
 - [ ] `atelier selftest vm --real` once per agent (Phase 5)
 
@@ -117,6 +122,19 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   launch defaults).
 - **The new-session dialog's VM rows**: *Run on*, then *Repository* with *size* on one row and *Branch*; a VM
   session gets no worktree and no fork choice. Copilot CLI only until Phase 5.
+- **The provider contract** (settled at the workers' merge): `put_file(id, path, bytes, mode)` (the plan's VM-11 had
+  the mode; the first trait dropped it); guest paths are relative to the guest user's home or absolute (`vm::local`:
+  absolute only inside the sandbox's `home/`); `get_file` over `max` is an error everywhere; `exec` of `atelier`
+  runs the satellite (`aca` puts `/opt/atelier/bin` first on `PATH`). `vm::aca` writes a file as a staging upload
+  plus one `install -D -m MODE` (the files API sets no mode and may not make folders) and asks a sandbox's `$HOME`
+  once for relative reads. `vm::local`'s disk is `home/` only: the workspace moved from `<sandbox>/work` to
+  `<sandbox>/home/work` (where the guest's `~/work/<repo>` is), so images carry the clone.
+- **`vm attach` on `provider: local`** runs the agent in the sandbox directly (`Local::command`, tracked so suspend
+  and delete reach it) until Phase 2's satellite link carries every provider's terminals; `aca` boxes reach
+  *Running* but have no terminal before Phase 2.
+- **The spikes go through `open_provider`** (the plan had them on `vm::aca`; Phase 0 had them on the hooks).
+- **The satellite's TLS uses `rustls-platform-verifier`** (already in the lock through reqwest) for the platform's
+  roots, with the pack's CA as extra roots.
 
 ## Log
 
@@ -145,5 +163,13 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   the launcher had revoked (the probe now waits for it), macOS saw "2 of 1 running" (budgets now count the
   launches' running VMs, not sandbox records; the probe checks no sandbox leaked). Fixed in 88defa0 (3 local passes);
   its CI is queued behind the workers' branches. Main's CI for the d35d56e merge is still running.
-- Next: the workers' hand-offs (`vm-aca`, `vm-local`) to wire `open_provider` and run the pool lane
-  (`selftest vm` on `provider: local`), then Phase 1's merge.
+- 2026-11-10: the workers handed off. `vm-aca` and `vm-local` merged into `vm-sessions` (one conflict: the module
+  list). The provider contract settled (departures), `open_provider` wired for both, `vm attach` and the spikes
+  through providers, the pool lane in `selftest vm` (both lanes PASS in 34–35 s on macOS, three runs), `vm::tls`
+  with rustls on every OS. 74 `vm::` tests, 289 canvas-agents lib tests, 18 canvas-sys tests; clippy clean on
+  macOS and `cargo xwin` (Windows). Windows CI runs `vm::local`'s Windows suspend for the first time.
+- Owner items added by `vm::aca` (guesses from Appendix A, checked only on real sandboxes): image readiness, the
+  egress-decisions and raw-file GET shapes, whether the files API makes folders (writes go through `install -D`
+  either way), whether `/opt/atelier/bin` is writable by the files API in the stock image (S3), token expiry from
+  `expires_on` or the token's `exp`; no re-fetch on a 401 yet.
+

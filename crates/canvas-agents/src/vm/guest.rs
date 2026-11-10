@@ -33,18 +33,35 @@ pub fn workspace(key: &str) -> Result<PathBuf> {
     Ok(guest_home().join("work").join(key))
 }
 
-/// `--write-file PATH`: standard input into PATH (parents made, written atomically, 0600 on Unix).
-pub fn write_file(path: &str) -> Result<Value> {
+/// `--write-file PATH [--mode OCTAL]`: standard input into PATH (parents
+/// made, written atomically, with `mode` on Unix: 0600 by default).
+pub fn write_file(path: &str, mode: Option<&str>) -> Result<Value> {
+    let mode = match mode {
+        Some(text) => u32::from_str_radix(text, 8).ok().filter(|m| *m <= 0o7777).with_context(|| format!("--mode takes an octal mode, not {text:?}"))?,
+        None => 0o600,
+    };
     let path = guest_path(path)?;
     let mut bytes = Vec::new();
     std::io::stdin().take(64 << 20).read_to_end(&mut bytes)?;
-    crate::paths::write_atomic(&path, &bytes)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
     }
+    write_with_mode(&path, &bytes, mode).with_context(|| format!("cannot write {}", path.display()))?;
     Ok(json!({ "ok": true, "bytes": bytes.len() }))
+}
+
+/// Writes `path` atomically, owner-only from the start (0600), then with
+/// `mode` on Unix (Windows: owner-only, `mode` is not used).
+pub fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
+    canvas_sys::fs::write_private(path, bytes)?;
+    #[cfg(unix)]
+    if mode != 0o600 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+    Ok(())
 }
 
 /// `--read-file PATH`: the file on standard output (raw).

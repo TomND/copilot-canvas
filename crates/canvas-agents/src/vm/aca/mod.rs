@@ -14,6 +14,8 @@ pub mod model;
 pub mod rest;
 pub mod token;
 
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
@@ -43,6 +45,8 @@ pub struct Aca {
     group: String,
     poll: Duration,
     wait: Duration,
+    /// Each sandbox's guest home, asked once (relative guest paths are from it).
+    homes: Mutex<HashMap<String, String>>,
 }
 
 impl std::fmt::Debug for Aca {
@@ -65,7 +69,7 @@ impl Aca {
         let api_version = Some(aca.api_version.trim()).filter(|v| !v.is_empty()).unwrap_or(DEFAULT_API_VERSION);
         let hidden = vec![(aca.subscription.clone(), "<subscription>"), (aca.resource_group.clone(), "<resource-group>"), (aca.sandbox_group.clone(), "<sandbox-group>")];
         let rest = Rest::new(rest::endpoint(aca)?, api_version, Cache::new(token), hidden)?;
-        Ok(Aca { rest, group, poll: POLL, wait: WAIT })
+        Ok(Aca { rest, group, poll: POLL, wait: WAIT, homes: Mutex::default() })
     }
 
     /// The provider with the pack's token command (`auth.command`, else the Azure CLI).
@@ -119,6 +123,50 @@ impl Aca {
             }
             std::thread::sleep(self.poll);
         }
+    }
+
+    /// Runs shell text in the sandbox (sent once: a command may not be safe to repeat).
+    fn shell(&self, id: &str, command: &str) -> Result<ExecResult> {
+        let path = self.sandbox_path(id)?;
+        let op = format!("exec in {id}");
+        let body = model::exec_body(command);
+        let reply = self.rest.send(Call::new(&op, Method::POST, self.url(&format!("{path}/executeShellCommand"))).json(&body).once().timeout(EXEC_TIMEOUT))?;
+        model::exec_result(&reply.json(&op)?).map_err(|e| anyhow!("{op}: {e}"))
+    }
+
+    /// Writes `bytes` at the absolute guest path `path` as the files API does.
+    fn upload(&self, id: &str, path: &str, bytes: &[u8]) -> Result<()> {
+        let sandbox = self.sandbox_path(id)?;
+        let op = format!("write a file in {id}");
+        let url = self.rest.url(&format!("{sandbox}/files"), &[("path", model::guest_path(path)?)]);
+        self.rest.send(Call::new(&op, Method::PUT, url).payload(Payload::Bytes(bytes)).timeout(FILE_TIMEOUT))?;
+        Ok(())
+    }
+
+    /// The guest user's home in the sandbox (asked once, then remembered).
+    fn home(&self, id: &str) -> Result<String> {
+        if let Some(home) = self.homes.lock().unwrap_or_else(|e| e.into_inner()).get(id) {
+            return Ok(home.clone());
+        }
+        let out = self.shell(id, model::HOME_COMMAND)?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let home = text.trim_end_matches('/');
+        let home = if home.is_empty() && text.starts_with('/') { "/" } else { home };
+        if out.code != 0 || model::guest_path(home).is_err() {
+            bail!("cannot tell the guest's home in {id}");
+        }
+        self.homes.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_owned(), home.to_owned());
+        Ok(home.to_owned())
+    }
+
+    /// The absolute guest path of `path` (relative paths are from the guest's home).
+    fn absolute(&self, id: &str, path: &str) -> Result<String> {
+        if path.starts_with('/') {
+            return Ok(model::guest_path(path)?.to_owned());
+        }
+        let relative = model::relative_path(path)?;
+        let home = self.home(id)?;
+        Ok(format!("{}/{relative}", home.trim_end_matches('/')))
     }
 
     /// After a 409 on `stop`/`resume`: done already (`Ok(true)`), on its way
@@ -183,8 +231,7 @@ impl Provider for Aca {
     }
 
     fn exec(&self, id: &str, argv: &[String], stdin: &[u8]) -> Result<ExecResult> {
-        let path = self.sandbox_path(id)?;
-        let op = format!("exec in {id}");
+        self.sandbox_path(id)?;
         let file = (stdin.len() > INLINE_STDIN).then(|| format!("/tmp/atelier-stdin-{}", uuid::Uuid::new_v4().simple()));
         let input = match &file {
             Some(file) => Stdin::File(file),
@@ -193,25 +240,32 @@ impl Provider for Aca {
         };
         let command = model::shell_command(argv, input)?;
         if let Some(file) = &file {
-            self.put_file(id, file, stdin)?;
+            self.upload(id, file, stdin)?;
         }
-        let body = model::exec_body(&command);
-        let reply = self.rest.send(Call::new(&op, Method::POST, self.url(&format!("{path}/executeShellCommand"))).json(&body).once().timeout(EXEC_TIMEOUT))?;
-        model::exec_result(&reply.json(&op)?).map_err(|e| anyhow!("{op}: {e}"))
+        self.shell(id, &command)
     }
 
-    fn put_file(&self, id: &str, path: &str, bytes: &[u8]) -> Result<()> {
-        let sandbox = self.sandbox_path(id)?;
-        let op = format!("write a file in {id}");
-        let url = self.rest.url(&format!("{sandbox}/files"), &[("path", model::guest_path(path)?)]);
-        self.rest.send(Call::new(&op, Method::PUT, url).payload(Payload::Bytes(bytes)).timeout(FILE_TIMEOUT))?;
+    /// Uploads to a staging file, then one command puts it in place with
+    /// `mode` and its folders (the files API sets no mode and may not make
+    /// folders); relative paths are from the guest's home (`$HOME`).
+    fn put_file(&self, id: &str, path: &str, bytes: &[u8], mode: u32) -> Result<()> {
+        self.sandbox_path(id)?;
+        let staged = format!("/tmp/atelier-put-{}", uuid::Uuid::new_v4().simple());
+        let command = model::install_command(&staged, path, mode)?;
+        self.upload(id, &staged, bytes)?;
+        let out = self.shell(id, &command)?;
+        if out.code != 0 {
+            bail!("cannot write {path:?} in {id}: {}", crate::vm::hooks::first_line(&out.stderr));
+        }
         Ok(())
     }
 
+    /// Reads a file; one larger than `max` is an error (never truncated).
     fn get_file(&self, id: &str, path: &str, max: u64) -> Result<Vec<u8>> {
         let sandbox = self.sandbox_path(id)?;
         let op = format!("read a file in {id}");
-        let url = self.rest.url(&format!("{sandbox}/files"), &[("path", model::guest_path(path)?)]);
+        let path = self.absolute(id, path)?;
+        let url = self.rest.url(&format!("{sandbox}/files"), &[("path", path.as_str())]);
         Ok(self.rest.send(Call::new(&op, Method::GET, url).max(max).timeout(FILE_TIMEOUT))?.body)
     }
 
@@ -603,19 +657,37 @@ mod tests {
 
     #[test]
     fn files_go_raw_with_the_path_in_the_query_and_reads_are_bounded() {
-        let standin = scripted(vec![("PUT G/sandboxes/sbx-1/files", vec![Reply::status(201)]), ("GET G/sandboxes/sbx-1/files", vec![Reply::text(200, "0123456789")])]);
+        let ran = |code: i64, stdout: &str, stderr: &str| Reply::json(200, json!({ "exitCode": code, "stdout": stdout, "stderr": stderr }));
+        let standin = scripted(vec![
+            ("PUT G/sandboxes/sbx-1/files", vec![Reply::status(201)]),
+            ("GET G/sandboxes/sbx-1/files", vec![Reply::text(200, "0123456789")]),
+            ("POST G/sandboxes/sbx-1/executeShellCommand", vec![ran(0, "", ""), ran(0, "/home/agent/", ""), ran(1, "", "install: cannot create directory: Permission denied\nmore")]),
+        ]);
         let (aca, _) = provider(&standin.url);
-        aca.put_file("sbx-1", "/home/agent/a b&c=d.json", b"{\"x\":1}").unwrap();
-        assert_eq!(aca.get_file("sbx-1", "/home/agent/notes.md", 10).unwrap(), b"0123456789");
-        assert_eq!(aca.get_file("sbx-1", "/home/agent/notes.md", u64::MAX).unwrap(), b"0123456789");
+        // A write is an upload to a staging file, then one command that puts it in place with its mode.
+        aca.put_file("sbx-1", "/home/agent/a b&c=d.json", b"{\"x\":1}", 0o600).unwrap();
+        let requests = standin.requests();
+        let staged = requests[0].param("path").unwrap().to_owned();
+        assert!(staged.starts_with("/tmp/atelier-put-") && requests[0].body == b"{\"x\":1}", "{staged}");
+        assert_eq!(requests[0].header("content-type"), Some("application/octet-stream"));
+        assert_eq!(requests[1].json()["command"], format!("install -D -m 0600 -- '{staged}' '/home/agent/a b&c=d.json'; code=$?; rm -f -- '{staged}'; exit $code"));
+        // Relative paths are from the guest's home, asked once; reads are bounded, never truncated.
+        assert_eq!(aca.get_file("sbx-1", "notes.md", 10).unwrap(), b"0123456789");
+        assert_eq!(aca.get_file("sbx-1", "notes.md", u64::MAX).unwrap(), b"0123456789");
         assert!(aca.get_file("sbx-1", "/home/agent/notes.md", 9).unwrap_err().to_string().contains("larger than 9 bytes"));
         let requests = standin.requests();
-        assert_eq!((requests[0].param("path"), requests[0].body.as_slice()), (Some("/home/agent/a b&c=d.json"), b"{\"x\":1}".as_slice()));
-        assert_eq!(requests[1].param("path"), Some("/home/agent/notes.md"));
-        for bad in ["relative.txt", "/a/../../etc/passwd"] {
-            assert!(aca.put_file("sbx-1", bad, b"x").is_err() && aca.get_file("sbx-1", bad, 10).is_err());
+        assert_eq!(requests[2].json()["command"], "printf %s \"$HOME\"");
+        assert_eq!(requests.iter().filter(|r| r.method == "GET").map(|r| r.param("path").unwrap()).collect::<Vec<_>>(), ["/home/agent/notes.md"; 3]);
+        assert_eq!(requests.len(), 6);
+        // A write the guest refuses says why.
+        let error = aca.put_file("sbx-1", ".atelier/satellite.json", b"{}", 0o600).unwrap_err().to_string();
+        assert_eq!(error, "cannot write \".atelier/satellite.json\" in sbx-1: install: cannot create directory: Permission denied");
+        assert!(standin.requests()[7].json()["command"].as_str().unwrap().contains(" \"$HOME\"/'.atelier/satellite.json';"));
+        for bad in ["../x.txt", "/a/../../etc/passwd", "", ".", "a\nb"] {
+            assert!(aca.put_file("sbx-1", bad, b"x", 0o600).is_err() && aca.get_file("sbx-1", bad, 10).is_err(), "{bad:?}");
         }
-        assert_eq!(standin.requests().len(), 4);
+        assert!(aca.put_file("sbx-1", "x", b"x", 0o17777).is_err());
+        assert_eq!(standin.requests().len(), 8, "nothing is sent for a bad path or mode");
     }
 
     #[test]

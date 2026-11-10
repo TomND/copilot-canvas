@@ -322,12 +322,19 @@ pack and `vm pack check`), `hooks.rs` (the pack's hooks), `launch.rs` (VM
 launches' intents, `vm attach`, the agent's command line in the guest),
 `lite.rs` (the guest side of the thin lane: relayed commands, the drain),
 `thin.rs` (the hub side: drains, mirrors, running relayed operations),
-`local.rs` (`vm::local` sandboxes and `vm-hook-standin`). The model is
+`provider.rs` (the provider trait and its contract: guest paths from the
+guest's home, file modes, bounded reads), `local.rs` (`vm::local` sandboxes
+and `vm-hook-standin`), `aca/` (`vm::aca`, the sandboxes' REST API, tested
+against an in-process stand-in only), `store.rs`, `manager.rs`,
+`launcher.rs`, `guest.rs` (the guest-side `satellite --write-file|--clone|
+--prepare`), `secrets.rs`, `spike.rs`, `tls.rs` (the satellite link's TLS);
+`open_provider` picks the pack's provider. The model is
 `canvas_model::vm`, the satellite link's messages `canvas_common::sat`, the
 client side `canvas-core/src/vms.rs` and the new-session dialog's *Run on*.
 Everything is off without a pack. `atelier selftest vm` (`src/vm_probe.rs`)
-runs it end to end on local sandboxes; never point it, or anything else, at a
-real provider in a test.
+runs it end to end on local sandboxes, twice: the hooks lane, then the pool
+lane with `provider: local`; never point it, or anything else, at a real
+provider in a test.
 
 ### Agent providers
 

@@ -1502,7 +1502,10 @@ atelier vm list|pool|images|budget   VM sessions as the service sees them (with 
 atelier vm image build REPO · vm suspend|resume|cancel|retry BOX · vm delete BOX --yes
 atelier selftest vm                   VM sessions end to end on local stand-in sandboxes (no cloud,
                                       no model): a VM box, its status from the guest, commands
-                                      relayed from the guest, refusals
+                                      relayed from the guest, refusals; then the warm pool (an
+                                      image built, a VM leased and prepared on the box's branch)
+atelier vm spike s2|s3|s4             the owner's checks on real sandboxes through the pack's
+                                      provider (one JSON line each; VM-SESSIONS.md, Phase 0)
 cargo test                            unit tests
 ```
 
