@@ -50,6 +50,9 @@ final class AppModel: ObservableObject {
             registerPush()
         }
     }
+    /// `-pairLink` machines are being paired again (automated runs): they
+    /// connect, and one is shown, once that is done.
+    @Published private(set) var relinking = false
 
     private let store = ServerStore.shared
     private var backgroundedAt: Date?
@@ -72,19 +75,25 @@ final class AppModel: ObservableObject {
         let lock = UserDefaults.standard.object(forKey: "lockWithFaceID") as? Bool ?? true
         // `-noLock`: UI tests on a simulator without a passcode prompt.
         locked = lock && !servers.isEmpty && !ProcessInfo.processInfo.arguments.contains("-noLock")
-        for server in servers {
+        // Machines paired again from the launch arguments connect once that is
+        // done: connecting with the pairing they had first, the new pairing
+        // then replaced the connection and rebuilt the screen under a test.
+        let (links, machine) = Self.argumentLinks()
+        for server in servers where !links.contains(where: { Self.sameAddress($0.url, server.url) }) {
             makeConnection(server)
         }
         let saved = UserDefaults.standard.string(forKey: "currentServer").flatMap(UUID.init(uuidString:))
-        currentID = servers.first(where: { $0.id == saved })?.id ?? servers.first?.id
-        pairFromArguments()
+        let named = machine.flatMap { name in servers.first { $0.name == name } }
+        currentID = named?.id ?? servers.first(where: { $0.id == saved })?.id ?? servers.first?.id
+        pairFromArguments(links, machine: machine)
     }
 
     // MARK: Machines
 
     /// Adds a newly paired machine, or updates the one at the same address
-    /// (re-pairing keeps its name and colour). `ask`: offer to name it.
-    func add(_ paired: PairedServer, ask: Bool = true) {
+    /// (re-pairing keeps its name and colour). `ask`: offer to name it;
+    /// `show`: switch to it.
+    func add(_ paired: PairedServer, ask: Bool = true, show: Bool = true) {
         var server = paired
         let isNew: Bool
         if let index = servers.firstIndex(where: { Self.sameAddress($0.url, server.url) }) {
@@ -101,9 +110,9 @@ final class AppModel: ObservableObject {
         }
         let failure = store.save(servers)
         makeConnection(server)
-        select(server.id)
-        if !locked { connection?.activate() }
-        if let failure { connection?.toast = Toast(text: failure, error: true) }
+        if show { select(server.id) }
+        if !locked { connections[server.id]?.activate() }
+        if let failure { connections[server.id]?.toast = Toast(text: failure, error: true) }
         // Once the pairing sheet is gone: a name and a colour for the new machine.
         if isNew && ask {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in self?.naming = server }
@@ -120,7 +129,7 @@ final class AppModel: ObservableObject {
     func forget(_ id: UUID) {
         servers.removeAll { $0.id == id }
         store.save(servers)
-        connections[id]?.client.detach()
+        connections[id]?.close()
         connections[id] = nil
         forwarding[id] = nil
         if currentID == id {
@@ -180,7 +189,8 @@ final class AppModel: ObservableObject {
     }
 
     private func makeConnection(_ server: PairedServer) {
-        connections[server.id]?.client.detach()
+        // The connection it replaces stops for good (it reconnected with the old pairing).
+        connections[server.id]?.close()
         let connection = ServiceConnection(server: server)
         connection.onServerChanged = { [weak self] updated in self?.update(updated) }
         if let pushToken {
@@ -315,23 +325,40 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// `-pairLink URI` (repeatable) pairs (or pairs again) machines and
-    /// `-machine NAME` shows one: automated simulator runs.
-    private func pairFromArguments() {
+    /// `-pairLink URI` (repeatable) and `-machine NAME`: automated simulator runs.
+    private static func argumentLinks() -> ([PairLinkInfo], String?) {
         let args = ProcessInfo.processInfo.arguments
         let links = args.indices.filter { args[$0] == "-pairLink" && $0 + 1 < args.count }.compactMap { try? parsePairLink(uri: args[$0 + 1]) }
         let machine = args.firstIndex(of: "-machine").flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
+        return (links, machine)
+    }
+
+    /// Pairs the `-pairLink` machines (again), then shows `-machine` (else
+    /// the machine shown before, else the last one paired). Each connects
+    /// once paired, and nothing switches before the end, so the screen shown
+    /// is never rebuilt under a test; a machine that cannot be paired again
+    /// connects with the pairing it had.
+    private func pairFromArguments(_ links: [PairLinkInfo], machine: String?) {
         guard !links.isEmpty || machine != nil else { return }
+        relinking = !links.isEmpty
         Task { @MainActor in
             // Always paired again: a test service may have forgotten earlier pairings.
+            var last: UUID?
             for link in links {
                 if let server = try? await Pairer.pair(link: link) {
-                    add(server, ask: false)
+                    add(server, ask: false, show: false)
+                } else if let old = servers.first(where: { Self.sameAddress($0.url, link.url) }), connections[old.id] == nil {
+                    makeConnection(old)
+                    if !locked { connections[old.id]?.activate() }
                 }
+                last = servers.first(where: { Self.sameAddress($0.url, link.url) })?.id ?? last
             }
             if let machine, let server = servers.first(where: { $0.name == machine }) {
                 select(server.id)
+            } else if connection == nil, let last {
+                select(last)
             }
+            relinking = false
         }
     }
 }

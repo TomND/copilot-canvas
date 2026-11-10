@@ -49,6 +49,8 @@ final class ServiceConnection: ObservableObject {
     private var reportsPending = false
     private var todosPending = false
     private var active = false
+    /// Replaced or forgotten (`close()`): it never connects again.
+    private var closed = false
     private var background: UIBackgroundTaskIdentifier = .invalid
     /// Terminal views waiting for screen updates.
     private var screenWatchers: [String: [UUID: () -> Void]] = [:]
@@ -72,6 +74,7 @@ final class ServiceConnection: ObservableObject {
 
     /// The app is in the foreground: connect (again).
     func activate() {
+        guard !closed else { return }
         endBackgroundTask()
         active = true
         if transport == nil && state != .revoked {
@@ -100,6 +103,20 @@ final class ServiceConnection: ObservableObject {
         endBackgroundTask()
     }
 
+    /// Replaced (the machine was paired again) or forgotten: closes for good,
+    /// whoever still holds it (a detached client alone was connected again
+    /// with the old pairing as its WebSocket closed).
+    func close() {
+        closed = true
+        active = false
+        retry?.cancel()
+        let ended = transport
+        transport = nil
+        client.detach()
+        ended?.close()
+        endBackgroundTask()
+    }
+
     private func endBackgroundTask() {
         if background != .invalid {
             UIApplication.shared.endBackgroundTask(background)
@@ -109,6 +126,7 @@ final class ServiceConnection: ObservableObject {
 
     func connect() {
         retry?.cancel()
+        guard !closed else { return }
         guard let url = URL(string: server.url) else {
             state = .offline
             message = "Invalid address \(server.url)"

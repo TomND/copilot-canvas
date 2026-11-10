@@ -110,6 +110,9 @@ struct RootView: View {
                 // is a new screen: nothing keeps talking to the old one.
                 HomeView(connection: connection)
                     .id(ObjectIdentifier(connection))
+            } else if model.relinking {
+                // `-pairLink` (automated runs): the machine shows once paired again.
+                ProgressView("Pairing…")
             } else {
                 PairView(initial: model.incomingLink) { server in model.add(server) }
             }

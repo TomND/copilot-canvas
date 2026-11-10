@@ -128,6 +128,34 @@ final class ReportViewTests: XCTestCase {
         XCTAssertEqual(cells, 2, "Markdown tables")
     }
 
+    /// A page loaded again before WebKit asked about the first load (a note
+    /// saved while its first page was still on its way: a busy simulator's
+    /// web content process can take seconds to start) shows the newer page,
+    /// never a blank one.
+    func testAPageLoadedAgainBeforeTheFirstIsAskedAboutShowsTheNewerOne() async throws {
+        let controller = ReportWebController(rules: try await ReportLockdown.ruleList(), identifier: "notePage")
+        let finished = expectation(description: "a page loaded")
+        finished.assertForOverFulfill = false
+        controller.onFinish = { finished.fulfill() }
+        // Both in one turn of the run loop: WebKit asks about neither before the second.
+        controller.load("<h1 id=\"t\">First</h1>")
+        controller.load("<h1 id=\"t\">Saved</h1>")
+        await fulfillment(of: [finished], timeout: 60)
+        var heading: String?
+        for _ in 0..<20 {
+            heading = await eval(controller, "document.getElementById('t') ? document.getElementById('t').textContent : ''") as? String
+            if heading == "Saved" { break }
+            await pause(0.25)
+        }
+        XCTAssertEqual(heading, "Saved", "cancelled: \(controller.cancelled)")
+        controller.onFinish = nil
+        // The page itself is allowed once per load: a later blank navigation is not.
+        _ = await eval(controller, "location.href = 'about:blank'")
+        await pause(0.5)
+        let still = await eval(controller, "document.getElementById('t') ? document.getElementById('t').textContent : 'gone'") as? String
+        XCTAssertEqual(still, "Saved", "the page stayed")
+    }
+
     func testOnlyWebAndMailLinksMayOpen() {
         XCTAssertTrue(reportLinkAllowed(url: "https://github.com/x/y/pull/1"))
         XCTAssertTrue(reportLinkAllowed(url: "mailto:me@example.com"))

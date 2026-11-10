@@ -68,7 +68,9 @@ cargo run -p canvas-mock -- --listen 0.0.0.0:47600   # reachable from a phone on
 
 In the simulator, paste the printed `atelier://pair?…` link (the app also
 takes `ccanvas://`, from before the rename), or launch with
-`-pairLink <link>`. Other launch arguments for automated runs:
+`-pairLink <link>` (pairs again at every launch; that machine connects and
+shows once paired, so a test never sees its screen rebuilt by the new
+pairing). Other launch arguments for automated runs:
 `-noNotificationPrompt`, `-noLock`, `-openSession <id>`, `-startMode canvas|notebook|tasks`,
 `-machine <name>` (`-pairLink` may be repeated).
 

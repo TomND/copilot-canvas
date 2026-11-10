@@ -67,9 +67,12 @@ and Tasks places (docs/NOTEBOOK-TASKS.md §7: not parity, viewing and editing).
   it does not understand them). Each is applied to the phone's copy at once
   (as you, under the same rules as the desktop) and sent as the window's bus
   action (`{"action": "todos", "op": …}`), answers a `TodoChange` (the id and
-  what happened, with warnings) and emits `CoreEvent::Overview`; the
-  service's next book confirms or undoes it, and its refusal reaches the app
-  as a toast. Offline, or before the first book, a change is refused.
+  what happened, with warnings) and emits `CoreEvent::Overview`. Books the
+  service sends before it has the change (its book after an earlier change)
+  get it put back on top, as on the desktop (`todos::InFlight`, like
+  `canvas-core` `tasks::book::receive`), until a book has it, the service
+  refuses it (its notice undoes it at once and reaches the app as a toast)
+  or 5 s pass. Offline, or before the first book, a change is refused.
 - **Notebook** (`notes.rs`, `Client`): `notebook()` resolves the root
   (`Request::NotebookInfo`) and gives a `NotebookOverview` (root,
   canvas-wide folder, the explorer's roots); `list_notes(folder, filter,
@@ -113,9 +116,9 @@ and Tasks places (docs/NOTEBOOK-TASKS.md §7: not parity, viewing and editing).
 
 | Check | Covers |
 |---|---|
-| Rust unit tests (`canvas-mobile`, `canvas-common`, `canvas-model`, `canvas-push`) | State machine, statuses, launches, forks, passive sessions, the reports inbox and its pages, the todo boards (the book from the bus snapshot, changes applied here and sent as the window's action, field edits, the desktop's actions per todo, checklist edits, refusals, offline) and the notebook (pages, what may be edited, `author: mixed`, new notes, renames, the trash), push payloads, JWT signing, sealed tokens |
+| Rust unit tests (`canvas-mobile`, `canvas-common`, `canvas-model`, `canvas-push`) | State machine, statuses, launches, forks, passive sessions, the reports inbox and its pages, the todo boards (the book from the bus snapshot, changes applied here and sent as the window's action and kept on top of books the service sent before it had them, field edits, the desktop's actions per todo, checklist edits, refusals, offline) and the notebook (pages, what may be edited, `author: mixed`, new notes, renames, the trash), push payloads, JWT signing, sealed tokens |
 | `crates/canvas-mobile/tests/end_to_end.rs` | The core against the mock over a real WebSocket: pairing, a shell typed into, reconnecting, the reports inbox across two phones, the todo boards and the notebook (boards from the snapshot, a change reaching the other phone, the notebook's root, folders with provenance, notes as safe pages, *Mark reviewed* on the note's revision), and edits across two phones: a note saved on its revision, a conflict when it changed meanwhile and *Keep mine*, an agent's note becoming mixed, new notes and folders, renames, the trash; todo fields, checklist add/reword/remove/tick, cancel and reopen, release |
-| XCTest (12 tests) | Core bridge, terminal helpers, the report view's lock-down against a local network listener, and a note page in it (app links to the app, web links asked about, nothing loaded) |
+| XCTest (14 tests) | Core bridge, terminal helpers, the report view's lock-down against a local network listener, a note page in it (app links to the app, web links asked about, nothing loaded), and a page loaded again before WebKit asked about the first (the newer one shows) |
 | XCUITest (9 tests, against two mocks) | Session list, canvas, typing into a shell, new session form and keyboard, two machines, subsessions, passive pause/resume, opening an HTML report; the Notebook (open a note, follow a `#note:` link, create a note, write and save it in the editor with the key row, see it, delete it) and Tasks (decline a proposal and reopen it, tick and untick a checklist item, create a todo, edit it, cancel it) |
 | CI (`.github/workflows/ci.yml`) | All of the above on macOS. Windows: clippy, the service's tests, the GUI self-tests and the parity suite |
 | By hand, on Thomas's iPhone 14 Pro | Pairing and daily use through real `*.devtunnels.ms` tunnels against the two Mac stand-ins |

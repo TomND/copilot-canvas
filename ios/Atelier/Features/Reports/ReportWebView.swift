@@ -77,8 +77,12 @@ final class ReportWebController: NSObject, WKNavigationDelegate, WKUIDelegate {
     var onFinish: (() -> Void)?
     /// Navigations cancelled (tests).
     private(set) var cancelled: [URL] = []
-    /// The page's own load, still to come.
+    /// The page's own loads are allowed until the latest has finished (a
+    /// page loaded again before WebKit asked about the first gets asked
+    /// about twice: a single allowance cancelled the newer one, leaving
+    /// the view blank).
     private var expecting = false
+    private var latest: WKNavigation?
 
     init(rules: WKContentRuleList, identifier: String = "reportPage") {
         webView = WKWebView(frame: .zero, configuration: ReportLockdown.configuration(rules: rules))
@@ -96,7 +100,7 @@ final class ReportWebController: NSObject, WKNavigationDelegate, WKUIDelegate {
     /// Shows a page (the core's sanitized document; tests also load raw HTML).
     func load(_ html: String) {
         expecting = true
-        webView.loadHTMLString(Self.appLinks(html), baseURL: nil)
+        latest = webView.loadHTMLString(Self.appLinks(html), baseURL: nil)
     }
 
     /// The scheme in-app links get: WebKit never asks about jumps within a
@@ -137,9 +141,8 @@ final class ReportWebController: NSObject, WKNavigationDelegate, WKUIDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
         let url = action.request.url
         let address = url?.absoluteString ?? ""
-        // The page itself (`loadHTMLString` without a base: about:blank), once.
+        // The page itself (`loadHTMLString` without a base: about:blank), while it loads.
         if expecting, action.navigationType == .other, address == "about:blank", action.targetFrame?.isMainFrame == true {
-            expecting = false
             decisionHandler(.allow)
             return
         }
@@ -162,6 +165,7 @@ final class ReportWebController: NSObject, WKNavigationDelegate, WKUIDelegate {
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if latest == nil || navigation === latest { expecting = false }
         onFinish?()
     }
 
