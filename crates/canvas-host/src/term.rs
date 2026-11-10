@@ -94,6 +94,10 @@ pub trait RemotePty: Send + Sync {
     /// The terminal exists at this size: its feed (output, gap resets, the
     /// exit) for the link.
     fn started(&self, _feed: RemoteFeed, _cols: u16, _rows: u16) {}
+    /// Linked and caught up (no replay under way): text may be typed in for the program.
+    fn settled(&self) -> bool {
+        true
+    }
 }
 
 /// Ends a remote terminal's program through its link (`force_kill`).
@@ -538,6 +542,11 @@ impl Terminal {
     /// Its PTY is in a VM session's guest.
     pub fn is_remote(&self) -> bool {
         self.remote.is_some()
+    }
+
+    /// A local terminal, or a remote one whose link is up and caught up.
+    pub fn remote_settled(&self) -> bool {
+        self.remote.as_ref().is_none_or(|remote| remote.settled())
     }
 
     /// Its size now (columns, rows).

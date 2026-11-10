@@ -71,7 +71,8 @@ fn append_log(home: &Path, event: &Event) {
 /// mid-progress, and you have not typed into it in the last 20 seconds.
 fn idle(shared: &Shared, session: &str) -> bool {
     let Some(term) = lock(&shared.terms).get(session).cloned() else { return false };
-    if !term.alive.load(Ordering::Acquire) {
+    // A VM box's terminal waits while its link is down or replaying.
+    if !term.alive.load(Ordering::Acquire) || !term.remote_settled() {
         return false;
     }
     let info = term.info();

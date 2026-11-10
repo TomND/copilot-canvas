@@ -41,6 +41,10 @@ use crate::paths::now_ms;
 
 /// Input kept until the satellite acknowledges it.
 const UNACKED: usize = 1 << 20;
+/// Typing while a VM resumes is kept (at most this much, this long) and sent
+/// once its satellite links again (D9); otherwise typing offline is refused.
+const RESUME_BUFFER: usize = 4 << 10;
+const RESUME_WAIT_MS: u64 = 30_000;
 const HEARTBEAT: Duration = Duration::from_secs(2);
 /// A link whose writer cannot take a message within this long is closed.
 const SEND: Duration = Duration::from_secs(5);
@@ -73,6 +77,8 @@ struct Link {
 }
 
 impl Link {
+    /// `io`: terminal I/O and what orders it (`Welcome`, `Spawn`, `Resync`,
+    /// input, sizes, stops) on the lane that goes first, in order; controls on the other.
     fn send(&self, io: bool, message: SatDown) -> bool {
         let lane = if io { &self.io } else { &self.other };
         if lane.send_timeout(ServiceMsg::Sat(Box::new(message)), SEND).is_err() {
@@ -112,6 +118,11 @@ struct RemoteState {
     exited: bool,
     /// A stop asked for while the link was down.
     stop: bool,
+    /// Until when typing is kept for a VM that resumes (ms; 0: not resuming).
+    resuming_until: u64,
+    /// The first input `seq` typed while the VM resumed, and when (dropped after [`RESUME_WAIT_MS`]).
+    buffered: Option<(u64, u64)>,
+    buffered_bytes: usize,
 }
 
 impl RemoteState {
@@ -209,6 +220,24 @@ impl Links {
             if state.exited || state.feed.is_none() {
                 continue;
             }
+            if self.link(&state.sandbox).is_some() {
+                state.buffered = None;
+                state.buffered_bytes = 0;
+            }
+            let resuming = intent.state == VmState::Resuming || (matches!(intent.state, VmState::Suspended | VmState::Suspending) && intent.pending == "resume");
+            if resuming {
+                state.resuming_until = now_ms() + RESUME_WAIT_MS;
+            }
+            // Typing kept for a resume that did not link in time is dropped, not typed much later.
+            if let Some((from, at)) = state.buffered
+                && now_ms().saturating_sub(at) > RESUME_WAIT_MS
+                && self.link(&state.sandbox).is_none()
+            {
+                state.unacked.retain(|(seq, _)| *seq < from);
+                state.unacked_bytes = state.unacked.iter().map(|(_, b)| b.len()).sum();
+                state.buffered = None;
+                state.buffered_bytes = 0;
+            }
             match intent.state {
                 VmState::Failed => state.exit(1, Some(format!("the VM could not be started: {}", intent.error))),
                 VmState::Deleted | VmState::Deleting => state.exit(1, Some("this session's VM was deleted".into())),
@@ -223,7 +252,7 @@ impl Links {
                         Some(link) => {
                             let spawn = SatDown::Spawn { term: remote.term.clone(), generation: state.generation, argv: intent.argv.clone(), env: intent.env.clone(), cwd: intent.cwd.clone(), cols: state.cols, rows: state.rows };
                             state.note(&format!("Starting {} in the VM ({})…", intent.agent, intent.sandbox));
-                            if link.send(false, spawn) {
+                            if link.send(true, spawn) {
                                 state.spawned = true;
                                 state.have = 0;
                                 let generation = state.generation;
@@ -329,7 +358,7 @@ impl Links {
             }
         }
         let welcome = WelcomeInfo { terms };
-        if !link.send(false, SatDown::Welcome { json: serde_json::to_string(&welcome).unwrap_or_default() }) {
+        if !link.send(true, SatDown::Welcome { json: serde_json::to_string(&welcome).unwrap_or_default() }) {
             return;
         }
         for remote in &mine {
@@ -396,7 +425,7 @@ impl Links {
                     // A gap: everything from what the hub has, once.
                     if !state.resyncing {
                         state.resyncing = true;
-                        link.send(false, SatDown::Resync { term, generation, have: state.have });
+                        link.send(true, SatDown::Resync { term, generation, have: state.have });
                     }
                 } else if end > state.have {
                     let fresh = bytes[(state.have - seq) as usize..].to_vec();
@@ -406,8 +435,11 @@ impl Links {
                     } else if !state.resyncing {
                         // The engine fell behind: the rest comes again.
                         state.resyncing = true;
-                        link.send(false, SatDown::Resync { term, generation, have: state.have });
+                        link.send(true, SatDown::Resync { term, generation, have: state.have });
                     }
+                } else if bytes.is_empty() && seq == state.have {
+                    // The satellite had nothing more: caught up.
+                    state.resyncing = false;
                 }
             }
             SatUp::Snapshot { seq, vt, .. } => {
@@ -478,8 +510,15 @@ impl RemotePty for Remote {
         let state = lock(&self.state);
         anyhow::ensure!(!state.exited, "the program has exited");
         anyhow::ensure!(state.spawned, "the VM is starting: input not sent");
-        self.current_link(&state).context("VM offline: input not sent")?;
+        if self.current_link(&state).is_none() {
+            anyhow::ensure!(now_ms() < state.resuming_until && state.buffered_bytes < RESUME_BUFFER, "VM offline: input not sent");
+        }
         Ok(())
+    }
+
+    fn settled(&self) -> bool {
+        let state = lock(&self.state);
+        state.spawned && !state.exited && !state.resyncing && self.current_link(&state).is_some()
     }
 
     fn input(&self, bytes: Vec<u8>) {
@@ -487,9 +526,20 @@ impl RemotePty for Remote {
         if state.exited || !state.spawned {
             return;
         }
+        let linked = self.current_link(&state).is_some();
         for piece in bytes.chunks(SAT_IO_CHUNK) {
             if state.unacked_bytes + piece.len() > UNACKED {
                 return;
+            }
+            if !linked {
+                // Kept for a resuming VM only (`accepting` refused the rest).
+                if now_ms() >= state.resuming_until || state.buffered_bytes + piece.len() > RESUME_BUFFER {
+                    return;
+                }
+                state.buffered_bytes += piece.len();
+                if state.buffered.is_none() {
+                    state.buffered = Some((state.next_seq + 1, now_ms()));
+                }
             }
             state.next_seq += 1;
             let seq = state.next_seq;
@@ -537,5 +587,226 @@ impl RemotePty for Remote {
         if !state.spawned {
             state.shown.clear();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use canvas_common::protocol::{CAP_SATELLITE, ClientInfo, Input};
+    use canvas_common::sat::TermHeld;
+    use canvas_host::emulator::Engine;
+    use canvas_host::term::{Hooks, RemoteSpawn, Terminal};
+    use std::net::{Shutdown, TcpListener, TcpStream};
+    use std::time::Instant;
+
+    const A: &str = "sbx-aaaaaaaaaaaa";
+    const B: &str = "sbx-bbbbbbbbbbbb";
+    const BOX: &str = "0b1e5ca1-0000-4000-8000-0000000071e5";
+
+    fn home() -> PathBuf {
+        let home = std::env::temp_dir().join(format!("atelier-link-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        home
+    }
+
+    fn links(home: &Path) -> Arc<Links> {
+        Links::new(home, Arc::new(|_| {}))
+    }
+
+    /// The satellite's end of a link the hub serves on a loopback socket.
+    struct Sat {
+        reader: FrameReader,
+        writer: FrameWriter,
+        socket: TcpStream,
+        served: std::thread::JoinHandle<Result<()>>,
+    }
+
+    impl Sat {
+        fn connect(links: &Arc<Links>, id: &str) -> Sat {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let socket = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (server, _) = listener.accept().unwrap();
+            let closing = server.try_clone().unwrap();
+            let link = SatelliteLink {
+                reader: FrameReader::new(Box::new(server.try_clone().unwrap())),
+                writer: FrameWriter::new(Box::new(server)),
+                closer: Closer::new(move || {
+                    let _ = closing.shutdown(Shutdown::Both);
+                }),
+                info: ClientInfo { remote_id: Some(id.into()), caps: CAP_SATELLITE, ..Default::default() },
+                websocket: false,
+            };
+            let served = std::thread::spawn({
+                let links = links.clone();
+                move || links.serve(link)
+            });
+            socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            Sat { reader: FrameReader::new(Box::new(socket.try_clone().unwrap())), writer: FrameWriter::new(Box::new(socket.try_clone().unwrap())), socket, served }
+        }
+
+        fn send(&mut self, up: SatUp) {
+            self.writer.send(&ClientMsg::Sat(Box::new(up))).unwrap();
+        }
+
+        fn hello(&mut self, sandbox: &str, terms: Vec<TermHeld>) {
+            let hello = HelloInfo { sandbox: sandbox.into(), build: "test".into(), platform: "linux".into(), home: "/home/agent".into(), terms };
+            self.send(SatUp::Hello { version: SAT_PROTOCOL, caps: 0, json: serde_json::to_string(&hello).unwrap() });
+        }
+
+        /// The hub's next message to the satellite (heartbeats skipped).
+        fn next(&mut self) -> SatDown {
+            loop {
+                match self.reader.recv::<ServiceMsg>().unwrap().expect("the link ended") {
+                    ServiceMsg::Sat(down) => return *down,
+                    ServiceMsg::Heartbeat { .. } => {}
+                    other => panic!("a satellite got a client's message: {other:?}"),
+                }
+            }
+        }
+
+        /// Drops the link and returns how serving it ended.
+        fn close(self) -> Result<()> {
+            let _ = self.socket.shutdown(Shutdown::Both);
+            self.served.join().unwrap()
+        }
+    }
+
+    /// A box's terminal adopted on sandbox `sandbox` at generation 7 (its intent says it runs there).
+    fn adopted(home: &Path, links: &Arc<Links>, sandbox: &str) -> Arc<Terminal> {
+        let mut intent = launch::Intent { r#box: BOX.into(), agent: "copilot".into(), sandbox: sandbox.into(), state: VmState::Running, terminal: 7, ..Default::default() };
+        launch::save(home, &mut intent).unwrap();
+        let made = Arc::new(Mutex::new(None));
+        links.adopt(|id, remote| {
+            let (pump, _) = bounded(1);
+            let (exited, _) = crossbeam_channel::unbounded();
+            let (clipboard, _) = bounded(1);
+            let (changed, _) = bounded(16);
+            let hooks = Hooks { pump, exited, clipboard, bytes: Default::default(), changed, notify: None, raw: None };
+            let (terminal, feed) = Terminal::spawn_remote(RemoteSpawn { id, cols: 60, rows: 8, copilot: true, engine: Engine::Alacritty }, hooks, remote.clone());
+            remote.started(feed, 60, 8);
+            *lock(&made) = Some(terminal);
+        });
+        lock(&made).take().expect("adopted")
+    }
+
+    fn wait_until(what: &str, mut ok: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ok() {
+            assert!(Instant::now() < deadline, "{what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_satellite_is_served_only_as_its_own_sandbox_and_hello_comes_first() {
+        let home = home();
+        let links = links(&home);
+        let minted = super::super::store::Satellites::new(&home).mint(A).unwrap();
+        let mut sat = Sat::connect(&links, &minted.id);
+        sat.writer.send(&ClientMsg::Heartbeat).unwrap();
+        assert!(sat.close().unwrap_err().to_string().contains("Hello"));
+        let mut sat = Sat::connect(&links, &minted.id);
+        sat.hello(B, Vec::new());
+        assert!(sat.close().unwrap_err().to_string().contains("not its own"));
+        let sat = Sat::connect(&links, "sat-0000000000000000");
+        assert!(sat.close().unwrap_err().to_string().contains("has no sandbox"));
+        // Its own sandbox: the hub's first frame is the satellite's Welcome, nothing a client gets.
+        let mut sat = Sat::connect(&links, &minted.id);
+        sat.hello(A, Vec::new());
+        assert!(matches!(sat.next(), SatDown::Welcome { .. }));
+        assert!(links.linked(A) && !links.linked(B));
+        sat.close().unwrap();
+        assert!(!links.linked(A));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn output_is_taken_in_order_and_input_is_numbered_until_acknowledged() {
+        let home = home();
+        let links = links(&home);
+        let minted = super::super::store::Satellites::new(&home).mint(A).unwrap();
+        let terminal = adopted(&home, &links, A);
+        assert!(terminal.send_input(&Input::Raw(b"x".to_vec())).unwrap_err().to_string().contains("VM offline"), "no link yet");
+        let mut sat = Sat::connect(&links, &minted.id);
+        sat.hello(A, vec![TermHeld { term: BOX.into(), generation: 7, end: 0, alive: true, input_acked: 0 }]);
+        let SatDown::Welcome { json } = sat.next() else { panic!("Welcome first") };
+        let welcome: WelcomeInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(welcome.terms, [TermHave { term: BOX.into(), generation: 7, have: 0 }]);
+
+        let output = |seq: u64, generation: u64, text: &str| SatUp::Output { term: BOX.into(), generation, seq, bytes: text.as_bytes().to_vec() };
+        sat.send(output(0, 7, "hello "));
+        sat.send(output(20, 7, "gap"));
+        assert!(matches!(sat.next(), SatDown::Resync { have: 6, generation: 7, .. }), "a gap asks for what the hub lacks");
+        sat.send(output(3, 7, "lo world"));
+        sat.send(output(11, 8, " stale"));
+        wait_until("the overlap is trimmed", || terminal.snapshot().is_some_and(|s| s.text().contains("hello world")));
+        std::thread::sleep(Duration::from_millis(50));
+        let text = terminal.snapshot().unwrap().text();
+        assert!(!text.contains("lolo") && !text.contains("stale"), "{text:?}");
+
+        terminal.send_input(&Input::Raw(b"ls\r".to_vec())).unwrap();
+        assert!(matches!(sat.next(), SatDown::Input { seq: 1, ref bytes, .. } if bytes == b"ls\r"));
+        sat.close().unwrap();
+        assert!(terminal.send_input(&Input::Raw(b"y".to_vec())).unwrap_err().to_string().contains("VM offline"), "refused while the link is down");
+
+        // Back: what the hub has, then the input not acknowledged, again.
+        let mut sat = Sat::connect(&links, &minted.id);
+        sat.hello(A, vec![TermHeld { term: BOX.into(), generation: 7, end: 11, alive: true, input_acked: 0 }]);
+        let SatDown::Welcome { json } = sat.next() else { panic!("Welcome first") };
+        assert_eq!(serde_json::from_str::<WelcomeInfo>(&json).unwrap().terms[0].have, 11);
+        assert!(matches!(sat.next(), SatDown::Input { seq: 1, .. }), "sent again until acknowledged");
+        sat.send(SatUp::InputAck { term: BOX.into(), generation: 7, seq: 1 });
+        sat.send(SatUp::Exit { term: BOX.into(), generation: 7, code: 3, json: "{}".into() });
+        wait_until("the program's exit reaches the terminal", || !terminal.alive.load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(*terminal.raw_exit_code.lock().unwrap(), Some(3));
+        wait_until("the launch forgets the terminal", || launch::load(&home, BOX).unwrap().unwrap().terminal == 0);
+        sat.close().unwrap();
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_satellite_naming_another_sandboxs_terminal_or_sending_a_clients_message_is_closed() {
+        let home = home();
+        let links = links(&home);
+        let store = super::super::store::Satellites::new(&home);
+        let (a, b) = (store.mint(A).unwrap(), store.mint(B).unwrap());
+        let _terminal = adopted(&home, &links, A);
+        let mut sat = Sat::connect(&links, &b.id);
+        sat.hello(B, Vec::new());
+        assert!(matches!(sat.next(), SatDown::Welcome { .. }));
+        sat.send(SatUp::Output { term: BOX.into(), generation: 7, seq: 0, bytes: b"not mine".to_vec() });
+        let error = sat.served.join().unwrap().unwrap_err().to_string();
+        assert!(error.contains("not its sandbox's"), "{error}");
+        let mut sat = Sat::connect(&links, &a.id);
+        sat.hello(A, Vec::new());
+        assert!(matches!(sat.next(), SatDown::Welcome { .. }));
+        sat.writer.send(&ClientMsg::Input { id: BOX.into(), input: Input::Raw(b"x".to_vec()) }).unwrap();
+        assert!(sat.served.join().unwrap().unwrap_err().to_string().contains("client's message"));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn typing_while_a_vm_resumes_is_kept_and_sent_once_it_links_and_the_mailbox_waits_for_the_replay() {
+        let home = home();
+        let links = links(&home);
+        let minted = super::super::store::Satellites::new(&home).mint(A).unwrap();
+        let terminal = adopted(&home, &links, A);
+        launch::update(&home, BOX, |i| i.state = VmState::Suspended).unwrap();
+        links.progress();
+        assert!(terminal.send_input(&Input::Raw(b"x".to_vec())).unwrap_err().to_string().contains("VM offline"), "a suspended VM refuses typing");
+        launch::update(&home, BOX, |i| i.pending = "resume".into()).unwrap();
+        links.progress();
+        terminal.send_input(&Input::Raw(b"abc".to_vec())).unwrap();
+        assert!(!terminal.remote_settled(), "no link: the mailbox waits");
+        let mut sat = Sat::connect(&links, &minted.id);
+        sat.hello(A, vec![TermHeld { term: BOX.into(), generation: 7, end: 0, alive: true, input_acked: 0 }]);
+        assert!(matches!(sat.next(), SatDown::Welcome { .. }));
+        assert!(matches!(sat.next(), SatDown::Input { seq: 1, ref bytes, .. } if bytes == b"abc"), "kept and sent once linked");
+        assert!(!terminal.remote_settled(), "replaying: the mailbox still waits");
+        sat.send(SatUp::Output { term: BOX.into(), generation: 7, seq: 0, bytes: Vec::new() });
+        wait_until("caught up", || terminal.remote_settled());
+        sat.close().unwrap();
+        let _ = std::fs::remove_dir_all(home);
     }
 }

@@ -224,6 +224,10 @@ impl Terms {
         };
         let mut state = lock(&term.state);
         match state.ring.since(have) {
+            // Nothing new: an empty piece at `have` tells the hub it is caught up.
+            Some(bytes) if bytes.is_empty() => {
+                let _ = lanes.io.send(SatUp::Output { term: term.id.clone(), generation, seq: have, bytes });
+            }
             Some(bytes) => send_output(&lanes, &term, have, &bytes),
             None => {
                 if let Some((screen, fed)) = term.terminal.snapshot_at() {
