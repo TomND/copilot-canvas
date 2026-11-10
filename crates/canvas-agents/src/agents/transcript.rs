@@ -22,12 +22,13 @@ const TAIL: u64 = 2 << 20;
 /// OpenCode messages read at most (the newest).
 const OPENCODE_MESSAGES: usize = 150;
 
-/// The transcript a `Request::Transcript` asks for (Copilot's history is in `sessions_dir`).
-pub fn read(sessions_dir: &Path, agent: AgentKind, session: &str, parent: Option<&str>, agent_key: Option<&str>, cwd: Option<&str>, limit: usize) -> Result<Transcript> {
+/// The transcript a `Request::Transcript` asks for (`root`: Copilot's history
+/// folder, or Claude Code's data folder: this machine's or a VM mirror's).
+pub fn read(root: &Path, agent: AgentKind, session: &str, parent: Option<&str>, agent_key: Option<&str>, cwd: Option<&str>, limit: usize) -> Result<Transcript> {
     let mut transcript = match agent {
-        AgentKind::Copilot => copilot(sessions_dir, session, agent_key)?,
+        AgentKind::Copilot => copilot(root, session, agent_key)?,
         AgentKind::OpenCode => opencode(&super::opencode_history::db_path(), session, parent)?,
-        AgentKind::Claude => claude(&super::claude_history::claude_dir(), session, agent_key, cwd)?,
+        AgentKind::Claude => claude(root, session, agent_key, cwd)?,
     };
     transcript.keep_newest(limit);
     Ok(transcript)

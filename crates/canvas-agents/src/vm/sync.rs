@@ -117,6 +117,20 @@ pub struct Guest {
 /// The guest's Copilot MCP configuration (`mcp-config.json`): each server of
 /// the box's preset that has a policy, at the guest's MCP proxy, for this box
 /// (`None`: no preset, no proxy, or no server).
+/// The group's instructions file in its `instructions/<group>` root.
+pub const GROUP_INSTRUCTIONS: &str = "canvas-group.instructions.md";
+
+/// Claude Code's MCP configuration in the guest (under the roots): the
+/// box's preset at the satellite's proxy (`--mcp-config`).
+pub const CLAUDE_MCP: &str = "agent-mcp/claude.json";
+
+/// [`mcp_config`] for Claude Code (`type: http` with a URL, no tool list).
+pub fn claude_mcp_config(pack: &Pack, intent: &Intent, mcp_port: u16) -> Option<String> {
+    let copilot: serde_json::Value = serde_json::from_str(&mcp_config(pack, intent, mcp_port)?).ok()?;
+    let servers: serde_json::Map<String, serde_json::Value> = copilot["mcpServers"].as_object()?.iter().map(|(name, server)| (name.clone(), serde_json::json!({ "type": "http", "url": server["url"] }))).collect();
+    serde_json::to_string_pretty(&serde_json::json!({ "mcpServers": servers })).ok()
+}
+
 pub fn mcp_config(pack: &Pack, intent: &Intent, mcp_port: u16) -> Option<String> {
     let preset = intent.placement.mcp.as_deref().filter(|p| !p.is_empty())?;
     let servers: Vec<&String> = pack.mcp.presets.get(preset)?.iter().filter(|s| pack.mcp.servers.contains_key(*s)).collect();
@@ -150,6 +164,10 @@ pub fn roots_for(home: &Path, pack: &Pack, user_home: &Path, guest: &Guest, inte
     {
         let target = format!("{}/.copilot", guest.home.trim_end_matches(['/', '\\']));
         roots.push(Root { id: "mcp".into(), target, files: [("mcp-config.json".to_owned(), Source::Bytes(config.into_bytes()))].into(), ..Default::default() });
+    }
+    // Claude Code's: a file under the roots that its command line names.
+    if let Some(config) = intents.iter().find_map(|i| claude_mcp_config(pack, i, guest.mcp_port)) {
+        roots.push(Root { id: "agent-mcp".into(), files: [("claude.json".to_owned(), Source::Bytes(config.into_bytes()))].into(), ..Default::default() });
     }
     let plugin = folder(&home.join("plugin"), &[]);
     if !plugin.is_empty() {
@@ -200,7 +218,7 @@ pub fn roots_for(home: &Path, pack: &Pack, user_home: &Path, guest: &Guest, inte
         roots.push(Root { id: format!("notes/{slug}"), files: notes, writes: Some(writes), folders: vec![docs.to_owned(), outputs.to_owned()], ..Default::default() });
         let guest_notes = format!("{}/notes/{slug}", guest_roots.trim_end_matches('/'));
         let text = canvas_model::doc::group_instructions_text(&intent.group_name, &format!("{guest_notes}/{docs}"), &format!("{guest_notes}/{outputs}"));
-        roots.push(Root { id: format!("instructions/{slug}"), files: [("canvas-group.instructions.md".to_owned(), Source::Bytes(text.into_bytes()))].into(), ..Default::default() });
+        roots.push(Root { id: format!("instructions/{slug}"), files: [(GROUP_INSTRUCTIONS.to_owned(), Source::Bytes(text.into_bytes()))].into(), ..Default::default() });
     }
     for (n, map) in pack.paths.iter().enumerate().filter(|(_, m)| m.mode != "none") {
         let dir = PathBuf::from(&map.host);
@@ -340,7 +358,12 @@ mod tests {
         assert_eq!(config["mcpServers"].as_object().unwrap().keys().collect::<Vec<_>>(), ["forge"], "a server without a policy is not offered");
         assert_eq!(config["mcpServers"]["forge"]["url"], "http://127.0.0.1:48200/mcp/0b1e5ca1-0000-4000-8000-0000000051c0/forge");
         assert_eq!(mcp_config(&pack, &intent, 0), None, "no proxy in the guest");
+        // Claude Code's: the same servers, `type: http` and a URL only, a file under the roots.
+        let claude: serde_json::Value = serde_json::from_str(&claude_mcp_config(&pack, &intent, 48200).unwrap()).unwrap();
+        assert_eq!(claude["mcpServers"]["forge"], serde_json::json!({ "type": "http", "url": "http://127.0.0.1:48200/mcp/0b1e5ca1-0000-4000-8000-0000000051c0/forge" }));
         let roots = roots_for(Path::new("/nowhere"), &pack, Path::new("/nowhere"), &Guest { roots: "/home/agent/.atelier/vm/roots".into(), home: "/home/agent".into(), mcp_port: 48200 }, &[intent]);
         assert_eq!((roots[0].id.as_str(), roots[0].target.as_str()), ("mcp", "/home/agent/.copilot"));
+        assert_eq!((roots[1].id.as_str(), roots[1].target.as_str()), ("agent-mcp", ""), "under the roots");
+        assert!(roots[1].files.contains_key("claude.json") && CLAUDE_MCP == "agent-mcp/claude.json");
     }
 }

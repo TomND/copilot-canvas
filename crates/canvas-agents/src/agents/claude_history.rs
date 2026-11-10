@@ -107,6 +107,25 @@ impl PidFile {
     }
 }
 
+/// What a mirrored Claude history's live sessions are (its pid files as the
+/// guest wrote them; the guest says which are alive).
+pub type LiveSessions = std::sync::Arc<dyn Fn() -> HashMap<String, PidFile> + Send + Sync>;
+
+/// A mirror's pid files by session id, live or not (their pids are another
+/// machine's): the caller keeps those its guest reports live.
+pub fn mirrored_pid_files(dir: &Path) -> HashMap<String, PidFile> {
+    let mut out: HashMap<String, PidFile> = HashMap::new();
+    let Ok(entries) = std::fs::read_dir(dir.join("sessions")) else { return out };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let Some(file) = std::fs::read_to_string(entry.path()).ok().and_then(|t| PidFile::parse(&t)) else { continue };
+        if !crate::index::is_session_id(&file.session_id) || out.get(&file.session_id).is_some_and(|o| o.started_ms >= file.started_ms) {
+            continue;
+        }
+        out.insert(file.session_id.clone(), file);
+    }
+    out
+}
+
 /// Live pid files by session id (the newest process wins). Files that do not
 /// parse, name another pid or carry an invalid session id are ignored.
 pub fn live_sessions(dir: &Path) -> HashMap<String, PidFile> {
@@ -517,6 +536,9 @@ impl Entry {
 /// Claude Code's sessions as a [`super::History`].
 pub struct ClaudeHistory {
     dir: PathBuf,
+    /// Who says which sessions are live (a VM mirror: the guest's satellite);
+    /// `None`: this machine's pid files.
+    live: Option<LiveSessions>,
     entries: HashMap<String, Entry>,
     git_roots: HashMap<String, String>,
     /// Tracked ids without a transcript (other agents' sessions), until the next full scan.
@@ -634,7 +656,13 @@ fn parse_title_tail(path: &Path, size: u64, meta: &mut Meta) {
 
 impl ClaudeHistory {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir, entries: HashMap::new(), git_roots: HashMap::new(), unknown: HashSet::new(), last_full_scan: None, warnings: Vec::new() }
+        Self { dir, live: None, entries: HashMap::new(), git_roots: HashMap::new(), unknown: HashSet::new(), last_full_scan: None, warnings: Vec::new() }
+    }
+
+    /// A mirrored history (a VM session's): its live sessions as `live` says.
+    pub fn with_live(mut self, live: LiveSessions) -> Self {
+        self.live = Some(live);
+        self
     }
 
     pub fn poll(&mut self, tracked: &HashSet<String>, full_every: std::time::Duration) -> (Vec<SessionSummary>, Vec<String>) {
@@ -646,7 +674,10 @@ impl ClaudeHistory {
             self.unknown.clear();
             self.scan(tracked, &mut seen);
         }
-        let live = live_sessions(&self.dir);
+        let live = match &self.live {
+            Some(live) => live(),
+            None => live_sessions(&self.dir),
+        };
         // Tracked sessions may be new (just launched) and not yet in a full scan.
         for id in tracked.iter().filter(|id| crate::index::is_session_id(id)) {
             let known = self.entries.contains_key(id) || live.contains_key(id);

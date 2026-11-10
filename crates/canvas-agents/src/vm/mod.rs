@@ -127,7 +127,9 @@ pub fn action_with(home: &Path, id: &str, op: VmOp, git: GitCheck) -> anyhow::Re
             }
             VmOp::RetryStart if matches!(intent.state, VmState::Failed | VmState::Lost) => {
                 // Its conversation comes along when the hub mirrored it (a resume on a new VM).
-                let mirrored = thin::mirror_dir(home, &intent.sandbox).join("copilot").join(&intent.r#box).join("events.jsonl").is_file();
+                let mirror = thin::mirror_dir(home, &intent.sandbox);
+                let claude = std::fs::read_dir(mirror.join("claude").join("projects")).into_iter().flatten().flatten().any(|e| e.path().join(format!("{}.jsonl", intent.r#box)).is_file());
+                let mirrored = claude || mirror.join("copilot").join(&intent.r#box).join("events.jsonl").is_file();
                 (intent.resume_from, intent.resume_session) = if !intent.sandbox.is_empty() && mirrored { (intent.sandbox.clone(), intent.r#box.clone()) } else { Default::default() };
                 intent.fence += 1;
                 intent.state = VmState::Claiming;

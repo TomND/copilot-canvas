@@ -130,6 +130,13 @@ fn write_private(path: &Path, contents: &[u8]) -> Result<()> {
 impl Claude {
     /// The command for a launch against a given Claude Code home.
     pub fn command_in(&self, home: &ClaudeHome, id: &str, launch: &AgentLaunch, integration: &Integration) -> Result<Command> {
+        let (args, env) = self.args_env(home, id, launch, integration)?;
+        Ok(Command { program: self.program()?, args, env })
+    }
+
+    /// Claude Code's arguments and environment for a launch (its program is
+    /// found where the launch runs: here, or the guest's own `claude`).
+    pub fn args_env(&self, home: &ClaudeHome, id: &str, launch: &AgentLaunch, integration: &Integration) -> Result<super::ArgsEnv> {
         let session = launch.native_id.as_deref().unwrap_or(id);
         anyhow::ensure!(is_session_id(session), "refusing to launch an invalid session id");
         let mut args: Vec<String> = Vec::new();
@@ -221,7 +228,7 @@ impl Claude {
         // and VS Code; the canvas terminal is neither.
         env.extend([("-WT_SESSION".to_owned(), String::new()), ("-TERM_PROGRAM".to_owned(), String::new()), ("ConEmuANSI".to_owned(), "ON".to_owned())]);
         env.extend(launch.env.iter().cloned());
-        Ok(Command { program: self.program()?, args, env })
+        Ok((args, env))
     }
 }
 

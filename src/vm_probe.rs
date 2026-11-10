@@ -168,6 +168,8 @@ struct Watch {
     doc: Option<(String, u64)>,
     /// Subsessions the service told of: (parent, child, name).
     subsessions: Vec<(String, String, String)>,
+    /// The activities the second box's sessions summary went through.
+    second_activities: Vec<crate::protocol::Activity>,
 }
 
 impl Watch {
@@ -184,9 +186,10 @@ impl Watch {
                 Ok(ServiceMsg::Frame8(frame)) if frame.id == BOX => self.view.apply8(frame),
                 Ok(ServiceMsg::Frame8(frame)) if frame.id == SECOND => self.second.apply8(frame),
                 Ok(ServiceMsg::Sessions { upsert, .. }) => {
-                    for s in upsert.into_iter().filter(|s| s.id == BOX) {
-                        if self.activities.last() != Some(&s.activity) {
-                            self.activities.push(s.activity);
+                    for s in upsert {
+                        let seen = if s.id == BOX { &mut self.activities } else if s.id == SECOND { &mut self.second_activities } else { continue };
+                        if seen.last() != Some(&s.activity) {
+                            seen.push(s.activity);
                         }
                     }
                 }
@@ -311,7 +314,7 @@ fn scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
             Err(_) => std::thread::sleep(Duration::from_millis(200)),
         }
     };
-    let mut watch = Watch { conn, view: TermView::default(), second: TermView::default(), activities: Vec::new(), errors: Vec::new(), doc: None, subsessions: Vec::new() };
+    let mut watch = Watch { conn, view: TermView::default(), second: TermView::default(), activities: Vec::new(), errors: Vec::new(), doc: None, subsessions: Vec::new(), second_activities: Vec::new() };
     let routing = serde_json::json!({
         "canvas": CANVAS, "groups": [], "members": {}, "passive": [], "no_messages": [],
         "names": { BOX: "VM box", PLACED: "Placed box" }, "agents": { BOX: "copilot", PLACED: "copilot" },
@@ -518,6 +521,8 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     let pack = write_pool_pack(root, &bare, port)?;
     let local = canvas_agents::vm::local::Local::new(root.join("pool-sandboxes"));
     let copilot = root.join("fake-cli").join(canvas_sys::host::exe_name("copilot"));
+    let claude = root.join("fake-cli").join(canvas_sys::host::exe_name("claude"));
+    alias(exe, &claude)?;
     let work = root.join("work");
     let home = &instance.home;
     let hub_env: Vec<(String, String)> = vec![("ATELIER_HOME".into(), home.display().to_string()), ("ATELIER_VM_PACK".into(), pack.display().to_string()), (PROBE_INSTANCE.into(), instance.name.clone())];
@@ -542,6 +547,7 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     let env = [
         ("ATELIER_VM_PACK", pack.display().to_string()),
         ("ATELIER_COPILOT", copilot.display().to_string()),
+        ("ATELIER_CLAUDE", claude.display().to_string()),
         (crate::fake_copilot::ENV, "1".into()),
         ("COPILOT_HOME", copilot_home.display().to_string()),
         ("ATELIER_SELFTEST", "1".into()),
@@ -560,7 +566,7 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
             Err(_) => std::thread::sleep(Duration::from_millis(200)),
         }
     };
-    let mut watch = Watch { conn, view: TermView::default(), second: TermView::default(), activities: Vec::new(), errors: Vec::new(), doc: None, subsessions: Vec::new() };
+    let mut watch = Watch { conn, view: TermView::default(), second: TermView::default(), activities: Vec::new(), errors: Vec::new(), doc: None, subsessions: Vec::new(), second_activities: Vec::new() };
 
     step("the manager builds the repository's image in a builder VM and keeps a warm VM in the pool");
     let ready = || store::load_images(home).map(|f| f.images.into_iter().filter(|i| i.repo == "probe-app" && i.state == "ready").collect::<Vec<_>>()).unwrap_or_default();
@@ -755,7 +761,7 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
             Err(_) => std::thread::sleep(Duration::from_millis(200)),
         }
     };
-    watch = Watch { conn, view: TermView::default(), second: TermView::default(), activities: Vec::new(), errors: Vec::new(), doc: None, subsessions: Vec::new() };
+    watch = Watch { conn, view: TermView::default(), second: TermView::default(), activities: Vec::new(), errors: Vec::new(), doc: None, subsessions: Vec::new(), second_activities: Vec::new() };
     watch.conn.tx.send(ClientMsg::Subscribe8 { ids: vec![BOX.into()], focused: Some(BOX.into()) })?;
     anyhow::ensure!(
         watch.pump(Instant::now() + Duration::from_secs(30), |w| w.screen().contains("typed-through-the-link") && w.screen().contains("Fake Copilot")),
@@ -836,5 +842,39 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     let (ok, out) = cli(exe, &["vm", "delete", BOX, "--yes", "--discard"], &hub_env)?;
     anyhow::ensure!(ok, "vm delete: {out}");
     wait_file("the new VM was not deleted", 20, || local.get(&resumed.sandbox).is_err())?;
+
+    step("a Claude Code box runs in a VM: its command line names the synced roots and its MCP file there, its status follows its mirrored transcript and status file, its transcript is read from the mirror");
+    let mut claude_node = node.clone();
+    claude_node.id = SECOND.into();
+    claude_node.name = "Claude box".into();
+    claude_node.agent = Some("claude".into());
+    if let Some(canvas_model::vm::Placement::Vm(vm)) = claude_node.placement.as_mut() {
+        vm.branch = Some("atelier/claude".into());
+    }
+    let routing = serde_json::json!({ "canvas": CANVAS, "groups": [], "members": {}, "passive": [], "no_messages": [], "names": { SECOND: "Claude box" }, "agents": { SECOND: "claude" } });
+    watch.conn.tx.send(ClientMsg::Routing { json: routing.to_string() })?;
+    let launch = canvas_model::launch::agent_launch(&claude_node, &Default::default(), Some(&group), None, None, false);
+    watch.conn.tx.send(ClientMsg::Subscribe8 { ids: vec![SECOND.into()], focused: Some(SECOND.into()) })?;
+    watch.conn.tx.send(ClientMsg::Launch { id: SECOND.into(), kind: LaunchKind::Agent(Box::new(launch)), cwd: work.display().to_string(), cols: 100, rows: 30 })?;
+    let second_screen = |w: &Watch| w.second.lines.iter().map(|row| row.iter().map(|r| r.text.as_str()).collect::<String>()).collect::<Vec<_>>().join("\n");
+    anyhow::ensure!(watch.pump(Instant::now() + Duration::from_secs(60), |w| second_screen(w).contains("Fake Copilot")), "Claude Code did not start in its VM; errors {:?}:\n{}", watch.errors, second_screen(&watch));
+    let claude_intent = canvas_agents::vm::launch::load(home, SECOND)?.context("the Claude box's launch")?;
+    anyhow::ensure!(claude_intent.agent == "claude" && claude_intent.argv.first().is_some_and(|a| a == "claude"), "the guest runs claude: {:?}", claude_intent.argv);
+    let argv = claude_intent.argv.join(" ");
+    anyhow::ensure!(argv.contains("--mcp-config %ROOTS%/agent-mcp/claude.json") && argv.contains("--append-system-prompt-file %ROOTS%/instructions/probe-group/") && argv.contains("--plugin-dir %ROOTS%/plugin"), "its command line: {argv}");
+    wait_file("Claude Code's MCP file in the guest", 20, || local.get_file(&claude_intent.sandbox, &format!("{roots}/agent-mcp/claude.json"), 64 << 10).is_ok_and(|b| String::from_utf8_lossy(&b).contains("/mcp/")))?;
+    watch.conn.tx.send(ClientMsg::Input { id: SECOND.into(), input: Input::Raw(b"claude-in-a-vm\r".to_vec()) })?;
+    use crate::protocol::Activity;
+    anyhow::ensure!(
+        watch.pump(Instant::now() + Duration::from_secs(40), |w| w.second_activities.contains(&Activity::Working) && w.second_activities.last() == Some(&Activity::Idle)),
+        "its status did not follow the guest (working, then idle): {:?}",
+        watch.second_activities
+    );
+    let backend = canvas_agents::backend::LocalBackend::new(canvas_agents::backend::Ctx::new(instance));
+    let transcript = canvas_model::rpc::Backend::call(&backend, canvas_model::rpc::Request::Transcript { agent: canvas_model::agent::AgentKind::Claude, session: SECOND.into(), parent: None, agent_key: None, cwd: None, limit: 50 })?;
+    anyhow::ensure!(format!("{transcript:?}").contains("typed in the fake"), "its transcript from the mirror: {transcript:?}");
+    let (ok, out) = cli(exe, &["vm", "delete", SECOND, "--yes", "--discard"], &hub_env)?;
+    anyhow::ensure!(ok, "vm delete: {out}");
+    wait_file("the Claude box's VM was not deleted", 20, || local.get(&claude_intent.sandbox).is_err())?;
     Ok(())
 }

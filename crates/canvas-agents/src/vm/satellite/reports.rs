@@ -42,7 +42,10 @@ pub fn proc_report(running: &[Running], root: &Path) -> ProcReport {
     let mut live: Vec<String> = std::fs::read_dir(root)
         .map(|e| e.flatten().filter_map(|e| e.file_name().to_str().map(str::to_owned)).filter(|id| crate::index::is_session_id(id)).filter(|id| crate::service::session_live(root, id)).collect())
         .unwrap_or_default();
+    // Claude Code's sessions running in the guest (their pid files, checked here where the pids are).
+    live.extend(crate::agents::claude_history::live_sessions(&super::super::lite::claude_root()).into_keys());
     live.sort();
+    live.dedup();
     report.live = live;
     report
 }

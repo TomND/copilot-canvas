@@ -128,6 +128,14 @@ impl crate::app::App {
     }
 }
 
+/// Why an agent's sessions do not run on a VM (the new-session dialog's error).
+pub fn refusal(kind: crate::agents::AgentKind) -> String {
+    format!(
+        "{} sessions do not run on a VM in this version: its history is a database and its live state a server on the machine it runs on, which the canvas cannot follow from a VM yet. Choose Copilot CLI or Claude Code, or run it on this machine.",
+        kind.label()
+    )
+}
+
 /// The toolbar's ☁ VMs (`None` without a pack): the VMs running, and
 /// whether something wants a look (a queued start, pack errors, a VM lost or
 /// failed, offline).
@@ -139,10 +147,11 @@ pub fn button_label(app: &crate::app::App) -> Option<(String, bool)> {
     Some((if running > 0 { format!(" {VM_GLYPH} VMs {running} ") } else { format!(" {VM_GLYPH} VMs ") }, attention))
 }
 
-/// The agents VM sessions run so far (Copilot CLI; docs/VM-SESSIONS-PLAN.md
-/// Phase 5 adds the others).
+/// The agents VM sessions run (Copilot CLI and Claude Code; OpenCode's
+/// history is a database and its TUI a server of this machine's: see
+/// docs/VM-SESSIONS.md, *As built*).
 pub fn runs_on_vm(kind: crate::agents::AgentKind) -> bool {
-    kind == crate::agents::AgentKind::Copilot
+    matches!(kind, crate::agents::AgentKind::Copilot | crate::agents::AgentKind::Claude)
 }
 
 #[cfg(test)]

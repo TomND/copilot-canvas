@@ -1160,14 +1160,14 @@ impl App {
         if name.is_empty() {
             name = Path::new(&folder).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Session".into());
         }
-        // A VM session: its repository, size and branch (only Copilot CLI so far).
+        // A VM session: its repository, size and branch (Copilot CLI and Claude Code).
         let placement = match dialog.vm.as_ref().filter(|vm| vm.on_vm) {
             Some(vm) => {
                 if vm.repo.is_empty() {
                     return Err("Choose the VM's repository (the VM pack lists them).".into());
                 }
                 if !crate::vms::runs_on_vm(dialog.agent) {
-                    return Err(format!("{} sessions cannot run on a VM yet; choose Copilot CLI, or run it on this machine.", dialog.agent.label()));
+                    return Err(crate::vms::refusal(dialog.agent));
                 }
                 let branch = match vm.branch.text.trim() {
                     "" => canvas_model::vm::branch_for_session(if dialog.name.text.trim().is_empty() { &name } else { dialog.name.text.trim() }),
