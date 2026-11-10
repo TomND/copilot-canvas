@@ -1054,7 +1054,7 @@ fn vms_panel() {
 /// set to a VM for the group; the canvas's stays this machine).
 #[test]
 fn group_defaults_run_on() {
-    let mut doc = canvas_core::demo::demo_doc(CWD);
+    let doc = canvas_core::demo::demo_doc(CWD);
     let group = doc.groups[0].id.clone();
     let mut app = app(doc, false);
     with_vm_pack(&mut app);

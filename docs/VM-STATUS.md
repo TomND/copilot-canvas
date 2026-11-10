@@ -148,7 +148,10 @@ owner's note that VM sessions are optional and local stays the default.
       `claim`, then `todo submit ID --pr URL`); a board's *Sessions start on* policy (`AgentPolicy::start_on_vm`, in
       its menu and panel, only with a pack) makes *Start a session on this…* open it on a VM; snapshots
       `tasks-start-on-vm`, `tasks-board-policy-vm`
-- [ ] VM-47 client exclusions · VM-48 parity rows 57–62 and the self-test step · VM-49 docs
+- [x] VM-47 client exclusions: idle auto-stop skips VM boxes (the service suspends them); a path link in a VM box's
+      terminal is the guest's (Ctrl+click or a force click shows it with *Copy path*, never opens it here); the VM
+      details show where it works in the guest (*In the VM*, from its history). The sidebar's folder rows are unchanged
+- [ ] VM-48 parity rows 57–62 and the self-test step · VM-49 docs
 - [ ] Exit: parity rows pass, snapshots read, self-test step in both clients
 
 ### 5: hardening

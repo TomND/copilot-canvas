@@ -657,7 +657,9 @@ impl App {
             && let Some(link) = self.layout.links.iter().find(|l| l.contains(x, y)).cloned()
             && (!link.terminal || modifiers.contains(Modifiers::CONTROL))
         {
-            self.open_link(&link.target);
+            if !(link.terminal && self.guest_link(&link.target, x, y)) {
+                self.open_link(&link.target);
+            }
             return;
         }
         let hit = self.layout.hits.iter().find(|(r, _)| rect_contains(*r, x, y)).map(|(_, h)| h.clone());

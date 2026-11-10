@@ -80,6 +80,24 @@ impl crate::app::App {
         );
     }
 
+    /// A path link at `(x, y)` in a VM box's terminal is the guest's: it is
+    /// shown with *Copy path* and never opened on this machine (true: shown).
+    pub fn guest_link(&mut self, target: &str, x: u16, y: u16) -> bool {
+        if crate::links::is_url(target) {
+            return false;
+        }
+        let Some(id) = self.layout.tiles.iter().find(|(_, outer, _)| crate::paint::rect_contains(*outer, x, y)).map(|(id, _, _)| id.clone()) else { return false };
+        let Some(node) = self.doc.node(&id).filter(|n| n.placement.as_ref().is_some_and(|p| p.is_vm())) else { return false };
+        self.modals.push(crate::dialogs::Modal::Confirm(crate::dialogs::Confirm {
+            title: format!("{VM_GLYPH} A path on the VM"),
+            body: vec![target.to_owned(), format!("It is in the VM of “{}”, not on this machine: Atelier does not open it here.", node.name)],
+            buttons: vec![("Copy path".into(), crate::dialogs::Action::Copy(target.to_owned())), ("Close".into(), crate::dialogs::Action::Nothing)],
+            sel: 0,
+        }));
+        self.needs_draw = true;
+        true
+    }
+
     /// A VM box's menu items: its VM's details, and Suspend or Resume.
     pub fn vm_menu_items(&self, node: &crate::doc::Node) -> Vec<crate::dialogs::MenuItem> {
         use canvas_model::vm::{VmOp, VmState};
@@ -213,6 +231,40 @@ mod tests {
         assert_eq!(placements[2], None, "the canvas's again");
         let sub = app.vm_choice(None, ".", Some(&parent)).unwrap();
         assert_eq!((sub.on_vm, sub.repo.as_str(), sub.size.as_str()), (true, "lib", "M"), "a VM of its own for its parent's repository");
+    }
+
+    #[test]
+    fn idle_auto_stop_leaves_vm_boxes_and_their_paths_stay_in_the_vm() {
+        use canvas_model::vm::{Placement, VmPlacement};
+        let (tx, sent) = crossbeam_channel::bounded(64);
+        let (_keep, service_rx) = crossbeam_channel::bounded(1);
+        let (app_tx, _events) = crossbeam_channel::unbounded();
+        let mut doc = crate::demo::demo_doc(".");
+        let mut other = doc.nodes[0].clone();
+        other.id = "here".into();
+        doc.nodes[0].id = "vm".into();
+        doc.nodes[0].placement = Some(Placement::Vm(Box::new(VmPlacement { repo: "app".into(), ..Default::default() })));
+        doc.nodes.push(other);
+        doc.idle_stop_minutes = 15;
+        let mut app = crate::app::App::new(crate::conn::Conn::detached(tx, service_rx), Arc::new(Service::default()), crate::sync::Opened::detached(doc), false, ".".into(), app_tx, None);
+        for id in ["vm", "here"] {
+            app.terms.insert(id.into(), canvas_common::protocol::TermInfo { id: id.into(), alive: true, copilot: true, started_ms: 1, last_output_ms: 1, ..Default::default() });
+        }
+        app.stop_idle_sessions();
+        let stopped: Vec<String> = sent.try_iter().filter_map(|m| match m {
+            canvas_common::protocol::ClientMsg::Stop { id, .. } => Some(id),
+            _ => None,
+        }).collect();
+        assert_eq!(stopped, ["here"], "the VM box is the service's to suspend");
+        // A path in the VM box's terminal is the guest's: shown with Copy path, not opened.
+        let rect = ratatui::layout::Rect::new(0, 0, 40, 10);
+        app.layout.tiles = vec![("vm".into(), rect, rect)];
+        assert!(!app.guest_link("https://example.com/x", 5, 5), "URLs open as anywhere");
+        assert!(app.guest_link("/home/agent/work/app/src/main.rs:3", 5, 5));
+        let Some(Modal::Confirm(shown)) = app.modals.pop() else { panic!("the path, shown") };
+        assert_eq!(shown.buttons[0].1, Action::Copy("/home/agent/work/app/src/main.rs:3".into()));
+        app.layout.tiles = vec![("here".into(), rect, rect)];
+        assert!(!app.guest_link("/home/me/x.rs", 5, 5), "a box on this machine opens its paths");
     }
 
     #[test]

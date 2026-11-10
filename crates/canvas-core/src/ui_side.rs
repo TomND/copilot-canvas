@@ -716,6 +716,10 @@ fn vm_section(app: &App, out: &mut Lines, node: &crate::doc::Node) -> Vec<(Strin
     let (_, color) = crate::vms::state_line(info, now).unwrap_or_default();
     out.spans(vec![(format!("{:<11}", "State"), fg(TEXT)), (state, fg(if info.state == VmState::Running && info.offline_ms == 0 { POSITIVE } else { color }))]);
     out.field("Repository", &info.repo);
+    // Where it works in the guest (its history says; paths in its terminal are the guest's too).
+    if let Some(cwd) = app.summary(node).map(|s| s.cwd.clone()).filter(|c| !c.is_empty() && Some(c) != node.cwd.as_ref()) {
+        out.field_left("In the VM", &cwd);
+    }
     out.field("Branch", &info.branch);
     out.field("Size", &info.size);
     if !info.sandbox.is_empty() {

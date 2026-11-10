@@ -2031,6 +2031,10 @@ impl App {
                 continue;
             }
             let Some(node) = self.doc.node(id) else { continue };
+            // A VM box is the service's to suspend (stopping its program would leave its VM running).
+            if node.placement.as_ref().is_some_and(|p| p.is_vm()) {
+                continue;
+            }
             // Never stop a session waiting for its next scheduled run: its schedule would end.
             if !matches!(self.node_status(node), Status::Idle | Status::Running) || self.node_loop(node).is_some() {
                 continue;
