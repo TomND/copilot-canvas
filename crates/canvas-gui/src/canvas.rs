@@ -932,6 +932,7 @@ mod tests {
             deck: None,
             hidden: None,
             badge: None,
+            vm: None,
         };
         let boxes = [model("a", 0.0, 0.0), model("b", 10.0, 2.0), model("c", 100.0, 0.0), model("d", 20.0, 3.0), model("e", 25.0, 3.5)];
         assert_eq!(box_levels(&boxes), [0, 1, 0, 2, 2], "capped at the top level");
@@ -1046,6 +1047,7 @@ mod tests {
             deck: None,
             hidden: None,
             badge: None,
+            vm: None,
         }
     }
 

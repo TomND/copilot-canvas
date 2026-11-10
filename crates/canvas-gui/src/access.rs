@@ -461,6 +461,7 @@ mod tests {
             deck: None,
             hidden: None,
             badge: None,
+            vm: None,
         };
         let idle = canvas_core::status::Status::Idle.label().to_owned();
         assert_eq!(super::box_description(&bx), idle);

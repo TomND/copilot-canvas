@@ -1,0 +1,76 @@
+# vm-box-states (124x26 cells)
+## cells (the TUI screen)
+ ◆ Atelier   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit
+    SESSIONS                     │▌·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+▌▤  / filter…                    │  ╭ ☁ Queued ──────────────────╮          ╭ ☁ Starting ────────────────╮          ╭ ☁ Runn
+                                 │  │ ☁ queued: 4 of 4 VMs are … │          │ ☁ starting…                │          │ ○ idle
+ ◷  ■ Queued                     │ ·│ canvas                     │     ·    │ canvas                     │ ·     ·  │ canvas
+    ■ Starting                   │  ╰────────────────────────────╯          ╰────────────────────────────╯          ╰───────
+ ⧉  ○ ↗ Running, idle            │
+    ■ Integration offline        │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+ ⌁  ■ Suspended                  │
+    ■ Resuming                   │
+ ✦  ■ Lost                       │ ·╭ ☁ Integration offline ─────╮     ·    ╭ ☁ Suspended ───────────────╮ ·     ·  ╭ ☁ Resu
+    ■ Deleting                   │  │ ☁ integration offline 5m   │          │ ☁ suspended                │          │ ☁ resu
+ ◈  ■ Failed                     │  │ canvas                     │          │ canvas                     │          │ canvas
+                                 │ ·╰────────────────────────────╯     ·    ╰────────────────────────────╯ ·     ·  ╰───────
+ ⇄                               │
+                                 │
+ ≡                               │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+ ✉                               │  ╭ ☁ Lost ────────────────────╮          ╭ ☁ Deleting ────────────────╮          ╭ ☁ Fail
+                                 │ ·│ ☁ VM lost                  │     ·    │ ☁ deleting its VM…         │ ·     ·  │ ☁ coul
+                                 │  │ canvas                     │          │ canvas                     │          │ canvas
+                                 │  ╰────────────────────────────╯          ╰────────────────────────────╯          ╰───────
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·
+                                 │
+                                 │
+ click view · double-click/Enter start · ] [ or Ctrl+F6 recent · drag move · empty-drag pan · Shift/right-drag select · wh…
+## gpu view model
+view cursor=none modal=none banner=None
+canvas area=34,1 90x24 origin=-1,0 scale=1 grid=true tick=0 empty=false
+box v-queued Session rect=1,1 30x4 prefix="☁ " name="Queued"
+  status=Stopped icon="■" label="stopped" line="☁ queued: 4 of 4 VMs are running" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #6e7681]
+  selected=false focused_term=false active=false
+  vm=queued
+box v-starting Session rect=41,1 30x4 prefix="☁ " name="Starting"
+  status=Stopped icon="■" label="stopped" line="☁ starting…" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #58a6ff]
+  selected=false focused_term=false active=false
+  vm=starting
+box v-running Session rect=81,1 30x4 prefix="☁ " name="Running, idle"
+  status=Idle icon="○" label="idle" line="○ idle" subtitle="canvas · main" elsewhere=true every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #8b949e]
+  selected=false focused_term=false active=false
+  vm=running
+box v-offline Session rect=1,9 30x4 prefix="☁ " name="Integration offline"
+  status=Stopped icon="■" label="stopped" line="☁ integration offline 5m" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #ffb000]
+  selected=false focused_term=false active=false
+  vm=integration offline
+box v-suspended Session rect=41,9 30x4 prefix="☁ " name="Suspended"
+  status=Stopped icon="■" label="stopped" line="☁ suspended" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #6e7681]
+  selected=false focused_term=false active=false
+  vm=suspended
+box v-resuming Session rect=81,9 30x4 prefix="☁ " name="Resuming"
+  status=Stopped icon="■" label="stopped" line="☁ resuming…" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #58a6ff]
+  selected=false focused_term=false active=false
+  vm=resuming
+box v-lost Session rect=1,17 30x4 prefix="☁ " name="Lost"
+  status=Stopped icon="■" label="stopped" line="☁ VM lost" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #e66100]
+  selected=false focused_term=false active=false
+  vm=lost
+box v-deleting Session rect=41,17 30x4 prefix="☁ " name="Deleting"
+  status=Stopped icon="■" label="stopped" line="☁ deleting its VM…" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #6e7681]
+  selected=false focused_term=false active=false
+  vm=deleting
+box v-failed Session rect=81,17 30x4 prefix="☁ " name="Failed"
+  status=Stopped icon="■" label="stopped" line="☁ could not start: the image is not built yet" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #e66100]
+  selected=false focused_term=false active=false
+  vm=failed

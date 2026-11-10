@@ -98,7 +98,7 @@ pub fn action_with(home: &Path, id: &str, op: VmOp, git: GitCheck) -> anyhow::Re
         let findings = barrier_findings(&repos, repos.len() > 1);
         let accepted = confirm.iter().any(|c| c == canvas_model::vm::DISCARD_ALL) || findings.iter().all(|f| confirm.contains(f));
         if !accepted {
-            anyhow::bail!("deleting this VM would lose: {} ({when}). Push what you keep first, or delete anyway to lose it", findings.join("; "));
+            anyhow::bail!("{}", canvas_model::vm::barrier_refusal(&findings, &when));
         }
     }
     let done = launch::update(home, id, |intent| -> anyhow::Result<String> {

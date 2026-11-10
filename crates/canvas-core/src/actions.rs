@@ -108,6 +108,7 @@ impl App {
             items.push(item("Inspect transcript", "", Action::Inspect(id.to_owned()), true));
         }
         items.push(item("New subsession", "S", Action::NewSession { at: None, parent: Some(id.to_owned()) }, true));
+        items.extend(self.vm_menu_items(node));
         items.extend(self.visual_node_items(id));
         items.extend(self.hide_items(id));
         items.push(item("Rename", "R", Action::Rename(Target::Node(id.to_owned())), true));
@@ -764,6 +765,12 @@ impl App {
             Action::Detach => self.quit = true,
             Action::UpdateService => self.confirm_update_service(),
             Action::McpServers(id) => self.open_mcp_picker(crate::dialogs::McpTarget::Node(id)),
+            Action::Vm { id, op } => self.vm_action(id, op),
+            Action::VmDelete(id) => self.ask_vm_delete(&id),
+            Action::VmDetails(id) => {
+                self.select_node(&id, false);
+                self.right_detail = Some(crate::side::RightDetail::Session(id));
+            }
             Action::NewPassive(group) => self.new_passive(&group),
             Action::PassiveDetail(id) => {
                 self.select_node(&id, false);

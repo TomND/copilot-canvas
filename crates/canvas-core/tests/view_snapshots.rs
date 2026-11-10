@@ -921,6 +921,82 @@ fn a_vm_box_is_marked() {
     check("vm-box-marker", &mut app, BOTH);
 }
 
+/// VM boxes in every state of their VM: the status line says it unless the
+/// VM simply runs (then the agent's own state shows).
+#[test]
+fn vm_box_states() {
+    use canvas_model::vm::{VmInfo, VmState};
+    let now = canvas_core::paths::now_ms();
+    let boxes = [
+        ("v-queued", "Queued", VmInfo { state: VmState::Queued, note: "4 of 4 VMs are running".into(), ..Default::default() }),
+        ("v-starting", "Starting", VmInfo { state: VmState::Starting, ..Default::default() }),
+        ("v-running", "Running, idle", VmInfo { state: VmState::Running, ..Default::default() }),
+        ("v-offline", "Integration offline", VmInfo { state: VmState::Running, offline_ms: now - 330_000, ..Default::default() }),
+        ("v-suspended", "Suspended", VmInfo { state: VmState::Suspended, ..Default::default() }),
+        ("v-resuming", "Resuming", VmInfo { state: VmState::Resuming, ..Default::default() }),
+        ("v-lost", "Lost", VmInfo { state: VmState::Lost, ..Default::default() }),
+        ("v-deleting", "Deleting", VmInfo { state: VmState::Deleting, ..Default::default() }),
+        ("v-failed", "Failed", VmInfo { state: VmState::Failed, note: "the image is not built yet".into(), ..Default::default() }),
+    ];
+    let mut doc = Doc::default();
+    for (i, (id, name, _)) in boxes.iter().enumerate() {
+        let mut n = node(id, name, 1 + (i as i32 % 3) * 40, 1 + (i as i32 / 3) * 8);
+        n.placement = Some(canvas_model::vm::Placement::Vm(Box::new(canvas_model::vm::VmPlacement { repo: "contoso-app".into(), ..Default::default() })));
+        doc.nodes.push(n);
+    }
+    doc.view.x = -1;
+    doc.view.y = 0;
+    let mut app = app(doc, false);
+    with_vm_pack(&mut app);
+    let view = app.bus.vm.as_mut().unwrap();
+    for (id, _, info) in boxes {
+        view.boxes.insert(id.into(), info);
+    }
+    app.sessions.insert("v-running".into(), summary("v-running", Activity::Idle, true));
+    app.sessions_loaded = true;
+    check_sized("vm-box-states", &mut app, BOTH, (124, 26));
+}
+
+/// A VM box's details (viewing it starts nothing): its VM's state, where
+/// it runs, cost, repository and link, and the operations its state allows.
+#[test]
+fn vm_details() {
+    use canvas_model::vm::{GitState, VmInfo, VmState};
+    let now = canvas_core::paths::now_ms();
+    let mut doc = Doc::default();
+    let mut n = node("v1", "Fix the flaky test", 1, 1);
+    n.placement = Some(canvas_model::vm::Placement::Vm(Box::new(canvas_model::vm::VmPlacement { repo: "contoso-app".into(), branch: Some("atelier/fix-the-flaky-test".into()), ..Default::default() })));
+    doc.nodes.push(n);
+    doc.view.x = -1;
+    doc.view.y = 0;
+    let mut app = app(doc, false);
+    with_vm_pack(&mut app);
+    let git = GitState { branch: "atelier/fix-the-flaky-test".into(), ahead: 2, dirty: 1, unpushed: vec!["atelier/fix-the-flaky-test".into()], ..Default::default() };
+    let info = VmInfo {
+        state: VmState::Running,
+        sandbox: "sbx-0123456789ab".into(),
+        repo: "contoso-app".into(),
+        branch: "atelier/fix-the-flaky-test".into(),
+        size: "M".into(),
+        image_ms: now - 2 * 3_600_000 - 60_000,
+        started_ms: now - 40 * 60_000 - 30_000,
+        cost_cents: 37,
+        git: Some(git),
+        refusals: 2,
+        ..Default::default()
+    };
+    app.bus.vm.as_mut().unwrap().boxes.insert("v1".into(), info);
+    app.sessions.insert("v1".into(), summary("v1", Activity::Idle, true));
+    app.terms.insert("v1".into(), term("v1", true, None));
+    app.sessions_loaded = true;
+    // Running here: its box menu's *VM details…* shows the panel over its terminal.
+    let (_, items) = app.node_menu("v1");
+    let details = items.iter().find(|i| i.label == "☁ VM details…").expect("the box menu has VM details").action.clone();
+    assert!(items.iter().any(|i| i.label == "Suspend VM" && i.enabled));
+    app.run(details);
+    check_sized("vm-details", &mut app, Sections { cells: true, painted: false }, (124, 40));
+}
+
 /// A new session in a group that sets its own model: the dialog says so.
 #[test]
 fn new_session_dialog_in_a_group_with_its_own_model() {

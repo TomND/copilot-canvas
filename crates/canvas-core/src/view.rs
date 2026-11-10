@@ -126,6 +126,8 @@ pub struct BoxModel {
     /// The todo the session claimed (its id, drawn as `☑ DEC-031`; a click
     /// opens its card in Tasks).
     pub badge: Option<String>,
+    /// A VM box's VM state (its status line says it unless it simply runs).
+    pub vm: Option<canvas_model::vm::VmState>,
 }
 
 /// A deck drawn beneath its session: stacked subsessions and/or the
@@ -632,6 +634,9 @@ impl CanvasModel {
             }
             if let Some(badge) = &b.badge {
                 out.push(format!("  badge={badge}"));
+            }
+            if let Some(vm) = b.vm {
+                out.push(format!("  vm={}", vm.word()));
             }
         }
         for e in &self.effects {

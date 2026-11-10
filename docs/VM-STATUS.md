@@ -129,8 +129,15 @@ owner's note that VM sessions are optional and local stays the default.
       (`Links::git_check`, the satellite's `git` control), else the last report with its age, and checked just before
       a suspend; each finding confirmed, or `*` (`vm delete --discard`); *Update from main* is a message to the
       agent; the view says *integration offline* for a running VM whose link is down
-- [ ] VM-41 *Run on* · VM-42 box states · VM-43 details · VM-44 Tasks · VM-45 ☁ VMs panel · VM-47 client
-      exclusions · VM-48 parity rows 57–62 and the self-test step · VM-49 docs
+- [x] VM-42 box states: a VM box's status line says its VM's state unless it simply runs (`vms::state_line`:
+      queued with why, starting, suspended, integration offline with since when, lost, deleting, failed with why);
+      `BoxModel::vm` and the `tree` hook's `vm`; snapshot `vm-box-states`
+- [x] VM-43 details: a ☁ VM section (state, repository, branch, size, sandbox, image age, uptime, estimated cost,
+      git, link, refusals) with Suspend or Resume, Update from main, Cancel start, Start again on a new VM, Delete VM…
+      (asks; the barrier's findings then ask again, *Delete anyway* confirms exactly those); the box menu's *VM
+      details…* shows it over a running terminal; snapshot `vm-details`. *Open shell* not built yet
+- [ ] VM-41 *Run on* · VM-44 Tasks · VM-45 ☁ VMs panel · VM-47 client exclusions · VM-48 parity rows 57–62 and the
+      self-test step · VM-49 docs
 - [ ] Exit: parity rows pass, snapshots read, self-test step in both clients
 
 ### 5: hardening

@@ -246,7 +246,14 @@ pub fn box_model(app: &App, node: &Node, rect: WRect, status: Status, selected: 
     let mut name_style = if selected { Style::default().fg(SELECT).add_modifier(Modifier::BOLD) } else { fg(TEXT) };
     let mut border_style = box_border_style(node, attention, selected, focused_term);
     let mut fill = attention.map(|(_, bg)| bg).unwrap_or(PANEL);
-    if let Some(dust) = &dust {
+    // A VM box whose VM is not simply running says so (starting, suspended, offline, lost, …).
+    let vm = crate::vms::box_vm(app, &node.id).filter(|_| node.placement.as_ref().is_some_and(|p| p.is_vm()));
+    let vm_line = vm.and_then(|info| crate::vms::state_line(info, crate::paths::now_ms()));
+    if let Some((text, color)) = &vm_line {
+        line = text.clone();
+        line_style = fg(*color);
+    }
+    if let Some(dust) = dust.as_ref().filter(|_| vm_line.is_none()) {
         // Dust: drained colours and the age, never over anything important.
         line.push_str(&dust.suffix);
         line_style = fg(MUTED);
@@ -286,6 +293,7 @@ pub fn box_model(app: &App, node: &Node, rect: WRect, status: Status, selected: 
         deck: None,
         hidden: None,
         badge: crate::tasks::session_badge(app, node),
+        vm: vm.map(|info| if info.state == canvas_model::vm::VmState::Running && info.offline_ms > 0 { canvas_model::vm::VmState::IntegrationOffline } else { info.state }),
     }
 }
 

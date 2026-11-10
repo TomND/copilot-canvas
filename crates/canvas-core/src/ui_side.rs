@@ -581,6 +581,7 @@ fn session_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)
     if !shell && !app.demo {
         out.field("Session", crate::agents::native_id(node));
     }
+    let vm_actions = vm_section(app, out, node);
     out.gap();
     let plan = app.start_plan(node);
     match &plan {
@@ -614,9 +615,74 @@ fn session_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)
     if !app.demo && !shell {
         actions.push(("MCP servers…".into(), Action::McpServers(node.id.clone())));
     }
+    actions.extend(vm_actions);
     actions.extend(show);
     actions.push(("Remove".into(), Action::RemoveNode(node.id.clone())));
     primary
+}
+
+/// A VM box's VM (only with a pack, for a box that runs on a VM): its state,
+/// where it runs, its cost, its repository and link; the operations its
+/// state allows (returned). None of them starts anything but *Resume*.
+fn vm_section(app: &App, out: &mut Lines, node: &crate::doc::Node) -> Vec<(String, Action)> {
+    use canvas_model::vm::{VmOp, VmState};
+    let Some(info) = crate::vms::box_vm(app, &node.id).filter(|_| node.placement.as_ref().is_some_and(|p| p.is_vm())) else { return Vec::new() };
+    let now = crate::paths::now_ms();
+    let ago = |ms: u64| format!("{} ago", crate::paths::format_age(ms, now));
+    out.gap();
+    out.text(format!("{} VM", crate::vms::VM_GLYPH), bold(TEXT));
+    let state = if info.note.is_empty() { info.state.word().to_owned() } else { format!("{}: {}", info.state.word(), info.note) };
+    let (_, color) = crate::vms::state_line(info, now).unwrap_or_default();
+    out.spans(vec![(format!("{:<11}", "State"), fg(TEXT)), (state, fg(if info.state == VmState::Running && info.offline_ms == 0 { POSITIVE } else { color }))]);
+    out.field("Repository", &info.repo);
+    out.field("Branch", &info.branch);
+    out.field("Size", &info.size);
+    if !info.sandbox.is_empty() {
+        out.field("Sandbox", &info.sandbox);
+    }
+    if info.image_ms > 0 {
+        out.field("Image", &format!("built {}", ago(info.image_ms)));
+    }
+    if info.started_ms > 0 && matches!(info.state, VmState::Running | VmState::IntegrationOffline) {
+        out.field("Up", &crate::paths::format_age(info.started_ms, now));
+    }
+    if info.cost_cents > 0 {
+        out.field("Cost", &format!("{}.{:02} so far (estimated)", info.cost_cents / 100, info.cost_cents % 100));
+    }
+    if let Some(git) = &info.git {
+        let mut parts = vec![git.branch.clone()];
+        parts.extend([(git.ahead, "ahead"), (git.behind, "behind"), (git.dirty, "changed"), (git.untracked, "untracked"), (git.stashes, "stashed")].into_iter().filter(|(n, _)| *n > 0).map(|(n, what)| format!("{n} {what}")));
+        out.field("Git", &parts.join(" · "));
+        if !git.unpushed.is_empty() {
+            out.field("Not pushed", &git.unpushed.join(", "));
+        }
+    }
+    if info.offline_ms > 0 {
+        out.field("Link", &format!("offline since {} (hub operations wait)", ago(info.offline_ms)));
+    } else if matches!(info.state, VmState::Running) {
+        out.field("Link", "linked");
+    }
+    if info.refusals > 0 {
+        out.field("Refusals", &format!("{} (network or MCP; ☁ VMs lists them)", info.refusals));
+    }
+    let id = node.id.clone();
+    let op = |label: &str, op: VmOp| (label.to_owned(), Action::Vm { id: id.clone(), op });
+    let running = matches!(info.state, VmState::Running | VmState::IntegrationOffline);
+    let mut actions = Vec::new();
+    match info.state {
+        VmState::Running if info.offline_ms == 0 => actions.push(op("Suspend VM", VmOp::Suspend)),
+        VmState::Suspended | VmState::Suspending => actions.push(op("Resume VM", VmOp::Resume)),
+        VmState::Queued | VmState::Claiming | VmState::Starting => actions.push(op("Cancel start", VmOp::CancelStart)),
+        VmState::Failed | VmState::Lost => actions.push(op("Start again on a new VM", VmOp::RetryStart)),
+        _ => {}
+    }
+    if (running && info.offline_ms == 0) || matches!(info.state, VmState::Suspended) {
+        actions.push(op("Update from main", VmOp::UpdateFromMain));
+    }
+    if !matches!(info.state, VmState::Deleting | VmState::Deleted | VmState::Queued | VmState::Claiming) {
+        actions.push(("Delete VM…".into(), Action::VmDelete(node.id.clone())));
+    }
+    actions
 }
 
 /// A hidden box's details say why and where it counts; one hidden on its

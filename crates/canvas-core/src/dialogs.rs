@@ -203,6 +203,13 @@ pub enum Action {
     Tasks(crate::tasks::Action),
     /// The Skills view and skill folders (`skills::run_skills`).
     Skills(crate::skills::SkillAction),
+    /// An operation on a VM box's VM (`vms::run`): suspend, resume, update
+    /// from main, delete (behind the barrier), cancel or retry a start.
+    Vm { id: String, op: canvas_model::vm::VmOp },
+    /// *Delete VM…*: asks first (`vms::ask_delete`).
+    VmDelete(String),
+    /// A VM box's details, its terminal running or not (its box menu).
+    VmDetails(String),
 }
 
 #[derive(Clone, Debug)]
