@@ -219,6 +219,22 @@ fixed-size chips) have these checks, on a separate canvas of the sandbox
 
 ## Last run
 
+<!-- rename:keep-begin -->
+The rename from Copilot Canvas to Atelier (2026-11-09, branch
+`rename-atelier`, CI run 42720389861): no row changed; the self-test gained
+one step (46: the upgrade from a stand-in service of the build before the
+rename on its old pipe or socket; 45 over `--remote`). On CI: Windows (WARP)
+`PASS: 74 rows in 330.9s`, the self-test in the TUI (146.3 s), over loopback
+(143.7 s) and in the GUI (161.5 s), `--remote faults` and `--remote paired`;
+macOS `PASS: 77 rows in 337.6s`, the self-tests in the TUI and the GUI, also
+over loopback, nine hardening checks, 11 goldens; Linux (X11) `PASS: 74
+rows in 302.4s`, 41b and T1-T3 on Wayland, nine hardening checks, 11
+goldens; `corpus check`: 26 checked, 0 failed. The macOS and Linux goldens
+were recorded again on CI (only the toolbar row changed: ◆ Atelier); the
+Windows goldens of the reference machine wait to be recorded again there
+(`atelier selftest --client gui --golden --update`, then look at each).
+<!-- rename:keep-end -->
+
 WI-024 to WI-028 together (2026-11-02, after merging): `PASS: 74 rows in
 298.7s`; the 45-step self-test passed in the TUI (145.7 s), over loopback
 (146.7 s), in the GUI (143.0 s) and in the GUI over loopback (142.6 s);
