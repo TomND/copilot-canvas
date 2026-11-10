@@ -586,8 +586,18 @@ fn real_main() -> Result<()> {
     {
         let words: Vec<&str> = args.command.iter().map(String::as_str).collect();
         let options = canvas_agents::todos_cli::options_with_canvas(&words, &args.rest, args.canvas.as_deref());
-        println!("{}", canvas_agents::vm::lite::relay(&instance.home, &words, &options, &args.flags)?);
-        return Ok(());
+        match canvas_agents::vm::lite::route(&words, &options) {
+            canvas_agents::vm::lite::Here::Relay => {
+                println!("{}", canvas_agents::vm::lite::relay(&instance.home, &words, &options, &args.flags)?);
+                return Ok(());
+            }
+            canvas_agents::vm::lite::Here::Print(text) => {
+                println!("{text}");
+                return Ok(());
+            }
+            // Static text: runs here as anywhere.
+            canvas_agents::vm::lite::Here::Normal => {}
+        }
     }
     match args.command.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         [] => {

@@ -159,6 +159,10 @@ pub fn guest_command(kind: AgentKind, id: &str, launch: &AgentLaunch, target: &s
     }
     // The canvas's own variables are set by the guest's side.
     env.retain(|(k, _)| !canvas_common::env::is_ours(k));
+    // `atelier note path` in the guest: the group's notes as synced there.
+    if let Some(group) = &roots.group {
+        env.push(("ATELIER_NOTES".to_owned(), super::target::guest(&format!("notes/{group}"))));
+    }
     let mut argv = vec![kind.id().to_owned()];
     argv.extend(args);
     Ok((argv, env))
@@ -295,6 +299,7 @@ mod tests {
         let dirs: Vec<&str> = argv.windows(2).filter(|w| w[0] == "--add-dir").map(|w| w[1].as_str()).collect();
         assert_eq!(dirs, ["%ROOTS%/notes/g/ai-docs", "%ROOTS%/notes/g/human-outputs"]);
         assert!(env.contains(&("COPILOT_CUSTOM_INSTRUCTIONS_DIRS".into(), "%ROOTS%/instructions/g".into())));
+        assert!(env.contains(&("ATELIER_NOTES".into(), "%ROOTS%/notes/g".into())));
         assert!(!format!("{argv:?}{env:?}").contains(r"C:\"), "nothing of this machine");
     }
 }

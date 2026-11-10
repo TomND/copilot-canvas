@@ -294,6 +294,88 @@ mod tests {
     use super::*;
     use super::super::lite::Piece;
 
+    /// The CLI inventory (plan §4), row by row: what an agent runs in a VM
+    /// session's guest becomes, on this machine, the same command line it
+    /// would run here (its files carried, its outputs written back), or is
+    /// refused there with why; static text runs in the guest.
+    #[test]
+    fn every_row_of_the_cli_inventory_relays_as_the_same_command() {
+        use super::super::lite::{Here, op_of, route};
+        let dir = std::env::temp_dir().join(format!("atelier-inventory-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |name: &str, text: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, text).unwrap();
+            path.display().to_string()
+        };
+        let (body, summary, results, notes, draft, md, html, import) = (file("body.md", "b"), file("summary.md", "s"), file("results.md", "r"), file("notes.md", "n"), file("draft.md", "d"), file("note.md", "m"), file("r.html", "h"), file("import.json", "[]"));
+        let o = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+        let f = |flags: &[&str]| flags.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // (words, options, flags) as typed in the guest; the command line here is the same with carried files.
+        type Row<'a> = (Vec<&'a str>, Vec<(String, String)>, Vec<String>);
+        let rows: Vec<Row> = vec![
+            (vec!["events"], o(&[]), f(&[])),
+            (vec!["emit", "deploy.done"], o(&[("data", "{\"ok\":true}"), ("to", "Reviewer"), ("group", "g1")]), f(&[])),
+            (vec!["send", "Hello there"], o(&[("to", "Reviewer")]), f(&[])),
+            (vec!["status", "ok", "All green"], o(&[]), f(&[])),
+            (vec!["followup", "Check the build"], o(&[("in", "30m")]), f(&[])),
+            (vec!["followup", "Standup"], o(&[("at", "09:00")]), f(&[])),
+            (vec!["effect", "pulse"], o(&[("on", "Reviewer"), ("note", "look")]), f(&[])),
+            (vec!["effect", "clear"], o(&[]), f(&[])),
+            (vec!["report", "publish"], o(&[("markdown", &body), ("title", "Done"), ("kind", "summary"), ("pr", "https://example.com/pr/1")]), f(&[])),
+            (vec!["report", "publish"], o(&[("html", &html)]), f(&[])),
+            (vec!["report", "publish"], o(&[("message", "Short note")]), f(&[])),
+            (vec!["report", "list"], o(&[("limit", "5")]), f(&["unread"])),
+            (vec!["pr", "track", "https://example.com/contoso/app/pull/7"], o(&[("title", "Fix")]), f(&[])),
+            (vec!["pr", "untrack", "https://example.com/contoso/app/pull/7"], o(&[]), f(&[])),
+            (vec!["pr", "check"], o(&[]), f(&[])),
+            (vec!["pr", "list"], o(&[("format", "json")]), f(&[])),
+            (vec!["review", "handoff"], o(&[("pr", "https://example.com/pr/1"), ("author", "Ana"), ("results", &results), ("notes", &notes)]), f(&[])),
+            (vec!["review", "message", "RV-1"], o(&[("draft", &draft)]), f(&[])),
+            (vec!["review", "list"], o(&[]), f(&[])),
+            (vec!["todo", "prime"], o(&[]), f(&[])),
+            (vec!["todo", "boards"], o(&[]), f(&["tree"])),
+            (vec!["todo", "list"], o(&[("board", "Canvas App")]), f(&["mine"])),
+            (vec!["todo", "show", "WI-1"], o(&[]), f(&[])),
+            (vec!["todo", "ready"], o(&[]), f(&[])),
+            (vec!["todo", "add", "Fix it"], o(&[("type", "bug"), ("body", &body)]), f(&[])),
+            (vec!["todo", "claim", "WI-1"], o(&[]), f(&[])),
+            (vec!["todo", "submit", "WI-1"], o(&[("summary", &summary), ("pr", "https://example.com/pr/1")]), f(&[])),
+            (vec!["todo", "note", "WI-1", "Halfway"], o(&[]), f(&[])),
+            (vec!["todo", "import", &import], o(&[("board", "Canvas App")]), f(&[])),
+            (vec!["todo", "export"], o(&[("canvas", "/home/agent/b.canvas")]), f(&[])),
+            (vec!["todo", "mirror"], o(&[("out", "/home/agent/todos.md")]), f(&[])),
+            (vec!["note", "new"], o(&[("title", "Plan"), ("md", &md), ("audience", "ai")]), f(&[])),
+            (vec!["note", "list"], o(&[("format", "json")]), f(&["internal"])),
+        ];
+        for (words, options, flags) in rows {
+            assert_eq!(route(&words, &options), Here::Relay, "{words:?}");
+            let op = op_of(&words, &options, &flags, &mut std::io::empty()).unwrap_or_else(|e| panic!("{words:?}: {e}"));
+            let files: BTreeMap<String, PathBuf> = op.inputs.iter().enumerate().map(|(n, b)| (b.name.clone(), PathBuf::from(format!("/hub/in-{n}")))).collect();
+            let outputs: Vec<(String, PathBuf)> = super::super::lite::output_options(&op).into_iter().enumerate().map(|(n, name)| (name, PathBuf::from(format!("/hub/out-{n}")))).collect();
+            let argv = argv_of(&op, &files, &outputs).unwrap_or_else(|e| panic!("{words:?}: {e}"));
+            // The same words, options and flags, a carried file or output in place of each guest path.
+            let mut expected: Vec<String> = words.iter().map(|w| files.get(*w).map(|p| p.display().to_string()).unwrap_or_else(|| w.to_string())).collect();
+            for (key, value) in &options {
+                let carried = files.get(value).or_else(|| outputs.iter().find(|(n, _)| n == value).map(|(_, p)| p)).filter(|_| key != "data" && key != "to" && key != "title" && key != "pr");
+                expected.extend([format!("--{key}"), carried.map(|p| p.display().to_string()).unwrap_or_else(|| value.clone())]);
+            }
+            expected.extend(flags.iter().map(|f| format!("--{f}")));
+            assert_eq!(argv, expected, "{words:?}");
+            assert!(op.inputs.iter().all(|b| !b.bytes.is_empty()), "{words:?}: files carried with their content");
+        }
+        // Static text runs in the guest; commands of the canvas's machine are refused there with why.
+        assert_eq!(route(&["effect"], &[]), Here::Normal);
+        assert_eq!(route(&["effect", "list"], &[]), Here::Normal);
+        let refused = |words: &[&str], options: &[(String, String)]| op_of(words, options, &[], &mut std::io::empty()).unwrap_err().to_string();
+        for words in [&["service", "stop"][..], &["remote", "pair"], &["vm", "list"], &["automations", "list"], &["config", "vm.pack"], &["doctor"], &["record"], &["corpus", "check"], &["selftest"]] {
+            assert!(refused(words, &[]).contains("not available inside a VM session"), "{words:?}");
+        }
+        assert!(refused(&["todo", "mirror"], &o(&[("set", "/home/agent/m.md")])).contains("set it from the canvas"));
+        assert!(refused(&["todo", "add", "x"], &o(&[("body", "/no/such/file.md")])).contains("cannot read"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn relayed_commands_become_this_programs_command_lines() {
         let files: BTreeMap<String, PathBuf> = [("-".to_owned(), PathBuf::from("/t/in-0"))].into_iter().collect();

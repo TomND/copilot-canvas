@@ -19,7 +19,35 @@ use serde::{Deserialize, Serialize};
 use crate::paths::now_ms;
 
 /// The verbs relayed to the hub (everything else is refused in a VM session).
-pub const RELAYED: [&str; 10] = ["emit", "send", "status", "followup", "effect", "report", "pr", "review", "todo", "note"];
+pub const RELAYED: [&str; 11] = ["events", "emit", "send", "status", "followup", "effect", "report", "pr", "review", "todo", "note"];
+
+/// What a canvas command does in a VM session's guest.
+#[derive(Debug, PartialEq)]
+pub enum Here {
+    /// Relayed to the canvas's machine.
+    Relay,
+    /// Run here as anywhere (static text).
+    Normal,
+    /// Answered here.
+    Print(String),
+}
+
+/// What a command does in the guest: `effect` and `effect list` print their
+/// static text here; `note path` names the group's notes as synced into the
+/// guest (`ATELIER_NOTES`, set for a box in a group); the rest is relayed (or refused there).
+pub fn route(words: &[&str], options: &[(String, String)]) -> Here {
+    match words {
+        ["effect"] | ["effect", "list"] => Here::Normal,
+        ["note", "path"] => match std::env::var("ATELIER_NOTES").ok().filter(|n| !n.is_empty()) {
+            Some(notes) => {
+                let human = options.iter().any(|(k, v)| k == "audience" && v == "human");
+                Here::Print(format!("{notes}/{}", if human { canvas_model::doc::HUMAN_OUTPUTS } else { canvas_model::doc::AI_DOCS }))
+            }
+            None => Here::Relay,
+        },
+        _ => Here::Relay,
+    }
+}
 /// Options whose value is a file the command reads (`-`: standard input).
 pub const FILE_OPTIONS: [&str; 8] = ["body", "summary", "results", "notes", "draft", "markdown", "html", "md"];
 /// Largest file a relayed command may carry.
@@ -67,6 +95,9 @@ pub fn op_of(words: &[&str], options: &[(String, String)], flags: &[String], std
     }
     if words.get(..2) == Some(&["note", "path"]) {
         bail!("`atelier note path` names folders of the canvas's machine; write notes with `atelier note new … --md FILE` (they are filed on the canvas's machine)");
+    }
+    if words.get(..2) == Some(&["todo", "mirror"]) && options.iter().any(|(k, _)| k == "set") {
+        bail!("the todo mirror is a file on the canvas's machine: set it from the canvas");
     }
     let mut inputs = Vec::new();
     let mut read = |name: &str| -> Result<()> {

@@ -22,6 +22,7 @@ pub mod local;
 pub mod manager;
 pub mod mcp;
 pub mod pack;
+pub mod paths;
 pub mod profile;
 pub mod provider;
 pub mod satellite;

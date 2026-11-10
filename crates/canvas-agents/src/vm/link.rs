@@ -732,17 +732,24 @@ impl Links {
             return;
         }
         let refused = |text: &str| OpAnswer { ok: false, state: "refused".into(), text: text.into(), outputs: Vec::new() };
-        let agent = match launch::load(&self.home, &term) {
-            Ok(Some(intent)) if intent.sandbox == link.sandbox && !link.sandbox.is_empty() => intent.agent,
+        let intent = match launch::load(&self.home, &term) {
+            Ok(Some(intent)) if intent.sandbox == link.sandbox && !link.sandbox.is_empty() => intent,
             _ => {
                 answer(&refused("this command does not come from a session of this VM"));
                 return;
             }
         };
-        let Ok(op) = serde_json::from_str::<canvas_model::vm::CliOp>(&json) else {
+        let agent = intent.agent.clone();
+        let Ok(mut op) = serde_json::from_str::<canvas_model::vm::CliOp>(&json) else {
             answer(&refused("the command could not be read"));
             return;
         };
+        // Paths: the guest's in the command become this machine's, and the other way in its answer.
+        let places = super::paths::Places::of(&self.home, &intent, &link.roots);
+        if let Err(why) = places.command_in(&mut op) {
+            answer(&refused(&why));
+            return;
+        }
         {
             let mut ops = lock(&self.ops);
             if ops.0.contains(&(link.sandbox.clone(), id.clone())) {
@@ -766,7 +773,8 @@ impl Links {
                 *ops.1.entry(sandbox.clone()).or_default() += 1;
             }
             let exe = lock(&links.exe).clone();
-            let result = super::thin::execute(&links.home, &exe, &id, &term, &agent, &op);
+            let mut result = super::thin::execute(&links.home, &exe, &id, &term, &agent, &op);
+            result.text = places.text_out(&result.text);
             (links.log)(format!("VM {sandbox}: box {term} ran `atelier {}` ({})", op.words.first().cloned().unwrap_or_default(), result.state));
             let _ = super::thin::store_answer(&links.home, &sandbox, &id, &result);
             {
