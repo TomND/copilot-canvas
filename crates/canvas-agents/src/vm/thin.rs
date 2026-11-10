@@ -188,15 +188,21 @@ fn stored_answer(home: &Path, sandbox: &str, id: &str) -> Option<OpAnswer> {
     std::fs::read(home.join("vm").join("ops").join(sandbox).join(format!("{id}.json"))).ok().and_then(|b| serde_json::from_slice(&b).ok())
 }
 
-/// One drain of one sandbox: history into the mirror, operations run as
-/// their box (only boxes of this sandbox), answers queued for the next drain.
-pub fn poll(home: &Path, exe: &Path, provider: &dyn super::provider::Provider, sandbox: &str, boxes: &HashMap<String, String>, log: &dyn Fn(String)) -> Result<()> {
+/// A drain through the provider: `atelier satellite --lite` run in the guest.
+pub fn exec_drain(provider: &dyn super::provider::Provider, sandbox: &str, request: &DrainRequest) -> Result<DrainResponse> {
+    let out = provider.exec(sandbox, &["atelier".into(), "satellite".into(), "--lite".into()], &serde_json::to_vec(request)?)?;
+    anyhow::ensure!(out.code == 0, "the guest's drain failed (exit code {})", out.code);
+    serde_json::from_slice(&out.stdout).context("the guest's drain printed no drain")
+}
+
+/// One drain of one sandbox (through `drain`: the satellite's link, else
+/// the provider): history into the mirror, operations run as their box
+/// (only boxes of this sandbox), answers queued for the next drain.
+pub fn poll(home: &Path, exe: &Path, drain: &dyn Fn(&DrainRequest) -> Result<DrainResponse>, sandbox: &str, boxes: &HashMap<String, String>, log: &dyn Fn(String)) -> Result<()> {
     let path = state_path(home, sandbox);
     let mut state: MirrorState = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let request = DrainRequest { files: state.files.clone(), answers: state.answers.clone(), max_bytes: 4 << 20 };
-    let out = provider.exec(sandbox, &["atelier".into(), "satellite".into(), "--lite".into()], &serde_json::to_vec(&request)?)?;
-    anyhow::ensure!(out.code == 0, "the guest's drain failed (exit code {})", out.code);
-    let response: DrainResponse = serde_json::from_slice(&out.stdout).context("the guest's drain printed no drain")?;
+    let response = drain(&request)?;
     // Delivered: the guest stored them.
     state.answers.clear();
     apply_history(home, sandbox, &mut state, &response)?;
@@ -235,7 +241,10 @@ pub struct Drains {
 
 impl Drains {
     /// Drains what is due; true when something was drained (the index wakes).
-    pub fn run(&mut self, home: &Path, pack: &super::pack::Pack, provider: &dyn super::provider::Provider, log: &dyn Fn(String)) -> bool {
+    /// A sandbox whose satellite is linked is drained through the link; the
+    /// hooks' sandboxes through the provider; another provider's sandbox
+    /// waits for its satellite (no command per poll on a cloud's API).
+    pub fn run(&mut self, home: &Path, pack: &super::pack::Pack, provider: &dyn super::provider::Provider, links: &super::link::Links, log: &dyn Fn(String)) -> bool {
         let exe = std::env::current_exe().unwrap_or_default();
         let mut sandboxes: HashMap<String, HashMap<String, String>> = HashMap::new();
         for intent in super::launch::all(home).into_iter().filter(|i| !i.sandbox.is_empty() && i.state == VmState::Running) {
@@ -248,8 +257,13 @@ impl Drains {
             if self.last.get(&sandbox).is_some_and(|at| at.elapsed() < every) {
                 continue;
             }
+            let linked = links.linked(&sandbox);
+            if !linked && provider.name() != "hooks" {
+                continue;
+            }
             self.last.insert(sandbox.clone(), Instant::now());
-            match poll(home, &exe, provider, &sandbox, &boxes, log) {
+            let drain = |request: &DrainRequest| if linked { links.drain(&sandbox, request) } else { exec_drain(provider, &sandbox, request) };
+            match poll(home, &exe, &drain, &sandbox, &boxes, log) {
                 Ok(()) => {
                     if self.failing.remove(&sandbox).is_some() {
                         log(format!("VM {sandbox}: reachable again"));

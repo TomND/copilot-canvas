@@ -58,6 +58,9 @@ pub struct Links {
     links: Mutex<HashMap<String, Arc<Link>>>,
     remotes: Mutex<HashMap<String, Arc<Remote>>>,
     epochs: AtomicU64,
+    /// Controls sent and waiting for their answer: id → (sandbox, where it goes).
+    controls: Mutex<HashMap<u64, (String, Sender<String>)>>,
+    control_ids: AtomicU64,
 }
 
 /// A satellite's live link.
@@ -133,7 +136,7 @@ impl RemoteState {
 
 impl Links {
     pub fn new(home: &Path, log: Log) -> Arc<Self> {
-        Arc::new(Links { home: home.to_path_buf(), log, links: Mutex::default(), remotes: Mutex::default(), epochs: AtomicU64::new(0) })
+        Arc::new(Links { home: home.to_path_buf(), log, links: Mutex::default(), remotes: Mutex::default(), epochs: AtomicU64::new(0), controls: Mutex::default(), control_ids: AtomicU64::new(0) })
     }
 
     fn link(&self, sandbox: &str) -> Option<Arc<Link>> {
@@ -146,6 +149,27 @@ impl Links {
     /// Whether `sandbox`'s satellite is linked now.
     pub fn linked(&self, sandbox: &str) -> bool {
         self.link(sandbox).is_some()
+    }
+
+    /// Asks `sandbox`'s satellite (`SatDown::Control`) and waits for its
+    /// answer (JSON), at most `wait`.
+    pub fn control(&self, sandbox: &str, json: serde_json::Value, wait: Duration) -> Result<serde_json::Value> {
+        let link = self.link(sandbox).context("the VM's satellite is not linked")?;
+        let id = self.control_ids.fetch_add(1, Ordering::Relaxed) + 1;
+        let (tx, rx) = bounded::<String>(1);
+        lock(&self.controls).insert(id, (sandbox.to_owned(), tx));
+        let sent = link.send(false, SatDown::Control { id, json: json.to_string() });
+        let answer = if sent { rx.recv_timeout(wait).ok() } else { None };
+        lock(&self.controls).remove(&id);
+        let answer: serde_json::Value = serde_json::from_str(&answer.context("the VM's satellite did not answer")?)?;
+        anyhow::ensure!(answer["ok"] == true, "the VM's satellite: {}", answer["error"].as_str().unwrap_or("refused"));
+        Ok(answer)
+    }
+
+    /// The thin lane's drain of `sandbox` through its satellite's link.
+    pub fn drain(&self, sandbox: &str, request: &super::lite::DrainRequest) -> Result<super::lite::DrainResponse> {
+        let answer = self.control(sandbox, serde_json::json!({ "drain": request }), Duration::from_secs(30))?;
+        Ok(serde_json::from_value(answer["drain"].clone())?)
     }
 
     fn remotes(&self) -> Vec<Arc<Remote>> {
@@ -340,6 +364,14 @@ impl Links {
 
     /// One message from a satellite.
     fn take(&self, link: &Link, up: SatUp) -> Result<()> {
+        if let SatUp::ControlResult { id, json } = &up {
+            // Only the sandbox a control was sent to answers it.
+            let waiting = lock(&self.controls).get(id).filter(|(sandbox, _)| *sandbox == link.sandbox).map(|(_, tx)| tx.clone());
+            if let Some(tx) = waiting {
+                let _ = tx.try_send(json.clone());
+            }
+            return Ok(());
+        }
         let term = match &up {
             SatUp::Output { term, .. } | SatUp::Snapshot { term, .. } | SatUp::Exit { term, .. } | SatUp::InputAck { term, .. } => term.clone(),
             // History, operations, notes, MCP and stats come with Phase 3; liveness with the mirrors.

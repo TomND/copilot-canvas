@@ -244,7 +244,7 @@ pub fn run(home: PathBuf, log: impl Fn(String) + Send + Sync + 'static, wake: im
                 });
             }
         }
-        if drains.run(&home, pack, provider.as_ref(), log.as_ref()) {
+        if drains.run(&home, pack, provider.as_ref(), &links, log.as_ref()) {
             wake();
         }
     }

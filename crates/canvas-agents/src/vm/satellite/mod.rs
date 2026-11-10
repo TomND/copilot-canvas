@@ -191,7 +191,7 @@ pub fn session(config: &Config, terms: &Arc<Terms>, epoch: u64) -> Result<()> {
             }
         })?;
     }
-    let result = read_loop(&mut reader, terms, &heard);
+    let result = read_loop(&mut reader, terms, &heard, &other_tx);
     terms.detach(epoch);
     let _ = stop_tx.send(());
     closer.close();
@@ -220,7 +220,23 @@ fn write_lanes(mut writer: FrameWriter, io: Receiver<SatUp>, other: Receiver<Sat
     closer.close();
 }
 
-fn read_loop(reader: &mut FrameReader, terms: &Arc<Terms>, heard: &AtomicU64) -> Result<()> {
+/// A control from the hub, answered on the link (`SatUp::ControlResult`):
+/// `{"drain": DrainRequest}` runs the thin lane's drain here (the agents'
+/// history the hub lacks, relayed commands, their answers stored).
+fn control(json: &str) -> serde_json::Value {
+    let request: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
+    let answer = (|| -> Result<serde_json::Value> {
+        let drain: super::lite::DrainRequest = serde_json::from_value(request.get("drain").cloned().context("an unknown control")?)?;
+        let home = crate::paths::Instance::new(None, None, None)?.home;
+        Ok(serde_json::to_value(super::lite::drain(&home, &super::lite::copilot_root(), &drain)?)?)
+    })();
+    match answer {
+        Ok(value) => serde_json::json!({ "ok": true, "drain": value }),
+        Err(error) => serde_json::json!({ "ok": false, "error": format!("{error:#}") }),
+    }
+}
+
+fn read_loop(reader: &mut FrameReader, terms: &Arc<Terms>, heard: &AtomicU64, other: &crossbeam_channel::Sender<SatUp>) -> Result<()> {
     loop {
         let message = match reader.recv::<ServiceMsg>() {
             Ok(Some(message)) => message,
@@ -250,7 +266,13 @@ fn read_loop(reader: &mut FrameReader, terms: &Arc<Terms>, heard: &AtomicU64) ->
             SatDown::Signal { term, generation, signal } => terms.signal(&term, generation, signal),
             SatDown::Stop { term, generation, .. } => terms.stop(&term, generation),
             SatDown::Resync { term, generation, have } => terms.resync(&term, generation, have),
-            // Files, notes, MCP and controls come with Phase 3.
+            SatDown::Control { id, json } => {
+                let other = other.clone();
+                std::thread::Builder::new().name("sat-control".into()).spawn(move || {
+                    let _ = other.send(SatUp::ControlResult { id, json: control(&json).to_string() });
+                })?;
+            }
+            // Files, notes and MCP come with Phase 3.
             _ => {}
         }
     }

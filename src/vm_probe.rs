@@ -461,6 +461,8 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
         ("COPILOT_HOME", copilot_home.display().to_string()),
         ("ATELIER_SELFTEST", "1".into()),
         ("ATELIER_LISTEN", format!("127.0.0.1:{port}")),
+        ("ATELIER_FAKE_HISTORY", "1".into()),
+        ("ATELIER_FAKE_TURN_MS", "3000".into()),
     ];
     let env_refs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
     conn::spawn_service_exe(exe, instance, &env_refs)?;
@@ -516,9 +518,19 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     anyhow::ensure!(log.contains(&format!("leased pool member {}", member.id)), "the service log tells the lease");
     anyhow::ensure!(log.contains(&format!("VM {}: satellite linked", member.id)) && log.contains(&format!("launched {BOX} on a VM")), "the box's terminal runs behind the satellite");
 
-    step("typing reaches the program in the guest through the link");
+    step("typing reaches the program in the guest through the link; its status follows the history drained over the link");
     watch.conn.tx.send(ClientMsg::Input { id: BOX.into(), input: Input::Raw(b"typed-through-the-link".to_vec()) })?;
     anyhow::ensure!(watch.pump(Instant::now() + Duration::from_secs(15), |w| w.screen().contains("typed-through-the-link")), "the typing did not come back:\n{}", watch.screen());
+    watch.conn.tx.send(ClientMsg::Input { id: BOX.into(), input: Input::Raw(b"\r".to_vec()) })?;
+    anyhow::ensure!(
+        watch.pump(Instant::now() + Duration::from_secs(30), |w| w.activities.contains(&crate::protocol::Activity::Working) && w.activities.last() == Some(&crate::protocol::Activity::Idle)),
+        "the box's status did not follow the guest (seen {:?})",
+        watch.activities
+    );
+    let mirror = canvas_agents::vm::thin::mirror_dir(home, &member.id).join("copilot").join(BOX).join("events.jsonl");
+    anyhow::ensure!(std::fs::read_to_string(&mirror).unwrap_or_default().contains("user.message"), "the hub's mirror has the turn");
+    let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
+    anyhow::ensure!(!log.contains(&format!("VM {}: cannot drain", member.id)), "drained over the link");
 
     step("the pool is filled again behind the leased VM");
     wait_file("the pool was not filled again", 60, || pool().iter().any(|m| m.id != member.id))?;
