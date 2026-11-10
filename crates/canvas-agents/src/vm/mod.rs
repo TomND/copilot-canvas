@@ -7,6 +7,8 @@
 //! VM UI shows: the bus snapshot carries no `vm` view and the requests say
 //! that no pack is configured.
 
+pub mod pack;
+
 use std::path::Path;
 
 use canvas_model::rpc::{Request, Response};
@@ -14,9 +16,10 @@ use canvas_model::rpc::{Request, Response};
 
 /// What the service answers a VM request (`Request::is_service_state`).
 pub fn service_request(home: &Path, request: Request) -> Response {
-    let pack = canvas_common::settings::Settings::load(home).vm_pack();
+    let pack = pack::configured(home);
     match (request, pack) {
         (Request::VmPackStatus, None) => Response::VmPack(Box::default()),
+        (Request::VmPackStatus, Some(folder)) => Response::VmPack(Box::new(pack::load(&folder).1)),
         (request, None) => Response::Error(format!("{}: no VM pack is configured (settings.json vm.pack or ATELIER_VM_PACK); VM sessions are off", request.name())),
         (request, Some(_)) => Response::Error(format!("{}: VM sessions are not available in this build yet", request.name())),
     }

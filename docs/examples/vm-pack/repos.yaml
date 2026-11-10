@@ -1,0 +1,12 @@
+repos:
+  contoso-app:
+    url: https://example.com/contoso/app.git
+    default_branch: main
+    clone:
+      mode: blobless
+    image:
+      base: ubuntu
+      disk: 20Gi
+    egress: forge
+    folders:
+      - "**/contoso-app"

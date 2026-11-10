@@ -1,0 +1,9 @@
+# Personal skills and instructions bundled into each VM session.
+include:
+  - ~/.copilot/skills/*
+  - ~/.claude/skills/*
+exclude:
+  - "**/*token*"
+  - "**/.env"
+  - "**/*.pem"
+config_keys: []

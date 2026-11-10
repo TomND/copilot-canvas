@@ -124,6 +124,11 @@ USAGE
                                         permission, passive (LIST: some of them, comma-separated);
                                         deletes every session it created
 
+VM SESSIONS (docs/VM-SESSIONS.md; optional: without a VM pack sessions run on this machine)
+  atelier config vm.pack FOLDER|none    use a VM pack (a folder outside any repository)
+  atelier vm pack check                 check the VM pack (settings.json vm.pack or ATELIER_VM_PACK):
+                                        its findings, never its values
+
 REMOTE (docs/REMOTE.md; agents on the Cloud PC, the canvas at home over a private Dev Tunnel)
   on the Cloud PC:
   atelier remote tunnel-setup [--tunnel ID] [--port PORT]
@@ -413,10 +418,21 @@ fn config(home: &std::path::Path, key: Option<&str>, value: Option<&str>) -> Res
         println!("agent   {}", settings.agent.as_deref().unwrap_or("auto (first installed)"));
         println!("engine  {}", settings.terminal.engine.as_deref().unwrap_or("auto (ghostty when built in)"));
         println!("listen  {}", settings.remote.listen.as_deref().unwrap_or("off"));
+        if let Some(pack) = &settings.vm.pack {
+            println!("vm.pack {pack}");
+        }
         println!("({})", canvas_common::settings::path(home).display());
         return Ok(());
     };
     let unset = |v: &str| matches!(v, "default" | "unset" | "none");
+    if key == "vm.pack" {
+        // A folder on this machine, kept as typed (VM sessions: docs/VM-SESSIONS.md).
+        let value = value.context("config vm.pack needs a folder (or none)")?.trim();
+        settings.vm.pack = (!unset(&value.to_ascii_lowercase())).then(|| std::path::absolute(value).map(|p| p.display().to_string()).unwrap_or_else(|_| value.to_owned()));
+        settings.save(home)?;
+        println!("vm.pack = {}", settings.vm.pack.as_deref().unwrap_or("none (VM sessions are off)"));
+        return Ok(());
+    }
     let value = value.with_context(|| format!("config {key} needs a value"))?.trim().to_ascii_lowercase();
     match key {
         "client" => {
@@ -738,6 +754,18 @@ fn real_main() -> Result<()> {
         ),
         ["remote", "servers"] => remote_cli::servers(&instance),
         ["remote", "forget", name] => remote_cli::forget(&instance, name),
+        ["vm", "pack", "check"] => {
+            let status = match canvas_agents::vm::pack::configured(&instance.home) {
+                Some(folder) => canvas_agents::vm::pack::load(&folder).1,
+                None => Default::default(),
+            };
+            println!("{}", canvas_agents::vm::pack::report(&status));
+            if status.errors() > 0 { std::process::exit(1) }
+            Ok(())
+        }
+        ["vm", ..] if canvas_agents::vm::pack::configured(&instance.home).is_none() => {
+            bail!("no VM pack is configured (settings.json vm.pack or ATELIER_VM_PACK): VM sessions are off; `atelier vm pack check` says more")
+        }
         ["selftest"] => {
             let client = match option("client").as_deref() {
                 None | Some("tui") => selftest::Client::Tui,
