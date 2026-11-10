@@ -367,3 +367,20 @@ Phase by phase; the details and the log are in [VM-STATUS.md](VM-STATUS.md).
   (*Copy path*, never opened here). Checked: parity rows 57–62 and the self-test's 47th step on a VM lane of local
   sandboxes (`src/vm_lane.rs`), `selftest vm` (typing resumes a suspended VM; the barrier stops at an untracked
   file).
+- **Phase 5 (hardening).** **Claude Code** runs on VMs: its guest command line names the synced roots, the group's
+  instructions file and the box's MCP preset as a file of the roots; its transcripts, subagents and status files are
+  mirrored (`<home>/vm/mirrors/<sandbox>/claude`) and indexed with liveness from the guest's satellite; transcripts
+  are read from the mirror. **OpenCode** is refused on VMs with why (its history is a database and its live state a
+  server of the machine it runs on). **Resume on a new VM**: after a VM is lost or deleted, a resumed launch (or
+  *Start again on a new VM*) puts the hub's mirror of the conversation into the new guest and moves the mirror with
+  it; refused when nothing was mirrored. **The delete barrier** checks the boxes' workspaces the hub knows as well as
+  the satellite's terminals'. **Shared MCP processes** (`mode: shared` per server) are tested: one initialize, each
+  session's ids, progress, cancellations and identity kept apart, the server's requests to the session that asked
+  last. The new-session dialog picks the VM's **MCP preset**. **The owner's checks**: `atelier vm spike s1` (a guest
+  reaches the hub through the tunnel) and `s7` (freeze, resume, no auto-suspend while working), and `atelier
+  selftest vm --real [--agent …] [--json FILE]` through the running service (no pack values printed, every VM it
+  made deleted; its `--dry-run` runs in `selftest vm`). **The soak**: `atelier selftest vm --soak [--minutes N]`.
+  A 20-minute soak (2026-11-10, macOS, debug build): 515 cycles (129 freezes, 129 service restarts, 129 typings
+  into a suspended VM, 128 without a fault); 515 lines typed, 515 turns in the mirrored history; 644 commands from
+  the guest, each applied once (none lost, none doubled); 388 links, 129 replays, 0 gaps; the satellite's memory 108
+  MB after its start and 19 MB at the end (no growth); the service 117 MB (its first process) and 113 MB (its last).
