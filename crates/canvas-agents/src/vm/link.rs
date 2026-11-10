@@ -71,6 +71,17 @@ pub struct Links {
     /// Stops asked for while a sandbox's link was down: (sandbox, terminal,
     /// generation), sent when it links again (whatever was launched meanwhile).
     stops: Mutex<Vec<(String, String, u64)>>,
+    /// The MCP gateway: guest agents' sessions with the hub's MCP servers.
+    mcp: Arc<super::mcp::Gateway>,
+}
+
+/// The gateway's answers go out on the sandbox's link.
+struct McpDown(std::sync::Weak<Links>);
+
+impl super::mcp::Down for McpDown {
+    fn send(&self, sandbox: &str, stream: u64, kind: u8, bytes: Vec<u8>) -> bool {
+        self.0.upgrade().and_then(|links| links.link(sandbox)).is_some_and(|link| link.send(false, SatDown::Mcp { stream, kind, bytes }))
+    }
 }
 
 /// A satellite's live link.
@@ -155,7 +166,17 @@ impl RemoteState {
 
 impl Links {
     pub fn new(home: &Path, log: Log) -> Arc<Self> {
-        Arc::new(Links { home: home.to_path_buf(), log, links: Mutex::default(), remotes: Mutex::default(), epochs: AtomicU64::new(0), controls: Mutex::default(), control_ids: AtomicU64::new(0), stops: Mutex::default() })
+        Arc::new_cyclic(|links| Links {
+            home: home.to_path_buf(),
+            log,
+            links: Mutex::default(),
+            remotes: Mutex::default(),
+            epochs: AtomicU64::new(0),
+            controls: Mutex::default(),
+            control_ids: AtomicU64::new(0),
+            stops: Mutex::default(),
+            mcp: super::mcp::Gateway::new(home, Arc::new(super::mcp::NoServers), Arc::new(McpDown(links.clone()))),
+        })
     }
 
     fn link(&self, sandbox: &str) -> Option<Arc<Link>> {
@@ -354,6 +375,9 @@ impl Links {
         closer.close();
         drop(current);
         let _ = writing.join();
+        if !self.linked(&sandbox) {
+            self.mcp.link_ended(&sandbox);
+        }
         (self.log)(format!("VM {sandbox}: satellite link ended{}", result.as_ref().err().map(|e| format!(" ({e:#})")).unwrap_or_default()));
         result
     }
@@ -417,6 +441,10 @@ impl Links {
 
     /// One message from a satellite.
     fn take(&self, link: &Link, up: SatUp) -> Result<()> {
+        if let SatUp::Mcp { stream, kind, bytes } = up {
+            self.mcp.up(&link.sandbox, stream, kind, bytes);
+            return Ok(());
+        }
         if let SatUp::ControlResult { id, json } = &up {
             // Only the sandbox a control was sent to answers it.
             let waiting = lock(&self.controls).get(id).filter(|(sandbox, _)| *sandbox == link.sandbox).map(|(_, tx)| tx.clone());
@@ -485,6 +513,7 @@ impl Links {
                 let error = if info.unknown { Some("the VM no longer runs this session".to_owned()) } else { Some(info.error).filter(|e| !e.is_empty()) };
                 state.exit(code, error);
                 drop(state);
+                self.mcp.session_ended(&term);
                 let _ = launch::update(&self.home, &term, |i| {
                     if i.terminal == generation {
                         i.terminal = 0;
@@ -682,7 +711,7 @@ mod tests {
         }
 
         fn hello(&mut self, sandbox: &str, terms: Vec<TermHeld>) {
-            let hello = HelloInfo { sandbox: sandbox.into(), build: "test".into(), platform: "linux".into(), home: "/home/agent".into(), terms };
+            let hello = HelloInfo { sandbox: sandbox.into(), build: "test".into(), platform: "linux".into(), home: "/home/agent".into(), terms, mcp_port: 0 };
             self.send(SatUp::Hello { version: SAT_PROTOCOL, caps: 0, json: serde_json::to_string(&hello).unwrap() });
         }
 
@@ -856,6 +885,22 @@ mod tests {
         sat.hello(A, vec![TermHeld { term: BOX.into(), generation: 7, end: 0, alive: true, input_acked: 0 }]);
         assert!(matches!(sat.next(), SatDown::Welcome { .. }));
         assert!(matches!(sat.next(), SatDown::Stop { generation: 7, force: true, .. }));
+        sat.close().unwrap();
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn until_the_gateway_lands_an_mcp_stream_is_refused_on_the_link() {
+        let home = home();
+        let links = links(&home);
+        let minted = super::super::store::Satellites::new(&home).mint(A).unwrap();
+        let mut sat = Sat::connect(&links, &minted.id);
+        sat.hello(A, Vec::new());
+        assert!(matches!(sat.next(), SatDown::Welcome { .. }));
+        let open = canvas_common::sat::McpOpen { term: BOX.into(), server: "forge".into() };
+        sat.send(SatUp::Mcp { stream: 9, kind: canvas_common::sat::MCP_OPEN, bytes: serde_json::to_vec(&open).unwrap() });
+        assert!(matches!(sat.next(), SatDown::Mcp { stream: 9, kind: canvas_common::sat::MCP_ERROR, .. }));
+        assert!(matches!(sat.next(), SatDown::Mcp { stream: 9, kind: canvas_common::sat::MCP_CLOSE, .. }));
         sat.close().unwrap();
         let _ = std::fs::remove_dir_all(home);
     }

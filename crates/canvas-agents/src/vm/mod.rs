@@ -8,6 +8,7 @@
 //! that no pack is configured.
 
 pub mod aca;
+pub mod egress;
 #[cfg(test)]
 mod fake;
 pub mod guest;
@@ -18,6 +19,7 @@ pub mod link;
 pub mod lite;
 pub mod local;
 pub mod manager;
+pub mod mcp;
 pub mod pack;
 pub mod provider;
 pub mod satellite;

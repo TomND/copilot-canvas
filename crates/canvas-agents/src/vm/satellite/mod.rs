@@ -8,6 +8,7 @@
 //! only when the hub proves the credential was revoked (the VM is deleted).
 
 pub mod dial;
+pub mod mcp_proxy;
 pub mod ring;
 pub mod terms;
 
@@ -24,6 +25,7 @@ use canvas_common::wire::{self, FrameReader, FrameWriter};
 use crossbeam_channel::{Receiver, bounded, select_biased};
 use serde::{Deserialize, Serialize};
 
+use self::mcp_proxy::McpProxy;
 use self::terms::{Lanes, SpawnRequest, Terms};
 
 /// A link with nothing from the hub for this long is dropped (its heartbeat is every 2 s).
@@ -107,13 +109,14 @@ pub fn run() -> Result<()> {
     let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(lock_path(&home))?;
     anyhow::ensure!(lock.try_lock().is_ok(), "a satellite runs for {} already", home.display());
     let terms = Arc::new(Terms::default());
+    let mcp = McpProxy::start(0)?;
     let epochs = AtomicU64::new(0);
     let mut failures = 0u32;
     loop {
         let config = wait_config();
         let epoch = epochs.fetch_add(1, Ordering::Relaxed) + 1;
         let started = Instant::now();
-        match session(&config, &terms, epoch) {
+        match session(&config, &terms, &mcp, epoch) {
             Ok(()) => {}
             Err(error) if error.downcast_ref::<handshake::Refused>().is_some_and(|r| r.verified) => {
                 eprintln!("satellite: the hub revoked this VM's credential; ending its terminals");
@@ -133,7 +136,7 @@ pub fn run() -> Result<()> {
 }
 
 /// One link: dial, authenticate, `Hello`, then serve until it drops.
-pub fn session(config: &Config, terms: &Arc<Terms>, epoch: u64) -> Result<()> {
+pub fn session(config: &Config, terms: &Arc<Terms>, mcp: &Arc<McpProxy>, epoch: u64) -> Result<()> {
     let secret = canvas_common::paths::unhex(&config.secret).context("the satellite's secret is not hex")?;
     let roots = if config.ca.is_empty() { Vec::new() } else { super::tls::pem_certificates(&std::fs::read(&config.ca).context("the pack's CA file")?)? };
     let dialed = dial::dial(&config.hub, roots, &config.headers)?;
@@ -170,12 +173,14 @@ pub fn session(config: &Config, terms: &Arc<Terms>, epoch: u64) -> Result<()> {
         platform: std::env::consts::OS.to_owned(),
         home: super::guest::guest_home().display().to_string(),
         terms: terms.held(),
+        mcp_port: mcp.port(),
     };
     other_tx.send(SatUp::Hello { version: SAT_PROTOCOL, caps: 0, json: serde_json::to_string(&hello)? })?;
     let (beat_tx, beat_rx) = bounded::<()>(1);
     let writer_closer = closer.clone();
     let writing = std::thread::Builder::new().name("sat-writer".into()).spawn(move || write_lanes(writer, io_rx, other_rx, beat_rx, writer_closer))?;
     terms.attach(Lanes { io: io_tx.clone(), other: other_tx.clone(), epoch });
+    mcp.attach(Some(other_tx.clone()));
 
     let heard = Arc::new(AtomicU64::new(now()));
     let (stop_tx, stop_rx) = bounded::<()>(1);
@@ -191,8 +196,10 @@ pub fn session(config: &Config, terms: &Arc<Terms>, epoch: u64) -> Result<()> {
             }
         })?;
     }
-    let result = read_loop(&mut reader, terms, &heard, &other_tx);
+    let result = read_loop(&mut reader, terms, mcp, &heard, &other_tx);
     terms.detach(epoch);
+    mcp.attach(None);
+    mcp.link_lost();
     let _ = stop_tx.send(());
     closer.close();
     drop((io_tx, other_tx));
@@ -236,7 +243,7 @@ fn control(json: &str) -> serde_json::Value {
     }
 }
 
-fn read_loop(reader: &mut FrameReader, terms: &Arc<Terms>, heard: &AtomicU64, other: &crossbeam_channel::Sender<SatUp>) -> Result<()> {
+fn read_loop(reader: &mut FrameReader, terms: &Arc<Terms>, mcp: &McpProxy, heard: &AtomicU64, other: &crossbeam_channel::Sender<SatUp>) -> Result<()> {
     loop {
         let message = match reader.recv::<ServiceMsg>() {
             Ok(Some(message)) => message,
@@ -272,7 +279,8 @@ fn read_loop(reader: &mut FrameReader, terms: &Arc<Terms>, heard: &AtomicU64, ot
                     let _ = other.send(SatUp::ControlResult { id, json: control(&json).to_string() });
                 })?;
             }
-            // Files, notes and MCP come with Phase 3.
+            SatDown::Mcp { stream, kind, bytes } => mcp.down(stream, kind, bytes),
+            // Files and notes come with Phase 3.
             _ => {}
         }
     }
@@ -418,12 +426,12 @@ mod tests {
         let config = Config { hub: format!("tcp://127.0.0.1:{}", relay.port), id: minted.id, secret: minted.secret, sandbox: SANDBOX.into(), ..Default::default() };
         let stop = Arc::new(AtomicBool::new(false));
         {
-            let (terms, stop) = (terms.clone(), stop.clone());
+            let (terms, stop, mcp) = (terms.clone(), stop.clone(), McpProxy::start(0).unwrap());
             std::thread::spawn(move || {
                 let mut epoch = 0;
                 while !stop.load(Ordering::Acquire) {
                     epoch += 1;
-                    let _ = session(&config, &terms, epoch);
+                    let _ = session(&config, &terms, &mcp, epoch);
                     std::thread::sleep(Duration::from_millis(100));
                 }
             });

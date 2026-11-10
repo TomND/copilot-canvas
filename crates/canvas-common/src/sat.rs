@@ -120,6 +120,28 @@ pub struct HelloInfo {
     /// The guest user's home (guest paths are built from it).
     pub home: String,
     pub terms: Vec<TermHeld>,
+    /// The port of the guest's MCP proxy on its loopback (`/mcp/<term>/<server>`; 0: none).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub mcp_port: u16,
+}
+
+fn is_zero(port: &u16) -> bool {
+    *port == 0
+}
+
+/// The JSON of an `MCP_OPEN` (`SatUp::Mcp`): a guest agent's MCP session
+/// with one of the hub's servers. The stream id is the satellite's, unique
+/// on its link; a stream ends with `MCP_CLOSE` from either side, or with the
+/// link. Then `MCP_MESSAGE`s carry one JSON-RPC message each (UTF-8 JSON),
+/// both ways; the hub refuses a stream with `MCP_ERROR` (JSON `{"message"}`)
+/// and `MCP_CLOSE`.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct McpOpen {
+    /// The box's terminal the agent runs in (from the proxy's path).
+    pub term: String,
+    /// The hub's server name (as in the hub's agent configuration and the pack's `mcp-policy.yaml`).
+    pub server: String,
 }
 
 /// A terminal the satellite has: its output so far and whether it runs.

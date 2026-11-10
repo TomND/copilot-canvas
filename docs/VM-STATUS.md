@@ -93,6 +93,9 @@ owner's note that VM sessions are optional and local stays the default.
 
 ### 3: integration
 - [ ] VM-31 `Io` seam · VM-32 CLI satellite mode · VM-33 op relay · VM-34 file sync · VM-35 profile and path map · VM-36 egress and secrets · VM-37 MCP gateway · VM-38 guest MCP config · VM-39 docs and skills
+- [ ] VM-36 egress (worker P-egress, `vm-egress`) and VM-37 MCP gateway (worker P-mcp, `vm-mcp`): prompts in
+      VM-WORKERS.md; their interfaces landed (`vm/egress/mod.rs` denies everything, `vm/mcp/mod.rs` refuses every
+      stream, `vm/satellite/mcp_proxy.rs` serves nothing; the link and the satellite already call them)
 - [ ] Exit: every row of the CLI inventory tested; offline writes say *queued*
 
 ### 4: UX
