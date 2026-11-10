@@ -105,7 +105,7 @@ fn soak(exe: &Path, instance: &Instance, lane: &crate::vm_lane::Lane, root: &Pat
     let (hub_rss0, sat_rss0) = (rss(service_pid(&home)), rss(satellite_pid(soak_ms)));
     let (mut lines, mut ops, mut cycle) = (0u64, 0u64, 0u64);
     let mut faults = [0u32; 4];
-    let typed = |conn: &conn::Conn, n: u64| conn.tx.send(ClientMsg::Input { id: id.clone(), input: Input::Raw(format!("soak-{n}\r").into_bytes()) });
+    let typed = |conn: &conn::Conn, n: u64| -> Result<()> { conn.tx.send(ClientMsg::Input { id: id.clone(), input: Input::Raw(format!("soak-{n}\r").into_bytes()) }).map_err(|_| anyhow::anyhow!("the connection to the service ended")) };
     while Instant::now() < until {
         cycle += 1;
         let fault = (cycle % 4) as usize;
