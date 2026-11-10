@@ -954,7 +954,8 @@ impl App {
         let found = canvas_model::vm::repo_for_folder(&pack.repos, folder, self.info.path_style());
         let repo = chosen.vm().map(|v| v.repo.clone()).filter(|r| repos.contains(r)).or(found).or_else(|| repos.first().cloned()).unwrap_or_default();
         let size = chosen.vm().and_then(|v| v.size.clone()).filter(|s| pack.sizes.contains(s)).or_else(|| pack.sizes.first().cloned()).unwrap_or_default();
-        Some(crate::dialogs::VmChoice { on_vm: chosen.is_vm() && !repos.is_empty(), repos, sizes: pack.sizes.clone(), repo, size, branch: TextInput::default(), branch_edited: false })
+        let mcp = chosen.vm().and_then(|v| v.mcp.clone()).filter(|m| pack.presets.contains(m)).unwrap_or_default();
+        Some(crate::dialogs::VmChoice { on_vm: chosen.is_vm() && !repos.is_empty(), repos, sizes: pack.sizes.clone(), repo, size, branch: TextInput::default(), branch_edited: false, presets: pack.presets.clone(), mcp })
     }
 
     /// Where a new session box goes: next to its parent, at the spot given
@@ -1176,7 +1177,7 @@ impl App {
                 if !canvas_model::vm::branch_ok(&branch) {
                     return Err(format!("Invalid branch name: {branch}"));
                 }
-                Some(canvas_model::vm::Placement::Vm(Box::new(canvas_model::vm::VmPlacement { repo: vm.repo.clone(), branch: Some(branch), size: Some(vm.size.clone()).filter(|s| !s.is_empty()), mcp: None, with: None })))
+                Some(canvas_model::vm::Placement::Vm(Box::new(canvas_model::vm::VmPlacement { repo: vm.repo.clone(), branch: Some(branch), size: Some(vm.size.clone()).filter(|s| !s.is_empty()), mcp: Some(vm.mcp.clone()).filter(|m| !m.is_empty()), with: None })))
             }
             None => None,
         };

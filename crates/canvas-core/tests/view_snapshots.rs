@@ -934,6 +934,25 @@ fn new_session_dialog_run_on_vm() {
     check("new-session-run-on-vm", &mut app, BOTH);
 }
 
+/// With MCP presets in the pack, a VM session's dialog picks one (none by
+/// default: no MCP servers in the VM).
+#[test]
+fn new_session_dialog_vm_mcp_preset() {
+    let mut app = app(canvas_core::demo::demo_doc(CWD), false);
+    configs(&mut app);
+    with_vm_pack(&mut app);
+    app.bus.vm.as_mut().unwrap().pack.presets = vec!["forge-readonly".into(), "forge-write".into()];
+    app.run(Action::NewSession { at: None, parent: None });
+    if let Some(canvas_core::dialogs::Modal::NewSession(dialog)) = app.modals.last_mut() {
+        let vm = dialog.vm.as_mut().unwrap();
+        vm.on_vm = true;
+        assert_eq!(vm.mcp, "", "none unless chosen");
+        vm.mcp = "forge-readonly".into();
+        dialog.focus = canvas_core::dialogs::NsField::VmMcp;
+    }
+    check("new-session-vm-mcp", &mut app, BOTH);
+}
+
 /// A box on a VM shows ☁ before its name; the others are unchanged.
 #[test]
 fn a_vm_box_is_marked() {

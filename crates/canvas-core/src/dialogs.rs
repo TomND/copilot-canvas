@@ -277,6 +277,8 @@ pub enum NsField {
     RunOn,
     VmRepo,
     VmSize,
+    /// The VM's MCP preset (only when the pack has presets).
+    VmMcp,
     VmBranch,
 }
 
@@ -327,6 +329,9 @@ pub struct VmChoice {
     pub size: String,
     pub branch: TextInput,
     pub branch_edited: bool,
+    /// The pack's MCP presets and the one chosen (empty: no MCP servers in the VM).
+    pub presets: Vec<String>,
+    pub mcp: String,
 }
 
 impl NewSession {
@@ -336,6 +341,9 @@ impl NewSession {
             fields.push(NsField::RunOn);
             if vm.on_vm {
                 fields.extend([NsField::VmRepo, NsField::VmSize, NsField::VmBranch]);
+                if self.vm.as_ref().is_some_and(|vm| !vm.presets.is_empty()) {
+                    fields.push(NsField::VmMcp);
+                }
             }
         }
         if matches!(self.git, GitState::Repo(_)) && !self.on_vm() {
