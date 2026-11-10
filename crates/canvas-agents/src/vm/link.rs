@@ -444,7 +444,9 @@ impl Links {
     /// satellite (the delete barrier; before a suspend), kept in its link
     /// record. An older satellite does not know the check: an error.
     pub fn git_check(&self, sandbox: &str) -> Result<Vec<canvas_common::sat::RepoStats>> {
-        let answer = self.control(sandbox, serde_json::json!({ "git": true }), Duration::from_secs(20))?;
+        // Its boxes' workspaces too: a program that is not running (yet, or since a restart) still left its work there.
+        let places: Vec<(String, String)> = launch::all(&self.home).into_iter().filter(|i| i.sandbox == sandbox && !i.cwd.is_empty()).map(|i| (i.r#box, i.cwd)).collect();
+        let answer = self.control(sandbox, serde_json::json!({ "git": true, "places": places }), Duration::from_secs(20))?;
         let repos: Vec<canvas_common::sat::RepoStats> = serde_json::from_value(answer.get("repos").cloned().context("the VM's satellite does not check repositories")?)?;
         update_record(&self.home, sandbox, |r| {
             r.stats.repos = repos.clone();

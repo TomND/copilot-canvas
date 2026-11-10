@@ -126,6 +126,11 @@ pub fn action_with(home: &Path, id: &str, op: VmOp, git: GitCheck) -> anyhow::Re
                 "Start canceled.".into()
             }
             VmOp::RetryStart if matches!(intent.state, VmState::Failed | VmState::Lost) => {
+                // Its conversation comes along when the hub mirrored it (a resume on a new VM).
+                let mirror = thin::mirror_dir(home, &intent.sandbox);
+                let claude = std::fs::read_dir(mirror.join("claude").join("projects")).into_iter().flatten().flatten().any(|e| e.path().join(format!("{}.jsonl", intent.r#box)).is_file());
+                let mirrored = claude || mirror.join("copilot").join(&intent.r#box).join("events.jsonl").is_file();
+                (intent.resume_from, intent.resume_session) = if !intent.sandbox.is_empty() && mirrored { (intent.sandbox.clone(), intent.r#box.clone()) } else { Default::default() };
                 intent.fence += 1;
                 intent.state = VmState::Claiming;
                 intent.sandbox.clear();
@@ -133,7 +138,7 @@ pub fn action_with(home: &Path, id: &str, op: VmOp, git: GitCheck) -> anyhow::Re
                 intent.attempts = 0;
                 intent.error.clear();
                 intent.queued_ms = now_ms();
-                "Starting it again on a new VM.".into()
+                if intent.resume_session.is_empty() { "Starting it again on a new VM.".into() } else { "Starting it again on a new VM, with its conversation from this machine's mirror.".into() }
             }
             VmOp::Shell => anyhow::bail!("a shell in the VM comes with a later phase (docs/VM-STATUS.md)"),
             other => anyhow::bail!("{} is not possible while its VM is {}", serde_json::to_value(&other).ok().and_then(|v| v["op"].as_str().map(str::to_owned)).unwrap_or_default(), intent.state.word()),
@@ -561,6 +566,30 @@ mod tests {
         let event: canvas_model::bus::Event = serde_json::from_slice(&std::fs::read(inbox[0].path()).unwrap()).unwrap();
         assert_eq!((event.kind.as_str(), event.to.as_str()), ("message", "b2"));
         assert!(event.data["text"].as_str().unwrap().contains("Do not push"));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn starting_a_lost_box_again_brings_its_mirrored_conversation() {
+        let home = std::env::temp_dir().join(format!("atelier-vm-retry-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/examples/vm-pack");
+        canvas_common::settings::Settings { vm: canvas_common::settings::VmSettings { pack: Some(example.display().to_string()) }, ..Default::default() }.save(&home).unwrap();
+        if std::env::var_os("ATELIER_VM_PACK").is_some() {
+            return;
+        }
+        for (id, sandbox) in [("5e55a1d0-0000-4000-8000-0000000000b1", "sbx-1"), ("5e55a1d0-0000-4000-8000-0000000000b2", "sbx-2")] {
+            let mut intent = launch::Intent { r#box: id.into(), sandbox: sandbox.into(), state: VmState::Lost, ..Default::default() };
+            launch::store(&home, &mut intent).unwrap();
+        }
+        let mirrored = thin::mirror_dir(&home, "sbx-1").join("copilot").join("5e55a1d0-0000-4000-8000-0000000000b1");
+        std::fs::create_dir_all(&mirrored).unwrap();
+        std::fs::write(mirrored.join("events.jsonl"), "{}\n").unwrap();
+        assert!(action(&home, "5e55a1d0-0000-4000-8000-0000000000b1", VmOp::RetryStart).unwrap().contains("with its conversation"));
+        let again = launch::load(&home, "5e55a1d0-0000-4000-8000-0000000000b1").unwrap().unwrap();
+        assert_eq!((again.state, again.resume_from.as_str(), again.resume_session.as_str()), (VmState::Claiming, "sbx-1", "5e55a1d0-0000-4000-8000-0000000000b1"));
+        assert_eq!(action(&home, "5e55a1d0-0000-4000-8000-0000000000b2", VmOp::RetryStart).unwrap(), "Starting it again on a new VM.", "nothing mirrored: a new start");
+        assert!(launch::load(&home, "5e55a1d0-0000-4000-8000-0000000000b2").unwrap().unwrap().resume_session.is_empty());
         let _ = std::fs::remove_dir_all(home);
     }
 

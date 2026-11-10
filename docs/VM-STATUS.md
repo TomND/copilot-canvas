@@ -49,8 +49,12 @@ owner's note that VM sessions are optional and local stays the default.
 - [x] `atelier satellite --self-check` (a PTY with alacritty, the data folder) and `atelier vm spike s2|s3|s4`
       through the pack's provider (hooks, local or aca; JSON, no pack values; sandboxes deleted unless `--keep`;
       S3 uploads `satellite.path` first); run on local sandboxes through `hooks` and `local` by `selftest vm` in CI
-- [ ] `vm spike s1` (Phase 2: the satellite link), `s5` (Phase 3: the MCP gateway), `s7` (Phase 2/5: faults)
+- [x] `vm spike s1` (a guest's satellite links to the running service through the pack's tunnel URL) and `s7` (a
+      freeze drops the link, a resume brings it back, the platform keeps a working VM running for `--runs` minutes),
+      built in Phase 5 and run on local sandboxes by `selftest vm`; `s5` is a manual check (its MCP client runs in the
+      guest): the owner's checklist below
 - [x] S6: `policy_ack` in `vm.yaml` (`pack check` warns while it is empty); the owner's checklist below
+- [x] Exit: the spike kits run on local sandboxes in CI (`selftest vm`); their real runs are the owner's (below)
 
 ### 1: manager (done 2026-11-10; CI run 42771716398 green on every job; merged into main at 36e0bcf with Phase 2's core)
 - [x] VM-11 provider trait (`vm::provider`); the pack's hooks as a provider (`vm::hooks::HooksProvider`)
@@ -122,7 +126,7 @@ owner's note that VM sessions are optional and local stays the default.
 - [x] Exit: the probe's integration steps on three OSes (CI run 42879098435; Windows 77 s); owner: `vm spike s5`
       with a real server (open)
 
-### 4: UX
+### 4: UX (done 2026-11-10; CI run 42895272083 green on every job; merged into main at 8b09f73)
 - [x] VM-46 on the hub: idle and unseen for `suspend_after` (no client shows it, not working, no mail, quiet) →
       suspended (`vm_idle_loop`, `vm_idle_verdict`); typing into a suspended VM and mail waiting for it resume it
       (`Remote::accepting`); the barrier: every terminal's repository (ended ones too) checked now through the link
@@ -158,33 +162,78 @@ owner's note that VM sessions are optional and local stays the default.
 - [x] VM-49 docs: README (the VM row, Controls, Commands, the self-test), VM-SESSIONS *As built* Phase 4, PARITY rows
       57–62 and *Last run*, NOTEBOOK-TASKS (*Start on VM…*, the board policy), GUI (`tree`'s `vm`), BACKEND
 - [ ] *Open shell* (VM-43): a shell box in the same sandbox needs shared VMs (`with`), not built (departure)
-- [ ] Exit: parity rows pass, snapshots read, self-test step in both clients
+- [x] Exit: parity rows pass (Windows `PASS: 80 rows`, macOS, Linux), snapshots read, the self-test's VM step in both
+      clients and over loopback (CI run 42895272083)
 
-### 5: hardening
-- [ ] VM-51 `selftest vm --real` · VM-52 soak · VM-53 resume on a new VM · VM-54 Claude Code · VM-55 OpenCode · VM-56 shared MCP · VM-57 docs
-- [ ] Exit: as in the plan
+### 5: hardening (done 2026-11-10; CI run 42913883263 green on every job; merged into main with this file)
+- [x] VM-53 resume on a new VM: a resumed launch after its VM was lost or deleted, or *Start again on a new VM*, puts
+      the hub's mirror of the conversation into the new guest (Copilot's session folder; Claude Code's transcript and
+      subagents in the project folder of the new clone) and moves the mirror with it; refused, with why, when nothing
+      was mirrored (`selftest vm`: deleted, then resumed on a new VM, the agent finds its history)
+- [x] VM-54 Claude Code on VMs: its guest command line (`claude::args_env`: the synced plugins, the group's notes as
+      `--add-dir`, the group's instructions file as `--append-system-prompt-file`, the box's MCP preset as
+      `--strict-mcp-config --mcp-config %ROOTS%/agent-mcp/claude.json`); its transcripts, subagents and status files
+      mirrored (`claude/…` in the mirror), live as the guest's satellite reports, transcripts read from the mirror
+      (`session_store::claude`); `selftest vm`: a Claude Code box in a VM, its status working then idle, its transcript
+- [x] VM-55 OpenCode: refused on VMs with why, in the dialog and the service (departure below)
+- [x] VM-51 `atelier selftest vm --real [--agent copilot|claude] [--json FILE]` through the running service: the pack,
+      sign-in, an image, a box with the real agent CLI and no prompt, typing, replay, suspend and resume, the delete
+      barrier, the delete; no pack values printed (details in `<home>/selftest-vm-real.log`); every VM it made deleted
+      whatever happens; `--dry-run` on local sandboxes, run by `selftest vm` (`PASS: 11 step(s)`)
+- [x] VM-52 soak: `atelier selftest vm --soak [--minutes N]`; 20 minutes passed: 515 cycles, every line typed and
+      each of 644 commands exactly once, 129 replays, 0 gaps, no memory growth (VM-SESSIONS.md *As built*)
+- [x] VM-56 shared MCP processes (`mode: shared`, opt-in per server): the five behaviours tested with the stand-in
+      (one initialize; each session's ids, progress and cancellations kept apart; each call checked and recorded as
+      its own box; the server's requests sent to the session that asked last; the process ends once idle)
+- [x] the new-session dialog's *VM MCP* (the box's preset; only when the pack has presets; none by default);
+      `vm spike s1` and `s7` (Phase 0's kit)
+- [x] VM-57 docs: README (VM sessions: optional, local stays the default; commands), VM-SESSIONS *As built* Phase 5,
+      AGENT-PROVIDERS (*Inside a VM*: Claude Code), PARITY *Last run*, this file (every exit, the owner's checklist)
+- [x] Exit: `selftest vm` (with the resume on a new VM, a Claude Code box, S1, S7 and the `--real` dry run) on three
+      OSes (CI run 42913883263: Windows, macOS 102.1 s, Linux 99.0 s); the 20-minute soak passed (below); Claude Code's probe with the stand-in passes; OpenCode refused with
+      why. Owner: `selftest vm --real` once per agent (the checklist)
 
-## Owner-only items (need real sandboxes; never run in CI)
+## The owner's checklist (real Azure; never in CI)
 
-Prerequisites: an Entra account with *Container Apps SandboxGroup Data Owner*, a sandbox group, a
-Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
-`docs/examples/vm-pack/` outside any repository and filled in, `atelier vm pack check` clean.
+In this order: each needs the ones before it, and S1 comes first because everything else depends on a
+guest reaching this machine's service through the tunnel. Every command prints JSON or step lines, never
+a value of the pack, and deletes the sandboxes it made (`--keep` keeps a spike's for a look).
 
-- [ ] M-1 the example pack's aca hook scripts against a real group
-- [ ] M-2 an agent CLI authenticated in a guest
-- [ ] M-3 first-prompt latency through hooks
-- [ ] S1 satellite through the tunnel's web forwarding, role before any client message (`atelier vm spike s1`)
-- [ ] S2 agent CLI auth in a guest (`vm spike s2 --agent …`)
-- [ ] S3 the Linux build in the stock image (`vm spike s3`)
-- [ ] S4 first prompt p50/p95 from a warm pool (`vm spike s4 --runs 20`)
-- [ ] S5 MCP policy and per-session processes with a real server (`vm spike s5 --server NAME`)
-- [ ] S6 the data-handling policy for the pack (`policy_ack` in `vm.yaml`)
-- [ ] S7 failure injection on the platform (`vm spike s7`), incl. auto-suspend off while working
-- [ ] the token audience (`auth.audience`: a 401 with the other value answers it)
-- [ ] `vm::aca` against a real group: the answers' shapes (image readiness, egress decisions, raw-file GET), the
-      files API and `/opt/atelier/bin` in the stock image (`vm spike s3` uploads there), token expiry
-- [ ] egress isolation: a guest process that ignores proxy settings is still refused
-- [ ] `atelier selftest vm --real` once per agent (Phase 5)
+Once:
+
+1. An Entra account with *Container Apps SandboxGroup Data Owner* on a sandbox group; `az login`.
+2. A pack outside any repository, copied from `docs/examples/vm-pack/` and filled in (`provider: aca`, the
+   group, `repos.yaml`, `policy_ack` once the data-handling policy is read: S6):
+   `atelier config vm.pack <FOLDER>`, then `atelier vm pack check` (no errors).
+3. The tunnel to the service's remote port: `atelier remote tunnel-setup --tunnel <ID> --port <PORT>`, then
+   the `devtunnel` commands it prints (the port with web forwarding); `tunnel.url` in `vm.yaml` is that
+   port's `wss://` URL.
+4. The Linux build for guests: `satellite.path` and `satellite.sha256` in `vm.yaml` (the CI artifact
+   `atelier-linux-x86_64`).
+5. Atelier running (open the canvas: `atelier` or `atelier-gui`): it takes the satellites' links.
+
+Then:
+
+- [ ] **S1** a guest reaches the hub: `atelier vm spike s1` → `"linked": true` (`link_ms`). A 401 or a refusal:
+      check the token audience (`auth.audience` in `vm.yaml`: a 401 with one value is answered by the other)
+- [ ] **S3** this build in the stock image (and `/opt/atelier/bin` writable): `atelier vm spike s3`
+- [ ] **S2** the agent CLIs in a guest: `atelier vm spike s2 --agent copilot`, then `--agent claude`
+- [ ] **S4** first-prompt latency from a warm pool: `atelier vm spike s4 --runs 20` (`p50_ms`, `p95_ms`)
+- [ ] **S7** faults on the platform: `atelier vm spike s7 --runs 10` (a freeze drops the link, a resume brings it
+      back, no auto-suspend of a working VM for 10 minutes: `"lapses": 0`)
+- [ ] **the whole path, once per agent**: `atelier selftest vm --real --agent copilot --json vm-real-copilot.json`,
+      then `--agent claude` (an image, a box with the real CLI and no prompt, typing, replay, suspend and resume,
+      the barrier, the delete). The agent's sign-in shows on its screen (M-2)
+- [ ] **S5** MCP (manual): a new session with *Run on: ☁ VM* and *VM MCP* a preset naming one of this machine's
+      MCP servers; in the agent, list its MCP tools (Copilot CLI and Claude Code: `/mcp`; no prompt): only the
+      tools the policy allows; `atelier vm list` shows refusals; the server's process ends with the session
+- [ ] **egress** (manual): in a VM box's terminal, a shell command to a host its repository's egress profile does
+      not allow (Copilot CLI: `!curl -sS https://example.org`): refused; `atelier vm list` shows the refusal; a
+      process that ignores proxy settings is refused too (the platform's egress, not only the proxy)
+- [ ] `vm::aca`'s guesses are settled by the above: the answers' shapes (S1, S3, image readiness in `--real`), the
+      files API (S1, S3), token expiry (a run longer than the token's life: S7 with `--runs 60`)
+- [ ] the hooks lane, only if a pack uses `provider: hooks`: M-1 `atelier vm spike s2` and M-3 `atelier vm spike s4`
+      through the hooks
 
 ## Departures from the plan
 
@@ -245,6 +294,18 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   branch is reported whatever its PR), no drain with acknowledgements before the delete (the outbox and history are
   pushed continuously), and a suspended VM is not resumed for the check (its repositories were checked as it was
   suspended). The idle suspend runs in the service (`vm_idle_loop`), not `vm::manager`; there is no `vm::quiesce`.
+- **OpenCode sessions are refused on VMs** (VM-55), with why, in the new-session dialog and the service: its history
+  is a SQLite database and its live state its TUI's HTTP server on the machine it runs on; following them from a
+  guest needs a reader in the satellite, transcripts over the link and its session re-keying (the plan's VM-55), not
+  built. Copilot CLI and Claude Code run on VMs.
+- **S5 is a manual check** (`vm spike s5` names it): its MCP client must run in the guest; the gateway's behaviour
+  is tested with the stand-in on every OS, a real server is the owner's (the checklist).
+- **Resume on a new VM does not compare the mirror with the guest's last report** (the plan's check): the hub keeps
+  every drained append, and a resume is refused only when nothing of the conversation was mirrored.
+- **The delete barrier also checks the boxes' workspaces the hub knows** (not only the satellite's running
+  terminals'): a program not running yet, or a satellite restarted, hid them (found by `selftest vm --real`).
+- **A satellite may dial twice as its VM wakes** (its first link can end at once); typing waits, so `--real` and
+  the soak wait for a steady link before the barrier.
 - ***Open shell* is not built** (VM-43): a shell box in a VM box's sandbox is a shared VM (`with`), below.
 - **No shared VMs yet (`VmPlacement::with`)**: the service gives every VM box a sandbox of its own (claiming,
   suspend, delete and the idle loop all assume one box per sandbox); a subsession of a VM box defaults to a VM of its
@@ -343,3 +404,11 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
 - 2026-11-10: Phase 4 done locally: VM-41/44/47 (Run on defaults, Tasks' Start on VM, client exclusions), the
   parity rows 57–62 (`PASS: 6 rows in 25.5s` on macOS) and the self-test's VM step (TUI, GUI, both over loopback);
   two bugs found by them and fixed (local clients' VM requests; a suspended VM's frozen link). Waiting for CI.
+- 2026-11-10: Phase 4 merged into main at 8b09f73 (CI run 42895272083 green on all 17 jobs; on Windows the VM step
+  ran in the TUI, the GUI and over loopback, and rows 57–62 passed). Phase 5 begun: VM-53 resume on a new VM
+  (d9fec28).
+- 2026-11-10: Phase 5: VM-53 resume on a new VM, VM-54 Claude Code, VM-55 OpenCode refused with why, VM-51
+  `selftest vm --real` (and its dry run in `selftest vm`), VM-52 the soak, VM-56 shared MCP tested, `vm spike s1`
+  and `s7`, the dialog's *VM MCP*; the owner's checklist rewritten in order (S1 first).
+- 2026-11-10: Phase 5 done: CI run 42913883263 green on all 17 jobs (on 015287a; a Windows race in the probe's
+  resume step fixed before it). Merged into main with this file.

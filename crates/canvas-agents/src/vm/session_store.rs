@@ -1,7 +1,7 @@
 //! Where a session's history is (plan VM-27, D17): the canvas's own
 //! Copilot folder, or the mirror of a VM session's guest on this hub
 //! (`<home>/vm/mirrors/<sandbox>/copilot/`). File-backed, so the service and
-//! a `LocalBackend` resolve a session alike. Copilot only until Phase 5.
+//! a `LocalBackend` resolve a session alike. Copilot and Claude Code (`claude`).
 
 use std::path::{Path, PathBuf};
 
@@ -35,6 +35,16 @@ pub fn copilot(home: &Path, sessions_dir: &Path, id: &str) -> Root {
         }
     }
     Root::Local(sessions_dir.to_path_buf())
+}
+
+/// Session `id`'s Claude Code data folder: this machine's when its
+/// transcript is there, else a VM mirror's that has it, else this machine's.
+pub fn claude(home: &Path, id: &str) -> PathBuf {
+    let local = crate::agents::claude_history::claude_dir();
+    if !crate::index::is_session_id(id) || crate::agents::claude_history::find_transcript(&local, id, None).is_some() {
+        return local;
+    }
+    super::thin::claude_mirrors(home).into_iter().find(|root| crate::agents::claude_history::find_transcript(root, id, None).is_some()).unwrap_or(local)
 }
 
 #[cfg(test)]

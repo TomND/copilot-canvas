@@ -481,6 +481,7 @@ impl Agents {
                 profile_instructions: !pack.paths.is_empty(),
                 group: group.as_ref().map(|(_, name)| crate::vm::sync::group_slug(name)),
                 group_skills: group_plugin.is_some(),
+                mcp: placement.mcp.as_deref().is_some_and(|preset| pack.mcp.presets.get(preset).is_some_and(|servers| !servers.is_empty())),
             })
         } else {
             crate::vm::target::ExecTarget::Local
@@ -492,6 +493,9 @@ impl Agents {
         intent.agent = kind.id().to_owned();
         // A first launch, or one after its VM was deleted, failed or lost: the launcher claims a VM.
         if intent.sandbox.is_empty() || matches!(intent.state, VmState::Failed | VmState::Deleted | VmState::Lost) {
+            // Resuming its conversation there: from the hub's mirror of the VM it ran in.
+            let from = if launch.resume && !intent.sandbox.is_empty() { intent.sandbox.clone() } else { intent.resume_from.clone() };
+            (intent.resume_from, intent.resume_session) = if launch.resume { (from, launch.native_id.clone().unwrap_or_else(|| id.to_owned())) } else { Default::default() };
             intent.placement = placement;
             intent.sandbox.clear();
             intent.satellite.clear();
@@ -1300,6 +1304,7 @@ fn event_source(agent_sessions: &HashMap<String, String>, session: &str) -> Stri
 fn index_loop(shared: Arc<Agents>, wake: Receiver<()>) {
     let mut histories: Vec<(AgentKind, Box<dyn crate::agents::History>)> = crate::agents::ALL.iter().map(|kind| (*kind, kind.provider().history())).collect();
     let mut mirrors: HashMap<PathBuf, crate::index::Index> = HashMap::new();
+    let mut claude_mirrors: HashMap<PathBuf, crate::agents::claude_history::ClaudeHistory> = HashMap::new();
     loop {
         let natives: Vec<String> = {
             let terms = lock(&shared.terms);
@@ -1323,6 +1328,21 @@ fn index_loop(shared: Arc<Agents>, wake: Receiver<()>) {
         }
         for index in mirrors.values_mut() {
             let (c, _) = index.poll(&tracked, Duration::from_secs(15));
+            changed.extend(c);
+        }
+        // Claude Code's mirrored histories: live as the guest's satellite reports them.
+        for root in crate::vm::thin::claude_mirrors(&shared.instance.home) {
+            let sandbox = root.parent().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let (links, dir) = (shared.vm_links.clone(), root.clone());
+            let live: crate::agents::claude_history::LiveSessions = Arc::new(move || {
+                let mut files = crate::agents::claude_history::mirrored_pid_files(&dir);
+                files.retain(|id, _| links.session_live(&sandbox, id));
+                files
+            });
+            claude_mirrors.entry(root.clone()).or_insert_with(|| crate::agents::claude_history::ClaudeHistory::new(root).with_live(live));
+        }
+        for history in claude_mirrors.values_mut() {
+            let (c, _) = history.poll(&tracked, Duration::from_secs(15));
             changed.extend(c);
         }
         for (kind, history) in histories.iter_mut() {

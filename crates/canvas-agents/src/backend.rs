@@ -178,6 +178,7 @@ fn run(ctx: &Ctx, request: Request) -> Result<Response> {
         Request::HasHistory { agent, id } => Response::Flag(match agent {
             // The canvas's own history folder (`--sessions-dir`), or a VM session's mirror.
             AgentKind::Copilot => crate::index::is_session_id(&id) && crate::vm::session_store::copilot(&ctx.home, &ctx.sessions_dir, &id).path().join(&id).join("events.jsonl").is_file(),
+            AgentKind::Claude => crate::index::is_session_id(&id) && agents::claude_history::find_transcript(&crate::vm::session_store::claude(&ctx.home, &id), &id, None).is_some(),
             other => other.provider().has_history(&id),
         }),
         Request::Fork { parent, child, name, cwd } => {
@@ -190,6 +191,8 @@ fn run(ctx: &Ctx, request: Request) -> Result<Response> {
         Request::Transcript { agent, session, parent, agent_key, cwd, limit } => Response::Transcript(Box::new(agents::transcript::read(
             match agent {
                 AgentKind::Copilot => crate::vm::session_store::copilot(&ctx.home, &ctx.sessions_dir, &session).path().to_path_buf(),
+                // Claude Code's data folder (this machine's, or a VM session's mirror).
+                AgentKind::Claude => crate::vm::session_store::claude(&ctx.home, &session),
                 _ => ctx.sessions_dir.clone(),
             }
             .as_path(),

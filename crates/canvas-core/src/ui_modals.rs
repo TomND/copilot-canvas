@@ -894,7 +894,7 @@ fn draw_new_session(app: &App, buf: &mut Buffer, screen: Rect, dialog: &crate::d
     let repo = matches!(dialog.git, GitState::Repo(_)) && !on_vm;
     let vm_rows = match &dialog.vm {
         None => 0,
-        Some(vm) if vm.on_vm => 5,
+        Some(vm) if vm.on_vm => if vm.presets.is_empty() { 5 } else { 6 },
         Some(_) => 2,
     };
     let fork_rows = if dialog.can_fork && !on_vm { 2 } else { 0 };
@@ -967,7 +967,14 @@ fn draw_new_session(app: &App, buf: &mut Buffer, screen: Rect, dialog: &crate::d
             label(buf, y, "Branch", focus == NsField::VmBranch);
             cursor = field(buf, field_x, y, field_w, &vm.branch, focus == NsField::VmBranch, "atelier/<the session's name>: a new branch from the default, or yours if it exists", rect).or(cursor);
             ctx.hit(Rect::new(field_x as u16, y as u16, field_w as u16, 1), Hit::Field(NsField::VmBranch));
-            y += 2;
+            y += 1;
+            if !vm.presets.is_empty() {
+                label(buf, y, "VM MCP", focus == NsField::VmMcp);
+                let text = if vm.mcp.is_empty() { "none (no MCP servers in the VM)".to_owned() } else { format!("preset {} (this machine's servers, the pack's rules)", vm.mcp) };
+                pick(buf, ctx, field_x, y, field_w, &text, NsField::VmMcp);
+                y += 1;
+            }
+            y += 1;
         }
     }
 

@@ -436,6 +436,16 @@ impl App {
                 }
                 return Outcome::Keep;
             }
+            NsField::VmMcp if activate || matches!(key.code, KeyCode::Left | KeyCode::Right) => {
+                if let Some(vm) = dialog.vm.as_mut() {
+                    // None, then each preset, around.
+                    let choices: Vec<String> = std::iter::once(String::new()).chain(vm.presets.iter().cloned()).collect();
+                    let at = choices.iter().position(|c| *c == vm.mcp).unwrap_or(0);
+                    let next = if key.code == KeyCode::Left { (at + choices.len() - 1) % choices.len() } else { (at + 1) % choices.len() };
+                    vm.mcp = choices[next].clone();
+                }
+                return Outcome::Keep;
+            }
             NsField::Cancel if activate => return Outcome::Close,
             _ => {}
         }
@@ -794,7 +804,7 @@ impl App {
             }
             (Some(Modal::NewSession(dialog)), Hit::Field(field)) => {
                 dialog.focus = field;
-                if matches!(field, NsField::Browse | NsField::Recent | NsField::Mode | NsField::Base | NsField::Agent | NsField::Model | NsField::Context | NsField::Mcp | NsField::Create | NsField::Cancel | NsField::RunOn | NsField::VmRepo | NsField::VmSize) {
+                if matches!(field, NsField::Browse | NsField::Recent | NsField::Mode | NsField::Base | NsField::Agent | NsField::Model | NsField::Context | NsField::Mcp | NsField::Create | NsField::Cancel | NsField::RunOn | NsField::VmRepo | NsField::VmSize | NsField::VmMcp) {
                     self.modal_key(enter);
                 }
             }

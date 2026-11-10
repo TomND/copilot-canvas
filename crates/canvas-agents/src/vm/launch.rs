@@ -63,6 +63,12 @@ pub struct Intent {
     /// The plugin with the group's skill folders, made on the hub for this box.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub group_plugin: String,
+    /// Resume on a new VM: the sandbox whose mirrored history holds the
+    /// conversation (`resume_session`), put into the new guest at its start.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub resume_from: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub resume_session: String,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -144,19 +150,40 @@ pub fn guest_command(kind: AgentKind, id: &str, launch: &AgentLaunch, target: &s
     // The synced roots in this machine's places: plugins, the group's notes and instructions.
     let plugins = roots.plugins(id);
     let integration = crate::agents::Integration { plugin_dir: None, env: Vec::new(), skill_plugins: plugins.iter().map(std::path::PathBuf::from).collect() };
-    let (mut args, mut env) = match kind {
-        AgentKind::Copilot => crate::agents::copilot::args(id, &launch, &integration)?,
-        other => bail!("{} sessions cannot run on a VM yet (Copilot CLI can)", other.label()),
-    };
-    if !launch.resume {
-        for dir in roots.add_dirs() {
-            args.extend(["--add-dir".to_owned(), dir]);
+    let (args, mut env) = match kind {
+        AgentKind::Copilot => {
+            let (mut args, mut env) = crate::agents::copilot::args(id, &launch, &integration)?;
+            if !launch.resume {
+                for dir in roots.add_dirs() {
+                    args.extend(["--add-dir".to_owned(), dir]);
+                }
+            }
+            let instructions = roots.instructions();
+            if !instructions.is_empty() {
+                env.push(("COPILOT_CUSTOM_INSTRUCTIONS_DIRS".to_owned(), instructions.join(",")));
+            }
+            (args, env)
         }
-    }
-    let instructions = roots.instructions();
-    if !instructions.is_empty() {
-        env.push(("COPILOT_CUSTOM_INSTRUCTIONS_DIRS".to_owned(), instructions.join(",")));
-    }
+        AgentKind::Claude => {
+            // This machine's folders, its MCP file and its group folder are not the guest's: the synced roots stand in.
+            let guest_launch = AgentLaunch { group_folder: None, group_name: None, mcp_off: Vec::new(), add_dirs: Vec::new(), ..launch.clone() };
+            let home = crate::agents::claude::ClaudeHome { dir: PathBuf::new(), user_config: PathBuf::new() };
+            let (mut args, env) = crate::agents::claude::Claude.args_env(&home, id, &guest_launch, &integration)?;
+            // Nothing below is saved with a Claude session: every run gets it.
+            for dir in roots.add_dirs() {
+                args.extend(["--add-dir".to_owned(), dir]);
+            }
+            if let Some(file) = roots.instructions_file() {
+                args.extend(["--append-system-prompt-file".to_owned(), file]);
+            }
+            if roots.mcp {
+                args.extend(["--strict-mcp-config".to_owned(), "--mcp-config".to_owned(), super::target::guest(super::sync::CLAUDE_MCP)]);
+            }
+            // Windows Terminal's variables are this machine's matter.
+            (args, env.into_iter().filter(|(k, _)| !k.starts_with('-')).collect())
+        }
+        other => bail!("{} sessions cannot run on a VM in this version: its history is a database and its live state a server on the machine it runs on, which the canvas cannot follow from a VM yet (Copilot CLI and Claude Code can)", other.label()),
+    };
     // The canvas's own variables are set by the guest's side.
     env.retain(|(k, _)| !canvas_common::env::is_ours(k));
     // `atelier note path` in the guest: the group's notes as synced there.
@@ -287,12 +314,13 @@ mod tests {
         let all = format!("{argv:?}{env:?}");
         assert!(!all.contains(r"C:\") && !all.contains("--plugin-dir") && !all.contains("--add-dir") && !all.contains("ATELIER_HOME"), "{all}");
         assert!(env.contains(&("KEEP".into(), "1".into())));
-        assert!(guest_command(AgentKind::Claude, id, &launch, &crate::vm::target::ExecTarget::Local).is_err(), "Copilot first");
+        let refused = guest_command(AgentKind::OpenCode, id, &launch, &crate::vm::target::ExecTarget::Local).unwrap_err().to_string();
+        assert!(refused.contains("cannot run on a VM"), "{refused}");
         assert!(guest_command(AgentKind::Copilot, id, &AgentLaunch { fork_from: Some("p".into()), ..launch.clone() }, &crate::vm::target::ExecTarget::Local).is_err(), "no forks of VM sessions");
         let env = guest_env(id, AgentKind::Copilot);
         assert!(env.contains(&("ATELIER_SESSION".into(), id.into())) && env.contains(&("ATELIER_REMOTE".into(), "satellite-lite".into())));
         // With a satellite: the synced roots in this machine's places, guest paths only.
-        let roots = crate::vm::target::GuestRoots { plugin: true, profile: true, profile_instructions: false, group: Some("g".into()), group_skills: true };
+        let roots = crate::vm::target::GuestRoots { plugin: true, profile: true, profile_instructions: false, group: Some("g".into()), group_skills: true, mcp: false };
         let (argv, env) = guest_command(AgentKind::Copilot, id, &launch, &crate::vm::target::ExecTarget::Vm(roots)).unwrap();
         let plugins: Vec<&str> = argv.windows(2).filter(|w| w[0] == "--plugin-dir").map(|w| w[1].as_str()).collect();
         assert_eq!(plugins, ["%ROOTS%/plugin", "%ROOTS%/profile", format!("%ROOTS%/group-skills/{id}").as_str()]);
@@ -301,5 +329,18 @@ mod tests {
         assert!(env.contains(&("COPILOT_CUSTOM_INSTRUCTIONS_DIRS".into(), "%ROOTS%/instructions/g".into())));
         assert!(env.contains(&("ATELIER_NOTES".into(), "%ROOTS%/notes/g".into())));
         assert!(!format!("{argv:?}{env:?}").contains(r"C:\"), "nothing of this machine");
+        // Claude Code: its own flags for the same roots, the box's MCP preset as a file of the roots.
+        let roots = crate::vm::target::GuestRoots { plugin: true, profile: false, profile_instructions: false, group: Some("g".into()), group_skills: false, mcp: true };
+        let claude = AgentLaunch { agent: "claude".into(), group_folder: Some(r"C:\work\g".into()), group_name: Some("g".into()), mcp_off: vec!["gh".into()], add_dirs: vec![r"C:\x".into()], ..launch.clone() };
+        let (argv, env) = guest_command(AgentKind::Claude, id, &claude, &crate::vm::target::ExecTarget::Vm(roots)).unwrap();
+        assert_eq!(argv[..3], ["claude", "--session-id", id]);
+        let pairs = |flag: &str| argv.windows(2).filter(|w| w[0] == flag).map(|w| w[1].clone()).collect::<Vec<_>>();
+        assert_eq!(pairs("--plugin-dir"), ["%ROOTS%/plugin"]);
+        assert_eq!(pairs("--add-dir"), ["%ROOTS%/notes/g/ai-docs", "%ROOTS%/notes/g/human-outputs"]);
+        assert_eq!(pairs("--append-system-prompt-file"), ["%ROOTS%/instructions/g/canvas-group.instructions.md"]);
+        assert_eq!(pairs("--mcp-config"), ["%ROOTS%/agent-mcp/claude.json"]);
+        assert!(argv.contains(&"--strict-mcp-config".to_owned()));
+        let all = format!("{argv:?}{env:?}");
+        assert!(!all.contains(r"C:\") && !env.iter().any(|(k, _)| k.starts_with('-')), "nothing of this machine: {all}");
     }
 }

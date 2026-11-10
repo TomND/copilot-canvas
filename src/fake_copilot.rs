@@ -202,13 +202,17 @@ fn session(args: &[String]) -> Result<()> {
     let disabled: Vec<&str> = args.windows(2).filter(|w| w[0] == "--disable-mcp-server").map(|w| w[1].as_str()).collect();
     // Mouse reports (SGR), as Copilot asks for them.
     write!(out, "\x1b[?1000h\x1b[?1006h")?;
+    let history = FakeHistory::start(args);
     write!(out, "Fake Copilot (canvas parity)\r\n")?;
+    // A resumed conversation says what it found (a resume on a new VM brings it along).
+    if let Some(earlier) = history.as_ref().map(|h| h.earlier).filter(|n| *n > 0) {
+        write!(out, "Resumed with {earlier} earlier events of history\r\n")?;
+    }
     write!(out, "MCP off: {} · {}\r\n\r\n", if disabled.is_empty() { "none".to_owned() } else { disabled.join(",") }, model_line(args))?;
     write!(out, " ❯ {USER_MESSAGE}\r\n   and its second line\r\n\r\n")?;
     write!(out, " ● Fake reply: nothing was sent anywhere.\r\n\r\n")?;
     write!(out, "❯ ")?;
     out.flush()?;
-    let history = FakeHistory::start(args);
     let mut stdin = std::io::stdin().lock();
     let mut buf = [0u8; 4096];
     let mut line = String::new();
@@ -284,6 +288,10 @@ fn hold(args: &[String]) -> Result<()> {
 struct FakeHistory {
     events: std::path::PathBuf,
     lock: std::path::PathBuf,
+    /// Events it had before this run (a resumed session).
+    earlier: usize,
+    /// As Claude Code: its session, workspace and status file (`sessions/<pid>.json`).
+    claude: Option<(String, String)>,
 }
 
 impl Drop for FakeHistory {
@@ -292,9 +300,17 @@ impl Drop for FakeHistory {
     }
 }
 
+/// This fake's program name (`copilot`, `claude`, `opencode`).
+fn role() -> String {
+    std::env::current_exe().ok().and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase())).unwrap_or_default()
+}
+
 impl FakeHistory {
     fn start(args: &[String]) -> Option<Self> {
         std::env::var_os("ATELIER_FAKE_HISTORY")?;
+        if role() == "claude" {
+            return Self::start_claude(args);
+        }
         let id = args.windows(2).find(|w| w[0] == "--session-id").map(|w| w[1].clone())?;
         let root = std::env::var_os("COPILOT_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".copilot"));
         let dir = root.join("session-state").join(&id);
@@ -302,18 +318,58 @@ impl FakeHistory {
         let now = canvas_common::paths::rfc3339_now();
         let cwd = std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default();
         let name = args.windows(2).find(|w| w[0] == "--name").map(|w| w[1].clone()).unwrap_or_else(|| "Fake session".into());
-        std::fs::write(dir.join("workspace.yaml"), format!("id: {id}\ncwd: {cwd}\nname: {name}\ncreated_at: {now}\nupdated_at: {now}\n")).ok()?;
+        // A resumed session keeps its history (as Copilot does).
+        let earlier = std::fs::read_to_string(dir.join("events.jsonl")).map(|t| t.lines().count()).unwrap_or(0);
+        if earlier == 0 {
+            std::fs::write(dir.join("workspace.yaml"), format!("id: {id}\ncwd: {cwd}\nname: {name}\ncreated_at: {now}\nupdated_at: {now}\n")).ok()?;
+        }
         let lock = dir.join(format!("inuse.{}.lock", std::process::id()));
         let _ = std::fs::write(&lock, b"");
-        let history = FakeHistory { events: dir.join("events.jsonl"), lock };
+        let history = FakeHistory { events: dir.join("events.jsonl"), lock, earlier, claude: None };
         history.event("session.start");
+        Some(history)
+    }
+
+    /// Claude Code's history: `<CLAUDE_CONFIG_DIR or ~/.claude>/projects/<dir>/<id>.jsonl`
+    /// (`--session-id` new, `-r` resumed) and its status file while it runs.
+    fn start_claude(args: &[String]) -> Option<Self> {
+        let id = args.windows(2).find(|w| w[0] == "--session-id" || w[0] == "-r").map(|w| w[1].clone())?;
+        let root = std::env::var_os("CLAUDE_CONFIG_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".claude"));
+        let cwd = std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default();
+        let project = root.join("projects").join(canvas_agents::agents::claude_history::project_dir_name(&cwd));
+        std::fs::create_dir_all(&project).ok()?;
+        std::fs::create_dir_all(root.join("sessions")).ok()?;
+        let events = project.join(format!("{id}.jsonl"));
+        let earlier = std::fs::read_to_string(&events).map(|t| t.lines().count()).unwrap_or(0);
+        let lock = root.join("sessions").join(format!("{}.json", std::process::id()));
+        let history = FakeHistory { events, lock, earlier, claude: Some((id, cwd)) };
+        history.event("session.idle");
         Some(history)
     }
 
     fn event(&self, kind: &str) {
         use std::io::Write;
+        let now = canvas_common::paths::rfc3339_now();
+        if let Some((id, cwd)) = &self.claude {
+            // Claude Code: a transcript record per turn's half, the status in its pid file.
+            let record = match kind {
+                "user.message" => Some(serde_json::json!({ "type": "user", "timestamp": now, "sessionId": id, "cwd": cwd, "message": { "role": "user", "content": "typed in the fake" } })),
+                "assistant.turn_end" => Some(serde_json::json!({ "type": "assistant", "timestamp": now, "sessionId": id, "cwd": cwd, "message": { "role": "assistant", "content": [{ "type": "text", "text": "Fake reply: nothing was sent anywhere." }], "stop_reason": "end_turn" } })),
+                _ => None,
+            };
+            if let Some(record) = record
+                && let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&self.events)
+            {
+                let _ = writeln!(file, "{record}");
+            }
+            let ms = canvas_common::paths::now_ms();
+            let status = if kind == "user.message" { "busy" } else { "idle" };
+            let pid = serde_json::json!({ "pid": std::process::id(), "sessionId": id, "cwd": cwd, "startedAt": ms.saturating_sub(1_000), "status": status, "updatedAt": ms, "statusUpdatedAt": ms });
+            let _ = std::fs::write(&self.lock, pid.to_string());
+            return;
+        }
         if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&self.events) {
-            let _ = writeln!(file, "{{\"type\":\"{kind}\",\"timestamp\":\"{}\",\"data\":{{}}}}", canvas_common::paths::rfc3339_now());
+            let _ = writeln!(file, "{{\"type\":\"{kind}\",\"timestamp\":\"{now}\",\"data\":{{}}}}");
         }
     }
 

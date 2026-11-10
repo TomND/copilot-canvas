@@ -302,7 +302,56 @@ fn ident(meta: &std::fs::Metadata) -> u64 {
 /// `atelier satellite --lite`: stores the hub's answers, then reports what
 /// the hub does not have yet of the agents' history and the queued
 /// operations (at most `max_bytes` of history a drain).
+/// The guest's history files a drain sends (mirror name, path, sent whole):
+/// Copilot's sessions under `copilot`, then Claude Code's under `claude`
+/// (transcripts and subagents appended, status files whole).
+fn history_files(copilot: &Path, claude: &Path) -> Vec<(String, PathBuf, bool)> {
+    let dirs = |path: &Path| -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = std::fs::read_dir(path).map(|e| e.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+        out.sort();
+        out
+    };
+    let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut out = Vec::new();
+    for dir in dirs(copilot).into_iter().filter(|d| d.is_dir()) {
+        let session = name(&dir);
+        if crate::index::is_session_id(&session) {
+            out.push((format!("copilot/{session}/workspace.yaml"), dir.join("workspace.yaml"), true));
+            out.push((format!("copilot/{session}/events.jsonl"), dir.join("events.jsonl"), false));
+        }
+    }
+    for project in dirs(&claude.join("projects")).into_iter().filter(|d| d.is_dir()) {
+        let project_name = name(&project);
+        for entry in dirs(&project) {
+            let entry_name = name(&entry);
+            if entry.is_dir() {
+                for agent in dirs(&entry.join("subagents")) {
+                    let agent_name = name(&agent);
+                    out.push((format!("claude/projects/{project_name}/{entry_name}/subagents/{agent_name}"), agent.clone(), agent_name.ends_with(".meta.json")));
+                }
+            } else {
+                out.push((format!("claude/projects/{project_name}/{entry_name}"), entry.clone(), false));
+            }
+        }
+    }
+    for status in dirs(&claude.join("sessions")) {
+        out.push((format!("claude/sessions/{}", name(&status)), status.clone(), true));
+    }
+    out.retain(|(file, _, _)| super::thin::mirror_name_ok(file));
+    out
+}
+
+/// Claude Code's data folder in the guest (`CLAUDE_CONFIG_DIR`, else `~/.claude`).
+pub fn claude_root() -> PathBuf {
+    crate::agents::claude_history::claude_dir()
+}
+
 pub fn drain(home: &Path, history: &Path, request: &DrainRequest) -> Result<DrainResponse> {
+    drain_with(home, history, &claude_root(), request)
+}
+
+/// [`drain`] with Claude Code's folder given.
+pub fn drain_with(home: &Path, history: &Path, claude: &Path, request: &DrainRequest) -> Result<DrainResponse> {
     for (id, answer) in &request.answers {
         if valid_op_id(id) {
             answered(home, id, answer)?;
@@ -311,17 +360,12 @@ pub fn drain(home: &Path, history: &Path, request: &DrainRequest) -> Result<Drai
     let budget = if request.max_bytes == 0 { 4 << 20 } else { request.max_bytes.min(16 << 20) };
     let mut used = 0u64;
     let mut pieces = Vec::new();
-    let mut sessions: Vec<PathBuf> = std::fs::read_dir(history).map(|e| e.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect()).unwrap_or_default();
-    sessions.sort();
-    'sessions: for dir in sessions {
-        let Some(session) = dir.file_name().map(|n| n.to_string_lossy().into_owned()).filter(|s| crate::index::is_session_id(s)) else { continue };
-        for (name, whole) in [("workspace.yaml", true), ("events.jsonl", false)] {
-            let path = dir.join(name);
+    'sessions: for (file, path, whole) in history_files(history, claude) {
+        {
             let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
             if !meta.is_file() {
                 continue;
             }
-            let file = format!("copilot/{session}/{name}");
             let have = request.files.get(&file).copied().unwrap_or_default();
             let size = meta.len();
             let (ident, start) = if whole {
@@ -424,7 +468,7 @@ mod tests {
         std::fs::write(history.join(id).join("inuse.7.lock"), "").unwrap();
         let queued = Queued { id: "op-1".into(), term: id.into(), op: CliOp { words: vec!["emit".into(), "x".into()], ..Default::default() }, ms: 1 };
         crate::paths::write_atomic(&outbox_dir(&home).join("op-1.json"), &serde_json::to_vec(&queued).unwrap()).unwrap();
-        let first = drain(&home, &history, &DrainRequest::default()).unwrap();
+        let first = drain_with(&home, &history, &root.join("no-claude"), &DrainRequest::default()).unwrap();
         assert_eq!(first.history.iter().map(|p| p.file.as_str()).collect::<Vec<_>>(), [format!("copilot/{id}/workspace.yaml"), format!("copilot/{id}/events.jsonl")], "never lock files");
         assert_eq!(first.ops, vec![queued]);
         // The hub has it all: nothing again; an append ships only the new part.
@@ -433,17 +477,46 @@ mod tests {
             have.files.insert(p.file.clone(), FileState { ident: p.ident, offset: p.offset + p.bytes.len() as u64 });
         }
         have.answers.push(("op-1".into(), OpAnswer { ok: true, state: "applied".into(), text: "Sent x".into(), ..Default::default() }));
-        assert!(drain(&home, &history, &have).unwrap().history.is_empty());
+        assert!(drain_with(&home, &history, &root.join("no-claude"), &have).unwrap().history.is_empty());
         assert!(!outbox_dir(&home).join("op-1.json").exists() && answers_dir(&home).join("op-1.json").is_file(), "answered: out of the outbox");
         use std::io::Write;
         std::fs::OpenOptions::new().append(true).open(history.join(id).join("events.jsonl")).unwrap().write_all(b"{\"type\":\"session.idle\"}\n").unwrap();
-        let next = drain(&home, &history, &have).unwrap();
+        let next = drain_with(&home, &history, &root.join("no-claude"), &have).unwrap();
         assert_eq!(next.history.len(), 1);
         assert_eq!((next.history[0].offset, next.history[0].bytes.as_slice()), (24, &b"{\"type\":\"session.idle\"}\n"[..]));
         // A budget splits large appends across drains.
         let small = DrainRequest { max_bytes: 5, ..Default::default() };
-        let pieces = drain(&home, &history, &small).unwrap().history;
+        let pieces = drain_with(&home, &history, &root.join("no-claude"), &small).unwrap().history;
         assert!(pieces.iter().map(|p| p.bytes.len()).sum::<usize>() <= 8 + 5, "{pieces:?}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn drains_ship_claude_codes_transcripts_subagents_and_status_files() {
+        let root = std::env::temp_dir().join(format!("atelier-drain-claude-{}", uuid::Uuid::new_v4()));
+        let (home, claude) = (root.join("home"), root.join("claude"));
+        let id = "12345678-1234-1234-1234-123456789abc";
+        let project = claude.join("projects").join("-home-agent-work-app");
+        std::fs::create_dir_all(project.join(id).join("subagents")).unwrap();
+        std::fs::create_dir_all(claude.join("sessions")).unwrap();
+        std::fs::write(project.join(format!("{id}.jsonl")), "{\"type\":\"user\"}\n").unwrap();
+        std::fs::write(project.join(id).join("subagents").join("agent-a1.jsonl"), "{}\n").unwrap();
+        std::fs::write(project.join(id).join("subagents").join("agent-a1.meta.json"), "{}").unwrap();
+        std::fs::write(claude.join("sessions").join("4242.json"), "{}").unwrap();
+        std::fs::write(claude.join("sessions").join("notes.txt"), "no").unwrap();
+        std::fs::write(project.join("not-a-session.jsonl"), "{}\n").unwrap();
+        let drained = drain_with(&home, &root.join("no-copilot"), &claude, &DrainRequest::default()).unwrap();
+        let mut files: Vec<(String, bool)> = drained.history.iter().map(|p| (p.file.clone(), p.whole)).collect();
+        files.sort();
+        assert_eq!(
+            files,
+            [
+                (format!("claude/projects/-home-agent-work-app/{id}.jsonl"), false),
+                (format!("claude/projects/-home-agent-work-app/{id}/subagents/agent-a1.jsonl"), false),
+                (format!("claude/projects/-home-agent-work-app/{id}/subagents/agent-a1.meta.json"), true),
+                ("claude/sessions/4242.json".to_owned(), true),
+            ]
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }

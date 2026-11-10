@@ -339,7 +339,10 @@ fn control(json: &str, files: &Files, places: &[(String, String)]) -> serde_json
     }
     // The delete barrier's check, now: every terminal's repository.
     if request.get("git").is_some() {
-        return serde_json::json!({ "ok": true, "repos": reports::repos(places) });
+        // The hub's boxes' workspaces, then this satellite's terminals' folders.
+        let mut all: Vec<(String, String)> = serde_json::from_value(request["places"].clone()).unwrap_or_default();
+        all.extend(places.iter().cloned());
+        return serde_json::json!({ "ok": true, "repos": reports::repos(&all) });
     }
     let answer = (|| -> Result<serde_json::Value> {
         let drain: super::lite::DrainRequest = serde_json::from_value(request.get("drain").cloned().context("an unknown control")?)?;

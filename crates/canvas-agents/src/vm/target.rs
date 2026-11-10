@@ -27,6 +27,8 @@ pub struct GuestRoots {
     pub group: Option<String>,
     /// The box's group skill plugin (`group-skills/<box>`).
     pub group_skills: bool,
+    /// The box has an MCP preset: Claude Code's configuration is synced (`sync::CLAUDE_MCP`).
+    pub mcp: bool,
 }
 
 /// A guest path under the roots: `%ROOTS%/<rel>`.
@@ -55,6 +57,11 @@ impl GuestRoots {
         self.group.iter().flat_map(|g| [canvas_model::doc::AI_DOCS, canvas_model::doc::HUMAN_OUTPUTS].map(|d| guest(&format!("notes/{g}/{d}")))).collect()
     }
 
+    /// Claude Code's instructions (`--append-system-prompt-file`): the group's.
+    pub fn instructions_file(&self) -> Option<String> {
+        self.group.as_ref().map(|g| guest(&format!("instructions/{g}/{}", super::sync::GROUP_INSTRUCTIONS)))
+    }
+
     /// Copilot's instruction folders (`COPILOT_CUSTOM_INSTRUCTIONS_DIRS`).
     pub fn instructions(&self) -> Vec<String> {
         let mut out: Vec<String> = self.group.iter().map(|g| guest(&format!("instructions/{g}"))).collect();
@@ -71,7 +78,7 @@ mod tests {
 
     #[test]
     fn a_vm_boxs_roots_are_guest_paths_under_the_roots() {
-        let roots = GuestRoots { plugin: true, profile: true, profile_instructions: true, group: Some("design".into()), group_skills: true };
+        let roots = GuestRoots { plugin: true, profile: true, profile_instructions: true, group: Some("design".into()), group_skills: true, mcp: false };
         assert_eq!(roots.plugins("b1"), ["%ROOTS%/plugin", "%ROOTS%/profile", "%ROOTS%/group-skills/b1"]);
         assert_eq!(roots.add_dirs(), ["%ROOTS%/notes/design/ai-docs", "%ROOTS%/notes/design/human-outputs"]);
         assert_eq!(roots.instructions(), ["%ROOTS%/instructions/design", "%ROOTS%/profile/instructions"]);

@@ -35,6 +35,34 @@ pub fn copilot_mirrors(home: &Path) -> Vec<PathBuf> {
     roots
 }
 
+/// Every mirror's Claude Code root (`<home>/vm/mirrors/<sandbox>/claude`).
+pub fn claude_mirrors(home: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(home.join("vm").join("mirrors")) else { return Vec::new() };
+    let mut roots: Vec<PathBuf> = entries.flatten().map(|e| e.path().join("claude")).filter(|p| p.is_dir()).collect();
+    roots.sort();
+    roots
+}
+
+/// A history file a guest may send (its name in the mirror): Copilot's
+/// `copilot/<session>/events.jsonl|workspace.yaml`; Claude Code's
+/// `claude/projects/<dir>/<session>.jsonl`, its subagents'
+/// `claude/projects/<dir>/<session>/subagents/<agent>.jsonl|.meta.json` and
+/// its status files `claude/sessions/<pid>.json`.
+pub fn mirror_name_ok(file: &str) -> bool {
+    use crate::index::is_session_id;
+    let dir_ok = |d: &str| !d.is_empty() && d.len() <= 200 && d.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    let agent_ok = |n: &str| n.strip_suffix(".jsonl").or_else(|| n.strip_suffix(".meta.json")).is_some_and(|stem| !stem.is_empty() && stem.len() <= 80 && stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+    let parts: Vec<&str> = file.split('/').collect();
+    canvas_model::vm::sync_name_ok(file)
+        && match parts.as_slice() {
+            ["copilot", session, "events.jsonl" | "workspace.yaml"] => is_session_id(session),
+            ["claude", "projects", dir, name] => dir_ok(dir) && name.strip_suffix(".jsonl").is_some_and(is_session_id),
+            ["claude", "projects", dir, session, "subagents", name] => dir_ok(dir) && is_session_id(session) && agent_ok(name),
+            ["claude", "sessions", name] => name.strip_suffix(".json").is_some_and(|pid| pid.parse::<u32>().is_ok()),
+            _ => false,
+        }
+}
+
 /// What the hub has of a sandbox's history and the answers it owes it.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(default)]
@@ -47,6 +75,17 @@ fn state_path(home: &Path, sandbox: &str) -> PathBuf {
     mirror_dir(home, sandbox).join("state.json")
 }
 
+/// Drops a mirror's record of the files under `prefix` (they moved to
+/// another sandbox's mirror: a resume on a new VM).
+pub fn forget_files(home: &Path, sandbox: &str, prefix: &str) {
+    let path = state_path(home, sandbox);
+    let Some(mut state) = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<MirrorState>(&b).ok()) else { return };
+    state.files.retain(|name, _| !name.starts_with(prefix));
+    if let Ok(bytes) = serde_json::to_vec(&state) {
+        let _ = crate::paths::write_atomic(&path, &bytes);
+    }
+}
+
 /// Takes in a drain's history pieces: appends that continue the mirror,
 /// whole files replaced, anything else (a name that is not a session's
 /// file, a gap) left for the next drain to send again.
@@ -54,10 +93,7 @@ pub fn apply_history(home: &Path, sandbox: &str, state: &mut MirrorState, respon
     use std::io::Write;
     let mut taken = 0;
     for piece in &response.history {
-        let parts: Vec<&str> = piece.file.split('/').collect();
-        let ok = canvas_model::vm::sync_name_ok(&piece.file)
-            && matches!(parts.as_slice(), ["copilot", session, "events.jsonl" | "workspace.yaml"] if crate::index::is_session_id(session));
-        if !ok {
+        if !mirror_name_ok(&piece.file) {
             continue;
         }
         let path = mirror_dir(home, sandbox).join(&piece.file);

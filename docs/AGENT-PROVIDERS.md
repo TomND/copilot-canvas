@@ -679,8 +679,10 @@ and prints the screen.
 
 ## Inside a VM (VM sessions)
 
-With a VM pack ([VM-SESSIONS.md](VM-SESSIONS.md)) a box can run its agent on a microVM. Copilot CLI only for
-now (Claude Code and OpenCode come later); everything else here is unchanged on this machine.
+With a VM pack ([VM-SESSIONS.md](VM-SESSIONS.md)) a box can run its agent on a microVM: Copilot CLI or Claude
+Code. OpenCode sessions are refused there, with why (its history is a SQLite database and its live state its TUI's
+HTTP server on the machine it runs on, which the canvas cannot follow from a VM yet). Everything else here is
+unchanged on this machine; VM sessions are optional and local stays the default.
 
 - **The command line** (`vm::launch::guest_command`, `vm::target`) is the provider's own (`copilot --session-id
   <box> …`) with nothing of this machine: the program by its name on the guest's `PATH` (`ATELIER_<AGENT>` is
@@ -689,14 +691,20 @@ now (Claude Code and OpenCode come later); everything else here is unchanged on 
   skills, `profile.yaml`) and the group's skill folders; `--add-dir` for the group's `ai-docs` and
   `human-outputs`; `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` for the group's instructions (with the guest's paths) and the
   generated path map (`paths.yaml`); `ATELIER_NOTES` for `atelier note path`. The program starts once those roots
-  are in the guest. A VM session cannot be forked yet.
+  are in the guest. A VM session cannot be forked yet. **Claude Code** (`claude::Claude::args_env`, without this
+  machine's folders): `--plugin-dir` for the same roots, `--add-dir` for the group's notes, the group's
+  instructions file as `--append-system-prompt-file`, and the box's MCP preset as `--strict-mcp-config --mcp-config`
+  with a file of the roots (`agent-mcp/claude.json`); every run gets them (nothing is saved with a Claude session).
 - **MCP**: the guest's `~/.copilot/mcp-config.json` names the servers of the box's MCP preset (the new-session
   dialog's choice; the pack's `mcp-policy.yaml`) as `http` servers at the satellite's proxy on the guest's loopback;
   the calls go to this machine's servers (its own Copilot configuration and credentials), filtered and checked by
   the pack's rules first. `--disable-mcp-server` (the box's MCP choice) applies as here.
 - **The terminal** is drawn here and runs in the guest behind its satellite; status comes from the guest's
-  history, mirrored under `<home>/vm/mirrors/<sandbox>/copilot` and indexed like Copilot's own folder.
-  `Transcript` and `HasHistory` find a VM session there.
+  history, mirrored under `<home>/vm/mirrors/<sandbox>/copilot` (Copilot) or `…/claude` (Claude Code: its
+  `projects/<dir>/<id>.jsonl` transcripts and subagents appended, its `sessions/<pid>.json` status files whole,
+  live as the guest's satellite reports) and indexed like the agent's own folder. `Transcript` and `HasHistory`
+  find a VM session there. **Resume on a new VM**: when its VM was lost or deleted, the mirror goes into the new
+  guest (Claude Code's into the project folder of the new clone) and the conversation continues there.
 - **Subsessions**: a `copilot` an agent starts inside its terminal in the guest (holding a session's in-use lock)
   is reported by the satellite and becomes the box's subsession, as locally. Whether a mirrored session is live is
   what the guest reports (its lock files are not mirrored).

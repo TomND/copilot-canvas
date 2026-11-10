@@ -262,11 +262,82 @@ fn start(ctx: &Ctx, intent: &Intent) -> Result<Change> {
         let answer: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
         anyhow::ensure!(out.code == 0 && answer["ok"] == true, "preparing {branch} failed: {}", super::hooks::first_line(&String::from_utf8_lossy(&out.stdout)));
         change.cwd = answer["path"].as_str().map(str::to_owned);
+        if !intent.resume_session.is_empty() {
+            restore_history(ctx, intent, change.cwd.as_deref().unwrap_or_default())?;
+        }
         // The guest's link to this hub, which runs the box's terminal.
         ctx.provider.start_satellite(&intent.sandbox)?;
     }
     (ctx.log)(format!("VM launch of {}: ready in {}", intent.r#box, intent.sandbox));
     Ok(change)
+}
+
+/// Resume on a new VM: the conversation's history as the hub mirrored it
+/// from its earlier VM goes into the new guest's Copilot root, and the
+/// mirror follows it to the new sandbox (the guest's first drain rewrites it
+/// from the start, so nothing is doubled). Refused when nothing was mirrored.
+fn restore_history(ctx: &Ctx, intent: &Intent, cwd: &str) -> Result<()> {
+    let session = &intent.resume_session;
+    anyhow::ensure!(crate::index::is_session_id(session), "{session:?} is not a session id");
+    if intent.agent == "claude" {
+        return restore_claude(ctx, intent, cwd);
+    }
+    let from = super::thin::mirror_dir(ctx.home, &intent.resume_from).join("copilot").join(session);
+    let events = std::fs::read(from.join("events.jsonl")).unwrap_or_default();
+    anyhow::ensure!(
+        !intent.resume_from.is_empty() && !events.is_empty(),
+        "its conversation was not mirrored on this machine, so it cannot resume on a new VM: start a new session in its box"
+    );
+    for name in ["events.jsonl", "workspace.yaml"] {
+        if let Ok(bytes) = std::fs::read(from.join(name)) {
+            ctx.provider.put_file(&intent.sandbox, &format!(".copilot/session-state/{session}/{name}"), &bytes, 0o600)?;
+        }
+    }
+    let to = super::thin::mirror_dir(ctx.home, &intent.sandbox).join("copilot").join(session);
+    if from != to {
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::rename(&from, &to).with_context(|| format!("moving the mirror of {session}"))?;
+        super::thin::forget_files(ctx.home, &intent.resume_from, &format!("copilot/{session}/"));
+    }
+    (ctx.log)(format!("VM launch of {}: its conversation resumes from the hub's mirror ({} bytes of history from {})", intent.r#box, events.len(), intent.resume_from));
+    Ok(())
+}
+
+/// [`restore_history`] for Claude Code: its transcript and subagents go into
+/// the new guest's project folder of its workspace `cwd` (a new clone's path
+/// may differ), and the mirror follows them.
+fn restore_claude(ctx: &Ctx, intent: &Intent, cwd: &str) -> Result<()> {
+    let session = &intent.resume_session;
+    let projects = super::thin::mirror_dir(ctx.home, &intent.resume_from).join("claude").join("projects");
+    let transcript = format!("{session}.jsonl");
+    let found = std::fs::read_dir(&projects).ok().into_iter().flatten().flatten().map(|e| e.path()).find(|p| p.join(&transcript).is_file());
+    let events = found.as_ref().and_then(|p| std::fs::read(p.join(&transcript)).ok()).unwrap_or_default();
+    anyhow::ensure!(
+        !intent.resume_from.is_empty() && !events.is_empty(),
+        "its conversation was not mirrored on this machine, so it cannot resume on a new VM: start a new session in its box"
+    );
+    let from = found.context("checked")?;
+    let project = crate::agents::claude_history::project_dir_name(cwd);
+    ctx.provider.put_file(&intent.sandbox, &format!(".claude/projects/{project}/{transcript}"), &events, 0o600)?;
+    let subagents = from.join(session).join("subagents");
+    for entry in std::fs::read_dir(&subagents).into_iter().flatten().flatten() {
+        if let (Ok(bytes), Some(name)) = (std::fs::read(entry.path()), entry.file_name().to_str()) {
+            ctx.provider.put_file(&intent.sandbox, &format!(".claude/projects/{project}/{session}/subagents/{name}"), &bytes, 0o600)?;
+        }
+    }
+    let to = super::thin::mirror_dir(ctx.home, &intent.sandbox).join("claude").join("projects").join(&project);
+    std::fs::create_dir_all(&to)?;
+    std::fs::rename(from.join(&transcript), to.join(&transcript)).context("moving the mirror of its transcript")?;
+    if subagents.is_dir() {
+        std::fs::create_dir_all(to.join(session))?;
+        let _ = std::fs::rename(&subagents, to.join(session).join("subagents"));
+    }
+    let old_project = from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    super::thin::forget_files(ctx.home, &intent.resume_from, &format!("claude/projects/{old_project}/{session}"));
+    (ctx.log)(format!("VM launch of {}: its conversation resumes from the hub's mirror ({} bytes of history from {})", intent.r#box, events.len(), intent.resume_from));
+    Ok(())
 }
 
 /// Deletes a box's sandbox (Phase 4 puts the quiescence barrier before it):
@@ -397,6 +468,59 @@ mod tests {
         assert_eq!(run(&ctx, "b2").state, VmState::Deleted);
         assert!(!provider.exists(&sandbox));
         assert!(matches!(Satellites::new(&home).credential(&satellite), canvas_common::handshake::Credential::Revoked(_)));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_box_resumes_on_a_new_vm_from_the_hubs_mirror_or_is_refused_without_one() {
+        let home = std::env::temp_dir().join(format!("atelier-launcher-{}", uuid::Uuid::new_v4()));
+        let provider = FakeProvider::new("fake");
+        let mut pack = pack(ProviderKind::Local);
+        pack.budget.max_running = 3;
+        let log = |_: String| {};
+        let ctx = Ctx { home: &home, pack: &pack, provider: &provider, hub: "hub1", log: &log };
+        let mut images = store::load_images(&home).unwrap();
+        images.images = vec![store::ImageRecord { repo: "app".into(), id: "img-1".into(), built_ms: 1, state: "ready".into(), ..Default::default() }];
+        store::save_images(&home, &mut images).unwrap();
+        // The conversation as the hub mirrored it from the VM that was lost.
+        let session = "5e55a1d0-0000-4000-8000-000000000001";
+        let old = super::super::thin::mirror_dir(&home, "sbx-lost").join("copilot").join(session);
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("events.jsonl"), "{\"type\":\"session.start\"}\n").unwrap();
+        std::fs::write(old.join("workspace.yaml"), "id: x\n").unwrap();
+        intent(&home, "b1");
+        launch::update(&home, "b1", |i| (i.resume_from, i.resume_session) = ("sbx-lost".into(), session.into())).unwrap();
+        let resumed = run(&ctx, "b1");
+        assert_eq!(resumed.state, VmState::Running, "{resumed:?}");
+        let files = provider.files(&resumed.sandbox);
+        assert!(files.contains(&format!(".copilot/session-state/{session}/events.jsonl")) && files.contains(&format!(".copilot/session-state/{session}/workspace.yaml")), "{files:?}");
+        let moved = super::super::thin::mirror_dir(&home, &resumed.sandbox).join("copilot").join(session).join("events.jsonl");
+        assert!(moved.is_file() && !old.exists(), "the mirror follows the conversation to the new VM");
+        // Nothing mirrored: refused, with why.
+        intent(&home, "b2");
+        launch::update(&home, "b2", |i| (i.resume_from, i.resume_session) = ("sbx-gone".into(), "5e55a1d0-0000-4000-8000-000000000002".into())).unwrap();
+        let refused = run(&ctx, "b2");
+        assert_eq!(refused.state, VmState::Failed, "{refused:?}");
+        assert!(refused.error.contains("not mirrored on this machine"), "{}", refused.error);
+        // Claude Code: its transcript and subagents into the project folder of the new clone.
+        let claude_session = "5e55a1d0-0000-4000-8000-000000000003";
+        let old_project = super::super::thin::mirror_dir(&home, "sbx-lost").join("claude").join("projects").join("-old-clone");
+        std::fs::create_dir_all(old_project.join(claude_session).join("subagents")).unwrap();
+        std::fs::write(old_project.join(format!("{claude_session}.jsonl")), "{\"type\":\"user\"}\n").unwrap();
+        std::fs::write(old_project.join(claude_session).join("subagents").join("agent-a1.jsonl"), "{}\n").unwrap();
+        intent(&home, "b3");
+        launch::update(&home, "b3", |i| {
+            i.agent = "claude".into();
+            (i.resume_from, i.resume_session) = ("sbx-lost".into(), claude_session.into());
+        })
+        .unwrap();
+        let claude = run(&ctx, "b3");
+        assert_eq!(claude.state, VmState::Running, "{claude:?}");
+        let files = provider.files(&claude.sandbox);
+        let project = crate::agents::claude_history::project_dir_name("/home/agent/work/app");
+        assert!(files.contains(&format!(".claude/projects/{project}/{claude_session}.jsonl")) && files.contains(&format!(".claude/projects/{project}/{claude_session}/subagents/agent-a1.jsonl")), "{files:?}");
+        let moved = super::super::thin::mirror_dir(&home, &claude.sandbox).join("claude").join("projects").join(&project);
+        assert!(moved.join(format!("{claude_session}.jsonl")).is_file() && moved.join(claude_session).join("subagents").join("agent-a1.jsonl").is_file());
         let _ = std::fs::remove_dir_all(home);
     }
 
