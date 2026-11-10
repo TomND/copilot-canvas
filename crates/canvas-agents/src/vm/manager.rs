@@ -18,14 +18,30 @@ use super::provider::{Labels, Provider, SandboxSpec};
 use super::store::{self, ImageRecord, ImagesFile, Role, SandboxRecord, SandboxesFile};
 use crate::paths::now_ms;
 
-/// Whether a VM of `size` may start now (`Err`: why it waits).
-pub fn admit(pack: &Pack, sandboxes: &SandboxesFile, size: &str, today_cents: u64) -> Result<(), String> {
-    let running: Vec<&SandboxRecord> = sandboxes.sandboxes.iter().filter(|s| s.role == Role::Session && !s.suspended).collect();
+/// The VMs that count for the budget: (sandbox, size) of every launch whose
+/// VM runs or is being made ready (the launches are the truth; a suspended
+/// VM does not count).
+pub fn running(home: &Path, pack: &Pack) -> Vec<(String, String)> {
+    let sandboxes = store::load_sandboxes(home).unwrap_or_default();
+    let mut out: Vec<(String, String)> = Vec::new();
+    for intent in super::launch::all(home) {
+        use canvas_model::vm::VmState::*;
+        if intent.sandbox.is_empty() || !matches!(intent.state, Claiming | Starting | Running | Resuming | Suspending) || out.iter().any(|(s, _)| *s == intent.sandbox) {
+            continue;
+        }
+        let size = sandboxes.sandboxes.iter().find(|s| s.id == intent.sandbox).map(|s| s.size.clone()).or_else(|| intent.placement.size.clone()).or_else(|| pack.size(None).map(|s| s.name.clone())).unwrap_or_default();
+        out.push((intent.sandbox, size));
+    }
+    out
+}
+
+/// Whether a VM of `size` may start now, with `running` VMs (sandbox, size) (`Err`: why it waits).
+pub fn admit(pack: &Pack, running: &[(String, String)], size: &str, today_cents: u64) -> Result<(), String> {
     if pack.budget.max_running > 0 && running.len() as u32 >= pack.budget.max_running {
         return Err(format!("{} of {} VMs are running (budget.max_running); it starts when one is suspended or deleted", running.len(), pack.budget.max_running));
     }
     let cores = |name: &str| pack.size(Some(name)).map(|s| s.cores()).unwrap_or(0.0);
-    let used: f32 = running.iter().map(|s| cores(&s.size)).sum();
+    let used: f32 = running.iter().map(|(_, s)| cores(s)).sum();
     if pack.budget.max_cores > 0.0 && used + cores(size) > pack.budget.max_cores {
         return Err(format!("{used} of {} cores are in use (budget.max_cores)", pack.budget.max_cores));
     }
@@ -251,26 +267,27 @@ mod tests {
         }
     }
 
-    fn session(id: &str, size: &str, suspended: bool) -> SandboxRecord {
-        SandboxRecord { id: id.into(), role: Role::Session, size: size.into(), suspended, ..Default::default() }
-    }
-
     #[test]
     fn budgets_queue_starts_and_say_why() {
         let pack = pack();
-        let mut file = SandboxesFile::default();
-        assert_eq!(admit(&pack, &file, "S", 0), Ok(()));
-        file.sandboxes.push(session("a", "L", false));
-        assert!(admit(&pack, &file, "L", 0).unwrap_err().contains("cores"), "4 + 4 > 5 cores");
-        assert_eq!(admit(&pack, &file, "S", 0), Ok(()));
-        file.sandboxes.push(session("b", "S", false));
-        assert!(admit(&pack, &file, "S", 0).unwrap_err().contains("2 of 2 VMs are running"));
-        file.sandboxes[1].suspended = true;
-        assert_eq!(admit(&pack, &file, "S", 0), Ok(()), "suspended VMs do not count");
-        assert!(admit(&pack, &file, "S", 1000).unwrap_err().contains("daily budget"));
-        let pool_member = SandboxRecord { id: "p".into(), role: Role::Pool, size: "L".into(), ..Default::default() };
-        file.sandboxes.push(pool_member);
-        assert_eq!(admit(&pack, &file, "S", 0), Ok(()), "pool members are not sessions");
+        let vm = |id: &str, size: &str| (id.to_owned(), size.to_owned());
+        assert_eq!(admit(&pack, &[], "S", 0), Ok(()));
+        assert!(admit(&pack, &[vm("a", "L")], "L", 0).unwrap_err().contains("cores"), "4 + 4 > 5 cores");
+        assert_eq!(admit(&pack, &[vm("a", "L")], "S", 0), Ok(()));
+        assert!(admit(&pack, &[vm("a", "L"), vm("b", "S")], "S", 0).unwrap_err().contains("2 of 2 VMs are running"));
+        assert!(admit(&pack, &[], "S", 1000).unwrap_err().contains("daily budget"));
+    }
+
+    #[test]
+    fn running_vms_come_from_the_launches() {
+        let home = std::env::temp_dir().join(format!("atelier-running-{}", uuid::Uuid::new_v4()));
+        let pack = pack();
+        for (id, sandbox, state) in [("b1", "s1", canvas_model::vm::VmState::Running), ("b2", "s2", canvas_model::vm::VmState::Suspended), ("b3", "", canvas_model::vm::VmState::Queued), ("b4", "s1", canvas_model::vm::VmState::Running)] {
+            let mut intent = super::super::launch::Intent { r#box: id.into(), sandbox: sandbox.into(), state, ..Default::default() };
+            super::super::launch::store(&home, &mut intent).unwrap();
+        }
+        assert_eq!(running(&home, &pack), [("s1".to_owned(), "S".to_owned())], "suspended, queued and shared VMs count once or not at all");
+        let _ = std::fs::remove_dir_all(home);
     }
 
     #[test]

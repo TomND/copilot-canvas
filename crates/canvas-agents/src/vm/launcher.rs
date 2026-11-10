@@ -175,11 +175,12 @@ fn claim(ctx: &Ctx, intent: &Intent) -> Result<Change> {
     let size = pack.size(intent.placement.size.as_deref()).context("the VM pack has no such size")?.name.clone();
     let branch = intent.placement.branch.clone().unwrap_or_else(|| canvas_model::vm::branch_for_session(&intent.r#box));
     anyhow::ensure!(canvas_model::vm::branch_ok(&branch), "{branch:?} is not a branch name");
-    let mut sandboxes = store::load_sandboxes(ctx.home)?;
+    let running: Vec<(String, String)> = super::manager::running(ctx.home, pack).into_iter().filter(|(s, _)| *s != intent.sandbox).collect();
     let today = store::load_budget(ctx.home)?.today(now_ms());
-    if let Err(why) = super::manager::admit(pack, &sandboxes, &size, today) {
+    if let Err(why) = super::manager::admit(pack, &running, &size, today) {
         return Ok(Change { state: Some(VmState::Queued), note: Some(why), queued: true, ..Default::default() });
     }
+    let mut sandboxes = store::load_sandboxes(ctx.home)?;
     let images = store::load_images(ctx.home)?;
     let newest = images.newest(&repo.key).map(|i| i.id.clone());
     let leased = newest.as_ref().and_then(|image| sandboxes.sandboxes.iter_mut().find(|s| s.role == Role::Pool && s.repo == repo.key && s.size == size && s.image == *image));

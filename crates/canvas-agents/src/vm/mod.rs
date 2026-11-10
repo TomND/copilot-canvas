@@ -310,11 +310,11 @@ pub fn view(home: &Path) -> Option<VmView> {
         })
         .collect();
     view.images = images.images.iter().map(|i| ImageRow { repo: i.repo.clone(), id: i.id.clone(), built_ms: minute(i.built_ms), state: i.state.clone(), note: i.note.clone() }).collect();
-    let running: Vec<&store::SandboxRecord> = sandboxes.sandboxes.iter().filter(|s| s.role == store::Role::Session && !s.suspended).collect();
+    let running = manager::running(home, &pack);
     view.budget = BudgetView {
         running: running.len() as u32,
         max_running: pack.budget.max_running,
-        cores: running.iter().filter_map(|s| pack.size(Some(&s.size))).map(|z| z.cores()).sum(),
+        cores: running.iter().filter_map(|(_, size)| pack.size(Some(size))).map(|z| z.cores()).sum(),
         max_cores: pack.budget.max_cores,
         today_cents: budget.today(now),
         daily_cents: pack.budget.daily_cents,

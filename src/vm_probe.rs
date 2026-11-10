@@ -331,11 +331,10 @@ fn scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     let second_intent = canvas_agents::vm::launch::load(&instance.home, SECOND)?.context("the second intent")?;
     let (ok, out) = cli(exe, &["vm", "delete", SECOND, "--yes"], &hub_env)?;
     anyhow::ensure!(ok, "vm delete: {out}");
-    wait_file("the second VM was not deleted", 20, || local.get(&second_intent.sandbox).is_err())?;
-    anyhow::ensure!(
-        matches!(canvas_agents::vm::store::Satellites::new(&instance.home).credential(&second_intent.satellite), canvas_common::handshake::Credential::Revoked(_)),
-        "the deleted VM's credential is revoked"
-    );
+    let revoked = || matches!(canvas_agents::vm::store::Satellites::new(&instance.home).credential(&second_intent.satellite), canvas_common::handshake::Credential::Revoked(_));
+    wait_file("the second VM was not deleted and its credential revoked", 20, || local.get(&second_intent.sandbox).is_err() && revoked())?;
+    let left: Vec<String> = local.list().into_iter().map(|s| s.id).collect();
+    anyhow::ensure!(left == [intent.sandbox.clone()], "no sandbox leaked: {left:?}");
     watch.conn.tx.send(ClientMsg::Stop { id: SECOND.into(), force: true })?;
     let (ok, out) = cli(exe, &["vm", "resume", BOX], &hub_env)?;
     anyhow::ensure!(ok, "vm resume: {out}");
