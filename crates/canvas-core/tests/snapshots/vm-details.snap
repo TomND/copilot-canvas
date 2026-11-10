@@ -1,0 +1,50 @@
+# vm-details (124x40 cells)
+## cells (the TUI screen)
+ ◆ Atelier   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ☁ VMs 1   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit
+    SESSIONS                     │▌·     ·     ·     ·     ·     ·     ·  │┌───────────────────────────────────────────────┐
+▌▤  / filter…                    │  ┏ ☁ Fix the flaky test ━━━━━━┓        ││ ☁ Fix the flaky test                          │
+                                 │  ┃ ○ idle                     ┃        ││ ○ idle                                        │
+ ◷  ▾ RECENT 1     Ctrl+F6 · [ ] │ ·┃ canvas · main              ┃     ·  ││                                               │
+    ○ Fix the flaky… copilot now │  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛        ││ Agent      GitHub Copilot                     │
+ ⧉  ── All sessions (1)          │                                        ││ Folder     C:\work\canvas                     │
+    ○ Fix the flaky test         │ ·     ·     ·     ·     ·     ·     ·  ││ Branch     main                               │
+ ⌁                               │                                        ││ Client     unknown                            │
+                                 │                                        ││ Session    v1                                 │
+ ✦                               │ ·     ·     ·     ·     ·     ·     ·  ││                                               │
+                                 │                                        ││ ☁ VM                                          │
+ ◈                               │                                        ││ State      running                            │
+                                 │ ·     ·     ·     ·     ·     ·     ·  ││ Repository contoso-app                        │
+ ⇄                               │                                        ││ Branch     atelier/fix-the-flaky-test         │
+                                 │                                        ││ Size       M                                  │
+ ≡                               │ ·     ·     ·     ·     ·     ·     ·  ││ Sandbox    sbx-0123456789ab                   │
+                                 │                                        ││ Image      built 2h ago                       │
+ ✉                               │                                        ││ Up         40m                                │
+                                 │ ·     ·     ·     ·     ·     ·     ·  ││ Cost       0.37 so far (estimated)            │
+                                 │                                        ││ Git        atelier/fix-the-flaky-test · 2     │
+                                 │                                        ││            ahead · 1 changed                  │
+                                 │ ·     ·     ·     ·     ·     ·     ·  ││ Not pushed atelier/fix-the-flaky-test         │
+                                 │                                        ││ Link       linked                             │
+                                 │                                        ││ Refusals   2 (network or MCP; ☁ VMs lists     │
+                                 │ ·     ·     ·     ·     ·     ·     ·  ││            them)                              │
+                                 │                                        ││                                               │
+                                 │                                        ││ Running in this canvas: Open terminal to type │
+                                 │ ·     ·     ·     ·     ·     ·     ·  ││ in it.                                        │
+                                 │                                        ││ S subsession · R rename · G group · X stop    │
+                                 │                                        ││                                               │
+                                 │ ·     ·     ·     ·     ·     ·     ·  ││                                               │
+                                 │                                        ││                                               │
+                                 │                                        ││                                               │
+                                 │ ·     ·     ·     ·     ·     ·     ·  ││  Open terminal    Inspect transcript    Stop  │
+                                 │                                        ││  MCP servers…    Suspend VM                   │
+                                 │                                        ││  Update from main    Delete VM…    Remove     │
+                                 │ ·     ·     ·     ·     ·     ·     ·  ││  Close                                        │
+                                 │                                        │└───────────────────────────────────────────────┘
+ click view · double-click/Enter start · ] [ or Ctrl+F6 recent · drag move · empty-drag pan · Shift/right-drag select · wh…
+## gpu view model
+view cursor=none modal=none banner=None
+canvas area=34,1 40x38 origin=-1,0 scale=1 grid=true tick=0 empty=false
+box v1 Session rect=1,1 30x4 prefix="☁ " name="Fix the flaky test"
+  status=Idle icon="○" label="idle" line="○ idle" subtitle="canvas · main" elsewhere=false every=None mailbox=0
+  border=Heavy border_style=[fg #f0f6fc +BOLD] fill=#161b22 attention=none name_style=[fg #f0f6fc +BOLD] line_style=[fg #8b949e]
+  selected=true focused_term=true active=false
+  vm=running

@@ -111,12 +111,11 @@ const FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
 pub fn run(options: Options) -> Result<()> {
     let home = options.instance.home.clone();
     let target = conn::ConnTarget::parse(options.remote.as_deref(), &options.instance)?;
-    // Remote clients ask the service for everything; local ones run the backend in-process.
-    let remote_backend = target.is_remote().then(RemoteBackend::new);
-    let backend: Arc<dyn Backend> = match &remote_backend {
-        Some(remote) => remote.clone(),
-        None => options.local_backend.clone(),
-    };
+    // Remote clients ask the service for everything; local ones run the backend in-process
+    // but for what only the service holds (VM sessions), asked over their connection.
+    let service_rpc = RemoteBackend::new();
+    let backend: Arc<dyn Backend> = if target.is_remote() { service_rpc.clone() } else { canvas_core::remote::Routed::new(options.local_backend.clone(), service_rpc.clone()) };
+    let remote_backend = Some(service_rpc);
     let conn_options = conn::ConnOptions {
         start: true,
         compress: canvas_core::settings::Settings::load(&home).compress(),

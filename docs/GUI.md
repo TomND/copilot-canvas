@@ -747,7 +747,7 @@ The keyboard map is the TUI's (`?` shows it). GUI specifics:
   `UPDATE_SNAPSHOTS=1 cargo test -p canvas-core --test view_snapshots`
   accepts the new texts.
 - `atelier selftest --client gui [--remote loopback]` runs the TUI
-  self-test's 46 steps against the GUI in a 170 × 46 cell window. A `Ui`
+  self-test's 47 steps against the GUI in a 170 × 46 cell window. A `Ui`
   trait has two drivers: the TUI's hidden pseudoconsole and `GuiDriver`,
   which starts `atelier-gui.exe --test-hooks --size 170x46` and turns
   the terminal input the scenario sends (keys, Alt+digits, Ctrl+letters, SGR
@@ -879,7 +879,7 @@ one (`"window": n`, the creation index):
 | `{"cmd":"wheel","dir":"up\|down\|left\|right","x":…,"y":…,"mods":["ctrl"]}` | one wheel notch |
 | `{"cmd":"drop","paths":["…"],"x":…,"y":…}` | files dropped at a cell |
 | `{"cmd":"screen"}` | `lines`: the screen as text (chrome, canvas as TUI characters, terminal text, dialogs) |
-| `{"cmd":"tree"}` | automation tree: click targets with their text, canvas boxes (status, border, prefix, loop, drawing `level`, `dust`, `deck`, `hidden`, `alpha`, the todo `badge`), `loop_arcs` (box, lap, grow, ending, moving, the dot now), `glow` (active, moving, busy, its sources with their box, fade and rings, how many dots it lights, now), effects (kind, badge, rect) and groups (with their chips: label, rect, `fixed`, `attention`, action) with screen rects, tiles (tint, image placements as cell rects), links, terminal selection, notice, focus, modal, paste preview, `html` (the published pane's id and rect), `space` (`canvas`, `notebook`, `tasks`), and `access`: the UI Automation nodes |
+| `{"cmd":"tree"}` | automation tree: click targets with their text, canvas boxes (status, border, prefix, loop, drawing `level`, `dust`, `deck`, `hidden`, `alpha`, the todo `badge`, a VM box's `vm`: its VM's state word), `loop_arcs` (box, lap, grow, ending, moving, the dot now), `glow` (active, moving, busy, its sources with their box, fade and rings, how many dots it lights, now), effects (kind, badge, rect) and groups (with their chips: label, rect, `fixed`, `attention`, action) with screen rects, tiles (tint, image placements as cell rects), links, terminal selection, notice, focus, modal, paste preview, `html` (the published pane's id and rect), `space` (`canvas`, `notebook`, `tasks`), and `access`: the UI Automation nodes |
 | `{"cmd":"access"}` | the UI Automation nodes (role, name, description, value, rect, children, focus) and whether a UIA client listens |
 | `{"cmd":"png","path":"…"}` | renders the current frame offscreen to a PNG (works on a locked workstation); `clock_ms`: the animation clock it was drawn at; `loops`: each loop arc's dot (px and cells), lap and bounds at that instant; `glow`: the working glow then (sources, rings, lit dots) and up to 96 grid dots clear of groups and boxes where colours can be sampled, nearest a box first plus a quarter far ones, each with its px centre, nearest box, distance from its outline (world units) and the level and colour the model gives it |
 | `{"cmd":"freeze","tick":0}`, `{"cmd":"freeze"}` | animations (spinners, loop dots, pulsing borders, effects mid-burst) hold frame `tick` (the loop clock at tick × 80 ms) and there is no working glow; without it they run again |

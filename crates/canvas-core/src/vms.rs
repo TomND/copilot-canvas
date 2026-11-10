@@ -7,6 +7,138 @@ pub const VM_GLYPH: &str = "☁";
 /// Before a VM session's name on its box.
 pub const VM_PREFIX: &str = "☁ ";
 
+/// A box's VM as the service last told (`None`: not a VM box, or no pack).
+pub fn box_vm<'a>(app: &'a crate::app::App, id: &str) -> Option<&'a canvas_model::vm::VmInfo> {
+    app.bus.vm.as_ref()?.boxes.get(id)
+}
+
+/// What a VM box's status line says while its VM matters more than its
+/// agent's state (`None` while it simply runs): the text and its colour.
+pub fn state_line(info: &canvas_model::vm::VmInfo, now_ms: u64) -> Option<(String, ratatui::style::Color)> {
+    use crate::paint::{ACCENT, ATTENTION, MUTED, NEGATIVE};
+    use canvas_model::vm::VmState;
+    let note = |text: &str| if info.note.is_empty() { text.to_owned() } else { format!("{text}: {}", info.note) };
+    Some(match info.state {
+        VmState::Running if info.offline_ms == 0 => return None,
+        VmState::Running | VmState::IntegrationOffline => (format!("{VM_GLYPH} integration offline{}", if info.offline_ms > 0 { format!(" {}", crate::paths::format_age(info.offline_ms, now_ms)) } else { String::new() }), ATTENTION),
+        VmState::Queued => (format!("{VM_GLYPH} {}", note("queued")), MUTED),
+        VmState::Claiming => (format!("{VM_GLYPH} claiming a VM…"), ACCENT),
+        VmState::Starting => (format!("{VM_GLYPH} starting…"), ACCENT),
+        VmState::Suspending => (format!("{VM_GLYPH} suspending…"), MUTED),
+        VmState::Suspended => (format!("{VM_GLYPH} suspended"), MUTED),
+        VmState::Resuming => (format!("{VM_GLYPH} resuming…"), ACCENT),
+        VmState::Lost => (format!("{VM_GLYPH} VM lost"), NEGATIVE),
+        VmState::Deleting => (format!("{VM_GLYPH} deleting its VM…"), MUTED),
+        VmState::Deleted => (format!("{VM_GLYPH} VM deleted"), MUTED),
+        VmState::Failed => (format!("{VM_GLYPH} {}", note("could not start")), NEGATIVE),
+    })
+}
+
+impl crate::app::App {
+    /// Asks the service for an operation on box `id`'s VM (off the UI
+    /// thread: a delete checks the VM's repositories first); its answer is a
+    /// notice, or for a delete the barrier stopped, what would be lost and
+    /// *Delete anyway*.
+    pub fn vm_action(&mut self, id: String, op: canvas_model::vm::VmOp) {
+        let deleting = matches!(op, canvas_model::vm::VmOp::Delete { .. });
+        let call_id = id.clone();
+        self.in_background(
+            move |backend| backend.vm_action(&call_id, op).map_err(|e| format!("{e:#}")),
+            move |result| crate::app::AppEvent::Run(Box::new(move |app: &mut crate::app::App| app.vm_answered(&id, deleting, result))),
+        );
+    }
+
+    fn vm_answered(&mut self, id: &str, deleting: bool, result: Result<String, String>) {
+        let findings = result.as_ref().err().filter(|_| deleting).and_then(|e| canvas_model::vm::refused_findings(e));
+        match (result, findings) {
+            (Ok(text), _) => self.notify(text, false),
+            (Err(_), Some(findings)) => {
+                let name = self.doc.node(id).map(|n| n.name.clone()).unwrap_or_default();
+                let mut body = vec!["Deleting its VM loses what its repositories have not pushed:".to_owned()];
+                body.extend(findings.iter().map(|f| format!("  · {f}")));
+                body.push("Push what you keep first (ask its agent), or delete anyway.".into());
+                self.modals.push(crate::dialogs::Modal::Confirm(crate::dialogs::Confirm {
+                    title: format!("Delete the VM of “{name}” anyway?"),
+                    body,
+                    buttons: vec![("Delete anyway".into(), crate::dialogs::Action::Vm { id: id.to_owned(), op: canvas_model::vm::VmOp::Delete { confirm: findings } }), ("Keep it".into(), crate::dialogs::Action::Nothing)],
+                    sel: 1,
+                }));
+            }
+            (Err(error), None) => self.notify(error, true),
+        }
+        self.needs_draw = true;
+    }
+
+    /// Asks the service to build `repo`'s image now (the answer is a notice).
+    pub fn vm_build_image(&mut self, repo: String) {
+        self.in_background(
+            move |backend| backend.vm_image_build(&repo).map_err(|e| format!("{e:#}")),
+            |result| match result {
+                Ok(text) => crate::app::AppEvent::Notice { text, error: false },
+                Err(text) => crate::app::AppEvent::Notice { text, error: true },
+            },
+        );
+    }
+
+    /// A path link at `(x, y)` in a VM box's terminal is the guest's: it is
+    /// shown with *Copy path* and never opened on this machine (true: shown).
+    pub fn guest_link(&mut self, target: &str, x: u16, y: u16) -> bool {
+        if crate::links::is_url(target) {
+            return false;
+        }
+        let Some(id) = self.layout.tiles.iter().find(|(_, outer, _)| crate::paint::rect_contains(*outer, x, y)).map(|(id, _, _)| id.clone()) else { return false };
+        let Some(node) = self.doc.node(&id).filter(|n| n.placement.as_ref().is_some_and(|p| p.is_vm())) else { return false };
+        self.modals.push(crate::dialogs::Modal::Confirm(crate::dialogs::Confirm {
+            title: format!("{VM_GLYPH} A path on the VM"),
+            body: vec![target.to_owned(), format!("It is in the VM of “{}”, not on this machine: Atelier does not open it here.", node.name)],
+            buttons: vec![("Copy path".into(), crate::dialogs::Action::Copy(target.to_owned())), ("Close".into(), crate::dialogs::Action::Nothing)],
+            sel: 0,
+        }));
+        self.needs_draw = true;
+        true
+    }
+
+    /// A VM box's menu items: its VM's details, and Suspend or Resume.
+    pub fn vm_menu_items(&self, node: &crate::doc::Node) -> Vec<crate::dialogs::MenuItem> {
+        use canvas_model::vm::{VmOp, VmState};
+        let Some(info) = box_vm(self, &node.id).filter(|_| node.placement.as_ref().is_some_and(|p| p.is_vm())) else { return Vec::new() };
+        let item = |label: &str, action: crate::dialogs::Action, enabled: bool| crate::dialogs::MenuItem { label: label.into(), hint: String::new(), action, enabled };
+        let mut items = vec![item(&format!("{VM_GLYPH} VM details…"), crate::dialogs::Action::VmDetails(node.id.clone()), true)];
+        match info.state {
+            VmState::Running => items.push(item("Suspend VM", crate::dialogs::Action::Vm { id: node.id.clone(), op: VmOp::Suspend }, info.offline_ms == 0)),
+            VmState::Suspended | VmState::Suspending => items.push(item("Resume VM", crate::dialogs::Action::Vm { id: node.id.clone(), op: VmOp::Resume }, true)),
+            _ => {}
+        }
+        items
+    }
+
+    /// *Delete VM…*: one confirmation; the service's barrier may then ask again.
+    pub fn ask_vm_delete(&mut self, id: &str) {
+        let name = self.doc.node(id).map(|n| n.name.clone()).unwrap_or_default();
+        self.modals.push(crate::dialogs::Modal::Confirm(crate::dialogs::Confirm {
+            title: format!("Delete the VM of “{name}”?"),
+            body: vec![
+                "Its sandbox and its satellite's credential go; the box and its conversation stay.".into(),
+                "What its repositories have not pushed is checked first.".into(),
+            ],
+            buttons: vec![("Delete VM".into(), crate::dialogs::Action::Vm { id: id.to_owned(), op: canvas_model::vm::VmOp::Delete { confirm: Vec::new() } }), ("Cancel".into(), crate::dialogs::Action::Nothing)],
+            sel: 1,
+        }));
+        self.needs_draw = true;
+    }
+}
+
+/// The toolbar's ☁ VMs (`None` without a pack): the VMs running, and
+/// whether something wants a look (a queued start, pack errors, a VM lost or
+/// failed, offline).
+pub fn button_label(app: &crate::app::App) -> Option<(String, bool)> {
+    use canvas_model::vm::VmState;
+    let view = app.bus.vm.as_ref()?;
+    let attention = view.pack.errors > 0 || !view.queued.is_empty() || view.boxes.values().any(|b| matches!(b.state, VmState::Lost | VmState::Failed | VmState::IntegrationOffline) || b.offline_ms > 0);
+    let running = view.boxes.values().filter(|b| matches!(b.state, VmState::Running | VmState::IntegrationOffline)).count();
+    Some((if running > 0 { format!(" {VM_GLYPH} VMs {running} ") } else { format!(" {VM_GLYPH} VMs ") }, attention))
+}
+
 /// The agents VM sessions run so far (Copilot CLI; docs/VM-SESSIONS-PLAN.md
 /// Phase 5 adds the others).
 pub fn runs_on_vm(kind: crate::agents::AgentKind) -> bool {
@@ -16,6 +148,137 @@ pub fn runs_on_vm(kind: crate::agents::AgentKind) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dialogs::{Action, Modal};
+    use canvas_model::rpc::{Request, Response};
+    use canvas_model::vm::VmOp;
+    use std::sync::{Arc, Mutex};
+
+    /// A service whose barrier finds an unpushed branch until it is confirmed.
+    #[derive(Default)]
+    struct Service {
+        asked: Mutex<Vec<VmOp>>,
+    }
+
+    impl canvas_model::rpc::Backend for Service {
+        fn call(&self, request: Request) -> anyhow::Result<Response> {
+            let Request::VmAction { op, .. } = request else { return Ok(Response::Error("not here".into())) };
+            self.asked.lock().unwrap().push(op.clone());
+            Ok(match op {
+                VmOp::Delete { confirm } if confirm.is_empty() => Response::Error(canvas_model::vm::barrier_refusal(&["1 branch not pushed: atelier/x".into()], "now")),
+                _ => Response::Text("Deleting its VM.".into()),
+            })
+        }
+    }
+
+    #[test]
+    fn deleting_a_vm_asks_then_shows_what_the_barrier_found_and_confirms_exactly_that() {
+        let (tx, _sent) = crossbeam_channel::bounded(64);
+        let (_keep, service_rx) = crossbeam_channel::bounded(1);
+        let (app_tx, events) = crossbeam_channel::unbounded();
+        let service = Arc::new(Service::default());
+        let mut doc = crate::demo::demo_doc(".");
+        doc.nodes[0].id = "b1".into();
+        doc.nodes[0].name = "Fix it".into();
+        let mut app = crate::app::App::new(crate::conn::Conn::detached(tx, service_rx), service.clone(), crate::sync::Opened::detached(doc), false, ".".into(), app_tx, None);
+        let answered = |app: &mut crate::app::App| {
+            let event = events.recv_timeout(std::time::Duration::from_secs(5)).expect("the service's answer");
+            app.on_app_event(event);
+        };
+        app.run(Action::VmDelete("b1".into()));
+        let Some(Modal::Confirm(ask)) = app.modals.pop() else { panic!("asked first") };
+        assert_eq!((ask.title.as_str(), ask.sel), ("Delete the VM of “Fix it”?", 1), "Cancel is the default");
+        assert!(service.asked.lock().unwrap().is_empty(), "nothing asked of the service yet");
+        app.run(ask.buttons[0].1.clone());
+        answered(&mut app);
+        let Some(Modal::Confirm(found)) = app.modals.pop() else { panic!("what would be lost") };
+        assert!(found.body.iter().any(|l| l.contains("1 branch not pushed: atelier/x")), "{:?}", found.body);
+        assert_eq!(found.buttons[0].1, Action::Vm { id: "b1".into(), op: VmOp::Delete { confirm: vec!["1 branch not pushed: atelier/x".into()] } });
+        app.run(found.buttons[0].1.clone());
+        answered(&mut app);
+        assert!(app.modals.is_empty());
+        assert_eq!(service.asked.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn run_on_defaults_cycle_and_a_vm_boxs_subsession_defaults_to_a_vm_for_its_repository() {
+        use canvas_model::vm::{PackSummary, Placement, RepoSummary, VmPlacement, VmView};
+        let (tx, _sent) = crossbeam_channel::bounded(64);
+        let (_keep, service_rx) = crossbeam_channel::bounded(1);
+        let (app_tx, _events) = crossbeam_channel::unbounded();
+        let mut doc = crate::demo::demo_doc(".");
+        doc.nodes[0].placement = Some(Placement::Vm(Box::new(VmPlacement { repo: "lib".into(), size: Some("M".into()), ..Default::default() })));
+        let (parent, group) = (doc.nodes[0].id.clone(), doc.groups[0].id.clone());
+        let mut app = crate::app::App::new(crate::conn::Conn::detached(tx, service_rx), Arc::new(Service::default()), crate::sync::Opened::detached(doc), false, ".".into(), app_tx, None);
+        assert!(app.vm_choice(None, ".", None).is_none(), "no pack: no Run on");
+        let repos = ["app", "lib"].map(|key| RepoSummary { key: key.into(), default_branch: "main".into(), folders: Vec::new() }).to_vec();
+        app.bus.vm = Some(VmView { pack: PackSummary { repos, sizes: vec!["S".into(), "M".into()], ..Default::default() }, ..Default::default() });
+        let plain = app.vm_choice(None, ".", None).unwrap();
+        assert!(!plain.on_vm, "this machine unless set");
+        app.cycle_run_on();
+        assert!(app.doc.defaults.placement.as_ref().is_some_and(|p| p.is_vm()));
+        assert!(app.vm_choice(None, ".", None).unwrap().on_vm, "the canvas's default");
+        app.cycle_run_on();
+        assert_eq!(app.doc.defaults.placement, None, "back to this machine (unset)");
+        app.settings_group = Some(group.clone());
+        let placements: Vec<Option<Placement>> = (0..3)
+            .map(|_| {
+                app.cycle_run_on();
+                app.doc.group(&group).and_then(|g| g.defaults.as_ref()).and_then(|d| d.placement.clone())
+            })
+            .collect();
+        assert_eq!(placements[0], Some(Placement::Local));
+        assert!(placements[1].as_ref().is_some_and(|p| p.is_vm()));
+        assert_eq!(placements[2], None, "the canvas's again");
+        let sub = app.vm_choice(None, ".", Some(&parent)).unwrap();
+        assert_eq!((sub.on_vm, sub.repo.as_str(), sub.size.as_str()), (true, "lib", "M"), "a VM of its own for its parent's repository");
+    }
+
+    #[test]
+    fn idle_auto_stop_leaves_vm_boxes_and_their_paths_stay_in_the_vm() {
+        use canvas_model::vm::{Placement, VmPlacement};
+        let (tx, sent) = crossbeam_channel::bounded(64);
+        let (_keep, service_rx) = crossbeam_channel::bounded(1);
+        let (app_tx, _events) = crossbeam_channel::unbounded();
+        let mut doc = crate::demo::demo_doc(".");
+        let mut other = doc.nodes[0].clone();
+        other.id = "here".into();
+        doc.nodes[0].id = "vm".into();
+        doc.nodes[0].placement = Some(Placement::Vm(Box::new(VmPlacement { repo: "app".into(), ..Default::default() })));
+        doc.nodes.push(other);
+        doc.idle_stop_minutes = 15;
+        let mut app = crate::app::App::new(crate::conn::Conn::detached(tx, service_rx), Arc::new(Service::default()), crate::sync::Opened::detached(doc), false, ".".into(), app_tx, None);
+        for id in ["vm", "here"] {
+            app.terms.insert(id.into(), canvas_common::protocol::TermInfo { id: id.into(), alive: true, copilot: true, started_ms: 1, last_output_ms: 1, ..Default::default() });
+        }
+        app.stop_idle_sessions();
+        let stopped: Vec<String> = sent.try_iter().filter_map(|m| match m {
+            canvas_common::protocol::ClientMsg::Stop { id, .. } => Some(id),
+            _ => None,
+        }).collect();
+        assert_eq!(stopped, ["here"], "the VM box is the service's to suspend");
+        // A path in the VM box's terminal is the guest's: shown with Copy path, not opened.
+        let rect = ratatui::layout::Rect::new(0, 0, 40, 10);
+        app.layout.tiles = vec![("vm".into(), rect, rect)];
+        assert!(!app.guest_link("https://example.com/x", 5, 5), "URLs open as anywhere");
+        assert!(app.guest_link("/home/agent/work/app/src/main.rs:3", 5, 5));
+        let Some(Modal::Confirm(shown)) = app.modals.pop() else { panic!("the path, shown") };
+        assert_eq!(shown.buttons[0].1, Action::Copy("/home/agent/work/app/src/main.rs:3".into()));
+        app.layout.tiles = vec![("here".into(), rect, rect)];
+        assert!(!app.guest_link("/home/me/x.rs", 5, 5), "a box on this machine opens its paths");
+    }
+
+    #[test]
+    fn a_vm_box_says_its_vms_state_unless_it_simply_runs() {
+        use canvas_model::vm::{VmInfo, VmState};
+        let at = |state: VmState| VmInfo { state, ..Default::default() };
+        assert_eq!(state_line(&at(VmState::Running), 0), None, "the agent's own state shows");
+        let offline = VmInfo { offline_ms: 1_000, ..at(VmState::Running) };
+        assert_eq!(state_line(&offline, 181_000).unwrap().0, "☁ integration offline 3m");
+        let queued = VmInfo { note: "4 of 4 VMs are running".into(), ..at(VmState::Queued) };
+        assert_eq!(state_line(&queued, 0).unwrap().0, "☁ queued: 4 of 4 VMs are running");
+        assert_eq!(state_line(&at(VmState::Suspended), 0).unwrap().0, "☁ suspended");
+        assert_eq!(state_line(&at(VmState::Lost), 0).unwrap().0, "☁ VM lost");
+    }
 
     #[test]
     fn the_vm_glyph_is_one_cell_wide() {

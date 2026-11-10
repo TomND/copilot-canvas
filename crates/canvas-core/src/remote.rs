@@ -100,11 +100,51 @@ impl Backend for RemoteBackend {
     }
 }
 
+/// A local client's backend: everything in-process, except what only the
+/// service holds (`Request::is_service_state`: VM sessions), asked over the
+/// client's connection.
+pub struct Routed {
+    local: Arc<dyn Backend>,
+    service: Arc<RemoteBackend>,
+}
+
+impl Routed {
+    pub fn new(local: Arc<dyn Backend>, service: Arc<RemoteBackend>) -> Arc<Self> {
+        Arc::new(Self { local, service })
+    }
+}
+
+impl Backend for Routed {
+    fn call(&self, request: Request) -> Result<Response> {
+        if request.is_service_state() { self.service.call(request) } else { self.local.call(request) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::rpc::BackendInfo;
     use crossbeam_channel::unbounded;
+
+    #[test]
+    fn a_local_client_asks_the_service_only_for_what_the_service_holds() {
+        struct Here;
+        impl Backend for Here {
+            fn call(&self, _: Request) -> Result<Response> {
+                Ok(Response::Text("in-process".into()))
+            }
+        }
+        let service = RemoteBackend::new();
+        let routed = Routed::new(Arc::new(Here), service.clone());
+        assert!(matches!(routed.call(Request::Info).unwrap(), Response::Text(t) if t == "in-process"));
+        let (tx, rx) = unbounded();
+        service.attach(tx);
+        let asking = std::thread::spawn(move || routed.call(Request::VmList));
+        let Ok(ClientMsg::Rpc { id, json }) = rx.recv_timeout(std::time::Duration::from_secs(5)) else { panic!("asked over the connection") };
+        assert!(json.contains("vm_list") || json.contains("VmList"), "{json}");
+        service.deliver(id, serde_json::to_string(&Response::Text("from the service".into())).unwrap());
+        assert!(matches!(asking.join().unwrap().unwrap(), Response::Text(t) if t == "from the service"));
+    }
 
     #[test]
     fn answers_reach_their_caller_and_a_lost_connection_fails_pending_calls() {

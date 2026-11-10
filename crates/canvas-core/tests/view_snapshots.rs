@@ -542,6 +542,29 @@ fn tasks_selected_card_with_details() {
     check("tasks-details", &mut app, BOTH);
 }
 
+/// With a VM pack: a card's details say where its board's sessions start
+/// (here the board's *Start on VM* policy), and *Start on VM…* opens the
+/// session dialog on a VM with the todo's branch and a first prompt that
+/// ends with a pull request.
+#[test]
+fn tasks_start_on_vm() {
+    let mut app = app(canvas_core::demo::demo_doc(CWD), false);
+    with_vm_pack(&mut app);
+    app.bus.todos = Some(canvas_model::todos::demo_book());
+    app.switch_space(canvas_core::spaces::Space::Tasks);
+    app.tasks.pan = (-2, -1);
+    let book = app.bus.todos.as_mut().unwrap();
+    let board = book.todo("WI-002").map(|t| t.board.clone()).unwrap();
+    let root = book.root(&board).map(|b| b.id.clone()).unwrap();
+    let policy = canvas_model::todos::AgentPolicy { start_on_vm: true, ..book.board(&root).unwrap().policy };
+    book.apply(canvas_model::todos::TodoOp::UpdateBoard { board: root.clone(), name: None, prefix: None, wip: None, color: None, notes: None, policy: Some(policy), statuses: None }, &canvas_model::todos::Actor::human(), &canvas_model::todos::Ctx::at(1)).unwrap();
+    app.tasks.board = Some(root);
+    app.notice = None;
+    check_sized("tasks-board-policy-vm", &mut app, Sections { cells: true, painted: false }, (124, 40));
+    app.run(Action::Tasks(canvas_core::tasks::Action::StartSession("WI-002".into())));
+    check_sized("tasks-start-on-vm", &mut app, Sections { cells: true, painted: false }, (124, 40));
+}
+
 /// A group without a board: its ☑ + chip offers the boards to link and a
 /// new board for the group.
 #[test]
@@ -919,6 +942,126 @@ fn a_vm_box_is_marked() {
     let mut app = app(doc, false);
     with_vm_pack(&mut app);
     check("vm-box-marker", &mut app, BOTH);
+}
+
+/// VM boxes in every state of their VM: the status line says it unless the
+/// VM simply runs (then the agent's own state shows).
+#[test]
+fn vm_box_states() {
+    use canvas_model::vm::{VmInfo, VmState};
+    let now = canvas_core::paths::now_ms();
+    let boxes = [
+        ("v-queued", "Queued", VmInfo { state: VmState::Queued, note: "4 of 4 VMs are running".into(), ..Default::default() }),
+        ("v-starting", "Starting", VmInfo { state: VmState::Starting, ..Default::default() }),
+        ("v-running", "Running, idle", VmInfo { state: VmState::Running, ..Default::default() }),
+        ("v-offline", "Integration offline", VmInfo { state: VmState::Running, offline_ms: now - 330_000, ..Default::default() }),
+        ("v-suspended", "Suspended", VmInfo { state: VmState::Suspended, ..Default::default() }),
+        ("v-resuming", "Resuming", VmInfo { state: VmState::Resuming, ..Default::default() }),
+        ("v-lost", "Lost", VmInfo { state: VmState::Lost, ..Default::default() }),
+        ("v-deleting", "Deleting", VmInfo { state: VmState::Deleting, ..Default::default() }),
+        ("v-failed", "Failed", VmInfo { state: VmState::Failed, note: "the image is not built yet".into(), ..Default::default() }),
+    ];
+    let mut doc = Doc::default();
+    for (i, (id, name, _)) in boxes.iter().enumerate() {
+        let mut n = node(id, name, 1 + (i as i32 % 3) * 40, 1 + (i as i32 / 3) * 8);
+        n.placement = Some(canvas_model::vm::Placement::Vm(Box::new(canvas_model::vm::VmPlacement { repo: "contoso-app".into(), ..Default::default() })));
+        doc.nodes.push(n);
+    }
+    doc.view.x = -1;
+    doc.view.y = 0;
+    let mut app = app(doc, false);
+    with_vm_pack(&mut app);
+    let view = app.bus.vm.as_mut().unwrap();
+    for (id, _, info) in boxes {
+        view.boxes.insert(id.into(), info);
+    }
+    app.sessions.insert("v-running".into(), summary("v-running", Activity::Idle, true));
+    app.sessions_loaded = true;
+    check_sized("vm-box-states", &mut app, BOTH, (124, 26));
+}
+
+/// A VM box's details (viewing it starts nothing): its VM's state, where
+/// it runs, cost, repository and link, and the operations its state allows.
+#[test]
+fn vm_details() {
+    use canvas_model::vm::{GitState, VmInfo, VmState};
+    let now = canvas_core::paths::now_ms();
+    let mut doc = Doc::default();
+    let mut n = node("v1", "Fix the flaky test", 1, 1);
+    n.placement = Some(canvas_model::vm::Placement::Vm(Box::new(canvas_model::vm::VmPlacement { repo: "contoso-app".into(), branch: Some("atelier/fix-the-flaky-test".into()), ..Default::default() })));
+    doc.nodes.push(n);
+    doc.view.x = -1;
+    doc.view.y = 0;
+    let mut app = app(doc, false);
+    with_vm_pack(&mut app);
+    let git = GitState { branch: "atelier/fix-the-flaky-test".into(), ahead: 2, dirty: 1, unpushed: vec!["atelier/fix-the-flaky-test".into()], ..Default::default() };
+    let info = VmInfo {
+        state: VmState::Running,
+        sandbox: "sbx-0123456789ab".into(),
+        repo: "contoso-app".into(),
+        branch: "atelier/fix-the-flaky-test".into(),
+        size: "M".into(),
+        image_ms: now - 2 * 3_600_000 - 60_000,
+        started_ms: now - 40 * 60_000 - 30_000,
+        cost_cents: 37,
+        git: Some(git),
+        refusals: 2,
+        ..Default::default()
+    };
+    app.bus.vm.as_mut().unwrap().boxes.insert("v1".into(), info);
+    app.sessions.insert("v1".into(), summary("v1", Activity::Idle, true));
+    app.terms.insert("v1".into(), term("v1", true, None));
+    app.sessions_loaded = true;
+    // Running here: its box menu's *VM details…* shows the panel over its terminal.
+    let (_, items) = app.node_menu("v1");
+    let details = items.iter().find(|i| i.label == "☁ VM details…").expect("the box menu has VM details").action.clone();
+    assert!(items.iter().any(|i| i.label == "Suspend VM" && i.enabled));
+    app.run(details);
+    check_sized("vm-details", &mut app, Sections { cells: true, painted: false }, (124, 40));
+}
+
+/// The toolbar's ☁ VMs (only with a pack; gold while a start waits) and its
+/// panel: the budget, the VM boxes, a start waiting with *Cancel*, the
+/// sandboxes, the images with *Build now*, the newest refusals.
+#[test]
+fn vms_panel() {
+    use canvas_model::vm::{BudgetView, ImageRow, QueuedStart, Refusal, SandboxRow, VmInfo, VmState};
+    let now = canvas_core::paths::now_ms();
+    let mut doc = Doc::default();
+    for (i, (id, name)) in [("v1", "Fix the flaky test"), ("v2", "Upgrade the SDK")].iter().enumerate() {
+        let mut n = node(id, name, 1, 1 + i as i32 * 8);
+        n.placement = Some(canvas_model::vm::Placement::Vm(Box::new(canvas_model::vm::VmPlacement { repo: "contoso-app".into(), ..Default::default() })));
+        doc.nodes.push(n);
+    }
+    doc.view.x = -1;
+    doc.view.y = 0;
+    let mut app = app(doc, false);
+    with_vm_pack(&mut app);
+    let view = app.bus.vm.as_mut().unwrap();
+    view.boxes.insert("v1".into(), VmInfo { state: VmState::Running, repo: "contoso-app".into(), sandbox: "sbx-0123456789ab".into(), ..Default::default() });
+    view.boxes.insert("v2".into(), VmInfo { state: VmState::Queued, repo: "contoso-app".into(), note: "1 of 1 VMs are running".into(), ..Default::default() });
+    view.queued.push(QueuedStart { r#box: "v2".into(), since_ms: now - 125_000, why: "1 of 1 VMs are running".into() });
+    view.budget = BudgetView { running: 1, max_running: 1, cores: 2.0, max_cores: 8.0, today_cents: 37, daily_cents: 2_000 };
+    view.sandboxes.push(SandboxRow { id: "sbx-0123456789ab".into(), role: "session".into(), state: VmState::Running, repo: "contoso-app".into(), size: "M".into(), boxes: vec!["v1".into()], created_ms: now - 50 * 60_000 - 1_000 });
+    view.sandboxes.push(SandboxRow { id: "sbx-ba9876543210".into(), role: "pool".into(), state: VmState::Suspended, repo: "contoso-app".into(), size: "M".into(), boxes: Vec::new(), created_ms: now - 3 * 3_600_000 - 1_000 });
+    view.images.push(ImageRow { repo: "contoso-app".into(), id: "img-1".into(), built_ms: now - 26 * 3_600_000, state: "ready".into(), note: String::new() });
+    view.refusals.push(Refusal { ms: now - 600_000, r#box: "v1".into(), kind: "egress".into(), what: "registry.example.com:443".into(), why: "not in the repository's egress profile".into() });
+    app.run(Action::VmPanel);
+    check_sized("vms-panel", &mut app, Sections { cells: true, painted: false }, (130, 40));
+}
+
+/// A group's session defaults with a VM pack: *Run new sessions on* (here
+/// set to a VM for the group; the canvas's stays this machine).
+#[test]
+fn group_defaults_run_on() {
+    let doc = canvas_core::demo::demo_doc(CWD);
+    let group = doc.groups[0].id.clone();
+    let mut app = app(doc, false);
+    with_vm_pack(&mut app);
+    app.run(Action::GroupDefaults(group));
+    app.cycle_run_on();
+    app.cycle_run_on();
+    check_sized("group-defaults-run-on", &mut app, Sections { cells: true, painted: false }, (124, 34));
 }
 
 /// A new session in a group that sets its own model: the dialog says so.

@@ -507,7 +507,12 @@ merged PR's).
   the board's linked group; name: `<ID> <title>`; first prompt: "Work on
   DEC-031 (title). Run `atelier todo show DEC-031`, then
   `atelier todo claim DEC-031`."): the
-  dialog is the explicit start. *Open spec note* opens the linked note, else
+  dialog is the explicit start. With a VM pack, *Start on VM…* opens it on a
+  ☁ VM with the branch `atelier/DEC-031-short-title` and a first prompt that
+  ends with a pull request (`atelier todo prime`, `show`, `claim`, then push,
+  open a pull request and `atelier todo submit DEC-031 --pr URL`); a board's
+  *Sessions start on* policy (its menu; `AgentPolicy::start_on_vm`, shown in
+  its panel) makes *Start a session on this…* do so. *Open spec note* opens the linked note, else
   creates `<root>/Todos/<ID> - <title>.md` with the body, links it, and opens
   it. *Claim for…* (you or a session), *Release*, *Done*, *Cancel*, *Reopen*.
 - Window edits apply locally at once (optimistic) and are sent as ops.

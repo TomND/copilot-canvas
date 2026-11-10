@@ -108,6 +108,7 @@ impl App {
             items.push(item("Inspect transcript", "", Action::Inspect(id.to_owned()), true));
         }
         items.push(item("New subsession", "S", Action::NewSession { at: None, parent: Some(id.to_owned()) }, true));
+        items.extend(self.vm_menu_items(node));
         items.extend(self.visual_node_items(id));
         items.extend(self.hide_items(id));
         items.push(item("Rename", "R", Action::Rename(Target::Node(id.to_owned())), true));
@@ -764,6 +765,15 @@ impl App {
             Action::Detach => self.quit = true,
             Action::UpdateService => self.confirm_update_service(),
             Action::McpServers(id) => self.open_mcp_picker(crate::dialogs::McpTarget::Node(id)),
+            Action::Vm { id, op } => self.vm_action(id, op),
+            Action::VmDelete(id) => self.ask_vm_delete(&id),
+            Action::VmDetails(id) => {
+                self.select_node(&id, false);
+                self.right_detail = Some(crate::side::RightDetail::Session(id));
+            }
+            Action::VmPanel if self.bus.vm.is_some() => self.right_detail = Some(crate::side::RightDetail::Vms),
+            Action::VmPanel => {}
+            Action::VmBuildImage(repo) => self.vm_build_image(repo),
             Action::NewPassive(group) => self.new_passive(&group),
             Action::PassiveDetail(id) => {
                 self.select_node(&id, false);
@@ -899,6 +909,7 @@ impl App {
             .unwrap_or_else(|| self.default_cwd.clone());
         let (x, y) = self.new_session_slot(parent.as_deref(), at);
         let group = self.doc.group_at(x + crate::doc::SESSION_W / 2, y + crate::doc::SESSION_H / 2).map(|g| g.id.clone());
+        let vm = self.vm_choice(group.as_deref(), &folder, parent.as_deref());
         let dialog = NewSession {
             parent,
             at,
@@ -921,7 +932,7 @@ impl App {
             fork: can_fork,
             agent,
             model: None,
-            vm: self.vm_choice(group.as_deref(), &folder),
+            vm,
             group,
         };
         if !self.agent_configs.contains_key(&agent) {
@@ -931,12 +942,14 @@ impl App {
     }
 
     /// The dialog's *Run on* (`None` without a VM pack): a VM only when the
-    /// group's or the canvas's launch defaults say so; the repository the
-    /// folder belongs to, else the pack's first.
-    pub(crate) fn vm_choice(&self, group: Option<&str>, folder: &str) -> Option<crate::dialogs::VmChoice> {
+    /// group's or the canvas's launch defaults say so, or for a subsession of
+    /// a VM box (a VM of its own for its parent's repository and size); the
+    /// repository the folder belongs to, else the pack's first.
+    pub(crate) fn vm_choice(&self, group: Option<&str>, folder: &str, parent: Option<&str>) -> Option<crate::dialogs::VmChoice> {
         let pack = &self.bus.vm.as_ref()?.pack;
         let defaults = self.doc.defaults.merged(group.and_then(|g| self.doc.group(g)).and_then(|g| g.defaults.as_ref()));
-        let chosen = canvas_model::vm::Placement::of(defaults.placement.as_ref());
+        let parents = parent.and_then(|p| self.doc.node(p)).and_then(|n| n.placement.clone()).filter(|p| p.is_vm());
+        let chosen = parents.unwrap_or_else(|| canvas_model::vm::Placement::of(defaults.placement.as_ref()));
         let repos: Vec<String> = pack.repos.iter().map(|r| r.key.clone()).collect();
         let found = canvas_model::vm::repo_for_folder(&pack.repos, folder, self.info.path_style());
         let repo = chosen.vm().map(|v| v.repo.clone()).filter(|r| repos.contains(r)).or(found).or_else(|| repos.first().cloned()).unwrap_or_default();

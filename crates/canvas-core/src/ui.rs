@@ -212,7 +212,8 @@ fn toolbar_buttons_width(app: &App) -> i32 {
         labels.push(" ⧉ ");
     }
     let agents = if app.demo { 0 } else { crate::paint::text_width(&agents_button_label(app).0) as i32 + 1 };
-    labels.iter().map(|l| crate::paint::text_width(l) as i32 + 1).sum::<i32>() + agents
+    let vms = crate::vms::button_label(app).filter(|_| !app.demo).map_or(0, |(l, _)| crate::paint::text_width(&l) as i32 + 1);
+    labels.iter().map(|l| crate::paint::text_width(l) as i32 + 1).sum::<i32>() + agents + vms
 }
 
 /// The space tabs are compact (`◫ ✎ ☑`) unless their full form leaves the
@@ -265,6 +266,12 @@ fn draw_toolbar(app: &mut App, buf: &mut Buffer, area: Rect) {
         x = toolbar_button(app, buf, x, " ⇩ Import ", Action::ImportCopilot, area);
         x = toolbar_button(app, buf, x, " ⟳ VS Code ", Action::SyncVs, area);
         x = agents_button(app, buf, x, area);
+        if let Some((label, attention)) = crate::vms::button_label(app) {
+            let style = if attention { bold(PANEL).bg(ATTENTION) } else { Style::default().fg(TEXT).bg(PANEL_HI) };
+            let end = put(buf, x, area.y as i32, &label, style, area);
+            app.layout.hits.push((Rect::new(x as u16, area.y, (end - x).max(0) as u16, 1), Hit::Toolbar(Action::VmPanel)));
+            x = end + 1;
+        }
     }
     x = toolbar_button(app, buf, x, if app.doc.ui.tiled { " ▦ Tiled " } else { " ▢ Single " }, Action::ToggleTiled, area);
     // Fitting and zooming are the session canvas's.

@@ -159,6 +159,46 @@ pub struct GitState {
     pub unpushed: Vec<String>,
 }
 
+/// What deleting a VM would lose, from its repository's last report (the
+/// quiescence barrier: a delete asks for these to be confirmed).
+pub fn delete_findings(git: &GitState) -> Vec<String> {
+    let mut out = Vec::new();
+    let plural = |n: u32, one: &str, many: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {many}") };
+    if !git.unpushed.is_empty() {
+        out.push(format!("{} not pushed: {}", plural(git.unpushed.len() as u32, "branch", "branches"), git.unpushed.join(", ")));
+    }
+    if git.dirty > 0 {
+        out.push(format!("{} with uncommitted changes", plural(git.dirty, "file", "files")));
+    }
+    if git.untracked > 0 {
+        out.push(format!("{} not in git", plural(git.untracked, "new file", "new files")));
+    }
+    if git.stashes > 0 {
+        out.push(plural(git.stashes, "stash", "stashes"));
+    }
+    out
+}
+
+/// A delete's confirmation that accepts losing whatever the barrier finds.
+pub const DISCARD_ALL: &str = "*";
+
+const LOSE: &str = "deleting this VM would lose: ";
+
+/// The service's answer to a delete the barrier stops (`when`: "now", or
+/// how old the report is); [`refused_findings`] reads it back.
+pub fn barrier_refusal(findings: &[String], when: &str) -> String {
+    format!("{LOSE}{} ({when}). Push what you keep first, or delete anyway to lose it", findings.join("; "))
+}
+
+/// The findings of a delete the barrier stopped (`None`: another error):
+/// a client confirms exactly these (*Delete anyway*), so anything new
+/// since stops the delete again.
+pub fn refused_findings(error: &str) -> Option<Vec<String>> {
+    let rest = &error[error.find(LOSE)? + LOSE.len()..];
+    let list = &rest[..rest.rfind(" (")?];
+    Some(list.split("; ").map(str::to_owned).filter(|f| !f.is_empty()).collect())
+}
+
 /// What clients see of VM sessions (`bus::Snapshot::vm`): absent without a
 /// pack, so no VM UI shows.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
@@ -449,6 +489,21 @@ pub fn branch_ok(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_delete_gives_its_findings_back() {
+        let findings = vec!["app: 1 branch not pushed: atelier/x (y)".to_owned(), "lib: 2 stashes".to_owned()];
+        let message = format!("VM action: {}", barrier_refusal(&findings, "as it reported 3m ago"));
+        assert_eq!(refused_findings(&message), Some(findings));
+        assert_eq!(refused_findings("its VM is queued"), None);
+    }
+
+    #[test]
+    fn deleting_names_what_would_be_lost() {
+        assert!(delete_findings(&GitState { branch: "atelier/x".into(), ..Default::default() }).is_empty(), "all pushed and clean");
+        let git = GitState { branch: "atelier/x".into(), ahead: 2, dirty: 3, untracked: 1, stashes: 2, unpushed: vec!["atelier/x".into()], ..Default::default() };
+        assert_eq!(delete_findings(&git), ["1 branch not pushed: atelier/x", "3 files with uncommitted changes", "1 new file not in git", "2 stashes"]);
+    }
 
     #[test]
     fn local_is_the_default_everywhere() {

@@ -95,7 +95,7 @@ owner's note that VM sessions are optional and local stays the default.
       17 jobs); replay and gap end to end in `vm::satellite` tests; `corpus check` with the repaint round trip;
       `selftest` and `--remote loopback` unchanged. Owner: `vm spike s1`, `s4`, `s7` on real sandboxes
 
-### 3: integration
+### 3: integration (done 2026-11-10; CI run 42879098435 green on every job; merged into main at ffb5f20)
 - [x] VM-31 the CLI inventory (§4) row by row: each relayed command is the same command line here (files carried,
       outputs written back), refusals with why (`every_row_of_the_cli_inventory_relays_as_the_same_command`); the
       `Io` seam is not built (departure: relayed commands run as a subprocess)
@@ -118,14 +118,46 @@ owner's note that VM sessions are optional and local stays the default.
       JSON-RPC, the hub's Copilot servers, `atelier mcp-standin`, the guest's proxy; wired in `vm::link`
 - [x] VM-38 the guest's Copilot MCP configuration (a synced root at `~/.copilot`); Claude Code and OpenCode in Phase 5
 - [x] refusals (MCP and egress) in the VM view and `vm list`
-- [ ] Exit: the probe's integration steps on three OSes (CI); owner: `vm spike s5` with a real server
-- [ ] VM-36 egress (worker P-egress, `vm-egress`) and VM-37 MCP gateway (worker P-mcp, `vm-mcp`): prompts in
-      VM-WORKERS.md; their interfaces landed (`vm/egress/mod.rs` denies everything, `vm/mcp/mod.rs` refuses every
-      stream, `vm/satellite/mcp_proxy.rs` serves nothing; the link and the satellite already call them)
-- [ ] Exit: every row of the CLI inventory tested; offline writes say *queued*
+- [x] Exit: every row of the CLI inventory tested; offline writes say *queued*
+- [x] Exit: the probe's integration steps on three OSes (CI run 42879098435; Windows 77 s); owner: `vm spike s5`
+      with a real server (open)
 
 ### 4: UX
-- [ ] VM-41 *Run on* · VM-42 box states · VM-43 details · VM-44 Tasks · VM-45 ☁ VMs panel · VM-46 lifecycle and barrier · VM-47 client exclusions · VM-48 parity rows 57–62 and the self-test step · VM-49 docs
+- [x] VM-46 on the hub: idle and unseen for `suspend_after` (no client shows it, not working, no mail, quiet) →
+      suspended (`vm_idle_loop`, `vm_idle_verdict`); typing into a suspended VM and mail waiting for it resume it
+      (`Remote::accepting`); the barrier: every terminal's repository (ended ones too) checked now through the link
+      (`Links::git_check`, the satellite's `git` control), else the last report with its age, and checked just before
+      a suspend; each finding confirmed, or `*` (`vm delete --discard`); *Update from main* is a message to the
+      agent; the view says *integration offline* for a running VM whose link is down
+- [x] VM-42 box states: a VM box's status line says its VM's state unless it simply runs (`vms::state_line`:
+      queued with why, starting, suspended, integration offline with since when, lost, deleting, failed with why);
+      `BoxModel::vm` and the `tree` hook's `vm`; snapshot `vm-box-states`
+- [x] VM-43 details: a ☁ VM section (state, repository, branch, size, sandbox, image age, uptime, estimated cost,
+      git, link, refusals) with Suspend or Resume, Update from main, Cancel start, Start again on a new VM, Delete VM…
+      (asks; the barrier's findings then ask again, *Delete anyway* confirms exactly those); the box menu's *VM
+      details…* shows it over a running terminal; snapshot `vm-details`. *Open shell* not built yet
+- [x] VM-45 the toolbar's ☁ VMs (only with a pack; the VMs running; gold while a start waits, the pack has errors
+      or a VM is lost, failed or offline) opens `RightDetail::Vms`: budget, VM boxes (a click shows one's details),
+      waiting starts with *Cancel*, sandboxes, images with *Build now*, the newest refusals; a help row; snapshot
+      `vms-panel`. Not built: orphans' *Adopt* and the pack's findings (their count shows; `vm pack check` lists them)
+- [x] VM-41 *Run on*: the dialog's row (Phase 1: this machine / ☁ VM, the repository from the folder, branch, size)
+      completed with *Run new sessions on* in Settings (canvas: this machine / ☁ VM; a group: also the canvas's) and
+      a subsession of a VM box defaulting to a VM for its parent's repository and size; snapshot
+      `group-defaults-run-on`. Not built: the MCP preset pick (the box's MCP servers go to the guest, VM-38)
+- [x] VM-44 Tasks: *Start on VM…* (Phase 1) gains a first prompt that ends with a pull request (`todo prime`, `show`,
+      `claim`, then `todo submit ID --pr URL`); a board's *Sessions start on* policy (`AgentPolicy::start_on_vm`, in
+      its menu and panel, only with a pack) makes *Start a session on this…* open it on a VM; snapshots
+      `tasks-start-on-vm`, `tasks-board-policy-vm`
+- [x] VM-47 client exclusions: idle auto-stop skips VM boxes (the service suspends them); a path link in a VM box's
+      terminal is the guest's (Ctrl+click or a force click shows it with *Copy path*, never opens it here); the VM
+      details show where it works in the guest (*In the VM*, from its history). The sidebar's folder rows are unchanged
+- [x] VM-48 parity rows 57–62 (`src/parity_vm.rs`) and the self-test's 47th step (`src/selftest_vm.rs`), both on a
+      VM lane of local sandboxes (`src/vm_lane.rs`: `provider: local`, a git repository of its own); found and
+      fixed by them: local clients' VM requests went to their in-process backend (now over their connection,
+      `remote::Routed`), and a suspended VM kept its frozen link until its reads timed out (closed at once now)
+- [x] VM-49 docs: README (the VM row, Controls, Commands, the self-test), VM-SESSIONS *As built* Phase 4, PARITY rows
+      57–62 and *Last run*, NOTEBOOK-TASKS (*Start on VM…*, the board policy), GUI (`tree`'s `vm`), BACKEND
+- [ ] *Open shell* (VM-43): a shell box in the same sandbox needs shared VMs (`with`), not built (departure)
 - [ ] Exit: parity rows pass, snapshots read, self-test step in both clients
 
 ### 5: hardening
@@ -209,6 +241,15 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   starts on a blank screen (the launch's step lines are cleared).
 - **`vm::local` on Linux starts its satellite in a systemd user scope of its own**, out of the service's unit, whose
   stop ends its cgroup (a VM's satellite is not the hub's process at all).
+- **The delete barrier is git only** (VM-46): no `gh`/`az` re-check of merged or closed pull requests (an unpushed
+  branch is reported whatever its PR), no drain with acknowledgements before the delete (the outbox and history are
+  pushed continuously), and a suspended VM is not resumed for the check (its repositories were checked as it was
+  suspended). The idle suspend runs in the service (`vm_idle_loop`), not `vm::manager`; there is no `vm::quiesce`.
+- ***Open shell* is not built** (VM-43): a shell box in a VM box's sandbox is a shared VM (`with`), below.
+- **No shared VMs yet (`VmPlacement::with`)**: the service gives every VM box a sandbox of its own (claiming,
+  suspend, delete and the idle loop all assume one box per sandbox); a subsession of a VM box defaults to a VM of its
+  own for its parent's repository and size (the plan: its parent's sandbox).
+- **A follow-up does not resume a VM**: follow-ups are passive agents', and passive agents do not run on VMs.
 
 ## Log
 
@@ -292,4 +333,13 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   configuration, refusals in the view; `atelier egress-standin`, `atelier mcp-standin`. Suggestions taken: the
   placeholders' doc fixed (`{{repo.path}}` never existed), the decisions log capped at 5 MB, `pack check` renders
   profiles. `selftest vm` PASS in 66 s on macOS.
-
+- 2026-11-10: Phase 4 on the hub (VM-46): idle suspend, typing and mail resume, the delete barrier (checked now
+  through the link; `vm delete --discard`), *Update from main*, *integration offline* in the view; the satellite
+  reports the repositories of ended terminals too (found by the probe: a session that ended hid its work from the
+  barrier). `selftest vm` PASS in 65 s on macOS (typing resumes a suspended VM; the barrier stops at an untracked
+  file).
+- 2026-11-10: Phase 3 merged into main at ffb5f20 (CI run 42879098435 green on all 17 jobs; the Windows VM
+  self-test passed with the satellite's read timeout). The workers' `vm-egress` and `vm-mcp` are in main.
+- 2026-11-10: Phase 4 done locally: VM-41/44/47 (Run on defaults, Tasks' Start on VM, client exclusions), the
+  parity rows 57–62 (`PASS: 6 rows in 25.5s` on macOS) and the self-test's VM step (TUI, GUI, both over loopback);
+  two bugs found by them and fixed (local clients' VM requests; a suspended VM's frozen link). Waiting for CI.

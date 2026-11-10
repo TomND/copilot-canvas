@@ -581,6 +581,7 @@ fn session_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)
     if !shell && !app.demo {
         out.field("Session", crate::agents::native_id(node));
     }
+    let vm_actions = vm_section(app, out, node);
     out.gap();
     let plan = app.start_plan(node);
     match &plan {
@@ -614,9 +615,159 @@ fn session_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)
     if !app.demo && !shell {
         actions.push(("MCP servers…".into(), Action::McpServers(node.id.clone())));
     }
+    actions.extend(vm_actions);
     actions.extend(show);
     actions.push(("Remove".into(), Action::RemoveNode(node.id.clone())));
     primary
+}
+
+/// The ☁ VMs panel: the budget, the VM boxes (a click shows one's details),
+/// starts waiting with why (*Cancel*), the sandboxes, the images (*Build
+/// now*), the pack's errors and the newest refusals. Viewing starts nothing.
+fn vms_panel(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)>) {
+    use canvas_model::vm::{VmOp, VmState};
+    let Some(view) = app.bus.vm.as_ref() else {
+        out.text("No VM pack: VM sessions are off and sessions run on this machine.", fg(MUTED));
+        return;
+    };
+    let now = crate::paths::now_ms();
+    let ago = |ms: u64| if ms == 0 { "unknown".to_owned() } else { format!("{} ago", crate::paths::format_age(ms, now)) };
+    let money = |cents: u64| format!("{}.{:02}", cents / 100, cents % 100);
+    out.text(format!("{} VMs", crate::vms::VM_GLYPH), bold(TEXT));
+    out.field("Pack", &format!("{} (provider {})", if view.pack.name.is_empty() { "unnamed" } else { &view.pack.name }, view.pack.provider));
+    let b = &view.budget;
+    out.field("Running", &format!("{} of {} VMs · {} of {} cores", b.running, b.max_running, b.cores, b.max_cores));
+    out.field("Today", &if b.daily_cents == 0 { format!("{} (estimated; no daily budget)", money(b.today_cents)) } else { format!("{} of {} (estimated)", money(b.today_cents), money(b.daily_cents)) });
+    if view.pack.errors > 0 {
+        out.gap();
+        out.text(format!("The pack has {} error(s): VM starts are refused until they are fixed (atelier vm pack check).", view.pack.errors), fg(NEGATIVE));
+    }
+    out.gap();
+    out.text("VM BOXES", bold(MUTED));
+    if view.boxes.is_empty() {
+        out.text("None yet: New session › Run on: ☁ VM.", fg(MUTED));
+    }
+    for (id, info) in &view.boxes {
+        let name = app.doc.node(id).map(|n| n.name.clone()).unwrap_or_else(|| format!("{id} (not on this canvas)"));
+        let (state, color) = crate::vms::state_line(info, now).unwrap_or_else(|| (format!("{} running", crate::vms::VM_GLYPH), POSITIVE));
+        let open = if app.doc.node(id).is_some() { Action::VmDetails(id.clone()) } else { Action::Nothing };
+        out.entry(&format!("{name} · {} · {}", state.trim_start_matches(crate::vms::VM_GLYPH).trim(), info.repo), fg(color), open, Vec::new());
+    }
+    if !view.queued.is_empty() {
+        out.gap();
+        out.text("WAITING TO START", bold(MUTED));
+        for q in &view.queued {
+            let name = app.doc.node(&q.r#box).map(|n| n.name.clone()).unwrap_or_else(|| q.r#box.clone());
+            out.entry(&format!("{name}: {} (since {})", q.why, ago(q.since_ms)), fg(ATTENTION), Action::VmDetails(q.r#box.clone()), vec![("Cancel".into(), Action::Vm { id: q.r#box.clone(), op: VmOp::CancelStart })]);
+        }
+    }
+    if !view.sandboxes.is_empty() {
+        out.gap();
+        out.text("SANDBOXES", bold(MUTED));
+        for s in &view.sandboxes {
+            let color = match s.state {
+                VmState::Running => TEXT,
+                VmState::Lost | VmState::Failed => NEGATIVE,
+                _ => MUTED,
+            };
+            let what = if s.boxes.is_empty() { s.role.clone() } else { format!("{} box(es)", s.boxes.len()) };
+            out.text(format!("{} · {} · {} · {} · {what} · made {}", s.id, s.state.word(), s.repo, s.size, ago(s.created_ms)), fg(color));
+        }
+    }
+    if !view.images.is_empty() || !view.pack.repos.is_empty() {
+        out.gap();
+        out.text("IMAGES", bold(MUTED));
+        for repo in &view.pack.repos {
+            let image = view.images.iter().filter(|i| i.repo == repo.key).max_by_key(|i| i.built_ms);
+            let text = match image {
+                Some(i) if i.state == "ready" => format!("{} · built {}", repo.key, ago(i.built_ms)),
+                Some(i) => format!("{} · {}{}", repo.key, i.state, if i.note.is_empty() { String::new() } else { format!(": {}", i.note) }),
+                None => format!("{} · not built yet", repo.key),
+            };
+            let building = image.is_some_and(|i| i.state == "building");
+            let build = if building { Vec::new() } else { vec![("Build now".into(), Action::VmBuildImage(repo.key.clone()))] };
+            out.entry(&text, fg(if image.is_some_and(|i| i.state == "failed") { NEGATIVE } else { TEXT }), Action::Nothing, build);
+        }
+    }
+    if !view.refusals.is_empty() {
+        out.gap();
+        out.text("REFUSED (network and MCP, newest first)", bold(MUTED));
+        for r in view.refusals.iter().rev().take(8) {
+            let name = app.doc.node(&r.r#box).map(|n| n.name.clone()).unwrap_or_else(|| r.r#box.clone());
+            out.text(format!("{} · {name} · {} {}: {}", at_ms(r.ms), r.kind, r.what, r.why), fg(TEXT));
+        }
+    }
+    out.gap();
+    out.text("Suspend, resume and delete a VM from its box's details (its menu: VM details…).", fg(MUTED));
+    let _ = actions;
+}
+
+/// A VM box's VM (only with a pack, for a box that runs on a VM): its state,
+/// where it runs, its cost, its repository and link; the operations its
+/// state allows (returned). None of them starts anything but *Resume*.
+fn vm_section(app: &App, out: &mut Lines, node: &crate::doc::Node) -> Vec<(String, Action)> {
+    use canvas_model::vm::{VmOp, VmState};
+    let Some(info) = crate::vms::box_vm(app, &node.id).filter(|_| node.placement.as_ref().is_some_and(|p| p.is_vm())) else { return Vec::new() };
+    let now = crate::paths::now_ms();
+    let ago = |ms: u64| format!("{} ago", crate::paths::format_age(ms, now));
+    out.gap();
+    out.text(format!("{} VM", crate::vms::VM_GLYPH), bold(TEXT));
+    let state = if info.note.is_empty() { info.state.word().to_owned() } else { format!("{}: {}", info.state.word(), info.note) };
+    let (_, color) = crate::vms::state_line(info, now).unwrap_or_default();
+    out.spans(vec![(format!("{:<11}", "State"), fg(TEXT)), (state, fg(if info.state == VmState::Running && info.offline_ms == 0 { POSITIVE } else { color }))]);
+    out.field("Repository", &info.repo);
+    // Where it works in the guest (its history says; paths in its terminal are the guest's too).
+    if let Some(cwd) = app.summary(node).map(|s| s.cwd.clone()).filter(|c| !c.is_empty() && Some(c) != node.cwd.as_ref()) {
+        out.field_left("In the VM", &cwd);
+    }
+    out.field("Branch", &info.branch);
+    out.field("Size", &info.size);
+    if !info.sandbox.is_empty() {
+        out.field("Sandbox", &info.sandbox);
+    }
+    if info.image_ms > 0 {
+        out.field("Image", &format!("built {}", ago(info.image_ms)));
+    }
+    if info.started_ms > 0 && matches!(info.state, VmState::Running | VmState::IntegrationOffline) {
+        out.field("Up", &crate::paths::format_age(info.started_ms, now));
+    }
+    if info.cost_cents > 0 {
+        out.field("Cost", &format!("{}.{:02} so far (estimated)", info.cost_cents / 100, info.cost_cents % 100));
+    }
+    if let Some(git) = &info.git {
+        let mut parts = vec![git.branch.clone()];
+        parts.extend([(git.ahead, "ahead"), (git.behind, "behind"), (git.dirty, "changed"), (git.untracked, "untracked"), (git.stashes, "stashed")].into_iter().filter(|(n, _)| *n > 0).map(|(n, what)| format!("{n} {what}")));
+        out.field("Git", &parts.join(" · "));
+        if !git.unpushed.is_empty() {
+            out.field("Not pushed", &git.unpushed.join(", "));
+        }
+    }
+    if info.offline_ms > 0 {
+        out.field("Link", &format!("offline since {} (hub operations wait)", ago(info.offline_ms)));
+    } else if matches!(info.state, VmState::Running) {
+        out.field("Link", "linked");
+    }
+    if info.refusals > 0 {
+        out.field("Refusals", &format!("{} (network or MCP; ☁ VMs lists them)", info.refusals));
+    }
+    let id = node.id.clone();
+    let op = |label: &str, op: VmOp| (label.to_owned(), Action::Vm { id: id.clone(), op });
+    let running = matches!(info.state, VmState::Running | VmState::IntegrationOffline);
+    let mut actions = Vec::new();
+    match info.state {
+        VmState::Running if info.offline_ms == 0 => actions.push(op("Suspend VM", VmOp::Suspend)),
+        VmState::Suspended | VmState::Suspending => actions.push(op("Resume VM", VmOp::Resume)),
+        VmState::Queued | VmState::Claiming | VmState::Starting => actions.push(op("Cancel start", VmOp::CancelStart)),
+        VmState::Failed | VmState::Lost => actions.push(op("Start again on a new VM", VmOp::RetryStart)),
+        _ => {}
+    }
+    if (running && info.offline_ms == 0) || matches!(info.state, VmState::Suspended) {
+        actions.push(op("Update from main", VmOp::UpdateFromMain));
+    }
+    if !matches!(info.state, VmState::Deleting | VmState::Deleted | VmState::Queued | VmState::Claiming) {
+        actions.push(("Delete VM…".into(), Action::VmDelete(node.id.clone())));
+    }
+    actions
 }
 
 /// A hidden box's details say why and where it counts; one hidden on its
@@ -1344,6 +1495,7 @@ pub fn draw_right_detail(app: &mut App, buf: &mut Buffer, area: Rect, detail: &R
         RightDetail::CanvasAgents => canvas_agents_panel(app, &mut out, &mut actions),
         RightDetail::GroupPassives(group) => group_passives_panel(app, &mut out, &mut actions, group),
         RightDetail::Prs => prs_panel(app, &mut out, &mut actions),
+        RightDetail::Vms => vms_panel(app, &mut out, &mut actions),
         RightDetail::Reviews => reviews_panel(app, &mut out, &mut actions),
         RightDetail::Note(_) | RightDetail::Todo(_) => {}
         RightDetail::Passive(id) if app.doc.node(id).is_some_and(|n| n.is_canvas_agent()) => {

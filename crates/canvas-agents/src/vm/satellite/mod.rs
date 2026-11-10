@@ -304,7 +304,7 @@ fn report_loop(terms: &Terms, up: &crossbeam_channel::Sender<SatUp>, stats_every
             last = Some((report, Instant::now()));
         }
         if Instant::now() >= next_stats {
-            let json = serde_json::to_string(&reports::stats_report(&running, &home)).unwrap_or_default();
+            let json = serde_json::to_string(&reports::stats_report(&running, &terms.places(), &home)).unwrap_or_default();
             if up.send(SatUp::Stats { json }).is_err() {
                 return;
             }
@@ -332,10 +332,14 @@ fn write_lanes(mut writer: FrameWriter, io: Receiver<SatUp>, other: Receiver<Sat
 /// A control from the hub, answered on the link (`SatUp::ControlResult`):
 /// `{"drain": DrainRequest}` runs the thin lane's drain here (the agents'
 /// history the hub lacks, relayed commands, their answers stored).
-fn control(json: &str, files: &Files) -> serde_json::Value {
+fn control(json: &str, files: &Files, places: &[(String, String)]) -> serde_json::Value {
     let request: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
     if request.get("roots_state").is_some() {
         return serde_json::json!({ "ok": true, "roots_state": files.state() });
+    }
+    // The delete barrier's check, now: every terminal's repository.
+    if request.get("git").is_some() {
+        return serde_json::json!({ "ok": true, "repos": reports::repos(places) });
     }
     let answer = (|| -> Result<serde_json::Value> {
         let drain: super::lite::DrainRequest = serde_json::from_value(request.get("drain").cloned().context("an unknown control")?)?;
@@ -383,9 +387,9 @@ fn read_loop(reader: &mut FrameReader, terms: &Arc<Terms>, mcp: &McpProxy, files
             SatDown::Stop { term, generation, .. } => terms.stop(&term, generation),
             SatDown::Resync { term, generation, have } => terms.resync(&term, generation, have),
             SatDown::Control { id, json } => {
-                let (other, files) = (other.clone(), files.clone());
+                let (other, files, places) = (other.clone(), files.clone(), terms.places());
                 std::thread::Builder::new().name("sat-control".into()).spawn(move || {
-                    let _ = other.send(SatUp::ControlResult { id, json: control(&json, &files).to_string() });
+                    let _ = other.send(SatUp::ControlResult { id, json: control(&json, &files, &places).to_string() });
                 })?;
             }
             SatDown::Manifest { root, json } => {

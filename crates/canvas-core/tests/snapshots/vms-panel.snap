@@ -1,0 +1,55 @@
+# vms-panel (130x40 cells)
+## cells (the TUI screen)
+ ◆ Atelier   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ☁ VMs 1   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit
+    SESSIONS                     │▌·     ·     ·     ·     ·     ·     ·     │┌──────────────────────────────────────────────────┐
+▌▤  / filter…                    │  ╭ ☁ Fix the flaky test ──────╮           ││ ☁ VMs                                            │
+                                 │  │ ■ stopped                  │           ││ Pack       contoso (provider aca)                │
+ ◷  ■ Fix the flaky test         │ ·│ canvas                     │     ·     ││ Running    1 of 1 VMs · 2 of 8 cores             │
+    ■ Upgrade the SDK            │  ╰────────────────────────────╯           ││ Today      0.37 of 20.00 (estimated)             │
+ ⧉                               │                                           ││                                                  │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ││ VM BOXES                                         │
+ ⌁                               │                                           ││ Fix the flaky test · running · contoso-app       │
+                                 │                                           ││ Upgrade the SDK · queued: 1 of 1 VMs are runnin… │
+ ✦                               │ ·╭ ☁ Upgrade the SDK ─────────╮     ·     ││                                                  │
+                                 │  │ ☁ queued: 1 of 1 VMs are … │           ││ WAITING TO START                                 │
+ ◈                               │  │ canvas                     │           ││ Upgrade the SDK: 1 of 1 VMs are runnin…  Cancel  │
+                                 │ ·╰────────────────────────────╯     ·     ││                                                  │
+ ⇄                               │                                           ││ SANDBOXES                                        │
+                                 │                                           ││ sbx-0123456789ab · running · contoso-app · M · 1 │
+ ≡                               │ ·     ·     ·     ·     ·     ·     ·     ││ box(es) · made 50m ago                           │
+                                 │                                           ││ sbx-ba9876543210 · suspended · contoso-app · M · │
+ ✉                               │                                           ││ pool · made 3h ago                               │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ││                                                  │
+                                 │                                           ││ IMAGES                                           │
+                                 │                                           ││ contoso-app · built 1d ago  Build now            │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ││                                                  │
+                                 │                                           ││ REFUSED (network and MCP, newest first)          │
+                                 │                                           ││ 10m ago · Fix the flaky test · egress            │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ││ registry.example.com:443: not in the             │
+                                 │                                           ││ repository's egress profile                      │
+                                 │                                           ││                                                  │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ││ Suspend, resume and delete a VM from its box's   │
+                                 │                                           ││ details (its menu: VM details…).                 │
+                                 │                                           ││                                                  │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ││                                                  │
+                                 │                                           ││                                                  │
+                                 │                                           ││                                                  │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ││                                                  │
+                                 │                                           ││                                                  │
+                                 │                                           ││                                                  │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ││  Close                                           │
+                                 │                                           │└──────────────────────────────────────────────────┘
+ click view · double-click/Enter start · ] [ or Ctrl+F6 recent · drag move · empty-drag pan · Shift/right-drag select · wheel pa…
+## gpu view model
+view cursor=none modal=none banner=None
+canvas area=34,1 43x38 origin=-1,0 scale=1 grid=true tick=0 empty=false
+box v1 Session rect=1,1 30x4 prefix="☁ " name="Fix the flaky test"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]
+  selected=false focused_term=false active=false
+  vm=running
+box v2 Session rect=1,9 30x4 prefix="☁ " name="Upgrade the SDK"
+  status=Stopped icon="■" label="stopped" line="☁ queued: 1 of 1 VMs are running" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #6e7681]
+  selected=false focused_term=false active=false
+  vm=queued

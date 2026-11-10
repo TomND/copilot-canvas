@@ -484,6 +484,9 @@ impl App {
             return;
         }
         if let Some(link) = self.layout.links.iter().find(|l| l.contains(cx, cy)).cloned() {
+            if link.terminal && self.guest_link(&link.target, cx, cy) {
+                return;
+            }
             return self.open_link(&link.target);
         }
         if self.space == Space::Canvas
