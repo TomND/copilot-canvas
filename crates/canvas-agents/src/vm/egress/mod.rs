@@ -4,8 +4,9 @@
 //! forward proxy that enforces a policy for `vm::local` sandboxes (the
 //! platform enforces it for `vm::aca`).
 //!
-//! This is the interface the lead wires; until the worker's package lands,
-//! [`decide`] denies everything and [`render`] and [`serve`] refuse.
+//! This is the interface the lead wires; [`decide`] is the engine
+//! ([`rules`]); until the rest of the package lands, [`render`] and
+//! [`serve`] refuse.
 
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -14,6 +15,8 @@ use anyhow::{Result, bail};
 
 use super::pack::Pack;
 use super::provider::{EgressDecision, EgressPolicy, HeaderFromSecret, Secret};
+
+pub mod rules;
 
 /// What a profile's placeholders are filled with at a claim: `{{box.branch}}`,
 /// `{{box.repo}}` (the pack's repository key), `{{box.id}}`, `{{sandbox}}`,
@@ -54,10 +57,10 @@ pub struct Decision {
     pub headers: Vec<HeaderFromSecret>,
 }
 
-/// The first rule that matches decides; none: the policy's default action.
+/// The first rule that matches decides; none: the policy's default action
+/// (how hosts, paths and methods match, and what a `CONNECT` matches: [`rules`]).
 pub fn decide(policy: &EgressPolicy, request: &Request) -> Decision {
-    let _ = (policy, request);
-    Decision::default()
+    rules::decide(policy, request)
 }
 
 /// The secrets an egress point injects (never the guest's).
@@ -79,13 +82,3 @@ pub fn serve(listener: TcpListener, policy: Arc<dyn Fn() -> Option<EgressPolicy>
     bail!("the egress stand-in is not available yet (Phase 3)")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn until_the_engine_lands_everything_is_denied() {
-        let policy = EgressPolicy { default_action: "Allow".into(), rules: Vec::new() };
-        assert!(!decide(&policy, &Request { host: "example.com".into(), port: 443, method: "GET".into(), path: Some("/".into()) }).allowed);
-    }
-}
