@@ -58,8 +58,9 @@ impl Lane {
     /// is stopped first) and waits for it.
     pub(crate) fn start_service(&self, exe: &Path, instance: &Instance, env: &[(String, String)]) -> Result<()> {
         crate::parity::stop_service(instance);
-        let mut all: Vec<(String, String)> = env.to_vec();
-        all.extend(self.env());
+        // The suite's own settings win over the lane's defaults.
+        let mut all: Vec<(String, String)> = self.env().into_iter().filter(|(k, _)| !env.iter().any(|(e, _)| e == k)).collect();
+        all.extend(env.iter().cloned());
         let refs: Vec<(&str, &str)> = all.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         conn::spawn_service_exe(exe, instance, &refs)?;
         let deadline = Instant::now() + Duration::from_secs(20);

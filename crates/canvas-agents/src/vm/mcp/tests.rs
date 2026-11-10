@@ -618,3 +618,70 @@ fn an_mcp_client_in_the_guest_uses_the_hubs_server_through_the_proxy_and_the_gat
     proxy.attach(None);
     let _ = std::fs::remove_dir_all(home);
 }
+
+/// `mode: shared` (VM-56): one server process for every session of the
+/// server, each session still its own: the five behaviours the design names.
+#[test]
+fn shared_mode_serves_every_session_from_one_process_each_keeping_its_ids_progress_cancellations_identity_and_asks() {
+    let policy = "presets:\n  forge-readonly: [forge]\nservers:\n  forge:\n    mode: shared\n    rules:\n      - allow: list_pull_requests\n      - allow: roots/list\n      - deny: vote\n";
+    let mut h = Harness::new(Some(policy), false, Duration::from_millis(600));
+    h.launch(BOX1, A, Some("forge-readonly"));
+    h.launch(BOX2, B, Some("forge-readonly"));
+    // 1. initialize: the server's own initialize once; the second session joins it.
+    h.initialize(A, 1, BOX1, json!({ "roots": {} }));
+    h.initialize(B, 1, BOX2, json!({ "roots": {} }));
+    let shared = h.pids("");
+    assert_eq!(shared.len(), 1, "one process, no box's: {:?}", h.gateway.running());
+    assert!(h.pids(BOX1).is_empty() && h.pids(BOX2).is_empty());
+    assert_eq!(h.logged().iter().filter(|m| m["method"] == "initialize").count(), 1, "the server is initialized once");
+
+    // 2. ids and notifications: both sessions use id 7 and the progress token "tok" at once;
+    // each gets its own answer and its own progress, the server sees distinct ids and tokens.
+    let call = |progress: bool| jsonrpc::request(json!(7), "tools/call", json!({ "name": "list_pull_requests", "arguments": { "progress": progress }, "_meta": { "progressToken": "tok" } }));
+    h.send(A, 1, &call(true));
+    h.send(B, 1, &call(true));
+    for (sandbox, stream) in [(A, 1), (B, 1)] {
+        for step in 1..=2 {
+            let progress = h.message(sandbox, stream);
+            assert_eq!((progress["params"]["progressToken"].as_str(), progress["params"]["progress"].as_i64()), (Some("tok"), Some(step)), "{sandbox}: its own token");
+        }
+        assert_eq!(h.message(sandbox, stream)["id"], 7, "{sandbox}: its own id");
+    }
+    let calls = h.calls();
+    let (ids, tokens): (Vec<Value>, Vec<Value>) = calls.iter().map(|c| (c["id"].clone(), c["params"]["_meta"]["progressToken"].clone())).unzip();
+    assert!(ids.len() == 2 && ids[0] != ids[1] && tokens[0] != tokens[1], "the server tells them apart: {calls:?}");
+
+    // 3. cancellation: a session cancels its held call; the other's held call is not touched.
+    h.send(A, 1, &jsonrpc::request(json!(8), "tools/call", json!({ "name": "list_pull_requests", "arguments": { "hold": true } })));
+    h.send(B, 1, &jsonrpc::request(json!(8), "tools/call", json!({ "name": "list_pull_requests", "arguments": { "hold": true } })));
+    wait_until("both held calls reached the server", || h.calls().len() == 4);
+    let held = h.calls();
+    h.send(A, 1, &jsonrpc::notification("notifications/cancelled", json!({ "requestId": 8, "reason": "Esc in box 1" })));
+    wait_until("the cancellation reached the server", || h.logged().iter().any(|m| m["method"] == "notifications/cancelled"));
+    let cancels: Vec<Value> = h.logged().into_iter().filter(|m| m["method"] == "notifications/cancelled").collect();
+    assert_eq!(cancels.len(), 1);
+    assert_eq!(cancels[0]["params"]["requestId"], held[2]["id"], "box 1's call only");
+
+    // 4. identity: each call is checked and recorded as its own box's.
+    let refused = h.call(B, 1, json!(9), "vote", json!({ "number": 1, "vote": 10 }));
+    assert!(text(&refused).contains("refused") || refused["error"].is_object(), "{refused}");
+    assert!(h.refusals().iter().any(|r| r["tool"] == "vote" && r["box"] == BOX2), "{:?}", h.refusals());
+    assert!(!h.refusals().iter().any(|r| r["tool"] == "vote" && r["box"] == BOX1));
+
+    // 5. server-initiated requests go to the session whose request is newest, and its answer back.
+    h.send(A, 1, &jsonrpc::request(json!(10), "tools/call", json!({ "name": "list_pull_requests", "arguments": { "ask": "roots/list" } })));
+    let asked = h.message(A, 1);
+    assert_eq!(asked["method"], "roots/list", "the asking session's guest");
+    h.send(A, 1, &jsonrpc::result(asked["id"].clone(), json!({ "roots": [] })));
+    let answered = h.message(A, 1);
+    assert_eq!(answered["id"], 10);
+    assert!(text(&answered).starts_with("roots/list answered"), "{answered}");
+
+    // Sessions end; the shared process outlives them until it is idle, then ends.
+    h.gateway.session_ended(BOX1);
+    assert_eq!(h.pids(""), shared, "shared: box 1's end does not end it");
+    h.send(B, 1, &jsonrpc::notification("notifications/cancelled", json!({ "requestId": 8 })));
+    h.gateway.session_ended(BOX2);
+    wait_until("the idle shared process ended", || h.gateway.running().is_empty() && !canvas_sys::process::alive(shared[0]));
+    assert!(h.clean(), "the credential never reached a guest");
+}
