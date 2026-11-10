@@ -207,4 +207,14 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
   vm` PASS in 50 s on macOS (both lanes), three runs. Found and fixed: the probe's `vm …` commands started a stray
   `default` service in the probe's home (with the real Copilot folder as its sessions folder) that ran a second VM
   manager: they now name the probe's instance; the probe ends every sandbox's processes, pass or fail.
+- 2026-11-10: CI on the Phase 2 work found three things, all fixed: Linux runners stopped the guest's programs at a
+  restart of the service (its systemd unit ended its cgroup: `vm::local` now starts the satellite in a scope of
+  its own); on Windows the guest's ConPTY drew over the launch's step lines (a program now starts on a blank screen
+  and nothing of the hub's is drawn into it); the new repaint round trip in `corpus check` met Ghostty dropping a
+  keycap's VS16 (between engines the hub's own drawing of the recording is accepted). The earlier Windows hang was
+  the probe's stray service holding its output (fixed by naming the probe's instance; every probe command is now
+  bounded, the step has 15 minutes). In-process tests now cover the hub link (Hello, ordering, input, resume
+  buffer, the mailbox's wait, offline stops) and drops end to end (exact replay within the ring, repaint beyond).
+  Pending for Phase 2: VM-26 guest roots (with Phase 3's sync), VM-28 subsessions, the link's flood limits,
+  `proc` and `stats`, DEVELOPMENT and AGENT-PROVIDERS docs.
 
