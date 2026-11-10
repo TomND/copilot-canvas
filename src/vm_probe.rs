@@ -192,8 +192,40 @@ fn cli(exe: &Path, args: &[&str], env: &[(String, String)]) -> Result<(bool, Str
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let out = cmd.output()?;
-    Ok((out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))))
+    // Bounded: a command that hangs (or a process it started that holds its output) fails the step.
+    let mut child = cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn()?;
+    let read = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut text = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut text);
+            }
+            text
+        })
+    };
+    let stdout = read(child.stdout.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
+    let stderr = read(child.stderr.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            bail!("`atelier {}` did not end within 2 minutes", args.join(" "));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let wait = |reader: std::thread::JoinHandle<Vec<u8>>| -> Result<Vec<u8>> {
+        let until = Instant::now() + Duration::from_secs(10);
+        while !reader.is_finished() {
+            anyhow::ensure!(Instant::now() < until, "`atelier {}` ended but a process it started holds its output", args.join(" "));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        Ok(reader.join().unwrap_or_default())
+    };
+    let (out, err) = (wait(stdout)?, wait(stderr)?);
+    Ok((status.success(), format!("{}{}", String::from_utf8_lossy(&out), String::from_utf8_lossy(&err))))
 }
 
 fn wait_file(what: &str, secs: u64, mut check: impl FnMut() -> bool) -> Result<()> {
