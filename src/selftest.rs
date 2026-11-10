@@ -1455,6 +1455,9 @@ pub(crate) const SIDEBAR: (u16, u16) = (3, 33);
 #[path = "selftest_spaces.rs"]
 mod spaces;
 
+#[path = "selftest_vm.rs"]
+mod vm;
+
 pub(crate) fn step(name: &str) {
     println!("  · {name}");
 }
@@ -1618,8 +1621,9 @@ pub fn run(remote: Option<&str>, client: Client) -> Result<()> {
     result
 }
 
-/// The 46 steps (the last five on canvases of their own; the last, the upgrade
-/// from the build before the rename, only without `--remote`), against any front
+/// The 47 steps (the last six on canvases of their own; the upgrade from the
+/// build before the rename only without `--remote`; the last, a box on a VM,
+/// on the VM lane's local sandboxes, skipped without git), against any front
 /// end (client: its name in the service log; start: launches it with the
 /// given arguments and environment).
 fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, client: &str, start: impl Fn(&[String], &[(&str, &Path)]) -> Result<U>) -> Result<()> {
@@ -1674,6 +1678,10 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
         ("ATELIER_CLAUDE", fake_claude.as_path()),
         ("ATELIER_FAKE_RUN_MS", Path::new("300")),
     ];
+    // CANVAS_SELFTEST_ONLY=vm: only the VM step (while working on it).
+    if std::env::var("CANVAS_SELFTEST_ONLY").is_ok_and(|only| only == "vm") {
+        return vm::vm_steps(instance, &args, &env, &start);
+    }
     let started = Instant::now();
     let mut ui = start(&args, &env)?;
     step("client starts and auto-starts the terminal service");
@@ -2089,6 +2097,7 @@ fn scenario<U: Ui>(instance: &Instance, work: &Path, remote: Option<&str>, clien
     if remote.is_none() {
         legacy_service_steps(instance, work, &env, &start)?;
     }
+    vm::vm_steps(instance, &args, &env, &start)?;
     println!(
         "PASS in {:.1}s (first paint incl. service start: {} ms)",
         started.elapsed().as_secs_f64(),

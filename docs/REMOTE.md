@@ -683,7 +683,7 @@ Checklist (over a day):
   tables; input dedupe and takeover; heartbeats keeping a connection and
   silence ending it with short timeouts (`canvas-core::conn`); offline input,
   reconnect resync and the lost-keystroke report (`canvas-core::app`).
-- `atelier selftest --remote loopback`: the UI self-test (45 of its 46 steps: the upgrade from the build before the rename is local only) with
+- `atelier selftest --remote loopback`: the UI self-test (46 of its 47 steps: the upgrade from the build before the rename is local only) with
   the client on TCP.
 - `atelier selftest --remote faults` (or, after `cargo build --release`,
   `cargo test --release fault_injection -- --ignored --nocapture`): a TCP proxy

@@ -20,6 +20,7 @@ mod soak;
 mod standin;
 mod test_shell;
 mod vm_cli;
+mod vm_lane;
 mod vm_probe;
 #[cfg(windows)]
 mod uia;

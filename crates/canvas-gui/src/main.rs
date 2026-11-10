@@ -163,14 +163,16 @@ impl Launch {
         ConnOptions { start: true, compress: self.compress, name: "gui".into(), rpc, caps: CAP_IMAGES | CAP_NOTIFY | CAP_REPORTS, ..Default::default() }
     }
 
-    /// The backend for a connection (remote clients ask the service, local ones run it in-process).
+    /// The backend for a connection (remote clients ask the service, local
+    /// ones run it in-process but for what only the service holds: VM sessions).
     fn backend(&self) -> (Arc<dyn Backend>, Option<Arc<RemoteBackend>>) {
-        let remote = self.target.is_remote().then(RemoteBackend::new);
-        let backend: Arc<dyn Backend> = match &remote {
-            Some(remote) => remote.clone(),
-            None => Arc::new(canvas_agents::backend::LocalBackend::new(canvas_agents::backend::Ctx::new(&self.instance))),
+        let service = RemoteBackend::new();
+        let backend: Arc<dyn Backend> = if self.target.is_remote() {
+            service.clone()
+        } else {
+            canvas_core::remote::Routed::new(Arc::new(canvas_agents::backend::LocalBackend::new(canvas_agents::backend::Ctx::new(&self.instance))), service.clone())
         };
-        (backend, remote)
+        (backend, Some(service))
     }
 
     /// Opens the canvas on `conn` and builds window `index`'s app (each

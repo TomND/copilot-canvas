@@ -36,7 +36,7 @@ const SECOND: &str = "0b1e5ca1-0000-4000-8000-00000000c20d";
 const MCP_TOKEN: &str = "probe-mcp-credential-0b1e5ca1";
 
 /// Not a variable of the program: the instance [`cli`] names for hub commands.
-const PROBE_INSTANCE: &str = "ATELIER_PROBE_INSTANCE";
+pub(crate) const PROBE_INSTANCE: &str = "ATELIER_PROBE_INSTANCE";
 
 fn step(text: &str) {
     println!("  · {text}");
@@ -125,7 +125,7 @@ fn hook(dir: &Path, exe: &Path, name: &str) -> Result<()> {
 }
 
 /// A local repository to clone into sandboxes (`None` without git).
-fn bare_repo(root: &Path) -> Option<PathBuf> {
+pub(crate) fn bare_repo(root: &Path) -> Option<PathBuf> {
     let bare = root.join("repo.git");
     let seed = root.join("seed");
     let git = |args: &[&str], cwd: &Path| Command::new("git").args(args).current_dir(cwd).env("GIT_TERMINAL_PROMPT", "0").output().is_ok_and(|o| o.status.success());
@@ -207,7 +207,7 @@ impl Watch {
 /// Runs this program as a command of the guest (relayed) or of the hub.
 /// A hub command names the probe's own service (`ATELIER_PROBE_INSTANCE`
 /// in `env`, passed as `--instance`), so none starts a service of its own.
-fn cli(exe: &Path, args: &[&str], env: &[(String, String)]) -> Result<(bool, String)> {
+pub(crate) fn cli(exe: &Path, args: &[&str], env: &[(String, String)]) -> Result<(bool, String)> {
     let mut cmd = Command::new(exe);
     if let Some((_, name)) = env.iter().find(|(k, _)| k == PROBE_INSTANCE) {
         cmd.args(["--instance", name]);
@@ -460,7 +460,7 @@ fn intent_now(instance: &Instance) -> Result<canvas_agents::vm::launch::Intent> 
 }
 
 /// A free loopback port in 48000–48999 for the pool lane's hub.
-fn free_port() -> Result<u16> {
+pub(crate) fn free_port() -> Result<u16> {
     let start = 48000 + (std::process::id() % 1000) as u16;
     (0..1000u16).map(|i| 48000 + (start - 48000 + i) % 1000).find(|p| std::net::TcpListener::bind(("127.0.0.1", *p)).is_ok()).context("no free port in 48000-48999")
 }
