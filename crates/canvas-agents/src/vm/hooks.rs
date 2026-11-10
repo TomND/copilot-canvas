@@ -138,11 +138,17 @@ impl Hooks {
 
     /// `exec`: runs `argv` in the sandbox with `stdin`; (exit code, stdout).
     pub fn exec(&self, sandbox: &str, argv: &[String], stdin: &[u8]) -> Result<(i64, Vec<u8>)> {
+        let out = self.exec_full(sandbox, argv, stdin)?;
+        Ok((out.code, out.stdout))
+    }
+
+    /// [`Hooks::exec`] with the first line of the program's standard error (the hook's `stderr`).
+    pub fn exec_full(&self, sandbox: &str, argv: &[String], stdin: &[u8]) -> Result<super::provider::ExecResult> {
         use base64::Engine as _;
         let b64 = base64::engine::general_purpose::STANDARD;
         let answer = self.call("exec", &serde_json::json!({ "sandbox": sandbox, "argv": argv, "stdin": b64.encode(stdin) }))?;
         let stdout = b64.decode(answer["stdout"].as_str().unwrap_or_default()).map_err(|_| anyhow!("the exec hook's stdout is not base64"))?;
-        Ok((answer["code"].as_i64().unwrap_or(0), stdout))
+        Ok(super::provider::ExecResult { code: answer["code"].as_i64().unwrap_or(0), stdout, stderr: first_line(answer["stderr"].as_str().unwrap_or_default()) })
     }
 }
 
@@ -189,8 +195,7 @@ impl super::provider::Provider for HooksProvider {
     }
 
     fn exec(&self, id: &str, argv: &[String], stdin: &[u8]) -> Result<super::provider::ExecResult> {
-        let (code, stdout) = Hooks::exec(&self.hooks, id, argv, stdin)?;
-        Ok(super::provider::ExecResult { code, stdout, stderr: String::new() })
+        self.hooks.exec_full(id, argv, stdin)
     }
 
     fn put_file(&self, id: &str, path: &str, bytes: &[u8], mode: u32) -> Result<()> {

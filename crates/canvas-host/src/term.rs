@@ -1900,6 +1900,7 @@ mod tests {
 
     #[test]
     fn the_raw_tap_sees_every_byte_before_the_engine_and_snapshots_say_how_far_it_got() {
+        let _serial = serial();
         let (pump, _pump_rx) = bounded(1);
         let (exited, exited_rx) = bounded(1);
         let (clipboard, _clip) = bounded(1);
@@ -1918,14 +1919,21 @@ mod tests {
             }
         }
         wait_until("the engine took every tapped byte", || terminal.snapshot_at().is_some_and(|(s, fed)| fed >= seen.len() as u64 && s.text().contains("tapped-output")));
-        let (_, fed) = terminal.snapshot_at().unwrap();
-        assert!(fed >= seen.len() as u64);
         let _ = exited_rx.recv_timeout(Duration::from_secs(10));
-        while let Ok(chunk) = raw_rx.try_recv() {
-            seen.extend(chunk);
+        // The reader may go on (ConPTY writes as it closes): every byte the engine
+        // took went through the tap first, and once it is quiet they agree.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let (_, fed) = terminal.snapshot_at().unwrap();
+            while let Ok(chunk) = raw_rx.recv_timeout(Duration::from_millis(200)) {
+                seen.extend(chunk);
+            }
+            assert!(seen.len() as u64 >= fed, "the tap is never behind the engine: {} < {fed}", seen.len());
+            if terminal.snapshot_at().unwrap().1 == seen.len() as u64 {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the engine did not catch up with the tap");
         }
-        let (_, fed) = terminal.snapshot_at().unwrap();
-        assert_eq!(fed, seen.len() as u64, "the engine took exactly what the tap saw");
     }
 
     #[test]

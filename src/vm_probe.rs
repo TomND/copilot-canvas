@@ -82,9 +82,13 @@ fn shut_down(instance: &Instance) {
     }
 }
 
-/// A hard link of this program under another name (a copy where links are not possible).
+/// This program under another name: a hard link on Unix, a copy on Windows
+/// (Windows shares a hard-linked program's image between its names, and a
+/// process started through one name may then see the other as its own path:
+/// `atelier` started while the stand-in `copilot` ran took itself for the
+/// stand-in, the CI flake of `vm spike s3`), and a copy where links fail.
 fn alias(exe: &Path, path: &Path) -> Result<()> {
-    if std::fs::hard_link(exe, path).is_err() {
+    if cfg!(windows) || std::fs::hard_link(exe, path).is_err() {
         std::fs::copy(exe, path)?;
     }
     Ok(())

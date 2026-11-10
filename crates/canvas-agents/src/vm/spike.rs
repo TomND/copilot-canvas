@@ -98,9 +98,9 @@ pub fn run(home: &Path, pack: &Pack, name: &str, agent: Option<&str>, runs: u32,
         let hooks = super::hooks::Hooks::of(pack);
         anyhow::ensure!(hooks.has("claim") && hooks.has("exec") && hooks.has("delete"), "the spikes need the pack's claim, exec and delete hooks");
     }
-    let exec = |sandbox: &str, argv: &[&str]| -> Result<(i64, String)> {
+    let exec = |sandbox: &str, argv: &[&str]| -> Result<(i64, String, String)> {
         let out = provider.exec(sandbox, &argv.iter().map(|s| s.to_string()).collect::<Vec<_>>(), b"")?;
-        Ok((out.code, String::from_utf8_lossy(&out.stdout).into_owned()))
+        Ok((out.code, String::from_utf8_lossy(&out.stdout).into_owned(), super::hooks::first_line(&out.stderr)))
     };
     match name {
         // S2: the agent CLI runs in a guest (its sign-in is checked by starting a VM box).
@@ -109,15 +109,15 @@ pub fn run(home: &Path, pack: &Pack, name: &str, agent: Option<&str>, runs: u32,
             anyhow::ensure!(canvas_model::agent::AgentKind::parse(agent).is_some(), "--agent is copilot, opencode or claude");
             with_sandbox(pack, provider, keep, |sandbox| {
                 let started = Instant::now();
-                let (code, out) = exec(sandbox, &[agent, "--version"])?;
-                Ok(json!({ "spike": "s2", "agent": agent, "ok": code == 0, "exit_code": code, "version": super::hooks::first_line(&out), "ms": started.elapsed().as_millis() as u64 }))
+                let (code, out, err) = exec(sandbox, &[agent, "--version"])?;
+                Ok(json!({ "spike": "s2", "agent": agent, "ok": code == 0, "exit_code": code, "version": super::hooks::first_line(&out), "stderr": err, "ms": started.elapsed().as_millis() as u64 }))
             })
         }
         // S3: this build runs in the stock image (the pack's satellite uploaded first).
         "s3" => with_sandbox(pack, provider, keep, |sandbox| {
             let uploaded = super::manager::install_satellite(pack, provider, sandbox)?;
-            let (code, out) = exec(sandbox, &["atelier", "satellite", "--self-check"])?;
-            let check: Value = serde_json::from_str(out.trim()).unwrap_or_else(|_| json!({ "ok": false, "output": super::hooks::first_line(&out) }));
+            let (code, out, err) = exec(sandbox, &["atelier", "satellite", "--self-check"])?;
+            let check: Value = serde_json::from_str(out.trim()).unwrap_or_else(|_| json!({ "ok": false, "output": super::hooks::first_line(&out), "stderr": err }));
             Ok(json!({ "spike": "s3", "ok": code == 0 && check["ok"] == true, "exit_code": code, "uploaded": uploaded, "self_check": check }))
         }),
         // S4 (without a model): claim to a command answered in the guest, p50 and p95.
@@ -127,7 +127,7 @@ pub fn run(home: &Path, pack: &Pack, name: &str, agent: Option<&str>, runs: u32,
             for _ in 0..runs {
                 let started = Instant::now();
                 with_sandbox(pack, provider, false, |sandbox| {
-                    let (code, _) = exec(sandbox, &["atelier", "--version"])?;
+                    let (code, _, _) = exec(sandbox, &["atelier", "--version"])?;
                     anyhow::ensure!(code == 0, "atelier did not answer in the guest");
                     Ok(json!({}))
                 })?;
