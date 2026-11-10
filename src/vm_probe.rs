@@ -615,7 +615,8 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     wait_file("the canvas's plugin did not reach the guest", 30, || guest_file("plugin/plugin.json").is_some_and(|t| t.contains("atelier")))?;
     anyhow::ensure!(guest_file("notes/probe-group/ai-docs/GOALS.md").as_deref() == Some("hub goals\n"), "the group's notes in the guest");
     let instructions = guest_file("instructions/probe-group/canvas-group.instructions.md").unwrap_or_default();
-    anyhow::ensure!(instructions.contains("/vm/roots/notes/probe-group/ai-docs") && !instructions.contains(&group_dir.display().to_string()), "the instructions name guest paths: {instructions}");
+    // (A local sandbox on Windows is a Windows guest: its paths have backslashes.)
+    anyhow::ensure!(instructions.replace('\\', "/").contains("/vm/roots/notes/probe-group/ai-docs") && !instructions.contains(&group_dir.display().to_string()), "the instructions name guest paths: {instructions}");
     #[cfg(unix)]
     {
         let agent = local.processes(&member.id)?.into_iter().filter_map(|p| canvas_sys::process::process_argv(p.pid)).find(|argv| argv.iter().any(|a| a == "--session-id"));
