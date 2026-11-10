@@ -136,8 +136,60 @@ pub fn run(home: &Path, pack: &Pack, name: &str, agent: Option<&str>, runs: u32,
             let (p50, p95) = (p(&mut times.clone(), 0.5), p(&mut times, 0.95));
             Ok(json!({ "spike": "s4", "ok": true, "provider": provider.name(), "runs": runs, "p50_ms": p50, "p95_ms": p95, "target": "first prompt p50 <= 5 s, p95 <= 10 s (this is claim to a guest command; the prompt adds the agent's start)" }))
         }
-        "s1" | "s5" | "s7" => bail!("spike {name} needs the satellite link (later phases; docs/VM-STATUS.md)"),
-        other => bail!("unknown spike {other:?} (s2, s3, s4)"),
+        // S1: a guest's satellite reaches this hub through the pack's tunnel (the running service takes the link).
+        // S7: then a freeze drops the link and a resume brings it back, and the platform keeps a working VM
+        // running for `runs` minutes (no auto-suspend).
+        "s1" | "s7" => {
+            anyhow::ensure!(provider.name() != "hooks", "the satellite link needs a provider (aca or local), not the pack's hooks");
+            anyhow::ensure!(!pack.tunnel.url.trim().is_empty(), "the pack has no tunnel.url (vm.yaml)");
+            anyhow::ensure!(crate::reports::service_alive(home), "the Atelier service of this instance is not running: start Atelier first (it takes the satellite's link)");
+            let minutes = if name == "s7" { runs.min(60) } else { 0 };
+            with_sandbox(pack, provider, keep, |sandbox| {
+                let uploaded = super::manager::install_satellite(pack, provider, sandbox)?;
+                let store = super::store::Satellites::new(home);
+                let minted = store.mint(sandbox)?;
+                let body = json!({ "hub": pack.tunnel.url, "id": minted.id, "secret": minted.secret, "sandbox": sandbox });
+                provider.put_file(sandbox, ".atelier/satellite.json", body.to_string().as_bytes(), 0o600)?;
+                let linked = || super::link::load_record(home, sandbox).is_some_and(|r| r.linked);
+                let until = |secs: u64, ok: &dyn Fn() -> bool| {
+                    let deadline = Instant::now() + std::time::Duration::from_secs(secs);
+                    while !ok() && Instant::now() < deadline {
+                        std::thread::sleep(std::time::Duration::from_millis(250));
+                    }
+                    ok()
+                };
+                let started = Instant::now();
+                provider.start_satellite(sandbox)?;
+                let ok = until(180, &linked);
+                let mut out = json!({ "spike": name, "ok": ok, "linked": ok, "link_ms": started.elapsed().as_millis() as u64, "satellite_uploaded": uploaded });
+                if name == "s7" && ok {
+                    let started = Instant::now();
+                    provider.suspend(sandbox)?;
+                    let dropped = until(60, &|| !linked());
+                    out["freeze_drop_ms"] = (started.elapsed().as_millis() as u64).into();
+                    let started = Instant::now();
+                    provider.resume(sandbox)?;
+                    let back = until(180, &linked);
+                    out["relink_ms"] = (started.elapsed().as_millis() as u64).into();
+                    let mut lapses = 0;
+                    let watch_until = Instant::now() + std::time::Duration::from_secs(minutes as u64 * 60);
+                    while Instant::now() < watch_until {
+                        let running = provider.get(sandbox).ok().flatten().is_some_and(|s| s.running());
+                        if !running || !linked() {
+                            lapses += 1;
+                        }
+                        std::thread::sleep(std::time::Duration::from_secs(10));
+                    }
+                    out["watched_minutes"] = minutes.into();
+                    out["lapses"] = lapses.into();
+                    out["ok"] = (dropped && back && lapses == 0).into();
+                }
+                let _ = store.revoke_sandbox(sandbox);
+                Ok(out)
+            })
+        }
+        "s5" => bail!("S5 is a manual check (its MCP client runs in the guest): docs/VM-STATUS.md, the owner's checklist"),
+        other => bail!("unknown spike {other:?} (s1, s2, s3, s4, s7)"),
     }
 }
 
