@@ -4,10 +4,10 @@
 //! forward proxy that enforces a policy for `vm::local` sandboxes (the
 //! platform enforces it for `vm::aca`).
 //!
-//! This is the interface the lead wires: [`render`] (the profile's format:
+//! This is the interface the lead wires: [`render()`] (the profile's format:
 //! [`render`](mod@render)), [`decide`] (the engine: [`rules`]) and [`serve`]
 //! (the forward proxy: module `proxy`), and the stand-in of a `vm::local`
-//! sandbox ([`standin`], [`Standin`], [`proxy_env`]).
+//! sandbox ([`standin()`], [`Standin`], [`proxy_env`]).
 
 use std::net::TcpListener;
 use std::sync::Arc;

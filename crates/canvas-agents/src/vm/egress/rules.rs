@@ -1,4 +1,4 @@
-//! The rule engine every egress point applies ([`decide`]): the first rule
+//! The rule engine every egress point applies ([`decide`](super::decide)): the first rule
 //! that matches decides; none: the policy's default action (anything but
 //! `Allow` denies).
 //!
