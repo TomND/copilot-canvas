@@ -18,6 +18,7 @@ pub mod local;
 pub mod manager;
 pub mod pack;
 pub mod provider;
+pub mod secrets;
 pub mod spike;
 pub mod store;
 pub mod thin;
@@ -149,8 +150,9 @@ pub fn has_work(home: &Path) -> bool {
 }
 
 /// The service's VM loop (thread `vm`): reconciles once per pack, advances
-/// every launch that has a step to take, runs the manager every 10 s
-/// (images built on threads of their own), drains the thin lane's guests.
+/// every launch that has a step to take, runs the manager and the secrets
+/// refresher every 10 s (images built on threads of their own), drains the
+/// thin lane's guests.
 /// Without a pack it only waits.
 pub fn run(home: PathBuf, log: impl Fn(String) + Send + Sync + 'static, wake: impl Fn() + Send + 'static) {
     let log: Arc<dyn Fn(String) + Send + Sync> = Arc::new(log);
@@ -158,6 +160,7 @@ pub fn run(home: PathBuf, log: impl Fn(String) + Send + Sync + 'static, wake: im
     let mut refused: Option<String> = None;
     let mut reconciled = false;
     let mut drains = thin::Drains::default();
+    let mut refresher = secrets::Refresher::default();
     let mut last_tick: Option<Instant> = None;
     let mut since_ms = now_ms();
     let building: Arc<Mutex<std::collections::HashSet<String>>> = Arc::default();
@@ -208,6 +211,7 @@ pub fn run(home: PathBuf, log: impl Fn(String) + Send + Sync + 'static, wake: im
                 log(format!("VM manager: {}", hooks::first_line(&format!("{error:#}"))));
             }
             since_ms = now;
+            refresher.run(pack, provider.as_ref(), log.as_ref());
             let due = store::load_images(&home).map(|images| manager::images_due(pack, &images, now)).unwrap_or_default();
             for repo in due {
                 if !building.lock().unwrap_or_else(|e| e.into_inner()).insert(repo.clone()) {

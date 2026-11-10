@@ -60,6 +60,8 @@ owner's note that VM sessions are optional and local stays the default.
       and keep-N, pool plan and tick, image builds) · VM-16 launcher (`vm::launcher`: steps, fence, rollback,
       reconciliation) · VM-17 claim (lease or create, credential in the guest, `satellite --prepare`) · VM-18 the
       view, `VmAction`, `VmImageBuild`, `atelier vm …` · VM-19 `has_work`, doctor
+- [x] the secrets refresher (`vm::secrets`, in the design's Phase 1; the plan had it in Phase 3): each
+      `secrets.yaml` command's output set on the provider on its interval, never logged or stored
 - [ ] wiring after the hand-offs: `open_provider` for `local` and `aca`, `selftest vm --lane local` (the pool lane:
       an image built, a pool member leased, its branch prepared), `vm spike` through a provider
 - [ ] Exit: as in the plan §3 Phase 1
