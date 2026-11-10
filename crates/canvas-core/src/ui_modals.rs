@@ -889,8 +889,15 @@ fn draw_mcp_picker(app: &App, buf: &mut Buffer, screen: Rect, picker: &crate::di
 }
 
 fn draw_new_session(app: &App, buf: &mut Buffer, screen: Rect, dialog: &crate::dialogs::NewSession, ctx: &mut Ctx) -> (Rect, Option<(u16, u16)>) {
-    let repo = matches!(dialog.git, GitState::Repo(_));
-    let height = 20 + if repo { 2 } else { 0 } + if repo && dialog.worktree { 4 } else { 0 } + if dialog.can_fork { 2 } else { 0 };
+    let on_vm = dialog.on_vm();
+    let repo = matches!(dialog.git, GitState::Repo(_)) && !on_vm;
+    let vm_rows = match &dialog.vm {
+        None => 0,
+        Some(vm) if vm.on_vm => 5,
+        Some(_) => 2,
+    };
+    let fork_rows = if dialog.can_fork && !on_vm { 2 } else { 0 };
+    let height = 20 + if repo { 2 } else { 0 } + if repo && dialog.worktree { 4 } else { 0 } + fork_rows + vm_rows;
     let rect = centered(screen, 84, height);
     let title = match dialog.parent.as_ref().and_then(|p| app.doc.node(p)) {
         Some(parent) => format!("New subsession of “{}”", truncate(&parent.name, 40)),
@@ -935,7 +942,35 @@ fn draw_new_session(app: &App, buf: &mut Buffer, screen: Rect, dialog: &crate::d
     put(buf, field_x, y, &truncate(&git_text, field_w as usize), git_style.bg(MODAL), rect);
     y += 2;
 
-    if let GitState::Repo(_) = &dialog.git {
+    // Run on: only with a VM pack; this machine unless chosen.
+    if let Some(vm) = &dialog.vm {
+        label(buf, y, "Run on", focus == NsField::RunOn);
+        let option = |on: bool, text: &str| format!("{} {text}", if on { "◉" } else { "○" });
+        let style = if focus == NsField::RunOn { bold(SELECT).bg(MODAL) } else { fg(TEXT).bg(MODAL) };
+        let end = put(buf, field_x, y, &option(!vm.on_vm, "This machine"), style, rect);
+        let end = put(buf, end + 3, y, &option(vm.on_vm, &format!("{} VM", crate::vms::VM_GLYPH)), style, rect);
+        ctx.hit(Rect::new(field_x as u16, y as u16, (end - field_x) as u16, 1), Hit::Field(NsField::RunOn));
+        y += 2;
+        if vm.on_vm {
+            let pick = |buf: &mut Buffer, ctx: &mut Ctx, x: i32, y: i32, w: i32, text: &str, f: NsField| {
+                let style = if focus == f { Style::default().fg(TEXT).bg(PANEL_HI).add_modifier(Modifier::UNDERLINED) } else { Style::default().fg(TEXT).bg(PANEL_HI) };
+                fill(buf, x, y, w, 1, style, rect);
+                put(buf, x, y, &truncate(&format!("{text}  ◂▸"), w as usize), style, rect);
+                ctx.hit(Rect::new(x as u16, y as u16, w as u16, 1), Hit::Field(f));
+            };
+            label(buf, y, "Repository", focus == NsField::VmRepo || focus == NsField::VmSize);
+            let repo_w = (field_w - 14).max(10);
+            pick(buf, ctx, field_x, y, repo_w, if vm.repo.is_empty() { "(the pack has none)" } else { &vm.repo }, NsField::VmRepo);
+            pick(buf, ctx, field_x + repo_w + 2, y, 12, &format!("size {}", vm.size), NsField::VmSize);
+            y += 1;
+            label(buf, y, "Branch", focus == NsField::VmBranch);
+            cursor = field(buf, field_x, y, field_w, &vm.branch, focus == NsField::VmBranch, "atelier/<the session's name>: a new branch from the default, or yours if it exists", rect).or(cursor);
+            ctx.hit(Rect::new(field_x as u16, y as u16, field_w as u16, 1), Hit::Field(NsField::VmBranch));
+            y += 2;
+        }
+    }
+
+    if let (GitState::Repo(_), false) = (&dialog.git, on_vm) {
         label(buf, y, "Workspace", focus == NsField::Mode);
         let option = |on: bool, text: &str| format!("{} {text}", if on { "◉" } else { "○" });
         let style = if focus == NsField::Mode { bold(SELECT).bg(MODAL) } else { fg(TEXT).bg(MODAL) };
@@ -989,7 +1024,7 @@ fn draw_new_session(app: &App, buf: &mut Buffer, screen: Rect, dialog: &crate::d
         y += 2;
     }
 
-    if dialog.can_fork {
+    if dialog.can_fork && !on_vm {
         label(buf, y, "Context", focus == NsField::Context);
         let option = |on: bool, text: &str| format!("{} {text}", if on { "◉" } else { "○" });
         let style = if focus == NsField::Context { bold(SELECT).bg(MODAL) } else { fg(TEXT).bg(MODAL) };

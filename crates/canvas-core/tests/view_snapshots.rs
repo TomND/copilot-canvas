@@ -874,6 +874,53 @@ fn new_session_dialog() {
     check("new-session-dialog", &mut app, BOTH);
 }
 
+/// A service with a VM pack (docs/VM-SESSIONS.md): the bus snapshot's VM view.
+fn with_vm_pack(app: &mut App) {
+    let repo = canvas_model::vm::RepoSummary { key: "contoso-app".into(), default_branch: "main".into(), folders: vec!["**/canvas".into()] };
+    let pack = canvas_model::vm::PackSummary { name: "contoso".into(), provider: "aca".into(), repos: vec![repo], sizes: vec!["S".into(), "M".into()], ..Default::default() };
+    app.bus.vm = Some(canvas_model::vm::VmView { pack, ..Default::default() });
+}
+
+/// With a VM pack the dialog has *Run on*, and it starts on this machine
+/// (VM sessions are optional; local stays the default).
+#[test]
+fn new_session_dialog_with_a_vm_pack_runs_here_by_default() {
+    let mut app = app(canvas_core::demo::demo_doc(CWD), false);
+    configs(&mut app);
+    with_vm_pack(&mut app);
+    app.run(Action::NewSession { at: None, parent: None });
+    let Some(canvas_core::dialogs::Modal::NewSession(dialog)) = app.modals.last() else { panic!("the dialog") };
+    let vm = dialog.vm.as_ref().expect("Run on shows with a pack");
+    assert!(!vm.on_vm, "this machine unless chosen");
+    assert_eq!((vm.repo.as_str(), vm.size.as_str()), ("contoso-app", "S"), "the repository the folder belongs to");
+    check("new-session-run-on-default", &mut app, BOTH);
+}
+
+/// *Run on: VM* chosen: the repository, size and branch rows; a box made
+/// from it runs on a VM (☁ before its name).
+#[test]
+fn new_session_dialog_run_on_vm() {
+    let mut app = app(canvas_core::demo::demo_doc(CWD), false);
+    configs(&mut app);
+    with_vm_pack(&mut app);
+    app.run(Action::NewSession { at: None, parent: None });
+    if let Some(canvas_core::dialogs::Modal::NewSession(dialog)) = app.modals.last_mut() {
+        dialog.vm.as_mut().unwrap().on_vm = true;
+        dialog.focus = canvas_core::dialogs::NsField::VmRepo;
+    }
+    check("new-session-run-on-vm", &mut app, BOTH);
+}
+
+/// A box on a VM shows ☁ before its name; the others are unchanged.
+#[test]
+fn a_vm_box_is_marked() {
+    let mut doc = canvas_core::demo::demo_doc(CWD);
+    doc.nodes[0].placement = Some(canvas_model::vm::Placement::Vm(Box::new(canvas_model::vm::VmPlacement { repo: "contoso-app".into(), ..Default::default() })));
+    let mut app = app(doc, false);
+    with_vm_pack(&mut app);
+    check("vm-box-marker", &mut app, BOTH);
+}
+
 /// A new session in a group that sets its own model: the dialog says so.
 #[test]
 fn new_session_dialog_in_a_group_with_its_own_model() {

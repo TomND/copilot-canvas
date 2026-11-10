@@ -80,11 +80,12 @@ fn border_set(border: Border) -> &'static BoxSet {
     }
 }
 
-/// Marker before a box's name: canvas-wide agent, passive, subagent,
-/// automation, subsession.
+/// Marker before a box's name: canvas-wide agent, passive, a session on a
+/// VM, subagent, automation, subsession.
 pub fn box_prefix(node: &Node) -> &'static str {
     match (node.kind, node.parent.is_some()) {
         _ if node.is_canvas_agent() => "◎ ",
+        (NodeKind::Session, _) if node.placement.as_ref().is_some_and(|p| p.is_vm()) => crate::vms::VM_PREFIX,
         _ if node.passive.is_some() => "⟲ ",
         (NodeKind::Agent, _) => "◇ ",
         (NodeKind::Automation, _) => "◷ ",

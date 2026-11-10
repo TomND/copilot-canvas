@@ -60,3 +60,4 @@ pub mod undo;
 pub mod view;
 pub mod viewer;
 pub mod visual;
+pub mod vms;
