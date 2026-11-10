@@ -4,16 +4,26 @@
 //! forward proxy that enforces a policy for `vm::local` sandboxes (the
 //! platform enforces it for `vm::aca`).
 //!
-//! This is the interface the lead wires; until the worker's package lands,
-//! [`decide`] denies everything and [`render`] and [`serve`] refuse.
+//! This is the interface the lead wires: [`render()`] (the profile's format:
+//! [`render`](mod@render)), [`decide`] (the engine: [`rules`]) and [`serve`]
+//! (the forward proxy: module `proxy`), and the stand-in of a `vm::local`
+//! sandbox ([`standin()`], [`Standin`], [`proxy_env`]).
 
 use std::net::TcpListener;
 use std::sync::Arc;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 
 use super::pack::Pack;
 use super::provider::{EgressDecision, EgressPolicy, HeaderFromSecret, Secret};
+
+mod proxy;
+pub mod render;
+pub mod rules;
+pub mod standin;
+
+pub use render::hub_host;
+pub use standin::{Standin, proxy_env, standin};
 
 /// What a profile's placeholders are filled with at a claim: `{{box.branch}}`,
 /// `{{box.repo}}` (the pack's repository key), `{{box.id}}`, `{{sandbox}}`,
@@ -28,10 +38,12 @@ pub struct Vars {
     pub hub_host: String,
 }
 
-/// Renders profile `name` of the pack for a box.
+/// Renders profile `name` of the pack for a box: its placeholders filled
+/// from `vars` (an empty `hub_host`: [`hub_host`] of the pack), header values
+/// as references to secrets. Errors name the profile, the rule and the
+/// placeholder, never a value.
 pub fn render(pack: &Pack, name: &str, vars: &Vars) -> Result<EgressPolicy> {
-    let _ = (pack, vars);
-    bail!("egress profile {name}: rendering is not available yet (Phase 3)")
+    render::render(pack, name, vars)
 }
 
 /// An outbound request as an egress point sees it.
@@ -54,10 +66,10 @@ pub struct Decision {
     pub headers: Vec<HeaderFromSecret>,
 }
 
-/// The first rule that matches decides; none: the policy's default action.
+/// The first rule that matches decides; none: the policy's default action
+/// (how hosts, paths and methods match, and what a `CONNECT` matches: [`rules`]).
 pub fn decide(policy: &EgressPolicy, request: &Request) -> Decision {
-    let _ = (policy, request);
-    Decision::default()
+    rules::decide(policy, request)
 }
 
 /// The secrets an egress point injects (never the guest's).
@@ -74,18 +86,9 @@ pub trait Recorder: Send + Sync {
 /// every request, so a changed policy applies at once): absolute-form
 /// requests and `Upgrade`s by host, path and method with `Transform`
 /// headers injected; `CONNECT` by host only.
+/// One thread per connection; it returns only when the listener keeps
+/// failing (the module `proxy` says what it relays and how it is bounded).
 pub fn serve(listener: TcpListener, policy: Arc<dyn Fn() -> Option<EgressPolicy> + Send + Sync>, secrets: Arc<dyn Secrets>, recorder: Arc<dyn Recorder>) -> Result<()> {
-    let _ = (listener, policy, secrets, recorder);
-    bail!("the egress stand-in is not available yet (Phase 3)")
+    proxy::serve(listener, policy, secrets, recorder)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn until_the_engine_lands_everything_is_denied() {
-        let policy = EgressPolicy { default_action: "Allow".into(), rules: Vec::new() };
-        assert!(!decide(&policy, &Request { host: "example.com".into(), port: 443, method: "GET".into(), path: Some("/".into()) }).allowed);
-    }
-}
