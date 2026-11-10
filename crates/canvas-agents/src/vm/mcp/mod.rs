@@ -10,10 +10,17 @@
 //! [`Gateway::link_ended`], [`Gateway::session_ended`]); until the worker's
 //! package lands, every stream is refused.
 
+pub mod jsonrpc;
+pub mod policy;
+pub mod server;
+pub mod standin;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use canvas_common::sat::{MCP_CLOSE, MCP_ERROR, MCP_OPEN};
+
+pub use self::server::CopilotServers;
 
 /// How the gateway answers a sandbox's satellite (`SatDown::Mcp`); `false`
 /// when its link is down.
