@@ -816,7 +816,26 @@ impl Provider for Local {
             return Ok(());
         }
         let log = std::fs::OpenOptions::new().create(true).append(true).open(home.join(".atelier").join("satellite.log"))?;
-        let mut cmd = self.command(id, &["atelier".into(), "satellite".into()], None, &[])?;
+        let plain = self.command(id, &["atelier".into(), "satellite".into()], None, &[])?;
+        // Linux: a scope of its own, out of the service's unit (whose stop ends its whole cgroup).
+        if let Some(mut scoped) = canvas_sys::spawn::in_own_scope(&plain) {
+            scoped.stdin(std::process::Stdio::null()).stdout(log.try_clone()?).stderr(log.try_clone()?);
+            if let Ok(mut child) = self.spawn(id, &mut scoped) {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !super::satellite::running(&home) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                if super::satellite::running(&home) {
+                    std::thread::Builder::new().name("local-satellite".into()).spawn(move || {
+                        let _ = child.wait();
+                    })?;
+                    return Ok(());
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+        let mut cmd = plain;
         cmd.stdin(std::process::Stdio::null()).stdout(log.try_clone()?).stderr(log);
         // Out of the service's job where the jobs permit it (Windows): a VM's satellite outlives a restart of the hub.
         canvas_sys::spawn::CommandExt::spawn_flags(&mut cmd, canvas_sys::spawn::NO_WINDOW | canvas_sys::spawn::BREAKAWAY);
