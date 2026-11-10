@@ -91,9 +91,9 @@ fn suspend_started(pid: u32, started: u64, suspend: bool) -> std::io::Result<boo
 }
 
 /// `root` (when it still has the start time `started`) and its descendants,
-/// breadth first, each with its start time.
+/// breadth first, each with its start time. Never this process's tree.
 fn started_tree(root: u32, started: u64) -> Vec<(u32, u64)> {
-    if process_start_ms(root) != Some(started) {
+    if root == 0 || root == std::process::id() || process_start_ms(root) != Some(started) {
         return Vec::new();
     }
     let mut children: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();

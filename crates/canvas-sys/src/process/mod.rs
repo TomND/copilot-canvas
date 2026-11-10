@@ -107,10 +107,10 @@ mod tests {
         wait_for("the ticker did not start", || count.load(SeqCst) >= 3);
 
         assert_eq!(suspend_tree(root, started + 1).unwrap(), 0, "a pid with another start time (a reused pid) is never signalled");
+        let me = std::process::id();
+        assert_eq!(suspend_tree(me, process_start_ms(me).unwrap()).unwrap(), 0, "never this process, nor its children");
         let before = count.load(SeqCst);
         wait_for("the ticker stopped without being frozen", || count.load(SeqCst) > before + 2);
-        let me = std::process::id();
-        assert_eq!(suspend_tree(me, process_start_ms(me).unwrap()).unwrap(), 0, "never this process");
 
         let frozen = suspend_tree(root, started).unwrap();
         assert!(frozen >= 2, "the parent and its ticker: {frozen}");
