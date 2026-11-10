@@ -673,8 +673,9 @@ mod tests {
         links.sync(SANDBOX, &roots).unwrap();
         assert!(links.synced(SANDBOX));
         let in_guest = files.roots_dir().to_path_buf();
-        wait_until("the roots reached the guest", 10, || std::fs::read(in_guest.join("plugin/skills/a/SKILL.md")).is_ok_and(|b| b.len() == 3 << 20) && in_guest.join("notes/g/human-outputs").is_dir());
-        assert_eq!(std::fs::read(in_guest.join("notes/g/ai-docs/GOALS.md")).unwrap(), b"goals");
+        wait_until("the roots reached the guest", 10, || {
+            std::fs::read(in_guest.join("plugin/skills/a/SKILL.md")).is_ok_and(|b| b.len() == 3 << 20) && in_guest.join("notes/g/human-outputs").is_dir() && std::fs::read(in_guest.join("notes/g/ai-docs/GOALS.md")).is_ok_and(|b| b == b"goals")
+        });
         // A second pass sends nothing new: the guest says what it holds.
         links.sync(SANDBOX, &roots).unwrap();
         // An edit in the guest's notes comes back; one outside the root's names does not.
