@@ -327,14 +327,22 @@ guest's home, file modes, bounded reads), `local.rs` (`vm::local` sandboxes
 and `vm-hook-standin`), `aca/` (`vm::aca`, the sandboxes' REST API, tested
 against an in-process stand-in only), `store.rs`, `manager.rs`,
 `launcher.rs`, `guest.rs` (the guest-side `satellite --write-file|--clone|
---prepare`), `secrets.rs`, `spike.rs`, `tls.rs` (the satellite link's TLS);
-`open_provider` picks the pack's provider. The model is
+--prepare`), `secrets.rs`, `spike.rs`, `tls.rs` (the satellite link's TLS),
+`satellite/` (the guest's `atelier satellite`: `dial.rs` reaches the hub,
+`terms.rs` runs the boxes' PTYs, `ring.rs` keeps their output for replays),
+`link.rs` (the hub's side: one link per sandbox, the boxes' remote
+terminals, adoption after a restart), `session_store.rs` (a VM session's
+history in its mirror); `open_provider` picks the pack's provider. The
+canvas-host side is `term.rs`'s `RemotePty`/`spawn_remote` and
+`server.rs`'s `serve_satellite`/`adopt_remote`. The model is
 `canvas_model::vm`, the satellite link's messages `canvas_common::sat`, the
 client side `canvas-core/src/vms.rs` and the new-session dialog's *Run on*.
 Everything is off without a pack. `atelier selftest vm` (`src/vm_probe.rs`)
 runs it end to end on local sandboxes, twice: the hooks lane, then the pool
-lane with `provider: local`; never point it, or anything else, at a real
-provider in a test.
+lane with `provider: local` (the satellite over `ws://` on loopback, a
+restart, a freeze); never point it, or anything else, at a real provider in
+a test. Its hub commands pass the probe's `--instance`: a command without it
+reaches instance `default` of that home and starts one.
 
 ### Agent providers
 
