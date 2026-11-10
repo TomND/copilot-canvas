@@ -185,6 +185,16 @@ fn scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     let (ok, out) = cli(exe, &["vm", "pack", "check"], &hub_env)?;
     anyhow::ensure!(ok && out.contains("The pack is usable."), "pack check: {out}");
 
+    step("the spikes' kit on local sandboxes: the agent CLI in a guest (s2), this build in the guest (s3), claim latency (s4)");
+    let spike_env: Vec<(String, String)> = hub_env.iter().cloned().chain([("ATELIER_COPILOT".to_owned(), copilot.display().to_string()), (crate::fake_copilot::ENV.to_owned(), "1".to_owned())]).collect();
+    for spike in [&["vm", "spike", "s2", "--agent", "copilot"][..], &["vm", "spike", "s3"], &["vm", "spike", "s4", "--runs", "2"]] {
+        let (ok, out) = cli(exe, spike, &spike_env)?;
+        let value: serde_json::Value = serde_json::from_str(out.trim()).with_context(|| format!("{spike:?} printed no JSON: {out}"))?;
+        anyhow::ensure!(ok && value["ok"] == true, "{spike:?}: {out}");
+        anyhow::ensure!(!out.contains(&pack.display().to_string()), "a spike printed the pack's folder");
+    }
+    anyhow::ensure!(canvas_agents::vm::local::Local::new(root.join("sandboxes")).list().is_empty(), "the spikes left sandboxes behind");
+
     let copilot_home = root.join("hub-copilot");
     std::fs::create_dir_all(&copilot_home)?;
     let env = [

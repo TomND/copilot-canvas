@@ -129,6 +129,9 @@ USAGE
 
 VM SESSIONS (docs/VM-SESSIONS.md; optional: without a VM pack sessions run on this machine)
   atelier config vm.pack FOLDER|none    use a VM pack (a folder outside any repository)
+  atelier vm spike s2|s3|s4 [--agent A] [--runs N] [--keep]
+                                        checks only real sandboxes answer (docs/VM-STATUS.md, the owner's):
+                                        the agent CLI in a guest, this build in the image, claim latency
   atelier vm pack check                 check the VM pack (settings.json vm.pack or ATELIER_VM_PACK):
                                         its findings, never its values
 
@@ -348,7 +351,7 @@ fn parse() -> Result<Args> {
             "--canvas" => args.canvas = Some(PathBuf::from(value("--canvas")?)),
             "--cwd" => args.cwd = Some(PathBuf::from(value("--cwd")?)),
             "--remote" => args.remote = Some(value("--remote")?),
-            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--pulse" | "--unread" | "--sent" | "--qr" | "--mine" | "--tree" | "--all" | "--internal" | "--undo" | "--with-todos" | "--detach" | "--lite" => {
+            "--yes" | "--force" | "--parity" | "--stress" | "--hardening" | "--prompt" | "--golden" | "--update" | "--paste" | "--plain" | "--kitty" | "--keys" | "--raw" | "--effects" | "--loops" | "--pulse" | "--unread" | "--sent" | "--qr" | "--mine" | "--tree" | "--all" | "--internal" | "--undo" | "--with-todos" | "--detach" | "--lite" | "--self-check" | "--keep" => {
                 args.flags.push(arg.trim_start_matches("--").to_owned())
             }
             "--" => {
@@ -767,6 +770,22 @@ fn real_main() -> Result<()> {
         ),
         ["remote", "servers"] => remote_cli::servers(&instance),
         ["remote", "forget", name] => remote_cli::forget(&instance, name),
+        ["satellite"] if flag("self-check") => {
+            let check = canvas_agents::vm::spike::self_check(&instance.home);
+            println!("{check}");
+            if check["ok"] != true { std::process::exit(1) }
+            Ok(())
+        }
+        ["vm", "spike", name] if canvas_agents::vm::pack::configured(&instance.home).is_some() => {
+            let folder = canvas_agents::vm::pack::configured(&instance.home).context("no VM pack")?;
+            let (pack, status) = canvas_agents::vm::pack::load(&folder);
+            anyhow::ensure!(status.errors() == 0, "the VM pack has {} error(s): see `atelier vm pack check`", status.errors());
+            let runs = option("runs").map(|r| r.parse::<u32>().context("--runs takes a number")).transpose()?.unwrap_or(5);
+            let result = canvas_agents::vm::spike::run(&pack, name, option("agent").as_deref(), runs, flag("keep"))?;
+            println!("{result}");
+            if result["ok"] != true { std::process::exit(1) }
+            Ok(())
+        }
         ["satellite"] if flag("lite") => {
             use std::io::Read;
             let mut input = String::new();

@@ -25,28 +25,32 @@ owner's note that VM sessions are optional and local stays the default.
 
 ## Phases
 
-### F: foundations
-- [ ] VM-F1 satellite protocol (`canvas_common::sat`), `CAP_SATELLITE`, `ClientMsg::Sat` / `ServiceMsg::Sat` at 29, shaping
-- [ ] VM-F2 `Credential::Satellite`, `Accepted::satellite`, refused on the pipe
-- [ ] VM-F3 model types (`Placement`, `VmPlacement`, `canvas_model::vm`, `Snapshot::vm`, `AgentPolicy::start_on_vm`, launch carrier and `vm:` agents, `Vm*` requests)
-- [ ] VM-F4 `settings.json` `vm.pack`, `ATELIER_VM_PACK`
-- [ ] VM-F5 `canvas_agents::vm` skeleton
-- [ ] Exit: clippy (macOS), `cargo xwin clippy`, the portable line, the touched tests; CI green; merged into main
+### F: foundations (done 2026-11-09, c90c165)
+- [x] VM-F1 satellite protocol (`canvas_common::sat`), `CAP_SATELLITE`, `ClientMsg::Sat` / `ServiceMsg::Sat` at 29, shaping
+- [x] VM-F2 `Credential::Satellite`, `Accepted::satellite`, refused on the pipe
+- [x] VM-F3 model types (`Placement`, `VmPlacement`, `canvas_model::vm`, `Snapshot::vm`, `AgentPolicy::start_on_vm`, launch carrier and `vm:` agents, `Vm*` requests)
+- [x] VM-F4 `settings.json` `vm.pack`, `ATELIER_VM_PACK`
+- [x] VM-F5 `canvas_agents::vm` (the module; `vm::service_request`)
+- [x] Exit: clippy (macOS), `cargo xwin clippy`, the touched tests (CI runs with Phase M's: F was not merged on its own)
 
-### M: thin lane
-- [ ] VM-M1 pack loader, `atelier vm pack check`, example pack (`docs/examples/vm-pack/`)
-- [ ] VM-M2 hooks runner and `atelier vm-hook-standin`
-- [ ] VM-M3 placement in launches (fail closed)
-- [ ] VM-M4 `atelier vm attach`
-- [ ] VM-M5 `atelier satellite --lite`, guest outbox
-- [ ] VM-M6 hub poller, the `CliOp` executor (first verbs)
-- [ ] VM-M7 status from mirrors (liveness overlay)
-- [ ] VM-M8 minimal UI (*Run on*, ☁ marker, *Start on VM…*), only with a pack
-- [ ] VM-M9 docs
+### M: thin lane (code done 2026-11-09; waiting for CI and the merge)
+- [x] VM-M1 pack loader, `atelier vm pack check`, example pack (`docs/examples/vm-pack/`)
+- [x] VM-M2 hooks runner and `atelier vm-hook-standin`
+- [x] VM-M3 placement in launches (fail closed)
+- [x] VM-M4 `atelier vm attach`
+- [x] VM-M5 `atelier satellite --lite`, guest outbox
+- [x] VM-M6 hub poller, the `CliOp` executor (first verbs)
+- [x] VM-M7 status from mirrors (liveness overlay)
+- [x] VM-M8 minimal UI (*Run on*, ☁ marker, *Start on VM…*), only with a pack
+- [x] VM-M9 docs
 - [ ] Exit: `selftest vm --lane hooks` on Windows, macOS, Linux; no-pack snapshots and self-test unchanged; merged into main
 
 ### 0: spike kits
-- [ ] `atelier vm spike s1…s5, s7` with local analogs in CI; S6 text; `docs/VM-OWNER-CHECKLIST` part below
+- [x] `atelier satellite --self-check` (a PTY with alacritty, the data folder) and `atelier vm spike s2|s3|s4`
+      through the pack's hooks (JSON, no pack values; sandboxes deleted unless `--keep`); run on local sandboxes
+      by `selftest vm` in CI
+- [ ] `vm spike s1` (Phase 2: the satellite link), `s5` (Phase 3: the MCP gateway), `s7` (Phase 2/5: faults)
+- [x] S6: `policy_ack` in `vm.yaml` (`pack check` warns while it is empty); the owner's checklist below
 
 ### 1: manager
 - [ ] VM-11 provider trait · VM-12 `vm::aca` (HTTP stand-in) · VM-13 `vm::local` · VM-14 stores · VM-15 manager (images, pool, budgets) · VM-16 launcher · VM-17 claim · VM-18 `VmView`, `Vm*` requests, `atelier vm …` · VM-19 `has_work`, doctor
@@ -88,7 +92,29 @@ Dev Tunnel hosting the hub's remote port with web forwarding, a pack copied from
 - [ ] egress isolation: a guest process that ignores proxy settings is still refused
 - [ ] `atelier selftest vm --real` once per agent (Phase 5)
 
+## Departures from the plan
+
+- **Relayed commands run as a subprocess** (Phase M; replaces most of Phase 3's VM-31 `Io` seam): the hub runs
+  `atelier <words>` with the box's identity (`ATELIER_SESSION`, `ATELIER_HOME`), the files the command reads
+  carried in the operation and written to a folder of their own, its outputs read back. The command then follows
+  exactly the rules a local session's command follows, with no change to the six CLI modules. Phase 3 keeps the
+  satellite endpoint (identity from the process tree) and adds nothing to the CLI modules unless a verb needs it.
+- **Launch intents are one file per box** (`<home>/vm/launches/<box>.json`) instead of one `launches.json`.
+- **`Placement::Vm` holds a `Box<VmPlacement>`** (clippy's large-variant rule on `Request`, whose `Group` carries
+  launch defaults).
+- **The new-session dialog's VM rows**: *Run on*, then *Repository* with *size* on one row and *Branch*; a VM
+  session gets no worktree and no fork choice. Copilot CLI only until Phase 5.
+
 ## Log
 
 - 2026-11-09: worktree and branch made from `origin/main` 3f6551e; the plan copied into
   docs/VM-SESSIONS-PLAN.md with the approval; this file.
+- 2026-11-09: Phase F (c90c165): `canvas_common::sat`, `CAP_SATELLITE`, `Sat` at 29, `Credential::Satellite`,
+  `HostApp::serve_satellite`, `canvas_model::vm`, placements, `Snapshot::vm`, `Vm*` requests, `vm.pack`.
+- 2026-11-09: Phase M: the pack (`vm pack check`, `config vm.pack`, the example pack), hooks, `vm::local` and
+  `vm-hook-standin`, intents and `vm attach`, the guest relay and `satellite --lite`, the hub's drains, mirrors and
+  relayed operations, the mirror index, *Run on* / ☁ / *Start on VM…* with a pack only (3 new snapshots, every
+  other unchanged), `selftest vm` (PASS in 13 s on macOS; added to CI on all three OSes), the backend contract's
+  VM requests, docs.
+- 2026-11-09: Phase 0 (partial, by design): the spikes S2–S4 kit and `satellite --self-check`, checked by
+  `selftest vm` on local sandboxes; S1, S5, S7 land with the phases that make them possible.
