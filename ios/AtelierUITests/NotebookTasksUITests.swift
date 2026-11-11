@@ -8,6 +8,11 @@ final class NotebookTasksUITests: XCTestCase {
     private let link = "ccanvas://pair?v=1&name=mock&url=ws%3A%2F%2F127%2E0%2E0%2E1%3A47600&code=ABCDEFGHJKMN"
     /// The first wait of a test: the app's launch, pairing and the first data.
     private let firstConnection: TimeInterval = 90
+    /// A note page's first content: every page is a new web view with a web
+    /// content process of its own, which a busy CI simulator can take over half
+    /// a minute to launch, not only the first (run 42944083229: 34.7 s for the
+    /// new note's page below, under 1 s for the two before it).
+    private let pageUp: TimeInterval = 60
 
     override func setUp() {
         continueAfterFailure = false
@@ -33,10 +38,9 @@ final class NotebookTasksUITests: XCTestCase {
         attach(app, "notebook")
         welcome.tap()
         // The note as its page: rendered Markdown, a [[link]] to another note.
-        // A busy CI simulator's first web content process can take most of a minute.
         let page = app.webViews["notePage"].firstMatch
-        XCTAssertTrue(page.waitForExistence(timeout: 60))
-        XCTAssertTrue(page.staticTexts["Welcome to the notebook"].waitForExistence(timeout: 60), "the note's heading")
+        XCTAssertTrue(page.waitForExistence(timeout: pageUp))
+        XCTAssertTrue(page.staticTexts["Welcome to the notebook"].waitForExistence(timeout: pageUp), "the note's heading")
         XCTAssertTrue(app.descendants(matching: .any)["noteProvenance"].waitForExistence(timeout: 10))
         attach(app, "note")
         let wikiLink = page.links["Release plan"]
@@ -75,9 +79,14 @@ final class NotebookTasksUITests: XCTestCase {
         app.typeText("now")
         attach(app, "note-editor")
         app.buttons["saveNote"].tap()
-        let typed = app.webViews["notePage"].staticTexts.matching(NSPredicate(format: "label CONTAINS %@", line)).firstMatch
+        // The new note's page was made just before the editor covered it: its
+        // web content process may still be launching. Its heading (in every
+        // version of the page) says it is up; then it must show what was saved.
+        let saved = app.webViews["notePage"].firstMatch
+        XCTAssertTrue(saved.staticTexts[name].waitForExistence(timeout: pageUp), "the new note's page is up")
+        let typed = saved.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", line)).firstMatch
         XCTAssertTrue(typed.waitForExistence(timeout: 20), "the saved text on the page")
-        XCTAssertTrue(app.webViews["notePage"].staticTexts["now"].exists, "bold from the key row")
+        XCTAssertTrue(saved.staticTexts["now"].exists, "bold from the key row")
         attach(app, "note-saved")
         // Delete it (to the trash), back to its folder: gone.
         let actions = menu(app, "noteActions", label: "Note actions")

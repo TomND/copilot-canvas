@@ -123,6 +123,13 @@ and Tasks places (docs/NOTEBOOK-TASKS.md §7: not parity, viewing and editing).
 | CI (`.github/workflows/ci.yml`) | All of the above on macOS. Windows: clippy, the service's tests, the GUI self-tests and the parity suite |
 | By hand, on Thomas's iPhone 14 Pro | Pairing and daily use through real `*.devtunnels.ms` tunnels against the two Mac stand-ins |
 
+Every report, note and todo page is a new web view with a web content
+process of its own, and a busy CI simulator can take over half a minute to
+launch any of them, not only the first (run 42944083229: 34.7 s for the
+Notebook UI test's new note, after under 1 s for its first two pages): a UI
+test waits up to a minute for a page to be up (a text every version of it
+has) before it times what the page shows.
+
 ## 3. Not verified yet (needs Thomas)
 
 1. **The real Windows Cloud PC with the phone.** Update the Cloud PC from
