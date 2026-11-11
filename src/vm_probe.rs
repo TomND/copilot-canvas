@@ -885,14 +885,17 @@ fn pool_scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     wait_file("the Claude box's VM was not deleted", 20, || local.get(&claude_intent.sandbox).is_err())?;
 
     step("the owner's spikes S1 and S7 on local sandboxes: a guest links through the pack's tunnel URL; a freeze drops the link and a resume brings it back");
-    let before: Vec<String> = local.list().into_iter().map(|s| s.id).collect();
+    // The spikes' own sandboxes (role `spike`): the service's warm pool refills
+    // in the background meanwhile, and its new members are not the spikes'.
+    let spikes = |local: &canvas_agents::vm::local::Local| -> Vec<String> { local.list().into_iter().filter(|s| s.labels.get("atelier.role").is_some_and(|r| r == "spike")).map(|s| s.id).collect() };
+    let before = spikes(&local);
     for spike in [&["vm", "spike", "s1"][..], &["vm", "spike", "s7", "--runs", "0"]] {
         let (ok, out) = cli(exe, spike, &hub_env)?;
         let value: serde_json::Value = serde_json::from_str(out.trim()).with_context(|| format!("{spike:?} printed no JSON: {out}"))?;
         anyhow::ensure!(ok && value["ok"] == true && value["linked"] == true, "{spike:?}: {out}");
         anyhow::ensure!(!out.contains(&pack.display().to_string()), "a spike printed the pack's folder");
     }
-    let after: Vec<String> = local.list().into_iter().map(|s| s.id).collect();
+    let after = spikes(&local);
     anyhow::ensure!(after.iter().all(|id| before.contains(id)), "the spikes left sandboxes behind: {after:?} (before: {before:?})");
     Ok(())
 }
