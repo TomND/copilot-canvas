@@ -434,14 +434,20 @@ mod tests {
                 seen.extend(bytes);
             }
         }
-        // The hub has more than the satellite ever sent: the ring cannot serve it, so the screen comes.
+        // The hub has more than the satellite ever sent: the ring cannot serve it, so the screen comes,
+        // then the output its emulator had not taken in yet (the raw tap runs ahead of the engine).
         terms.resync("t3", 1, u64::MAX / 2);
         let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
+        let mut restored = loop {
             assert!(Instant::now() < deadline, "no snapshot");
-            if let Ok(SatUp::Snapshot { vt, seq, .. }) = io.recv_timeout(Duration::from_millis(100)) {
-                assert!(String::from_utf8_lossy(&vt).contains("screen-line") && seq > 0);
-                break;
+            if let Ok(SatUp::Snapshot { vt, .. }) = io.recv_timeout(Duration::from_millis(100)) {
+                break vt;
+            }
+        };
+        while !String::from_utf8_lossy(&restored).contains("screen-line") {
+            assert!(Instant::now() < deadline, "the screen and what followed it lack the output: {:?}", String::from_utf8_lossy(&restored));
+            if let Ok(SatUp::Output { bytes, .. }) = io.recv_timeout(Duration::from_millis(100)) {
+                restored.extend(bytes);
             }
         }
         terms.stop("t3", 1);
