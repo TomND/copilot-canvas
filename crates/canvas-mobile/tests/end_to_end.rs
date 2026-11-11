@@ -100,11 +100,27 @@ fn screen_text(client: &Client, id: &str) -> String {
     rows.join("\n")
 }
 
+/// Each client's current WebSocket (a number per `attach`): this harness's
+/// reader thread notices a socket the client let go of (`detach`) only some
+/// time later, and its close or last bytes must not reach the newer connection
+/// (then the core would close that one). The app's transport reports its close
+/// inside `close()` itself, before the next connection is attached.
+static CURRENT: Mutex<Option<std::collections::HashMap<usize, u64>>> = Mutex::new(None);
+
 fn attach(client: &Arc<Client>, addr: &str) {
+    let key = Arc::as_ptr(client) as usize;
+    let mine = {
+        let mut current = CURRENT.lock().unwrap();
+        let generation = current.get_or_insert_with(Default::default).entry(key).or_insert(0);
+        *generation += 1;
+        *generation
+    };
+    let current = move || CURRENT.lock().unwrap().as_ref().and_then(|m| m.get(&key).copied()) == Some(mine);
     let feed = client.clone();
     let transport = websocket(addr, move |data| match data {
-        Some(bytes) => feed.receive(bytes),
-        None => feed.transport_closed("closed".into()),
+        Some(bytes) if current() => feed.receive(bytes),
+        None if current() => feed.transport_closed("closed".into()),
+        _ => {}
     });
     client.attach(transport);
 }
