@@ -1,0 +1,63 @@
+# interrupted-after-restart (150x40 cells)
+## cells (the TUI screen)
+ ◆ Atelier   ◫  ✎  ☑    + New   ⇩ Import   ⟳ VS Code   ◎ Agents   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit                        4 sessions
+    SESSIONS                     │▌·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · │┌────────────────────────────────┐
+▌▤  / filter…                    │  ┌ Was working ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┐         ╭ Being resumed ─────────────╮          ││ Was looping                    │
+                                 │  ╎ ↯ interrupted              ╎         │ ⠋ resuming after restart   │          ││ ↯ interrupted                  │
+ ◷  ▾ RECENT 1     Ctrl+F6 · [ ] │ ·╎ canvas · main              ╎     ·   │ canvas · main              │  ·     · ││ Interrupted while looping      │
+    ↯ Was looping    copilot now │  └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┘         ╰────────────────────────────╯          ││ every 15m: its program went    │
+ ⧉  ── All sessions (4)          │                                                                                 ││ away (a restart of the service │
+    ↯ Was working                │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││ or the machine, or a crash).   │
+ ⌁  ⠋ Being resumed              │                                                                                 ││ Not resumed after the restart: │
+    ↯ Was looping                │  ┏ Was looping ━━━━━━━━━━━━━━━┓┄┄╮      ╭ Was idle ──────────────────╮          ││ it is running elsewhere.       │
+ ✦  ■ Was idle                   │ ·┃ ↯ interrupted · ↻ every 1… ┃  ┆  ·   │ ■ stopped                  │  ·     · ││ Resume continues the           │
+                                 │  ┃ canvas · main              ┃  ↯      │ canvas · main              │          ││ conversation; tell it what to  │
+ ◈                               │  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛◂┄╯      ╰────────────────────────────╯          ││ pick up again.                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││                                │
+ ⇄                               │                                                                                 ││ Agent      GitHub Copilot      │
+                                 │                                                                                 ││ Folder     C:\work\canvas      │
+ ≡                               │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││ Branch     main                │
+                                 │                                                                                 ││ Client     unknown             │
+ ✉                               │                                                                                 ││ Session    looping             │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││                                │
+                                 │                                                                                 ││ Resume continues this          │
+                                 │                                                                                 ││ conversation in GitHub Copilot │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││ (copilot --session-id …) in a  │
+                                 │                                                                                 ││ canvas terminal.               │
+                                 │                                                                                 ││ Double-click the box or press  │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││ Enter to resume it.            │
+                                 │                                                                                 ││ S subsession · R rename · G    │
+                                 │                                                                                 ││ group · X stop                 │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││                                │
+                                 │                                                                                 ││                                │
+                                 │                                                                                 ││                                │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││                                │
+                                 │                                                                                 ││                                │
+                                 │                                                                                 ││                                │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││  ▸ Resume                      │
+                                 │                                                                                 ││  Inspect transcript            │
+                                 │                                                                                 ││  MCP servers…    Remove        │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││  Close                         │
+                                 │                                                                                 │└────────────────────────────────┘
+ click view · double-click/Enter start · ] [ or Ctrl+F6 recent · drag move · empty-drag pan · Shift/right-drag select · wheel pan · Alt+wheel zoom ·…
+## gpu view model
+view cursor=none modal=none banner=None
+canvas area=34,1 81x38 origin=-1,0 scale=1 grid=true tick=0 empty=false
+box working Session rect=1,1 30x4 prefix="" name="Was working"
+  status=Interrupted icon="↯" label="interrupted" line="↯ interrupted" subtitle="canvas · main" elsewhere=false every=None mailbox=0
+  border=Dashed border_style=[fg #e66100 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #e66100]
+  selected=false focused_term=false active=false
+box resuming Session rect=40,1 30x4 prefix="" name="Being resumed"
+  status=Resuming icon="⠋" label="resuming after restart" line="⠋ resuming after restart" subtitle="canvas · main" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #c9d1d9]
+  selected=false focused_term=false active=false
+box idle Session rect=40,8 30x4 prefix="" name="Was idle"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas · main" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]
+  selected=false focused_term=false active=false
+box looping Session rect=1,8 30x4 prefix="" name="Was looping"
+  status=Interrupted icon="↯" label="interrupted" line="↯ interrupted · ↻ every 15m" subtitle="canvas · main" elsewhere=false every=None mailbox=0
+  border=Heavy border_style=[fg #f0f6fc +BOLD] fill=#161b22 attention=none name_style=[fg #f0f6fc +BOLD] line_style=[fg #e66100]
+  selected=true focused_term=false active=false
+loops motion=On frozen=true
+loop looping rect=1,8 30x4 halo=false lap=0.748 grow=1 ending=false interrupted

@@ -20,8 +20,18 @@ pub enum Status {
     Stopped,
     Failed,
     Preparing,
+    /// The history says it was working, looping or waiting, but its program
+    /// is gone (no live terminal here, no live process elsewhere): a restart
+    /// of the service or the machine (or a crash) interrupted it.
+    Interrupted,
+    /// The service resumes it after a restart (`restore` in the bus snapshot).
+    Resuming,
     Unknown,
 }
+
+/// The glyph of an interrupted session (one cell wide everywhere, also in
+/// the Windows console: U+21AF is not East Asian ambiguous).
+pub const INTERRUPTED_GLYPH: &str = "↯";
 
 impl Status {
     pub fn label(self) -> &'static str {
@@ -35,13 +45,15 @@ impl Status {
             Status::Stopped => "stopped",
             Status::Failed => "failed",
             Status::Preparing => "preparing",
+            Status::Interrupted => "interrupted",
+            Status::Resuming => "resuming after restart",
             Status::Unknown => "unknown",
         }
     }
 
     pub fn icon(self, tick: usize) -> &'static str {
         match self {
-            Status::Working | Status::Preparing => SPINNER[tick % SPINNER.len()],
+            Status::Working | Status::Preparing | Status::Resuming => SPINNER[tick % SPINNER.len()],
             Status::Waiting => "◆",
             Status::JustFinished => "✓",
             Status::Idle => "○",
@@ -49,6 +61,7 @@ impl Status {
             Status::External => "↗",
             Status::Stopped => "■",
             Status::Failed => "✗",
+            Status::Interrupted => INTERRUPTED_GLYPH,
             Status::Unknown => "·",
         }
     }
@@ -59,8 +72,16 @@ impl Status {
     }
 
     pub fn animated(self) -> bool {
-        matches!(self, Status::Working | Status::Preparing)
+        matches!(self, Status::Working | Status::Preparing | Status::Resuming)
     }
+}
+
+/// The history says the session was busy when it was last seen: working on
+/// a turn, waiting on a question or permission, looping on a schedule, or
+/// with a subagent still running (a clean exit, `session.shutdown`, clears
+/// all of them).
+pub fn was_busy(summary: &SessionSummary) -> bool {
+    summary.activity == Activity::Working || summary.pending > 0 || summary.loop_ms > 0 || summary.agents.iter().any(|a| a.status == AgentStatus::Working)
 }
 
 /// `reviewed_ms`: when you last looked at the session; a finished turn stays
@@ -90,7 +111,12 @@ pub fn session_status(summary: Option<&SessionSummary>, term: Option<&TermInfo>,
         return if owned { Status::Running } else { Status::Stopped };
     };
     if !owned && !summary.live {
-        return if summary.activity == Activity::Failed { Status::Failed } else { Status::Stopped };
+        // Busy when its program went away: interrupted (a restart, a crash), not a clean stop.
+        return match summary.activity {
+            Activity::Failed => Status::Failed,
+            _ if was_busy(summary) => Status::Interrupted,
+            _ => Status::Stopped,
+        };
     }
     if summary.pending > 0 {
         return Status::Waiting;
@@ -145,8 +171,24 @@ mod tests {
     }
 
     #[test]
-    fn not_running_is_stopped_regardless_of_stale_working_history() {
-        assert_eq!(session_status(Some(&summary(Activity::Working, false)), None, None), Status::Stopped);
+    fn not_running_with_busy_history_is_interrupted_not_working() {
+        assert_eq!(session_status(Some(&summary(Activity::Working, false)), None, None), Status::Interrupted, "a turn its program never finished");
+        let mut waiting = summary(Activity::Idle, false);
+        waiting.pending = 1;
+        assert_eq!(session_status(Some(&waiting), None, None), Status::Interrupted, "a question nobody can answer now");
+        let mut looping = summary(Activity::Idle, false);
+        looping.loop_ms = 900_000;
+        assert_eq!(session_status(Some(&looping), None, None), Status::Interrupted, "a loop that no longer runs");
+        assert_eq!(session_status(Some(&summary(Activity::Idle, false)), None, None), Status::Stopped, "idle when it went: simply stopped");
+        assert_eq!(session_status(Some(&summary(Activity::Stopped, false)), None, None), Status::Stopped, "a clean exit");
+        assert_eq!(session_status(Some(&summary(Activity::Failed, false)), None, None), Status::Failed);
+        // Live elsewhere, or in a terminal here: never interrupted.
+        assert_eq!(session_status(Some(&summary(Activity::Working, true)), None, None), Status::Working);
+        assert_eq!(session_status(Some(&summary(Activity::Working, false)), Some(&term(true, None)), None), Status::Working);
+        // Its terminal here ended (you stopped it, or it quit): stopped, as before.
+        assert_eq!(session_status(Some(&summary(Activity::Working, false)), Some(&term(false, Some(0))), None), Status::Stopped);
+        assert_eq!(Status::Interrupted.icon(0), INTERRUPTED_GLYPH);
+        assert!(Status::Resuming.animated() && !Status::Interrupted.animated());
     }
 
     #[test]

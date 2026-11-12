@@ -1244,6 +1244,10 @@ impl App {
                 if self.preparing.contains(&node.id) || self.launching.contains_key(&node.id) {
                     return Status::Preparing;
                 }
+                // The service resumes it after a restart (until it has settled).
+                if self.bus.restore.as_ref().is_some_and(|r| r.is_resuming(&node.id)) {
+                    return Status::Resuming;
+                }
                 if self.node_errors.contains_key(&node.id) && !self.owned_alive(&node.id) {
                     return Status::Failed;
                 }
@@ -1472,6 +1476,10 @@ impl App {
                 (!passive.paused && !done && wakes).then(|| Self::passive_trigger(passive))
             }
             NodeKind::Session => {
+                // A loop whose program went away does not run: drawn broken (`loop_interrupted`).
+                if self.loop_interrupted(node).is_some() {
+                    return None;
+                }
                 let live = self.owned_alive(&node.id) || self.summary(node).is_some_and(|s| s.live);
                 if let Some(summary) = self.summary(node).filter(|s| live && s.loop_ms > 0) {
                     return Some(format!("every {}", short_interval(summary.loop_ms)));
@@ -1483,6 +1491,46 @@ impl App {
                 node.automation.as_deref().and_then(|k| self.automation(k)).filter(|a| a.factory.is_none() && a.enabled && repeats(&a.schedule)).map(|a| a.schedule.clone())
             }
             NodeKind::Agent => None,
+        }
+    }
+
+    /// "every 15m" when this session looped and was interrupted (a restart, a
+    /// crash): its program is gone, so the loop no longer runs. Its history's
+    /// schedule, else its saved session schedule.
+    pub fn loop_interrupted(&self, node: &Node) -> Option<String> {
+        if node.kind != NodeKind::Session || node.passive.is_some() || !matches!(self.node_status(node), Status::Interrupted | Status::Resuming) {
+            return None;
+        }
+        if self.owned_alive(&node.id) || self.summary(node).is_some_and(|s| s.live) {
+            return None;
+        }
+        if let Some(summary) = self.summary(node).filter(|s| s.loop_ms > 0) {
+            return Some(format!("every {}", short_interval(summary.loop_ms)));
+        }
+        self.automation(&format!("session:{}", node.id)).filter(|a| a.enabled && repeats(&a.schedule)).map(|a| a.schedule.clone())
+    }
+
+    /// What the details panel says about an interrupted or resuming session.
+    pub fn interruption_text(&self, node: &Node, status: Status) -> Option<String> {
+        match status {
+            Status::Resuming => Some("Atelier is resuming it after a restart of the service; a note asks it to restore what it was doing.".into()),
+            Status::Interrupted => {
+                let summary = self.summary(node);
+                let mut was = Vec::new();
+                if summary.is_some_and(|s| s.activity == crate::protocol::Activity::Working) {
+                    was.push("working".to_owned());
+                }
+                if summary.is_some_and(|s| s.pending > 0) {
+                    was.push("waiting for you".to_owned());
+                }
+                if let Some(every) = self.loop_interrupted(node) {
+                    was.push(format!("looping {every}"));
+                }
+                let was = if was.is_empty() { String::new() } else { format!(" while {}", was.join(", ")) };
+                let skipped = self.bus.restore.as_ref().and_then(|r| r.skipped(&node.id)).map(|why| format!(" Not resumed after the restart: {why}.")).unwrap_or_default();
+                Some(format!("Interrupted{was}: its program went away (a restart of the service or the machine, or a crash).{skipped} Resume continues the conversation; tell it what to pick up again."))
+            }
+            _ => None,
         }
     }
 

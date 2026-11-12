@@ -17,13 +17,14 @@ pub trait StatusStyle {
 impl StatusStyle for Status {
     fn color(self) -> Color {
         match self {
-            Status::Working | Status::Running | Status::Preparing => TEXT,
+            Status::Working | Status::Running | Status::Preparing | Status::Resuming => TEXT,
             Status::Waiting => ATTENTION,
             Status::JustFinished => FINISHED,
             Status::Idle => GRAY,
             Status::External => PURPLE,
             Status::Stopped | Status::Unknown => DARK,
-            Status::Failed => NEGATIVE,
+            // The failure colour: its program is gone mid-work (its glyph ↯ and border tell it from failed).
+            Status::Failed | Status::Interrupted => NEGATIVE,
         }
     }
 

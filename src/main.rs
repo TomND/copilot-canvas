@@ -432,6 +432,7 @@ fn config(home: &std::path::Path, key: Option<&str>, value: Option<&str>) -> Res
         println!("agent   {}", settings.agent.as_deref().unwrap_or("auto (first installed)"));
         println!("engine  {}", settings.terminal.engine.as_deref().unwrap_or("auto (ghostty when built in)"));
         println!("listen  {}", settings.remote.listen.as_deref().unwrap_or("off"));
+        println!("restore {}", if settings.restore() { "on (the service resumes its sessions after a restart)" } else { "off" });
         if let Some(pack) = &settings.vm.pack {
             println!("vm.pack {pack}");
         }
@@ -448,6 +449,18 @@ fn config(home: &std::path::Path, key: Option<&str>, value: Option<&str>) -> Res
         return Ok(());
     }
     let value = value.with_context(|| format!("config {key} needs a value"))?.trim().to_ascii_lowercase();
+    if key == "restore" {
+        // README "Restore after a restart": what the service resumes when it starts again.
+        settings.restore = match value.as_str() {
+            "on" | "true" | "yes" | "1" => None,
+            "off" | "false" | "no" | "0" => Some(false),
+            _ if unset(&value) => None,
+            _ => bail!("restore is on or off"),
+        };
+        settings.save(home)?;
+        println!("restore = {}", if settings.restore() { "on" } else { "off (a restarted service starts no session by itself)" });
+        return Ok(());
+    }
     match key {
         "client" => {
             anyhow::ensure!(matches!(value.as_str(), "tui" | "gui" | "auto") || unset(&value), "client is tui, gui or auto");
@@ -462,7 +475,7 @@ fn config(home: &std::path::Path, key: Option<&str>, value: Option<&str>) -> Res
             settings.terminal.engine = (!(value == "auto" || unset(&value))).then_some(value);
             println!("New terminals use it after the service restarts (atelier service stop).");
         }
-        other => bail!("unknown setting {other:?} (client, agent, engine)"),
+        other => bail!("unknown setting {other:?} (client, agent, engine, restore, vm.pack)"),
     }
     settings.save(home)?;
     println!("{key} = {}", match key {

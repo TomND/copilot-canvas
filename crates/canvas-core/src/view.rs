@@ -291,6 +291,9 @@ pub struct LoopModel {
     /// 0 while the `freeze` hook holds animations, so screenshots do not
     /// depend on box ids).
     pub seed: u32,
+    /// The loop was interrupted (its session's program is gone): a broken,
+    /// still arc marked ↯, no dot.
+    pub interrupted: bool,
 }
 
 impl LoopModel {
@@ -373,7 +376,7 @@ impl CanvasModel {
     /// Loop dots move on their own (motion on, a running clock): the front
     /// end redraws them at its own pace.
     pub fn loops_move(&self) -> bool {
-        self.motion == Motion::On && !self.frozen && !self.loops.is_empty()
+        self.motion == Motion::On && !self.frozen && self.loops.iter().any(|l| !l.interrupted)
     }
 
     /// Some loop is moving, growing in or fading out at `clock_ms`.
@@ -651,7 +654,8 @@ impl CanvasModel {
         for l in &self.loops {
             // The dot's lap only on a fixed clock (else it is the time of the run).
             let lap = if self.frozen { format!(" lap={}", num(l.lap_at(self.clock_ms))) } else { String::new() };
-            out.push(format!("loop {} rect={} halo={}{lap} grow={} ending={}", l.id, wrect(l.rect), l.halo, num(l.grow_at(self.clock_ms)), l.ending));
+            let broken = if l.interrupted { " interrupted" } else { "" };
+            out.push(format!("loop {} rect={} halo={}{lap} grow={} ending={}{broken}", l.id, wrect(l.rect), l.halo, num(l.grow_at(self.clock_ms)), l.ending));
         }
         for p in &self.pulses {
             out.push(format!("pulse from={} to={} t={} path={}", wrect(p.from), wrect(p.to), num(p.t), path(&p.path)));

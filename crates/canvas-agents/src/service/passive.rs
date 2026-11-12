@@ -29,16 +29,33 @@ pub fn load_routing(home: &Path) -> Routing {
 
 pub fn load_state(home: &Path) -> BusState {
     let mut state: BusState = std::fs::read_to_string(bus_dir(home).join("state.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
-    // Runs do not survive a service restart; their events are tried again.
+    // Runs do not survive a service restart; their events are tried again,
+    // once, with a note that the restart interrupted the run.
     for passive in state.passive.values_mut() {
         if passive.running {
-            passive.running = false;
-            let inflight = std::mem::take(&mut passive.inflight);
-            passive.pending.splice(0..0, inflight);
-            passive.first_pending_ms = now_ms();
+            interrupted_run(passive, now_ms());
         }
     }
     state
+}
+
+/// The event that tells a passive run its previous run was interrupted.
+pub const RESTARTED: &str = "atelier.restarted";
+
+/// A run the restart interrupted: its events are queued again, after a note.
+fn interrupted_run(passive: &mut bus::PassiveState, now: u64) {
+    passive.running = false;
+    let inflight = std::mem::take(&mut passive.inflight);
+    passive.pending.splice(0..0, inflight);
+    let local = bus::Local::now();
+    let note = format!(
+        "The machine running Atelier restarted at {:02}:{:02} ({}) and interrupted your previous run, which runs again now with the same trigger. Check your memory and log files for what it already did before repeating anything.",
+        local.hour,
+        local.minute,
+        local.date()
+    );
+    passive.pending.insert(0, Event { kind: RESTARTED.into(), source_name: "Atelier".into(), data: serde_json::json!({ "note": note }), ms: now, ..Default::default() });
+    passive.first_pending_ms = now;
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) {
@@ -83,7 +100,14 @@ fn idle(shared: &Shared, session: &str) -> bool {
         return false;
     }
     let native = shared.native_of(session);
+    let now = now_ms();
     match lock(&shared.sessions).get(&native) {
+        // History from before this terminal started (a resume after a restart
+        // whose agent writes nothing until prompted) says nothing about now:
+        // a quiet terminal is idle.
+        Some(summary) if summary.last_event_ms < term.started_ms => {
+            now.saturating_sub(term.started_ms) >= 5_000 && now.saturating_sub(term.last_output_ms.load(Ordering::Relaxed)) >= 2_000
+        }
         Some(summary) => summary.pending == 0 && summary.activity != Activity::Working,
         None => true,
     }
@@ -625,8 +649,12 @@ fn reap(shared: &Shared, routing: &Routing, state: &mut BusState, now: u64) {
 /// Answers the message it delivered.
 fn deliver_mail(shared: &Shared, state: &mut BusState) -> Option<Mail> {
     for mail in state.mailbox.clone() {
+        // A session being resumed after a restart gets its note first.
+        if shared.restore.holds(&mail.to) {
+            continue;
+        }
         if idle(shared, &mail.to) && type_in(shared, &mail.to, &bus::mail_text(&mail)) {
-            log(&shared.instance, &format!("delivered a message from {} to {}", mail.from, mail.to));
+            log(&shared.instance, &format!("delivered a message from {} to {}", if mail.from.is_empty() { "Atelier (the restore note)" } else { &mail.from }, mail.to));
             state.mailbox.retain(|m| m.id != mail.id);
             return Some(mail);
         }
@@ -687,6 +715,10 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
         let local = bus::Local::now();
         let routing = lock(&shared.routing).clone();
         let mut state = lock(&shared.bus).clone();
+        // Restore notes for sessions resumed after a restart go first.
+        for mail in shared.restore.take_notes() {
+            state.mailbox.insert(0, mail);
+        }
         let (failures, watch_changed) = super::factory_watch::poll(&routing, &mut watch, now);
         for event in &failures {
             log(&shared.instance, &format!("{} {}: {}", event.kind, event.source_name, event.data["reason"].as_str().unwrap_or("ok")));
@@ -793,6 +825,7 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
         view.reviews = super::reviews::view(&shared, &routing);
         view.todos = super::todos::view(&shared, &routing);
         view.vm = crate::vm::view(&shared.instance.home);
+        view.restore = shared.restore.view();
         let snapshot = serde_json::to_string(&view).unwrap_or_default();
         if snapshot != last_snapshot {
             shared.broadcast(ServiceMsg::Bus { json: snapshot.clone() });
@@ -908,6 +941,7 @@ pub(super) fn snapshot(shared: &Shared) -> String {
     view.reviews = super::reviews::view(shared, &routing);
     view.todos = super::todos::view(shared, &routing);
     view.vm = crate::vm::view(&shared.instance.home);
+    view.restore = shared.restore.view();
     serde_json::to_string(&view).unwrap_or_default()
 }
 

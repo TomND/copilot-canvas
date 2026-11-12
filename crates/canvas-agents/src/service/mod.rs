@@ -10,6 +10,7 @@ mod passive;
 mod prs;
 mod reviews;
 mod push;
+pub mod restore;
 mod todos;
 pub use canvas_host::{keys, term};
 
@@ -177,6 +178,8 @@ pub struct Agents {
     push: push::Push,
     /// The satellites' links and the VM boxes' terminals.
     vm_links: Arc<crate::vm::link::Links>,
+    /// The running set, resumed after a restart (`restore.rs`).
+    restore: restore::Restore,
 }
 
 /// Passive sessions and the factory watch use the backend under this name.
@@ -249,6 +252,7 @@ impl Agents {
                 let instance = instance.clone();
                 Arc::new(move |line: String| log(&instance, &line))
             }),
+            restore: restore::Restore::new(&instance.home, &instance.name),
         });
         // Sessions found inside VM boxes' terminals in their guests: subsessions, as local ones (`subsession_loop`).
         agents.vm_links.on_subsession({
@@ -291,6 +295,8 @@ impl Agents {
         server::spawn_named("bus", { let a = agents.clone(); move || passive::bus_loop(a, bus_rx) });
         server::spawn_named("reports", { let a = agents.clone(); move || inbox::run(a) });
         server::spawn_named("prs", { let a = agents.clone(); move || prs::run(a) });
+        // What ran before a restart starts again (no client needed); then the running set is kept.
+        server::spawn_named("restore", { let a = agents.clone(); move || restore::run(a) });
         // VM sessions: launches, the manager, the satellites' terminals and the thin lane (idle without a VM pack).
         server::spawn_named("vm", {
             let (home, log_instance, wake) = (instance.home.clone(), instance.clone(), agents.index_wake.clone());
@@ -588,6 +594,7 @@ impl HostApp for Agents {
     }
 
     fn resolve_launch(&self, id: &str, kind: LaunchKind, cwd: &str) -> Result<Resolved> {
+        self.restore.requested(id, &kind, cwd);
         let (new_name, prompt, resume, extra, env) = match kind {
             LaunchKind::Copilot { new_name, prompt, resume } => (new_name, prompt, resume, Vec::new(), Vec::new()),
             LaunchKind::CopilotWith { new_name, prompt, resume, args, env } => (new_name, prompt, resume, args, without_group_skills(env)),
@@ -732,6 +739,7 @@ impl HostApp for Agents {
     }
 
     fn terminal_stopping(&self, id: &str) {
+        self.restore.stopping(id, self.shutting_down.load(Ordering::Acquire));
         let kind = lock(&self.agent_terms).get(id).copied();
         if let Some(kind) = kind {
             let started = std::time::Instant::now();
@@ -744,6 +752,11 @@ impl HostApp for Agents {
         // Already relaunched: what is registered now belongs to the new run.
         if lock(&self.terms).get(id).is_some_and(|t| t.alive.load(Ordering::Acquire)) {
             return;
+        }
+        let forced = lock(&self.terms).get(id).is_some_and(|t| t.was_forced());
+        let kept = self.restore.exited(id, forced, self.shutting_down.load(Ordering::Acquire), now_ms());
+        if kept != "not recorded" {
+            log(&self.instance, &format!("terminal {id}: restore entry {kept}"));
         }
         let kind = lock(&self.agent_terms).remove(id);
         if let Some(kind) = kind {
@@ -790,6 +803,8 @@ impl HostApp for Agents {
     }
 
     fn shutdown(&self) {
+        self.restore.shutdown(now_ms());
+        self.restore.save_now();
         for saved in self.docs.save(true) {
             if let Some(error) = saved.error {
                 log(&self.instance, &format!("cannot save the canvas {}: {error}", saved.key));

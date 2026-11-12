@@ -257,6 +257,50 @@ pub struct Snapshot {
     /// UI shows then).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vm: Option<crate::vm::VmView>,
+    /// What the service restored after it started again (none when nothing
+    /// ran before, and from older services).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore: Option<RestoreView>,
+}
+
+/// What a service restored when it started (`atelier config restore`): the
+/// boxes whose sessions it resumes or resumed, and those that ran before and
+/// were not resumed, with why. Clients mark them at once (resuming after
+/// restart, interrupted) instead of waiting for history to tell.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct RestoreView {
+    /// When this service started (ms).
+    pub started_ms: u64,
+    /// When the previous service last recorded its running set (about when it went away).
+    #[serde(default)]
+    pub previous_ms: u64,
+    /// Boxes being resumed (until their terminal runs and has settled).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resuming: Vec<String>,
+    /// Boxes resumed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resumed: Vec<String>,
+    /// Boxes that ran before the restart and were not resumed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub interrupted: Vec<RestoreSkip>,
+}
+
+/// A box the restore did not resume, and why.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct RestoreSkip {
+    pub id: String,
+    pub why: String,
+}
+
+impl RestoreView {
+    pub fn is_resuming(&self, id: &str) -> bool {
+        self.resuming.iter().any(|r| r == id)
+    }
+
+    /// Why a box that ran before the restart was not resumed.
+    pub fn skipped(&self, id: &str) -> Option<&str> {
+        self.interrupted.iter().find(|s| s.id == id).map(|s| s.why.as_str())
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -659,7 +703,7 @@ impl BusState {
         for mail in &self.mailbox {
             *mailbox.entry(mail.to.clone()).or_insert(0) += 1;
         }
-        Snapshot { passive, mailbox, recent: self.recent.iter().cloned().collect(), effects: self.effects.iter().filter(|e| e.alive(now)).cloned().collect(), prs: None, reviews: None, todos: None, vm: None }
+        Snapshot { passive, mailbox, recent: self.recent.iter().cloned().collect(), effects: self.effects.iter().filter(|e| e.alive(now)).cloned().collect(), prs: None, reviews: None, todos: None, vm: None, restore: None }
     }
 }
 
@@ -740,7 +784,11 @@ pub fn run_prompt(spec: &PassiveSpec, group: &RouteGroup, paths: &PassivePaths, 
 }
 
 /// Text typed into an active session for a message from a passive session.
+/// A message from Atelier itself (no sender: the restore note) is typed as written.
 pub fn mail_text(mail: &Mail) -> String {
+    if mail.from.is_empty() {
+        return mail.text.replace(['\r', '\n'], " ");
+    }
     format!("[From {} via Atelier] {}", mail.from, mail.text.replace(['\r', '\n'], " "))
 }
 

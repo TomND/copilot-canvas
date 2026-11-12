@@ -384,6 +384,40 @@ fn looping_sessions_in_reduced_motion() {
     check("looping-sessions-reduced-motion", &mut looping(canvas_core::view::Motion::Reduced), BOTH);
 }
 
+/// After a restart: a session whose program went away mid-turn and a loop
+/// that no longer runs show "↯ interrupted" (dashed outline; the loop's arc
+/// broken and still, no dot), one the service resumes shows "resuming after
+/// restart", one that was idle is simply stopped. The interrupted loop's
+/// details say what it was doing and why it was not resumed.
+#[test]
+fn interrupted_sessions_and_loop_after_a_restart() {
+    let mut doc = Doc::default();
+    doc.nodes.push(node("working", "Was working", 1, 1));
+    doc.nodes.push(node("looping", "Was looping", 1, 8));
+    doc.nodes.push(node("resuming", "Being resumed", 40, 1));
+    doc.nodes.push(node("idle", "Was idle", 40, 8));
+    doc.view.x = -1;
+    doc.view.y = 0;
+    doc.ui.terminal_percent = 30;
+    let mut app = app(doc, false);
+    app.sessions.insert("working".into(), summary("working", Activity::Working, false));
+    let mut looping = summary("looping", Activity::Idle, false);
+    looping.loop_ms = 900_000;
+    app.sessions.insert("looping".into(), looping);
+    app.sessions.insert("resuming".into(), summary("resuming", Activity::Working, false));
+    app.sessions.insert("idle".into(), summary("idle", Activity::Idle, false));
+    app.bus.restore = Some(canvas_model::bus::RestoreView {
+        started_ms: NOW,
+        resuming: vec!["resuming".into()],
+        interrupted: vec![canvas_model::bus::RestoreSkip { id: "looping".into(), why: "it is running elsewhere".into() }],
+        ..Default::default()
+    });
+    app.sessions_loaded = true;
+    app.visual.clock_ms = Some(NOW + 700);
+    app.select_node("looping", false);
+    check("interrupted-after-restart", &mut app, BOTH);
+}
+
 /// The working glow on a fixed clock: one session at work (faded in a while
 /// ago: its ring and steady glow), one that stopped 300 ms ago (its glow
 /// fading out, its last ring travelling on) and an idle one (none). The TUI's

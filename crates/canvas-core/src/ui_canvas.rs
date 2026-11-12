@@ -59,7 +59,8 @@ pub fn box_border(node: &Node, status: Status, selected: bool, attention: bool) 
         Border::Heavy
     } else if attention {
         Border::Double
-    } else if node.passive.is_some() {
+    } else if node.passive.is_some() || status == Status::Interrupted {
+        // Dashed: passive sessions, and interrupted ones (their program is gone mid-work).
         Border::Dashed
     } else {
         match node.kind {
@@ -234,6 +235,8 @@ pub fn box_model(app: &App, node: &Node, rect: WRect, status: Status, selected: 
     let icon = agent_state.as_ref().map(|s| s.icon(tick)).unwrap_or_else(|| status.icon(tick));
     let label = box_label(node, status);
     let every = app.node_loop(node);
+    // An interrupted loop stays named on the status line ("↯ interrupted · ↻ every 15m").
+    let broken_loop = if every.is_none() { app.loop_interrupted(node) } else { None };
     let status_style = fg(agent_state.as_ref().map(|s| s.color()).unwrap_or_else(|| status.color()));
     let kind = match node.kind {
         _ if node.passive.is_some() => BoxKind::Passive,
@@ -241,10 +244,13 @@ pub fn box_model(app: &App, node: &Node, rect: WRect, status: Status, selected: 
         NodeKind::Agent => BoxKind::Agent,
         NodeKind::Automation => BoxKind::Automation,
     };
-    let mut line = box_line(app, node, icon, label, every.as_deref());
+    let mut line = box_line(app, node, icon, label, every.as_deref().or(broken_loop.as_deref()));
     let mut line_style = if attention.is_some() { status_style.add_modifier(Modifier::BOLD) } else { status_style };
     let mut name_style = if selected { Style::default().fg(SELECT).add_modifier(Modifier::BOLD) } else { fg(TEXT) };
     let mut border_style = box_border_style(node, attention, selected, focused_term);
+    if status == Status::Interrupted && !selected && !focused_term {
+        border_style = fg(crate::paint::NEGATIVE).add_modifier(Modifier::DIM);
+    }
     let mut fill = attention.map(|(_, bg)| bg).unwrap_or(PANEL);
     // A VM box whose VM is not simply running says so (starting, suspended, offline, lost, …).
     let vm = crate::vms::box_vm(app, &node.id).filter(|_| node.placement.as_ref().is_some_and(|p| p.is_vm()));
@@ -536,11 +542,16 @@ pub fn draw_canvas(app: &mut App, buf: &mut Buffer, area: Rect) {
         if x + w + 3 < area.x as i32 || x > area.right() as i32 || y + h < area.y as i32 || y > area.bottom() as i32 {
             continue;
         }
-        if app.node_loop(node).is_none() {
+        let interrupted = app.node_loop(node).is_none() && app.loop_interrupted(node).is_some();
+        if app.node_loop(node).is_none() && !interrupted {
             continue;
         }
         // Outside the active terminal's halo, which runs one cell around the box.
         let halo = zoom < 2 && active_term.as_deref() == Some(node.id.as_str());
+        if interrupted {
+            draw_broken_loop(buf, (x, y, w + halo as i32, h), clip);
+            continue;
+        }
         let lap = moving.then(|| crate::loops::lap(clock, app.loop_seed(&node.id)));
         draw_loop(buf, (x, y, w + halo as i32, h), lap, clip);
     }
@@ -711,6 +722,25 @@ fn draw_loop(buf: &mut Buffer, (x, y, w, h): (i32, i32, i32, i32), lap: Option<f
             _ => (glyph, fg(LOOP)),
         };
         put(buf, px, py, glyph, style, clip);
+    }
+}
+
+/// An interrupted loop's arc beside a box: still, dim, in the failure colour,
+/// broken at the far bend by ↯ (no dot: nothing runs).
+fn draw_broken_loop(buf: &mut Buffer, (x, y, w, h): (i32, i32, i32, i32), clip: Rect) {
+    use crate::paint::{NEGATIVE, bold};
+    let glyph = canvas_model::status::INTERRUPTED_GLYPH;
+    let path = loop_path(x, y, w, h);
+    if path.len() == 1 {
+        let (px, py, _) = path[0];
+        put(buf, px, py, glyph, bold(NEGATIVE), clip);
+        return;
+    }
+    // The far side's middle cell (the vertical run) carries the break.
+    let at = path.len() / 2;
+    for (i, &(px, py, cell)) in path.iter().enumerate() {
+        let (cell, style) = if i == at { (glyph, bold(NEGATIVE)) } else { (cell, fg(NEGATIVE).add_modifier(Modifier::DIM)) };
+        put(buf, px, py, cell, style, clip);
     }
 }
 
@@ -955,9 +985,13 @@ pub fn canvas_model(app: &mut App, area: Rect) -> CanvasModel {
             match (b.every.is_some(), app.loop_change(&node.id)) {
                 (true, change) => {
                     let changed_ms = change.filter(|(_, ended)| !ended).map(|(at, _)| at);
-                    model.loops.push(LoopModel { id: node.id.clone(), rect, halo, changed_ms, ending: false, seed: app.loop_seed(&node.id) });
+                    model.loops.push(LoopModel { id: node.id.clone(), rect, halo, changed_ms, ending: false, seed: app.loop_seed(&node.id), interrupted: false });
                 }
-                (false, Some((at, true))) => model.loops.push(LoopModel { id: node.id.clone(), rect, halo, changed_ms: Some(at), ending: true, seed: app.loop_seed(&node.id) }),
+                (false, Some((at, true))) => model.loops.push(LoopModel { id: node.id.clone(), rect, halo, changed_ms: Some(at), ending: true, seed: app.loop_seed(&node.id), interrupted: false }),
+                // An interrupted loop: its arc stays, broken and still.
+                (false, _) if app.loop_interrupted(node).is_some() => {
+                    model.loops.push(LoopModel { id: node.id.clone(), rect, halo, changed_ms: None, ending: false, seed: app.loop_seed(&node.id), interrupted: true });
+                }
                 (false, _) => {}
             }
         }
@@ -1075,6 +1109,10 @@ pub fn paint_model(model: &CanvasModel, buf: &mut Buffer) {
     let clock = model.anim_clock();
     for lp in model.loops.iter().filter(|l| !l.ending) {
         let (x, y, w, h) = screen_box(lp.rect);
+        if lp.interrupted {
+            draw_broken_loop(buf, (x, y, w + (zoom < 2 && lp.halo) as i32, h), clip);
+            continue;
+        }
         let lap = (model.motion == crate::view::Motion::On).then(|| lp.lap_at(clock));
         draw_loop(buf, (x, y, w + (zoom < 2 && lp.halo) as i32, h), lap, clip);
     }

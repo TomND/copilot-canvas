@@ -125,6 +125,13 @@ impl Docs {
         open.values().find_map(|d| d.doc.node(id).and_then(|n| n.placement.clone()))
     }
 
+    /// The command and folder of a plain command box (`Node::command`: demo
+    /// shells) in the open documents.
+    pub fn command_of(&self, id: &str) -> Option<(Vec<String>, String)> {
+        let open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        open.values().find_map(|d| d.doc.node(id).and_then(|n| n.command.clone().filter(|c| !c.is_empty()).map(|c| (c, n.cwd.clone().unwrap_or_default()))))
+    }
+
     /// Whether any document is open.
     #[cfg(test)]
     pub fn any_open(&self) -> bool {
