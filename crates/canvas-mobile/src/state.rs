@@ -462,6 +462,10 @@ impl State {
                 if self.launching.contains_key(&node.id) {
                     return Status::Preparing;
                 }
+                // The service resumes it after a restart (as the desktop canvas shows it).
+                if self.bus.restore.as_ref().is_some_and(|r| r.is_resuming(&node.id)) {
+                    return Status::Resuming;
+                }
                 if self.errors.contains_key(&node.id) && !self.alive(&node.id) {
                     return Status::Failed;
                 }
@@ -599,7 +603,7 @@ impl State {
         let (mut stopped, mut working) = (HashSet::new(), HashSet::new());
         for node in self.doc.nodes.iter().filter(|n| n.kind == NodeKind::Session) {
             let status = self.node_status(node, now);
-            if self.have_sessions && matches!(status, Status::Stopped | Status::Failed) {
+            if self.have_sessions && matches!(status, Status::Stopped | Status::Failed | Status::Interrupted) {
                 stopped.insert(node.id.clone());
             }
             if status.animated() {

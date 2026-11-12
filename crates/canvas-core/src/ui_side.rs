@@ -503,6 +503,9 @@ fn session_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)
         line.push_str(" · ↗ open elsewhere");
     }
     out.text(line, fg(status.color()));
+    if let Some(text) = app.interruption_text(node, status) {
+        out.text(text, fg(if status == Status::Interrupted { NEGATIVE } else { MUTED }));
+    }
     out.gap();
     let show = hidden_note(app, out, node);
     if node.kind == NodeKind::Agent {

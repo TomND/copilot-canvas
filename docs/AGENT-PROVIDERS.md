@@ -259,9 +259,24 @@ older service ignores them).
 `canvas-core/src/status.rs` turns a session summary (from history), the
 terminal (alive, exit code, OSC 9;4 progress) and when you last looked at the
 box into one state: **working**, **needs you**, **done · review**, **idle**,
-**stopped**, **failed**, **open elsewhere**. A finished turn stays *done ·
-review* until you open, click or type in that session; a turn that ends while
-you watch its terminal is already reviewed.
+**stopped**, **failed**, **open elsewhere**, **↯ interrupted** and
+**resuming after restart**. A finished turn stays *done · review* until you
+open, click or type in that session; a turn that ends while you watch its
+terminal is already reviewed.
+
+**Interrupted** (`canvas_model::status::was_busy`): no terminal here, not live
+elsewhere (Copilot's `inuse.<pid>.lock` with a process started before the
+lock was written, Claude Code's pid file with its process start, OpenCode's
+answering server), yet the history says it was working, waiting on a
+question or permission, looping (`loop_ms`) or running a subagent. A clean
+exit (`session.shutdown`, an idle transcript) is *stopped*; a terminal of
+this service that ended (you stopped it) stays *stopped* or *failed*. Its
+loop is drawn broken and still. **Resuming after restart** comes from the bus
+snapshot's `restore` record while the service resumes the box after a
+restart (README "Restore after a restart"); the resume is the provider's own
+(`--session-id`, `-s`, `-r`) through the normal launch path, and the note the
+service types in once it has settled asks the agent to continue its task,
+set up its loop again and ask again what it was waiting on.
 
 - **Copilot**: its progress report starts and ends turns at once; the events
   add pending permissions/questions, failures, subagents and schedules.

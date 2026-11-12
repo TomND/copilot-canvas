@@ -112,12 +112,12 @@ pub(crate) fn tick(app: &mut App) {
     }
 }
 
-/// The session that claimed a todo is gone (no longer on the canvas) or
-/// stopped (once the sessions are known): its claim is stale.
+/// The session that claimed a todo is gone (no longer on the canvas),
+/// stopped or interrupted (once the sessions are known): its claim is stale.
 pub fn session_gone(app: &App, session: &str) -> bool {
     match app.doc.node(session) {
         None => true,
-        Some(node) => app.sessions_loaded && matches!(app.node_status(node), crate::status::Status::Stopped | crate::status::Status::Failed),
+        Some(node) => app.sessions_loaded && matches!(app.node_status(node), crate::status::Status::Stopped | crate::status::Status::Failed | crate::status::Status::Interrupted),
     }
 }
 

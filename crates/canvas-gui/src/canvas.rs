@@ -663,6 +663,42 @@ impl Path {
     }
 }
 
+/// An interrupted loop's arc: still and dim in the failure colour, broken at
+/// the far bend by ↯; no dot, no arrowhead (nothing runs).
+fn broken_arc(p: &mut Painter, cx: &Ctx, r: [f32; 4], lp: &LoopModel) {
+    let layer = scene::LOOPS;
+    let color = rgb(paint::NEGATIVE);
+    let d = cx.dpi;
+    let glyph = canvas_core::status::INTERRUPTED_GLYPH;
+    let Some(path) = loop_path(cx, r, lp.halo) else {
+        let size = (r[3] * 0.9).max(8.0 * d);
+        let (x, y) = (loop_start(cx, r, lp.halo) + 2.0 * d, r[1] + (r[3] - size * 1.3) / 2.0);
+        p.text(layer, Spec::ui(glyph, size).bold(true), x, y, color, cx.clip);
+        return;
+    };
+    let width = 1.3 * d;
+    let track = theme::rgba(color, 0.55);
+    let (gap_from, gap_to) = (0.4, 0.6);
+    let total = path.total().max(1.0);
+    for (i, pair) in path.points.windows(2).enumerate() {
+        let (a, b) = (path.lengths[i] / total, path.lengths[i + 1] / total);
+        // The parts of this segment outside the gap.
+        for (from, to) in [(a, b.min(gap_from)), (a.max(gap_to), b)] {
+            if to > from {
+                let lerp = |s: f32| {
+                    let f = if b > a { (s - a) / (b - a) } else { 0.0 };
+                    (pair[0].0 + (pair[1].0 - pair[0].0) * f, pair[0].1 + (pair[1].1 - pair[0].1) * f)
+                };
+                p.under(layer, Quad::line(lerp(from), lerp(to), width, track, 0.0, cx.clip));
+            }
+        }
+    }
+    let (mx, my) = path.at(0.5);
+    let size = (11.0 * d).min((r[3] * 0.55).max(8.0 * d));
+    let (key, w) = p.shape(Spec::ui(glyph, size).bold(true));
+    p.place(layer, key, mx - w / 2.0, my - size * 0.74, 1.0, color, cx.clip);
+}
+
 /// Where a loop's arc starts (px): the box's right edge, or outside the halo.
 fn loop_start(cx: &Ctx, r: [f32; 4], halo: bool) -> f32 {
     r[0] + r[2] + if halo { halo_pad(cx) + 2.0 * cx.dpi } else { 0.0 }
@@ -715,6 +751,9 @@ fn loops(p: &mut Painter, cx: &Ctx, clock_ms: u64) {
 /// Where a loop's lit dot is at `clock_ms` (px; `None`: no arc, or no
 /// moving dot with reduced motion).
 pub(crate) fn loop_dot(cx: &Ctx, lp: &LoopModel, clock_ms: u64) -> Option<(f32, f32)> {
+    if lp.interrupted {
+        return None;
+    }
     let path = loop_path(cx, cx.rect(lp.rect), lp.halo)?;
     (cx.model.motion == Motion::On).then(|| path.at(loops::along(lp.lap_at(clock_ms))))
 }
@@ -764,7 +803,8 @@ pub fn loop_info(grid: &Grid, model: &CanvasModel, clock_ms: u64) -> Vec<serde_j
                 "lap": lp.lap_at(clock_ms),
                 "grow": lp.grow_at(clock_ms),
                 "ending": lp.ending,
-                "moving": model.loops_move(),
+                "interrupted": lp.interrupted,
+                "moving": model.loops_move() && !lp.interrupted,
                 "dot_px": dot.map(|(x, y)| [x, y]),
                 "dot": dot.map(|(x, y)| [x / grid.cell_w, y / grid.cell_h]),
                 "bounds_px": bounds,
@@ -780,6 +820,9 @@ pub fn loop_info(grid: &Grid, model: &CanvasModel, clock_ms: u64) -> Vec<serde_j
 /// arrowhead and a ↻ badge, still. Small boxes get a ↻ that breathes.
 fn loop_arc(p: &mut Painter, cx: &Ctx, r: [f32; 4], lp: &LoopModel, clock_ms: u64) {
     let layer = scene::LOOPS;
+    if lp.interrupted {
+        return broken_arc(p, cx, r, lp);
+    }
     let grow = lp.grow_at(clock_ms);
     if grow <= 0.002 {
         return;
@@ -957,7 +1000,7 @@ mod tests {
             groups: Vec::new(),
             edges: Vec::new(),
             boxes: Vec::new(),
-            loops: vec![LoopModel { id: "s".into(), rect: WRect::new(2.0, 2.0, 30.0, 4.0), halo: false, changed_ms: None, ending: false, seed: loops::seed("s") }],
+            loops: vec![LoopModel { id: "s".into(), rect: WRect::new(2.0, 2.0, 30.0, 4.0), halo: false, changed_ms: None, ending: false, seed: loops::seed("s"), interrupted: false }],
             pulses: Vec::new(),
             halo: None,
             rubber: None,

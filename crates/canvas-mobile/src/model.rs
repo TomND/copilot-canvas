@@ -43,7 +43,10 @@ impl From<Status> for StatusKind {
             Status::Idle => StatusKind::Idle,
             Status::Running => StatusKind::Running,
             Status::External => StatusKind::Elsewhere,
-            Status::Stopped => StatusKind::Stopped,
+            // The Swift app has no kinds for these (yet): interrupted shows as
+            // stopped (its label says "interrupted"), resuming as preparing.
+            Status::Stopped | Status::Interrupted => StatusKind::Stopped,
+            Status::Resuming => StatusKind::Preparing,
             Status::Failed => StatusKind::Failed,
             Status::Preparing => StatusKind::Preparing,
             Status::Unknown => StatusKind::Unknown,

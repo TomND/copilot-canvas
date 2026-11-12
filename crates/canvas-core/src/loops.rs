@@ -320,6 +320,28 @@ mod tests {
     }
 
     #[test]
+    fn a_loop_whose_program_went_away_is_interrupted_and_still() {
+        use crate::status::Status;
+        let mut app = looping_app(Motion::On);
+        let node = app.doc.nodes[0].clone();
+        assert_eq!(app.node_loop(&node).as_deref(), Some("every 15m"));
+        // The service restarted: the session is not live, its history still has the schedule.
+        app.sessions.get_mut("s").unwrap().live = false;
+        assert_eq!(app.node_status(&node), Status::Interrupted);
+        assert_eq!((app.node_loop(&node), app.loop_interrupted(&node).as_deref()), (None, Some("every 15m")));
+        let model = app.model();
+        assert!(model.loops.len() == 1 && model.loops[0].interrupted && !model.loops_move(), "a broken arc, no moving dot");
+        assert_eq!(model.boxes[0].line, "↯ interrupted · ↻ every 15m");
+        // Copilot's saved session schedule fires only while its CLI runs.
+        app.sessions.get_mut("s").unwrap().loop_ms = 0;
+        app.automations.push(canvas_model::automation::Automation { key: "session:s".into(), enabled: true, schedule: "every 15 min".into(), ..Default::default() });
+        assert_eq!(app.node_status(&node), Status::Stopped, "a clean stop");
+        assert_eq!((app.node_loop(&node), app.loop_interrupted(&node)), (None, None), "no loop looks alive on a stopped session");
+        app.sessions.get_mut("s").unwrap().live = true;
+        assert_eq!(app.node_loop(&node).as_deref(), Some("every 15 min"), "running: its saved schedule loops");
+    }
+
+    #[test]
     fn the_gpu_client_animates_loops_itself_and_the_tui_redraws_only_for_visible_dots() {
         let mut app = looping_app(Motion::On);
         let model = app.model();

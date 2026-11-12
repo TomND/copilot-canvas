@@ -315,6 +315,20 @@ OpenCode; docs/AGENT-PROVIDERS.md).
    the new build (`atelier service stop`, then open the canvas again,
    or the toolbar's *Update service*); sessions get the plugin at launch.
 
+### Restore after a restart
+
+`crates/canvas-agents/src/service/restore.rs` keeps the running set and
+resumes it at start (docs/BACKEND.md "Restore after a restart"); its hooks
+are one line each in `service/mod.rs` (`resolve_launch`,
+`terminal_stopping`, `terminal_exited`, `shutdown`) and `passive.rs` (the
+note into the mailbox, the snapshot's `restore`). The interrupted and
+resuming states: `canvas_model::status` (rules), `App::node_status`,
+`App::loop_interrupted` and `interruption_text` (canvas-core),
+`draw_broken_loop` (TUI) and `broken_arc` (GUI). Tests: the unit tests in
+`restore.rs`, the `interrupted-after-restart` view snapshot, and
+`tests/restore.rs` (a killed service resumes a stand-in Copilot session with
+its note and leaves the one you stopped alone).
+
 ### VM sessions
 
 `crates/canvas-agents/src/vm/` (docs/VM-SESSIONS.md, the plan in

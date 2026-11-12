@@ -30,6 +30,10 @@ pub struct Settings {
     /// does not use them, nothing about VMs shows.
     #[serde(default, skip_serializing_if = "VmSettings::is_empty")]
     pub vm: VmSettings,
+    /// The service resumes the sessions it ran when it starts again after a
+    /// restart, a crash or a reboot (`atelier config restore on|off`; unset: on).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -140,6 +144,11 @@ impl Settings {
         }
     }
 
+    /// Whether the service restores what it ran after a restart (default on).
+    pub fn restore(&self) -> bool {
+        self.restore.unwrap_or(true)
+    }
+
     /// Address the service listens on for remote clients:
     /// `ATELIER_LISTEN`, else `remote.listen`.
     pub fn listen(&self) -> Option<String> {
@@ -178,6 +187,16 @@ mod tests {
             assert_eq!(set.vm_pack(), Some(PathBuf::from("/packs/contoso")));
             assert_eq!(Settings { vm: VmSettings { pack: Some("  ".into()) }, ..Default::default() }.vm_pack(), None);
         }
+    }
+
+    #[test]
+    fn restore_is_on_unless_turned_off() {
+        let none: Settings = serde_json::from_str("{}").unwrap();
+        assert!(none.restore(), "on by default");
+        assert!(!serde_json::to_string(&none).unwrap().contains("restore"), "never written while unset");
+        let off: Settings = serde_json::from_str(r#"{"restore":false}"#).unwrap();
+        assert!(!off.restore());
+        assert_eq!(serde_json::from_str::<Settings>(&serde_json::to_string(&off).unwrap()).unwrap(), off);
     }
 
     #[test]
