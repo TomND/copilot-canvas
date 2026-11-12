@@ -160,7 +160,10 @@ forwarding. The tunnel access token is injected by egress from a pack-configured
 ## 5. The VM pack (configuration outside the repository)
 
 Settings: `vm.pack` (a folder path) or `ATELIER_VM_PACK`. Without a pack, VM features are hidden.
-`atelier vm pack check` validates it. The schema is versioned (`pack_version: 1`).
+`atelier vm pack check` validates it. The schema is versioned (`pack_version: 1`). A pack written
+against an earlier draft of this document is told the new names: an egress profile's `defaultAction`
+is `default` (deny or allow) with its hosts under `rules:`, a rule's `domain`, `fqdn`, `url` or
+`hosts` is one `host` per rule, and `sizes` is a list of named items (not a map keyed by name).
 
 | File | Holds |
 |---|---|

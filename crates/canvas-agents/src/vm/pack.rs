@@ -450,7 +450,15 @@ fn vm_yaml(pack: &mut Pack, file: &mut File) {
             }
         }
     }
-    if pack.sizes.is_empty() {
+    if let Some(map) = y["sizes"].as_hash() {
+        // The earlier draft of docs/VM-SESSIONS.md keyed sizes by name.
+        let names: Vec<String> = map.keys().filter_map(text).collect();
+        file.find(
+            Level::Error,
+            "sizes",
+            format!("sizes is a list now, not a map keyed by name (the earlier draft's format): write `sizes:` then `- name: {}` with its cpu, memory and disk under it, one item per size", names.first().map(String::as_str).unwrap_or("small")),
+        );
+    } else if pack.sizes.is_empty() {
         file.find(Level::Error, "sizes", "no sizes: list at least one (name, cpu, memory, disk)");
     }
     let duration = |file: &mut File, key: &str, value: &Yaml, default: u64| -> u64 {
@@ -527,8 +535,27 @@ fn repos_yaml(pack: &mut Pack, file: &mut File) {
     }
 }
 
+/// Keys of the earlier draft of docs/VM-SESSIONS.md that a rule may carry
+/// instead of `host`, with what to write now.
+const DRAFT_RULE_KEYS: [(&str, &str); 7] = [
+    ("domain", "`host: NAME`"),
+    ("fqdn", "`host: NAME`"),
+    ("hostname", "`host: NAME`"),
+    ("destination", "`host: NAME`"),
+    ("url", "`host: NAME` (the host alone, no scheme or path)"),
+    ("hosts", "one rule per host (`- host: NAME`)"),
+    ("domains", "one rule per host (`- host: NAME`)"),
+];
+
 fn egress_yaml(file: &mut File) {
     let y = file.yaml.clone();
+    // The earlier draft's names: say what they are now.
+    for old in ["defaultAction", "default_action", "defaultaction"] {
+        if !y[old].is_badvalue() {
+            let value = text(&y[old]).unwrap_or_else(|| "deny".into()).to_lowercase();
+            file.find(Level::Error, old, format!("{old} is the earlier draft's key: write `default: {value}` and list the hosts the guest may reach under `rules:` (`- host: NAME`, action allow, deny or transform)"));
+        }
+    }
     match text(&y["default"]).as_deref() {
         Some("deny") | Some("Deny") | None => {}
         Some("allow") | Some("Allow") => file.find(Level::Warning, "default", "default: allow lets the guest reach any host; VM sessions should deny by default"),
@@ -536,7 +563,10 @@ fn egress_yaml(file: &mut File) {
     }
     for rule in y["rules"].as_vec().into_iter().flatten() {
         if text(&rule["host"]).is_none_or(|h| h.trim().is_empty()) {
-            file.find(Level::Error, "rules", "every rule names a host");
+            match DRAFT_RULE_KEYS.iter().find(|(key, _)| !rule[*key].is_badvalue()) {
+                Some((key, now)) => file.find(Level::Error, "rules", format!("every rule names a host: this one has `{key}` (the earlier draft's key); write {now}")),
+                None => file.find(Level::Error, "rules", "every rule names a host"),
+            }
         }
         let action = text(&rule["action"]).unwrap_or_else(|| "allow".into());
         if !matches!(action.as_str(), "allow" | "deny" | "transform") {
@@ -834,6 +864,23 @@ mod tests {
         assert_eq!(pack.repos.len(), 1);
         let (_, missing) = load(&dir.join("nope"));
         assert!(missing.errors() == 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_pack_in_the_earlier_drafts_format_is_told_the_new_key_names() {
+        let dir = std::env::temp_dir().join(format!("atelier-pack-draft-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("egress")).unwrap();
+        std::fs::write(dir.join("vm.yaml"), "pack_version: 1\nprovider: aca\nsizes:\n  small:\n    cpu: 2000m\n    memory: 4096Mi\n").unwrap();
+        std::fs::write(dir.join("egress/forge.yaml"), "defaultAction: Deny\nrules:\n  - domain: example.com\n  - hosts: [a.example.com, b.example.com]\n  - action: allow\n").unwrap();
+        let (_, status) = load(&dir);
+        let find = |file: &str, text: &str| status.findings.iter().find(|f| f.file == file && f.text.contains(text)).unwrap_or_else(|| panic!("{file}: {text} in {:#?}", status.findings));
+        assert_eq!(find("vm.yaml", "sizes is a list now").line, 3);
+        find("vm.yaml", "`- name: small`");
+        assert_eq!(find("egress/forge.yaml", "defaultAction is the earlier draft's key: write `default: deny`").line, 1);
+        find("egress/forge.yaml", "this one has `domain` (the earlier draft's key); write `host: NAME`");
+        find("egress/forge.yaml", "this one has `hosts` (the earlier draft's key); write one rule per host");
+        assert!(status.findings.iter().any(|f| f.text == "every rule names a host"), "a rule with neither keeps the plain message");
         let _ = std::fs::remove_dir_all(dir);
     }
 

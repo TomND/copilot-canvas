@@ -186,6 +186,8 @@ pub fn apply(dir: &Path, names: &[String], yes: bool) -> Result<()> {
     let stamp = crate::paths::rfc3339_now().replace([':', '.'], "-");
     let backups = repo.defaults.state.join("backups").join(format!("{stamp}-canvas"));
     let mut pending = 0;
+    // Tasks whose scheduler name changes (from before the rename): (old, new).
+    let mut renamed: Vec<(String, String)> = Vec::new();
     let named = |m: &Manifest| names.is_empty() || names.iter().any(|n| n.eq_ignore_ascii_case(&m.name) || factory::renamed_task(n).is_some_and(|r| r.eq_ignore_ascii_case(&m.name)));
     for m in repo.manifests.iter().filter(|m| named(m)) {
         let own = tasks.get(&m.name.to_lowercase());
@@ -216,6 +218,9 @@ pub fn apply(dir: &Path, names: &[String], yes: bool) -> Result<()> {
         println!("{} {}", if yes { "→" } else { "~" }, m.name);
         for c in &changes {
             println!("    {c}");
+        }
+        if let Some(old) = legacy.filter(|_| own.is_none()) {
+            renamed.push((old.name.clone(), m.name.clone()));
         }
         if !yes {
             continue;
@@ -250,6 +255,7 @@ pub fn apply(dir: &Path, names: &[String], yes: bool) -> Result<()> {
     for name in unmanaged {
         println!("? {name}: uses the launcher but has no manifest (left alone; import it to manage it)");
     }
+    print!("{}", renamed_summary(&renamed, yes));
     if yes {
         if pending > 0 && backups.exists() {
             println!("Previous task definitions saved in {}", backups.display());
@@ -260,6 +266,23 @@ pub fn apply(dir: &Path, names: &[String], yes: bool) -> Result<()> {
         println!("{} matches the manifests.", capitalized(sched.name()));
     }
     Ok(())
+}
+
+/// The tasks `apply` renamed (or would rename), old → new: scripts and
+/// watchers that look tasks up by name need the new names.
+fn renamed_summary(renamed: &[(String, String)], done: bool) -> String {
+    if renamed.is_empty() {
+        return String::new();
+    }
+    let mut out = format!(
+        "{} {} task(s) to their new names; scripts or watchers that look tasks up by name need the new ones:\n",
+        if done { "Renamed" } else { "Would rename" },
+        renamed.len()
+    );
+    for (old, new) in renamed {
+        out.push_str(&format!("    {old} → {new}\n"));
+    }
+    out
 }
 
 pub fn run(dir: &Path, name: &str) -> Result<()> {
@@ -395,5 +418,15 @@ mod tests {
         set_manifest_enabled(&path, true).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "name: 'A'\nenabled: true\nfamily: 'F'\n");
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn apply_lists_the_tasks_it_renames_old_to_new() {
+        assert_eq!(renamed_summary(&[], true), "");
+        let renamed = [("CopilotCanvas-Service".to_owned(), "Atelier-Service".to_owned()), ("CopilotCanvas-Tunnel".to_owned(), "Atelier-Tunnel".to_owned())]; // rename:keep
+        let done = renamed_summary(&renamed, true);
+        assert!(done.starts_with("Renamed 2 task(s) to their new names"), "{done}");
+        assert!(done.contains("    CopilotCanvas-Service → Atelier-Service\n") && done.contains("    CopilotCanvas-Tunnel → Atelier-Tunnel\n"), "{done}"); // rename:keep
+        assert!(renamed_summary(&renamed, false).starts_with("Would rename 2 task(s)"));
     }
 }

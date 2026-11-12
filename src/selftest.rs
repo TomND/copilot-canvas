@@ -841,6 +841,34 @@ const CHECK_NAME: &str = "Canvas agent check";
 /// typing, everything stops gracefully, and a session the test created is
 /// removed when it holds no prompt. `agent`: copilot, opencode or claude
 /// (default: the detected default agent).
+/// Waits for a configuration view (plugins, MCP servers, skills) to be
+/// `ready`: as long as it says it is `loading` (its own ready signal), up to
+/// [`VIEW_LIMIT`]; once it stopped loading, `ready` must hold within 30 s.
+fn wait_view(ui: &Console, what: &str, loading: impl Fn(&str) -> bool, ready: impl Fn(&str) -> bool) -> Result<()> {
+    let started = Instant::now();
+    let mut settled: Option<Instant> = None;
+    loop {
+        let text = ui.text();
+        if ready(&text) {
+            return Ok(());
+        }
+        let busy = loading(&text);
+        if busy {
+            settled = None;
+        } else {
+            settled.get_or_insert_with(Instant::now);
+        }
+        if started.elapsed() > VIEW_LIMIT || settled.is_some_and(|at| at.elapsed() > Duration::from_secs(30)) {
+            let state = if busy { "still loading" } else { "loaded, but not as expected" };
+            bail!("timed out waiting for {what} after {:.0} s ({state})\n--- screen ---\n{text}", started.elapsed().as_secs_f64());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The longest a configuration view may keep loading in `selftest agent`.
+const VIEW_LIMIT: Duration = Duration::from_secs(300);
+
 pub fn agent(agent: Option<&str>) -> Result<()> {
     let kind = match agent {
         Some(name) => AgentKind::parse(name).with_context(|| format!("unknown agent {name:?} (copilot, opencode or claude)"))?,
@@ -1021,19 +1049,21 @@ fn agent_scenario(instance: &Instance, work: &Path, kind: AgentKind, env: &[(&st
     let header = format!("Agent: {label}");
     let loaded = |t: &str| t.contains(&header) && !t.contains("Loading from");
     ui.send(b"\x1b3")?;
-    ui.wait("plugins view", Duration::from_secs(90), |t| loaded(t) && t.contains("Install plugin"))?;
+    // The views say themselves when they are loading: waited for as long as
+    // they do (a machine with many plugins and MCP servers takes minutes).
+    wait_view(&ui, "plugins view", |t| t.contains("Loading from"), |t| loaded(t) && t.contains("Install plugin"))?;
     let rows = |ui: &Console| {
         let sidebar = |l: &str| l.chars().skip(SIDEBAR.0 as usize).take((SIDEBAR.1 - SIDEBAR.0) as usize).collect::<String>();
         ui.text().lines().map(sidebar).filter(|l| l.contains('●') || l.contains('○')).count()
     };
     let mut counts = vec![format!("{} plugins", rows(&ui))];
     ui.send(b"\x1b4")?;
-    ui.wait("mcp view", Duration::from_secs(30), |t| loaded(t) && t.contains("Add MCP server"))?;
+    wait_view(&ui, "mcp view", |t| t.contains("Loading from"), |t| loaded(t) && t.contains("Add MCP server"))?;
     counts.push(format!("{} MCP servers", rows(&ui)));
     ui.send(b"\x1b5")?;
     // The Skills view shows every agent's skills: its own sources (the canvas plugin's
     // skills at the top), then the agents' lists; its last rows may be below the first screen.
-    ui.wait("skills view", Duration::from_secs(30), |t| t.contains("Agent: All agents") && !t.contains("Loading the skill sources") && t.contains("SKILLS") && t.contains("canvas-events") && t.contains("PROJECTS"))?;
+    wait_view(&ui, "skills view", |t| t.contains("Loading the skill sources") || t.contains("Loading from"), |t| t.contains("Agent: All agents") && !t.contains("Loading the skill sources") && t.contains("SKILLS") && t.contains("canvas-events") && t.contains("PROJECTS"))?;
     counts.push(format!("{} skills", rows(&ui)));
     println!("    {} (first screen of each)", counts.join(", "));
     for warning in ui.text().lines().filter_map(|l| l.split('⚠').nth(1)) {
