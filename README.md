@@ -1346,7 +1346,7 @@ and `docs/REMOTE.md`.
   the Cloud PC: pair only your own machines (security notes in
   docs/REMOTE.md). Remote links never execute anything: URLs open at home, the
   Cloud PC's files in VS Code through its tunnel or in a read-only viewer.
-- Stop is graceful (Ctrl+D, then the whole process tree after 5 s). The service
+- Stop is graceful (Ctrl+D, then Ctrl+C twice and `/exit`, then the whole process tree after 10 s). The service
   sits in a kill-on-close job so nothing is orphaned if it dies.
 - **Idle auto-stop** (*Settings › Performance › Stop idle sessions*: never /
   30 / 60 / 120 / 240 (default) min) gracefully stops a canvas-started Copilot
@@ -1595,8 +1595,10 @@ service starts at login, `atelier service install`.
   wrap their paragraphs themselves, so a paragraph copied from Copilot or
   OpenCode keeps their line breaks. cmd.exe has no multi-line input: a
   pasted line break ends its line (docs/AGENT-PROVIDERS.md#pasting).
-- Stopping a session sends the agent Ctrl+D (twice), then Ctrl+C, and ends its
-  process tree after 5 s; a session the canvas stopped always shows as stopped.
+- Stopping a session sends the agent Ctrl+D (Copilot CLI's *Shutdown*; twice),
+  then Ctrl+C twice (*press twice to exit*), then types `/exit` and Enter, and
+  ends its process tree after 10 s (`service stop` waits that long for every
+  session); a session the canvas stopped always shows as stopped.
   OpenCode 1.19 sometimes quits its screen but leaves its process running (on a
   busy machine, or while one of its own background requests is pending); the
   canvas ends such a process 3 s after its screen closed.

@@ -35,8 +35,12 @@ follow-ups, notes, todos), plus the canvas skills (`canvas-events`,
 | History | `~/.copilot/session-state/<id>/events.jsonl` (tailed) | `~/.local/share/opencode/opencode.db` (SQLite, read-only, indexed lookups only) | `~/.claude/projects/<dir>/<id>.jsonl` (tailed) |
 | Live state | OSC 9;4 progress; `inuse.<pid>.lock` | the TUI's own HTTP server (busy, permission prompts, questions) | `~/.claude/sessions/<pid>.json` (busy / idle / waiting) |
 
-Stopping a session sends Ctrl+D (twice), then Ctrl+C, and ends its process
-tree after 5 s. Before an OpenCode TUI is asked to quit, the canvas stops
+Stopping a session sends Ctrl+D (Copilot CLI's *Shutdown*) at once and again
+after 2 s, Ctrl+C twice after 3.5 s (Copilot and Claude Code exit on a second
+Ctrl+C), `/exit` and Enter after 6 s (each agent's quit command, for one whose
+keys a prompt took), and ends its process tree after 10 s (`STOP_GRACE`; it
+was 5 s, and on `service stop` every Copilot of a busy host was killed with
+code 1); each step only while the program still runs. Before an OpenCode TUI is asked to quit, the canvas stops
 polling its server and waits for requests in flight (OpenCode aborts
 half-finished requests when it quits and then hangs).
 

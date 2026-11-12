@@ -44,6 +44,8 @@ const CONTROL_QUEUE: usize = 1024;
 const CONTROL_BURST: u32 = 64;
 /// How long a client waits for room in the control queue before failing.
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(1);
+/// How long an agent gets to quit on a stop request before it is killed ([`Terminal::stop`]).
+pub const STOP_GRACE: Duration = Duration::from_secs(10);
 /// How long a snapshot request waits for its answer.
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long the frame pump waits for one terminal's snapshot.
@@ -712,13 +714,18 @@ impl Terminal {
         let _ = self.command(Ctl::Scroll(scroll));
     }
 
-    /// Graceful stop for agents: Ctrl+D (encoded by the emulator, so programs
+    /// Graceful stop for agents, each step only while the program still runs:
+    /// Ctrl+D (Copilot CLI's "Shutdown"; encoded by the emulator, so programs
     /// using the kitty keyboard protocol read it as a key), again after 2 s
-    /// (some agents ask for a second one), Ctrl+C after 3.5 s (ConPTY turns it
-    /// into a console Ctrl+C event, which ends a program stuck after its UI
-    /// has quit), then force after 5 s. A program that left its full-screen
-    /// view on the request (its UI quit) but whose process lingers is ended 3 s
-    /// later (OpenCode 1.19 can linger for minutes on a busy machine).
+    /// (some agents ask for a second one), Ctrl+C twice after 3.5 s (Copilot
+    /// and Claude Code exit on a second Ctrl+C; ConPTY turns a raw one into a
+    /// console Ctrl+C event, which ends a program stuck after its UI quit),
+    /// `/exit` and Enter after 6 s (the agents' own quit command, for one whose
+    /// keys were taken by a prompt), then force after [`STOP_GRACE`] (a busy
+    /// Copilot with many MCP servers needs more than the 5 s it once had: on
+    /// `service stop` every one was killed). A program that left its
+    /// full-screen view on the request (its UI quit) but whose process lingers
+    /// is ended 3 s later (OpenCode 1.19 can linger for minutes on a busy machine).
     pub fn stop(self: &Arc<Self>, force: bool) {
         if !self.alive.load(Ordering::Acquire) {
             return;
@@ -730,8 +737,9 @@ impl Terminal {
         if self.stopping.swap(true, Ordering::AcqRel) {
             return;
         }
-        let ctrl_d = || Input::Key { key: crate::protocol::Key::Char('d'), mods: crate::protocol::MOD_CTRL };
-        if self.command(Ctl::Input(ctrl_d())).is_err() {
+        let key = |c: char, mods: u8| Input::Key { key: crate::protocol::Key::Char(c), mods };
+        let ctrl = crate::protocol::MOD_CTRL;
+        if self.command(Ctl::Input(key('d', ctrl))).is_err() {
             let _ = self.input.try_send(vec![0x04]);
         }
         let me = self.clone();
@@ -741,7 +749,15 @@ impl Terminal {
             // machine may wake this thread late, never move the steps later.
             let asked = Instant::now();
             let mut ui_quit_at: Option<Instant> = None;
-            let (mut second_ctrl_d, mut ctrl_c_sent) = (false, false);
+            // (when, what: raw bytes when the engine cannot encode the key)
+            let steps: [(Duration, Input, &[u8]); 5] = [
+                (Duration::from_secs(2), key('d', ctrl), &[0x04]),
+                (Duration::from_millis(3_500), key('c', ctrl), &[0x03]),
+                (Duration::from_millis(3_800), key('c', ctrl), &[0x03]),
+                (Duration::from_secs(6), Input::Raw(b"/exit".to_vec()), b"/exit"),
+                (Duration::from_millis(6_300), Input::Key { key: crate::protocol::Key::Enter, mods: 0 }, b"\r"),
+            ];
+            let mut next = 0;
             loop {
                 if !me.alive.load(Ordering::Acquire) {
                     return;
@@ -754,21 +770,16 @@ impl Terminal {
                     me.ui_quit.store(true, Ordering::Release);
                     break;
                 }
-                if elapsed >= Duration::from_secs(5) {
+                if elapsed >= STOP_GRACE {
                     break;
                 }
-                if !second_ctrl_d && elapsed >= Duration::from_secs(2) {
-                    second_ctrl_d = true;
-                    if me.command(Ctl::Input(ctrl_d())).is_err() {
-                        let _ = me.input.try_send(vec![0x04]);
+                // A program whose UI already quit only waits for its process.
+                while ui_quit_at.is_none() && next < steps.len() && elapsed >= steps[next].0 {
+                    let (_, input, raw) = &steps[next];
+                    if me.command(Ctl::Input(input.clone())).is_err() {
+                        let _ = me.input.try_send(raw.to_vec());
                     }
-                }
-                if !ctrl_c_sent && elapsed >= Duration::from_millis(3_500) {
-                    ctrl_c_sent = true;
-                    let ctrl_c = Input::Key { key: crate::protocol::Key::Char('c'), mods: crate::protocol::MOD_CTRL };
-                    if me.command(Ctl::Input(ctrl_c)).is_err() {
-                        let _ = me.input.try_send(vec![0x03]);
-                    }
+                    next += 1;
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
@@ -1737,7 +1748,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(300));
         let asked = Instant::now();
         stuck.stop(false);
-        let (code, raw) = wait_exit(&stuck, Duration::from_secs(10));
+        let (code, raw) = wait_exit(&stuck, Duration::from_secs(15));
         assert_eq!(code, Some(0), "stopped by the canvas: not a failure ({raw:?})");
         assert!(!stuck.was_forced() && asked.elapsed() < Duration::from_millis(4_900), "Ctrl+C ended it before the kill");
         // Ignores everything: killed when the grace period runs out, still reported as stopped.
@@ -1747,7 +1758,7 @@ mod tests {
         let ignores = Terminal::spawn(spec, hooks_c).expect("spawn powershell.exe");
         std::thread::sleep(Duration::from_millis(1_500));
         ignores.stop(false);
-        let (code, raw) = wait_exit(&ignores, Duration::from_secs(10));
+        let (code, raw) = wait_exit(&ignores, Duration::from_secs(15));
         assert!(ignores.was_forced() && code == Some(0) && raw.is_some_and(|c| c != 0), "killed after the grace period: {code:?} {raw:?}");
     }
 
@@ -1825,15 +1836,35 @@ mod tests {
         std::thread::sleep(Duration::from_millis(300));
         let asked = Instant::now();
         stuck.stop(false);
-        let (code, raw) = wait_exit(&stuck, Duration::from_secs(10));
+        let (code, raw) = wait_exit(&stuck, Duration::from_secs(15));
         assert_eq!(code, Some(0), "stopped by the canvas: not a failure ({raw:?})");
         assert!(!stuck.was_forced() && asked.elapsed() < Duration::from_millis(4_900), "Ctrl+C ended it before the kill");
         // Ignores everything: killed when the grace period runs out, still reported as stopped.
         let ignores = sh("ignores", "trap '' INT HUP; sleep 30", true);
         std::thread::sleep(Duration::from_millis(500));
         ignores.stop(false);
-        let (code, raw) = wait_exit(&ignores, Duration::from_secs(10));
+        let (code, raw) = wait_exit(&ignores, Duration::from_secs(15));
         assert!(ignores.was_forced() && code == Some(0) && raw.is_some_and(|c| c != 0), "killed after the grace period: {code:?} {raw:?}");
+    }
+
+    /// An agent that ignores Ctrl+D (its keys taken by a prompt) and quits on
+    /// a second Ctrl+C (Copilot CLI's "press twice to exit"), or only on its
+    /// `/exit` command: the stop reaches it before the kill.
+    #[test]
+    #[cfg(unix)]
+    fn the_graceful_stop_reaches_an_agent_that_quits_on_two_ctrl_c_or_on_exit() {
+        let _serial = serial();
+        let twice = sh("twice", "stty raw -echo; n=0; while :; do c=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' '); [ \"$c\" = 03 ] && n=$((n+1)); [ $n -ge 2 ] && exit 5; done", true);
+        let command = sh("command", "stty raw -echo; buf=; while :; do c=$(dd bs=1 count=1 2>/dev/null); buf=\"$buf$c\"; case \"$buf\" in *'/exit'*) exit 6;; esac; done", true);
+        std::thread::sleep(Duration::from_millis(500));
+        let asked = Instant::now();
+        twice.stop(false);
+        command.stop(false);
+        let (code, raw) = wait_exit(&twice, Duration::from_secs(15));
+        assert!(!twice.was_forced() && code == Some(0) && raw == Some(5), "the second Ctrl+C ended it: {code:?} {raw:?}");
+        let (code, raw) = wait_exit(&command, Duration::from_secs(15));
+        assert!(!command.was_forced() && code == Some(0) && raw == Some(6), "/exit ended it: {code:?} {raw:?}");
+        assert!(asked.elapsed() < STOP_GRACE, "both before the kill");
     }
 
     #[test]

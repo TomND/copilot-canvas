@@ -969,7 +969,8 @@ impl Host {
             self.app().terminal_stopping(&terminal.id);
             terminal.stop(false);
         }
-        let deadline = Instant::now() + Duration::from_secs(6);
+        // Each agent gets its whole grace period (its own stop kills it then).
+        let deadline = Instant::now() + crate::term::STOP_GRACE + Duration::from_secs(1);
         while Instant::now() < deadline && terms.iter().any(|t| t.alive.load(Ordering::Acquire)) {
             std::thread::sleep(Duration::from_millis(100));
         }
