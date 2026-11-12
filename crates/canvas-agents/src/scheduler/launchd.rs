@@ -710,7 +710,24 @@ pub mod service_agent {
 
     use anyhow::Result;
 
-    use super::{PLIST_HEAD, bootout, bootstrap, loaded, push_argv, write_atomic, xml};
+    use super::{PLIST_HEAD, bootout, bootstrap, domain, launchctl, loaded, push_argv, write_atomic, xml};
+
+    /// Runs the login agent's job again (`launchctl kickstart -k`; loaded
+    /// first when it is not), the entry the service starts by at login
+    /// (`atelier service restart`). `false`: no login agent is installed.
+    pub fn kickstart(instance: &str) -> Result<bool> {
+        let path = path(instance);
+        if !path.exists() {
+            return Ok(false);
+        }
+        if loaded(&label(instance)).is_none() {
+            // Loading runs it (RunAtLoad).
+            bootstrap(&path)?;
+        } else {
+            launchctl(&["kickstart", "-k", &format!("{}/{}", domain(), label(instance))])?;
+        }
+        Ok(true)
+    }
 
     /// The job's label for an instance.
     pub fn label(instance: &str) -> String {

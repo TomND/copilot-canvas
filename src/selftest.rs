@@ -723,6 +723,14 @@ pub fn doctor(instance: &Instance) -> Result<()> {
                 "same build".to_owned()
             };
             line(true, "Terminal service", format!("running ({state})"));
+            if !conn.legacy {
+                let terms = crate::service_install::stats_and_terminals(&conn).map(|(_, terms)| terms).unwrap_or_default();
+                let signs = crate::service_install::wedge_signs(instance, &terms);
+                match signs.is_empty() {
+                    true => line(true, "Service health", "nothing stuck".into()),
+                    false => line(false, "Service health", format!("{}; `atelier service restart --yes` starts it again (conversations stay resumable)", signs.join("; "))),
+                }
+            }
         }
         Err(_) => line(true, "Terminal service", "not running (starts automatically)".into()),
     }

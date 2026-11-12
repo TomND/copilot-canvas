@@ -745,6 +745,13 @@ fn frozen_client(exe: &Path, instance: &Instance, root: &Path, direct: &ConnTarg
     anyhow::ensure!(closings == 1, "the frozen client's close was logged {closings} times (once expected)");
     let (frames, echoed) = (typist.frames - frames_before, typist.echoed().len() - echoed_before);
     anyhow::ensure!(frames > 0 && echoed > 0, "the other client got {frames} frames and {echoed} echoed keys while a client was frozen");
+    // Nothing is left stuck: no pending close, no quiet terminal (`service status`'s "wedged").
+    std::thread::sleep(canvas_host::server::HEALTH_EVERY + Duration::from_millis(500));
+    let conn = conn::try_connect(instance)?;
+    let (_, terms) = crate::service_install::stats_and_terminals(&conn)?;
+    let signs = crate::service_install::wedge_signs(instance, &terms);
+    anyhow::ensure!(signs.is_empty(), "after the freeze the service reports itself wedged: {signs:?}");
+    drop(conn);
     stall_proxy.set_stalled(false);
     stall_proxy.drop_all();
     launcher.send(ClientMsg::Stop { id: NOISE.into(), force: true })?;

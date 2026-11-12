@@ -1459,7 +1459,14 @@ atelier doctor                 environment checks (each agent CLI and its histor
                                       data move from before the rename)
 atelier migrate [--yes]        finish moving the data of an install from before the rename to
                                       ~/.atelier (stops its service first; --yes when it runs sessions)
-atelier service status|stop    stop ends the service's sessions (gracefully)
+atelier service status|stop    stop ends the service's sessions (gracefully); status lists under
+                                      "wedged" what looks stuck: a terminal that printed nothing 30 s
+                                      after its launch, a client close or a launch that does not end,
+                                      a stale health file (`doctor` says the same)
+atelier service restart [--yes]
+                                      stop it gracefully, wait, and start it the way it starts at login
+                                      (Windows: the Atelier-Service task; macOS: its LaunchAgent; Linux:
+                                      its systemd unit; else as `service start`); --yes while sessions run
 atelier note path|new|list …   notes with their provenance in the canvas notebook (Notebook, above)
 atelier todo prime|boards|list|show|ready|add|propose|update|move|claim|release|note|check|link|
                relate|submit|accept|decline|done|cancel|reopen|delete|board|import|mirror|export …

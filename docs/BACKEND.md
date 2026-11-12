@@ -585,6 +585,19 @@ connection fails the calls waiting on it. An answer too large for one frame
 (32 MiB) becomes an error answer; the connection stays up. `Tails` reads at
 most 8 files and 4 MiB in all.
 
+### Wedge signs and restart
+
+Every 2 s the service writes `<home>/run/health-<instance>.json` from a thread
+of its own (`server::Health`: clients dropped whose connection thread has not
+returned, launches under way, with when each began). `service status` (its
+`wedged` list) and `doctor` (*Service health*) read it with the terminal list
+(`server::wedge_signs`): a terminal alive with no output 30 s after its launch,
+a close pending over 5 s, a launch over 30 s, a health file older than 10 s.
+`service restart [--yes]` stops the service gracefully, waits for its process
+to end and starts it through its login entry (Windows: the `Atelier-Service`
+task; macOS: `launchctl kickstart` of its LaunchAgent; Linux: `systemctl --user
+restart` of its unit), else as `service start` does.
+
 ### One process per session
 
 `Host::launch` reserves the terminal id under one lock before anything is

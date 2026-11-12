@@ -67,7 +67,12 @@ USAGE
                                         `devtunnel connect` for a tunnel and reconnects through it)
   atelier --remote HOST:PORT     open the canvas on a remote service (a forwarded tunnel port;
                                         credentials: ATELIER_REMOTE_ID, ATELIER_REMOTE_SECRET)
-  atelier service status|stop    inspect or stop the terminal service (stop ends its sessions)
+  atelier service status|stop    inspect or stop the terminal service (stop ends its sessions;
+                                        status lists signs that it is wedged)
+  atelier service restart [--yes]
+                                        stop it gracefully and start it the way it starts at login
+                                        (the Atelier-Service task, LaunchAgent or systemd unit);
+                                        --yes while sessions run
   atelier service start          start it in the background (for a logon task: passive sessions
                                         and the automation doctor then run without the canvas open)
   atelier service install|uninstall
@@ -642,34 +647,8 @@ fn real_main() -> Result<()> {
             println!("Stop requested; Copilot sessions get a few seconds to exit gracefully.");
             Ok(())
         }
-        ["service", "status"] => match client::conn::connect(&instance, false) {
-            Ok(conn) => {
-                conn.tx.send(protocol::ClientMsg::Stats)?;
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-                while std::time::Instant::now() < deadline {
-                    if let Ok(protocol::ServiceMsg::Stats(stats)) = conn.rx.recv_timeout(std::time::Duration::from_millis(200)) {
-                        let report = serde_json::json!({
-                            "running": true,
-                            "build": conn.service_build,
-                            "pid": stats.pid,
-                            "terminals": stats.terminals,
-                            "alive": stats.alive,
-                            "private_mb": stats.private_bytes / (1024 * 1024),
-                            "working_set_mb": stats.working_set_bytes / (1024 * 1024),
-                            "cpu_ms": stats.cpu_ms,
-                            "uptime_s": stats.uptime_ms / 1000,
-                        });
-                        println!("{}", serde_json::to_string_pretty(&report)?);
-                        return Ok(());
-                    }
-                }
-                bail!("the service did not answer")
-            }
-            Err(_) => {
-                println!("{{\"running\": false}}");
-                Ok(())
-            }
-        },
+        ["service", "status"] => service_install::status(&instance),
+        ["service", "restart"] => service_install::restart(&instance, flag("yes")),
         ["events"] => cli::events(&instance.home),
         ["emit", kind] => cli::emit(&instance.home, kind, option("data"), option("to"), option("group")),
         ["send", text @ ..] => cli::send(&instance.home, &option("to").unwrap_or_default(), &text.join(" ")),

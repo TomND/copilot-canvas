@@ -608,6 +608,18 @@ pub mod service_unit {
         Ok(path)
     }
 
+    /// Starts the service again through its unit (`systemctl --user
+    /// restart`), the entry it starts by at login (`atelier service
+    /// restart`). `false`: no unit is installed.
+    pub fn restart(instance: &str) -> Result<bool> {
+        let systemd = Systemd::user();
+        if !systemd.dir.join(file_name(instance)).exists() {
+            return Ok(false);
+        }
+        systemd.systemctl(&["restart", &file_name(instance)])?;
+        Ok(true)
+    }
+
     /// Disables and removes the unit, and the one from before the rename (a
     /// running service keeps running).
     pub fn uninstall(instance: &str) -> Result<Option<PathBuf>> {

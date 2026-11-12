@@ -339,8 +339,11 @@ pub struct Host {
     user_sid: String,
     /// Each terminal's size wishes and owner (tmux "latest").
     sizes: Mutex<HashMap<String, SizePolicy>>,
-    /// Terminal ids whose launch is under way ([`Host::launch`]).
-    launching: Mutex<HashSet<String>>,
+    /// Terminal ids whose launch is under way ([`Host::launch`]), with when it began.
+    launching: Mutex<HashMap<String, u64>>,
+    /// Clients dropped whose connection thread has not returned yet, with when
+    /// they were dropped (a wedge sign when it lasts: [`Health`]).
+    closing: Mutex<HashMap<u64, u64>>,
     /// Keys a launch claimed (an agent session id) and the terminal that has
     /// each: never two live terminals with one key ([`Host::claim_launch_key`]).
     launch_keys: Mutex<HashMap<String, String>>,
@@ -601,7 +604,8 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
         surplus_logged: Mutex::new(None),
         user_sid: canvas_sys::process::current_user_id().unwrap_or_default(),
         sizes: Mutex::new(HashMap::new()),
-        launching: Mutex::new(HashSet::new()),
+        launching: Mutex::new(HashMap::new()),
+        closing: Mutex::new(HashMap::new()),
         launch_keys: Mutex::new(HashMap::new()),
         app: OnceLock::new(),
     });
@@ -618,6 +622,7 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
     #[cfg(unix)]
     spawn_named("remember", { let h = host.clone(); move || remember_loop(h) });
     spawn_named("liveness", { let h = host.clone(); move || liveness_loop(h) });
+    spawn_named("health", { let h = host.clone(); move || health_loop(h) });
     if let Some(addr) = settings.listen() {
         // Failures are logged and recorded for `doctor` by `listen_remote`. A
         // port still held by a service that is exiting is tried again for a while.
@@ -791,6 +796,7 @@ impl Host {
         if let Some(why) = why {
             log(&self.instance, why);
         }
+        lock(&self.closing).insert(client.id, now_ms());
         client.closer.close();
         let removed = {
             let mut clients = lock(&self.clients);
@@ -891,7 +897,7 @@ impl Host {
         if lock(&self.terms).get(id).is_some_and(|t| t.alive.load(Ordering::Acquire)) {
             return None;
         }
-        if !launching.insert(id.to_owned()) {
+        if launching.insert(id.to_owned(), now_ms()).is_some() {
             drop(launching);
             log(&self.instance, &format!("terminal {id} is already being launched; not started twice"));
             return None;
@@ -901,7 +907,7 @@ impl Host {
 
     /// Whether terminal `id` runs or is being launched.
     pub fn running_or_launching(&self, id: &str) -> bool {
-        lock(&self.launching).contains(id) || lock(&self.terms).get(id).is_some_and(|t| t.alive.load(Ordering::Acquire))
+        lock(&self.launching).contains_key(id) || lock(&self.terms).get(id).is_some_and(|t| t.alive.load(Ordering::Acquire))
     }
 
     /// Claims `key` (an agent session id) for terminal `id` during its
@@ -987,6 +993,7 @@ impl Host {
 
     /// The token, port and listen-error files are only valid while this process runs.
     fn remove_published_files(&self) {
+        let _ = std::fs::remove_file(health_path(&self.instance));
         let _ = std::fs::remove_file(self.instance.token_path());
         let _ = std::fs::remove_file(self.instance.port_path());
         let _ = std::fs::remove_file(self.instance.listen_error_path());
@@ -1314,6 +1321,7 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
     // Again on this thread: whatever a message handled meanwhile left for this client.
     host.size_leave(id, None);
     host.app().client_disconnected(id);
+    lock(&host.closing).remove(&id);
     if remote {
         log(&host.instance, &format!("remote client {id} disconnected"));
     }
@@ -1378,6 +1386,83 @@ fn spawn_writer(host: std::sync::Weak<Host>, mut writer: FrameWriter, out: Recei
             host.drop_client(&client, why.as_deref());
         }
     })
+}
+
+/// What the service writes every [`HEALTH_EVERY`] for `service status` and
+/// `doctor` (`<home>/run/health-<instance>.json`): things that are under way
+/// and should not last. Written by a thread of its own, so a stale file is
+/// itself a sign (a stalled disk, or a starved process).
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default, Clone, PartialEq)]
+pub struct Health {
+    pub pid: u32,
+    pub updated_ms: u64,
+    /// Clients dropped whose connection thread has not returned: (client, since ms).
+    #[serde(default)]
+    pub pending_closes: Vec<(u64, u64)>,
+    /// Launches under way: (terminal, since ms).
+    #[serde(default)]
+    pub launching: Vec<(String, u64)>,
+}
+
+/// How often the health file is written.
+pub const HEALTH_EVERY: Duration = Duration::from_secs(2);
+/// A terminal that printed nothing this long after its launch looks stuck.
+pub const QUIET_AFTER_MS: u64 = 30_000;
+
+pub fn health_path(instance: &Instance) -> std::path::PathBuf {
+    instance.home.join("run").join(format!("health-{}.json", instance.name))
+}
+
+/// The running service's health file, when there is one.
+pub fn read_health(instance: &Instance) -> Option<Health> {
+    serde_json::from_str(&std::fs::read_to_string(health_path(instance)).ok()?).ok()
+}
+
+/// Signs that the service is wedged (README, `service status`): its health
+/// file stale, a client close or a launch that does not end, a terminal that
+/// printed nothing long after its launch. `terms` as the service lists them;
+/// `now` on the service's clock (the same machine).
+pub fn wedge_signs(health: Option<&Health>, terms: &[crate::protocol::TermInfo], now: u64) -> Vec<String> {
+    let mut signs = Vec::new();
+    let age = |since: u64| now.saturating_sub(since) / 1000;
+    if let Some(health) = health {
+        if now.saturating_sub(health.updated_ms) > 10_000 {
+            signs.push(format!("its health file was last written {} s ago (a stalled thread or disk)", age(health.updated_ms)));
+        }
+        for (client, since) in health.pending_closes.iter().filter(|(_, since)| now.saturating_sub(*since) > 5_000) {
+            signs.push(format!("client {client} was closed {} s ago and its connection thread has not returned", age(*since)));
+        }
+        for (id, since) in health.launching.iter().filter(|(_, since)| now.saturating_sub(*since) > 30_000) {
+            signs.push(format!("terminal {id} has been launching for {} s", age(*since)));
+        }
+    }
+    for term in terms.iter().filter(|t| t.alive && t.last_output_ms == 0 && now.saturating_sub(t.started_ms) > QUIET_AFTER_MS) {
+        signs.push(format!("terminal {} (pid {}) printed nothing in the {} s since its launch", term.id, term.pid, age(term.started_ms)));
+    }
+    signs
+}
+
+/// Writes the health file every [`HEALTH_EVERY`].
+fn health_loop(host: Arc<Host>) {
+    let path = health_path(&host.instance);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    loop {
+        if host.shutting_down.load(Ordering::Relaxed) {
+            return;
+        }
+        let health = Health {
+            pid: std::process::id(),
+            updated_ms: now_ms(),
+            pending_closes: lock(&host.closing).iter().map(|(id, since)| (*id, *since)).collect(),
+            launching: lock(&host.launching).iter().map(|(id, since)| (id.clone(), *since)).collect(),
+        };
+        if let Ok(text) = serde_json::to_string(&health) {
+            let _ = std::fs::write(&path, text);
+        }
+        std::thread::sleep(HEALTH_EVERY);
+    }
 }
 
 /// Closes protocol-8 connections that stayed silent too long (no heartbeat).
@@ -2101,6 +2186,22 @@ mod tests {
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn wedge_signs_name_what_is_stuck_and_nothing_else() {
+        let now = 1_000_000;
+        let term = |id: &str, alive: bool, started_ms: u64, last_output_ms: u64| TermInfo { id: id.into(), alive, started_ms, last_output_ms, pid: 7, ..Default::default() };
+        let terms = [term("quiet", true, now - 40_000, 0), term("young", true, now - 5_000, 0), term("talks", true, now - 40_000, now - 39_000), term("gone", false, now - 90_000, 0)];
+        let fresh = Health { pid: 1, updated_ms: now - 1_000, pending_closes: vec![(26, now - 20_000), (27, now - 1_000)], launching: vec![("slow".into(), now - 45_000), ("now".into(), now - 2_000)] };
+        let signs = wedge_signs(Some(&fresh), &terms, now);
+        assert_eq!(signs.len(), 3, "{signs:?}");
+        assert!(signs[0].starts_with("client 26 was closed 20 s ago"), "{signs:?}");
+        assert!(signs[1].starts_with("terminal slow has been launching for 45 s"), "{signs:?}");
+        assert!(signs[2].starts_with("terminal quiet (pid 7) printed nothing in the 40 s"), "{signs:?}");
+        let stale = Health { updated_ms: now - 60_000, ..Health::default() };
+        assert!(wedge_signs(Some(&stale), &[], now)[0].contains("last written 60 s ago"));
+        assert!(wedge_signs(None, &terms[1..], now).is_empty(), "an older service without a health file: only the terminals count");
     }
 
     #[test]
