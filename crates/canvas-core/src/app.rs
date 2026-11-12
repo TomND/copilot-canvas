@@ -1467,7 +1467,7 @@ impl App {
     }
 
     /// "every 15m" when this box repeats on a schedule that is active now: a live
-    /// session with a recurring schedule (`/every`), Copilot's saved session
+    /// session with a recurring schedule (`/every`) or Copilot's saved session
     /// schedule, or an enabled automation.
     pub fn node_loop(&self, node: &Node) -> Option<String> {
         match node.kind {
@@ -1486,6 +1486,11 @@ impl App {
                 let live = self.owned_alive(&node.id) || self.summary(node).is_some_and(|s| s.live);
                 if let Some(summary) = self.summary(node).filter(|s| live && s.loop_ms > 0) {
                     return Some(format!("every {}", short_interval(summary.loop_ms)));
+                }
+                // A saved session schedule fires only while its session's CLI
+                // runs: a stopped session's never looks alive (after a restart too).
+                if !live {
+                    return None;
                 }
                 self.automation(&format!("session:{}", node.id)).filter(|a| a.enabled && repeats(&a.schedule)).map(|a| a.schedule.clone())
             }
