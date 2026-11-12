@@ -265,7 +265,13 @@ impl Restore {
     pub fn exited(&self, id: &str, forced: bool, shutting_down: bool, now: u64) -> &'static str {
         let mut inner = lock(&self.inner);
         let asked = inner.stops.remove(id);
-        inner.pending.remove(id);
+        // Resumed after a restart and gone before it settled: not resumed after all.
+        if inner.pending.remove(id).is_some()
+            && let Some(view) = inner.view.as_mut()
+        {
+            view.resuming.retain(|r| r != id);
+            view.interrupted.push(RestoreSkip { id: id.to_owned(), why: "it exited right after it was resumed".into() });
+        }
         if !inner.set.entries.contains_key(id) {
             return "not recorded";
         }
@@ -360,9 +366,10 @@ impl Restore {
             let recorded = set.entries.get(&t.id).is_some_and(|e| e.started_ms == t.started_ms);
             if let Some((launch, cwd, _)) = request.filter(|_| !recorded) {
                 requests.remove(&t.id);
-                let previous = set.entries.get(&t.id).map(|e| (e.native.clone(), e.doing.clone()));
-                let (native, doing) = previous.unwrap_or_default();
-                set.entries.insert(t.id.clone(), Entry { id: t.id.clone(), launch, cwd, cols: t.cols, rows: t.rows, started_ms: t.started_ms, native, doing, exited_ms: 0 });
+                // A resume after a restart keeps what it did before until its note is
+                // queued; any other launch starts afresh (its session id comes from `natives`).
+                let doing = set.entries.get(&t.id).filter(|_| pending.contains_key(&t.id)).map(|e| e.doing.clone()).unwrap_or_default();
+                set.entries.insert(t.id.clone(), Entry { id: t.id.clone(), launch, cwd, cols: t.cols, rows: t.rows, started_ms: t.started_ms, native: String::new(), doing, exited_ms: 0 });
                 *dirty = true;
             } else if !recorded
                 && !t.agent
@@ -722,6 +729,33 @@ mod tests {
         // A message from Atelier itself is typed as written.
         let mail = Mail { from: String::new(), text: working.clone(), ..Default::default() };
         assert_eq!(canvas_model::bus::mail_text(&mail), working);
+    }
+
+    #[test]
+    fn a_learned_session_id_is_resumed_and_a_resume_that_dies_is_reported() {
+        let home = home();
+        let r = Restore::new(&home, "default");
+        let now = now_ms();
+        let oc = LaunchKind::Agent(Box::new(AgentLaunch { agent: "opencode".into(), ..Default::default() }));
+        r.requested("box", &oc, "/w");
+        let natives = HashMap::from([("box".to_owned(), "ses_abc".to_owned())]);
+        let doing = |native: &str, _: bool| Doing { working: native == "ses_abc", ..Default::default() };
+        r.sync(&[term("box", true, now)], &natives, &|_| None, &doing, now);
+        let entry = &r.entries()[0];
+        assert_eq!(entry.native, "ses_abc");
+        assert!(entry.doing.working, "what its own session does");
+        let LaunchKind::Agent(again) = relaunch(&entry.launch, Some(&entry.native)).unwrap() else { panic!() };
+        assert_eq!((again.native_id.as_deref(), again.resume), (Some("ses_abc"), true), "OpenCode resumes the session it learned");
+        // A resume after a restart that exits before it settles leaves "resuming".
+        {
+            let mut inner = lock(&r.inner);
+            inner.pending.insert("box".into(), Pending { doing: Doing::default(), launched_ms: now });
+            inner.view = Some(RestoreView { resuming: vec!["box".into()], ..Default::default() });
+        }
+        r.exited("box", false, false, now);
+        let view = r.view().unwrap();
+        assert!(view.resuming.is_empty() && view.interrupted[0].id == "box" && !r.holds("box"));
+        let _ = std::fs::remove_dir_all(home);
     }
 
     #[test]
