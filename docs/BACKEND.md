@@ -585,6 +585,23 @@ connection fails the calls waiting on it. An answer too large for one frame
 (32 MiB) becomes an error answer; the connection stays up. `Tails` reads at
 most 8 files and 4 MiB in all.
 
+### One process per session
+
+`Host::launch` reserves the terminal id under one lock before anything is
+resolved or spawned: while the terminal runs or another launch of it is under
+way (two clients resuming one session, a frozen client's launch replayed
+beside its reconnection's) a launch does nothing and the caller shows the one
+terminal (`terminal X is already being launched; not started twice` in the
+log). `Agents::resolve_agent` then claims the agent session itself
+(`Host::claim_launch_key`, key `<agent>:<session id>`): another box resuming a
+session that runs or is starting is refused ("already running in another
+box"), before the agent could write its own lock; Copilot's
+`session-state/<id>/inuse.<pid>.lock` with a live process is refused as
+before. `ClientMsg::Launch` is unchanged (postcard: no new fields); all of it
+is on the service side, and the restart restore relaunches through the same
+path. `selftest --remote faults` sends two launches at once from two
+connections and counts the processes.
+
 ## Tests
 
 - `canvas_model::sync`: concurrent edits (field-level last-writer-wins, delete

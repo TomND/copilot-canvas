@@ -1552,7 +1552,11 @@ service starts at login, `atelier service install`.
 ## Limitations
 
 - Sessions already running in another terminal can't be attached to (no
-  Copilot API for that); open them where they run.
+  Copilot API for that); open them where they run. Within the canvas a
+  session runs once: a second launch or resume of a box that runs or is
+  starting (two clients, a reconnection replaying it) shows the one terminal,
+  and another box resuming the same agent session is refused ("already
+  running in another box").
 - Subagents run inside their parent's terminal; their boxes show status and
   their transcript (Inspect). Only OpenCode's child sessions resume on their
   own (as a linked subsession, once the parent is stopped).

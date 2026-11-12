@@ -168,6 +168,21 @@ on TCP. Either side closes a connection that stayed silent for 6 s (the
 service's `liveness` thread, the client's watchdog thread). TCP keepalive is on
 as a backstop and Nagle is off.
 
+The service never waits on a client (`Host::drop_client`): dropping one shuts
+its socket, takes it off the client list at once (no frame, broadcast or
+watchdog sees it again; the closing is logged once) and does the rest of the
+cleanup on a helper thread, whatever its reader thread is doing. A reconnection
+that replaces a client drops the old one the same way. Each TCP client has a
+write deadline (`CLIENT_WRITE_TIMEOUT`, 10 s): a client that takes no data for
+that long is dropped (`client N took no data for 10 s; closing`), so a writer
+never stays blocked behind a full TCP window (a frozen client behind `devtunnel
+connect`); on Windows a waiting write also ends within 100 ms of a close. A
+WebSocket reader answers pings only when the writer is free. The frame pump
+waits at most 200 ms for one terminal's screen (a slow engine delays only its
+own frames), and the service log is written by a thread of its own: a stalled
+log file never holds a caller more than 250 ms (in the 2026-11-12 report the
+whole service stopped for 59 s).
+
 ### Reconnect and input
 
 - When the connection drops, the canvas shows "Offline — reconnecting…"
@@ -691,7 +706,14 @@ Checklist (over a day):
   keystrokes stream to an `echo` terminal, cuts a frame in half, and adds 300 ms
   of latency each way. It checks reconnect time, full frames after resync, that
   the echo terminal shows exactly the acknowledged keystrokes once and in order,
-  and that unacknowledged ones are reported, not resent. A last step runs the
+  and that unacknowledged ones are reported, not resent. Then a client
+  freezes (neither reads nor writes) in the middle of a stream of large
+  frames: `service status` must answer in under 1 s throughout, the other
+  client keeps getting its echoes, and the frozen client is dropped within the
+  silence timeout plus 1 s with its closing logged once; after it a new
+  (stand-in) Copilot session must show its screen within 5 s, and two
+  connections resuming one session at the same moment must start exactly one
+  process (a third box resuming it is refused). A last step runs the
   canvas itself through the proxy: banner, offline input blocked, reconnect
   after the network returns, the pane resynced.
 - `atelier selftest --remote paired`: a real service in a temporary

@@ -63,6 +63,9 @@ const IDLE_EXIT: Duration = Duration::from_secs(10 * 60);
 /// Client sessions remembered for input deduplication.
 const MAX_INPUT_SESSIONS: usize = 256;
 pub const CLIENT_QUEUE: usize = 1024;
+/// A remote client that takes none of the data written to it for this long
+/// is dropped (its writer never waits on it longer).
+pub const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bytes of image messages queued for one client at most; more wait.
 const IMAGE_BUDGET: usize = 32 << 20;
 /// When images left out for the budget are tried again.
@@ -222,6 +225,8 @@ pub struct Client {
     session: Option<Arc<Mutex<InputSession>>>,
     liveness: Option<Arc<Liveness>>,
     closer: Closer,
+    /// Set once the service dropped this client ([`Host::drop_client`]).
+    dropped: AtomicBool,
 }
 
 impl Client {
@@ -241,6 +246,7 @@ impl Client {
             session: None,
             liveness: (protocol >= 8).then(|| Arc::new(Liveness::standard())),
             closer,
+            dropped: AtomicBool::new(false),
         }
     }
 
@@ -333,7 +339,24 @@ pub struct Host {
     user_sid: String,
     /// Each terminal's size wishes and owner (tmux "latest").
     sizes: Mutex<HashMap<String, SizePolicy>>,
+    /// Terminal ids whose launch is under way ([`Host::launch`]).
+    launching: Mutex<HashSet<String>>,
+    /// Keys a launch claimed (an agent session id) and the terminal that has
+    /// each: never two live terminals with one key ([`Host::claim_launch_key`]).
+    launch_keys: Mutex<HashMap<String, String>>,
     app: OnceLock<Arc<dyn HostApp>>,
+}
+
+/// A terminal id reserved by its launch until the launch is over.
+struct LaunchReservation<'a> {
+    host: &'a Host,
+    id: String,
+}
+
+impl Drop for LaunchReservation<'_> {
+    fn drop(&mut self) {
+        lock(&self.host.launching).remove(&self.id);
+    }
 }
 
 /// The loopback listener's address and the flag that stops its accept loop.
@@ -358,14 +381,120 @@ impl Drop for HandshakeSlot {
     }
 }
 
+/// Appends a line to the instance's service log. The line is timestamped now
+/// and written by a logger thread: a caller waits at most [`LOG_WAIT`] for it
+/// (so it is on disk when this returns, as before) and not at all while the
+/// file is stalled (a scan or a busy disk once froze every thread that
+/// logged, the frame pump and the heartbeat watchdog included). Lines beyond
+/// [`LOG_QUEUE`] waiting are dropped and counted in the next line written.
 pub fn log(instance: &Instance, message: &str) {
+    let line = format!("{} [{}] {message}\n", now_ms(), std::process::id());
     let path = instance.log_path();
-    if std::fs::metadata(&path).map(|m| m.len() > 4 * 1024 * 1024).unwrap_or(false) {
-        let _ = std::fs::rename(&path, path.with_extension("log.old"));
+    match logger() {
+        Some(logger) => logger.append(path, line),
+        None => append_log(&path, line.as_bytes()),
     }
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = writeln!(file, "{} [{}] {message}", now_ms(), std::process::id());
+}
+
+/// How long [`log`] waits for its line to be written.
+const LOG_WAIT: Duration = Duration::from_millis(250);
+/// Lines waiting for the logger thread at most.
+const LOG_QUEUE: usize = 4096;
+/// The log is rotated (to `.log.old`) beyond this size.
+const LOG_LIMIT: u64 = 4 * 1024 * 1024;
+
+/// Appends `bytes` to a log file, rotating it first when it is too large.
+fn append_log(path: &std::path::Path, bytes: &[u8]) {
+    if std::fs::metadata(path).map(|m| m.len() > LOG_LIMIT).unwrap_or(false) {
+        let _ = std::fs::rename(path, path.with_extension("log.old"));
     }
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = file.write_all(bytes);
+    }
+}
+
+/// The logger thread's queue and how far it got.
+struct Logger {
+    lines: Sender<(u64, std::path::PathBuf, String)>,
+    next: AtomicU64,
+    /// The last line written (its number) and the wake-up for callers waiting on it.
+    written: Mutex<u64>,
+    wake: std::sync::Condvar,
+    /// When the write under way started (ms since `epoch`; 0: idle).
+    busy_since: AtomicU64,
+    epoch: Instant,
+    dropped: AtomicU64,
+}
+
+impl Logger {
+    fn append(&self, path: std::path::PathBuf, line: String) {
+        let seq = self.next.fetch_add(1, Ordering::AcqRel) + 1;
+        if self.lines.try_send((seq, path, line)).is_err() {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        // A stalled file (one write under way for a second) is not waited for.
+        let busy = self.busy_since.load(Ordering::Acquire);
+        if busy != 0 && (self.epoch.elapsed().as_millis() as u64).saturating_sub(busy) > 1_000 {
+            return;
+        }
+        let deadline = Instant::now() + LOG_WAIT;
+        let mut written = lock(&self.written);
+        while *written < seq {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return;
+            }
+            written = self.wake.wait_timeout(written, left).map(|(guard, _)| guard).unwrap_or_else(|poisoned| poisoned.into_inner().0);
+        }
+    }
+
+    /// Writes queued lines in batches (one open per file and batch).
+    fn run(&self, lines: Receiver<(u64, std::path::PathBuf, String)>) {
+        while let Ok(first) = lines.recv() {
+            let mut batch = vec![first];
+            batch.extend(lines.try_iter().take(LOG_QUEUE));
+            let last = batch.iter().map(|(seq, _, _)| *seq).max().unwrap_or(0);
+            self.busy_since.store((self.epoch.elapsed().as_millis() as u64).max(1), Ordering::Release);
+            let mut files: Vec<(std::path::PathBuf, String)> = Vec::new();
+            for (_, path, line) in batch {
+                match files.iter_mut().find(|(p, _)| *p == path) {
+                    Some((_, text)) => text.push_str(&line),
+                    None => files.push((path, line)),
+                }
+            }
+            let dropped = self.dropped.swap(0, Ordering::Relaxed);
+            for (index, (path, mut text)) in files.into_iter().enumerate() {
+                if index == 0 && dropped > 0 {
+                    text.push_str(&format!("{} [{}] {dropped} log line(s) dropped: the log file did not keep up\n", now_ms(), std::process::id()));
+                }
+                append_log(&path, text.as_bytes());
+            }
+            self.busy_since.store(0, Ordering::Release);
+            let mut written = lock(&self.written);
+            *written = (*written).max(last);
+            drop(written);
+            self.wake.notify_all();
+        }
+    }
+}
+
+/// The process's logger (`None` when its thread could not start: lines are then written by the caller).
+fn logger() -> Option<&'static Logger> {
+    static LOGGER: OnceLock<Option<&'static Logger>> = OnceLock::new();
+    *LOGGER.get_or_init(|| {
+        let (tx, rx) = bounded(LOG_QUEUE);
+        let logger: &'static Logger = Box::leak(Box::new(Logger {
+            lines: tx,
+            next: AtomicU64::new(0),
+            written: Mutex::new(0),
+            wake: std::sync::Condvar::new(),
+            busy_since: AtomicU64::new(0),
+            epoch: Instant::now(),
+            dropped: AtomicU64::new(0),
+        }));
+        try_spawn("log", move || logger.run(rx)).ok().map(|()| logger)
+    })
 }
 
 /// The engine new terminals use: `ATELIER_ENGINE`, else
@@ -472,6 +601,8 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
         surplus_logged: Mutex::new(None),
         user_sid: canvas_sys::process::current_user_id().unwrap_or_default(),
         sizes: Mutex::new(HashMap::new()),
+        launching: Mutex::new(HashSet::new()),
+        launch_keys: Mutex::new(HashMap::new()),
         app: OnceLock::new(),
     });
     let app = make_app(&host);
@@ -647,6 +778,44 @@ impl Host {
         }
     }
 
+    /// Drops a client at once, without waiting on it: its connection is shut
+    /// (its reader and writer end, or fail at the write deadline), it leaves
+    /// the client list (no frame, broadcast or watchdog sees it again) and the
+    /// rest of the cleanup runs on a helper thread. Idempotent: only the first
+    /// call logs `why`. The client's reader thread, whenever it returns, finds
+    /// it gone and only repeats the (idempotent) cleanup.
+    pub fn drop_client(self: &Arc<Self>, client: &Arc<Client>, why: Option<&str>) {
+        if client.dropped.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if let Some(why) = why {
+            log(&self.instance, why);
+        }
+        client.closer.close();
+        let removed = {
+            let mut clients = lock(&self.clients);
+            match clients.get(&client.id) {
+                Some(listed) if Arc::ptr_eq(listed, client) => clients.remove(&client.id),
+                _ => None,
+            }
+        };
+        if removed.is_some() {
+            let (host, id) = (self.clone(), client.id);
+            let cleanup = move || {
+                host.size_leave(id, None);
+                host.app().client_disconnected(id);
+            };
+            if try_spawn("client-drop", cleanup.clone()).is_err() {
+                cleanup();
+            }
+        }
+    }
+
+    /// Clients the service listed (connected and not dropped).
+    pub fn client_count(&self) -> usize {
+        lock(&self.clients).len()
+    }
+
     pub fn broadcast(&self, message: ServiceMsg) {
         let clients: Vec<Arc<Client>> = lock(&self.clients).values().cloned().collect();
         for client in clients {
@@ -668,13 +837,14 @@ impl Host {
         clients.iter().flat_map(|c| lock(&c.subs).keys().cloned().collect::<Vec<_>>()).collect()
     }
 
+    /// Starts terminal `id`, at most once: while it runs, or while another
+    /// launch of it is under way (two clients resuming the same session at
+    /// once, a reconnection replaying a launch), this does nothing and the
+    /// caller shows the one terminal there is. The id is reserved under one
+    /// lock before anything is resolved or spawned.
     pub fn launch(&self, id: &str, kind: LaunchKind, cwd: &str, cols: u16, rows: u16) -> Result<()> {
         anyhow::ensure!(!id.is_empty() && id.len() <= 100, "invalid terminal id");
-        if let Some(existing) = lock(&self.terms).get(id)
-            && existing.alive.load(Ordering::Acquire)
-        {
-            return Ok(());
-        }
+        let Some(_reservation) = self.reserve_launch(id) else { return Ok(()) };
         let resolved = match kind {
             LaunchKind::Command { program, args } => Resolved { program, args, env: self.app().command_env(id), agent: false, remote: None },
             other => self.app().resolve_launch(id, other, cwd)?,
@@ -711,6 +881,41 @@ impl Host {
         lock(&self.terms).insert(id.to_owned(), terminal);
         self.broadcast(ServiceMsg::Terminals(vec![info]));
         self.app().terminals_changed();
+        Ok(())
+    }
+
+    /// Reserves terminal `id` for a launch; `None` when it runs or another
+    /// launch of it is under way (logged).
+    fn reserve_launch(&self, id: &str) -> Option<LaunchReservation<'_>> {
+        let mut launching = lock(&self.launching);
+        if lock(&self.terms).get(id).is_some_and(|t| t.alive.load(Ordering::Acquire)) {
+            return None;
+        }
+        if !launching.insert(id.to_owned()) {
+            drop(launching);
+            log(&self.instance, &format!("terminal {id} is already being launched; not started twice"));
+            return None;
+        }
+        Some(LaunchReservation { host: self, id: id.to_owned() })
+    }
+
+    /// Whether terminal `id` runs or is being launched.
+    pub fn running_or_launching(&self, id: &str) -> bool {
+        lock(&self.launching).contains(id) || lock(&self.terms).get(id).is_some_and(|t| t.alive.load(Ordering::Acquire))
+    }
+
+    /// Claims `key` (an agent session id) for terminal `id` during its
+    /// launch. Fails with the other terminal's id while another terminal that
+    /// claimed it runs or is being launched: one session never gets two
+    /// processes, whichever boxes ask for it.
+    pub fn claim_launch_key(&self, id: &str, key: &str) -> std::result::Result<(), String> {
+        let mut keys = lock(&self.launch_keys);
+        if let Some(other) = keys.get(key).filter(|other| other.as_str() != id)
+            && self.running_or_launching(other)
+        {
+            return Err(other.clone());
+        }
+        keys.insert(key.to_owned(), id.to_owned());
         Ok(())
     }
 
@@ -1030,6 +1235,10 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
         return host.app().serve_satellite(SatelliteLink { reader, writer, closer, info, websocket });
     }
 
+    // A client that stops taking data never holds its writer (or a WebSocket reader answering pings) for long.
+    if let Some(ends) = &tcp_ends {
+        ends.closer.set_write_timeout(Some(CLIENT_WRITE_TIMEOUT));
+    }
     let (out_tx, out_rx) = bounded::<Outgoing>(CLIENT_QUEUE);
     let id = host.next_client.fetch_add(1, Ordering::Relaxed);
     let mut client = Client::new(id, accepted.protocol, remote, info.caps, out_tx, closer.clone());
@@ -1049,8 +1258,8 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
         };
         let replaced = lock(&host.clients).get(&previous).cloned();
         if let Some(old) = replaced {
-            log(&host.instance, &format!("client {previous} replaced by its reconnection {id}"));
-            old.close();
+            // Torn down at once: never waits on the old connection (it may be stuck writing).
+            host.drop_client(&old, Some(&format!("client {previous} replaced by its reconnection {id}")));
         }
         client.session = Some(session);
     }
@@ -1058,7 +1267,7 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
     if let Some(liveness) = &client.liveness {
         liveness.received();
     }
-    if let Err(error) = spawn_writer(writer, out_rx, &client) {
+    if let Err(error) = spawn_writer(Arc::downgrade(host), writer, out_rx, &client) {
         closer.close();
         bail!("cannot start the client's writer thread: {error}");
     }
@@ -1086,6 +1295,10 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
 
     let result = (|| -> Result<()> {
         while let Some(message) = reader.recv::<ClientMsg>()? {
+            // A client the service dropped is not served further (its reader may have been busy).
+            if client.dropped.load(Ordering::Acquire) {
+                break;
+            }
             if let Some(liveness) = &client.liveness {
                 liveness.received();
             }
@@ -1096,8 +1309,8 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
         }
         Ok(())
     })();
-    lock(&host.clients).remove(&id);
-    closer.close();
+    host.drop_client(&client, None);
+    // Again on this thread: whatever a message handled meanwhile left for this client.
     host.size_leave(id, None);
     host.app().client_disconnected(id);
     if remote {
@@ -1107,13 +1320,18 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
 }
 
 /// Writes queued messages; protocol-8 clients also get a heartbeat every 2 s.
-/// A message that cannot be encoded (too large) is skipped, not fatal.
-fn spawn_writer(mut writer: FrameWriter, out: Receiver<Outgoing>, client: &Arc<Client>) -> std::io::Result<()> {
+/// A message that cannot be encoded (too large) is skipped, not fatal. A write
+/// that fails (the connection ended, or the client took nothing until the
+/// write deadline) drops the client at once.
+fn spawn_writer(host: std::sync::Weak<Host>, mut writer: FrameWriter, out: Receiver<Outgoing>, client: &Arc<Client>) -> std::io::Result<()> {
     let heartbeat = client.liveness.as_ref().map(|l| l.interval);
     let session = client.session.clone();
     let closer = client.closer.clone();
     let image_bytes = client.image_bytes.clone();
+    // Weak: the writer must not keep the client (and so its queue) alive.
+    let weak = Arc::downgrade(client);
     try_spawn("client-writer", move || {
+        let mut failure: Option<std::io::Error> = None;
         let mut beat = heartbeat.map(Beat::new);
         loop {
             let message = match &beat {
@@ -1140,16 +1358,24 @@ fn spawn_writer(mut writer: FrameWriter, out: Receiver<Outgoing>, client: &Arc<C
                 Ok(_) => {}
                 // Nothing was written: the connection is still in sync.
                 Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {}
-                Err(_) => break,
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
             }
             if beat.as_mut().is_some_and(|b| b.due(Instant::now())) {
                 let input_ack = session.as_ref().map(|s| lock(s).applied).unwrap_or(0);
-                if writer.send(&ServiceMsg::Heartbeat { input_ack }).is_err() {
+                if let Err(error) = writer.send(&ServiceMsg::Heartbeat { input_ack }) {
+                    failure = Some(error);
                     break;
                 }
             }
         }
         closer.close();
+        if let (Some(host), Some(client)) = (host.upgrade(), weak.upgrade()) {
+            let why = failure.filter(|e| e.kind() == std::io::ErrorKind::TimedOut).map(|_| format!("client {} took no data for {} s; closing", client.id, CLIENT_WRITE_TIMEOUT.as_secs()));
+            host.drop_client(&client, why.as_deref());
+        }
     })
 }
 
@@ -1162,8 +1388,8 @@ fn liveness_loop(host: Arc<Host>) {
             if let Some(liveness) = &client.liveness
                 && liveness.dead()
             {
-                log(&host.instance, &format!("client {} silent for {:.1} s; closing", client.id, liveness.silence().as_secs_f32()));
-                client.close();
+                // Logged once: the client leaves the list at once.
+                host.drop_client(&client, Some(&format!("client {} silent for {:.1} s; closing", client.id, liveness.silence().as_secs_f32())));
             }
         }
     }
@@ -1415,7 +1641,11 @@ fn pump_client(host: &Host, client: &Client) -> Option<Instant> {
                 continue;
             }
         }
-        let Some(mut snap) = terminal.snapshot() else { continue };
+        // Never more than a short wait: one busy or stuck engine must not hold every other terminal's frames.
+        let Some((mut snap, fresh)) = terminal.snapshot_for_pump() else {
+            due = sooner(due, Instant::now() + crate::term::PUMP_SNAPSHOT_WAIT);
+            continue;
+        };
         let images = std::mem::take(&mut snap.images);
         if client.caps & CAP_IMAGES != 0 {
             match send_images(client, &terminal, &id, &images) {
@@ -1429,7 +1659,11 @@ fn pump_client(host: &Host, client: &Client) -> Option<Instant> {
         // Unsubscribed while we took the snapshot.
         let Some(sub) = subs.get_mut(&id) else { continue };
         let Some((frame, next)) = diff_frame(&id, sub, snap, hashes) else {
-            sub.generation = generation;
+            if fresh {
+                sub.generation = generation;
+            } else {
+                due = sooner(due, Instant::now() + FRAME_INTERVAL);
+            }
             continue;
         };
         // Not queued (full or gone): the client keeps what it had; retried next pass.
@@ -1437,6 +1671,11 @@ fn pump_client(host: &Host, client: &Client) -> Option<Instant> {
             break;
         }
         host.frames.fetch_add(1, Ordering::Relaxed);
+        // A late answer may predate `generation`: look at the terminal again.
+        let generation = if fresh { generation } else { seen };
+        if !fresh {
+            due = sooner(due, Instant::now() + FRAME_INTERVAL);
+        }
         *sub = Sub { generation, sent_at: Some(Instant::now()), ..next };
     }
     due
@@ -1883,7 +2122,7 @@ mod tests {
         client.try_send_image("t", 6, &image).unwrap();
         assert_eq!(client.image_bytes.load(Ordering::Acquire), 2 * png.len());
         assert_eq!(Arc::strong_count(&png), 4, "queued twice without a copy");
-        spawn_writer(FrameWriter::new(Box::new(sink.clone())), rx, &client).unwrap();
+        spawn_writer(std::sync::Weak::new(), FrameWriter::new(Box::new(sink.clone())), rx, &client).unwrap();
         let started = Instant::now();
         while client.image_bytes.load(Ordering::Acquire) != 0 {
             assert!(started.elapsed() < Duration::from_secs(5), "the writer took the images off the budget");

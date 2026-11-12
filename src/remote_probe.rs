@@ -48,6 +48,8 @@ pub(crate) struct ProxyShared {
     cut_compressed: AtomicBool,
     pub(crate) connections: AtomicU64,
     down: AtomicBool,
+    /// Relay nothing either way (a client that froze: it neither reads nor writes).
+    stalled: AtomicBool,
     /// Bytes relayed from the service to clients.
     pub(crate) bytes_down: AtomicU64,
 }
@@ -66,6 +68,7 @@ impl Proxy {
             cut_compressed: AtomicBool::new(false),
             connections: AtomicU64::new(0),
             down: AtomicBool::new(false),
+            stalled: AtomicBool::new(false),
             bytes_down: AtomicU64::new(0),
         });
         let accept = shared.clone();
@@ -107,6 +110,12 @@ impl Proxy {
     pub(crate) fn set_delay(&self, delay: Duration) {
         self.shared.delay_ms.store(delay.as_millis() as u64, Ordering::Release);
     }
+
+    /// Stops relaying either way: the service's writes pile up until its
+    /// socket's buffers are full, and the client's heartbeats stop.
+    pub(crate) fn set_stalled(&self, stalled: bool) {
+        self.shared.stalled.store(stalled, Ordering::Release);
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -121,6 +130,10 @@ fn relay(mut from: Box<dyn Read + Send>, mut to: Box<dyn Write + Send>, ends: [T
     let (writer_ends, writer_shared) = (ends.clone(), shared.clone());
     std::thread::spawn(move || {
         for (arrived, bytes, last) in rx {
+            // What was read before a freeze is held too.
+            while writer_shared.stalled.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
             let due = arrived + Duration::from_millis(writer_shared.delay_ms.load(Ordering::Acquire));
             if let Some(wait) = due.checked_duration_since(Instant::now()) {
                 std::thread::sleep(wait);
@@ -135,6 +148,9 @@ fn relay(mut from: Box<dyn Read + Send>, mut to: Box<dyn Write + Send>, ends: [T
     });
     std::thread::spawn(move || {
         loop {
+            while shared.stalled.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
             if frames {
                 let mut header = [0u8; 4];
                 if from.read_exact(&mut header).is_err() {
@@ -197,6 +213,8 @@ struct Typist {
     /// For each reconnect: whether the first echo frame afterwards was full.
     full_after: Vec<bool>,
     awaiting_full: bool,
+    /// Frames of the echo terminal received.
+    frames: u64,
 }
 
 impl Typist {
@@ -220,6 +238,7 @@ impl Typist {
             reconnected_at: Vec::new(),
             full_after: Vec::new(),
             awaiting_full: false,
+            frames: 0,
         })
     }
 
@@ -259,6 +278,7 @@ impl Typist {
             if std::mem::take(&mut self.awaiting_full) {
                 self.full_after.push(frame.full);
             }
+            self.frames += 1;
             self.view.apply8(frame);
         }
     }
@@ -428,7 +448,21 @@ fn step(text: &str) {
 
 fn scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     println!("Atelier remote fault injection (TCP proxy between a protocol-8 client and the service)");
-    conn::spawn_service_exe(exe, instance, &[("ATELIER_LISTEN", "127.0.0.1:0")])?;
+    // The stand-in Copilot (`fake_copilot.rs`) for the agent steps: nothing reaches a real agent.
+    let fake_cli = root.join("fake-cli");
+    std::fs::create_dir_all(&fake_cli)?;
+    let fake_copilot = fake_cli.join(canvas_sys::host::exe_name("copilot"));
+    if std::fs::hard_link(exe, &fake_copilot).is_err() {
+        std::fs::copy(exe, &fake_copilot)?;
+    }
+    let copilot_home = root.join("copilot-home");
+    std::fs::create_dir_all(&copilot_home)?;
+    let (fake_copilot, copilot_home) = (fake_copilot.to_string_lossy().into_owned(), copilot_home.to_string_lossy().into_owned());
+    conn::spawn_service_exe(
+        exe,
+        instance,
+        &[("ATELIER_LISTEN", "127.0.0.1:0"), ("ATELIER_COPILOT", &fake_copilot), (crate::fake_copilot::ENV, "1"), ("COPILOT_HOME", &copilot_home)],
+    )?;
     let deadline = Instant::now() + Duration::from_secs(15);
     let port = loop {
         if let Some(port) = conn::listening_port(instance) {
@@ -551,6 +585,19 @@ fn scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     );
     let times: Vec<String> = typist.reconnects.iter().map(|d| format!("{:.2} s", d.as_secs_f64())).collect();
 
+    step("a client that freezes mid-stream (stops reading and writing) never blocks the service");
+    let direct = ConnTarget::Tcp { addr: format!("127.0.0.1:{port}"), remote_id: None, secret: canvas_sys::token::read_token(&instance.token_path())? };
+    let frozen = frozen_client(exe, instance, root, &direct, &mut typist)?;
+    println!("{frozen}");
+
+    step("after the freeze a new agent session shows its UI within 5 s");
+    let shown = agent_after_freeze(instance, root, &direct)?;
+    println!("    the stand-in agent drew its screen {:.2} s after the launch", shown.as_secs_f64());
+
+    step("two connections resuming one session at once start exactly one process");
+    let once = one_process_per_session(instance, root, &direct)?;
+    println!("{once}");
+
     step("a protocol-7 client of the new service gets protocol-7 messages only");
     let (count, frames) = protocol7_client(instance)?;
     println!("    {count} messages ({frames} protocol-7 frames), none of a protocol-8 variant");
@@ -560,6 +607,222 @@ fn scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     println!("    reconnected {:.2} s after the network came back; the pane shows its output again; offline typing never reached the shell", back.as_secs_f64());
     println!("PASS (probe reconnects: {})", times.join(", "));
     Ok(())
+}
+
+/// The silence after which the service drops a protocol-8 client.
+const SILENCE: Duration = canvas_common::wire::DEAD_AFTER;
+
+/// A protocol-8 client of its own that keeps every terminal's frames (and
+/// what else it was told) apart.
+struct Viewer {
+    conn: Conn,
+    views: std::collections::HashMap<String, TermView>,
+    terminals: std::collections::HashMap<String, crate::protocol::TermInfo>,
+    errors: Vec<(Option<String>, String)>,
+}
+
+impl Viewer {
+    fn open(target: &ConnTarget, name: &str) -> Result<Self> {
+        let options = ConnOptions { name: name.into(), ..Default::default() };
+        let conn = conn::open(target, &options, &ClientSession::new())?;
+        Ok(Self { conn, views: Default::default(), terminals: Default::default(), errors: Vec::new() })
+    }
+
+    fn subscribe(&self, ids: &[&str]) -> Result<()> {
+        self.conn.tx.send(ClientMsg::Subscribe8 { ids: ids.iter().map(|id| (*id).to_owned()).collect(), focused: ids.first().map(|id| (*id).to_owned()) })?;
+        Ok(())
+    }
+
+    fn send(&self, message: ClientMsg) -> Result<()> {
+        self.conn.tx.send(message)?;
+        Ok(())
+    }
+
+    fn pump(&mut self, wait: Duration) {
+        let deadline = Instant::now() + wait;
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            match self.conn.rx.recv_timeout(left) {
+                Ok(ServiceMsg::Frame8(frame)) => self.views.entry(frame.id.clone()).or_default().apply8(frame),
+                Ok(ServiceMsg::Terminals(infos)) => {
+                    for info in infos {
+                        self.terminals.insert(info.id.clone(), info);
+                    }
+                }
+                Ok(ServiceMsg::Error { id, message }) => self.errors.push((id, message)),
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+    }
+
+    fn text(&self, id: &str) -> String {
+        self.views.get(id).map(|view| view.lines.iter().map(|runs| runs.iter().map(|r| r.text.as_str()).collect::<String>()).collect::<Vec<_>>().join("\n")).unwrap_or_default()
+    }
+}
+
+/// What `atelier service status` does: connect over the pipe and ask for the stats. Returns how long it took.
+fn status_round_trip(instance: &Instance) -> Result<Duration> {
+    let started = Instant::now();
+    let conn = conn::try_connect(instance)?;
+    conn.tx.send(ClientMsg::Stats)?;
+    let deadline = started + Duration::from_secs(5);
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        if let Ok(ServiceMsg::Stats(_)) = conn.rx.recv_timeout(left) {
+            return Ok(started.elapsed());
+        }
+    }
+    bail!("the service did not answer a status request within 5 s")
+}
+
+/// The service log's lines as (ms, message).
+fn log_lines(instance: &Instance) -> Vec<(u64, String)> {
+    std::fs::read_to_string(instance.log_path())
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| {
+            let (ms, rest) = line.split_once(' ')?;
+            let message = rest.split_once("] ").map_or(rest, |(_, m)| m);
+            Some((ms.parse().ok()?, message.to_owned()))
+        })
+        .collect()
+}
+
+/// A remote client that stops reading (and heartbeating) in the middle of a
+/// stream of large frames, while another client types and the service is
+/// asked for its status. Checks: every status answer under 1 s; the other
+/// client's keystrokes keep coming back; the frozen client is dropped
+/// within the silence timeout plus 1 s, closed once (logged once).
+fn frozen_client(exe: &Path, instance: &Instance, root: &Path, direct: &ConnTarget, typist: &mut Typist) -> Result<String> {
+    const NOISE: &str = "noise";
+    let mut launcher = Viewer::open(direct, "noise-launcher")?;
+    launcher.send(ClientMsg::Launch {
+        id: NOISE.into(),
+        kind: LaunchKind::Command { program: exe.to_string_lossy().into_owned(), args: vec!["noise".into(), "--rate".into(), "2000".into()] },
+        cwd: root.to_string_lossy().into_owned(),
+        cols: 220,
+        rows: 70,
+    })?;
+    let stall_proxy = Proxy::start(match direct {
+        ConnTarget::Tcp { addr, .. } => addr.clone(),
+        _ => bail!("a TCP target"),
+    })?;
+    let token = canvas_sys::token::read_token(&instance.token_path())?;
+    let mut frozen = Viewer::open(&ConnTarget::Tcp { addr: stall_proxy.addr.clone(), remote_id: None, secret: token }, "frozen-probe")?;
+    frozen.subscribe(&[NOISE, ECHO])?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !frozen.text(NOISE).contains("step") {
+        anyhow::ensure!(Instant::now() < deadline, "the frozen client never got the noise terminal's frames");
+        frozen.pump(Duration::from_millis(50));
+        launcher.pump(Duration::ZERO);
+    }
+    let id: u64 = log_lines(instance)
+        .iter()
+        .rev()
+        .find_map(|(_, line)| line.strip_prefix("remote client ").filter(|rest| rest.contains("connected (frozen-probe"))?.split_whitespace().next()?.parse().ok())
+        .context("the service logged the frozen client's connection")?;
+    // Freeze it in the middle of the stream: the service's writes back up.
+    let frozen_at = crate::paths::now_ms();
+    stall_proxy.set_stalled(true);
+    let (mut worst, mut asked) = (Duration::ZERO, 0);
+    let (frames_before, echoed_before) = (typist.frames, typist.echoed().len());
+    let mut gone_at = None;
+    let until = Instant::now() + SILENCE + Duration::from_secs(3);
+    while Instant::now() < until {
+        let took = status_round_trip(instance)?;
+        anyhow::ensure!(took < Duration::from_secs(1), "service status took {:.2} s while a client was frozen", took.as_secs_f64());
+        worst = worst.max(took);
+        asked += 1;
+        typist.type_keys(3, Duration::from_millis(60), |_, _| {})?;
+        if gone_at.is_none() {
+            gone_at = log_lines(instance).iter().find(|(ms, line)| *ms >= frozen_at && *line == format!("remote client {id} disconnected")).map(|(ms, _)| *ms);
+        }
+    }
+    typist.pump(Duration::from_millis(300))?;
+    let gone_at = gone_at.with_context(|| format!("the frozen client {id} was never dropped; see {}", instance.log_path().display()))?;
+    let after = Duration::from_millis(gone_at.saturating_sub(frozen_at));
+    anyhow::ensure!(after <= SILENCE + Duration::from_secs(1), "the frozen client was dropped {:.2} s after it froze (silence timeout {} s)", after.as_secs_f64(), SILENCE.as_secs());
+    let closings = log_lines(instance).iter().filter(|(_, line)| line.starts_with(&format!("client {id} silent for "))).count();
+    anyhow::ensure!(closings == 1, "the frozen client's close was logged {closings} times (once expected)");
+    let (frames, echoed) = (typist.frames - frames_before, typist.echoed().len() - echoed_before);
+    anyhow::ensure!(frames > 0 && echoed > 0, "the other client got {frames} frames and {echoed} echoed keys while a client was frozen");
+    stall_proxy.set_stalled(false);
+    stall_proxy.drop_all();
+    launcher.send(ClientMsg::Stop { id: NOISE.into(), force: true })?;
+    launcher.pump(Duration::from_millis(200));
+    Ok(format!(
+        "    client {id} froze mid-stream; dropped {:.2} s later (closing logged once); {asked} status requests answered (slowest {:.0} ms); the other client got {frames} frames and {echoed} echoed keys meanwhile",
+        after.as_secs_f64(),
+        worst.as_secs_f64() * 1000.0
+    ))
+}
+
+/// Launches the stand-in Copilot after the freeze: its screen must be there within 5 s.
+fn agent_after_freeze(instance: &Instance, root: &Path, direct: &ConnTarget) -> Result<Duration> {
+    let _ = instance;
+    let mut viewer = Viewer::open(direct, "agent-after-freeze")?;
+    let id = uuid::Uuid::new_v4().to_string();
+    viewer.subscribe(&[&id])?;
+    let launched = Instant::now();
+    viewer.send(ClientMsg::Launch { id: id.clone(), kind: LaunchKind::Copilot { new_name: None, prompt: None, resume: false }, cwd: root.to_string_lossy().into_owned(), cols: 100, rows: 30 })?;
+    while !viewer.text(&id).contains("Fake Copilot") {
+        if let Some((_, error)) = viewer.errors.first() {
+            bail!("the launch failed: {error}");
+        }
+        anyhow::ensure!(launched.elapsed() < Duration::from_secs(5), "the new agent's box stayed blank for 5 s after the freeze:\n{}", viewer.text(&id));
+        viewer.pump(Duration::from_millis(50));
+    }
+    let shown = launched.elapsed();
+    viewer.send(ClientMsg::Stop { id, force: true })?;
+    viewer.pump(Duration::from_millis(100));
+    Ok(shown)
+}
+
+/// Two connections send `Launch` for one session at the same moment (a
+/// frozen client's replayed resume and its reconnection's): exactly one
+/// process starts. A third box resuming the same agent session is refused.
+fn one_process_per_session(instance: &Instance, root: &Path, direct: &ConnTarget) -> Result<String> {
+    let session = uuid::Uuid::new_v4().to_string();
+    let launch = |native: Option<String>| LaunchKind::Agent(Box::new(crate::protocol::AgentLaunch { agent: "copilot".into(), resume: true, native_id: native, ..Default::default() }));
+    let mut first = Viewer::open(direct, "resume-a")?;
+    let mut second = Viewer::open(direct, "resume-b")?;
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let senders: Vec<_> = [&first, &second]
+        .iter()
+        .map(|viewer| {
+            let (tx, barrier, session, kind, cwd) = (viewer.conn.tx.clone(), barrier.clone(), session.clone(), launch(None), root.to_string_lossy().into_owned());
+            std::thread::spawn(move || {
+                barrier.wait();
+                tx.send(ClientMsg::Launch { id: session, kind, cwd, cols: 100, rows: 30 }).is_ok()
+            })
+        })
+        .collect();
+    for sender in senders {
+        anyhow::ensure!(sender.join().unwrap_or(false), "a launch could not be sent");
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !first.terminals.get(&session).is_some_and(|t| t.alive) {
+        anyhow::ensure!(Instant::now() < deadline, "the resumed session did not start: {:?} {:?}", first.errors, second.errors);
+        first.pump(Duration::from_millis(50));
+        second.pump(Duration::ZERO);
+    }
+    // Time for a second launch to show up if there were one.
+    first.pump(Duration::from_millis(1500));
+    second.pump(Duration::from_millis(100));
+    let launched = log_lines(instance).iter().filter(|(_, line)| line.starts_with(&format!("launched {session} "))).count();
+    anyhow::ensure!(launched == 1, "{launched} processes were started for one session (one expected)");
+    // Another box resuming the same agent session while it runs: refused.
+    let other = format!("other-{}", &session[..8]);
+    first.send(ClientMsg::Launch { id: other.clone(), kind: launch(Some(session.clone())), cwd: root.to_string_lossy().into_owned(), cols: 100, rows: 30 })?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !first.errors.iter().any(|(id, message)| id.as_deref() == Some(other.as_str()) && message.contains("already running")) {
+        anyhow::ensure!(Instant::now() < deadline, "a second box resuming a running session was not refused: {:?}", first.errors);
+        first.pump(Duration::from_millis(50));
+    }
+    let refused = log_lines(instance).iter().any(|(_, line)| line.starts_with(&format!("launched {other} ")));
+    anyhow::ensure!(!refused, "the second box started a process");
+    first.send(ClientMsg::Stop { id: session, force: true })?;
+    first.pump(Duration::from_millis(200));
+    Ok("    two concurrent resumes from two connections: one process; a third box resuming the running session was refused (\"already running\")".to_owned())
 }
 
 /// Runs the canvas (`--demo --remote HOST:PORT` through the proxy) in a hidden

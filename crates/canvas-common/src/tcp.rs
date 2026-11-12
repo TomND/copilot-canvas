@@ -6,6 +6,12 @@
 //! down, so readers wait for data with `WSAPoll` in short slices and end once
 //! the connection was closed. The same slices enforce a read deadline (the
 //! service's handshake timeout) without a thread per connection.
+//!
+//! Writers never wait on a peer forever: the service gives each client a
+//! write deadline ([`TcpCloser::set_write_timeout`]); a write the peer does not
+//! take in time fails with `TimedOut` (the service then drops the client),
+//! and on Windows a waiting writer also ends within a slice once the
+//! connection was closed.
 
 use std::io::{self, Read, Write};
 #[cfg(windows)]
@@ -22,7 +28,7 @@ use windows_sys::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_OWNER_PID, TCP_TABLE_CLASS, TCP_TABLE_OWNER_PID_CONNECTIONS, TCP_TABLE_OWNER_PID_LISTENER,
 };
 #[cfg(windows)]
-use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6, POLLRDNORM, SO_EXCLUSIVEADDRUSE, SOCKET, SOL_SOCKET, WSAPOLLFD, WSAPoll, setsockopt};
+use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6, POLLRDNORM, POLLWRNORM, SO_EXCLUSIVEADDRUSE, SOCKET, SOL_SOCKET, WSAPOLLFD, WSAPoll, setsockopt};
 
 /// How often a waiting reader checks whether its connection was closed.
 const POLL_SLICE_MS: i32 = 100;
@@ -32,6 +38,8 @@ struct Shared {
     closed: AtomicBool,
     /// Reads fail once `epoch` is this many ms old (0: no deadline).
     deadline_ms: AtomicU64,
+    /// A write the peer does not take within this many ms fails (0: no deadline).
+    write_timeout_ms: AtomicU64,
     epoch: Instant,
 }
 
@@ -58,6 +66,22 @@ fn readable(stream: &TcpStream, ms: i32) -> io::Result<bool> {
         return Err(io::Error::last_os_error());
     }
     Ok(ready > 0)
+}
+
+/// Waits up to `ms` for the socket to take more data (or to fail).
+#[cfg(windows)]
+fn writable(stream: &TcpStream, ms: i32) -> io::Result<bool> {
+    let mut fd = WSAPOLLFD { fd: stream.as_raw_socket() as SOCKET, events: POLLWRNORM, revents: 0 };
+    let ready = unsafe { WSAPoll(&mut fd, 1, ms) };
+    if ready < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(ready > 0)
+}
+
+/// The error of a write the peer did not take before the write deadline.
+fn write_timed_out() -> io::Error {
+    io::Error::new(io::ErrorKind::TimedOut, "the peer did not take the data in time")
 }
 
 /// Elsewhere (macOS and iOS: the mock service, tests) a peek with a read
@@ -113,7 +137,26 @@ impl Write for TcpWriter {
         if self.shared.closed() {
             return Err(io::Error::new(io::ErrorKind::BrokenPipe, "connection closed"));
         }
-        self.stream.write(buf)
+        // Winsock does not wake a blocked `send` when the socket is shut down:
+        // wait for room in slices, so a close or the deadline ends the wait.
+        #[cfg(windows)]
+        {
+            let started = Instant::now();
+            let limit = self.shared.write_timeout_ms.load(Ordering::Acquire);
+            while !writable(&self.stream, POLL_SLICE_MS)? {
+                if self.shared.closed() {
+                    return Err(io::Error::new(io::ErrorKind::BrokenPipe, "connection closed"));
+                }
+                if limit > 0 && started.elapsed() >= Duration::from_millis(limit) {
+                    return Err(write_timed_out());
+                }
+            }
+        }
+        match self.stream.write(buf) {
+            // The socket's send timeout (the write deadline) passed.
+            Err(error) if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => Err(write_timed_out()),
+            other => other,
+        }
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -135,6 +178,14 @@ impl TcpCloser {
         self.0.stream.peer_addr().ok()
     }
 
+    /// A write the peer does not take within `limit` fails with `TimedOut`
+    /// (`None`: writes wait as long as the peer needs).
+    pub fn set_write_timeout(&self, limit: Option<Duration>) {
+        let ms = limit.map_or(0, |d| d.as_millis().max(1) as u64);
+        self.0.write_timeout_ms.store(ms, Ordering::Release);
+        let _ = self.0.stream.set_write_timeout(limit.filter(|d| !d.is_zero()));
+    }
+
     /// Reads fail with `TimedOut` once `within` has passed (`None`: no deadline).
     pub fn set_deadline(&self, within: Option<Duration>) {
         let ms = within.map_or(0, |d| (self.0.epoch.elapsed() + d).as_millis().max(1) as u64);
@@ -147,7 +198,7 @@ pub fn split(stream: TcpStream) -> io::Result<(TcpReader, TcpWriter, TcpCloser)>
     stream.set_nodelay(true)?;
     let keepalive = socket2::TcpKeepalive::new().with_time(Duration::from_secs(10)).with_interval(Duration::from_secs(2));
     let _ = socket2::SockRef::from(&stream).set_tcp_keepalive(&keepalive);
-    let shared = Arc::new(Shared { stream: stream.try_clone()?, closed: AtomicBool::new(false), deadline_ms: AtomicU64::new(0), epoch: Instant::now() });
+    let shared = Arc::new(Shared { stream: stream.try_clone()?, closed: AtomicBool::new(false), deadline_ms: AtomicU64::new(0), write_timeout_ms: AtomicU64::new(0), epoch: Instant::now() });
     Ok((
         TcpReader { stream: stream.try_clone()?, shared: shared.clone() },
         TcpWriter { stream, shared: shared.clone() },
@@ -385,6 +436,29 @@ mod tests {
         assert!(started.elapsed() < Duration::from_millis(800), "a trickle does not extend the deadline");
         closer.set_deadline(None);
         trickle.join().unwrap();
+    }
+
+    #[test]
+    fn a_write_deadline_ends_a_peer_that_stopped_reading_and_a_close_ends_a_waiting_write() {
+        let (server, client) = pair();
+        let (_reader, mut writer, closer) = split(server).unwrap();
+        // The peer never reads: the buffers fill and the next write waits.
+        let (_creader, _cwriter, _ccloser) = split(client).unwrap();
+        closer.set_write_timeout(Some(Duration::from_millis(400)));
+        let chunk = vec![7u8; 256 * 1024];
+        let started = Instant::now();
+        let error = loop {
+            if let Err(error) = writer.write_all(&chunk) {
+                break error;
+            }
+            assert!(started.elapsed() < Duration::from_secs(20), "the buffers never filled");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        // A closed connection fails a write at once.
+        closer.close();
+        let started = Instant::now();
+        assert!(writer.write_all(&chunk).is_err());
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

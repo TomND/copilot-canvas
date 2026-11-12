@@ -381,6 +381,14 @@ impl Agents {
             !launch.resume || !provider.is_live(&session),
             "this session is already running in another terminal; use that terminal"
         );
+        // Nor for one another box of this service runs or is starting right
+        // now (before the agent wrote its own lock): claimed under one lock.
+        if launch.fork_from.is_none()
+            && let Err(other) = self.host.claim_launch_key(id, &format!("{}:{session}", kind.id()))
+        {
+            log(&self.instance, &format!("terminal {id}: {} session {session} already runs in terminal {other}; not started twice", kind.id()));
+            anyhow::bail!("this session is already running in another box; use that terminal");
+        }
         // Structured launches carry no free-form arguments; the environment
         // must not impersonate another session.
         anyhow::ensure!(

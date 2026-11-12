@@ -201,8 +201,15 @@ pub struct WsReader {
 }
 
 impl WsReader {
+    /// A control frame through the shared writer, only when it is free: the
+    /// reader never waits behind a write the peer is not taking (its data
+    /// already shows the link is alive; a skipped pong or close echo is harmless).
     fn send(&self, opcode: u8, payload: &[u8]) -> io::Result<()> {
-        let mut writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        let mut writer = match self.writer.try_lock() {
+            Ok(writer) => writer,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(()),
+        };
         writer.write_all(&frame(self.role, opcode, payload))?;
         writer.flush()
     }

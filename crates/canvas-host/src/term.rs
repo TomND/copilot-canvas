@@ -46,6 +46,8 @@ const CONTROL_BURST: u32 = 64;
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long a snapshot request waits for its answer.
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long the frame pump waits for one terminal's snapshot.
+pub const PUMP_SNAPSHOT_WAIT: Duration = Duration::from_millis(200);
 /// A recording stops (with a final note) once its file reaches this size.
 const RECORD_LIMIT: u64 = 64 << 20;
 /// Buffered recording data reaches the file at least this often.
@@ -580,7 +582,16 @@ impl Terminal {
 
     /// The current viewport (a round trip to the emulator thread).
     pub fn snapshot(&self) -> Option<Snapshot> {
-        request_snapshot(&self.control, &self.pending_snapshot, CONTROL_TIMEOUT, SNAPSHOT_TIMEOUT)
+        request_snapshot(&self.control, &self.pending_snapshot, CONTROL_TIMEOUT, SNAPSHOT_TIMEOUT, false).map(|(snapshot, _)| snapshot)
+    }
+
+    /// The viewport for the frame pump, which serves every client and terminal
+    /// from one thread: it waits at most [`PUMP_SNAPSHOT_WAIT`], so a busy or
+    /// stuck engine delays only its own frames. An answer that came after an
+    /// earlier wait ran out is taken too, marked not fresh (`false`: the screen
+    /// may have changed since; ask again).
+    pub fn snapshot_for_pump(&self) -> Option<(Snapshot, bool)> {
+        request_snapshot(&self.control, &self.pending_snapshot, Duration::ZERO, PUMP_SNAPSHOT_WAIT, true)
     }
 
     /// The screen and the count of the program's output bytes the engine
@@ -834,22 +845,31 @@ fn image_encoder() -> Option<&'static Sender<EncodeJob>> {
         .as_ref()
 }
 
-/// Asks the emulator thread for its viewport. At most one request per
-/// terminal is outstanding: after a timeout the unanswered request is kept in
-/// `pending` and the next call waits for its answer instead of queueing
-/// another; an answer that arrived meanwhile is stale and replaced by a new request.
-fn request_snapshot(control: &Sender<Ctl>, pending: &Mutex<Option<Receiver<Snapshot>>>, send: Duration, wait: Duration) -> Option<Snapshot> {
+/// Asks the emulator thread for its viewport; with it, whether it was drawn
+/// after this call began (`false`: an answer that was waiting, taken with `take_late`).
+/// At most one request per terminal is outstanding: after a timeout the
+/// unanswered request is kept in `pending` and the next call waits for its
+/// answer instead of queueing another; an answer that arrived meanwhile is
+/// stale and replaced by a new request, unless `take_late`. A full control
+/// queue waits at most `send` (zero: not at all).
+fn request_snapshot(control: &Sender<Ctl>, pending: &Mutex<Option<Receiver<Snapshot>>>, send: Duration, wait: Duration, take_late: bool) -> Option<(Snapshot, bool)> {
     let mut pending = lock(pending);
-    let reply = match pending.take() {
-        Some(reply) if reply.is_empty() => reply,
+    let (reply, fresh, wait) = match pending.take() {
+        // Its answer, when it comes, shows the screen after this call began.
+        // The pump waited for it once already: it only looks.
+        Some(reply) if reply.is_empty() => (reply, true, if take_late { Duration::ZERO } else { wait }),
+        Some(reply) if take_late => return reply.try_recv().ok().map(|snapshot| (snapshot, false)),
         _ => {
             let (tx, rx) = bounded(1);
-            control.send_timeout(Ctl::Snapshot(tx), send).ok()?;
-            rx
+            let sent = if send.is_zero() { control.try_send(Ctl::Snapshot(tx)).is_ok() } else { control.send_timeout(Ctl::Snapshot(tx), send).is_ok() };
+            if !sent {
+                return None;
+            }
+            (rx, true, wait)
         }
     };
     match reply.recv_timeout(wait) {
-        Ok(snapshot) => Some(snapshot),
+        Ok(snapshot) => Some((snapshot, fresh)),
         Err(RecvTimeoutError::Timeout) => {
             *pending = Some(reply);
             None
@@ -1483,7 +1503,7 @@ mod tests {
         }
 
         fn snapshot(&self, wait: Duration) -> Option<Snapshot> {
-            request_snapshot(&self.control, &self.pending, CONTROL_TIMEOUT, wait)
+            request_snapshot(&self.control, &self.pending, CONTROL_TIMEOUT, wait, false).map(|(snapshot, _)| snapshot)
         }
 
         /// Floods the output channel for `period` (blocking while it is full).
@@ -1615,7 +1635,7 @@ mod tests {
         };
         spawn_emulator(thread, || panic!("no engine"));
         assert!(failed.recv_timeout(Duration::from_secs(5)).unwrap().contains("no engine"));
-        let snap = request_snapshot(&control, &Mutex::new(None), CONTROL_TIMEOUT, Duration::from_secs(5)).expect("blank screen");
+        let (snap, _) = request_snapshot(&control, &Mutex::new(None), CONTROL_TIMEOUT, Duration::from_secs(5), false).expect("blank screen");
         assert_eq!((snap.cols, snap.rows, snap.lines.len()), (30, 6, 6));
     }
 
@@ -1637,6 +1657,24 @@ mod tests {
     }
 
     #[test]
+    fn the_frame_pump_never_waits_long_for_a_slow_engine_and_uses_its_late_answer() {
+        let _serial = serial();
+        let log = ProbeLog::default();
+        let harness = Harness::new(Probe { snapshot_delay: Duration::from_millis(600), ..Probe::new(&log) });
+        let pump = |h: &Harness| request_snapshot(&h.control, &h.pending, Duration::ZERO, PUMP_SNAPSHOT_WAIT, true);
+        let started = Instant::now();
+        assert!(pump(&harness).is_none(), "not answered within the pump's wait");
+        assert!(started.elapsed() < PUMP_SNAPSHOT_WAIT + Duration::from_millis(300), "the pump waited {:?}", started.elapsed());
+        let started = Instant::now();
+        assert!(pump(&harness).is_none(), "still not answered");
+        assert!(started.elapsed() < Duration::from_millis(100), "an outstanding request is only looked at, not waited for again");
+        std::thread::sleep(Duration::from_millis(800));
+        let (_, fresh) = pump(&harness).expect("the late answer is used");
+        assert!(!fresh, "and marked as not fresh");
+        assert_eq!(log.snapshots.load(Ordering::SeqCst), 1, "no second request meanwhile");
+    }
+
+    #[test]
     fn the_thread_ends_with_the_terminal_and_survives_the_reader() {
         let log = ProbeLog::default();
         let harness = Harness::new(Probe::new(&log));
@@ -1644,7 +1682,7 @@ mod tests {
         let Harness { control, output, written, pending, .. } = harness;
         drop(output);
         // The reader is gone; control still works.
-        assert!(request_snapshot(&control, &pending, CONTROL_TIMEOUT, Duration::from_secs(5)).is_some());
+        assert!(request_snapshot(&control, &pending, CONTROL_TIMEOUT, Duration::from_secs(5), false).is_some());
         drop(control);
         // The thread exits and drops its writer end.
         let started = Instant::now();
