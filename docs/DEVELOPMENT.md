@@ -936,8 +936,11 @@ Each with the reason it matters.
 
 The README's *Quick start* describes a preview ZIP on the GitHub Releases
 page holding `atelier.exe` and `atelier-gui.exe`, which must
-stay in one folder. The repository has no release workflow
-(`.github/workflows` holds only `ci.yml`); a release build is
+stay in one folder. CI's Windows `test` job builds it right after clippy and
+uploads it as the `windows-x64` artifact
+(`atelier-<version>-<commit>-windows-x64.zip`: both executables and
+`BUILD-INFO.json` with the build id, commit and SHA-256s); a pre-release is
+that ZIP attached with `gh release create … --prerelease`. A local release build is
 `cargo build --release` (both executables in `target\release`; the C runtime
 is linked statically, `.cargo/config.toml`, because the service runs from
 its copy in `<home>/bin`). `cargo build --release --no-default-features`

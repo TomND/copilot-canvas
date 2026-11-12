@@ -63,14 +63,34 @@ jobs:
           path: target/ghostty
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # The release build and its ZIP come first, so a Windows build is
+      # available minutes into the run (the self-tests below take most of it).
+      - name: release build
+        run: cargo build --release
+      - name: package the Windows build (windows-x64 ZIP with BUILD-INFO.json)
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"' | Select-Object -First 1).Matches.Groups[1].Value
+          $short = "$env:GITHUB_SHA".Substring(0, 7)
+          $dist = "dist\atelier-$version-$short-windows-x64"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          Copy-Item target\release\atelier.exe, target\release\atelier-gui.exe $dist
+          $build = (& target\release\atelier.exe --version).Trim()
+          $files = @{}
+          foreach ($f in 'atelier.exe', 'atelier-gui.exe') { $files[$f] = (Get-FileHash "$dist\$f" -Algorithm SHA256).Hash.ToLower() }
+          [ordered]@{ version = $version; build = $build; commit = "$env:GITHUB_SHA"; ref = "$env:GITHUB_REF_NAME"; run = "$env:GITHUB_RUN_ID"; target = 'x86_64-pc-windows-msvc'; engine = 'ghostty'; sha256 = $files } | ConvertTo-Json | Set-Content -Encoding utf8 "$dist\BUILD-INFO.json"
+          Compress-Archive -Path "$dist\*" -DestinationPath "dist\atelier-$version-$short-windows-x64.zip"
+          Get-ChildItem dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-x64
+          path: dist/*.zip
       # Includes canvas-core's ViewModel snapshot tests (tests/view_snapshots.rs):
       # fixed inputs, so they are the same on every machine.
       - name: unit and integration tests
         run: cargo test --workspace
       - name: alacritty-only build (no Zig)
         run: cargo build --no-default-features
-      - name: release build
-        run: cargo build --release
       - name: golden corpus (both engines)
         run: target\release\atelier.exe corpus check
       - name: VM sessions self-test (local sandboxes, no cloud)
