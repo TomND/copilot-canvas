@@ -96,7 +96,7 @@ fn idle(shared: &Shared, session: &str) -> bool {
     if info.progress_seen && matches!(info.progress, 1 | 3) {
         return false;
     }
-    if lock(&shared.input_at).get(session).is_some_and(|t| now_ms().saturating_sub(*t) < 20_000) {
+    if lock(&shared.submitting).contains(session) || lock(&shared.input_at).get(session).is_some_and(|t| now_ms().saturating_sub(*t) < 20_000) {
         return false;
     }
     let native = shared.native_of(session);
@@ -113,12 +113,83 @@ fn idle(shared: &Shared, session: &str) -> bool {
     }
 }
 
-/// Types text into a live terminal and submits it.
-fn type_in(shared: &Shared, session: &str, text: &str) -> bool {
+/// How long a submitted message may take to show in the agent's state
+/// before Enter is pressed again, and how many times it is pressed again.
+const SUBMIT_CHECK: Duration = Duration::from_secs(5);
+const SUBMIT_RETRIES: usize = 2;
+
+/// Types text into a live terminal and submits it. The paste goes now; its
+/// Enter follows `SUBMIT_AFTER_PASTE_MS` later on a thread of its own (an
+/// Enter that arrives with a paste is taken as part of it by Copilot CLI and
+/// Claude Code, which left the text in their prompt unsent), and is pressed
+/// again, at most twice, while the agent shows no sign of having taken it.
+/// Nothing else is typed into the session meanwhile (`idle`).
+fn type_in(shared: &Arc<Shared>, session: &str, text: &str) -> bool {
     let Some(term) = lock(&shared.terms).get(session).cloned() else { return false };
-    let ok = term.send_input(&Input::Paste(text.to_owned())).is_ok() && term.send_input(&Input::Key { key: Key::Enter, mods: 0 }).is_ok();
+    if term.send_input(&Input::Paste(text.to_owned())).is_err() {
+        return false;
+    }
     let _ = shared.pump.try_send(());
-    ok
+    lock(&shared.submitting).insert(session.to_owned());
+    let (shared, session) = (shared.clone(), session.to_owned());
+    let typed_ms = now_ms();
+    let spawned = std::thread::Builder::new().name("submit".into()).spawn({
+        let (shared, session) = (shared.clone(), session.clone());
+        move || {
+            std::thread::sleep(Duration::from_millis(crate::protocol::SUBMIT_AFTER_PASTE_MS));
+            submit(&shared, &session, typed_ms);
+            lock(&shared.submitting).remove(&session);
+        }
+    });
+    if spawned.is_err() {
+        lock(&shared.submitting).remove(&session);
+        return term.send_input(&Input::Key { key: Key::Enter, mods: 0 }).is_ok();
+    }
+    true
+}
+
+/// Presses Enter in `session` until the agent shows it took what was typed
+/// at `typed_ms` (see `type_in`).
+fn submit(shared: &Shared, session: &str, typed_ms: u64) {
+    for attempt in 0..=SUBMIT_RETRIES {
+        let Some(term) = lock(&shared.terms).get(session).cloned().filter(|t| t.alive.load(Ordering::Acquire)) else { return };
+        if term.send_input(&Input::Key { key: Key::Enter, mods: 0 }).is_err() {
+            return;
+        }
+        let _ = shared.pump.try_send(());
+        let deadline = std::time::Instant::now() + SUBMIT_CHECK;
+        loop {
+            match taken(shared, session, typed_ms) {
+                // No way to tell (no history for it): one Enter is all it gets.
+                None => return,
+                Some(true) => return,
+                Some(false) if std::time::Instant::now() >= deadline => break,
+                Some(false) => std::thread::sleep(Duration::from_millis(200)),
+            }
+        }
+        if attempt < SUBMIT_RETRIES {
+            log(&shared.instance, &format!("{session}: no sign the agent took the typed message; pressing Enter again"));
+        }
+    }
+    log(&shared.instance, &format!("{session}: the typed message may still wait in the agent's prompt"));
+}
+
+/// Whether the agent of `session` took a message typed at `typed_ms`: its
+/// history moved on (a new event, a turn, a question) or it shows progress.
+/// `None` when nothing can tell (no history of it, its terminal is gone).
+fn taken(shared: &Shared, session: &str, typed_ms: u64) -> Option<bool> {
+    let term = lock(&shared.terms).get(session).cloned()?;
+    if !term.alive.load(Ordering::Acquire) {
+        return None;
+    }
+    let info = term.info();
+    if info.progress_seen && matches!(info.progress, 1 | 3) {
+        return Some(true);
+    }
+    let native = shared.native_of(session);
+    let sessions = lock(&shared.sessions);
+    let summary = sessions.get(&native)?;
+    Some(summary.last_event_ms >= typed_ms || summary.activity == Activity::Working || summary.pending > 0)
 }
 
 /// First request and latest summary of a session, from its history.
@@ -477,7 +548,7 @@ fn fresh_conversation(started: bool, exists: impl FnOnce() -> bool) -> bool {
 }
 
 /// Starts (or types in) one passive run with its pending events.
-fn start_run(shared: &Shared, routing: &Routing, spec: &PassiveSpec, state: &mut BusState, now: u64) {
+fn start_run(shared: &Arc<Shared>, routing: &Routing, spec: &PassiveSpec, state: &mut BusState, now: u64) {
     let snapshot_state = state.clone();
     let Some(s) = state.passive.get_mut(&spec.key) else { return };
     let place = match run_place(&shared.instance.home, routing, spec) {
@@ -647,7 +718,7 @@ fn reap(shared: &Shared, routing: &Routing, state: &mut BusState, now: u64) {
 /// Types queued messages into their sessions when they are open and idle.
 /// One message per pass, so the session reacts before the next one arrives.
 /// Answers the message it delivered.
-fn deliver_mail(shared: &Shared, state: &mut BusState) -> Option<Mail> {
+fn deliver_mail(shared: &Arc<Shared>, state: &mut BusState) -> Option<Mail> {
     for mail in state.mailbox.clone() {
         // A session being resumed after a restart gets its note first.
         if shared.restore.holds(&mail.to) {

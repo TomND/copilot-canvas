@@ -200,8 +200,8 @@ fn session(args: &[String]) -> Result<()> {
     canvas_sys::console::raw_vt_modes();
     let mut out = std::io::stdout();
     let disabled: Vec<&str> = args.windows(2).filter(|w| w[0] == "--disable-mcp-server").map(|w| w[1].as_str()).collect();
-    // Mouse reports (SGR), as Copilot asks for them.
-    write!(out, "\x1b[?1000h\x1b[?1006h")?;
+    // Mouse reports (SGR) and bracketed paste, as Copilot asks for them.
+    write!(out, "\x1b[?1000h\x1b[?1006h\x1b[?2004h")?;
     let history = FakeHistory::start(args);
     write!(out, "Fake Copilot (canvas parity)\r\n")?;
     // A resumed conversation says what it found (a resume on a new VM brings it along).
@@ -216,14 +216,38 @@ fn session(args: &[String]) -> Result<()> {
     let mut stdin = std::io::stdin().lock();
     let mut buf = [0u8; 4096];
     let mut line = String::new();
+    // When the last paste ended: an Enter right after it is taken as part of
+    // the paste, as Copilot CLI and Claude Code do (it does not submit).
+    let mut pasted_at: Option<std::time::Instant> = None;
     loop {
         let n = stdin.read(&mut buf)?;
         if n == 0 {
             break;
         }
-        let text = String::from_utf8_lossy(&buf[..n]).into_owned();
+        let mut text = String::from_utf8_lossy(&buf[..n]).into_owned();
         if text.contains('\u{4}') || text.contains('\u{3}') {
             break;
+        }
+        if pasted_at.is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(300)) && text.starts_with('\r') {
+            text.remove(0);
+        }
+        // A bracketed paste joins the line (shown; its own line breaks never submit).
+        while let Some(start) = text.find("\x1b[200~") {
+            let body = start + "\x1b[200~".len();
+            let end = text[body..].find("\x1b[201~").map_or(text.len(), |e| body + e);
+            let pasted = text[body..end].replace('\r', "\n");
+            write!(out, "{}", pasted.replace('\n', "\r\n  "))?;
+            line.push_str(&pasted);
+            pasted_at = Some(std::time::Instant::now());
+            let mut rest = text[(end + "\x1b[201~".len()).min(text.len())..].to_owned();
+            if rest.starts_with('\r') {
+                rest.remove(0);
+            }
+            text = format!("{}{rest}", &text[..start]);
+        }
+        if text.is_empty() {
+            out.flush()?;
+            continue;
         }
         if text.contains("\x1b[<") {
             // Every report in the read (wheel notches arrive together).
@@ -252,7 +276,7 @@ fn session(args: &[String]) -> Result<()> {
         }
         out.flush()?;
     }
-    write!(out, "\x1b[?1000l\x1b[?1006l")?;
+    write!(out, "\x1b[?1000l\x1b[?1006l\x1b[?2004l")?;
     out.flush()?;
     Ok(())
 }

@@ -180,6 +180,10 @@ pub struct Agents {
     vm_links: Arc<crate::vm::link::Links>,
     /// The running set, resumed after a restart (`restore.rs`).
     restore: restore::Restore,
+    /// Sessions a typed message is being submitted to (its Enter follows the
+    /// paste and is pressed again until the agent takes it): nothing else is
+    /// typed into them meanwhile.
+    submitting: Mutex<HashSet<String>>,
 }
 
 /// Passive sessions and the factory watch use the backend under this name.
@@ -253,6 +257,7 @@ impl Agents {
                 Arc::new(move |line: String| log(&instance, &line))
             }),
             restore: restore::Restore::new(&instance.home, &instance.name),
+            submitting: Mutex::new(HashSet::new()),
         });
         // Sessions found inside VM boxes' terminals in their guests: subsessions, as local ones (`subsession_loop`).
         agents.vm_links.on_subsession({

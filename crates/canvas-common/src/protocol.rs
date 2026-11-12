@@ -18,6 +18,12 @@ pub const PROTOCOL: u32 = 8;
 pub const PROTOCOL_MIN: u32 = 7;
 /// Largest frame body.
 pub const MAX_FRAME: usize = 32 * 1024 * 1024;
+
+/// How long a program submitting typed text waits between the paste and the
+/// Enter that submits it (ms). Copilot CLI and Claude Code take a key that
+/// arrives right after a paste as part of the paste, so an Enter sent with it
+/// leaves the text in their prompt, unsent.
+pub const SUBMIT_AFTER_PASTE_MS: u64 = 600;
 /// Largest frame body read before the peer authenticated.
 pub const PRE_AUTH_FRAME: usize = 16 * 1024;
 /// Longest build id and client name in a handshake.

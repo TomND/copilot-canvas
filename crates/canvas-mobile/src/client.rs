@@ -254,10 +254,16 @@ impl Client {
         self.shared.input(&id, Input::Paste(text));
     }
 
-    /// A prompt written in the app: pasted, then Enter.
+    /// A prompt written in the app: pasted, then Enter a moment later (an
+    /// Enter that arrives with the paste is taken as part of it by Copilot CLI
+    /// and Claude Code, which left the prompt unsent).
     pub fn submit(&self, id: String, text: String) {
         if self.shared.input(&id, Input::Paste(text)) {
-            self.shared.input(&id, Input::Key { key: Key::Enter, mods: 0 });
+            let shared = self.shared.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(protocol::SUBMIT_AFTER_PASTE_MS));
+                shared.input(&id, Input::Key { key: Key::Enter, mods: 0 });
+            });
         }
     }
 

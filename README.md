@@ -339,7 +339,10 @@ what it was running, with no window needed:
   anything that was in progress.* A loop gets its interval to set up again; a
   question or permission request it was waiting on is lost, so it is told to
   ask again. An agent that was idle with no loop is resumed without a note (no
-  tokens spent).
+  tokens spent). Like every message the canvas types into a session, the note
+  is pasted and then submitted with Enter a moment later (an Enter that arrives
+  with a paste is taken as part of it by Copilot CLI and Claude Code); Enter is
+  pressed again, at most twice, while the agent shows no sign of taking it.
 - **Loops, messages, passive sessions, automations**: a loop (`/every`) lives
   in the agent's process, so the note asks the agent to set it up again.
   Messages queued for a session wait in the bus's state and are delivered
