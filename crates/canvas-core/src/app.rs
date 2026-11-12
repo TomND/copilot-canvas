@@ -825,6 +825,9 @@ impl App {
         self.last_tracked.clear();
         self.routing_sent.clear();
         self.resync_terms = true;
+        // Launches the previous connection asked for are the service's now (a
+        // restarted one resumes what it ran): never "preparing" forever.
+        self.launching.clear();
         // The new connection opens the document again (local changes are kept).
         self.request_doc();
         if lost > 0 {

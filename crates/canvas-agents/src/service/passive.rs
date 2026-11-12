@@ -976,6 +976,31 @@ mod tests {
     }
 
     #[test]
+    fn a_run_the_restart_interrupted_runs_again_once_with_a_note_and_missed_ticks_run_once() {
+        let home = std::env::temp_dir().join(format!("cc-passive-restart-{}", uuid::Uuid::new_v4()));
+        let mut before = BusState::default();
+        let trigger = Event { kind: "pr.created".into(), ..Default::default() };
+        before.passive.insert("k1".into(), bus::PassiveState { running: true, inflight: vec![trigger.clone()], ..Default::default() });
+        before.passive.insert("k2".into(), bus::PassiveState::default());
+        std::fs::create_dir_all(bus_dir(&home)).unwrap();
+        std::fs::write(bus_dir(&home).join("state.json"), serde_json::to_string(&before).unwrap()).unwrap();
+        let state = load_state(&home);
+        let s = &state.passive["k1"];
+        assert!(!s.running && s.inflight.is_empty());
+        assert_eq!(s.pending.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(), vec![RESTARTED, "pr.created"], "the note first, then its trigger, once");
+        assert!(s.pending[0].data["note"].as_str().unwrap().contains("interrupted your previous run"));
+        assert!(state.passive["k2"].pending.is_empty(), "a session that was not running gets nothing");
+        // A schedule missed for hours while the service was down fires once, then waits a full interval.
+        let spec = PassiveSpec { key: "k2".into(), every_minutes: 15, ..Default::default() };
+        let mut idle = bus::PassiveState { last_every_ms: 1_000, ..Default::default() };
+        let local = bus::Local { year: 2026, month: 11, day: 12, hour: 10, minute: 0 };
+        let now = 1_000 + 6 * 3_600_000;
+        assert_eq!(idle.due_timers(&spec, now, local).len(), 1);
+        assert!(idle.due_timers(&spec, now + 60_000, local).is_empty());
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
     fn effects_reach_only_the_senders_group_and_clear_again() {
         let r = routing();
         let mut list = Vec::new();

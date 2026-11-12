@@ -479,6 +479,44 @@ older service ignores them). They change `state.json` (or delete the item
 folder) and broadcast the new inbox, so every window and every remote client
 shows the same read state.
 
+## Restore after a restart
+
+`canvas-agents/src/service/restore.rs` (README "Restore after a restart"). The
+service keeps a **running set**, `<home>/run/restore-<instance>.json`
+(written atomically, owner-only): per terminal its launch as it is to be
+started again (an agent's `AgentLaunch` with `resume` on, no first prompt or
+fork, the learned `native_id`; a command box's `LaunchKind::Command` from the
+open canvas), folder, size, start time and what it was doing (`doing`:
+working, waiting, `loop_ms`, from the session summary and the terminal's
+progress report). Hooks in `service/mod.rs`: `resolve_launch` notes the
+request (passive runs and VM launches are never recorded), the restore
+thread confirms it once the terminal runs (and keeps `doing` every second),
+`terminal_stopping` outside a shutdown marks your stop, `terminal_exited`
+removes the entry on your stop (or a forced stop outside a shutdown), keeps
+it while the service shuts down, and otherwise (the program quit on its own)
+removes it 10 s later unless the service goes away first (a logoff or reboot
+ends programs before the service: exits less than 3 s before a shutdown are
+kept). At start, with `restore` on (`Settings::restore`, default on), the
+restore thread relaunches every entry through `Host::launch` (the same path
+as a client's launch), skipping sessions live elsewhere (`Provide::is_live`),
+VM boxes and refused launches. A resumed agent that was busy gets its note
+once it has run 6 s and been quiet 2 s: a `Mail` with no sender (typed as
+written, `bus::mail_text`) put first in the mailbox by the bus loop
+(`take_notes`); other mail for it waits until then (`holds`). The bus's
+`idle` check treats a history older than the terminal (an agent that writes
+nothing until prompted) as idle once the terminal is quiet. Passive runs:
+`load_state` queues an interrupted run's events again after an
+`atelier.restarted` event with the note.
+
+| Where | Addition | An older peer |
+|---|---|---|
+| bus snapshot (`ServiceMsg::Bus` JSON) | `restore`: `{started_ms, previous_ms, resuming, resumed, interrupted: [{id, why}]}` (absent when nothing ran before) | an older client ignores it (it shows the history's state: no "resuming after restart") |
+| `settings.json` | `restore: false` (absent: on) | an older service ignores it (it restores nothing anyway) |
+
+`canvas_model::status::Status::{Interrupted, Resuming}` are computed on
+clients (not a wire enum); the iPhone maps them to `StatusKind::Stopped` (label
+"interrupted") and `Preparing`.
+
 ## VM sessions on the wire
 
 VM sessions are optional ([VM-SESSIONS.md](VM-SESSIONS.md)); without a VM pack none of this is sent or shown.
