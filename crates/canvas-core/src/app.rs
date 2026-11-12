@@ -302,6 +302,9 @@ pub struct App {
     pub stats: Option<ServiceStats>,
     pub stats_at: Instant,
     pub build_mismatch: bool,
+    /// A remote service of another build (its build id): mixed builds are
+    /// unsupported, so the toolbar says so ([`App::note_mixed_builds`]).
+    pub mixed_builds: Option<String>,
     pub needs_draw: bool,
     pub auto_imported: bool,
     pub instance: Option<crate::paths::Instance>,
@@ -504,6 +507,7 @@ impl App {
             term_select: None,
             perf: None,
             build_mismatch,
+            mixed_builds: None,
             needs_draw: true,
             auto_imported: false,
             side_view: crate::side::SideView::Sessions,
@@ -562,10 +566,23 @@ impl App {
         if let Some(error) = info_error {
             app.notify(format!("The backend did not answer: {error}"), true);
         }
+        let differs = app.conn.remote_build_differs().map(str::to_owned);
+        app.note_mixed_builds(differs);
         app
     }
 
     // ---------- notices & persistence ----------
+
+    /// Records whether the remote service is of another build; a new
+    /// difference is also said once as a notice: mixed builds are
+    /// unsupported (an older client froze resuming a large session against a
+    /// newer service), and how to get one build on both machines.
+    pub fn note_mixed_builds(&mut self, service_build: Option<String>) {
+        if service_build.is_some() && service_build != self.mixed_builds {
+            self.notify(mixed_builds_notice(crate::paths::build_id(), service_build.as_deref().unwrap_or_default()), true);
+        }
+        self.mixed_builds = service_build;
+    }
 
     pub fn notify(&mut self, text: impl Into<String>, error: bool) {
         let text: String = text.into();
@@ -815,6 +832,7 @@ impl App {
         }
         let lost = conn.session.settle();
         self.build_mismatch = conn.outdated();
+        self.note_mixed_builds(conn.remote_build_differs().map(str::to_owned));
         self.new_service_rx = Some(conn.rx.clone());
         self.conn = conn;
         self.connected = true;
@@ -1598,8 +1616,10 @@ impl App {
         let (cols, rows) = self.pane_size();
         self.node_errors.remove(id);
         // The folder is on the service's machine; when it cannot be asked, the
-        // launch itself reports a missing folder.
-        if self.backend.path_info(&cwd).is_ok_and(|info| !info.dir) {
+        // launch itself reports a missing folder. A remote service is not
+        // asked from here: a round trip on the UI thread to a busy service
+        // froze the window (its launch answers the same).
+        if !self.conn.remote && self.backend.path_info(&cwd).is_ok_and(|info| !info.dir) {
             self.node_errors.insert(id.to_owned(), "folder missing".into());
             self.notify(format!("Cannot open: folder not found: {cwd}"), true);
             return;
@@ -2362,6 +2382,13 @@ pub fn apply_agent_session(doc: &mut Doc, id: &str, native: &str) -> bool {
     true
 }
 
+/// What the mixed-builds notice says (the toolbar's ⚠ Mixed builds repeats it on a click).
+pub fn mixed_builds_notice(client: &str, service: &str) -> String {
+    format!(
+        "Mixed builds are unsupported: this client is {client} and the service is {service}. Install the same build on both machines (update this client, or update the service's machine and run `atelier service restart` there)."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2420,6 +2447,34 @@ mod connection_tests {
         app.target = Some(crate::conn::ConnTarget::Local(instance));
         assert!(!app.other_client_args().iter().any(|a| a == "--remote"), "the local pipe needs no --remote");
         let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_remote_service_of_another_build_is_called_out_once_and_cleared_when_builds_match() {
+        let (mut conn, _sent) = detached();
+        (conn.remote, conn.service_build) = (true, "0.0.0-elsewhere".into());
+        let (app_tx, _app_rx) = unbounded();
+        let mut app = App::new(conn, Arc::new(crate::rpc::Offline), Opened::detached(Doc::default()), false, ".".into(), app_tx, None);
+        assert_eq!(app.mixed_builds.as_deref(), Some("0.0.0-elsewhere"));
+        let notice = app.notice.as_ref().map(|n| n.text.clone()).unwrap_or_default();
+        assert!(notice.contains("Mixed builds are unsupported") && notice.contains("0.0.0-elsewhere") && notice.contains(crate::paths::build_id()), "{notice}");
+        // The same service again: no second notice.
+        app.notice = None;
+        let (mut conn, _sent) = detached();
+        (conn.remote, conn.service_build) = (true, "0.0.0-elsewhere".into());
+        app.on_reconnected(Ok(conn));
+        assert!(app.notice.as_ref().is_none_or(|n| !n.text.contains("Mixed builds")), "said once per service build");
+        // A service of this client's build: nothing to say.
+        let (mut conn, _sent) = detached();
+        conn.remote = true;
+        app.on_reconnected(Ok(conn));
+        assert_eq!(app.mixed_builds, None);
+        // A local service is replaced instead (⟳ Update service): never called mixed.
+        let (mut conn, _sent) = detached();
+        conn.service_build = "0.0.0-elsewhere".into();
+        app.on_reconnected(Ok(conn));
+        assert_eq!(app.mixed_builds, None);
+        assert!(app.build_mismatch);
     }
 
     #[test]
@@ -2560,3 +2615,4 @@ mod connection_tests {
         assert_eq!(status(&app), Status::JustFinished);
     }
 }
+

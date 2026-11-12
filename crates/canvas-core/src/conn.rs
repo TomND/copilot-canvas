@@ -210,6 +210,12 @@ impl Conn {
     pub fn outdated(&self) -> bool {
         !self.remote && (self.legacy || self.service_build != build_id())
     }
+
+    /// A remote service of another build than this client's (it is never
+    /// replaced from here): the service's build, for the mixed-builds notice.
+    pub fn remote_build_differs(&self) -> Option<&str> {
+        (self.remote && !self.service_build.is_empty() && self.service_build != build_id()).then_some(self.service_build.as_str())
+    }
 }
 
 impl Conn {

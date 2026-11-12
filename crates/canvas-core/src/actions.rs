@@ -865,6 +865,11 @@ impl App {
             }
             Action::DiscardMail(id) => self.bus_action(serde_json::json!({ "action": "discard_mail", "to": id })),
             Action::RestartService => self.restart_service(),
+            Action::MixedBuilds => {
+                if let Some(service) = self.mixed_builds.clone() {
+                    self.notify(crate::app::mixed_builds_notice(crate::paths::build_id(), &service), true);
+                }
+            }
             Action::StopAllAndQuit => {
                 let alive: Vec<String> = self.terms.values().filter(|t| t.alive).map(|t| t.id.clone()).collect();
                 for id in alive {

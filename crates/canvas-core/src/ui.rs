@@ -260,6 +260,10 @@ fn draw_toolbar(app: &mut App, buf: &mut Buffer, area: Rect) {
         let end = put(buf, x, area.y as i32, " ⟳ Update service ", bold(PANEL).bg(ATTENTION), area);
         app.layout.hits.push((Rect::new(x as u16, area.y, (end - x).max(0) as u16, 1), Hit::Toolbar(Action::UpdateService)));
         x = end + 2;
+    } else if app.mixed_builds.is_some() {
+        let end = put(buf, x, area.y as i32, " ⚠ Mixed builds ", bold(PANEL).bg(ATTENTION), area);
+        app.layout.hits.push((Rect::new(x as u16, area.y, (end - x).max(0) as u16, 1), Hit::Toolbar(Action::MixedBuilds)));
+        x = end + 2;
     }
     x = toolbar_button(app, buf, x, " + New ", Action::NewSession { at: None, parent: None }, area);
     if !app.demo {

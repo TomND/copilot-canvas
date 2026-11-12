@@ -179,6 +179,8 @@ pub enum Action {
     DiscardMail(String),
     UpdateService,
     RestartService,
+    /// Says again why mixed builds (this client, a remote service) are unsupported.
+    MixedBuilds,
     Help,
     Nothing,
     /// Another window on the same canvas (front ends with windows).

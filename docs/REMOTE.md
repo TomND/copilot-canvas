@@ -191,7 +191,16 @@ whole service stopped for 59 s).
   missed PLAN §9's "≤ 2 s after the network returns" after outages longer
   than a few seconds; an attempt is one TCP connect). A local service that is
   gone is started again. Remote clients never restart or upgrade the service:
-  a protocol mismatch is shown as an error.
+  a protocol mismatch is shown as an error. A service of another build with
+  the same protocol is not refused, but mixed builds are unsupported (an older
+  client froze resuming a large session against a newer service): the client
+  compares the service's build (`Welcome { build }`) with its own on every
+  connect and, when they differ, says so once as a notice and keeps
+  **⚠ Mixed builds** in the toolbar (a click repeats the notice: install the
+  same build on both machines; `atelier service restart` on the service's
+  machine after updating it). Both clients get it from `canvas-core`. A
+  remote client also no longer asks the service whether a box's folder exists
+  on the UI thread before a launch (the launch answers that).
 - The new connection replaces the old one (like a service restart): the client
   sends its subscriptions, sizes, tracked sessions and routing again; the
   service sends the terminal list and full frames.

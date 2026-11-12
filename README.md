@@ -303,6 +303,10 @@ atelier --gui --remote cloudpc
 Follow the [complete remote guide](docs/REMOTE.md) or
 [compact setup checklist](docs/REMOTE-SETUP.txt) for installation and recovery.
 Choose **Detach** when you close the client to leave the hosted sessions running.
+Keep the host and every client on the same build: a client that connects to a
+service of another build says so once and shows **⚠ Mixed builds** in its
+toolbar (mixed builds are unsupported; update the client, or update the host
+and run `atelier service restart` there).
 
 > [!IMPORTANT]
 > Pair only your own trusted machines: a paired client can act as you on the
