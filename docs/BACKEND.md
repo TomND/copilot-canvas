@@ -378,6 +378,19 @@ defaults:
 | bus inbox | requests `{"type": "canvas.todo", "source": <session>, "data": {"op": …, "request": <uuid>, "bot": <automation>}}` (`atelier todo …`), intercepted by the bus loop, never routed to agents, applied as their sender; a session not on the routed canvas is refused | routes it as an ordinary event nobody subscribes to; the command then says the change is handed over |
 | `<home>/bus/answers/<request>.json` | `{ok, message, state: "applied" \| "refused", data}`; `data` is the `--format json` answer (`{"schemaVersion": 1, "kind": "todo-change", "ok", "message", "warnings", "id", "created", "changed"}` plus the `todo` or `board` it names). `data` is optional: `pr` and `review` answers leave it out | — |
 | `ServiceMsg::Bus` (`bus::Snapshot`) | `todos`: the routed canvas's whole `TodoBook` | absent from older services and while the routed canvas has no id: Tasks shows "Waiting for the todo boards from the service…" |
+
+The bus snapshot is made whole (the book, the PR and review views) and sent
+only when something in it changed: each pass compares the snapshot without
+the book, and the book's change count (`todos::stamp`), with what every
+client got last (`passive::Sent`); a passive session's `next_run_ms` no longer
+depends on the clock (it was `now` for the whole 8 s debounce, which re-sent
+the whole snapshot every second). A connecting client, and a window whose todo
+change was refused, get one of their own. Every snapshot still carries the
+whole book: an older client reads a snapshot without it as "no book".
+Windows' bus actions (`run`, `resume`, `discard_mail`, `pause`) are applied to
+the shared state at once and replayed onto the bus loop's copy before it is
+written back (`passive::BusOp`): one that arrives while a pass runs is never
+overwritten, and mail discarded meanwhile is never typed in.
 | `TodoOp` | `edit_check` (`{id, index, text}`: rewords a checklist item, its tick kept; anyone) and `remove_check` (`{id, index}`: people only), appended at the end, sent by the phone | a service of an older build answers "Todo change not understood by the service … restart the service after updating" with the book as it is: the phone's toast says so and its change is undone |
 | bus events | `todo.created`, `todo.proposed`, `todo.accepted`, `todo.status`, `todo.claimed`, `todo.submitted`, `todo.done` (data: `id`, `title`, `type`, `priority`, `status`, `board`, `board_name`, `by`, `by_session`, and `from`, `to`, `why`, `resolution`, `pr`, `for`, `for_session` where they apply) in the first canvas group linked to the board (else its parent's), from the actor's session (so never back to it), with the canvas id and the request's hop | ordinary events |
 | group catalog | `events.yaml` gains the seven `todo.*` entries (below) | — |
@@ -496,10 +509,19 @@ removes the entry on your stop (or a forced stop outside a shutdown), keeps
 it while the service shuts down, and otherwise (the program quit on its own)
 removes it 10 s later unless the service goes away first (a logoff or reboot
 ends programs before the service: exits less than 3 s before a shutdown are
-kept). At start, with `restore` on (`Settings::restore`, default on), the
-restore thread relaunches every entry through `Host::launch` (the same path
-as a client's launch), skipping sessions live elsewhere (`Provide::is_live`),
-VM boxes and refused launches. A resumed agent that was busy gets its note
+kept). The file is written from a copy taken under the restore's lock,
+after the lock is released (launches, client connects, the bus and exits take
+it; a flush on a busy disk took seconds), at once for a launch, an exit or a
+learned id and at most every 5 s for what sessions do. At start, with
+`restore` on (`Settings::restore`, default on), the restore thread relaunches
+the entries through `Host::launch` (the same path as a client's launch), two
+at a time and 2 s apart, the most recently active first (`Entry::active_ms`;
+busy ones first), the next once one has printed and been quiet 2 s (at most
+20 s); the snapshot lists every waiting one as `resuming`. It skips entries a
+client started meanwhile (`running_or_launching`) or stopped, VM boxes and
+refused launches; a session live elsewhere (`Provide::is_live`) is tried
+again every 2 s for 30 s, then skipped with its holder (`Provide::holders`:
+a canvas box, VS Code, or a program and its pid) as the reason. A resumed agent that was busy gets its note
 once it has run 6 s and been quiet 2 s: a `Mail` with no sender (typed as
 written, `bus::mail_text`) put first in the mailbox by the bus loop
 (`take_notes`); other mail for it waits until then (`holds`). The bus's

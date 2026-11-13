@@ -304,6 +304,11 @@ impl ActivityState {
                 self.schedules.clear();
                 self.pending.clear();
                 self.open_tools.clear();
+                // A clean exit ends its subagents too (background ones get no
+                // completion): none is left working (S5-04).
+                for agent in self.agents.iter_mut().filter(|a| a.status == AgentStatus::Working) {
+                    agent.status = AgentStatus::Unknown;
+                }
             }
             _ => {}
         }
@@ -738,6 +743,14 @@ mod tests {
         assert_eq!(state.agents[0].status, AgentStatus::Working);
         state.apply(r#"{"type":"session.resume","timestamp":"2026-10-20T21:00:00Z","data":{}}"#);
         assert_eq!(state.agents[0].status, AgentStatus::Unknown);
+    }
+
+    #[test]
+    fn a_clean_exit_leaves_no_subagent_working() {
+        let mut state = ActivityState::default();
+        state.apply(r#"{"type":"subagent.started","timestamp":"2026-10-20T20:00:00Z","data":{"toolCallId":"a","agentDisplayName":"Explorer"}}"#);
+        state.apply(r#"{"type":"session.shutdown","timestamp":"2026-10-20T20:05:00Z","data":{}}"#);
+        assert_eq!((state.activity, state.agents[0].status), (Activity::Stopped, AgentStatus::Unknown), "a stopped session is not interrupted by a background subagent");
     }
 
     #[test]

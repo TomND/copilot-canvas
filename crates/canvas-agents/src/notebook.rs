@@ -361,13 +361,43 @@ pub(crate) fn write(path: &str, text: &str, base: Option<&str>, roots: &[String]
     Ok(Response::NoteSaved { rev: notebook::rev_of(text.as_bytes()) })
 }
 
+/// Revisions of files as last read, by path: (size, modified time, rev).
+/// Open notes are polled every 2 s in every window: an unchanged file
+/// (same size and time) is not read and hashed again (S8-07).
+static REVS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<PathBuf, RevStamp>>> = std::sync::LazyLock::new(Default::default);
+/// A file's size and time, and its revision then.
+type RevStamp = (u64, std::time::SystemTime, String);
+/// Files whose revision is remembered at most (beyond, it starts over).
+const MAX_REMEMBERED_REVS: usize = 2_048;
+
+/// The revision of a file, read and hashed only when its size or time changed.
+fn file_rev(path: &Path, meta: &std::fs::Metadata) -> Option<String> {
+    let modified = meta.modified().ok();
+    if let Some(modified) = modified
+        && let Some((len, at, rev)) = REVS.lock().unwrap_or_else(|e| e.into_inner()).get(path)
+        && *len == meta.len()
+        && *at == modified
+    {
+        return Some(rev.clone());
+    }
+    let rev = notebook::rev_of(&std::fs::read(path).ok()?);
+    if let Some(modified) = modified {
+        let mut revs = REVS.lock().unwrap_or_else(|e| e.into_inner());
+        if revs.len() >= MAX_REMEMBERED_REVS {
+            revs.clear();
+        }
+        revs.insert(path.to_path_buf(), (meta.len(), modified, rev.clone()));
+    }
+    Some(rev)
+}
+
 /// `Request::NoteRevs`.
 pub(crate) fn revs(paths: &[String]) -> Result<Response> {
     anyhow::ensure!(paths.len() <= MAX_REVS, "at most {MAX_REVS} files at once");
     let rev = |path: &String| -> Option<String> {
         let path = notebook::checked_path(path).ok()?;
         let meta = std::fs::metadata(&path).ok()?;
-        (meta.is_file() && meta.len() <= notebook::MAX_BYTES).then(|| std::fs::read(&path).ok().map(|b| notebook::rev_of(&b))).flatten()
+        (meta.is_file() && meta.len() <= notebook::MAX_BYTES).then(|| file_rev(&path, &meta)).flatten()
     };
     Ok(Response::NoteRevs(paths.iter().map(rev).collect()))
 }
@@ -723,6 +753,25 @@ mod tests {
         let refused = rename(&s(&dir.join("plan.md")), &s(&dir.join("Other.md")), &roots).unwrap_err().to_string();
         assert!(refused.contains("already exists") && std::fs::read_to_string(dir.join("Other.md")).unwrap() == "other", "{refused}");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn polled_revisions_read_only_files_that_changed() {
+        let home = temp("revs");
+        let note = home.join("open.md");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(&note, "AAAA").unwrap();
+        let at = std::fs::metadata(&note).unwrap().modified().unwrap();
+        let first = revs(&[s(&note)]).unwrap();
+        assert!(matches!(&first, Response::NoteRevs(r) if r[0].as_deref() == Some(notebook::rev_of(b"AAAA").as_str())));
+        // Same size, same time: taken as unchanged, not read again.
+        std::fs::write(&note, "BBBB").unwrap();
+        std::fs::File::options().write(true).open(&note).unwrap().set_modified(at).unwrap();
+        assert_eq!(revs(&[s(&note)]).unwrap(), first, "no read, no hash");
+        // Changed (its time moved): read and hashed again.
+        std::fs::File::options().write(true).open(&note).unwrap().set_modified(at + Duration::from_secs(2)).unwrap();
+        assert!(matches!(revs(&[s(&note)]).unwrap(), Response::NoteRevs(r) if r[0].as_deref() == Some(notebook::rev_of(b"BBBB").as_str())));
+        let _ = std::fs::remove_dir_all(home);
     }
 
     #[test]

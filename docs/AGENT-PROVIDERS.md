@@ -332,7 +332,13 @@ a new subsession box linked to the parent whose `agent_session` is the
 child's id and resumes it in its own terminal; the subagent box stays as it
 is, and a second resume goes to the same box. The service checks again right
 before the launch (`is_live`); when it refuses, the new box goes again and a
-notice says why. The parent is never signalled. Copilot and Claude Code
+notice says why. A refusal names who has the session (`Provide::holders`,
+classified against the service's terminals' process trees): *already running
+inside the canvas box “Name” (copilot.exe pid 1234): use that box*, *in this
+box's own terminal, which is still closing … try again in a few seconds*, *in
+VS Code (Code.exe pid …)*, or *in another terminal (copilot.exe pid …, not
+started by Atelier)*; OpenCode's live sessions are always one of the canvas's
+own TUIs. Every text keeps "already running", which clients show as ↗. The parent is never signalled. Copilot and Claude Code
 subagents are part of their parent's conversation: the inspector says so, and
 resuming means resuming the parent.
 

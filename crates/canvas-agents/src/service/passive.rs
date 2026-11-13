@@ -12,12 +12,12 @@ use std::time::Duration;
 
 use crossbeam_channel::Receiver;
 
-use super::{Shared, lock, log};
+use super::{Client, Shared, lock, log};
 use crate::agents::{AgentKind, Provide};
 use crate::bus::{self, BusState, Event, Mail, PassiveSpec, Routing, Target};
 use crate::effects;
 use crate::paths::now_ms;
-use crate::protocol::{Activity, AgentLaunch, Input, Key, LaunchKind, ServiceMsg};
+use crate::protocol::{Activity, AgentLaunch, Input, Key, LaunchKind, ServiceMsg, SessionSummary};
 
 pub fn bus_dir(home: &Path) -> PathBuf {
     home.join("bus")
@@ -117,79 +117,204 @@ fn idle(shared: &Shared, session: &str) -> bool {
 /// before Enter is pressed again, and how many times it is pressed again.
 const SUBMIT_CHECK: Duration = Duration::from_secs(5);
 const SUBMIT_RETRIES: usize = 2;
+/// The typed text sits in the agent's input line when its end is on the
+/// screen with at most this many non-blank rows below it (the input box's
+/// border, a footer of hints).
+const PROMPT_TAIL_ROWS: usize = 4;
+/// Characters of the typed text's end looked for on the screen.
+const PROBE_CHARS: usize = 24;
 
 /// Types text into a live terminal and submits it. The paste goes now; its
 /// Enter follows `SUBMIT_AFTER_PASTE_MS` later on a thread of its own (an
 /// Enter that arrives with a paste is taken as part of it by Copilot CLI and
-/// Claude Code, which left the text in their prompt unsent), and is pressed
-/// again, at most twice, while the agent shows no sign of having taken it.
+/// Claude Code, which left the text in their prompt unsent). It is pressed
+/// again (at most twice) only while the text still sits in the input line
+/// exactly as the paste left it, and never once you typed into the
+/// terminal, the agent asks something, or its terminal was started again.
 /// Nothing else is typed into the session meanwhile (`idle`).
 fn type_in(shared: &Arc<Shared>, session: &str, text: &str) -> bool {
     let Some(term) = lock(&shared.terms).get(session).cloned() else { return false };
+    let typed_ms = now_ms();
     if term.send_input(&Input::Paste(text.to_owned())).is_err() {
         return false;
     }
     let _ = shared.pump.try_send(());
     lock(&shared.submitting).insert(session.to_owned());
-    let (shared, session) = (shared.clone(), session.to_owned());
-    let typed_ms = now_ms();
     let spawned = std::thread::Builder::new().name("submit".into()).spawn({
-        let (shared, session) = (shared.clone(), session.clone());
+        let (shared, session, term, text) = (shared.clone(), session.to_owned(), term.clone(), text.to_owned());
         move || {
             std::thread::sleep(Duration::from_millis(crate::protocol::SUBMIT_AFTER_PASTE_MS));
-            submit(&shared, &session, typed_ms);
+            submit(&shared, &session, &term, &text, typed_ms);
             lock(&shared.submitting).remove(&session);
         }
     });
     if spawned.is_err() {
-        lock(&shared.submitting).remove(&session);
+        lock(&shared.submitting).remove(session);
         return term.send_input(&Input::Key { key: Key::Enter, mods: 0 }).is_ok();
     }
     true
 }
 
-/// Presses Enter in `session` until the agent shows it took what was typed
-/// at `typed_ms` (see `type_in`).
-fn submit(shared: &Shared, session: &str, typed_ms: u64) {
-    for attempt in 0..=SUBMIT_RETRIES {
-        let Some(term) = lock(&shared.terms).get(session).cloned().filter(|t| t.alive.load(Ordering::Acquire)) else { return };
-        if term.send_input(&Input::Key { key: Key::Enter, mods: 0 }).is_err() {
-            return;
-        }
-        let _ = shared.pump.try_send(());
-        let deadline = std::time::Instant::now() + SUBMIT_CHECK;
-        loop {
-            match taken(shared, session, typed_ms) {
-                // No way to tell (no history for it): one Enter is all it gets.
-                None => return,
-                Some(true) => return,
-                Some(false) if std::time::Instant::now() >= deadline => break,
-                Some(false) => std::thread::sleep(Duration::from_millis(200)),
-            }
-        }
-        if attempt < SUBMIT_RETRIES {
-            log(&shared.instance, &format!("{session}: no sign the agent took the typed message; pressing Enter again"));
-        }
-    }
-    log(&shared.instance, &format!("{session}: the typed message may still wait in the agent's prompt"));
+/// What a typed message's submitter sees at one check.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Check {
+    /// You typed into the terminal since the paste.
+    typed: bool,
+    /// Its terminal ended or was started again.
+    replaced: bool,
+    /// The agent asks a question or a permission (in this run's history).
+    question: bool,
+    /// The agent took it: progress shows, or its history moved since the paste.
+    taken: bool,
+    /// The screen from the typed text's end to the bottom, when that end
+    /// sits in the input line (`None`: not on the screen there, or no screen).
+    prompt: Option<Vec<String>>,
 }
 
-/// Whether the agent of `session` took a message typed at `typed_ms`: its
-/// history moved on (a new event, a turn, a question) or it shows progress.
-/// `None` when nothing can tell (no history of it, its terminal is gone).
-fn taken(shared: &Shared, session: &str, typed_ms: u64) -> Option<bool> {
-    let term = lock(&shared.terms).get(session).cloned()?;
-    if !term.alive.load(Ordering::Acquire) {
+/// What the submitter does next.
+#[derive(Debug, PartialEq)]
+enum Next {
+    Enter,
+    /// Stop, and why (logged when it says something).
+    Stop(&'static str),
+}
+
+/// Before the first Enter: pressed unless you typed meanwhile (it would
+/// send your text too), the terminal changed, or the agent asks something
+/// (Enter would answer it).
+fn first_enter(check: &Check) -> Next {
+    if check.replaced {
+        Next::Stop("its terminal ended or was started again")
+    } else if check.typed {
+        Next::Stop("you typed into it, so it stays in the prompt for you to send")
+    } else if check.question {
+        Next::Stop("the agent asks a question or a permission, which Enter would answer")
+    } else {
+        Next::Enter
+    }
+}
+
+/// Before Enter is pressed again: only when nothing says the agent took it
+/// and the text still sits in the input line exactly as it did before the
+/// first Enter (`before`); a screen that changed below it (the message
+/// sent, a permission menu) or cannot be read stops the retries.
+fn again(check: &Check, before: Option<&[String]>) -> Next {
+    match first_enter(check) {
+        Next::Enter if check.taken => Next::Stop(""),
+        Next::Enter => match (&check.prompt, before) {
+            (Some(now), Some(before)) if same_screen(now, before) => Next::Enter,
+            (_, None) => Next::Stop("the screen cannot tell whether it is still in the prompt"),
+            _ => Next::Stop(""),
+        },
+        stop => stop,
+    }
+}
+
+/// A row as compared: no spaces, no box drawing or block elements (input
+/// box borders, a drawn cursor).
+fn normalize(row: &str) -> String {
+    row.chars().filter(|c| !c.is_whitespace() && !('\u{2500}'..='\u{259f}').contains(c)).collect()
+}
+
+/// Two screens' input lines are the same but for what changes on its own
+/// (spinners, counters).
+fn same_screen(a: &[String], b: &[String]) -> bool {
+    let steady = |rows: &[String]| -> Vec<String> {
+        rows.iter().map(|r| r.chars().filter(|c| !c.is_ascii_digit() && !('\u{2800}'..='\u{28ff}').contains(c) && !"◐◓◑◒✢✳✶✻✽·•".contains(*c)).collect::<String>()).filter(|r| !r.is_empty()).collect()
+    };
+    steady(a) == steady(b)
+}
+
+/// The end of the typed text as looked for on the screen (normalized).
+fn probe_of(text: &str) -> String {
+    let all: Vec<char> = normalize(text).chars().collect();
+    all[all.len().saturating_sub(PROBE_CHARS)..].iter().collect()
+}
+
+/// The rows from the one where `probe` (the typed text's end) last shows
+/// to the bottom of the screen, normalized, when at most
+/// `PROMPT_TAIL_ROWS` non-blank rows follow it: the text sits in the input
+/// line. Rows wrap a long text, so they are joined before it is looked for.
+fn prompt_tail(rows: &[&str], probe: &str) -> Option<Vec<String>> {
+    if probe.chars().count() < 4 {
         return None;
     }
-    let info = term.info();
-    if info.progress_seen && matches!(info.progress, 1 | 3) {
-        return Some(true);
+    let norm: Vec<String> = rows.iter().map(|r| normalize(r)).collect();
+    let (mut joined, mut starts) = (String::new(), Vec::with_capacity(norm.len()));
+    for row in &norm {
+        starts.push(joined.len());
+        joined.push_str(row);
     }
-    let native = shared.native_of(session);
-    let sessions = lock(&shared.sessions);
-    let summary = sessions.get(&native)?;
-    Some(summary.last_event_ms >= typed_ms || summary.activity == Activity::Working || summary.pending > 0)
+    let end = joined.rfind(probe)? + probe.len() - 1;
+    let row = starts.iter().rposition(|start| *start <= end)?;
+    let below: Vec<String> = norm[row + 1..].iter().filter(|r| !r.is_empty()).cloned().collect();
+    (below.len() <= PROMPT_TAIL_ROWS).then(|| std::iter::once(norm[row].clone()).chain(below).collect())
+}
+
+/// What the history says since the paste: the agent took it (an event at
+/// or after `typed_ms`), and whether it asks something (a request of this
+/// run: one from before its terminal started is a lost one, `idle`).
+fn history_says(summary: Option<&SessionSummary>, started_ms: u64, typed_ms: u64) -> (bool, bool) {
+    summary.map_or((false, false), |s| (s.last_event_ms >= typed_ms, s.pending > 0 && s.last_event_ms >= started_ms))
+}
+
+/// Presses Enter in `session` for the text typed at `typed_ms` (see
+/// `type_in`), again only while the screen shows it still waits in the prompt.
+fn submit(shared: &Shared, session: &str, term: &Arc<super::term::Terminal>, text: &str, typed_ms: u64) {
+    let probe = probe_of(text);
+    let check = |screen: bool| -> Check {
+        let current = lock(&shared.terms).get(session).cloned();
+        let replaced = !current.is_some_and(|t| Arc::ptr_eq(&t, term) && t.alive.load(Ordering::Acquire));
+        let typed = lock(&shared.input_at).get(session).is_some_and(|at| *at >= typed_ms);
+        let info = term.info();
+        let busy = info.progress_seen && matches!(info.progress, 1 | 3);
+        let native = shared.native_of(session);
+        let (moved, question) = history_says(lock(&shared.sessions).get(&native), term.started_ms, typed_ms);
+        let prompt = if screen && !replaced {
+            term.snapshot().and_then(|s| (s.display_offset == 0).then(|| s.text())).and_then(|text| prompt_tail(&text.lines().collect::<Vec<_>>(), &probe))
+        } else {
+            None
+        };
+        Check { typed, replaced, question, taken: busy || moved, prompt }
+    };
+    let first = check(true);
+    if let Next::Stop(why) = first_enter(&first) {
+        log(&shared.instance, &format!("{session}: no Enter for the typed message: {why}"));
+        return;
+    }
+    if term.send_input(&Input::Key { key: Key::Enter, mods: 0 }).is_err() {
+        return;
+    }
+    let _ = shared.pump.try_send(());
+    // The screen as the paste left it: Enter is pressed again only while it stays so.
+    let before = first.prompt;
+    for _ in 0..SUBMIT_RETRIES {
+        let deadline = std::time::Instant::now() + SUBMIT_CHECK;
+        while std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(250));
+            let quick = check(false);
+            if quick.taken || quick.replaced {
+                return;
+            }
+            if quick.typed || quick.question {
+                break;
+            }
+        }
+        match again(&check(true), before.as_deref()) {
+            Next::Enter => {
+                log(&shared.instance, &format!("{session}: the typed message still waits in the agent's prompt; pressing Enter again"));
+                if term.send_input(&Input::Key { key: Key::Enter, mods: 0 }).is_err() {
+                    return;
+                }
+                let _ = shared.pump.try_send(());
+            }
+            Next::Stop("") => return,
+            Next::Stop(why) => {
+                log(&shared.instance, &format!("{session}: Enter is not pressed again: {why}"));
+                return;
+            }
+        }
+    }
 }
 
 /// First request and latest summary of a session, from its history.
@@ -213,8 +338,12 @@ fn digest(events: &Path) -> (String, String) {
     if let Ok(mut file) = std::fs::File::open(events) {
         let len = file.metadata().map(|m| m.len()).unwrap_or(0);
         let start = len.saturating_sub(512 * 1024);
-        let mut text = String::new();
-        if file.seek(SeekFrom::Start(start)).is_ok() && file.read_to_string(&mut text).is_ok() {
+        let mut bytes = Vec::new();
+        // Bytes, not a string: the cut may fall inside a character (S4-18); the
+        // partial first line is skipped.
+        if file.seek(SeekFrom::Start(start)).is_ok() && file.read_to_end(&mut bytes).is_ok() {
+            let text = String::from_utf8_lossy(&bytes);
+            let text = if start > 0 { text.split_once('\n').map(|(_, rest)| rest).unwrap_or_default() } else { &text };
             for line in text.lines().rev() {
                 let summary = if line.contains("\"type\":\"session.task_complete\"") {
                     serde_json::from_str::<serde_json::Value>(line).ok().and_then(|v| v["data"]["summary"].as_str().map(str::to_owned))
@@ -239,8 +368,9 @@ fn write_context(shared: &Shared, routing: &Routing, group: &bus::RouteGroup, st
     let sessions = lock(&shared.sessions).clone();
     for (id, _) in routing.members.iter().filter(|(_, g)| **g == group.id) {
         let name = routing.names.get(id).cloned().unwrap_or_else(|| id.clone());
-        let summary = sessions.get(&shared.native_of(id));
-        let history = shared.instance.sessions_dir.join(id).join("events.jsonl");
+        let native = shared.native_of(id);
+        let summary = sessions.get(&native);
+        let history = shared.instance.sessions_dir.join(&native).join("events.jsonl");
         let (first, last) = digest(&history);
         text.push_str(&format!("\n## {name}\n- session: `{id}`\n"));
         if let Some(s) = summary {
@@ -299,7 +429,7 @@ fn write_canvas_context(shared: &Shared, routing: &Routing, state: &BusState, pa
         if let Some(s) = sessions.get(&shared.native_of(id)) {
             text.push_str(&format!("- status: {:?}{} · folder: {} · branch: {}\n", s.activity, if s.live { " (running)" } else { "" }, s.cwd, if s.branch.is_empty() { "—" } else { &s.branch }));
         }
-        let (first, last) = digest(&shared.instance.sessions_dir.join(id).join("events.jsonl"));
+        let (first, last) = digest(&shared.instance.sessions_dir.join(shared.native_of(id)).join("events.jsonl"));
         if !first.is_empty() {
             text.push_str(&format!("- first request: {first}\n"));
         }
@@ -751,8 +881,7 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
     let home = shared.instance.home.clone();
     let inbox = bus::inbox_dir(&home);
     let _ = std::fs::create_dir_all(&inbox);
-    let mut last_snapshot = String::new();
-    let mut last_saved = String::new();
+    let mut last_saved: Option<BusState> = None;
     let mut watch = super::factory_watch::load(&home);
     loop {
         let mut events: Vec<Event> = Vec::new();
@@ -785,7 +914,8 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
         let now = now_ms();
         let local = bus::Local::now();
         let routing = lock(&shared.routing).clone();
-        let mut state = lock(&shared.bus).clone();
+        // The pass works on a copy; windows' changes made meanwhile are replayed onto it (`BusOp`).
+        let mut state = take_copy(&shared.bus, &shared.bus_ops);
         // Restore notes for sessions resumed after a restart go first.
         for mail in shared.restore.take_notes() {
             state.mailbox.insert(0, mail);
@@ -882,31 +1012,170 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
         // Forget state of removed passive sessions; mail for gone sessions stays a day.
         retain_states(&mut state, &routing, now);
         state.mailbox.retain(|m| now.saturating_sub(m.ms) < 86_400_000);
+        // Mail you discarded while this pass ran is never typed in.
+        catch_up(&shared, &mut state);
         if let Some(mail) = deliver_mail(&shared, &mut state) {
             // Delivered after it was queued, even within one pass (the inbox orders a thread by time).
             let delivered_at = now_ms().max(now + 1);
             super::prs::delivered(&shared, &routing, &mail, delivered_at);
             super::reviews::delivered(&shared, &routing, &mail, delivered_at);
         }
-        *lock(&shared.bus) = state.clone();
-        // In turn with windows' todo changes (todos.rs): a snapshot made before a newer one is never sent after it.
-        let turn = lock(&shared.snapshots);
-        let mut view = state.snapshot(&routing, now);
-        view.prs = super::prs::view(&shared, &routing);
-        view.reviews = super::reviews::view(&shared, &routing);
-        view.todos = super::todos::view(&shared, &routing);
-        view.vm = crate::vm::view(&shared.instance.home);
-        view.restore = shared.restore.view();
-        let snapshot = serde_json::to_string(&view).unwrap_or_default();
-        if snapshot != last_snapshot {
-            shared.broadcast(ServiceMsg::Bus { json: snapshot.clone() });
-            last_snapshot = snapshot;
+        {
+            // Windows' changes since the copy was taken stay (S4-03, S8-08).
+            write_back(&shared.bus, &shared.bus_ops, &mut state);
         }
-        drop(turn);
-        let saved = serde_json::to_string(&state).unwrap_or_default();
-        if saved != last_saved {
-            write_atomic(&bus_dir(&home).join("state.json"), saved.as_bytes());
-            last_saved = saved;
+        // Sent only when something changed, and made whole only then (S8-01).
+        send_snapshot(&shared, &routing, &state, now);
+        if last_saved.as_ref() != Some(&state) {
+            write_atomic(&bus_dir(&home).join("state.json"), serde_json::to_string(&state).unwrap_or_default().as_bytes());
+            last_saved = Some(state);
+        }
+    }
+}
+
+/// A window's change to the bus state ([`action`]): applied to the shared
+/// state at once (a client connecting meanwhile sees it) and replayed onto
+/// the bus loop's copy before the loop writes it back, so a change made
+/// while a pass runs is never overwritten (a discarded message typed in
+/// anyway, a lost Run now or Resume).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum BusOp {
+    /// Run now: a manual event, past its debounce, nothing to wait for.
+    Run { key: String, group: String, ms: u64 },
+    /// Resume after done, or after failed runs.
+    Resume { key: String },
+    DiscardMail { to: String },
+    /// Unpaused: it may run again at once.
+    Unpaused { key: String },
+}
+
+fn apply_op(state: &mut BusState, op: &BusOp) {
+    match op {
+        BusOp::Run { key, group, ms } => {
+            let s = state.passive.entry(key.clone()).or_default();
+            let event = Event { kind: "manual.run".into(), group: group.clone(), source_name: "you".into(), ms: *ms, ..Default::default() };
+            s.enqueue(event, *ms);
+            s.first_pending_ms = ms.saturating_sub(bus::DEBOUNCE_MS);
+            s.retry_at_ms = 0;
+            s.failures = 0;
+            if s.status == "done" {
+                s.status.clear();
+            }
+        }
+        BusOp::Resume { key } => {
+            if let Some(s) = state.passive.get_mut(key) {
+                if s.status == "done" {
+                    s.status.clear();
+                    s.headline.clear();
+                }
+                s.failures = 0;
+                s.retry_at_ms = 0;
+            }
+        }
+        BusOp::DiscardMail { to } => state.mailbox.retain(|m| m.to != *to),
+        BusOp::Unpaused { key } => {
+            if let Some(s) = state.passive.get_mut(key) {
+                s.failures = 0;
+                s.retry_at_ms = 0;
+            }
+        }
+    }
+}
+
+/// Applies a window's change now, and keeps it for the bus loop's copy.
+fn apply_now(shared: &Shared, op: BusOp) {
+    apply_shared(&shared.bus, &shared.bus_ops, op);
+}
+
+fn apply_shared(bus: &std::sync::Mutex<BusState>, ops: &std::sync::Mutex<Vec<BusOp>>, op: BusOp) {
+    let mut state = lock(bus);
+    apply_op(&mut state, &op);
+    lock(ops).push(op);
+}
+
+/// The bus loop's copy of the state for a pass (changes made before it are in it).
+fn take_copy(bus: &std::sync::Mutex<BusState>, ops: &std::sync::Mutex<Vec<BusOp>>) -> BusState {
+    let state = lock(bus);
+    lock(ops).clear();
+    state.clone()
+}
+
+/// Applies to the loop's copy the windows' changes made since it was taken.
+fn catch_up(shared: &Shared, state: &mut BusState) {
+    catch_up_with(&shared.bus, &shared.bus_ops, state);
+}
+
+fn catch_up_with(bus: &std::sync::Mutex<BusState>, ops: &std::sync::Mutex<Vec<BusOp>>, state: &mut BusState) {
+    let _bus = lock(bus);
+    for op in lock(ops).drain(..) {
+        apply_op(state, &op);
+    }
+}
+
+/// Writes the loop's copy back with the windows' changes made meanwhile.
+fn write_back(bus: &std::sync::Mutex<BusState>, ops: &std::sync::Mutex<Vec<BusOp>>, state: &mut BusState) {
+    let mut shared = lock(bus);
+    for op in lock(ops).drain(..) {
+        apply_op(state, &op);
+    }
+    *shared = state.clone();
+}
+
+/// What the bus snapshot every client got last was made of: it is made
+/// whole (the todo book, the PR and review registries) and sent again only
+/// when one of them changed (S8-01: it was rebuilt, serialized and compared every second).
+#[derive(Default)]
+pub(super) struct Sent {
+    /// The snapshot without the todo book.
+    view: Option<bus::Snapshot>,
+    /// The book's stamp (canvas, change count).
+    book: Option<(String, u64)>,
+}
+
+/// The snapshot without the todo book, and the book's stamp.
+fn light_view(shared: &Shared, routing: &Routing, state: &BusState, now: u64) -> (bus::Snapshot, Option<(String, u64)>) {
+    let mut view = state.snapshot(routing, now);
+    view.prs = super::prs::view(shared, routing);
+    view.reviews = super::reviews::view(shared, routing);
+    view.vm = crate::vm::view(&shared.instance.home);
+    view.restore = shared.restore.view();
+    (view, super::todos::stamp(shared, routing))
+}
+
+/// The whole snapshot as clients read it (every client gets the book in each:
+/// older ones take a snapshot without it as "no book").
+fn whole(shared: &Shared, routing: &Routing, mut view: bus::Snapshot) -> String {
+    view.todos = super::todos::view(shared, routing);
+    serde_json::to_string(&view).unwrap_or_default()
+}
+
+/// Broadcasts the bus snapshot when it changed since the last one every client got.
+fn send_snapshot(shared: &Shared, routing: &Routing, state: &BusState, now: u64) {
+    // In turn with windows' todo changes (todos.rs): a snapshot made before a newer one is never sent after it.
+    let mut sent = lock(&shared.snapshots);
+    let (view, book) = light_view(shared, routing, state, now);
+    if sent.view.as_ref() == Some(&view) && sent.book == book {
+        return;
+    }
+    shared.broadcast(ServiceMsg::Bus { json: whole(shared, routing, view.clone()) });
+    *sent = Sent { view: Some(view), book };
+}
+
+/// Makes the snapshot from the shared state and sends it: to every client
+/// (`to: None`; it becomes the last one sent), or to one.
+pub(super) fn send_snapshot_now(shared: &Shared, to: Option<&Client>) {
+    let routing = lock(&shared.routing).clone();
+    let state = lock(&shared.bus).clone();
+    let mut sent = lock(&shared.snapshots);
+    let (view, book) = light_view(shared, &routing, &state, now_ms());
+    let message = ServiceMsg::Bus { json: whole(shared, &routing, view.clone()) };
+    match to {
+        Some(client) => {
+            client.send(message);
+        }
+        None => {
+            shared.broadcast(message);
+            *sent = Sent { view: Some(view), book };
         }
     }
 }
@@ -916,49 +1185,35 @@ pub(super) fn action(shared: &Shared, json: &str, incoming: &crossbeam_channel::
     let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else { return };
     let key = value["key"].as_str().unwrap_or_default().to_owned();
     let now = now_ms();
-    let mut state = lock(&shared.bus);
     match value["action"].as_str().unwrap_or_default() {
         "run" => {
-            if let Some(spec) = lock(&shared.routing).passive.iter().find(|p| p.key == key) {
-                let s = state.passive.entry(key.clone()).or_default();
-                let event = Event { kind: "manual.run".into(), group: spec.group.clone(), source_name: "you".into(), ms: now, ..Default::default() };
-                s.enqueue(event, now);
-                s.first_pending_ms = now.saturating_sub(bus::DEBOUNCE_MS);
-                s.retry_at_ms = 0;
-                s.failures = 0;
-                if s.status == "done" {
-                    s.status.clear();
-                }
+            let group = lock(&shared.routing).passive.iter().find(|p| p.key == key).map(|p| p.group.clone());
+            if let Some(group) = group {
+                apply_now(shared, BusOp::Run { key, group, ms: now });
             }
         }
-        "resume" => {
-            if let Some(s) = state.passive.get_mut(&key) {
-                if s.status == "done" {
-                    s.status.clear();
-                    s.headline.clear();
-                }
-                s.failures = 0;
-                s.retry_at_ms = 0;
-            }
-        }
-        "discard_mail" => {
-            let to = value["to"].as_str().unwrap_or_default();
-            state.mailbox.retain(|m| m.to != to);
-        }
+        "resume" => apply_now(shared, BusOp::Resume { key }),
+        "discard_mail" => apply_now(shared, BusOp::DiscardMail { to: value["to"].as_str().unwrap_or_default().to_owned() }),
         // From clients that do not send the routing (the iPhone): pause or
         // resume one passive session now; the canvas field it also changed
         // keeps the desktop's next routing in agreement.
         "pause" => {
             let paused = value["paused"].as_bool().unwrap_or(true);
-            let mut routing = lock(&shared.routing);
-            if let Some(spec) = routing.passive.iter_mut().find(|p| p.key == key)
-                && spec.paused != paused
-            {
-                spec.paused = paused;
-                save_routing(&shared.instance.home, &routing);
-                if !paused && let Some(s) = state.passive.get_mut(&key) {
-                    s.failures = 0;
-                    s.retry_at_ms = 0;
+            let changed = {
+                let mut routing = lock(&shared.routing);
+                match routing.passive.iter_mut().find(|p| p.key == key) {
+                    Some(spec) if spec.paused != paused => {
+                        spec.paused = paused;
+                        Some((shared.routing_version.fetch_add(1, Ordering::SeqCst) + 1, routing.clone()))
+                    }
+                    _ => None,
+                }
+            };
+            // Written once the lock is released (S4-02: no file I/O under the locks launches take).
+            if let Some((version, routing)) = changed {
+                super::routing_changed(shared, version, &routing);
+                if !paused {
+                    apply_now(shared, BusOp::Unpaused { key });
                 }
             }
         }
@@ -1004,21 +1259,11 @@ fn stop_run(shared: &Shared, state: &mut BusState, key: &str) {
     }
 }
 
-/// Client snapshot on connect.
-pub(super) fn snapshot(shared: &Shared) -> String {
-    let routing = lock(&shared.routing).clone();
-    let mut view = lock(&shared.bus).snapshot(&routing, now_ms());
-    view.prs = super::prs::view(shared, &routing);
-    view.reviews = super::reviews::view(shared, &routing);
-    view.todos = super::todos::view(shared, &routing);
-    view.vm = crate::vm::view(&shared.instance.home);
-    view.restore = shared.restore.view();
-    serde_json::to_string(&view).unwrap_or_default()
-}
-
 /// The service keeps running for passive schedules even with no window open.
 pub(super) fn has_work(shared: &Shared) -> bool {
-    lock(&shared.routing).passive.iter().any(|p| !p.paused) || !lock(&shared.bus).mailbox.is_empty()
+    // One lock at a time (`action` takes the routing, then the bus).
+    let passive = lock(&shared.routing).passive.iter().any(|p| !p.paused);
+    passive || !lock(&shared.bus).mailbox.is_empty()
 }
 
 pub(super) fn input_noted(shared: &Shared, id: &str) {
@@ -1214,5 +1459,140 @@ mod tests {
         assert_eq!(canvas_model::launch::take_group_skills(&mut passive_launch(AgentKind::Copilot, &wide, None, true, Path::new(r"C:\a"), "check".into(), 1)), None);
         let none = PassiveSpec { skill_dirs: Vec::new(), ..spec };
         assert_eq!(passive_launch(AgentKind::Claude, &none, None, false, Path::new(r"C:\g"), "check".into(), 1).env.len(), 4, "its identity under both names");
+    }
+
+    #[test]
+    fn the_digest_reads_the_latest_summary_when_the_cut_falls_inside_a_character() {
+        let dir = std::env::temp_dir().join(format!("cc-digest-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("events.jsonl");
+        let first = "{\"type\":\"user.message\",\"data\":{\"content\":\"first ask\"}}\n";
+        let last = "{\"type\":\"assistant.message\",\"data\":{\"content\":\"latest → done\"}}\n";
+        // A long line of two-byte characters; the 512 KB cut lands on a continuation byte.
+        let mut filler = format!("x{}\n", "é".repeat(300_000));
+        let start = |filler: &str| (first.len() + filler.len() + last.len()) as u64 - 512 * 1024;
+        if (start(&filler) - first.len() as u64) % 2 == 1 {
+            filler.insert(0, 'y');
+        }
+        let cut = (start(&filler) - first.len() as u64) as usize;
+        assert!(!filler.is_char_boundary(cut), "the cut is inside a character");
+        std::fs::write(&path, format!("{first}{filler}{last}")).unwrap();
+        assert_eq!(digest(&path), ("first ask".to_owned(), "latest → done".to_owned()));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn window_actions_taken_while_a_pass_runs_are_kept() {
+        let bus = std::sync::Mutex::new(BusState::default());
+        let ops = std::sync::Mutex::new(Vec::new());
+        lock(&bus).mailbox.push(Mail { id: "m1".into(), to: "s1".into(), from: "Rollout".into(), text: "hello".into(), ms: 1 });
+        lock(&bus).passive.insert("k1".into(), bus::PassiveState { status: "done".into(), failures: 2, retry_at_ms: 99, ..Default::default() });
+        // The bus loop takes its copy and works on it (a run starting, a launch: seconds).
+        let mut copy = take_copy(&bus, &ops);
+        copy.recent.push_back(Event { kind: "pr.pushed".into(), ..Default::default() });
+        // Meanwhile a window discards the mail, asks for a run now and resumes.
+        apply_shared(&bus, &ops, BusOp::DiscardMail { to: "s1".into() });
+        apply_shared(&bus, &ops, BusOp::Run { key: "k2".into(), group: "g1".into(), ms: 50_000 });
+        apply_shared(&bus, &ops, BusOp::Resume { key: "k1".into() });
+        assert!(lock(&bus).mailbox.is_empty(), "applied at once (a client connecting meanwhile sees it)");
+        // Before the loop types mail in, the discard reaches its copy: nothing is typed.
+        catch_up_with(&bus, &ops, &mut copy);
+        assert!(copy.mailbox.is_empty());
+        apply_shared(&bus, &ops, BusOp::Unpaused { key: "k1".into() });
+        // Written back: the loop's work and every window change are there.
+        write_back(&bus, &ops, &mut copy);
+        let state = lock(&bus).clone();
+        assert_eq!(state.recent.len(), 1, "the pass's own work");
+        assert!(state.mailbox.is_empty(), "the discarded message stays discarded");
+        let run = &state.passive["k2"];
+        assert_eq!(run.pending.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(), ["manual.run"]);
+        assert!(run.ready(&PassiveSpec { key: "k2".into(), ..Default::default() }, 50_000), "run now: no debounce to wait out");
+        let resumed = &state.passive["k1"];
+        assert_eq!((resumed.status.as_str(), resumed.failures, resumed.retry_at_ms), ("", 0, 0));
+        assert!(lock(&ops).is_empty());
+        // The next pass's copy has them too; changes made before a copy are not replayed twice.
+        apply_shared(&bus, &ops, BusOp::Run { key: "k2".into(), group: "g1".into(), ms: 60_000 });
+        let copy = take_copy(&bus, &ops);
+        assert_eq!(copy.passive["k2"].pending.len(), 2);
+        assert!(lock(&ops).is_empty());
+    }
+
+    /// A Copilot-like screen: the conversation, then the input box and a footer.
+    fn screen(input: &[&str], above: &[&str]) -> Vec<String> {
+        let mut rows: Vec<String> = above.iter().map(|r| r.to_string()).collect();
+        rows.push("╭──────────────────────────────────────────╮".into());
+        for line in input {
+            rows.push(format!("│ {line:<40} │"));
+        }
+        rows.push("╰──────────────────────────────────────────╯".into());
+        rows.push(" ctrl+c Exit · ctrl+r Expand    claude-x ⠋ 11%".into());
+        rows.extend(["", "", ""].iter().map(|r| r.to_string()));
+        rows
+    }
+
+    fn tail(rows: &[String], text: &str) -> Option<Vec<String>> {
+        prompt_tail(&rows.iter().map(String::as_str).collect::<Vec<_>>(), &probe_of(text))
+    }
+
+    #[test]
+    fn enter_is_pressed_again_only_while_the_text_still_waits_in_the_prompt() {
+        let note = "[Atelier] The machine restarted at 10:52 and interrupted you. Restore the state you were in.";
+        // The paste wraps in the input box: its end sits in the input line.
+        let pasted = screen(&["> [Atelier] The machine restarted at 10:5", "2 and interrupted you. Restore the state", " you were in."], &["● Fake reply"]);
+        let before = tail(&pasted, note).expect("in the prompt");
+        let waiting = Check { prompt: Some(before.clone()), ..Default::default() };
+        assert_eq!(first_enter(&waiting), Next::Enter);
+        // Swallowed (the agent was still loading): the screen is as the paste left it.
+        assert_eq!(again(&Check { prompt: tail(&pasted, note), ..Default::default() }, Some(&before)), Next::Enter, "the restore note is submitted");
+        // A spinner or a counter moving in the footer does not hide it.
+        let mut spinning = pasted.clone();
+        spinning[6] = " ctrl+c Exit · ctrl+r Expand    claude-x ⠙ 12%".into();
+        assert_eq!(again(&Check { prompt: tail(&spinning, note), ..Default::default() }, Some(&before)), Next::Enter);
+        // Sent: the box is empty and the message is in the conversation above it.
+        let sent = screen(&["> "], &["● Fake reply", "> [Atelier] The machine restarted at 10:52 and interrupted you.", "  Restore the state you were in.", "", "⠋ Thinking"]);
+        assert_ne!(again(&Check { prompt: tail(&sent, note), ..Default::default() }, Some(&before)), Next::Enter, "never Enter into an empty prompt");
+        // The agent took it and shows a permission menu: Enter would accept "Yes".
+        let menu = vec!["> [Atelier] ... Restore the state you were in.".to_owned(), "Allow this tool?".into(), "❯ 1. Yes".into(), "  2. Yes, always".into(), "  3. No".into(), "Esc to cancel".into()];
+        assert_eq!(tail(&menu, note), None, "too far above the bottom to be the input line");
+        assert_ne!(again(&Check { prompt: tail(&menu, note), ..Default::default() }, Some(&before)), Next::Enter);
+        // You typed into it since the paste: your text would be sent too.
+        let typed = Check { typed: true, prompt: Some(before.clone()), ..Default::default() };
+        assert_eq!(first_enter(&typed), Next::Stop("you typed into it, so it stays in the prompt for you to send"));
+        assert!(matches!(again(&typed, Some(&before)), Next::Stop(_)));
+        // A question or a permission request pending: never Enter.
+        let question = Check { question: true, prompt: Some(before.clone()), ..Default::default() };
+        assert!(matches!(first_enter(&question), Next::Stop(_)) && matches!(again(&question, Some(&before)), Next::Stop(_)));
+        // Its terminal was started again: nothing for the new run.
+        let replaced = Check { replaced: true, prompt: Some(before.clone()), ..Default::default() };
+        assert!(matches!(first_enter(&replaced), Next::Stop(_)) && matches!(again(&replaced, Some(&before)), Next::Stop(_)));
+        // The history or the progress says it was taken.
+        assert_eq!(again(&Check { taken: true, prompt: Some(before.clone()), ..Default::default() }, Some(&before)), Next::Stop(""));
+        // A paste the agent shows collapsed ("[Pasted text +3 lines]"): no screen to tell, one Enter only.
+        let collapsed = screen(&["> [Pasted text #1 +3 lines]"], &[]);
+        assert_eq!(tail(&collapsed, note), None);
+        assert!(matches!(again(&Check { prompt: None, ..Default::default() }, None), Next::Stop(_)));
+    }
+
+    #[test]
+    fn the_stand_ins_prompt_line_is_read_as_the_input_line() {
+        // `fake_copilot`: the prompt and the text inline, the cursor after it.
+        let note = "[Atelier] Restore the state you were in.";
+        let rows = vec!["Fake Copilot (canvas parity)".to_owned(), " ● Fake reply: nothing was sent anywhere.".into(), "".into(), format!("❯ {note}"), "".into()];
+        let before = tail(&rows, note).expect("at the prompt");
+        let mut sent = rows.clone();
+        sent[4] = "❯ ".into();
+        assert!(!same_screen(&tail(&sent, note).unwrap(), &before), "a new prompt below it: it was sent");
+    }
+
+    #[test]
+    fn the_history_says_taken_only_after_the_paste_and_questions_only_of_this_run() {
+        let started = 10_000;
+        let typed = 60_000;
+        // Interrupted while working (the restore note's case): the old Working state is no sign it took the note.
+        let stale = SessionSummary { activity: Activity::Working, last_event_ms: 5_000, pending: 1, ..Default::default() };
+        assert_eq!(history_says(Some(&stale), started, typed), (false, false), "a lost question from before the restart does not block it either");
+        let moved = SessionSummary { last_event_ms: typed + 300, ..stale.clone() };
+        assert_eq!(history_says(Some(&moved), started, typed), (true, true), "a new event: taken; a question of this run: never Enter");
+        assert_eq!(history_says(None, started, typed), (false, false));
     }
 }

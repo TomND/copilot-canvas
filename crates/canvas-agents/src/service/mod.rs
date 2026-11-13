@@ -35,9 +35,15 @@ pub use server::log;
 use term::lock;
 
 /// Threads answering backend requests (`ClientMsg::Rpc`): slow ones (CLI
-/// runs, scans) and quick ones (file checks, listings) on their own.
+/// runs, scans), bulky reads (transcripts, files, note folders) and quick
+/// ones (file checks, listings) each on their own.
 const RPC_WORKERS: usize = 8;
+const BULKY_RPC_WORKERS: usize = 3;
 const QUICK_RPC_WORKERS: usize = 4;
+/// A client whose edits keep being refused gets the whole canvas back at most this often.
+const DOC_REFUSAL_GAP_MS: u64 = 5_000;
+/// What a client that went away tracked stays tracked this long.
+const TRACK_GRACE_MS: u64 = 120_000;
 
 /// A backend request waiting for a worker.
 struct RpcJob {
@@ -87,18 +93,69 @@ fn session_plan(kind: AgentKind, launch: &AgentLaunch, id: &str, session: &str) 
 /// under `root` as `launch`, and the service log's line about it: what it got
 /// and what it left out (names the agent already loads from the project of
 /// `cwd`, repeated names, links).
+#[cfg(test)]
 fn group_skill_plugin(root: &Path, launch: &str, id: &str, kind: AgentKind, cwd: &Path, skills: &canvas_model::launch::GroupSkills) -> (Option<PathBuf>, String) {
     let native = canvas_model::skills::native_skill_names(kind, cwd);
-    let group = if skills.group.is_empty() { "the canvas".to_owned() } else { format!("group {}", skills.group) };
     match canvas_model::skills::prepare_group_plugin(root, &skills.group, launch, &skills.dirs, &native) {
-        Ok(made) => {
-            let given = if made.given.is_empty() { "none".to_owned() } else { made.given.join(", ") };
-            let skipped = if made.skipped.is_empty() { String::new() } else { format!("; skipped {}", made.skipped.join(", ")) };
-            (made.dir, format!("terminal {id}: skill folders of {group} ({} folder(s)): {given}{skipped}", skills.dirs.len()))
-        }
-        Err(error) => (None, format!("terminal {id}: cannot prepare the skill folders of {group}: {error}")),
+        Ok(made) => (made.dir.clone(), group_skill_line(id, skills, &made, "")),
+        Err(error) => (None, format!("terminal {id}: cannot prepare the skill folders of {}: {error}", group_label(skills))),
     }
 }
+
+fn group_label(skills: &canvas_model::launch::GroupSkills) -> String {
+    if skills.group.is_empty() { "the canvas".to_owned() } else { format!("group {}", skills.group) }
+}
+
+/// The service log's line about a launch's group skill plugin.
+fn group_skill_line(id: &str, skills: &canvas_model::launch::GroupSkills, made: &canvas_model::skills::GroupPlugin, how: &str) -> String {
+    let given = if made.given.is_empty() { "none".to_owned() } else { made.given.join(", ") };
+    let skipped = if made.skipped.is_empty() { String::new() } else { format!("; skipped {}", made.skipped.join(", ")) };
+    format!("terminal {id}: skill folders of {} ({} folder(s)){how}: {given}{skipped}", group_label(skills), skills.dirs.len())
+}
+
+/// What tells whether skill folders changed: the size and time of what is
+/// in them (a bounded walk of names and times, no file read).
+fn skills_stamp(dirs: &[String]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut seen = 0usize;
+    let mut stack: Vec<(PathBuf, usize)> = dirs.iter().map(|d| (PathBuf::from(d), 0)).collect();
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            dir.hash(&mut hasher);
+            continue;
+        };
+        let mut items: Vec<(PathBuf, u64, Option<std::time::SystemTime>, bool)> = entries
+            .flatten()
+            .filter_map(|e| e.metadata().ok().map(|m| (e.path(), m.len(), m.modified().ok(), m.is_dir())))
+            .collect();
+        items.sort_by(|a, b| a.0.cmp(&b.0));
+        for (path, len, modified, is_dir) in items {
+            seen += 1;
+            if seen > canvas_model::skills::MAX_VISITS * 4 {
+                return hasher.finish();
+            }
+            (&path, len, modified).hash(&mut hasher);
+            if is_dir && depth < 6 {
+                stack.push((path, depth + 1));
+            }
+        }
+    }
+    hasher.finish()
+}
+
+/// A group skill plugin built for an earlier launch, reused while its
+/// inputs are the same and its folders unchanged (S8-03: every launch and
+/// resume scanned and copied every skill again).
+struct CachedPlugin {
+    stamp: u64,
+    made: canvas_model::skills::GroupPlugin,
+    /// When a launch last took it (the least recently used go beyond `MAX_CACHED_PLUGINS`).
+    used_ms: u64,
+}
+
+/// Group skill plugins kept for later launches, at most.
+const MAX_CACHED_PLUGINS: usize = 16;
 
 /// The group skill plugin to remove when terminal `id` (started at
 /// `started`, when known) exits: the one registered for it, unless it was
@@ -129,16 +186,26 @@ pub struct Agents {
     host: Arc<Host>,
     sessions: Mutex<HashMap<String, SessionSummary>>,
     index_wake: Sender<()>,
-    /// Sessions started inside a hosted terminal: child id → message.
-    subsessions: Mutex<HashMap<String, ServiceMsg>>,
+    /// Sessions started inside a hosted terminal: child id → its link.
+    subsessions: Mutex<HashMap<String, SubsessionLink>>,
     /// Groups and passive sessions from the canvas, and the bus state.
     routing: Mutex<crate::bus::Routing>,
+    /// Numbers routing changes; the version last written to routing.json
+    /// (written after the routing lock is released, a newer one wins).
+    routing_version: std::sync::atomic::AtomicU64,
+    routing_written: Mutex<u64>,
     bus: Mutex<crate::bus::BusState>,
+    /// Windows' changes to the bus state since the bus loop took its copy
+    /// (locked after `bus`, never before).
+    bus_ops: Mutex<Vec<passive::BusOp>>,
     bus_tx: Sender<crate::bus::Event>,
     /// When each terminal last got keyboard input (messages wait while you type).
     input_at: Mutex<HashMap<String, u64>>,
     /// Sessions each client wants indexed (its canvas members).
     tracked: Mutex<HashMap<u64, HashSet<String>>>,
+    /// What clients that went away tracked, until then (ms): a reconnect
+    /// (a tunnel blip) finds their tails still read (S4-15, S5-12).
+    lingering: Mutex<Vec<(u64, HashSet<String>)>>,
     /// The agent each terminal runs (for its exit hook).
     agent_terms: Mutex<HashMap<String, AgentKind>>,
     /// Terminals whose agent session is not known yet.
@@ -153,10 +220,15 @@ pub struct Agents {
     group_plugins: Mutex<HashMap<String, (PathBuf, u64)>>,
     /// Numbers each launch's group skill plugin folder.
     group_plugin_seq: std::sync::atomic::AtomicU64,
+    /// Group skill plugins by what they were made of (group, folders, the
+    /// project's own skill names): launches share one while it holds.
+    skill_cache: Mutex<HashMap<String, CachedPlugin>>,
     /// Canvas documents clients opened.
     docs: docs::Docs,
-    /// Backend requests for the worker threads (slow, quick).
-    rpc: (Sender<RpcJob>, Sender<RpcJob>),
+    /// (client, document) → when a refused edit last got the whole canvas, and how many were refused since.
+    doc_refusals: Mutex<HashMap<(u64, String), (u64, u32)>>,
+    /// Backend requests for the worker threads (slow, bulky, quick).
+    rpc: (Sender<RpcJob>, Sender<RpcJob>, Sender<RpcJob>),
     /// Pairing codes and paired remote clients.
     remote: crate::remote::Registry,
     /// The reports inbox (`inbox.rs`).
@@ -168,8 +240,9 @@ pub struct Agents {
     /// The routed canvas's todo boards (`todos.rs`).
     todos: Mutex<todos::Hub>,
     /// Held while a bus snapshot is made and sent (the bus loop, windows'
-    /// todo changes), so a snapshot never overtakes a newer one.
-    snapshots: Mutex<()>,
+    /// todo changes, a connecting client), so a snapshot never overtakes a
+    /// newer one; what the last one every client got was made of.
+    snapshots: Mutex<passive::Sent>,
     /// The Dev Tunnels access token phone clients get (`CAP_TUNNEL_ACCESS`).
     tunnel_access: Mutex<Option<crate::tunnel_access::Access>>,
     /// Asks the tunnel access thread to issue a token now.
@@ -223,6 +296,7 @@ impl Agents {
         let (index_tx, index_rx) = bounded::<()>(1);
         let (bus_tx, bus_rx) = unbounded::<crate::bus::Event>();
         let (rpc_tx, rpc_rx) = unbounded::<RpcJob>();
+        let (bulky_tx, bulky_rx) = unbounded::<RpcJob>();
         let (quick_tx, quick_rx) = unbounded::<RpcJob>();
         let (tunnel_tx, tunnel_rx) = bounded::<()>(1);
         let agents = Arc::new(Agents {
@@ -231,24 +305,30 @@ impl Agents {
             index_wake: index_tx,
             subsessions: Mutex::new(HashMap::new()),
             routing: Mutex::new(passive::load_routing(&instance.home)),
+            routing_version: std::sync::atomic::AtomicU64::new(0),
+            routing_written: Mutex::new(0),
             bus: Mutex::new(passive::load_state(&instance.home)),
+            bus_ops: Mutex::new(Vec::new()),
             bus_tx,
             input_at: Mutex::new(HashMap::new()),
             tracked: Mutex::new(HashMap::new()),
+            lingering: Mutex::new(Vec::new()),
             agent_terms: Mutex::new(HashMap::new()),
             pending_sessions: Mutex::new(HashMap::new()),
             agent_sessions: Mutex::new(HashMap::new()),
             skill_plugins: Mutex::new(HashMap::new()),
             group_plugins: Mutex::new(HashMap::new()),
             group_plugin_seq: std::sync::atomic::AtomicU64::new(0),
+            skill_cache: Mutex::new(HashMap::new()),
             docs: docs::Docs::default(),
-            rpc: (rpc_tx, quick_tx),
+            doc_refusals: Mutex::new(HashMap::new()),
+            rpc: (rpc_tx, bulky_tx, quick_tx),
             remote: crate::remote::Registry::new(&instance.home),
             reports: Mutex::new(crate::reports::Store::open(&instance.home, now_ms())),
             prs: Mutex::new(prs::Hub::default()),
             reviews: Mutex::new(reviews::Hub::default()),
             todos: Mutex::new(todos::Hub::default()),
-            snapshots: Mutex::new(()),
+            snapshots: Mutex::new(passive::Sent::default()),
             tunnel_access: Mutex::new(None),
             tunnel_wake: tunnel_tx,
             push: push::Push::new(&instance.home),
@@ -269,8 +349,7 @@ impl Agents {
                 }
                 let message = ServiceMsg::Subsession { parent: parent.to_owned(), child: child.to_owned(), name: name.to_owned(), cwd: cwd.to_owned() };
                 log(&shared.instance, &format!("session {child} started inside {parent} (in its VM)"));
-                lock(&shared.subsessions).insert(child.to_owned(), message.clone());
-                shared.broadcast(message);
+                shared.new_subsession(child, message);
                 let _ = shared.index_wake.try_send(());
             })
         });
@@ -281,7 +360,7 @@ impl Agents {
         server::spawn_named("subsessions", { let a = agents.clone(); move || subsession_loop(a) });
         server::spawn_named("agent-sessions", { let a = agents.clone(); move || agent_session_loop(a) });
         server::spawn_named("docs", { let a = agents.clone(); move || docs_loop(a) });
-        for (count, jobs) in [(RPC_WORKERS, &rpc_rx), (QUICK_RPC_WORKERS, &quick_rx)] {
+        for (count, jobs) in [(RPC_WORKERS, &rpc_rx), (BULKY_RPC_WORKERS, &bulky_rx), (QUICK_RPC_WORKERS, &quick_rx)] {
             for _ in 0..count {
                 let (ctx, jobs, owner) = (Ctx::new(&instance), jobs.clone(), instance.clone());
                 server::spawn_named("rpc", move || rpc_worker(ctx, jobs, owner));
@@ -387,18 +466,18 @@ impl Agents {
         let session = launch.native_id.clone().unwrap_or_else(|| id.to_owned());
         // Skill folders travel in the environment; they never reach the agent.
         let group_skills = canvas_model::launch::take_group_skills(&mut launch);
-        // Never become a second writer for a session running elsewhere.
-        anyhow::ensure!(
-            !launch.resume || !provider.is_live(&session),
-            "this session is already running in another terminal; use that terminal"
-        );
+        // Never become a second writer for a session running elsewhere (who has it is named).
+        if launch.resume {
+            self.refuse_live(id, kind, &session)?;
+        }
         // Nor for one another box of this service runs or is starting right
         // now (before the agent wrote its own lock): claimed under one lock.
         if launch.fork_from.is_none()
             && let Err(other) = self.host.claim_launch_key(id, &format!("{}:{session}", kind.id()))
         {
             log(&self.instance, &format!("terminal {id}: {} session {session} already runs in terminal {other}; not started twice", kind.id()));
-            anyhow::bail!("this session is already running in another box; use that terminal");
+            let name = lock(&self.routing).names.get(&other).map(|n| format!("“{n}”")).unwrap_or_else(|| format!("terminal {other}"));
+            anyhow::bail!("this session is already running in another box of this canvas ({name}): use that box");
         }
         // Structured launches carry no free-form arguments; the environment
         // must not impersonate another session.
@@ -421,13 +500,14 @@ impl Agents {
         let skills = if integration.skill_plugins.is_empty() { "" } else { ", with its canvas skills" };
         // The previous launch's copy: that terminal has exited (a live one is never launched again).
         let root = canvas_model::skills::group_plugins_dir(&self.instance.home, &self.instance.name);
-        if let Some((previous, _)) = lock(&self.group_plugins).remove(id) {
-            canvas_model::skills::remove_group_plugin(&root, &previous);
+        let previous = lock(&self.group_plugins).remove(id);
+        if let Some((previous, _)) = previous {
+            self.release_group_plugin(&root, &previous);
         }
-        // A folder of its own for each launch: a late exit of the previous one never removes it.
+        // Built once and shared while its folders do not change; a late exit of
+        // the previous launch never removes one another launch uses.
         let group_plugin = group_skills.and_then(|skills| {
-            let launch_key = format!("{}-{id}", self.group_plugin_seq.fetch_add(1, Ordering::Relaxed));
-            let (plugin, line) = group_skill_plugin(&root, &launch_key, id, kind, Path::new(cwd), &skills);
+            let (plugin, line) = self.cached_group_plugin(&root, id, kind, Path::new(cwd), &skills);
             log(&self.instance, &line);
             plugin
         });
@@ -439,7 +519,7 @@ impl Agents {
         let command = provider.command(id, &launch, &integration).inspect_err(|_| {
             if let Some(plugin) = &group_plugin {
                 lock(&self.group_plugins).remove(id);
-                canvas_model::skills::remove_group_plugin(&root, plugin);
+                self.release_group_plugin(&root, plugin);
             }
         })?;
         let how = if launch.headless_prompt.is_some() { "headless run" } else if launch.fork_from.is_some() { "fork" } else if launch.resume { "resume" } else { "new session" };
@@ -547,6 +627,50 @@ impl Agents {
         Ok(Resolved { program: program.display().to_string(), args: vec!["vm".into(), "attach".into(), "--box".into(), id.to_owned()], env: self.integration(id).env, agent: true, remote: None })
     }
 
+    /// The group skill plugin of a launch: the one built before for the same
+    /// group, folders and project skill names while the folders are
+    /// unchanged, else a new one (which replaces it).
+    fn cached_group_plugin(&self, root: &Path, id: &str, kind: AgentKind, cwd: &Path, skills: &canvas_model::launch::GroupSkills) -> (Option<PathBuf>, String) {
+        let native = canvas_model::skills::native_skill_names(kind, cwd);
+        let mut names: Vec<&String> = native.iter().collect();
+        names.sort();
+        let key = format!("{}\u{1f}{}\u{1f}{}", skills.group, skills.dirs.join("\u{1e}"), names.iter().map(|n| n.as_str()).collect::<Vec<_>>().join("\u{1e}"));
+        let stamp = skills_stamp(&skills.dirs);
+        if let Some(cached) = lock(&self.skill_cache).get_mut(&key).filter(|c| c.stamp == stamp && c.made.dir.as_ref().is_none_or(|d| d.is_dir())) {
+            cached.used_ms = now_ms();
+            return (cached.made.dir.clone(), group_skill_line(id, skills, &cached.made, ", unchanged since an earlier launch"));
+        }
+        let launch_key = format!("{}-{id}", self.group_plugin_seq.fetch_add(1, Ordering::Relaxed));
+        match canvas_model::skills::prepare_group_plugin(root, &skills.group, &launch_key, &skills.dirs, &native) {
+            Ok(made) => {
+                let line = group_skill_line(id, skills, &made, "");
+                let mut gone: Vec<PathBuf> = Vec::new();
+                {
+                    let mut cache = lock(&self.skill_cache);
+                    gone.extend(cache.insert(key, CachedPlugin { stamp, made: made.clone(), used_ms: now_ms() }).and_then(|o| o.made.dir));
+                    while cache.len() > MAX_CACHED_PLUGINS {
+                        let Some(oldest) = cache.iter().min_by_key(|(_, c)| c.used_ms).map(|(k, _)| k.clone()) else { break };
+                        gone.extend(cache.remove(&oldest).and_then(|o| o.made.dir));
+                    }
+                }
+                for old in gone.iter().filter(|d| Some(*d) != made.dir.as_ref()) {
+                    self.release_group_plugin(root, old);
+                }
+                (made.dir, line)
+            }
+            Err(error) => (None, format!("terminal {id}: cannot prepare the skill folders of {}: {error}", group_label(skills))),
+        }
+    }
+
+    /// Removes a group skill plugin no launch shares any more (none of the
+    /// terminals has it, and it is not the one kept for the next launch).
+    fn release_group_plugin(&self, root: &Path, plugin: &Path) {
+        let used = lock(&self.group_plugins).values().any(|(p, _)| p == plugin) || lock(&self.skill_cache).values().any(|c| c.made.dir.as_deref() == Some(plugin));
+        if !used {
+            canvas_model::skills::remove_group_plugin(root, plugin);
+        }
+    }
+
     /// Learns the agent session `id` is about to create (see [`agent_session_loop`]).
     fn expect_session(&self, id: &str, cwd: Option<String>, fork: bool) {
         lock(&self.agent_sessions).remove(id);
@@ -609,6 +733,17 @@ impl Agents {
     }
 }
 
+/// Writes routing.json for routing change `version` (taken under the
+/// routing lock, written after it was released): a slow disk never holds up
+/// launches or the bus, and an older change never overwrites a newer one.
+fn routing_changed(shared: &Agents, version: u64, routing: &crate::bus::Routing) {
+    let mut written = lock(&shared.routing_written);
+    if *written < version {
+        passive::save_routing(&shared.instance.home, routing);
+        *written = version;
+    }
+}
+
 impl HostApp for Agents {
     fn command_env(&self, id: &str) -> Vec<(String, String)> {
         // Plain shells (the demo's) get the `atelier` command and their identity too.
@@ -624,15 +759,18 @@ impl HostApp for Agents {
             LaunchKind::Command { .. } => anyhow::bail!("plain commands are launched by the host"),
         };
         anyhow::ensure!(is_session_id(id), "refusing to launch an invalid session id");
-        // Never become a second writer for a session running elsewhere.
-        anyhow::ensure!(
-            !session_live(&self.instance.sessions_dir, id),
-            "this session is already running in another terminal; use that terminal"
-        );
+        // Never become a second writer for a session running elsewhere (who has it is named).
+        self.refuse_live(id, AgentKind::Copilot, id)?;
         anyhow::ensure!(
             !extra.iter().any(|a| a == "--session-id" || a == "--resume" || a == "-r" || a == "--continue"),
             "launch options may not select a different session"
         );
+        // Older clients' launches claim the session as agent launches do: two
+        // boxes never start it at once, whichever kind of launch each sends (S4-12).
+        if let Err(other) = self.host.claim_launch_key(id, &format!("{}:{id}", AgentKind::Copilot.id())) {
+            log(&self.instance, &format!("terminal {id}: copilot session {id} already runs in terminal {other}; not started twice"));
+            anyhow::bail!("this session is already running in another box of this canvas (terminal {other}): use that box");
+        }
         let program = copilot_program()?;
         // No --mouse flag: Copilot saves it to the user's global settings.
         let mut args = vec!["--session-id".to_owned(), id.to_owned()];
@@ -650,16 +788,17 @@ impl HostApp for Agents {
     fn client_connected(&self, client: &Arc<Client>) {
         // The client is listed already: every change after this list reaches it.
         self.send_sessions(client);
-        for link in lock(&self.subsessions).values() {
-            client.send(link.clone());
+        // Subsession links this client (the same window or paired client
+        // reconnecting) was not told yet: a box you removed never comes back (S5-06).
+        let who = client_identity(client);
+        let links: Vec<ServiceMsg> = lock(&self.subsessions).values_mut().filter_map(|link| link.tell(who.as_deref())).collect();
+        for link in links {
+            client.send(link);
         }
         for (id, native) in lock(&self.agent_sessions).iter() {
             client.send(ServiceMsg::AgentSession { id: id.clone(), native: native.clone() });
         }
-        {
-            let _turn = lock(&self.snapshots);
-            client.send(ServiceMsg::Bus { json: passive::snapshot(self) });
-        }
+        passive::send_snapshot_now(self, Some(client.as_ref()));
         // Only clients that show the inbox get it (`CAP_REPORTS`).
         client.send(inbox::message(self));
         if client.caps() & CAP_TUNNEL_ACCESS != 0 {
@@ -675,7 +814,11 @@ impl HostApp for Agents {
     }
 
     fn client_disconnected(&self, client: u64) {
-        lock(&self.tracked).remove(&client);
+        let gone = lock(&self.tracked).remove(&client);
+        if let Some(ids) = gone.filter(|ids| !ids.is_empty()) {
+            lock(&self.lingering).push((now_ms() + TRACK_GRACE_MS, ids));
+        }
+        lock(&self.doc_refusals).retain(|(id, _), _| *id != client);
         self.docs.leave(client);
         let _ = self.index_wake.try_send(());
     }
@@ -694,10 +837,16 @@ impl HostApp for Agents {
             }
             ClientMsg::Routing { json } => {
                 let routing: crate::bus::Routing = serde_json::from_str(&json).context("invalid routing")?;
-                let mut current = lock(&self.routing);
-                if *current != routing {
-                    passive::save_routing(&self.instance.home, &routing);
-                    *current = routing;
+                let changed = {
+                    let mut current = lock(&self.routing);
+                    (*current != routing).then(|| {
+                        *current = routing.clone();
+                        self.routing_version.fetch_add(1, Ordering::SeqCst) + 1
+                    })
+                };
+                // Written after the lock is released (launches and the bus take it).
+                if let Some(version) = changed {
+                    routing_changed(self, version, &routing);
                 }
             }
             ClientMsg::Bus { json } => {
@@ -738,8 +887,11 @@ impl HostApp for Agents {
                     });
                     return Ok(());
                 }
-                let quick = request.as_ref().is_ok_and(|r| r.is_quick());
-                let queue = if quick { &self.rpc.1 } else { &self.rpc.0 };
+                let queue = match &request {
+                    Ok(r) if r.is_quick() && r.is_bulky() => &self.rpc.1,
+                    Ok(r) if !r.is_quick() => &self.rpc.0,
+                    _ => &self.rpc.2,
+                };
                 let _ = queue.send(RpcJob { client: client.clone(), id, request });
             }
             other => anyhow::bail!("unexpected message {other:?}"),
@@ -773,8 +925,10 @@ impl HostApp for Agents {
     }
 
     fn terminal_exited(&self, id: &str) {
-        // Already relaunched: what is registered now belongs to the new run.
+        // Already relaunched: what is registered now belongs to the new run
+        // (a stop you asked of the earlier run is spent with it).
         if lock(&self.terms).get(id).is_some_and(|t| t.alive.load(Ordering::Acquire)) {
+            self.restore.relaunched(id);
             return;
         }
         let forced = lock(&self.terms).get(id).is_some_and(|t| t.was_forced());
@@ -789,8 +943,9 @@ impl HostApp for Agents {
         // Its copy of the group's skill folders, unless a relaunch (prepared
         // after this terminal started) has made the one registered now.
         let started = lock(&self.terms).get(id).map(|t| t.started_ms);
-        if let Some(plugin) = take_exited_plugin(&mut lock(&self.group_plugins), id, started) {
-            canvas_model::skills::remove_group_plugin(&canvas_model::skills::group_plugins_dir(&self.instance.home, &self.instance.name), &plugin);
+        let taken = take_exited_plugin(&mut lock(&self.group_plugins), id, started);
+        if let Some(plugin) = taken {
+            self.release_group_plugin(&canvas_model::skills::group_plugins_dir(&self.instance.home, &self.instance.name), &plugin);
         }
     }
 
@@ -928,7 +1083,25 @@ impl Agents {
             })
         });
         if let Err(error) = applied {
-            log(&self.instance, &format!("refused a canvas edit from client {}: {error:#}", client.id));
+            // A client that keeps sending the refused change (it puts it back
+            // on top of the canvas it gets) gets the whole canvas and the
+            // notice at most every few seconds, not ten times a second (S8-05).
+            let now = now_ms();
+            let due = {
+                let mut refusals = lock(&self.doc_refusals);
+                let last = refusals.entry((client.id, key.clone())).or_insert((0, 0));
+                if now.saturating_sub(last.0) >= DOC_REFUSAL_GAP_MS {
+                    let since = last.1;
+                    *last = (now, 0);
+                    Some(since)
+                } else {
+                    last.1 += 1;
+                    None
+                }
+            };
+            let Some(since) = due else { return };
+            let more = if since > 0 { format!(" ({since} more refused since the last notice)") } else { String::new() };
+            log(&self.instance, &format!("refused a canvas edit from client {}: {error:#}{more}", client.id));
             self.docs.snapshot(&key, client.id, |version, reply| {
                 let json = serde_json::to_string(&reply).unwrap_or_default();
                 client.send(ServiceMsg::Doc { key: key.clone(), version, json });
@@ -1029,6 +1202,11 @@ fn docs_loop(shared: Arc<Agents>) {
 fn rpc_worker(ctx: Ctx, jobs: Receiver<RpcJob>, instance: Instance) {
     use canvas_model::rpc::{Request, Response, unsupported};
     for job in jobs {
+        // Its client is gone (a reconnect asks again): nobody waits for the
+        // answer, and the new connection's requests wait behind it (S2-07).
+        if job.client.is_dropped() {
+            continue;
+        }
         let response = match job.request {
             Ok(request) => {
                 let name = request.name();
@@ -1059,15 +1237,109 @@ fn rpc_reply(id: u64, json: String) -> ServiceMsg {
 
 /// True when a live process (not a recycled PID) holds the session's in-use lock.
 pub fn session_live(root: &Path, id: &str) -> bool {
-    let Ok(entries) = std::fs::read_dir(root.join(id)) else { return false };
-    entries.filter_map(|e| e.ok()).any(|e| {
-        let name = e.file_name();
-        name.to_string_lossy()
-            .strip_prefix("inuse.")
-            .and_then(|rest| rest.strip_suffix(".lock"))
-            .and_then(|pid| pid.parse::<u32>().ok())
-            .is_some_and(|pid| canvas_sys::process::lock_owner_alive(pid, &e.path()))
-    })
+    !session_lock_pids(root, id).is_empty()
+}
+
+/// The live processes (not recycled PIDs) holding the session's in-use locks.
+pub fn session_lock_pids(root: &Path, id: &str) -> Vec<u32> {
+    let Ok(entries) = std::fs::read_dir(root.join(id)) else { return Vec::new() };
+    entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name();
+            name.to_string_lossy()
+                .strip_prefix("inuse.")
+                .and_then(|rest| rest.strip_suffix(".lock"))
+                .and_then(|pid| pid.parse::<u32>().ok())
+                .filter(|pid| canvas_sys::process::lock_owner_alive(*pid, &e.path()))
+        })
+        .collect()
+}
+
+/// Who holds a session open, as a refusal names it.
+#[derive(Clone, Debug, PartialEq)]
+enum Holder {
+    /// A process inside one of this service's terminals: (terminal id, program, pid).
+    Terminal(String, String, u32),
+    /// VS Code (the process or one of its ancestors): (program, pid).
+    VsCode(String, u32),
+    /// Any other program: (program, pid).
+    Other(String, u32),
+}
+
+/// Classifies the process `pid`: inside one of this service's terminals
+/// (`terminal_of`: the terminal whose process tree has it), VS Code (it or
+/// an ancestor, from `procs`: pid → parent, name), or another program.
+fn classify_holder(pid: u32, procs: &HashMap<u32, (u32, String)>, terminal_of: &dyn Fn(u32) -> Option<String>) -> Holder {
+    let name = procs.get(&pid).map(|(_, n)| n.clone()).unwrap_or_else(|| "a process".into());
+    if let Some(id) = terminal_of(pid) {
+        return Holder::Terminal(id, name, pid);
+    }
+    let vscode = |n: &str| {
+        let n = n.to_ascii_lowercase();
+        n.starts_with("code") || n.contains("vscode") || n.starts_with("cursor")
+    };
+    let (mut at, mut hops) = (pid, 0);
+    while let Some((parent, n)) = procs.get(&at) {
+        if vscode(n) {
+            return Holder::VsCode(n.clone(), pid);
+        }
+        if *parent == 0 || *parent == at || hops > 32 {
+            break;
+        }
+        (at, hops) = (*parent, hops + 1);
+    }
+    Holder::Other(name, pid)
+}
+
+impl Agents {
+    /// Who holds agent session `native` open, after "is" (a refusal, the
+    /// restore's reason, the log): "already running" in a canvas box (named),
+    /// in VS Code, or in another program, with its name and pid, and what to
+    /// do. `launching`: the box being started (its own terminal still closing says so).
+    pub(super) fn session_holder(&self, kind: AgentKind, native: &str, launching: Option<&str>) -> String {
+        const ELSEWHERE: &str = "already running in another terminal: use that terminal";
+        let name = |id: &str| lock(&self.routing).names.get(id).cloned().map(|n| format!("“{n}”")).unwrap_or_else(|| format!("terminal {id}"));
+        if kind == AgentKind::OpenCode {
+            // Only TUIs this service started count as live: one of its own terminals.
+            let fresh = now_ms().saturating_sub(5_000);
+            return match crate::agents::opencode::servers().into_iter().find(|(_, s)| s.ok_ms >= fresh && s.sessions.contains(native)) {
+                Some((server, _)) => format!("already running inside the canvas box {}: use that box", name(&server.terminal)),
+                None => ELSEWHERE.into(),
+            };
+        }
+        let Some(pid) = kind.provider().holders(native).first().copied() else { return ELSEWHERE.into() };
+        let entries = canvas_sys::process::process_entries();
+        let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (child, parent, _) in &entries {
+            children.entry(*parent).or_default().push(*child);
+        }
+        let procs: HashMap<u32, (u32, String)> = entries.into_iter().map(|(pid, parent, name)| (pid, (parent, name))).collect();
+        let terms: Vec<(String, u32)> = lock(&self.terms).values().filter(|t| t.pid != 0).map(|t| (t.id.clone(), t.pid)).collect();
+        let terminal_of = |pid: u32| terms.iter().find(|(_, root)| canvas_sys::process::process_tree(*root, &children).contains(&pid)).map(|(id, _)| id.clone());
+        holder_text(&classify_holder(pid, &procs, &terminal_of), launching, &name)
+    }
+
+    /// Refuses to become a second writer of agent session `session` (live in
+    /// another process), naming who has it.
+    fn refuse_live(&self, id: &str, kind: AgentKind, session: &str) -> Result<()> {
+        if !kind.provider().is_live(session) {
+            return Ok(());
+        }
+        let holder = self.session_holder(kind, session, Some(id));
+        log(&self.instance, &format!("terminal {id}: {} session {session} is {holder}; not started", kind.id()));
+        anyhow::bail!("this session is {holder}")
+    }
+}
+
+/// The words for a holder (`name`: a box's name by its terminal id).
+fn holder_text(holder: &Holder, launching: Option<&str>, name: &dyn Fn(&str) -> String) -> String {
+    match holder {
+        Holder::Terminal(id, exe, pid) if launching == Some(id.as_str()) => format!("already running in this box's own terminal, which is still closing ({exe} pid {pid}): try again in a few seconds"),
+        Holder::Terminal(id, exe, pid) => format!("already running inside the canvas box {} ({exe} pid {pid}): use that box", name(id)),
+        Holder::VsCode(exe, pid) => format!("already running in VS Code ({exe} pid {pid}): close it there first"),
+        Holder::Other(exe, pid) => format!("already running in another terminal ({exe} pid {pid}, not started by Atelier): use that terminal"),
+    }
 }
 
 pub fn find_on_path(name: &str) -> Option<PathBuf> {
@@ -1098,6 +1370,14 @@ pub fn nested_copilots(tree: &[u32], procs: &HashMap<u32, (u32, String)>) -> Vec
         .collect()
 }
 
+/// The terminal's own Copilot (its root, or the CLI its root shim started):
+/// its session is the terminal's, never a subsession, and the shim never
+/// holds a lock (S4-10: each was looked for in every session folder 15 times).
+fn own_copilot(pid: u32, root: u32, procs: &HashMap<u32, (u32, String)>) -> bool {
+    let copilot = canvas_sys::host::exe_name("copilot");
+    pid == root || (procs.get(&pid).is_some_and(|(parent, _)| *parent == root) && procs.get(&root).is_some_and(|(_, name)| *name == copilot))
+}
+
 /// Names `copilot` the processes of `tree` that run the Copilot CLI as a
 /// script (`node …/bin/copilot`, `node …/@github/copilot/index.js`): on
 /// macOS and Linux the CLI is a Node program, so its process name is the
@@ -1126,7 +1406,8 @@ pub fn name_node_copilots(tree: &[u32], procs: &mut HashMap<u32, (u32, String)>)
     }
 }
 
-/// The session whose in-use lock this process holds.
+/// The session whose in-use lock this process holds (a stale lock whose
+/// pid was reused names nothing: S5-05).
 pub fn session_for_pid(root: &Path, pid: u32) -> Option<String> {
     let lock_name = format!("inuse.{pid}.lock");
     std::fs::read_dir(root)
@@ -1134,7 +1415,10 @@ pub fn session_for_pid(root: &Path, pid: u32) -> Option<String> {
         .filter_map(|e| e.ok())
         .filter_map(|e| e.file_name().to_str().map(str::to_owned))
         .filter(|name| is_session_id(name))
-        .find(|name| root.join(name).join(&lock_name).exists())
+        .find(|name| {
+            let lock = root.join(name).join(&lock_name);
+            lock.exists() && canvas_sys::process::lock_owner_alive(pid, &lock)
+        })
 }
 
 /// Watches hosted terminals for Copilot sessions started inside them (an agent
@@ -1148,6 +1432,10 @@ fn subsession_loop(shared: Arc<Agents>) {
         if shared.shutting_down.load(Ordering::Relaxed) {
             return;
         }
+        // Links of terminals long gone are forgotten (the map only grew, S4-08).
+        let running: HashSet<String> = lock(&shared.terms).values().filter(|t| t.alive.load(Ordering::Acquire)).map(|t| t.id.clone()).collect();
+        let now = now_ms();
+        lock(&shared.subsessions).retain(|_, link| link.keep(&running, now));
         let terms: Vec<(String, u32)> =
             lock(&shared.terms).values().filter(|t| t.alive.load(Ordering::Acquire) && t.pid != 0).map(|t| (t.id.clone(), t.pid)).collect();
         if terms.is_empty() {
@@ -1164,7 +1452,7 @@ fn subsession_loop(shared: Arc<Agents>) {
         for (parent_id, root) in terms {
             let tree = canvas_sys::process::process_tree(root, &children);
             name_node_copilots(&tree, &mut procs);
-            for pid in nested_copilots(&tree, &procs) {
+            for pid in nested_copilots(&tree, &procs).into_iter().filter(|pid| !own_copilot(*pid, root, &procs)) {
                 alive.insert(pid);
                 let state = checked.entry(pid).or_insert((0, None));
                 if state.1.is_some() || state.0 >= 15 {
@@ -1182,12 +1470,57 @@ fn subsession_loop(shared: Arc<Agents>) {
                 };
                 let message = ServiceMsg::Subsession { parent: parent_id.clone(), child: child.clone(), name: field("name:"), cwd: field("cwd:") };
                 log(&shared.instance, &format!("session {child} started inside {parent_id}"));
-                lock(&shared.subsessions).insert(child, message.clone());
-                shared.broadcast(message);
+                shared.new_subsession(&child, message);
                 let _ = shared.index_wake.try_send(());
             }
         }
         checked.retain(|pid, _| alive.contains(pid));
+    }
+}
+
+/// A session started inside a hosted terminal, as clients are told of it.
+struct SubsessionLink {
+    message: ServiceMsg,
+    found_ms: u64,
+    /// The clients (by [`client_identity`]) told of it.
+    told: HashSet<String>,
+}
+
+/// Links whose parent no longer runs are kept this long (a client away meanwhile still learns of them).
+const SUBSESSION_KEEP_MS: u64 = 3_600_000;
+
+impl SubsessionLink {
+    /// The link for a client that has not been told of it yet (`who`:
+    /// unknown, always), now marked told.
+    fn tell(&mut self, who: Option<&str>) -> Option<ServiceMsg> {
+        match who {
+            Some(who) if !self.told.insert(who.to_owned()) => None,
+            _ => Some(self.message.clone()),
+        }
+    }
+
+    /// Kept while its parent runs, or for a while after.
+    fn keep(&self, running: &HashSet<String>, now: u64) -> bool {
+        let parent = match &self.message {
+            ServiceMsg::Subsession { parent, .. } => parent.as_str(),
+            _ => "",
+        };
+        running.contains(parent) || now.saturating_sub(self.found_ms) < SUBSESSION_KEEP_MS
+    }
+}
+
+/// What identifies a client across its reconnections: its paired id
+/// (remote), else the process at the other end of the pipe.
+fn client_identity(client: &Client) -> Option<String> {
+    client.remote_id.as_ref().map(|id| format!("remote:{id}")).or_else(|| client.peer_pid.map(|pid| format!("pid:{pid}")))
+}
+
+impl Agents {
+    /// Records a subsession found now and tells every client.
+    fn new_subsession(&self, child: &str, message: ServiceMsg) {
+        let told: HashSet<String> = lock(&self.clients).values().filter_map(|c| client_identity(c)).collect();
+        lock(&self.subsessions).insert(child.to_owned(), SubsessionLink { message: message.clone(), found_ms: now_ms(), told });
+        self.broadcast(message);
     }
 }
 
@@ -1350,9 +1683,16 @@ fn index_loop(shared: Arc<Agents>, wake: Receiver<()>) {
             let sessions = lock(&shared.agent_sessions);
             sessions.iter().filter(|(id, _)| terms.get(*id).is_some_and(|t| t.alive.load(Ordering::Acquire))).map(|(_, native)| native.clone()).collect()
         };
+        let lingering: Vec<String> = {
+            let mut lingering = lock(&shared.lingering);
+            let now = now_ms();
+            lingering.retain(|(until, _)| *until > now);
+            lingering.iter().flat_map(|(_, ids)| ids.iter().cloned()).collect()
+        };
         let tracked: HashSet<String> = lock(&shared.tracked)
             .values()
             .flat_map(|ids| ids.iter().cloned())
+            .chain(lingering)
             .chain(lock(&shared.terms).values().filter(|t| t.copilot).map(|t| t.id.clone()))
             .chain(natives)
             .collect();
@@ -1514,6 +1854,8 @@ mod tests {
         .collect();
         let tree = [10, 11, 12, 20, 21, 22, 23, 24];
         assert_eq!(nested_copilots(&tree, &procs), vec![10, 11, 21, 22]);
+        // The terminal's own shim and CLI are its session, never looked up as subsessions.
+        assert_eq!(nested_copilots(&tree, &procs).into_iter().filter(|pid| !own_copilot(*pid, 10, &procs)).collect::<Vec<_>>(), vec![21, 22]);
     }
 
     #[test]
@@ -1530,13 +1872,90 @@ mod tests {
     }
 
     #[test]
+    fn refusals_name_who_holds_the_session() {
+        let procs: HashMap<u32, (u32, String)> = [
+            (1, (0, "atelier-service.exe")),
+            (10, (1, "copilot.exe")), // box A's terminal
+            (11, (10, "pwsh.exe")),
+            (12, (11, "copilot.exe")), // `copilot --resume S` an agent ran in box A
+            (20, (0, "Code.exe")),
+            (21, (20, "Code.exe")),
+            (22, (21, "copilot.exe")), // VS Code's agent host
+            (30, (0, "explorer.exe")),
+            (31, (30, "WindowsTerminal.exe")),
+            (32, (31, "copilot.exe")), // a terminal outside Atelier
+        ]
+        .into_iter()
+        .map(|(pid, (parent, name))| (pid, (parent, name.to_owned())))
+        .collect();
+        // Box A's terminal is the tree of pid 10.
+        let terms = |pid: u32| [10, 11, 12].contains(&pid).then(|| "box-a".to_owned());
+        let terms: &dyn Fn(u32) -> Option<String> = &terms;
+        assert_eq!(classify_holder(12, &procs, terms), Holder::Terminal("box-a".into(), "copilot.exe".into(), 12));
+        assert_eq!(classify_holder(22, &procs, terms), Holder::VsCode("Code.exe".into(), 22));
+        assert_eq!(classify_holder(32, &procs, terms), Holder::Other("copilot.exe".into(), 32));
+        let name = |id: &str| if id == "box-a" { "“Refactor”".to_owned() } else { format!("terminal {id}") };
+        let texts = [
+            holder_text(&classify_holder(12, &procs, terms), Some("box-b"), &name),
+            holder_text(&classify_holder(12, &procs, terms), Some("box-a"), &name),
+            holder_text(&classify_holder(22, &procs, terms), None, &name),
+            holder_text(&classify_holder(32, &procs, terms), None, &name),
+        ];
+        assert_eq!(texts[0], "already running inside the canvas box “Refactor” (copilot.exe pid 12): use that box");
+        assert!(texts[1].contains("this box's own terminal, which is still closing") && texts[1].contains("try again"), "{}", texts[1]);
+        assert_eq!(texts[2], "already running in VS Code (Code.exe pid 22): close it there first");
+        assert_eq!(texts[3], "already running in another terminal (copilot.exe pid 32, not started by Atelier): use that terminal");
+        // Every one keeps the words clients recognise as "open elsewhere" (↗).
+        assert!(texts.iter().all(|t| t.starts_with("already running")));
+    }
+
+    #[test]
+    fn the_skill_folders_stamp_moves_only_when_they_change() {
+        let root = std::env::temp_dir().join(format!("cc-skills-stamp-{}", uuid::Uuid::new_v4()));
+        let skill = root.join("team").join("review");
+        std::fs::create_dir_all(skill.join("scripts")).unwrap();
+        std::fs::write(skill.join("SKILL.md"), "---\nname: review\n---\n").unwrap();
+        std::fs::write(skill.join("scripts").join("run.sh"), "echo 1").unwrap();
+        let dirs = vec![root.join("team").display().to_string()];
+        let first = skills_stamp(&dirs);
+        assert_eq!(skills_stamp(&dirs), first, "unchanged: the plugin built before is reused");
+        // A file deep inside changes: built again.
+        std::fs::write(skill.join("scripts").join("run.sh"), "echo 22").unwrap();
+        assert_ne!(skills_stamp(&dirs), first);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_reconnecting_client_is_not_told_of_a_subsession_again() {
+        let message = ServiceMsg::Subsession { parent: "box-a".into(), child: "child-1".into(), name: "Nested".into(), cwd: String::new() };
+        // Found while the GUI (pipe pid 77) was connected: it was told then.
+        let mut link = SubsessionLink { message: message.clone(), found_ms: 1_000, told: ["pid:77".to_owned()].into() };
+        assert_eq!(link.tell(Some("pid:77")), None, "the same window reconnecting: a box you removed stays removed");
+        assert_eq!(link.tell(Some("remote:home-pc")), Some(message.clone()), "a client away meanwhile learns of it");
+        assert_eq!(link.tell(Some("remote:home-pc")), None, "once");
+        assert_eq!(link.tell(None), Some(message), "a client that cannot be told apart gets it as before");
+        // Kept while its parent runs, forgotten an hour after it stopped.
+        let running: HashSet<String> = ["box-a".to_owned()].into();
+        assert!(link.keep(&running, 10 * SUBSESSION_KEEP_MS));
+        assert!(link.keep(&HashSet::new(), 1_000 + SUBSESSION_KEEP_MS - 1));
+        assert!(!link.keep(&HashSet::new(), 1_000 + SUBSESSION_KEEP_MS));
+    }
+
+    #[test]
     fn session_for_pid_finds_the_lock_holder() {
         let root = std::env::temp_dir().join(format!("cc-lock-{}", uuid::Uuid::new_v4()));
         let id = "12345678-1234-1234-1234-123456789abc";
         std::fs::create_dir_all(root.join(id)).unwrap();
-        std::fs::write(root.join(id).join("inuse.4242.lock"), "").unwrap();
-        assert_eq!(session_for_pid(&root, 4242).as_deref(), Some(id));
-        assert_eq!(session_for_pid(&root, 4243), None);
+        // This process holds it (it started before the lock was written).
+        let me = std::process::id();
+        std::fs::write(root.join(id).join(format!("inuse.{me}.lock")), "").unwrap();
+        assert_eq!(session_for_pid(&root, me).as_deref(), Some(id));
+        assert_eq!(session_for_pid(&root, me + 1), None);
+        // A lock left by a dead process whose pid is not running: nothing.
+        let other = "22345678-1234-1234-1234-123456789abc";
+        std::fs::create_dir_all(root.join(other)).unwrap();
+        std::fs::write(root.join(other).join("inuse.4000000.lock"), "").unwrap();
+        assert_eq!(session_for_pid(&root, 4_000_000), None);
         let _ = std::fs::remove_dir_all(root);
     }
 

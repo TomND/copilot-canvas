@@ -78,10 +78,14 @@ impl Status {
 
 /// The history says the session was busy when it was last seen: working on
 /// a turn, waiting on a question or permission, looping on a schedule, or
-/// with a subagent still running (a clean exit, `session.shutdown`, clears
-/// all of them).
+/// with a subagent still running. A clean exit (`session.shutdown`, activity
+/// stopped) clears all of them, also subagents a history written before
+/// that rule still lists as working.
 pub fn was_busy(summary: &SessionSummary) -> bool {
-    summary.activity == Activity::Working || summary.pending > 0 || summary.loop_ms > 0 || summary.agents.iter().any(|a| a.status == AgentStatus::Working)
+    summary.activity == Activity::Working
+        || summary.pending > 0
+        || summary.loop_ms > 0
+        || (summary.activity != Activity::Stopped && summary.agents.iter().any(|a| a.status == AgentStatus::Working))
 }
 
 /// `reviewed_ms`: when you last looked at the session; a finished turn stays
@@ -181,6 +185,13 @@ mod tests {
         assert_eq!(session_status(Some(&looping), None, None), Status::Interrupted, "a loop that no longer runs");
         assert_eq!(session_status(Some(&summary(Activity::Idle, false)), None, None), Status::Stopped, "idle when it went: simply stopped");
         assert_eq!(session_status(Some(&summary(Activity::Stopped, false)), None, None), Status::Stopped, "a clean exit");
+        // A clean exit with a subagent its history never finished (written before
+        // shutdown cleared them): stopped, not interrupted.
+        let mut subagent = summary(Activity::Stopped, false);
+        subagent.agents.push(canvas_common::protocol::AgentSummary { key: "a".into(), name: "Explorer".into(), description: String::new(), status: AgentStatus::Working, finished_ms: None });
+        assert_eq!(session_status(Some(&subagent), None, None), Status::Stopped);
+        subagent.activity = Activity::Idle;
+        assert_eq!(session_status(Some(&subagent), None, None), Status::Interrupted, "gone without a clean exit while a subagent ran");
         assert_eq!(session_status(Some(&summary(Activity::Failed, false)), None, None), Status::Failed);
         // Live elsewhere, or in a terminal here: never interrupted.
         assert_eq!(session_status(Some(&summary(Activity::Working, true)), None, None), Status::Working);

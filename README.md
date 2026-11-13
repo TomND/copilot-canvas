@@ -327,9 +327,17 @@ what it was running, with no window needed:
   own takes it out; the service going away for any other reason keeps it.
 - **Resumed**: agents continue their conversation through the normal launch
   path (`--session-id` / `-s` / `-r`, the same id), at their last size until a
-  window shows them; command boxes run their command again in their folder. A
-  session that is live elsewhere, or whose launch is now refused (its folder
-  is gone), is left alone and logged. VM boxes are not relaunched: their
+  window shows them; command boxes run their command again in their folder.
+  They start two at a time, at least 2 s apart, the most recently active first
+  (busy ones, then by their last turn): each agent loads its whole history as
+  it starts, and all of them at once starved each other and your typing. The
+  next one starts when one has printed and been quiet for 2 s (at most 20 s);
+  every box waiting its turn shows **resuming after restart**, and one you
+  start yourself meanwhile is simply left running. A session that is live
+  elsewhere (often the previous service's program still closing) is checked
+  again every 2 s for 30 s, then left alone with who has it (a canvas box, VS
+  Code, or another program with its pid); one whose launch is now refused (its
+  folder is gone) is left alone and logged. VM boxes are not relaunched: their
   satellites keep running in the guest and the service adopts them again.
 - **The note**: an agent that was busy gets, once it has settled, a message
   typed in (before any other queued message): *[Atelier] The machine running
@@ -341,8 +349,12 @@ what it was running, with no window needed:
   ask again. An agent that was idle with no loop is resumed without a note (no
   tokens spent). Like every message the canvas types into a session, the note
   is pasted and then submitted with Enter a moment later (an Enter that arrives
-  with a paste is taken as part of it by Copilot CLI and Claude Code); Enter is
-  pressed again, at most twice, while the agent shows no sign of taking it.
+  with a paste is taken as part of it by Copilot CLI and Claude Code). Enter is
+  pressed again (at most twice, 5 s apart) only while the screen shows the
+  text still in the agent's input line exactly as the paste left it and the
+  agent's history shows nothing new; never once you typed into that terminal
+  (your text would go with it), while the agent asks a question or a
+  permission (Enter would answer it), or after its terminal was started again.
 - **Loops, messages, passive sessions, automations**: a loop (`/every`) lives
   in the agent's process, so the note asks the agent to set it up again.
   Messages queued for a session wait in the bus's state and are delivered

@@ -327,7 +327,13 @@ resuming states: `canvas_model::status` (rules), `App::node_status`,
 `draw_broken_loop` (TUI) and `broken_arc` (GUI). Tests: the unit tests in
 `restore.rs`, the `interrupted-after-restart` view snapshot, and
 `tests/restore.rs` (a killed service resumes a stand-in Copilot session with
-its note and leaves the one you stopped alone).
+its note and leaves the one you stopped alone). The restore file is written
+after the restore's lock is released (`Restore::write`; never add file I/O
+under `inner`: launches, connects, the bus and exits take it), and entries
+resume through `Queue` (two at a time, the most recently active first). The
+bus snapshot is broadcast only when it changed (`passive::send_snapshot`;
+`tests/bus_quiet.rs` counts them while an event waits out its debounce):
+keep clock-derived values out of `bus::Snapshot`.
 
 ### VM sessions
 

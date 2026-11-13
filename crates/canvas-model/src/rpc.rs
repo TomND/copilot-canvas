@@ -565,6 +565,26 @@ impl Request {
     pub fn is_quick(&self) -> bool {
         self.timeout() <= Duration::from_secs(30)
     }
+
+    /// Quick by its time limit but reads a lot (a transcript's tail, a file, a
+    /// folder of notes, a history store): served apart from the cheap checks
+    /// a front end waits on, which never queue behind them.
+    pub fn is_bulky(&self) -> bool {
+        matches!(
+            self,
+            Request::Transcript { .. }
+                | Request::ReadText { .. }
+                | Request::ReadBytes { .. }
+                | Request::NoteRead { .. }
+                | Request::NoteRevs { .. }
+                | Request::NotebookList { .. }
+                | Request::HasHistory { .. }
+                | Request::Tails { .. }
+                | Request::DocBackup { .. }
+                | Request::PrepareGroup { .. }
+                | Request::Info
+        )
+    }
 }
 
 /// The backend: in-process (`canvas_agents::backend::LocalBackend`) or the

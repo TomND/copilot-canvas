@@ -277,11 +277,16 @@ pub fn install_cli(home: &Path) -> Result<std::path::PathBuf> {
     std::fs::create_dir_all(&dir)?;
     let target = dir.join(canvas_sys::host::exe_name("atelier"));
     let current = std::env::current_exe()?;
-    let same = std::fs::metadata(&target).ok().map(|m| m.len()) == std::fs::metadata(&current).ok().map(|m| m.len())
-        && std::fs::read(&target).ok() == std::fs::read(&current).ok();
+    // Size and time, not whole contents: the service starts before its first
+    // client is served, and reading two large executables delayed it (S4-20).
+    let same = same_file_stamp(&target, &current);
     if !same {
         let temp = dir.join(format!("atelier.{}.tmp", std::process::id()));
         std::fs::copy(&current, &temp)?;
+        // The copy carries the source's time: the next start knows it is the same.
+        if let Ok(modified) = std::fs::metadata(&current).and_then(|m| m.modified()) {
+            let _ = std::fs::File::options().write(true).open(&temp).and_then(|f| f.set_modified(modified));
+        }
         canvas_sys::fs::strip_quarantine(&temp);
         if std::fs::rename(&temp, &target).is_err() {
             let _ = std::fs::remove_file(&temp);
@@ -289,6 +294,13 @@ pub fn install_cli(home: &Path) -> Result<std::path::PathBuf> {
     }
     install_alias(&dir, &target);
     Ok(dir)
+}
+
+/// Two files of the same size and modification time (an installed copy of
+/// this executable: the copy keeps its time).
+fn same_file_stamp(a: &Path, b: &Path) -> bool {
+    let stamp = |p: &Path| std::fs::metadata(p).ok().map(|m| (m.len(), m.modified().ok()));
+    stamp(a).is_some_and(|s| s.1.is_some() && Some(s) == stamp(b))
 }
 
 /// The deprecated alias of the CLI for sessions, under its name before the
@@ -309,12 +321,14 @@ pub fn install_alias(dir: &Path, target: &Path) {
     }
     #[cfg(windows)]
     {
-        let same = std::fs::metadata(&alias).ok().map(|m| m.len()) == std::fs::metadata(target).ok().map(|m| m.len()) && std::fs::read(&alias).ok() == std::fs::read(target).ok();
-        if same || (alias.exists() && std::fs::remove_file(&alias).is_err()) {
+        // A hard link shares the target's size and time; a copy is given its time.
+        if same_file_stamp(&alias, target) || (alias.exists() && std::fs::remove_file(&alias).is_err()) {
             return;
         }
-        if std::fs::hard_link(target, &alias).is_err() {
-            let _ = std::fs::copy(target, &alias);
+        if std::fs::hard_link(target, &alias).is_err() && std::fs::copy(target, &alias).is_ok()
+            && let Ok(modified) = std::fs::metadata(target).and_then(|m| m.modified())
+        {
+            let _ = std::fs::File::options().write(true).open(&alias).and_then(|f| f.set_modified(modified));
         }
     }
 }
@@ -686,6 +700,22 @@ mod tests {
         assert_eq!(events.len(), 2, "refused ones are never posted");
         assert!(events.iter().any(|e| e.to == "canvas") && events.iter().any(|e| e.to == "PR coordinator"));
         let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn the_installed_cli_is_compared_by_size_and_time_not_read_whole() {
+        let dir = std::env::temp_dir().join(format!("cc-stamp-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        std::fs::write(&a, b"build 1").unwrap();
+        std::fs::write(&b, b"build 2").unwrap();
+        let at = std::fs::metadata(&a).unwrap().modified().unwrap();
+        std::fs::File::options().write(true).open(&b).unwrap().set_modified(at).unwrap();
+        assert!(same_file_stamp(&a, &b), "same size and time: taken as the same build, nothing read");
+        std::fs::File::options().write(true).open(&b).unwrap().set_modified(at + std::time::Duration::from_secs(1)).unwrap();
+        assert!(!same_file_stamp(&a, &b), "a new build has another time");
+        assert!(!same_file_stamp(&a, &dir.join("missing")));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

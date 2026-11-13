@@ -71,13 +71,20 @@ pub(super) struct Hub {
     served: VecDeque<String>,
     /// The size budget (`None`: [`MAX_BOOK_BYTES`]; tests make it small).
     budget: Option<usize>,
+    /// Counts changes of the book held (read, applied): the bus snapshot
+    /// carries the book again only when it moved.
+    generation: u64,
+    /// The unreadable book file's size and time when it was read.
+    unreadable_stamp: Option<(u64, Option<std::time::SystemTime>)>,
 }
 
 impl Hub {
     /// Holds `canvas`'s book (the one held before is saved first); a book
-    /// that could not be read is read again.
+    /// that could not be read is read again once its file changed (S8-15:
+    /// it was read again on every call, at least once a second).
     fn open(&mut self, home: &Path, canvas: &str) {
-        if self.canvas == canvas && self.unreadable.is_none() {
+        let stamp = || std::fs::metadata(crate::todos_cli::book_path(home, canvas)).ok().map(|m| (m.len(), m.modified().ok()));
+        if self.canvas == canvas && (self.unreadable.is_none() || self.unreadable_stamp == stamp()) {
             return;
         }
         if self.canvas != canvas {
@@ -94,6 +101,8 @@ impl Hub {
             Ok(book) => (book, None, None),
             Err(why) => (TodoBook::default(), Some(why), None),
         };
+        self.unreadable_stamp = if self.unreadable.is_some() { stamp() } else { None };
+        self.generation += 1;
         self.saved = serde_json::to_string_pretty(&self.book).unwrap_or_default();
     }
 
@@ -329,6 +338,7 @@ pub(super) fn apply(hub: &mut Hub, home: &Path, routing: &Routing, op: TodoOp, a
     });
     let mut events = Vec::new();
     if let Ok(applied) = &mut result {
+        hub.generation += 1;
         let stored = match text {
             Some(text) => hub.store(home, text),
             None => hub.save(home),
@@ -435,18 +445,14 @@ pub(super) fn action(shared: &Shared, client: &Arc<Client>, value: &serde_json::
     let routing = lock(&shared.routing).clone();
     let live = live_sessions(shared, &routing);
     let (refused, events) = window_op(&mut lock(&shared.todos), &shared.instance.home, &routing, value, Some(live), now_ms());
-    {
-        // Made and sent in turn with the bus loop's: a snapshot made before a newer one is never sent after it.
-        let _turn = lock(&shared.snapshots);
-        let snapshot = ServiceMsg::Bus { json: super::passive::snapshot(shared) };
-        match refused {
-            Some(notice) => {
-                log(&shared.instance, &format!("todo {} from a window: {notice}", value["op"]["op"].as_str().unwrap_or("?")));
-                client.send(ServiceMsg::Error { id: None, message: notice });
-                client.send(snapshot);
-            }
-            None => shared.broadcast(snapshot),
+    // Made and sent in turn with the bus loop's: a snapshot made before a newer one is never sent after it.
+    match refused {
+        Some(notice) => {
+            log(&shared.instance, &format!("todo {} from a window: {notice}", value["op"]["op"].as_str().unwrap_or("?")));
+            client.send(ServiceMsg::Error { id: None, message: notice });
+            super::passive::send_snapshot_now(shared, Some(client.as_ref()));
         }
+        None => super::passive::send_snapshot_now(shared, None),
     }
     for event in events {
         let _ = shared.bus_tx.send(event);
@@ -502,6 +508,17 @@ pub(super) fn view(shared: &Shared, routing: &Routing) -> Option<TodoBook> {
     let mut hub = lock(&shared.todos);
     hub.open(&shared.instance.home, &routing.canvas);
     hub.unreadable.is_none().then(|| hub.book.clone())
+}
+
+/// What tells whether the book clients get changed (the canvas and the
+/// book's change count), without copying it.
+pub(super) fn stamp(shared: &Shared, routing: &Routing) -> Option<(String, u64)> {
+    if !crate::doc::valid_canvas_id(&routing.canvas) {
+        return None;
+    }
+    let mut hub = lock(&shared.todos);
+    hub.open(&shared.instance.home, &routing.canvas);
+    Some((hub.canvas.clone(), hub.generation))
 }
 
 /// The `# Todos` section of a group's `group-context.md` (empty: no board is linked to it).
@@ -798,6 +815,31 @@ mod tests {
         let refused = add_board(&mut hub, &home, "Decomps").result.unwrap_err();
         assert!(refused.contains("newer atelier") && hub.book.boards.len() == 1 && hub.unreadable.is_none(), "{refused}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), newer);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_damaged_book_is_read_again_only_once_its_file_changed_and_changes_are_counted() {
+        let (home, mut hub) = (temp_home(), Hub::default());
+        let path = crate::todos_cli::book_path(&home, "c1");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{\"boards\": [").unwrap();
+        hub.open(&home, "c1");
+        let read = hub.generation;
+        // Every bus pass asks: the damaged file is not read again (it was, every second).
+        for _ in 0..3 {
+            hub.open(&home, "c1");
+        }
+        assert_eq!(hub.generation, read, "not read again");
+        std::fs::write(&path, "{\"boards\": []}").unwrap();
+        hub.open(&home, "c1");
+        assert!(hub.unreadable.is_none() && hub.generation > read, "fixed: read again");
+        // Applied changes move the count (the snapshot carries the book again); refused ones do not.
+        let before = hub.generation;
+        assert!(add_board(&mut hub, &home, "Decomps").result.is_ok());
+        assert_eq!(hub.generation, before + 1);
+        assert!(add_board(&mut hub, &home, "Decomps").result.is_err());
+        assert_eq!(hub.generation, before + 1);
         let _ = std::fs::remove_dir_all(home);
     }
 

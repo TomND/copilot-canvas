@@ -265,6 +265,10 @@ impl Provider for Claude {
         live_sessions(&claude_dir()).contains_key(native_id)
     }
 
+    fn holders(&self, native_id: &str) -> Vec<u32> {
+        live_sessions(&claude_dir()).get(native_id).map(|file| vec![file.pid]).unwrap_or_default()
+    }
+
     fn has_history(&self, native_id: &str) -> bool {
         is_session_id(native_id) && find_transcript(&claude_dir(), native_id, None).is_some()
     }
