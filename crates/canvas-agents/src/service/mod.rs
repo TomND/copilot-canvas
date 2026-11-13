@@ -42,6 +42,41 @@ const BULKY_RPC_WORKERS: usize = 3;
 const QUICK_RPC_WORKERS: usize = 4;
 /// A client whose edits keep being refused gets the whole canvas back at most this often.
 const DOC_REFUSAL_GAP_MS: u64 = 5_000;
+
+/// A client's refused edits of one canvas: when it last got the whole
+/// canvas back, and the refusals since (owed: sent by `docs_loop` once the
+/// gap is over, never dropped, R2-C-05).
+#[derive(Default)]
+struct Refusals {
+    last_ms: u64,
+    owed: u32,
+    /// The latest refusal's reason.
+    error: String,
+}
+
+impl Refusals {
+    /// A refusal now: `Some(refused since the last answer)` when the whole
+    /// canvas goes back now; else it is owed.
+    fn refused(&mut self, now: u64, error: String) -> Option<u32> {
+        if now.saturating_sub(self.last_ms) >= DOC_REFUSAL_GAP_MS {
+            let since = std::mem::take(&mut self.owed);
+            self.last_ms = now;
+            return Some(since);
+        }
+        self.owed += 1;
+        self.error = error;
+        None
+    }
+
+    /// An answer owed and due now: (the refusals it covers, the latest reason).
+    fn due(&mut self, now: u64) -> Option<(u32, String)> {
+        if self.owed == 0 || now.saturating_sub(self.last_ms) < DOC_REFUSAL_GAP_MS {
+            return None;
+        }
+        self.last_ms = now;
+        Some((std::mem::take(&mut self.owed), std::mem::take(&mut self.error)))
+    }
+}
 /// What a client that went away tracked stays tracked this long.
 const TRACK_GRACE_MS: u64 = 120_000;
 
@@ -166,6 +201,45 @@ struct CachedPlugin {
 /// Group skill plugins kept for later launches, at most.
 const MAX_CACHED_PLUGINS: usize = 16;
 
+/// Group skill plugins by terminal (and when each was registered).
+type GroupPlugins = Mutex<HashMap<String, (PathBuf, u64)>>;
+
+/// The plugin kept for `key` while its folders' `stamp` is the same,
+/// registered for terminal `id` before the cache's lock is released.
+fn take_cached_plugin(plugins: &GroupPlugins, cache: &Mutex<HashMap<String, CachedPlugin>>, key: &str, stamp: u64, id: &str) -> Option<canvas_model::skills::GroupPlugin> {
+    let mut plugins = lock(plugins);
+    let mut cache = lock(cache);
+    let cached = cache.get_mut(key).filter(|c| c.stamp == stamp && c.made.dir.as_ref().is_none_or(|d| d.is_dir()))?;
+    cached.used_ms = now_ms();
+    if let Some(dir) = &cached.made.dir {
+        plugins.insert(id.to_owned(), (dir.clone(), now_ms()));
+    }
+    Some(cached.made.clone())
+}
+
+/// Keeps a plugin just built for `key` (registered for terminal `id` under
+/// the same locks); answers the plugins it replaced or pushed out, for the
+/// caller to release.
+fn keep_built_plugin(plugins: &GroupPlugins, cache: &Mutex<HashMap<String, CachedPlugin>>, key: String, stamp: u64, id: &str, made: &canvas_model::skills::GroupPlugin) -> Vec<PathBuf> {
+    let mut plugins = lock(plugins);
+    let mut cache = lock(cache);
+    if let Some(dir) = &made.dir {
+        plugins.insert(id.to_owned(), (dir.clone(), now_ms()));
+    }
+    let mut gone: Vec<PathBuf> = cache.insert(key, CachedPlugin { stamp, made: made.clone(), used_ms: now_ms() }).and_then(|o| o.made.dir).into_iter().collect();
+    while cache.len() > MAX_CACHED_PLUGINS {
+        let Some(oldest) = cache.iter().min_by_key(|(_, c)| c.used_ms).map(|(k, _)| k.clone()) else { break };
+        gone.extend(cache.remove(&oldest).and_then(|o| o.made.dir));
+    }
+    gone
+}
+
+/// A terminal has the plugin, or it is the one kept for the next launch.
+fn plugin_in_use(plugins: &GroupPlugins, cache: &Mutex<HashMap<String, CachedPlugin>>, plugin: &Path) -> bool {
+    let plugins = lock(plugins);
+    plugins.values().any(|(p, _)| p == plugin) || lock(cache).values().any(|c| c.made.dir.as_deref() == Some(plugin))
+}
+
 /// The group skill plugin to remove when terminal `id` (started at
 /// `started`, when known) exits: the one registered for it, unless it was
 /// made after that terminal started (a relaunch of the id owns it then).
@@ -235,7 +309,7 @@ pub struct Agents {
     /// Canvas documents clients opened.
     docs: docs::Docs,
     /// (client, document) → when a refused edit last got the whole canvas, and how many were refused since.
-    doc_refusals: Mutex<HashMap<(u64, String), (u64, u32)>>,
+    doc_refusals: Mutex<HashMap<(u64, String), Refusals>>,
     /// Backend requests for the worker threads (slow, bulky, quick).
     rpc: (Sender<RpcJob>, Sender<RpcJob>, Sender<RpcJob>),
     /// Pairing codes and paired remote clients.
@@ -248,6 +322,13 @@ pub struct Agents {
     reviews: Mutex<reviews::Hub>,
     /// The routed canvas's todo boards (`todos.rs`).
     todos: Mutex<todos::Hub>,
+    /// Held while the book's files are written (after the book's lock is
+    /// released): one writer at a time, in the order of the changes.
+    todos_writer: Mutex<()>,
+    /// The last bus snapshot every client got (`ServiceMsg::Bus`), held
+    /// while it is broadcast: a connecting client gets it without waiting
+    /// for a pass or any store's lock, and never after a newer one (R2-C-02, R2-C-07).
+    last_bus: Mutex<Option<String>>,
     /// Held while a bus snapshot is made and sent (the bus loop, windows'
     /// todo changes, a connecting client), so a snapshot never overtakes a
     /// newer one; what the last one every client got was made of.
@@ -337,6 +418,8 @@ impl Agents {
             prs: Mutex::new(prs::Hub::default()),
             reviews: Mutex::new(reviews::Hub::default()),
             todos: Mutex::new(todos::Hub::default()),
+            todos_writer: Mutex::new(()),
+            last_bus: Mutex::new(None),
             snapshots: Mutex::new(passive::Sent::default()),
             tunnel_access: Mutex::new(None),
             tunnel_wake: tunnel_tx,
@@ -515,14 +598,12 @@ impl Agents {
         }
         // Built once and shared while its folders do not change; a late exit of
         // the previous launch never removes one another launch uses.
+        // Registered for this terminal as it is taken (R2-C-12).
         let group_plugin = group_skills.and_then(|skills| {
             let (plugin, line) = self.cached_group_plugin(&root, id, kind, Path::new(cwd), &skills);
             log(&self.instance, &line);
             plugin
         });
-        if let Some(plugin) = &group_plugin {
-            lock(&self.group_plugins).insert(id.to_owned(), (plugin.clone(), now_ms()));
-        }
         let group = if group_plugin.is_some() { ", with its group skills" } else { "" };
         integration.skill_plugins.extend(group_plugin.clone());
         let command = provider.command(id, &launch, &integration).inspect_err(|_| {
@@ -638,30 +719,24 @@ impl Agents {
 
     /// The group skill plugin of a launch: the one built before for the same
     /// group, folders and project skill names while the folders are
-    /// unchanged, else a new one (which replaces it).
+    /// unchanged, else a new one (which replaces it). It is registered for
+    /// terminal `id` under the cache's lock: a concurrent launch that replaces
+    /// it in the cache never removes it before this one could register it
+    /// (R2-C-12; lock order: group_plugins, then skill_cache).
     fn cached_group_plugin(&self, root: &Path, id: &str, kind: AgentKind, cwd: &Path, skills: &canvas_model::launch::GroupSkills) -> (Option<PathBuf>, String) {
         let native = canvas_model::skills::native_skill_names(kind, cwd);
         let mut names: Vec<&String> = native.iter().collect();
         names.sort();
         let key = format!("{}\u{1f}{}\u{1f}{}", skills.group, skills.dirs.join("\u{1e}"), names.iter().map(|n| n.as_str()).collect::<Vec<_>>().join("\u{1e}"));
         let stamp = skills_stamp(&skills.dirs);
-        if let Some(cached) = lock(&self.skill_cache).get_mut(&key).filter(|c| c.stamp == stamp && c.made.dir.as_ref().is_none_or(|d| d.is_dir())) {
-            cached.used_ms = now_ms();
-            return (cached.made.dir.clone(), group_skill_line(id, skills, &cached.made, ", unchanged since an earlier launch"));
+        if let Some(made) = take_cached_plugin(&self.group_plugins, &self.skill_cache, &key, stamp, id) {
+            return (made.dir.clone(), group_skill_line(id, skills, &made, ", unchanged since an earlier launch"));
         }
         let launch_key = format!("{}-{id}", self.group_plugin_seq.fetch_add(1, Ordering::Relaxed));
         match canvas_model::skills::prepare_group_plugin(root, &skills.group, &launch_key, &skills.dirs, &native) {
             Ok(made) => {
                 let line = group_skill_line(id, skills, &made, "");
-                let mut gone: Vec<PathBuf> = Vec::new();
-                {
-                    let mut cache = lock(&self.skill_cache);
-                    gone.extend(cache.insert(key, CachedPlugin { stamp, made: made.clone(), used_ms: now_ms() }).and_then(|o| o.made.dir));
-                    while cache.len() > MAX_CACHED_PLUGINS {
-                        let Some(oldest) = cache.iter().min_by_key(|(_, c)| c.used_ms).map(|(k, _)| k.clone()) else { break };
-                        gone.extend(cache.remove(&oldest).and_then(|o| o.made.dir));
-                    }
-                }
+                let gone = keep_built_plugin(&self.group_plugins, &self.skill_cache, key, stamp, id, &made);
                 for old in gone.iter().filter(|d| Some(*d) != made.dir.as_ref()) {
                     self.release_group_plugin(root, old);
                 }
@@ -674,8 +749,7 @@ impl Agents {
     /// Removes a group skill plugin no launch shares any more (none of the
     /// terminals has it, and it is not the one kept for the next launch).
     fn release_group_plugin(&self, root: &Path, plugin: &Path) {
-        let used = lock(&self.group_plugins).values().any(|(p, _)| p == plugin) || lock(&self.skill_cache).values().any(|c| c.made.dir.as_deref() == Some(plugin));
-        if !used {
+        if !plugin_in_use(&self.group_plugins, &self.skill_cache, plugin) {
             canvas_model::skills::remove_group_plugin(root, plugin);
         }
     }
@@ -807,7 +881,7 @@ impl HostApp for Agents {
         for (id, native) in lock(&self.agent_sessions).iter() {
             client.send(ServiceMsg::AgentSession { id: id.clone(), native: native.clone() });
         }
-        passive::send_snapshot_now(self, Some(client.as_ref()));
+        passive::send_last_snapshot(self, client.as_ref());
         // Only clients that show the inbox get it (`CAP_REPORTS`).
         client.send(inbox::message(self));
         if client.caps() & CAP_TUNNEL_ACCESS != 0 {
@@ -1094,29 +1168,26 @@ impl Agents {
         if let Err(error) = applied {
             // A client that keeps sending the refused change (it puts it back
             // on top of the canvas it gets) gets the whole canvas and the
-            // notice at most every few seconds, not ten times a second (S8-05).
-            let now = now_ms();
-            let due = {
-                let mut refusals = lock(&self.doc_refusals);
-                let last = refusals.entry((client.id, key.clone())).or_insert((0, 0));
-                if now.saturating_sub(last.0) >= DOC_REFUSAL_GAP_MS {
-                    let since = last.1;
-                    *last = (now, 0);
-                    Some(since)
-                } else {
-                    last.1 += 1;
-                    None
-                }
-            };
-            let Some(since) = due else { return };
-            let more = if since > 0 { format!(" ({since} more refused since the last notice)") } else { String::new() };
-            log(&self.instance, &format!("refused a canvas edit from client {}: {error:#}{more}", client.id));
-            self.docs.snapshot(&key, client.id, |version, reply| {
-                let json = serde_json::to_string(&reply).unwrap_or_default();
-                client.send(ServiceMsg::Doc { key: key.clone(), version, json });
-            });
-            client.send(ServiceMsg::Error { id: None, message: format!("A canvas change was refused: {error:#}") });
+            // notice at most every few seconds, not ten times a second (S8-05);
+            // one refused within that time gets them when it is over (R2-C-05).
+            let error = format!("{error:#}");
+            let due = lock(&self.doc_refusals).entry((client.id, key.clone())).or_default().refused(now_ms(), error.clone());
+            if let Some(since) = due {
+                self.resync_refused(client, &key, &error, since);
+            }
         }
+    }
+
+    /// A client whose canvas edit was refused gets the whole canvas back
+    /// (its refused change goes) and a notice; `more`: refusals not answered before.
+    fn resync_refused(&self, client: &Client, key: &str, error: &str, more: u32) {
+        let more = if more > 0 { format!(" ({more} more refused since the last notice)") } else { String::new() };
+        log(&self.instance, &format!("refused a canvas edit from client {}: {error}{more}", client.id));
+        self.docs.snapshot(key, client.id, |version, reply| {
+            let json = serde_json::to_string(&reply).unwrap_or_default();
+            client.send(ServiceMsg::Doc { key: key.to_owned(), version, json });
+        });
+        client.send(ServiceMsg::Error { id: None, message: format!("A canvas change was refused: {error}") });
     }
 }
 
@@ -1195,6 +1266,15 @@ impl Agents {
 fn docs_loop(shared: Arc<Agents>) {
     loop {
         std::thread::sleep(Duration::from_millis(100));
+        // Refused edits answered once their gap is over (R2-C-05).
+        let now = now_ms();
+        let owed: Vec<(u64, String, u32, String)> = lock(&shared.doc_refusals).iter_mut().filter_map(|((client, key), r)| r.due(now).map(|(n, error)| (*client, key.clone(), n, error))).collect();
+        for (id, key, refused, error) in owed {
+            let client = lock(&shared.clients).get(&id).cloned();
+            if let Some(client) = client {
+                shared.resync_refused(&client, &key, &error, refused.saturating_sub(1));
+            }
+        }
         for saved in shared.docs.save(false) {
             if let Some(error) = &saved.error {
                 log(&shared.instance, &format!("cannot save the canvas {}: {error}", saved.key));
@@ -1317,7 +1397,19 @@ impl Agents {
                 None => ELSEWHERE.into(),
             };
         }
-        let Some(pid) = kind.provider().holders(native).first().copied() else { return ELSEWHERE.into() };
+        match self.holder(kind, native) {
+            Some(holder) => holder_text(&holder, launching, &name),
+            None => ELSEWHERE.into(),
+        }
+    }
+
+    /// The process that holds agent session `native` open, classified (`None`:
+    /// not known, OpenCode's included).
+    fn holder(&self, kind: AgentKind, native: &str) -> Option<Holder> {
+        if kind == AgentKind::OpenCode {
+            return None;
+        }
+        let pid = kind.provider().holders(native).first().copied()?;
         let entries = canvas_sys::process::process_entries();
         let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
         for (child, parent, _) in &entries {
@@ -1326,25 +1418,55 @@ impl Agents {
         let procs: HashMap<u32, (u32, String)> = entries.into_iter().map(|(pid, parent, name)| (pid, (parent, name))).collect();
         let terms: Vec<(String, u32)> = lock(&self.terms).values().filter(|t| t.pid != 0).map(|t| (t.id.clone(), t.pid)).collect();
         let terminal_of = |pid: u32| terms.iter().find(|(_, root)| canvas_sys::process::process_tree(*root, &children).contains(&pid)).map(|(id, _)| id.clone());
-        holder_text(&classify_holder(pid, &procs, &terminal_of), launching, &name)
+        Some(classify_holder(pid, &procs, &terminal_of))
     }
 
     /// Refuses to become a second writer of agent session `session` (live in
-    /// another process), naming who has it.
+    /// another process), naming who has it. Held by this box's own earlier
+    /// CLI that is still closing (a Stop, then Resume at once): waited for, up
+    /// to [`OWN_CLOSE_WAIT`], then started; refused only if it is still there,
+    /// and then not as "already running" (it is open nowhere else, R2-C-09).
     fn refuse_live(&self, id: &str, kind: AgentKind, session: &str) -> Result<()> {
-        if !kind.provider().is_live(session) {
+        let live = || kind.provider().is_live(session);
+        if !live() {
             return Ok(());
         }
-        let holder = self.session_holder(kind, session, Some(id));
-        log(&self.instance, &format!("terminal {id}: {} session {session} is {holder}; not started", kind.id()));
-        anyhow::bail!("this session is {holder}")
+        let holder = self.holder(kind, session);
+        let own = matches!(&holder, Some(Holder::Terminal(terminal, ..)) if terminal == id);
+        if own && !still_live(&live, OWN_CLOSE_WAIT) {
+            log(&self.instance, &format!("terminal {id}: waited for its own earlier {} to close", kind.id()));
+            return Ok(());
+        }
+        let name = |id: &str| lock(&self.routing).names.get(id).cloned().map(|n| format!("“{n}”")).unwrap_or_else(|| format!("terminal {id}"));
+        let text = match &holder {
+            Some(holder) => holder_text(holder, Some(id), &name),
+            None => self.session_holder(kind, session, Some(id)),
+        };
+        log(&self.instance, &format!("terminal {id}: {} session {session} is {text}; not started", kind.id()));
+        anyhow::bail!("this session is {text}")
     }
+}
+
+/// How long a launch waits for its box's own earlier CLI to close (R2-C-09).
+const OWN_CLOSE_WAIT: Duration = Duration::from_secs(5);
+
+/// Whether `live` still holds after waiting up to `wait` for it to clear.
+fn still_live(live: &dyn Fn() -> bool, wait: Duration) -> bool {
+    let deadline = Instant::now() + wait;
+    while live() {
+        if Instant::now() >= deadline {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    false
 }
 
 /// The words for a holder (`name`: a box's name by its terminal id).
 fn holder_text(holder: &Holder, launching: Option<&str>, name: &dyn Fn(&str) -> String) -> String {
     match holder {
-        Holder::Terminal(id, exe, pid) if launching == Some(id.as_str()) => format!("already running in this box's own terminal, which is still closing ({exe} pid {pid}): try again in a few seconds"),
+        // Not "already running": it is open nowhere else, and clients show those words as ↗ open elsewhere (R2-C-09).
+        Holder::Terminal(id, exe, pid) if launching == Some(id.as_str()) => format!("still closing in this box's own terminal ({exe} pid {pid}): try again in a few seconds"),
         Holder::Terminal(id, exe, pid) => format!("already running inside the canvas box {} ({exe} pid {pid}): use that box", name(id)),
         Holder::VsCode(exe, pid) => format!("already running in VS Code ({exe} pid {pid}): close it there first"),
         Holder::Other(exe, pid) => format!("already running in another terminal ({exe} pid {pid}, not started by Atelier): use that terminal"),
@@ -1911,11 +2033,63 @@ mod tests {
             holder_text(&classify_holder(32, &procs, terms), None, &name),
         ];
         assert_eq!(texts[0], "already running inside the canvas box “Refactor” (copilot.exe pid 12): use that box");
-        assert!(texts[1].contains("this box's own terminal, which is still closing") && texts[1].contains("try again"), "{}", texts[1]);
+        assert!(texts[1].starts_with("still closing in this box's own terminal") && texts[1].contains("try again"), "{}", texts[1]);
         assert_eq!(texts[2], "already running in VS Code (Code.exe pid 22): close it there first");
         assert_eq!(texts[3], "already running in another terminal (copilot.exe pid 32, not started by Atelier): use that terminal");
-        // Every one keeps the words clients recognise as "open elsewhere" (↗).
-        assert!(texts.iter().all(|t| t.starts_with("already running")));
+        // Every holder elsewhere keeps the words clients recognise as "open elsewhere" (↗);
+        // the box's own closing CLI is open nowhere else (R2-C-09).
+        assert!([&texts[0], &texts[2], &texts[3]].iter().all(|t| t.starts_with("already running")));
+        assert!(!texts[1].contains("already running"));
+    }
+
+    #[test]
+    fn refused_edits_inside_the_gap_are_answered_when_it_ends_never_dropped() {
+        let mut r = Refusals::default();
+        assert_eq!(r.refused(10_000, "a".into()), Some(0), "the first: the whole canvas at once");
+        // The client resyncs and re-sends; refused again twice within the gap: owed, not dropped (R2-C-05).
+        assert_eq!(r.refused(10_100, "b".into()), None);
+        assert_eq!(r.refused(10_200, "c".into()), None);
+        assert_eq!(r.due(14_999), None, "not before the gap ends");
+        assert_eq!(r.due(15_000), Some((2, "c".to_owned())), "one answer for both, with the latest reason");
+        assert_eq!(r.due(15_100), None, "once");
+        // One more within the new gap: owed again; after it, answered at once.
+        assert_eq!(r.refused(16_000, "d".into()), None);
+        assert_eq!(r.due(20_000), Some((1, "d".to_owned())));
+        assert_eq!(r.refused(26_000, "e".into()), Some(0));
+    }
+
+    #[test]
+    fn a_launch_waits_for_its_own_closing_cli_then_starts() {
+        // Live for 300 ms (the box's own CLI closing after a Stop), then gone: waited for.
+        let start = Instant::now();
+        let closing = || start.elapsed() < Duration::from_millis(300);
+        assert!(!still_live(&closing, Duration::from_secs(5)));
+        assert!(start.elapsed() >= Duration::from_millis(300) && start.elapsed() < Duration::from_secs(2));
+        // Still live after the wait: refused then.
+        let start = Instant::now();
+        assert!(still_live(&|| true, Duration::from_millis(250)));
+        assert!(start.elapsed() >= Duration::from_millis(250));
+    }
+
+    #[test]
+    fn a_plugin_taken_from_the_cache_is_never_removed_by_a_launch_that_replaces_it() {
+        let root = std::env::temp_dir().join(format!("cc-plugin-race-{}", uuid::Uuid::new_v4().simple()));
+        let (a, b) = (root.join("a"), root.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let made = |dir: &Path| canvas_model::skills::GroupPlugin { dir: Some(dir.to_path_buf()), ..Default::default() };
+        let (plugins, cache): (GroupPlugins, Mutex<HashMap<String, CachedPlugin>>) = Default::default();
+        keep_built_plugin(&plugins, &cache, "group".into(), 1, "t0", &made(&a));
+        lock(&plugins).remove("t0");
+        // Launch 1 takes A from the cache: it is registered as it is taken.
+        assert_eq!(take_cached_plugin(&plugins, &cache, "group", 1, "t1").and_then(|m| m.dir), Some(a.clone()));
+        // Launch 2 (its folders changed meanwhile) builds B, which replaces A in the cache.
+        assert!(take_cached_plugin(&plugins, &cache, "group", 2, "t2").is_none());
+        assert_eq!(keep_built_plugin(&plugins, &cache, "group".into(), 2, "t2", &made(&b)), std::slice::from_ref(&a));
+        assert!(plugin_in_use(&plugins, &cache, &a), "launch 1 hands A to its agent: never removed under it");
+        lock(&plugins).remove("t1");
+        assert!(!plugin_in_use(&plugins, &cache, &a) && plugin_in_use(&plugins, &cache, &b));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

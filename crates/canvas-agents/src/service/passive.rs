@@ -882,6 +882,8 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
     let inbox = bus::inbox_dir(&home);
     let _ = std::fs::create_dir_all(&inbox);
     let mut last_saved: Option<BusState> = None;
+    // What the todo book's writer said last (said again only when it changes).
+    let mut todo_errors: Vec<String> = Vec::new();
     let mut watch = super::factory_watch::load(&home);
     loop {
         let mut events: Vec<Event> = Vec::new();
@@ -1026,6 +1028,14 @@ pub(super) fn bus_loop(shared: Arc<Shared>, incoming: Receiver<Event>) {
         }
         // Sent only when something changed, and made whole only then (S8-01).
         send_snapshot(&shared, &routing, &state, now);
+        // The todo book's files a pass left to write (a canvas switch saves the book it held).
+        let errors = super::todos::flush(&shared);
+        if errors != todo_errors {
+            for error in &errors {
+                log(&shared.instance, &format!("todos: {error}"));
+            }
+            todo_errors = errors;
+        }
         if last_saved.as_ref() != Some(&state) {
             write_atomic(&bus_dir(&home).join("state.json"), serde_json::to_string(&state).unwrap_or_default().as_bytes());
             last_saved = Some(state);
@@ -1044,7 +1054,10 @@ pub(super) enum BusOp {
     Run { key: String, group: String, ms: u64 },
     /// Resume after done, or after failed runs.
     Resume { key: String },
-    DiscardMail { to: String },
+    /// The messages for `to` that were there when you discarded them
+    /// (`ids`, filled in when it is applied to the shared state): a message
+    /// queued later, by the pass under way too, stays (R2-C-08).
+    DiscardMail { to: String, ids: Vec<String> },
     /// Unpaused: it may run again at once.
     Unpaused { key: String },
 }
@@ -1072,7 +1085,7 @@ fn apply_op(state: &mut BusState, op: &BusOp) {
                 s.retry_at_ms = 0;
             }
         }
-        BusOp::DiscardMail { to } => state.mailbox.retain(|m| m.to != *to),
+        BusOp::DiscardMail { to, ids } => state.mailbox.retain(|m| m.to != *to || !ids.contains(&m.id)),
         BusOp::Unpaused { key } => {
             if let Some(s) = state.passive.get_mut(key) {
                 s.failures = 0;
@@ -1087,8 +1100,11 @@ fn apply_now(shared: &Shared, op: BusOp) {
     apply_shared(&shared.bus, &shared.bus_ops, op);
 }
 
-fn apply_shared(bus: &std::sync::Mutex<BusState>, ops: &std::sync::Mutex<Vec<BusOp>>, op: BusOp) {
+fn apply_shared(bus: &std::sync::Mutex<BusState>, ops: &std::sync::Mutex<Vec<BusOp>>, mut op: BusOp) {
     let mut state = lock(bus);
+    if let BusOp::DiscardMail { to, ids } = &mut op {
+        *ids = state.mailbox.iter().filter(|m| m.to == *to).map(|m| m.id.clone()).collect();
+    }
     apply_op(&mut state, &op);
     lock(ops).push(op);
 }
@@ -1157,24 +1173,46 @@ fn send_snapshot(shared: &Shared, routing: &Routing, state: &BusState, now: u64)
     if sent.view.as_ref() == Some(&view) && sent.book == book {
         return;
     }
-    shared.broadcast(ServiceMsg::Bus { json: whole(shared, routing, view.clone()) });
+    broadcast_kept(shared, whole(shared, routing, view.clone()));
     *sent = Sent { view: Some(view), book };
 }
 
+/// Sends a whole snapshot to every client and keeps it for clients that
+/// connect later ([`send_last_snapshot`]), under one lock.
+fn broadcast_kept(shared: &Shared, json: String) {
+    let mut last = lock(&shared.last_bus);
+    shared.broadcast(ServiceMsg::Bus { json: json.clone() });
+    *last = Some(json);
+}
+
+/// A connecting client gets the last snapshot every client got: nothing is
+/// made, and no store's lock (the todo book, pull requests, reviews, a pass
+/// under way) is waited for (R2-C-02). Before the first one it gets none
+/// here: it is listed already, so the first one reaches it.
+pub(super) fn send_last_snapshot(shared: &Shared, client: &Client) {
+    let last = lock(&shared.last_bus);
+    if let Some(json) = last.as_ref() {
+        client.send(ServiceMsg::Bus { json: json.clone() });
+    }
+}
+
 /// Makes the snapshot from the shared state and sends it: to every client
-/// (`to: None`; it becomes the last one sent), or to one.
+/// (`to: None`; it becomes the last one sent), or to one. The state is
+/// copied under the snapshots' lock, so a snapshot made from an older state
+/// is never sent after a newer one (R2-C-07; lock order: snapshots, then
+/// routing and bus).
 pub(super) fn send_snapshot_now(shared: &Shared, to: Option<&Client>) {
+    let mut sent = lock(&shared.snapshots);
     let routing = lock(&shared.routing).clone();
     let state = lock(&shared.bus).clone();
-    let mut sent = lock(&shared.snapshots);
     let (view, book) = light_view(shared, &routing, &state, now_ms());
-    let message = ServiceMsg::Bus { json: whole(shared, &routing, view.clone()) };
+    let json = whole(shared, &routing, view.clone());
     match to {
         Some(client) => {
-            client.send(message);
+            client.send(ServiceMsg::Bus { json });
         }
         None => {
-            shared.broadcast(message);
+            broadcast_kept(shared, json);
             *sent = Sent { view: Some(view), book };
         }
     }
@@ -1193,7 +1231,7 @@ pub(super) fn action(shared: &Shared, json: &str, incoming: &crossbeam_channel::
             }
         }
         "resume" => apply_now(shared, BusOp::Resume { key }),
-        "discard_mail" => apply_now(shared, BusOp::DiscardMail { to: value["to"].as_str().unwrap_or_default().to_owned() }),
+        "discard_mail" => apply_now(shared, BusOp::DiscardMail { to: value["to"].as_str().unwrap_or_default().to_owned(), ids: Vec::new() }),
         // From clients that do not send the routing (the iPhone): pause or
         // resume one passive session now; the canvas field it also changed
         // keeps the desktop's next routing in agreement.
@@ -1491,13 +1529,16 @@ mod tests {
         let mut copy = take_copy(&bus, &ops);
         copy.recent.push_back(Event { kind: "pr.pushed".into(), ..Default::default() });
         // Meanwhile a window discards the mail, asks for a run now and resumes.
-        apply_shared(&bus, &ops, BusOp::DiscardMail { to: "s1".into() });
+        apply_shared(&bus, &ops, BusOp::DiscardMail { to: "s1".into(), ids: Vec::new() });
         apply_shared(&bus, &ops, BusOp::Run { key: "k2".into(), group: "g1".into(), ms: 50_000 });
         apply_shared(&bus, &ops, BusOp::Resume { key: "k1".into() });
         assert!(lock(&bus).mailbox.is_empty(), "applied at once (a client connecting meanwhile sees it)");
-        // Before the loop types mail in, the discard reaches its copy: nothing is typed.
+        // The pass queues another message for s1 after your click (an agent's `atelier send`).
+        copy.mailbox.push(Mail { id: "m2".into(), to: "s1".into(), from: "Agent".into(), text: "later".into(), ms: 2 });
+        // Before the loop types mail in, the discard reaches its copy: what you discarded is not typed, the later one stays.
         catch_up_with(&bus, &ops, &mut copy);
-        assert!(copy.mailbox.is_empty());
+        assert_eq!(copy.mailbox.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["m2"], "only what was there when you discarded it goes (R2-C-08)");
+        copy.mailbox.clear();
         apply_shared(&bus, &ops, BusOp::Unpaused { key: "k1".into() });
         // Written back: the loop's work and every window change are there.
         write_back(&bus, &ops, &mut copy);

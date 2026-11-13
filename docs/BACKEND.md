@@ -182,7 +182,8 @@ A client changes its working copy and marks it dirty; within 100 ms
 version the client had). The service applies the edits of all clients in
 arrival order, validates the result (an edit that breaks the document, such as
 a duplicate id, is refused: the sender gets `Error` and the whole document
-again), bumps the version and sends `ServiceMsg::DocPatch { key, version,
+again, at most every 5 s per client and canvas; refusals within those 5 s are
+answered once when they are over, never dropped), bumps the version and sends `ServiceMsg::DocPatch { key, version,
 origin, ops_json }` to every client that has the document open, including the
 sender, in version order (sent under the document lock).
 
@@ -396,13 +397,17 @@ only when something in it changed: each pass compares the snapshot without
 the book, and the book's change count (`todos::stamp`), with what every
 client got last (`passive::Sent`); a passive session's `next_run_ms` no longer
 depends on the clock (it was `now` for the whole 8 s debounce, which re-sent
-the whole snapshot every second). A connecting client, and a window whose todo
-change was refused, get one of their own. Every snapshot still carries the
+the whole snapshot every second). A connecting client gets the last snapshot
+every client got (kept with `ServiceMsg::Bus`, under the lock it is broadcast
+under: nothing is made, no store's lock is waited for, and it never comes
+after a newer one); a window whose todo change was refused gets one made
+then. Every snapshot still carries the
 whole book: an older client reads a snapshot without it as "no book".
 Windows' bus actions (`run`, `resume`, `discard_mail`, `pause`) are applied to
 the shared state at once and replayed onto the bus loop's copy before it is
 written back (`passive::BusOp`): one that arrives while a pass runs is never
-overwritten, and mail discarded meanwhile is never typed in.
+overwritten, and mail discarded meanwhile is never typed in (only the messages
+there when you discarded them go: one queued later stays).
 | `TodoOp` | `edit_check` (`{id, index, text}`: rewords a checklist item, its tick kept; anyone) and `remove_check` (`{id, index}`: people only), appended at the end, sent by the phone | a service of an older build answers "Todo change not understood by the service … restart the service after updating" with the book as it is: the phone's toast says so and its change is undone |
 | bus events | `todo.created`, `todo.proposed`, `todo.accepted`, `todo.status`, `todo.claimed`, `todo.submitted`, `todo.done` (data: `id`, `title`, `type`, `priority`, `status`, `board`, `board_name`, `by`, `by_session`, and `from`, `to`, `why`, `resolution`, `pr`, `for`, `for_session` where they apply) in the first canvas group linked to the board (else its parent's), from the actor's session (so never back to it), with the canvas id and the request's hop | ordinary events |
 | group catalog | `events.yaml` gains the seven `todo.*` entries (below) | — |
@@ -410,7 +415,9 @@ overwritten, and mail discarded meanwhile is never typed in.
 **The hub.** The service holds the routed canvas's book, read from
 `<home>/canvas-agents/<canvas id>/todos/book.json` when that canvas is
 routed (the one held before is saved first), and is its only writer: after
-every applied operation it writes the book atomically when its text changed,
+every applied operation (once the book's lock is released, one writer at a
+time, so a slow disk never holds up the bus snapshot, a connecting client or a
+launch) it writes the book atomically when its text changed,
 rewrites the Markdown mirror (`settings.mirror`: an absolute `.md` path on its
 machine; a relative one is refused) when its text changed, and appends to
 `log.jsonl` one line per applied or refused operation (`ms`, `actor`, `op`,

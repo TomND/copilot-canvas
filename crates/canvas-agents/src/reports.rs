@@ -209,6 +209,18 @@ impl Store {
         let _ = self.save_state();
     }
 
+    /// Whether the spool holds anything for [`Store::ingest`] (a report, or
+    /// an answer or temporary file left too long): looked at without the
+    /// store, so the poll every 250 ms takes no lock while it is empty (R2-C-02).
+    pub fn spooled(home: &Path) -> bool {
+        let Ok(entries) = std::fs::read_dir(spool_dir(home)) else { return false };
+        entries.flatten().any(|entry| match entry.path().extension().and_then(|e| e.to_str()) {
+            Some("json") => true,
+            Some("rejected") | Some("tmp") => entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > STALE_ANSWER),
+            _ => false,
+        })
+    }
+
     /// Stores the reports waiting in the spool (oldest first).
     pub fn ingest(&mut self, routing: &Routing, now: u64) -> Ingested {
         let mut done = Ingested::default();

@@ -1001,6 +1001,28 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_edit_answered_by_the_whole_canvas_leaves_nothing_in_flight() {
+        let mut server = Server::new(Doc { nodes: vec![node("a", 0)], ..Doc::default() });
+        let mut a = Window::open(&server, 1);
+        let mut b = Window::open(&server, 2);
+        // A's edit is refused: no patch for it ever comes.
+        a.doc.node_mut("a").unwrap().x = 5;
+        let _refused = a.take().unwrap();
+        assert_eq!(a.replica.in_flight(), 1);
+        // The service answers with the whole canvas, also when the refusal came within
+        // its gap (later, R2-C-05): nothing stays in flight.
+        a.replica.resync(&mut a.doc, server.open(1));
+        a.seen = server.patches.len();
+        assert_eq!(a.replica.in_flight(), 0);
+        a.doc.node_mut("a").unwrap().x = 0;
+        // Another window's later change of that box is taken, not held back as this one's own.
+        b.doc.node_mut("a").unwrap().x = 40;
+        b.send(&mut server);
+        a.receive(&server);
+        assert_eq!(a.doc.node("a").unwrap().x, 40);
+    }
+
+    #[test]
     fn missing_patches_ask_for_a_resync_and_old_ones_are_ignored() {
         let server = Server::new(Doc::default());
         let mut a = Window::open(&server, 1);
