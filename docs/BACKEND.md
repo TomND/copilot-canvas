@@ -222,7 +222,19 @@ show (`sync::stable_id`), so they end up as one box.
 After a reconnect (or a service restart) the client opens the document again.
 `Replica::resync` takes the service's document and puts the client's own
 changes that are not known to have arrived on top; they go out with the next
-edit. While offline nothing is sent; local changes wait.
+edit. While offline nothing is sent; local changes wait. A `DocOpen` whose
+`Doc` has not come 10 s later is sent again.
+
+### What desktop clients send since round 1 (no wire additions)
+
+| Where | Since | An older service |
+|---|---|---|
+| `ClientMsg::Claim` from the TUI and the GUI (the terminal that gets the keyboard; a size repair) | the iPhone client added it (every service since, v0.3.0 included, reads it); never sent over protocol 7 | a protocol-8 service from before the iPhone client would drop the connection: not supported |
+| `ClientMsg::RefreshSessions` every minute and when `Stats` disagrees with the client's terminal list (`canvas-core/src/resync.rs`) | existing message | indexes again (cheap); a service that answers it with `Terminals` (all) and `Sessions { full: true }` to the requester repairs a client's lists at once (older clients take both as the updates they are) |
+| A reconnect when `Stats` keeps disagreeing with the client's terminal list (at most every 5 minutes) | — | sends its whole lists, as on any connect |
+| A second, short-lived connection for uploads and clipboard images over 256 KiB (`conn::Bulk`: its own client session, no subscriptions, closed when done) | — | another client for a moment; an upload slower than 6 s on it can still be dropped as silent by a service that counts only whole messages, never the window's connection |
+| `Request::Upload` pieces of 256 KiB (4 MiB before) | — | takes pieces of any size |
+| `ServiceMsg::Error { id: Some(box) }` (a refused launch) shown with its text, the box ↗ when it says the session already runs ("already running", "running elsewhere", "open elsewhere", "open in another", "running in another", "running inside") | — | its texts ("…already running in another terminal…") already match |
 
 ### Saving
 
