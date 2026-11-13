@@ -176,6 +176,11 @@ pub trait Provider: Send + Sync {
     fn history(&self) -> Box<dyn History>;
     /// Open in another process (never start a second copy).
     fn is_live(&self, native_id: &str) -> bool;
+    /// The processes holding the session open (its live lock or pid file),
+    /// named in refusals; empty when the agent does not tell.
+    fn holders(&self, _native_id: &str) -> Vec<u32> {
+        Vec::new()
+    }
     /// The session's history exists (it can be resumed or forked).
     fn has_history(&self, native_id: &str) -> bool;
     /// Default root of the history store (shown by `doctor`).

@@ -631,14 +631,18 @@ impl PassiveState {
         self.started && spec.rollover_runs > 0 && self.runs_since_rollover >= spec.rollover_runs
     }
 
-    /// The next scheduled time (for display).
-    pub fn next_run_ms(&self, spec: &PassiveSpec, now: u64) -> u64 {
+    /// The next scheduled time (for display). It depends on the state only,
+    /// never on the clock: the bus snapshot that carries it is sent again
+    /// only when something changed (it was `now` for the whole debounce
+    /// window, which re-sent the whole snapshot every second).
+    pub fn next_run_ms(&self, spec: &PassiveSpec) -> u64 {
         if spec.paused || self.status == "done" {
             return 0;
         }
         let mut next = u64::MAX;
         if !self.pending.is_empty() {
-            next = next.min(self.first_pending_ms + DEBOUNCE_MS).min(self.retry_at_ms.max(now));
+            // After the debounce, and not before a retry after a failure.
+            next = next.min((self.first_pending_ms + DEBOUNCE_MS).max(self.retry_at_ms));
         }
         if spec.every_minutes > 0 && self.last_every_ms > 0 {
             next = next.min(self.last_every_ms + spec.every_minutes as u64 * 60_000);
@@ -689,7 +693,7 @@ impl BusState {
                     running: state.running,
                     pending: state.pending.len() as u32,
                     last_run_ms: state.last_run_ms,
-                    next_run_ms: state.next_run_ms(spec, now),
+                    next_run_ms: state.next_run_ms(spec),
                     runs_today: state.runs_today,
                     last_error: state.last_error.clone(),
                     native_id: state.native_id.clone(),
@@ -1301,5 +1305,25 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "events: [oops\n");
         assert!(!path.with_extension("yaml.tmp").exists());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_snapshot_does_not_change_with_the_clock_while_events_wait_out_their_debounce() {
+        let routing = Routing { passive: vec![spec("a", &["pr.*"])], ..Default::default() };
+        let mut state = BusState::default();
+        let t0 = 1_000_000;
+        state.passive.entry("a".into()).or_default().enqueue(event("pr.pushed"), t0);
+        // Every second of the 8 s debounce: the same snapshot (it was resent every pass).
+        let first = state.snapshot(&routing, t0);
+        for later in (1..9).map(|s| t0 + s * 1_000) {
+            assert_eq!(state.snapshot(&routing, later), first, "at +{} ms", later - t0);
+        }
+        assert_eq!(first.passive["a"].next_run_ms, t0 + DEBOUNCE_MS);
+        // A retry after a failure: not before it.
+        let s = state.passive.get_mut("a").unwrap();
+        s.retry_at_ms = t0 + 60_000;
+        assert_eq!(s.next_run_ms(&spec("a", &[])), t0 + 60_000);
+        s.retry_at_ms = t0 + 1_000;
+        assert_eq!(s.next_run_ms(&spec("a", &[])), t0 + DEBOUNCE_MS, "the debounce still ends later");
     }
 }

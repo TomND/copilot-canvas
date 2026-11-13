@@ -57,6 +57,10 @@ impl Provider for Copilot {
         crate::service::session_live(&sessions_dir(), native_id)
     }
 
+    fn holders(&self, native_id: &str) -> Vec<u32> {
+        crate::service::session_lock_pids(&sessions_dir(), native_id)
+    }
+
     fn has_history(&self, native_id: &str) -> bool {
         is_session_id(native_id) && sessions_dir().join(native_id).join("events.jsonl").is_file()
     }

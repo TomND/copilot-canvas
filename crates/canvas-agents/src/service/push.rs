@@ -127,6 +127,12 @@ fn send_all(agents: &Arc<Agents>, sender: Arc<Sender>, jobs: Vec<(Device, serde_
 pub(super) fn push_loop(agents: Arc<Agents>) {
     loop {
         std::thread::sleep(Duration::from_secs(2));
+        // No phone registered: no canvas read, no copy of the sessions (S4-16, S8-06);
+        // the first pass after one registers only primes.
+        if agents.push.devices.is_empty() {
+            *lock(&agents.push.attention) = Attention::default();
+            continue;
+        }
         let home = agents.instance.home.clone();
         let Some(doc) = agents.push.doc(&home) else { continue };
         let events = lock(&agents.push.attention).update(statuses(&agents, &doc));
