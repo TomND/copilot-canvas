@@ -115,11 +115,18 @@ impl SizePolicy {
         self.leaving.map(|(_, until)| until)
     }
 
-    /// `client` is back (a wish or a claim): it is not leaving any more.
-    fn stay(&mut self, client: u64) {
-        if self.leaving.is_some_and(|(leaver, _)| leaver == client) {
+    /// `client` shows the terminal again (or sent a wish or claim): if it
+    /// was leaving, it is not any more and keeps the size. `true` then.
+    pub fn back(&mut self, client: u64) -> bool {
+        let back = self.leaving.is_some_and(|(leaver, _)| leaver == client);
+        if back {
             self.leaving = None;
         }
+        back
+    }
+
+    fn stay(&mut self, client: u64) {
+        self.back(client);
     }
 
     /// Nothing is remembered (no wish, no owner).
@@ -192,9 +199,14 @@ mod tests {
         assert_eq!(p.leaving_until(), Some(now + LEAVE_GRACE));
         assert_eq!(p.expire(now + LEAVE_GRACE / 2), None);
         // It shows the tile again within the grace: nothing ever changed.
-        assert_eq!(p.wish(DESK, 140, 45), Some((140, 45)));
+        assert!(p.back(DESK));
         assert_eq!(p.leaving_until(), None);
         assert_eq!(p.owner(), Some(DESK));
+        assert!(!p.back(DESK), "not leaving");
+        // Or it sends its size again.
+        p.leave_at(DESK, now);
+        assert_eq!(p.wish(DESK, 140, 45), Some((140, 45)));
+        assert_eq!(p.leaving_until(), None);
         // Gone for good: the phone's size once the grace is over.
         p.leave_at(DESK, now);
         assert_eq!(p.expire(now + LEAVE_GRACE), Some(Some((48, 30))));

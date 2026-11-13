@@ -1752,7 +1752,11 @@ fn subscribe(host: &Host, client: &Client, ids: Vec<String>, focused: Option<Str
     let mut subs = lock(&client.subs);
     let hidden: Vec<String> = subs.keys().filter(|id| !ids.contains(id)).cloned().collect();
     subs.retain(|id, _| ids.contains(id));
+    let mut shown = Vec::new();
     for id in ids.into_iter().take(16) {
+        if !subs.contains_key(&id) {
+            shown.push(id.clone());
+        }
         subs.entry(id).or_default();
     }
     let shown: Vec<String> = subs.keys().cloned().collect();
@@ -1760,9 +1764,15 @@ fn subscribe(host: &Host, client: &Client, ids: Vec<String>, focused: Option<Str
     client.outbox.retain_tiles(&shown);
     client.outbox.set_focused(focused.clone());
     drop(subs);
-    // A terminal this client no longer shows stops following its size.
+    // A terminal this client no longer shows stops following its size; one
+    // it shows again within the moment its size is kept keeps it.
     for id in hidden {
         host.size_leave(client.id, Some(&id));
+    }
+    for id in shown {
+        if let Some(policy) = lock(&host.sizes).get_mut(&id) {
+            policy.back(client.id);
+        }
     }
     *lock(&client.focused) = focused;
     let _ = host.pump.try_send(());

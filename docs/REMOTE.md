@@ -576,8 +576,9 @@ When it owned the terminal and another connection wishes another size,
 its wish still holds for about a second (`LEAVE_GRACE`, ended by the
 service's 500 ms tick), so a tile hidden for a moment or a connection its
 own reconnection replaces does not resize the agent to the other size and
-straight back; a wish or claim of its own meanwhile keeps it, another
-connection's claim ends the wait at once.
+straight back; showing the terminal again (`Subscribe8` with it), or a wish
+or claim of its own, meanwhile keeps it, another connection's claim ends
+the wait at once.
 A terminal it launched starts with its size and owner.
 (`canvas_common::sizing`, tmux's "latest" policy.)
 
