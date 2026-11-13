@@ -264,6 +264,16 @@ box into one state: **working**, **needs you**, **done · review**, **idle**,
 open, click or type in that session; a turn that ends while you watch its
 terminal is already reviewed.
 
+**Open elsewhere** (`summary.live` with no terminal of the box alive here) is
+a hint, never a refusal on the client: the client's copy of `live` can be a
+second or more behind (the CLI of a terminal that just exited here still holds
+its lock until the next index pass; an update lost on the way). Start and
+Resume always send the launch; the service checks the lock right then and
+refuses a second copy with its reason (`ServiceMsg::Error` naming the box),
+which the box shows (`App::on_launch_error`): *open elsewhere* when the
+reason says the session already runs, else *failed*, and a notice names the
+box and the reason.
+
 **Interrupted** (`canvas_model::status::was_busy`): no terminal here, not live
 elsewhere (Copilot's `inuse.<pid>.lock` with a process started before the
 lock was written, Claude Code's pid file with its process start, OpenCode's

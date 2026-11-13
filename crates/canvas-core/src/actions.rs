@@ -39,7 +39,8 @@ impl App {
         let Some(node) = self.doc.node(id) else { return (String::new(), Vec::new()) };
         let session = self.session_of(id).unwrap_or_default();
         let alive = self.owned_alive(&session);
-        let external = self.summary(node).is_some_and(|s| s.live) && !alive;
+        // Open elsewhere is only a hint here: the service refuses a second copy
+        // when it launches, with its reason (`App::on_launch_error`).
         let mut items = Vec::new();
         if node.kind == NodeKind::Automation {
             let key = node.automation.clone().unwrap_or_default();
@@ -65,7 +66,7 @@ impl App {
                 let resumable = !matches!(self.child_resume(node), crate::inspect::ChildResume::No(_));
                 items.push(item("Resume as subsession", "", Action::ResumeChild(id.to_owned()), resumable));
             }
-            items.push(item(if parent_alive { "Open parent terminal" } else { "Start parent session" }, "", Action::Start(parent.clone()), !external));
+            items.push(item(if parent_alive { "Open parent terminal" } else { "Start parent session" }, "", Action::Start(parent.clone()), true));
             if self.doc.node(&parent).is_some_and(|p| p.kind == NodeKind::Session) {
                 let stack = crate::visual::VisualAction::FoldSubagents(parent, true);
                 items.push(item("Stack subagents", "K", Action::Visual(stack), true));
@@ -84,13 +85,13 @@ impl App {
         if node.passive.is_some() {
             let paused = node.passive.as_ref().is_some_and(|p| p.paused);
             let running = self.passive_view(node).is_some_and(|v| v.running);
-            items.push(item("Run now", "", Action::PassiveRun(id.to_owned()), !external));
+            items.push(item("Run now", "", Action::PassiveRun(id.to_owned()), true));
             items.push(item(if paused { "Resume" } else { "Pause" }, "", Action::PassivePause(id.to_owned()), true));
             items.push(item("Settings…", "", Action::PassiveDetail(id.to_owned()), true));
             items.push(item("Message…", "", Action::MessagePassive(id.to_owned()), true));
             items.push(item("Edit rules", "", Action::PassiveOpen(id.to_owned(), 0), true));
             items.push(item("Open run log", "", Action::PassiveOpen(id.to_owned(), 2), true));
-            items.push(item(if alive { "Focus chat" } else { "Open chat" }, "", Action::PassiveChat(id.to_owned()), !external));
+            items.push(item(if alive { "Focus chat" } else { "Open chat" }, "", Action::PassiveChat(id.to_owned()), true));
             items.push(item("Inspect transcript", "", Action::Inspect(id.to_owned()), self.transcript_request(id).is_some()));
             items.push(item("MCP servers…", "", Action::McpServers(id.to_owned()), true));
             items.push(item("Rename", "R", Action::Rename(Target::Node(id.to_owned())), true));
@@ -117,7 +118,7 @@ impl App {
             items.push(item(if node.no_messages { "Accept passive messages" } else { "Mute passive messages" }, "", Action::ToggleMessages(id.to_owned()), true));
             let queued = self.bus.mailbox.get(id).copied().unwrap_or(0);
             if queued > 0 {
-                items.push(item(&format!("Deliver {queued} queued message(s)"), "", Action::Start(id.to_owned()), !external));
+                items.push(item(&format!("Deliver {queued} queued message(s)"), "", Action::Start(id.to_owned()), true));
                 items.push(item("Discard queued messages", "", Action::DiscardMail(id.to_owned()), true));
             }
         }
@@ -781,11 +782,10 @@ impl App {
             }
             Action::PassiveChat(id) if self.doc.node(&id).is_some_and(|n| n.is_canvas_agent()) => self.open_agent_chat(&id, None),
             Action::PassiveChat(id) => {
+                // Open elsewhere or not, the service decides (and says why it refuses).
                 if self.owned_alive(&id) {
                     self.show_terminal(&id);
                     self.set_focus(Focus::Terminal);
-                } else if self.doc.node(&id).and_then(|n| self.summary(n)).is_some_and(|s| s.live) {
-                    self.notify("This passive session is running elsewhere right now.", true);
                 } else {
                     self.launch(&id);
                 }

@@ -1239,9 +1239,17 @@ impl App {
         self.terms.get(id).is_some_and(|t| t.alive)
     }
 
-    /// Running in another terminal (CLI or VS Code) rather than in this service.
+    /// Possibly running in another terminal (CLI or VS Code) rather than in
+    /// this service: a hint (this client's copy can be stale); the service
+    /// decides when it launches.
     pub fn live_elsewhere(&self, node: &Node) -> bool {
         node.kind == NodeKind::Session && !self.owned_alive(&node.id) && self.summary(node).is_some_and(|s| s.live)
+    }
+
+    /// Why the box's last start failed or was refused. A refusal because it
+    /// ran elsewhere lasts while its history still says it is live there.
+    pub fn node_error(&self, node: &Node) -> Option<&String> {
+        self.node_errors.get(&node.id).filter(|error| !is_open_elsewhere(error) || self.owned_alive(&node.id) || self.summary(node).is_some_and(|s| s.live))
     }
 
     pub fn node_status(&self, node: &Node) -> Status {
@@ -1269,8 +1277,11 @@ impl App {
                 if self.bus.restore.as_ref().is_some_and(|r| r.is_resuming(&node.id)) {
                     return Status::Resuming;
                 }
-                if self.node_errors.contains_key(&node.id) && !self.owned_alive(&node.id) {
-                    return Status::Failed;
+                if let Some(error) = self.node_error(node)
+                    && !self.owned_alive(&node.id)
+                {
+                    // Refused because it runs elsewhere: that, not a failure.
+                    return if is_open_elsewhere(error) { Status::External } else { Status::Failed };
                 }
                 status::session_status(self.summary(node), self.terms.get(&node.id), node.reviewed_ms)
             }
@@ -1292,7 +1303,7 @@ impl App {
     }
 
     pub fn subtitle(&self, node: &Node) -> String {
-        if let Some(error) = self.node_errors.get(&node.id) {
+        if let Some(error) = self.node_error(node) {
             return error.clone();
         }
         if node.kind == NodeKind::Agent {
@@ -1830,20 +1841,17 @@ impl App {
                 }
             }
             ServiceMsg::Clipboard(text) => self.copy_to_clipboard(&text),
-            ServiceMsg::Error { id, message } => {
-                if let Some(id) = &id {
-                    self.launching.remove(id);
-                    self.node_errors.insert(id.clone(), "launch failed".into());
-                }
-                // A todo change of this window refused (the book as it is follows): it is undone now.
-                if id.is_none() && message.starts_with("Todo change ") {
-                    crate::tasks::refused(self);
-                }
-                // A resumed child that may not start goes again (with its own notice).
-                if !id.is_some_and(|id| self.launch_refused(&id, &message)) {
+            ServiceMsg::Error { id, message } => match id {
+                // Only a launch's errors name a terminal.
+                Some(id) => self.on_launch_error(&id, &message),
+                None => {
+                    // A todo change of this window refused (the book as it is follows): it is undone now.
+                    if message.starts_with("Todo change ") {
+                        crate::tasks::refused(self);
+                    }
                     self.notify(message, true);
                 }
-            }
+            },
             ServiceMsg::Stats(stats) => self.stats = Some(stats),
             ServiceMsg::Subsession { parent, child, name, cwd } => self.link_subsession(&parent, &child, &name, &cwd),
             ServiceMsg::Bus { json } => self.on_bus(&json),
@@ -1877,6 +1885,21 @@ impl App {
             // Only for VM sessions' satellites (CAP_SATELLITE).
             | ServiceMsg::Sat(_) => {}
         }
+    }
+
+    /// The service did not launch terminal `id` and says why: the box shows
+    /// that reason (a session open elsewhere shows as such, anything else as
+    /// failed) and the notice names the box.
+    pub fn on_launch_error(&mut self, id: &str, message: &str) {
+        self.launching.remove(id);
+        // A resumed child that may not start goes again (with its own notice).
+        if self.launch_refused(id, message) {
+            return;
+        }
+        let reason = launch_reason(message);
+        self.node_errors.insert(id.to_owned(), reason.clone());
+        let name = self.doc.node(id).map(|n| n.name.clone()).unwrap_or_else(|| id.to_owned());
+        self.notify(format!("“{name}” was not started: {reason}"), true);
     }
 
     /// Copilot asked to copy (OSC 52): use the Windows clipboard directly; the
@@ -2297,6 +2320,20 @@ fn is_terminal_input(message: &ClientMsg) -> bool {
         message,
         ClientMsg::Input { .. } | ClientMsg::Input8 { .. } | ClientMsg::Click { .. } | ClientMsg::Wheel { .. } | ClientMsg::Scroll { .. }
     )
+}
+
+/// A launch error from the service as the box shows it: one line, bounded.
+pub fn launch_reason(message: &str) -> String {
+    let line = message.split(['\n', '\r']).map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ");
+    let line = if line.is_empty() { "the service gave no reason".to_owned() } else { line };
+    crate::paint::truncate(&line, 240)
+}
+
+/// The service refused a launch because the session already runs (another
+/// terminal, VS Code, another box): "open elsewhere", not a failure.
+pub fn is_open_elsewhere(reason: &str) -> bool {
+    let reason = reason.to_lowercase();
+    ["already running", "running elsewhere", "open elsewhere", "open in another", "running in another", "running inside"].iter().any(|p| reason.contains(p))
 }
 
 /// Client-side frame statistics (`--perf`).
