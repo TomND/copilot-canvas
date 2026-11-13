@@ -344,8 +344,9 @@ pub struct Host {
     last_input_client: AtomicU64,
     /// The client that last sent input to each terminal (gets its OSC 52 copies).
     input_clients: Mutex<HashMap<String, u64>>,
-    /// Terminal that most recently received keyboard input (gets CPU priority).
-    active_input: Mutex<Option<String>>,
+    /// The terminal that most recently received keyboard input (its agent
+    /// gets CPU priority for a while: `priority::FOCUS_LAPSE`).
+    active_input: Mutex<crate::priority::Focus>,
     priority_wake: Sender<()>,
     bytes: Arc<AtomicU64>,
     frames: AtomicU64,
@@ -635,7 +636,7 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
         notify: notify_tx,
         last_input_client: AtomicU64::new(0),
         input_clients: Mutex::new(HashMap::new()),
-        active_input: Mutex::new(None),
+        active_input: Mutex::new(crate::priority::Focus::default()),
         priority_wake: prio_tx,
         bytes: Arc::new(AtomicU64::new(0)),
         frames: AtomicU64::new(0),
@@ -1096,10 +1097,8 @@ impl Host {
     }
 
     fn note_active(&self, id: &str) {
-        let mut active = lock(&self.active_input);
-        if active.as_deref() != Some(id) {
-            *active = Some(id.to_owned());
-            drop(active);
+        let changed = lock(&self.active_input).note(id, Instant::now());
+        if changed {
             let _ = self.priority_wake.try_send(());
         }
     }
@@ -2161,55 +2160,60 @@ fn send_images(client: &Client, terminal: &Arc<Terminal>, id: &str, images: &[Sn
     retry.map_or(ImagesSent::Done, ImagesSent::Later)
 }
 
-/// Keeps the session you type in responsive on a busy machine: its whole
-/// process tree (the agent, tools, MCP servers, builds) runs above normal,
-/// sessions shown on screen at normal, all others below normal. Background
+/// Keeps the session you type in responsive on a busy machine
+/// (`crate::priority`): its agent and the agent's console host run above
+/// normal, sessions shown on screen at normal, all others below normal; the
+/// tools and builds an agent starts never run above normal. Background
 /// sessions still use all spare CPU; they just yield to you. Only processes
-/// inside our own sessions are touched. `ATELIER_NO_PRIORITY=1` turns
-/// it off. Unix forbids raising priorities without privilege, so there the
-/// others are lowered instead (`canvas_sys::process::set_priority`:
-/// `PRIO_DARWIN_BG` on macOS, nice on Linux; MAC-LINUX-PLAN §5.3).
+/// inside our own sessions (and their console hosts) are touched.
+/// `ATELIER_NO_PRIORITY=1` turns it off. Unix forbids raising priorities
+/// without privilege, so there the others are lowered instead
+/// (`canvas_sys::process::set_priority`: `PRIO_DARWIN_BG` on macOS, nice on
+/// Linux; MAC-LINUX-PLAN §5.3).
 fn priority_loop(host: Arc<Host>, wake: Receiver<()>) {
+    use crate::priority::{Session, classify, reapply};
     use canvas_sys::process::Class;
     if canvas_common::env::var_os("ATELIER_NO_PRIORITY").is_some() {
         return;
     }
     let mut applied: HashMap<u32, Class> = HashMap::new();
     loop {
-        // Re-check every 2 s so new child processes (tools, builds) follow their session.
+        // Re-check every 2 s so new child processes (tools, builds) follow
+        // their session and a lapsed focus is lowered.
         let _ = wake.recv_timeout(Duration::from_secs(2));
         if host.shutting_down.load(Ordering::Relaxed) {
             return;
         }
-        let terms: Vec<(String, u32)> =
-            lock(&host.terms).values().filter(|t| t.alive.load(Ordering::Acquire) && t.pid != 0).map(|t| (t.id.clone(), t.pid)).collect();
+        let terms: Vec<Arc<Terminal>> = lock(&host.terms).values().filter(|t| t.alive.load(Ordering::Acquire) && t.pid != 0).cloned().collect();
         if terms.is_empty() {
             applied.clear();
             continue;
         }
-        let active = lock(&host.active_input).clone();
+        let active = lock(&host.active_input).current(Instant::now()).map(str::to_owned);
         let visible = host.visible();
         let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
-        for (pid, parent) in canvas_sys::process::process_pairs() {
+        let mut procs = crate::priority::Procs::new();
+        for (pid, parent, name) in canvas_sys::process::process_entries() {
             children.entry(parent).or_default().push(pid);
+            procs.insert(pid, (parent, name));
         }
-        let mut seen = HashSet::new();
-        for (id, root) in terms {
-            let class = if active.as_deref() == Some(id.as_str()) {
-                Class::Focused
-            } else if visible.contains(&id) {
-                Class::Visible
-            } else {
-                Class::Background
-            };
-            for pid in canvas_sys::process::process_tree(root, &children) {
-                seen.insert(pid);
-                if applied.get(&pid) != Some(&class) && canvas_sys::process::set_priority(pid, class) {
-                    applied.insert(pid, class);
-                }
-            }
-        }
-        applied.retain(|pid, _| seen.contains(pid));
+        let sessions: Vec<Session> = terms
+            .iter()
+            .map(|t| Session {
+                root: t.pid,
+                // Still the same process (its pid not reused).
+                console_host: t.console_host.filter(|(pid, started)| canvas_sys::process::process_start_ms(*pid) == Some(*started)).map(|(pid, _)| pid),
+                class: if active.as_deref() == Some(t.id.as_str()) {
+                    Class::Focused
+                } else if visible.contains(&t.id) {
+                    Class::Visible
+                } else {
+                    Class::Background
+                },
+            })
+            .collect();
+        let classes = classify(&sessions, &procs, |root| canvas_sys::process::process_tree(root, &children));
+        reapply(&mut applied, &classes, canvas_sys::process::set_priority);
     }
 }
 

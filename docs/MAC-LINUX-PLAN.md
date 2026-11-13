@@ -583,6 +583,9 @@ does not let an unprivileged process raise a priority, so the policy becomes
   `doctor` explains.
 - `bench --burn 40` decides the defaults per OS in Phase 1;
   `ATELIER_NO_PRIORITY=1` still turns it off.
+- As on Windows, only the agent counts as focused (its tools and builds are
+  visible at most) and the focus lapses a minute after the last keystroke;
+  Unix has no console host process to keep up (the PTY is the kernel's).
 
 **TCC on macOS.** Agents read and write the user's projects; when those live
 in `~/Documents`, `~/Desktop` or `~/Downloads`, macOS asks once per folder,

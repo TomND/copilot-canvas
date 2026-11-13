@@ -20,6 +20,53 @@ pub fn set_priority(pid: u32, class: Class) -> bool {
     canvas_common::win::set_priority_class(pid, class)
 }
 
+/// The class `pid` runs in now (`None`: unreadable, or a class the priority
+/// manager never sets).
+pub fn priority(pid: u32) -> Option<Class> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, GetPriorityClass, NORMAL_PRIORITY_CLASS, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    // SAFETY: plain Win32 calls with a handle closed right after.
+    let class = unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let class = GetPriorityClass(handle);
+        CloseHandle(handle);
+        class
+    };
+    match class {
+        ABOVE_NORMAL_PRIORITY_CLASS => Some(Class::Focused),
+        NORMAL_PRIORITY_CLASS => Some(Class::Visible),
+        BELOW_NORMAL_PRIORITY_CLASS => Some(Class::Background),
+        _ => None,
+    }
+}
+
+/// Whether `name` (lowercase, as [`process_entries`] gives it) is a
+/// pseudoconsole host: the system's `conhost.exe`, or the `OpenConsole.exe`
+/// that comes with a side-loaded `conpty.dll`.
+pub fn is_console_host(name: &str) -> bool {
+    matches!(name, "conhost.exe" | "openconsole.exe")
+}
+
+/// The pseudoconsole hosts this process started, with their start times.
+/// `CreatePseudoConsole` starts one per terminal as a child of the calling
+/// process (not of the program in the terminal); it carries every keystroke
+/// in and every byte of output out.
+pub fn console_hosts() -> Vec<(u32, u64)> {
+    let me = std::process::id();
+    let Some(my_start) = process_start_ms(me) else { return Vec::new() };
+    process_entries()
+        .into_iter()
+        .filter(|(_, parent, name)| *parent == me && is_console_host(name))
+        // A process whose parent had this pid before us is not ours.
+        .filter_map(|(pid, _, _)| process_start_ms(pid).filter(|start| *start >= my_start).map(|start| (pid, start)))
+        .collect()
+}
+
 /// The command line of `pid` is not read on Windows (process names suffice there).
 pub fn process_argv(_pid: u32) -> Option<Vec<String>> {
     None

@@ -229,6 +229,12 @@ pub fn set_priority(pid: u32, class: Class) -> bool {
     signallable(pid) && os::set_priority(pid, class)
 }
 
+/// Pseudoconsole host processes this process started: none on Unix (a PTY
+/// is the kernel's; Windows starts a `conhost.exe` per terminal).
+pub fn console_hosts() -> Vec<(u32, u64)> {
+    Vec::new()
+}
+
 /// The user a process runs as (`uid:N`), to compare with [`current_user_id`].
 pub fn process_user_id(pid: u32) -> io::Result<String> {
     os::process_uid(pid).map(|uid| format!("uid:{uid}"))

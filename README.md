@@ -1328,15 +1328,20 @@ terminal corpus), `canvas-mobile` (the iPhone app's Rust core, UniFFI),
   canvas and the service run above normal priority, so Copilot processes that
   are starting or working cannot starve them (they still run at normal
   priority themselves).
-- **The session you type in comes first.** The service gives the whole process
-  tree of the session that last received your keystrokes (Copilot, its tools,
-  MCP servers and anything it builds) above-normal CPU priority, sessions shown
-  on screen normal priority, and every other session below-normal priority.
-  Background sessions still use all spare CPU; they just yield to your typing.
-  Re-applied every 2 s so new child processes follow. Measured with 40
-  CPU-burning background sessions on a busy 16-core machine: keystroke→screen
-  p50 257 ms → 5 ms, p99 1.26 s → 14 ms. Disable with
-  `ATELIER_NO_PRIORITY=1`.
+- **The session you type in comes first.** The service gives the agent of the
+  session that last received your keystrokes (its own process, and the CLI
+  its launcher starts) and that terminal's console host (`conhost.exe`, which
+  carries every keystroke in and every byte of echo out) above-normal CPU
+  priority; the tools, builds, test runners and MCP servers the agent starts
+  stay at normal, so a build it runs never outranks your typing. Sessions
+  shown on screen run at normal priority, every other session below normal
+  (a console host never below normal). Background sessions still use all
+  spare CPU; they just yield to your typing. A session stops coming first a
+  minute after your last keystroke in it, and goes back as soon as you type
+  in another one. Re-applied every 2 s so new child processes follow.
+  Measured with 40 CPU-burning background sessions on a busy 16-core
+  machine: keystroke→screen p50 257 ms → 5 ms, p99 1.26 s → 14 ms. Disable
+  with `ATELIER_NO_PRIORITY=1`.
 - **No artifacts.** Characters whose width terminals disagree on (emoji,
   symbols that gained an emoji form, Unicode-16 width changes) are followed by
   an explicit cursor move, so a disagreement can affect at most that one cell.

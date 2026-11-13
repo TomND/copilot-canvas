@@ -223,6 +223,10 @@ pub struct Terminal {
     /// processes that left the session for another one are still ended with
     /// it; MAC-LINUX-PLAN §5.2).
     pub remembered: Mutex<Vec<(u32, u64)>>,
+    /// Its pseudoconsole host (`conhost.exe`, a child of the service, not of
+    /// the program) and that host's start time: the priority manager keeps it
+    /// at least at the program's class. `None` on Unix and when not found.
+    pub console_host: Option<(u32, u64)>,
     /// A VM session's terminal: its PTY is in the guest (`None`: this machine's).
     remote: Option<Arc<dyn RemotePty>>,
 }
@@ -359,13 +363,25 @@ fn pack(cols: u16, rows: u16) -> u32 {
     ((cols as u32) << 16) | rows as u32
 }
 
+/// Opens a pseudoconsole and finds the console host it started (Windows):
+/// the one host process of this service that was not there before. One
+/// terminal opens at a time, so concurrent launches cannot mix them up.
+fn open_pty(size: PtySize) -> Result<(portable_pty::PtyPair, Option<(u32, u64)>)> {
+    static OPENING: Mutex<()> = Mutex::new(());
+    let _one = lock(&OPENING);
+    let before = canvas_sys::process::console_hosts();
+    let pair = native_pty_system().openpty(size).context("cannot create a pseudoconsole")?;
+    let mut started = canvas_sys::process::console_hosts();
+    started.retain(|host| !before.contains(host));
+    Ok((pair, if started.len() == 1 { started.pop() } else { None }))
+}
+
 impl Terminal {
     pub fn spawn(spec: Spawn<'_>, hooks: Hooks) -> Result<Arc<Self>> {
         let cols = spec.cols.clamp(20, 1000);
         let rows = spec.rows.clamp(5, 500);
         anyhow::ensure!(std::path::Path::new(spec.cwd).is_dir(), "working directory does not exist: {}", spec.cwd);
-        let pty = native_pty_system();
-        let pair = pty.openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }).context("cannot create a pseudoconsole")?;
+        let (pair, console_host) = open_pty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
         let mut command = CommandBuilder::new(spec.program);
         command.args(spec.args);
         command.cwd(spec.cwd);
@@ -419,6 +435,7 @@ impl Terminal {
             encoding: Mutex::new(HashSet::new()),
             pump: hooks.pump.clone(),
             remembered: Mutex::new(Vec::new()),
+            console_host,
             remote: None,
         });
         // Weak: the emulator thread must not keep the terminal alive.
@@ -497,6 +514,7 @@ impl Terminal {
             encoding: Mutex::new(HashSet::new()),
             pump: hooks.pump.clone(),
             remembered: Mutex::new(Vec::new()),
+            console_host: None,
             remote: Some(pty.clone()),
         });
         let weak = Arc::downgrade(&terminal);
