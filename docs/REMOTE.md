@@ -172,7 +172,8 @@ tiles' frames, then bulk (documents, bus snapshots, large replies, images). A
 keystroke's echo therefore waits at most for the message being written, not
 for everything queued before it. The system buffers at most 64 KiB for a
 remote client (`SO_SNDBUF`), so the order holds; what `devtunnel host` and the
-relay buffer further on is out of the service's hands. One
+relay buffer further on is out of the service's hands (`selftest --remote
+faults` measures the echo while 32 replies of 256 KB stream at 1 MB/s). One
 message is never split: a reply of many megabytes still holds the echo behind
 it for its own transfer time.
 
@@ -745,7 +746,15 @@ Checklist (over a day):
   silence timeout plus 1 s with its closing logged once; after it a new
   (stand-in) Copilot session must show its screen within 5 s, and two
   connections resuming one session at the same moment must start exactly one
-  process (a third box resuming it is refused). A last step runs the
+  process (a third box resuming it is refused). Over a throttled link
+  (1 MB/s down) keystrokes typed while 32 replies of 256 KB stream must echo
+  in under 2 s and in under half the time the replies take (one queue made
+  them wait for all); over a throttled uplink (160 KB/s) a 1.5 MB upload that
+  takes longer than the silence timeout must not get the client dropped; and
+  state a client missed must be repaired: a `Launch` of a running terminal
+  answers with it (no second process), `RefreshSessions` lists every terminal
+  and session, and a client whose link stalled while a terminal started and
+  ended knows it ended once the link is back. A last step runs the
   canvas itself through the proxy: banner, offline input blocked, reconnect
   after the network returns, the pane resynced.
 - `atelier selftest --remote paired`: a real service in a temporary

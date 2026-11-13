@@ -123,6 +123,7 @@ ratatui.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+socket2.workspace = true
 uuid.workspace = true
 canvas-sys.workspace = true
 

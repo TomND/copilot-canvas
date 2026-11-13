@@ -649,7 +649,8 @@ generic over the `Ui` trait (`send` bytes, `paste`, `clipboard`, `text`,
   `CANVAS_SELFTEST_DEBUG=1` prints diagnostics at the start.
 
 Remote probes: `--remote faults` (`remote_probe.rs`: drops, cut frames and
-delay while typing; exactly-once input), `--remote paired`
+delay while typing; exactly-once input; a throttled link with large replies,
+a slow upload, and state repair), `--remote paired`
 (`pair_probe.rs`: pairing, a Dev Tunnel stand-in, revocation, wrong secrets),
 `--remote soak [--minutes N] [--drop-every S] [--client tui|gui]`
 (`soak.rs`). `selftest agent` drives the real agent CLIs; run it only when

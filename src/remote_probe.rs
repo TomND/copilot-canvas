@@ -6,7 +6,10 @@
 //! a frame, and delays it by 300 ms each way. Checks: the client reconnects
 //! within 5 s and gets full frames again; every acknowledged keystroke reached
 //! the terminal exactly once and in order; nothing arrived twice; keystrokes
-//! the service never confirmed are reported, never resent.
+//! the service never confirmed are reported, never resent. Over a throttled
+//! link: large replies in flight do not hold a keystroke's echo back, a large
+//! message sent slowly does not get the client dropped as silent, and state a
+//! client missed is repaired.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -20,6 +23,8 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, bounded, unbounded};
 
 use crate::client::app::TermView;
 use crate::client::conn::{self, ClientSession, Conn, ConnOptions, ConnTarget};
+use crate::client::remote::RemoteBackend;
+use canvas_model::rpc::{Backend, Request, Response};
 use crate::paths::Instance;
 use crate::protocol::{ClientMsg, Input, Key, LaunchKind, ServiceMsg};
 use canvas_common::tcp::{self, TcpCloser};
@@ -52,6 +57,9 @@ pub(crate) struct ProxyShared {
     stalled: AtomicBool,
     /// Bytes relayed from the service to clients.
     pub(crate) bytes_down: AtomicU64,
+    /// Throughput caps (bytes per second; 0: none): service to client, client to service.
+    rate_down: AtomicU64,
+    rate_up: AtomicU64,
 }
 
 impl Proxy {
@@ -70,6 +78,8 @@ impl Proxy {
             down: AtomicBool::new(false),
             stalled: AtomicBool::new(false),
             bytes_down: AtomicU64::new(0),
+            rate_down: AtomicU64::new(0),
+            rate_up: AtomicU64::new(0),
         });
         let accept = shared.clone();
         std::thread::spawn(move || {
@@ -78,7 +88,7 @@ impl Proxy {
                     drop(client);
                     continue;
                 }
-                let Ok(upstream) = tcp::connect(&accept.upstream, Duration::from_secs(2)) else { continue };
+                let Ok(upstream) = connect_small(&accept.upstream) else { continue };
                 let (Ok((cr, cw, cc)), Ok((ur, uw, uc))) = (tcp::split(client), tcp::split(upstream)) else { continue };
                 accept.connections.fetch_add(1, Ordering::Relaxed);
                 lock(&accept.links).push((cc.clone(), uc.clone()));
@@ -116,6 +126,49 @@ impl Proxy {
     pub(crate) fn set_stalled(&self, stalled: bool) {
         self.shared.stalled.store(stalled, Ordering::Release);
     }
+
+    /// Caps the throughput of each direction (bytes per second; 0: none), as
+    /// a slow tunnel does: the sender's socket fills and its writes wait.
+    pub(crate) fn set_rates(&self, down: u64, up: u64) {
+        self.shared.rate_down.store(down, Ordering::Release);
+        self.shared.rate_up.store(up, Ordering::Release);
+    }
+}
+
+/// Reads at most the proxy's rate for its direction (8 KiB at a time).
+struct Throttled {
+    inner: Box<dyn Read + Send>,
+    shared: Arc<ProxyShared>,
+    down: bool,
+    free_at: Instant,
+}
+
+impl Read for Throttled {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let rate = if self.down { &self.shared.rate_down } else { &self.shared.rate_up }.load(Ordering::Acquire);
+        if rate == 0 {
+            return self.inner.read(buf);
+        }
+        if let Some(wait) = self.free_at.checked_duration_since(Instant::now()) {
+            std::thread::sleep(wait);
+        }
+        let len = buf.len().min(8 * 1024);
+        let read = self.inner.read(&mut buf[..len])?;
+        self.free_at = self.free_at.max(Instant::now()) + Duration::from_secs_f64(read as f64 / rate as f64);
+        Ok(read)
+    }
+}
+
+/// Connects to the service asking for a small receive buffer: like a tunnel
+/// that forwards as it reads, the proxy should hold little of what the
+/// service sent ahead (a throttled link delivers that before anything sent
+/// after it). macOS grows it to about 330 KB anyway.
+fn connect_small(addr: &str) -> std::io::Result<std::net::TcpStream> {
+    let addr: std::net::SocketAddr = addr.parse().map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "an IP address and port"))?;
+    let socket = socket2::Socket::new(socket2::Domain::for_address(addr), socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
+    socket.set_recv_buffer_size(64 << 10)?;
+    socket.connect_timeout(&addr.into(), Duration::from_secs(2))?;
+    Ok(socket.into())
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -125,7 +178,8 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// Copies one direction. Chunks are forwarded `delay` after they arrived (pure
 /// latency, no throughput limit). `frames`: the service-to-client direction,
 /// read frame by frame so a frame can be cut in its middle.
-fn relay(mut from: Box<dyn Read + Send>, mut to: Box<dyn Write + Send>, ends: [TcpCloser; 2], shared: Arc<ProxyShared>, frames: bool) {
+fn relay(from: Box<dyn Read + Send>, mut to: Box<dyn Write + Send>, ends: [TcpCloser; 2], shared: Arc<ProxyShared>, frames: bool) {
+    let mut from = Throttled { inner: from, shared: shared.clone(), down: frames, free_at: Instant::now() };
     let (tx, rx) = unbounded::<(Instant, Vec<u8>, bool)>();
     let (writer_ends, writer_shared) = (ends.clone(), shared.clone());
     std::thread::spawn(move || {
@@ -197,6 +251,8 @@ fn relay(mut from: Box<dyn Read + Send>, mut to: Box<dyn Write + Send>, ends: [T
 struct Typist {
     target: ConnTarget,
     options: ConnOptions,
+    /// Backend requests over its connection.
+    backend: Arc<RemoteBackend>,
     session: Arc<ClientSession>,
     conn: Option<Conn>,
     reconnect: Option<Receiver<Result<Conn>>>,
@@ -219,13 +275,15 @@ struct Typist {
 
 impl Typist {
     fn connect(target: ConnTarget) -> Result<Self> {
-        let options = ConnOptions { name: "faults".into(), ..Default::default() };
+        let backend = RemoteBackend::new();
+        let options = ConnOptions { name: "faults".into(), rpc: Some(backend.clone()), ..Default::default() };
         let session = ClientSession::new();
         let conn = conn::open(&target, &options, &session)?;
         conn.tx.send(ClientMsg::Subscribe8 { ids: vec![ECHO.into()], focused: Some(ECHO.into()) })?;
         Ok(Self {
             target,
             options,
+            backend,
             session,
             conn: Some(conn),
             reconnect: None,
@@ -365,6 +423,20 @@ impl Typist {
 
     fn unconfirmed(&self) -> u64 {
         self.lost.iter().map(|(a, b)| b - a + 1).sum()
+    }
+
+    /// Types one key and waits for the echo terminal to print it; returns how long that took.
+    fn echo_time(&mut self, key: char, within: Duration) -> Result<Duration> {
+        let last = |t: &Self| t.echoed().last().map(|(n, _)| *n);
+        let before = last(self);
+        let typed = Instant::now();
+        self.type_key(key);
+        while last(self) == before {
+            anyhow::ensure!(typed.elapsed() < within, "the echo of a keystroke did not come within {:.1} s", within.as_secs_f64());
+            anyhow::ensure!(self.online(), "the connection was lost while waiting for an echo");
+            self.pump(Duration::from_millis(2))?;
+        }
+        Ok(typed.elapsed())
     }
 
     /// `n:c` lines the echo terminal printed, in order.
@@ -598,6 +670,18 @@ fn scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     let once = one_process_per_session(instance, root, &direct)?;
     println!("{once}");
 
+    step("over a slow link, large replies in flight do not hold back a keystroke's echo");
+    let echo = echo_behind_replies(&mut typist, &proxy, root)?;
+    println!("{echo}");
+
+    step("over a slow uplink, a client sending one large message is not dropped as silent");
+    let upload = slow_upload(&mut typist, &proxy, instance)?;
+    println!("{upload}");
+
+    step("state a client missed is repaired: a launch of a running terminal answers, a refresh lists everything, a stalled link gets the last state");
+    let repaired = state_repair(instance, root, &direct)?;
+    println!("{repaired}");
+
     step("a protocol-7 client of the new service gets protocol-7 messages only");
     let (count, frames) = protocol7_client(instance)?;
     println!("    {count} messages ({frames} protocol-7 frames), none of a protocol-8 variant");
@@ -619,13 +703,15 @@ struct Viewer {
     views: std::collections::HashMap<String, TermView>,
     terminals: std::collections::HashMap<String, crate::protocol::TermInfo>,
     errors: Vec<(Option<String>, String)>,
+    /// Full session lists received.
+    full_sessions: usize,
 }
 
 impl Viewer {
     fn open(target: &ConnTarget, name: &str) -> Result<Self> {
         let options = ConnOptions { name: name.into(), ..Default::default() };
         let conn = conn::open(target, &options, &ClientSession::new())?;
-        Ok(Self { conn, views: Default::default(), terminals: Default::default(), errors: Vec::new() })
+        Ok(Self { conn, views: Default::default(), terminals: Default::default(), errors: Vec::new(), full_sessions: 0 })
     }
 
     fn subscribe(&self, ids: &[&str]) -> Result<()> {
@@ -649,6 +735,7 @@ impl Viewer {
                     }
                 }
                 Ok(ServiceMsg::Error { id, message }) => self.errors.push((id, message)),
+                Ok(ServiceMsg::Sessions { full: true, .. }) => self.full_sessions += 1,
                 Ok(_) => {}
                 Err(_) => break,
             }
@@ -830,6 +917,192 @@ fn one_process_per_session(instance: &Instance, root: &Path, direct: &ConnTarget
     first.send(ClientMsg::Stop { id: session, force: true })?;
     first.pump(Duration::from_millis(200));
     Ok("    two concurrent resumes from two connections: one process; a third box resuming the running session was refused (\"already running\")".to_owned())
+}
+
+/// Text that compresses about 2:1 like real replies do (hex of a pseudo-random sequence from `seed`).
+fn noisy_text(bytes: usize, seed: u64) -> String {
+    let mut state = 0x9e37_79b9_7f4a_7c15u64 ^ seed.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    let mut text = String::with_capacity(bytes);
+    while text.len() < bytes {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        text.push_str(&format!("{state:016x}"));
+    }
+    text.truncate(bytes);
+    text
+}
+
+/// Keystrokes typed while large backend replies stream to the client over a
+/// throttled link: each echo waits for at most the reply being written, never
+/// for every reply queued before it (one FIFO made it wait for all of them).
+fn echo_behind_replies(typist: &mut Typist, proxy: &Proxy, root: &Path) -> Result<String> {
+    const RATE: u64 = 1 << 20;
+    const REPLIES: usize = 32;
+    const SIZE: usize = 256 << 10;
+    // Each reply different: the connection's zstd stream would shrink repeats to nothing.
+    let mut paths = Vec::new();
+    for index in 0..REPLIES {
+        let path = root.join(format!("large-reply-{index}.txt"));
+        std::fs::write(&path, noisy_text(SIZE, index as u64 + 1))?;
+        paths.push(path.to_string_lossy().into_owned());
+    }
+    // Settled first: nothing else in flight.
+    typist.pump(Duration::from_millis(300))?;
+    proxy.set_rates(RATE, 0);
+    let down_before = proxy.shared.bytes_down.load(Ordering::Relaxed);
+    let started = Instant::now();
+    let calls: Vec<_> = paths
+        .into_iter()
+        .map(|path| {
+            let backend = typist.backend.clone();
+            std::thread::spawn(move || backend.call(Request::ReadText { path, max_bytes: 1 << 20 }).map(|answer| (answer, started.elapsed())))
+        })
+        .collect();
+    // The replies are queued in the service by now (each is read in a few ms).
+    typist.pump(Duration::from_millis(250))?;
+    let mut times = Vec::new();
+    for index in 0..6 {
+        times.push(typist.echo_time((b'a' + index as u8) as char, Duration::from_secs(30))?);
+        typist.pump(Duration::from_millis(150))?;
+    }
+    let mut last = Duration::ZERO;
+    for call in calls {
+        let (answer, at) = call.join().map_err(|_| anyhow::anyhow!("a reply thread panicked"))??;
+        anyhow::ensure!(matches!(&answer, Response::Text(text) if text.len() == SIZE), "a large reply arrived incomplete");
+        last = last.max(at);
+    }
+    proxy.set_rates(0, 0);
+    let streamed = proxy.shared.bytes_down.load(Ordering::Relaxed) - down_before;
+    let worst = times.iter().copied().max().unwrap_or_default();
+    // Behind one FIFO the first echo would have waited for every reply (`last`).
+    // What is left: the reply being written, and what the system buffers on
+    // the way (the service's send buffer, the proxy's receive buffer).
+    anyhow::ensure!(
+        worst < Duration::from_secs(2) && worst * 2 < last,
+        "a keystroke's echo took {:.2} s while {REPLIES} replies streamed for {:.2} s ({:?})",
+        worst.as_secs_f64(),
+        last.as_secs_f64(),
+        times
+    );
+    Ok(format!(
+        "    {REPLIES} replies of {} KB ({} KB on the wire at {} KB/s) took {:.2} s to arrive; meanwhile 6 keystrokes echoed in {:.0} ms at worst ({})",
+        SIZE >> 10,
+        streamed >> 10,
+        RATE >> 10,
+        last.as_secs_f64(),
+        worst.as_secs_f64() * 1000.0,
+        times.iter().map(|t| format!("{:.0}", t.as_secs_f64() * 1000.0)).collect::<Vec<_>>().join(", ")
+    ))
+}
+
+/// One message larger than the uplink carries in the silence timeout (an
+/// upload piece, a pasted image): the service sees its bytes arrive and keeps
+/// the client; the client stays connected and gets its answer.
+fn slow_upload(typist: &mut Typist, proxy: &Proxy, instance: &Instance) -> Result<String> {
+    use base64::Engine;
+    const RATE: u64 = 160 << 10;
+    // Random bytes: their base64 compresses to about 3/4.
+    let mut state = 0x2545_f491_4f6c_dd1du64;
+    let bytes: Vec<u8> = (0..(1536 << 10))
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state as u8
+        })
+        .collect();
+    let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    typist.pump(Duration::from_millis(200))?;
+    let reconnects = typist.reconnects.len();
+    let since = crate::paths::now_ms();
+    proxy.set_rates(0, RATE);
+    let backend = typist.backend.clone();
+    let started = Instant::now();
+    let call = std::thread::spawn(move || backend.call(Request::Upload { name: "slow.bin".into(), id: "faults-slow-upload".into(), offset: 0, data, last: true }));
+    while !call.is_finished() {
+        anyhow::ensure!(started.elapsed() < Duration::from_secs(90), "the upload did not end within 90 s");
+        typist.pump(Duration::from_millis(50))?;
+    }
+    let took = started.elapsed();
+    proxy.set_rates(0, 0);
+    let answer = call.join().map_err(|_| anyhow::anyhow!("the upload thread panicked"))??;
+    let Response::Text(saved) = answer else { bail!("the upload was not stored: {answer:?}") };
+    anyhow::ensure!(std::fs::metadata(&saved).map(|m| m.len()).unwrap_or(0) == 1536 << 10, "the uploaded file {saved} is incomplete");
+    anyhow::ensure!(typist.online() && typist.reconnects.len() == reconnects, "the client was dropped while it sent a large message");
+    let silent: Vec<String> = log_lines(instance).into_iter().filter(|(ms, line)| *ms >= since && line.contains("silent for")).map(|(_, line)| line).collect();
+    anyhow::ensure!(silent.is_empty(), "a client was closed as silent during the upload: {silent:?}");
+    anyhow::ensure!(took > SILENCE, "the upload took {:.2} s, less than the silence timeout: the step proves nothing (raise its size)", took.as_secs_f64());
+    Ok(format!("    a 1.5 MB upload took {:.1} s at {} KB/s (longer than the {} s silence timeout); the client stayed connected and the file arrived whole", took.as_secs_f64(), RATE >> 10, SILENCE.as_secs()))
+}
+
+/// A program that ends at once.
+fn quick_program() -> LaunchKind {
+    #[cfg(windows)]
+    return LaunchKind::Command { program: "cmd.exe".into(), args: vec!["/c".into(), "exit 0".into()] };
+    #[cfg(not(windows))]
+    LaunchKind::Command { program: "/bin/sh".into(), args: vec!["-c".into(), "exit 0".into()] }
+}
+
+/// A client that lost what it knew of the terminals asks again: a `Launch` of
+/// a running terminal answers with its info (it starts nothing), and
+/// `RefreshSessions` sends every terminal and session. A client whose link
+/// stalls while a terminal starts and ends gets its last state once the link
+/// is back.
+fn state_repair(instance: &Instance, root: &Path, direct: &ConnTarget) -> Result<String> {
+    let cwd = root.to_string_lossy().into_owned();
+    let mut viewer = Viewer::open(direct, "repair")?;
+    viewer.pump(Duration::from_millis(300));
+    anyhow::ensure!(viewer.terminals.get(ECHO).is_some_and(|t| t.alive), "the echo terminal is listed on connect");
+    // As if every update about it had been missed.
+    viewer.terminals.clear();
+    let launched_before = log_lines(instance).iter().filter(|(_, line)| line.starts_with(&format!("launched {ECHO} "))).count();
+    viewer.send(ClientMsg::Launch { id: ECHO.into(), kind: quick_program(), cwd: cwd.clone(), cols: 40, rows: 10 })?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !viewer.terminals.get(ECHO).is_some_and(|t| t.alive) {
+        anyhow::ensure!(Instant::now() < deadline, "a launch of a running terminal did not answer with it: {:?}", viewer.errors);
+        viewer.pump(Duration::from_millis(50));
+    }
+    let launched = log_lines(instance).iter().filter(|(_, line)| line.starts_with(&format!("launched {ECHO} "))).count();
+    anyhow::ensure!(launched == launched_before, "a launch of a running terminal started another process");
+    viewer.terminals.clear();
+    let full_before = viewer.full_sessions;
+    viewer.send(ClientMsg::RefreshSessions)?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !(viewer.terminals.get(ECHO).is_some_and(|t| t.alive) && viewer.full_sessions > full_before) {
+        anyhow::ensure!(Instant::now() < deadline, "a refresh did not list the terminals and sessions again");
+        viewer.pump(Duration::from_millis(50));
+    }
+    // A link that stalls (shorter than the silence timeout) while a terminal starts and ends.
+    let stall = Proxy::start(match direct {
+        ConnTarget::Tcp { addr, .. } => addr.clone(),
+        _ => bail!("a TCP target"),
+    })?;
+    let token = canvas_sys::token::read_token(&instance.token_path())?;
+    let mut stalled = Viewer::open(&ConnTarget::Tcp { addr: stall.addr.clone(), remote_id: None, secret: token }, "repair-stalled")?;
+    stalled.pump(Duration::from_millis(300));
+    stall.set_stalled(true);
+    let blip = format!("blip-{}", crate::paths::now_ms());
+    viewer.send(ClientMsg::Launch { id: blip.clone(), kind: quick_program(), cwd, cols: 40, rows: 10 })?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !viewer.terminals.get(&blip).is_some_and(|t| !t.alive) {
+        anyhow::ensure!(Instant::now() < deadline, "the short terminal did not start and end: {:?}", viewer.errors);
+        viewer.pump(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(1500));
+    stall.set_stalled(false);
+    let back = Instant::now();
+    while !stalled.terminals.get(&blip).is_some_and(|t| !t.alive) {
+        anyhow::ensure!(back.elapsed() < Duration::from_secs(3), "after its link stalled, a client still does not know the terminal ended: {:?}", stalled.terminals.get(&blip));
+        stalled.pump(Duration::from_millis(50));
+    }
+    let caught_up = back.elapsed();
+    viewer.send(ClientMsg::Forget { id: blip })?;
+    viewer.pump(Duration::from_millis(100));
+    Ok(format!(
+        "    a launch of the running terminal answered with it (no second process); a refresh listed every terminal and session; a client whose link stalled knew the terminal had ended {:.0} ms after the link came back",
+        caught_up.as_secs_f64() * 1000.0
+    ))
 }
 
 /// Runs the canvas (`--demo --remote HOST:PORT` through the proxy) in a hidden
