@@ -13,7 +13,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded, unbounded};
 
 use crate::paths::{Instance, build_id};
 use crate::pipe;
-use crate::protocol::{self, CAP_COMPRESS, CAP_FRAME8, ClientInfo, ClientMsg, Input, PROTOCOL, PROTOCOL_MIN, ServiceMsg};
+use crate::protocol::{self, CAP_ACK, CAP_COMPRESS, CAP_FRAME8, ClientInfo, ClientMsg, Input, PROTOCOL, PROTOCOL_MIN, SERVICE_ACKS, ServiceMsg};
 use crate::sync::Opened;
 use crate::tunnel::Server;
 pub use canvas_common::handshake::{AuthError, NoChallenge, Refused};
@@ -178,11 +178,55 @@ pub struct ConnOptions {
     pub rpc: Option<Arc<crate::remote::RemoteBackend>>,
     /// Capabilities besides frames and compression (`CAP_IMAGES`, `CAP_NOTIFY`).
     pub caps: u32,
+    /// Over TCP, acknowledge what is read (`CAP_ACK`) to a service that
+    /// paces by it (false: as an older build; tests).
+    pub acks: bool,
 }
 
 impl Default for ConnOptions {
     fn default() -> Self {
-        Self { start: false, compress: true, name: "client".into(), heartbeat: wire::HEARTBEAT, dead_after: wire::DEAD_AFTER, rpc: None, caps: 0 }
+        Self { start: false, compress: true, name: "client".into(), heartbeat: wire::HEARTBEAT, dead_after: wire::DEAD_AFTER, rpc: None, caps: 0, acks: true }
+    }
+}
+
+/// An acknowledgement goes once this many bytes were read since the last one…
+const ACK_BYTES: u64 = 16 << 10;
+/// …or this long after the last one, while bytes came since.
+const ACK_EVERY: Duration = Duration::from_millis(25);
+
+/// Flow control (`CAP_ACK`): what this connection read since the service's
+/// `Caps` announced `SERVICE_ACKS`; the reader counts, the writer sends
+/// `Received` (an older service never announces it: nothing is sent).
+#[derive(Default)]
+struct Acks {
+    on: AtomicBool,
+    /// `WireStats::bytes_in` when `Caps` was read (the service counts from the byte after it).
+    base: AtomicU64,
+}
+
+impl Acks {
+    /// Bytes read since `Caps` (`None`: not acknowledging).
+    fn read(&self, stats: &WireStats) -> Option<u64> {
+        self.on.load(Ordering::Acquire).then(|| stats.bytes_in.load(Ordering::Relaxed).saturating_sub(self.base.load(Ordering::Acquire)))
+    }
+}
+
+/// What the writer acknowledged last, and when.
+struct Acked {
+    bytes: u64,
+    at: Instant,
+}
+
+impl Acked {
+    /// `Ok(total)`: acknowledge now; `Err(Some(at))`: then; `Err(None)`: nothing to acknowledge.
+    fn due(&self, read: Option<u64>, now: Instant) -> std::result::Result<u64, Option<Instant>> {
+        match read {
+            Some(total) if total > self.bytes => {
+                let at = self.at + ACK_EVERY;
+                if total - self.bytes >= ACK_BYTES || now >= at { Ok(total) } else { Err(Some(at)) }
+            }
+            _ => Err(None),
+        }
     }
 }
 
@@ -615,10 +659,11 @@ fn establish(
     let compress = remote && options.compress;
     let info = hello8.then(|| ClientInfo {
         name: options.name.clone(),
-        caps: CAP_FRAME8 | if compress { CAP_COMPRESS } else { 0 } | options.caps,
+        caps: CAP_FRAME8 | if compress { CAP_COMPRESS } else { 0 } | if remote && options.acks { CAP_ACK } else { 0 } | options.caps,
         session: session.id.clone(),
         remote_id,
     });
+    let acking = info.as_ref().is_some_and(|info| info.caps & CAP_ACK != 0);
     // A service that never answers must not hang the client.
     let done = Arc::new(AtomicBool::new(false));
     let timed_out = Arc::new(AtomicBool::new(false));
@@ -681,13 +726,19 @@ fn establish(
         let generation = backend.attach(out_tx.clone());
         (backend, generation)
     });
+    let acks = Arc::new(Acks::default());
+    // The reader wakes the writer when an acknowledgement may be due (a nudge, never a backlog).
+    let (nudge_tx, nudge_rx) = bounded::<()>(1);
     {
-        let (liveness, reading, closer, session) = (liveness.clone(), reading.clone(), closer.clone(), session.clone());
+        let (liveness, reading, closer, session, acks, stats) = (liveness.clone(), reading.clone(), closer.clone(), session.clone(), acks.clone(), stats.clone());
         std::thread::Builder::new().name("service-reader".into()).spawn(move || {
             // Kept (a tunnel in use) for as long as this connection reads.
             let _keep = keep;
             while let Ok(Some(frame)) = reader.recv_lenient::<ServiceMsg>() {
                 liveness.received();
+                if acks.on.load(Ordering::Acquire) {
+                    let _ = nudge_tx.try_send(());
+                }
                 let message = match frame {
                     Ok(message) => message,
                     Err(body) if lenient => match protocol::decode_v3_terminals(&body) {
@@ -696,6 +747,14 @@ fn establish(
                     },
                     Err(_) => break,
                 };
+                // The service paces by what this client read: count from the byte after this message.
+                if let ServiceMsg::Caps { bits } = message {
+                    if acking && bits & SERVICE_ACKS != 0 {
+                        acks.base.store(stats.bytes_in.load(Ordering::Relaxed), Ordering::Release);
+                        acks.on.store(true, Ordering::Release);
+                    }
+                    continue;
+                }
                 if let ServiceMsg::Heartbeat { input_ack } = message {
                     session.ack(input_ack);
                     continue;
@@ -718,25 +777,38 @@ fn establish(
         })?;
     }
     {
-        let (closer, session) = (closer.clone(), session.clone());
+        let (closer, session, acks, stats) = (closer.clone(), session.clone(), acks.clone(), stats.clone());
         let heartbeat = v8.then_some(options.heartbeat);
         std::thread::Builder::new().name("service-writer".into()).spawn(move || {
             let mut beat = heartbeat.map(Beat::new);
             let mut lanes = Lanes::default();
+            let mut acked = Acked { bytes: 0, at: Instant::now() };
+            // Gone once the reader ended (nothing more to acknowledge).
+            let mut nudge = Some(nudge_rx);
             loop {
-                if lanes.is_empty() {
-                    let message = match &beat {
-                        Some(beat) => match out_rx.recv_deadline(beat.next()) {
-                            Ok(message) => Some(message),
-                            Err(RecvTimeoutError::Timeout) => None,
-                            Err(RecvTimeoutError::Disconnected) => break,
-                        },
-                        None => match out_rx.recv() {
-                            Ok(message) => Some(message),
+                let ack = acked.due(acks.read(&stats), Instant::now());
+                if lanes.is_empty() && ack.is_err() {
+                    let far = Instant::now() + Duration::from_secs(3600);
+                    let deadline = [beat.as_ref().map(Beat::next), ack.err().flatten()].into_iter().flatten().min().unwrap_or(far);
+                    let mut select = crossbeam_channel::Select::new();
+                    let out = select.recv(&out_rx);
+                    if let Some(nudge) = &nudge {
+                        select.recv(nudge);
+                    }
+                    let reader_gone = match select.select_deadline(deadline) {
+                        Ok(op) if op.index() == out => match op.recv(&out_rx) {
+                            Ok(message) => {
+                                lanes.push(message);
+                                false
+                            }
                             Err(_) => break,
                         },
+                        Ok(op) => nudge.as_ref().is_some_and(|rx| op.recv(rx).is_err()),
+                        Err(_) => false,
                     };
-                    lanes.extend(message);
+                    if reader_gone {
+                        nudge = None;
+                    }
                 }
                 // What was queued meanwhile (behind a large request, say): what a
                 // person waits for goes first.
@@ -744,6 +816,14 @@ fn establish(
                     && let Ok(message) = out_rx.try_recv()
                 {
                     lanes.push(message);
+                }
+                // Acknowledgements go ahead of everything (they let the service send).
+                let now = Instant::now();
+                if let Ok(total) = acked.due(acks.read(&stats), now) {
+                    if writer.send(&ClientMsg::Received { bytes: total }).is_err() {
+                        break;
+                    }
+                    acked = Acked { bytes: total, at: now };
                 }
                 if let Some(message) = lanes.pop().and_then(|m| adapt(m, v8, &session))
                     && writer.send(&message).is_err()
@@ -815,12 +895,6 @@ impl Lanes {
                 | ClientMsg::Stats
         );
         if urgent { self.urgent.push_back(message) } else { self.normal.push_back(message) }
-    }
-
-    fn extend(&mut self, message: Option<ClientMsg>) {
-        if let Some(message) = message {
-            self.push(message);
-        }
     }
 
     fn pop(&mut self) -> Option<ClientMsg> {
@@ -1014,7 +1088,7 @@ mod tests {
         assert!(alive < beating + Duration::from_millis(900), "silence ended it soon after the timeout ({alive:?})");
         assert_eq!(session.acked(), 9, "heartbeats carry the input ack");
         let (caps, heartbeats) = service.join().unwrap();
-        assert_eq!(caps, CAP_FRAME8 | CAP_COMPRESS);
+        assert_eq!(caps, CAP_FRAME8 | CAP_COMPRESS | CAP_ACK, "over TCP it offers to acknowledge (older services ignore the bit)");
         // Every 50 ms for about 700 ms; more than one shows they repeat (a busy
         // CI runner starved the client's writer thread to 3 once).
         assert!(heartbeats >= 2, "the client sent heartbeats ({heartbeats})");
@@ -1125,6 +1199,53 @@ mod tests {
         let error = open(&ConnTarget::Tcp { addr: closed, remote_id: None, secret: b"secret".to_vec() }, &ConnOptions::default(), &ClientSession::new()).err().expect("closed");
         assert_eq!(error.downcast_ref::<Unheard>(), Some(&Unheard::Closed), "{error:#}");
         assert!(error.is::<NoChallenge>(), "what the handshake said is still there (the pipe's protocol-7 fallback reads it): {error:#}");
+    }
+
+    #[test]
+    fn what_is_read_is_acknowledged_only_to_a_service_that_asks() {
+        // A service that announces flow control: every byte after `Caps` is acknowledged.
+        let (done_tx, done_rx) = bounded::<(u64, u64)>(1);
+        let addr = fake_service(|w| w, move |_, mut reader, mut writer| {
+            writer.send(&ServiceMsg::Caps { bits: SERVICE_ACKS }).unwrap();
+            let mut sent = 0;
+            for n in 0..50u64 {
+                sent += writer.send(&ServiceMsg::Clipboard(format!("{n}").repeat(2000))).unwrap() as u64;
+            }
+            let mut last = 0;
+            while let Ok(Some(message)) = reader.recv::<ClientMsg>() {
+                if let ClientMsg::Received { bytes } = message {
+                    assert!(bytes >= last, "acknowledgements only grow");
+                    last = bytes;
+                    if bytes == sent {
+                        break;
+                    }
+                }
+            }
+            let _ = done_tx.send((sent, last));
+        });
+        let conn = open(&ConnTarget::Tcp { addr, remote_id: None, secret: b"secret".to_vec() }, &ConnOptions::default(), &ClientSession::new()).unwrap();
+        let (sent, acked) = done_rx.recv_timeout(Duration::from_secs(5)).expect("the acknowledgements reached the service");
+        assert_eq!(acked, sent, "everything read after Caps, counted as the service counts it");
+        assert!(conn.rx.try_iter().all(|m| !matches!(m, ServiceMsg::Caps { .. })), "Caps is the connection's own");
+        // An older service never sends `Caps` (it ignores CAP_ACK): the client never acknowledges.
+        let (seen_tx, seen_rx) = bounded::<bool>(1);
+        let addr = fake_service(|w| w, move |_, mut reader, mut writer| {
+            for n in 0..50u64 {
+                writer.send(&ServiceMsg::Clipboard(format!("{n}").repeat(2000))).unwrap();
+            }
+            let until = Instant::now() + Duration::from_millis(600);
+            let mut acked = false;
+            while Instant::now() < until
+                && let Ok(Some(message)) = reader.recv::<ClientMsg>()
+            {
+                acked |= matches!(message, ClientMsg::Received { .. });
+            }
+            let _ = seen_tx.send(acked);
+        });
+        let options = ConnOptions { heartbeat: Duration::from_millis(100), ..ConnOptions::default() };
+        let _conn = open(&ConnTarget::Tcp { addr, remote_id: None, secret: b"secret".to_vec() }, &options, &ClientSession::new()).unwrap();
+        let acked = seen_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(!acked, "nothing an older service cannot decode");
     }
 
     #[test]

@@ -1325,7 +1325,12 @@ terminal corpus), `canvas-mobile` (the iPhone app's Rust core, UniFFI),
   messages wait in lanes, not one queue: terminal and session state, then the
   focused terminal's frame, other terminals' frames, then bulk (documents,
   large replies, images). A terminal gets its next frame once its last one was
-  sent, so a slow link gets fewer, newer frames, never a backlog. A slow
+  sent, so a slow link gets fewer, newer frames, never a backlog. Over a
+  tunnel that buffers (Dev Tunnels holds about 1 MB) the window says what it
+  has read, and the service keeps no more than about 150 ms of the link's
+  rate in flight besides the echo, so the lanes, not the tunnel, decide what
+  an echo waits behind (clients of older builds get bulk paced while they
+  type instead). A slow
   request (a launch, a canvas load, a todo write) runs beside the window's
   keystrokes, never in front of them, and a large paste or upload on a slow
   uplink never gets the window disconnected as silent. State a window missed

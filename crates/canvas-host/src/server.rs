@@ -45,7 +45,7 @@ use crate::outbox::{Next, Outbox, Push, Taken};
 pub use crate::outbox::Outgoing;
 use crate::paths::{Instance, build_id, now_ms};
 use canvas_sys::ipc::{Pipe, PipeServer};
-use crate::protocol::{self, CAP_COMPRESS, CAP_IMAGES, ClientMsg, Frame8, ImageRef, Input, LaunchKind, MAX_FRAME, PRE_AUTH_FRAME, Placement, Run8, ServiceMsg, ServiceStats};
+use crate::protocol::{self, CAP_ACK, CAP_COMPRESS, CAP_IMAGES, ClientMsg, Frame8, ImageRef, Input, LaunchKind, MAX_FRAME, PRE_AUTH_FRAME, Placement, Run8, SERVICE_ACKS, ServiceMsg, ServiceStats};
 use crate::term::{EncodedImage, Hooks, ImagePng, Notice, Spawn, Terminal, lock};
 use canvas_common::handshake::{Credential, Opening, Pairing};
 use canvas_common::sizing::SizePolicy;
@@ -56,6 +56,9 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(4);
 /// Remote clients: the focused tile at most every 16 ms, others every 100 ms.
 const FOCUSED_INTERVAL: Duration = Duration::from_millis(16);
 const BACKGROUND_INTERVAL: Duration = Duration::from_millis(100);
+/// Remote clients without flow control that typed in the last 2 s: their
+/// other tiles at most every 250 ms (the stopgap, `outbox::Pace`).
+const TYPING_BACKGROUND_INTERVAL: Duration = Duration::from_millis(250);
 /// Local clients that type in a tile: their other tiles at most every 33 ms
 /// (the typed-in tile is not paced).
 const LOCAL_BACKGROUND_INTERVAL: Duration = Duration::from_millis(33);
@@ -1369,6 +1372,13 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
         log(&host.instance, &format!("remote client {id} connected ({}, protocol {}, compression {}{via}){paired}", printable(&info.name), accepted.protocol, host.compress && info.caps & CAP_COMPRESS != 0));
     }
     client.send(ServiceMsg::Ready8 { pid: std::process::id(), input_ack: ready_ack });
+    // Clients that acknowledge what they read (`CAP_ACK`) are told so; flow
+    // control counts from the next byte. Remote clients that do not (older
+    // builds, the phone) get the stopgap pacing while they type.
+    client.send(ServiceMsg::Caps { bits: SERVICE_ACKS });
+    if remote && info.caps & CAP_ACK == 0 {
+        client.outbox.set_paced();
+    }
     host.register(&client);
     host.app().client_connected(&client);
     // A revocation between the handshake and now closed only the clients
@@ -1472,6 +1482,7 @@ fn handled_inline(message: &ClientMsg) -> bool {
             | ClientMsg::Hello8 { .. }
             | ClientMsg::Auth { .. }
             | ClientMsg::Sat(_)
+            | ClientMsg::Received { .. }
     )
 }
 
@@ -1585,7 +1596,9 @@ fn spawn_writer(host: Weak<Host>, mut writer: FrameWriter, outbox: Arc<Outbox>, 
             let sent = match outbox.next(deadline) {
                 Next::Closed => break,
                 Next::Timeout => Ok(0),
-                Next::Item(Taken { message, frame_of }) => {
+                Next::Item(Taken { message, frame_of, urgent }) => {
+                    // Flow control counts from the byte after `Caps` (the client does too).
+                    let caps = matches!(&message, Outgoing::Message(ServiceMsg::Caps { .. }));
                     let sent = match message {
                         Outgoing::Message(message) => writer.send(&message),
                         Outgoing::Image { term, image_id, width, height, png } => {
@@ -1594,6 +1607,11 @@ fn spawn_writer(host: Weak<Host>, mut writer: FrameWriter, outbox: Arc<Outbox>, 
                             sent
                         }
                     };
+                    match &sent {
+                        Ok(_) if caps => outbox.start_window(),
+                        Ok(bytes) => outbox.wrote(*bytes, urgent),
+                        Err(_) => {}
+                    }
                     if let Some(tile) = frame_of {
                         // Too large to encode: the client never got it, though
                         // the tile's diff state counts it. Its next frame is
@@ -1623,9 +1641,12 @@ fn spawn_writer(host: Weak<Host>, mut writer: FrameWriter, outbox: Arc<Outbox>, 
             }
             if beat.as_mut().is_some_and(|b| b.due(Instant::now())) {
                 let input_ack = session.as_ref().map(|s| lock(s).applied).unwrap_or(0);
-                if let Err(error) = writer.send(&ServiceMsg::Heartbeat { input_ack }) {
-                    failure = Some(error);
-                    break;
+                match writer.send(&ServiceMsg::Heartbeat { input_ack }) {
+                    Ok(bytes) => outbox.wrote(bytes, true),
+                    Err(error) => {
+                        failure = Some(error);
+                        break;
+                    }
                 }
             }
         }
@@ -1786,6 +1807,8 @@ fn apply_input(host: &Host, client: &Client, id: &str, input: &Input) -> Result<
         let _ = host.size_claim(client.id, id);
         host.note_active(id);
         host.app().input_noted(id);
+        // Its echo is due: a client under the stopgap pacing gets less else meanwhile.
+        client.outbox.typed();
     }
     host.terminal(id)?.send_input(input)?;
     let _ = host.pump.try_send(());
@@ -1834,6 +1857,8 @@ fn dispatch(host: &Arc<Host>, client: &Arc<Client>, message: ClientMsg) -> Resul
             }
         }
         ClientMsg::Heartbeat => {}
+        // What the client read so far: flow control lets more go.
+        ClientMsg::Received { bytes } => client.outbox.acked(bytes),
         ClientMsg::Resize { id, cols, rows } => {
             host.terminal(&id)?;
             host.size_wish(client.id, &id, cols, rows)?;
@@ -2083,8 +2108,11 @@ fn pump_client(host: &Host, client: &Client, focused_pass: bool, answers: &HashM
         }
         // Remote tiles are paced; so are a local client's tiles other than
         // the one it types in (a busy tile would cost a snapshot every pass, S3-15).
+        // A remote client that does not acknowledge and typed just now gets
+        // its other tiles even less often (the stopgap: its echo goes first).
         let interval = match (client.remote, focused_pass) {
             (true, true) => Some(FOCUSED_INTERVAL),
+            (true, false) if client.outbox.slow_others() => Some(TYPING_BACKGROUND_INTERVAL),
             (true, false) => Some(BACKGROUND_INTERVAL),
             (false, false) if focused.is_some() => Some(LOCAL_BACKGROUND_INTERVAL),
             (false, _) => None,
@@ -2434,7 +2462,7 @@ mod tests {
     /// The ordinary messages a test client was sent so far, in the order its writer takes them.
     fn drain(outbox: &Outbox) -> Vec<ServiceMsg> {
         let mut out = Vec::new();
-        while let Next::Item(Taken { message, frame_of }) = outbox.next(Instant::now()) {
+        while let Next::Item(Taken { message, frame_of, .. }) = outbox.next(Instant::now()) {
             if let Some(tile) = frame_of {
                 outbox.frame_written(&tile);
             }
@@ -2854,16 +2882,31 @@ mod tests {
 
     /// A protocol-8 client over TCP: what it receives arrives on the channel.
     fn test_client(instance: &Instance, addr: SocketAddr, name: &str) -> (Receiver<ServiceMsg>, FrameWriter, tcp::TcpCloser) {
+        let (rx, writer, closer) = test_client_with(instance, addr, name, protocol::CAP_FRAME8);
+        let (tx, plain) = unbounded();
+        std::thread::spawn(move || {
+            for (message, _) in rx {
+                if tx.send(message).is_err() {
+                    break;
+                }
+            }
+        });
+        (plain, writer, closer)
+    }
+
+    /// [`test_client`] with `caps`; each message comes with the bytes read up to its end.
+    fn test_client_with(instance: &Instance, addr: SocketAddr, name: &str, caps: u32) -> (Receiver<(ServiceMsg, u64)>, FrameWriter, tcp::TcpCloser) {
         let token = canvas_sys::token::read_token(&instance.token_path()).unwrap();
         let (reader, writer, closer) = tcp::split(TcpStream::connect(addr).unwrap()).unwrap();
-        let (mut reader, mut writer) = (FrameReader::new(Box::new(reader)), FrameWriter::new(Box::new(writer)));
+        let stats = Arc::new(canvas_common::wire::WireStats::default());
+        let (mut reader, mut writer) = (FrameReader::new(Box::new(reader)).with_stats(stats.clone()), FrameWriter::new(Box::new(writer)));
         let session: Vec<u8> = name.bytes().chain(std::iter::repeat(0)).take(16).collect();
-        let info = protocol::ClientInfo { name: name.into(), caps: protocol::CAP_FRAME8, session, remote_id: None };
+        let info = protocol::ClientInfo { name: name.into(), caps, session, remote_id: None };
         handshake::open(&mut reader, &mut writer, &token, "test", Some(info)).unwrap();
         let (tx, rx) = unbounded();
         std::thread::spawn(move || {
             while let Ok(Some(message)) = reader.recv::<ServiceMsg>() {
-                if tx.send(message).is_err() {
+                if tx.send((message, stats.bytes_in.load(Ordering::Relaxed))).is_err() {
                     break;
                 }
             }
@@ -3007,5 +3050,90 @@ mod tests {
         let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
         assert!(!log.contains("silent for"), "{log}");
         closer.close();
+    }
+
+    /// A backend that answers every `Rpc` at once with a reply of `.0` bytes (bulk).
+    struct ReplyApp(usize);
+
+    impl HostApp for ReplyApp {
+        fn resolve_launch(&self, _: &str, _: LaunchKind, _: &str) -> Result<Resolved> {
+            bail!("no agents here")
+        }
+        fn client_connected(&self, _: &Arc<Client>) {}
+        fn client_disconnected(&self, _: u64) {}
+        fn message(&self, client: &Arc<Client>, message: ClientMsg) -> Result<()> {
+            if let ClientMsg::Rpc { id, .. } = message {
+                client.send(ServiceMsg::RpcReply { id, json: "x".repeat(self.0) });
+            }
+            Ok(())
+        }
+        fn input_noted(&self, _: &str) {}
+        fn terminals_changed(&self) {}
+        fn has_work(&self) -> bool {
+            false
+        }
+        fn remote_credential(&self, _: &str) -> Credential {
+            Credential::Refused
+        }
+    }
+
+    fn replies(rx: &Receiver<(ServiceMsg, u64)>, within: Duration) -> (usize, Option<u64>) {
+        let (mut count, mut read) = (0, None);
+        let until = Instant::now() + within;
+        while let Some(left) = until.checked_duration_since(Instant::now()) {
+            match rx.recv_timeout(left) {
+                Ok((message, bytes)) => {
+                    read = Some(bytes);
+                    count += matches!(message, ServiceMsg::RpcReply { .. }) as usize;
+                }
+                Err(_) => break,
+            }
+        }
+        (count, read)
+    }
+
+    #[test]
+    fn a_client_that_acknowledges_gets_bulk_within_its_window_and_older_clients_get_no_caps() {
+        let (instance, addr) = test_service("flow", |_| Arc::new(ReplyApp(100 << 10)));
+        let rpc = |id| ClientMsg::Rpc { id, json: "\"Info\"".into() };
+        // An older client (no CAP_ACK): no `Caps`, and nothing waits for acknowledgements.
+        let (rx, mut writer, closer) = test_client_with(&instance, addr, "older", protocol::CAP_FRAME8);
+        for id in 0..8 {
+            writer.send(&rpc(id)).unwrap();
+        }
+        let mut got = Vec::new();
+        let until = Instant::now() + Duration::from_secs(5);
+        while got.iter().filter(|m| matches!(m, ServiceMsg::RpcReply { .. })).count() < 8 {
+            let left = until.checked_duration_since(Instant::now()).expect("an older client gets every reply unacknowledged");
+            got.push(rx.recv_timeout(left).unwrap().0);
+        }
+        assert!(matches!(got[0], ServiceMsg::Ready8 { .. }));
+        assert!(!got.iter().any(|m| matches!(m, ServiceMsg::Caps { .. })), "an older client never gets Caps");
+        closer.close();
+        // A client that acknowledges: `Caps` right after `Ready8`, then no more
+        // bulk in flight than its window until it says what it read.
+        let (rx, mut writer, closer) = test_client_with(&instance, addr, "acks", protocol::CAP_FRAME8 | CAP_ACK);
+        assert!(matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap().0, ServiceMsg::Ready8 { .. }));
+        let (caps, base) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(caps, ServiceMsg::Caps { bits: SERVICE_ACKS }, "Caps follows Ready8");
+        for id in 0..8 {
+            writer.send(&rpc(id)).unwrap();
+        }
+        let (first, read) = replies(&rx, Duration::from_millis(800));
+        assert!((1..=2).contains(&first), "{first} replies of 100 KB went unacknowledged (the window starts at 128 KB)");
+        let mut total = first;
+        let mut read = read.unwrap_or(base);
+        let until = Instant::now() + Duration::from_secs(5);
+        while total < 8 {
+            assert!(Instant::now() < until, "acknowledgements let the rest go ({total} of 8)");
+            writer.send(&ClientMsg::Received { bytes: read - base }).unwrap();
+            let (more, now) = replies(&rx, Duration::from_millis(100));
+            total += more;
+            read = now.unwrap_or(read);
+        }
+        assert_eq!(total, 8);
+        closer.close();
+        let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
+        assert!(!log.contains("cannot read"), "Received is understood: {log}");
     }
 }

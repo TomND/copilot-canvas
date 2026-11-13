@@ -637,6 +637,7 @@ All new messages are protocol 8 and appended at the end of the enums:
 | `PairStart { name, nonce }` (REMOTE.md, Pairing) | 25 |
 | `PairProof { proof }` (REMOTE.md, Pairing) | 26 |
 | `Sat(Box<SatUp>)` (VM sessions' satellites only; [VM-SESSIONS.md](VM-SESSIONS.md); refused from any other connection) | 29 |
+| `Received { bytes }` (flow control: what a `CAP_ACK` client read since `Caps`; sent only to a service whose `Caps` said `SERVICE_ACKS`) | 30 |
 
 | Service → client | Index |
 |---|---|
@@ -650,6 +651,12 @@ All new messages are protocol 8 and appended at the end of the enums:
 | `Welcome { build }` (REMOTE.md, handshake) | 26 |
 | `Reports { json }` (the reports inbox; only to clients with `CAP_REPORTS`, `1 << 4`, which the TUI and the GUI set) | 27 |
 | `Sat(Box<SatDown>)` (only to a satellite: `CAP_SATELLITE`, `1 << 6`) | 29 |
+| `Caps { bits }` (what the service does, `SERVICE_*`; sent right after `Ready8`, only to clients with `CAP_ACK`, `1 << 7`) | 30 |
+
+Client capability bits an older service ignores: `CAP_ACK` (`1 << 7`: the
+client reads `Caps` and acknowledges what it reads when the service says
+`SERVICE_ACKS`; the desktop clients set it over TCP; REMOTE.md, *Flow
+control*).
 
 `ServiceMsg::shaped` never sends them to protocol-7 clients. The connection's
 reader thread routes `RpcReply` to the waiting caller by id; a dropped
@@ -679,7 +686,12 @@ most 8 files and 4 MiB in all.
   replaces what waits), the newest bus snapshot. At most one frame per tile
   waits; the pump makes the next once the writer wrote it. Lanes are bounded
   in messages and bytes: a client that overflows them is dropped and logged
-  (`client N fell behind …`); it reconnects and gets everything again.
+  (`client N fell behind …`); it reconnects and gets everything again. A
+  client that acknowledges what it reads (`CAP_ACK`) gets flow control
+  (`outbox::Window`): other tiles' frames and bulk only while the bytes it has
+  not acknowledged are under a budget that follows the link; a remote client
+  that does not gets bulk paced while it types (`outbox::Pace`; REMOTE.md,
+  *Flow control*).
 - **State is never missed.** A connecting client is listed, and sent the
   terminal list, under one lock: a launch or an exit is in that list or
   reaches it as a broadcast. The backend sends the session list under the lock

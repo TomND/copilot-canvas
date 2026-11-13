@@ -1924,7 +1924,9 @@ impl App {
             // Only for the iPhone client (CAP_TUNNEL_ACCESS).
             | ServiceMsg::TunnelAccess { .. }
             // Only for VM sessions' satellites (CAP_SATELLITE).
-            | ServiceMsg::Sat(_) => {}
+            | ServiceMsg::Sat(_)
+            // Read by the connection itself (flow control, CAP_ACK).
+            | ServiceMsg::Caps { .. } => {}
         }
     }
 

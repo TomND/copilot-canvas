@@ -171,11 +171,34 @@ client*): control and state first, then the focused tile's frame, other
 tiles' frames, then bulk (documents, bus snapshots, large replies, images). A
 keystroke's echo therefore waits at most for the message being written, not
 for everything queued before it. The system buffers at most 64 KiB for a
-remote client (`SO_SNDBUF`), so the order holds; what `devtunnel host` and the
-relay buffer further on is out of the service's hands (`selftest --remote
-faults` measures the echo while 32 replies of 256 KB stream at 1 MB/s). One
-message is never split: a reply of many megabytes still holds the echo behind
-it for its own transfer time.
+remote client (`SO_SNDBUF`), so the order holds up to the socket.
+
+**Flow control.** On the Cloud PC the service's peer is `devtunnel host`,
+which reads the loopback socket as fast as its SSH channel's window allows
+(about 1 MiB, given back in 512 KiB steps) and forwards it in arrival order:
+without more, a burst (a reconnect's resync, the inspector's transcript, a
+few large replies) would wait there ahead of an echo. So a client that
+acknowledges what it reads sets `CAP_ACK`; a service that reads the
+acknowledgements answers right after `Ready8` with `ServiceMsg::Caps { bits }`
+(`SERVICE_ACKS`), and from the byte after it the client sends
+`ClientMsg::Received { bytes }` (its total read since `Caps`: frames as on
+the wire, every 16 KiB or 25 ms while reading). The service then lets other
+tiles' frames and bulk go only while fewer bytes than its budget are
+unacknowledged: the rate acknowledged during a busy spell times the round
+trip plus 150 ms, within 32–256 KiB; control and the focused frame may have
+128 KiB more in flight, and one message always goes when nothing is in
+flight. On a slow relay an echo waits about 150 ms behind bulk, on a fast
+one bulk still fills the link. An older service never sends `Caps` (it
+ignores the bit), so the client never sends `Received`; an older client never
+sets the bit and never gets `Caps`. Remote clients that do not acknowledge
+(older builds, the phone) get a stopgap instead: while they typed in the last
+2 s, other tiles' frames and bulk leave at most 128 KB/s and other tiles get
+4 frames/s, so the tunnel drains ahead of their echoes. `selftest --remote
+faults` runs its proxy as such a tunnel (1 MiB in flight, in arrival order)
+and measures the echo while 32 replies of 256 KB stream at 1 MB/s: under 1 s
+with acknowledgements (about 250 ms), and for a client without them once it
+typed. One message is never split: a reply of many megabytes still holds the
+echo behind it for its own transfer time.
 
 ### Liveness
 
@@ -814,10 +837,14 @@ Checklist (over a day):
   silence timeout plus 1 s with its closing logged once; after it a new
   (stand-in) Copilot session must show its screen within 5 s, and two
   connections resuming one session at the same moment must start exactly one
-  process (a third box resuming it is refused). Over a throttled link
-  (1 MB/s down) keystrokes typed while 32 replies of 256 KB stream must echo
-  in under 2 s and in under half the time the replies take (one queue made
-  them wait for all); over a throttled uplink (160 KB/s) a 1.5 MB upload that
+  process (a third box resuming it is refused). The proxy buffers like a Dev
+  Tunnel (1 MiB per direction in flight, in arrival order, room given back in
+  512 KiB steps). Over a throttled link (1 MB/s down) keystrokes typed while
+  32 replies of 256 KB stream must echo in under 1 s and in under half the
+  time the replies take (one queue made them wait for all, the tunnel's buffer
+  for a window of them); a client without acknowledgements (an older build)
+  must get its later echoes in under 1 s once it typed (the stopgap pacing);
+  over a throttled uplink (160 KB/s) a 1.5 MB upload that
   takes longer than the silence timeout must not get the client dropped; and
   state a client missed must be repaired: a `Launch` of a running terminal
   answers with it (no second process), `RefreshSessions` lists every terminal

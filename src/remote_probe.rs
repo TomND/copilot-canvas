@@ -6,10 +6,12 @@
 //! a frame, and delays it by 300 ms each way. Checks: the client reconnects
 //! within 5 s and gets full frames again; every acknowledged keystroke reached
 //! the terminal exactly once and in order; nothing arrived twice; keystrokes
-//! the service never confirmed are reported, never resent. Over a throttled
-//! link: large replies in flight do not hold a keystroke's echo back, a large
-//! message sent slowly does not get the client dropped as silent, and state a
-//! client missed is repaired.
+//! the service never confirmed are reported, never resent. The proxy buffers
+//! like a Dev Tunnel (about 1 MiB per direction, in arrival order). Over a
+//! throttled link: large replies in flight do not hold a keystroke's echo
+//! back (flow control keeps them in the service, where the echo goes first),
+//! a large message sent slowly does not get the client dropped as silent, and
+//! state a client missed is repaired.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -34,11 +36,22 @@ const ECHO: &str = "echo";
 /// Reconnecting must take less than this (PLAN §9 asks ≤ 2 s once the network is back).
 const RECONNECT_LIMIT: Duration = Duration::from_secs(5);
 
-/// A TCP proxy that can drop, cut and delay its connections.
+/// A TCP proxy that can drop, cut, delay and throttle its connections. It
+/// behaves like a Dev Tunnel: each direction reads what its sender writes
+/// at once, up to [`TUNNEL_WINDOW`] bytes ahead of what it delivered (an SSH
+/// channel's window, granted back in [`TUNNEL_CREDIT`] steps), and delivers
+/// it in arrival order at the direction's rate. So a sender that writes as
+/// fast as the proxy reads puts up to a window of data ahead of whatever it
+/// sends next, as `devtunnel host` does on the service's machine.
 pub(crate) struct Proxy {
     pub(crate) addr: String,
     pub(crate) shared: Arc<ProxyShared>,
 }
+
+/// What a tunnel direction buffers ahead of the far end at most…
+const TUNNEL_WINDOW: u64 = 1 << 20;
+/// …and the steps in which room is given back (SSH adjusts the window once half was consumed).
+const TUNNEL_CREDIT: u64 = 512 << 10;
 
 pub(crate) struct ProxyShared {
     upstream: String,
@@ -88,7 +101,7 @@ impl Proxy {
                     drop(client);
                     continue;
                 }
-                let Ok(upstream) = connect_small(&accept.upstream) else { continue };
+                let Ok(upstream) = tcp::connect(&accept.upstream, Duration::from_secs(2)) else { continue };
                 let (Ok((cr, cw, cc)), Ok((ur, uw, uc))) = (tcp::split(client), tcp::split(upstream)) else { continue };
                 accept.connections.fetch_add(1, Ordering::Relaxed);
                 lock(&accept.links).push((cc.clone(), uc.clone()));
@@ -121,69 +134,75 @@ impl Proxy {
         self.shared.delay_ms.store(delay.as_millis() as u64, Ordering::Release);
     }
 
-    /// Stops relaying either way: the service's writes pile up until its
-    /// socket's buffers are full, and the client's heartbeats stop.
+    /// Stops relaying either way: the service's writes pile up until the
+    /// tunnel's window and its socket's buffers are full, and the client's
+    /// heartbeats stop.
     pub(crate) fn set_stalled(&self, stalled: bool) {
         self.shared.stalled.store(stalled, Ordering::Release);
     }
 
     /// Caps the throughput of each direction (bytes per second; 0: none), as
-    /// a slow tunnel does: the sender's socket fills and its writes wait.
+    /// a slow relay does: the tunnel's window fills, then the sender's socket.
     pub(crate) fn set_rates(&self, down: u64, up: u64) {
         self.shared.rate_down.store(down, Ordering::Release);
         self.shared.rate_up.store(up, Ordering::Release);
     }
 }
 
-/// Reads at most the proxy's rate for its direction (8 KiB at a time).
-struct Throttled {
-    inner: Box<dyn Read + Send>,
-    shared: Arc<ProxyShared>,
-    down: bool,
-    free_at: Instant,
+/// A tunnel direction's window: bytes read and not yet given back.
+#[derive(Default)]
+struct Credit {
+    /// (read and not given back, delivered since room was last given back, closed).
+    state: Mutex<(u64, u64, bool)>,
+    room: std::sync::Condvar,
 }
 
-impl Read for Throttled {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let rate = if self.down { &self.shared.rate_down } else { &self.shared.rate_up }.load(Ordering::Acquire);
-        if rate == 0 {
-            return self.inner.read(buf);
+impl Credit {
+    /// Waits for room in the window, then counts `len` bytes read.
+    fn take(&self, len: u64) -> bool {
+        let mut state = lock(&self.state);
+        while state.0 >= TUNNEL_WINDOW && !state.2 {
+            state = self.room.wait(state).unwrap_or_else(|e| e.into_inner());
         }
-        if let Some(wait) = self.free_at.checked_duration_since(Instant::now()) {
-            std::thread::sleep(wait);
-        }
-        let len = buf.len().min(8 * 1024);
-        let read = self.inner.read(&mut buf[..len])?;
-        self.free_at = self.free_at.max(Instant::now()) + Duration::from_secs_f64(read as f64 / rate as f64);
-        Ok(read)
+        state.0 += len;
+        !state.2
     }
-}
 
-/// Connects to the service asking for a small receive buffer: like a tunnel
-/// that forwards as it reads, the proxy should hold little of what the
-/// service sent ahead (a throttled link delivers that before anything sent
-/// after it). macOS grows it to about 330 KB anyway.
-fn connect_small(addr: &str) -> std::io::Result<std::net::TcpStream> {
-    let addr: std::net::SocketAddr = addr.parse().map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "an IP address and port"))?;
-    let socket = socket2::Socket::new(socket2::Domain::for_address(addr), socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
-    socket.set_recv_buffer_size(64 << 10)?;
-    socket.connect_timeout(&addr.into(), Duration::from_secs(2))?;
-    Ok(socket.into())
+    /// `len` bytes were delivered: room comes back in `TUNNEL_CREDIT` steps.
+    fn give(&self, len: u64) {
+        let mut state = lock(&self.state);
+        state.1 += len;
+        if state.1 >= TUNNEL_CREDIT {
+            state.0 = state.0.saturating_sub(state.1);
+            state.1 = 0;
+            self.room.notify_all();
+        }
+    }
+
+    fn close(&self) {
+        lock(&self.state).2 = true;
+        self.room.notify_all();
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Copies one direction. Chunks are forwarded `delay` after they arrived (pure
-/// latency, no throughput limit). `frames`: the service-to-client direction,
-/// read frame by frame so a frame can be cut in its middle.
-fn relay(from: Box<dyn Read + Send>, mut to: Box<dyn Write + Send>, ends: [TcpCloser; 2], shared: Arc<ProxyShared>, frames: bool) {
-    let mut from = Throttled { inner: from, shared: shared.clone(), down: frames, free_at: Instant::now() };
+/// Copies one direction like a tunnel: read at once while the window has
+/// room, delivered `delay` after arrival, at the direction's rate. `frames`:
+/// the service-to-client direction, read frame by frame so a frame can be
+/// cut in its middle.
+fn relay(mut from: Box<dyn Read + Send>, mut to: Box<dyn Write + Send>, ends: [TcpCloser; 2], shared: Arc<ProxyShared>, frames: bool) {
     let (tx, rx) = unbounded::<(Instant, Vec<u8>, bool)>();
-    let (writer_ends, writer_shared) = (ends.clone(), shared.clone());
+    let credit = Arc::new(Credit::default());
+    let (writer_ends, writer_shared, writer_credit) = (ends.clone(), shared.clone(), credit.clone());
     std::thread::spawn(move || {
-        for (arrived, bytes, last) in rx {
+        // When the next byte may go at the direction's rate; a burst of up to
+        // 64 KB makes up for sleeps that overshoot (a loaded CI runner), so the
+        // rate holds on average.
+        let mut free_at = Instant::now();
+        'chunks: for (arrived, bytes, last) in rx {
             // What was read before a freeze is held too.
             while writer_shared.stalled.load(Ordering::Acquire) {
                 std::thread::sleep(Duration::from_millis(20));
@@ -192,10 +211,26 @@ fn relay(from: Box<dyn Read + Send>, mut to: Box<dyn Write + Send>, ends: [TcpCl
             if let Some(wait) = due.checked_duration_since(Instant::now()) {
                 std::thread::sleep(wait);
             }
-            if to.write_all(&bytes).is_err() || last {
+            for piece in bytes.chunks(8 * 1024) {
+                let rate = if frames { &writer_shared.rate_down } else { &writer_shared.rate_up }.load(Ordering::Acquire);
+                if rate > 0 {
+                    if let Some(wait) = free_at.checked_duration_since(Instant::now()) {
+                        std::thread::sleep(wait);
+                    }
+                    let now = Instant::now();
+                    let burst = Duration::from_secs_f64(64.0 * 1024.0 / rate as f64);
+                    free_at = free_at.max(now.checked_sub(burst).unwrap_or(now)) + Duration::from_secs_f64(piece.len() as f64 / rate as f64);
+                }
+                if to.write_all(piece).is_err() {
+                    break 'chunks;
+                }
+            }
+            writer_credit.give(bytes.len() as u64);
+            if last {
                 break;
             }
         }
+        writer_credit.close();
         for end in &writer_ends {
             end.close();
         }
@@ -205,7 +240,7 @@ fn relay(from: Box<dyn Read + Send>, mut to: Box<dyn Write + Send>, ends: [TcpCl
             while shared.stalled.load(Ordering::Acquire) {
                 std::thread::sleep(Duration::from_millis(20));
             }
-            if frames {
+            let (packet, last) = if frames {
                 let mut header = [0u8; 4];
                 if from.read_exact(&mut header).is_err() {
                     break;
@@ -221,13 +256,11 @@ fn relay(from: Box<dyn Read + Send>, mut to: Box<dyn Write + Send>, ends: [TcpCl
                     packet.extend_from_slice(&body[..len / 2]);
                     shared.cut_size.store(len as u64 + 4, Ordering::Release);
                     shared.cut_compressed.store(compressed, Ordering::Release);
-                    let _ = tx.send((Instant::now(), packet, true));
-                    break;
-                }
-                packet.extend_from_slice(&body);
-                shared.bytes_down.fetch_add(packet.len() as u64, Ordering::Relaxed);
-                if tx.send((Instant::now(), packet, false)).is_err() {
-                    break;
+                    (packet, true)
+                } else {
+                    packet.extend_from_slice(&body);
+                    shared.bytes_down.fetch_add(packet.len() as u64, Ordering::Relaxed);
+                    (packet, false)
                 }
             } else {
                 let mut buf = vec![0u8; 64 * 1024];
@@ -235,14 +268,16 @@ fn relay(from: Box<dyn Read + Send>, mut to: Box<dyn Write + Send>, ends: [TcpCl
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
                         buf.truncate(n);
-                        if tx.send((Instant::now(), buf, false)).is_err() {
-                            break;
-                        }
+                        (buf, false)
                     }
                 }
+            };
+            // Read at once, but never more than the tunnel's window ahead of delivery.
+            if !credit.take(packet.len() as u64) || tx.send((Instant::now(), packet, last)).is_err() || last {
+                break;
             }
         }
-        // The writer forwards what is queued, then closes both sides.
+        // The writer delivers what is queued, then closes both sides.
     });
 }
 
@@ -275,8 +310,13 @@ struct Typist {
 
 impl Typist {
     fn connect(target: ConnTarget) -> Result<Self> {
+        Self::connect_as(target, true)
+    }
+
+    /// `acks`: acknowledge what is read (false: as a client of an older build does).
+    fn connect_as(target: ConnTarget, acks: bool) -> Result<Self> {
         let backend = RemoteBackend::new();
-        let options = ConnOptions { name: "faults".into(), rpc: Some(backend.clone()), ..Default::default() };
+        let options = ConnOptions { name: if acks { "faults" } else { "faults-older" }.into(), rpc: Some(backend.clone()), acks, ..Default::default() };
         let session = ClientSession::new();
         let conn = conn::open(&target, &options, &session)?;
         conn.tx.send(ClientMsg::Subscribe8 { ids: vec![ECHO.into()], focused: Some(ECHO.into()) })?;
@@ -934,22 +974,72 @@ fn noisy_text(bytes: usize, seed: u64) -> String {
 }
 
 /// Keystrokes typed while large backend replies stream to the client over a
-/// throttled link: each echo waits for at most the reply being written, never
-/// for every reply queued before it (one FIFO made it wait for all of them).
+/// throttled link that buffers like a tunnel: each echo waits for at most the
+/// bulk the service lets be in flight and the reply being written, never for
+/// every reply queued before it (one FIFO made it wait for all of them, the
+/// tunnel's buffer for a window of them). Then the same for a client that
+/// does not acknowledge (an older build): the stopgap pacing lets the echoes
+/// after its first keystroke through once the tunnel drained.
 fn echo_behind_replies(typist: &mut Typist, proxy: &Proxy, root: &Path) -> Result<String> {
     const RATE: u64 = 1 << 20;
-    const REPLIES: usize = 32;
-    const SIZE: usize = 256 << 10;
+    let (times, last, streamed) = echoes_while_replies_stream(typist, proxy, root, RATE)?;
+    let worst = times.iter().copied().max().unwrap_or_default();
+    // Behind one FIFO the first echo would have waited for every reply
+    // (`last`); behind the tunnel's buffer, for a window of them (about 1 s at
+    // 1 MB/s). With flow control what is left is the bulk the service lets be
+    // in flight (about 150 ms of the link) and the reply being written.
+    anyhow::ensure!(
+        worst < Duration::from_secs(1) && worst * 2 < last,
+        "a keystroke's echo took {:.2} s while {REPLIES} replies streamed for {:.2} s ({:?})",
+        worst.as_secs_f64(),
+        last.as_secs_f64(),
+        times
+    );
+    let mut older = Typist::connect_as(typist.target.clone(), false)?;
+    older.pump(Duration::from_millis(300))?;
+    let (old_times, old_last, _) = echoes_while_replies_stream(&mut older, proxy, root, RATE)?;
+    // Its first echoes wait behind what the tunnel took before it typed; once
+    // it typed, bulk leaves at the stopgap's rate and the tunnel drains.
+    let settled = old_times.iter().rev().take(2).copied().max().unwrap_or_default();
+    anyhow::ensure!(
+        settled < Duration::from_secs(1),
+        "a client without acknowledgements still waited {:.2} s for an echo once it typed, while replies streamed for {:.2} s ({:?})",
+        settled.as_secs_f64(),
+        old_last.as_secs_f64(),
+        old_times
+    );
+    let ms = |times: &[Duration]| times.iter().map(|t| format!("{:.0}", t.as_secs_f64() * 1000.0)).collect::<Vec<_>>().join(", ");
+    Ok(format!(
+        "    {REPLIES} replies of {} KB ({} KB on the wire at {} KB/s, through a tunnel that buffers 1 MB) took {:.2} s to arrive; meanwhile 6 keystrokes echoed in {:.0} ms at worst ({}); a client without acknowledgements (stopgap pacing): {} ms",
+        SIZE >> 10,
+        streamed >> 10,
+        RATE >> 10,
+        last.as_secs_f64(),
+        worst.as_secs_f64() * 1000.0,
+        ms(&times),
+        ms(&old_times)
+    ))
+}
+
+const REPLIES: usize = 32;
+const SIZE: usize = 256 << 10;
+
+/// Asks for [`REPLIES`] replies of [`SIZE`] at once over a link of `rate`
+/// bytes per second and types 6 keys meanwhile. Returns each echo's time,
+/// when the last reply arrived and the bytes that went down.
+fn echoes_while_replies_stream(typist: &mut Typist, proxy: &Proxy, root: &Path, rate: u64) -> Result<(Vec<Duration>, Duration, u64)> {
     // Each reply different: the connection's zstd stream would shrink repeats to nothing.
     let mut paths = Vec::new();
     for index in 0..REPLIES {
         let path = root.join(format!("large-reply-{index}.txt"));
-        std::fs::write(&path, noisy_text(SIZE, index as u64 + 1))?;
+        if !path.exists() {
+            std::fs::write(&path, noisy_text(SIZE, index as u64 + 1))?;
+        }
         paths.push(path.to_string_lossy().into_owned());
     }
     // Settled first: nothing else in flight.
     typist.pump(Duration::from_millis(300))?;
-    proxy.set_rates(RATE, 0);
+    proxy.set_rates(rate, 0);
     let down_before = proxy.shared.bytes_down.load(Ordering::Relaxed);
     let started = Instant::now();
     let calls: Vec<_> = paths
@@ -974,26 +1064,7 @@ fn echo_behind_replies(typist: &mut Typist, proxy: &Proxy, root: &Path) -> Resul
     }
     proxy.set_rates(0, 0);
     let streamed = proxy.shared.bytes_down.load(Ordering::Relaxed) - down_before;
-    let worst = times.iter().copied().max().unwrap_or_default();
-    // Behind one FIFO the first echo would have waited for every reply (`last`).
-    // What is left: the reply being written, and what the system buffers on
-    // the way (the service's send buffer, the proxy's receive buffer).
-    anyhow::ensure!(
-        worst < Duration::from_secs(2) && worst * 2 < last,
-        "a keystroke's echo took {:.2} s while {REPLIES} replies streamed for {:.2} s ({:?})",
-        worst.as_secs_f64(),
-        last.as_secs_f64(),
-        times
-    );
-    Ok(format!(
-        "    {REPLIES} replies of {} KB ({} KB on the wire at {} KB/s) took {:.2} s to arrive; meanwhile 6 keystrokes echoed in {:.0} ms at worst ({})",
-        SIZE >> 10,
-        streamed >> 10,
-        RATE >> 10,
-        last.as_secs_f64(),
-        worst.as_secs_f64() * 1000.0,
-        times.iter().map(|t| format!("{:.0}", t.as_secs_f64() * 1000.0)).collect::<Vec<_>>().join(", ")
-    ))
+    Ok((times, last, streamed))
 }
 
 /// One message larger than the uplink carries in the silence timeout (an

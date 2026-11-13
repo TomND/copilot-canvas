@@ -49,6 +49,26 @@ pub const CAP_TUNNEL_ACCESS: u32 = 1 << 5;
 /// the role comes from the satellite's credential in the handshake, and a
 /// satellite connection without the bit is closed.
 pub const CAP_SATELLITE: u32 = 1 << 6;
+/// The client reads `ServiceMsg::Caps` and, when the service announces
+/// [`SERVICE_ACKS`] there, acknowledges the bytes it read with
+/// `ClientMsg::Received` (flow control across a tunnel that buffers: the
+/// service keeps what is not acknowledged within a small window, so its
+/// lanes, not the tunnel's buffer, decide what an echo waits behind). Older
+/// services ignore the bit and never send `Caps`, so the client never acks.
+pub const CAP_ACK: u32 = 1 << 7;
+/// The connection only carries backend requests (the client's short-lived
+/// upload connection): the service sends it `Ready8` and its answers, and
+/// never the connect snapshot, broadcasts or frames; it gets no input
+/// session. Older services ignore the bit and serve it as a whole client.
+pub const CAP_REQUESTS_ONLY: u32 = 1 << 8;
+
+/// `ServiceMsg::Caps::bits`: the service reads `ClientMsg::Received` and
+/// paces what it sends by it; a `CAP_ACK` client acknowledges from the frame
+/// after `Caps` on.
+pub const SERVICE_ACKS: u64 = 1;
+/// `ServiceMsg::Caps::bits`: the service serves `CAP_REQUESTS_ONLY`
+/// connections as such.
+pub const SERVICE_REQUESTS_ONLY: u64 = 1 << 1;
 
 /// `ServiceMsg::Image::format`: raw RGBA rows.
 pub const IMAGE_RGBA: u8 = 0;
@@ -144,6 +164,11 @@ pub enum ClientMsg {
     /// Protocol 8, satellites only: a message of the satellite link
     /// (`crate::sat`); the hub refuses it from any other connection.
     Sat(Box<crate::sat::SatUp>),
+    /// Protocol 8, `CAP_ACK`: the bytes (frames on the wire: length headers
+    /// and bodies as sent, compressed or not) this client read since
+    /// `ServiceMsg::Caps`, in all. Sent only to a service whose `Caps`
+    /// announced `SERVICE_ACKS` (an older service cannot decode it).
+    Received { bytes: u64 },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -305,6 +330,9 @@ pub enum ServiceMsg {
     /// Protocol 8, `CAP_SATELLITE`: a message of the satellite link
     /// (`crate::sat`), only to the satellite connection it is for.
     Sat(Box<crate::sat::SatDown>),
+    /// Protocol 8, `CAP_ACK`: what this service does (`SERVICE_*` bits),
+    /// sent once right after `Ready8`. Older services never send it.
+    Caps { bits: u64 },
 }
 
 /// Where an image is drawn in a terminal's viewport (`ServiceMsg::Placements`).
@@ -359,6 +387,7 @@ impl ServiceMsg {
             | ServiceMsg::Reports { .. }
             | ServiceMsg::TunnelAccess { .. }
             | ServiceMsg::Sat(_)
+            | ServiceMsg::Caps { .. }
                 if protocol < 8 =>
             {
                 None
@@ -370,8 +399,9 @@ impl ServiceMsg {
     /// [`ServiceMsg::shaped`] for a client with `caps` (`CAP_*`): images go
     /// only to clients with `CAP_IMAGES`, notifications only to clients with
     /// `CAP_NOTIFY`, the reports inbox only to clients with `CAP_REPORTS`,
-    /// satellite messages only to satellites (`CAP_SATELLITE`) (a protocol-8
-    /// client of an older build cannot decode them).
+    /// satellite messages only to satellites (`CAP_SATELLITE`), `Caps` only to
+    /// clients that read it (`CAP_ACK`) (a protocol-8 client of an older build
+    /// cannot decode them).
     pub fn shaped_for(self, protocol: u32, caps: u32) -> Option<ServiceMsg> {
         match &self {
             ServiceMsg::Image { .. } | ServiceMsg::Placements { .. } if caps & CAP_IMAGES == 0 => None,
@@ -379,6 +409,7 @@ impl ServiceMsg {
             ServiceMsg::Reports { .. } if caps & CAP_REPORTS == 0 => None,
             ServiceMsg::TunnelAccess { .. } if caps & CAP_TUNNEL_ACCESS == 0 => None,
             ServiceMsg::Sat(_) if caps & CAP_SATELLITE == 0 => None,
+            ServiceMsg::Caps { .. } if caps & CAP_ACK == 0 => None,
             _ => self.shaped(protocol, caps & CAP_FRAME8 != 0),
         }
     }
@@ -887,6 +918,7 @@ pub(crate) mod tests {
             (27, ClientMsg::Claim { id: "t".into() }),
             (28, ClientMsg::PushRegister { token: "ab".repeat(32), environment: "sandbox".into(), bundle: "com.x".into(), label: "work".into() }),
             (29, ClientMsg::Sat(Box::new(crate::sat::SatUp::InputAck { term: "t".into(), generation: 1, seq: 2 }))),
+            (30, ClientMsg::Received { bytes: 1 << 40 }),
         ];
         for (index, message) in client {
             let bytes = postcard::to_stdvec(&message).unwrap();
@@ -912,6 +944,7 @@ pub(crate) mod tests {
             (27, ServiceMsg::Reports { json: "{\"version\":1}".into() }),
             (28, ServiceMsg::TunnelAccess { url: "wss://atelier-47600.usw2.devtunnels.ms".into(), token: "eyJ.x.y".into(), expires_ms: 9 }),
             (29, ServiceMsg::Sat(Box::new(crate::sat::SatDown::Resync { term: "t".into(), generation: 1, have: 42 }))),
+            (30, ServiceMsg::Caps { bits: SERVICE_ACKS | SERVICE_REQUESTS_ONLY }),
         ];
         for (index, message) in service {
             let bytes = postcard::to_stdvec(&message).unwrap();
@@ -946,6 +979,7 @@ pub(crate) mod tests {
             ServiceMsg::Reports { json: "{}".into() },
             ServiceMsg::TunnelAccess { url: String::new(), token: "t".into(), expires_ms: 1 },
             ServiceMsg::Sat(Box::new(crate::sat::SatDown::Welcome { json: "{}".into() })),
+            ServiceMsg::Caps { bits: SERVICE_ACKS },
         ];
         for message in all.clone() {
             let Some(shaped) = message.shaped(7, true) else { continue };
@@ -1041,6 +1075,21 @@ pub(crate) mod tests {
         // The bit changes nothing else a connection gets.
         assert!(matches!(ServiceMsg::Frame8(sample_frame8()).shaped_for(8, CAP_SATELLITE), Some(ServiceMsg::Frame(_))));
         assert_eq!(ServiceMsg::Reports { json: "{}".into() }.shaped_for(8, CAP_SATELLITE), None);
+    }
+
+    #[test]
+    fn caps_reach_only_clients_that_acknowledge() {
+        let caps = ServiceMsg::Caps { bits: SERVICE_ACKS };
+        // Older clients (v0.3.0, 707411c) never set the bit: they never get it.
+        let older = CAP_FRAME8 | CAP_COMPRESS | CAP_IMAGES | CAP_NOTIFY | CAP_REPORTS | CAP_TUNNEL_ACCESS;
+        assert_eq!(caps.clone().shaped_for(8, older), None);
+        assert_eq!(caps.clone().shaped_for(8, older | CAP_REQUESTS_ONLY), None);
+        assert_eq!(caps.clone().shaped_for(7, CAP_ACK), None, "protocol 7");
+        assert_eq!(caps.clone().shaped_for(8, older | CAP_ACK).as_ref(), Some(&caps));
+        // The new bits mean nothing to an older service: ClientInfo is unchanged on the wire.
+        let info = ClientInfo { name: "gui".into(), caps: older | CAP_ACK | CAP_REQUESTS_ONLY, session: vec![1; 16], remote_id: None };
+        let bytes = postcard::to_stdvec(&info).unwrap();
+        assert_eq!(postcard::from_bytes::<ClientInfo>(&bytes).unwrap(), info);
     }
 
     #[test]
