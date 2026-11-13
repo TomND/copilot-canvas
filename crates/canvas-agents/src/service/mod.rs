@@ -150,7 +150,12 @@ fn skills_stamp(dirs: &[String]) -> u64 {
 struct CachedPlugin {
     stamp: u64,
     made: canvas_model::skills::GroupPlugin,
+    /// When a launch last took it (the least recently used go beyond `MAX_CACHED_PLUGINS`).
+    used_ms: u64,
 }
+
+/// Group skill plugins kept for later launches, at most.
+const MAX_CACHED_PLUGINS: usize = 16;
 
 /// The group skill plugin to remove when terminal `id` (started at
 /// `started`, when known) exits: the one registered for it, unless it was
@@ -631,16 +636,25 @@ impl Agents {
         names.sort();
         let key = format!("{}\u{1f}{}\u{1f}{}", skills.group, skills.dirs.join("\u{1e}"), names.iter().map(|n| n.as_str()).collect::<Vec<_>>().join("\u{1e}"));
         let stamp = skills_stamp(&skills.dirs);
-        if let Some(cached) = lock(&self.skill_cache).get(&key).filter(|c| c.stamp == stamp && c.made.dir.as_ref().is_none_or(|d| d.is_dir())) {
+        if let Some(cached) = lock(&self.skill_cache).get_mut(&key).filter(|c| c.stamp == stamp && c.made.dir.as_ref().is_none_or(|d| d.is_dir())) {
+            cached.used_ms = now_ms();
             return (cached.made.dir.clone(), group_skill_line(id, skills, &cached.made, ", unchanged since an earlier launch"));
         }
         let launch_key = format!("{}-{id}", self.group_plugin_seq.fetch_add(1, Ordering::Relaxed));
         match canvas_model::skills::prepare_group_plugin(root, &skills.group, &launch_key, &skills.dirs, &native) {
             Ok(made) => {
                 let line = group_skill_line(id, skills, &made, "");
-                let old = lock(&self.skill_cache).insert(key, CachedPlugin { stamp, made: made.clone() });
-                if let Some(old) = old.and_then(|o| o.made.dir).filter(|d| Some(d) != made.dir.as_ref()) {
-                    self.release_group_plugin(root, &old);
+                let mut gone: Vec<PathBuf> = Vec::new();
+                {
+                    let mut cache = lock(&self.skill_cache);
+                    gone.extend(cache.insert(key, CachedPlugin { stamp, made: made.clone(), used_ms: now_ms() }).and_then(|o| o.made.dir));
+                    while cache.len() > MAX_CACHED_PLUGINS {
+                        let Some(oldest) = cache.iter().min_by_key(|(_, c)| c.used_ms).map(|(k, _)| k.clone()) else { break };
+                        gone.extend(cache.remove(&oldest).and_then(|o| o.made.dir));
+                    }
+                }
+                for old in gone.iter().filter(|d| Some(*d) != made.dir.as_ref()) {
+                    self.release_group_plugin(root, old);
                 }
                 (made.dir, line)
             }
@@ -1893,6 +1907,22 @@ mod tests {
         assert_eq!(texts[3], "already running in another terminal (copilot.exe pid 32, not started by Atelier): use that terminal");
         // Every one keeps the words clients recognise as "open elsewhere" (↗).
         assert!(texts.iter().all(|t| t.starts_with("already running")));
+    }
+
+    #[test]
+    fn the_skill_folders_stamp_moves_only_when_they_change() {
+        let root = std::env::temp_dir().join(format!("cc-skills-stamp-{}", uuid::Uuid::new_v4()));
+        let skill = root.join("team").join("review");
+        std::fs::create_dir_all(skill.join("scripts")).unwrap();
+        std::fs::write(skill.join("SKILL.md"), "---\nname: review\n---\n").unwrap();
+        std::fs::write(skill.join("scripts").join("run.sh"), "echo 1").unwrap();
+        let dirs = vec![root.join("team").display().to_string()];
+        let first = skills_stamp(&dirs);
+        assert_eq!(skills_stamp(&dirs), first, "unchanged: the plugin built before is reused");
+        // A file deep inside changes: built again.
+        std::fs::write(skill.join("scripts").join("run.sh"), "echo 22").unwrap();
+        assert_ne!(skills_stamp(&dirs), first);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
