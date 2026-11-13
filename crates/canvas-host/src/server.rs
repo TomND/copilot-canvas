@@ -385,6 +385,11 @@ pub struct Host {
     priority_wake: Sender<()>,
     bytes: Arc<AtomicU64>,
     frames: AtomicU64,
+    /// When the frame pump last began a pass (ms; for [`Health::pump_ms`]).
+    pump_ms: AtomicU64,
+    /// Tests: the pump's next pass panics.
+    #[cfg(test)]
+    pump_panic: AtomicBool,
     last_activity: Mutex<Instant>,
     started: Instant,
     pub shutting_down: AtomicBool,
@@ -678,6 +683,9 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
         priority_wake: prio_tx,
         bytes: Arc::new(AtomicU64::new(0)),
         frames: AtomicU64::new(0),
+        pump_ms: AtomicU64::new(0),
+        #[cfg(test)]
+        pump_panic: AtomicBool::new(false),
         last_activity: Mutex::new(Instant::now()),
         started: Instant::now(),
         shutting_down: AtomicBool::new(false),
@@ -1990,7 +1998,18 @@ pub struct Health {
     /// load, a request; the client's later slow messages wait): (client, since ms).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub working: Vec<(u64, u64)>,
+    /// When the frame pump last began a pass (ms; it passes at least every
+    /// 50 ms; 0: an older service). Long ago: no terminal shows new output.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pump_ms: u64,
 }
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+/// The pump not having run for this long (ms, by the health file's clock) is a wedge sign.
+pub const PUMP_STUCK_MS: u64 = 10_000;
 
 /// How often the health file is written.
 pub const HEALTH_EVERY: Duration = Duration::from_secs(2);
@@ -2026,6 +2045,9 @@ pub fn wedge_signs(health: Option<&Health>, terms: &[crate::protocol::TermInfo],
         for (client, since) in health.working.iter().filter(|(_, since)| now.saturating_sub(*since) > WORK_STUCK_MS) {
             signs.push(format!("a message of client {client} has been handled for {} s (its later requests wait)", age(*since)));
         }
+        if health.pump_ms != 0 && health.updated_ms.saturating_sub(health.pump_ms) > PUMP_STUCK_MS {
+            signs.push(format!("its frame pump had not run for {} s when the health file was written (terminals show no new output)", health.updated_ms.saturating_sub(health.pump_ms) / 1000));
+        }
     }
     for term in terms.iter().filter(|t| t.alive && t.last_output_ms == 0 && now.saturating_sub(t.started_ms) > QUIET_AFTER_MS) {
         signs.push(format!("terminal {} (pid {}) printed nothing in the {} s since its launch", term.id, term.pid, age(term.started_ms)));
@@ -2051,6 +2073,7 @@ fn health_loop(host: Arc<Host>) {
             pending_closes: lock(&host.closing).iter().map(|(id, since)| (*id, *since)).collect(),
             launching: lock(&host.launching).iter().map(|(id, since)| (id.clone(), *since)).collect(),
             working: clients.iter().filter_map(|c| Some((c.id, c.work_since.load(Ordering::Acquire))).filter(|(_, since)| *since != 0)).collect(),
+            pump_ms: host.pump_ms.load(Ordering::Relaxed),
         };
         if let Ok(text) = serde_json::to_string(&health) {
             // Replaced whole: a reader never sees half a file.
@@ -2326,52 +2349,92 @@ struct Answer {
 /// (one waits per tile at most; remote tiles are paced from that write),
 /// focused tiles first.
 fn pump(host: Arc<Host>, wake: Receiver<()>) {
-    let mut asks: HashMap<String, Ask> = HashMap::new();
-    // When each terminal was last asked: at most every FRAME_INTERVAL.
-    let mut asked_at: HashMap<String, Instant> = HashMap::new();
-    let mut due: Option<Instant> = None;
+    let mut state = PumpState::default();
+    let mut logged: Option<Instant> = None;
     loop {
-        let poll = Instant::now() + PUMP_POLL;
-        wait_for_work(&wake, &asks, due.map_or(poll, |d| d.min(poll)));
-        while wake.try_recv().is_ok() {}
-        let mut answers: HashMap<String, Answer> = HashMap::new();
-        asks.retain(|id, ask| match ask.reply.try_recv() {
-            Ok(mut snapshot) => {
-                let images = std::mem::take(&mut snapshot.images);
-                let hashes = snapshot.lines.iter().map(|row| row_hash8(row, &snapshot.links)).collect();
-                answers.insert(id.clone(), Answer { terminal: ask.terminal.clone(), snapshot, images, hashes, generation: ask.generation });
-                false
+        host.pump_ms.store(now_ms(), Ordering::Relaxed);
+        // A panic in one pass must not end every tile's frames silently (S3-13):
+        // the pass is dropped, what it asked for is asked again.
+        let pass = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pump_pass(&host, &wake, &mut state)));
+        if let Err(panic) = pass {
+            state = PumpState::default();
+            if logged.is_none_or(|at| at.elapsed() >= Duration::from_secs(60)) {
+                logged = Some(Instant::now());
+                log(&host.instance, &format!("the frame pump recovered from a panic: {}", panic_text(&panic)));
             }
-            Err(TryRecvError::Empty) => true,
-            Err(TryRecvError::Disconnected) => false,
-        });
-        due = None;
-        let mut wanted: HashMap<String, (Arc<Terminal>, u64)> = HashMap::new();
-        let clients: Vec<Arc<Client>> = lock(&host.clients).values().cloned().collect();
-        for focused in [true, false] {
-            for client in &clients {
-                if let Some(at) = pump_client(&host, client, focused, &answers, &asks, &mut wanted) {
-                    due = sooner(due, at);
-                }
-            }
+            std::thread::sleep(PUMP_POLL);
         }
-        let now = Instant::now();
-        for (id, (terminal, generation)) in wanted {
-            if let Some(next) = asked_at.get(&id).map(|at| *at + FRAME_INTERVAL).filter(|next| *next > now) {
-                due = sooner(due, next);
-                continue;
-            }
-            match terminal.ask_snapshot() {
-                Some(reply) => {
-                    asked_at.insert(id.clone(), now);
-                    asks.insert(id, Ask { terminal, reply, generation });
-                }
-                // Its control queue is full (a busy engine) or it stopped: asked again later.
-                None => due = sooner(due, now + PUMP_POLL),
-            }
-        }
-        asked_at.retain(|id, at| asks.contains_key(id) || now.saturating_duration_since(*at) < Duration::from_secs(1));
     }
+}
+
+/// What a panic said.
+fn panic_text(panic: &Box<dyn std::any::Any + Send>) -> String {
+    panic.downcast_ref::<&str>().map(|s| (*s).to_owned()).or_else(|| panic.downcast_ref::<String>().cloned()).unwrap_or_else(|| "(no message)".into())
+}
+
+/// Runs `body`; a panic in it is logged (with `what`) instead of ending the caller's loop.
+fn contained(host: &Host, what: &str, body: impl FnOnce()) {
+    if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+        log(&host.instance, &format!("{what} recovered from a panic: {}", panic_text(&panic)));
+    }
+}
+
+/// The pump's state between passes.
+#[derive(Default)]
+struct PumpState {
+    asks: HashMap<String, Ask>,
+    /// When each terminal was last asked: at most every FRAME_INTERVAL.
+    asked_at: HashMap<String, Instant>,
+    due: Option<Instant>,
+}
+
+/// One pass of the pump.
+fn pump_pass(host: &Arc<Host>, wake: &Receiver<()>, state: &mut PumpState) {
+    let PumpState { asks, asked_at, due } = state;
+    let poll = Instant::now() + PUMP_POLL;
+    wait_for_work(wake, asks, due.map_or(poll, |d| d.min(poll)));
+    while wake.try_recv().is_ok() {}
+    #[cfg(test)]
+    if host.pump_panic.swap(false, Ordering::AcqRel) {
+        panic!("a test made the pump panic");
+    }
+    let mut answers: HashMap<String, Answer> = HashMap::new();
+    asks.retain(|id, ask| match ask.reply.try_recv() {
+        Ok(mut snapshot) => {
+            let images = std::mem::take(&mut snapshot.images);
+            let hashes = snapshot.lines.iter().map(|row| row_hash8(row, &snapshot.links)).collect();
+            answers.insert(id.clone(), Answer { terminal: ask.terminal.clone(), snapshot, images, hashes, generation: ask.generation });
+            false
+        }
+        Err(TryRecvError::Empty) => true,
+        Err(TryRecvError::Disconnected) => false,
+    });
+    *due = None;
+    let mut wanted: HashMap<String, (Arc<Terminal>, u64)> = HashMap::new();
+    let clients: Vec<Arc<Client>> = lock(&host.clients).values().cloned().collect();
+    for focused in [true, false] {
+        for client in &clients {
+            if let Some(at) = pump_client(host, client, focused, &answers, asks, &mut wanted) {
+                *due = sooner(*due, at);
+            }
+        }
+    }
+    let now = Instant::now();
+    for (id, (terminal, generation)) in wanted {
+        if let Some(next) = asked_at.get(&id).map(|at| *at + FRAME_INTERVAL).filter(|next| *next > now) {
+            *due = sooner(*due, next);
+            continue;
+        }
+        match terminal.ask_snapshot() {
+            Some(reply) => {
+                asked_at.insert(id.clone(), now);
+                asks.insert(id, Ask { terminal, reply, generation });
+            }
+            // Its control queue is full (a busy engine) or it stopped: asked again later.
+            None => *due = sooner(*due, now + PUMP_POLL),
+        }
+    }
+    asked_at.retain(|id, at| asks.contains_key(id) || now.saturating_duration_since(*at) < Duration::from_secs(1));
 }
 
 /// Waits until the pump is woken, a screen it asked for arrives, or `until`.
@@ -2689,28 +2752,33 @@ pub fn sweep_orphans(instance: &Instance) -> usize {
 
 fn exit_loop(host: Arc<Host>, exited: Receiver<String>) {
     for id in exited {
-        // Not holding `terms` while broadcasting (lock order: clients before terms).
-        let terminal = lock(&host.terms).get(&id).cloned();
-        if let Some(terminal) = terminal {
-            let (code, raw) = (*lock(&terminal.exit_code), *lock(&terminal.raw_exit_code));
-            let note = match (raw != code, terminal.was_forced()) {
-                (_, true) if terminal.ui_quit_lingered() => format!(" (stopped; its UI quit on request, process code {} ended 3 s later)", raw.unwrap_or_default()),
-                (_, true) => format!(" (stopped; process code {}, killed after the grace period)", raw.unwrap_or_default()),
-                (true, false) => format!(" (stopped; process code {})", raw.unwrap_or_default()),
-                (false, false) => String::new(),
-            };
-            log(&host.instance, &format!("terminal {id} exited with {code:?}{note}"));
-            // A relaunch meanwhile told every client about the new run already:
-            // the end of this one must not overwrite it (checked and queued
-            // under the client list's lock: no relaunch falls in between).
-            host.tell_terms(|terms| match terms.get(&id).is_some_and(|t| Arc::ptr_eq(t, &terminal)) {
-                true => ((), vec![ServiceMsg::Terminals(vec![terminal.info()])]),
-                false => ((), Vec::new()),
-            });
-        }
-        host.app().terminals_changed();
-        host.app().terminal_exited(&id);
+        contained(&host, "the exit loop", || exited_one(&host, &id));
     }
+}
+
+/// A terminal's program exited: logged, and every client told (unless it was relaunched meanwhile).
+fn exited_one(host: &Arc<Host>, id: &str) {
+    // Not holding `terms` while broadcasting (lock order: clients before terms).
+    let terminal = lock(&host.terms).get(id).cloned();
+    if let Some(terminal) = terminal {
+        let (code, raw) = (*lock(&terminal.exit_code), *lock(&terminal.raw_exit_code));
+        let note = match (raw != code, terminal.was_forced()) {
+            (_, true) if terminal.ui_quit_lingered() => format!(" (stopped; its UI quit on request, process code {} ended 3 s later)", raw.unwrap_or_default()),
+            (_, true) => format!(" (stopped; process code {}, killed after the grace period)", raw.unwrap_or_default()),
+            (true, false) => format!(" (stopped; process code {})", raw.unwrap_or_default()),
+            (false, false) => String::new(),
+        };
+        log(&host.instance, &format!("terminal {id} exited with {code:?}{note}"));
+        // A relaunch meanwhile told every client about the new run already:
+        // the end of this one must not overwrite it (checked and queued
+        // under the client list's lock: no relaunch falls in between).
+        host.tell_terms(|terms| match terms.get(id).is_some_and(|t| Arc::ptr_eq(t, &terminal)) {
+            true => ((), vec![ServiceMsg::Terminals(vec![terminal.info()])]),
+            false => ((), Vec::new()),
+        });
+    }
+    host.app().terminals_changed();
+    host.app().terminal_exited(id);
 }
 
 /// Delivers programs' desktop notifications to the clients that show them.
@@ -2727,9 +2795,11 @@ fn change_loop(host: Arc<Host>, changed: Receiver<String>) {
         std::thread::sleep(Duration::from_millis(100));
         let mut ids = HashSet::from([first]);
         ids.extend(changed.try_iter());
-        host.tell_terms(|terms| {
-            let infos: Vec<crate::protocol::TermInfo> = ids.iter().filter_map(|id| terms.get(id).map(|t| t.info())).collect();
-            ((), if infos.is_empty() { Vec::new() } else { vec![ServiceMsg::Terminals(infos)] })
+        contained(&host, "the change loop", || {
+            host.tell_terms(|terms| {
+                let infos: Vec<crate::protocol::TermInfo> = ids.iter().filter_map(|id| terms.get(id).map(|t| t.info())).collect();
+                ((), if infos.is_empty() { Vec::new() } else { vec![ServiceMsg::Terminals(infos)] })
+            });
         });
     }
 }
@@ -2926,6 +2996,7 @@ mod tests {
             pending_closes: vec![(26, now - 20_000), (27, now - 1_000)],
             launching: vec![("slow".into(), now - 45_000), ("now".into(), now - 2_000)],
             working: vec![(31, now - 40_000), (32, now - 3_000)],
+            pump_ms: now - 1_050,
         };
         let signs = wedge_signs(Some(&fresh), &terms, now);
         assert_eq!(signs.len(), 4, "{signs:?}");
@@ -2935,6 +3006,11 @@ mod tests {
         assert!(signs[3].starts_with("terminal quiet (pid 7) printed nothing in the 40 s"), "{signs:?}");
         let stale = Health { updated_ms: now - 60_000, ..Health::default() };
         assert!(wedge_signs(Some(&stale), &[], now)[0].contains("last written 60 s ago"));
+        // A frame pump that stopped passing (S3-13); 0: an older service that does not say.
+        let pump = Health { updated_ms: now - 1_000, pump_ms: now - 31_000, ..Health::default() };
+        assert_eq!(wedge_signs(Some(&pump), &[], now), ["its frame pump had not run for 30 s when the health file was written (terminals show no new output)"]);
+        let older: Health = serde_json::from_str(r#"{"pid":1,"updated_ms":999000}"#).unwrap();
+        assert!(wedge_signs(Some(&older), &[], now).is_empty());
         assert!(wedge_signs(None, &terms[1..], now).is_empty(), "an older service without a health file: only the terminals count");
     }
 
@@ -3585,6 +3661,37 @@ mod tests {
         assert!(sessions.len() <= MAX_INPUT_SESSIONS, "{}", sessions.len());
         drop(sessions);
         closer.close();
+    }
+
+    /// A program that prints a line every 100 ms for a minute.
+    fn ticking_program() -> LaunchKind {
+        #[cfg(windows)]
+        return LaunchKind::Command { program: "cmd.exe".into(), args: vec!["/c".into(), "for /l %i in (1,1,600) do @(echo tick %i & ping -n 1 -w 100 10.255.255.1 >nul)".into()] };
+        #[cfg(not(windows))]
+        LaunchKind::Command { program: "/bin/sh".into(), args: vec!["-c".into(), "i=0; while [ $i -lt 600 ]; do echo tick $i; i=$((i+1)); sleep 0.1; done".into()] }
+    }
+
+    #[test]
+    fn the_frame_pump_survives_a_panic_and_says_when_it_last_ran() {
+        let (instance, addr, host) = slow_service("pump", Duration::ZERO, Duration::ZERO);
+        let (rx, mut writer, closer) = test_client(&instance, addr, "pump-client");
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        host.launch("p", ticking_program(), &cwd, 80, 24).unwrap();
+        writer.send(&ClientMsg::Subscribe8 { ids: vec!["p".into()], focused: Some("p".into()) }).unwrap();
+        expect(&rx, Duration::from_secs(5), "frames of the ticking terminal", |m| matches!(m, ServiceMsg::Frame8(f) if f.id == "p"));
+        host.pump_panic.store(true, Ordering::Release);
+        eventually(Duration::from_secs(5), "the pump's next pass panics", || !host.pump_panic.load(Ordering::Acquire));
+        while rx.try_recv().is_ok() {}
+        // Frames go on after the panic (S3-13).
+        expect(&rx, Duration::from_secs(5), "frames after the pump's panic", |m| matches!(m, ServiceMsg::Frame8(f) if f.id == "p"));
+        eventually(Duration::from_secs(5), "the panic is logged", || std::fs::read_to_string(instance.log_path()).unwrap_or_default().contains("the frame pump recovered from a panic: a test made the pump panic"));
+        // The health file says when it last ran: just now.
+        std::thread::sleep(HEALTH_EVERY + Duration::from_millis(300));
+        let health = read_health(&instance).expect("the health file");
+        assert!(health.pump_ms != 0 && health.updated_ms.saturating_sub(health.pump_ms) < 1_000, "{health:?}");
+        assert!(wedge_signs(Some(&health), &[], health.updated_ms).is_empty());
+        closer.close();
+        let _ = host.terminal("p").map(|t| t.stop(true));
     }
 
     /// A backend that answers every `Rpc` at once with a reply of `.0` bytes (bulk).
