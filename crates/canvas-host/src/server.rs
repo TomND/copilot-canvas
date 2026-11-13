@@ -34,13 +34,15 @@ use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded, unbounded};
+use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded, unbounded};
 
 use crate::emulator::{Engine, Snapshot, SnapshotImage};
+use crate::outbox::{Next, Outbox, Push, Taken};
+pub use crate::outbox::Outgoing;
 use crate::paths::{Instance, build_id, now_ms};
 use canvas_sys::ipc::{Pipe, PipeServer};
 use crate::protocol::{self, CAP_COMPRESS, CAP_IMAGES, ClientMsg, Frame8, ImageRef, Input, LaunchKind, MAX_FRAME, PRE_AUTH_FRAME, Placement, Run8, ServiceMsg, ServiceStats};
@@ -62,10 +64,17 @@ pub const MAX_UNAUTHENTICATED: usize = 16;
 const IDLE_EXIT: Duration = Duration::from_secs(10 * 60);
 /// Client sessions remembered for input deduplication.
 const MAX_INPUT_SESSIONS: usize = 256;
-pub const CLIENT_QUEUE: usize = 1024;
+/// Messages a client's worker may have waiting; a reader with more to hand
+/// it waits (the client's own backpressure).
+const WORK_QUEUE: usize = 4096;
+/// A client worker busy with one message this long is a wedge sign.
+pub const WORK_STUCK_MS: u64 = 30_000;
 /// A remote client that takes none of the data written to it for this long
 /// is dropped (its writer never waits on it longer).
 pub const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+/// What the system buffers for sending to a remote client (`SO_SNDBUF`):
+/// the rest waits in the client's outbox, ordered by priority.
+const CLIENT_SEND_BUFFER: usize = 64 << 10;
 /// Bytes of image messages queued for one client at most; more wait.
 const IMAGE_BUDGET: usize = 32 << 20;
 /// When images left out for the budget are tried again.
@@ -150,6 +159,9 @@ pub struct SatelliteLink {
 /// What a client last received of one subscribed terminal.
 #[derive(Default)]
 struct Sub {
+    /// The terminal (one run of it) the frames came from: a relaunch under
+    /// the same id starts over with a full frame (its generations restart).
+    terminal: Weak<Terminal>,
     generation: u64,
     hashes: Vec<u64>,
     cols: u16,
@@ -159,8 +171,6 @@ struct Sub {
     shape: u8,
     blink: bool,
     modes: u32,
-    /// When the last frame went out (remote frames are coalesced).
-    sent_at: Option<Instant>,
     /// Image placements last sent (CAP_IMAGES).
     placements: Vec<Placement>,
     /// The placements the client was last sent (those whose image it has).
@@ -194,13 +204,6 @@ impl InputSession {
     }
 }
 
-/// A message waiting for a client's writer: an ordinary one, or an image
-/// whose PNG is shared by every client it is queued for.
-pub enum Outgoing {
-    Message(ServiceMsg),
-    Image { term: String, image_id: u32, width: u32, height: u32, png: Arc<[u8]> },
-}
-
 /// One connected client.
 pub struct Client {
     pub id: u64,
@@ -216,9 +219,8 @@ pub struct Client {
     pub websocket: bool,
     /// `CAP_*` bits from the handshake.
     caps: u32,
-    out: Sender<Outgoing>,
-    /// Bytes of image messages queued and not written yet.
-    image_bytes: Arc<AtomicUsize>,
+    /// What waits for the writer ([`crate::outbox`]).
+    outbox: Arc<Outbox>,
     subs: Mutex<HashMap<String, Sub>>,
     /// The focused tile (`Subscribe8`).
     focused: Mutex<Option<String>>,
@@ -227,10 +229,19 @@ pub struct Client {
     closer: Closer,
     /// Set once the service dropped this client ([`Host::drop_client`]).
     dropped: AtomicBool,
+    /// When its worker began the message it handles (ms; 0: idle).
+    work_since: AtomicU64,
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        // Its writer ends with it.
+        self.outbox.close();
+    }
 }
 
 impl Client {
-    fn new(id: u64, protocol: u32, remote: bool, caps: u32, out: Sender<Outgoing>, closer: Closer) -> Self {
+    fn new(id: u64, protocol: u32, remote: bool, caps: u32, outbox: Arc<Outbox>, closer: Closer) -> Self {
         Self {
             id,
             protocol,
@@ -239,51 +250,70 @@ impl Client {
             peer_pid: None,
             websocket: false,
             caps,
-            out,
-            image_bytes: Arc::default(),
+            outbox,
             subs: Mutex::new(HashMap::new()),
             focused: Mutex::new(None),
             session: None,
             liveness: (protocol >= 8).then(|| Arc::new(Liveness::standard())),
             closer,
             dropped: AtomicBool::new(false),
+            work_since: AtomicU64::new(0),
         }
     }
 
-    /// Queues a message in the shape this client reads; false when the client is gone.
+    /// Queues a message in the shape this client reads; false when the client
+    /// is gone. Nothing is dropped silently: state is coalesced, and a client
+    /// whose lanes overflow is dropped (it reconnects and gets everything again).
     pub fn send(&self, message: ServiceMsg) -> bool {
-        !matches!(self.try_send(message), Err(TrySendError::Disconnected(_)))
+        let Some(message) = message.shaped_for(self.protocol, self.caps) else { return !self.outbox.is_closed() };
+        match self.outbox.push(message) {
+            Push::Queued => true,
+            Push::Closed => false,
+            Push::Full => {
+                self.fell_behind();
+                false
+            }
+        }
     }
 
-    fn try_send(&self, message: ServiceMsg) -> Result<(), TrySendError<Outgoing>> {
-        match message.shaped_for(self.protocol, self.caps) {
-            Some(message) => self.out.try_send(Outgoing::Message(message)),
-            None => Ok(()),
+    /// A lane overflowed: the client is closed (its writer drops it and logs why, once).
+    fn fell_behind(&self) {
+        let id = self.id;
+        self.outbox.overflowed(|w| format!("client {id} fell behind ({} control, {} bulk message(s), about {} KB waiting); closing", w.control, w.bulk, w.bytes >> 10));
+        self.closer.close();
+    }
+
+    /// Queues the frame of a tile (one per tile waits at most).
+    fn send_frame(&self, tile: &str, frame: ServiceMsg) -> Push {
+        match frame.shaped_for(self.protocol, self.caps) {
+            Some(frame) => self.outbox.push_frame(tile, frame),
+            None => Push::Queued,
         }
     }
 
     /// Queues an encoded image (`CAP_IMAGES` clients) and counts it against the image budget.
-    fn try_send_image(&self, term: &str, image_id: u32, image: &EncodedImage) -> Result<(), TrySendError<Outgoing>> {
+    fn send_image(&self, term: &str, image_id: u32, image: &EncodedImage) -> Push {
         if self.protocol < 8 || self.caps & CAP_IMAGES == 0 {
-            return Ok(());
+            return Push::Queued;
         }
         let message = Outgoing::Image { term: term.to_owned(), image_id, width: image.width, height: image.height, png: image.png.clone() };
-        // Counted before it is queued: the writer may take it off at once.
-        self.image_bytes.fetch_add(image.png.len(), Ordering::AcqRel);
-        self.out.try_send(message).inspect_err(|_| {
-            self.image_bytes.fetch_sub(image.png.len(), Ordering::AcqRel);
-        })
+        self.outbox.push_image(message, image.png.len())
     }
 
     /// Whether an image of `len` bytes fits the image budget now (one image always fits an empty queue).
     fn image_fits(&self, len: usize) -> bool {
-        let queued = self.image_bytes.load(Ordering::Acquire);
+        let queued = self.outbox.image_bytes();
         queued == 0 || queued + len <= IMAGE_BUDGET
     }
 
     /// Ends the connection.
     pub fn close(&self) {
         self.closer.close();
+    }
+
+    /// Whether the service dropped this client (its replies go nowhere).
+    pub fn is_dropped(&self) -> bool {
+        self.dropped.load(Ordering::Acquire)
     }
 
     /// `CAP_*` bits from the handshake.
@@ -350,6 +380,15 @@ pub struct Host {
     app: OnceLock<Arc<dyn HostApp>>,
 }
 
+/// What a launch did ([`Host::start`]).
+enum Started {
+    New,
+    /// It was running already: its info now.
+    Running(crate::protocol::TermInfo),
+    /// Another launch of it is under way (it tells every client when it is done).
+    Launching,
+}
+
 /// A terminal id reserved by its launch until the launch is over.
 struct LaunchReservation<'a> {
     host: &'a Host,
@@ -407,9 +446,17 @@ const LOG_QUEUE: usize = 4096;
 const LOG_LIMIT: u64 = 4 * 1024 * 1024;
 
 /// Appends `bytes` to a log file, rotating it first when it is too large.
+/// When another program holds the log so it cannot be renamed (Windows),
+/// it is copied to `.log.old` and emptied instead.
 fn append_log(path: &std::path::Path, bytes: &[u8]) {
-    if std::fs::metadata(path).map(|m| m.len() > LOG_LIMIT).unwrap_or(false) {
-        let _ = std::fs::rename(path, path.with_extension("log.old"));
+    // After a rotation that failed both ways, the next try waits a minute (not every line).
+    static FAILED_AT: AtomicU64 = AtomicU64::new(0);
+    let failed_at = FAILED_AT.load(Ordering::Relaxed);
+    if (failed_at == 0 || now_ms().saturating_sub(failed_at) > 60_000) && std::fs::metadata(path).map(|m| m.len() > LOG_LIMIT).unwrap_or(false) {
+        let old = path.with_extension("log.old");
+        let rotated = std::fs::rename(path, &old).is_ok()
+            || (std::fs::copy(path, &old).is_ok() && std::fs::OpenOptions::new().write(true).open(path).and_then(|file| file.set_len(0)).is_ok());
+        FAILED_AT.store(if rotated { 0 } else { now_ms() }, Ordering::Relaxed);
     }
     if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         let _ = file.write_all(bytes);
@@ -793,11 +840,13 @@ impl Host {
         if client.dropped.swap(true, Ordering::AcqRel) {
             return;
         }
+        lock(&self.closing).insert(client.id, now_ms());
+        client.closer.close();
+        client.outbox.close();
+        // Logged once closed: a slow log never delays the close.
         if let Some(why) = why {
             log(&self.instance, why);
         }
-        lock(&self.closing).insert(client.id, now_ms());
-        client.closer.close();
         let removed = {
             let mut clients = lock(&self.clients);
             match clients.get(&client.id) {
@@ -849,15 +898,23 @@ impl Host {
     /// caller shows the one terminal there is. The id is reserved under one
     /// lock before anything is resolved or spawned.
     pub fn launch(&self, id: &str, kind: LaunchKind, cwd: &str, cols: u16, rows: u16) -> Result<()> {
+        self.start(id, kind, cwd, cols, rows).map(|_| ())
+    }
+
+    /// [`Host::launch`], saying whether it started the terminal.
+    fn start(&self, id: &str, kind: LaunchKind, cwd: &str, cols: u16, rows: u16) -> Result<Started> {
         anyhow::ensure!(!id.is_empty() && id.len() <= 100, "invalid terminal id");
-        let Some(_reservation) = self.reserve_launch(id) else { return Ok(()) };
+        let _reservation = match self.reserve_launch(id) {
+            Ok(reservation) => reservation,
+            Err(started) => return Ok(started),
+        };
         let resolved = match kind {
             LaunchKind::Command { program, args } => Resolved { program, args, env: self.app().command_env(id), agent: false, remote: None },
             other => self.app().resolve_launch(id, other, cwd)?,
         };
         if let Some(pty) = resolved.remote {
             self.adopt_remote(id, cols, rows, resolved.agent, pty);
-            return Ok(());
+            return Ok(Started::New);
         }
         let terminal = Terminal::spawn(
             Spawn {
@@ -887,22 +944,22 @@ impl Host {
         lock(&self.terms).insert(id.to_owned(), terminal);
         self.broadcast(ServiceMsg::Terminals(vec![info]));
         self.app().terminals_changed();
-        Ok(())
+        Ok(Started::New)
     }
 
-    /// Reserves terminal `id` for a launch; `None` when it runs or another
-    /// launch of it is under way (logged).
-    fn reserve_launch(&self, id: &str) -> Option<LaunchReservation<'_>> {
+    /// Reserves terminal `id` for a launch; otherwise it runs (its info) or
+    /// another launch of it is under way (logged).
+    fn reserve_launch(&self, id: &str) -> std::result::Result<LaunchReservation<'_>, Started> {
         let mut launching = lock(&self.launching);
-        if lock(&self.terms).get(id).is_some_and(|t| t.alive.load(Ordering::Acquire)) {
-            return None;
+        if let Some(terminal) = lock(&self.terms).get(id).filter(|t| t.alive.load(Ordering::Acquire)) {
+            return Err(Started::Running(terminal.info()));
         }
         if launching.insert(id.to_owned(), now_ms()).is_some() {
             drop(launching);
             log(&self.instance, &format!("terminal {id} is already being launched; not started twice"));
-            return None;
+            return Err(Started::Launching);
         }
-        Some(LaunchReservation { host: self, id: id.to_owned() })
+        Ok(LaunchReservation { host: self, id: id.to_owned() })
     }
 
     /// Whether terminal `id` runs or is being launched.
@@ -921,6 +978,9 @@ impl Host {
         {
             return Err(other.clone());
         }
+        // Keys of terminals that ended hold nothing: forgotten, so the map
+        // does not grow with every session ever launched.
+        keys.retain(|_, owner| owner.as_str() == id || self.running_or_launching(owner));
         keys.insert(key.to_owned(), id.to_owned());
         Ok(())
     }
@@ -1246,10 +1306,12 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
     // A client that stops taking data never holds its writer (or a WebSocket reader answering pings) for long.
     if let Some(ends) = &tcp_ends {
         ends.closer.set_write_timeout(Some(CLIENT_WRITE_TIMEOUT));
+        // Little is buffered past the writer: what waits stays in the outbox, where an echo goes first.
+        let _ = ends.closer.set_send_buffer(CLIENT_SEND_BUFFER);
     }
-    let (out_tx, out_rx) = bounded::<Outgoing>(CLIENT_QUEUE);
+    let outbox = Arc::new(Outbox::new());
     let id = host.next_client.fetch_add(1, Ordering::Relaxed);
-    let mut client = Client::new(id, accepted.protocol, remote, info.caps, out_tx, closer.clone());
+    let mut client = Client::new(id, accepted.protocol, remote, info.caps, outbox.clone(), closer.clone());
     client.remote_id = info.remote_id.clone();
     client.peer_pid = peer_pid;
     client.websocket = websocket;
@@ -1274,8 +1336,11 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
     let client = Arc::new(client);
     if let Some(liveness) = &client.liveness {
         liveness.received();
+        // Every byte that arrives counts, not only whole messages: a large
+        // message on a slow link keeps the client alive while it flows.
+        reader.set_liveness(liveness.clone());
     }
-    if let Err(error) = spawn_writer(Arc::downgrade(host), writer, out_rx, &client) {
+    if let Err(error) = spawn_writer(Arc::downgrade(host), writer, outbox, &client, Some(host.pump.clone())) {
         closer.close();
         bail!("cannot start the client's writer thread: {error}");
     }
@@ -1285,42 +1350,28 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
         log(&host.instance, &format!("remote client {id} connected ({}, protocol {}, compression {}{via}){paired}", printable(&info.name), accepted.protocol, host.compress && info.caps & CAP_COMPRESS != 0));
     }
     client.send(ServiceMsg::Ready8 { pid: std::process::id(), input_ack: ready_ack });
-    let infos: Vec<_> = lock(&host.terms).values().map(|t| t.info()).collect();
-    client.send(ServiceMsg::Terminals(infos));
+    host.register(&client);
     host.app().client_connected(&client);
-    lock(&host.clients).insert(id, client.clone());
     // A revocation between the handshake and now closed only the clients
     // listed then: check again now that this one is listed.
-    if let Some(remote_id) = &client.remote_id
-        && !host.app().remote_active(remote_id)
-    {
-        lock(&host.clients).remove(&id);
-        closer.close();
-        host.app().client_disconnected(id);
-        bail!("remote client {remote_id:?} was revoked while it connected");
+    let revoked = client.remote_id.as_ref().is_some_and(|remote_id| !host.app().remote_active(remote_id));
+    if revoked {
+        host.drop_client(&client, Some(&format!("remote client {:?} was revoked while it connected", client.remote_id.as_deref().unwrap_or_default())));
     }
     host.touch();
 
-    let result = (|| -> Result<()> {
-        while let Some(message) = reader.recv::<ClientMsg>()? {
-            // A client the service dropped is not served further (its reader may have been busy).
-            if client.dropped.load(Ordering::Acquire) {
-                break;
-            }
-            if let Some(liveness) = &client.liveness {
-                liveness.received();
-            }
-            host.touch();
-            if let Err(error) = dispatch(host, &client, message) {
-                client.send(ServiceMsg::Error { id: None, message: format!("{error:#}") });
-            }
-        }
-        Ok(())
-    })();
+    let result = if revoked { Ok(()) } else { serve_messages(host, &client, &mut reader) };
     host.drop_client(&client, None);
-    // Again on this thread: whatever a message handled meanwhile left for this client.
+    // Whatever a message handled meanwhile left for this client.
     host.size_leave(id, None);
     host.app().client_disconnected(id);
+    {
+        // Never left listed, even when it was dropped before it was listed.
+        let mut clients = lock(&host.clients);
+        if clients.get(&id).is_some_and(|listed| Arc::ptr_eq(listed, &client)) {
+            clients.remove(&id);
+        }
+    }
     lock(&host.closing).remove(&id);
     if remote {
         log(&host.instance, &format!("remote client {id} disconnected"));
@@ -1328,38 +1379,208 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
     result
 }
 
+impl Host {
+    /// Lists a client that just connected and queues it the terminal list,
+    /// under the client list's lock: a launch or an exit either is in that
+    /// list or reaches the client as a broadcast, never neither. A client
+    /// dropped meanwhile (its writer failed) is not listed.
+    fn register(&self, client: &Arc<Client>) {
+        let mut clients = lock(&self.clients);
+        if client.is_dropped() {
+            return;
+        }
+        // Lock order: clients before terms.
+        let infos: Vec<_> = lock(&self.terms).values().map(|t| t.info()).collect();
+        client.send(ServiceMsg::Terminals(infos));
+        clients.insert(client.id, client.clone());
+    }
+}
+
+/// Work a client's worker thread does in order ([`serve_messages`]).
+enum Work {
+    Message(ClientMsg),
+    /// Input the reader admitted (numbered input is admitted in the order it
+    /// arrives) for a terminal with work queued: applied after that work.
+    Input { id: String, input: Input },
+}
+
+impl Work {
+    /// The terminal it is about, while it waits.
+    fn terminal(&self) -> Option<&str> {
+        match self {
+            Work::Message(message) => message_terminal(message),
+            Work::Input { id, .. } => Some(id),
+        }
+    }
+}
+
+/// The terminal a message is about (input, sizes, launches).
+fn message_terminal(message: &ClientMsg) -> Option<&str> {
+    match message {
+        ClientMsg::Launch { id, .. }
+        | ClientMsg::Stop { id, .. }
+        | ClientMsg::Forget { id }
+        | ClientMsg::Input { id, .. }
+        | ClientMsg::Input8 { id, .. }
+        | ClientMsg::Resize { id, .. }
+        | ClientMsg::Claim { id }
+        | ClientMsg::Scroll { id, .. }
+        | ClientMsg::Wheel { id, .. }
+        | ClientMsg::Click { id, .. } => Some(id),
+        _ => None,
+    }
+}
+
+/// Whether the reader handles a message itself: terminal input and sizes,
+/// subscriptions and heartbeats, which are quick. Everything else (launches
+/// and stops, documents, the bus, todo and notebook operations, requests,
+/// uploads) may take long and goes to the client's worker, in order.
+fn handled_inline(message: &ClientMsg) -> bool {
+    matches!(
+        message,
+        ClientMsg::Input { .. }
+            | ClientMsg::Input8 { .. }
+            | ClientMsg::Heartbeat
+            | ClientMsg::Subscribe { .. }
+            | ClientMsg::Subscribe8 { .. }
+            | ClientMsg::Resize { .. }
+            | ClientMsg::Claim { .. }
+            | ClientMsg::Scroll { .. }
+            | ClientMsg::Wheel { .. }
+            | ClientMsg::Click { .. }
+            | ClientMsg::Shutdown
+            | ClientMsg::Hello { .. }
+            | ClientMsg::Hello8 { .. }
+            | ClientMsg::Auth { .. }
+            | ClientMsg::Sat(_)
+    )
+}
+
+/// Reads a client's messages until its connection ends. Quick ones are
+/// handled here; slow ones go to the client's worker thread, which handles
+/// them in order, so the reader keeps reading (heartbeats, keystrokes into
+/// other terminals) while a launch or a document load runs. A message about
+/// a terminal with work waiting (a keystroke right after its `Launch`) waits
+/// behind that work. Whatever this thread does itself is not the client's
+/// silence ([`Liveness::busy`]).
+fn serve_messages(host: &Arc<Host>, client: &Arc<Client>, reader: &mut FrameReader) -> Result<()> {
+    let (work_tx, work_rx) = bounded::<Work>(WORK_QUEUE);
+    // Per terminal: work waiting or under way on the worker.
+    let waiting: Arc<Mutex<HashMap<String, usize>>> = Arc::default();
+    let worker = {
+        let (host, client, waiting) = (host.clone(), client.clone(), waiting.clone());
+        std::thread::Builder::new().name("client-work".into()).spawn(move || {
+            for work in work_rx {
+                client.work_since.store(now_ms(), Ordering::Release);
+                let terminal = work.terminal().map(str::to_owned);
+                let result = match work {
+                    Work::Message(message) => dispatch(&host, &client, message),
+                    Work::Input { id, input } => apply_input(&host, &client, &id, &input),
+                };
+                if let Err(error) = result {
+                    client.send(ServiceMsg::Error { id: None, message: format!("{error:#}") });
+                }
+                if let Some(terminal) = terminal {
+                    let mut waiting = lock(&waiting);
+                    if let Some(count) = waiting.get_mut(&terminal) {
+                        *count -= 1;
+                        if *count == 0 {
+                            waiting.remove(&terminal);
+                        }
+                    }
+                }
+                client.work_since.store(0, Ordering::Release);
+            }
+        })?
+    };
+    let mut undecodable = 0u64;
+    let result = (|| -> Result<()> {
+        while let Some(frame) = reader.recv_lenient::<ClientMsg>()? {
+            // A client the service dropped is not served further.
+            if client.is_dropped() {
+                break;
+            }
+            if let Some(liveness) = &client.liveness {
+                liveness.received();
+            }
+            host.touch();
+            // A message of a newer build is skipped, not fatal: the stream is still in sync.
+            let message = match frame {
+                Ok(message) => message,
+                Err(body) => {
+                    undecodable += 1;
+                    if undecodable == 1 {
+                        log(&host.instance, &format!("client {} sent a message this build cannot read (kind {}); skipped (mixed builds?)", client.id, body.first().copied().unwrap_or_default()));
+                    }
+                    continue;
+                }
+            };
+            let _busy = client.liveness.as_ref().map(|l| l.busy());
+            let queued = message_terminal(&message).is_some_and(|id| lock(&waiting).contains_key(id));
+            if handled_inline(&message) && !queued {
+                if let Err(error) = dispatch(host, client, message) {
+                    client.send(ServiceMsg::Error { id: None, message: format!("{error:#}") });
+                }
+                continue;
+            }
+            let work = match message {
+                // Admitted now, in arrival order; applied behind its terminal's work.
+                ClientMsg::Input8 { id, input, seq } => match admit(client, seq) {
+                    true => Work::Input { id, input },
+                    false => continue,
+                },
+                ClientMsg::Input { id, input } => Work::Input { id, input },
+                other => Work::Message(other),
+            };
+            if let Some(id) = work.terminal() {
+                *lock(&waiting).entry(id.to_owned()).or_default() += 1;
+            }
+            if work_tx.send(work).is_err() {
+                break;
+            }
+        }
+        Ok(())
+    })();
+    drop(work_tx);
+    // What was read before the end is still handled (as it would have been inline).
+    let _ = worker.join();
+    result
+}
+
 /// Writes queued messages; protocol-8 clients also get a heartbeat every 2 s.
 /// A message that cannot be encoded (too large) is skipped, not fatal. A write
 /// that fails (the connection ended, or the client took nothing until the
-/// write deadline) drops the client at once.
-fn spawn_writer(host: std::sync::Weak<Host>, mut writer: FrameWriter, out: Receiver<Outgoing>, client: &Arc<Client>) -> std::io::Result<()> {
+/// write deadline) or a lane that overflowed drops the client at once. Once a
+/// frame is written the pump is woken: the tile may get its next one.
+fn spawn_writer(host: Weak<Host>, mut writer: FrameWriter, outbox: Arc<Outbox>, client: &Arc<Client>, pump: Option<Sender<()>>) -> std::io::Result<()> {
     let heartbeat = client.liveness.as_ref().map(|l| l.interval);
     let session = client.session.clone();
     let closer = client.closer.clone();
-    let image_bytes = client.image_bytes.clone();
-    // Weak: the writer must not keep the client (and so its queue) alive.
+    // Weak: the writer must not keep the client (and so its outbox) alive.
     let weak = Arc::downgrade(client);
     try_spawn("client-writer", move || {
         let mut failure: Option<std::io::Error> = None;
         let mut beat = heartbeat.map(Beat::new);
         loop {
-            let message = match &beat {
-                Some(beat) => match out.recv_deadline(beat.next()) {
-                    Ok(message) => Some(message),
-                    Err(RecvTimeoutError::Timeout) => None,
-                    Err(RecvTimeoutError::Disconnected) => break,
-                },
-                None => match out.recv() {
-                    Ok(message) => Some(message),
-                    Err(_) => break,
-                },
-            };
-            let sent = match message {
-                None => Ok(0),
-                Some(Outgoing::Message(message)) => writer.send(&message),
-                Some(Outgoing::Image { term, image_id, width, height, png }) => {
-                    let sent = writer.send(&ImageRef { term: &term, image_id, width, height, png: &png });
-                    image_bytes.fetch_sub(png.len(), Ordering::AcqRel);
+            let deadline = beat.as_ref().map_or_else(|| Instant::now() + Duration::from_secs(3600), Beat::next);
+            let sent = match outbox.next(deadline) {
+                Next::Closed => break,
+                Next::Timeout => Ok(0),
+                Next::Item(Taken { message, frame_of }) => {
+                    let sent = match message {
+                        Outgoing::Message(message) => writer.send(&message),
+                        Outgoing::Image { term, image_id, width, height, png } => {
+                            let sent = writer.send(&ImageRef { term: &term, image_id, width, height, png: &png });
+                            outbox.image_written(png.len());
+                            sent
+                        }
+                    };
+                    if let Some(tile) = frame_of {
+                        outbox.frame_written(&tile);
+                        if let Some(pump) = &pump {
+                            let _ = pump.try_send(());
+                        }
+                    }
                     sent
                 }
             };
@@ -1381,8 +1602,11 @@ fn spawn_writer(host: std::sync::Weak<Host>, mut writer: FrameWriter, out: Recei
             }
         }
         closer.close();
+        outbox.close();
         if let (Some(host), Some(client)) = (host.upgrade(), weak.upgrade()) {
-            let why = failure.filter(|e| e.kind() == std::io::ErrorKind::TimedOut).map(|_| format!("client {} took no data for {} s; closing", client.id, CLIENT_WRITE_TIMEOUT.as_secs()));
+            let why = outbox.overflow().or_else(|| {
+                failure.filter(|e| e.kind() == std::io::ErrorKind::TimedOut).map(|_| format!("client {} took no data for {} s; closing", client.id, CLIENT_WRITE_TIMEOUT.as_secs()))
+            });
             host.drop_client(&client, why.as_deref());
         }
     })
@@ -1402,6 +1626,10 @@ pub struct Health {
     /// Launches under way: (terminal, since ms).
     #[serde(default)]
     pub launching: Vec<(String, u64)>,
+    /// Clients whose worker is busy with one message (a launch, a document
+    /// load, a request; the client's later slow messages wait): (client, since ms).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub working: Vec<(u64, u64)>,
 }
 
 /// How often the health file is written.
@@ -1435,6 +1663,9 @@ pub fn wedge_signs(health: Option<&Health>, terms: &[crate::protocol::TermInfo],
         for (id, since) in health.launching.iter().filter(|(_, since)| now.saturating_sub(*since) > 30_000) {
             signs.push(format!("terminal {id} has been launching for {} s", age(*since)));
         }
+        for (client, since) in health.working.iter().filter(|(_, since)| now.saturating_sub(*since) > WORK_STUCK_MS) {
+            signs.push(format!("a message of client {client} has been handled for {} s (its later requests wait)", age(*since)));
+        }
     }
     for term in terms.iter().filter(|t| t.alive && t.last_output_ms == 0 && now.saturating_sub(t.started_ms) > QUIET_AFTER_MS) {
         signs.push(format!("terminal {} (pid {}) printed nothing in the {} s since its launch", term.id, term.pid, age(term.started_ms)));
@@ -1452,14 +1683,20 @@ fn health_loop(host: Arc<Host>) {
         if host.shutting_down.load(Ordering::Relaxed) {
             return;
         }
+        let clients: Vec<Arc<Client>> = lock(&host.clients).values().cloned().collect();
         let health = Health {
             pid: std::process::id(),
             updated_ms: now_ms(),
             pending_closes: lock(&host.closing).iter().map(|(id, since)| (*id, *since)).collect(),
             launching: lock(&host.launching).iter().map(|(id, since)| (id.clone(), *since)).collect(),
+            working: clients.iter().filter_map(|c| Some((c.id, c.work_since.load(Ordering::Acquire))).filter(|(_, since)| *since != 0)).collect(),
         };
         if let Ok(text) = serde_json::to_string(&health) {
-            let _ = std::fs::write(&path, text);
+            // Replaced whole: a reader never sees half a file.
+            let partial = path.with_extension("json.tmp");
+            if std::fs::write(&partial, text).is_ok() && std::fs::rename(&partial, &path).is_err() {
+                let _ = std::fs::remove_file(&partial);
+            }
         }
         std::thread::sleep(HEALTH_EVERY);
     }
@@ -1488,6 +1725,10 @@ fn subscribe(host: &Host, client: &Client, ids: Vec<String>, focused: Option<Str
     for id in ids.into_iter().take(16) {
         subs.entry(id).or_default();
     }
+    let shown: Vec<String> = subs.keys().cloned().collect();
+    // A frame of a tile no longer shown is not sent (its `Sub` is gone: a new one starts with a full frame).
+    client.outbox.retain_tiles(&shown);
+    client.outbox.set_focused(focused.clone());
     drop(subs);
     // A terminal this client no longer shows stops following its size.
     for id in hidden {
@@ -1510,37 +1751,47 @@ fn apply_input(host: &Host, client: &Client, id: &str, input: &Input) -> Result<
     Ok(())
 }
 
+/// Whether this client may apply numbered input `seq` now (each at most
+/// once, only from the session's newest connection); records it. The
+/// session's lock is held only for that, never while the input is applied.
+fn admit(client: &Client, seq: u64) -> bool {
+    client.session.as_ref().is_none_or(|session| lock(session).admit(client.id, seq))
+}
+
 fn dispatch(host: &Arc<Host>, client: &Arc<Client>, message: ClientMsg) -> Result<()> {
     match message {
-        ClientMsg::Launch { id, kind, cwd, cols, rows } => {
-            let running = host.terminal(&id).is_ok_and(|t| t.alive.load(Ordering::Acquire));
-            match host.launch(&id, kind, &cwd, cols, rows) {
-                // A new terminal has the launching client's size and follows it.
-                Ok(()) if !running => {
-                    let mut sizes = lock(&host.sizes);
-                    let policy = sizes.entry(id).or_default();
-                    policy.wish(client.id, cols.clamp(20, 1000), rows.clamp(5, 500));
-                    policy.claim(client.id);
-                }
-                Ok(()) => {}
-                Err(error) => {
-                    client.send(ServiceMsg::Error { id: Some(id), message: format!("{error:#}") });
-                }
+        ClientMsg::Launch { id, kind, cwd, cols, rows } => match host.start(&id, kind, &cwd, cols, rows) {
+            // A new terminal has the launching client's size and follows it.
+            Ok(Started::New) => {
+                let mut sizes = lock(&host.sizes);
+                let policy = sizes.entry(id).or_default();
+                policy.wish(client.id, cols.clamp(20, 1000), rows.clamp(5, 500));
+                policy.claim(client.id);
             }
+            // It runs already: the client learns so (a retry heals a list it missed).
+            Ok(Started::Running(info)) => {
+                client.send(ServiceMsg::Terminals(vec![info]));
+            }
+            // Its launch under way tells every client when it is done.
+            Ok(Started::Launching) => {}
+            Err(error) => {
+                client.send(ServiceMsg::Error { id: Some(id), message: format!("{error:#}") });
+            }
+        },
+        // A full refresh: every terminal here; the backend sends the sessions.
+        ClientMsg::RefreshSessions => {
+            let infos: Vec<_> = lock(&host.terms).values().map(|t| t.info()).collect();
+            client.send(ServiceMsg::Terminals(infos));
+            host.app().message(client, ClientMsg::RefreshSessions)?;
         }
         ClientMsg::Subscribe { ids } => subscribe(host, client, ids, None),
         ClientMsg::Subscribe8 { ids, focused } => subscribe(host, client, ids, focused),
         ClientMsg::Input { id, input } => apply_input(host, client, &id, &input)?,
-        ClientMsg::Input8 { id, input, seq } => match &client.session {
-            Some(session) => {
-                // Held while applying: a reconnection's Ready8 ack is exact.
-                let mut state = lock(session);
-                if state.admit(client.id, seq) {
-                    apply_input(host, client, &id, &input)?;
-                }
+        ClientMsg::Input8 { id, input, seq } => {
+            if admit(client, seq) {
+                apply_input(host, client, &id, &input)?;
             }
-            None => apply_input(host, client, &id, &input)?,
-        },
+        }
         ClientMsg::Heartbeat => {}
         ClientMsg::Resize { id, cols, rows } => {
             host.terminal(&id)?;
@@ -1643,6 +1894,7 @@ fn diff_frame(id: &str, sub: &Sub, snap: Snapshot, hashes: Vec<u64>) -> Option<(
         })
         .collect();
     let next = Sub {
+        terminal: sub.terminal.clone(),
         generation: sub.generation,
         hashes,
         cols,
@@ -1652,7 +1904,6 @@ fn diff_frame(id: &str, sub: &Sub, snap: Snapshot, hashes: Vec<u64>) -> Option<(
         shape: cursor_shape,
         blink: cursor_blink,
         modes,
-        sent_at: sub.sent_at,
         placements: sub.placements.clone(),
         visible: sub.visible.clone(),
         images: sub.images.clone(),
@@ -1662,26 +1913,88 @@ fn diff_frame(id: &str, sub: &Sub, snap: Snapshot, hashes: Vec<u64>) -> Option<(
     Some((frame, next))
 }
 
+/// A screen the pump asked a terminal's emulator for and has not received yet.
+struct Ask {
+    terminal: Arc<Terminal>,
+    reply: Receiver<Snapshot>,
+    /// The terminal's generation when it was asked: the answer shows at least that.
+    generation: u64,
+}
+
+/// A screen received, shared by every client that shows its terminal.
+struct Answer {
+    terminal: Arc<Terminal>,
+    /// Without its images (`images`).
+    snapshot: Snapshot,
+    images: Vec<SnapshotImage>,
+    hashes: Vec<u64>,
+    generation: u64,
+}
+
+/// Sends clients the frames their subscriptions need. It never waits on a
+/// terminal: the screens it needs are asked for all at once
+/// ([`Terminal::ask_snapshot`], at most one request per terminal) and turned
+/// into frames as their answers come, so a busy or stuck engine holds only
+/// its own frames. A tile gets its next frame once its last one was written
+/// (one waits per tile at most; remote tiles are paced from that write),
+/// focused tiles first.
 fn pump(host: Arc<Host>, wake: Receiver<()>) {
-    let mut next_allowed = Instant::now();
-    // When a coalesced (remote) tile may get its next frame.
+    let mut asks: HashMap<String, Ask> = HashMap::new();
+    // When each terminal was last asked: at most every FRAME_INTERVAL.
+    let mut asked_at: HashMap<String, Instant> = HashMap::new();
     let mut due: Option<Instant> = None;
     loop {
-        let wait = due.map(|d| d.saturating_duration_since(Instant::now())).unwrap_or(PUMP_POLL).min(PUMP_POLL);
-        let _ = wake.recv_timeout(wait);
-        let now = Instant::now();
-        if now < next_allowed {
-            std::thread::sleep(next_allowed - now);
-        }
+        let poll = Instant::now() + PUMP_POLL;
+        wait_for_work(&wake, &asks, due.map_or(poll, |d| d.min(poll)));
+        while wake.try_recv().is_ok() {}
+        let mut answers: HashMap<String, Answer> = HashMap::new();
+        asks.retain(|id, ask| match ask.reply.try_recv() {
+            Ok(mut snapshot) => {
+                let images = std::mem::take(&mut snapshot.images);
+                let hashes = snapshot.lines.iter().map(|row| row_hash8(row, &snapshot.links)).collect();
+                answers.insert(id.clone(), Answer { terminal: ask.terminal.clone(), snapshot, images, hashes, generation: ask.generation });
+                false
+            }
+            Err(TryRecvError::Empty) => true,
+            Err(TryRecvError::Disconnected) => false,
+        });
         due = None;
+        let mut wanted: HashMap<String, (Arc<Terminal>, u64)> = HashMap::new();
         let clients: Vec<Arc<Client>> = lock(&host.clients).values().cloned().collect();
-        for client in clients {
-            if let Some(at) = pump_client(&host, &client) {
-                due = Some(due.map_or(at, |d| d.min(at)));
+        for focused in [true, false] {
+            for client in &clients {
+                if let Some(at) = pump_client(&host, client, focused, &answers, &asks, &mut wanted) {
+                    due = sooner(due, at);
+                }
             }
         }
-        next_allowed = Instant::now() + FRAME_INTERVAL;
+        let now = Instant::now();
+        for (id, (terminal, generation)) in wanted {
+            if let Some(next) = asked_at.get(&id).map(|at| *at + FRAME_INTERVAL).filter(|next| *next > now) {
+                due = sooner(due, next);
+                continue;
+            }
+            match terminal.ask_snapshot() {
+                Some(reply) => {
+                    asked_at.insert(id.clone(), now);
+                    asks.insert(id, Ask { terminal, reply, generation });
+                }
+                // Its control queue is full (a busy engine) or it stopped: asked again later.
+                None => due = sooner(due, now + PUMP_POLL),
+            }
+        }
+        asked_at.retain(|id, at| asks.contains_key(id) || now.saturating_duration_since(*at) < Duration::from_secs(1));
     }
+}
+
+/// Waits until the pump is woken, a screen it asked for arrives, or `until`.
+fn wait_for_work(wake: &Receiver<()>, asks: &HashMap<String, Ask>, until: Instant) {
+    let mut select = crossbeam_channel::Select::new();
+    select.recv(wake);
+    for ask in asks.values() {
+        select.recv(&ask.reply);
+    }
+    let _ = select.ready_deadline(until);
 }
 
 /// The earlier of two optional times.
@@ -1689,21 +2002,26 @@ fn sooner(a: Option<Instant>, b: Instant) -> Option<Instant> {
     Some(a.map_or(b, |a| a.min(b)))
 }
 
-/// Sends one client the frames its subscriptions need. Never holds a lock
-/// while snapshotting a terminal and never waits for an image. Returns when
-/// a coalesced tile or a waiting image is due.
-fn pump_client(host: &Host, client: &Client) -> Option<Instant> {
-    // Backpressure: a slow client gets fewer, newer frames instead of a growing queue.
-    if client.out.len() > CLIENT_QUEUE / 2 {
-        return None;
-    }
+/// One client's pass (its focused tile, or its other tiles): frames from the
+/// screens received (`answers`), and the terminals whose screen it needs
+/// (`wanted`; not those already asked). Never holds a lock while waiting and
+/// never waits for an image. Returns when a paced tile or a waiting image is due.
+fn pump_client(host: &Host, client: &Client, focused_pass: bool, answers: &HashMap<String, Answer>, asks: &HashMap<String, Ask>, wanted: &mut HashMap<String, (Arc<Terminal>, u64)>) -> Option<Instant> {
     let focused = lock(&client.focused).clone();
-    let wanted: Vec<(String, u64, Option<Instant>, Option<Instant>)> =
-        lock(&client.subs).iter().map(|(id, s)| (id.clone(), s.generation, s.sent_at, s.images_due)).collect();
+    let ids: Vec<String> = lock(&client.subs).keys().filter(|id| (focused.as_deref() == Some(id.as_str())) == focused_pass).cloned().collect();
     let mut due: Option<Instant> = None;
-    for (id, seen, sent_at, images_due) in wanted {
+    for id in ids {
         let terminal = lock(&host.terms).get(&id).cloned();
         let Some(terminal) = terminal else { continue };
+        let (seen, images_due) = {
+            let mut subs = lock(&client.subs);
+            let Some(sub) = subs.get_mut(&id) else { continue };
+            // A relaunch under the same id starts over (its generations restart).
+            if !std::ptr::eq(sub.terminal.as_ptr(), Arc::as_ptr(&terminal)) {
+                *sub = Sub { terminal: Arc::downgrade(&terminal), ..Sub::default() };
+            }
+            (sub.generation, sub.images_due)
+        };
         let generation = terminal.generation();
         // Images that waited are looked at again once due, even if nothing else changed.
         let images_now = match images_due {
@@ -1717,52 +2035,51 @@ fn pump_client(host: &Host, client: &Client) -> Option<Instant> {
         if generation == seen && !images_now {
             continue;
         }
+        // Its last frame is not written yet: the writer wakes the pump once it is.
+        let (pending, written) = client.outbox.frame_state(&id);
+        if pending {
+            continue;
+        }
         if client.remote
-            && let Some(at) = sent_at
+            && let Some(at) = written
         {
-            let interval = if focused.as_deref() == Some(id.as_str()) { FOCUSED_INTERVAL } else { BACKGROUND_INTERVAL };
-            let ready = at + interval;
+            let ready = at + if focused_pass { FOCUSED_INTERVAL } else { BACKGROUND_INTERVAL };
             if Instant::now() < ready {
                 due = sooner(due, ready);
                 continue;
             }
         }
-        // Never more than a short wait: one busy or stuck engine must not hold every other terminal's frames.
-        let Some((mut snap, fresh)) = terminal.snapshot_for_pump() else {
-            due = sooner(due, Instant::now() + crate::term::PUMP_SNAPSHOT_WAIT);
+        let answer = answers.get(&id).filter(|a| Arc::ptr_eq(&a.terminal, &terminal) && a.generation >= seen);
+        let Some(answer) = answer else {
+            if !asks.get(&id).is_some_and(|ask| Arc::ptr_eq(&ask.terminal, &terminal)) {
+                wanted.entry(id).or_insert((terminal, generation));
+            }
             continue;
         };
-        let images = std::mem::take(&mut snap.images);
         if client.caps & CAP_IMAGES != 0 {
-            match send_images(client, &terminal, &id, &images) {
-                ImagesSent::Full => break,
+            match send_images(client, &terminal, &id, &answer.images) {
+                ImagesSent::Full => continue,
                 ImagesSent::Later(at) => due = sooner(due, at),
                 ImagesSent::Done => {}
             }
         }
-        let hashes: Vec<u64> = snap.lines.iter().map(|row| row_hash8(row, &snap.links)).collect();
         let mut subs = lock(&client.subs);
-        // Unsubscribed while we took the snapshot.
+        // Unsubscribed meanwhile.
         let Some(sub) = subs.get_mut(&id) else { continue };
-        let Some((frame, next)) = diff_frame(&id, sub, snap, hashes) else {
-            if fresh {
-                sub.generation = generation;
-            } else {
-                due = sooner(due, Instant::now() + FRAME_INTERVAL);
+        match diff_frame(&id, sub, answer.snapshot.clone(), answer.hashes.clone()) {
+            None => sub.generation = answer.generation,
+            // Not queued (gone): the client keeps what it had.
+            Some((frame, next)) => {
+                if client.send_frame(&id, ServiceMsg::Frame8(frame)) == Push::Queued {
+                    host.frames.fetch_add(1, Ordering::Relaxed);
+                    *sub = Sub { generation: answer.generation, ..next };
+                }
             }
-            continue;
-        };
-        // Not queued (full or gone): the client keeps what it had; retried next pass.
-        if client.try_send(ServiceMsg::Frame8(frame)).is_err() {
-            break;
         }
-        host.frames.fetch_add(1, Ordering::Relaxed);
-        // A late answer may predate `generation`: look at the terminal again.
-        let generation = if fresh { generation } else { seen };
-        if !fresh {
+        // The screen moved on since it was asked: look again soon.
+        if generation > answer.generation {
             due = sooner(due, Instant::now() + FRAME_INTERVAL);
         }
-        *sub = Sub { generation, sent_at: Some(Instant::now()), ..next };
     }
     due
 }
@@ -1809,13 +2126,15 @@ fn send_images(client: &Client, terminal: &Arc<Terminal>, id: &str, images: &[Sn
             continue;
         }
         let wait = match terminal.image_png(image_id, image.generation) {
-            ImagePng::Ready(encoded) if client.image_fits(encoded.png.len()) => {
-                if client.try_send_image(id, image_id, &encoded).is_err() {
-                    return ImagesSent::Full;
+            ImagePng::Ready(encoded) if client.image_fits(encoded.png.len()) => match client.send_image(id, image_id, &encoded) {
+                Push::Queued => {
+                    have.insert(image_id, (encoded.generation, true));
+                    continue;
                 }
-                have.insert(image_id, (encoded.generation, true));
-                continue;
-            }
+                Push::Closed => return ImagesSent::Full,
+                // Over the bulk budget: it waits.
+                Push::Full => now + IMAGE_RETRY,
+            },
             ImagePng::Ready(_) => now + IMAGE_RETRY,
             ImagePng::Pending(at) => at,
             ImagePng::Unavailable => {
@@ -1830,7 +2149,7 @@ fn send_images(client: &Client, terminal: &Arc<Terminal>, id: &str, images: &[Sn
         }
     }
     let visible: Vec<Placement> = placements.iter().filter(|p| have.get(&p.image_id).is_some_and(|(_, ok)| *ok)).cloned().collect();
-    if visible != visible_sent && client.try_send(ServiceMsg::Placements { term: id.to_owned(), placements: visible.clone() }).is_err() {
+    if visible != visible_sent && !client.send(ServiceMsg::Placements { term: id.to_owned(), placements: visible.clone() }) {
         return ImagesSent::Full;
     }
     if let Some(sub) = lock(&client.subs).get_mut(id) {
@@ -1980,7 +2299,12 @@ fn exit_loop(host: Arc<Host>, exited: Receiver<String>) {
                 (false, false) => String::new(),
             };
             log(&host.instance, &format!("terminal {id} exited with {code:?}{note}"));
-            host.broadcast(ServiceMsg::Terminals(vec![terminal.info()]));
+            // A relaunch meanwhile told every client about the new run already:
+            // the end of this one must not overwrite it.
+            let current = lock(&host.terms).get(&id).is_some_and(|t| Arc::ptr_eq(t, &terminal));
+            if current {
+                host.broadcast(ServiceMsg::Terminals(vec![terminal.info()]));
+            }
         }
         host.app().terminals_changed();
         host.app().terminal_exited(&id);
@@ -2050,19 +2374,23 @@ mod tests {
     use super::*;
     use crate::protocol::{CAP_FRAME8, SERVICE_V7_VARIANTS, TermInfo};
 
-    fn client(protocol: u32, caps: u32) -> (Client, Receiver<Outgoing>) {
-        let (tx, rx) = bounded::<Outgoing>(64);
-        (Client::new(1, protocol, false, caps, tx, Closer::new(|| {})), rx)
+    fn client(protocol: u32, caps: u32) -> (Client, Arc<Outbox>) {
+        let outbox = Arc::new(Outbox::new());
+        (Client::new(1, protocol, false, caps, outbox.clone(), Closer::new(|| {})), outbox)
     }
 
-    /// The ordinary messages a test client was sent so far.
-    fn drain(rx: &Receiver<Outgoing>) -> Vec<ServiceMsg> {
-        rx.try_iter()
-            .filter_map(|item| match item {
-                Outgoing::Message(message) => Some(message),
-                Outgoing::Image { .. } => None,
-            })
-            .collect()
+    /// The ordinary messages a test client was sent so far, in the order its writer takes them.
+    fn drain(outbox: &Outbox) -> Vec<ServiceMsg> {
+        let mut out = Vec::new();
+        while let Next::Item(Taken { message, frame_of }) = outbox.next(Instant::now()) {
+            if let Some(tile) = frame_of {
+                outbox.frame_written(&tile);
+            }
+            if let Outgoing::Message(message) = message {
+                out.push(message);
+            }
+        }
+        out
     }
 
     fn snapshot(rows: &[&str], link_row: Option<usize>) -> Snapshot {
@@ -2193,12 +2521,19 @@ mod tests {
         let now = 1_000_000;
         let term = |id: &str, alive: bool, started_ms: u64, last_output_ms: u64| TermInfo { id: id.into(), alive, started_ms, last_output_ms, pid: 7, ..Default::default() };
         let terms = [term("quiet", true, now - 40_000, 0), term("young", true, now - 5_000, 0), term("talks", true, now - 40_000, now - 39_000), term("gone", false, now - 90_000, 0)];
-        let fresh = Health { pid: 1, updated_ms: now - 1_000, pending_closes: vec![(26, now - 20_000), (27, now - 1_000)], launching: vec![("slow".into(), now - 45_000), ("now".into(), now - 2_000)] };
+        let fresh = Health {
+            pid: 1,
+            updated_ms: now - 1_000,
+            pending_closes: vec![(26, now - 20_000), (27, now - 1_000)],
+            launching: vec![("slow".into(), now - 45_000), ("now".into(), now - 2_000)],
+            working: vec![(31, now - 40_000), (32, now - 3_000)],
+        };
         let signs = wedge_signs(Some(&fresh), &terms, now);
-        assert_eq!(signs.len(), 3, "{signs:?}");
+        assert_eq!(signs.len(), 4, "{signs:?}");
         assert!(signs[0].starts_with("client 26 was closed 20 s ago"), "{signs:?}");
         assert!(signs[1].starts_with("terminal slow has been launching for 45 s"), "{signs:?}");
-        assert!(signs[2].starts_with("terminal quiet (pid 7) printed nothing in the 40 s"), "{signs:?}");
+        assert!(signs[2].starts_with("a message of client 31 has been handled for 40 s"), "{signs:?}");
+        assert!(signs[3].starts_with("terminal quiet (pid 7) printed nothing in the 40 s"), "{signs:?}");
         let stale = Health { updated_ms: now - 60_000, ..Health::default() };
         assert!(wedge_signs(Some(&stale), &[], now)[0].contains("last written 60 s ago"));
         assert!(wedge_signs(None, &terms[1..], now).is_empty(), "an older service without a health file: only the terminals count");
@@ -2206,9 +2541,10 @@ mod tests {
 
     #[test]
     fn the_image_budget_counts_queued_bytes() {
-        let (client, _rx) = client(8, CAP_IMAGES);
+        let (client, _outbox) = client(8, CAP_IMAGES);
         assert!(client.image_fits(100 << 20), "one image always fits an empty queue");
-        client.image_bytes.store(IMAGE_BUDGET - (1 << 20), Ordering::Release);
+        let png: Arc<[u8]> = vec![0u8; IMAGE_BUDGET - (1 << 20)].into();
+        assert_eq!(client.send_image("t", 1, &EncodedImage { generation: 1, width: 1, height: 1, png }), Push::Queued);
         assert!(client.image_fits(1 << 20));
         assert!(!client.image_fits((1 << 20) + 1), "over the budget: it waits");
     }
@@ -2216,17 +2552,17 @@ mod tests {
     #[test]
     fn queued_images_are_shared_and_written_as_image_messages() {
         let sink = Shared::default();
-        let (tx, rx) = bounded::<Outgoing>(8);
-        let client = Arc::new(Client::new(1, 8, true, CAP_IMAGES | protocol::CAP_FRAME8, tx, Closer::new(|| {})));
+        let outbox = Arc::new(Outbox::new());
+        let client = Arc::new(Client::new(1, 8, true, CAP_IMAGES | protocol::CAP_FRAME8, outbox.clone(), Closer::new(|| {})));
         let png: Arc<[u8]> = vec![7u8; 3 << 20].into();
         let image = EncodedImage { generation: 4, width: 2, height: 3, png: png.clone() };
-        client.try_send_image("t", 5, &image).unwrap();
-        client.try_send_image("t", 6, &image).unwrap();
-        assert_eq!(client.image_bytes.load(Ordering::Acquire), 2 * png.len());
+        assert_eq!(client.send_image("t", 5, &image), Push::Queued);
+        assert_eq!(client.send_image("t", 6, &image), Push::Queued);
+        assert_eq!(outbox.image_bytes(), 2 * png.len());
         assert_eq!(Arc::strong_count(&png), 4, "queued twice without a copy");
-        spawn_writer(std::sync::Weak::new(), FrameWriter::new(Box::new(sink.clone())), rx, &client).unwrap();
+        spawn_writer(std::sync::Weak::new(), FrameWriter::new(Box::new(sink.clone())), outbox.clone(), &client, None).unwrap();
         let started = Instant::now();
-        while client.image_bytes.load(Ordering::Acquire) != 0 {
+        while outbox.image_bytes() != 0 {
             assert!(started.elapsed() < Duration::from_secs(5), "the writer took the images off the budget");
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -2442,5 +2778,182 @@ mod tests {
     /// Whether the test service logged its shutdown.
     fn host_shutting_down(instance: &Instance) -> bool {
         std::fs::read_to_string(instance.log_path()).unwrap_or_default().contains("shutdown requested")
+    }
+
+    /// A service of its own (TCP on a loopback port) with the backend `make_app` builds.
+    fn test_service(name: &str, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn HostApp> + Send + 'static) -> (Instance, SocketAddr) {
+        let home = std::env::temp_dir().join(format!("cc-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("settings.json"), r#"{"remote":{"listen":"127.0.0.1:0"}}"#).unwrap();
+        let instance = Instance::new(Some(name.into()), Some(home.clone()), Some(home.clone())).unwrap();
+        let service = instance.clone();
+        std::thread::spawn(move || run(service, make_app));
+        let started = Instant::now();
+        let port = loop {
+            if let Some(port) = std::fs::read_to_string(instance.port_path()).ok().and_then(|p| p.trim().parse::<u16>().ok()) {
+                break port;
+            }
+            assert!(started.elapsed() < Duration::from_secs(10), "the service listens");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        (instance, SocketAddr::from(([127, 0, 0, 1], port)))
+    }
+
+    /// A protocol-8 client over TCP: what it receives arrives on the channel.
+    fn test_client(instance: &Instance, addr: SocketAddr, name: &str) -> (Receiver<ServiceMsg>, FrameWriter, tcp::TcpCloser) {
+        let token = canvas_sys::token::read_token(&instance.token_path()).unwrap();
+        let (reader, writer, closer) = tcp::split(TcpStream::connect(addr).unwrap()).unwrap();
+        let (mut reader, mut writer) = (FrameReader::new(Box::new(reader)), FrameWriter::new(Box::new(writer)));
+        let session: Vec<u8> = name.bytes().chain(std::iter::repeat(0)).take(16).collect();
+        let info = protocol::ClientInfo { name: name.into(), caps: protocol::CAP_FRAME8, session, remote_id: None };
+        handshake::open(&mut reader, &mut writer, &token, "test", Some(info)).unwrap();
+        let (tx, rx) = unbounded();
+        std::thread::spawn(move || {
+            while let Ok(Some(message)) = reader.recv::<ServiceMsg>() {
+                if tx.send(message).is_err() {
+                    break;
+                }
+            }
+        });
+        (rx, writer, closer)
+    }
+
+    /// Waits for a message that `want` accepts.
+    fn expect(rx: &Receiver<ServiceMsg>, within: Duration, what: &str, mut want: impl FnMut(&ServiceMsg) -> bool) -> ServiceMsg {
+        let deadline = Instant::now() + within;
+        loop {
+            let left = deadline.checked_duration_since(Instant::now()).unwrap_or_else(|| panic!("{what}: nothing within {within:?}"));
+            match rx.recv_timeout(left) {
+                Ok(message) if want(&message) => return message,
+                Ok(_) => {}
+                Err(error) => panic!("{what}: {error}"),
+            }
+        }
+    }
+
+    fn lists_alive(message: &ServiceMsg, id: &str) -> bool {
+        matches!(message, ServiceMsg::Terminals(infos) if infos.iter().any(|i| i.id == id && i.alive))
+    }
+
+    /// A program that waits a while in a terminal.
+    fn waiting_program() -> LaunchKind {
+        #[cfg(windows)]
+        return LaunchKind::Command { program: "cmd.exe".into(), args: vec!["/c".into(), "ping -n 60 127.0.0.1 >nul".into()] };
+        #[cfg(not(windows))]
+        LaunchKind::Command { program: "/bin/sh".into(), args: vec!["-c".into(), "sleep 60".into()] }
+    }
+
+    /// A backend that launches a terminal from another thread while a client
+    /// connects (the restore after a restart, another window), takes long
+    /// for `Track`, and notes the messages it got in order.
+    struct BusyApp {
+        host: OnceLock<Weak<Host>>,
+        launch_on_connect: Mutex<Option<String>>,
+        slow: Duration,
+        seen: Mutex<Vec<String>>,
+    }
+
+    impl HostApp for BusyApp {
+        fn resolve_launch(&self, _: &str, _: LaunchKind, _: &str) -> Result<Resolved> {
+            bail!("no agents here")
+        }
+        fn client_connected(&self, _: &Arc<Client>) {
+            let Some(id) = lock(&self.launch_on_connect).take() else { return };
+            let host = self.host.get().and_then(Weak::upgrade).unwrap();
+            let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+            std::thread::spawn(move || host.launch(&id, waiting_program(), &cwd, 80, 24)).join().unwrap().unwrap();
+        }
+        fn client_disconnected(&self, _: u64) {}
+        fn message(&self, _: &Arc<Client>, message: ClientMsg) -> Result<()> {
+            if matches!(message, ClientMsg::Track { .. }) {
+                std::thread::sleep(self.slow);
+            }
+            lock(&self.seen).push(format!("{message:?}").split([' ', '{', '(']).next().unwrap_or_default().to_owned());
+            Ok(())
+        }
+        fn input_noted(&self, _: &str) {}
+        fn terminals_changed(&self) {}
+        fn has_work(&self) -> bool {
+            false
+        }
+        fn remote_credential(&self, _: &str) -> Credential {
+            Credential::Refused
+        }
+    }
+
+    fn busy_app(launch_on_connect: Option<&str>, slow: Duration) -> Arc<BusyApp> {
+        Arc::new(BusyApp { host: OnceLock::new(), launch_on_connect: Mutex::new(launch_on_connect.map(str::to_owned)), slow, seen: Mutex::default() })
+    }
+
+    #[test]
+    fn a_launch_while_a_client_connects_reaches_it_and_a_launch_of_a_running_terminal_answers() {
+        let app = busy_app(Some("t1"), Duration::ZERO);
+        let (host_tx, host_rx) = bounded::<Arc<Host>>(1);
+        let made = app.clone();
+        let (instance, addr) = test_service("gap", move |host| {
+            let _ = made.host.set(Arc::downgrade(host));
+            let _ = host_tx.send(host.clone());
+            made
+        });
+        let host = host_rx.recv().unwrap();
+        // The launch completes while the client is being connected (after its terminal list was taken).
+        let (rx, mut writer, closer) = test_client(&instance, addr, "gap-client");
+        expect(&rx, Duration::from_secs(10), "the terminal launched while it connected", |m| lists_alive(m, "t1"));
+        // A launch of the running terminal starts nothing and tells the client it runs.
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        writer.send(&ClientMsg::Launch { id: "t1".into(), kind: waiting_program(), cwd, cols: 80, rows: 24 }).unwrap();
+        expect(&rx, Duration::from_secs(5), "the answer to a launch of a running terminal", |m| lists_alive(m, "t1"));
+        // A full refresh lists every terminal.
+        writer.send(&ClientMsg::RefreshSessions).unwrap();
+        expect(&rx, Duration::from_secs(5), "the terminal list a refresh sends", |m| lists_alive(m, "t1"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !lock(&app.seen).iter().any(|m| m == "RefreshSessions") {
+            assert!(Instant::now() < deadline, "the backend got the refresh too");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
+        assert_eq!(log.matches("launched t1 ").count(), 1, "{log}");
+        // A client dropped before it was listed (its writer failed at once) is never listed.
+        let gone = Arc::new(Client::new(9999, 8, true, protocol::CAP_FRAME8, Arc::new(Outbox::new()), Closer::new(|| {})));
+        gone.dropped.store(true, Ordering::Release);
+        host.register(&gone);
+        assert!(!lock(&host.clients).contains_key(&9999), "a dropped client is not listed");
+        closer.close();
+        let _ = host.terminal("t1").map(|t| t.stop(true));
+    }
+
+    #[test]
+    fn slow_messages_run_in_order_beside_the_reader_and_never_get_a_client_dropped() {
+        let app = busy_app(None, Duration::from_secs(7));
+        let made = app.clone();
+        let (instance, addr) = test_service("worker", move |host| {
+            let _ = made.host.set(Arc::downgrade(host));
+            made
+        });
+        let (rx, mut writer, closer) = test_client(&instance, addr, "worker-client");
+        writer.send(&ClientMsg::Track { ids: Vec::new() }).unwrap();
+        writer.send(&ClientMsg::RefreshSessions).unwrap();
+        // Quick messages are not held behind the slow one: input to an unknown terminal is refused at once.
+        std::thread::sleep(Duration::from_millis(300));
+        let typed = Instant::now();
+        writer.send(&ClientMsg::Input8 { id: "missing".into(), input: Input::Key { key: protocol::Key::Char('x'), mods: 0 }, seq: 1 }).unwrap();
+        expect(&rx, Duration::from_secs(2), "the refusal of input to an unknown terminal", |m| matches!(m, ServiceMsg::Error { message, .. } if message.contains("missing")));
+        assert!(typed.elapsed() < Duration::from_secs(1), "input waited {:?} behind a slow message", typed.elapsed());
+        // The client keeps heartbeating; the slow message outlasts the silence timeout.
+        let until = Instant::now() + Duration::from_secs(8);
+        while Instant::now() < until {
+            writer.send(&ClientMsg::Heartbeat).unwrap();
+            std::thread::sleep(Duration::from_millis(500));
+            while let Ok(message) = rx.try_recv() {
+                let _ = message;
+            }
+        }
+        assert_eq!(*lock(&app.seen), ["Track", "RefreshSessions"], "in the order sent");
+        writer.send(&ClientMsg::Heartbeat).unwrap();
+        expect(&rx, Duration::from_secs(3), "a heartbeat: still connected", |m| matches!(m, ServiceMsg::Heartbeat { .. }));
+        let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
+        assert!(!log.contains("silent for"), "{log}");
+        closer.close();
     }
 }

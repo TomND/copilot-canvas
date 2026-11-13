@@ -14,7 +14,7 @@ relative to the repository root; `file:function` names a function in a file.
 
 | Layer | Crate | What it owns |
 |---|---|---|
-| L1 terminal host | `canvas-host` | ConPTY sessions, the emulators (`emulator/ghostty.rs`, `emulator/alacritty.rs`), frames, input encoding, the host server loop (`server.rs`) |
+| L1 terminal host | `canvas-host` | ConPTY sessions, the emulators (`emulator/ghostty.rs`, `emulator/alacritty.rs`), frames, input encoding, the host server loop (`server.rs`: per client a reader for quick messages and an ordered worker for slow ones), each client's outgoing lanes (`outbox.rs`) |
 | L2 terminal view | `canvas-termview` | the client-side terminal grid, selection, links |
 | Model | `canvas-model` | the document (`doc.rs`), edits and patches (`sync.rs`), the event bus types (`bus.rs`), the backend RPC types (`rpc.rs`), todos, notebook, skills, reports, PRs, reviews: pure and portable |
 | L3 backend and service | `canvas-agents` | agent providers (`agents/`), the history index (`index.rs`), the backend handler (`backend.rs`), the service (`service/`: documents, bus loop, passive runs, the PR, review and todo hubs, the reports inbox), the agent-facing CLI pieces (`cli.rs`, `*_cli.rs`, `reports.rs`) |
@@ -857,7 +857,8 @@ Each with the reason it matters.
   (`protocol.rs:protocol8_variants_round_trip_at_appended_indices` pins the
   indices). Even appended, a peer of an older build cannot decode a new
   variant: an older service drops a connection that sends an unknown
-  `ClientMsg` (`canvas-host/src/server.rs`), so a new `ServiceMsg` goes only
+  `ClientMsg` (`canvas-host/src/server.rs`; a current service skips it and
+  logs it once, but older services remain in use), so a new `ServiceMsg` goes only
   to clients that announce a capability bit (`CAP_*`,
   `ServiceMsg::shaped_for`). `Request` and `Response` travel as JSON by
   name; they are appended at the end too.

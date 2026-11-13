@@ -155,17 +155,37 @@ connection is one zstd stream; every compressed frame is a flushed block of
 it, so rows that repeat across frames cost almost nothing. Bodies of 512 bytes
 or less are sent as they are. Pipes never compress.
 
-### Coalescing
+### Coalescing and priority
 
-TCP clients get at most one frame per tile every 16 ms for the focused tile
-(`Subscribe8::focused`) and every 100 ms for the others; the pump wakes when a
-deferred tile is due. Pipe clients are unchanged (4 ms pump).
+At most one frame per tile waits for a client's writer; the pump makes the
+next one once that one was written, from the screen then, so a slow link gets
+fewer, newer frames instead of a queue of stale ones. TCP clients get a frame
+at most every 16 ms for the focused tile (`Subscribe8::focused`) and every
+100 ms for the others, counted from when the last one was written; the pump
+wakes when a deferred tile is due. The pump never waits on a terminal: it asks
+every terminal it needs for its screen at once and makes frames as the answers
+come, so a busy or stuck engine delays only its own frames.
+
+What a client is sent waits in lanes (BACKEND.md, *How the service serves one
+client*): control and state first, then the focused tile's frame, other
+tiles' frames, then bulk (documents, bus snapshots, large replies, images). A
+keystroke's echo therefore waits at most for the message being written, not
+for everything queued before it. The system buffers at most 64 KiB for a
+remote client (`SO_SNDBUF`), so the order holds; what `devtunnel host` and the
+relay buffer further on is out of the service's hands. One
+message is never split: a reply of many megabytes still holds the echo behind
+it for its own transfer time.
 
 ### Liveness
 
 Protocol-8 clients and the service send `Heartbeat` every 2 s, on the pipe and
 on TCP. Either side closes a connection that stayed silent for 6 s (the
-service's `liveness` thread, the client's watchdog thread). TCP keepalive is on
+service's `liveness` thread, the client's watchdog thread). Any byte that
+arrives counts (`FrameReader::with_liveness`), not only whole messages: a
+large message on a slow link (a pasted image, an upload piece, a big reply)
+keeps its connection alive while it flows. Time the service's reader spends on
+a message of its own is not the client's silence (`Liveness::busy`; slow
+messages run on the client's worker anyway, BACKEND.md). TCP keepalive is on
 as a backstop and Nagle is off.
 
 The service never waits on a client (`Host::drop_client`): dropping one shuts
@@ -176,12 +196,15 @@ that replaces a client drops the old one the same way. Each TCP client has a
 write deadline (`CLIENT_WRITE_TIMEOUT`, 10 s): a client that takes no data for
 that long is dropped (`client N took no data for 10 s; closing`), so a writer
 never stays blocked behind a full TCP window (a frozen client behind `devtunnel
-connect`); on Windows a waiting write also ends within 100 ms of a close. A
+connect`). Writes go to the socket 64 KiB at a time, so the deadline measures
+progress (a large message to a client that reads steadily is never timed out
+by its size) and on Windows a waiting write ends within 100 ms of a close. A
 WebSocket reader answers pings only when the writer is free. The frame pump
-waits at most 200 ms for one terminal's screen (a slow engine delays only its
-own frames), and the service log is written by a thread of its own: a stalled
-log file never holds a caller more than 250 ms (in the 2026-11-12 report the
-whole service stopped for 59 s).
+never waits on one terminal's screen (a slow engine delays only its own
+frames), and the service log is written by a thread of its own: a stalled log
+file never holds a caller more than 250 ms (in the 2026-11-12 report the whole
+service stopped for 59 s). A log another program holds open (Windows) is
+copied and emptied when it cannot be renamed at its size limit.
 
 ### Reconnect and input
 

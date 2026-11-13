@@ -600,6 +600,15 @@ fn tunnel_access_loop(agents: Arc<Agents>, wake: Receiver<()>) {
     }
 }
 
+impl Agents {
+    /// Sends `client` every session summary, under the lock the index's
+    /// broadcasts take: no change falls between the list and the updates.
+    fn send_sessions(&self, client: &Client) {
+        let sessions = lock(&self.sessions);
+        client.send(ServiceMsg::Sessions { full: true, upsert: sessions.values().cloned().collect(), remove: Vec::new() });
+    }
+}
+
 impl HostApp for Agents {
     fn command_env(&self, id: &str) -> Vec<(String, String)> {
         // Plain shells (the demo's) get the `atelier` command and their identity too.
@@ -639,8 +648,8 @@ impl HostApp for Agents {
     }
 
     fn client_connected(&self, client: &Arc<Client>) {
-        let sessions: Vec<_> = lock(&self.sessions).values().cloned().collect();
-        client.send(ServiceMsg::Sessions { full: true, upsert: sessions, remove: Vec::new() });
+        // The client is listed already: every change after this list reaches it.
+        self.send_sessions(client);
         for link in lock(&self.subsessions).values() {
             client.send(link.clone());
         }
@@ -678,7 +687,9 @@ impl HostApp for Agents {
                 lock(&self.tracked).insert(client.id, ids.into_iter().filter(|id| crate::agents::ALL.iter().any(|k| k.provider().is_session_id(id))).collect());
                 let _ = self.index_wake.try_send(());
             }
+            // A full refresh (the host sent the terminals): what changed since comes as usual.
             ClientMsg::RefreshSessions => {
+                self.send_sessions(client);
                 let _ = self.index_wake.try_send(());
             }
             ClientMsg::Routing { json } => {
@@ -1402,14 +1413,13 @@ fn index_loop(shared: Arc<Agents>, wake: Receiver<()>) {
             }
         }
         if !changed.is_empty() || !removed.is_empty() {
-            {
-                let mut sessions = lock(&shared.sessions);
-                for summary in &changed {
-                    sessions.insert(summary.id.clone(), summary.clone());
-                }
-                for id in &removed {
-                    sessions.remove(id);
-                }
+            // Broadcast under the lock a full list is sent under (`send_sessions`): never a stale list after an update.
+            let mut sessions = lock(&shared.sessions);
+            for summary in &changed {
+                sessions.insert(summary.id.clone(), summary.clone());
+            }
+            for id in &removed {
+                sessions.remove(id);
             }
             shared.broadcast(ServiceMsg::Sessions { full: false, upsert: changed, remove: removed });
         }

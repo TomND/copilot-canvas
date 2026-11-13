@@ -1309,6 +1309,16 @@ terminal corpus), `canvas-mobile` (the iPhone app's Rust core, UniFFI),
 - **Hidden terminals cost almost nothing to the UI.** Every terminal's output is
   parsed in the service (state stays correct), but only visible tiles are
   diffed and streamed, row by row, at up to 250 frames/s.
+- **Your typing's echo goes first, over a slow link too.** Each window's
+  messages wait in lanes, not one queue: terminal and session state, then the
+  focused terminal's frame, other terminals' frames, then bulk (documents,
+  large replies, images). A terminal gets its next frame once its last one was
+  sent, so a slow link gets fewer, newer frames, never a backlog. A slow
+  request (a launch, a canvas load, a todo write) runs beside the window's
+  keystrokes, never in front of them, and a large paste or upload on a slow
+  uplink never gets the window disconnected as silent. State a window missed
+  is repaired: starting a session that already runs shows it, and a refresh
+  lists every terminal and session again.
 - **The UI thread never waits on the console or on sessions.** It handles
   input first, spends at most 4 ms per pass on service updates (session status,
   terminal frames), and renders frames in memory; a separate output thread
@@ -1512,8 +1522,8 @@ atelier migrate [--yes]        finish moving the data of an install from before 
                                       ~/.atelier (stops its service first; --yes when it runs sessions)
 atelier service status|stop    stop ends the service's sessions (gracefully); status lists under
                                       "wedged" what looks stuck: a terminal that printed nothing 30 s
-                                      after its launch, a client close or a launch that does not end,
-                                      a stale health file (`doctor` says the same)
+                                      after its launch, a client close, a launch or a client's request
+                                      that does not end, a stale health file (`doctor` says the same)
 atelier service restart [--yes]
                                       stop it gracefully, wait, and start it the way it starts at login
                                       (Windows: the Atelier-Service task; macOS: its LaunchAgent; Linux:

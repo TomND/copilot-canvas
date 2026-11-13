@@ -623,14 +623,49 @@ connection fails the calls waiting on it. An answer too large for one frame
 (32 MiB) becomes an error answer; the connection stays up. `Tails` reads at
 most 8 files and 4 MiB in all.
 
+### How the service serves one client
+
+- **Reading.** One reader thread per connection handles what is quick itself:
+  terminal input, sizes, subscriptions, heartbeats. Everything else (`Launch`,
+  `Stop`, `Forget`, `Stats`, documents, the bus, todo and notebook operations,
+  requests, uploads, routing) goes to the client's **worker** thread
+  (`server::serve_messages`), which handles it in the order it came. A message
+  about a terminal that has work waiting there (a keystroke right after its
+  `Launch`) waits behind that work, so input never overtakes a launch; numbered
+  input is still admitted in arrival order. `Health::working` names a worker
+  busy with one message (a wedge sign after 30 s). A message this build cannot
+  decode (a newer client) is skipped and logged once; the connection stays.
+- **Sending.** Each client has an outbox of lanes instead of one queue
+  (`canvas-host/src/outbox.rs`): control (in order: `Ready8`, errors, small
+  replies, `Stats`, terminal and session state), the focused tile's frame,
+  other tiles' frames, then bulk (documents, bus snapshots, the inbox, large
+  replies, images). State is coalesced, never dropped: the newest
+  `Terminals` info per terminal (an info of an earlier run of it never
+  replaces a newer one), `TerminalGone`, merged `Sessions` (a full list
+  replaces what waits), the newest bus snapshot. At most one frame per tile
+  waits; the pump makes the next once the writer wrote it. Lanes are bounded
+  in messages and bytes: a client that overflows them is dropped and logged
+  (`client N fell behind …`); it reconnects and gets everything again.
+- **State is never missed.** A connecting client is listed, and sent the
+  terminal list, under one lock: a launch or an exit is in that list or
+  reaches it as a broadcast. The backend sends the session list under the lock
+  its index broadcasts under. A `Launch` of a terminal that runs starts nothing
+  and answers the requester `Terminals([its info])`; `RefreshSessions` answers
+  with every terminal (`Terminals`) and session (`Sessions { full: true }`),
+  then wakes the index (older services only woke the index; older clients
+  apply both as usual).
+
 ### Wedge signs and restart
 
 Every 2 s the service writes `<home>/run/health-<instance>.json` from a thread
 of its own (`server::Health`: clients dropped whose connection thread has not
-returned, launches under way, with when each began). `service status` (its
-`wedged` list) and `doctor` (*Service health*) read it with the terminal list
-(`server::wedge_signs`): a terminal alive with no output 30 s after its launch,
-a close pending over 5 s, a launch over 30 s, a health file older than 10 s.
+returned, launches under way, clients whose worker is busy with one message,
+with when each began; written to a temporary file and renamed, so a reader
+never sees half of it). `service status` (its `wedged` list) and `doctor`
+(*Service health*) read it with the terminal list (`server::wedge_signs`): a
+terminal alive with no output 30 s after its launch, a close pending over 5 s,
+a launch over 30 s, a client's message handled for over 30 s, a health file
+older than 10 s.
 `service restart [--yes]` stops the service gracefully, waits for its process
 to end and starts it through its login entry (Windows: the `Atelier-Service`
 task; macOS: `launchctl kickstart` of its LaunchAgent; Linux: `systemctl --user

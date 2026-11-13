@@ -6,5 +6,6 @@ pub use canvas_common::{paths, protocol};
 
 pub mod emulator;
 pub mod keys;
+pub mod outbox;
 pub mod server;
 pub mod term;

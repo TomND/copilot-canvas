@@ -596,6 +596,17 @@ impl Terminal {
         request_snapshot(&self.control, &self.pending_snapshot, Duration::ZERO, PUMP_SNAPSHOT_WAIT, true)
     }
 
+    /// Asks the emulator thread for its viewport without waiting: the answer
+    /// comes on the returned channel. The frame pump asks every terminal it
+    /// needs at once and takes the answers as they come, so a busy or stuck
+    /// engine holds only its own frames. `None`: the control queue is full
+    /// (a busy engine; ask again later) or the engine has stopped.
+    pub fn ask_snapshot(&self) -> Option<Receiver<Snapshot>> {
+        let (tx, rx) = bounded(1);
+        self.control.try_send(Ctl::Snapshot(tx)).ok()?;
+        Some(rx)
+    }
+
     /// The screen and the count of the program's output bytes the engine
     /// had taken when it was drawn (a satellite's gap reset names that
     /// offset, so the hub asks for the rest from there).
