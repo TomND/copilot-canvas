@@ -1124,6 +1124,7 @@ mod tests {
         });
         let error = open(&ConnTarget::Tcp { addr: closed, remote_id: None, secret: b"secret".to_vec() }, &ConnOptions::default(), &ClientSession::new()).err().expect("closed");
         assert_eq!(error.downcast_ref::<Unheard>(), Some(&Unheard::Closed), "{error:#}");
+        assert!(error.is::<NoChallenge>(), "what the handshake said is still there (the pipe's protocol-7 fallback reads it): {error:#}");
     }
 
     #[test]
