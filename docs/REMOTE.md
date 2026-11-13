@@ -267,7 +267,12 @@ copied and emptied when it cannot be renamed at its size limit.
   when they still disagree two answers later it reconnects for the whole
   lists, at most every 5 minutes, with the notice "Reconnected to bring the
   terminal list back in step with the service." `RefreshSessions` also goes
-  every minute (an older service only indexes again; cheap). A document
+  every 10 minutes as a safety net for session states (an older service only
+  indexes again; cheap); it went every minute, and the whole session index
+  then went ahead of the echo to every window. A service answers it with its
+  terminal list (control) and its session list, which, when larger than
+  64 KiB, waits with the bulk behind frames (deltas that come meanwhile
+  join it). A document
   asked for again (`DocOpen`) and not received within 10 s is asked for
   again, so a lost answer never holds back this window's edits.
 - While offline, terminal input (keys, paste, clicks, wheel, scroll) is dropped

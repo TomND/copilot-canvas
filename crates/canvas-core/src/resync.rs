@@ -13,10 +13,12 @@
 //!   answers it with its whole lists repairs at once; when the difference
 //!   is still there two answers later, it reconnects to get the whole lists
 //!   (at most every 5 minutes), saying so.
-//! - `RefreshSessions` also goes every minute: older services only index
-//!   again (cheap); one that answers with its whole lists repairs session
-//!   states this way too (no wire change: an older client takes those as the
-//!   lists they are).
+//! - `RefreshSessions` also goes every 10 minutes, a safety net for session
+//!   states (it went every minute: every session indexed, to every window,
+//!   ahead of the echo; R2-C-03). Older services only index again (cheap);
+//!   one that answers with its whole lists repairs session states this way
+//!   too (no wire change: an older client takes those as the lists they
+//!   are), and sends a large session list with its bulk, behind frames.
 //! - A reconnect (or a restarted local service) starts this client's state
 //!   with the service from scratch: [`App::reset_service_state`].
 
@@ -25,8 +27,9 @@ use std::time::{Duration, Instant};
 use crate::app::App;
 use crate::protocol::{ClientMsg, ServiceStats};
 
-/// `RefreshSessions` this often while connected.
-pub const REFRESH_EVERY: Duration = Duration::from_secs(60);
+/// `RefreshSessions` this often while connected (a reconnect gets the whole
+/// lists anyway, and a mismatch asks at once).
+pub const REFRESH_EVERY: Duration = Duration::from_secs(600);
 /// `Stats` answers in a row with the same difference before `RefreshSessions`.
 const STRIKES_REFRESH: u32 = 2;
 /// … and before reconnecting.
@@ -246,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn sessions_are_refreshed_every_minute_while_connected() {
+    fn sessions_are_refreshed_only_now_and_then_while_connected() {
         let (mut app, sent) = rig();
         app.tick_resync();
         assert_eq!(refreshes(&sent), 0);

@@ -230,7 +230,7 @@ edit. While offline nothing is sent; local changes wait. A `DocOpen` whose
 | Where | Since | An older service |
 |---|---|---|
 | `ClientMsg::Claim` from the TUI and the GUI (the terminal that gets the keyboard; a size repair) | the iPhone client added it (every service since, v0.3.0 included, reads it); never sent over protocol 7 | a protocol-8 service from before the iPhone client would drop the connection: not supported |
-| `ClientMsg::RefreshSessions` every minute and when `Stats` disagrees with the client's terminal list (`canvas-core/src/resync.rs`) | existing message | indexes again (cheap); a service that answers it with `Terminals` (all) and `Sessions { full: true }` to the requester repairs a client's lists at once (older clients take both as the updates they are) |
+| `ClientMsg::RefreshSessions` every 10 minutes (every minute in round 1) and when `Stats` disagrees with the client's terminal list (`canvas-core/src/resync.rs`); a whole session list over 64 KiB is sent with the bulk (`outbox.rs`), never ahead of a focused frame | existing message | indexes again (cheap); a service that answers it with `Terminals` (all) and `Sessions { full: true }` to the requester repairs a client's lists at once (older clients take both as the updates they are) |
 | A reconnect when `Stats` keeps disagreeing with the client's terminal list (at most every 5 minutes) | — | sends its whole lists, as on any connect |
 | A second, short-lived connection for uploads and clipboard images over 256 KiB (`conn::Bulk`: its own client session, no subscriptions, closed when done; since round 2 it sets `CAP_REQUESTS_ONLY` and a service that knows the bit sends it `Ready8` and its answers only: no connect snapshot, broadcast or frame, no input session, not listed) | — | another client for a moment (the bit is ignored: it gets the connect snapshot it throws away); an upload slower than 6 s on it can still be dropped as silent by a service that counts only whole messages, never the window's connection |
 | `Request::Upload` pieces of 256 KiB (4 MiB before) | — | takes pieces of any size |
@@ -702,7 +702,8 @@ most 8 files and 4 MiB in all.
   (`canvas-host/src/outbox.rs`): control (in order: `Ready8`, errors, small
   replies, `Stats`, terminal and session state), the focused tile's frame,
   other tiles' frames, then bulk (documents, bus snapshots, the inbox, large
-  replies, images). State is coalesced, never dropped: the newest
+  replies, images, a whole session list over 64 KiB, which deltas pushed
+  while it waits join). State is coalesced, never dropped: the newest
   `Terminals` info per terminal (an info of an earlier run of it never
   replaces a newer one), `TerminalGone`, merged `Sessions` (a full list
   replaces what waits), the newest bus snapshot. At most one frame per tile

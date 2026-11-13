@@ -18,8 +18,9 @@
 //!    then, so a slow link gets fewer, newer frames instead of a queue.
 //! 4. **Bulk**, in order: documents and their patches, bus snapshots (a newer
 //!    one replaces one still waiting), the reports inbox, large replies,
-//!    images and their placements. Bulk that has waited [`BULK_WAIT`] goes
-//!    before other tiles' frames, so frames never starve it.
+//!    images and their placements, a whole session list larger than
+//!    [`SMALL`]. Bulk that has waited [`BULK_WAIT`] goes before other tiles'
+//!    frames, so frames never starve it.
 //!
 //! Lanes are bounded in messages and bytes (frames by the one-per-tile rule).
 //! A client whose control or bulk lane overflows is dropped (it reconnects
@@ -294,6 +295,8 @@ struct Lanes {
     /// A terminal list was pushed (even an empty one: a client takes its first list as the whole of them).
     terms_list: bool,
     sessions: Option<SessionsWaiting>,
+    /// The waiting `Entry::Sessions` is in the bulk lane (a large whole list).
+    sessions_bulk: bool,
     latest: HashMap<Latest, ServiceMsg>,
     frames: HashMap<String, ServiceMsg>,
     frame_order: VecDeque<String>,
@@ -356,10 +359,22 @@ impl Lanes {
                 self.ensure_terms();
             }
             ServiceMsg::Sessions { full, upsert, remove } => {
+                // A large whole list (every session indexed) waits with the bulk:
+                // it never goes ahead of a focused frame (deltas that follow join it).
+                let large = full && 64 + upsert.len() * 320 + remove.len() * 40 > SMALL;
+                if large && self.sessions.is_some() && !self.sessions_bulk {
+                    self.control.retain(|entry| !matches!(entry, Entry::Sessions));
+                    self.sessions = None;
+                }
                 let waiting = match &mut self.sessions {
                     Some(waiting) => waiting,
                     None => {
-                        self.control.push_back(Entry::Sessions);
+                        self.sessions_bulk = large;
+                        if large {
+                            self.bulk.push_back((Instant::now(), Entry::Sessions));
+                        } else {
+                            self.control.push_back(Entry::Sessions);
+                        }
                         self.sessions.insert(SessionsWaiting::default())
                     }
                 };
@@ -475,7 +490,10 @@ impl Lanes {
                 }
                 first.map(Outgoing::Message)
             }
-            Entry::Sessions => self.sessions.take().map(|s| Outgoing::Message(ServiceMsg::Sessions { full: s.full, upsert: s.upsert, remove: s.remove })),
+            Entry::Sessions => {
+                self.sessions_bulk = false;
+                self.sessions.take().map(|s| Outgoing::Message(ServiceMsg::Sessions { full: s.full, upsert: s.upsert, remove: s.remove }))
+            }
             Entry::Latest(kind) => self.latest.remove(&kind).map(Outgoing::Message),
         }
     }
@@ -952,6 +970,27 @@ mod tests {
         // An end alone is not a list.
         outbox.push(ServiceMsg::TerminalGone("b".into()));
         assert_eq!(kinds(&outbox), ["gone b"]);
+    }
+
+    #[test]
+    fn a_large_whole_session_list_waits_with_the_bulk_and_deltas_join_it() {
+        let outbox = Outbox::new();
+        outbox.set_focused(Some("echo".into()));
+        let many: Vec<SessionSummary> = (0..1000).map(|i| session(&format!("s{i}"), "x")).collect();
+        outbox.push(ServiceMsg::Sessions { full: false, upsert: vec![session("a", "1")], remove: Vec::new() });
+        // The whole list replaces the delta waiting in control and moves to the bulk lane.
+        outbox.push(ServiceMsg::Sessions { full: true, upsert: many, remove: Vec::new() });
+        outbox.push(ServiceMsg::Sessions { full: false, upsert: vec![session("b", "1")], remove: Vec::new() });
+        outbox.push_frame("echo", frame("echo", 1));
+        outbox.push(ServiceMsg::Error { id: None, message: "e".into() });
+        let out = drain(&outbox);
+        assert_eq!(out.iter().map(kind).take(2).collect::<Vec<_>>(), ["error e", "frame echo"], "the echo goes first");
+        let [_, _, ServiceMsg::Sessions { full: true, upsert, .. }] = out.as_slice() else { panic!("{out:?}") };
+        assert_eq!(upsert.len(), 1001, "the delta joined the list");
+        // A small whole list stays in control.
+        outbox.push_frame("echo", frame("echo", 2));
+        outbox.push(ServiceMsg::Sessions { full: true, upsert: vec![session("c", "1")], remove: Vec::new() });
+        assert!(matches!(drain(&outbox).first(), Some(ServiceMsg::Sessions { full: true, .. })));
     }
 
     /// Takes what the writer would take now and says it was written (`bytes` each).
