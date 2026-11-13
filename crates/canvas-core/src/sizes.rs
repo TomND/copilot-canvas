@@ -36,6 +36,16 @@ pub const SIZE_GRACE: Duration = Duration::from_millis(1500);
 /// The longest wait between two repairs of the same terminal.
 const REPAIR_MAX: Duration = Duration::from_secs(30);
 
+/// Whether a tile in `state` says "sized elsewhere": taken by another
+/// client, or still another size after two repairs (about 4.5 s).
+fn noted(state: Option<SizeState>) -> bool {
+    match state {
+        Some(SizeState::Taken) => true,
+        Some(SizeState::Differs { tries, .. }) => tries >= 2,
+        _ => false,
+    }
+}
+
 /// How a shown terminal's real size compares with its tile's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SizeState {
@@ -66,9 +76,10 @@ impl App {
         self.views.get(id).map_or(0, |view| view.first_row(height))
     }
 
-    /// The tile's note when its terminal keeps another client's size.
+    /// The tile's note when its terminal keeps another client's size (or
+    /// did not take this client's after two repairs).
     pub fn size_note(&self, id: &str) -> Option<&'static str> {
-        matches!(self.size_states.get(id), Some(SizeState::Taken)).then_some("sized elsewhere: click to fit")
+        noted(self.size_states.get(id).copied()).then_some("sized elsewhere: click to fit")
     }
 
     /// The size a launch of `id` asks for: the tile it will get (its own
@@ -196,7 +207,7 @@ impl App {
             None => SizeState::Differs { since: now, sent: None, tries: 0 },
         };
         if state != Some(next) {
-            self.needs_draw |= matches!(next, SizeState::Taken) || matches!(state, Some(SizeState::Taken));
+            self.needs_draw |= noted(state) != noted(Some(next));
             self.size_states.insert(id.to_owned(), next);
         }
     }
@@ -305,8 +316,10 @@ mod tests {
         assert_eq!(sizes(&sent), [ClientMsg::Resize { id: "a".into(), cols: want.0, rows: want.1 }, ClientMsg::Claim { id: "a".into() }]);
         app.sync_sizes(since + SIZE_GRACE + Duration::from_millis(100));
         assert!(sizes(&sent).is_empty(), "backoff");
+        assert!(app.size_note("a").is_none(), "a size on its way is not called elsewhere");
         app.sync_sizes(since + SIZE_GRACE * 3 + Duration::from_millis(1));
         assert_eq!(sizes(&sent).len(), 2, "again later");
+        assert!(app.size_note("a").is_some(), "still another size after two repairs: the tile says so");
         // It arrives; then another client takes the terminal: left to it, the tile says so.
         frame(&mut app, "a", want.0, want.1);
         draw(&mut app);

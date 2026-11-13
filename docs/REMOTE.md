@@ -604,7 +604,8 @@ The desktop clients (TUI and GUI, `canvas-core/src/sizes.rs`) also:
   `Claim`, for the terminal with the keyboard) goes again, with backoff up
   to 30 s; a terminal that had this client's size and then took another was
   taken by another client, and is left to it (no fight with the phone): its
-  tile says *sized elsewhere: click to fit* until you click into it;
+  tile says *sized elsewhere: click to fit* until you click into it (so does
+  one still at another size after two repairs, about 4.5 s);
 - while a terminal is taller than its tile, draw its bottom rows (or the
   rows down to its cursor when that is higher up), so the agent's input box,
   status line and cursor stay visible; selections, clicks and the wheel use
