@@ -33,6 +33,10 @@ const WINDOW_LOG_MAX: u32 = 24;
 pub const HEARTBEAT: Duration = Duration::from_secs(2);
 /// Silence after which a protocol-8 connection is dead.
 pub const DEAD_AFTER: Duration = Duration::from_secs(6);
+/// How long a reader busy with a message of its own ([`Liveness::busy`]) keeps
+/// its connection from being judged silent: past this the reader is stuck,
+/// and the connection may be closed as before.
+pub const BUSY_GRACE: Duration = Duration::from_secs(60);
 
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.to_owned())
@@ -185,6 +189,20 @@ impl FrameReader {
         self.limit = limit.min(MAX_FRAME);
     }
 
+    /// Marks `liveness` whenever bytes arrive, not only when a whole message
+    /// was read: a large message on a slow link (an image paste, an upload
+    /// piece, a big reply) keeps its connection alive while it flows.
+    pub fn with_liveness(mut self, liveness: Arc<Liveness>) -> Self {
+        self.set_liveness(liveness);
+        self
+    }
+
+    /// [`FrameReader::with_liveness`] on a reader already in use (after the handshake).
+    pub fn set_liveness(&mut self, liveness: Arc<Liveness>) {
+        let inner = std::mem::replace(&mut self.inner, Box::new(io::empty()));
+        self.inner = Box::new(Heard { inner, liveness });
+    }
+
     pub fn accept_compressed(&mut self) -> io::Result<()> {
         if self.zstd.is_none() {
             let mut decoder = zstd::stream::write::Decoder::new(Bounded::default())?;
@@ -245,17 +263,55 @@ impl FrameReader {
     }
 }
 
-/// When the peer was last heard from; a connection silent for `timeout` is dead.
+/// A reader that marks its connection alive whenever bytes arrive.
+struct Heard {
+    inner: Box<dyn Read + Send>,
+    liveness: Arc<Liveness>,
+}
+
+impl Read for Heard {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let read = self.inner.read(buf)?;
+        if read > 0 {
+            self.liveness.received();
+        }
+        Ok(read)
+    }
+}
+
+/// When the peer was last heard from; a connection silent for `timeout` is
+/// dead. Anything heard counts: whole messages, and with
+/// [`FrameReader::with_liveness`] every byte that arrives. While this end's
+/// reader is busy with a message ([`Liveness::busy`]) the silence is its own,
+/// not the peer's: the connection is not dead then (for [`BUSY_GRACE`] at most).
 pub struct Liveness {
     epoch: Instant,
     last_ms: AtomicU64,
+    /// When this end's reader became busy (ms since `epoch`, at least 1; 0: not busy).
+    busy_since_ms: AtomicU64,
     pub interval: Duration,
     pub timeout: Duration,
 }
 
+/// This end's reader is busy with a message ([`Liveness::busy`]); dropping it
+/// counts as hearing the peer (what it sent meanwhile is read next).
+pub struct Busy<'a> {
+    liveness: &'a Liveness,
+    previous: u64,
+}
+
+impl Drop for Busy<'_> {
+    fn drop(&mut self) {
+        self.liveness.busy_since_ms.store(self.previous, Ordering::Release);
+        if self.previous == 0 {
+            self.liveness.received();
+        }
+    }
+}
+
 impl Liveness {
     pub fn new(interval: Duration, timeout: Duration) -> Self {
-        Self { epoch: Instant::now(), last_ms: AtomicU64::new(0), interval, timeout }
+        Self { epoch: Instant::now(), last_ms: AtomicU64::new(0), busy_since_ms: AtomicU64::new(0), interval, timeout }
     }
 
     /// Heartbeat every 2 s, dead after 6 s.
@@ -268,11 +324,33 @@ impl Liveness {
         self.last_ms.store(self.epoch.elapsed().as_millis() as u64, Ordering::Relaxed);
     }
 
+    /// The reader (one thread) is busy with a message until the guard drops:
+    /// the peer's heartbeats wait unread meanwhile, which is not its silence.
+    pub fn busy(&self) -> Busy<'_> {
+        let now = (self.epoch.elapsed().as_millis() as u64).max(1);
+        let previous = self.busy_since_ms.load(Ordering::Acquire);
+        if previous == 0 {
+            self.busy_since_ms.store(now, Ordering::Release);
+        }
+        Busy { liveness: self, previous }
+    }
+
+    /// How long the reader has been busy (`None`: it is not).
+    pub fn busy_for(&self) -> Option<Duration> {
+        match self.busy_since_ms.load(Ordering::Acquire) {
+            0 => None,
+            since => Some(self.epoch.elapsed().saturating_sub(Duration::from_millis(since))),
+        }
+    }
+
     pub fn silence(&self) -> Duration {
         self.epoch.elapsed().saturating_sub(Duration::from_millis(self.last_ms.load(Ordering::Relaxed)))
     }
 
     pub fn dead(&self) -> bool {
+        if self.busy_for().is_some_and(|busy| busy < BUSY_GRACE) {
+            return false;
+        }
         self.silence() >= self.timeout
     }
 }
@@ -460,5 +538,78 @@ mod tests {
         assert!(beat.due(start + Duration::from_millis(260)));
         assert!(!beat.due(start + Duration::from_millis(300)));
         assert!(beat.next() > start + Duration::from_millis(400));
+    }
+
+    /// Hands out `chunk` bytes per read, `pause` apart (a slow link).
+    struct Trickle {
+        bytes: io::Cursor<Vec<u8>>,
+        chunk: usize,
+        pause: Duration,
+    }
+
+    impl Read for Trickle {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            std::thread::sleep(self.pause);
+            let len = buf.len().min(self.chunk);
+            self.bytes.read(&mut buf[..len])
+        }
+    }
+
+    #[test]
+    fn a_large_message_on_a_slow_link_keeps_its_connection_alive() {
+        // About 1.2 s for one 1 MiB frame, with a 300 ms silence timeout.
+        let sink = Shared::default();
+        let body: String = (0..(1u32 << 20) / 8).map(|i| format!("{:08x}", i.wrapping_mul(2_654_435_761))).collect();
+        FrameWriter::new(Box::new(sink.clone())).send(&ClientMsg::Rpc { id: 1, json: body }).unwrap();
+        FrameWriter::new(Box::new(sink.clone())).send(&ClientMsg::Heartbeat).unwrap();
+        let bytes = sink.0.lock().unwrap().clone();
+        let run = |progress: bool| {
+            let live = Arc::new(Liveness::new(Duration::from_millis(100), Duration::from_millis(300)));
+            live.received();
+            let trickle = Trickle { bytes: io::Cursor::new(bytes.clone()), chunk: 64 * 1024, pause: Duration::from_millis(70) };
+            let mut reader = FrameReader::new(Box::new(trickle));
+            if progress {
+                reader.set_liveness(live.clone());
+            }
+            let (watch, done) = (live.clone(), Arc::new(std::sync::atomic::AtomicBool::new(false)));
+            let stop = done.clone();
+            let watcher = std::thread::spawn(move || {
+                let mut died = false;
+                while !stop.load(Ordering::Acquire) {
+                    died |= watch.dead();
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                died
+            });
+            // As the service's reader does: whole messages count too.
+            while let Some(message) = reader.recv::<ClientMsg>().unwrap() {
+                live.received();
+                if message == ClientMsg::Heartbeat {
+                    break;
+                }
+            }
+            done.store(true, Ordering::Release);
+            watcher.join().unwrap()
+        };
+        assert!(!run(true), "bytes arriving keep the connection alive");
+        assert!(run(false), "counting whole messages only, the same transfer looks silent");
+    }
+
+    #[test]
+    fn a_busy_reader_is_not_the_peers_silence() {
+        let live = Liveness::new(Duration::from_millis(20), Duration::from_millis(150));
+        live.received();
+        {
+            let _busy = live.busy();
+            let _nested = live.busy();
+            std::thread::sleep(Duration::from_millis(400));
+            assert!(live.silence() >= Duration::from_millis(400));
+            assert!(!live.dead(), "busy: not dead");
+            assert!(live.busy_for().is_some());
+        }
+        assert!(live.busy_for().is_none());
+        assert!(!live.dead(), "the end of the busy spell counts as hearing the peer");
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(live.dead(), "then the usual timeout applies");
     }
 }

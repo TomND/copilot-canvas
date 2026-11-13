@@ -11,7 +11,9 @@
 //! write deadline ([`TcpCloser::set_write_timeout`]); a write the peer does not
 //! take in time fails with `TimedOut` (the service then drops the client),
 //! and on Windows a waiting writer also ends within a slice once the
-//! connection was closed.
+//! connection was closed. Writes go to the socket in pieces of at most
+//! 64 KiB, so the deadline measures progress: a peer that takes a large
+//! message steadily is never timed out by its size.
 
 use std::io::{self, Read, Write};
 #[cfg(windows)]
@@ -32,6 +34,8 @@ use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6, POLLRDNORM, POL
 
 /// How often a waiting reader checks whether its connection was closed.
 const POLL_SLICE_MS: i32 = 100;
+/// The most one `write` hands to the socket.
+const WRITE_SLICE: usize = 64 * 1024;
 
 struct Shared {
     stream: TcpStream,
@@ -137,6 +141,11 @@ impl Write for TcpWriter {
         if self.shared.closed() {
             return Err(io::Error::new(io::ErrorKind::BrokenPipe, "connection closed"));
         }
+        // One piece at a time: the write deadline then means "the peer took
+        // nothing for that long", not "one message took that long" (a blocking
+        // Winsock send returns only once the whole buffer is taken), and a close
+        // is noticed between pieces.
+        let buf = &buf[..buf.len().min(WRITE_SLICE)];
         // Winsock does not wake a blocked `send` when the socket is shut down:
         // wait for room in slices, so a close or the deadline ends the wait.
         #[cfg(windows)]
@@ -184,6 +193,15 @@ impl TcpCloser {
         let ms = limit.map_or(0, |d| d.as_millis().max(1) as u64);
         self.0.write_timeout_ms.store(ms, Ordering::Release);
         let _ = self.0.stream.set_write_timeout(limit.filter(|d| !d.is_zero()));
+    }
+
+    /// Caps the bytes the system buffers for sending (`SO_SNDBUF`, which also
+    /// ends its automatic growth). A writer that orders what it sends (the
+    /// service puts a keystroke's echo before bulk) keeps that order only for
+    /// what is not handed to the system yet: a few MB buffered ahead of an
+    /// echo on a slow tunnel are seconds of lag.
+    pub fn set_send_buffer(&self, bytes: usize) -> io::Result<()> {
+        socket2::SockRef::from(&self.0.stream).set_send_buffer_size(bytes)
     }
 
     /// Reads fail with `TimedOut` once `within` has passed (`None`: no deadline).
@@ -459,6 +477,30 @@ mod tests {
         let started = Instant::now();
         assert!(writer.write_all(&chunk).is_err());
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_peer_that_takes_a_large_write_steadily_is_never_timed_out() {
+        let (server, client) = pair();
+        let (_reader, mut writer, closer) = split(server).unwrap();
+        let (mut creader, _cwriter, _ccloser) = split(client).unwrap();
+        // 6 MiB to a peer reading about 4 MiB/s: far longer than the deadline in all, never that long without progress.
+        closer.set_write_timeout(Some(Duration::from_millis(500)));
+        let total = 6 << 20;
+        let drain = std::thread::spawn(move || {
+            let mut buf = vec![0u8; 32 * 1024];
+            let mut got = 0;
+            while got < total {
+                match creader.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => got += n,
+                }
+                std::thread::sleep(Duration::from_millis(8));
+            }
+            got
+        });
+        writer.write_all(&vec![3u8; total]).expect("a steady reader is never timed out");
+        assert_eq!(drain.join().unwrap(), total);
     }
 
     #[test]
