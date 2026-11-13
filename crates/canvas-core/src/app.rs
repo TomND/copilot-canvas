@@ -365,6 +365,8 @@ pub struct App {
     pub installed_agents: Vec<AgentKind>,
     /// New subsessions that fork their parent natively: node → parent's agent session.
     pub pending_forks: HashMap<String, String>,
+    /// Remote mode: sessions the service said have history to fork (agent session ids).
+    pub fork_history: HashMap<String, bool>,
     /// New subsession boxes that resume a subagent's own conversation and
     /// have not run yet (a refused launch removes them again).
     pub resumed_children: HashSet<String>,
@@ -436,7 +438,9 @@ impl App {
             Ok(info) => (info, None),
             Err(error) => (BackendInfo::default(), Some(format!("{error:#}"))),
         };
-        let automations_folder = backend.automations_dir(doc.automations_dir.clone()).unwrap_or_default();
+        // A remote service is not asked here (one round trip less before the
+        // first frame): the first automations load, in the background, says it.
+        let automations_folder = if conn.remote { String::new() } else { backend.automations_dir(doc.automations_dir.clone()).unwrap_or_default() };
         let selection = doc.selected.clone().into_iter().collect();
         let detected_agent = info.default_agent;
         let installed_agents = info.installed.clone();
@@ -542,6 +546,7 @@ impl App {
             detected_agent,
             installed_agents,
             pending_forks: HashMap::new(),
+            fork_history: HashMap::new(),
             resumed_children: HashSet::new(),
             automations: Vec::new(),
             automations_loading: false,
@@ -1717,7 +1722,7 @@ impl App {
         // launch itself reports a missing folder. A remote service is not
         // asked from here: a round trip on the UI thread to a busy service
         // froze the window (its launch answers the same).
-        if !self.conn.remote && self.backend.path_info(&cwd).is_ok_and(|info| !info.dir) {
+        if !self.conn.remote && !self.service_is_remote() && self.backend.path_info(&cwd).is_ok_and(|info| !info.dir) {
             self.node_errors.insert(id.to_owned(), "folder missing".into());
             self.notify(format!("Cannot open: folder not found: {cwd}"), true);
             return;
@@ -2226,6 +2231,14 @@ impl App {
         // The focused tile gets frames at a higher rate over remote links.
         let focused = self.focused_term.clone().filter(|id| visible.contains(id));
         if (visible != self.last_subscribed || focused != self.last_focused_sub) && self.queue(ClientMsg::Subscribe8 { ids: visible.clone(), focused: focused.clone() }) {
+            // Images of terminals no longer shown go (up to 64 MB each decoded);
+            // the service sends them again with the next subscription.
+            for id in self.last_subscribed.iter().filter(|id| !visible.contains(id)) {
+                if let Some(view) = self.views.get_mut(id) {
+                    view.images.clear();
+                    view.placements.clear();
+                }
+            }
             self.last_subscribed = visible;
             self.last_focused_sub = focused;
         }

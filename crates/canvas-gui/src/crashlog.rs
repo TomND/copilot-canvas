@@ -52,6 +52,8 @@ pub fn event(kind: &str, text: &str) {
         if recent.get(text).is_some_and(|t| now.duration_since(*t) < Duration::from_secs(10)) {
             return;
         }
+        // Only the last 10 s matter: older texts go (the map never grows for good).
+        recent.retain(|_, at| now.duration_since(*at) < Duration::from_secs(10));
         recent.insert(text.to_owned(), now);
     }
     let adapter = lock(&ADAPTER).clone().unwrap_or_else(|| "no adapter yet".into());

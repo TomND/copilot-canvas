@@ -450,7 +450,16 @@ impl App {
             _ => {}
         }
         if matches!(key.code, KeyCode::Enter) {
-            return match self.submit_new_session(dialog) {
+            // A check on the service's machine is under way: it ends the dialog.
+            if dialog.checking.is_some() {
+                return Outcome::Keep;
+            }
+            // Remote mode: the folders are checked off the UI thread first.
+            if self.service_is_remote() && !self.demo {
+                self.check_new_session(dialog);
+                return Outcome::Keep;
+            }
+            return match self.submit_new_session(dialog, None) {
                 Ok(()) => Outcome::Close,
                 Err(error) => {
                     dialog.error = Some(error);

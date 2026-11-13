@@ -317,6 +317,10 @@ pub struct NewSession {
     pub group: Option<String>,
     /// VM sessions: `None` without a VM pack (no *Run on* row shows).
     pub vm: Option<VmChoice>,
+    /// Remote mode: Enter checks the folders on the service's machine in the
+    /// background (request id, and the folder checked); the session is made
+    /// when the answer comes.
+    pub checking: Option<(u64, String)>,
 }
 
 /// The new-session dialog's *Run on* (docs/VM-SESSIONS.md): this machine by
@@ -683,6 +687,7 @@ mod tests {
             model: None,
             group: None,
             vm: None,
+            checking: None,
         };
         assert!(!dialog.fields().contains(&NsField::Base));
         assert!(dialog.fields().contains(&NsField::Agent), "every session chooses its agent");
