@@ -232,7 +232,7 @@ edit. While offline nothing is sent; local changes wait. A `DocOpen` whose
 | `ClientMsg::Claim` from the TUI and the GUI (the terminal that gets the keyboard; a size repair) | the iPhone client added it (every service since, v0.3.0 included, reads it); never sent over protocol 7 | a protocol-8 service from before the iPhone client would drop the connection: not supported |
 | `ClientMsg::RefreshSessions` every minute and when `Stats` disagrees with the client's terminal list (`canvas-core/src/resync.rs`) | existing message | indexes again (cheap); a service that answers it with `Terminals` (all) and `Sessions { full: true }` to the requester repairs a client's lists at once (older clients take both as the updates they are) |
 | A reconnect when `Stats` keeps disagreeing with the client's terminal list (at most every 5 minutes) | — | sends its whole lists, as on any connect |
-| A second, short-lived connection for uploads and clipboard images over 256 KiB (`conn::Bulk`: its own client session, no subscriptions, closed when done) | — | another client for a moment; an upload slower than 6 s on it can still be dropped as silent by a service that counts only whole messages, never the window's connection |
+| A second, short-lived connection for uploads and clipboard images over 256 KiB (`conn::Bulk`: its own client session, no subscriptions, closed when done; since round 2 it sets `CAP_REQUESTS_ONLY` and a service that knows the bit sends it `Ready8` and its answers only: no connect snapshot, broadcast or frame, no input session, not listed) | — | another client for a moment (the bit is ignored: it gets the connect snapshot it throws away); an upload slower than 6 s on it can still be dropped as silent by a service that counts only whole messages, never the window's connection |
 | `Request::Upload` pieces of 256 KiB (4 MiB before) | — | takes pieces of any size |
 | `ServiceMsg::Error { id: Some(box) }` (a refused launch) shown with its text, the box ↗ when it says the session already runs ("already running", "running elsewhere", "open elsewhere", "open in another", "running in another", "running inside") | — | its texts ("…already running in another terminal…") already match |
 
@@ -656,7 +656,14 @@ All new messages are protocol 8 and appended at the end of the enums:
 Client capability bits an older service ignores: `CAP_ACK` (`1 << 7`: the
 client reads `Caps` and acknowledges what it reads when the service says
 `SERVICE_ACKS`; the desktop clients set it over TCP; REMOTE.md, *Flow
-control*).
+control*), `CAP_REQUESTS_ONLY` (`1 << 8`: the connection carries backend
+requests only, the desktop clients' upload connection; a service that
+honours it says `SERVICE_REQUESTS_ONLY` in `Caps`, never lists it, sends it no
+snapshot, broadcast or frame, gives it no input session and serves only its
+`Rpc`, `Stats`, heartbeats and acknowledgements). An input session (what a
+client session's input was applied, kept across its reconnections, 256 at
+most) is forgotten least recently used first, never while its connection is
+listed.
 
 `ServiceMsg::shaped` never sends them to protocol-7 clients. The connection's
 reader thread routes `RpcReply` to the waiting caller by id; a dropped

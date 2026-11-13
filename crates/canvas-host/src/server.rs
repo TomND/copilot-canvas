@@ -45,7 +45,10 @@ use crate::outbox::{Next, Outbox, Push, Taken};
 pub use crate::outbox::Outgoing;
 use crate::paths::{Instance, build_id, now_ms};
 use canvas_sys::ipc::{Pipe, PipeServer};
-use crate::protocol::{self, CAP_ACK, CAP_COMPRESS, CAP_IMAGES, ClientMsg, Frame8, ImageRef, Input, LaunchKind, MAX_FRAME, PRE_AUTH_FRAME, Placement, Run8, SERVICE_ACKS, ServiceMsg, ServiceStats};
+use crate::protocol::{
+    self, CAP_ACK, CAP_COMPRESS, CAP_IMAGES, CAP_REQUESTS_ONLY, ClientMsg, Frame8, ImageRef, Input, LaunchKind, MAX_FRAME, PRE_AUTH_FRAME, Placement, Run8, SERVICE_ACKS, SERVICE_REQUESTS_ONLY, ServiceMsg,
+    ServiceStats,
+};
 use crate::term::{EncodedImage, Hooks, ImagePng, Notice, Spawn, Terminal, lock};
 use canvas_common::handshake::{Credential, Opening, Pairing};
 use canvas_common::sizing::SizePolicy;
@@ -206,6 +209,7 @@ impl InputSession {
             return false;
         }
         self.applied = seq;
+        self.seen = Instant::now();
         true
     }
 }
@@ -223,6 +227,10 @@ pub struct Client {
     pub peer_pid: Option<u32>,
     /// Connected through a WebSocket (Dev Tunnels web forwarding: the iPhone).
     pub websocket: bool,
+    /// It carries backend requests only (`CAP_REQUESTS_ONLY`: a client's
+    /// upload connection): never listed, so no connect snapshot, broadcast
+    /// or frame reaches it, and no input session.
+    pub requests_only: bool,
     /// `CAP_*` bits from the handshake.
     caps: u32,
     /// What waits for the writer ([`crate::outbox`]).
@@ -258,6 +266,7 @@ impl Client {
             remote_id: None,
             peer_pid: None,
             websocket: false,
+            requests_only: false,
             caps,
             outbox,
             subs: Mutex::new(HashMap::new()),
@@ -1233,13 +1242,15 @@ impl Host {
         }
     }
 
-    /// The input state of a client session (created on first use; the least
-    /// recently connected session is forgotten beyond `MAX_INPUT_SESSIONS`).
+    /// The input state of a client session (created on first use; beyond
+    /// `MAX_INPUT_SESSIONS` the one least recently used whose connection is
+    /// not listed is forgotten: a window connected for days keeps its own).
     fn input_session(&self, key: &[u8]) -> Arc<Mutex<InputSession>> {
+        let listed: HashSet<u64> = lock(&self.clients).keys().copied().collect();
         let mut sessions = lock(&self.input_sessions);
         if sessions.len() >= MAX_INPUT_SESSIONS
             && !sessions.contains_key(key)
-            && let Some(oldest) = sessions.iter().min_by_key(|(_, s)| lock(s).seen).map(|(k, _)| k.clone())
+            && let Some(oldest) = sessions.iter().map(|(k, s)| (k, lock(s))).filter(|(_, s)| !listed.contains(&s.owner)).min_by_key(|(_, s)| s.seen).map(|(k, _)| k.clone())
         {
             sessions.remove(&oldest);
         }
@@ -1362,7 +1373,9 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
     reader.set_limit(MAX_FRAME);
     let v8 = accepted.protocol >= 8;
     let info = accepted.client.unwrap_or_default();
-    if let Some(remote_id) = info.remote_id.as_ref().filter(|_| !accepted.satellite) {
+    // A connection for requests only (a client's uploads) is not the client coming back.
+    let requests_only = v8 && info.caps & CAP_REQUESTS_ONLY != 0 && !accepted.satellite;
+    if let Some(remote_id) = info.remote_id.as_ref().filter(|_| !accepted.satellite && !requests_only) {
         host.app().remote_seen(remote_id);
     }
     if remote && v8 {
@@ -1393,11 +1406,12 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
     client.remote_id = info.remote_id.clone();
     client.peer_pid = peer_pid;
     client.websocket = websocket;
+    client.requests_only = requests_only;
     // The newest connection of a client session owns its input; the previous
     // one (half-open after a network drop) stops applying input and is closed.
     let mut ready_ack = 0;
     let mut replaced: Option<Arc<Client>> = None;
-    if v8 {
+    if v8 && !requests_only {
         let session = host.input_session(&info.session);
         let previous = {
             let mut state = lock(&session);
@@ -1432,17 +1446,20 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
     if remote {
         let paired = info.remote_id.as_deref().map(|r| format!(" as paired client {r:?}")).unwrap_or_default();
         let via = if websocket { ", WebSocket" } else { "" };
-        log(&host.instance, &format!("remote client {id} connected ({}, protocol {}, compression {}{via}){paired}", printable(&info.name), accepted.protocol, host.compress && info.caps & CAP_COMPRESS != 0));
+        let only = if requests_only { ", requests only" } else { "" };
+        log(&host.instance, &format!("remote client {id} connected ({}, protocol {}, compression {}{via}{only}){paired}", printable(&info.name), accepted.protocol, host.compress && info.caps & CAP_COMPRESS != 0));
     }
     client.send(ServiceMsg::Ready8 { pid: std::process::id(), input_ack: ready_ack });
     // Clients that acknowledge what they read (`CAP_ACK`) are told so; flow
     // control counts from the next byte. Remote clients that do not (older
     // builds, the phone) get the stopgap pacing while they type.
-    client.send(ServiceMsg::Caps { bits: SERVICE_ACKS });
+    client.send(ServiceMsg::Caps { bits: SERVICE_ACKS | SERVICE_REQUESTS_ONLY });
     if remote && info.caps & CAP_ACK == 0 {
         client.outbox.set_paced();
     }
-    host.register(&client);
+    if !requests_only {
+        host.register(&client);
+    }
     let revoked = {
         // What follows is this end's work, not the client's silence.
         let _busy = client.liveness.as_ref().map(|l| l.busy());
@@ -1464,9 +1481,11 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
     // The backend's snapshot is the worker's first job (R2-A-03): reading starts at once.
     let result = if revoked { Ok(()) } else { serve_messages(host, &client, &mut reader) };
     host.drop_client(&client, None);
-    // Whatever a message handled meanwhile left for this client.
-    host.size_leave(id, None);
-    host.app().client_disconnected(id);
+    if !requests_only {
+        // Whatever a message handled meanwhile left for this client.
+        host.size_leave(id, None);
+        host.app().client_disconnected(id);
+    }
     {
         // Never left listed, even when it was dropped before it was listed.
         let mut clients = lock(&host.clients);
@@ -1767,8 +1786,11 @@ fn serve_messages(host: &Arc<Host>, client: &Arc<Client>, reader: &mut FrameRead
             return Err(error.into());
         }
     };
-    let _ = work_tx.send(Work::Connected);
+    if !client.requests_only {
+        let _ = work_tx.send(Work::Connected);
+    }
     let mut undecodable = 0u64;
+    let mut refused = 0u64;
     let result = (|| -> Result<()> {
         while let Some(frame) = reader.recv_lenient::<ClientMsg>()? {
             // A client the service dropped is not served further.
@@ -1790,6 +1812,14 @@ fn serve_messages(host: &Arc<Host>, client: &Arc<Client>, reader: &mut FrameRead
                     continue;
                 }
             };
+            // A connection for requests only gets nothing else served.
+            if client.requests_only && !matches!(message, ClientMsg::Rpc { .. } | ClientMsg::Heartbeat | ClientMsg::Received { .. } | ClientMsg::Stats) {
+                refused += 1;
+                if refused == 1 {
+                    log(&host.instance, &format!("client {} (requests only) sent another message; skipped", client.id));
+                }
+                continue;
+            }
             let _busy = client.liveness.as_ref().map(|l| l.busy());
             // Work waits for it, or another launch of it is starting (R2-A-07).
             let queued = message_terminal(&message).is_some_and(|id| lock(&pending.waiting).contains_key(id) || host.is_launching(id));
@@ -2039,8 +2069,10 @@ fn liveness_loop(host: Arc<Host>) {
     loop {
         std::thread::sleep(Duration::from_millis(500));
         host.size_expire();
-        let clients: Vec<Arc<Client>> = lock(&host.clients).values().cloned().collect();
-        for client in clients {
+        // Listed clients, and connections served without being listed (requests only).
+        let mut clients: HashMap<u64, Arc<Client>> = lock(&host.clients).clone();
+        clients.extend(lock(&host.serving).iter().map(|(id, client)| (*id, client.clone())));
+        for client in clients.into_values() {
             if let Some(liveness) = &client.liveness
                 && liveness.dead()
             {
@@ -3503,6 +3535,58 @@ mod tests {
         closer2.close();
     }
 
+    #[test]
+    fn a_connection_for_requests_only_gets_its_answers_and_nothing_else() {
+        let (instance, addr, host) = slow_service("light", Duration::ZERO, Duration::ZERO);
+        let (_window_rx, _window, window_closer) = test_client(&instance, addr, "light-window");
+        eventually(Duration::from_secs(5), "the window is listed", || lock(&host.clients).len() == 1);
+        let sessions = lock(&host.input_sessions).len();
+        // The window's upload connection (R2-A-05).
+        let (rx, mut writer, closer) = test_client_with(&instance, addr, "light-uploads", protocol::CAP_FRAME8 | CAP_REQUESTS_ONLY);
+        writer.send(&ClientMsg::Rpc { id: 3, json: "\"Info\"".into() }).unwrap();
+        writer.send(&ClientMsg::Input8 { id: "x".into(), input: Input::Key { key: protocol::Key::Char('x'), mods: 0 }, seq: 1 }).unwrap();
+        // A broadcast while it is connected (a launch) does not reach it.
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        host.launch("light-t", waiting_program(), &cwd, 80, 24).unwrap();
+        let mut got = Vec::new();
+        let until = Instant::now() + Duration::from_millis(800);
+        while let Some(left) = until.checked_duration_since(Instant::now()) {
+            match rx.recv_timeout(left) {
+                Ok((message, _)) => got.push(message),
+                Err(_) => break,
+            }
+        }
+        let kinds: Vec<String> = got.iter().filter(|m| !matches!(m, ServiceMsg::Heartbeat { .. })).map(|m| format!("{m:?}").split([' ', '{', '(']).next().unwrap_or_default().to_owned()).collect();
+        assert_eq!(kinds, ["Ready8", "RpcReply"], "{got:?}");
+        assert!(matches!(got[0], ServiceMsg::Ready8 { input_ack: 0, .. }));
+        assert_eq!(lock(&host.clients).len(), 1, "it is never listed");
+        assert_eq!(lock(&host.input_sessions).len(), sessions, "it takes no input session");
+        closer.close();
+        window_closer.close();
+        let _ = host.terminal("light-t").map(|t| t.stop(true));
+    }
+
+    #[test]
+    fn a_listed_clients_input_session_is_never_forgotten() {
+        let (instance, addr, host) = slow_service("sessions", Duration::ZERO, Duration::ZERO);
+        let (_rx, _writer, closer) = test_client(&instance, addr, "sessions-window");
+        eventually(Duration::from_secs(5), "the window is listed", || lock(&host.clients).len() == 1);
+        // Connected for days: its session is the least recently used one.
+        let long_ago = Instant::now().checked_sub(Duration::from_secs(3600)).unwrap_or_else(Instant::now);
+        for session in lock(&host.input_sessions).values() {
+            lock(session).seen = long_ago;
+        }
+        for n in 0..MAX_INPUT_SESSIONS + 20 {
+            host.input_session(format!("other-{n}").as_bytes());
+        }
+        let key: Vec<u8> = "sessions-window".bytes().chain(std::iter::repeat(0)).take(16).collect();
+        let sessions = lock(&host.input_sessions);
+        assert!(sessions.contains_key(&key), "the listed window kept its session");
+        assert!(sessions.len() <= MAX_INPUT_SESSIONS, "{}", sessions.len());
+        drop(sessions);
+        closer.close();
+    }
+
     /// A backend that answers every `Rpc` at once with a reply of `.0` bytes (bulk).
     struct ReplyApp(usize);
 
@@ -3589,7 +3673,7 @@ mod tests {
         let (rx, mut writer, closer) = test_client_with(&instance, addr, "acks", protocol::CAP_FRAME8 | CAP_ACK);
         assert!(matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap().0, ServiceMsg::Ready8 { .. }));
         let (caps, base) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert_eq!(caps, ServiceMsg::Caps { bits: SERVICE_ACKS }, "Caps follows Ready8");
+        assert_eq!(caps, ServiceMsg::Caps { bits: SERVICE_ACKS | SERVICE_REQUESTS_ONLY }, "Caps follows Ready8");
         for id in 0..8 {
             writer.send(&rpc(id)).unwrap();
         }

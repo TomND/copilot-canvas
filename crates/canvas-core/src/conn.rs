@@ -13,7 +13,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded, unbounded};
 
 use crate::paths::{Instance, build_id};
 use crate::pipe;
-use crate::protocol::{self, CAP_ACK, CAP_COMPRESS, CAP_FRAME8, ClientInfo, ClientMsg, Input, PROTOCOL, PROTOCOL_MIN, SERVICE_ACKS, ServiceMsg};
+use crate::protocol::{self, CAP_ACK, CAP_COMPRESS, CAP_FRAME8, CAP_REQUESTS_ONLY, ClientInfo, ClientMsg, Input, PROTOCOL, PROTOCOL_MIN, SERVICE_ACKS, ServiceMsg};
 use crate::sync::Opened;
 use crate::tunnel::Server;
 pub use canvas_common::handshake::{AuthError, NoChallenge, Refused};
@@ -469,8 +469,10 @@ pub fn reconnect(target: &ConnTarget, options: &ConnOptions, session: &Arc<Clien
 /// dropped files): keystrokes, their echo and the heartbeats on the window's
 /// own connection never wait behind them, and a transfer slower than the
 /// dead-after time can only fail itself, never drop the window's connection.
-/// The service sees one more client that shows nothing; it goes when this
-/// is dropped.
+/// It says it carries requests only (`CAP_REQUESTS_ONLY`): the service sends
+/// it no connect snapshot, broadcast or frame and gives it no input session
+/// (an older service serves it as a client that shows nothing). It goes
+/// when this is dropped.
 pub struct Bulk {
     conn: Conn,
     pub backend: Arc<crate::remote::RemoteBackend>,
@@ -485,7 +487,7 @@ impl Drop for Bulk {
 /// Opens a [`Bulk`] connection to `target` (protocol 8 only).
 pub fn open_bulk(target: &ConnTarget, options: &ConnOptions) -> Result<Bulk> {
     let backend = crate::remote::RemoteBackend::new();
-    let options = ConnOptions { start: false, name: format!("{} uploads", options.name), rpc: Some(backend.clone()), caps: 0, ..options.clone() };
+    let options = ConnOptions { start: false, name: format!("{} uploads", options.name), rpc: Some(backend.clone()), caps: CAP_REQUESTS_ONLY, ..options.clone() };
     // A session of its own: the window's connection is never taken for its reconnection.
     let conn = open(target, &options, &ClientSession::new())?;
     let bulk = Bulk { conn, backend };
@@ -1121,6 +1123,11 @@ mod tests {
     /// A minimal protocol-8 service on loopback: `serve` gets each accepted
     /// connection's halves after the handshake and `Ready8`.
     fn fake_service(writer_of: fn(Box<dyn std::io::Write + Send>) -> Box<dyn std::io::Write + Send>, serve: impl Fn(usize, FrameReader, FrameWriter) + Send + Sync + 'static) -> String {
+        fake_service_caps(writer_of, move |n, _caps, reader, writer| serve(n, reader, writer))
+    }
+
+    /// [`fake_service`] that also tells `serve` the client's `CAP_*` bits.
+    fn fake_service_caps(writer_of: fn(Box<dyn std::io::Write + Send>) -> Box<dyn std::io::Write + Send>, serve: impl Fn(usize, u32, FrameReader, FrameWriter) + Send + Sync + 'static) -> String {
         let listener = tcp::listen_loopback("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         let serve = Arc::new(serve);
@@ -1130,11 +1137,9 @@ mod tests {
                 std::thread::spawn(move || {
                     let (reader, writer, _closer) = tcp::split(stream).unwrap();
                     let (mut reader, mut writer) = (FrameReader::new(Box::new(reader)), FrameWriter::new(writer_of(Box::new(writer))));
-                    if handshake::accept(&mut reader, &mut writer, true, "svc", |_| Some(b"secret".to_vec())).is_err() {
-                        return;
-                    }
+                    let Ok(accepted) = handshake::accept(&mut reader, &mut writer, true, "svc", |_| Some(b"secret".to_vec())) else { return };
                     writer.send(&ServiceMsg::Ready8 { pid: 1, input_ack: 0 }).unwrap();
-                    serve(n, reader, writer);
+                    serve(n, accepted.client.map_or(0, |c| c.caps), reader, writer);
                 });
             }
         });
@@ -1171,7 +1176,9 @@ mod tests {
     fn uploads_go_over_a_connection_of_their_own_and_a_closed_handshake_says_so() {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let log = seen.clone();
-        let addr = fake_service(|w| w, move |n, mut reader, mut writer| {
+        let addr = fake_service_caps(|w| w, move |n, caps, mut reader, mut writer| {
+            // Only the upload connection says it carries requests only (an older service ignores the bit).
+            assert_eq!(caps & CAP_REQUESTS_ONLY != 0, n == 1, "connection {n}: caps {caps:#x}");
             while let Ok(Some(message)) = reader.recv::<ClientMsg>() {
                 if let ClientMsg::Rpc { id, .. } = message {
                     log.lock().unwrap().push(n);
