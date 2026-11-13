@@ -23,6 +23,9 @@ use crate::sync::{ClientPrefs, Opened, Replica};
 
 /// Local document changes are sent to the service this soon.
 const DOC_FLUSH: Duration = Duration::from_millis(100);
+/// A document asked for and not received by then is asked for again (a
+/// lost `DocOpen` or `Doc` would otherwise hold back every edit for good).
+pub const DOC_RETRY: Duration = Duration::from_secs(10);
 /// View and panel changes are written to the client's preferences this soon.
 const PREFS_FLUSH: Duration = Duration::from_millis(400);
 
@@ -238,6 +241,8 @@ pub struct App {
     pub doc_request: (Option<String>, bool),
     /// Waiting for the service to send the whole document again.
     pub doc_resync: bool,
+    /// When the document was last asked for (asked again after [`DOC_RETRY`]).
+    pub doc_asked_at: Instant,
     /// When local document changes started waiting to be sent.
     pub dirty_at: Option<Instant>,
     /// When view or panel changes started waiting to be written.
@@ -311,6 +316,8 @@ pub struct App {
     pub last_tracked: Vec<String>,
     pub stats: Option<ServiceStats>,
     pub stats_at: Instant,
+    /// Keeps the terminal and session lists in step with the service's (`resync.rs`).
+    pub resync: crate::resync::Resync,
     pub build_mismatch: bool,
     /// A remote service of another build (its build id): mixed builds are
     /// unsupported, so the toolbar says so ([`App::note_mixed_builds`]).
@@ -447,6 +454,7 @@ impl App {
             replica,
             doc_request: (None, demo),
             doc_resync: false,
+            doc_asked_at: Instant::now(),
             dirty_at: None,
             prefs_dirty_at: None,
             prefs,
@@ -499,6 +507,7 @@ impl App {
             last_tracked: Vec::new(),
             stats: None,
             stats_at: Instant::now() - Duration::from_secs(60),
+            resync: Default::default(),
             last_input_at: HashMap::new(),
             idle_check_at: Instant::now(),
             repaint_requested: false,
@@ -659,9 +668,13 @@ impl App {
             return;
         }
         self.doc_resync = true;
+        self.doc_asked_at = Instant::now();
         let (path, demo) = self.doc_request.clone();
         let cwd = self.default_cwd.clone();
-        self.send(ClientMsg::DocOpen { path, demo, cwd });
+        if !self.queue(ClientMsg::DocOpen { path, demo, cwd }) {
+            // Not sent (a full queue): asked again in a second.
+            self.doc_asked_at -= DOC_RETRY.saturating_sub(Duration::from_secs(1));
+        }
     }
 
     /// The whole document from the service.
@@ -859,22 +872,14 @@ impl App {
         self.conn = conn;
         self.connected = true;
         self.banner = None;
-        self.last_subscribed.clear();
-        self.last_focused_sub = None;
-        self.last_sizes.clear();
-        self.pending_sizes.clear();
-        self.size_states.clear();
-        self.last_claimed = None;
-        self.last_tracked.clear();
-        self.routing_sent.clear();
-        self.resync_terms = true;
-        // Launches the previous connection asked for are the service's now (a
-        // restarted one resumes what it ran): never "preparing" forever.
-        self.launching.clear();
+        self.reset_service_state();
         // The new connection opens the document again (local changes are kept).
         self.request_doc();
+        let repaired = std::mem::take(&mut self.resync.repairing);
         if lost > 0 {
             self.notify(format!("Reconnected. {lost} keystroke(s) were not delivered."), true);
+        } else if repaired {
+            self.notify("Reconnected to bring the terminal list back in step with the service.", false);
         } else {
             self.notify("Reconnected to the terminal service.", false);
         }
@@ -1883,7 +1888,7 @@ impl App {
                     self.notify(message, true);
                 }
             },
-            ServiceMsg::Stats(stats) => self.stats = Some(stats),
+            ServiceMsg::Stats(stats) => self.on_stats(stats),
             ServiceMsg::Subsession { parent, child, name, cwd } => self.link_subsession(&parent, &child, &name, &cwd),
             ServiceMsg::Bus { json } => self.on_bus(&json),
             ServiceMsg::BusEvent { json } => self.on_bus_event(&json),
@@ -2251,6 +2256,9 @@ impl App {
         if self.dirty_at.is_some_and(|t| t.elapsed() >= DOC_FLUSH) {
             self.flush_doc();
         }
+        if self.doc_resync && self.connected && self.doc_asked_at.elapsed() >= DOC_RETRY {
+            self.request_doc();
+        }
         if self.prefs_dirty_at.is_some_and(|t| t.elapsed() >= PREFS_FLUSH) {
             self.save_prefs();
         }
@@ -2269,6 +2277,7 @@ impl App {
             self.stats_at = Instant::now();
             self.send(ClientMsg::Stats);
         }
+        self.tick_resync();
         if self.pan_quiet_until.is_some_and(|t| Instant::now() >= t) {
             self.pan_quiet_until = None;
             self.needs_draw = true;
@@ -2695,6 +2704,16 @@ mod connection_tests {
         app.flush_doc();
         let resent = edits(&sent);
         assert!(matches!(resent.as_slice(), [(9, ops)] if ops.len() == 1), "{resent:?}");
+        // A resync whose answer never comes asks again.
+        app.request_doc();
+        assert!(matches!(sent.try_recv(), Ok(ClientMsg::DocOpen { .. })));
+        app.on_tick();
+        assert!(!sent.try_iter().any(|m| matches!(m, ClientMsg::DocOpen { .. })), "not at once");
+        app.doc_asked_at = Instant::now() - DOC_RETRY;
+        app.on_tick();
+        assert!(sent.try_iter().any(|m| matches!(m, ClientMsg::DocOpen { .. })), "asked again");
+        app.on_service(ServiceMsg::Doc { key: "k".into(), version: 9, json: serde_json::to_string(&reply).unwrap() });
+        assert!(!app.doc_resync);
         // Save errors from the service are shown.
         app.on_service(ServiceMsg::DocSaved { key: "k".into(), version: 9, error: Some("disk full".into()) });
         assert_eq!(app.save_error.as_deref(), Some("the service cannot save the canvas: disk full"));

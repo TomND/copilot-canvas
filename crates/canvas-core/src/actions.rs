@@ -553,14 +553,14 @@ impl App {
             }
         };
         self.build_mismatch = conn.outdated();
-        self.routing_sent.clear();
         self.new_service_rx = Some(conn.rx.clone());
         self.conn = conn;
         self.connected = true;
+        // A new service: nothing this client sent the old one holds (S6-07:
+        // without this, unchanged tiles were never subscribed again).
+        self.reset_service_state();
         self.terms.clear();
         self.views.clear();
-        self.launching.clear();
-        self.terms_rev += 1;
         // The new service opens the document again (local changes are kept).
         self.request_doc();
         let count = self.resume_terminals(&resume);

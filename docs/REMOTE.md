@@ -203,7 +203,24 @@ whole service stopped for 59 s).
   on the UI thread before a launch (the launch answers that).
 - The new connection replaces the old one (like a service restart): the client
   sends its subscriptions, sizes, tracked sessions and routing again; the
-  service sends the terminal list and full frames.
+  service sends the terminal list and full frames. A local service restarted
+  by ⟳ Update service starts the client from scratch the same way
+  (`App::reset_service_state`).
+- Between reconnects the client keeps its lists in step with the service's
+  (`canvas-core/src/resync.rs`): the service sends whole lists only when a
+  client connects, then changes, and a change lost on the way (a full queue,
+  a launch or exit between a connect's snapshot and its registration) would
+  leave a box looking stopped or open elsewhere while it runs here, or a dead
+  terminal looking alive. Every `Stats` answer (every 3 s) carries the
+  service's terminal and alive counts; when the client's lists disagree on
+  two answers in a row with the same numbers, it sends `RefreshSessions`
+  (a service that answers it with its whole lists repairs them at once);
+  when they still disagree two answers later it reconnects for the whole
+  lists, at most every 5 minutes, with the notice "Reconnected to bring the
+  terminal list back in step with the service." `RefreshSessions` also goes
+  every minute (an older service only indexes again; cheap). A document
+  asked for again (`DocOpen`) and not received within 10 s is asked for
+  again, so a lost answer never holds back this window's edits.
 - While offline, terminal input (keys, paste, clicks, wheel, scroll) is dropped
   with "Offline: input not sent." It is never queued.
 - Keyboard input travels as `Input8` with a per-session sequence number. The

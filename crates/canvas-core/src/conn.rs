@@ -203,6 +203,9 @@ pub struct Conn {
     /// ([`canvas_common::legacy::PRODUCT`], `Instance::legacy_pipe_name`): an older service that
     /// clients replace like any service of another build.
     pub legacy: bool,
+    /// Ends the connection (its reader then ends and the front end
+    /// reconnects); `None` for a detached connection.
+    closer: Option<Closer>,
 }
 
 impl Conn {
@@ -215,6 +218,19 @@ impl Conn {
     /// replaced from here): the service's build, for the mixed-builds notice.
     pub fn remote_build_differs(&self) -> Option<&str> {
         (self.remote && !self.service_build.is_empty() && self.service_build != build_id()).then_some(self.service_build.as_str())
+    }
+
+    /// Closes the connection: the service forgets this client (its
+    /// subscriptions and size wishes) and the reader ends, so a front end
+    /// still using it reconnects. False for a detached connection.
+    pub fn close(&self) -> bool {
+        match &self.closer {
+            Some(closer) => {
+                closer.close();
+                true
+            }
+            None => false,
+        }
     }
 }
 
@@ -231,6 +247,7 @@ impl Conn {
             session: ClientSession::new(),
             wire: Arc::default(),
             legacy: false,
+            closer: None,
         }
     }
 }
@@ -625,6 +642,7 @@ fn establish(
     if v8 {
         // A connection silent past `dead_after` is closed; the reader then ends.
         let slice = (options.dead_after / 4).min(Duration::from_millis(250));
+        let closer = closer.clone();
         std::thread::Builder::new().name("service-watchdog".into()).spawn(move || {
             while reading.load(Ordering::Acquire) {
                 std::thread::sleep(slice);
@@ -644,6 +662,7 @@ fn establish(
         session: session.clone(),
         wire: stats,
         legacy: false,
+        closer: Some(closer),
     })
 }
 

@@ -43,6 +43,7 @@ pub mod recent;
 pub mod remote;
 pub mod remove;
 pub mod reports;
+pub mod resync;
 pub mod review_followups;
 pub mod richtext;
 pub mod side;
