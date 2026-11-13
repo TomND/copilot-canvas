@@ -273,12 +273,15 @@ impl App {
             return self.notify("Offline: input not sent.", true);
         }
         self.notify("Sending the image to the service's clipboard…", false);
-        let (platform, id) = (self.platform.clone(), id.to_owned());
+        let (platform, id, bulk) = (self.platform.clone(), id.to_owned(), self.upload_target());
         self.in_background(
             move |backend| {
                 let png = platform.clipboard_image_png().map_err(|e| format!("{e:#}"))?;
                 let size = png.len();
-                backend.set_clipboard_image(png).map(|_| size).map_err(|e| format!("{e:#}"))
+                // A large image (up to 20 MB in one request) goes over a connection
+                // of its own: typing and its echo never wait behind it.
+                let bulk = bulk.filter(|_| size > crate::files::PIECE);
+                crate::conn::with_bulk(backend, bulk, |backend| backend.set_clipboard_image(png)).map(|_| size).map_err(|e| format!("{e:#}"))
             },
             move |result| {
                 AppEvent::Run(Box::new(move |app: &mut App| match result {

@@ -237,9 +237,19 @@ whole service stopped for 59 s).
   refused this client)" or "… (the service did not prove it knows this
   client's secret)".
 - Through a Dev Tunnel every attempt first asks for the forwarded address: a
-  `devtunnel connect` child that died is started again, and one whose
-  connections failed twice in a row (the tunnel is up locally but the relay is
-  broken) is restarted.
+  `devtunnel connect` child that died is started again. One through which
+  nothing gets twice in a row (no TCP connection to its port, or not a byte
+  back before the handshake's 10 s: the relay is broken) is restarted, and so
+  is one whose connections keep closing before a byte comes back for 45 s
+  (the service restarting closes them too, for shorter); but never a child
+  younger than 10 s, nor one that carries another connection that is up
+  (another window, an upload), and an answer from the service (a refusal
+  included) counts as the tunnel working.
+- The client's writer sends what a person waits for (keys, clicks, the
+  wheel, sizes, subscriptions) ahead of anything queued before it (backend
+  requests, canvas edits), and every byte read counts as a sign of life, so a
+  large answer slower than the 6 s dead-after time no longer ends the
+  connection on the client's side.
 
 ## Pairing
 
@@ -629,7 +639,7 @@ in the canvas in any remote mode (that is how the tests check them).
 |---|---|---|
 | Text copy (selection, Ctrl+C, Ctrl+Shift+C), paste | this machine's clipboard | the home clipboard (client side) |
 | OSC 52 copies from a terminal | the client that last sent input to that terminal (else the last client that typed) | the same: with the home PC and the Cloud PC's own window open, the copy goes to the machine you typed on |
-| Image paste (Ctrl+V / Alt+V with an image, pane menu Paste) | the key goes to the agent, which reads the local clipboard | the client reads the home clipboard image (`PNG` format, else `CF_DIBV5`/`CF_DIB` converted to PNG; at most 20 MB and 32 M pixels), sends `Request::SetClipboardImage`, the service puts it on the Cloud PC clipboard in its user session as `CF_DIB` (32-bit) and `PNG`, then the client sends the same key. Offline: nothing is sent |
+| Image paste (Ctrl+V / Alt+V with an image, pane menu Paste) | the key goes to the agent, which reads the local clipboard | the client reads the home clipboard image (`PNG` format, else `CF_DIBV5`/`CF_DIB` converted to PNG; at most 20 MB and 32 M pixels), sends `Request::SetClipboardImage` (an image over 256 KiB on a short-lived connection of its own, so typing on the window's connection never waits behind it), the service puts it on the Cloud PC clipboard in its user session as `CF_DIB` (32-bit) and `PNG`, then the client sends the same key. Offline: nothing is sent |
 | URLs in terminals (Ctrl+click), report links | this machine's browser | the home browser |
 | Paths in terminals, passive-session files (rules, memory, log), the events catalog | VS Code at the line / Explorer | checked on the service (`PathInfo`, so a missing file says "… does not exist"); with `--vscode-tunnel NAME` on the server record and VS Code installed at home: `vscode://vscode-remote/tunnel+NAME/C:/path:LINE`; otherwise the text viewer |
 | Folders (config views' "Open folder", group folders and their chips, the sidebar's folder rows, passive folder) | Explorer | VS Code through the tunnel, else the canvas's folder browser (subfolders and files, `ListEntries`; a file opens in the viewer through `ReadText`; "Copy path"). Folders follow this in any remote mode, `--remote loopback` included, so the service never opens Explorer for a client |

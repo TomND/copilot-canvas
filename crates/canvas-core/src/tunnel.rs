@@ -38,8 +38,14 @@ const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const PROBE_AFTER: Duration = Duration::from_secs(8);
 /// How often the child's listeners are looked for.
 const PROBE_EVERY: Duration = Duration::from_millis(500);
-/// Failed connections through a live child before it is restarted.
+/// Connections in a row that got nothing through a live child (no TCP
+/// connection to its port, or not a byte back) before it is restarted.
 const RESTART_AFTER_FAILURES: u32 = 2;
+/// Connections closed before a byte came back (the service restarting, or a
+/// forwarder whose relay is gone) restart the child only after this long.
+const RESTART_AFTER_CLOSES: Duration = Duration::from_secs(45);
+/// A child younger than this is never restarted (it may still be reaching the relay).
+const MIN_LIFE: Duration = Duration::from_secs(10);
 /// Output lines kept for error messages.
 const KEEP_LINES: usize = 30;
 
@@ -96,18 +102,42 @@ impl Server {
         }
     }
 
-    /// A connection through the current address failed.
+    /// A connection through the current address got nothing back: no TCP
+    /// connection to the forwarded port, or not a byte before the handshake
+    /// timed out (the relay may be gone).
     pub fn failed(&self) {
         if let Some(tunnel) = &self.tunnel {
             lock(&tunnel.state).failures += 1;
         }
     }
 
-    /// A connection succeeded.
+    /// A connection through the current address was closed before a byte
+    /// came back: the service restarting behind a working tunnel, or (when
+    /// it lasts) a forwarder that lost its relay.
+    pub fn closed_unheard(&self) {
+        if let Some(tunnel) = &self.tunnel {
+            lock(&tunnel.state).closes_since.get_or_insert_with(Instant::now);
+        }
+    }
+
+    /// Something came back through the address (a connection, or a
+    /// service's refusal): the path works.
     pub fn succeeded(&self) {
         if let Some(tunnel) = &self.tunnel {
-            lock(&tunnel.state).failures = 0;
+            let mut state = lock(&tunnel.state);
+            state.failures = 0;
+            state.closes_since = None;
         }
+    }
+
+    /// A connection through the tunnel is up until the returned guard is
+    /// dropped: the child is never restarted under it (other windows, an
+    /// upload connection), only when it dies.
+    pub fn in_use(self: &Arc<Self>) -> TunnelUse {
+        if let Some(tunnel) = &self.tunnel {
+            lock(&tunnel.state).open += 1;
+        }
+        TunnelUse(self.clone())
     }
 
     /// The `devtunnel connect` child's process id, while it runs.
@@ -126,6 +156,18 @@ impl Server {
     }
 }
 
+/// A connection through a server's tunnel that is up (see [`Server::in_use`]).
+pub struct TunnelUse(Arc<Server>);
+
+impl Drop for TunnelUse {
+    fn drop(&mut self) {
+        if let Some(tunnel) = &self.0.tunnel {
+            let mut state = lock(&tunnel.state);
+            state.open = state.open.saturating_sub(1);
+        }
+    }
+}
+
 /// `devtunnel connect ID`, kept running.
 struct Tunnel {
     id: String,
@@ -133,13 +175,31 @@ struct Tunnel {
     port: u16,
     ready_timeout: Duration,
     probe_after: Duration,
+    /// See [`MIN_LIFE`].
+    min_life: Duration,
     state: Mutex<TunnelState>,
 }
 
 #[derive(Default)]
 struct TunnelState {
     child: Option<Running>,
+    /// Connections in a row that got nothing back.
     failures: u32,
+    /// Since when connections have closed before a byte came back.
+    closes_since: Option<Instant>,
+    /// Connections through the child that are up.
+    open: usize,
+}
+
+impl TunnelState {
+    /// The child is restarted: it died, or nothing gets through it while no
+    /// connection through it is up and it had time to reach the relay.
+    fn restart_due(&mut self, min_life: Duration) -> bool {
+        let exited = self.child.as_mut().is_some_and(|r| r.child.try_wait().ok().flatten().is_some());
+        let old_enough = self.child.as_ref().is_none_or(|r| r.started.elapsed() >= min_life);
+        let failing = self.failures >= RESTART_AFTER_FAILURES || self.closes_since.is_some_and(|at| at.elapsed() >= RESTART_AFTER_CLOSES);
+        exited || (failing && self.open == 0 && old_enough)
+    }
 }
 
 #[derive(Default)]
@@ -260,7 +320,7 @@ fn read_lines(source: impl Read + Send + 'static, output: Arc<Mutex<Output>>) {
 
 impl Tunnel {
     fn new(id: &str, port: u16) -> Self {
-        Self { id: id.to_owned(), port, ready_timeout: READY_TIMEOUT, probe_after: PROBE_AFTER, state: Mutex::new(TunnelState::default()) }
+        Self { id: id.to_owned(), port, ready_timeout: READY_TIMEOUT, probe_after: PROBE_AFTER, min_life: MIN_LIFE, state: Mutex::new(TunnelState::default()) }
     }
 
     fn spawn(&self) -> Result<Running> {
@@ -287,10 +347,10 @@ impl Tunnel {
     /// died, or kept failing) and waits until it forwards the port.
     fn address(&self) -> Result<String> {
         let mut state = lock(&self.state);
-        let exited = state.child.as_mut().is_some_and(|r| r.child.try_wait().ok().flatten().is_some());
-        if exited || state.failures >= RESTART_AFTER_FAILURES {
+        if state.restart_due(self.min_life) {
             state.child = None;
             state.failures = 0;
+            state.closes_since = None;
         }
         if state.child.is_none() {
             state.child = Some(self.spawn()?);
@@ -416,8 +476,26 @@ mod tests {
         let first = server.tunnel_pid().expect("running");
         assert_eq!(server.address().unwrap(), "127.0.0.1:5555", "a running child is reused");
         assert_eq!(server.tunnel_pid(), Some(first));
+        // Closed before a byte came back (the service restarting): never a restart at once.
+        for _ in 0..5 {
+            server.closed_unheard();
+            server.address().unwrap();
+        }
+        assert_eq!(server.tunnel_pid(), Some(first), "connections the far side closed do not restart the child");
+        server.succeeded();
+        // Nothing got through twice, but a young child is left to reach its relay…
         server.failed();
         server.failed();
+        server.address().unwrap();
+        assert_eq!(server.tunnel_pid(), Some(first), "a child younger than its minimum life is kept");
+        if let Some(tunnel) = &server.tunnel {
+            lock(&tunnel.state).child.as_mut().expect("running").started -= MIN_LIFE;
+        }
+        // … and one carrying another connection (another window, an upload) is kept.
+        let other = server.in_use();
+        server.address().unwrap();
+        assert_eq!(server.tunnel_pid(), Some(first), "never restarted under a connection that is up");
+        drop(other);
         server.address().unwrap();
         let second = server.tunnel_pid().expect("restarted");
         assert_ne!(second, first, "a child whose connections keep failing is restarted");

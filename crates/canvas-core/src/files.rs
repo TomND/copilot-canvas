@@ -11,8 +11,10 @@ use crate::dialogs::Modal;
 use crate::protocol::{ClientMsg, Input};
 use crate::rpc::{Backend, MAX_UPLOAD};
 
-/// Bytes per upload request (base64 grows it by a third).
-const PIECE: usize = 4 << 20;
+/// Bytes per upload request (base64 grows it by a third): small enough that
+/// one takes a fraction of a second on a home uplink, so nothing on the
+/// connection waits long behind it (the service takes pieces of any size).
+pub const PIECE: usize = 256 << 10;
 
 impl App {
     /// Files dropped at `at` (fractional cells).
@@ -56,20 +58,29 @@ impl App {
         self.send(ClientMsg::Input { id: id.to_owned(), input: Input::Paste(text) });
     }
 
+    /// The connection uploads go over: one of their own in remote mode (see
+    /// `conn::Bulk`), so typing never waits behind them.
+    pub fn upload_target(&self) -> Option<(crate::conn::ConnTarget, crate::conn::ConnOptions)> {
+        self.target.clone().filter(|t| t.is_remote() && self.conn.protocol >= 8).map(|t| (t, self.conn_options.clone()))
+    }
+
     fn upload_and_paste(&mut self, term: String, paths: Vec<String>) {
         let count = paths.len();
         self.notify(format!("Uploading {count} file(s) to the remote machine…"), false);
+        let bulk = self.upload_target();
         self.in_background(
             move |backend| {
-                let mut uploaded = Vec::new();
-                let mut errors = Vec::new();
-                for path in &paths {
-                    match upload_file(backend, Path::new(path)) {
-                        Ok(remote) => uploaded.push(remote),
-                        Err(error) => errors.push(format!("{}: {error:#}", Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())),
+                crate::conn::with_bulk(backend, bulk, |backend| {
+                    let mut uploaded = Vec::new();
+                    let mut errors = Vec::new();
+                    for path in &paths {
+                        match upload_file(backend, Path::new(path)) {
+                            Ok(remote) => uploaded.push(remote),
+                            Err(error) => errors.push(format!("{}: {error:#}", Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())),
+                        }
                     }
-                }
-                (uploaded, errors)
+                    (uploaded, errors)
+                })
             },
             move |(paths, errors)| AppEvent::Uploaded { term, paths, errors },
         );
