@@ -858,7 +858,12 @@ Checklist (over a day):
   and session, and a client whose link stalled while a terminal started and
   ended knows it ended once the link is back. A last step runs the
   canvas itself through the proxy: banner, offline input blocked, reconnect
-  after the network returns, the pane resynced.
+  after the network returns, the pane resynced. Mixed builds:
+  `ATELIER_FAULTS_SERVICE=<an older atelier>` runs this build's client
+  against that build's service (the echo behind replies is measured, not held
+  to the bound, and the older service must have logged no message it cannot
+  read: no acknowledgement without its `Caps`); `ATELIER_FAULTS_CLIENT=<an
+  older atelier>` runs that build's canvas in the last step.
 - `atelier selftest --remote paired`: a real service in a temporary
   data folder plays the Cloud PC, a second folder the home PC, the stand-in
   plays `devtunnel connect`. It checks that listening is off until a code is

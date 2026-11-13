@@ -560,6 +560,19 @@ fn step(text: &str) {
 
 fn scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     println!("Atelier remote fault injection (TCP proxy between a protocol-8 client and the service)");
+    // Mixed builds: `ATELIER_FAULTS_SERVICE=<an older atelier>` runs this
+    // build's client against that build's service (no flow control there:
+    // the echo is measured, not held to the bound, and the service must never
+    // have been sent a message it cannot read).
+    let older = canvas_common::env::var("ATELIER_FAULTS_SERVICE").ok().filter(|v| !v.trim().is_empty()).map(std::path::PathBuf::from);
+    if let Some(older) = &older {
+        println!("  (mixed builds: the service is {})", older.display());
+    }
+    // `ATELIER_FAULTS_CLIENT=<an older atelier>`: the canvas over the dropped link is that build's.
+    let older_client = canvas_common::env::var("ATELIER_FAULTS_CLIENT").ok().filter(|v| !v.trim().is_empty()).map(std::path::PathBuf::from);
+    if let Some(client) = &older_client {
+        println!("  (mixed builds: the canvas is {})", client.display());
+    }
     // The stand-in Copilot (`fake_copilot.rs`) for the agent steps: nothing reaches a real agent.
     let fake_cli = root.join("fake-cli");
     std::fs::create_dir_all(&fake_cli)?;
@@ -571,7 +584,7 @@ fn scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     std::fs::create_dir_all(&copilot_home)?;
     let (fake_copilot, copilot_home) = (fake_copilot.to_string_lossy().into_owned(), copilot_home.to_string_lossy().into_owned());
     conn::spawn_service_exe(
-        exe,
+        older.as_deref().unwrap_or(exe),
         instance,
         &[("ATELIER_LISTEN", "127.0.0.1:0"), ("ATELIER_COPILOT", &fake_copilot), (crate::fake_copilot::ENV, "1"), ("COPILOT_HOME", &copilot_home)],
     )?;
@@ -711,7 +724,7 @@ fn scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     println!("{once}");
 
     step("over a slow link, large replies in flight do not hold back a keystroke's echo");
-    let echo = echo_behind_replies(&mut typist, &proxy, root)?;
+    let echo = echo_behind_replies(&mut typist, &proxy, root, older.is_none())?;
     println!("{echo}");
 
     step("over a slow uplink, a client sending one large message is not dropped as silent");
@@ -727,8 +740,13 @@ fn scenario(exe: &Path, instance: &Instance, root: &Path) -> Result<()> {
     println!("    {count} messages ({frames} protocol-7 frames), none of a protocol-8 variant");
 
     step("the canvas over a dropped link: banner, input blocked while offline, reconnect and resync");
-    let back = tui_over_dropped_link(exe, instance, root, &proxy)?;
+    let back = tui_over_dropped_link(older_client.as_deref().unwrap_or(exe), instance, root, &proxy)?;
     println!("    reconnected {:.2} s after the network came back; the pane shows its output again; offline typing never reached the shell", back.as_secs_f64());
+    if older.is_some() {
+        step("the older service was never sent a message it cannot read (no acknowledgements without its Caps)");
+        let unread: Vec<String> = log_lines(instance).into_iter().filter(|(_, line)| line.contains("cannot read")).map(|(_, line)| line).collect();
+        anyhow::ensure!(unread.is_empty(), "the older service got messages it cannot read: {unread:?}");
+    }
     println!("PASS (probe reconnects: {})", times.join(", "));
     Ok(())
 }
@@ -980,10 +998,14 @@ fn noisy_text(bytes: usize, seed: u64) -> String {
 /// tunnel's buffer for a window of them). Then the same for a client that
 /// does not acknowledge (an older build): the stopgap pacing lets the echoes
 /// after its first keystroke through once the tunnel drained.
-fn echo_behind_replies(typist: &mut Typist, proxy: &Proxy, root: &Path) -> Result<String> {
+fn echo_behind_replies(typist: &mut Typist, proxy: &Proxy, root: &Path, bound: bool) -> Result<String> {
     const RATE: u64 = 1 << 20;
     let (times, last, streamed) = echoes_while_replies_stream(typist, proxy, root, RATE)?;
     let worst = times.iter().copied().max().unwrap_or_default();
+    let ms = |times: &[Duration]| times.iter().map(|t| format!("{:.0}", t.as_secs_f64() * 1000.0)).collect::<Vec<_>>().join(", ");
+    if !bound {
+        return Ok(format!("    (an older service: no flow control) {REPLIES} replies took {:.2} s; 6 keystrokes echoed in {} ms", last.as_secs_f64(), ms(&times)));
+    }
     // Behind one FIFO the first echo would have waited for every reply
     // (`last`); behind the tunnel's buffer, for a window of them (about 1 s at
     // 1 MB/s). With flow control what is left is the bulk the service lets be
@@ -1008,7 +1030,6 @@ fn echo_behind_replies(typist: &mut Typist, proxy: &Proxy, root: &Path) -> Resul
         old_last.as_secs_f64(),
         old_times
     );
-    let ms = |times: &[Duration]| times.iter().map(|t| format!("{:.0}", t.as_secs_f64() * 1000.0)).collect::<Vec<_>>().join(", ");
     Ok(format!(
         "    {REPLIES} replies of {} KB ({} KB on the wire at {} KB/s, through a tunnel that buffers 1 MB) took {:.2} s to arrive; meanwhile 6 keystrokes echoed in {:.0} ms at worst ({}); a client without acknowledgements (stopgap pacing): {} ms",
         SIZE >> 10,
