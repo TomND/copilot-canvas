@@ -67,6 +67,51 @@ pub fn console_hosts() -> Vec<(u32, u64)> {
         .collect()
 }
 
+/// A kill-on-close job holding one process and everything it starts (a
+/// terminal's agent): dropping it ends whatever of that tree still runs,
+/// even processes whose parent already exited, which a tree walk cannot
+/// find. Processes may break away (`CREATE_BREAKAWAY_FROM_JOB`) as they may
+/// from the service's own job. Nested in that job (Windows 8 and later).
+pub struct TreeJob(windows_sys::Win32::Foundation::HANDLE);
+
+// SAFETY: a job handle may be used and closed from any thread.
+unsafe impl Send for TreeJob {}
+unsafe impl Sync for TreeJob {}
+
+impl TreeJob {
+    /// Puts the process behind `process` (a handle with `PROCESS_SET_QUOTA`
+    /// and `PROCESS_TERMINATE` access) in a new job.
+    pub fn new(process: std::os::windows::io::RawHandle) -> std::io::Result<Self> {
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JobObjectExtendedLimitInformation, SetInformationJobObject,
+        };
+        // SAFETY: a fresh job with a valid limit structure; the guard closes it on failure.
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return Err(std::io::Error::last_os_error());
+            }
+            let guard = TreeJob(job);
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+            if SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info as *const _ as *const _, std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32) == 0
+                || AssignProcessToJobObject(job, process as _) == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(guard)
+        }
+    }
+}
+
+impl Drop for TreeJob {
+    fn drop(&mut self) {
+        // SAFETY: the job handle this guard owns; closing it ends the job's processes.
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
+    }
+}
+
 /// The command line of `pid` is not read on Windows (process names suffice there).
 pub fn process_argv(_pid: u32) -> Option<Vec<String>> {
     None

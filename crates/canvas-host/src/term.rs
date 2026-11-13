@@ -29,11 +29,12 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use crossbeam_channel::{Receiver, RecvTimeoutError, SendTimeoutError, Sender, at, bounded, never, select_biased};
+use crossbeam_channel::{Receiver, RecvTimeoutError, SendTimeoutError, Sender, TrySendError, at, bounded, never, select_biased};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
-use crate::emulator::{self, Config, Emulator, Engine, Events, ImageData, Scroll, Snapshot};
+use crate::emulator::frozen::Frozen;
 use crate::emulator::inline::InlineImages;
+use crate::emulator::{self, Config, Emulator, Engine, Events, ImageData, Scroll, Snapshot};
 use crate::paths::now_ms;
 use crate::protocol::{Input, Run, TermInfo};
 
@@ -49,14 +50,14 @@ pub const OUTPUT_QUEUE: usize = 64;
 const CONTROL_QUEUE: usize = 1024;
 /// Control messages handled before one waiting output chunk gets its turn.
 const CONTROL_BURST: u32 = 64;
-/// How long a client waits for room in the control queue before failing.
+/// How long a request of the service's own (a stop's keys, an image, a
+/// remote terminal's reset) waits for room in the control queue. Clients'
+/// keys, clicks and scrolls never wait: a full queue refuses them at once.
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long an agent gets to quit on a stop request before it is killed ([`Terminal::stop`]).
 pub const STOP_GRACE: Duration = Duration::from_secs(10);
 /// How long a snapshot request waits for its answer.
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(5);
-/// How long the frame pump waits for one terminal's snapshot.
-pub const PUMP_SNAPSHOT_WAIT: Duration = Duration::from_millis(200);
 /// A recording stops (with a final note) once its file reaches this size.
 const RECORD_LIMIT: u64 = 64 << 20;
 /// Buffered recording data reaches the file at least this often.
@@ -89,6 +90,9 @@ enum Ctl {
     Reset(Vec<u8>),
     /// The screen with the count of output bytes the engine had taken then.
     SnapshotAt(Sender<(Snapshot, u64)>),
+    /// The program exited and its PTY is closed: once the output is drained
+    /// the engine is frozen and its thread ends ([`EmulatorThread::freeze`]).
+    Exited,
 }
 
 /// Engine resizes waiting for their place in the output stream: each is
@@ -234,7 +238,9 @@ pub struct Terminal {
     pending_snapshot: Mutex<Option<Receiver<Snapshot>>>,
     /// Bumped by the emulator thread whenever the screen may have changed.
     generation: Arc<AtomicU64>,
-    input: Sender<Vec<u8>>,
+    /// Raw bytes for the program (the PTY writer); dropped when it exits, so
+    /// the writer thread ends.
+    input: Mutex<Option<Sender<Vec<u8>>>>,
     master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     pub pid: u32,
@@ -275,6 +281,15 @@ pub struct Terminal {
     pub console_host: Option<(u32, u64)>,
     /// A VM session's terminal: its PTY is in the guest (`None`: this machine's).
     remote: Option<Arc<dyn RemotePty>>,
+    /// Set once the program exited and its PTY closed: the engine freezes.
+    ended: Arc<AtomicBool>,
+    /// The exited terminal's screen and scrollback once its engine is gone:
+    /// snapshots and scrolling are answered from it (S3-06).
+    frozen: OnceLock<Arc<Mutex<Frozen>>>,
+    /// An agent's kill-on-close job (Windows): what it leaves running when
+    /// it exits ends with it, as on a stop.
+    #[cfg(windows)]
+    job: Mutex<Option<canvas_sys::process::TreeJob>>,
 }
 
 /// An image's pixels as a PNG file, shared by every client that needs it.
@@ -441,12 +456,23 @@ impl Terminal {
                 command.env(key, value);
             }
         }
-        let child = pair.slave.spawn_command(command).with_context(|| format!("cannot start {}", spec.program))?;
+        let mut child = pair.slave.spawn_command(command).with_context(|| format!("cannot start {}", spec.program))?;
         drop(pair.slave);
         let pid = child.process_id().unwrap_or(0);
         let killer = child.clone_killer();
-        let reader = pair.master.try_clone_reader().context("pty reader")?;
-        let writer = pair.master.take_writer().context("pty writer")?;
+        // From here on the program runs: a failure ends it, never leaves it running unseen (S3-13).
+        let io = pair.master.try_clone_reader().context("pty reader").and_then(|reader| Ok((reader, pair.master.take_writer().context("pty writer")?)));
+        let (reader, writer) = match io {
+            Ok(io) => io,
+            Err(error) => {
+                let _ = canvas_sys::process::kill_tree(pid);
+                let _ = child.kill();
+                return Err(error);
+            }
+        };
+        // An agent's own job: what it leaves running when it exits ends with it (S3-14).
+        #[cfg(windows)]
+        let job = if spec.copilot { child.as_raw_handle().and_then(|process| canvas_sys::process::TreeJob::new(process).ok()) } else { None };
 
         let (input_tx, input_rx) = bounded::<Vec<u8>>(4096);
         let (control_tx, control_rx) = bounded::<Ctl>(CONTROL_QUEUE);
@@ -456,6 +482,7 @@ impl Terminal {
         let config = Config { cols, rows, scrollback: 5000, kitty_keyboard: true, pull_scrollback: emulator::PTY_PULLS_SCROLLBACK };
         let engine = spec.engine;
         let resizes = Arc::new(Resizes::default());
+        let ended = Arc::new(AtomicBool::new(false));
         let terminal = Arc::new(Self {
             id: spec.id.to_owned(),
             copilot: spec.copilot,
@@ -463,7 +490,7 @@ impl Terminal {
             control: control_tx,
             pending_snapshot: Mutex::new(None),
             generation: generation.clone(),
-            input: input_tx.clone(),
+            input: Mutex::new(Some(input_tx.clone())),
             master: Mutex::new(Some(pair.master)),
             killer: Mutex::new(killer),
             pid,
@@ -486,6 +513,10 @@ impl Terminal {
             remembered: Mutex::new(Vec::new()),
             console_host,
             remote: None,
+            ended: ended.clone(),
+            frozen: OnceLock::new(),
+            #[cfg(windows)]
+            job: Mutex::new(job),
         });
         // Weak: the emulator thread must not keep the terminal alive.
         let weak = Arc::downgrade(&terminal);
@@ -495,7 +526,13 @@ impl Terminal {
                 terminal.force_kill();
             }
         });
-        spawn_emulator(
+        let weak = Arc::downgrade(&terminal);
+        let freeze: FreezeHook = Box::new(move |frozen| {
+            if let Some(terminal) = weak.upgrade() {
+                let _ = terminal.frozen.set(frozen);
+            }
+        });
+        let started = spawn_emulator(
             EmulatorThread {
                 id: spec.id.to_owned(),
                 cols,
@@ -517,12 +554,20 @@ impl Terminal {
                 fed: 0,
                 resizes,
                 chunks: 0,
+                exit: Some(ExitHook { ended, freeze }),
+                output_done: false,
             },
             move || emulator::create(engine, &config),
-        );
-        spawn_writer(writer, input_rx);
-        spawn_reader(terminal.clone(), reader, output_tx, hooks.bytes, hooks.raw, terminal.read_chunks.clone());
-        spawn_waiter(terminal.clone(), child, hooks.exited, hooks.pump);
+        )
+        .and_then(|_| spawn_writer(writer, input_rx))
+        .and_then(|_| spawn_reader(terminal.clone(), reader, output_tx, hooks.bytes, hooks.raw, terminal.read_chunks.clone()))
+        .and_then(|_| spawn_waiter(terminal.clone(), child, hooks.exited, hooks.pump));
+        if let Err(error) = started {
+            // The program cannot be served: it is ended, not left running unseen (S3-13).
+            terminal.force_kill();
+            terminal.close_pty();
+            return Err(error).context("cannot start the terminal's threads");
+        }
         Ok(terminal)
     }
 
@@ -547,7 +592,7 @@ impl Terminal {
             control: control_tx.clone(),
             pending_snapshot: Mutex::new(None),
             generation: generation.clone(),
-            input: input_tx.clone(),
+            input: Mutex::new(Some(input_tx.clone())),
             master: Mutex::new(None),
             killer: Mutex::new(Box::new(RemoteKiller(pty.clone()))),
             pid: 0,
@@ -570,6 +615,11 @@ impl Terminal {
             remembered: Mutex::new(Vec::new()),
             console_host: None,
             remote: Some(pty.clone()),
+            // A remote terminal keeps its engine: its link may replay or reset it.
+            ended: Arc::default(),
+            frozen: OnceLock::new(),
+            #[cfg(windows)]
+            job: Mutex::new(None),
         });
         let weak = Arc::downgrade(&terminal);
         let fail: FailHook = Box::new(move |message| {
@@ -600,9 +650,12 @@ impl Terminal {
                 remake: Some(Box::new(move |cols, rows| emulator::create(engine, &Config { cols, rows, scrollback: 5000, kitty_keyboard: true, pull_scrollback: true }))),
                 resizes,
                 chunks: 0,
+                exit: None,
+                output_done: false,
             },
             move || emulator::create(engine, &config),
-        );
+        )
+        .expect("spawn emulator thread");
         // Input the engine encoded goes to the guest's PTY through the link.
         let writer = pty.clone();
         std::thread::Builder::new()
@@ -656,18 +709,23 @@ impl Terminal {
         self.generation.load(Ordering::Acquire)
     }
 
-    /// The current viewport (a round trip to the emulator thread).
-    pub fn snapshot(&self) -> Option<Snapshot> {
-        request_snapshot(&self.control, &self.pending_snapshot, CONTROL_TIMEOUT, SNAPSHOT_TIMEOUT, false).map(|(snapshot, _)| snapshot)
+    /// The exited terminal's frozen screen, once its engine is gone.
+    fn frozen(&self) -> Option<MutexGuard<'_, Frozen>> {
+        self.frozen.get().map(|frozen| lock(frozen))
     }
 
-    /// The viewport for the frame pump, which serves every client and terminal
-    /// from one thread: it waits at most [`PUMP_SNAPSHOT_WAIT`], so a busy or
-    /// stuck engine delays only its own frames. An answer that came after an
-    /// earlier wait ran out is taken too, marked not fresh (`false`: the screen
-    /// may have changed since; ask again).
-    pub fn snapshot_for_pump(&self) -> Option<(Snapshot, bool)> {
-        request_snapshot(&self.control, &self.pending_snapshot, Duration::ZERO, PUMP_SNAPSHOT_WAIT, true)
+    /// Its engine is gone (the program exited): the last screen and the
+    /// scrollback are kept as rows (S3-06).
+    pub fn is_frozen(&self) -> bool {
+        self.frozen.get().is_some()
+    }
+
+    /// The current viewport (a round trip to the emulator thread).
+    pub fn snapshot(&self) -> Option<Snapshot> {
+        if let Some(frozen) = self.frozen() {
+            return Some(frozen.snapshot());
+        }
+        request_snapshot(&self.control, &self.pending_snapshot, CONTROL_TIMEOUT, SNAPSHOT_TIMEOUT)
     }
 
     /// Asks the emulator thread for its viewport without waiting: the answer
@@ -677,7 +735,10 @@ impl Terminal {
     /// (a busy engine; ask again later) or the engine has stopped.
     pub fn ask_snapshot(&self) -> Option<Receiver<Snapshot>> {
         let (tx, rx) = bounded(1);
-        self.control.try_send(Ctl::Snapshot(tx)).ok()?;
+        match self.frozen() {
+            Some(frozen) => tx.send(frozen.snapshot()).ok()?,
+            None => self.control.try_send(Ctl::Snapshot(tx)).ok()?,
+        }
         Some(rx)
     }
 
@@ -685,9 +746,22 @@ impl Terminal {
     /// had taken when it was drawn (a satellite's gap reset names that
     /// offset, so the hub asks for the rest from there).
     pub fn snapshot_at(&self) -> Option<(Snapshot, u64)> {
+        if let Some(frozen) = self.frozen() {
+            return Some((frozen.snapshot(), frozen.fed));
+        }
         let (tx, rx) = bounded(1);
         self.control.send_timeout(Ctl::SnapshotAt(tx), CONTROL_TIMEOUT).ok()?;
         rx.recv_timeout(SNAPSHOT_TIMEOUT).ok()
+    }
+
+    /// Scrolls a frozen screen (`false`: the engine runs; it scrolls itself).
+    fn scroll_frozen(&self, scroll: Scroll) -> bool {
+        let Some(mut frozen) = self.frozen() else { return false };
+        frozen.scroll(scroll);
+        drop(frozen);
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        let _ = self.pump.try_send(());
+        true
     }
 
     /// An image as a PNG file, encoded once per generation on an encoder
@@ -738,9 +812,20 @@ impl Terminal {
         let _ = self.pump.try_send(());
     }
 
-    /// Queues a control message, waiting up to [`CONTROL_TIMEOUT`] for room.
+    /// Queues a control message, waiting up to [`CONTROL_TIMEOUT`] for room
+    /// (the service's own requests, on threads of their own).
     fn command(&self, ctl: Ctl) -> Result<()> {
         send_control(&self.control, ctl, CONTROL_TIMEOUT)
+    }
+
+    /// [`offer`]: a client's control message, never waited for.
+    fn offer(&self, ctl: Ctl) -> Result<()> {
+        offer(&self.control, ctl)
+    }
+
+    /// Raw bytes straight to the program (`false`: gone, or its queue full).
+    fn send_raw(&self, bytes: &[u8]) -> bool {
+        lock(&self.input).as_ref().is_some_and(|input| input.try_send(bytes.to_vec()).is_ok())
     }
 
     /// A click: forwarded only when the app asked for mouse reports.
@@ -751,15 +836,17 @@ impl Terminal {
         if let Some(remote) = &self.remote {
             remote.accepting()?;
         }
-        self.command(Ctl::Click { button, col, row, mods })
+        self.offer(Ctl::Click { button, col, row, mods })
     }
 
+    /// Keys, paste and focus for the program. Never waits: a terminal whose
+    /// engine is far behind refuses the input at once (the error says so).
     pub fn send_input(&self, input: &Input) -> Result<()> {
         anyhow::ensure!(self.alive.load(Ordering::Acquire), "terminal has exited");
         if let Some(remote) = &self.remote {
             remote.accepting()?;
         }
-        self.command(Ctl::Input(input.clone()))
+        self.offer(Ctl::Input(input.clone()))
     }
 
     /// Resizes the PTY and the emulator together. Runs under the PTY lock so
@@ -775,7 +862,8 @@ impl Terminal {
         let packed = pack(cols, rows);
         let master = lock(&self.master);
         let current = self.size.load(Ordering::Acquire);
-        if current == packed {
+        // A frozen screen keeps the size the program last drew for.
+        if current == packed || self.is_frozen() {
             return Ok(());
         }
         // A remote terminal's output has no place to wait for: at once.
@@ -807,7 +895,10 @@ impl Terminal {
 
     /// Mouse wheel: forwarded to the app when it wants it, else scrolls history.
     pub fn wheel(&self, up: bool, col: u16, row: u16, mods: u8) -> Result<()> {
-        self.command(Ctl::Wheel { up, col, row, mods })
+        if self.scroll_frozen(Scroll::Delta(if up { 3 } else { -3 })) {
+            return Ok(());
+        }
+        self.offer(Ctl::Wheel { up, col, row, mods })
     }
 
     pub fn scroll(&self, delta: i32) {
@@ -816,7 +907,9 @@ impl Terminal {
             i32::MIN => Scroll::Bottom,
             d => Scroll::Delta(d),
         };
-        let _ = self.command(Ctl::Scroll(scroll));
+        if !self.scroll_frozen(scroll) {
+            let _ = self.offer(Ctl::Scroll(scroll));
+        }
     }
 
     /// Graceful stop for agents, each step only while the program still runs:
@@ -845,11 +938,11 @@ impl Terminal {
         let key = |c: char, mods: u8| Input::Key { key: crate::protocol::Key::Char(c), mods };
         let ctrl = crate::protocol::MOD_CTRL;
         if self.command(Ctl::Input(key('d', ctrl))).is_err() {
-            let _ = self.input.try_send(vec![0x04]);
+            self.send_raw(&[0x04]);
         }
         let me = self.clone();
         let full_screen = self.state.alt_screen.load(Ordering::Acquire);
-        std::thread::spawn(move || {
+        let stopper = std::thread::Builder::new().name("stop".into()).spawn(move || {
             // Measured on the clock, checked every 100 ms: a busy or throttled
             // machine may wake this thread late, never move the steps later.
             let asked = Instant::now();
@@ -882,7 +975,7 @@ impl Terminal {
                 while ui_quit_at.is_none() && next < steps.len() && elapsed >= steps[next].0 {
                     let (_, input, raw) = &steps[next];
                     if me.command(Ctl::Input(input.clone())).is_err() {
-                        let _ = me.input.try_send(raw.to_vec());
+                        me.send_raw(raw);
                     }
                     next += 1;
                 }
@@ -890,6 +983,10 @@ impl Terminal {
             }
             me.force_kill();
         });
+        if stopper.is_err() {
+            // No thread for the graceful steps: stopped at once instead of never.
+            self.force_kill();
+        }
     }
 
     /// The program quit its UI on a stop request but its process lingered and
@@ -908,19 +1005,41 @@ impl Terminal {
         if self.pid != 0 {
             let _ = canvas_sys::process::kill_tree(self.pid);
         }
-        // Descendants that moved to sessions of their own (Unix), when still the same processes.
+        self.end_leftovers();
+        let _ = lock(&self.killer).kill();
+    }
+
+    /// Ends what the program left running that is known to be its own, also
+    /// once it is gone (a tree walk from a dead root finds nothing safely):
+    /// its job's processes (Windows), its descendants seen with their start
+    /// times, still the same processes (Unix: those that moved to sessions of
+    /// their own too). An agent that exits on its own gets this as a stop
+    /// does, so its MCP servers and nested sessions (holding their session
+    /// locks) do not outlive it (S3-14).
+    fn end_leftovers(&self) {
+        #[cfg(windows)]
+        drop(lock(&self.job).take());
         for (pid, started) in std::mem::take(&mut *lock(&self.remembered)) {
             if canvas_sys::process::process_start_ms(pid) == Some(started) {
                 let _ = canvas_sys::process::kill_tree(pid);
             }
         }
-        let _ = lock(&self.killer).kill();
     }
 
     /// Closes the pseudoconsole, which ends the reader thread.
     fn close_pty(&self) {
         lock(&self.master).take();
     }
+}
+
+/// Queues a client's control message without waiting: a full queue (an
+/// engine that fell [`CONTROL_QUEUE`] messages behind) refuses it at once
+/// with the reason, and the client's reader goes on.
+fn offer(control: &Sender<Ctl>, ctl: Ctl) -> Result<()> {
+    control.try_send(ctl).map_err(|error| match error {
+        TrySendError::Full(_) => anyhow::anyhow!("terminal is not responding: {} inputs are waiting for it; this one was not sent", control.len()),
+        TrySendError::Disconnected(_) => anyhow::anyhow!("terminal emulator has stopped"),
+    })
 }
 
 fn send_control(control: &Sender<Ctl>, ctl: Ctl, timeout: Duration) -> Result<()> {
@@ -961,33 +1080,26 @@ fn image_encoder() -> Option<&'static Sender<EncodeJob>> {
         .as_ref()
 }
 
-/// Asks the emulator thread for its viewport; with it, whether it was drawn
-/// after this call began (`false`: an answer that was waiting, taken with `take_late`).
-/// At most one request per terminal is outstanding: after a timeout the
-/// unanswered request is kept in `pending` and the next call waits for its
-/// answer instead of queueing another; an answer that arrived meanwhile is
-/// stale and replaced by a new request, unless `take_late`. A full control
-/// queue waits at most `send` (zero: not at all).
-fn request_snapshot(control: &Sender<Ctl>, pending: &Mutex<Option<Receiver<Snapshot>>>, send: Duration, wait: Duration, take_late: bool) -> Option<(Snapshot, bool)> {
-    let mut pending = lock(pending);
-    let (reply, fresh, wait) = match pending.take() {
+/// Asks the emulator thread for its viewport. At most one request per
+/// terminal is outstanding: after a timeout the unanswered request is kept
+/// in `pending` and the next call waits for its answer instead of queueing
+/// another; an answer that arrived meanwhile is stale and replaced by a new
+/// request. A full control queue waits at most `send`. The `pending` lock is
+/// not held while waiting.
+fn request_snapshot(control: &Sender<Ctl>, pending: &Mutex<Option<Receiver<Snapshot>>>, send: Duration, wait: Duration) -> Option<Snapshot> {
+    let reply = match lock(pending).take() {
         // Its answer, when it comes, shows the screen after this call began.
-        // The pump waited for it once already: it only looks.
-        Some(reply) if reply.is_empty() => (reply, true, if take_late { Duration::ZERO } else { wait }),
-        Some(reply) if take_late => return reply.try_recv().ok().map(|snapshot| (snapshot, false)),
+        Some(reply) if reply.is_empty() => reply,
         _ => {
             let (tx, rx) = bounded(1);
-            let sent = if send.is_zero() { control.try_send(Ctl::Snapshot(tx)).is_ok() } else { control.send_timeout(Ctl::Snapshot(tx), send).is_ok() };
-            if !sent {
-                return None;
-            }
-            (rx, true, wait)
+            control.send_timeout(Ctl::Snapshot(tx), send).ok()?;
+            rx
         }
     };
     match reply.recv_timeout(wait) {
-        Ok(snapshot) => Some((snapshot, fresh)),
+        Ok(snapshot) => Some(snapshot),
         Err(RecvTimeoutError::Timeout) => {
-            *pending = Some(reply);
+            *lock(pending) = Some(reply);
             None
         }
         Err(RecvTimeoutError::Disconnected) => None,
@@ -996,6 +1108,16 @@ fn request_snapshot(control: &Sender<Ctl>, pending: &Mutex<Option<Receiver<Snaps
 
 /// Called once with the error message when the terminal's engine panics.
 type FailHook = Box<dyn FnOnce(String) + Send>;
+
+/// Hands the terminal its frozen screen when the engine ends.
+type FreezeHook = Box<dyn FnOnce(Arc<Mutex<Frozen>>) + Send>;
+
+/// How a local terminal's engine learns its program is over.
+struct ExitHook {
+    /// Set once the program exited and its PTY closed ([`Ctl::Exited`] wakes the thread).
+    ended: Arc<AtomicBool>,
+    freeze: FreezeHook,
+}
 
 /// The emulator thread's ends of the channels and its hooks.
 struct EmulatorThread {
@@ -1027,6 +1149,11 @@ struct EmulatorThread {
     resizes: Arc<Resizes>,
     /// Output chunks taken so far (the places resizes wait for).
     chunks: u64,
+    /// A local terminal's: the engine is frozen and the thread ends once the
+    /// program is over and its output drained (`None`: kept until dropped).
+    exit: Option<ExitHook>,
+    /// The output channel closed (the reader ended): no more output comes.
+    output_done: bool,
 }
 
 /// Makes a fresh engine of a size.
@@ -1038,11 +1165,14 @@ enum Msg {
     Output(Vec<u8>),
     /// A synchronized update's deadline passed with nothing else to do.
     SyncTimeout,
+    /// The reader ended: all output is in.
+    OutputDone,
 }
 
-/// Owns the emulator until the terminal is dropped (its control channel closes).
-fn spawn_emulator(t: EmulatorThread, make: impl FnOnce() -> Box<dyn Emulator> + Send + 'static) -> std::thread::JoinHandle<()> {
-    std::thread::Builder::new().name("emulator".into()).spawn(move || t.run(make)).expect("spawn emulator thread")
+/// Owns the emulator until the terminal is dropped (its control channel
+/// closes) or its program exited and the output is drained (it freezes).
+fn spawn_emulator(t: EmulatorThread, make: impl FnOnce() -> Box<dyn Emulator> + Send + 'static) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new().name("emulator".into()).spawn(move || t.run(make))
 }
 
 fn panic_message(panic: &(dyn Any + Send)) -> String {
@@ -1084,7 +1214,39 @@ impl EmulatorThread {
             if chunk {
                 self.chunks += 1;
             }
+            if self.output_done && self.exit.as_ref().is_some_and(|exit| exit.ended.load(Ordering::Acquire)) {
+                return self.freeze(emu);
+            }
         }
+    }
+
+    /// The program is over and its last output is in: keeps the screen and
+    /// scrollback as rows ([`Frozen`]) for the terminal to answer from, drops
+    /// the engine (cells, images, parser) and ends this thread (S3-06).
+    fn freeze(mut self, mut emu: Box<dyn Emulator>) {
+        let (fed, cols, rows) = (self.fed, self.cols, self.rows);
+        let frozen = catch_unwind(AssertUnwindSafe(|| Frozen::capture(emu.as_mut(), fed))).unwrap_or_else(|_| Frozen::blank(cols, rows));
+        // Dropping an engine may panic.
+        let _ = catch_unwind(AssertUnwindSafe(move || drop(emu)));
+        let frozen = Arc::new(Mutex::new(frozen));
+        if let Some(exit) = self.exit.take() {
+            (exit.freeze)(frozen.clone());
+        }
+        // What was asked before the terminal had the frozen screen.
+        while let Ok(ctl) = self.control.try_recv() {
+            let mut screen = lock(&frozen);
+            match ctl {
+                Ctl::Snapshot(reply) => {
+                    let _ = reply.send(screen.snapshot());
+                }
+                Ctl::SnapshotAt(reply) => {
+                    let _ = reply.send((screen.snapshot(), screen.fed));
+                }
+                Ctl::Scroll(scroll) => screen.scroll(scroll),
+                _ => {}
+            }
+        }
+        self.bump();
     }
 
     /// The next message: control first, then output, then the sync deadline.
@@ -1098,34 +1260,32 @@ impl EmulatorThread {
             self.burst = 0;
             return Some(Msg::Output(bytes));
         }
-        loop {
-            let timer = deadline.map_or_else(never, at);
-            let mut output_closed = false;
-            let msg = select_biased! {
-                recv(self.control) -> ctl => Some(Msg::Control(ctl.ok()?)),
-                recv(self.output) -> bytes => match bytes {
-                    Ok(bytes) => Some(Msg::Output(bytes)),
-                    Err(_) => {
-                        output_closed = true;
-                        None
-                    }
-                },
-                recv(timer) -> _ => Some(Msg::SyncTimeout),
-            };
-            if output_closed {
-                // The reader ended; keep serving control messages.
-                self.output = never();
+        let timer = deadline.map_or_else(never, at);
+        let mut output_closed = false;
+        let msg = select_biased! {
+            recv(self.control) -> ctl => Msg::Control(ctl.ok()?),
+            recv(self.output) -> bytes => match bytes {
+                Ok(bytes) => Msg::Output(bytes),
+                Err(_) => {
+                    output_closed = true;
+                    Msg::OutputDone
+                }
+            },
+            recv(timer) -> _ => Msg::SyncTimeout,
+        };
+        if output_closed {
+            // The reader ended; keep serving control messages.
+            self.output = never();
+            self.output_done = true;
+        }
+        match msg {
+            Msg::Control(ctl) => {
+                self.burst += 1;
+                Some(Msg::Control(ctl))
             }
-            match msg {
-                Some(Msg::Control(ctl)) => {
-                    self.burst += 1;
-                    return Some(Msg::Control(ctl));
-                }
-                Some(msg) => {
-                    self.burst = 0;
-                    return Some(msg);
-                }
-                None => {}
+            msg => {
+                self.burst = 0;
+                Some(msg)
             }
         }
     }
@@ -1160,7 +1320,7 @@ impl EmulatorThread {
                 self.bump();
             }
             Msg::Control(ctl) => self.control(emu, ctl),
-            Msg::SyncTimeout => {}
+            Msg::SyncTimeout | Msg::OutputDone => {}
         }
         // A synchronized update whose end marker never came. Checked after
         // every message, so a steady stream of messages cannot postpone it.
@@ -1206,7 +1366,8 @@ impl EmulatorThread {
                     self.bump();
                 }
             },
-            Ctl::Resized => {}
+            // Wakes: their work is done before each message (`handle`, `run`).
+            Ctl::Resized | Ctl::Exited => {}
             Ctl::Scroll(scroll) => {
                 emu.scroll(scroll);
                 self.bump();
@@ -1257,7 +1418,8 @@ impl EmulatorThread {
     }
 }
 
-fn spawn_writer(mut writer: Box<dyn Write + Send>, input: Receiver<Vec<u8>>) {
+/// Writes input to the PTY until every sender is gone (the program exited).
+fn spawn_writer(mut writer: Box<dyn Write + Send>, input: Receiver<Vec<u8>>) -> std::io::Result<()> {
     std::thread::Builder::new()
         .name("pty-writer".into())
         .spawn(move || {
@@ -1267,10 +1429,10 @@ fn spawn_writer(mut writer: Box<dyn Write + Send>, input: Receiver<Vec<u8>>) {
                 }
             }
         })
-        .expect("spawn pty writer");
+        .map(|_| ())
 }
 
-fn spawn_reader(terminal: Arc<Terminal>, mut reader: Box<dyn Read + Send>, output: Sender<Vec<u8>>, bytes: Arc<AtomicU64>, mut raw: Option<Sender<Vec<u8>>>, read_chunks: Arc<AtomicU64>) {
+fn spawn_reader(terminal: Arc<Terminal>, mut reader: Box<dyn Read + Send>, output: Sender<Vec<u8>>, bytes: Arc<AtomicU64>, mut raw: Option<Sender<Vec<u8>>>, read_chunks: Arc<AtomicU64>) -> std::io::Result<()> {
     std::thread::Builder::new()
         .name("pty-reader".into())
         .spawn(move || {
@@ -1314,7 +1476,7 @@ fn spawn_reader(terminal: Arc<Terminal>, mut reader: Box<dyn Read + Send>, outpu
                 }
             }
         })
-        .expect("spawn pty reader");
+        .map(|_| ())
 }
 
 /// Directory where the service records every terminal's raw output (golden corpus).
@@ -1442,7 +1604,7 @@ impl Tap {
     }
 }
 
-fn spawn_waiter(terminal: Arc<Terminal>, mut child: Box<dyn portable_pty::Child + Send + Sync>, exited: Sender<String>, pump: Sender<()>) {
+fn spawn_waiter(terminal: Arc<Terminal>, mut child: Box<dyn portable_pty::Child + Send + Sync>, exited: Sender<String>, pump: Sender<()>) -> std::io::Result<()> {
     std::thread::Builder::new()
         .name("pty-waiter".into())
         .spawn(move || {
@@ -1462,12 +1624,20 @@ fn spawn_waiter(terminal: Arc<Terminal>, mut child: Box<dyn portable_pty::Child 
             // Let the last output drain before closing the pseudoconsole.
             std::thread::sleep(Duration::from_millis(150));
             terminal.alive.store(false, Ordering::Release);
+            if terminal.copilot {
+                terminal.end_leftovers();
+            }
             terminal.close_pty();
             terminal.generation.fetch_add(1, Ordering::AcqRel);
             let _ = pump.try_send(());
             let _ = exited.send(terminal.id.clone());
+            // Nothing more for the program: the writer thread ends, and the
+            // engine freezes once the last output is in (S3-06).
+            lock(&terminal.input).take();
+            terminal.ended.store(true, Ordering::Release);
+            let _ = terminal.control.try_send(Ctl::Exited);
         })
-        .expect("spawn pty waiter");
+        .map(|_| ())
 }
 
 pub fn row_hash<T: Hash>(runs: &[T]) -> u64 {
@@ -1641,8 +1811,10 @@ mod tests {
                 fed: 0,
                 resizes: resizes.clone(),
                 chunks: 0,
+                exit: None,
+                output_done: false,
             };
-            spawn_emulator(thread, make);
+            spawn_emulator(thread, make).unwrap();
             Self { control, output, written, generation, failed, pending: Mutex::new(None), resizes, _keep: (clipboard_rx, changed_rx, pump_rx) }
         }
 
@@ -1657,7 +1829,7 @@ mod tests {
         }
 
         fn snapshot(&self, wait: Duration) -> Option<Snapshot> {
-            request_snapshot(&self.control, &self.pending, CONTROL_TIMEOUT, wait, false).map(|(snapshot, _)| snapshot)
+            request_snapshot(&self.control, &self.pending, CONTROL_TIMEOUT, wait)
         }
 
         /// Floods the output channel for `period` (blocking while it is full).
@@ -1887,10 +2059,12 @@ mod tests {
             fed: 0,
             resizes: Arc::default(),
             chunks: 0,
+            exit: None,
+            output_done: false,
         };
-        spawn_emulator(thread, || panic!("no engine"));
+        spawn_emulator(thread, || panic!("no engine")).unwrap();
         assert!(failed.recv_timeout(Duration::from_secs(5)).unwrap().contains("no engine"));
-        let (snap, _) = request_snapshot(&control, &Mutex::new(None), CONTROL_TIMEOUT, Duration::from_secs(5), false).expect("blank screen");
+        let snap = request_snapshot(&control, &Mutex::new(None), CONTROL_TIMEOUT, Duration::from_secs(5)).expect("blank screen");
         assert_eq!((snap.cols, snap.rows, snap.lines.len()), (30, 6, 6));
     }
 
@@ -1911,22 +2085,84 @@ mod tests {
         assert_eq!(log.snapshots.load(Ordering::SeqCst), 2);
     }
 
+    /// Input never waits on a busy engine: a full control queue refuses a
+    /// keystroke at once, saying why, instead of holding the client's reader.
     #[test]
-    fn the_frame_pump_never_waits_long_for_a_slow_engine_and_uses_its_late_answer() {
+    fn input_for_a_busy_engine_is_refused_at_once_with_the_reason() {
         let _serial = serial();
         let log = ProbeLog::default();
         let harness = Harness::new(Probe { snapshot_delay: Duration::from_millis(600), ..Probe::new(&log) });
-        let pump = |h: &Harness| request_snapshot(&h.control, &h.pending, Duration::ZERO, PUMP_SNAPSHOT_WAIT, true);
+        let (tx, _rx) = bounded(1);
+        harness.send(Ctl::Snapshot(tx));
+        std::thread::sleep(Duration::from_millis(50));
+        while harness.control.try_send(Ctl::Resized).is_ok() {}
         let started = Instant::now();
-        assert!(pump(&harness).is_none(), "not answered within the pump's wait");
-        assert!(started.elapsed() < PUMP_SNAPSHOT_WAIT + Duration::from_millis(300), "the pump waited {:?}", started.elapsed());
-        let started = Instant::now();
-        assert!(pump(&harness).is_none(), "still not answered");
-        assert!(started.elapsed() < Duration::from_millis(100), "an outstanding request is only looked at, not waited for again");
-        std::thread::sleep(Duration::from_millis(800));
-        let (_, fresh) = pump(&harness).expect("the late answer is used");
-        assert!(!fresh, "and marked as not fresh");
-        assert_eq!(log.snapshots.load(Ordering::SeqCst), 1, "no second request meanwhile");
+        let error = offer(&harness.control, Ctl::Input(Input::Raw(b"x".to_vec()))).unwrap_err().to_string();
+        assert!(started.elapsed() < Duration::from_millis(50), "waited {:?}", started.elapsed());
+        assert!(error.contains("not responding") && error.contains(&CONTROL_QUEUE.to_string()), "{error}");
+        // Once the engine caught up, input goes through again.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while offer(&harness.control, Ctl::Input(Input::Raw(b"y".to_vec()))).is_err() {
+            assert!(Instant::now() < deadline, "the queue drains");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(harness.written.recv_timeout(Duration::from_secs(5)).unwrap(), b"y");
+    }
+
+    /// S3-06: once the program is over and its last output is in, the engine
+    /// is frozen into rows and its thread ends (its input sender goes, so the
+    /// PTY writer ends too); the screen and the scrollback stay scrollable.
+    #[test]
+    fn an_exited_terminals_engine_is_frozen_once_its_output_is_in() {
+        let (control, control_rx) = bounded(CONTROL_QUEUE);
+        let (output, output_rx) = bounded(OUTPUT_QUEUE);
+        let (input, written) = bounded::<Vec<u8>>(16);
+        let ended = Arc::new(AtomicBool::new(false));
+        let kept: Arc<Mutex<Option<Arc<Mutex<Frozen>>>>> = Arc::default();
+        let keep = kept.clone();
+        let thread = EmulatorThread {
+            id: "exits".into(),
+            cols: 30,
+            rows: 5,
+            control: control_rx,
+            output: output_rx,
+            generation: Arc::new(AtomicU64::new(1)),
+            state: Arc::new(State::default()),
+            input,
+            clipboard: bounded(16).0,
+            changed: bounded(1024).0,
+            pump: bounded(1).0,
+            fail: None,
+            burst: 0,
+            notify: None,
+            bridge: InlineImages::default(),
+            replies: true,
+            remake: None,
+            fed: 0,
+            resizes: Arc::default(),
+            chunks: 0,
+            exit: Some(ExitHook { ended: ended.clone(), freeze: Box::new(move |frozen| *lock(&keep) = Some(frozen)) }),
+            output_done: false,
+        };
+        spawn_emulator(thread, || Box::new(headless(30, 5, true))).unwrap();
+        let lines: Vec<String> = (1..=40).map(|i| format!("line {i}")).collect();
+        output.send(lines.join("\r\n").into_bytes()).unwrap();
+        // The program exited, but its last output may still come: not yet.
+        ended.store(true, Ordering::Release);
+        control.send(Ctl::Exited).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(lock(&kept).is_none(), "frozen before the output was in");
+        output.send(b"\r\nthe end".to_vec()).unwrap();
+        drop(output);
+        wait_until("frozen", || lock(&kept).is_some());
+        wait_until("the thread ended", || matches!(control.try_send(Ctl::Resized), Err(TrySendError::Disconnected(_))));
+        assert!(matches!(written.recv_timeout(Duration::from_secs(1)), Err(RecvTimeoutError::Disconnected)), "the writer's input is gone");
+        let frozen = lock(&kept).clone().unwrap();
+        let mut frozen = lock(&frozen);
+        assert!(frozen.snapshot().text().contains("the end"));
+        assert_eq!(frozen.fed, lines.join("\r\n").len() as u64 + 9);
+        frozen.scroll(Scroll::Top);
+        assert_eq!(frozen.snapshot().text().lines().next(), Some("line 1"));
     }
 
     #[test]
@@ -1937,7 +2173,7 @@ mod tests {
         let Harness { control, output, written, pending, .. } = harness;
         drop(output);
         // The reader is gone; control still works.
-        assert!(request_snapshot(&control, &pending, CONTROL_TIMEOUT, Duration::from_secs(5), false).is_some());
+        assert!(request_snapshot(&control, &pending, CONTROL_TIMEOUT, Duration::from_secs(5)).is_some());
         drop(control);
         // The thread exits and drops its writer end.
         let started = Instant::now();
@@ -2148,6 +2384,98 @@ mod tests {
         // The engine takes the size once it reaches the resize's place in the output.
         wait_until("the last size reached the engine", || terminal.snapshot().is_some_and(|snap| (snap.cols, snap.rows) == (69, 10 + 29 % 7)));
         terminal.force_kill();
+    }
+
+    /// S3-06 with a real program: once it exited, its terminal answers from
+    /// the frozen screen, the engine thread and the writer's input are gone,
+    /// sizes are ignored and keys refused.
+    #[test]
+    fn an_exited_program_leaves_its_screen_and_no_engine() {
+        let _serial = serial();
+        let cwd = std::env::temp_dir().display().to_string();
+        let (hooks, _keep) = hooks();
+        let (program, args): (&str, Vec<String>) =
+            if cfg!(windows) { ("cmd.exe", vec!["/d".into(), "/c".into(), "echo frozen-hi".into()]) } else { ("/bin/sh", vec!["-c".into(), "printf 'frozen-hi\\n'".into()]) };
+        let terminal = Terminal::spawn(Spawn { id: "exits", program, args: &args, env: &[], cwd: &cwd, cols: 40, rows: 6, copilot: false, engine: Engine::Alacritty }, hooks).unwrap();
+        wait_exit(&terminal, Duration::from_secs(10));
+        wait_until("the engine froze", || terminal.is_frozen());
+        assert!(terminal.snapshot().unwrap().text().contains("frozen-hi"));
+        assert!(lock(&terminal.input).is_none(), "the writer's input is gone");
+        wait_until("the engine thread ended", || matches!(terminal.control.try_send(Ctl::Resized), Err(TrySendError::Disconnected(_))));
+        let screen = terminal.ask_snapshot().expect("the frame pump still gets the screen").try_recv().unwrap();
+        assert!(screen.text().contains("frozen-hi"));
+        terminal.resize(80, 20).unwrap();
+        assert_eq!(terminal.snapshot().map(|s| (s.cols, s.rows)), Some((40, 6)), "a frozen screen keeps its size");
+        let generation = terminal.generation();
+        terminal.scroll(i32::MAX);
+        assert!(terminal.generation() > generation, "scrolling a frozen screen shows");
+        assert!(terminal.send_input(&Input::Raw(b"x".to_vec())).is_err());
+        assert!(terminal.snapshot_at().is_some());
+    }
+
+    /// S3-14: what an agent leaves running ends with it when it exits on its
+    /// own, as on a stop (a helper that ignores the hang-up, as an MCP server
+    /// in a session of its own does). A plain terminal's are left alone.
+    #[test]
+    #[cfg(unix)]
+    fn an_agent_that_exits_on_its_own_takes_what_it_left_running_with_it() {
+        let _serial = serial();
+        let helper_of = |terminal: &Terminal| -> u32 {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let text = terminal.snapshot().map(|s| s.text()).unwrap_or_default();
+                if let Some(pid) = text.lines().find_map(|line| line.trim().strip_prefix("helper ")?.trim().parse().ok()) {
+                    return pid;
+                }
+                assert!(Instant::now() < deadline, "the helper started: {text}");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        let script = "nohup sleep 30 >/dev/null 2>&1 & echo \"helper $!\"; read line";
+        for agent in [true, false] {
+            let terminal = sh(if agent { "agent-leaves" } else { "shell-leaves" }, script, agent);
+            let helper = helper_of(&terminal);
+            // The service's remember loop records descendants every 2 s; here at once.
+            lock(&terminal.remembered).push((helper, canvas_sys::process::process_start_ms(helper).expect("the helper runs")));
+            terminal.send_input(&Input::Raw(b"\r".to_vec())).unwrap();
+            wait_exit(&terminal, Duration::from_secs(10));
+            assert!(!terminal.was_forced(), "it exited on its own");
+            if agent {
+                wait_until("the agent's helper ended with it", || !canvas_sys::process::alive(helper));
+            } else {
+                std::thread::sleep(Duration::from_millis(300));
+                assert!(canvas_sys::process::alive(helper), "a plain terminal's leftovers are left alone");
+                let _ = canvas_sys::process::kill_tree(helper);
+            }
+        }
+    }
+
+    /// S3-14 on Windows: a helper with a console of its own (not attached to
+    /// the pseudoconsole, so closing it does not end the helper) ends with the
+    /// agent through the agent's job.
+    #[test]
+    #[cfg(windows)]
+    fn an_agent_that_exits_on_its_own_takes_what_it_left_running_with_it() {
+        let _serial = serial();
+        let cwd = std::env::temp_dir().display().to_string();
+        let (hooks, _keep) = hooks();
+        let script = "$p = Start-Process -WindowStyle Hidden -PassThru ping.exe -ArgumentList '-n','30','127.0.0.1'; Write-Output \"helper $($p.Id)\"; Start-Sleep 2";
+        let args = ["-NoProfile".to_owned(), "-Command".to_owned(), script.to_owned()];
+        let spec = Spawn { id: "agent-leaves", program: "powershell.exe", args: &args, env: &[], cwd: &cwd, cols: 80, rows: 24, copilot: true, engine: Engine::Alacritty };
+        let terminal = Terminal::spawn(spec, hooks).expect("spawn powershell.exe");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let helper: u32 = loop {
+            let text = terminal.snapshot().map(|s| s.text()).unwrap_or_default();
+            if let Some(pid) = text.lines().find_map(|line| line.trim().strip_prefix("helper ")?.trim().parse().ok()) {
+                break pid;
+            }
+            assert!(Instant::now() < deadline, "the helper started: {text}");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert!(canvas_sys::process::alive(helper));
+        wait_exit(&terminal, Duration::from_secs(30));
+        assert!(!terminal.was_forced(), "it exited on its own");
+        wait_until("the agent's helper ended with it", || !canvas_sys::process::alive(helper));
     }
 
     #[test]

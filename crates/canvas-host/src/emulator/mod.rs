@@ -10,6 +10,7 @@ use std::time::Instant;
 use canvas_common::protocol::{Input, Placement, Run, Run8, runs_v7};
 
 pub mod alacritty;
+pub mod frozen;
 #[cfg(feature = "ghostty")]
 pub mod ghostty;
 pub mod inline;

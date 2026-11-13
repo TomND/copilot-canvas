@@ -56,6 +56,9 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(4);
 /// Remote clients: the focused tile at most every 16 ms, others every 100 ms.
 const FOCUSED_INTERVAL: Duration = Duration::from_millis(16);
 const BACKGROUND_INTERVAL: Duration = Duration::from_millis(100);
+/// Local clients that type in a tile: their other tiles at most every 33 ms
+/// (the typed-in tile is not paced).
+const LOCAL_BACKGROUND_INTERVAL: Duration = Duration::from_millis(33);
 const PUMP_POLL: Duration = Duration::from_millis(50);
 /// TCP clients that have not authenticated by then are dropped.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -2068,10 +2071,16 @@ fn pump_client(host: &Host, client: &Client, focused_pass: bool, answers: &HashM
         if pending {
             continue;
         }
-        if client.remote
-            && let Some(at) = written
-        {
-            let ready = at + if focused_pass { FOCUSED_INTERVAL } else { BACKGROUND_INTERVAL };
+        // Remote tiles are paced; so are a local client's tiles other than
+        // the one it types in (a busy tile would cost a snapshot every pass, S3-15).
+        let interval = match (client.remote, focused_pass) {
+            (true, true) => Some(FOCUSED_INTERVAL),
+            (true, false) => Some(BACKGROUND_INTERVAL),
+            (false, false) if focused.is_some() => Some(LOCAL_BACKGROUND_INTERVAL),
+            (false, _) => None,
+        };
+        if let (Some(interval), Some(at)) = (interval, written) {
+            let ready = at + interval;
             if Instant::now() < ready {
                 due = sooner(due, ready);
                 continue;

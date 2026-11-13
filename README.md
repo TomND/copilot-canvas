@@ -1365,7 +1365,7 @@ lines/s, four of them subscribed like a tiled UI, plus an echo terminal.
 | Full UI frame: 100 sessions + 1,200 subagent boxes + 10 groups + 4 tiles, 200×50 | **p50 2.5–3.2 ms · p95 3.8–4.5 ms** (all zoom levels) |
 | Launch 101 terminals | 2.5 s |
 | Service CPU while 100 terminals stream | 14.5 % of one core |
-| Service memory | ~5 MB per live terminal (emulator + scrollback); 2–6 MB with none |
+| Service memory | ~5 MB per live terminal (emulator + scrollback); 2–6 MB with none; an exited terminal keeps only its rows (no emulator, no threads) |
 | Panning a 94-session canvas, 200×55 | input→screen **≈2 ms**, 4–5 KB per frame (the dot grid hides while panning) |
 | Panning while 100 sessions are live and 30 are busy (events every 50 ms, subagents spawning, permission prompts) | input→screen **≈8 ms**, UI thread ≤3 ms per frame, service updates ≤2 ms per pass |
 | 300 sessions + 3,000 subagent boxes + 30 groups, 30 busy | UI thread ≈4–6 ms per frame (sidebar cached; rebuilt only when it changes), first load 15 ms (was 369 ms) |
@@ -1416,7 +1416,13 @@ and `docs/REMOTE.md`.
   docs/REMOTE.md). Remote links never execute anything: URLs open at home, the
   Cloud PC's files in VS Code through its tunnel or in a read-only viewer.
 - Stop is graceful (Ctrl+D, then Ctrl+C twice and `/exit`, then the whole process tree after 10 s). The service
-  sits in a kill-on-close job so nothing is orphaned if it dies.
+  sits in a kill-on-close job so nothing is orphaned if it dies. An agent that
+  exits on its own (a crash, `/exit`) takes what it left running with it, as a
+  stop does: MCP servers and nested sessions (which hold their session's
+  in-use lock) do not outlive it (Windows: each agent has a kill-on-close job
+  of its own; macOS and Linux: its descendants seen with their start times).
+  An exited terminal keeps its last screen and scrollback as rows you can
+  still scroll; its emulator and threads are freed at once.
 - **Idle auto-stop** (*Settings › Performance › Stop idle sessions*: never /
   30 / 60 / 120 / 240 (default) min) gracefully stops a canvas-started Copilot
   session only when it is idle (not working, waiting on you, waiting for review
