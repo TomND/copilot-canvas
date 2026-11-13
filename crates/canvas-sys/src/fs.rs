@@ -179,6 +179,44 @@ mod unix {
     }
 }
 
+/// `a` and `b` are the same file (volume and file index; links not
+/// followed): two hard links of one file, say. Opened for no access, so a
+/// running executable and a file another program holds are looked at too.
+#[cfg(windows)]
+pub fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle};
+    let id = |path: &std::path::Path| -> Option<(u32, u32, u32)> {
+        let file = std::fs::OpenOptions::new()
+            .access_mode(0)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .ok()?;
+        // SAFETY: an open handle and a zeroed struct the call fills.
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        (unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) } != 0).then_some((info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow))
+    };
+    matches!((id(a), id(b)), (Some(x), Some(y)) if x == y)
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    #[test]
+    fn hard_links_are_the_same_file_and_copies_are_not() {
+        let dir = std::env::temp_dir().join(format!("cs-same-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, link, copy) = (dir.join("a.exe"), dir.join("b.exe"), dir.join("c.exe"));
+        std::fs::write(&a, b"build").unwrap();
+        std::fs::hard_link(&a, &link).unwrap();
+        std::fs::copy(&a, &copy).unwrap();
+        assert!(super::same_file(&a, &link) && super::same_file(&a, &a));
+        assert!(!super::same_file(&a, &copy) && !super::same_file(&a, &dir.join("missing")));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
 /// Where the folder browser starts: the drives (Windows).
 #[cfg(windows)]
 pub fn roots() -> Vec<String> {

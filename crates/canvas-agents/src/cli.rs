@@ -321,11 +321,28 @@ pub fn install_alias(dir: &Path, target: &Path) {
     }
     #[cfg(windows)]
     {
-        // A hard link shares the target's size and time; a copy is given its time.
+        // A hard link is the target's file itself. A new build replaced the
+        // target with another file, which the old link is not, even when both
+        // have the same size and time (the times are coarse): never compared
+        // by size and time, which kept the old build.
+        if canvas_sys::fs::same_file(&alias, target) {
+            return;
+        }
+        // A new link is made beside it and moved over it (an alias in use is left as it is).
+        let temp = dir.join(format!("{}.{}.tmp", crate::legacy::CLI, std::process::id()));
+        let _ = std::fs::remove_file(&temp);
+        if std::fs::hard_link(target, &temp).is_ok() {
+            if std::fs::rename(&temp, &alias).is_err() {
+                let _ = std::fs::remove_file(&temp);
+            }
+            return;
+        }
+        // No hard links on this volume: a copy, given the target's time, is
+        // compared by size and time (a copy of a build keeps that build's time).
         if same_file_stamp(&alias, target) || (alias.exists() && std::fs::remove_file(&alias).is_err()) {
             return;
         }
-        if std::fs::hard_link(target, &alias).is_err() && std::fs::copy(target, &alias).is_ok()
+        if std::fs::copy(target, &alias).is_ok()
             && let Ok(modified) = std::fs::metadata(target).and_then(|m| m.modified())
         {
             let _ = std::fs::File::options().write(true).open(&alias).and_then(|f| f.set_modified(modified));
@@ -733,9 +750,15 @@ mod tests {
         // A new build replaces the CLI file (as install_cli does): the alias follows.
         let temp = dir.join("atelier.tmp");
         std::fs::write(&temp, b"build 2").unwrap();
+        // Even with the old build's size and time (Windows' times are coarse:
+        // two quick writes often get the same one).
+        let old = std::fs::metadata(&target).unwrap().modified().unwrap();
+        std::fs::File::options().write(true).open(&temp).unwrap().set_modified(old).unwrap();
         std::fs::rename(&temp, &target).unwrap();
         install_alias(&dir, &target);
         assert_eq!(std::fs::read(&alias).unwrap(), b"build 2");
+        #[cfg(windows)]
+        assert!(canvas_sys::fs::same_file(&alias, &target), "a hard link of the new build");
         let _ = std::fs::remove_dir_all(dir);
     }
 

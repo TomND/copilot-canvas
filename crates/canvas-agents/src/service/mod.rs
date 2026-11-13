@@ -113,8 +113,14 @@ fn group_skill_line(id: &str, skills: &canvas_model::launch::GroupSkills, made: 
     format!("terminal {id}: skill folders of {} ({} folder(s)){how}: {given}{skipped}", group_label(skills), skills.dirs.len())
 }
 
-/// What tells whether skill folders changed: the size and time of what is
-/// in them (a bounded walk of names and times, no file read).
+/// What tells whether skill folders changed: the names in them and the size
+/// and time of their files (a bounded walk, no file read). A folder's own
+/// time is left out: what changes it (a name added or removed) is in the
+/// names, and on Windows the time a listing gives for a folder is brought up
+/// to date lazily (listing the folder itself does it), so it moved between
+/// two walks with nothing changed and the plugin was built again each time.
+/// For the same reason a file's size and time are asked of the file itself
+/// there, not taken from the listing.
 fn skills_stamp(dirs: &[String]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -125,19 +131,22 @@ fn skills_stamp(dirs: &[String]) -> u64 {
             dir.hash(&mut hasher);
             continue;
         };
-        let mut items: Vec<(PathBuf, u64, Option<std::time::SystemTime>, bool)> = entries
-            .flatten()
-            .filter_map(|e| e.metadata().ok().map(|m| (e.path(), m.len(), m.modified().ok(), m.is_dir())))
-            .collect();
+        let mut items: Vec<(PathBuf, bool)> = entries.flatten().filter_map(|e| e.file_type().ok().map(|t| (e.path(), t.is_dir()))).collect();
         items.sort_by(|a, b| a.0.cmp(&b.0));
-        for (path, len, modified, is_dir) in items {
+        for (path, is_dir) in items {
             seen += 1;
             if seen > canvas_model::skills::MAX_VISITS * 4 {
                 return hasher.finish();
             }
-            (&path, len, modified).hash(&mut hasher);
-            if is_dir && depth < 6 {
-                stack.push((path, depth + 1));
+            if is_dir {
+                (&path, true).hash(&mut hasher);
+                if depth < 6 {
+                    stack.push((path, depth + 1));
+                }
+            } else {
+                // Links are not followed (the plugin builder skips them too).
+                let meta = std::fs::symlink_metadata(&path).ok();
+                (&path, meta.as_ref().map(|m| m.len()), meta.and_then(|m| m.modified().ok())).hash(&mut hasher);
             }
         }
     }
@@ -1919,9 +1928,20 @@ mod tests {
         let dirs = vec![root.join("team").display().to_string()];
         let first = skills_stamp(&dirs);
         assert_eq!(skills_stamp(&dirs), first, "unchanged: the plugin built before is reused");
+        // A folder's own time moving (Windows brings it up to date lazily) changes nothing.
+        #[cfg(unix)]
+        {
+            let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+            std::fs::File::open(&skill).unwrap().set_modified(later).unwrap();
+            assert_eq!(skills_stamp(&dirs), first, "only a folder's time moved");
+        }
         // A file deep inside changes: built again.
         std::fs::write(skill.join("scripts").join("run.sh"), "echo 22").unwrap();
-        assert_ne!(skills_stamp(&dirs), first);
+        let second = skills_stamp(&dirs);
+        assert_ne!(second, first);
+        // A file added (or a folder): built again.
+        std::fs::create_dir_all(skill.join("assets")).unwrap();
+        assert_ne!(skills_stamp(&dirs), second);
         let _ = std::fs::remove_dir_all(root);
     }
 
