@@ -6,11 +6,15 @@
 //! graphics command before the bytes reach the engine. The cursor stays where
 //! it was (`C=1`): ConPTY does not know the image's size, so its cursor is
 //! the one that counts, and programs leave room below the image themselves.
-//! Only PNG files are translated (the engine decodes PNG); other formats,
-//! downloads (`inline=0`) and bodies that are not strictly base64 are
-//! dropped. Sequences longer than [`MAX_SEQUENCE`] are dropped as they
-//! stream. A sequence split across reads is held and only the new bytes are
-//! appended and searched each time, so a long image costs linear time.
+//! Only PNG files are translated (the engine decodes PNG); other formats
+//! and downloads (`inline=0`) are dropped. Sequences longer than
+//! [`MAX_SEQUENCE`] are dropped as they stream. A sequence split across reads
+//! is held and only the new bytes are appended and searched each time, so a
+//! long image costs linear time. A byte that cannot belong to an inline image
+//! (outside the arguments' characters before the `:`, outside base64 and
+//! whitespace after it) ends the hold at once: the bytes held go to the
+//! engine unchanged, as any terminal would take them, so a stray
+//! `ESC ] 1337 ; File=` in a program's output never withholds what follows.
 
 use std::borrow::Cow;
 
@@ -27,12 +31,57 @@ const ESC: u8 = 0x1b;
 pub struct InlineImages {
     /// The start of a sequence (or of a possible prefix) not yet complete.
     held: Vec<u8>,
+    /// The held (or skipped) sequence reached its base64 body (after `:`).
+    body: bool,
     /// Dropping an oversized sequence until its terminator.
     skipping: bool,
     /// While skipping, the last byte seen was ESC (`ESC \` may span two reads).
     skip_esc: bool,
     cols: u16,
     rows: u16,
+}
+
+/// How a `File=` sequence goes on from a point ([`sequence_end`]).
+enum End {
+    /// Terminated: (body end, index after the terminator).
+    At(usize, usize),
+    /// This byte cannot belong to it: not an inline image.
+    Broken(usize),
+    /// The data ends inside it.
+    More,
+}
+
+/// A byte of the arguments before `:` (`inline=1;width=50%;name=<base64>;type=image/png`).
+fn argument_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'=' | b';' | b'%' | b'.' | b'/' | b'+' | b'-' | b'_')
+}
+
+/// A byte of the base64 body.
+fn body_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=') || b.is_ascii_whitespace()
+}
+
+/// Scans a `File=` sequence from `from` (`body`: whether its `:` was seen, updated).
+fn sequence_end(data: &[u8], from: usize, body: &mut bool) -> End {
+    let mut i = from;
+    while i < data.len() {
+        match data[i] {
+            0x07 | 0x18 | 0x1a => return End::At(i, i + 1),
+            ESC => {
+                return match data.get(i + 1) {
+                    Some(b'\\') => End::At(i, i + 2),
+                    Some(_) => End::Broken(i),
+                    None => End::More,
+                };
+            }
+            b':' if !*body => *body = true,
+            b if *body && body_byte(b) => {}
+            b if !*body && argument_byte(b) => {}
+            _ => return End::Broken(i),
+        }
+        i += 1;
+    }
+    End::More
 }
 
 impl InlineImages {
@@ -50,7 +99,7 @@ impl InlineImages {
         let mut out = Vec::with_capacity(bytes.len());
         let mut rest = bytes;
         if self.skipping {
-            match self.skip(rest) {
+            match self.skip(rest, &mut out) {
                 Some(end) => rest = &rest[end..],
                 None => return Cow::Owned(out),
             }
@@ -72,22 +121,34 @@ impl InlineImages {
         Cow::Owned(out)
     }
 
-    /// Skips the rest of an oversized sequence; the index after its end, or
-    /// `None` when `data` ends inside it.
-    fn skip(&mut self, data: &[u8]) -> Option<usize> {
+    /// Skips the rest of an oversized sequence; the index to go on from (after
+    /// its end, or at a byte that cannot belong to it), or `None` when `data`
+    /// ends inside it (or was handled here).
+    fn skip(&mut self, data: &[u8], out: &mut Vec<u8>) -> Option<usize> {
         if data.is_empty() {
             return None;
         }
-        if std::mem::take(&mut self.skip_esc) && data[0] == b'\\' {
+        if std::mem::take(&mut self.skip_esc) {
             self.skipping = false;
-            return Some(1);
+            if data[0] == b'\\' {
+                return Some(1);
+            }
+            // The ESC that ended the last read starts something else.
+            let mut joined = vec![ESC];
+            joined.extend_from_slice(data);
+            self.scan(&joined, out);
+            return None;
         }
-        match terminator(data, 0) {
-            Some((_, end)) => {
+        match sequence_end(data, 0, &mut self.body) {
+            End::At(_, end) => {
                 self.skipping = false;
                 Some(end)
             }
-            None => {
+            End::Broken(at) => {
+                self.skipping = false;
+                Some(at)
+            }
+            End::More => {
                 self.skip_esc = data.last() == Some(&ESC);
                 None
             }
@@ -103,17 +164,36 @@ impl InlineImages {
             return None;
         }
         // `ESC \` split across reads: the held ESC starts the terminator.
-        let split = self.held.last() == Some(&ESC) && data[0] == b'\\';
-        let found = if split { Some((0, 1)) } else { terminator(data, 0) };
-        let Some((body_end, end)) = found else {
-            if self.held.len() + data.len() > MAX_SEQUENCE {
-                self.held = Vec::new();
-                self.skipping = true;
-                self.skip_esc = data.last() == Some(&ESC);
-            } else {
-                self.held.extend_from_slice(data);
-            }
+        let held_esc = self.held.last() == Some(&ESC);
+        let split = held_esc && data[0] == b'\\';
+        if held_esc && !split {
+            // The held ESC starts something else: not an image after all.
+            let held = std::mem::take(&mut self.held);
+            out.extend_from_slice(&held[..held.len() - 1]);
+            let mut joined = vec![ESC];
+            joined.extend_from_slice(data);
+            self.scan(&joined, out);
             return None;
+        }
+        let found = if split { End::At(0, 1) } else { sequence_end(data, 0, &mut self.body) };
+        let (body_end, end) = match found {
+            End::At(body_end, end) => (body_end, end),
+            End::Broken(at) => {
+                // Not an image: everything held reaches the engine as it came.
+                out.extend_from_slice(&std::mem::take(&mut self.held));
+                out.extend_from_slice(&data[..at]);
+                return Some(at);
+            }
+            End::More => {
+                if self.held.len() + data.len() > MAX_SEQUENCE {
+                    self.held = Vec::new();
+                    self.skipping = true;
+                    self.skip_esc = data.last() == Some(&ESC);
+                } else {
+                    self.held.extend_from_slice(data);
+                }
+                return None;
+            }
         };
         let mut sequence = std::mem::take(&mut self.held);
         if split {
@@ -155,20 +235,28 @@ impl InlineImages {
                 i = start + 1;
                 continue;
             }
-            match terminator(data, start + PREFIX.len()) {
-                Some((body_end, end)) => {
+            let mut body = false;
+            match sequence_end(data, start + PREFIX.len(), &mut body) {
+                End::At(body_end, end) => {
                     if let Some(kitty) = self.translate(&data[start + PREFIX.len()..body_end]) {
                         out.extend_from_slice(&kitty);
                     }
                     i = end;
                 }
-                None if rest.len() > MAX_SEQUENCE => {
+                End::Broken(at) => {
+                    // Not an image: passed on as it came; scanning goes on there.
+                    out.extend_from_slice(&data[start..at]);
+                    i = at;
+                }
+                End::More if rest.len() > MAX_SEQUENCE => {
                     self.skipping = true;
+                    self.body = body;
                     self.skip_esc = data.last() == Some(&ESC);
                     return;
                 }
-                None => {
+                End::More => {
                     self.held = rest.to_vec();
+                    self.body = body;
                     return;
                 }
             }
@@ -227,21 +315,6 @@ impl InlineImages {
         }
         Some(out)
     }
-}
-
-/// The end of an OSC body from `from`: (body end, index after the terminator).
-fn terminator(data: &[u8], from: usize) -> Option<(usize, usize)> {
-    let mut i = from;
-    while i < data.len() {
-        match data[i] {
-            0x07 => return Some((i, i + 1)),
-            0x1b if data.get(i + 1) == Some(&b'\\') => return Some((i, i + 2)),
-            0x1b if i + 1 == data.len() => return None,
-            0x18 | 0x1a => return Some((i, i + 1)),
-            _ => i += 1,
-        }
-    }
-    None
 }
 
 /// The chunk ends in what could be the start of [`PREFIX`].
@@ -352,10 +425,52 @@ mod tests {
     fn only_strict_base64_bodies_are_translated() {
         let mut bridge = InlineImages::default();
         let with = |payload: &str| format!("\x1b]1337;File=inline=1:{payload}\x07z");
-        assert_eq!(&*bridge.filter(with(&format!("{PNG}\x1b[31mAAAA")).as_bytes()), b"z", "an escape sequence inside the body");
-        assert_eq!(&*bridge.filter(with(&format!("{PNG};a=d")).as_bytes()), b"z", "Kitty control characters");
-        assert_eq!(&*bridge.filter(with(&format!("{PNG}%%")).as_bytes()), b"z");
+        // Not an image: passed on as it came (the engine ends the OSC at the
+        // stray byte, as any terminal would); nothing becomes a Kitty command.
+        for payload in [format!("{PNG}\x1b[31mAAAA"), format!("{PNG};a=d"), format!("{PNG}%%")] {
+            let input = with(&payload);
+            assert_eq!(&*bridge.filter(input.as_bytes()), input.as_bytes(), "{payload:?}");
+        }
         let wrapped = String::from_utf8(bridge.filter(with("iVBORw0K\r\n  GgoAAAA==").as_bytes()).into_owned()).unwrap();
         assert_eq!(wrapped, "\x1b_Ga=T,f=100,q=2,C=1,m=0;iVBORw0KGgoAAAA==\x1b\\z", "line breaks and padding are fine");
+    }
+
+    /// S3-12: a stray prefix in a program's output (a log or a file printed
+    /// with its escapes) never withholds what follows until some later BEL.
+    #[test]
+    fn a_stray_prefix_lets_the_output_after_it_through_at_once() {
+        let mut bridge = InlineImages::default();
+        let stray = "\x1b]1337;File=";
+        // In one read.
+        let input = format!("{stray}\x1b[2Jhello");
+        assert_eq!(&*bridge.filter(input.as_bytes()), input.as_bytes());
+        // The prefix ending one read, the rest in the next.
+        let mut out = bridge.filter(stray.as_bytes()).into_owned();
+        assert!(out.is_empty(), "held while it may be an image");
+        out.extend_from_slice(&bridge.filter(b"\x1b[2Jhello"));
+        assert_eq!(out, input.as_bytes());
+        // Arguments, then an ESC at the end of a read that turns out to start a CSI.
+        let mut out = bridge.filter(format!("{stray}inline=1\x1b").as_bytes()).into_owned();
+        out.extend_from_slice(&bridge.filter(b"[1mbold"));
+        assert_eq!(out, format!("{stray}inline=1\x1b[1mbold").as_bytes());
+        // Text that is no image argument (a space), and a later BEL on its own.
+        let input = format!("{stray}some log line\r\nnext line");
+        assert_eq!(&*bridge.filter(input.as_bytes()), input.as_bytes());
+        assert_eq!(&*bridge.filter(b"\x07after"), b"\x07after");
+        assert!(bridge.held.is_empty() && !bridge.skipping);
+        // An image still works after all that.
+        let image = sequence("inline=1");
+        assert_eq!(String::from_utf8(bridge.filter(image.as_bytes()).into_owned()).unwrap(), format!("\x1b_Ga=T,f=100,q=2,C=1,m=0;{PNG}\x1b\\"));
+    }
+
+    /// An oversized sequence being skipped ends at a byte that cannot belong to it.
+    #[test]
+    fn skipping_an_oversized_sequence_stops_at_a_foreign_byte() {
+        let mut bridge = InlineImages::default();
+        let mut big = b"\x1b]1337;File=inline=1:".to_vec();
+        big.extend(std::iter::repeat_n(b'A', MAX_SEQUENCE + 10));
+        assert!(bridge.filter(&big).is_empty());
+        assert_eq!(&*bridge.filter(b"AAAA\x1b[2Jafter"), b"\x1b[2Jafter");
+        assert!(!bridge.skipping);
     }
 }

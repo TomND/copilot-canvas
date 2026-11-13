@@ -572,8 +572,22 @@ appended at index 27). Without an owner, or when the owner asked for no
 size, the newest wish applies, which is the old "last `Resize` wins" for a
 single client. A connection that disconnects or stops showing the terminal
 (`Subscribe8` without it) is forgotten; the newest remaining wish applies.
+When it owned the terminal and another connection wishes another size,
+its wish still holds for about a second (`LEAVE_GRACE`, ended by the
+service's 500 ms tick), so a tile hidden for a moment or a connection its
+own reconnection replaces does not resize the agent to the other size and
+straight back; a wish or claim of its own meanwhile keeps it, another
+connection's claim ends the wait at once.
 A terminal it launched starts with its size and owner.
 (`canvas_common::sizing`, tmux's "latest" policy.)
+
+The engine takes a resize at its place in the output: after what the
+program drew for the old size (even while that output still waits for the
+engine) and before anything the PTY sends once resized (ConPTY repaints the
+whole screen at once; fed at the old size, that repaint scrolled the top rows
+of a growing terminal away for good). A resize never waits for a busy engine,
+and one the PTY refuses is undone in the engine too and retried by the next
+`Resize`; a keystroke whose size claim fails is still delivered.
 
 So with the home PC and the phone on one session: typing on the phone (in
 *Fit to this phone* mode) reflows the agent to the phone's width; typing at

@@ -2,13 +2,20 @@
 //!
 //! The emulator lives on a dedicated thread (engines need not be `Send`).
 //! Clients and the frame pump reach it through a control channel (input,
-//! clicks, wheel, resize, scroll, snapshots); the PTY reader feeds it through
+//! clicks, wheel, scroll, snapshots); the PTY reader feeds it through
 //! a separate output channel. The thread handles waiting control messages
 //! before the next output chunk (one chunk still gets its turn after a long
 //! burst), so keystrokes and snapshots never queue behind a flood of output.
 //! The output channel is bounded in bytes
 //! ([`OUTPUT_QUEUE`] chunks of at most [`READ_CHUNK`] bytes): when the
 //! emulator falls behind, the reader blocks and ConPTY slows the program.
+//!
+//! A resize reaches the engine at its place in the output stream, not ahead
+//! of output still queued: the engine takes the new size right after the
+//! output the reader had taken from the PTY when the PTY was resized (drawn
+//! for the old size), and before anything read later (ConPTY's repaint for
+//! the new size). Fed at the old size, that repaint would scroll the top
+//! rows away for good ([`Resizes`]).
 
 use std::any::Any;
 use std::collections::hash_map::DefaultHasher;
@@ -72,7 +79,8 @@ enum Ctl {
     Input(Input),
     Wheel { up: bool, col: u16, row: u16, mods: u8 },
     Click { button: u8, col: u16, row: u16, mods: u8 },
-    Resize(u16, u16),
+    /// A resize waits in [`Resizes`]: apply it if its place in the output came.
+    Resized,
     Scroll(Scroll),
     Snapshot(Sender<Snapshot>),
     Image(u32, Sender<Option<ImageData>>),
@@ -81,6 +89,40 @@ enum Ctl {
     Reset(Vec<u8>),
     /// The screen with the count of output bytes the engine had taken then.
     SnapshotAt(Sender<(Snapshot, u64)>),
+}
+
+/// Engine resizes waiting for their place in the output stream: each is
+/// applied once the engine has taken the output chunks the reader had read
+/// before the PTY was resized, and before any later chunk.
+#[derive(Default)]
+struct Resizes {
+    /// (output chunks read before the PTY resize, cols, rows), oldest first.
+    queue: Mutex<std::collections::VecDeque<(u64, u16, u16)>>,
+}
+
+impl Resizes {
+    fn push(&self, after: u64, cols: u16, rows: u16) {
+        lock(&self.queue).push_back((after, cols, rows));
+    }
+
+    /// Takes back the newest resize when it is `resize` and not applied yet.
+    fn withdraw(&self, resize: (u64, u16, u16)) -> bool {
+        let mut queue = lock(&self.queue);
+        queue.back() == Some(&resize) && queue.pop_back().is_some()
+    }
+
+    /// The size to take now that `fed` chunks were fed: the newest resize
+    /// whose place came. The engine looks before every message, so resizes
+    /// that come due together have no output between them: only the last
+    /// one matters (a resize undone at once costs no reflow).
+    fn due(&self, fed: u64) -> Option<(u16, u16)> {
+        let mut queue = lock(&self.queue);
+        let mut size = None;
+        while queue.front().is_some_and(|(after, _, _)| *after <= fed) {
+            size = queue.pop_front().map(|(_, cols, rows)| (cols, rows));
+        }
+        size
+    }
 }
 
 /// The far end of a remote terminal's PTY (docs/VM-SESSIONS.md A2): a VM
@@ -212,6 +254,10 @@ pub struct Terminal {
     pub error: Mutex<Option<String>>,
     /// The size the PTY and the emulator have (or have queued); see [`Terminal::resize`].
     size: AtomicU32,
+    /// Output chunks the reader took from the PTY (where a resize goes in the stream).
+    read_chunks: Arc<AtomicU64>,
+    /// Engine resizes waiting for their place in the output.
+    resizes: Arc<Resizes>,
     stopping: AtomicBool,
     /// Images encoded as PNG for clients, by image id.
     encoded: Mutex<HashMap<u32, CachedImage>>,
@@ -409,6 +455,7 @@ impl Terminal {
         let generation = Arc::new(AtomicU64::new(1));
         let config = Config { cols, rows, scrollback: 5000, kitty_keyboard: true, pull_scrollback: emulator::PTY_PULLS_SCROLLBACK };
         let engine = spec.engine;
+        let resizes = Arc::new(Resizes::default());
         let terminal = Arc::new(Self {
             id: spec.id.to_owned(),
             copilot: spec.copilot,
@@ -430,6 +477,8 @@ impl Terminal {
             last_output_ms: AtomicU64::new(0),
             error: Mutex::new(None),
             size: AtomicU32::new(pack(cols, rows)),
+            read_chunks: Arc::new(AtomicU64::new(0)),
+            resizes: resizes.clone(),
             stopping: AtomicBool::new(false),
             encoded: Mutex::new(HashMap::new()),
             encoding: Mutex::new(HashSet::new()),
@@ -466,11 +515,13 @@ impl Terminal {
                 replies: true,
                 remake: None,
                 fed: 0,
+                resizes,
+                chunks: 0,
             },
             move || emulator::create(engine, &config),
         );
         spawn_writer(writer, input_rx);
-        spawn_reader(terminal.clone(), reader, output_tx, hooks.bytes, hooks.raw);
+        spawn_reader(terminal.clone(), reader, output_tx, hooks.bytes, hooks.raw, terminal.read_chunks.clone());
         spawn_waiter(terminal.clone(), child, hooks.exited, hooks.pump);
         Ok(terminal)
     }
@@ -488,6 +539,7 @@ impl Terminal {
         let generation = Arc::new(AtomicU64::new(1));
         let config = Config { cols, rows, scrollback: 5000, kitty_keyboard: true, pull_scrollback: true };
         let engine = spec.engine;
+        let resizes = Arc::new(Resizes::default());
         let terminal = Arc::new(Self {
             id: spec.id.to_owned(),
             copilot: spec.copilot,
@@ -509,6 +561,8 @@ impl Terminal {
             last_output_ms: AtomicU64::new(0),
             error: Mutex::new(None),
             size: AtomicU32::new(pack(cols, rows)),
+            read_chunks: Arc::new(AtomicU64::new(0)),
+            resizes: resizes.clone(),
             stopping: AtomicBool::new(false),
             encoded: Mutex::new(HashMap::new()),
             encoding: Mutex::new(HashSet::new()),
@@ -544,6 +598,8 @@ impl Terminal {
                 replies: false,
                 fed: 0,
                 remake: Some(Box::new(move |cols, rows| emulator::create(engine, &Config { cols, rows, scrollback: 5000, kitty_keyboard: true, pull_scrollback: true }))),
+                resizes,
+                chunks: 0,
             },
             move || emulator::create(engine, &config),
         );
@@ -707,26 +763,46 @@ impl Terminal {
     }
 
     /// Resizes the PTY and the emulator together. Runs under the PTY lock so
-    /// concurrent resizes reach both in the same order; the new size is
-    /// stored only once the emulator has it queued, so a failed resize is
-    /// retried by the next call instead of being skipped as unchanged.
+    /// concurrent resizes reach both in the same order. The engine's resize
+    /// is queued first, at its place in the output: after the chunks read so
+    /// far (drawn for the old size), before whatever the resized PTY sends
+    /// (ConPTY repaints at once). It never waits for a busy engine. When the
+    /// PTY refuses, the engine goes back to the old size too and the size is
+    /// not stored, so the next call retries instead of skipping it as unchanged.
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
         let cols = cols.clamp(20, 1000);
         let rows = rows.clamp(5, 500);
         let packed = pack(cols, rows);
         let master = lock(&self.master);
-        if self.size.load(Ordering::Acquire) == packed {
+        let current = self.size.load(Ordering::Acquire);
+        if current == packed {
             return Ok(());
         }
-        if let Some(master) = master.as_ref() {
-            master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
+        // A remote terminal's output has no place to wait for: at once.
+        let place = || if self.remote.is_some() { 0 } else { self.read_chunks.load(Ordering::Acquire) };
+        let after = place();
+        self.queue_resize(after, cols, rows);
+        if let Some(master) = master.as_ref()
+            && let Err(error) = master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        {
+            // Not taken yet: withdrawn; else the engine goes back.
+            if !self.resizes.withdraw((after, cols, rows)) {
+                self.queue_resize(place(), (current >> 16) as u16, current as u16);
+            }
+            return Err(error);
         }
         if let Some(remote) = &self.remote {
             remote.resize(cols, rows);
         }
-        self.command(Ctl::Resize(cols, rows))?;
         self.size.store(packed, Ordering::Release);
         Ok(())
+    }
+
+    /// Queues an engine resize after output chunk `after` and wakes the
+    /// engine (a full control queue means it is awake already).
+    fn queue_resize(&self, after: u64, cols: u16, rows: u16) {
+        self.resizes.push(after, cols, rows);
+        let _ = self.control.try_send(Ctl::Resized);
     }
 
     /// Mouse wheel: forwarded to the app when it wants it, else scrolls history.
@@ -947,6 +1023,10 @@ struct EmulatorThread {
     remake: Option<Remake>,
     /// Output bytes taken so far (before inline images are filtered).
     fed: u64,
+    /// Resizes waiting for their place in the output.
+    resizes: Arc<Resizes>,
+    /// Output chunks taken so far (the places resizes wait for).
+    chunks: u64,
 }
 
 /// Makes a fresh engine of a size.
@@ -983,6 +1063,7 @@ impl EmulatorThread {
             Err(panic) => return self.failed(&panic_message(panic.as_ref()), None),
         };
         while let Some(mut msg) = self.next(emu.sync_deadline()) {
+            let chunk = matches!(msg, Msg::Output(_));
             if let Msg::Output(bytes) = &msg {
                 self.fed += bytes.len() as u64;
             }
@@ -999,6 +1080,9 @@ impl EmulatorThread {
                 // Dropping a broken engine may panic as well.
                 let _ = catch_unwind(AssertUnwindSafe(move || drop(emu)));
                 return self.failed(&panic_message(panic.as_ref()), last);
+            }
+            if chunk {
+                self.chunks += 1;
             }
         }
     }
@@ -1056,6 +1140,16 @@ impl EmulatorThread {
     }
 
     fn handle(&mut self, emu: &mut dyn Emulator, msg: Msg) {
+        // A resize whose place in the output came goes before this message
+        // (and before this chunk, which was read after the PTY's resize).
+        if let Some((cols, rows)) = self.resizes.due(self.chunks)
+            && (cols, rows) != (self.cols, self.rows)
+        {
+            emu.resize(cols, rows);
+            (self.cols, self.rows) = (cols, rows);
+            self.bridge.set_size(cols, rows);
+            self.bump();
+        }
         match msg {
             Msg::Output(bytes) => {
                 let bytes = self.bridge.filter(&bytes);
@@ -1112,12 +1206,7 @@ impl EmulatorThread {
                     self.bump();
                 }
             },
-            Ctl::Resize(cols, rows) => {
-                emu.resize(cols, rows);
-                (self.cols, self.rows) = (cols, rows);
-                self.bridge.set_size(cols, rows);
-                self.bump();
-            }
+            Ctl::Resized => {}
             Ctl::Scroll(scroll) => {
                 emu.scroll(scroll);
                 self.bump();
@@ -1181,7 +1270,7 @@ fn spawn_writer(mut writer: Box<dyn Write + Send>, input: Receiver<Vec<u8>>) {
         .expect("spawn pty writer");
 }
 
-fn spawn_reader(terminal: Arc<Terminal>, mut reader: Box<dyn Read + Send>, output: Sender<Vec<u8>>, bytes: Arc<AtomicU64>, mut raw: Option<Sender<Vec<u8>>>) {
+fn spawn_reader(terminal: Arc<Terminal>, mut reader: Box<dyn Read + Send>, output: Sender<Vec<u8>>, bytes: Arc<AtomicU64>, mut raw: Option<Sender<Vec<u8>>>, read_chunks: Arc<AtomicU64>) {
     std::thread::Builder::new()
         .name("pty-reader".into())
         .spawn(move || {
@@ -1192,6 +1281,11 @@ fn spawn_reader(terminal: Arc<Terminal>, mut reader: Box<dyn Read + Send>, outpu
                 match reader.read(&mut buffer) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
+                        // Counted before it can reach the engine: a resize
+                        // that saw this count is applied after this chunk,
+                        // one that did not before it, so nothing read after
+                        // the PTY was resized is fed at the old size.
+                        read_chunks.fetch_add(1, Ordering::AcqRel);
                         bytes.fetch_add(n as u64, Ordering::Relaxed);
                         let now = now_ms();
                         terminal.last_output_ms.store(now, Ordering::Relaxed);
@@ -1422,6 +1516,8 @@ mod tests {
         fed: Arc<AtomicUsize>,
         snapshots: Arc<AtomicUsize>,
         end_syncs: Arc<AtomicUsize>,
+        /// Feeds (with the size they were fed at) and resizes, in order.
+        events: Arc<Mutex<Vec<String>>>,
     }
 
     /// A test engine: slow on demand, panics on `b"panic"`, starts a
@@ -1451,10 +1547,12 @@ mod tests {
                 self.sync = Some(Instant::now() + Duration::from_millis(50));
             }
             std::thread::sleep(self.feed_delay);
+            lock(&self.log.events).push(format!("{} at {}x{}", String::from_utf8_lossy(bytes), self.cols, self.rows));
             self.log.fed.fetch_add(1, Ordering::SeqCst);
         }
         fn resize(&mut self, cols: u16, rows: u16) {
             (self.cols, self.rows) = (cols, rows);
+            lock(&self.log.events).push(format!("resize {cols}x{rows}"));
         }
         fn snapshot(&self) -> Snapshot {
             std::thread::sleep(self.snapshot_delay);
@@ -1498,11 +1596,19 @@ mod tests {
         generation: Arc<AtomicU64>,
         failed: Receiver<String>,
         pending: Mutex<Option<Receiver<Snapshot>>>,
+        resizes: Arc<Resizes>,
         _keep: (Receiver<(String, String)>, Receiver<String>, Receiver<()>),
     }
 
     impl Harness {
         fn new(probe: Probe) -> Self {
+            let (cols, rows) = (probe.cols, probe.rows);
+            Self::with(cols, rows, move || Box::new(probe))
+        }
+
+        /// The thread with any engine of `cols`×`rows`.
+        fn with(cols: u16, rows: u16, make: impl FnOnce() -> Box<dyn Emulator> + Send + 'static) -> Self {
+            let resizes = Arc::new(Resizes::default());
             let (control, control_rx) = bounded(CONTROL_QUEUE);
             let (output, output_rx) = bounded(OUTPUT_QUEUE);
             let (input, written) = bounded(4096);
@@ -1516,8 +1622,8 @@ mod tests {
             });
             let thread = EmulatorThread {
                 id: "probe".into(),
-                cols: probe.cols,
-                rows: probe.rows,
+                cols,
+                rows,
                 control: control_rx,
                 output: output_rx,
                 generation: generation.clone(),
@@ -1533,9 +1639,17 @@ mod tests {
                 replies: true,
                 remake: None,
                 fed: 0,
+                resizes: resizes.clone(),
+                chunks: 0,
             };
-            spawn_emulator(thread, move || Box::new(probe));
-            Self { control, output, written, generation, failed, pending: Mutex::new(None), _keep: (clipboard_rx, changed_rx, pump_rx) }
+            spawn_emulator(thread, make);
+            Self { control, output, written, generation, failed, pending: Mutex::new(None), resizes, _keep: (clipboard_rx, changed_rx, pump_rx) }
+        }
+
+        /// A resize applied once `after` output chunks were fed (as [`Terminal::resize`] queues it).
+        fn resize(&self, after: u64, cols: u16, rows: u16) {
+            self.resizes.push(after, cols, rows);
+            let _ = self.control.try_send(Ctl::Resized);
         }
 
         fn send(&self, ctl: Ctl) {
@@ -1594,11 +1708,110 @@ mod tests {
         let harness = Harness::new(Probe { feed_delay: Duration::from_millis(5), ..Probe::new(&log) });
         let flood = harness.flood(Duration::from_millis(800));
         for i in 0..40u16 {
-            harness.send(Ctl::Resize(40 + i, 10 + i % 7));
+            harness.resize(0, 40 + i, 10 + i % 7);
         }
         let snap = harness.snapshot(Duration::from_secs(5)).expect("snapshot");
         assert_eq!((snap.cols, snap.rows), (79, 10 + 39 % 7));
         flood.join().unwrap();
+    }
+
+    fn wait_fed(log: &ProbeLog, count: usize) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while log.fed.load(Ordering::SeqCst) < count {
+            assert!(Instant::now() < deadline, "{} of {count} chunks fed", log.fed.load(Ordering::SeqCst));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// S3-03: output read before the PTY was resized is fed at the old size,
+    /// even when it still waits in the queue (control messages go first);
+    /// output read after it at the new size.
+    #[test]
+    fn a_resize_takes_its_place_in_the_output_stream() {
+        let _serial = serial();
+        let log = ProbeLog::default();
+        let harness = Harness::new(Probe { feed_delay: Duration::from_millis(30), ..Probe::new(&log) });
+        for chunk in ["one", "two", "three"] {
+            harness.output.send(chunk.as_bytes().to_vec()).unwrap();
+        }
+        // The PTY is resized once three chunks were read; its repaint follows.
+        harness.resize(3, 100, 30);
+        harness.output.send(b"repaint".to_vec()).unwrap();
+        wait_fed(&log, 4);
+        assert_eq!(*lock(&log.events), ["one at 80x24", "two at 80x24", "three at 80x24", "resize 100x30", "repaint at 100x30"]);
+        let snap = harness.snapshot(Duration::from_secs(5)).unwrap();
+        assert_eq!((snap.cols, snap.rows), (100, 30));
+    }
+
+    /// The repaint is fed at the new size even when it overtakes the wake
+    /// (its control message late, or the control queue full).
+    #[test]
+    fn output_read_after_a_resize_never_reaches_the_engine_at_the_old_size() {
+        let log = ProbeLog::default();
+        let harness = Harness::new(Probe::new(&log));
+        harness.output.send(b"before".to_vec()).unwrap();
+        wait_fed(&log, 1);
+        harness.resizes.push(1, 60, 12);
+        harness.output.send(b"repaint".to_vec()).unwrap();
+        wait_fed(&log, 2);
+        assert_eq!(*lock(&log.events), ["before at 80x24", "resize 60x12", "repaint at 60x12"]);
+        // A resize undone before its place came costs nothing.
+        harness.resizes.push(2, 90, 40);
+        harness.resizes.push(2, 60, 12);
+        harness.output.send(b"after".to_vec()).unwrap();
+        wait_fed(&log, 3);
+        assert_eq!(lock(&log.events).last().map(String::as_str), Some("after at 60x12"));
+        assert_eq!(lock(&log.events).len(), 4, "no reflow to the size that was taken back");
+    }
+
+    /// The case S3-03 describes, with a real engine: a full-screen program
+    /// (the alternate screen keeps no scrollback) grows from 10 to 20 rows
+    /// and ConPTY repaints all 20 at once. Fed at the old size, the repaint's
+    /// line feeds would scroll its first 10 rows away for good.
+    #[test]
+    fn a_growing_terminal_keeps_the_top_rows_of_its_repaint() {
+        let harness = Harness::with(40, 10, || Box::new(headless(40, 10, true)));
+        let old: Vec<String> = (1..=10).map(|i| format!("old {i}")).collect();
+        harness.output.send(format!("\x1b[?1049h\x1b[H{}", old.join("\r\n")).into_bytes()).unwrap();
+        harness.resize(1, 40, 20);
+        let rows: Vec<String> = (1..=20).map(|i| format!("row {i}\x1b[K")).collect();
+        harness.output.send(format!("\x1b[?25l\x1b[8;20;40t\x1b[H{}", rows.join("\r\n")).into_bytes()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let snap = loop {
+            let snap = harness.snapshot(Duration::from_secs(5)).unwrap();
+            if snap.text().contains("row 20") {
+                break snap;
+            }
+            assert!(Instant::now() < deadline, "the repaint was fed: {}", snap.text());
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let text = snap.text();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!((snap.cols, snap.rows), (40, 20));
+        assert_eq!(lines.first().map(|l| l.trim_end()), Some("row 1"), "{text}");
+        assert_eq!(lines.get(19).map(|l| l.trim_end()), Some("row 20"), "{text}");
+    }
+
+    /// A resize never waits for the engine: with its control queue full it
+    /// is still applied once the engine gets to it.
+    #[test]
+    fn a_resize_is_queued_without_waiting_when_the_control_queue_is_full() {
+        let _serial = serial();
+        let log = ProbeLog::default();
+        let harness = Harness::new(Probe { snapshot_delay: Duration::from_millis(400), ..Probe::new(&log) });
+        // The engine is busy with a snapshot; fill its control queue behind it.
+        let (tx, _rx) = bounded(1);
+        harness.send(Ctl::Snapshot(tx));
+        std::thread::sleep(Duration::from_millis(50));
+        while harness.control.try_send(Ctl::Scroll(Scroll::Bottom)).is_ok() {}
+        let started = Instant::now();
+        harness.resize(0, 70, 20);
+        assert!(started.elapsed() < Duration::from_millis(50), "waited {:?}", started.elapsed());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !lock(&log.events).iter().any(|e| e == "resize 70x20") {
+            assert!(Instant::now() < deadline, "the resize was applied");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]
@@ -1630,7 +1843,7 @@ mod tests {
     fn an_engine_panic_is_reported_and_snapshots_keep_working() {
         let log = ProbeLog::default();
         let harness = Harness::new(Probe::new(&log));
-        harness.send(Ctl::Resize(50, 12));
+        harness.resize(0, 50, 12);
         harness.output.send(b"hello".to_vec()).unwrap();
         let before = harness.generation.load(Ordering::SeqCst);
         harness.output.send(b"panic".to_vec()).unwrap();
@@ -1672,6 +1885,8 @@ mod tests {
             replies: true,
             remake: None,
             fed: 0,
+            resizes: Arc::default(),
+            chunks: 0,
         };
         spawn_emulator(thread, || panic!("no engine"));
         assert!(failed.recv_timeout(Duration::from_secs(5)).unwrap().contains("no engine"));
@@ -1833,8 +2048,8 @@ mod tests {
             terminal.resize(40 + i, 10 + i % 7).expect("resize under flood");
         }
         terminal.resize(69, 10 + 29 % 7).expect("same size again");
-        let snap = terminal.snapshot().expect("snapshot under flood");
-        assert_eq!((snap.cols, snap.rows), (69, 10 + 29 % 7));
+        // The engine takes the size once it reaches the resize's place in the output.
+        wait_until("the last size reached the engine", || terminal.snapshot().is_some_and(|snap| (snap.cols, snap.rows) == (69, 10 + 29 % 7)));
         terminal.force_kill();
     }
 
@@ -1930,8 +2145,8 @@ mod tests {
             terminal.resize(40 + i, 10 + i % 7).expect("resize under flood");
         }
         terminal.resize(69, 10 + 29 % 7).expect("same size again");
-        let snap = terminal.snapshot().expect("snapshot under flood");
-        assert_eq!((snap.cols, snap.rows), (69, 10 + 29 % 7));
+        // The engine takes the size once it reaches the resize's place in the output.
+        wait_until("the last size reached the engine", || terminal.snapshot().is_some_and(|snap| (snap.cols, snap.rows) == (69, 10 + 29 % 7)));
         terminal.force_kill();
     }
 

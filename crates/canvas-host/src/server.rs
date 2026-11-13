@@ -1133,19 +1133,36 @@ impl Host {
     }
 
     /// `client` stopped showing terminal `id` (or disconnected): the newest
-    /// remaining wish applies.
+    /// remaining wish applies, after a moment when `client` owned the size
+    /// (`SizePolicy::leave_at`; [`Host::size_expire`] ends the wait).
     fn size_leave(&self, client: u64, id: Option<&str>) {
+        let now = Instant::now();
         let targets: Vec<(String, Option<(u16, u16)>)> = {
             let mut sizes = lock(&self.sizes);
             let mut targets = Vec::new();
             for (term, policy) in sizes.iter_mut().filter(|(term, _)| id.is_none_or(|i| i == term.as_str())) {
                 let owned = policy.owner() == Some(client);
                 let before = policy.target();
-                let after = policy.leave(client);
-                if owned || after != before {
+                let after = policy.leave_at(client, now);
+                if (owned && policy.leaving_until().is_none()) || after != before {
                     targets.push((term.clone(), after));
                 }
             }
+            sizes.retain(|_, policy| !policy.is_empty());
+            targets
+        };
+        for (term, target) in targets {
+            let _ = self.apply_size(&term, target);
+        }
+    }
+
+    /// Ends the waits of owners that left (`size_leave`) once they are over:
+    /// their terminals take the newest remaining wish.
+    fn size_expire(&self) {
+        let now = Instant::now();
+        let targets: Vec<(String, Option<(u16, u16)>)> = {
+            let mut sizes = lock(&self.sizes);
+            let targets = sizes.iter_mut().filter_map(|(term, policy)| policy.expire(now).map(|target| (term.clone(), target))).collect();
             sizes.retain(|_, policy| !policy.is_empty());
             targets
         };
@@ -1575,6 +1592,15 @@ fn spawn_writer(host: Weak<Host>, mut writer: FrameWriter, outbox: Arc<Outbox>, 
                         }
                     };
                     if let Some(tile) = frame_of {
+                        // Too large to encode: the client never got it, though
+                        // the tile's diff state counts it. Its next frame is
+                        // full instead of a diff against rows it lacks (S3-11).
+                        if sent.as_ref().is_err_and(|e| e.kind() == std::io::ErrorKind::InvalidData)
+                            && let Some(client) = weak.upgrade()
+                            && let Some(sub) = lock(&client.subs).get_mut(&tile)
+                        {
+                            sub.hashes.clear();
+                        }
                         outbox.frame_written(&tile);
                         if let Some(pump) = &pump {
                             let _ = pump.try_send(());
@@ -1701,10 +1727,12 @@ fn health_loop(host: Arc<Host>) {
     }
 }
 
-/// Closes protocol-8 connections that stayed silent too long (no heartbeat).
+/// Closes protocol-8 connections that stayed silent too long (no heartbeat);
+/// on the same tick, ends the size waits of owners that left.
 fn liveness_loop(host: Arc<Host>) {
     loop {
         std::thread::sleep(Duration::from_millis(500));
+        host.size_expire();
         let clients: Vec<Arc<Client>> = lock(&host.clients).values().cloned().collect();
         for client in clients {
             if let Some(liveness) = &client.liveness
@@ -1740,8 +1768,9 @@ fn subscribe(host: &Host, client: &Client, ids: Vec<String>, focused: Option<Str
 fn apply_input(host: &Host, client: &Client, id: &str, input: &Input) -> Result<()> {
     host.input_from(client.id, id);
     if !matches!(input, Input::Focus(_)) {
-        // The terminal takes the size of the client typing in it.
-        host.size_claim(client.id, id)?;
+        // The terminal takes the size of the client typing in it. A resize
+        // the PTY refused never costs the key (the next `Resize` retries it).
+        let _ = host.size_claim(client.id, id);
         host.note_active(id);
         host.app().input_noted(id);
     }
@@ -1811,7 +1840,7 @@ fn dispatch(host: &Arc<Host>, client: &Arc<Client>, message: ClientMsg) -> Resul
         }
         ClientMsg::Click { id, col, row, button, mods } => {
             host.input_from(client.id, &id);
-            host.size_claim(client.id, &id)?;
+            let _ = host.size_claim(client.id, &id);
             host.terminal(&id)?.click(button, col, row, mods)?;
             let _ = host.pump.try_send(());
         }
