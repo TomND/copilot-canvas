@@ -143,9 +143,10 @@ fn type_in(shared: &Arc<Shared>, session: &str, text: &str) -> bool {
     let spawned = std::thread::Builder::new().name("submit".into()).spawn({
         let (shared, session, term, text) = (shared.clone(), session.to_owned(), term.clone(), text.to_owned());
         move || {
+            // Never left marked, whatever happens in `submit` (the session would never be idle again).
+            let _done = Submitting(&shared, &session);
             std::thread::sleep(Duration::from_millis(crate::protocol::SUBMIT_AFTER_PASTE_MS));
             submit(&shared, &session, &term, &text, typed_ms);
-            lock(&shared.submitting).remove(&session);
         }
     });
     if spawned.is_err() {
@@ -153,6 +154,48 @@ fn type_in(shared: &Arc<Shared>, session: &str, text: &str) -> bool {
         return term.send_input(&Input::Key { key: Key::Enter, mods: 0 }).is_ok();
     }
     true
+}
+
+/// A session whose typed message is being submitted; unmarked when dropped.
+struct Submitting<'a>(&'a Shared, &'a str);
+
+impl Drop for Submitting<'_> {
+    fn drop(&mut self) {
+        lock(&self.0.submitting).remove(self.1);
+    }
+}
+
+/// How long the typed text must show unchanged in the input line before it
+/// counts as where the paste left it, when it was not on the screen yet at
+/// the first Enter.
+const LATE_BASELINE_MS: u64 = 1_000;
+
+/// The screen the retries compare with, when the paste was not drawn yet at
+/// the first Enter (an agent busy loading a large history draws it late, and
+/// may have taken the paste and its Enter as one: the text then sits in its
+/// prompt unsent, R2-C-04): the input line once it shows the text unchanged
+/// for [`LATE_BASELINE_MS`].
+#[derive(Default)]
+struct LateBaseline {
+    seen: Option<(Vec<String>, u64)>,
+}
+
+impl LateBaseline {
+    /// One look at the input line (`None`: the text is not there) at `now`;
+    /// answers the baseline once it held long enough.
+    fn sample(&mut self, prompt: Option<Vec<String>>, now: u64) -> Option<Vec<String>> {
+        let Some(prompt) = prompt else {
+            self.seen = None;
+            return None;
+        };
+        match &self.seen {
+            Some((seen, since)) if same_screen(seen, &prompt) => (now.saturating_sub(*since) >= LATE_BASELINE_MS).then_some(prompt),
+            _ => {
+                self.seen = Some((prompt, now));
+                None
+            }
+        }
+    }
 }
 
 /// What a typed message's submitter sees at one check.
@@ -287,16 +330,24 @@ fn submit(shared: &Shared, session: &str, term: &Arc<super::term::Terminal>, tex
     }
     let _ = shared.pump.try_send(());
     // The screen as the paste left it: Enter is pressed again only while it stays so.
-    let before = first.prompt;
+    let mut before = first.prompt;
+    // Not drawn yet: taken once it shows, steady (R2-C-04).
+    let mut late = LateBaseline::default();
     for _ in 0..SUBMIT_RETRIES {
         let deadline = std::time::Instant::now() + SUBMIT_CHECK;
         while std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(250));
-            let quick = check(false);
+            let quick = check(before.is_none());
             if quick.taken || quick.replaced {
                 return;
             }
             if quick.typed || quick.question {
+                break;
+            }
+            if before.is_none()
+                && let Some(baseline) = late.sample(quick.prompt, now_ms())
+            {
+                before = Some(baseline);
                 break;
             }
         }
@@ -1612,6 +1663,37 @@ mod tests {
         let collapsed = screen(&["> [Pasted text #1 +3 lines]"], &[]);
         assert_eq!(tail(&collapsed, note), None);
         assert!(matches!(again(&Check { prompt: None, ..Default::default() }, None), Next::Stop(_)));
+    }
+
+    #[test]
+    fn a_paste_drawn_late_gets_its_baseline_once_it_shows_unchanged() {
+        let note = "[Atelier] The machine restarted at 10:52 and interrupted you. Restore the state you were in.";
+        let pasted = screen(&["> [Atelier] The machine restarted at 10:5", "2 and interrupted you. Restore the state", " you were in."], &["● Fake reply"]);
+        let mut late = LateBaseline::default();
+        // Loading (CPU-bound, quiet): the paste is not drawn for 2 s.
+        for at in [250, 500, 1_000, 1_750] {
+            assert_eq!(late.sample(tail(&loading_screen(), note), at), None);
+        }
+        // Drawn at +2 s, in the prompt: unchanged for a second makes it the baseline (R2-C-04).
+        assert_eq!(late.sample(tail(&pasted, note), 2_000), None);
+        assert_eq!(late.sample(tail(&pasted, note), 2_500), None, "not steady long enough");
+        let baseline = late.sample(tail(&pasted, note), 3_000).expect("a baseline at +3 s");
+        assert_eq!(again(&Check { prompt: tail(&pasted, note), ..Default::default() }, Some(&baseline)), Next::Enter, "one more Enter");
+        // A screen that changes meanwhile starts over; one that never shows the text gives none.
+        let mut late = LateBaseline::default();
+        assert_eq!(late.sample(tail(&pasted, note), 0), None);
+        let sent = screen(&["> "], &["● Fake reply", "> [Atelier] The machine restarted at 10:52 and interrupted you.", "  Restore the state you were in."]);
+        assert_eq!(late.sample(tail(&sent, note), 600), None);
+        assert_eq!(late.sample(tail(&pasted, note), 1_200), None);
+        assert_eq!(late.sample(tail(&pasted, note), 2_000), None, "steady only since +1.2 s");
+        let mut never = LateBaseline::default();
+        assert!((0..20).all(|i| never.sample(None, i * 250).is_none()));
+        assert!(matches!(again(&Check { prompt: None, ..Default::default() }, None), Next::Stop(_)), "no baseline: no second Enter");
+    }
+
+    /// A screen while the agent loads its history: its banner, nothing typed shows yet.
+    fn loading_screen() -> Vec<String> {
+        vec!["GitHub Copilot".into(), "Loading session…".into()]
     }
 
     #[test]

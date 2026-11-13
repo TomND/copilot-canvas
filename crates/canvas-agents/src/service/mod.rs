@@ -376,6 +376,14 @@ pub fn run(instance: Instance) -> Result<()> {
     }
     #[cfg(windows)]
     let _ = files;
+    // Copilot keeps its sessions under `COPILOT_HOME` when that is set (after
+    // the login environment, which may set it): the history, statuses and
+    // the live guard look there too (S5-10).
+    let mut instance = instance;
+    if let Some(dir) = crate::agents::copilot::sessions_dir_for(&instance.sessions_dir) {
+        server::log(&instance, &format!("Copilot sessions in {} (COPILOT_HOME)", dir.display()));
+        instance.sessions_dir = dir;
+    }
     server::run(instance, |host| Agents::start(host.clone()))
 }
 
@@ -871,10 +879,11 @@ impl HostApp for Agents {
     fn client_connected(&self, client: &Arc<Client>) {
         // The client is listed already: every change after this list reaches it.
         self.send_sessions(client);
-        // Subsession links this client (the same window or paired client
-        // reconnecting) was not told yet: a box you removed never comes back (S5-06).
-        let who = client_identity(client);
-        let links: Vec<ServiceMsg> = lock(&self.subsessions).values_mut().filter_map(|link| link.tell(who.as_deref())).collect();
+        // Subsession links again (a link sent to a connection that dropped
+        // with it still queued, or to a window that had another canvas open,
+        // was lost: R2-C-10; clients take a child already on the canvas as
+        // it is), except those whose box you removed (S5-06).
+        let links: Vec<ServiceMsg> = lock(&self.subsessions).values().filter_map(SubsessionLink::tell).collect();
         for link in links {
             client.send(link);
         }
@@ -935,7 +944,7 @@ impl HostApp for Agents {
             ClientMsg::Bus { json } => {
                 // Inbox requests travel as bus requests (older services ignore them);
                 // todo operations are applied at once, as you.
-                let handled = serde_json::from_str::<serde_json::Value>(&json).is_ok_and(|value| inbox::action(self, &value) || todos::action(self, client, &value));
+                let handled = serde_json::from_str::<serde_json::Value>(&json).is_ok_and(|value| inbox::action(self, &value) || todos::action(self, client, &value) || restore::action(self, &value));
                 if !handled {
                     passive::action(self, &json, &self.bus_tx);
                 }
@@ -1157,7 +1166,9 @@ impl Agents {
     /// Applies a client's document edit and sends the patch to every client
     /// that has the document open; a refused edit resynchronizes its sender.
     fn doc_edit(&self, client: &Arc<Client>, key: String, ops_json: String) {
+        let mut removed: Vec<String> = Vec::new();
         let applied = serde_json::from_str::<Vec<canvas_model::sync::Op>>(&ops_json).context("unreadable canvas edit").and_then(|ops| {
+            removed = ops.iter().filter_map(|op| if let canvas_model::sync::Op::DelNode(id) = op { Some(id.clone()) } else { None }).collect();
             self.docs.edit(&key, client.id, &ops, |version, clients| {
                 let targets: Vec<Arc<Client>> = lock(&self.clients).values().filter(|c| clients.contains(&c.id)).cloned().collect();
                 for target in targets {
@@ -1165,6 +1176,18 @@ impl Agents {
                 }
             })
         });
+        // A box removed while it waits for its turn in the restore is not
+        // resumed (R2-C-01); a subsession box removed is never linked again (S5-06).
+        if applied.is_ok() {
+            for id in removed {
+                if let Some(link) = lock(&self.subsessions).get_mut(&id) {
+                    link.dismissed = true;
+                }
+                if self.restore.cancel(&id, "removed from the canvas before its turn") {
+                    log(&self.instance, &format!("restore: {id} removed from the canvas before its turn; not resumed"));
+                }
+            }
+        }
         if let Err(error) = applied {
             // A client that keeps sending the refused change (it puts it back
             // on top of the canvas it gets) gets the whole canvas and the
@@ -1613,21 +1636,17 @@ fn subsession_loop(shared: Arc<Agents>) {
 struct SubsessionLink {
     message: ServiceMsg,
     found_ms: u64,
-    /// The clients (by [`client_identity`]) told of it.
-    told: HashSet<String>,
+    /// Its box was removed from a canvas (a `DelNode` edit of the child): never sent again.
+    dismissed: bool,
 }
 
 /// Links whose parent no longer runs are kept this long (a client away meanwhile still learns of them).
 const SUBSESSION_KEEP_MS: u64 = 3_600_000;
 
 impl SubsessionLink {
-    /// The link for a client that has not been told of it yet (`who`:
-    /// unknown, always), now marked told.
-    fn tell(&mut self, who: Option<&str>) -> Option<ServiceMsg> {
-        match who {
-            Some(who) if !self.told.insert(who.to_owned()) => None,
-            _ => Some(self.message.clone()),
-        }
+    /// The link for a connecting client, unless its box was removed.
+    fn tell(&self) -> Option<ServiceMsg> {
+        (!self.dismissed).then(|| self.message.clone())
     }
 
     /// Kept while its parent runs, or for a while after.
@@ -1640,17 +1659,10 @@ impl SubsessionLink {
     }
 }
 
-/// What identifies a client across its reconnections: its paired id
-/// (remote), else the process at the other end of the pipe.
-fn client_identity(client: &Client) -> Option<String> {
-    client.remote_id.as_ref().map(|id| format!("remote:{id}")).or_else(|| client.peer_pid.map(|pid| format!("pid:{pid}")))
-}
-
 impl Agents {
     /// Records a subsession found now and tells every client.
     fn new_subsession(&self, child: &str, message: ServiceMsg) {
-        let told: HashSet<String> = lock(&self.clients).values().filter_map(|c| client_identity(c)).collect();
-        lock(&self.subsessions).insert(child.to_owned(), SubsessionLink { message: message.clone(), found_ms: now_ms(), told });
+        lock(&self.subsessions).insert(child.to_owned(), SubsessionLink { message: message.clone(), found_ms: now_ms(), dismissed: false });
         self.broadcast(message);
     }
 }
@@ -2120,14 +2132,16 @@ mod tests {
     }
 
     #[test]
-    fn a_reconnecting_client_is_not_told_of_a_subsession_again() {
+    fn a_reconnecting_client_is_told_of_a_subsession_again_unless_its_box_was_removed() {
         let message = ServiceMsg::Subsession { parent: "box-a".into(), child: "child-1".into(), name: "Nested".into(), cwd: String::new() };
-        // Found while the GUI (pipe pid 77) was connected: it was told then.
-        let mut link = SubsessionLink { message: message.clone(), found_ms: 1_000, told: ["pid:77".to_owned()].into() };
-        assert_eq!(link.tell(Some("pid:77")), None, "the same window reconnecting: a box you removed stays removed");
-        assert_eq!(link.tell(Some("remote:home-pc")), Some(message.clone()), "a client away meanwhile learns of it");
-        assert_eq!(link.tell(Some("remote:home-pc")), None, "once");
-        assert_eq!(link.tell(None), Some(message), "a client that cannot be told apart gets it as before");
+        let mut link = SubsessionLink { message: message.clone(), found_ms: 1_000, dismissed: false };
+        // Every connect gets it (one told before may have lost it with its
+        // connection, or had another canvas open, R2-C-10); a client that has the box keeps it as it is.
+        assert_eq!(link.tell(), Some(message.clone()));
+        assert_eq!(link.tell(), Some(message));
+        // Its box removed from the canvas (the service applies that edit): never again (S5-06).
+        link.dismissed = true;
+        assert_eq!(link.tell(), None);
         // Kept while its parent runs, forgotten an hour after it stopped.
         let running: HashSet<String> = ["box-a".to_owned()].into();
         assert!(link.keep(&running, 10 * SUBSESSION_KEEP_MS));
