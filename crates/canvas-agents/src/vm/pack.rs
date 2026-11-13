@@ -778,7 +778,22 @@ fn git_remote_of(folder: &Path) -> Option<String> {
 
 /// The configured pack: `ATELIER_VM_PACK`, else settings.json `vm.pack`.
 pub fn configured(home: &Path) -> Option<PathBuf> {
-    canvas_common::settings::Settings::load(home).vm_pack()
+    // Asked several times a second (the VM thread, every bus snapshot):
+    // settings.json is read again only when it changed (S4-17, S8-10).
+    type Stamp = (PathBuf, Option<(u64, Option<std::time::SystemTime>)>, Option<String>);
+    static CACHE: std::sync::Mutex<Option<(Stamp, Option<PathBuf>)>> = std::sync::Mutex::new(None);
+    let file = canvas_common::settings::path(home);
+    let stamp: Stamp = (file.clone(), std::fs::metadata(&file).ok().map(|m| (m.len(), m.modified().ok())), std::env::var("ATELIER_VM_PACK").ok());
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((seen, pack)) = cache.as_ref()
+        && *seen == stamp
+        && stamp.1.as_ref().is_none_or(|(_, modified)| modified.is_some())
+    {
+        return pack.clone();
+    }
+    let pack = canvas_common::settings::Settings::load(home).vm_pack();
+    *cache = Some((stamp, pack.clone()));
+    pack
 }
 
 /// The text `atelier vm pack check` prints.
