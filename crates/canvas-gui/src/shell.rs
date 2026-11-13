@@ -1851,6 +1851,7 @@ impl Win {
                 || app.text_zoom_steps != 0
                 || app.text_zoom_reset
                 || app.recent_pending()
+                || app.sizes_pending()
                 || app.reconnecting
                 || app.restarting.is_some()
                 || self.preview.is_some();

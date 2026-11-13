@@ -241,13 +241,16 @@ pub fn paint(p: &mut Painter, grid: &Grid, tiles: &[TileModel], views: &HashMap<
         let clip = [x0, y0, x1, y1];
         p.under(layer, cell_rect(x0, y0, x1, y1, theme::rgba(BG, 1.0), clip));
         let Some(view) = views.get(&tile.id) else { continue };
+        // A terminal taller than its tile shows its bottom (or down to its
+        // cursor), as in the TUI: `y` below is the terminal's row.
+        let first = view.first_row(inner.height);
         let visible = (inner.height as usize).min(view.rows as usize);
         let tinted: Vec<bool> = if tile.tint { canvas_core::app::user_message_rows(&view.lines) } else { Vec::new() };
         let selection = input.selection.filter(|s| s.id == tile.id);
         let rows = cache.rows(&tile.id, view);
         let thin = grid.scale.round().max(1.0);
-        for (y, (_, row)) in rows.iter().enumerate().take(visible) {
-            let top = y0 + y as f32 * ch;
+        for (y, (_, row)) in rows.iter().enumerate().skip(first as usize).take(visible) {
+            let top = y0 + (y - first as usize) as f32 * ch;
             let cell_x = |col: u16| x0 + col as f32 * cw;
             if tinted.get(y).copied().unwrap_or(false) {
                 p.under(layer, cell_rect(x0, top, x1, top + ch, theme::color(canvas_core::paint::USER_BG, 1.0), clip));
@@ -284,14 +287,14 @@ pub fn paint(p: &mut Painter, grid: &Grid, tiles: &[TileModel], views: &HashMap<
             for &(col, cells, kind, color) in &row.lines {
                 line(p, kind, cell_x(col), cell_x(col + cells), top, ch, thin, theme::rgba(color, 1.0), clip);
             }
-            let hovered = |col: u16, cells: u16| input.hover.is_some_and(|(hx, hy)| hy == inner.y + y as u16 && hx >= inner.x + col && hx < inner.x + col + cells);
+            let hovered = |col: u16, cells: u16| input.hover.is_some_and(|(hx, hy)| hy == inner.y + y as u16 - first && hx >= inner.x + col && hx < inner.x + col + cells);
             for &(col, cells, color) in &row.links {
                 if input.ctrl || hovered(col, cells) {
                     line(p, Line::Single, cell_x(col), cell_x(col + cells), top, ch, thin, theme::rgba(color, 1.0), clip);
                 }
             }
         }
-        images(p, grid, view, (x0, y0), clip);
+        images(p, grid, view, (x0, y0 - first as f32 * ch), clip);
         // Plain-text URLs and paths: underlined on hover or with Ctrl.
         for link in input.links.iter().filter(|l| l.terminal) {
             let hover = input.hover.is_some_and(|(x, y)| link.contains(x, y));
@@ -313,8 +316,8 @@ pub fn paint(p: &mut Painter, grid: &Grid, tiles: &[TileModel], views: &HashMap<
         if !tile.cursor {
             continue;
         }
-        let Some((cx, cy)) = view.cursor.filter(|(cx, cy)| *cx < inner.width && *cy < inner.height) else { continue };
-        let (left, top) = (x0 + cx as f32 * cw, y0 + cy as f32 * ch);
+        let Some((cx, cy)) = view.cursor.filter(|(cx, cy)| *cx < inner.width && *cy >= first && *cy - first < inner.height) else { continue };
+        let (left, top) = (x0 + cx as f32 * cw, y0 + (cy - first) as f32 * ch);
         ime = Some([left, top, cw, ch]);
         let cursor = theme::rgba([220, 226, 232], 1.0);
         if let Some(text) = input.preedit.filter(|t| !t.is_empty()) {

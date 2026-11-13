@@ -46,6 +46,7 @@ pub mod reports;
 pub mod review_followups;
 pub mod richtext;
 pub mod side;
+pub mod sizes;
 pub mod skill_folders;
 pub mod skills;
 pub mod spaces;

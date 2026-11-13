@@ -51,6 +51,7 @@ impl App {
                 // The front end resizes its surface; the next draw lays out anew.
                 InputEvent::Resize(_, _) => {}
                 InputEvent::Focus(focused) => {
+                    self.window_focused(focused);
                     if self.focus == Focus::Terminal
                         && let Some(id) = self.focused_term.clone()
                         && self.owned_alive(&id)
@@ -708,12 +709,19 @@ impl App {
         if let Some((id, _, inner)) = self.layout.tiles.iter().find(|(_, outer, _)| rect_contains(*outer, x, y)).cloned() {
             self.focused_term = Some(id.clone());
             self.mark_reviewed(&id);
+            // A click into a tile takes the terminal's size for this window
+            // (claimed again at the next draw), also from another client.
+            if self.last_claimed.as_deref() == Some(id.as_str()) {
+                self.last_claimed = None;
+            }
             if button == MouseButton::Right {
                 return self.open_menu(x, y, self.tile_menu(&id));
             }
             if button == MouseButton::Left && rect_contains(inner, x, y) {
                 self.term_select = None;
-                self.drag = Some(Drag::Select { id: id.clone(), anchor: (x - inner.x, y - inner.y), moved: false });
+                // In the terminal's rows (a terminal taller than its tile shows its bottom).
+                let first = self.tile_first_row(&id);
+                self.drag = Some(Drag::Select { id: id.clone(), anchor: (x - inner.x, y - inner.y + first), moved: false });
             }
             if self.doc.node(&id).is_some() && !self.selection.contains(&id) {
                 self.select_node(&id, false);
@@ -900,7 +908,8 @@ impl App {
             Drag::Select { id, anchor, moved } => {
                 match self.layout.tiles.iter().find(|(t, _, _)| *t == id).map(|(_, _, inner)| *inner) {
                     Some(inner) if inner.width > 0 && inner.height > 0 => {
-                        let head = (x.clamp(inner.x, inner.right() - 1) - inner.x, y.clamp(inner.y, inner.bottom() - 1) - inner.y);
+                        let first = self.tile_first_row(&id);
+                        let head = (x.clamp(inner.x, inner.right() - 1) - inner.x, y.clamp(inner.y, inner.bottom() - 1) - inner.y + first);
                         let moved = moved || head != anchor;
                         if moved {
                             self.term_select = Some(crate::app::TermSelection { id: id.clone(), anchor, head });
@@ -1140,7 +1149,7 @@ impl App {
         if let Some((id, _, inner)) = self.layout.tiles.iter().find(|(_, outer, _)| rect_contains(*outer, x, y)).cloned() {
             if self.terms.contains_key(&id) {
                 let col = x.saturating_sub(inner.x).min(inner.width.saturating_sub(1));
-                let row = y.saturating_sub(inner.y).min(inner.height.saturating_sub(1));
+                let row = y.saturating_sub(inner.y).min(inner.height.saturating_sub(1)) + self.tile_first_row(&id);
                 self.send(ClientMsg::Wheel { id, up, col, row, mods: input::mods(modifiers) });
             }
             return;

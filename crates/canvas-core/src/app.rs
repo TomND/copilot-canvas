@@ -110,6 +110,9 @@ pub struct Layout {
     pub sidebar: Rect,
     pub canvas: Rect,
     pub terms: Rect,
+    /// Where the right panel is when it shows (`terms` is empty while it
+    /// does not): a launch's size before its tile exists.
+    pub terms_shown: Rect,
     pub status: Rect,
     pub tiles: Vec<(String, Rect, Rect)>,
     pub sidebar_rows: Vec<(u16, usize)>,
@@ -297,7 +300,14 @@ pub struct App {
     pub frozen_tick: Option<usize>,
     pub git_req: u64,
     pub last_subscribed: Vec<String>,
+    /// The size last sent (`Resize`) for each shown terminal.
     pub last_sizes: HashMap<String, (u16, u16)>,
+    /// Tile sizes waiting to hold before they are sent: id → (size, since).
+    pub pending_sizes: HashMap<String, ((u16, u16), Instant)>,
+    /// How each shown terminal's real size compares with its tile (`sizes.rs`).
+    pub size_states: HashMap<String, crate::sizes::SizeState>,
+    /// The terminal this client last claimed the size of (it has the keyboard here).
+    pub last_claimed: Option<String>,
     pub last_tracked: Vec<String>,
     pub stats: Option<ServiceStats>,
     pub stats_at: Instant,
@@ -483,6 +493,9 @@ impl App {
             git_req: 0,
             last_subscribed: Vec::new(),
             last_sizes: HashMap::new(),
+            pending_sizes: HashMap::new(),
+            size_states: HashMap::new(),
+            last_claimed: None,
             last_tracked: Vec::new(),
             stats: None,
             stats_at: Instant::now() - Duration::from_secs(60),
@@ -724,6 +737,13 @@ impl App {
     }
 
     pub fn send(&mut self, message: ClientMsg) {
+        self.queue(message);
+    }
+
+    /// Sends a message to the service; false when it was not queued (offline,
+    /// or the outgoing queue is full), so state sent once (subscriptions,
+    /// sizes, tracking) is sent again later.
+    pub fn queue(&mut self, message: ClientMsg) -> bool {
         let input = is_terminal_input(&message);
         if !self.connected {
             // Nothing is queued while offline: typing into a screen that changed
@@ -731,7 +751,7 @@ impl App {
             if input && !matches!(message, ClientMsg::Input { input: Input::Focus(_), .. }) {
                 self.notify("Offline: input not sent.", true);
             }
-            return;
+            return false;
         }
         if let ClientMsg::Input { id, .. } | ClientMsg::Wheel { id, .. } = &message {
             self.last_input_at.insert(id.clone(), Instant::now());
@@ -745,16 +765,18 @@ impl App {
             self.note_access(&id);
         }
         match self.conn.tx.try_send(message) {
-            Ok(()) => {}
+            Ok(()) => true,
             Err(crossbeam_channel::TrySendError::Full(_)) => {
                 if input {
                     self.notify("Offline: input not sent.", true);
                 }
+                false
             }
             Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
                 if self.restarting.is_none() {
                     self.connection_lost();
                 }
+                false
             }
         }
     }
@@ -840,6 +862,9 @@ impl App {
         self.last_subscribed.clear();
         self.last_focused_sub = None;
         self.last_sizes.clear();
+        self.pending_sizes.clear();
+        self.size_states.clear();
+        self.last_claimed = None;
         self.last_tracked.clear();
         self.routing_sent.clear();
         self.resync_terms = true;
@@ -1606,17 +1631,25 @@ impl App {
         self.right_detail = None;
         self.focused_term = Some(id.to_owned());
         self.doc.touch_tile(id);
-        if !self.tile_slots.iter().any(|t| t == id) {
-            if self.tile_slots.len() < 4 {
-                self.tile_slots.push(id.to_owned());
+        self.tile_slots = self.slots_showing(&self.tile_slots, id);
+        self.mark_dirty();
+    }
+
+    /// The tile slots once `id` shows: kept where it is, else in a free
+    /// slot, else instead of the least recently shown one.
+    pub fn slots_showing(&self, slots: &[String], id: &str) -> Vec<String> {
+        let mut slots = slots.to_vec();
+        if !slots.iter().any(|t| t == id) {
+            if slots.len() < 4 {
+                slots.push(id.to_owned());
             } else {
                 let rank = |t: &String| self.doc.tiles.iter().position(|x| x == t).unwrap_or(usize::MAX);
-                if let Some((slot, _)) = self.tile_slots.iter().enumerate().max_by_key(|(_, t)| rank(t)) {
-                    self.tile_slots[slot] = id.to_owned();
+                if let Some((slot, _)) = slots.iter().enumerate().max_by_key(|(_, t)| rank(t)) {
+                    slots[slot] = id.to_owned();
                 }
             }
         }
-        self.mark_dirty();
+        slots
     }
 
     pub fn visible_terminals(&self) -> Vec<String> {
@@ -1660,15 +1693,6 @@ impl App {
         }
     }
 
-    pub fn pane_size(&self) -> (u16, u16) {
-        let tiles = &self.layout.tiles;
-        if let Some((_, _, inner)) = tiles.first() {
-            return (inner.width.max(20), inner.height.max(5));
-        }
-        let t = self.layout.terms;
-        if t.width > 4 { (t.width - 2, t.height.saturating_sub(2).max(5)) } else { (100, 30) }
-    }
-
     // ---------- launching ----------
 
     /// Starts a session box's terminal (see `interact.rs` for what may call it).
@@ -1680,7 +1704,9 @@ impl App {
             .filter(|c| !c.is_empty())
             .or_else(|| self.summary(&node).map(|s| s.cwd.clone()).filter(|c| !c.is_empty()))
             .unwrap_or_else(|| self.default_cwd.clone());
-        let (cols, rows) = self.pane_size();
+        // The size of the tile it gets (a size sent for an earlier run is sent again).
+        let (cols, rows) = self.launch_size(id);
+        self.forget_size(id);
         self.node_errors.remove(id);
         // The folder is on the service's machine; when it cannot be asked, the
         // launch itself reports a missing folder. A remote service is not
@@ -1779,6 +1805,11 @@ impl App {
                     }
                     if info.alive {
                         self.launching.remove(&info.id);
+                        // Started again (here, by another client or the restore):
+                        // its size is sent again, whatever an earlier run had.
+                        if !self.owned_alive(&info.id) {
+                            self.forget_size(&info.id);
+                        }
                     } else if self.launching.remove(&info.id).is_some() && info.exit_code != Some(0) {
                         self.notify(format!("Terminal exited immediately (code {:?}).", info.exit_code), true);
                     }
@@ -2189,25 +2220,14 @@ impl App {
         let visible: Vec<String> = self.layout.tiles.iter().map(|(id, _, _)| id.clone()).collect();
         // The focused tile gets frames at a higher rate over remote links.
         let focused = self.focused_term.clone().filter(|id| visible.contains(id));
-        if visible != self.last_subscribed || focused != self.last_focused_sub {
-            self.send(ClientMsg::Subscribe8 { ids: visible.clone(), focused: focused.clone() });
+        if (visible != self.last_subscribed || focused != self.last_focused_sub) && self.queue(ClientMsg::Subscribe8 { ids: visible.clone(), focused: focused.clone() }) {
             self.last_subscribed = visible;
             self.last_focused_sub = focused;
         }
         // The service forgets this client's size for terminals it stopped
         // showing (sizes follow the client typing in a terminal: the iPhone
         // may take one over); showing one again sends its size again.
-        self.last_sizes.retain(|id, _| self.last_subscribed.contains(id));
-        if !matches!(self.drag, Some(Drag::SidebarDivider | Drag::TermDivider)) {
-            let tiles = self.layout.tiles.clone();
-            for (id, _, inner) in tiles {
-                let size = (inner.width.max(20), inner.height.max(5));
-                if self.owned_alive(&id) && self.last_sizes.get(&id) != Some(&size) {
-                    self.last_sizes.insert(id.clone(), size);
-                    self.send(ClientMsg::Resize { id, cols: size.0, rows: size.1 });
-                }
-            }
-        }
+        self.sync_sizes(Instant::now());
         // History is indexed by the agents' own session ids.
         let mut tracked: Vec<String> = self
             .doc
@@ -2217,8 +2237,7 @@ impl App {
             .map(|n| native_id(n).to_owned())
             .collect();
         tracked.sort();
-        if tracked != self.last_tracked {
-            self.send(ClientMsg::Track { ids: tracked.clone() });
+        if tracked != self.last_tracked && self.queue(ClientMsg::Track { ids: tracked.clone() }) {
             self.last_tracked = tracked;
         }
     }
@@ -2244,6 +2263,8 @@ impl App {
             self.needs_draw = true;
         }
         self.launching.retain(|_, t| t.elapsed() < Duration::from_secs(20));
+        // Tile sizes that settled and sizes due a repair, also without a draw.
+        self.sync_sizes(Instant::now());
         if self.stats_at.elapsed() >= Duration::from_secs(3) {
             self.stats_at = Instant::now();
             self.send(ClientMsg::Stats);

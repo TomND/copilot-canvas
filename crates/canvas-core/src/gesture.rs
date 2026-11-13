@@ -329,9 +329,10 @@ impl App {
             return;
         }
         let inner = self.layout.tiles.iter().find(|(t, _, _)| t == id).map(|(_, _, inner)| *inner);
+        let first = self.tile_first_row(id);
         let (col, row) = inner.map_or((0, 0), |r| {
             let (x, y) = (gesture.x.max(0.0) as u16, gesture.y.max(0.0) as u16);
-            (x.saturating_sub(r.x).min(r.width.saturating_sub(1)), y.saturating_sub(r.y).min(r.height.saturating_sub(1)))
+            (x.saturating_sub(r.x).min(r.width.saturating_sub(1)), y.saturating_sub(r.y).min(r.height.saturating_sub(1)) + first)
         });
         for _ in 0..notches.unsigned_abs() {
             self.send(ClientMsg::Wheel { id: id.to_owned(), up: notches > 0, col, row, mods: crate::input::mods(gesture.modifiers) });

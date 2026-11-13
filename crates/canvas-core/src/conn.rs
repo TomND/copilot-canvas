@@ -656,7 +656,8 @@ fn adapt(message: ClientMsg, v8: bool, session: &ClientSession) -> Option<Client
         }
         ClientMsg::Input8 { id, input, .. } => ClientMsg::Input { id, input },
         ClientMsg::Subscribe8 { ids, .. } if !v8 => ClientMsg::Subscribe { ids },
-        ClientMsg::Heartbeat if !v8 => return None,
+        // Protocol 7 has no heartbeats, and its services size terminals by the last `Resize`.
+        ClientMsg::Heartbeat | ClientMsg::Claim { .. } if !v8 => return None,
         other => other,
     })
 }
@@ -754,6 +755,8 @@ mod tests {
         assert_eq!(adapt(ClientMsg::Input8 { id: "t".into(), input: key(), seq: 9 }, false, &session), Some(ClientMsg::Input { id: "t".into(), input: key() }));
         assert_eq!(adapt(ClientMsg::Subscribe8 { ids: vec!["t".into()], focused: None }, false, &session), Some(ClientMsg::Subscribe { ids: vec!["t".into()] }));
         assert_eq!(adapt(ClientMsg::Heartbeat, false, &session), None);
+        assert_eq!(adapt(ClientMsg::Claim { id: "t".into() }, false, &session), None, "protocol 7 has no Claim");
+        assert_eq!(adapt(ClientMsg::Claim { id: "t".into() }, true, &session), Some(ClientMsg::Claim { id: "t".into() }));
         assert_eq!(session.sent(), 2);
     }
 

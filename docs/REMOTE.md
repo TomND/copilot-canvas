@@ -558,6 +558,31 @@ mode sends no size: it draws the desktop's grid scaled down. The desktop
 clients send their size again when they show a terminal again, and forget
 what they sent for terminals they stopped showing.
 
+The desktop clients (TUI and GUI, `canvas-core/src/sizes.rs`) also:
+
+- launch a terminal at the size of the tile it will get (its own tile in
+  the tiled view, else the right panel's), never the first tile's or a
+  guess, and send its size again whenever it comes alive (a relaunch, a
+  restore, another client's start), so a size sent for an earlier run never
+  hides a wrong one;
+- send a tile's changed size once it has held for 150 ms (a window drag is
+  one `Resize`, not one per frame);
+- claim the terminal that gets the keyboard here (a click into its tile,
+  F6, a start) and claim it again when the window comes back to the front
+  (`Claim` only to protocol-8 services; every one since the iPhone client
+  reads it, v0.3.0 included);
+- compare each shown terminal's real size (its frames) with its tile after
+  every draw: when the size this client sent has not arrived 1.5 s later
+  (a lost message, a resize the host did not finish), the `Resize` (and the
+  `Claim`, for the terminal with the keyboard) goes again, with backoff up
+  to 30 s; a terminal that had this client's size and then took another was
+  taken by another client, and is left to it (no fight with the phone): its
+  tile says *sized elsewhere: click to fit* until you click into it;
+- while a terminal is taller than its tile, draw its bottom rows (or the
+  rows down to its cursor when that is higher up), so the agent's input box,
+  status line and cursor stay visible; selections, clicks and the wheel use
+  the terminal's own rows (`TermView::first_row`).
+
 ## Satellites (VM sessions)
 
 A VM session's guest runs `atelier satellite`, which connects to this service like a paired client but with a

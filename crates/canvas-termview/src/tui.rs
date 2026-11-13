@@ -54,12 +54,14 @@ pub fn style(fg: u32, bg: u32, flags: u16, link: bool) -> Style {
     style
 }
 
-/// Draws the viewport into `inner`. Rows past the pane (a frame taller than a
-/// pane that just shrank) are skipped.
+/// Draws the viewport into `inner`. A frame taller than the pane (sized for
+/// another client, or a pane that just shrank) shows the rows from
+/// [`TermView::first_row`]: its bottom, or down to its cursor.
 pub fn draw(view: &TermView, buf: &mut Buffer, inner: Rect, options: &Options<'_>) -> Drawn {
     let mut drawn = Drawn::default();
-    for (y, line) in view.lines.iter().enumerate().take(inner.height as usize) {
-        let row_y = inner.y as i32 + y as i32;
+    let first = view.first_row(inner.height);
+    for (y, line) in view.lines.iter().enumerate().skip(first as usize).take(inner.height as usize) {
+        let row_y = inner.y as i32 + (y - first as usize) as i32;
         for run in line {
             let x0 = inner.x as i32 + run.col as i32;
             let x1 = put(buf, x0, row_y, &run.text, style(run.fg, run.bg, run.flags, run.link.is_some()), inner);
@@ -73,14 +75,15 @@ pub fn draw(view: &TermView, buf: &mut Buffer, inner: Rect, options: &Options<'_
         }
     }
     if let Some((bg, bar)) = options.tint {
-        tint_user_messages(buf, inner, &view.lines, bg, bar);
+        tint_user_messages(buf, inner, view.lines.get(first as usize..).unwrap_or_default(), bg, bar);
     }
+    // Selections are in the terminal's rows.
     if let Some(selection) = options.selection {
         let ((_, r0), (_, r1)) = selection.ordered();
-        for row in r0..=r1.min(inner.height.saturating_sub(1)) {
+        for row in r0.max(first)..=r1.min((first + inner.height).saturating_sub(1)) {
             for col in 0..inner.width {
                 if selection.contains(col, row) {
-                    buf[(inner.x + col, inner.y + row)].modifier.insert(Modifier::REVERSED);
+                    buf[(inner.x + col, inner.y + row - first)].modifier.insert(Modifier::REVERSED);
                 }
             }
         }
@@ -88,9 +91,10 @@ pub fn draw(view: &TermView, buf: &mut Buffer, inner: Rect, options: &Options<'_
     if options.cursor
         && let Some((cx, cy)) = view.cursor
         && cx < inner.width
-        && cy < inner.height
+        && cy >= first
+        && cy - first < inner.height
     {
-        drawn.cursor = Some((inner.x + cx, inner.y + cy));
+        drawn.cursor = Some((inner.x + cx, inner.y + cy - first));
     }
     drawn
 }
@@ -161,6 +165,29 @@ mod tests {
         tint_user_messages(&mut buf, inner, &lines, Color::Rgb(30, 44, 70), Color::Rgb(88, 166, 255));
         assert_eq!(buf[(1, 6)].symbol(), "▎", "visible message is marked");
         assert!((0..10).all(|y| y == 6 || buf[(1, y)].symbol() != "▎"), "nothing outside the pane");
+    }
+
+    #[test]
+    fn a_terminal_taller_than_its_pane_shows_its_bottom_rows_and_cursor() {
+        let run = |text: &str| Run { col: 0, text: text.into(), fg: 0, bg: 0, flags: 0, link: None };
+        // 40 rows sized for another client; the prompt and the cursor at the bottom.
+        let mut view = TermView { cols: 20, rows: 40, lines: (0..40).map(|i| vec![run(&format!("row {i}"))]).collect(), cursor: Some((4, 38)), ..Default::default() };
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 10));
+        let selection = TermSelection { id: "t".into(), anchor: (0, 37), head: (2, 37) };
+        let drawn = draw(&view, &mut buf, Rect::new(0, 0, 20, 10), &Options { tint: None, selection: Some(&selection), cursor: true });
+        assert_eq!(view.first_row(10), 30);
+        assert_eq!(buf[(0, 0)].symbol(), "r");
+        assert_eq!((0..6).map(|x| buf[(x, 9)].symbol().to_owned()).collect::<String>(), "row 39", "the last row at the bottom");
+        assert_eq!(drawn.cursor, Some((4, 8)), "the cursor stays visible");
+        assert!(buf[(1, 7)].modifier.contains(Modifier::REVERSED) && !buf[(1, 8)].modifier.contains(Modifier::REVERSED), "selections in terminal rows");
+        // A cursor higher up (a shell near the top of a tall screen): the rows down to it.
+        view.cursor = Some((0, 3));
+        assert_eq!(view.first_row(10), 0);
+        view.cursor = Some((0, 15));
+        assert_eq!(view.first_row(10), 6);
+        // Fits: from the top.
+        assert_eq!(view.first_row(40), 0);
+        assert_eq!(view.first_row(50), 0);
     }
 
     #[test]
