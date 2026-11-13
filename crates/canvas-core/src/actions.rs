@@ -19,6 +19,14 @@ fn item(label: &str, hint: &str, action: Action, enabled: bool) -> MenuItem {
     MenuItem { label: label.to_owned(), hint: hint.to_owned(), action, enabled }
 }
 
+/// What the service's machine said of a new session's folders.
+#[derive(Clone, Debug)]
+pub struct NewSessionChecked {
+    pub found: crate::rpc::PathInfo,
+    /// The worktree folder exists and is not empty.
+    pub occupied: bool,
+}
+
 impl App {
     pub fn open_menu(&mut self, x: u16, y: u16, (title, items): (String, Vec<MenuItem>)) {
         let sel = items.iter().position(|i| i.enabled).unwrap_or(0);
@@ -39,7 +47,8 @@ impl App {
         let Some(node) = self.doc.node(id) else { return (String::new(), Vec::new()) };
         let session = self.session_of(id).unwrap_or_default();
         let alive = self.owned_alive(&session);
-        let external = self.summary(node).is_some_and(|s| s.live) && !alive;
+        // Open elsewhere is only a hint here: the service refuses a second copy
+        // when it launches, with its reason (`App::on_launch_error`).
         let mut items = Vec::new();
         if node.kind == NodeKind::Automation {
             let key = node.automation.clone().unwrap_or_default();
@@ -65,7 +74,7 @@ impl App {
                 let resumable = !matches!(self.child_resume(node), crate::inspect::ChildResume::No(_));
                 items.push(item("Resume as subsession", "", Action::ResumeChild(id.to_owned()), resumable));
             }
-            items.push(item(if parent_alive { "Open parent terminal" } else { "Start parent session" }, "", Action::Start(parent.clone()), !external));
+            items.push(item(if parent_alive { "Open parent terminal" } else { "Start parent session" }, "", Action::Start(parent.clone()), true));
             if self.doc.node(&parent).is_some_and(|p| p.kind == NodeKind::Session) {
                 let stack = crate::visual::VisualAction::FoldSubagents(parent, true);
                 items.push(item("Stack subagents", "K", Action::Visual(stack), true));
@@ -84,13 +93,13 @@ impl App {
         if node.passive.is_some() {
             let paused = node.passive.as_ref().is_some_and(|p| p.paused);
             let running = self.passive_view(node).is_some_and(|v| v.running);
-            items.push(item("Run now", "", Action::PassiveRun(id.to_owned()), !external));
+            items.push(item("Run now", "", Action::PassiveRun(id.to_owned()), true));
             items.push(item(if paused { "Resume" } else { "Pause" }, "", Action::PassivePause(id.to_owned()), true));
             items.push(item("Settings…", "", Action::PassiveDetail(id.to_owned()), true));
             items.push(item("Message…", "", Action::MessagePassive(id.to_owned()), true));
             items.push(item("Edit rules", "", Action::PassiveOpen(id.to_owned(), 0), true));
             items.push(item("Open run log", "", Action::PassiveOpen(id.to_owned(), 2), true));
-            items.push(item(if alive { "Focus chat" } else { "Open chat" }, "", Action::PassiveChat(id.to_owned()), !external));
+            items.push(item(if alive { "Focus chat" } else { "Open chat" }, "", Action::PassiveChat(id.to_owned()), true));
             items.push(item("Inspect transcript", "", Action::Inspect(id.to_owned()), self.transcript_request(id).is_some()));
             items.push(item("MCP servers…", "", Action::McpServers(id.to_owned()), true));
             items.push(item("Rename", "R", Action::Rename(Target::Node(id.to_owned())), true));
@@ -117,7 +126,7 @@ impl App {
             items.push(item(if node.no_messages { "Accept passive messages" } else { "Mute passive messages" }, "", Action::ToggleMessages(id.to_owned()), true));
             let queued = self.bus.mailbox.get(id).copied().unwrap_or(0);
             if queued > 0 {
-                items.push(item(&format!("Deliver {queued} queued message(s)"), "", Action::Start(id.to_owned()), !external));
+                items.push(item(&format!("Deliver {queued} queued message(s)"), "", Action::Start(id.to_owned()), true));
                 items.push(item("Discard queued messages", "", Action::DiscardMail(id.to_owned()), true));
             }
         }
@@ -272,12 +281,15 @@ impl App {
             return self.notify("Offline: input not sent.", true);
         }
         self.notify("Sending the image to the service's clipboard…", false);
-        let (platform, id) = (self.platform.clone(), id.to_owned());
+        let (platform, id, bulk) = (self.platform.clone(), id.to_owned(), self.upload_target());
         self.in_background(
             move |backend| {
                 let png = platform.clipboard_image_png().map_err(|e| format!("{e:#}"))?;
                 let size = png.len();
-                backend.set_clipboard_image(png).map(|_| size).map_err(|e| format!("{e:#}"))
+                // A large image (up to 20 MB in one request) goes over a connection
+                // of its own: typing and its echo never wait behind it.
+                let bulk = bulk.filter(|_| size > crate::files::PIECE);
+                crate::conn::with_bulk(backend, bulk, |backend| backend.set_clipboard_image(png)).map(|_| size).map_err(|e| format!("{e:#}"))
             },
             move |result| {
                 AppEvent::Run(Box::new(move |app: &mut App| match result {
@@ -441,16 +453,60 @@ impl App {
 
     /// A session whose conversation can be forked: Copilot copies its history
     /// on disk; OpenCode and Claude Code fork natively once it has history.
+    /// A remote service is asked in the background ([`App::ask_fork_history`]):
+    /// unknown until it answered (no round trip on the UI thread).
     pub fn can_fork(&self, id: &str) -> bool {
         let Some(node) = self.doc.node(id).filter(|n| n.kind == NodeKind::Session && n.command.is_none()) else { return false };
         let kind = agent_of(node);
         let caps = kind.caps();
         let native = native_id(node);
         if caps.copy_fork {
-            kind.is_session_id(native) && self.backend.has_history(kind, native).unwrap_or(false)
+            kind.is_session_id(native)
+                && match self.service_is_remote() {
+                    true => self.fork_history.get(native).copied().unwrap_or(false),
+                    false => self.backend.has_history(kind, native).unwrap_or(false),
+                }
         } else {
             caps.native_fork && kind.is_session_id(native) && self.sessions.contains_key(native)
         }
+    }
+
+    /// Remote mode: asks the service whether session box `id` has history to
+    /// copy for a fork (in the background); an open new-session dialog of
+    /// that parent offers the fork when the answer comes.
+    pub fn ask_fork_history(&mut self, id: &str) {
+        let Some(node) = self.doc.node(id).filter(|n| n.kind == NodeKind::Session && n.command.is_none()) else { return };
+        let kind = agent_of(node);
+        let native = native_id(node).to_owned();
+        if !self.service_is_remote() || self.demo || !kind.caps().copy_fork || !kind.is_session_id(&native) || self.fork_history.contains_key(&native) {
+            return;
+        }
+        let parent = id.to_owned();
+        self.in_background(
+            move |backend| backend.has_history(kind, &native).ok().map(|known| (native, known)),
+            move |answer| {
+                AppEvent::Run(Box::new(move |app: &mut App| {
+                    let Some((native, known)) = answer else { return };
+                    // Only a yes is kept: a session without history yet may get one.
+                    if known {
+                        app.fork_history.insert(native, true);
+                    }
+                    for modal in app.modals.iter_mut() {
+                        if let Modal::NewSession(dialog) = modal
+                            && dialog.parent.as_deref() == Some(parent.as_str())
+                            && app.doc.node(&parent).map(agent_of) == Some(dialog.agent)
+                            && !dialog.can_fork
+                            && known
+                            && !app.demo
+                        {
+                            dialog.can_fork = true;
+                            dialog.fork = true;
+                        }
+                    }
+                    app.needs_draw = true;
+                }))
+            },
+        );
     }
 
     /// Opens the MCP server checklist for a new session or an existing one.
@@ -552,14 +608,14 @@ impl App {
             }
         };
         self.build_mismatch = conn.outdated();
-        self.routing_sent.clear();
         self.new_service_rx = Some(conn.rx.clone());
         self.conn = conn;
         self.connected = true;
+        // A new service: nothing this client sent the old one holds (S6-07:
+        // without this, unchanged tiles were never subscribed again).
+        self.reset_service_state();
         self.terms.clear();
         self.views.clear();
-        self.launching.clear();
-        self.terms_rev += 1;
         // The new service opens the document again (local changes are kept).
         self.request_doc();
         let count = self.resume_terminals(&resume);
@@ -781,11 +837,10 @@ impl App {
             }
             Action::PassiveChat(id) if self.doc.node(&id).is_some_and(|n| n.is_canvas_agent()) => self.open_agent_chat(&id, None),
             Action::PassiveChat(id) => {
+                // Open elsewhere or not, the service decides (and says why it refuses).
                 if self.owned_alive(&id) {
                     self.show_terminal(&id);
                     self.set_focus(Focus::Terminal);
-                } else if self.doc.node(&id).and_then(|n| self.summary(n)).is_some_and(|s| s.live) {
-                    self.notify("This passive session is running elsewhere right now.", true);
                 } else {
                     self.launch(&id);
                 }
@@ -939,9 +994,13 @@ impl App {
             model: None,
             vm,
             group,
+            checking: None,
         };
         if !self.agent_configs.contains_key(&agent) {
             self.refresh_config_for(agent);
+        }
+        if let Some(parent) = dialog.parent.clone().filter(|_| !can_fork) {
+            self.ask_fork_history(&parent);
         }
         self.modals.push(Modal::NewSession(Box::new(dialog)));
     }
@@ -995,6 +1054,9 @@ impl App {
         let parent_agent = dialog.parent.as_deref().and_then(|p| self.doc.node(p)).map(agent_of);
         dialog.can_fork = !self.demo && parent_agent == Some(dialog.agent) && dialog.parent.as_deref().is_some_and(|p| self.can_fork(p));
         dialog.fork = dialog.can_fork;
+        if let Some(parent) = dialog.parent.clone().filter(|_| !dialog.can_fork && parent_agent == Some(dialog.agent)) {
+            self.ask_fork_history(&parent);
+        }
         if !self.agent_configs.contains_key(&dialog.agent) {
             self.refresh_config_for(dialog.agent);
         }
@@ -1151,13 +1213,70 @@ impl App {
         }
     }
 
-    /// Validates the dialog and creates the session (and worktree if requested).
-    pub fn submit_new_session(&mut self, dialog: &NewSession) -> Result<(), String> {
+    /// Remote mode: Enter in the new-session dialog checks its folder (and
+    /// worktree folder) on the service's machine in the background; the
+    /// dialog says so and the session is made when the answer comes
+    /// ([`App::on_new_session_checked`]). The window never waits for it.
+    pub fn check_new_session(&mut self, dialog: &mut NewSession) {
+        if !self.demo && !self.installed_agents.contains(&dialog.agent) {
+            dialog.error = Some(format!("{} was not found on this machine; choose another agent.", dialog.agent.label()));
+            return;
+        }
+        let folder = dialog.folder.text.trim().trim_matches('"').to_owned();
+        let worktree = (dialog.worktree && !dialog.vm.as_ref().is_some_and(|vm| vm.on_vm)).then(|| dialog.wt_path.text.trim().to_owned()).filter(|p| !p.is_empty());
+        self.git_req += 1;
+        let req = self.git_req;
+        dialog.checking = Some((req, folder.clone()));
+        dialog.error = Some("Checking the folder on the service's machine…".into());
+        self.in_background(
+            move |backend| -> Result<NewSessionChecked, String> {
+                let found = backend.path_info(&folder).map_err(|e| format!("{e:#}"))?;
+                let occupied = match &worktree {
+                    Some(path) => backend.path_info(path).map_err(|e| format!("{e:#}"))?.occupied,
+                    None => false,
+                };
+                Ok(NewSessionChecked { found, occupied })
+            },
+            move |result| AppEvent::Run(Box::new(move |app: &mut App| app.on_new_session_checked(req, result))),
+        );
+    }
+
+    /// The service's answer to [`App::check_new_session`]: the session is
+    /// made and the dialog closes, or the dialog shows why not. A dialog that
+    /// was closed or whose folder changed meanwhile is left alone.
+    pub fn on_new_session_checked(&mut self, req: u64, result: Result<NewSessionChecked, String>) {
+        let Some(at) = self.modals.iter().position(|m| matches!(m, Modal::NewSession(d) if d.checking.as_ref().is_some_and(|(r, _)| *r == req))) else { return };
+        let Modal::NewSession(mut dialog) = self.modals.remove(at) else { return };
+        let checked_folder = dialog.checking.take().map(|(_, folder)| folder).unwrap_or_default();
+        dialog.error = None;
+        let outcome = if dialog.folder.text.trim().trim_matches('"') != checked_folder {
+            // Edited while the service looked: Enter again checks the new one.
+            Err(String::new())
+        } else {
+            result.and_then(|checked| self.submit_new_session(&dialog, Some(checked)))
+        };
+        match outcome {
+            Ok(()) => {}
+            Err(error) => {
+                dialog.error = (!error.is_empty()).then_some(error);
+                self.modals.insert(at.min(self.modals.len()), Modal::NewSession(dialog));
+            }
+        }
+        self.needs_draw = true;
+    }
+
+    /// Validates the dialog and creates the session (and worktree if
+    /// requested). `checked`: what the service's machine said of its
+    /// folders (remote mode); else they are looked at here.
+    pub fn submit_new_session(&mut self, dialog: &NewSession, checked: Option<NewSessionChecked>) -> Result<(), String> {
         if !self.demo && !self.installed_agents.contains(&dialog.agent) {
             return Err(format!("{} was not found on this machine; choose another agent.", dialog.agent.label()));
         }
         let folder = dialog.folder.text.trim().trim_matches('"').to_owned();
-        let found = self.backend.path_info(&folder).map_err(|e| format!("{e:#}"))?;
+        let found = match &checked {
+            Some(checked) => checked.found.clone(),
+            None => self.backend.path_info(&folder).map_err(|e| format!("{e:#}"))?,
+        };
         if !found.dir {
             return Err(format!("Folder not found: {folder}"));
         }
@@ -1204,7 +1323,11 @@ impl App {
                 return Err("Enter a worktree folder.".into());
             }
             let path = PathBuf::from(&path);
-            if self.backend.path_info(&path.to_string_lossy()).map_err(|e| format!("{e:#}"))?.occupied {
+            let occupied = match &checked {
+                Some(checked) => checked.occupied,
+                None => self.backend.path_info(&path.to_string_lossy()).map_err(|e| format!("{e:#}"))?.occupied,
+            };
+            if occupied {
                 return Err(format!("{} already exists and is not empty.", path.display()));
             }
             worktree_job = Some((info.root.to_string_lossy().into_owned(), path.to_string_lossy().into_owned(), (!new_branch.is_empty()).then_some(new_branch), dialog.base.clone()));
@@ -1463,6 +1586,56 @@ mod remote_tests {
                 f.app.on_app_event(event);
             }
         }
+    }
+
+    #[test]
+    fn a_remote_new_subsession_never_waits_for_the_service_on_the_ui_thread() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        /// A service that fails the test when the window's thread asks it anything.
+        struct Strict {
+            ui: std::thread::ThreadId,
+            armed: AtomicBool,
+        }
+        impl Backend for Strict {
+            fn call(&self, request: Request) -> anyhow::Result<Response> {
+                assert!(!(self.armed.load(Ordering::Acquire) && std::thread::current().id() == self.ui), "{} asked on the UI thread", request.name());
+                Ok(match request {
+                    Request::PathInfo { path } => Response::Path(PathInfo { exists: true, dir: true, absolute: path, ..Default::default() }),
+                    Request::HasHistory { .. } => Response::Flag(true),
+                    Request::Info => Response::Info(crate::rpc::BackendInfo { installed: crate::agents::ALL.to_vec(), ..Default::default() }),
+                    Request::Fork { .. } => Response::Done,
+                    _ => Response::Error("unexpected".into()),
+                })
+            }
+        }
+        let parent_id = "12345678-1234-1234-1234-123456789abc";
+        let parent: crate::doc::Node = serde_json::from_value(serde_json::json!({ "id": parent_id, "kind": "session", "name": "Parent", "x": 0, "y": 0, "cwd": r"C:\work" })).unwrap();
+        let (tx, sent) = bounded(64);
+        let (_keep, service_rx) = bounded(1);
+        let (app_tx, events) = unbounded();
+        let service = Arc::new(Strict { ui: std::thread::current().id(), armed: AtomicBool::new(false) });
+        let doc = crate::doc::Doc { nodes: vec![parent], ..Default::default() };
+        let app = App::new(Conn::detached(tx, service_rx), service.clone(), Opened::detached(doc), false, ".".into(), app_tx, None);
+        let mut f = Fixture { app, sent, events, service: Arc::new(Service::default()), home: Arc::new(Home::default()) };
+        f.app.target = Some(remote(None));
+        service.armed.store(true, Ordering::Release);
+        // S on a session: the dialog opens at once; the fork is offered when the service answers.
+        f.app.open_new_session(None, Some(parent_id.into()));
+        let dialog = |app: &App| match app.modals.last() {
+            Some(Modal::NewSession(d)) => Some((**d).clone()),
+            _ => None,
+        };
+        assert!(dialog(&f.app).is_some_and(|d| !d.can_fork), "not known yet");
+        settle(&mut f, |app| dialog(app).is_some_and(|d| d.can_fork && d.fork));
+        // Enter: the folder is checked on the service's machine, then the session forks and starts.
+        let enter = crate::input::KeyEvent { code: crate::input::KeyCode::Enter, modifiers: crate::input::Modifiers::NONE, kind: crate::input::KeyEventKind::Press, source: Default::default() };
+        f.app.modal_key(enter);
+        assert!(dialog(&f.app).is_some_and(|d| d.checking.is_some() && d.error.as_deref().is_some_and(|e| e.starts_with("Checking"))));
+        f.app.modal_key(enter);
+        settle(&mut f, |app| app.modals.is_empty() && app.launching.len() == 1);
+        let launched: Vec<ClientMsg> = f.sent.try_iter().filter(|m| matches!(m, ClientMsg::Launch { .. })).collect();
+        assert_eq!(launched.len(), 1, "one session, once: {launched:?}");
+        assert!(f.app.doc.nodes.iter().any(|n| n.parent.as_deref() == Some(parent_id) && n.cwd.as_deref() == Some(r"C:\work")));
     }
 
     #[test]

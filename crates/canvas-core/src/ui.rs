@@ -66,6 +66,9 @@ pub fn render(app: &mut App, buf: &mut Buffer, screen: Rect, overlay: Option<&mu
     app.layout.sidebar = sidebar;
     app.layout.canvas = canvas;
     app.layout.terms = terms;
+    // Where the panel would be when it shows (the size of a launch from here).
+    let shown_w = ((rest_w as u32 * app.doc.ui.terminal_percent as u32 / 100) as u16).min(rest_w.saturating_sub(20));
+    app.layout.terms_shown = Rect::new(rest_x + rest_w - shown_w, body.y, shown_w, body.height);
     app.layout.sidebar_divider = (sidebar_w > 0).then_some(sidebar.right());
     app.layout.term_divider = (term_w > 0).then_some(canvas.right());
 
@@ -849,7 +852,8 @@ fn draw_sidebar(app: &mut App, buf: &mut Buffer, area: Rect) {
     }
 }
 
-fn tile_rects(area: Rect, count: usize) -> Vec<Rect> {
+/// The tiles of `count` terminals in the right panel `area` (outlines).
+pub fn tile_rects(area: Rect, count: usize) -> Vec<Rect> {
     match count {
         0 => Vec::new(),
         1 => vec![area],
@@ -911,7 +915,7 @@ fn draw_terminals(app: &mut App, buf: &mut Buffer, area: Rect, view_model: &mut 
     }
     let mut cursor = None;
     for (id, outer) in ids.iter().zip(tile_rects(area, ids.len())) {
-        let inner = Rect::new(outer.x + 1, outer.y + 1, outer.width.saturating_sub(2), outer.height.saturating_sub(2));
+        let inner = crate::sizes::tile_inner(outer);
         app.layout.tiles.push((id.clone(), outer, inner));
         let focused = app.focus == Focus::Terminal && app.focused_term.as_deref() == Some(id);
         let info = app.terms.get(id).cloned().unwrap_or_default();
@@ -939,7 +943,9 @@ fn draw_terminals(app: &mut App, buf: &mut Buffer, area: Rect, view_model: &mut 
         let agent = node.as_ref().filter(|n| n.command.is_none()).map(crate::agents::agent_of);
         let intent = title_intent(agent.unwrap_or_default(), &info.title, &name);
         let intent = if intent.is_empty() { String::new() } else { format!(" · {intent}") };
-        let title = format!(" {} {name} · {}{intent}{scroll}{exit} ", status.icon(app.tick), status.label());
+        // Kept at another client's size: drawn from its bottom, and said here.
+        let sized = app.size_note(id).map(|note| format!(" · {note}")).unwrap_or_default();
+        let title = format!(" {} {name} · {}{intent}{scroll}{exit}{sized} ", status.icon(app.tick), status.label());
         let title_end = put(buf, outer.x as i32 + 1, outer.y as i32, &truncate(&title, outer.width.saturating_sub(6) as usize), border, outer);
         app.layout.hits.push((Rect::new(outer.x, outer.y, (title_end - outer.x as i32).max(1) as u16, 1), Hit::TileHeader(id.clone())));
         let close_x = outer.right() as i32 - 4;

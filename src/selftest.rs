@@ -1034,11 +1034,12 @@ fn agent_scenario(instance: &Instance, work: &Path, kind: AgentKind, env: &[(&st
         std::thread::sleep(Duration::from_millis(100));
     }
     if let Some((x, y)) = ui.find_in("↗", SIDEBAR.0, SIDEBAR.1) {
-        // A click only shows it; the explicit start (double-click) is refused.
+        // A click only shows it (with the hint); the explicit start goes to
+        // the service, which checks the lock and refuses, saying why.
         ui.click(x + 2, y)?;
-        ui.wait("its details panel", Duration::from_secs(5), |t| t.contains("open elsewhere") && !t.contains("▸ Resume"))?;
+        ui.wait("its details panel", Duration::from_secs(5), |t| t.contains("open elsewhere") && t.contains("may be open"))?;
         ui.double_click(x + 2, y)?;
-        ui.wait("refusal notice", Duration::from_secs(5), |t| t.contains("never starts a second copy"))?;
+        ui.wait("the service's refusal", Duration::from_secs(15), |t| t.contains("was not started"))?;
     } else {
         println!("    (no session is currently open elsewhere; skipped)");
     }

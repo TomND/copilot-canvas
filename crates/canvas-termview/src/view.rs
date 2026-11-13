@@ -53,6 +53,23 @@ impl std::fmt::Debug for TermImage {
 static IMAGE_SERIAL: AtomicU64 = AtomicU64::new(1);
 
 impl TermView {
+    /// The first of the terminal's rows a pane `height` rows tall shows. A
+    /// terminal taller than its pane (sized for another client, or a resize
+    /// still on its way) is anchored at the bottom, where agents keep their
+    /// input box and status line, unless its cursor is higher up: then the
+    /// rows down to the cursor. Every front end draws, hit-tests and selects
+    /// with the same offset.
+    pub fn first_row(&self, height: u16) -> u16 {
+        if height == 0 || self.rows <= height {
+            return 0;
+        }
+        let bottom = self.rows - height;
+        match self.cursor {
+            Some((_, cy)) if cy < bottom => (cy + 1).saturating_sub(height),
+            _ => bottom,
+        }
+    }
+
     pub fn apply(&mut self, frame: Frame) {
         if frame.full || frame.rows != self.rows || frame.cols != self.cols {
             self.lines = vec![Vec::new(); frame.rows as usize];

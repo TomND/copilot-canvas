@@ -1056,7 +1056,9 @@ fn draw_new_session(app: &App, buf: &mut Buffer, screen: Rect, dialog: &crate::d
     y += 2;
 
     if let Some(error) = &dialog.error {
-        put(buf, label_x, y, &truncate(error, rect.width as usize - 6), fg(NEGATIVE).bg(MODAL), rect);
+        // A check under way on the service's machine is not an error.
+        let color = if dialog.checking.is_some() { MUTED } else { NEGATIVE };
+        put(buf, label_x, y, &truncate(error, rect.width as usize - 6), fg(color).bg(MODAL), rect);
     } else {
         let hint = format!("Tab/↑↓ move · Space/←→ agent · Enter create · Esc cancel · {} permissions per Settings", dialog.agent.label());
         put(buf, label_x, y, &truncate(&hint, rect.width as usize - 6), fg(MUTED).bg(MODAL), rect);

@@ -227,7 +227,24 @@ copied and emptied when it cannot be renamed at its size limit.
   on the UI thread before a launch (the launch answers that).
 - The new connection replaces the old one (like a service restart): the client
   sends its subscriptions, sizes, tracked sessions and routing again; the
-  service sends the terminal list and full frames.
+  service sends the terminal list and full frames. A local service restarted
+  by ⟳ Update service starts the client from scratch the same way
+  (`App::reset_service_state`).
+- Between reconnects the client keeps its lists in step with the service's
+  (`canvas-core/src/resync.rs`): the service sends whole lists only when a
+  client connects, then changes, and a change lost on the way (a full queue,
+  a launch or exit between a connect's snapshot and its registration) would
+  leave a box looking stopped or open elsewhere while it runs here, or a dead
+  terminal looking alive. Every `Stats` answer (every 3 s) carries the
+  service's terminal and alive counts; when the client's lists disagree on
+  two answers in a row with the same numbers, it sends `RefreshSessions`
+  (a service that answers it with its whole lists repairs them at once);
+  when they still disagree two answers later it reconnects for the whole
+  lists, at most every 5 minutes, with the notice "Reconnected to bring the
+  terminal list back in step with the service." `RefreshSessions` also goes
+  every minute (an older service only indexes again; cheap). A document
+  asked for again (`DocOpen`) and not received within 10 s is asked for
+  again, so a lost answer never holds back this window's edits.
 - While offline, terminal input (keys, paste, clicks, wheel, scroll) is dropped
   with "Offline: input not sent." It is never queued.
 - Keyboard input travels as `Input8` with a per-session sequence number. The
@@ -244,9 +261,19 @@ copied and emptied when it cannot be renamed at its size limit.
   refused this client)" or "… (the service did not prove it knows this
   client's secret)".
 - Through a Dev Tunnel every attempt first asks for the forwarded address: a
-  `devtunnel connect` child that died is started again, and one whose
-  connections failed twice in a row (the tunnel is up locally but the relay is
-  broken) is restarted.
+  `devtunnel connect` child that died is started again. One through which
+  nothing gets twice in a row (no TCP connection to its port, or not a byte
+  back before the handshake's 10 s: the relay is broken) is restarted, and so
+  is one whose connections keep closing before a byte comes back for 45 s
+  (the service restarting closes them too, for shorter); but never a child
+  younger than 10 s, nor one that carries another connection that is up
+  (another window, an upload), and an answer from the service (a refusal
+  included) counts as the tunnel working.
+- The client's writer sends what a person waits for (keys, clicks, the
+  wheel, sizes, subscriptions) ahead of anything queued before it (backend
+  requests, canvas edits), and every byte read counts as a sign of life, so a
+  large answer slower than the 6 s dead-after time no longer ends the
+  connection on the client's side.
 
 ## Pairing
 
@@ -597,6 +624,32 @@ mode sends no size: it draws the desktop's grid scaled down. The desktop
 clients send their size again when they show a terminal again, and forget
 what they sent for terminals they stopped showing.
 
+The desktop clients (TUI and GUI, `canvas-core/src/sizes.rs`) also:
+
+- launch a terminal at the size of the tile it will get (its own tile in
+  the tiled view, else the right panel's), never the first tile's or a
+  guess, and send its size again whenever it comes alive (a relaunch, a
+  restore, another client's start), so a size sent for an earlier run never
+  hides a wrong one;
+- send a tile's changed size once it has held for 150 ms (a window drag is
+  one `Resize`, not one per frame);
+- claim the terminal that gets the keyboard here (a click into its tile,
+  F6, a start) and claim it again when the window comes back to the front
+  (`Claim` only to protocol-8 services; every one since the iPhone client
+  reads it, v0.3.0 included);
+- compare each shown terminal's real size (its frames) with its tile after
+  every draw: when the size this client sent has not arrived 1.5 s later
+  (a lost message, a resize the host did not finish), the `Resize` (and the
+  `Claim`, for the terminal with the keyboard) goes again, with backoff up
+  to 30 s; a terminal that had this client's size and then took another was
+  taken by another client, and is left to it (no fight with the phone): its
+  tile says *sized elsewhere: click to fit* until you click into it (so does
+  one still at another size after two repairs, about 4.5 s);
+- while a terminal is taller than its tile, draw its bottom rows (or the
+  rows down to its cursor when that is higher up), so the agent's input box,
+  status line and cursor stay visible; selections, clicks and the wheel use
+  the terminal's own rows (`TermView::first_row`).
+
 ## Satellites (VM sessions)
 
 A VM session's guest runs `atelier satellite`, which connects to this service like a paired client but with a
@@ -626,7 +679,7 @@ in the canvas in any remote mode (that is how the tests check them).
 |---|---|---|
 | Text copy (selection, Ctrl+C, Ctrl+Shift+C), paste | this machine's clipboard | the home clipboard (client side) |
 | OSC 52 copies from a terminal | the client that last sent input to that terminal (else the last client that typed) | the same: with the home PC and the Cloud PC's own window open, the copy goes to the machine you typed on |
-| Image paste (Ctrl+V / Alt+V with an image, pane menu Paste) | the key goes to the agent, which reads the local clipboard | the client reads the home clipboard image (`PNG` format, else `CF_DIBV5`/`CF_DIB` converted to PNG; at most 20 MB and 32 M pixels), sends `Request::SetClipboardImage`, the service puts it on the Cloud PC clipboard in its user session as `CF_DIB` (32-bit) and `PNG`, then the client sends the same key. Offline: nothing is sent |
+| Image paste (Ctrl+V / Alt+V with an image, pane menu Paste) | the key goes to the agent, which reads the local clipboard | the client reads the home clipboard image (`PNG` format, else `CF_DIBV5`/`CF_DIB` converted to PNG; at most 20 MB and 32 M pixels), sends `Request::SetClipboardImage` (an image over 256 KiB on a short-lived connection of its own, so typing on the window's connection never waits behind it), the service puts it on the Cloud PC clipboard in its user session as `CF_DIB` (32-bit) and `PNG`, then the client sends the same key. Offline: nothing is sent |
 | URLs in terminals (Ctrl+click), report links | this machine's browser | the home browser |
 | Paths in terminals, passive-session files (rules, memory, log), the events catalog | VS Code at the line / Explorer | checked on the service (`PathInfo`, so a missing file says "… does not exist"); with `--vscode-tunnel NAME` on the server record and VS Code installed at home: `vscode://vscode-remote/tunnel+NAME/C:/path:LINE`; otherwise the text viewer |
 | Folders (config views' "Open folder", group folders and their chips, the sidebar's folder rows, passive folder) | Explorer | VS Code through the tunnel, else the canvas's folder browser (subfolders and files, `ListEntries`; a file opens in the viewer through `ReadText`; "Copy path"). Folders follow this in any remote mode, `--remote loopback` included, so the service never opens Explorer for a client |

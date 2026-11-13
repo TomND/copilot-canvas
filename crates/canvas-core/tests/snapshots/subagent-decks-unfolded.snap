@@ -12,13 +12,19 @@
                                  │      └──────────────────────┘│┐         └──────────────────────┘    ││ Subagents  2                               │
  ✦                               │ ·     └──────────────────────┘│     ·     │     ·     ·     ·     · ││ Session    fix                             │
                                  │        └──────────────────────┘         ┌ ◇ Patch the config ──┐    ││                                            │
- ◈                               │                                         │ ○ idle               │    ││ It is open in another terminal (CLI or VS  │
-                                 │ ·     ·     ·     ·     ·     ·     ·   └──────────────────────┘  · ││ Code); Atelier never starts a second copy. │
- ⇄                               │                                                                     ││ S subsession · R rename · G group · X stop │
+ ◈                               │                                         │ ○ idle               │    ││ Resume continues this conversation in      │
+                                 │ ·     ·     ·     ·     ·     ·     ·   └──────────────────────┘  · ││ GitHub Copilot (copilot --session-id …) in │
+ ⇄                               │                                                                     ││ a canvas terminal.                         │
+                                 │                                                                     ││ It may be open in another terminal (CLI or │
+ ≡                               │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││ VS Code): the service checks when you      │
+                                 │                                                                     ││ start it and never starts a second copy.   │
+ ✉                               │                                                                     ││ Double-click the box or press Enter to     │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││ resume it.                                 │
+                                 │                                                                     ││ S subsession · R rename · G group · X stop │
                                  │                                                                     ││                                            │
- ≡                               │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││ SUBAGENTS 2 (shown · K stacks them)        │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││ SUBAGENTS 2 (shown · K stacks them)        │
                                  │                                                                     ││ ○ Patch the config · idle  Inspect   Hide  │
- ✉                               │                                                                     ││ ⠋ Search the logs · work…  Inspect   Hide  │
+                                 │                                                                     ││ ⠋ Search the logs · work…  Inspect   Hide  │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││                                            │
                                  │                                                                     ││                                            │
                                  │                                                                     ││                                            │
@@ -30,14 +36,8 @@
                                  │                                                                     ││                                            │
                                  │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││                                            │
                                  │                                                                     ││                                            │
-                                 │                                                                     ││                                            │
-                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││                                            │
-                                 │                                                                     ││                                            │
-                                 │                                                                     ││                                            │
-                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││                                            │
-                                 │                                                                     ││                                            │
-                                 │                                                                     ││  Inspect transcript    MCP servers…        │
-                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││  Remove    Close                           │
+                                 │                                                                     ││  ▸ Resume    Inspect transcript            │
+                                 │ ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     ·     · ││  MCP servers…    Remove    Close           │
                                  │                                                                     │└────────────────────────────────────────────┘
  Unfolded 2 subagent box(es) of “Fix the build”; K stacks them again.
 ## gpu view model

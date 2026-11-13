@@ -23,6 +23,9 @@ use crate::sync::{ClientPrefs, Opened, Replica};
 
 /// Local document changes are sent to the service this soon.
 const DOC_FLUSH: Duration = Duration::from_millis(100);
+/// A document asked for and not received by then is asked for again (a
+/// lost `DocOpen` or `Doc` would otherwise hold back every edit for good).
+pub const DOC_RETRY: Duration = Duration::from_secs(10);
 /// View and panel changes are written to the client's preferences this soon.
 const PREFS_FLUSH: Duration = Duration::from_millis(400);
 
@@ -110,6 +113,9 @@ pub struct Layout {
     pub sidebar: Rect,
     pub canvas: Rect,
     pub terms: Rect,
+    /// Where the right panel is when it shows (`terms` is empty while it
+    /// does not): a launch's size before its tile exists.
+    pub terms_shown: Rect,
     pub status: Rect,
     pub tiles: Vec<(String, Rect, Rect)>,
     pub sidebar_rows: Vec<(u16, usize)>,
@@ -235,6 +241,8 @@ pub struct App {
     pub doc_request: (Option<String>, bool),
     /// Waiting for the service to send the whole document again.
     pub doc_resync: bool,
+    /// When the document was last asked for (asked again after [`DOC_RETRY`]).
+    pub doc_asked_at: Instant,
     /// When local document changes started waiting to be sent.
     pub dirty_at: Option<Instant>,
     /// When view or panel changes started waiting to be written.
@@ -297,10 +305,19 @@ pub struct App {
     pub frozen_tick: Option<usize>,
     pub git_req: u64,
     pub last_subscribed: Vec<String>,
+    /// The size last sent (`Resize`) for each shown terminal.
     pub last_sizes: HashMap<String, (u16, u16)>,
+    /// Tile sizes waiting to hold before they are sent: id → (size, since).
+    pub pending_sizes: HashMap<String, ((u16, u16), Instant)>,
+    /// How each shown terminal's real size compares with its tile (`sizes.rs`).
+    pub size_states: HashMap<String, crate::sizes::SizeState>,
+    /// The terminal this client last claimed the size of (it has the keyboard here).
+    pub last_claimed: Option<String>,
     pub last_tracked: Vec<String>,
     pub stats: Option<ServiceStats>,
     pub stats_at: Instant,
+    /// Keeps the terminal and session lists in step with the service's (`resync.rs`).
+    pub resync: crate::resync::Resync,
     pub build_mismatch: bool,
     /// A remote service of another build (its build id): mixed builds are
     /// unsupported, so the toolbar says so ([`App::note_mixed_builds`]).
@@ -348,6 +365,8 @@ pub struct App {
     pub installed_agents: Vec<AgentKind>,
     /// New subsessions that fork their parent natively: node → parent's agent session.
     pub pending_forks: HashMap<String, String>,
+    /// Remote mode: sessions the service said have history to fork (agent session ids).
+    pub fork_history: HashMap<String, bool>,
     /// New subsession boxes that resume a subagent's own conversation and
     /// have not run yet (a refused launch removes them again).
     pub resumed_children: HashSet<String>,
@@ -419,7 +438,9 @@ impl App {
             Ok(info) => (info, None),
             Err(error) => (BackendInfo::default(), Some(format!("{error:#}"))),
         };
-        let automations_folder = backend.automations_dir(doc.automations_dir.clone()).unwrap_or_default();
+        // A remote service is not asked here (one round trip less before the
+        // first frame): the first automations load, in the background, says it.
+        let automations_folder = if conn.remote { String::new() } else { backend.automations_dir(doc.automations_dir.clone()).unwrap_or_default() };
         let selection = doc.selected.clone().into_iter().collect();
         let detected_agent = info.default_agent;
         let installed_agents = info.installed.clone();
@@ -437,6 +458,7 @@ impl App {
             replica,
             doc_request: (None, demo),
             doc_resync: false,
+            doc_asked_at: Instant::now(),
             dirty_at: None,
             prefs_dirty_at: None,
             prefs,
@@ -483,9 +505,13 @@ impl App {
             git_req: 0,
             last_subscribed: Vec::new(),
             last_sizes: HashMap::new(),
+            pending_sizes: HashMap::new(),
+            size_states: HashMap::new(),
+            last_claimed: None,
             last_tracked: Vec::new(),
             stats: None,
             stats_at: Instant::now() - Duration::from_secs(60),
+            resync: Default::default(),
             last_input_at: HashMap::new(),
             idle_check_at: Instant::now(),
             repaint_requested: false,
@@ -520,6 +546,7 @@ impl App {
             detected_agent,
             installed_agents,
             pending_forks: HashMap::new(),
+            fork_history: HashMap::new(),
             resumed_children: HashSet::new(),
             automations: Vec::new(),
             automations_loading: false,
@@ -646,9 +673,13 @@ impl App {
             return;
         }
         self.doc_resync = true;
+        self.doc_asked_at = Instant::now();
         let (path, demo) = self.doc_request.clone();
         let cwd = self.default_cwd.clone();
-        self.send(ClientMsg::DocOpen { path, demo, cwd });
+        if !self.queue(ClientMsg::DocOpen { path, demo, cwd }) {
+            // Not sent (a full queue): asked again in a second.
+            self.doc_asked_at -= DOC_RETRY.saturating_sub(Duration::from_secs(1));
+        }
     }
 
     /// The whole document from the service.
@@ -724,6 +755,13 @@ impl App {
     }
 
     pub fn send(&mut self, message: ClientMsg) {
+        self.queue(message);
+    }
+
+    /// Sends a message to the service; false when it was not queued (offline,
+    /// or the outgoing queue is full), so state sent once (subscriptions,
+    /// sizes, tracking) is sent again later.
+    pub fn queue(&mut self, message: ClientMsg) -> bool {
         let input = is_terminal_input(&message);
         if !self.connected {
             // Nothing is queued while offline: typing into a screen that changed
@@ -731,7 +769,7 @@ impl App {
             if input && !matches!(message, ClientMsg::Input { input: Input::Focus(_), .. }) {
                 self.notify("Offline: input not sent.", true);
             }
-            return;
+            return false;
         }
         if let ClientMsg::Input { id, .. } | ClientMsg::Wheel { id, .. } = &message {
             self.last_input_at.insert(id.clone(), Instant::now());
@@ -745,16 +783,18 @@ impl App {
             self.note_access(&id);
         }
         match self.conn.tx.try_send(message) {
-            Ok(()) => {}
+            Ok(()) => true,
             Err(crossbeam_channel::TrySendError::Full(_)) => {
                 if input {
                     self.notify("Offline: input not sent.", true);
                 }
+                false
             }
             Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
                 if self.restarting.is_none() {
                     self.connection_lost();
                 }
+                false
             }
         }
     }
@@ -837,19 +877,14 @@ impl App {
         self.conn = conn;
         self.connected = true;
         self.banner = None;
-        self.last_subscribed.clear();
-        self.last_focused_sub = None;
-        self.last_sizes.clear();
-        self.last_tracked.clear();
-        self.routing_sent.clear();
-        self.resync_terms = true;
-        // Launches the previous connection asked for are the service's now (a
-        // restarted one resumes what it ran): never "preparing" forever.
-        self.launching.clear();
+        self.reset_service_state();
         // The new connection opens the document again (local changes are kept).
         self.request_doc();
+        let repaired = std::mem::take(&mut self.resync.repairing);
         if lost > 0 {
             self.notify(format!("Reconnected. {lost} keystroke(s) were not delivered."), true);
+        } else if repaired {
+            self.notify("Reconnected to bring the terminal list back in step with the service.", false);
         } else {
             self.notify("Reconnected to the terminal service.", false);
         }
@@ -1239,9 +1274,17 @@ impl App {
         self.terms.get(id).is_some_and(|t| t.alive)
     }
 
-    /// Running in another terminal (CLI or VS Code) rather than in this service.
+    /// Possibly running in another terminal (CLI or VS Code) rather than in
+    /// this service: a hint (this client's copy can be stale); the service
+    /// decides when it launches.
     pub fn live_elsewhere(&self, node: &Node) -> bool {
         node.kind == NodeKind::Session && !self.owned_alive(&node.id) && self.summary(node).is_some_and(|s| s.live)
+    }
+
+    /// Why the box's last start failed or was refused. A refusal because it
+    /// ran elsewhere lasts while its history still says it is live there.
+    pub fn node_error(&self, node: &Node) -> Option<&String> {
+        self.node_errors.get(&node.id).filter(|error| !is_open_elsewhere(error) || self.owned_alive(&node.id) || self.summary(node).is_some_and(|s| s.live))
     }
 
     pub fn node_status(&self, node: &Node) -> Status {
@@ -1269,8 +1312,11 @@ impl App {
                 if self.bus.restore.as_ref().is_some_and(|r| r.is_resuming(&node.id)) {
                     return Status::Resuming;
                 }
-                if self.node_errors.contains_key(&node.id) && !self.owned_alive(&node.id) {
-                    return Status::Failed;
+                if let Some(error) = self.node_error(node)
+                    && !self.owned_alive(&node.id)
+                {
+                    // Refused because it runs elsewhere: that, not a failure.
+                    return if is_open_elsewhere(error) { Status::External } else { Status::Failed };
                 }
                 status::session_status(self.summary(node), self.terms.get(&node.id), node.reviewed_ms)
             }
@@ -1292,7 +1338,7 @@ impl App {
     }
 
     pub fn subtitle(&self, node: &Node) -> String {
-        if let Some(error) = self.node_errors.get(&node.id) {
+        if let Some(error) = self.node_error(node) {
             return error.clone();
         }
         if node.kind == NodeKind::Agent {
@@ -1595,17 +1641,25 @@ impl App {
         self.right_detail = None;
         self.focused_term = Some(id.to_owned());
         self.doc.touch_tile(id);
-        if !self.tile_slots.iter().any(|t| t == id) {
-            if self.tile_slots.len() < 4 {
-                self.tile_slots.push(id.to_owned());
+        self.tile_slots = self.slots_showing(&self.tile_slots, id);
+        self.mark_dirty();
+    }
+
+    /// The tile slots once `id` shows: kept where it is, else in a free
+    /// slot, else instead of the least recently shown one.
+    pub fn slots_showing(&self, slots: &[String], id: &str) -> Vec<String> {
+        let mut slots = slots.to_vec();
+        if !slots.iter().any(|t| t == id) {
+            if slots.len() < 4 {
+                slots.push(id.to_owned());
             } else {
                 let rank = |t: &String| self.doc.tiles.iter().position(|x| x == t).unwrap_or(usize::MAX);
-                if let Some((slot, _)) = self.tile_slots.iter().enumerate().max_by_key(|(_, t)| rank(t)) {
-                    self.tile_slots[slot] = id.to_owned();
+                if let Some((slot, _)) = slots.iter().enumerate().max_by_key(|(_, t)| rank(t)) {
+                    slots[slot] = id.to_owned();
                 }
             }
         }
-        self.mark_dirty();
+        slots
     }
 
     pub fn visible_terminals(&self) -> Vec<String> {
@@ -1649,15 +1703,6 @@ impl App {
         }
     }
 
-    pub fn pane_size(&self) -> (u16, u16) {
-        let tiles = &self.layout.tiles;
-        if let Some((_, _, inner)) = tiles.first() {
-            return (inner.width.max(20), inner.height.max(5));
-        }
-        let t = self.layout.terms;
-        if t.width > 4 { (t.width - 2, t.height.saturating_sub(2).max(5)) } else { (100, 30) }
-    }
-
     // ---------- launching ----------
 
     /// Starts a session box's terminal (see `interact.rs` for what may call it).
@@ -1669,13 +1714,15 @@ impl App {
             .filter(|c| !c.is_empty())
             .or_else(|| self.summary(&node).map(|s| s.cwd.clone()).filter(|c| !c.is_empty()))
             .unwrap_or_else(|| self.default_cwd.clone());
-        let (cols, rows) = self.pane_size();
+        // The size of the tile it gets (a size sent for an earlier run is sent again).
+        let (cols, rows) = self.launch_size(id);
+        self.forget_size(id);
         self.node_errors.remove(id);
         // The folder is on the service's machine; when it cannot be asked, the
         // launch itself reports a missing folder. A remote service is not
         // asked from here: a round trip on the UI thread to a busy service
         // froze the window (its launch answers the same).
-        if !self.conn.remote && self.backend.path_info(&cwd).is_ok_and(|info| !info.dir) {
+        if !self.conn.remote && !self.service_is_remote() && self.backend.path_info(&cwd).is_ok_and(|info| !info.dir) {
             self.node_errors.insert(id.to_owned(), "folder missing".into());
             self.notify(format!("Cannot open: folder not found: {cwd}"), true);
             return;
@@ -1768,6 +1815,11 @@ impl App {
                     }
                     if info.alive {
                         self.launching.remove(&info.id);
+                        // Started again (here, by another client or the restore):
+                        // its size is sent again, whatever an earlier run had.
+                        if !self.owned_alive(&info.id) {
+                            self.forget_size(&info.id);
+                        }
                     } else if self.launching.remove(&info.id).is_some() && info.exit_code != Some(0) {
                         self.notify(format!("Terminal exited immediately (code {:?}).", info.exit_code), true);
                     }
@@ -1830,21 +1882,18 @@ impl App {
                 }
             }
             ServiceMsg::Clipboard(text) => self.copy_to_clipboard(&text),
-            ServiceMsg::Error { id, message } => {
-                if let Some(id) = &id {
-                    self.launching.remove(id);
-                    self.node_errors.insert(id.clone(), "launch failed".into());
-                }
-                // A todo change of this window refused (the book as it is follows): it is undone now.
-                if id.is_none() && message.starts_with("Todo change ") {
-                    crate::tasks::refused(self);
-                }
-                // A resumed child that may not start goes again (with its own notice).
-                if !id.is_some_and(|id| self.launch_refused(&id, &message)) {
+            ServiceMsg::Error { id, message } => match id {
+                // Only a launch's errors name a terminal.
+                Some(id) => self.on_launch_error(&id, &message),
+                None => {
+                    // A todo change of this window refused (the book as it is follows): it is undone now.
+                    if message.starts_with("Todo change ") {
+                        crate::tasks::refused(self);
+                    }
                     self.notify(message, true);
                 }
-            }
-            ServiceMsg::Stats(stats) => self.stats = Some(stats),
+            },
+            ServiceMsg::Stats(stats) => self.on_stats(stats),
             ServiceMsg::Subsession { parent, child, name, cwd } => self.link_subsession(&parent, &child, &name, &cwd),
             ServiceMsg::Bus { json } => self.on_bus(&json),
             ServiceMsg::BusEvent { json } => self.on_bus_event(&json),
@@ -1877,6 +1926,21 @@ impl App {
             // Only for VM sessions' satellites (CAP_SATELLITE).
             | ServiceMsg::Sat(_) => {}
         }
+    }
+
+    /// The service did not launch terminal `id` and says why: the box shows
+    /// that reason (a session open elsewhere shows as such, anything else as
+    /// failed) and the notice names the box.
+    pub fn on_launch_error(&mut self, id: &str, message: &str) {
+        self.launching.remove(id);
+        // A resumed child that may not start goes again (with its own notice).
+        if self.launch_refused(id, message) {
+            return;
+        }
+        let reason = launch_reason(message);
+        self.node_errors.insert(id.to_owned(), reason.clone());
+        let name = self.doc.node(id).map(|n| n.name.clone()).unwrap_or_else(|| id.to_owned());
+        self.notify(format!("“{name}” was not started: {reason}"), true);
     }
 
     /// Copilot asked to copy (OSC 52): use the Windows clipboard directly; the
@@ -2166,25 +2230,22 @@ impl App {
         let visible: Vec<String> = self.layout.tiles.iter().map(|(id, _, _)| id.clone()).collect();
         // The focused tile gets frames at a higher rate over remote links.
         let focused = self.focused_term.clone().filter(|id| visible.contains(id));
-        if visible != self.last_subscribed || focused != self.last_focused_sub {
-            self.send(ClientMsg::Subscribe8 { ids: visible.clone(), focused: focused.clone() });
+        if (visible != self.last_subscribed || focused != self.last_focused_sub) && self.queue(ClientMsg::Subscribe8 { ids: visible.clone(), focused: focused.clone() }) {
+            // Images of terminals no longer shown go (up to 64 MB each decoded);
+            // the service sends them again with the next subscription.
+            for id in self.last_subscribed.iter().filter(|id| !visible.contains(id)) {
+                if let Some(view) = self.views.get_mut(id) {
+                    view.images.clear();
+                    view.placements.clear();
+                }
+            }
             self.last_subscribed = visible;
             self.last_focused_sub = focused;
         }
         // The service forgets this client's size for terminals it stopped
         // showing (sizes follow the client typing in a terminal: the iPhone
         // may take one over); showing one again sends its size again.
-        self.last_sizes.retain(|id, _| self.last_subscribed.contains(id));
-        if !matches!(self.drag, Some(Drag::SidebarDivider | Drag::TermDivider)) {
-            let tiles = self.layout.tiles.clone();
-            for (id, _, inner) in tiles {
-                let size = (inner.width.max(20), inner.height.max(5));
-                if self.owned_alive(&id) && self.last_sizes.get(&id) != Some(&size) {
-                    self.last_sizes.insert(id.clone(), size);
-                    self.send(ClientMsg::Resize { id, cols: size.0, rows: size.1 });
-                }
-            }
-        }
+        self.sync_sizes(Instant::now());
         // History is indexed by the agents' own session ids.
         let mut tracked: Vec<String> = self
             .doc
@@ -2194,8 +2255,7 @@ impl App {
             .map(|n| native_id(n).to_owned())
             .collect();
         tracked.sort();
-        if tracked != self.last_tracked {
-            self.send(ClientMsg::Track { ids: tracked.clone() });
+        if tracked != self.last_tracked && self.queue(ClientMsg::Track { ids: tracked.clone() }) {
             self.last_tracked = tracked;
         }
     }
@@ -2209,6 +2269,9 @@ impl App {
         if self.dirty_at.is_some_and(|t| t.elapsed() >= DOC_FLUSH) {
             self.flush_doc();
         }
+        if self.doc_resync && self.connected && self.doc_asked_at.elapsed() >= DOC_RETRY {
+            self.request_doc();
+        }
         if self.prefs_dirty_at.is_some_and(|t| t.elapsed() >= PREFS_FLUSH) {
             self.save_prefs();
         }
@@ -2221,10 +2284,13 @@ impl App {
             self.needs_draw = true;
         }
         self.launching.retain(|_, t| t.elapsed() < Duration::from_secs(20));
+        // Tile sizes that settled and sizes due a repair, also without a draw.
+        self.sync_sizes(Instant::now());
         if self.stats_at.elapsed() >= Duration::from_secs(3) {
             self.stats_at = Instant::now();
             self.send(ClientMsg::Stats);
         }
+        self.tick_resync();
         if self.pan_quiet_until.is_some_and(|t| Instant::now() >= t) {
             self.pan_quiet_until = None;
             self.needs_draw = true;
@@ -2297,6 +2363,20 @@ fn is_terminal_input(message: &ClientMsg) -> bool {
         message,
         ClientMsg::Input { .. } | ClientMsg::Input8 { .. } | ClientMsg::Click { .. } | ClientMsg::Wheel { .. } | ClientMsg::Scroll { .. }
     )
+}
+
+/// A launch error from the service as the box shows it: one line, bounded.
+pub fn launch_reason(message: &str) -> String {
+    let line = message.split(['\n', '\r']).map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ");
+    let line = if line.is_empty() { "the service gave no reason".to_owned() } else { line };
+    crate::paint::truncate(&line, 240)
+}
+
+/// The service refused a launch because the session already runs (another
+/// terminal, VS Code, another box): "open elsewhere", not a failure.
+pub fn is_open_elsewhere(reason: &str) -> bool {
+    let reason = reason.to_lowercase();
+    ["already running", "running elsewhere", "open elsewhere", "open in another", "running in another", "running inside"].iter().any(|p| reason.contains(p))
 }
 
 /// Client-side frame statistics (`--perf`).
@@ -2637,6 +2717,16 @@ mod connection_tests {
         app.flush_doc();
         let resent = edits(&sent);
         assert!(matches!(resent.as_slice(), [(9, ops)] if ops.len() == 1), "{resent:?}");
+        // A resync whose answer never comes asks again.
+        app.request_doc();
+        assert!(matches!(sent.try_recv(), Ok(ClientMsg::DocOpen { .. })));
+        app.on_tick();
+        assert!(!sent.try_iter().any(|m| matches!(m, ClientMsg::DocOpen { .. })), "not at once");
+        app.doc_asked_at = Instant::now() - DOC_RETRY;
+        app.on_tick();
+        assert!(sent.try_iter().any(|m| matches!(m, ClientMsg::DocOpen { .. })), "asked again");
+        app.on_service(ServiceMsg::Doc { key: "k".into(), version: 9, json: serde_json::to_string(&reply).unwrap() });
+        assert!(!app.doc_resync);
         // Save errors from the service are shown.
         app.on_service(ServiceMsg::DocSaved { key: "k".into(), version: 9, error: Some("disk full".into()) });
         assert_eq!(app.save_error.as_deref(), Some("the service cannot save the canvas: disk full"));

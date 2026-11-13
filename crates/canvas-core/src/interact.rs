@@ -67,9 +67,10 @@ impl App {
         if self.preparing.contains(&session.id) {
             return StartPlan::Blocked("Its worktree is still being created.".into());
         }
-        if self.summary(&session).is_some_and(|s| s.live) {
-            return StartPlan::Blocked("It is open in another terminal (CLI or VS Code); Atelier never starts a second copy.".into());
-        }
+        // Open elsewhere (`summary.live`) is only a hint: this client's copy
+        // of it can be stale (a lost update, this service's own CLI still
+        // closing). The service checks the session's lock when it launches
+        // and refuses a second copy; its reason is shown (`on_launch_error`).
         if session.command.is_some() || session.fresh {
             return StartPlan::Start;
         }
@@ -102,8 +103,8 @@ impl App {
 
     /// The explicit start: double-click, Enter, Start / Resume. Launches the
     /// box's session when it is not running here (a subagent's parent) and
-    /// gives its terminal the keyboard. Never starts a second copy of a
-    /// session that is open elsewhere.
+    /// gives its terminal the keyboard. A session that may be open elsewhere
+    /// is still sent: the service refuses a second copy and says why.
     pub fn start_node(&mut self, id: &str) {
         let Some(node) = self.doc.node(id).cloned() else { return };
         if node.kind == NodeKind::Automation {
@@ -207,19 +208,54 @@ mod tests {
     }
 
     #[test]
-    fn sessions_open_elsewhere_and_passive_sessions_never_start_here() {
+    fn open_elsewhere_is_a_hint_the_service_decides_and_passive_sessions_never_start_here() {
         let mut elsewhere = node("e", false);
         elsewhere.agent_session = None;
         let mut passive = node("p", false);
         passive.passive = Some(Default::default());
         let (mut app, sent) = app(vec![elsewhere, passive]);
         app.sessions.insert("e".into(), SessionSummary { id: "e".into(), live: true, tracked: true, ..Default::default() });
-        assert!(matches!(app.start_plan(app.doc.node("e").unwrap()), StartPlan::Blocked(reason) if reason.contains("second copy")));
+        assert!(app.live_elsewhere(app.doc.node("e").unwrap()), "the hint stays");
+        assert_eq!(app.start_plan(app.doc.node("e").unwrap()), StartPlan::Resume, "never refused from this client's copy of `live`");
         app.start_node("e");
         app.start_node("p");
-        assert!(launches(&sent).is_empty());
+        assert_eq!(launches(&sent), ["e"], "the launch goes to the service, which checks the lock");
         assert_eq!(app.right_detail, Some(RightDetail::Passive("p".into())), "a passive session shows its panel");
-        assert!(app.notice.is_some());
+        // The service refuses it: the box says why and shows as open elsewhere, not failed.
+        app.on_service(crate::protocol::ServiceMsg::Error { id: Some("e".into()), message: "this session is already running in another terminal; use that terminal".into() });
+        assert!(!app.launching.contains_key("e"));
+        assert_eq!(app.node_errors.get("e").map(String::as_str), Some("this session is already running in another terminal; use that terminal"));
+        assert_eq!(app.node_status(app.doc.node("e").unwrap()), crate::status::Status::External);
+        let notice = app.notice.as_ref().map(|n| n.text.clone()).unwrap_or_default();
+        assert!(notice.contains("“e” was not started") && notice.contains("already running in another terminal"), "{notice}");
+        // Closed over there: the refusal no longer shows.
+        app.sessions.insert("e".into(), SessionSummary { id: "e".into(), live: false, tracked: true, ..Default::default() });
+        assert!(app.node_error(app.doc.node("e").unwrap()).is_none() && !app.live_elsewhere(app.doc.node("e").unwrap()));
+        assert_eq!(app.node_status(app.doc.node("e").unwrap()), crate::status::Status::Stopped);
+        // Any other refusal is a failure with the service's reason.
+        app.start_node("e");
+        app.on_service(crate::protocol::ServiceMsg::Error { id: Some("e".into()), message: "folder not found: C:\\gone".into() });
+        assert_eq!(app.node_status(app.doc.node("e").unwrap()), crate::status::Status::Failed);
+        assert_eq!(app.subtitle(app.doc.node("e").unwrap()), "folder not found: C:\\gone");
+    }
+
+    #[test]
+    fn a_session_that_just_exited_here_starts_again_at_once() {
+        // Its CLI's lock outlives the terminal until the service's next index
+        // pass: `live` is still true, and that must not refuse Enter.
+        let mut a = node("12345678-1234-1234-1234-123456789abc", false);
+        a.fresh = false;
+        let id = a.id.clone();
+        let (mut app, sent) = app(vec![a]);
+        app.terms.insert(id.clone(), TermInfo { id: id.clone(), alive: false, exit_code: Some(0), ..Default::default() });
+        app.sessions.insert(id.clone(), SessionSummary { id: id.clone(), live: true, tracked: true, ..Default::default() });
+        app.start_node(&id);
+        assert_eq!(launches(&sent), std::slice::from_ref(&id));
+        // Not in `terms` at all (a lost update): the same.
+        let (mut app, sent) = super::tests::app(vec![node(&id, false)]);
+        app.sessions.insert(id.clone(), SessionSummary { id: id.clone(), live: true, tracked: true, ..Default::default() });
+        app.start_node(&id);
+        assert_eq!(launches(&sent), [id]);
     }
 
     #[test]

@@ -1213,6 +1213,28 @@ fn tiled_terminals() {
     check("tiled-terminals", &mut app, BOTH);
 }
 
+/// A terminal kept at another client's (taller) size: drawn from its
+/// bottom with the cursor and input row in view, and the tile says so.
+#[test]
+fn terminal_taller_than_its_tile() {
+    let doc = canvas_core::demo::demo_doc(CWD);
+    let mut app = app(doc, true);
+    let run = |text: String| Run { col: 0, text, fg: 0, bg: 0, flags: 0, link: None };
+    let mut lines: Vec<Vec<Run>> = (0..57).map(|i| vec![run(format!("output line {i}"))]).collect();
+    lines.push(vec![run("╭──────────────────────────╮".into())]);
+    lines.push(vec![run("│ > typed but cut off?     │".into())]);
+    lines.push(vec![run("status: the footer row".into())]);
+    let id = "demo-main";
+    app.terms.insert(id.into(), TermInfo { title: "GitHub Copilot".into(), ..term(id, true, None) });
+    app.views.insert(id.into(), canvas_core::app::TermView { cols: 60, rows: 60, lines, cursor: Some((16, 58)), ..Default::default() });
+    app.size_states.insert(id.into(), canvas_core::sizes::SizeState::Taken);
+    app.tile_slots.push(id.into());
+    app.selection = vec![id.into()];
+    app.focused_term = Some(id.into());
+    app.focus = Focus::Terminal;
+    check("terminal-taller-than-its-tile", &mut app, BOTH);
+}
+
 /// A fixed "now" for dust ages (day 100 after the epoch).
 const NOW: u64 = 100 * 86_400_000;
 

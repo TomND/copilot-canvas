@@ -225,6 +225,8 @@ struct Win {
     frame_interval: Duration,
     svc_gen: u64,
     svc_pending: Arc<AtomicBool>,
+    /// Service messages wait beyond the last budget (handled in `tick`).
+    svc_more: bool,
     svc_tx: Sender<(u64, ServiceMsg)>,
     svc_rx: Receiver<(u64, ServiceMsg)>,
     perf: Perf,
@@ -733,6 +735,7 @@ impl Win {
             frame_interval: Duration::from_micros(16_667),
             svc_gen: 0,
             svc_pending: Arc::new(AtomicBool::new(false)),
+            svc_more: false,
             svc_tx,
             svc_rx,
             perf: Perf::default(),
@@ -782,7 +785,13 @@ impl Win {
         });
     }
 
-    fn drain_service(&mut self, proxy: &EventLoopProxy<UserEvent>) {
+    /// Handles the service's messages for up to [`SERVICE_BUDGET`]; what is
+    /// left waits for `tick`, after input and a frame (`svc_more`). Posting
+    /// another wake-up instead would come back before any keystroke on
+    /// Windows (posted messages are dispatched before input, and winit drains
+    /// the queue before `AboutToWait`, where frames are drawn).
+    fn drain_service(&mut self) {
+        self.svc_more = false;
         self.svc_pending.store(false, Ordering::Release);
         let started = Instant::now();
         let focused = self.app.focused_term.clone();
@@ -818,10 +827,8 @@ impl Win {
                 }
             }
             if started.elapsed() >= SERVICE_BUDGET {
-                // Leftovers after input and drawing.
-                if !self.svc_pending.swap(true, Ordering::AcqRel) {
-                    let _ = proxy.send_event(UserEvent::Service(self.index));
-                }
+                // Leftovers after input and drawing (`tick`).
+                self.svc_more = true;
                 break;
             }
         }
@@ -1781,6 +1788,10 @@ impl Win {
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
             }
         }
+        // The window's connection goes with it: the service forgets its
+        // subscriptions and size wishes at once (a closed secondary window
+        // kept them, and the terminals its size, until two messages failed).
+        self.app.conn.close();
         self.app.save_error.clone()
     }
 
@@ -1804,6 +1815,23 @@ impl Win {
 
     /// Housekeeping, then a frame when one is due; returns when to wake next.
     fn tick(&mut self, gpu: Option<&mut Gpu>, fonts: Option<&mut Fonts>, options: &Options) -> Instant {
+        let wake = self.tick_inner(gpu, fonts, options);
+        // Service messages left over from the last budget: another slice now,
+        // and the loop comes back at once (after any input waiting).
+        if self.svc_more {
+            self.drain_service();
+        }
+        if self.svc_more { Instant::now() } else { wake }
+    }
+
+    fn tick_inner(&mut self, gpu: Option<&mut Gpu>, fonts: Option<&mut Fonts>, options: &Options) -> Instant {
+        // A frame cannot be drawn (no GPU yet or any more, a window shown
+        // minimized or not laid out): nothing is due for it, so the loop
+        // waits instead of spinning.
+        let drawable = {
+            let size = self.window.inner_size();
+            gpu.is_some() && fonts.is_some() && self.cols != 0 && self.surface.is_some() && size.width != 0 && size.height != 0
+        };
         // macOS: the left Option key is Alt (Meta) for a terminal's program,
         // and types characters everywhere else (accents, ™, the note editor).
         #[cfg(target_os = "macos")]
@@ -1839,7 +1867,7 @@ impl Win {
             let app = &self.app;
             // Effects alone tick on their own 80 ms clock (fewer wake-ups while they animate).
             let effects_only = app.visual.effects_live && !app.visual.animating();
-            let busy = (app.needs_draw && !effects_only)
+            let busy = (app.needs_draw && !effects_only && drawable)
                 || app.notice.is_some()
                 || app.flash.is_some()
                 || !app.pulses.is_empty()
@@ -1851,6 +1879,7 @@ impl Win {
                 || app.text_zoom_steps != 0
                 || app.text_zoom_reset
                 || app.recent_pending()
+                || app.sizes_pending()
                 || app.reconnecting
                 || app.restarting.is_some()
                 || self.preview.is_some();
@@ -1875,6 +1904,9 @@ impl Win {
         }
         self.update_access(false);
         let due = |s: &Self| -> Option<Instant> {
+            if !drawable {
+                return None;
+            }
             if !(s.app.needs_draw || s.redraw || !s.damaged.is_empty()) {
                 // Moving loop dots or the glow's rings: a frame of their layers alone.
                 return [s.loops_due(), s.glow_due()].into_iter().flatten().min();
@@ -2138,7 +2170,7 @@ impl ApplicationHandler<UserEvent> for Shell {
             }
             UserEvent::Service(index) => {
                 if let Some(at) = self.by_index(index) {
-                    self.wins[at].drain_service(&self.proxy);
+                    self.wins[at].drain_service();
                 }
             }
             UserEvent::ServiceClosed(index, generation) => {

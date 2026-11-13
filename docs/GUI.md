@@ -81,8 +81,16 @@ detaches it without asking, the last one asks as before, and the process
 ends with its last window. Service messages are forwarded by a thread per
 connection into a queue (PNG images are decoded to RGBA on the way) and wake
 the loop with one coalesced proxy event; the UI drains them with a 4 ms
-budget, as the TUI does. App events and test-hook commands arrive as proxy
-events too. Ticks run every 40 ms while anything is active (animations,
+budget, as the TUI does. What is left after a slice waits for the window's
+tick (after input and a frame) and the loop comes back at once
+(`WaitUntil(now)`): posting another wake-up instead came back before any
+keystroke on Windows (posted messages are dispatched before input, and
+winit drains the queue before `AboutToWait`, where frames are drawn), so a
+backlog delayed every key and frame until it was gone. A window that cannot
+draw (no GPU yet or any more, minimized, not laid out) has no frame due, so
+the loop waits instead of spinning; closing a window closes its connection
+(the service forgets its subscriptions and size wishes at once). App events
+and test-hook commands arrive as proxy events too. Ticks run every 40 ms while anything is active (animations,
 notices, drags, unsaved changes, a paste preview, a stack transition), every 80 ms while only effects animate, and every 400 ms
 otherwise. A frame is drawn only when the app needs one: at once after input
 (and for the echo of a keystroke in the focused terminal), otherwise paced to

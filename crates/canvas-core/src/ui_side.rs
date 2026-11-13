@@ -594,7 +594,12 @@ fn session_detail(app: &App, out: &mut Lines, actions: &mut Vec<(String, Action)
         StartPlan::Resume => out.text(format!("Resume continues this conversation in {} ({} …) in a canvas terminal.", kind.label(), resume_how(kind)), fg(ACCENT)),
         StartPlan::Blocked(reason) => out.text(reason.clone(), fg(crate::paint::PURPLE)),
     }
-    if let Some(error) = app.node_errors.get(&node.id) {
+    // A hint only: the service checks the session's lock when it starts and
+    // refuses a second copy (its reason shows here and in a notice).
+    if matches!(plan, StartPlan::Start | StartPlan::Resume) && app.live_elsewhere(node) {
+        out.text("It may be open in another terminal (CLI or VS Code): the service checks when you start it and never starts a second copy.", fg(crate::paint::PURPLE));
+    }
+    if let Some(error) = app.node_error(node) {
         out.text(format!("Problem: {error}"), fg(NEGATIVE));
     }
     let mut primary = false;

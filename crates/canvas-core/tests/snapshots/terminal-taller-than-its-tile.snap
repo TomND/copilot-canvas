@@ -1,0 +1,71 @@
+# terminal-taller-than-its-tile (150x40 cells)
+## cells (the TUI screen)
+ ◆ Atelier   ◫  ✎  ☑   DEMO · native shells   + New   ▢ Single   Show all nodes   −   +   ?   ⏻ Quit                                    3 sessions
+    SESSIONS                     │                                                    │┏ ● Build session canvas · running · sized elsewhere: cli…━[×]┓
+▌▤  / filter…                    │  ┌╌ ▣ Canvas project · 4 ╌╌╌╌╌╌╌╌╌╌╌╌ ✎ Set folder…│┃output line 24                                               ┃
+                                 │  ╎┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓                 │┃output line 25                                               ┃
+ ◷  ▾ ▣ Canvas project         3 │  ╎┃┏ Build session canvas ━━━━━━┓┃   ╭ Review imple│┃output line 26                                               ┃
+      ◧ Set folder…              │  ╎┃┃ ● running                  ┃┃   │ ■ stopped   │┃output line 27                                               ┃
+ ⧉    ● Build session canvas     │  ╎┃┃ canvas                     ┃┃   │ canvas      │┃output line 28                                               ┃
+        ◇ ✓ Explore terminal AP… │  ╎┃┗━ ☑ WI-002 ━━━━━━━━━━━━━━━━━┛┃   ╰─ ☑ WI-003 ──│┃output line 29                                               ┃
+ ⌁    ■ Review implementation    │  ╎┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛   · ┊   ·     · │┃output line 30                                               ┃
+        ↳ ■ Write tests          │  ╎     ┌ ◇ 1 subagent ────────┐        ┊           │┃output line 31                                               ┃
+ ✦                               │  ╎     │ ✓ just finished      │        ┊           │┃output line 32                                               ┃
+                                 │  ╎     └──────────────────────┘·     ╭ ↳ Write test│┃output line 33                                               ┃
+ ◈                               │  ╎                                   │ ■ stopped   │┃output line 34                                               ┃
+                                 │  ╎                                   │ canvas      │┃output line 35                                               ┃
+ ⇄                               │  ╎     ·     ·     ·     ·     ·     ╰─────────────│┃output line 36                                               ┃
+                                 │  ╎                                                 │┃output line 37                                               ┃
+ ≡                               │  └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌│┃output line 38                                               ┃
+                                 │  ·     ·     ·     ·     ·     ·     ·     ·     · │┃output line 39                                               ┃
+ ✉                               │                                                    │┃output line 40                                               ┃
+                                 │                                                    │┃output line 41                                               ┃
+                                 │  ·     ·     ·     ·     ·     ·     ·     ·     · │┃output line 42                                               ┃
+                                 │                                                    │┃output line 43                                               ┃
+                                 │                                                    │┃output line 44                                               ┃
+                                 │  ·     ·     ·     ·     ·     ·     ·     ·     · │┃output line 45                                               ┃
+                                 │                                                    │┃output line 46                                               ┃
+                                 │                                                    │┃output line 47                                               ┃
+                                 │  ·     ·     ·     ·     ·     ·     ·     ·     · │┃output line 48                                               ┃
+                                 │                                                    │┃output line 49                                               ┃
+                                 │                                                    │┃output line 50                                               ┃
+                                 │  ·     ·     ·     ·     ·     ·     ·     ·     · │┃output line 51                                               ┃
+                                 │                                                    │┃output line 52                                               ┃
+                                 │                                                    │┃output line 53                                               ┃
+                                 │  ·     ·     ·     ·     ·     ·     ·     ·     · │┃output line 54                                               ┃
+                                 │                                                    │┃output line 55                                               ┃
+                                 │                                                    │┃output line 56                                               ┃
+                                 │  ·     ·     ·     ·     ·     ·     ·     ·     · │┃╭──────────────────────────╮                                 ┃
+                                 │                                                    │┃│ > typed but cut off?     │                                 ┃
+                                 │                                                    │┃status: the footer row                                       ┃
+                                 │  ·     ·     ·     ·     ·     ·     ·     ·     · │┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+ Typing goes to the terminal · Ctrl+] or F6 back to canvas · Ctrl+F6 / Ctrl+Shift+F6 recent sessions · drag to copy · Ctrl+V paste · Alt+V image · C…
+## gpu view model
+view cursor=104,36 modal=none banner=None
+canvas area=34,1 52x38 origin=-2,-1 scale=1 grid=true tick=0 empty=false
+group g-demo "Canvas project" icon=▣ members=4 rect=0,0 70x15 color=#56b4e9 style=[fg #56b4e9 +DIM] selected=false drop_target=false automations=false folder=false
+  chip " ✎ Set folder… " action=Notebook(LinkFolder("g-demo")) rect=36,0 15x1 fixed=false lit=false
+  chip " ☑ 5 · 1▸ · 1◇ " action=Tasks(OpenGroup("g-demo")) rect=52,0 15x1 fixed=false lit=true attention=true
+edge Subsession color=#58a6ff from=36,2 30x4 to=36,9 30x4 path=(38.5,6) (38.5,7.5) (38.5,7.5) (38.5,9)
+edge Subagent color=#6e7681 from=2,2 30x4 to=6,7 24x3 path=(4.5,6) (4.5,6.5) (8.5,6.5) (8.5,7)
+box demo-review Session rect=36,2 30x4 prefix="" name="Review implementation"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]
+  selected=false focused_term=false active=false
+  badge=WI-003
+box demo-sub Session rect=36,9 30x4 prefix="↳ " name="Write tests"
+  status=Stopped icon="■" label="stopped" line="■ stopped" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Round border_style=[fg #c9d1d9 +DIM] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #585e66]
+  selected=false focused_term=false active=false
+box demo-main:explore Agent rect=6,7 24x3 prefix="◇ " name="1 subagent"
+  status=JustFinished icon="✓" label="just finished" line="✓ just finished" subtitle="double-click to show them" elsewhere=false every=None mailbox=0
+  border=Light border_style=[fg #6e7681] fill=#161b22 attention=none name_style=[fg #c9d1d9] line_style=[fg #648fff]
+  selected=false focused_term=false active=false
+  deck root=demo-main count=1 back=0 agents=1
+box demo-main Session rect=2,2 30x4 prefix="" name="Build session canvas"
+  status=Running icon="●" label="running" line="● running" subtitle="canvas" elsewhere=false every=None mailbox=0
+  border=Heavy border_style=[fg #f0f6fc +BOLD] fill=#161b22 attention=none name_style=[fg #f0f6fc +BOLD] line_style=[fg #c9d1d9]
+  selected=true focused_term=true active=true
+  badge=WI-002
+halo rect=2,2 30x4 typing=true
+tile demo-main outer=87,1 63x38 inner=88,2 61x36 focused=true alive=true cursor=true tint=false title="● Build session canvas · running · sized elsewhere: click to fit"

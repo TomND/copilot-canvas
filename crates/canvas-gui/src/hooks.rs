@@ -161,7 +161,7 @@ pub fn tree(app: &canvas_core::app::App, view: &View, chrome: &Buffer) -> Value 
             // Kitty images as screen cell rects (x, y, columns, rows).
             let images: Vec<Value> = app.views.get(&t.id).map(|v| v.placements.iter().map(|p| json!({
                 "id": p.image_id,
-                "rect": [t.inner.x as i32 + p.col, t.inner.y as i32 + p.row, p.cols, p.rows],
+                "rect": [t.inner.x as i32 + p.col, t.inner.y as i32 + p.row - v.first_row(t.inner.height) as i32, p.cols, p.rows],
                 "z": p.z,
                 "loaded": v.images.contains_key(&p.image_id),
             })).collect()).unwrap_or_default();

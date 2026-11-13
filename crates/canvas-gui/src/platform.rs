@@ -22,6 +22,9 @@ use crossbeam_channel::{Sender, unbounded};
 /// The same toast text is not shown twice within this time.
 const DEDUPE: Duration = Duration::from_secs(3);
 
+/// Toast records kept (the newest; older ones go).
+const MAX_TOASTS: usize = 200;
+
 /// A toast the platform was asked for (the test hooks list them).
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ToastRecord {
@@ -30,6 +33,9 @@ pub struct ToastRecord {
     /// "queued", "shown", "in front" (the window was active: no toast),
     /// "duplicate", "not shown: …" (the OS would not show it: why) or "failed: …".
     pub status: String,
+    /// Which toast this is (the toast thread finds its record by it).
+    #[serde(skip)]
+    id: u64,
 }
 
 #[derive(Default)]
@@ -126,13 +132,19 @@ impl GuiPlatform {
         } else {
             "queued"
         };
-        let index = {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        {
             let mut toasts = self.toasts.lock().unwrap_or_else(|p| p.into_inner());
-            toasts.push(ToastRecord { title: title.clone(), body: body.clone(), status: status.into() });
-            toasts.len() - 1
-        };
+            toasts.push(ToastRecord { title: title.clone(), body: body.clone(), status: status.into(), id });
+            // A long-running window keeps the newest only.
+            if toasts.len() > MAX_TOASTS {
+                let extra = toasts.len() - MAX_TOASTS;
+                toasts.drain(..extra);
+            }
+        }
         if status == "queued" {
-            let _ = toaster().send(Job::Show { title, body, records: self.toasts.clone(), index });
+            let _ = toaster().send(Job::Show { title, body, records: self.toasts.clone(), id });
         }
     }
 }
@@ -245,7 +257,7 @@ fn recently_shown(title: &str, body: &str) -> bool {
 }
 
 enum Job {
-    Show { title: String, body: String, records: Arc<Mutex<Vec<ToastRecord>>>, index: usize },
+    Show { title: String, body: String, records: Arc<Mutex<Vec<ToastRecord>>>, id: u64 },
     History(Sender<Option<u32>>),
 }
 
@@ -258,7 +270,7 @@ fn toaster() -> &'static Sender<Job> {
             let registered = crate::os::toast_thread_init();
             for job in rx {
                 match job {
-                    Job::Show { title, body, records, index } => {
+                    Job::Show { title, body, records, id } => {
                         let status = match registered.clone().and_then(|_| crate::os::show_toast(&title, &body)) {
                             Ok(()) => "shown".to_owned(),
                             // Nothing the OS would show (macOS outside its app bundle,
@@ -266,7 +278,7 @@ fn toaster() -> &'static Sender<Job> {
                             Err(error) if error.starts_with("not shown") => error,
                             Err(error) => format!("failed: {error}"),
                         };
-                        if let Some(record) = records.lock().unwrap_or_else(|p| p.into_inner()).get_mut(index) {
+                        if let Some(record) = records.lock().unwrap_or_else(|p| p.into_inner()).iter_mut().rev().find(|r| r.id == id) {
                             record.status = status;
                         }
                     }
@@ -312,6 +324,17 @@ mod tests {
         platform.bell(&mut out);
         assert!(out.is_empty(), "nothing goes to an outer terminal");
         assert_eq!((platform.bells.load(Ordering::Relaxed), platform.progress_state()), (1, 4));
+    }
+
+    #[test]
+    fn only_the_newest_toast_records_are_kept() {
+        let platform = GuiPlatform { quiet: true, ..Default::default() };
+        for n in 0..MAX_TOASTS + 50 {
+            platform.toast(format!("kept {n} {}", std::process::id()), String::new());
+        }
+        let toasts = platform.toasts.lock().unwrap();
+        assert_eq!(toasts.len(), MAX_TOASTS);
+        assert!(toasts.last().is_some_and(|t| t.title.starts_with(&format!("kept {} ", MAX_TOASTS + 49))));
     }
 
     #[test]

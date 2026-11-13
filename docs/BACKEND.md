@@ -93,7 +93,7 @@ the connection dropped while waiting).
 | `RemoteClients` | `RemoteClients(list)`: id, name, paired, last seen, revoked, open connections | `remote clients` (pipe only) |
 | `RemoteRevoke { client }` | `Text` (what was revoked; its connections are closed) | `remote revoke` (pipe only) |
 | `SetClipboardImage { png }` (base64 in JSON, at most 20 MB) | `Done` (the image is on the service machine's clipboard as `CF_DIB` + `PNG`) | remote image paste (Ctrl+V / Alt+V), see REMOTE.md |
-| `Upload { name, id, offset, data, last }` | `Done`, the last piece `Text` (the file's path) | files dropped on a terminal in remote mode: base64 pieces of at most 4 MiB, files of at most 50 MB, written under `<home>/uploads/<date>/` with a free name |
+| `Upload { name, id, offset, data, last }` | `Done`, the last piece `Text` (the file's path) | files dropped on a terminal in remote mode: base64 pieces (any size; clients send 256 KiB since round 1, 4 MiB before), files of at most 50 MB, written under `<home>/uploads/<date>/` with a free name. Clients send uploads, and clipboard images over 256 KiB, on a short-lived connection of their own (`conn::Bulk`: another client with its own session that shows nothing), so the window's typing and heartbeats never wait behind them |
 | `CreateCanvasAgent { files }` | `Text` (the slug used) | a new canvas-wide agent (the *New canvas agent* dialog; `rules` = its Instructions): `rules.md`, `state.md`, `log.md` in `<home>/canvas-agents/<canvas>/agents/<slug>` (the first free slug), the canvas's `GOALS.md` and `skills/` when missing. `files` names the canvas by its id (letters, digits, `-`), never a folder |
 | `CanvasSkills { canvas }` | `Skills(list)`: name, description, SKILL.md path and any problem per skill | the canvas-agents panel, an agent's *Skills…*, the skill library |
 | `CreateCanvasSkill { canvas, name, description }` | `Text` (its SKILL.md) | *New skill…* (never over an existing skill; the name is checked) |
@@ -222,7 +222,19 @@ show (`sync::stable_id`), so they end up as one box.
 After a reconnect (or a service restart) the client opens the document again.
 `Replica::resync` takes the service's document and puts the client's own
 changes that are not known to have arrived on top; they go out with the next
-edit. While offline nothing is sent; local changes wait.
+edit. While offline nothing is sent; local changes wait. A `DocOpen` whose
+`Doc` has not come 10 s later is sent again.
+
+### What desktop clients send since round 1 (no wire additions)
+
+| Where | Since | An older service |
+|---|---|---|
+| `ClientMsg::Claim` from the TUI and the GUI (the terminal that gets the keyboard; a size repair) | the iPhone client added it (every service since, v0.3.0 included, reads it); never sent over protocol 7 | a protocol-8 service from before the iPhone client would drop the connection: not supported |
+| `ClientMsg::RefreshSessions` every minute and when `Stats` disagrees with the client's terminal list (`canvas-core/src/resync.rs`) | existing message | indexes again (cheap); a service that answers it with `Terminals` (all) and `Sessions { full: true }` to the requester repairs a client's lists at once (older clients take both as the updates they are) |
+| A reconnect when `Stats` keeps disagreeing with the client's terminal list (at most every 5 minutes) | — | sends its whole lists, as on any connect |
+| A second, short-lived connection for uploads and clipboard images over 256 KiB (`conn::Bulk`: its own client session, no subscriptions, closed when done) | — | another client for a moment; an upload slower than 6 s on it can still be dropped as silent by a service that counts only whole messages, never the window's connection |
+| `Request::Upload` pieces of 256 KiB (4 MiB before) | — | takes pieces of any size |
+| `ServiceMsg::Error { id: Some(box) }` (a refused launch) shown with its text, the box ↗ when it says the session already runs ("already running", "running elsewhere", "open elsewhere", "open in another", "running in another", "running inside") | — | its texts ("…already running in another terminal…") already match |
 
 ### Saving
 

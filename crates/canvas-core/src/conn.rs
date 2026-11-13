@@ -203,6 +203,9 @@ pub struct Conn {
     /// ([`canvas_common::legacy::PRODUCT`], `Instance::legacy_pipe_name`): an older service that
     /// clients replace like any service of another build.
     pub legacy: bool,
+    /// Ends the connection (its reader then ends and the front end
+    /// reconnects); `None` for a detached connection.
+    closer: Option<Closer>,
 }
 
 impl Conn {
@@ -215,6 +218,19 @@ impl Conn {
     /// replaced from here): the service's build, for the mixed-builds notice.
     pub fn remote_build_differs(&self) -> Option<&str> {
         (self.remote && !self.service_build.is_empty() && self.service_build != build_id()).then_some(self.service_build.as_str())
+    }
+
+    /// Closes the connection: the service forgets this client (its
+    /// subscriptions and size wishes) and the reader ends, so a front end
+    /// still using it reconnects. False for a detached connection.
+    pub fn close(&self) -> bool {
+        match &self.closer {
+            Some(closer) => {
+                closer.close();
+                true
+            }
+            None => false,
+        }
     }
 }
 
@@ -231,6 +247,7 @@ impl Conn {
             session: ClientSession::new(),
             wire: Arc::default(),
             legacy: false,
+            closer: None,
         }
     }
 }
@@ -242,21 +259,71 @@ pub fn open(target: &ConnTarget, options: &ConnOptions, session: &Arc<ClientSess
         ConnTarget::Loopback(instance) => open_loopback(instance, options, session),
         ConnTarget::Tcp { addr, remote_id, secret } => {
             let stream = tcp::connect(addr, Duration::from_secs(5)).with_context(|| format!("cannot reach {addr}"))?;
-            open_stream(stream, secret, remote_id.clone(), options, session)
+            open_stream(stream, secret, remote_id.clone(), options, session, None)
         }
         ConnTarget::Server(server) => {
             let addr = server.address()?;
-            let opened = connect_soon(&addr)
-                .with_context(|| format!("cannot reach {} at {addr}", server.name()))
-                .and_then(|stream| open_stream(stream, server.secret(), Some(server.client_id().to_owned()), options, session));
-            match &opened {
-                Ok(_) => server.succeeded(),
-                // The service proved who it is: the path to it works.
-                Err(error) if is_final(error) => server.succeeded(),
-                Err(_) => server.failed(),
+            let stream = match connect_soon(&addr) {
+                Ok(stream) => stream,
+                Err(error) => {
+                    // Nothing listens where the tunnel child forwards: it counts toward a restart.
+                    server.failed();
+                    return Err(error).with_context(|| format!("cannot reach {} at {addr}", server.name()));
+                }
+            };
+            // While this connection is up its tunnel child is never restarted.
+            let opened = open_stream(stream, server.secret(), Some(server.client_id().to_owned()), options, session, Some(Box::new(server.in_use())));
+            match opened.as_ref().err().and_then(|e| e.downcast_ref::<Unheard>()) {
+                // Not a byte before the handshake's deadline: the relay may be gone.
+                Some(Unheard::TimedOut) => server.failed(),
+                // Closed before a byte came back: a service restarting behind a working
+                // tunnel (the child is restarted only when this lasts).
+                Some(Unheard::Closed) => server.closed_unheard(),
+                // Connected, or the service answered (even a refusal): the path works.
+                None => server.succeeded(),
             }
             opened
         }
+    }
+}
+
+/// A handshake that ended before a single byte came back from the far side
+/// (the context of such an error): what tells a broken tunnel from a
+/// service that is restarting or busy behind a working one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unheard {
+    /// Nothing came back before the handshake's deadline.
+    TimedOut,
+    /// The connection was closed before anything came back.
+    Closed,
+}
+
+impl std::fmt::Display for Unheard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Unheard::TimedOut => "nothing came back from the service in time",
+            Unheard::Closed => "the connection was closed before the service answered",
+        })
+    }
+}
+
+/// Every byte read is a sign of life: a large message that takes longer
+/// than the dead-after time to arrive keeps its connection (liveness counted
+/// only whole messages); `heard` says whether anything came at all.
+struct Alive {
+    inner: Box<dyn std::io::Read + Send>,
+    liveness: Arc<Liveness>,
+    heard: Arc<AtomicBool>,
+}
+
+impl std::io::Read for Alive {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n > 0 {
+            self.liveness.received();
+            self.heard.store(true, Ordering::Release);
+        }
+        Ok(n)
     }
 }
 
@@ -354,6 +421,47 @@ pub fn reconnect(target: &ConnTarget, options: &ConnOptions, session: &Arc<Clien
     }
 }
 
+/// A short-lived second connection for large uploads (a clipboard image,
+/// dropped files): keystrokes, their echo and the heartbeats on the window's
+/// own connection never wait behind them, and a transfer slower than the
+/// dead-after time can only fail itself, never drop the window's connection.
+/// The service sees one more client that shows nothing; it goes when this
+/// is dropped.
+pub struct Bulk {
+    conn: Conn,
+    pub backend: Arc<crate::remote::RemoteBackend>,
+}
+
+impl Drop for Bulk {
+    fn drop(&mut self) {
+        self.conn.close();
+    }
+}
+
+/// Opens a [`Bulk`] connection to `target` (protocol 8 only).
+pub fn open_bulk(target: &ConnTarget, options: &ConnOptions) -> Result<Bulk> {
+    let backend = crate::remote::RemoteBackend::new();
+    let options = ConnOptions { start: false, name: format!("{} uploads", options.name), rpc: Some(backend.clone()), caps: 0, ..options.clone() };
+    // A session of its own: the window's connection is never taken for its reconnection.
+    let conn = open(target, &options, &ClientSession::new())?;
+    let bulk = Bulk { conn, backend };
+    anyhow::ensure!(bulk.conn.protocol >= 8, "the service is too old for uploads on a connection of their own");
+    // Nothing reads what the service sends it but answers (they go to `backend`):
+    // dropped as they come, while its reader keeps going.
+    let rx = bulk.conn.rx.clone();
+    std::thread::Builder::new().name("bulk-drain".into()).spawn(move || for _ in rx {})?;
+    Ok(bulk)
+}
+
+/// Runs `work` with the backend of a [`Bulk`] connection to `bulk`'s target
+/// (`None`, or one that cannot be opened: the window's own backend `main`).
+pub fn with_bulk<T>(main: &dyn crate::rpc::Backend, bulk: Option<(ConnTarget, ConnOptions)>, work: impl FnOnce(&dyn crate::rpc::Backend) -> T) -> T {
+    match bulk.and_then(|(target, options)| open_bulk(&target, &options).ok()) {
+        Some(bulk) => work(&*bulk.backend),
+        None => work(main),
+    }
+}
+
 /// Opens a canvas document on the service (`DocOpen`) and waits for it.
 /// Messages that arrive first are returned for the caller to handle.
 pub fn open_doc(conn: &Conn, path: Option<String>, demo: bool, cwd: &str, timeout: Duration) -> Result<(Opened, Vec<ServiceMsg>)> {
@@ -400,11 +508,11 @@ pub fn service_answers(instance: &Instance) -> bool {
 fn open_pipe(instance: &Instance, options: &ConnOptions, session: &Arc<ClientSession>) -> Result<Conn> {
     let (pipe, legacy) = connect_endpoint(instance, Duration::from_secs(2))?;
     let token = canvas_sys::token::read_token(&instance.token_path())?;
-    let conn = match establish(pipe_halves(pipe)?, &token, None, options, session, false, true) {
+    let conn = match establish(pipe_halves(pipe)?, &token, None, options, session, false, true, None) {
         // A service older than protocol 8 cannot read `Hello8`: say `Hello`.
         Err(error) if error.is::<NoChallenge>() => {
             let (pipe, _) = connect_endpoint(instance, Duration::from_secs(2))?;
-            establish(pipe_halves(pipe)?, &token, None, options, session, false, false)
+            establish(pipe_halves(pipe)?, &token, None, options, session, false, false, None)
         }
         other => other,
     };
@@ -446,7 +554,7 @@ fn open_loopback(instance: &Instance, options: &ConnOptions, session: &Arc<Clien
         let port = listening_port(instance).context("the local service is not listening for remote clients")?;
         let token = canvas_sys::token::read_token(&instance.token_path())?;
         let stream = tcp::connect(&format!("127.0.0.1:{port}"), Duration::from_secs(2))?;
-        open_stream(stream, &token, None, options, session)
+        open_stream(stream, &token, None, options, session, None)
     };
     match attempt() {
         Ok(conn) => return Ok(conn),
@@ -474,14 +582,19 @@ fn open_loopback(instance: &Instance, options: &ConnOptions, session: &Arc<Clien
     wait_started(instance, attempt)
 }
 
-fn open_stream(stream: std::net::TcpStream, secret: &[u8], remote_id: Option<String>, options: &ConnOptions, session: &Arc<ClientSession>) -> Result<Conn> {
+/// Something kept for as long as a connection's reader runs (a tunnel in use).
+type Keep = Option<Box<dyn std::any::Any + Send>>;
+
+fn open_stream(stream: std::net::TcpStream, secret: &[u8], remote_id: Option<String>, options: &ConnOptions, session: &Arc<ClientSession>, keep: Keep) -> Result<Conn> {
     let (reader, writer, closer) = tcp::split(stream)?;
     let halves: Halves = (Box::new(reader), Box::new(writer), Closer::new(move || closer.close()));
-    establish(halves, secret, remote_id, options, session, true, true)
+    establish(halves, secret, remote_id, options, session, true, true, keep)
 }
 
 /// Runs the handshake on a fresh connection and starts its threads.
-/// `hello8`: open with `Hello8` (else protocol-7 `Hello`).
+/// `hello8`: open with `Hello8` (else protocol-7 `Hello`). A handshake that
+/// fails before any byte came back says so ([`Unheard`]).
+#[allow(clippy::too_many_arguments)]
 fn establish(
     (reader, writer, closer): Halves,
     secret: &[u8],
@@ -490,8 +603,12 @@ fn establish(
     session: &Arc<ClientSession>,
     remote: bool,
     hello8: bool,
+    keep: Keep,
 ) -> Result<Conn> {
     let stats = Arc::new(WireStats::default());
+    let liveness = Arc::new(Liveness::new(options.heartbeat, options.dead_after));
+    let heard = Arc::new(AtomicBool::new(false));
+    let reader = Box::new(Alive { inner: reader, liveness: liveness.clone(), heard: heard.clone() });
     // Until the service proved itself, its frames are held to the small limit.
     let mut reader = FrameReader::new(reader).with_stats(stats.clone()).with_limit(wire::PRE_AUTH_FRAME);
     let mut writer = FrameWriter::new(writer).with_stats(stats.clone());
@@ -504,14 +621,16 @@ fn establish(
     });
     // A service that never answers must not hang the client.
     let done = Arc::new(AtomicBool::new(false));
+    let timed_out = Arc::new(AtomicBool::new(false));
     {
-        let (done, closer) = (done.clone(), closer.clone());
+        let (done, timed_out, closer) = (done.clone(), timed_out.clone(), closer.clone());
         std::thread::Builder::new().name("handshake-timeout".into()).spawn(move || {
             let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
             while Instant::now() < deadline && !done.load(Ordering::Acquire) {
                 std::thread::sleep(Duration::from_millis(50));
             }
             if !done.load(Ordering::Acquire) {
+                timed_out.store(true, Ordering::Release);
                 closer.close();
             }
         })?;
@@ -541,14 +660,17 @@ fn establish(
         Ok(ok) => ok,
         Err(error) => {
             closer.close();
-            return Err(error);
+            if heard.load(Ordering::Acquire) {
+                return Err(error);
+            }
+            let unheard = if timed_out.load(Ordering::Acquire) { Unheard::TimedOut } else { Unheard::Closed };
+            return Err(error.context(unheard));
         }
     };
     let protocol = greeting.protocol;
 
     let (in_tx, in_rx) = unbounded::<ServiceMsg>();
-    let (out_tx, out_rx) = bounded::<ClientMsg>(4096);
-    let liveness = Arc::new(Liveness::new(options.heartbeat, options.dead_after));
+    let (out_tx, out_rx) = bounded::<ClientMsg>(OUT_QUEUE);
     liveness.received();
     let reading = Arc::new(AtomicBool::new(true));
     // A service of another protocol (about to be upgraded) sends messages this
@@ -562,6 +684,8 @@ fn establish(
     {
         let (liveness, reading, closer, session) = (liveness.clone(), reading.clone(), closer.clone(), session.clone());
         std::thread::Builder::new().name("service-reader".into()).spawn(move || {
+            // Kept (a tunnel in use) for as long as this connection reads.
+            let _keep = keep;
             while let Ok(Some(frame)) = reader.recv_lenient::<ServiceMsg>() {
                 liveness.received();
                 let message = match frame {
@@ -598,19 +722,30 @@ fn establish(
         let heartbeat = v8.then_some(options.heartbeat);
         std::thread::Builder::new().name("service-writer".into()).spawn(move || {
             let mut beat = heartbeat.map(Beat::new);
+            let mut lanes = Lanes::default();
             loop {
-                let message = match &beat {
-                    Some(beat) => match out_rx.recv_deadline(beat.next()) {
-                        Ok(message) => Some(message),
-                        Err(RecvTimeoutError::Timeout) => None,
-                        Err(RecvTimeoutError::Disconnected) => break,
-                    },
-                    None => match out_rx.recv() {
-                        Ok(message) => Some(message),
-                        Err(_) => break,
-                    },
-                };
-                if let Some(message) = message.and_then(|m| adapt(m, v8, &session))
+                if lanes.is_empty() {
+                    let message = match &beat {
+                        Some(beat) => match out_rx.recv_deadline(beat.next()) {
+                            Ok(message) => Some(message),
+                            Err(RecvTimeoutError::Timeout) => None,
+                            Err(RecvTimeoutError::Disconnected) => break,
+                        },
+                        None => match out_rx.recv() {
+                            Ok(message) => Some(message),
+                            Err(_) => break,
+                        },
+                    };
+                    lanes.extend(message);
+                }
+                // What was queued meanwhile (behind a large request, say): what a
+                // person waits for goes first.
+                while lanes.len() < OUT_QUEUE
+                    && let Ok(message) = out_rx.try_recv()
+                {
+                    lanes.push(message);
+                }
+                if let Some(message) = lanes.pop().and_then(|m| adapt(m, v8, &session))
                     && writer.send(&message).is_err()
                 {
                     break;
@@ -625,6 +760,7 @@ fn establish(
     if v8 {
         // A connection silent past `dead_after` is closed; the reader then ends.
         let slice = (options.dead_after / 4).min(Duration::from_millis(250));
+        let closer = closer.clone();
         std::thread::Builder::new().name("service-watchdog".into()).spawn(move || {
             while reading.load(Ordering::Acquire) {
                 std::thread::sleep(slice);
@@ -644,7 +780,60 @@ fn establish(
         session: session.clone(),
         wire: stats,
         legacy: false,
+        closer: Some(closer),
     })
+}
+
+/// Messages queued to the service at most (a full queue drops what is sent).
+const OUT_QUEUE: usize = 4096;
+
+/// The writer's two lanes. What a person waits for (keys, clicks, the wheel,
+/// scrolling, sizes, subscriptions, stats) goes out ahead of everything else
+/// queued (backend requests and uploads, canvas edits, launches, routing),
+/// which keeps its own order. Neither depends on the other's order: input,
+/// sizes and claims only go to terminals the service already announced.
+#[derive(Default)]
+struct Lanes {
+    urgent: std::collections::VecDeque<ClientMsg>,
+    normal: std::collections::VecDeque<ClientMsg>,
+}
+
+impl Lanes {
+    fn push(&mut self, message: ClientMsg) {
+        let urgent = matches!(
+            message,
+            ClientMsg::Input { .. }
+                | ClientMsg::Input8 { .. }
+                | ClientMsg::Click { .. }
+                | ClientMsg::Wheel { .. }
+                | ClientMsg::Scroll { .. }
+                | ClientMsg::Resize { .. }
+                | ClientMsg::Claim { .. }
+                | ClientMsg::Subscribe { .. }
+                | ClientMsg::Subscribe8 { .. }
+                | ClientMsg::Heartbeat
+                | ClientMsg::Stats
+        );
+        if urgent { self.urgent.push_back(message) } else { self.normal.push_back(message) }
+    }
+
+    fn extend(&mut self, message: Option<ClientMsg>) {
+        if let Some(message) = message {
+            self.push(message);
+        }
+    }
+
+    fn pop(&mut self) -> Option<ClientMsg> {
+        self.urgent.pop_front().or_else(|| self.normal.pop_front())
+    }
+
+    fn len(&self) -> usize {
+        self.urgent.len() + self.normal.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// The message in the negotiated protocol: keyboard input is numbered on
@@ -656,7 +845,8 @@ fn adapt(message: ClientMsg, v8: bool, session: &ClientSession) -> Option<Client
         }
         ClientMsg::Input8 { id, input, .. } => ClientMsg::Input { id, input },
         ClientMsg::Subscribe8 { ids, .. } if !v8 => ClientMsg::Subscribe { ids },
-        ClientMsg::Heartbeat if !v8 => return None,
+        // Protocol 7 has no heartbeats, and its services size terminals by the last `Resize`.
+        ClientMsg::Heartbeat | ClientMsg::Claim { .. } if !v8 => return None,
         other => other,
     })
 }
@@ -754,6 +944,8 @@ mod tests {
         assert_eq!(adapt(ClientMsg::Input8 { id: "t".into(), input: key(), seq: 9 }, false, &session), Some(ClientMsg::Input { id: "t".into(), input: key() }));
         assert_eq!(adapt(ClientMsg::Subscribe8 { ids: vec!["t".into()], focused: None }, false, &session), Some(ClientMsg::Subscribe { ids: vec!["t".into()] }));
         assert_eq!(adapt(ClientMsg::Heartbeat, false, &session), None);
+        assert_eq!(adapt(ClientMsg::Claim { id: "t".into() }, false, &session), None, "protocol 7 has no Claim");
+        assert_eq!(adapt(ClientMsg::Claim { id: "t".into() }, true, &session), Some(ClientMsg::Claim { id: "t".into() }));
         assert_eq!(session.sent(), 2);
     }
 
@@ -826,6 +1018,113 @@ mod tests {
         // Every 50 ms for about 700 ms; more than one shows they repeat (a busy
         // CI runner starved the client's writer thread to 3 once).
         assert!(heartbeats >= 2, "the client sent heartbeats ({heartbeats})");
+    }
+
+    #[test]
+    fn keys_go_out_ahead_of_requests_queued_before_them() {
+        let mut lanes = Lanes::default();
+        let rpc = |id: u64| ClientMsg::Rpc { id, json: "x".repeat(1000) };
+        let key = |c: char| ClientMsg::Input { id: "t".into(), input: Input::Key { key: crate::protocol::Key::Char(c), mods: 0 } };
+        lanes.push(rpc(1));
+        lanes.push(ClientMsg::DocEdit { key: "k".into(), base: 1, ops_json: "[]".into() });
+        lanes.push(key('a'));
+        lanes.push(rpc(2));
+        lanes.push(ClientMsg::Resize { id: "t".into(), cols: 80, rows: 24 });
+        lanes.push(key('b'));
+        let order: Vec<String> = std::iter::from_fn(|| lanes.pop())
+            .map(|m| match m {
+                ClientMsg::Rpc { id, .. } => format!("rpc{id}"),
+                ClientMsg::Input { input: Input::Key { key: crate::protocol::Key::Char(c), .. }, .. } => format!("key{c}"),
+                ClientMsg::Resize { .. } => "resize".into(),
+                ClientMsg::DocEdit { .. } => "edit".into(),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(order, ["keya", "resize", "keyb", "rpc1", "edit", "rpc2"], "input first, each lane in its own order");
+        assert!(lanes.is_empty());
+    }
+
+    /// A minimal protocol-8 service on loopback: `serve` gets each accepted
+    /// connection's halves after the handshake and `Ready8`.
+    fn fake_service(writer_of: fn(Box<dyn std::io::Write + Send>) -> Box<dyn std::io::Write + Send>, serve: impl Fn(usize, FrameReader, FrameWriter) + Send + Sync + 'static) -> String {
+        let listener = tcp::listen_loopback("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let serve = Arc::new(serve);
+        std::thread::spawn(move || {
+            for (n, stream) in listener.incoming().flatten().enumerate() {
+                let serve = serve.clone();
+                std::thread::spawn(move || {
+                    let (reader, writer, _closer) = tcp::split(stream).unwrap();
+                    let (mut reader, mut writer) = (FrameReader::new(Box::new(reader)), FrameWriter::new(writer_of(Box::new(writer))));
+                    if handshake::accept(&mut reader, &mut writer, true, "svc", |_| Some(b"secret".to_vec())).is_err() {
+                        return;
+                    }
+                    writer.send(&ServiceMsg::Ready8 { pid: 1, input_ack: 0 }).unwrap();
+                    serve(n, reader, writer);
+                });
+            }
+        });
+        addr
+    }
+
+    #[test]
+    fn a_large_message_slower_than_the_dead_after_time_keeps_the_connection() {
+        /// Writes 16 bytes every 2 ms (a slow link).
+        struct Slow(Box<dyn std::io::Write + Send>);
+        impl std::io::Write for Slow {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                std::thread::sleep(Duration::from_millis(2));
+                self.0.write(&buf[..buf.len().min(16)])
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.0.flush()
+            }
+        }
+        // 4 KB at 8 KB/s: half a second, with no heartbeat meanwhile.
+        let addr = fake_service(|w| Box::new(Slow(w)), |_, _reader, mut writer| {
+            writer.send(&ServiceMsg::Clipboard("x".repeat(4000))).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+        });
+        let options = ConnOptions { heartbeat: Duration::from_millis(50), dead_after: Duration::from_millis(300), ..ConnOptions::default() };
+        let conn = open(&ConnTarget::Tcp { addr, remote_id: None, secret: b"secret".to_vec() }, &options, &ClientSession::new()).unwrap();
+        match conn.rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(ServiceMsg::Clipboard(text)) => assert_eq!(text.len(), 4000),
+            other => panic!("the connection was dropped while the message arrived: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn uploads_go_over_a_connection_of_their_own_and_a_closed_handshake_says_so() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let addr = fake_service(|w| w, move |n, mut reader, mut writer| {
+            while let Ok(Some(message)) = reader.recv::<ClientMsg>() {
+                if let ClientMsg::Rpc { id, .. } = message {
+                    log.lock().unwrap().push(n);
+                    writer.send(&ServiceMsg::RpcReply { id, json: serde_json::to_string(&crate::rpc::Response::Done).unwrap() }).unwrap();
+                }
+            }
+        });
+        let main = crate::remote::RemoteBackend::new();
+        let options = ConnOptions { rpc: Some(main.clone()), ..ConnOptions::default() };
+        let target = ConnTarget::Tcp { addr, remote_id: None, secret: b"secret".to_vec() };
+        let _conn = open(&target, &options, &ClientSession::new()).unwrap();
+        with_bulk(&*main, Some((target.clone(), options.clone())), |backend| backend.set_clipboard_image(vec![1; 10])).unwrap();
+        assert_eq!(*seen.lock().unwrap(), [1], "the image went over the second connection");
+        // Without a target (or one that cannot be opened): the window's own connection.
+        with_bulk(&*main, None, |backend| backend.set_clipboard_image(vec![1; 10])).unwrap();
+        assert_eq!(*seen.lock().unwrap(), [1, 0]);
+        // A port that accepts and closes: the error says nothing came back.
+        let closing = tcp::listen_loopback("127.0.0.1:0").unwrap();
+        let closed = closing.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            for stream in closing.incoming().flatten() {
+                drop(stream);
+            }
+        });
+        let error = open(&ConnTarget::Tcp { addr: closed, remote_id: None, secret: b"secret".to_vec() }, &ConnOptions::default(), &ClientSession::new()).err().expect("closed");
+        assert_eq!(error.downcast_ref::<Unheard>(), Some(&Unheard::Closed), "{error:#}");
+        assert!(error.is::<NoChallenge>(), "what the handshake said is still there (the pipe's protocol-7 fallback reads it): {error:#}");
     }
 
     #[test]
