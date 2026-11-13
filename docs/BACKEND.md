@@ -667,15 +667,30 @@ most 8 files and 4 MiB in all.
 ### How the service serves one client
 
 - **Reading.** One reader thread per connection handles what is quick itself:
-  terminal input, sizes, subscriptions, heartbeats. Everything else (`Launch`,
-  `Stop`, `Forget`, `Stats`, documents, the bus, todo and notebook operations,
-  requests, uploads, routing) goes to the client's **worker** thread
-  (`server::serve_messages`), which handles it in the order it came. A message
-  about a terminal that has work waiting there (a keystroke right after its
-  `Launch`) waits behind that work, so input never overtakes a launch; numbered
-  input is still admitted in arrival order. `Health::working` names a worker
-  busy with one message (a wedge sign after 30 s). A message this build cannot
-  decode (a newer client) is skipped and logged once; the connection stays.
+  terminal input, sizes, subscriptions, heartbeats, acknowledgements,
+  `Stats`, and a remote client's backend requests (`Rpc`: parsed and queued
+  for the backend's request threads; remote administration is refused to
+  remote clients at once). Everything else (`Launch`, `Stop`, `Forget`,
+  documents, the bus, todo and notebook operations, a local client's
+  requests, routing) goes to the client's **worker** thread
+  (`server::serve_messages`), which handles it in the order it came; its
+  first job is the backend's snapshot for the new client
+  (`HostApp::client_connected`), so reading starts at once and a slow
+  snapshot never makes the client look silent. A `Launch` runs on a thread of
+  its own (at most 4 per connection): launches of different boxes run side
+  by side, and whatever comes for that terminal meanwhile (keys, sizes, a
+  stop, a hide) is held behind its launch and handled after it, in order.
+  A message about a terminal that has work waiting (a keystroke right after
+  its `Launch`), or that another launch is starting (another connection's,
+  the restore's), waits behind that work (at most 20 s for another's launch;
+  keys refused after a launch that failed give one error, not one per key);
+  numbered input is still admitted in arrival order. A reconnection of the
+  same client session waits (at most 5 s) for what its predecessor read to be
+  handled before it reads anything. `Health::working` names a worker busy
+  with one message, a dropped connection's still draining included (a wedge
+  sign after 30 s); `pending_closes` only a dropped connection whose reader
+  has not ended. A message this build cannot decode (a newer client) is
+  skipped and logged once; the connection stays.
 - **Sending.** Each client has an outbox of lanes instead of one queue
   (`canvas-host/src/outbox.rs`): control (in order: `Ready8`, errors, small
   replies, `Stats`, terminal and session state), the focused tile's frame,
@@ -694,7 +709,11 @@ most 8 files and 4 MiB in all.
   *Flow control*).
 - **State is never missed.** A connecting client is listed, and sent the
   terminal list, under one lock: a launch or an exit is in that list or
-  reaches it as a broadcast. The list goes even when it is empty (a restarted
+  reaches it as a broadcast. Every change of a terminal's state (a launch,
+  an exit, a title or progress change, `Forget`) is read and queued for every
+  client under that lock too, as are the answers to a `Launch` of a running
+  terminal and to `RefreshSessions`: a client never gets an older state of a
+  terminal after a newer one. The list goes even when it is empty (a restarted
   service with nothing running yet): the client takes its first list as the
   whole of them (a4bf57f services sent none; a client then clears its list
   when their `Stats` count no terminal). The backend sends the session list under the lock

@@ -13,7 +13,10 @@
 //! and on Windows a waiting writer also ends within a slice once the
 //! connection was closed. Writes go to the socket in pieces of at most
 //! 64 KiB, so the deadline measures progress: a peer that takes a large
-//! message steadily is never timed out by its size.
+//! message steadily is never timed out by its size. A peer that is still
+//! heard from ([`TcpCloser::set_write_patience`]) gets longer: a tunnel
+//! gives its window back in large steps, so a slow link takes nothing for a
+//! while and then much at once.
 
 use std::io::{self, Read, Write};
 #[cfg(windows)]
@@ -44,12 +47,25 @@ struct Shared {
     deadline_ms: AtomicU64,
     /// A write the peer does not take within this many ms fails (0: no deadline).
     write_timeout_ms: AtomicU64,
+    /// Past the deadline a write keeps waiting while this says the peer is
+    /// alive, up to the duration given (in all).
+    patience: std::sync::Mutex<Option<(Patience, Duration)>>,
     epoch: Instant,
 }
+
+/// Whether a peer is still heard from ([`TcpCloser::set_write_patience`]).
+pub type Patience = Arc<dyn Fn() -> bool + Send + Sync>;
 
 impl Shared {
     fn closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
+    }
+
+    /// Whether a write that began at `started` and is past its deadline may
+    /// keep waiting: the peer is still heard from, within the patience's limit.
+    fn patient(&self, started: Instant) -> bool {
+        let patience = self.patience.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        patience.is_some_and(|(alive, limit)| started.elapsed() < limit && alive())
     }
 
     /// Time left before the read deadline (`None`: no deadline).
@@ -146,25 +162,35 @@ impl Write for TcpWriter {
         // Winsock send returns only once the whole buffer is taken), and a close
         // is noticed between pieces.
         let buf = &buf[..buf.len().min(WRITE_SLICE)];
-        // Winsock does not wake a blocked `send` when the socket is shut down:
-        // wait for room in slices, so a close or the deadline ends the wait.
-        #[cfg(windows)]
-        {
-            let started = Instant::now();
-            let limit = self.shared.write_timeout_ms.load(Ordering::Acquire);
-            while !writable(&self.stream, POLL_SLICE_MS)? {
-                if self.shared.closed() {
-                    return Err(io::Error::new(io::ErrorKind::BrokenPipe, "connection closed"));
-                }
-                if limit > 0 && started.elapsed() >= Duration::from_millis(limit) {
-                    return Err(write_timed_out());
+        let started = Instant::now();
+        loop {
+            // Winsock does not wake a blocked `send` when the socket is shut down:
+            // wait for room in slices, so a close or the deadline ends the wait.
+            #[cfg(windows)]
+            {
+                let limit = self.shared.write_timeout_ms.load(Ordering::Acquire);
+                while !writable(&self.stream, POLL_SLICE_MS)? {
+                    if self.shared.closed() {
+                        return Err(io::Error::new(io::ErrorKind::BrokenPipe, "connection closed"));
+                    }
+                    if limit > 0 && started.elapsed() >= Duration::from_millis(limit) && !self.shared.patient(started) {
+                        return Err(write_timed_out());
+                    }
                 }
             }
-        }
-        match self.stream.write(buf) {
-            // The socket's send timeout (the write deadline) passed.
-            Err(error) if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => Err(write_timed_out()),
-            other => other,
+            match self.stream.write(buf) {
+                // The socket's send timeout (the write deadline) passed: wait
+                // again while the peer is heard from (nothing was written).
+                Err(error) if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+                    if self.shared.closed() {
+                        return Err(io::Error::new(io::ErrorKind::BrokenPipe, "connection closed"));
+                    }
+                    if !self.shared.patient(started) {
+                        return Err(write_timed_out());
+                    }
+                }
+                other => return other,
+            }
         }
     }
 
@@ -195,6 +221,13 @@ impl TcpCloser {
         let _ = self.0.stream.set_write_timeout(limit.filter(|d| !d.is_zero()));
     }
 
+    /// Past the write deadline, a write keeps waiting while `alive` says the
+    /// peer is still heard from (it reads, slowly: a tunnel that gives its
+    /// window back in large steps), up to `limit` in all.
+    pub fn set_write_patience(&self, alive: Patience, limit: Duration) {
+        *self.0.patience.lock().unwrap_or_else(|e| e.into_inner()) = Some((alive, limit));
+    }
+
     /// Caps the bytes the system buffers for sending (`SO_SNDBUF`, which also
     /// ends its automatic growth). A writer that orders what it sends (the
     /// service puts a keystroke's echo before bulk) keeps that order only for
@@ -216,7 +249,14 @@ pub fn split(stream: TcpStream) -> io::Result<(TcpReader, TcpWriter, TcpCloser)>
     stream.set_nodelay(true)?;
     let keepalive = socket2::TcpKeepalive::new().with_time(Duration::from_secs(10)).with_interval(Duration::from_secs(2));
     let _ = socket2::SockRef::from(&stream).set_tcp_keepalive(&keepalive);
-    let shared = Arc::new(Shared { stream: stream.try_clone()?, closed: AtomicBool::new(false), deadline_ms: AtomicU64::new(0), write_timeout_ms: AtomicU64::new(0), epoch: Instant::now() });
+    let shared = Arc::new(Shared {
+        stream: stream.try_clone()?,
+        closed: AtomicBool::new(false),
+        deadline_ms: AtomicU64::new(0),
+        write_timeout_ms: AtomicU64::new(0),
+        patience: std::sync::Mutex::new(None),
+        epoch: Instant::now(),
+    });
     Ok((
         TcpReader { stream: stream.try_clone()?, shared: shared.clone() },
         TcpWriter { stream, shared: shared.clone() },
@@ -477,6 +517,41 @@ mod tests {
         let started = Instant::now();
         assert!(writer.write_all(&chunk).is_err());
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_peer_still_heard_from_gets_patience_past_the_write_deadline() {
+        let (server, client) = pair();
+        let (_reader, mut writer, closer) = split(server).unwrap();
+        let (_creader, _cwriter, _ccloser) = split(client).unwrap();
+        closer.set_write_timeout(Some(Duration::from_millis(300)));
+        // Heard from for the first 1.5 s (a slow tunnel), silent after.
+        let heard_until = Instant::now() + Duration::from_millis(1500);
+        closer.set_write_patience(Arc::new(move || Instant::now() < heard_until), Duration::from_secs(20));
+        let chunk = vec![7u8; 256 * 1024];
+        let started = Instant::now();
+        let error = loop {
+            if let Err(error) = writer.write_all(&chunk) {
+                break error;
+            }
+            assert!(started.elapsed() < Duration::from_secs(20), "the buffers never filled");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(Instant::now() >= heard_until, "timed out after {:?} while the peer was heard from", started.elapsed());
+        // The patience has a limit of its own even for a peer heard from.
+        let (server, client) = pair();
+        let (_reader, mut writer, closer) = split(server).unwrap();
+        let (_creader, _cwriter, _ccloser) = split(client).unwrap();
+        closer.set_write_timeout(Some(Duration::from_millis(200)));
+        closer.set_write_patience(Arc::new(|| true), Duration::from_millis(900));
+        let started = Instant::now();
+        let error = loop {
+            if let Err(error) = writer.write_all(&chunk) {
+                break error;
+            }
+        };
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
     }
 
     #[test]

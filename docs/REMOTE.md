@@ -218,9 +218,11 @@ watchdog sees it again; the closing is logged once) and does the rest of the
 cleanup on a helper thread, whatever its reader thread is doing. A reconnection
 that replaces a client drops the old one the same way. Each TCP client has a
 write deadline (`CLIENT_WRITE_TIMEOUT`, 10 s): a client that takes no data for
-that long is dropped (`client N took no data for 10 s; closing`), so a writer
-never stays blocked behind a full TCP window (a frozen client behind `devtunnel
-connect`). Writes go to the socket 64 KiB at a time, so the deadline measures
+that long while it is silent too is dropped (`client N took no data for 10 s;
+closing`), so a writer never stays blocked behind a full TCP window (a frozen
+client behind `devtunnel connect`). A client still heard from (its heartbeats
+arrive) gets up to 60 s: on a slow relay `devtunnel host` takes nothing until
+its window comes back, in 512 KiB steps. Writes go to the socket 64 KiB at a time, so the deadline measures
 progress (a large message to a client that reads steadily is never timed out
 by its size) and on Windows a waiting write ends within 100 ms of a close. A
 WebSocket reader answers pings only when the writer is free. The frame pump

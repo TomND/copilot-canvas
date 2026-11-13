@@ -237,6 +237,9 @@ pub struct Client {
     dropped: AtomicBool,
     /// When its worker began the message it handles (ms; 0: idle).
     work_since: AtomicU64,
+    /// Everything it read was handled and its connection thread is done
+    /// (a reconnection waits for it: [`Client::wait_drained`]).
+    drained: (Mutex<bool>, std::sync::Condvar),
 }
 
 impl Drop for Client {
@@ -264,6 +267,23 @@ impl Client {
             closer,
             dropped: AtomicBool::new(false),
             work_since: AtomicU64::new(0),
+            drained: (Mutex::new(false), std::sync::Condvar::new()),
+        }
+    }
+
+    /// Its connection thread is done: everything it read was handled.
+    fn drained(&self) {
+        *lock(&self.drained.0) = true;
+        self.drained.1.notify_all();
+    }
+
+    /// Waits (at most `limit`) until what this connection read was handled.
+    fn wait_drained(&self, limit: Duration) {
+        let deadline = Instant::now() + limit;
+        let mut drained = lock(&self.drained.0);
+        while !*drained {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else { return };
+            drained = self.drained.1.wait_timeout(drained, left).map(|(guard, _)| guard).unwrap_or_else(|poisoned| poisoned.into_inner().0);
         }
     }
 
@@ -378,9 +398,12 @@ pub struct Host {
     sizes: Mutex<HashMap<String, SizePolicy>>,
     /// Terminal ids whose launch is under way ([`Host::launch`]), with when it began.
     launching: Mutex<HashMap<String, u64>>,
-    /// Clients dropped whose connection thread has not returned yet, with when
-    /// they were dropped (a wedge sign when it lasts: [`Health`]).
+    /// Clients dropped whose reader has not ended yet, with when they were
+    /// dropped (a wedge sign when it lasts: [`Health`]).
     closing: Mutex<HashMap<u64, u64>>,
+    /// Connections whose messages are being served (listed or not: a dropped
+    /// one's worker may still handle what it read).
+    serving: Mutex<HashMap<u64, Arc<Client>>>,
     /// Keys a launch claimed (an agent session id) and the terminal that has
     /// each: never two live terminals with one key ([`Host::claim_launch_key`]).
     launch_keys: Mutex<HashMap<String, String>>,
@@ -390,8 +413,8 @@ pub struct Host {
 /// What a launch did ([`Host::start`]).
 enum Started {
     New,
-    /// It was running already: its info now.
-    Running(crate::protocol::TermInfo),
+    /// It was running already.
+    Running,
     /// Another launch of it is under way (it tells every client when it is done).
     Launching,
 }
@@ -660,6 +683,7 @@ pub fn run(instance: Instance, make_app: impl FnOnce(&Arc<Host>) -> Arc<dyn Host
         sizes: Mutex::new(HashMap::new()),
         launching: Mutex::new(HashMap::new()),
         closing: Mutex::new(HashMap::new()),
+        serving: Mutex::new(HashMap::new()),
         launch_keys: Mutex::new(HashMap::new()),
         app: OnceLock::new(),
     });
@@ -947,19 +971,44 @@ impl Host {
         )?;
         // The pid stays last: `selftest copilot` parses the number after " pid ".
         log(&self.instance, &format!("launched {id} engine {} pid {}", terminal.engine.name(), terminal.pid));
-        let info = terminal.info();
-        lock(&self.terms).insert(id.to_owned(), terminal);
-        self.broadcast(ServiceMsg::Terminals(vec![info]));
+        self.tell_terms(|terms| {
+            let info = terminal.info();
+            terms.insert(id.to_owned(), terminal);
+            ((), vec![ServiceMsg::Terminals(vec![info])])
+        });
         self.app().terminals_changed();
         Ok(Started::New)
+    }
+
+    /// Changes (or reads) the terminal list and queues what every client
+    /// must learn of it under the client list's lock, as [`Host::register`]
+    /// does (clients before terms): clients get terminal states in the order
+    /// they happened, never an older one after a newer (R2-A-08).
+    fn tell_terms<R>(&self, change: impl FnOnce(&mut HashMap<String, Arc<Terminal>>) -> (R, Vec<ServiceMsg>)) -> R {
+        let clients = lock(&self.clients);
+        let (result, messages) = change(&mut lock(&self.terms));
+        for client in clients.values() {
+            for message in &messages {
+                client.send(message.clone());
+            }
+        }
+        result
+    }
+
+    /// Sends one client the state of terminals (`None`: all) under the
+    /// client list's lock, so a change broadcast meanwhile is never overtaken.
+    fn send_terms(&self, client: &Client, id: Option<&str>) {
+        let _clients = lock(&self.clients);
+        let infos: Vec<_> = lock(&self.terms).iter().filter(|(term, _)| id.is_none_or(|id| id == term.as_str())).map(|(_, t)| t.info()).collect();
+        client.send(ServiceMsg::Terminals(infos));
     }
 
     /// Reserves terminal `id` for a launch; otherwise it runs (its info) or
     /// another launch of it is under way (logged).
     fn reserve_launch(&self, id: &str) -> std::result::Result<LaunchReservation<'_>, Started> {
         let mut launching = lock(&self.launching);
-        if let Some(terminal) = lock(&self.terms).get(id).filter(|t| t.alive.load(Ordering::Acquire)) {
-            return Err(Started::Running(terminal.info()));
+        if lock(&self.terms).get(id).is_some_and(|t| t.alive.load(Ordering::Acquire)) {
+            return Err(Started::Running);
         }
         if launching.insert(id.to_owned(), now_ms()).is_some() {
             drop(launching);
@@ -967,6 +1016,11 @@ impl Host {
             return Err(Started::Launching);
         }
         Ok(LaunchReservation { host: self, id: id.to_owned() })
+    }
+
+    /// Whether a launch of terminal `id` is under way.
+    pub fn is_launching(&self, id: &str) -> bool {
+        lock(&self.launching).contains_key(id)
     }
 
     /// Whether terminal `id` runs or is being launched.
@@ -1009,9 +1063,11 @@ impl Host {
         let (cols, rows) = terminal.size();
         pty.started(feed, cols, rows);
         log(&self.instance, &format!("launched {id} on a VM (its program runs in the guest)"));
-        let info = terminal.info();
-        lock(&self.terms).insert(id.to_owned(), terminal);
-        self.broadcast(ServiceMsg::Terminals(vec![info]));
+        self.tell_terms(|terms| {
+            let info = terminal.info();
+            terms.insert(id.to_owned(), terminal);
+            ((), vec![ServiceMsg::Terminals(vec![info])])
+        });
         self.app().terminals_changed();
     }
 
@@ -1340,6 +1396,7 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
     // The newest connection of a client session owns its input; the previous
     // one (half-open after a network drop) stops applying input and is closed.
     let mut ready_ack = 0;
+    let mut replaced: Option<Arc<Client>> = None;
     if v8 {
         let session = host.input_session(&info.session);
         let previous = {
@@ -1348,10 +1405,10 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
             ready_ack = state.applied;
             std::mem::replace(&mut state.owner, id)
         };
-        let replaced = lock(&host.clients).get(&previous).cloned();
-        if let Some(old) = replaced {
+        replaced = lock(&host.clients).get(&previous).cloned().or_else(|| lock(&host.serving).get(&previous).cloned());
+        if let Some(old) = &replaced {
             // Torn down at once: never waits on the old connection (it may be stuck writing).
-            host.drop_client(&old, Some(&format!("client {previous} replaced by its reconnection {id}")));
+            host.drop_client(old, Some(&format!("client {previous} replaced by its reconnection {id}")));
         }
         client.session = Some(session);
     }
@@ -1361,6 +1418,12 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
         // Every byte that arrives counts, not only whole messages: a large
         // message on a slow link keeps the client alive while it flows.
         reader.set_liveness(liveness.clone());
+        // A stalled write is the client's only while it is silent too: a
+        // tunnel gives its window back in large steps (R2-A-02).
+        if let Some(ends) = &tcp_ends {
+            let liveness = liveness.clone();
+            ends.closer.set_write_patience(Arc::new(move || liveness.silence() < CLIENT_WRITE_TIMEOUT), CLIENT_WRITE_PATIENCE);
+        }
     }
     if let Err(error) = spawn_writer(Arc::downgrade(host), writer, outbox, &client, Some(host.pump.clone())) {
         closer.close();
@@ -1380,15 +1443,25 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
         client.outbox.set_paced();
     }
     host.register(&client);
-    host.app().client_connected(&client);
-    // A revocation between the handshake and now closed only the clients
-    // listed then: check again now that this one is listed.
-    let revoked = client.remote_id.as_ref().is_some_and(|remote_id| !host.app().remote_active(remote_id));
-    if revoked {
-        host.drop_client(&client, Some(&format!("remote client {:?} was revoked while it connected", client.remote_id.as_deref().unwrap_or_default())));
-    }
+    let revoked = {
+        // What follows is this end's work, not the client's silence.
+        let _busy = client.liveness.as_ref().map(|l| l.busy());
+        // A revocation between the handshake and now closed only the clients
+        // listed then: check again now that this one is listed.
+        let revoked = client.remote_id.as_ref().is_some_and(|remote_id| !host.app().remote_active(remote_id));
+        if revoked {
+            host.drop_client(&client, Some(&format!("remote client {:?} was revoked while it connected", client.remote_id.as_deref().unwrap_or_default())));
+        }
+        // What the replaced connection read before it went is handled first
+        // (for a moment at most): this one's input never overtakes it (R2-A-06).
+        if let Some(old) = replaced {
+            old.wait_drained(DRAIN_WAIT);
+        }
+        revoked
+    };
     host.touch();
 
+    // The backend's snapshot is the worker's first job (R2-A-03): reading starts at once.
     let result = if revoked { Ok(()) } else { serve_messages(host, &client, &mut reader) };
     host.drop_client(&client, None);
     // Whatever a message handled meanwhile left for this client.
@@ -1402,6 +1475,7 @@ fn serve_client(host: &Arc<Host>, link: Link, slot: Option<HandshakeSlot>) -> Re
         }
     }
     lock(&host.closing).remove(&id);
+    client.drained();
     if remote {
         log(&host.instance, &format!("remote client {id} disconnected"));
     }
@@ -1431,6 +1505,11 @@ enum Work {
     /// Input the reader admitted (numbered input is admitted in the order it
     /// arrives) for a terminal with work queued: applied after that work.
     Input { id: String, input: Input },
+    /// The client stopped showing a terminal that had work queued (its
+    /// launch): its size wish goes once that work is done (R2-A-07).
+    Leave(String),
+    /// The backend's snapshot for a client that just connected (its first job).
+    Connected,
 }
 
 impl Work {
@@ -1438,7 +1517,178 @@ impl Work {
     fn terminal(&self) -> Option<&str> {
         match self {
             Work::Message(message) => message_terminal(message),
-            Work::Input { id, .. } => Some(id),
+            Work::Input { id, .. } | Work::Leave(id) => Some(id),
+            Work::Connected => None,
+        }
+    }
+}
+
+/// Launches one client connection runs at once (each on a thread of its own).
+const MAX_LAUNCHES: usize = 4;
+/// Work for a terminal another launch is starting (another connection's, the
+/// restore's) waits for that launch at most this long.
+const LAUNCH_AWAIT: Duration = Duration::from_secs(20);
+/// A reconnection waits at most this long for what its predecessor read to be handled.
+const DRAIN_WAIT: Duration = Duration::from_secs(5);
+/// A write to a client still heard from waits at most this long (`tcp::TcpCloser::set_write_patience`).
+const CLIENT_WRITE_PATIENCE: Duration = Duration::from_secs(60);
+
+/// What a client connection has under way besides its reader: the worker's
+/// queue per terminal, and the launches running on threads of their own
+/// with the work held behind each, in order.
+#[derive(Default)]
+struct Pending {
+    /// Per terminal: work queued or under way (later input for it waits behind).
+    waiting: Mutex<HashMap<String, usize>>,
+    /// Terminals with a launch under way on a thread of its own (this
+    /// connection's, or another's it waits for): their later work, in order.
+    held: Mutex<HashMap<String, std::collections::VecDeque<Work>>>,
+    /// Launch threads running.
+    threads: Mutex<usize>,
+    idle: std::sync::Condvar,
+}
+
+impl Pending {
+    /// A piece of work for `terminal` was handled.
+    fn done(&self, terminal: Option<&str>) {
+        let Some(terminal) = terminal else { return };
+        let mut waiting = lock(&self.waiting);
+        if let Some(count) = waiting.get_mut(terminal) {
+            *count -= 1;
+            if *count == 0 {
+                waiting.remove(terminal);
+            }
+        }
+    }
+
+    /// Waits for room for one more launch thread and takes it.
+    fn start_thread(&self) {
+        let mut threads = lock(&self.threads);
+        while *threads >= MAX_LAUNCHES {
+            threads = self.idle.wait(threads).unwrap_or_else(|e| e.into_inner());
+        }
+        *threads += 1;
+    }
+
+    fn end_thread(&self) {
+        *lock(&self.threads) -= 1;
+        self.idle.notify_all();
+    }
+
+    /// Waits until no launch thread runs.
+    fn wait_threads(&self) {
+        let mut threads = lock(&self.threads);
+        while *threads > 0 {
+            threads = self.idle.wait(threads).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+}
+
+/// Handles one piece of work (on the worker or a launch thread); `quiet`:
+/// an error is not sent (the input after a launch that failed: one notice).
+fn handle(host: &Arc<Host>, client: &Arc<Client>, work: Work, quiet: bool) -> bool {
+    let result = match work {
+        Work::Message(message) => dispatch(host, client, message),
+        Work::Input { id, input } => apply_input(host, client, &id, &input),
+        Work::Leave(id) => {
+            // Shown again meanwhile: it keeps its wish.
+            if !lock(&client.subs).contains_key(&id) {
+                host.size_leave(client.id, Some(&id));
+            }
+            Ok(())
+        }
+        Work::Connected => {
+            host.app().client_connected(client);
+            Ok(())
+        }
+    };
+    match result {
+        Ok(()) => true,
+        Err(error) => {
+            if !quiet {
+                client.send(ServiceMsg::Error { id: None, message: format!("{error:#}") });
+            }
+            false
+        }
+    }
+}
+
+/// The worker's step: work for a terminal whose launch runs on a thread is
+/// held behind it; a launch gets a thread of its own (launches of different
+/// terminals run side by side, each terminal's work stays in order);
+/// work for a terminal another launch is starting waits for it there;
+/// everything else is handled here, in order.
+fn run_work(host: &Arc<Host>, client: &Arc<Client>, pending: &Arc<Pending>, work: Work) {
+    let terminal = work.terminal().map(str::to_owned);
+    if let Some(id) = &terminal {
+        let mut held = lock(&pending.held);
+        if let Some(queue) = held.get_mut(id) {
+            queue.push_back(work);
+            return;
+        }
+        let launch = matches!(work, Work::Message(ClientMsg::Launch { .. }));
+        if launch || host.is_launching(id) {
+            held.insert(id.clone(), std::collections::VecDeque::new());
+            drop(held);
+            run_held(host, client, pending, id.clone(), work, !launch);
+            return;
+        }
+    }
+    handle(host, client, work, false);
+    pending.done(terminal.as_deref());
+}
+
+/// Runs `first` for terminal `id` on a thread of its own (a launch; or,
+/// `await_launch`, work that waits for another's launch of it first), then
+/// the work held behind it, in order. A thread that cannot start runs here.
+fn run_held(host: &Arc<Host>, client: &Arc<Client>, pending: &Arc<Pending>, id: String, first: Work, await_launch: bool) {
+    pending.start_thread();
+    let (host, client, pending_job) = (host.clone(), client.clone(), pending.clone());
+    let body = move || {
+        if await_launch {
+            let until = Instant::now() + LAUNCH_AWAIT;
+            while host.is_launching(&id) && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+        let mut work = Some(first);
+        let mut failed_input = false;
+        loop {
+            let next = match work.take() {
+                Some(work) => work,
+                None => {
+                    let mut held = lock(&pending_job.held);
+                    match held.get_mut(&id).and_then(std::collections::VecDeque::pop_front) {
+                        Some(work) => work,
+                        None => {
+                            held.remove(&id);
+                            break;
+                        }
+                    }
+                }
+            };
+            // Keys for a terminal that did not start: one notice, not one per key.
+            let input = matches!(next, Work::Input { .. });
+            let handled = handle(&host, &client, next, input && failed_input);
+            failed_input |= input && !handled;
+            pending_job.done(Some(&id));
+        }
+        pending_job.end_thread();
+    };
+    let job = Arc::new(Mutex::new(Some(body)));
+    let spawned = {
+        let job = job.clone();
+        try_spawn("client-launch", move || {
+            let body = lock(&job).take();
+            if let Some(body) = body {
+                body();
+            }
+        })
+    };
+    if spawned.is_err() {
+        let body = lock(&job).take();
+        if let Some(body) = body {
+            body();
         }
     }
 }
@@ -1487,42 +1737,37 @@ fn handled_inline(message: &ClientMsg) -> bool {
 }
 
 /// Reads a client's messages until its connection ends. Quick ones are
-/// handled here; slow ones go to the client's worker thread, which handles
-/// them in order, so the reader keeps reading (heartbeats, keystrokes into
-/// other terminals) while a launch or a document load runs. A message about
-/// a terminal with work waiting (a keystroke right after its `Launch`) waits
-/// behind that work. Whatever this thread does itself is not the client's
-/// silence ([`Liveness::busy`]).
+/// handled here (input, sizes, subscriptions, heartbeats, acknowledgements,
+/// `Stats`, and a remote client's backend requests, which only queue); slow
+/// ones go to the client's worker thread, which handles them in order, so the
+/// reader keeps reading (heartbeats, keystrokes into other terminals) while a
+/// document load runs. Launches run on threads of their own ([`run_work`]). A
+/// message about a terminal with work waiting (a keystroke right after its
+/// `Launch`), or that another launch is starting, waits behind that work. The
+/// worker's first job is the backend's snapshot for the new client. Whatever
+/// this thread does itself is not the client's silence ([`Liveness::busy`]).
 fn serve_messages(host: &Arc<Host>, client: &Arc<Client>, reader: &mut FrameReader) -> Result<()> {
     let (work_tx, work_rx) = bounded::<Work>(WORK_QUEUE);
-    // Per terminal: work waiting or under way on the worker.
-    let waiting: Arc<Mutex<HashMap<String, usize>>> = Arc::default();
+    let pending: Arc<Pending> = Arc::default();
+    lock(&host.serving).insert(client.id, client.clone());
     let worker = {
-        let (host, client, waiting) = (host.clone(), client.clone(), waiting.clone());
+        let (host, client, pending) = (host.clone(), client.clone(), pending.clone());
         std::thread::Builder::new().name("client-work".into()).spawn(move || {
             for work in work_rx {
                 client.work_since.store(now_ms(), Ordering::Release);
-                let terminal = work.terminal().map(str::to_owned);
-                let result = match work {
-                    Work::Message(message) => dispatch(&host, &client, message),
-                    Work::Input { id, input } => apply_input(&host, &client, &id, &input),
-                };
-                if let Err(error) = result {
-                    client.send(ServiceMsg::Error { id: None, message: format!("{error:#}") });
-                }
-                if let Some(terminal) = terminal {
-                    let mut waiting = lock(&waiting);
-                    if let Some(count) = waiting.get_mut(&terminal) {
-                        *count -= 1;
-                        if *count == 0 {
-                            waiting.remove(&terminal);
-                        }
-                    }
-                }
+                run_work(&host, &client, &pending, work);
                 client.work_since.store(0, Ordering::Release);
             }
-        })?
+        })
     };
+    let worker = match worker {
+        Ok(worker) => worker,
+        Err(error) => {
+            lock(&host.serving).remove(&client.id);
+            return Err(error.into());
+        }
+    };
+    let _ = work_tx.send(Work::Connected);
     let mut undecodable = 0u64;
     let result = (|| -> Result<()> {
         while let Some(frame) = reader.recv_lenient::<ClientMsg>()? {
@@ -1546,35 +1791,71 @@ fn serve_messages(host: &Arc<Host>, client: &Arc<Client>, reader: &mut FrameRead
                 }
             };
             let _busy = client.liveness.as_ref().map(|l| l.busy());
-            let queued = message_terminal(&message).is_some_and(|id| lock(&waiting).contains_key(id));
-            if handled_inline(&message) && !queued {
-                if let Err(error) = dispatch(host, client, message) {
-                    client.send(ServiceMsg::Error { id: None, message: format!("{error:#}") });
+            // Work waits for it, or another launch of it is starting (R2-A-07).
+            let queued = message_terminal(&message).is_some_and(|id| lock(&pending.waiting).contains_key(id) || host.is_launching(id));
+            let mut leave = Vec::new();
+            match message {
+                // A tile hidden while its launch waits: its size wish goes once the launch is done.
+                ClientMsg::Subscribe { ids } => leave = subscribe(host, client, ids, None),
+                ClientMsg::Subscribe8 { ids, focused } => leave = subscribe(host, client, ids, focused),
+                message if !queued && (handled_inline(&message) || answered_at_once(client, &message)) => {
+                    if let Err(error) = dispatch(host, client, message) {
+                        client.send(ServiceMsg::Error { id: None, message: format!("{error:#}") });
+                    }
                 }
-                continue;
+                message => {
+                    let work = match message {
+                        // Admitted now, in arrival order; applied behind its terminal's work.
+                        ClientMsg::Input8 { id, input, seq } => match admit(client, seq) {
+                            true => Work::Input { id, input },
+                            false => continue,
+                        },
+                        ClientMsg::Input { id, input } => Work::Input { id, input },
+                        other => Work::Message(other),
+                    };
+                    if !queue(&pending, &work_tx, work) {
+                        break;
+                    }
+                }
             }
-            let work = match message {
-                // Admitted now, in arrival order; applied behind its terminal's work.
-                ClientMsg::Input8 { id, input, seq } => match admit(client, seq) {
-                    true => Work::Input { id, input },
-                    false => continue,
-                },
-                ClientMsg::Input { id, input } => Work::Input { id, input },
-                other => Work::Message(other),
-            };
-            if let Some(id) = work.terminal() {
-                *lock(&waiting).entry(id.to_owned()).or_default() += 1;
-            }
-            if work_tx.send(work).is_err() {
-                break;
+            leave.retain(|id| lock(&pending.waiting).contains_key(id));
+            for id in leave {
+                if !queue(&pending, &work_tx, Work::Leave(id)) {
+                    break;
+                }
             }
         }
         Ok(())
     })();
     drop(work_tx);
+    // Not a pending close any more: what the worker still does shows as its work.
+    lock(&host.closing).remove(&client.id);
     // What was read before the end is still handled (as it would have been inline).
     let _ = worker.join();
+    pending.wait_threads();
+    lock(&host.serving).remove(&client.id);
     result
+}
+
+/// Queues work for the client's worker (counted for its terminal); false once the worker is gone.
+fn queue(pending: &Pending, work_tx: &Sender<Work>, work: Work) -> bool {
+    if let Some(id) = work.terminal() {
+        *lock(&pending.waiting).entry(id.to_owned()).or_default() += 1;
+    }
+    work_tx.send(work).is_ok()
+}
+
+/// Messages the reader also answers itself: `Stats` (counts), and a remote
+/// client's backend requests (parsed and queued for the backend's threads;
+/// remote administration is refused at once to remote clients). A local
+/// client's requests stay on its worker (its remote administration writes
+/// settings).
+fn answered_at_once(client: &Client, message: &ClientMsg) -> bool {
+    match message {
+        ClientMsg::Stats => true,
+        ClientMsg::Rpc { .. } => client.remote,
+        _ => false,
+    }
 }
 
 /// Writes queued messages; protocol-8 clients also get a heartbeat every 2 s.
@@ -1732,7 +2013,8 @@ fn health_loop(host: Arc<Host>) {
         if host.shutting_down.load(Ordering::Relaxed) {
             return;
         }
-        let clients: Vec<Arc<Client>> = lock(&host.clients).values().cloned().collect();
+        // Dropped connections whose worker still handles what they read count too.
+        let clients: Vec<Arc<Client>> = lock(&host.serving).values().cloned().collect();
         let health = Health {
             pid: std::process::id(),
             updated_ms: now_ms(),
@@ -1769,7 +2051,8 @@ fn liveness_loop(host: Arc<Host>) {
     }
 }
 
-fn subscribe(host: &Host, client: &Client, ids: Vec<String>, focused: Option<String>) {
+/// Replaces a client's subscriptions; returns the terminals it no longer shows.
+fn subscribe(host: &Host, client: &Client, ids: Vec<String>, focused: Option<String>) -> Vec<String> {
     let mut subs = lock(&client.subs);
     let hidden: Vec<String> = subs.keys().filter(|id| !ids.contains(id)).cloned().collect();
     subs.retain(|id, _| ids.contains(id));
@@ -1787,8 +2070,8 @@ fn subscribe(host: &Host, client: &Client, ids: Vec<String>, focused: Option<Str
     drop(subs);
     // A terminal this client no longer shows stops following its size; one
     // it shows again within the moment its size is kept keeps it.
-    for id in hidden {
-        host.size_leave(client.id, Some(&id));
+    for id in &hidden {
+        host.size_leave(client.id, Some(id));
     }
     for id in shown {
         if let Some(policy) = lock(&host.sizes).get_mut(&id) {
@@ -1797,6 +2080,7 @@ fn subscribe(host: &Host, client: &Client, ids: Vec<String>, focused: Option<Str
     }
     *lock(&client.focused) = focused;
     let _ = host.pump.try_send(());
+    hidden
 }
 
 fn apply_input(host: &Host, client: &Client, id: &str, input: &Input) -> Result<()> {
@@ -1832,10 +2116,9 @@ fn dispatch(host: &Arc<Host>, client: &Arc<Client>, message: ClientMsg) -> Resul
                 policy.wish(client.id, cols.clamp(20, 1000), rows.clamp(5, 500));
                 policy.claim(client.id);
             }
-            // It runs already: the client learns so (a retry heals a list it missed).
-            Ok(Started::Running(info)) => {
-                client.send(ServiceMsg::Terminals(vec![info]));
-            }
+            // It runs already: the client learns so (a retry heals a list it missed),
+            // as it is now (an exit meanwhile is not overtaken).
+            Ok(Started::Running) => host.send_terms(client, Some(&id)),
             // Its launch under way tells every client when it is done.
             Ok(Started::Launching) => {}
             Err(error) => {
@@ -1844,12 +2127,15 @@ fn dispatch(host: &Arc<Host>, client: &Arc<Client>, message: ClientMsg) -> Resul
         },
         // A full refresh: every terminal here; the backend sends the sessions.
         ClientMsg::RefreshSessions => {
-            let infos: Vec<_> = lock(&host.terms).values().map(|t| t.info()).collect();
-            client.send(ServiceMsg::Terminals(infos));
+            host.send_terms(client, None);
             host.app().message(client, ClientMsg::RefreshSessions)?;
         }
-        ClientMsg::Subscribe { ids } => subscribe(host, client, ids, None),
-        ClientMsg::Subscribe8 { ids, focused } => subscribe(host, client, ids, focused),
+        ClientMsg::Subscribe { ids } => {
+            subscribe(host, client, ids, None);
+        }
+        ClientMsg::Subscribe8 { ids, focused } => {
+            subscribe(host, client, ids, focused);
+        }
         ClientMsg::Input { id, input } => apply_input(host, client, &id, &input)?,
         ClientMsg::Input8 { id, input, seq } => {
             if admit(client, seq) {
@@ -1884,13 +2170,16 @@ fn dispatch(host: &Arc<Host>, client: &Arc<Client>, message: ClientMsg) -> Resul
         }
         ClientMsg::Stop { id, force } => host.stop_terminal(&id, force)?,
         ClientMsg::Forget { id } => {
-            let mut terms = lock(&host.terms);
-            if terms.get(&id).is_some_and(|t| !t.alive.load(Ordering::Acquire)) {
-                terms.remove(&id);
-                drop(terms);
+            let forgotten = host.tell_terms(|terms| match terms.get(&id).is_some_and(|t| !t.alive.load(Ordering::Acquire)) {
+                true => {
+                    terms.remove(&id);
+                    (true, vec![ServiceMsg::TerminalGone(id.clone())])
+                }
+                false => (false, Vec::new()),
+            });
+            if forgotten {
                 lock(&host.input_clients).remove(&id);
                 lock(&host.sizes).remove(&id);
-                host.broadcast(ServiceMsg::TerminalGone(id));
             }
         }
         // A paired remote client (a phone, a home PC) disconnects; it never
@@ -2380,11 +2669,12 @@ fn exit_loop(host: Arc<Host>, exited: Receiver<String>) {
             };
             log(&host.instance, &format!("terminal {id} exited with {code:?}{note}"));
             // A relaunch meanwhile told every client about the new run already:
-            // the end of this one must not overwrite it.
-            let current = lock(&host.terms).get(&id).is_some_and(|t| Arc::ptr_eq(t, &terminal));
-            if current {
-                host.broadcast(ServiceMsg::Terminals(vec![terminal.info()]));
-            }
+            // the end of this one must not overwrite it (checked and queued
+            // under the client list's lock: no relaunch falls in between).
+            host.tell_terms(|terms| match terms.get(&id).is_some_and(|t| Arc::ptr_eq(t, &terminal)) {
+                true => ((), vec![ServiceMsg::Terminals(vec![terminal.info()])]),
+                false => ((), Vec::new()),
+            });
         }
         host.app().terminals_changed();
         host.app().terminal_exited(&id);
@@ -2405,13 +2695,10 @@ fn change_loop(host: Arc<Host>, changed: Receiver<String>) {
         std::thread::sleep(Duration::from_millis(100));
         let mut ids = HashSet::from([first]);
         ids.extend(changed.try_iter());
-        let infos: Vec<crate::protocol::TermInfo> = {
-            let terms = lock(&host.terms);
-            ids.iter().filter_map(|id| terms.get(id).map(|t| t.info())).collect()
-        };
-        if !infos.is_empty() {
-            host.broadcast(ServiceMsg::Terminals(infos));
-        }
+        host.tell_terms(|terms| {
+            let infos: Vec<crate::protocol::TermInfo> = ids.iter().filter_map(|id| terms.get(id).map(|t| t.info())).collect();
+            ((), if infos.is_empty() { Vec::new() } else { vec![ServiceMsg::Terminals(infos)] })
+        });
     }
 }
 
@@ -3050,6 +3337,170 @@ mod tests {
         let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
         assert!(!log.contains("silent for"), "{log}");
         closer.close();
+    }
+
+    /// A backend whose launches take `resolve` to resolve (then run a program
+    /// that waits), whose connect snapshot takes `connect`, and which answers
+    /// every request at once.
+    struct SlowApp {
+        resolve: Duration,
+        connect: Duration,
+    }
+
+    impl HostApp for SlowApp {
+        fn resolve_launch(&self, _: &str, _: LaunchKind, _: &str) -> Result<Resolved> {
+            std::thread::sleep(self.resolve);
+            let LaunchKind::Command { program, args } = waiting_program() else { unreachable!() };
+            Ok(Resolved { program, args, env: Vec::new(), agent: false, remote: None })
+        }
+        fn client_connected(&self, _: &Arc<Client>) {
+            std::thread::sleep(self.connect);
+        }
+        fn client_disconnected(&self, _: u64) {}
+        fn message(&self, client: &Arc<Client>, message: ClientMsg) -> Result<()> {
+            if let ClientMsg::Rpc { id, .. } = message {
+                client.send(ServiceMsg::RpcReply { id, json: "\"Done\"".into() });
+            }
+            Ok(())
+        }
+        fn input_noted(&self, _: &str) {}
+        fn terminals_changed(&self) {}
+        fn has_work(&self) -> bool {
+            false
+        }
+        fn remote_credential(&self, _: &str) -> Credential {
+            Credential::Refused
+        }
+    }
+
+    /// A service with a [`SlowApp`], and its host.
+    fn slow_service(name: &str, resolve: Duration, connect: Duration) -> (Instance, SocketAddr, Arc<Host>) {
+        let (host_tx, host_rx) = bounded::<Arc<Host>>(1);
+        let (instance, addr) = test_service(name, move |host| {
+            let _ = host_tx.send(host.clone());
+            Arc::new(SlowApp { resolve, connect })
+        });
+        (instance, addr, host_rx.recv().unwrap())
+    }
+
+    fn agent_launch(id: &str, cols: u16, rows: u16) -> ClientMsg {
+        ClientMsg::Launch { id: id.into(), kind: LaunchKind::Copilot { new_name: None, prompt: None, resume: false }, cwd: std::env::temp_dir().to_string_lossy().into_owned(), cols, rows }
+    }
+
+    /// Waits until `check` holds (polling), or fails with `what`.
+    fn eventually(within: Duration, what: &str, mut check: impl FnMut() -> bool) {
+        let deadline = Instant::now() + within;
+        while !check() {
+            assert!(Instant::now() < deadline, "{what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn errors(rx: &Receiver<ServiceMsg>) -> Vec<String> {
+        rx.try_iter().filter_map(|m| if let ServiceMsg::Error { message, .. } = m { Some(message) } else { None }).collect()
+    }
+
+    #[test]
+    fn launches_run_side_by_side_and_each_terminals_work_stays_behind_its_launch() {
+        let (instance, addr, host) = slow_service("parallel", Duration::from_millis(1500), Duration::ZERO);
+        let (rx, mut writer, closer) = test_client(&instance, addr, "parallel-client");
+        let started = Instant::now();
+        writer.send(&agent_launch("a", 80, 24)).unwrap();
+        writer.send(&ClientMsg::Resize { id: "a".into(), cols: 100, rows: 30 }).unwrap();
+        writer.send(&agent_launch("b", 80, 24)).unwrap();
+        writer.send(&ClientMsg::Resize { id: "b".into(), cols: 90, rows: 20 }).unwrap();
+        // A request is not held behind the launches (R2-A-04).
+        writer.send(&ClientMsg::Rpc { id: 7, json: "\"Info\"".into() }).unwrap();
+        expect(&rx, Duration::from_millis(500), "the reply while two launches run", |m| matches!(m, ServiceMsg::RpcReply { id: 7, .. }));
+        assert!(started.elapsed() < Duration::from_millis(700), "the reply waited {:?}", started.elapsed());
+        eventually(Duration::from_secs(10), "both terminals start", || host.terminal("a").is_ok() && host.terminal("b").is_ok());
+        let both = started.elapsed();
+        assert!(both < Duration::from_millis(2800), "the launches ran one after the other ({both:?})");
+        // Each resize was applied once its terminal existed: no "no terminal" error.
+        eventually(Duration::from_secs(5), "the resizes held behind the launches", || host.terminal("a").unwrap().size() == (100, 30) && host.terminal("b").unwrap().size() == (90, 20));
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(errors(&rx), Vec::<String>::new());
+        closer.close();
+        for id in ["a", "b"] {
+            let _ = host.terminal(id).map(|t| t.stop(true));
+        }
+    }
+
+    #[test]
+    fn work_for_a_terminal_another_launch_is_starting_waits_for_it() {
+        let (instance, addr, host) = slow_service("await", Duration::from_millis(1200), Duration::ZERO);
+        let (rx, mut writer, closer) = test_client(&instance, addr, "await-client");
+        // Another connection (or the restore after a restart) launches "c".
+        let launcher = host.clone();
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let other = std::thread::spawn(move || launcher.launch("c", LaunchKind::Copilot { new_name: None, prompt: None, resume: false }, &cwd, 80, 24));
+        eventually(Duration::from_secs(2), "the other launch is under way", || host.is_launching("c"));
+        writer.send(&ClientMsg::Resize { id: "c".into(), cols: 70, rows: 20 }).unwrap();
+        writer.send(&ClientMsg::Claim { id: "c".into() }).unwrap();
+        other.join().unwrap().unwrap();
+        eventually(Duration::from_secs(5), "the resize waited for the launch", || host.terminal("c").is_ok_and(|t| t.size() == (70, 20)));
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(errors(&rx), Vec::<String>::new(), "nothing refused while it started");
+        closer.close();
+        let _ = host.terminal("c").map(|t| t.stop(true));
+    }
+
+    #[test]
+    fn a_tile_hidden_while_its_launch_runs_leaves_no_size_wish() {
+        let (instance, addr, host) = slow_service("hidden", Duration::from_millis(1000), Duration::ZERO);
+        let (_rx, mut writer, closer) = test_client(&instance, addr, "hidden-client");
+        writer.send(&ClientMsg::Subscribe8 { ids: vec!["d".into()], focused: Some("d".into()) }).unwrap();
+        writer.send(&agent_launch("d", 80, 24)).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        writer.send(&ClientMsg::Subscribe8 { ids: Vec::new(), focused: None }).unwrap();
+        eventually(Duration::from_secs(5), "the terminal starts", || host.terminal("d").is_ok());
+        let id = *lock(&host.clients).keys().next().unwrap();
+        // The launch recorded this client's wish; the hide that came before it takes it back after it (R2-A-07).
+        eventually(Duration::from_secs(5), "the hidden tile's wish goes", || lock(&host.sizes).get("d").is_none_or(|p| p.owner() != Some(id)));
+        closer.close();
+        let _ = host.terminal("d").map(|t| t.stop(true));
+    }
+
+    #[test]
+    fn a_slow_connect_snapshot_neither_holds_reading_nor_gets_the_client_dropped() {
+        let (instance, addr, _host) = slow_service("connect", Duration::ZERO, Duration::from_secs(7));
+        let (rx, mut writer, closer) = test_client(&instance, addr, "connect-client");
+        let asked = Instant::now();
+        writer.send(&ClientMsg::Stats).unwrap();
+        expect(&rx, Duration::from_secs(2), "the stats while the snapshot is built", |m| matches!(m, ServiceMsg::Stats(_)));
+        assert!(asked.elapsed() < Duration::from_secs(1), "{:?}", asked.elapsed());
+        let until = Instant::now() + Duration::from_secs(8);
+        while Instant::now() < until {
+            writer.send(&ClientMsg::Heartbeat).unwrap();
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        let log = std::fs::read_to_string(instance.log_path()).unwrap_or_default();
+        assert!(!log.contains("silent for"), "{log}");
+        closer.close();
+    }
+
+    #[test]
+    fn a_reconnection_handles_what_its_predecessor_read_first() {
+        let app = busy_app(None, Duration::from_secs(3));
+        let made = app.clone();
+        let (instance, addr) = test_service("drain", move |host| {
+            let _ = made.host.set(Arc::downgrade(host));
+            made
+        });
+        let (_rx, mut writer, _closer) = test_client(&instance, addr, "drain-client");
+        writer.send(&ClientMsg::Track { ids: Vec::new() }).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        // The same client session reconnects while its old connection's slow message runs.
+        let (_rx2, mut writer2, closer2) = test_client(&instance, addr, "drain-client");
+        writer2.send(&ClientMsg::RefreshSessions).unwrap();
+        // The old worker is draining: that is work under way, not a close that hangs (R2-A-06).
+        std::thread::sleep(HEALTH_EVERY + Duration::from_millis(500));
+        let health = read_health(&instance).expect("the health file");
+        assert!(health.pending_closes.is_empty(), "{health:?}");
+        assert!(!health.working.is_empty(), "{health:?}");
+        eventually(Duration::from_secs(8), "both messages handled", || lock(&app.seen).len() == 2);
+        assert_eq!(*lock(&app.seen), ["Track", "RefreshSessions"], "the reconnection's message after its predecessor's");
+        closer2.close();
     }
 
     /// A backend that answers every `Rpc` at once with a reply of `.0` bytes (bulk).
