@@ -291,6 +291,8 @@ struct Lanes {
     /// Terminal state waiting, by terminal id, and whether its `Entry::Terminals` is in `control`.
     terms: Vec<(String, TermState)>,
     terms_queued: bool,
+    /// A terminal list was pushed (even an empty one: a client takes its first list as the whole of them).
+    terms_list: bool,
     sessions: Option<SessionsWaiting>,
     latest: HashMap<Latest, ServiceMsg>,
     frames: HashMap<String, ServiceMsg>,
@@ -343,6 +345,7 @@ impl Lanes {
     fn push(&mut self, message: ServiceMsg) -> Push {
         match message {
             ServiceMsg::Terminals(infos) => {
+                self.terms_list = true;
                 for info in infos {
                     self.merge_term(info.id.clone(), TermState::Info(info));
                 }
@@ -447,6 +450,7 @@ impl Lanes {
             Entry::Item(item, _) => Some(item),
             Entry::Terminals => {
                 self.terms_queued = false;
+                let list = std::mem::take(&mut self.terms_list);
                 let mut infos = Vec::new();
                 let mut gone = Vec::new();
                 for (id, state) in std::mem::take(&mut self.terms) {
@@ -456,8 +460,11 @@ impl Lanes {
                     }
                 }
                 // Terminals that went away follow the list, next in the lane.
+                // A list with no terminal is still sent: a client that just
+                // connected replaces what it knew with it (a restarted
+                // service with nothing running yet).
                 let mut messages: Vec<ServiceMsg> = Vec::new();
-                if !infos.is_empty() {
+                if !infos.is_empty() || list {
                     messages.push(ServiceMsg::Terminals(infos));
                 }
                 messages.extend(gone.into_iter().map(ServiceMsg::TerminalGone));
@@ -927,6 +934,24 @@ mod tests {
         late.join().unwrap();
         outbox.close();
         assert!(matches!(outbox.next(Instant::now() + Duration::from_secs(5)), Next::Closed));
+    }
+
+    #[test]
+    fn an_empty_terminal_list_is_sent() {
+        // A restarted service with nothing running yet: the connecting client
+        // must learn that the terminals it knew are gone (R2-E-01).
+        let outbox = Outbox::new();
+        outbox.push(ServiceMsg::Ready8 { pid: 1, input_ack: 0 });
+        outbox.push(ServiceMsg::Terminals(Vec::new()));
+        outbox.push(ServiceMsg::Stats(ServiceStats::default()));
+        assert_eq!(kinds(&outbox), ["ready", "terminals ", "stats 0"]);
+        // An empty list joined by an end still says both.
+        outbox.push(ServiceMsg::Terminals(Vec::new()));
+        outbox.push(ServiceMsg::TerminalGone("a".into()));
+        assert_eq!(kinds(&outbox), ["terminals ", "gone a"]);
+        // An end alone is not a list.
+        outbox.push(ServiceMsg::TerminalGone("b".into()));
+        assert_eq!(kinds(&outbox), ["gone b"]);
     }
 
     /// Takes what the writer would take now and says it was written (`bytes` each).

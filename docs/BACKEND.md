@@ -694,7 +694,10 @@ most 8 files and 4 MiB in all.
   *Flow control*).
 - **State is never missed.** A connecting client is listed, and sent the
   terminal list, under one lock: a launch or an exit is in that list or
-  reaches it as a broadcast. The backend sends the session list under the lock
+  reaches it as a broadcast. The list goes even when it is empty (a restarted
+  service with nothing running yet): the client takes its first list as the
+  whole of them (a4bf57f services sent none; a client then clears its list
+  when their `Stats` count no terminal). The backend sends the session list under the lock
   its index broadcasts under. A `Launch` of a terminal that runs starts nothing
   and answers the requester `Terminals([its info])`; `RefreshSessions` answers
   with every terminal (`Terminals`) and session (`Sessions { full: true }`),

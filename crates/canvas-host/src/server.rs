@@ -3055,6 +3055,29 @@ mod tests {
     /// A backend that answers every `Rpc` at once with a reply of `.0` bytes (bulk).
     struct ReplyApp(usize);
 
+    #[test]
+    fn a_service_with_no_terminal_sends_an_empty_list_before_its_first_stats() {
+        // A restarted service with nothing running yet: a reconnecting client
+        // learns the terminals it knew are gone (R2-E-01).
+        let (instance, addr) = test_service("empty", |_| Arc::new(NoApp));
+        let (rx, mut writer, closer) = test_client(&instance, addr, "empty-client");
+        writer.send(&ClientMsg::Stats).unwrap();
+        let mut seen = Vec::new();
+        loop {
+            match rx.recv_timeout(Duration::from_secs(5)).expect("the stats answer") {
+                ServiceMsg::Stats(_) => break,
+                ServiceMsg::Terminals(infos) => seen.push(format!("terminals {}", infos.len())),
+                ServiceMsg::Heartbeat { .. } => {}
+                other => seen.push(format!("{other:?}").split([' ', '{', '(']).next().unwrap_or_default().to_owned()),
+            }
+        }
+        assert_eq!(seen, ["Ready8", "terminals 0"]);
+        // A refresh answers with the empty list too.
+        writer.send(&ClientMsg::RefreshSessions).unwrap();
+        expect(&rx, Duration::from_secs(5), "the empty list a refresh sends", |m| matches!(m, ServiceMsg::Terminals(infos) if infos.is_empty()));
+        closer.close();
+    }
+
     impl HostApp for ReplyApp {
         fn resolve_launch(&self, _: &str, _: LaunchKind, _: &str) -> Result<Resolved> {
             bail!("no agents here")

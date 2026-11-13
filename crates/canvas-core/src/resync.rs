@@ -58,6 +58,14 @@ impl App {
     /// The service's numbers (`Stats`), compared with this client's lists.
     pub fn on_stats(&mut self, stats: ServiceStats) {
         let theirs = (stats.terminals, stats.alive);
+        // A service with no terminal at all, whose list never came (a4bf57f
+        // services never sent an empty one): nothing this client knew runs there.
+        if self.resync_terms && stats.terminals == 0 && self.connected && !self.reconnecting {
+            self.resync_terms = false;
+            self.terms.clear();
+            self.views.clear();
+            self.terms_rev += 1;
+        }
         self.stats = Some(stats);
         let mine = (self.terms.len() as u32, self.terms.values().filter(|t| t.alive).count() as u32);
         if theirs == mine || !self.connected || self.reconnecting || self.restarting.is_some() || self.resync_terms {
@@ -183,6 +191,28 @@ mod tests {
         // A reconnect starts over.
         app.reset_service_state();
         assert!(app.resync_terms && app.stats.is_none() && app.resync.strikes == 0);
+    }
+
+    #[test]
+    fn a_service_with_no_terminal_leaves_none_alive_here() {
+        // The old service's terminal, still shown alive after a restart.
+        let (mut app, _sent) = rig();
+        app.on_service(ServiceMsg::Terminals(vec![TermInfo { id: "a".into(), alive: true, ..Default::default() }]));
+        app.reset_service_state();
+        app.on_service(ServiceMsg::Terminals(Vec::new()));
+        assert!(app.terms.is_empty() && !app.resync_terms, "the empty list is the whole list");
+        // An older service that never sends an empty list: its Stats says so.
+        let (mut app, _sent) = rig();
+        app.on_service(ServiceMsg::Terminals(vec![TermInfo { id: "a".into(), alive: true, ..Default::default() }]));
+        app.reset_service_state();
+        app.on_service(stats(0, 0));
+        assert!(app.terms.is_empty() && !app.resync_terms);
+        // A service with terminals still waits for its list.
+        let (mut app, _sent) = rig();
+        app.on_service(ServiceMsg::Terminals(vec![TermInfo { id: "a".into(), alive: true, ..Default::default() }]));
+        app.reset_service_state();
+        app.on_service(stats(1, 1));
+        assert!(app.resync_terms && app.terms.len() == 1);
     }
 
     #[test]
