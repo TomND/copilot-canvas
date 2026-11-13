@@ -16,21 +16,26 @@ use windows::core::BSTR;
 
 pub use canvas_model::automation::TaskInfo;
 
-struct Com;
+/// COM on this thread: uninitialized on drop only when `init` added an
+/// initialization (S_OK, or S_FALSE: already initialized the same way).
+/// RPC_E_CHANGED_MODE (an STA thread) added none: uninitializing there would
+/// remove another component's (S8-14).
+struct Com(bool);
 
 impl Com {
     fn init() -> Com {
-        // SAFETY: balanced by CoUninitialize in Drop; S_FALSE (already
-        // initialized) also needs the matching call.
-        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-        Com
+        // SAFETY: balanced by CoUninitialize in Drop when it succeeded.
+        let result = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        Com(result.is_ok())
     }
 }
 
 impl Drop for Com {
     fn drop(&mut self) {
-        // SAFETY: paired with init.
-        unsafe { CoUninitialize() };
+        if self.0 {
+            // SAFETY: paired with a successful init.
+            unsafe { CoUninitialize() };
+        }
     }
 }
 
