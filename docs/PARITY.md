@@ -234,6 +234,13 @@ fixed-size chips) have these checks, on a separate canvas of the sandbox
 
 ## Last run
 
+Round 1 client fixes (2026-11-13, branch `fix-r1-client`, on macOS locally with the alacritty engine): row 63
+added (unit tests and snapshots). `selftest` PASS in the TUI (167.5 s), over loopback (162.1 s), in the GUI
+(176.0 s) and in the GUI over loopback (166.1 s); `--remote faults` and `--remote paired` PASS. The parity suite: 79
+rows ✓ and 4 ✗ that this machine cannot run: G1 needs the ghostty engine (Kitty placements; this build has
+alacritty), 7b, 51 and V3 count presented frames and the locked screen skipped every present. The Windows clippy
+cross-check is clean; the GUI suites on Windows run on CI.
+
 VM sessions, Phase 5 (2026-11-10, CI run 42913883263 on `vm-sessions`, all 17 jobs): no row changed (Claude
 Code boxes on VMs, OpenCode refused with why, the dialog's *VM MCP* when the pack has presets; snapshot
 `new-session-vm-mcp`). Windows (WARP) `PASS: 80 rows in 333.4s`, the self-test in the TUI, over loopback and in the
